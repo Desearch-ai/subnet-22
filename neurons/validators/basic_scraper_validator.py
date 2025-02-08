@@ -33,6 +33,7 @@ class BasicScraperValidator:
         self.max_execution_time = 10
 
         self.synthetic_history = []
+        self.organic_history = []  # Stores dicts: {'uid': int, 'response': Synapse, 'timestamp': float}
         self.basic_organic_query_state = BasicOrganicQueryState()
         # Init device.
         bt.logging.debug("loading", "device")
@@ -398,13 +399,31 @@ class BasicScraperValidator:
                 )
                 return
 
+            current_time = time.time()
+            four_hours_ago = current_time - 4 * 3600
+
+            # Clean up organic_history to remove entries older than 4 hours
+            self.organic_history = [
+                entry for entry in self.organic_history
+                if entry['timestamp'] >= four_hours_ago
+            ]
+
+            # Collect UIDs from organic_history
+            organic_uids = {entry['uid'] for entry in self.organic_history}
+            available_uids = self.neuron.available_uids.copy()
+
+            synthetic_uids = [
+                uid for uid in available_uids
+                if uid not in organic_uids
+            ]
+
             dataset = QuestionsDataset()
 
             # Question generation
             prompts = await asyncio.gather(
                 *[
                     dataset.generate_basic_question_with_openai()
-                    for _ in range(len(self.neuron.available_uids))
+                    for _ in range(len(synthetic_uids))
                 ]
             )
 
@@ -434,10 +453,43 @@ class BasicScraperValidator:
                     tasks=tasks,
                     strategy=strategy,
                     is_only_allowed_miner=False,
-                    specified_uids=None,
+                    specified_uids=synthetic_uids,
                     params_list=params,
                 )
             )
+
+            # Collect organic responses
+            organic_responses = {}
+            for entry in self.organic_history:
+                uid = entry['uid']
+                if uid in available_uids and uid in organic_uids:
+                    organic_responses[uid] = entry['response']
+
+            # Merge synthetic and organic responses
+            merged_responses = []
+            merged_uids = []
+            synthetic_responses_dict = {
+                uid.item(): response
+                for uid, response in zip(uids, responses)
+            }
+
+            for uid in available_uids:
+                if uid in organic_responses:
+                    merged_responses.append(organic_responses[uid])
+                    merged_uids.append(uid)
+                elif uid in synthetic_responses_dict:
+                    merged_responses.append(synthetic_responses_dict[uid])
+                    merged_uids.append(uid)
+
+            # Remove used organic entries from organic_history
+            self.organic_history = [
+                entry for entry in self.organic_history
+                if entry['uid'] not in organic_uids
+            ]
+
+            # Update responses and uids with merged data
+            responses = merged_responses
+            uids = torch.tensor(merged_uids, device=self.neuron.config.neuron.device)
 
             self.synthetic_history.append((event, tasks, responses, uids, start_time))
 
@@ -546,9 +598,13 @@ class BasicScraperValidator:
 
                 # Save organic queries if not an interval query
                 if not is_interval_query:
-                    self.basic_organic_query_state.save_organic_queries(
-                        final_responses, uids, original_rewards
-                    )
+                    current_time = time.time()
+                    for uid_tensor, response in zip(uids, final_responses):
+                        self.organic_history.append({
+                            'uid': uid_tensor.item(),
+                            'response': response,
+                            'timestamp': current_time
+                        })
 
             # Schedule scoring task
             asyncio.create_task(process_and_score_responses(uids))

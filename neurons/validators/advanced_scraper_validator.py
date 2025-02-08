@@ -87,6 +87,7 @@ class AdvancedScraperValidator:
 
         self.synthetic_history = []
         self.organic_query_state = OrganicQueryState()
+        self.organic_history = []  # New list to track organic queries
         # Init device.
         bt.logging.debug("loading", "device")
         bt.logging.debug(
@@ -448,18 +449,37 @@ class AdvancedScraperValidator:
 
     async def query_and_score(self, strategy=QUERY_MINERS.RANDOM):
         try:
-
             if not len(self.neuron.available_uids):
                 bt.logging.info("No available UIDs, skipping task execution.")
                 return
 
-            dataset = QuestionsDataset()
-            tools = random.choice(self.tools)
+            # Cleanup organic history older than 4 hours
+            current_time = time.time()
+            four_hours_ago = current_time - 4 * 3600
+            self.organic_history = [entry for entry in self.organic_history if entry['timestamp'] >= four_hours_ago]
 
+            # Generate synthetic parameters
+            tools = random.choice(self.tools)
+            random_model = self.get_random_execution_time()
+            date_filter = get_random_date_filter()
+            synthetic_date_filter_type = date_filter.date_filter_type
+
+            # Determine UIDs to exclude (matching model, tools, date_filter)
+            matching_uids = set()
+            for entry in self.organic_history:
+                if (entry['model'] == random_model and
+                    entry['tools'] == tools and
+                    entry['date_filter_type'] == synthetic_date_filter_type.value):
+                    matching_uids.add(entry['uid'])
+
+            available_uids = self.neuron.available_uids.copy()
+            synthetic_uids = [uid for uid in available_uids if uid not in matching_uids]
+
+            dataset = QuestionsDataset()
             prompts = await asyncio.gather(
                 *[
                     dataset.generate_new_question_with_openai(tools)
-                    for _ in range(len(self.neuron.available_uids))
+                    for _ in range(len(synthetic_uids))
                 ]
             )
 
@@ -477,14 +497,13 @@ class AdvancedScraperValidator:
                 f"Query and score running with prompts: {prompts} and tools: {tools}"
             )
 
-            random_model = self.get_random_execution_time()
             max_execution_time = get_max_execution_time(random_model)
 
             async_responses, uids, event, start_time = await self.run_task_and_score(
                 tasks=tasks,
                 strategy=strategy,
                 is_only_allowed_miner=False,
-                date_filter=get_random_date_filter(),
+                date_filter=date_filter,
                 tools=tools,
                 language=self.language,
                 region=self.region,
@@ -496,7 +515,41 @@ class AdvancedScraperValidator:
                 async_responses, uids, start_time, max_execution_time
             )
 
-            # Store final synapses for scoring later
+            # Collect organic responses for matching UIDs
+            organic_responses = {}
+            for entry in self.organic_history:
+                if (entry['uid'] in matching_uids and
+                    entry['model'] == random_model and
+                    entry['tools'] == tools and
+                    entry['date_filter_type'] == synthetic_date_filter_type.value):
+                    organic_responses[entry['uid']] = entry['response']
+
+            # Merge synthetic and organic responses in UID order
+            merged_responses = []
+            merged_uids = []
+            synthetic_responses_dict = {uid.item(): response for uid, response in zip(uids, final_synapses)}
+
+            for uid in available_uids:
+                if uid in organic_responses:
+                    merged_responses.append(organic_responses[uid])
+                    merged_uids.append(uid)
+                elif uid in synthetic_responses_dict:
+                    merged_responses.append(synthetic_responses_dict[uid])
+                    merged_uids.append(uid)
+
+            # Remove used organic entries
+            self.organic_history = [
+                entry for entry in self.organic_history
+                if not (entry['uid'] in matching_uids and
+                        entry['model'] == random_model and
+                        entry['tools'] == tools and
+                        entry['date_filter_type'] == synthetic_date_filter_type.value)
+            ]
+
+            # Update uids and responses
+            uids = torch.tensor(merged_uids, device=self.neuron.config.neuron.device)
+            final_synapses = merged_responses
+
             self.synthetic_history.append(
                 (event, tasks, final_synapses, uids, start_time)
             )
@@ -627,6 +680,17 @@ class AdvancedScraperValidator:
                     self.organic_query_state.save_organic_queries(
                         final_synapses, uids, original_rewards
                     )
+                # After scoring, save to organic_history
+                current_time = time.time()
+                for uid_tensor, response in zip(uids, final_synapses):
+                    self.organic_history.append({
+                        'uid': uid_tensor.item(),
+                        'model': response.model,
+                        'tools': response.tools,
+                        'date_filter_type': response.date_filter_type,
+                        'timestamp': current_time,
+                        'response': response
+                    })
 
             asyncio.create_task(process_and_score_responses(uids))
         except Exception as e:
