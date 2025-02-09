@@ -24,7 +24,7 @@ from neurons.validators.reward.performance_reward import PerformanceRewardModel
 from neurons.validators.utils.tasks import SearchTask
 from neurons.validators.basic_organic_query_state import BasicOrganicQueryState
 from neurons.validators.penalty.exponential_penalty import ExponentialTimePenaltyModel
-
+from collections import defaultdict
 
 class BasicScraperValidator:
     def __init__(self, neuron: AbstractNeuron):
@@ -34,6 +34,7 @@ class BasicScraperValidator:
 
         self.synthetic_history = []
         self.basic_organic_query_state = BasicOrganicQueryState()
+        self.organic_history: Dict[Any, Dict[str, Any]] = defaultdict(dict)  # {uid: {'prompt': prompt,'synapse': synapse,'timestep': start_time}
         # Init device.
         bt.logging.debug("loading", "device")
         bt.logging.debug(
@@ -398,15 +399,28 @@ class BasicScraperValidator:
                 )
                 return
 
-            dataset = QuestionsDataset()
-
+            THRESHOLD = time.time() - 3600 * 4 #4 hours of threshold to remove entries
+            # Cleanup the organic history to remove entries older than 4 hours
+            self.organic_history = {uid: data for uid, data in self.organic_history.items() if data['timestamp'] >= THRESHOLD}
+            
+            
+            unused_uids = self.neuron.available_uids - self.organic_history.keys()
+            
             # Question generation
-            prompts = await asyncio.gather(
-                *[
-                    dataset.generate_basic_question_with_openai()
-                    for _ in range(len(self.neuron.available_uids))
-                ]
-            )
+            if self.organic_history: #If there are no organic history entries, Fallback to the synthetic query method
+                prompts = [data['synapse'].prompt for _, data in self.organic_history.items()]
+            else:
+                bt.logging.info("No organic history, falling back to synthetic search.")
+                dataset = QuestionsDataset()
+
+                # Question generation
+                prompts = await asyncio.gather(
+                    *[
+                        dataset.generate_basic_question_with_openai()
+                        for _ in range(len(self.neuron.available_uids))
+                    ]
+                )
+            
 
             params = [
                 self.generate_random_twitter_search_params()
@@ -434,14 +448,26 @@ class BasicScraperValidator:
                     tasks=tasks,
                     strategy=strategy,
                     is_only_allowed_miner=False,
-                    specified_uids=None,
+                    specified_uids=unused_uids,
                     params_list=params,
                 )
             )
-
+            
+            # Merge if the response exists because we are making the responses None for Organic UIDs that were processed in previous synthetic
+            merged_responses = [data['synapse'] for data in self.organic_history.values() if data['synapse']]
+            merged_uids = [uid for uid, data in self.organic_history.items() if data['synapse']]
+            merged_responses.extend(responses)
+            merged_uids.extend(uids.tolist())
+            # Update responses and uids with merged data
+            responses = merged_responses
+            uids = torch.Tensor(merged_uids, device = self.neuron.config.neuron.device)
             self.synthetic_history.append((event, tasks, responses, uids, start_time))
 
             await self.score_random_synthetic_query()
+            # Remove used organic responses from history
+            for uid in uids:
+                if (entry := self.organic_history.get(uid)):  
+                    entry['synapse'] = None
         except Exception as e:
             bt.logging.error(f"Error in query_and_score_twitter_basic: {e}")
             raise
@@ -544,6 +570,13 @@ class BasicScraperValidator:
                     is_synthetic=False,
                 )
 
+                # Save organic queries in `self.organic_history` if not an interval query
+                if not is_interval_query:
+                    for uid_tensor, synapse in zip(uids, final_responses):
+                        self.organic_history[uid_tensor.item()] = {
+                            'synapse': synapse,
+                            'timestamp': start_time
+                        }
                 # Save organic queries if not an interval query
                 if not is_interval_query:
                     self.basic_organic_query_state.save_organic_queries(
