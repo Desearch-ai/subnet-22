@@ -32,9 +32,10 @@ from neurons.validators.utils.tasks import TwitterTask
 from neurons.validators.organic_query_state import OrganicQueryState
 from neurons.validators.penalty.streaming_penalty import StreamingPenaltyModel
 from neurons.validators.penalty.exponential_penalty import ExponentialTimePenaltyModel
+from neurons.validators.organic_history_mixin import OrganicHistoryMixin
 
 
-class AdvancedScraperValidator:
+class AdvancedScraperValidator(OrganicHistoryMixin):
     def __init__(self, neuron: AbstractNeuron):
         self.neuron = neuron
         self.timeout = 180
@@ -455,11 +456,29 @@ class AdvancedScraperValidator:
 
             dataset = QuestionsDataset()
             tools = random.choice(self.tools)
+            random_model = self.get_random_execution_time()
+            date_filter = get_random_date_filter()
+
+            self._clean_organic_history()
+
+            matching_organic_history = {
+                uid: value
+                for uid, value in self.organic_history.items()
+                if value["response"].model == random_model
+                and value["response"].tools == tools
+                and value["response"].date_filter_type
+                == date_filter.date_filter_type.value
+            }
+
+            available_uids = self.neuron.available_uids.copy()
+            uids_to_call = [
+                uid for uid in available_uids if uid not in matching_organic_history
+            ]
 
             prompts = await asyncio.gather(
                 *[
                     dataset.generate_new_question_with_openai(tools)
-                    for _ in range(len(self.neuron.available_uids))
+                    for _ in range(len(uids_to_call))
                 ]
             )
 
@@ -477,19 +496,19 @@ class AdvancedScraperValidator:
                 f"Query and score running with prompts: {prompts} and tools: {tools}"
             )
 
-            random_model = self.get_random_execution_time()
             max_execution_time = get_max_execution_time(random_model)
 
             async_responses, uids, event, start_time = await self.run_task_and_score(
                 tasks=tasks,
                 strategy=strategy,
                 is_only_allowed_miner=False,
-                date_filter=get_random_date_filter(),
+                date_filter=date_filter,
                 tools=tools,
                 language=self.language,
                 region=self.region,
                 google_date_filter=self.date_filter,
                 model=random_model,
+                specified_uids=uids_to_call,
             )
 
             final_synapses = await collect_final_synapses(
@@ -497,9 +516,10 @@ class AdvancedScraperValidator:
             )
 
             # Store final synapses for scoring later
-            self.synthetic_history.append(
-                (event, tasks, final_synapses, uids, start_time)
+            merged_result = self._merge_synthetic_organic_responses(
+                final_synapses, uids, tasks, event, start_time, available_uids
             )
+            self.synthetic_history.append(merged_result)
 
             await self.score_random_synthetic_query()
 
@@ -626,6 +646,10 @@ class AdvancedScraperValidator:
                 if not is_interval_query:
                     self.organic_query_state.save_organic_queries(
                         final_synapses, uids, original_rewards
+                    )
+
+                    self._save_organic_response(
+                        uids, final_synapses, tasks, event, start_time
                     )
 
             asyncio.create_task(process_and_score_responses(uids))
