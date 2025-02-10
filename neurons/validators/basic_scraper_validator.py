@@ -24,9 +24,10 @@ from neurons.validators.reward.performance_reward import PerformanceRewardModel
 from neurons.validators.utils.tasks import SearchTask
 from neurons.validators.basic_organic_query_state import BasicOrganicQueryState
 from neurons.validators.penalty.exponential_penalty import ExponentialTimePenaltyModel
+from neurons.validators.organic_history_mixin import OrganicHistoryMixin
 
 
-class BasicScraperValidator:
+class BasicScraperValidator(OrganicHistoryMixin):
     def __init__(self, neuron: AbstractNeuron):
         self.neuron = neuron
         self.timeout = 180
@@ -400,11 +401,18 @@ class BasicScraperValidator:
 
             dataset = QuestionsDataset()
 
+            self._clean_organic_history()
+
+            available_uids = self.neuron.available_uids.copy()
+            uids_to_call = [
+                uid for uid in available_uids if uid not in self.organic_history
+            ]
+
             # Question generation
             prompts = await asyncio.gather(
                 *[
                     dataset.generate_basic_question_with_openai()
-                    for _ in range(len(self.neuron.available_uids))
+                    for _ in range(len(uids_to_call))
                 ]
             )
 
@@ -434,12 +442,15 @@ class BasicScraperValidator:
                     tasks=tasks,
                     strategy=strategy,
                     is_only_allowed_miner=False,
-                    specified_uids=None,
+                    specified_uids=uids_to_call,
                     params_list=params,
                 )
             )
 
-            self.synthetic_history.append((event, tasks, responses, uids, start_time))
+            merged_result = self._merge_synthetic_organic_responses(
+                responses, uids, tasks, event, start_time, available_uids
+            )
+            self.synthetic_history.append(merged_result)
 
             await self.score_random_synthetic_query()
         except Exception as e:
@@ -548,6 +559,10 @@ class BasicScraperValidator:
                 if not is_interval_query:
                     self.basic_organic_query_state.save_organic_queries(
                         final_responses, uids, original_rewards
+                    )
+
+                    self._save_organic_response(
+                        uids, final_responses, tasks, event, start_time
                     )
 
             # Schedule scoring task
