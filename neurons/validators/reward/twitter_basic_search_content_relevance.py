@@ -19,7 +19,7 @@
 import traceback
 import time
 import random
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Tuple
 import json
 from datetime import datetime
 import pytz
@@ -178,6 +178,9 @@ class TwitterBasicSearchContentRelevanceModel(BaseRewardModel):
         is within the specified percentage threshold of the validator_value.
         """
 
+        if val1 is None and val2 is None:
+            return True
+
         if val1 is None or val2 is None:
             return False
 
@@ -200,15 +203,15 @@ class TwitterBasicSearchContentRelevanceModel(BaseRewardModel):
         Returns True if all the nested fields within the values are equal.
         """
 
+        if val1 is None and val2 is None:
+            return True
+
         if val1 is None or val2 is None:
             return False
 
         if isinstance(val1, dict) and isinstance(val2, dict):
-            if val1.keys() != val2.keys():
-                return False
-
-            for key in val1:
-                if not self.compare_nested_fields(val1[key], val2[key]):
+            for key in set(val1) | set(val2):
+                if not self.compare_nested_fields(val1.get(key), val2.get(key)):
                     return False
 
             return True
@@ -438,7 +441,7 @@ class TwitterBasicSearchContentRelevanceModel(BaseRewardModel):
                 # Compare nested fields
                 if any(
                     not self.compare_nested_fields(
-                        f, miner_tweet.get(f), val_tweet_dict.get(f)
+                        miner_tweet.get(f), val_tweet_dict.get(f)
                     )
                     for f in TWEET_NESTED_FIELDS
                 ):
@@ -467,9 +470,7 @@ class TwitterBasicSearchContentRelevanceModel(BaseRewardModel):
                     continue
 
                 if any(
-                    not self.compare_nested_fields(
-                        f, miner_user.get(f), val_user.get(f)
-                    )
+                    not self.compare_nested_fields(miner_user.get(f), val_user.get(f))
                     for f in USER_NESTED_FIELDS
                 ):
                     tweet_scores.append(0)
@@ -487,7 +488,7 @@ class TwitterBasicSearchContentRelevanceModel(BaseRewardModel):
 
     async def get_rewards(
         self, responses: List[TwitterSearchSynapse], uids: List[int]
-    ) -> List[BaseRewardEvent]:
+    ) -> Tuple[List[BaseRewardEvent], Dict[int, float]]:
         try:
             # Step 1: fetch and fill validator_tweets
             _ = await self.process_tweets(responses=responses)
