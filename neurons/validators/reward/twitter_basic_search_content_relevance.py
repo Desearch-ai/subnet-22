@@ -68,6 +68,7 @@ USER_EXACT_FIELDS = {
     "created_at",
     "description",
     "profile_image_url",
+    "profile_banner_url",
     "verified",
     "can_dm",
     "can_media_tag",
@@ -87,6 +88,7 @@ TWEET_NUMERIC_FIELDS = {
 USER_NUMERIC_FIELDS = {
     "favourites_count",
     "followers_count",
+    "listed_count",
     "media_count",
     "statuses_count",
 }
