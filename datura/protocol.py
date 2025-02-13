@@ -49,6 +49,138 @@ class TwitterScraperMedia(BaseModel):
     type: str = ""
 
 
+class TwitterScraperEntitiesUserMention(BaseModel):
+    id_str: str
+    name: str
+    screen_name: str
+    indices: List[int]
+
+
+class TwitterScraperEntitiesSymbol(BaseModel):
+    indices: List[int]
+    text: str
+
+
+class TwitterScraperEntitiesMediaAdditionalInfo(BaseModel):
+    monetizable: Optional[bool] = None
+    source_user: Optional[Dict[str, Any]] = None
+
+
+class TwitterScraperEntitiesMediaExtAvailability(BaseModel):
+    status: Optional[str] = None
+
+
+class MediaSize(BaseModel):
+    w: int
+    h: int
+    resize: str
+
+
+class Rect(BaseModel):
+    x: int
+    y: int
+    w: int
+    h: int
+
+
+class TwitterScraperEntitiesMediaSizes(BaseModel):
+    large: Optional[MediaSize] = None
+    medium: Optional[MediaSize] = None
+    small: Optional[MediaSize] = None
+    thumb: Optional[MediaSize] = None
+
+
+class TwitterScraperEntitiesMediaOriginalInfo(BaseModel):
+    height: int
+    width: int
+    focus_rects: Optional[List[Rect]] = []
+
+
+class TwitterScraperEntitiesMediaAllowDownloadStatus(BaseModel):
+    allow_download: Optional[bool] = None
+
+
+class TwitterScraperEntitiesMediaVideoInfoVariant(BaseModel):
+    content_type: str
+    url: str
+    bitrate: Optional[int] = None
+
+
+class TwitterScraperEntitiesMediaVideoInfo(BaseModel):
+    duration_millis: Optional[int] = None
+    aspect_ratio: Optional[List[int]] = []
+    variants: Optional[List[TwitterScraperEntitiesMediaVideoInfoVariant]] = []
+
+
+class TwitterScraperEntitiesMediaResult(BaseModel):
+    media_key: str
+
+
+class TwitterScraperEntitiesMediaResults(BaseModel):
+    result: Optional[TwitterScraperEntitiesMediaResult] = None
+
+
+class TwitterScraperEntitiesMediaFeature(BaseModel):
+    faces: Optional[List[Rect]] = []
+
+
+class TwitterScraperEntitiesMediaFeatures(BaseModel):
+    large: Optional[TwitterScraperEntitiesMediaFeature] = None
+    medium: Optional[TwitterScraperEntitiesMediaFeature] = None
+    small: Optional[TwitterScraperEntitiesMediaFeature] = None
+    orig: Optional[TwitterScraperEntitiesMediaFeature] = None
+
+
+class TwitterScraperEntitiesMedia(BaseModel):
+    display_url: Optional[str] = None
+    expanded_url: Optional[str] = None
+    id_str: Optional[str] = None
+    indices: Optional[List[int]] = None
+    media_key: Optional[str] = None
+    media_url_https: Optional[str] = None
+    type: Optional[str] = None
+    url: Optional[str] = None
+    additional_media_info: Optional[TwitterScraperEntitiesMediaAdditionalInfo] = None
+    ext_media_availability: Optional[TwitterScraperEntitiesMediaExtAvailability] = None
+    features: Optional[TwitterScraperEntitiesMediaFeatures] = None
+    sizes: Optional[TwitterScraperEntitiesMediaSizes] = None
+    original_info: Optional[TwitterScraperEntitiesMediaOriginalInfo] = None
+    allow_download_status: Optional[TwitterScraperEntitiesMediaAllowDownloadStatus] = (
+        None
+    )
+    video_info: Optional[TwitterScraperEntitiesMediaVideoInfo] = None
+    media_results: Optional[TwitterScraperEntitiesMediaResults] = None
+
+
+class TwitterScraperEntityUrl(BaseModel):
+    display_url: str
+    expanded_url: str
+    url: str
+    indices: List[int]
+
+
+class TwitterScraperEntities(BaseModel):
+    hashtags: Optional[List[TwitterScraperEntitiesSymbol]] = []
+    media: Optional[List[TwitterScraperEntitiesMedia]] = []
+    symbols: Optional[List[TwitterScraperEntitiesSymbol]] = []
+    timestamps: Optional[List[Any]] = []
+    urls: Optional[List[TwitterScraperEntityUrl]] = []
+    user_mentions: Optional[List[TwitterScraperEntitiesUserMention]] = []
+
+
+class TwitterScraperExtendedEntities(BaseModel):
+    media: Optional[List[TwitterScraperEntitiesMedia]] = []
+
+
+class TwitterScraperUserEntitiesDescription(BaseModel):
+    urls: Optional[List[TwitterScraperEntityUrl]] = []
+
+
+class TwitterScraperUserEntities(BaseModel):
+    description: Optional[TwitterScraperUserEntitiesDescription] = None
+    url: Optional[TwitterScraperUserEntitiesDescription] = None
+
+
 class TwitterScraperUser(BaseModel):
     id: str
     url: Optional[str] = None
@@ -65,7 +197,7 @@ class TwitterScraperUser(BaseModel):
     statuses_count: Optional[int] = None
     verified: Optional[bool] = None
     is_blue_verified: Optional[bool] = None
-    entities: Optional[Dict[str, Any]] = None
+    entities: Optional[TwitterScraperUserEntities] = None
     can_dm: Optional[bool] = None
     can_media_tag: Optional[bool] = None
     location: Optional[str] = None
@@ -92,10 +224,10 @@ class TwitterScraperTweet(BaseModel):
     in_reply_to_status_id: Optional[str] = None
     in_reply_to_user_id: Optional[str] = None
     quoted_status_id: Optional[str] = None
-    quote: Optional[Dict[str, Any]] = None
+    quote: Optional["TwitterScraperTweet"] = None
     display_text_range: Optional[List[int]] = None
-    entities: Optional[Dict[str, Any]] = None
-    extended_entities: Optional[Dict[str, Any]] = None
+    entities: Optional[TwitterScraperEntities] = None
+    extended_entities: Optional[TwitterScraperExtendedEntities] = None
 
 
 class ScraperTextRole(str, Enum):
