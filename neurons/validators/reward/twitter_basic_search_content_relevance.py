@@ -19,7 +19,7 @@
 import traceback
 import time
 import random
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 import json
 from datetime import datetime
 import pytz
@@ -51,6 +51,13 @@ TWEET_EXACT_MATCH_FIELDS = {
     "created_at",
     "is_quote_tweet",
     "is_retweet",
+    "conversation_id",
+    "in_reply_to_screen_name",
+    "in_reply_to_status_id",
+    "in_reply_to_user_id",
+    "quoted_status_id",
+    "display_text_range",
+    "lang",
 }
 
 USER_EXACT_FIELDS = {
@@ -62,6 +69,11 @@ USER_EXACT_FIELDS = {
     "description",
     "profile_image_url",
     "verified",
+    "can_dm",
+    "can_media_tag",
+    "location",
+    "pinned_tweet_ids",
+    "is_blue_verified",
 }
 
 TWEET_NUMERIC_FIELDS = {
@@ -78,6 +90,10 @@ USER_NUMERIC_FIELDS = {
     "media_count",
     "statuses_count",
 }
+
+TWEET_NESTED_FIELDS = {"quote", "entities", "extended_entities"}
+
+USER_NESTED_FIELDS = {"entities"}
 
 
 class TwitterBasicSearchContentRelevanceModel(BaseRewardModel):
@@ -174,6 +190,48 @@ class TwitterBasicSearchContentRelevanceModel(BaseRewardModel):
             )
 
         return is_allowed
+
+    def compare_nested_fields(
+        self, val1: Optional[Dict[str, Any]], val2: Optional[Dict[str, Any]]
+    ) -> bool:
+        """
+        Returns True if all the nested fields within the values are equal.
+        """
+
+        if val1 is None or val2 is None:
+            return False
+
+        if isinstance(val1, dict) and isinstance(val2, dict):
+            if val1.keys() != val2.keys():
+                return False
+
+            for key in val1:
+                if not self.compare_nested_fields(val1[key], val2[key]):
+                    return False
+
+            return True
+
+        if isinstance(val1, list) and isinstance(val2, list):
+            if len(val1) != len(val2):
+                return False
+
+            for x, y in zip(val1, val2):
+                if not self.compare_nested_fields(x, y):
+                    return False
+
+            return True
+
+        if isinstance(val1, tuple) and isinstance(val2, tuple):
+            if len(val1) != len(val2):
+                return False
+
+            for x, y in zip(val1, val2):
+                if not self.compare_nested_fields(x, y):
+                    return False
+
+            return True
+
+        return val1 == val2
 
     def compare_media(self, media1: List[dict], media2: List[dict]) -> bool:
         if len(media1) != len(media2):
@@ -339,6 +397,16 @@ class TwitterBasicSearchContentRelevanceModel(BaseRewardModel):
                             tweet_scores.append(0)
                             continue
 
+                    if response.lang is not None:
+                        if response.lang != val_tweet.lang:
+                            tweet_scores.append(0)
+                            continue
+
+                    if response.blue_verified is not None:
+                        if response.blue_verified != val_tweet.user.is_blue_verified:
+                            tweet_scores.append(0)
+                            continue
+
                 val_tweet_dict = val_tweet.model_dump()
 
                 # # Compare tweet basic fields
@@ -365,6 +433,16 @@ class TwitterBasicSearchContentRelevanceModel(BaseRewardModel):
                     tweet_scores.append(0)
                     continue
 
+                # Compare nested fields
+                if any(
+                    not self.compare_nested_fields(
+                        f, miner_tweet.get(f), val_tweet_dict.get(f)
+                    )
+                    for f in TWEET_NESTED_FIELDS
+                ):
+                    tweet_scores.append(0)
+                    continue
+
                 # Compare media
                 if not self.compare_media(
                     miner_tweet.get("media"), val_tweet_dict.get("media")
@@ -382,6 +460,15 @@ class TwitterBasicSearchContentRelevanceModel(BaseRewardModel):
                 if any(
                     not self.compare_numeric(f, miner_user.get(f), val_user.get(f))
                     for f in USER_NUMERIC_FIELDS
+                ):
+                    tweet_scores.append(0)
+                    continue
+
+                if any(
+                    not self.compare_nested_fields(
+                        f, miner_user.get(f), val_user.get(f)
+                    )
+                    for f in USER_NESTED_FIELDS
                 ):
                     tweet_scores.append(0)
                     continue
