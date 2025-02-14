@@ -21,6 +21,65 @@ if not APIFY_API_KEY:
     )
 
 
+def toTwitterScraperTweet(item):
+    media_list = item.get("extendedEntities", {}).get("media", [])
+
+    media_list = [
+        TwitterScraperMedia(
+            media_url=media.get("media_url_https"), type=media.get("type")
+        )
+        for media in media_list
+    ]
+
+    author = item.get("author", {})
+
+    tweet = TwitterScraperTweet(
+        id=item.get("id"),
+        text=item.get("text"),
+        reply_count=item.get("replyCount"),
+        retweet_count=item.get("retweetCount"),
+        like_count=item.get("likeCount"),
+        quote_count=item.get("quoteCount"),
+        # impression_count=item.get("viewCount"),
+        bookmark_count=item.get("bookmarkCount"),
+        url=item.get("url"),
+        created_at=item.get("createdAt"),
+        is_quote_tweet=item.get("isQuote"),
+        is_retweet=item.get("isRetweet"),
+        media=media_list,
+        lang=item.get("lang"),
+        conversation_id=item.get("conversationId"),
+        in_reply_to_user_id=item.get("inReplyToUserId"),
+        quote=item.get("quote"),
+        entities=item.get("entities"),
+        extended_entities=item.get("extendedEntities"),
+        user=TwitterScraperUser(
+            id=author.get("id"),
+            created_at=author.get("createdAt"),
+            description=author.get("description"),
+            followers_count=author.get("followers"),
+            favourites_count=author.get("favouritesCount"),
+            listed_count=author.get("listedCount"),
+            media_count=author.get("mediaCount"),
+            statuses_count=author.get("statusesCount"),
+            verified=author.get("isVerified"),
+            is_blue_verified=author.get("isBlueVerified"),
+            profile_image_url=author.get("profilePicture"),
+            profile_banner_url=author.get("coverPicture"),
+            url=author.get("url"),
+            name=author.get("name"),
+            username=author.get("userName"),
+            entities=author.get("entities"),
+            can_dm=author.get("canDm"),
+            can_media_tag=author.get("canMediaTag"),
+            location=author.get("location"),
+            pinned_tweet_ids=author.get("pinnedTweetIds"),
+        ),
+    )
+
+    return tweet
+
+
 class TwitterScraperActor:
     def __init__(self) -> None:
         # Actor: https://apify.com/apidojo/tweet-scraper
@@ -49,48 +108,10 @@ class TwitterScraperActor:
                 run["defaultDatasetId"]
             ).iterate_items():
                 try:
-                    media_list = item.get("extendedEntities", {}).get("media", [])
+                    if item.get("noResults"):
+                        continue
 
-                    media_list = [
-                        TwitterScraperMedia(
-                            media_url=media.get("media_url_https"),
-                            type=media.get("type"),
-                        )
-                        for media in media_list
-                    ]
-
-                    author = item.get("author", {})
-
-                    tweet = TwitterScraperTweet(
-                        id=item.get("id"),
-                        text=item.get("text"),
-                        reply_count=item.get("replyCount"),
-                        retweet_count=item.get("retweetCount"),
-                        like_count=item.get("likeCount"),
-                        quote_count=item.get("quoteCount"),
-                        bookmark_count=item.get("bookmarkCount"),
-                        # impression_count=item.get("impressionCount"),
-                        url=item.get("url"),
-                        created_at=item.get("createdAt"),
-                        is_quote_tweet=item.get("isQuote"),
-                        is_retweet=item.get("isRetweet"),
-                        media=media_list,
-                        user=TwitterScraperUser(
-                            id=author.get("id"),
-                            created_at=author.get("createdAt"),
-                            description=author.get("description"),
-                            followers_count=author.get("followers"),
-                            favourites_count=author.get("favouritesCount"),
-                            media_count=author.get("mediaCount"),
-                            statuses_count=author.get("statusesCount"),
-                            verified=author.get("isVerified"),
-                            profile_image_url=author.get("profilePicture"),
-                            url=author.get("url"),
-                            name=author.get("name"),
-                            username=author.get("userName"),
-                        ),
-                    )
-
+                    tweet = toTwitterScraperTweet(item)
                     tweets.append(tweet)
                 except Exception as e:
                     error_message = (
@@ -110,7 +131,7 @@ class TwitterScraperActor:
 
     async def get_tweets_advanced(
         self,
-        urls: Optional[List[str]],
+        urls: Optional[List[str]] = [],
         author: Optional[str] = None,
         conversationIds: Optional[List[str]] = None,
         start: Optional[str] = None,
@@ -177,50 +198,13 @@ class TwitterScraperActor:
             async for item in self.client.dataset(
                 run["defaultDatasetId"]
             ).iterate_items():
-                media_list = item.get("extendedEntities", {}).get("media", [])
+                if item.get("noResults"):
+                    continue
 
-                media_list = [
-                    TwitterScraperMedia(
-                        media_url=media.get("media_url_https"), type=media.get("type")
-                    )
-                    for media in media_list
-                ]
+                tweet = toTwitterScraperTweet(item)
+                tweets.append(tweet)
 
-                author = item.get("author", {})
-
-                tweet = TwitterScraperTweet(
-                    id=item.get("id"),
-                    text=item.get("text"),
-                    reply_count=item.get("replyCount"),
-                    retweet_count=item.get("retweetCount"),
-                    like_count=item.get("likeCount"),
-                    quote_count=item.get("quoteCount"),
-                    # impression_count=item.get("viewCount"),
-                    bookmark_count=item.get("bookmarkCount"),
-                    url=item.get("url"),
-                    created_at=item.get("createdAt"),
-                    is_quote_tweet=item.get("isQuote"),
-                    is_retweet=item.get("isRetweet"),
-                    media=media_list,
-                    user=TwitterScraperUser(
-                        id=author.get("id"),
-                        created_at=author.get("createdAt"),
-                        description=author.get("description"),
-                        followers_count=author.get("followers"),
-                        favourites_count=author.get("favouritesCount"),
-                        media_count=author.get("mediaCount"),
-                        statuses_count=author.get("statusesCount"),
-                        verified=author.get("isVerified"),
-                        profile_image_url=author.get("profilePicture"),
-                        url=author.get("url"),
-                        name=author.get("name"),
-                        username=author.get("userName"),
-                    ),
-                )
-
-                tweets.append(tweet.dict())
-
-            return {"data": tweets}
+            return tweets
         except Exception as e:
             error_message = (
                 f"TwitterScraperActor: Failed to scrape tweets {searchTerms}: {str(e)}"
