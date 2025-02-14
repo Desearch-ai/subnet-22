@@ -21,12 +21,12 @@ class OrganicHistoryMixin:
         for response, uid, task, *event_values in zip(
             responses, uids, tasks, *event.values()
         ):
-            event = dict(zip(event.keys(), event_values))
+            event_item = dict(zip(event.keys(), event_values))
 
             responses_dict[uid.item()] = {
                 "response": response,
                 "task": task,
-                "event": event,
+                "event": event_item,
             }
 
         merged_uids = []
@@ -35,23 +35,21 @@ class OrganicHistoryMixin:
         merged_event = {key: [] for key in event}
 
         for uid in available_uids:
-            item = (
-                self.organic_history.pop(uid.item())
-                if uid.item() in self.organic_history
-                else responses_dict.get(uid.item(), None)
+            item = responses_dict.get(uid.item()) or self.organic_history.pop(
+                uid.item(), None
             )
 
             if item:
                 merged_uids.append(uid)
-                merged_responses.append(item.response)
-                merged_tasks.append(item.task)
-                for key, value in item.event.items():
+                merged_responses.append(item["response"])
+                merged_tasks.append(item["task"])
+                for key, value in item["event"].items():
                     merged_event[key].append(value)
 
         return merged_event, merged_tasks, merged_responses, merged_uids, start_time
 
     def _save_organic_response(self, uids, responses, tasks, event, start_time) -> None:
-        for uid, response, task, event_values in zip(
+        for uid, response, task, *event_values in zip(
             uids, responses, tasks, *event.values()
         ):
             event = dict(zip(event.keys(), event_values))
