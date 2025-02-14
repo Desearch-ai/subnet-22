@@ -2,7 +2,7 @@ import torch
 import random
 import asyncio
 import time
-from typing import List, Optional
+from typing import List, Optional, Any, Dict
 import bittensor as bt
 from datura.stream import collect_final_synapses
 from reward import RewardModelType, RewardScoringType
@@ -32,6 +32,7 @@ from neurons.validators.utils.tasks import TwitterTask
 from neurons.validators.organic_query_state import OrganicQueryState
 from neurons.validators.penalty.streaming_penalty import StreamingPenaltyModel
 from neurons.validators.penalty.exponential_penalty import ExponentialTimePenaltyModel
+from collections import defaultdict
 
 
 class AdvancedScraperValidator:
@@ -87,6 +88,9 @@ class AdvancedScraperValidator:
 
         self.synthetic_history = []
         self.organic_query_state = OrganicQueryState()
+        self.organic_history: Dict[Any, Dict[str, Any]] = defaultdict(
+            dict
+        )  # {uid: {'synapse': synapse,'timestep': time.time()}}
         # Init device.
         bt.logging.debug("loading", "device")
         bt.logging.debug(
@@ -453,15 +457,52 @@ class AdvancedScraperValidator:
                 bt.logging.info("No available UIDs, skipping task execution.")
                 return
 
-            dataset = QuestionsDataset()
-            tools = random.choice(self.tools)
+            THRESHOLD = time.time() - 3600 * 4  # 4 hours of threshold to remove entries
+            # Cleanup the organic history to remove entries older than 4 hours
+            self.organic_history = {
+                uid: data
+                for uid, data in self.organic_history.items()
+                if data["timestamp"] >= THRESHOLD
+            }
 
-            prompts = await asyncio.gather(
-                *[
-                    dataset.generate_new_question_with_openai(tools)
-                    for _ in range(len(self.neuron.available_uids))
-                ]
+            # Parameters for synthetic query
+            random_model = self.get_random_execution_time()
+            tools = random.choice(self.tools)
+            date_filter = get_random_date_filter()
+            synthetic_date_filter_dtype = date_filter.date_filter_type
+
+            # Filtering UIDs from organic history that match the model, tools and date_filter
+            selected_queries_from_history = {
+                uid: data
+                for uid, data in self.organic_history.items()
+                if (
+                    data["synapse"].model == random_model
+                    and data["synapse"].tools == tools
+                    and data["synapse"].date_filter_type == synthetic_date_filter_dtype
+                )
+            }
+            # Exclude the Organic UIDs from the available UIDs
+            unused_uids = (
+                self.neuron.available_uids - selected_queries_from_history.keys()
             )
+
+            if (
+                self.organic_history
+            ):  # If there are no organic history entries, Fallback to the synthetic query method
+                prompts = [
+                    data["synapse"].prompt
+                    for _, data in selected_queries_from_history.items()
+                ]
+            else:
+                bt.logging.info("No organic history, falling back to synthetic search.")
+                dataset = QuestionsDataset()
+
+                prompts = await asyncio.gather(
+                    *[
+                        dataset.generate_new_question_with_openai(tools)
+                        for _ in range(len(unused_uids))
+                    ]
+                )
 
             tasks = [
                 TwitterTask(
@@ -477,14 +518,14 @@ class AdvancedScraperValidator:
                 f"Query and score running with prompts: {prompts} and tools: {tools}"
             )
 
-            random_model = self.get_random_execution_time()
             max_execution_time = get_max_execution_time(random_model)
 
             async_responses, uids, event, start_time = await self.run_task_and_score(
                 tasks=tasks,
                 strategy=strategy,
                 is_only_allowed_miner=False,
-                date_filter=get_random_date_filter(),
+                specified_uids=unused_uids,
+                date_filter=date_filter,
                 tools=tools,
                 language=self.language,
                 region=self.region,
@@ -496,13 +537,33 @@ class AdvancedScraperValidator:
                 async_responses, uids, start_time, max_execution_time
             )
 
+            # Collect organic responses for matching UIDs
+            # Merge if the response exists because we are making the responses None for Organic UIDs that were processed in previous synthetic
+            merged_responses = [
+                data["synapse"]
+                for data in selected_queries_from_history.values()
+                if data["synapse"]
+            ]
+            merged_uids = [
+                uid
+                for uid, data in selected_queries_from_history.items()
+                if data["synapse"]
+            ]
+            merged_responses.extend(final_synapses)
+            merged_uids.extend(uids.tolist())
+            # Update responses and uids with merged data
+            final_synapses = merged_responses
+            uids = torch.Tensor(merged_uids)
             # Store final synapses for scoring later
             self.synthetic_history.append(
                 (event, tasks, final_synapses, uids, start_time)
             )
 
             await self.score_random_synthetic_query()
-
+            # Remove used organic responses from history
+            for uid in uids:
+                if entry := self.organic_history.get(uid):
+                    entry["synapse"] = None
         except Exception as e:
             bt.logging.error(f"Error in query_and_score: {e}")
             raise e
@@ -627,6 +688,13 @@ class AdvancedScraperValidator:
                     self.organic_query_state.save_organic_queries(
                         final_synapses, uids, original_rewards
                     )
+                # Save organic queries in `self.organic_history` if not an interval query
+                if not is_interval_query:
+                    for uid_tensor, synapse in zip(uids, final_synapses):
+                        self.organic_history[uid_tensor.item()] = {
+                            "synapse": synapse,
+                            "timestamp": start_time,
+                        }
 
             asyncio.create_task(process_and_score_responses(uids))
         except Exception as e:
