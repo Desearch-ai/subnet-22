@@ -119,28 +119,49 @@ def set_weights_with_retry(self, processed_weight_uids, processed_weights):
     return success
 
 
+def process_weights(self, raw_weights):
+    max_retries = 5  # Define the maximum number of retries
+    retry_delay = 30  # Define the delay between retries in seconds
+
+    for attempt in range(max_retries):
+        try:
+            (
+                processed_weight_uids,
+                processed_weights,
+            ) = bt.utils.weight_utils.process_weights_for_netuid(
+                uids=self.metagraph.uids.to("cpu"),
+                weights=raw_weights.to("cpu"),
+                netuid=self.config.netuid,
+                subtensor=self.subtensor,
+                metagraph=self.metagraph,
+            )
+
+            weights_dict = {
+                str(uid.item()): weight.item()
+                for uid, weight in zip(processed_weight_uids, processed_weights)
+            }
+
+            return weights_dict, processed_weight_uids, processed_weights
+        except Exception as e:
+            bt.logging.error(f"Error in process_weights (attempt {attempt + 1}): {e}")
+
+            if attempt < max_retries - 1:
+                bt.logging.info(f"Retrying in {retry_delay} seconds...")
+                time.sleep(retry_delay)
+            else:
+                return {}, None, None
+
+
 def get_weights(self):
     if torch.all(self.moving_averaged_scores == 0):
-        bt.logging.info("All moving averaged scores are zero, skipping weight setting.")
+        bt.logging.info(
+            "All moving averaged scores are zero. Skipping weight retrieval."
+        )
         return {}
 
     raw_weights = torch.nn.functional.normalize(self.moving_averaged_scores, p=1, dim=0)
 
-    (
-        processed_weight_uids,
-        processed_weights,
-    ) = bt.utils.weight_utils.process_weights_for_netuid(
-        uids=self.metagraph.uids.to("cpu"),
-        weights=raw_weights.to("cpu"),
-        netuid=self.config.netuid,
-        subtensor=self.subtensor,
-        metagraph=self.metagraph,
-    )
-
-    weights_dict = {
-        str(uid.item()): weight.item()
-        for uid, weight in zip(processed_weight_uids, processed_weights)
-    }
+    weights_dict, _, _ = process_weights(self, raw_weights)
 
     return weights_dict
 
@@ -157,21 +178,12 @@ def set_weights(self):
     bt.logging.trace("top10 uids", raw_weights.sort()[1])
 
     # Process the raw weights to final_weights via subtensor limitations.
-    (
-        processed_weight_uids,
-        processed_weights,
-    ) = bt.utils.weight_utils.process_weights_for_netuid(
-        uids=self.metagraph.uids.to("cpu"),
-        weights=raw_weights.to("cpu"),
-        netuid=self.config.netuid,
-        subtensor=self.subtensor,
-        metagraph=self.metagraph,
+    weights_dict, processed_weight_uids, processed_weights = process_weights(
+        self, raw_weights
     )
 
-    weights_dict = {
-        str(uid.item()): weight.item()
-        for uid, weight in zip(processed_weight_uids, processed_weights)
-    }
+    if processed_weight_uids is None:
+        return
 
     # Log the weights dictionary
     bt.logging.info(f"Attempting to set weights action for {weights_dict}")
@@ -190,26 +202,3 @@ def set_weights(self):
     # Call the new method to handle the process with retry logic
     success = set_weights_with_retry(self, processed_weight_uids, processed_weights)
     return success
-
-
-def update_weights(self, total_scores, steps_passed):
-    try:
-        """Update weights based on total scores, using min-max normalization for display"""
-        avg_scores = total_scores / (steps_passed + 1)
-
-        # Normalize avg_scores to a range of 0 to 1
-        min_score = torch.min(avg_scores)
-        max_score = torch.max(avg_scores)
-
-        if max_score - min_score != 0:
-            normalized_scores = (avg_scores - min_score) / (max_score - min_score)
-        else:
-            normalized_scores = torch.zeros_like(avg_scores)
-
-        bt.logging.info(f"normalized_scores = {normalized_scores}")
-        # We can't set weights with normalized scores because that disrupts the weighting assigned to each validator class
-        # Weights get normalized anyways in weight_utils
-        set_weights(self, avg_scores)
-    except Exception as e:
-        bt.logging.error(f"Error in update_weights: {e}")
-        raise

@@ -15,13 +15,22 @@ import uvicorn
 import bittensor as bt
 import traceback
 from validator import Neuron
-import asyncio
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
+from contextlib import asynccontextmanager
 import json
 
+neu = Neuron()
 
-app = FastAPI()
+
+@asynccontextmanager
+async def lifespan(app):
+    # Start the neuron when the app starts
+    await neu.run()
+    yield
+
+
+app = FastAPI(lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -30,9 +39,6 @@ app.add_middleware(
     allow_methods=["*"],  # Allows all methods
     allow_headers=["*"],  # Allows all headers
 )
-
-
-neu = Neuron()
 
 
 available_tools = [
@@ -521,5 +527,4 @@ def run_fastapi():
 
 
 if __name__ == "__main__":
-    asyncio.get_event_loop().create_task(neu.run())
     run_fastapi()
