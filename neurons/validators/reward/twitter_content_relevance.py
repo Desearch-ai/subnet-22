@@ -255,6 +255,12 @@ class TwitterContentRelevanceModel(BaseRewardModel):
                     ):
                         tweet_score = 0
 
+                    if response.language != val_tweet.lang:
+                        tweet_score = 0
+
+                    if tweet.get("lang") != val_tweet.lang:
+                        tweet_score = 0
+
                 tweet_scores.append(tweet_score)
 
             if tweet_scores:

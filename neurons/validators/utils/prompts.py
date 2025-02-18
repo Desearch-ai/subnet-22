@@ -377,6 +377,13 @@ Role: As an evaluator, your task is to determine how well a web link answers a s
 
 Scoring Criteria:
 
+Score 0:
+- Criteria: Content is in a language different from question language.
+- Example:
+  - Question: "Effects of global warming on polar bears?"
+  - Content: "Visite las mejores playas tropicales!"
+  - Output: Score 0, Explanation: The answer is in a language different from the expected one (English)
+
 Score 2:
 - Criteria: Content does not mention the question’s keywords/themes.
 - Example:
@@ -402,13 +409,15 @@ Important Rules:
 1. Identify Keywords: Extract keywords/themes from the question.
 2. Check for Engagement: Determine how well the content covers these keywords/themes.
 3. Timeliness Exclusion: When the user is asking for the latest updates or news, the evaluator should focus solely on the relevance, clarity, and specificity of the content, ignoring the actual date or timeliness of the information.
-4. Scoring:
+4. **Language Requirement**: If the description or answer is in a language other than the question language, return a score of 0/
+5. Scoring:
+   - 0: Answer is in a different language.
    - 2: No relevant keywords.
    - 5: Superficial mention.
    - 9: Detailed, well-explained information with examples or evidence.
    
 Output Format:
-Score: [2, 5, or 9], Explanation:
+Score: [0, 2, 5, or 9], Explanation:
 """
 
 text_and_summarized_description_scoring_template = """
@@ -423,6 +432,9 @@ Establish clear criteria for evaluating a summary:
 
 ## 2. Develop a Scoring Rubric
 Create a scoring rubric with specific guidelines for assigning scores. Use a binary scoring system (0 or 1) for each criterion.
+
+## 3. Language consideration
+If summary language is different with text language, return 0 for all criterion.
 
 ### Example Rubric:
 - **Relevance**:
