@@ -474,6 +474,38 @@ class Neuron(AbstractNeuron):
         ):
             pass
 
+    async def compute_organic_responses(self):
+        specified_uids = self.advanced_scraper_validator.get_uids_with_no_history(
+            self.available_uids
+        )
+        bt.logging.info(
+            f"Running advanced synthetic queries with specified uids: {specified_uids}"
+        )
+        await self.advanced_scraper_validator.query_and_score(
+            strategy=QUERY_MINERS.ALL, specified_uids=specified_uids
+        )
+
+        await self.advanced_scraper_validator.compute_rewards_and_penalties(
+            **self.advanced_scraper_validator.get_latest_organic_responses(),
+            start_time=time.time(),
+        )
+
+    async def compute_basic_organic_responses(self):
+        specified_uids = self.basic_scraper_validator.get_uids_with_no_history(
+            self.available_uids
+        )
+        bt.logging.info(
+            f"Running basic synthetic queries with specified uids: {specified_uids}"
+        )
+        await self.basic_scraper_validator.query_and_score_twitter_basic(
+            strategy=QUERY_MINERS.ALL, specified_uids=specified_uids
+        )
+
+        await self.basic_scraper_validator.compute_rewards_and_penalties(
+            **self.basic_scraper_validator.get_latest_organic_responses(),
+            start_time=time.time(),
+        )
+
     def blocks_until_next_epoch(self):
         current_block = self.subtensor.get_current_block()
         tempo = self.subtensor.tempo(self.config.netuid, current_block)
@@ -507,6 +539,11 @@ class Neuron(AbstractNeuron):
                         f"Weight setting execution time: {weight_set_end_time - weight_set_start_time:.2f} seconds"
                     )
                     await asyncio.sleep(300)
+
+                if blocks_left <= 100 and self.config.neuron.synthetic_disabled:
+                    self.loop.create_task(self.compute_basic_organic_responses())
+                    self.loop.create_task(self.compute_organic_responses())
+
             except Exception as e:
                 bt.logging.error(f"Error in validator sync: {e}")
 
@@ -604,21 +641,22 @@ class Neuron(AbstractNeuron):
                         bt.logging.error(f"Error during task execution: {e}")
                         await asyncio.sleep(interval)  # Wait before retrying
 
-            if self.config.neuron.run_random_miner_syn_qs_interval > 0:
-                self.loop.create_task(
-                    run_with_interval(
-                        self.config.neuron.run_all_miner_syn_qs_interval,
-                        QUERY_MINERS.RANDOM,
+            if not self.config.neuron.synthetic_disabled:
+                if self.config.neuron.run_random_miner_syn_qs_interval > 0:
+                    self.loop.create_task(
+                        run_with_interval(
+                            self.config.neuron.run_all_miner_syn_qs_interval,
+                            QUERY_MINERS.RANDOM,
+                        )
                     )
-                )
 
-            if self.config.neuron.run_all_miner_syn_qs_interval > 0:
-                self.loop.create_task(
-                    run_with_interval(
-                        self.config.neuron.run_all_miner_syn_qs_interval,
-                        QUERY_MINERS.ALL,
+                if self.config.neuron.run_all_miner_syn_qs_interval > 0:
+                    self.loop.create_task(
+                        run_with_interval(
+                            self.config.neuron.run_all_miner_syn_qs_interval,
+                            QUERY_MINERS.ALL,
+                        )
                     )
-                )
             # If someone intentionally stops the validator, it'll safely terminate operations.
 
             three_hours_in_seconds = 10800
