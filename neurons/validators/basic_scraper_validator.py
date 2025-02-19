@@ -24,10 +24,13 @@ from neurons.validators.reward.performance_reward import PerformanceRewardModel
 from neurons.validators.utils.tasks import SearchTask
 from neurons.validators.basic_organic_query_state import BasicOrganicQueryState
 from neurons.validators.penalty.exponential_penalty import ExponentialTimePenaltyModel
+from neurons.validators.organic_history_mixin import OrganicHistoryMixin
 
 
-class BasicScraperValidator:
+class BasicScraperValidator(OrganicHistoryMixin):
     def __init__(self, neuron: AbstractNeuron):
+        super().__init__()
+
         self.neuron = neuron
         self.timeout = 180
         self.max_execution_time = 10
@@ -390,7 +393,7 @@ class BasicScraperValidator:
 
         return params
 
-    async def query_and_score_twitter_basic(self, strategy):
+    async def query_and_score_twitter_basic(self, strategy, specified_uids=None):
         try:
             if not len(self.neuron.available_uids):
                 bt.logging.info(
@@ -404,7 +407,13 @@ class BasicScraperValidator:
             prompts = await asyncio.gather(
                 *[
                     dataset.generate_basic_question_with_openai()
-                    for _ in range(len(self.neuron.available_uids))
+                    for _ in range(
+                        len(
+                            specified_uids
+                            if specified_uids
+                            else self.neuron.available_uids
+                        )
+                    )
                 ]
             )
 
@@ -434,19 +443,22 @@ class BasicScraperValidator:
                     tasks=tasks,
                     strategy=strategy,
                     is_only_allowed_miner=False,
-                    specified_uids=None,
+                    specified_uids=specified_uids,
                     params_list=params,
                 )
             )
 
-            await self.compute_rewards_and_penalties(
-                event=event,
-                tasks=tasks,
-                responses=responses,
-                uids=uids,
-                start_time=start_time,
-                is_synthetic=True,
-            )
+            if self.neuron.config.neuron.synthetic_disabled:
+                self._save_organic_response(uids, responses, tasks, event, start_time)
+            else:
+                await self.compute_rewards_and_penalties(
+                    event=event,
+                    tasks=tasks,
+                    responses=responses,
+                    uids=uids,
+                    start_time=start_time,
+                    is_synthetic=True,
+                )
         except Exception as e:
             bt.logging.error(f"Error in query_and_score_twitter_basic: {e}")
             raise
@@ -525,6 +537,10 @@ class BasicScraperValidator:
                 if not is_interval_query:
                     self.basic_organic_query_state.save_organic_queries(
                         final_responses, uids, original_rewards
+                    )
+
+                    self._save_organic_response(
+                        uids, final_responses, tasks, event, start_time
                     )
 
             # Schedule scoring task

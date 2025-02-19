@@ -32,10 +32,13 @@ from neurons.validators.utils.tasks import TwitterTask
 from neurons.validators.organic_query_state import OrganicQueryState
 from neurons.validators.penalty.streaming_penalty import StreamingPenaltyModel
 from neurons.validators.penalty.exponential_penalty import ExponentialTimePenaltyModel
+from neurons.validators.organic_history_mixin import OrganicHistoryMixin
 
 
-class AdvancedScraperValidator:
+class AdvancedScraperValidator(OrganicHistoryMixin):
     def __init__(self, neuron: AbstractNeuron):
+        super().__init__()
+
         self.neuron = neuron
         self.timeout = 180
         self.execution_time_options = [Model.NOVA, Model.ORBIT, Model.HORIZON]
@@ -448,7 +451,7 @@ class AdvancedScraperValidator:
 
         bt.logging.debug("Run Task event:", event)
 
-    async def query_and_score(self, strategy):
+    async def query_and_score(self, strategy, specified_uids=None):
         try:
 
             if not len(self.neuron.available_uids):
@@ -461,7 +464,13 @@ class AdvancedScraperValidator:
             prompts = await asyncio.gather(
                 *[
                     dataset.generate_new_question_with_openai(tools)
-                    for _ in range(len(self.neuron.available_uids))
+                    for _ in range(
+                        len(
+                            specified_uids
+                            if specified_uids
+                            else self.neuron.available_uids
+                        )
+                    )
                 ]
             )
 
@@ -493,20 +502,26 @@ class AdvancedScraperValidator:
                 google_date_filter=self.date_filter,
                 model=random_model,
                 is_synthetic=True,
+                specified_uids=specified_uids,
             )
 
             final_synapses = await collect_final_synapses(
                 async_responses, uids, start_time, max_execution_time
             )
 
-            await self.compute_rewards_and_penalties(
-                event=event,
-                tasks=tasks,
-                responses=final_synapses,
-                uids=uids,
-                start_time=start_time,
-                is_synthetic=True,
-            )
+            if self.neuron.config.neuron.synthetic_disabled:
+                self._save_organic_response(
+                    uids, final_synapses, tasks, event, start_time
+                )
+            else:
+                await self.compute_rewards_and_penalties(
+                    event=event,
+                    tasks=tasks,
+                    responses=final_synapses,
+                    uids=uids,
+                    start_time=start_time,
+                    is_synthetic=True,
+                )
         except Exception as e:
             bt.logging.error(f"Error in query_and_score: {e}")
             raise e
@@ -602,6 +617,10 @@ class AdvancedScraperValidator:
                 if not is_interval_query:
                     self.organic_query_state.save_organic_queries(
                         final_synapses, uids, original_rewards
+                    )
+
+                    self._save_organic_response(
+                        uids, final_synapses, tasks, event, start_time
                     )
 
             asyncio.create_task(process_and_score_responses(uids))

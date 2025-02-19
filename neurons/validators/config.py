@@ -198,6 +198,13 @@ def add_args(cls, parser):
         default=False,
     )
 
+    parser.add_argument(
+        "--neuron.synthetic_disabled",
+        action="store_true",
+        help="Disables synthetic queries.",
+        default=False,
+    )
+
     # parser.add_argument(
     #     "--neuron.save_logs",
     #     type=str2bool,
