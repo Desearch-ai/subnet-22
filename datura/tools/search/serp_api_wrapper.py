@@ -21,14 +21,14 @@ class SerpAPIWrapper:
 
     async def arun(self, query: str, **kwargs: Any) -> str:
         """Run query through SerpAPI and parse result async."""
-        result = await self.aresults(query)
+        result = await self.aresults(query, **kwargs)
         return self._process_response(result)
 
-    async def aresults(self, query: str) -> dict:
+    async def aresults(self, query: str, **kwargs: Any) -> dict:
         """Use aiohttp to run query through SerpAPI and return the results async."""
 
         def construct_url_and_params() -> Tuple[str, Dict[str, str]]:
-            params = self.get_params(query)
+            params = self.get_params(query, **kwargs)
             params["source"] = "python"
             if self.serpapi_api_key:
                 params["serp_api_key"] = self.serpapi_api_key
@@ -47,25 +47,27 @@ class SerpAPIWrapper:
 
         return res
 
-    def get_params(self, query: str) -> Dict[str, str]:
+    def get_params(self, query: str, **kwargs: Any) -> Dict[str, str]:
         """Get parameters for SerpAPI."""
         _params = {
             "api_key": self.serpapi_api_key,
             "q": query,
         }
-        return {**self.params, **_params}
+        return {**kwargs, **self.params, **_params}
 
     @staticmethod
     def _process_response(res: dict) -> str:
         """Process response from SerpAPI."""
-        if "error" in res.keys() and res["error"] == "Google hasn't returned any results for this query.":
+        if (
+            "error" in res.keys()
+            and res["error"] == "Google hasn't returned any results for this query."
+        ):
             return {}
 
         if "error" in res.keys():
             raise ValueError(f"Got error from SerpAPI: {res['error']}")
 
         return res
-
 
         # INFO: Parsing will be handled by the UI. I'll leave this here until we will parse job, top stories and etc...
 

@@ -712,12 +712,7 @@ class WebSearchResult(BaseModel):
     title: str
     snippet: str
     link: str
-    date: str
-    source: str
-    author: Optional[str] = None
-    image: Optional[str] = None
-    favicon: Optional[str] = None
-    highlights: List[str]
+    date: Optional[str] = None
 
 
 class WebSearchResultList(BaseModel):
