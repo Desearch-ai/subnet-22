@@ -4,7 +4,6 @@ import asyncio
 import os
 import json
 import bittensor as bt
-from datura.dataset.tool_return import ResponseOrder
 from datura.tools.base import BaseTool
 from datura.tools.get_tools import (
     TOOLKITS,
@@ -68,7 +67,6 @@ class ToolManager:
 
     twitter_prompt_analysis: Optional[TwitterPromptAnalysisResult]
     twitter_data: Optional[Dict[str, Any]]
-    response_order: ResponseOrder
 
     def __init__(
         self,
@@ -81,7 +79,6 @@ class ToolManager:
         region,
         date_filter,
         google_date_filter,
-        response_order,
     ):
         self.prompt = prompt
         self.manual_tool_names = manual_tool_names
@@ -101,8 +98,6 @@ class ToolManager:
         self.toolkit_name_to_instance = {toolkit.name: toolkit for toolkit in TOOLKITS}
         self.twitter_prompt_analysis = None
         self.twitter_data = None
-
-        self.response_order = response_order
 
     async def run(self):
         actions = await self.detect_tools_to_use()

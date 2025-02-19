@@ -1,28 +1,17 @@
 from openai import AsyncOpenAI
-from datura.dataset.tool_return import ResponseOrder
 from datura.protocol import ScraperTextRole
 
 client = AsyncOpenAI(timeout=60.0)
 
 
-def system_message(response_order: ResponseOrder):
-    output_example = ""
-    if response_order == ResponseOrder.LINKS_FIRST:
-        output_example = """
-            Key Sources:
-                - [Title and explanation.](https://bbc.com/aw/456)
-                - [Title and explanation.](https://bbc.com/w2/123)
-            Search Summary:
-             Georgia, as a country, hosts a diverse range of sports events catering to various interests. Popular sports in Georgia include football, basketball, rugby union, wrestling, judo, and weightlifting. The sports industry in Georgia is thriving, with a growing interest in modern sports like rugby union, weightlifting, basketball, judo, and football. The country offers a wide array of sporting activities from traditional sports like polo to modern events like football matches, showcasing a rich sporting culture.
-        """
-    else:
-        output_example = """
-            Search Summary:
-             Georgia, as a country, hosts a diverse range of sports events catering to various interests. Popular sports in Georgia include football, basketball, rugby union, wrestling, judo, and weightlifting. The sports industry in Georgia is thriving, with a growing interest in modern sports like rugby union, weightlifting, basketball, judo, and football. The country offers a wide array of sporting activities from traditional sports like polo to modern events like football matches, showcasing a rich sporting culture.
-            Key Sources:
-                - [Title and explanation.](https://bbc.com/aw/456)
-                - [Title and explanation.](https://bbc.com/w2/123)
-        """
+def system_message():
+    output_example = """
+        Key Sources:
+            - [Title and explanation.](https://bbc.com/aw/456)
+            - [Title and explanation.](https://bbc.com/w2/123)
+        Search Summary:
+            Georgia, as a country, hosts a diverse range of sports events catering to various interests. Popular sports in Georgia include football, basketball, rugby union, wrestling, judo, and weightlifting. The sports industry in Georgia is thriving, with a growing interest in modern sports like rugby union, weightlifting, basketball, judo, and football. The country offers a wide array of sporting activities from traditional sports like polo to modern events like football matches, showcasing a rich sporting culture.
+    """
 
     return f"""
     As search data analyst, your task is to provide users with a clear and concise summary derived from the given search data and the user's query.
@@ -50,7 +39,7 @@ def system_message(response_order: ResponseOrder):
     """
 
 
-async def summarize_search_data(prompt: str, model: str, data, response_order):
+async def summarize_search_data(prompt: str, model: str, data):
     content = f"""
     In <UserPrompt> provided User's prompt (Question).
     In <SearchData> I fetch data from Google, Youtube or Wikipedia.
@@ -65,7 +54,7 @@ async def summarize_search_data(prompt: str, model: str, data, response_order):
     """
 
     messages = [
-        {"role": "system", "content": system_message(response_order)},
+        {"role": "system", "content": system_message()},
         {"role": "user", "content": content},
     ]
 

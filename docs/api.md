@@ -43,7 +43,6 @@ POST /search
 | prompt         | string | Yes      | Search query text                                   | "What are the recent sport news?" |
 | tools          | array  | Yes      | List of search tools to use                         | ["Web Search"]                    |
 | model          | string | No       | Model to use for scraping (NOVA, ORBIT, HORIZON)    | NOVA                              |
-| response_order | string | No       | Order of results ("LINKS_FIRST" or "SUMMARY_FIRST") | "LINKS_FIRST"                     |
 | date_filter    | string | No       | Time range filter for results                       | "PAST_WEEK"                       |
 
 ### Date Filter Options
@@ -79,7 +78,6 @@ async def search_smart_scrape():
         "prompt": "What are the recent sport news?",
         "tools": ["Web Search"],
         "model": "NOVA",
-        "response_order": "LINKS_FIRST",
         "date_filter": "PAST_WEEK"
     }
 

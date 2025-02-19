@@ -16,7 +16,6 @@ class TwitterToolkit(BaseToolkit, ABC):
         return [TwitterSearchTool(), TwitterAdvancedSearchTool()]
 
     async def summarize(self, prompt, model, data):
-        response_order = self.tool_manager.response_order
         data = next(iter(data.values()))
         tweets, prompt_analysis = data
 
@@ -25,5 +24,4 @@ class TwitterToolkit(BaseToolkit, ABC):
             model=model,
             filtered_tweets=prepare_tweets_data_for_summary(tweets),
             prompt_analysis=prompt_analysis,
-            response_order=response_order,
         )

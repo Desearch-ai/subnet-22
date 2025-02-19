@@ -13,7 +13,6 @@ async def search_desearch():
             "Web Search",
         ],  # ["Twitter Search", "Web Search", "ArXiv Search", "Wikipedia Search", "Youtube Search", "Hacker News Search", "Reddit Search"]
         "model": "NOVA",  # "NOVA", "ORBIT", "HORIZON"
-        "response_order": "LINKS_FIRST",  # "LINKS_FIRST", "SUMMARY_FIRST"
         "date_filter": "PAST_WEEK",  # "PAST_DAY", "PAST_WEEK", "PAST_2_WEEKS", "PAST_MONTH", "PAST_YEAR"
     }
 
