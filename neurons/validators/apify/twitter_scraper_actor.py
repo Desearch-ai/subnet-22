@@ -22,6 +22,9 @@ if not APIFY_API_KEY:
 
 
 def toTwitterScraperTweet(item):
+    if item is None:
+        return None
+
     media_list = item.get("extendedEntities", {}).get("media", [])
 
     media_list = [
@@ -50,7 +53,7 @@ def toTwitterScraperTweet(item):
         lang=item.get("lang"),
         conversation_id=item.get("conversationId"),
         in_reply_to_user_id=item.get("inReplyToUserId"),
-        quote=item.get("quote"),
+        quote=toTwitterScraperTweet(item.get("quote")),
         entities=item.get("entities"),
         extended_entities=item.get("extendedEntities"),
         user=TwitterScraperUser(
