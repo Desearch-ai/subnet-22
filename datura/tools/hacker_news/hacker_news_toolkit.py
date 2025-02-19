@@ -21,10 +21,8 @@ class HackerNewsToolkit(BaseToolkit, ABC):
 
     async def summarize(self, prompt, model, data):
         data = next(iter(data.values()))
-        response_order = self.tool_manager.response_order
         return await summarize_hacker_news_data(
             prompt=prompt,
             model=model,
             filtered_posts=data,
-            response_order=response_order,
         )

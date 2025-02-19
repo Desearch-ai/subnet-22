@@ -15,11 +15,9 @@ class RedditToolkit(BaseToolkit, ABC):
         return [RedditSearchTool()]
 
     async def summarize(self, prompt, model, data):
-        response_order = self.tool_manager.response_order
         data = next(iter(data.values()))
         return await summarize_reddit_data(
             prompt=prompt,
             model=model,
             filtered_posts=data,
-            response_order=response_order
         )

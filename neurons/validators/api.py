@@ -8,7 +8,6 @@ from fastapi.responses import StreamingResponse
 from fastapi import FastAPI, HTTPException, Header, Query, Path
 from neurons.validators.env import PORT, EXPECTED_ACCESS_KEY
 from datura import __version__
-from datura.dataset.tool_return import ResponseOrder
 from datura.dataset.date_filters import DateFilterType
 from datura.protocol import Model, TwitterScraperTweet, WebSearchResultList, ResultType
 import uvicorn
@@ -70,10 +69,6 @@ class SearchRequest(BaseModel):
     tools: List[str] = Field(
         ..., description="List of tools to search with", example=available_tools
     )
-    response_order: Optional[ResponseOrder] = Field(
-        default=ResponseOrder.LINKS_FIRST,
-        description=f"Order of the search results. {format_enum_values(ResponseOrder)}",
-    )
     date_filter: Optional[DateFilterType] = Field(
         default=DateFilterType.PAST_WEEK,
         description=f"Date filter for the search results.{format_enum_values(DateFilterType)}",
@@ -128,7 +123,6 @@ async def response_stream_event(data: SearchRequest):
             "content": data.prompt,
             "tools": data.tools,
             "date_filter": data.date_filter.value,
-            "response_order": data.response_order,
         }
 
         merged_chunks = ""

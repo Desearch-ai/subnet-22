@@ -29,10 +29,8 @@ class SearchToolkit(BaseToolkit, ABC):
         return TOOLS
 
     async def summarize(self, prompt, model, data):
-        response_order = self.tool_manager.response_order
         return await summarize_search_data(
             prompt=prompt,
             model=model,
             data=prepare_search_data_for_summary(data),
-            response_order=response_order,
         )

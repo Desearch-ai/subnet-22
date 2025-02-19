@@ -398,12 +398,6 @@ class ScraperStreamingSynapse(StreamingSynapse):
 
         return texts
 
-    response_order: Optional[str] = pydantic.Field(
-        "",
-        title="Response Order",
-        description="Preffered order type of response, by default it will be SUMMARY_FIRST",
-    )
-
     max_execution_time: Optional[int] = pydantic.Field(
         None,
         title="Max Execution Time (timeout)",

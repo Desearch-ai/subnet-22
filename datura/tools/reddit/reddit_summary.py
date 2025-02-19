@@ -1,28 +1,17 @@
 from openai import AsyncOpenAI
-from datura.dataset.tool_return import ResponseOrder
 from datura.protocol import ScraperTextRole
 
 client = AsyncOpenAI(timeout=60.0)
 
 
-def system_message(response_order: ResponseOrder):
-    output_example = ""
-    if response_order == ResponseOrder.LINKS_FIRST:
-        output_example = """
-            Key Posts:
-                - [Noah discusses how SportAccord can elevate the West Midlands brand globally, emphasizing its role in hosting high-profile sports events.](https://reddit.com/r/subreddit/comments/abc/sport-events)
-                - [SportAccord highlights the success of the Social in the City 2024 event, where Georgia Tech alumni gathered from across the country to celebrate their community spirit.](https://reddit.com/r/subreddit/comments/abc/sport-events)
-            Reddit Summary:
-             Georgia, as a country, hosts a diverse range of sports events catering to various interests. Popular sports in Georgia include football, basketball, rugby union, wrestling, judo, and weightlifting. The sports industry in Georgia is thriving, with a growing interest in modern sports like rugby union, weightlifting, basketball, judo, and football. The country offers a wide array of sporting activities from traditional sports like polo to modern events like football matches, showcasing a rich sporting culture.
-        """
-    else:
-        output_example = """
-            Reddit Summary:
-             Georgia, as a country, hosts a diverse range of sports events catering to various interests. Popular sports in Georgia include football, basketball, rugby union, wrestling, judo, and weightlifting. The sports industry in Georgia is thriving, with a growing interest in modern sports like rugby union, weightlifting, basketball, judo, and football. The country offers a wide array of sporting activities from traditional sports like polo to modern events like football matches, showcasing a rich sporting culture.
-            Key Posts:
-                - [Noah discusses how SportAccord can elevate the West Midlands brand globally, emphasizing its role in hosting high-profile sports events.](https://reddit.com/r/subreddit/comments/abc/sport-events)
-                - [SportAccord highlights the success of the Social in the City 2024 event, where Georgia Tech alumni gathered from across the country to celebrate their community spirit.](https://reddit.com/r/subreddit/comments/abc/sport-events)
-        """
+def system_message():
+    output_example = """
+        Key Posts:
+            - [Noah discusses how SportAccord can elevate the West Midlands brand globally, emphasizing its role in hosting high-profile sports events.](https://reddit.com/r/subreddit/comments/abc/sport-events)
+            - [SportAccord highlights the success of the Social in the City 2024 event, where Georgia Tech alumni gathered from across the country to celebrate their community spirit.](https://reddit.com/r/subreddit/comments/abc/sport-events)
+        Reddit Summary:
+            Georgia, as a country, hosts a diverse range of sports events catering to various interests. Popular sports in Georgia include football, basketball, rugby union, wrestling, judo, and weightlifting. The sports industry in Georgia is thriving, with a growing interest in modern sports like rugby union, weightlifting, basketball, judo, and football. The country offers a wide array of sporting activities from traditional sports like polo to modern events like football matches, showcasing a rich sporting culture.
+    """
 
     return f"""
     As a Reddit data analyst, your task is to provide users with a clear and concise summary derived from the given Reddit data and the user's query.
@@ -54,7 +43,6 @@ async def summarize_reddit_data(
     prompt: str,
     model: str,
     filtered_posts,
-    response_order: ResponseOrder
 ):
     content = f"""
     In <UserPrompt> provided User's prompt (Question).
@@ -70,7 +58,7 @@ async def summarize_reddit_data(
     """
 
     messages = [
-        {"role": "system", "content": system_message(response_order)},
+        {"role": "system", "content": system_message()},
         {"role": "user", "content": content},
     ]
 

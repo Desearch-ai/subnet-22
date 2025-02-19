@@ -171,7 +171,6 @@ class AdvancedScraperValidator:
         language="en",
         region="us",
         google_date_filter="qdr:w",
-        response_order=ResponseOrder.SUMMARY_FIRST,
         model: Optional[Model] = Model.NOVA,
         result_type: Optional[ResultType] = ResultType.LINKS_WITH_SUMMARIES,
         is_synthetic=False,
@@ -207,7 +206,6 @@ class AdvancedScraperValidator:
                 language=language,
                 region=region,
                 google_date_filter=google_date_filter,
-                response_order=response_order.value,
                 max_execution_time=max_execution_time,
                 result_type=result_type,
                 is_synthetic=is_synthetic,
@@ -534,7 +532,6 @@ class AdvancedScraperValidator:
             prompt = query["content"]
             tools = query.get("tools", [])
             date_filter = query.get("date_filter", DateFilterType.PAST_WEEK.value)
-            response_order = query.get("response_order", ResponseOrder.LINKS_FIRST)
 
             if isinstance(date_filter, str):
                 date_filter_type = DateFilterType(date_filter)
@@ -559,7 +556,6 @@ class AdvancedScraperValidator:
                 date_filter=date_filter,
                 google_date_filter=self.date_filter,
                 specified_uids=specified_uids,
-                response_order=response_order,
                 model=model,
                 result_type=result_type,
             )
