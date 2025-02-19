@@ -9,7 +9,6 @@ from reward import RewardModelType, RewardScoringType
 from utils.mock import MockRewardModel
 
 from datura.dataset import QuestionsDataset
-from datura.dataset.tool_return import ResponseOrder
 from datura.dataset.date_filters import (
     get_random_date_filter,
     get_specified_date_filter,

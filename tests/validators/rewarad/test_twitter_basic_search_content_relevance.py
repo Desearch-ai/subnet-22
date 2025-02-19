@@ -25,7 +25,7 @@ class TwitterBasicSearchContentRelevanceModelTestCase(unittest.IsolatedAsyncioTe
         rewards, grouped_score = await self.model.get_rewards(
             [
                 TwitterSearchSynapse(
-                    query="how $XRP will reach $10,000 per coin",
+                    query=tweet1["text"],
                     results=[tweet1, tweet2],
                 ),
                 TwitterSearchSynapse(
@@ -33,7 +33,7 @@ class TwitterBasicSearchContentRelevanceModelTestCase(unittest.IsolatedAsyncioTe
                     results=[tweet2],
                 ),
                 TwitterSearchSynapse(
-                    query="how $XRP",
+                    query=tweet1["text"],
                     results=[tweet1],
                 ),
             ],

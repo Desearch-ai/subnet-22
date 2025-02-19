@@ -213,11 +213,11 @@ class TwitterScraperTweet(BaseModel):
     like_count: int
     quote_count: int
     bookmark_count: int
-    url: str
+    url: Optional[str]
     created_at: str
     media: Optional[List[TwitterScraperMedia]] = []
-    is_quote_tweet: bool
-    is_retweet: bool
+    is_quote_tweet: Optional[bool]
+    is_retweet: Optional[bool]
     lang: Optional[str] = None
     conversation_id: Optional[str] = None
     in_reply_to_screen_name: Optional[str] = None
