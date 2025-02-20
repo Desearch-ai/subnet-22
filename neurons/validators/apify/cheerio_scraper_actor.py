@@ -34,6 +34,8 @@ class CheerioScraperActor:
     const $ = context.$;
     let pageTitle = $('title').first().text().trim();
     let description = $('meta[name="description"]').attr('content') || '';
+    const htmlContent = $('html').html();
+    const htmlText = $('html').text()
 
     if (!description) {
         description = $('meta[property="og:description"]').attr('content') || '';
@@ -82,6 +84,8 @@ class CheerioScraperActor:
         url: context.request.url,
         pageTitle,
         description,
+        htmlContent,
+        htmlText,
     };
 }""",
                 "postNavigationHooks": '// We need to return array of (possibly async) functions here.\n// The functions accept a single argument: the "crawlingContext" object.\n[\n    async (crawlingContext) => {\n        // ...\n    },\n]',
@@ -104,7 +108,17 @@ class CheerioScraperActor:
                 url = item.get("url", "")
                 title = item.get("pageTitle")
                 description = item.get("description")
-                result.append({"title": title, "description": description, "url": url})
+                html_content = item.get("htmlContent")
+                html_text = item.get("htmlText")
+                result.append(
+                    {
+                        "title": title,
+                        "snippet": description,
+                        "link": url,
+                        "html_content": html_content,
+                        "html_text": html_text,
+                    }
+                )
 
             return result
         except Exception as e:

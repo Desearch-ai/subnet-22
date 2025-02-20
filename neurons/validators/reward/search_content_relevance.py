@@ -39,9 +39,9 @@ class WebSearchContentRelevanceModel(BaseRewardModel):
         scoring_messages = []
 
         for validator_link in response.validator_links:
-            url = validator_link.get("url")
+            url = validator_link.get("link")
             title = validator_link.get("title", "")
-            description = validator_link.get("description", "")
+            description = validator_link.get("snippet", "")
 
             result = self.get_scoring_text(
                 prompt=response.prompt,
@@ -90,7 +90,7 @@ class WebSearchContentRelevanceModel(BaseRewardModel):
                 fetched_links_with_metadata.extend(result)
 
             # Update non-fetched links
-            fetched_urls = {link.get("url") for link in fetched_links_with_metadata}
+            fetched_urls = {link.get("link") for link in fetched_links_with_metadata}
             non_fetched_links = [
                 url for url in non_fetched_links if url not in fetched_urls
             ]
@@ -148,7 +148,7 @@ class WebSearchContentRelevanceModel(BaseRewardModel):
 
         # Filter out any entries without a URL
         fetched_links_with_metadata = [
-            link for link in fetched_links_with_metadata if link.get("url")
+            link for link in fetched_links_with_metadata if link.get("link")
         ]
 
         return fetched_links_with_metadata, non_fetched_links
@@ -200,7 +200,7 @@ class WebSearchContentRelevanceModel(BaseRewardModel):
 
         for response, random_links in zip(responses, responses_random_links):
             for link_with_metadata in links_with_metadata:
-                url = link_with_metadata.get("url")
+                url = link_with_metadata.get("link")
 
                 if url in random_links:
                     response.validator_links.append(link_with_metadata)
@@ -261,7 +261,7 @@ class WebSearchContentRelevanceModel(BaseRewardModel):
             link_scores = []
 
             for val_link in validator_links:
-                url = val_link.get("url")
+                url = val_link.get("link")
 
                 if not url:
                     link_scores.append(0)
@@ -367,7 +367,7 @@ class WebSearchContentRelevanceModel(BaseRewardModel):
 
                 if num_links > 0:
                     for val_link in response.validator_links:
-                        val_url = val_link.get("url")
+                        val_url = val_link.get("link")
                         if val_score_responses:
                             score_result = val_score_responses.get(val_url, None)
                             if score_result is not None:
