@@ -205,6 +205,13 @@ def add_args(cls, parser):
         default=False,
     )
 
+    parser.add_argument(
+        "--neuron.offline",
+        action="store_true",
+        help="Run validator in offline mode",
+        default=False,
+    )
+
     # parser.add_argument(
     #     "--neuron.save_logs",
     #     type=str2bool,

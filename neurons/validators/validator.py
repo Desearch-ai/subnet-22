@@ -9,6 +9,9 @@ import bittensor as bt
 import time
 import sys
 from datura.protocol import IsAlive
+from datura.bittensor.dendrite import Dendrite
+from datura.bittensor.subtensor import Subtensor
+from datura.bittensor.wallet import Wallet
 from neurons.validators.advanced_scraper_validator import AdvancedScraperValidator
 from neurons.validators.basic_scraper_validator import BasicScraperValidator
 from config import add_args, check_config, config
@@ -94,14 +97,27 @@ class Neuron(AbstractNeuron):
         bt.logging.info(
             f"Running validator for subnet: {self.config.netuid} on network: {self.config.subtensor.chain_endpoint}"
         )
-        self.wallet = bt.wallet(config=self.config)
-        self.subtensor = bt.subtensor(config=self.config)
-        self.metagraph = self.subtensor.metagraph(self.config.netuid)
-        self.hotkeys = copy.deepcopy(self.metagraph.hotkeys)
-        self.dendrite = bt.dendrite(wallet=self.wallet)
-        self.dendrite1 = bt.dendrite(wallet=self.wallet)
-        self.dendrite2 = bt.dendrite(wallet=self.wallet)
-        self.dendrite3 = bt.dendrite(wallet=self.wallet)
+        if self.config.neuron.offline:
+            self.wallet = Wallet(config=self.config)
+            self.subtensor = Subtensor(
+                config=self.config, hotkey=self.wallet.hotkey.ss58_address
+            )
+            self.metagraph = self.subtensor.metagraph(self.config.netuid)
+            self.hotkeys = copy.deepcopy(self.metagraph.hotkeys)
+            self.dendrite = Dendrite(wallet=self.wallet)
+            self.dendrite1 = Dendrite(wallet=self.wallet)
+            self.dendrite2 = Dendrite(wallet=self.wallet)
+            self.dendrite3 = Dendrite(wallet=self.wallet)
+        else:
+            self.wallet = bt.wallet(config=self.config)
+            self.subtensor = bt.subtensor(config=self.config)
+            self.metagraph = self.subtensor.metagraph(self.config.netuid)
+            self.hotkeys = copy.deepcopy(self.metagraph.hotkeys)
+            self.dendrite = bt.dendrite(wallet=self.wallet)
+            self.dendrite1 = bt.dendrite(wallet=self.wallet)
+            self.dendrite2 = bt.dendrite(wallet=self.wallet)
+            self.dendrite3 = bt.dendrite(wallet=self.wallet)
+
         self.uid = self.metagraph.hotkeys.index(self.wallet.hotkey.ss58_address)
         if self.wallet.hotkey.ss58_address not in self.metagraph.hotkeys:
             bt.logging.error(
