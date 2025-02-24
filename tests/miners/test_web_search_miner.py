@@ -16,7 +16,7 @@ class TestWebSearchMiner(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result, synapse)
         self.assertTrue(
             all(
-                query in item.title.lower() or query in item.snippet.lower()
+                query in item["title"].lower() or query in item["snippet"].lower()
                 for item in synapse.results
             )
         )
@@ -31,7 +31,7 @@ class TestWebSearchMiner(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(synapse.results), 7)
         self.assertTrue(
             all(
-                query in item.title.lower() or query in item.snippet.lower()
+                query in item["title"].lower() or query in item["snippet"].lower()
                 for item in synapse.results
             )
         )

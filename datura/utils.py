@@ -24,7 +24,7 @@ from datura.misc import ttl_get_block
 import re
 import html
 import unicodedata
-from datura.protocol import Model, TwitterScraperTweet
+from datura.protocol import Model, TwitterScraperTweet, WebSearchResult
 from neurons.validators.apify.twitter_scraper_actor import TwitterScraperActor
 from typing import List
 from datura.services.twitter_utils import TwitterUtils
@@ -719,5 +719,14 @@ def is_valid_tweet(tweet):
         _ = TwitterScraperTweet(**tweet)
     except ValidationError as e:
         bt.logging.error(f"Invalid miner tweet data: {e}")
+        return False
+    return True
+
+
+def is_valid_web_search_result(result):
+    try:
+        WebSearchResult(**result)
+    except ValidationError as e:
+        bt.logging.error(f"Invalid miner web search result: {e}")
         return False
     return True

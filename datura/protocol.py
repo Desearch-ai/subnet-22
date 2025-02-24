@@ -713,6 +713,8 @@ class WebSearchResult(BaseModel):
     snippet: str
     link: str
     date: Optional[str] = None
+    html_content: Optional[str] = None
+    html_text: Optional[str] = None
 
 
 class WebSearchResultList(BaseModel):
@@ -749,10 +751,16 @@ class WebSearchSynapse(Synapse):
         description="Maximum time to execute concrete request",
     )
 
-    results: Optional[List[WebSearchResult]] = pydantic.Field(
+    results: Optional[List[Dict[str, Any]]] = pydantic.Field(
         default_factory=list,
         title="Web",
         description="Fetched Web Data.",
+    )
+
+    validator_links: Optional[List[WebSearchResult]] = pydantic.Field(
+        default_factory=list,
+        title="Validator Web",
+        description="Fetched validator Web Data.",
     )
 
     def deserialize(self) -> str:
