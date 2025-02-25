@@ -7,14 +7,15 @@ from bittensor.core.chain_data import (
 )
 from bittensor.core.chain_data.prometheus_info import PrometheusInfo
 from bittensor.utils.balance import Balance
+from .wallet import MOCK_WALLET_KEY
 
 NEURON_COUNT = 3
 
 
-def generateMockNeurons(hotkey, count: int = 2):
+def generateMockNeurons(count: int = 2):
     neurons = [
         NeuronInfoLite(
-            hotkey=hotkey,
+            hotkey=MOCK_WALLET_KEY,
             coldkey="coldkey0",
             uid=0,
             netuid=41,
@@ -23,7 +24,7 @@ def generateMockNeurons(hotkey, count: int = 2):
             axon_info=AxonInfo(
                 version=8005001,
                 ip="0.0.0.0",
-                hotkey=hotkey,
+                hotkey=MOCK_WALLET_KEY,
                 coldkey="coldkey0",
                 port=8091,
                 ip_type=4,
@@ -96,12 +97,11 @@ class Metagraph(bt.metagraph):
         lite: bool = True,
         sync: bool = True,
         subtensor=None,
-        hotkey: str = None,
     ):
         super().__init__(
             netuid=netuid, network=network, lite=lite, sync=sync, subtensor=subtensor
         )
-        self.neurons = generateMockNeurons(hotkey, NEURON_COUNT)
+        self.neurons = generateMockNeurons(NEURON_COUNT)
 
         self.lite = lite
         self.netuid = netuid

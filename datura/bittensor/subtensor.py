@@ -5,13 +5,11 @@ from .metagraph import Metagraph
 
 
 class Subtensor(bt.subtensor):
-    def __init__(self, hotkey, **params):
+    def __init__(self, **params):
         try:
             super().__init__(**params)
         except:
             pass
-
-        self.hotkey = hotkey
 
     def metagraph(self, netuid: int, lite: bool = True, block: Optional[int] = None):
         metagraph = Metagraph(
@@ -20,7 +18,6 @@ class Subtensor(bt.subtensor):
             lite=lite,
             sync=False,
             subtensor=self,
-            hotkey=self.hotkey,
         )
         metagraph.sync(block=block, lite=lite, subtensor=self)
 
