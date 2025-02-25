@@ -476,7 +476,7 @@ async def web_search_endpoint(
             f"Performing web search with query: '{query}', num: {num}, start: {start}"
         )
 
-        result = await neu.advanced_scraper_validator.web_search(
+        result = await neu.basic_scraper_validator.web_search(
             query=query,
             num=num,
             start=start,
