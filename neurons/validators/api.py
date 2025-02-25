@@ -476,13 +476,23 @@ async def web_search_endpoint(
             f"Performing web search with query: '{query}', num: {num}, start: {start}"
         )
 
-        result = await neu.basic_scraper_validator.web_search(
-            query=query,
-            num=num,
-            start=start,
-        )
+        # Collect all yielded synapses from organic
+        final_synapses = []
 
-        return {"data": result}
+        async for synapse in neu.basic_web_scraper_validator.organic(
+            query={"query": query, "num": num, "start": start}
+        ):
+            final_synapses.append(synapse)
+
+        # Transform final synapses into a flattened list of links
+        results = []
+
+        for syn in final_synapses:
+            # Each synapse (if successful) should have a 'results' field of WebSearchResult
+            if hasattr(syn, "results") and isinstance(syn.results, list):
+                results.extend(syn.results)
+
+        return {"data": results}
     except Exception as e:
         bt.logging.error(f"Error in web search: {e}")
         raise HTTPException(status_code=500, detail=f"An error occurred: {str(e)}")
