@@ -489,7 +489,10 @@ async def web_search_endpoint(
 
 
 @app.get("/")
-async def health_check():
+async def health_check(access_key: Annotated[str | None, Header()] = None):
+    if access_key != EXPECTED_ACCESS_KEY:
+        raise HTTPException(status_code=401, detail="Invalid access key")
+
     return {"status": "healthy", "version": __version__}
 
 
