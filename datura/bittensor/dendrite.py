@@ -81,9 +81,9 @@ class Dendrite(bt.dendrite):
             responses = []
 
             async def mockSend(data):
-                responses.append(data)
+                responses.append(data["body"])
 
-            def generateResponse():
+            async def generateResponse():
                 for data in responses:
                     yield data
 
@@ -91,7 +91,7 @@ class Dendrite(bt.dendrite):
 
             # Mock ClientResponse
             response = AsyncMock(spec=ClientResponse)
-            response.content.inter_any = generateResponse
+            response.content.iter_any = generateResponse
             response.__dict__["_raw_headers"] = {}
             response.status = 200
             response.headers = {}
@@ -113,6 +113,8 @@ class Dendrite(bt.dendrite):
                 yield synapse.deserialize()
             else:
                 yield synapse
+
+            return
 
         bt.logging.info("MockDendrite--call_stream with super(), synapse=", synapse)
         async for chunk in super().call_stream(
