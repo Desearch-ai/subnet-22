@@ -39,36 +39,45 @@ class Dendrite(bt.dendrite):
         self.scraper_miner = ScraperMiner(self.miner)
 
     async def call(self, target_axon, synapse, timeout=12, deserialize=True):
+        start_time = time.time()
         if isinstance(synapse, TwitterURLsSearchSynapse):
             bt.logging.info("MockDendrite--call twitter_search_miner.search_by_urls")
-            return await self.twitter_search_miner.search_by_urls(synapse)
+            synapse = await self.twitter_search_miner.search_by_urls(synapse)
+            synapse.dendrite.process_time = str(time.time() - start_time)
+            return synapse
 
         if isinstance(synapse, TwitterIDSearchSynapse):
             bt.logging.info("MockDendrite--call twitter_search_miner.search_by_id")
-            return await self.twitter_search_miner.search_by_id(synapse)
+            synapse = await self.twitter_search_miner.search_by_id(synapse)
+            synapse.dendrite.process_time = str(time.time() - start_time)
+            return synapse
 
         if isinstance(synapse, TwitterSearchSynapse):
             bt.logging.info("MockDendrite--call twitter_search_miner.search")
-            return await self.twitter_search_miner.search(synapse)
+            synapse = await self.twitter_search_miner.search(synapse)
+            synapse.dendrite.process_time = str(time.time() - start_time)
+            return synapse
 
         if isinstance(synapse, WebSearchSynapse):
             bt.logging.info("MockDendrite--call web_search_miner.search")
-            return await self.web_search_miner.search(synapse)
+            synapse = await self.web_search_miner.search(synapse)
+            synapse.dendrite.process_time = str(time.time() - start_time)
+            return synapse
 
         if isinstance(synapse, IsAlive):
             bt.logging.info("MockDendrite--call is_alive")
             if target_axon.hotkey.startswith("hotkey"):
                 synapse.completion = "True"
                 synapse.dendrite.status_code = 200
+            synapse.dendrite.process_time = str(time.time() - start_time)
             return synapse
 
         bt.logging.info("MockDendrite--call with super(), synapse=", synapse)
         return await super().call(target_axon, synapse, timeout, deserialize)
 
     async def call_stream(self, target_axon, synapse, timeout=12.0, deserialize=True):
+        start_time = time.time()
         if isinstance(synapse, ScraperStreamingSynapse):
-            start_time = time.time()
-
             responses = []
 
             async def mockSend(data):

@@ -713,6 +713,9 @@ class WebSearchResult(BaseModel):
     snippet: str
     link: str
     date: Optional[str] = None
+
+
+class WebSearchValidatorResult(WebSearchResult):
     html_content: Optional[str] = None
     html_text: Optional[str] = None
 
@@ -757,7 +760,7 @@ class WebSearchSynapse(Synapse):
         description="Fetched Web Data.",
     )
 
-    validator_links: Optional[List[WebSearchResult]] = pydantic.Field(
+    validator_links: Optional[List[WebSearchValidatorResult]] = pydantic.Field(
         default_factory=list,
         title="Validator Web",
         description="Fetched validator Web Data.",

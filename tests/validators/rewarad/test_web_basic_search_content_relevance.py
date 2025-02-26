@@ -2,7 +2,7 @@ import unittest
 from neurons.validators.reward.web_basic_search_content_relevance import (
     WebBasicSearchContentRelevanceModel,
 )
-from datura.protocol import WebSearchSynapse, WebSearchResult
+from datura.protocol import WebSearchSynapse, WebSearchValidatorResult
 from tests_data.links.links import link1, link2, link3, link4, link5
 
 
@@ -49,8 +49,8 @@ class WebBasicSearchContentRelevanceModelTestCase(unittest.IsolatedAsyncioTestCa
             query="python",
             results=[link1, link2, link3, link4, link5],
             validator_links=[
-                WebSearchResult(**link1, html_text=link1["snippet"]),
-                WebSearchResult(**link2, html_content=link2["snippet"]),
+                WebSearchValidatorResult(**link1, html_text=link1["snippet"]),
+                WebSearchValidatorResult(**link2, html_content=link2["snippet"]),
             ],
         )
 
@@ -71,10 +71,10 @@ class WebBasicSearchContentRelevanceModelTestCase(unittest.IsolatedAsyncioTestCa
                     query="python",
                     results=[link1, link2, link3, link4, link5],
                     validator_links=[
-                        WebSearchResult(
+                        WebSearchValidatorResult(
                             **link1,
                         ),
-                        WebSearchResult(
+                        WebSearchValidatorResult(
                             **link2,
                         ),
                     ],

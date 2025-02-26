@@ -14,6 +14,7 @@ from datura.bittensor.subtensor import Subtensor
 from datura.bittensor.wallet import Wallet
 from neurons.validators.advanced_scraper_validator import AdvancedScraperValidator
 from neurons.validators.basic_scraper_validator import BasicScraperValidator
+from neurons.validators.basic_web_scraper_validator import BasicWebScraperValidator
 from config import add_args, check_config, config
 from weights import init_wandb, set_weights, get_weights
 from traceback import print_exception
@@ -50,6 +51,7 @@ class Neuron(AbstractNeuron):
 
     advanced_scraper_validator: "AdvancedScraperValidator"
     basic_scraper_validator: "BasicScraperValidator"
+    basic_web_scraper_validator: "BasicWebScraperValidator"
     moving_average_scores: torch.Tensor = None
     uid: int = None
     shutdown_event: asyncio.Event()
@@ -73,6 +75,7 @@ class Neuron(AbstractNeuron):
 
         self.advanced_scraper_validator = AdvancedScraperValidator(neuron=self)
         self.basic_scraper_validator = BasicScraperValidator(neuron=self)
+        self.basic_web_scraper_validator = BasicWebScraperValidator(neuron=self)
         bt.logging.info("initialized_validators")
 
         self.step = 0
@@ -520,6 +523,22 @@ class Neuron(AbstractNeuron):
             start_time=time.time(),
         )
 
+    async def compute_web_basic_organic_responses(self):
+        specified_uids = self.basic_web_scraper_validator.get_uids_with_no_history(
+            self.available_uids
+        )
+        bt.logging.info(
+            f"Running basic web synthetic queries with specified uids: {specified_uids}"
+        )
+        await self.basic_web_scraper_validator.query_and_score_web_basic(
+            strategy=QUERY_MINERS.ALL, specified_uids=specified_uids
+        )
+
+        await self.basic_web_scraper_validator.compute_rewards_and_penalties(
+            **self.basic_web_scraper_validator.get_latest_organic_responses(),
+            start_time=time.time(),
+        )
+
     def blocks_until_next_epoch(self):
         current_block = self.subtensor.get_current_block()
         tempo = self.subtensor.tempo(self.config.netuid, current_block)
@@ -557,6 +576,7 @@ class Neuron(AbstractNeuron):
                 if blocks_left <= 100 and self.config.neuron.synthetic_disabled:
                     self.loop.create_task(self.compute_basic_organic_responses())
                     self.loop.create_task(self.compute_organic_responses())
+                    self.loop.create_task(self.compute_web_basic_organic_responses())
 
             except Exception as e:
                 bt.logging.error(f"Error in validator sync: {e}")

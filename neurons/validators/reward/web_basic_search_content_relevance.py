@@ -8,7 +8,7 @@ import asyncio
 import bittensor as bt
 from .config import RewardModelType
 from .reward import BaseRewardModel, BaseRewardEvent
-from datura.protocol import WebSearchSynapse, WebSearchResult
+from datura.protocol import WebSearchSynapse, WebSearchValidatorResult
 from datura.services.twitter_utils import TwitterUtils
 from datura.utils import is_valid_web_search_result
 from neurons.validators.apify.cheerio_scraper_actor import CheerioScraperActor
@@ -172,7 +172,7 @@ class WebBasicSearchContentRelevanceModel(BaseRewardModel):
 
                 if url in random_links:
                     response.validator_links.append(
-                        WebSearchResult(**link_with_metadata)
+                        WebSearchValidatorResult(**link_with_metadata)
                     )
 
         end_time = time.time()
