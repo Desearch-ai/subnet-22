@@ -1,5 +1,5 @@
-bittensor==9.0.0
-torch==2.5.1
+bittensor==9.0.2
+torch==2.6.0
 numpy==2.0.2
 wandb==0.17.2
 requests==2.31.0
