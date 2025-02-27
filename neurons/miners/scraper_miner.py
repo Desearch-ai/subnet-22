@@ -27,6 +27,7 @@ class ScraperMiner:
             tools = synapse.tools
             # is_intro_text = synapse.is_intro_text
             result_type = ResultType(synapse.result_type)
+            system_message = synapse.system_message
 
             bt.logging.trace(synapse)
 
@@ -65,6 +66,7 @@ class ScraperMiner:
                 region=synapse.region,
                 date_filter=date_filter,
                 google_date_filter=synapse.google_date_filter,
+                system_message=system_message,
             )
 
             await tool_manager.run()

@@ -271,6 +271,12 @@ class ScraperStreamingSynapse(StreamingSynapse):
         description="The model to define the max execution time.",
     )
 
+    system_message: Optional[str] = pydantic.Field(
+        "",
+        title="Sysmtem Message",
+        description="System message for formatting the response.",
+    )
+
     tools: Optional[List[str]] = pydantic.Field(
         default_factory=list,
         title="Tools",

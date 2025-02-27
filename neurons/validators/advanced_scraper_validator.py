@@ -176,6 +176,7 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
         model: Optional[Model] = Model.NOVA,
         result_type: Optional[ResultType] = ResultType.LINKS_WITH_SUMMARIES,
         is_synthetic=False,
+        system_message: Optional[str] = None,
     ):
         max_execution_time = get_max_execution_time(model)
 
@@ -211,6 +212,7 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
                 max_execution_time=max_execution_time,
                 result_type=result_type,
                 is_synthetic=is_synthetic,
+                system_message=system_message,
             )
             for task in tasks
         ]
@@ -546,6 +548,7 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
             prompt = query["content"]
             tools = query.get("tools", [])
             date_filter = query.get("date_filter", DateFilterType.PAST_WEEK.value)
+            system_message = query.get("system_message")
 
             if isinstance(date_filter, str):
                 date_filter_type = DateFilterType(date_filter)
@@ -572,6 +575,7 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
                 specified_uids=specified_uids,
                 model=model,
                 result_type=result_type,
+                system_message=system_message,
             )
 
             final_synapses = []

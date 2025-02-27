@@ -80,6 +80,12 @@ class SearchRequest(BaseModel):
         example=Model.NOVA.value,
     )
 
+    system_message: Optional[str] = Field(
+        default=None,
+        description="Rules influencing how summaries are generated",
+        example="Summarize the content by categorizing key points into 'Pros' and 'Cons' sections.",
+    )
+
 
 class LinksSearchRequest(BaseModel):
     prompt: str = Field(
@@ -123,6 +129,7 @@ async def response_stream_event(data: SearchRequest):
             "content": data.prompt,
             "tools": data.tools,
             "date_filter": data.date_filter.value,
+            "system_message": data.system_message,
         }
 
         merged_chunks = ""
