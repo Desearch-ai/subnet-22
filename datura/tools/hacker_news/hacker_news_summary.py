@@ -4,7 +4,7 @@ from datura.protocol import ScraperTextRole
 client = AsyncOpenAI(timeout=60.0)
 
 
-def system_message():
+def system_message(user_system_message):
     output_example = """
         Key News:
             - [Kobold letters: Why HTML emails are a risk to your organization](https://news.ycombinator.com/item?id=39928558)
@@ -25,6 +25,10 @@ def system_message():
     {output_example}
     </OutputExample>
 
+    <HackerNewsSummaryRule>
+    {user_system_message}
+    </HackerNewsSummaryRule>
+
     Operational Rules:
     1. No <HackerNewsData> Scenario: If no HackerNewsData is provided, inform the user that current Hacker News insights related to their topic are unavailable.
     2. Emphasis on Critical Issues: Focus on and clearly explain any significant issues or points of interest that emerge from the analysis.
@@ -36,13 +40,13 @@ def system_message():
     8. Return up to 10 Hacker News links if available.
     9. Do not number the "Key News"; instead, provide each link starting with "-" on a new line.
     10. Always maintain the order as shown in <OutputExample>, first providing "Key News", followed by "Hacker News Summary".
+    
+    **Follow the rules on <HackerNewsSummaryRule> for writing "Hacker News Summary".**
     """
 
 
 async def summarize_hacker_news_data(
-    prompt: str,
-    model: str,
-    filtered_posts,
+    prompt: str, model: str, filtered_posts, user_system_message
 ):
     content = f"""
     In <UserPrompt> provided User's prompt (Question).
@@ -58,7 +62,7 @@ async def summarize_hacker_news_data(
     """
 
     messages = [
-        {"role": "system", "content": system_message()},
+        {"role": "system", "content": system_message(user_system_message)},
         {"role": "user", "content": content},
     ]
 

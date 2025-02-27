@@ -4,7 +4,7 @@ from datura.protocol import ScraperTextRole
 client = AsyncOpenAI(timeout=60.0)
 
 
-def system_message():
+def system_message(user_system_message):
     output_example = """
         Key Sources:
             - [Title and explanation.](https://bbc.com/aw/456)
@@ -25,6 +25,10 @@ def system_message():
     {output_example}
     </OutputExample>
 
+    <SearchSummaryRule>
+    {user_system_message}
+    </SearchSummaryRule>
+
     Operational Rules:
     1. No <SearchData> Scenario: If no SearchData is provided, inform the user that current insights related to their topic are unavailable.
     2. Emphasis on Critical Issues: Focus on and clearly explain any significant issues or points of interest that emerge from the analysis.
@@ -36,10 +40,12 @@ def system_message():
     9. Do not number the "key Sources"; instead, provide each on a new line.
     10. always maintain the order as shown in <OutputExample>, first providing "Key Sources", followed by "Search Summary".
     11. For each link, include a explanation that connects its relevance to the user's question. The link's description should be 10-25 words, which emphasizes the main topic from that link. [Title and explanation.](https://bbc.com/w2/123)
+    
+    **Follow the rules on <SearchSummaryRule> for writing "Search Summary".**
     """
 
 
-async def summarize_search_data(prompt: str, model: str, data):
+async def summarize_search_data(prompt: str, model: str, data, user_system_message):
     content = f"""
     In <UserPrompt> provided User's prompt (Question).
     In <SearchData> I fetch data from Google, Youtube or Wikipedia.
@@ -54,7 +60,7 @@ async def summarize_search_data(prompt: str, model: str, data):
     """
 
     messages = [
-        {"role": "system", "content": system_message()},
+        {"role": "system", "content": system_message(user_system_message)},
         {"role": "user", "content": content},
     ]
 

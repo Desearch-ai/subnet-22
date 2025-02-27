@@ -141,7 +141,10 @@ class ToolManager:
 
             if results:
                 response, role = await find_toolkit_by_name(toolkit_name).summarize(
-                    prompt=self.prompt, model=self.openai_summary_model, data=results
+                    prompt=self.prompt,
+                    model=self.openai_summary_model,
+                    data=results,
+                    system_message=self.system_message,
                 )
 
                 streaming_task = asyncio.create_task(
@@ -305,7 +308,7 @@ class ToolManager:
         """
 
         if self.system_message:
-            system_message += self.system_message
+            system_message += f"5. Follow the next rules for summarizing the content: {self.system_message}"
 
         messages = [
             {"role": "system", "content": system_message},

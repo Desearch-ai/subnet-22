@@ -221,7 +221,7 @@ class BasicScraperValidator(OrganicHistoryMixin):
 
             for penalty_fn_i in self.penalty_functions:
                 raw_penalty_i, adjusted_penalty_i, applied_penalty_i = (
-                    penalty_fn_i.apply_penalties(responses, tasks)
+                    await penalty_fn_i.apply_penalties(responses, tasks)
                 )
                 penalty_start_time = time.time()
                 rewards *= applied_penalty_i.to(self.neuron.config.neuron.device)

@@ -67,7 +67,7 @@ class LinkValidationPenaltyModel(BasePenaltyModel):
         ]
         return await self.client.get_tweets_by_ids(tweet_ids)
 
-    def calculate_penalties(
+    async def calculate_penalties(
         self, task: TwitterTask, responses: List[ScraperStreamingSynapse]
     ) -> torch.FloatTensor:
         """

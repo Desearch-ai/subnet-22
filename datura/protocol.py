@@ -672,6 +672,7 @@ class ScraperStreamingSynapse(StreamingSynapse):
             "max_items": self.max_items,
             "language": self.language,
             "region": self.region,
+            "system_message": self.system_message,
         }
 
     class Config:

@@ -178,6 +178,52 @@ class LinkContentPrompt(ScoringPrompt):
         return 0
 
 
+class SummaryRulePrompt(ScoringPrompt):
+    r"""Used to validate if summary was generated following the rules specified"""
+
+    def __init__(self):
+        super().__init__()
+        self.template = user_summary_validation_template
+
+    def get_system_message(self):
+        return system_message_summary_validation_template
+
+    def get_messages(self, summary_text, summary_rule):
+        return [
+            {
+                "role": "system",
+                "content": self.get_system_message(),
+            },
+            {"role": "user", "content": self.text(summary_text, summary_rule)},
+        ]
+
+    def extract_score(self, response: str) -> float:
+        r"""Extract numeric score (range 0-10) from prompt response."""
+        # Mapping of special codes to numeric scores
+
+        # Extract score from output string with various formats
+        match = re.search(r"(?i)score[:\s]*(\d+)", response)
+        if match:
+            try:
+                score = float(match.group(1))
+                if 0 <= score <= 10:
+                    return score
+            except ValueError:
+                return 0
+
+        # Extract score directly from the response if "Score:" prefix is missing
+        match = re.search(r"\b([0-9]|10)\b", response)
+        if match:
+            try:
+                score = float(match.group(1))
+                if 0 <= score <= 10:
+                    return score
+            except ValueError:
+                return 0
+
+        return 0
+
+
 class LinkContentAndDescriptionPrompt(ScoringPrompt):
     r"""Compares a tweet or link title with summarized description in markdown and prompt
     Used to score each link from twitter or search summary
@@ -411,6 +457,33 @@ Output Format:
 Score: [2, 5, or 9], Explanation:
 """
 
+system_message_summary_validation_template = """
+Scoring Guide
+
+Role: As an evaluator, your task is to evaluate the adherence of a generated summary to specific guidelines outlined in a user system message.
+Follow these steps.
+
+1. Input Information
+-User System Message: <SummaryRule>
+-Generated Summary: <SummaryText>
+
+2. Evaluation Criteria
+- Check if the summary captures the main points outlined in the user system message.
+- Verify that the tone and style of the summary match the specifications in the user system message
+- Assess whether the summary maintains the required length and structure as indicated in the user system message
+- Look for any specific keywords or phrases mentioned in the user system message and confirm their presence in the summary.
+
+3. Output
+- Assign a score based on adherence:
+  - Score 10: If the summary fully adheres to the user system message guidelines
+  - Score 0: If the summary does not adhere to the user system message guidelines.
+
+- Output the score and the reason:
+  Example output
+  - Score 0: The generated summary does not include any of the main points outlined in the user system message and completely deviates from the required tone and style
+  - Score 10: The generated summary effectively captures all the main points, mirros the tone and style of the user system message, adheres to the length requirements, and include all the necessary keywords.
+"""
+
 text_and_summarized_description_scoring_template = """
 # Text and Summary Comparison Mechanism
 
@@ -478,4 +551,18 @@ And the summarized description of the text content:
 </SummarizedText>
 
 Please evaluate the above, <Text></Text> and <SummarizedText></SummarizedText> using relevance Scoring Guide in the system message.
+"""
+
+user_summary_validation_template = """
+Here is summarized text:
+<SummaryText>
+{}
+</SummaryText>
+
+And the rules for generating summary:
+<SummaryRule>
+{}
+</SummaryRule>
+
+Please evaluate the above, <SummaryText></SummaryText> and <SummaryRule></SummaryRule> using relevance Guide in the system message.
 """

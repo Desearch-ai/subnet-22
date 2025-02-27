@@ -4,7 +4,7 @@ from datura.protocol import ScraperTextRole
 client = AsyncOpenAI(timeout=60.0)
 
 
-def system_message():
+def system_message(user_system_message):
     output_example = """
         Key Posts:
             - [Noah discusses how SportAccord can elevate the West Midlands brand globally, emphasizing its role in hosting high-profile sports events.](https://reddit.com/r/subreddit/comments/abc/sport-events)
@@ -25,6 +25,10 @@ def system_message():
     {output_example}
     </OutputExample>
 
+    <RedditSummaryRule>
+    {user_system_message}
+    </RedditSummaryRule>
+
     Operational Rules:
     1. No <RedditData> Scenario: If no RedditData is provided, inform the user that current Reddit insights related to their topic are unavailable.
     2. Emphasis on Critical Issues: Focus on and clearly explain any significant issues or points of interest that emerge from the analysis.
@@ -36,13 +40,13 @@ def system_message():
     8. Return up to 10 Reddit links if available.
     9. Do not number the "key posts"; instead, provide each on a new line.
     10. Always maintain the order as shown in <OutputExample>, first providing "Key Posts", followed by "Reddit Summary".
+    
+    **Follow the rules on <RedditSummaryRule> for writing "Reddit Summary".**
     """
 
 
 async def summarize_reddit_data(
-    prompt: str,
-    model: str,
-    filtered_posts,
+    prompt: str, model: str, filtered_posts, user_system_message
 ):
     content = f"""
     In <UserPrompt> provided User's prompt (Question).
@@ -58,7 +62,7 @@ async def summarize_reddit_data(
     """
 
     messages = [
-        {"role": "system", "content": system_message()},
+        {"role": "system", "content": system_message(user_system_message)},
         {"role": "user", "content": content},
     ]
 
