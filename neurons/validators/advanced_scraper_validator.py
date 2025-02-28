@@ -475,7 +475,11 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
                 ]
             )
 
-            system_message = await dataset.generate_user_system_message_with_openai()
+            system_message = (
+                (await dataset.generate_user_system_message_with_openai())
+                if random.choice([True, False])
+                else ""
+            )
 
             tasks = [
                 TwitterTask(
