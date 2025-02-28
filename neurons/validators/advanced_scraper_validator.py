@@ -475,6 +475,8 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
                 ]
             )
 
+            system_message = await dataset.generate_user_system_message_with_openai()
+
             tasks = [
                 TwitterTask(
                     base_text=prompt,
@@ -504,6 +506,7 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
                 model=random_model,
                 is_synthetic=True,
                 specified_uids=specified_uids,
+                system_message=system_message,
             )
 
             final_synapses = await collect_final_synapses(
