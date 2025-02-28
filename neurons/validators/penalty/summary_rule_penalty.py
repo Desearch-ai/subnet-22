@@ -69,8 +69,7 @@ class SummaryRulePenaltyModel(BasePenaltyModel):
                     )
                     < 10
                 ):
-                    penalties[index] = 1.0
-                    break
+                    penalties[index] += 1.0 / len(SUMMARIES)
 
             bt.logging.debug(f"Response index {index} has penalty {penalties[index]}")
 
