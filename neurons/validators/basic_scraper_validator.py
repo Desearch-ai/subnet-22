@@ -91,6 +91,7 @@ class BasicScraperValidator(OrganicHistoryMixin):
         strategy=QUERY_MINERS.RANDOM,
         is_only_allowed_miner=True,
         specified_uids=None,
+        is_synthetic=False,
     ):
         event = {
             "names": [task.task_name for task in tasks],
@@ -112,6 +113,7 @@ class BasicScraperValidator(OrganicHistoryMixin):
                 **params,
                 query=task.compose_prompt(),
                 max_execution_time=self.max_execution_time,
+                is_synthetic=is_synthetic,
             )
             for task, params in zip(tasks, params_list)
         ]
@@ -444,6 +446,7 @@ class BasicScraperValidator(OrganicHistoryMixin):
                     is_only_allowed_miner=False,
                     specified_uids=specified_uids,
                     params_list=params,
+                    is_synthetic=True,
                 )
             )
 
