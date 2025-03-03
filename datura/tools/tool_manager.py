@@ -79,6 +79,7 @@ class ToolManager:
         region,
         date_filter,
         google_date_filter,
+        system_message,
     ):
         self.prompt = prompt
         self.manual_tool_names = manual_tool_names
@@ -88,6 +89,7 @@ class ToolManager:
         self.region = region
         self.date_filter = date_filter
         self.google_date_filter = google_date_filter
+        self.system_message = system_message
 
         self.response_streamer = ResponseStreamer(send=send)
         self.send = send
@@ -139,7 +141,10 @@ class ToolManager:
 
             if results:
                 response, role = await find_toolkit_by_name(toolkit_name).summarize(
-                    prompt=self.prompt, model=self.openai_summary_model, data=results
+                    prompt=self.prompt,
+                    model=self.openai_summary_model,
+                    data=results,
+                    system_message=self.system_message,
                 )
 
                 streaming_task = asyncio.create_task(
@@ -301,6 +306,9 @@ class ToolManager:
         3. Not return text like <UserPrompt> to your response, make response easy to understand to any user.
         4. Start text with bold text "Summary:".
         """
+
+        if self.system_message:
+            system_message += f"5. Follow the next rules for summarizing the content: {self.system_message}"
 
         messages = [
             {"role": "system", "content": system_message},

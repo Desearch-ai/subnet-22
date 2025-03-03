@@ -31,6 +31,7 @@ from neurons.validators.utils.tasks import TwitterTask
 from neurons.validators.organic_query_state import OrganicQueryState
 from neurons.validators.penalty.streaming_penalty import StreamingPenaltyModel
 from neurons.validators.penalty.exponential_penalty import ExponentialTimePenaltyModel
+from neurons.validators.penalty.summary_rule_penalty import SummaryRulePenaltyModel
 from neurons.validators.organic_history_mixin import OrganicHistoryMixin
 
 
@@ -155,6 +156,7 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
         self.penalty_functions = [
             StreamingPenaltyModel(max_penalty=1),
             ExponentialTimePenaltyModel(max_penalty=1),
+            SummaryRulePenaltyModel(max_penalty=1),
         ]
 
     def get_random_execution_time(self):
@@ -176,6 +178,7 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
         model: Optional[Model] = Model.NOVA,
         result_type: Optional[ResultType] = ResultType.LINKS_WITH_SUMMARIES,
         is_synthetic=False,
+        system_message: Optional[str] = None,
     ):
         max_execution_time = get_max_execution_time(model)
 
@@ -211,6 +214,7 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
                 max_execution_time=max_execution_time,
                 result_type=result_type,
                 is_synthetic=is_synthetic,
+                system_message=system_message,
             )
             for task in tasks
         ]
@@ -322,7 +326,7 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
 
             for penalty_fn_i in self.penalty_functions:
                 raw_penalty_i, adjusted_penalty_i, applied_penalty_i = (
-                    penalty_fn_i.apply_penalties(responses, tasks)
+                    await penalty_fn_i.apply_penalties(responses, tasks)
                 )
                 penalty_start_time = time.time()
                 rewards *= applied_penalty_i.to(self.neuron.config.neuron.device)
@@ -471,6 +475,12 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
                 ]
             )
 
+            system_message = (
+                (await dataset.generate_user_system_message_with_openai())
+                if random.choice([True, False])
+                else ""
+            )
+
             tasks = [
                 TwitterTask(
                     base_text=prompt,
@@ -500,6 +510,7 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
                 model=random_model,
                 is_synthetic=True,
                 specified_uids=specified_uids,
+                system_message=system_message,
             )
 
             final_synapses = await collect_final_synapses(
@@ -546,6 +557,7 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
             prompt = query["content"]
             tools = query.get("tools", [])
             date_filter = query.get("date_filter", DateFilterType.PAST_WEEK.value)
+            system_message = query.get("system_message")
 
             if isinstance(date_filter, str):
                 date_filter_type = DateFilterType(date_filter)
@@ -572,6 +584,7 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
                 specified_uids=specified_uids,
                 model=model,
                 result_type=result_type,
+                system_message=system_message,
             )
 
             final_synapses = []

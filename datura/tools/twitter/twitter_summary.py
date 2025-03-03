@@ -4,7 +4,7 @@ from datura.protocol import TwitterPromptAnalysisResult, ScraperTextRole
 client = AsyncOpenAI(timeout=60.0)
 
 
-def system_message():
+def system_message(user_system_message):
     output_example = """
         Key Tweets:
             - [Noah discusses how SportAccord can elevate the West Midlands brand globally, emphasizing its role in hosting high-profile sports events.](https://x.com/sportaccord/status/456)
@@ -25,6 +25,10 @@ def system_message():
     {output_example}
     </OutputExample>
 
+    <TwitterSummaryRule>
+    {user_system_message}
+    </TwitterSummaryRule>
+
     Operational Rules:
     1. No <TwitterData> Scenario: If no TwitterData is provided, inform the user that current Twitter insights related to their topic are unavailable.
     2. Emphasis on Critical Issues: Focus on and clearly explain any significant issues or points of interest that emerge from the analysis.
@@ -36,6 +40,8 @@ def system_message():
     8. Do not number the "key tweets"; instead, provide each on a new line.
     9. Always maintain the order as shown in <OutputExample>, first providing "Key Tweets", followed by "Twitter Summary".
     10. Always return 10 links if available
+    
+    **Follow the rules on <TwitterSummaryRule> for writing "Twitter Summary".**
     """
 
 
@@ -44,6 +50,7 @@ async def summarize_twitter_data(
     model: str,
     filtered_tweets,
     prompt_analysis: TwitterPromptAnalysisResult,
+    user_system_message,
 ):
 
     content = f"""
@@ -65,7 +72,7 @@ async def summarize_twitter_data(
     """
 
     messages = [
-        {"role": "system", "content": system_message()},
+        {"role": "system", "content": system_message(user_system_message)},
         {"role": "user", "content": content},
     ]
 

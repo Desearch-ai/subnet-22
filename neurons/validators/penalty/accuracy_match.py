@@ -76,7 +76,7 @@ class AccuracyPenaltyModel(BasePenaltyModel):
             re.compile(user_pattern, re.IGNORECASE) if user_pattern else None
         )
 
-    def calculate_penalties(
+    async def calculate_penalties(
         self, task: TwitterTask, responses: List[ScraperStreamingSynapse]
     ) -> torch.FloatTensor:
         """

@@ -1495,3 +1495,35 @@ class QuestionsDataset:
         except Exception as e:
             bt.logging.error(f"Failed to generate basic question with OpenAI: {e}")
             return "bittensor news"
+
+    async def generate_user_system_message_with_openai(self):
+        prompt = """Generate system message defining the rules or output format to summarize information. From the following list of summary types, choose random one and provide the corresponding system message with an example output.
+
+<ExamplePrompts>
+-Concise Bullet Point Summary 
+-Numbered List Summary
+-Executive Summary (Formal Style)
+-Pros and Cons Summary
+-One-Sentence Summary
+-Step-by-Step Summary
+-Table-Based Summary
+-Cause-and-Effect Summary
+-Actionable Summary
+</ExamplePrompts>
+
+Pick random format from <ExamplePrompts> and write system prompt accordingly.."""
+
+        try:
+            system_message = await call_openai(
+                messages=[{"role": "user", "content": prompt}],
+                temperature=1,
+                model="gpt-4o-mini",
+                seed=None,
+            )
+
+            if not system_message:
+                return ""
+            return system_message.strip()
+        except Exception as e:
+            print(f"Failed to call OpenAI: {e}")
+            return ""
