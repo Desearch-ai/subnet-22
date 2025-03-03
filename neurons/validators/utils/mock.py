@@ -18,7 +18,7 @@
 
 import torch
 from typing import Union, List
-from reward import BaseRewardModel, BaseRewardEvent
+from neurons.validators.reward import BaseRewardModel, BaseRewardEvent
 from datura.protocol import ScraperStreamingSynapse
 
 

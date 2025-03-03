@@ -15,10 +15,10 @@ from datura.bittensor.wallet import Wallet
 from neurons.validators.advanced_scraper_validator import AdvancedScraperValidator
 from neurons.validators.basic_scraper_validator import BasicScraperValidator
 from neurons.validators.basic_web_scraper_validator import BasicWebScraperValidator
-from config import add_args, check_config, config
-from weights import init_wandb, set_weights, get_weights
+from neurons.validators.config import add_args, check_config, config
+from neurons.validators.weights import init_wandb, set_weights, get_weights
 from traceback import print_exception
-from base_validator import AbstractNeuron
+from neurons.validators.base_validator import AbstractNeuron
 from datura import QUERY_MINERS
 from datura.misc import ttl_get_block
 from datura.utils import (

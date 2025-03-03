@@ -21,7 +21,7 @@ import torch
 import argparse
 import bittensor as bt
 from loguru import logger
-from reward import DefaultRewardFrameworkConfig
+from neurons.validators.reward import DefaultRewardFrameworkConfig
 from distutils.util import strtobool
 
 

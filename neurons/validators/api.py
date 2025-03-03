@@ -13,7 +13,7 @@ from datura.protocol import Model, TwitterScraperTweet, WebSearchResultList, Res
 import uvicorn
 import bittensor as bt
 import traceback
-from validator import Neuron
+from neurons.validators.validator import Neuron
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
 from contextlib import asynccontextmanager
