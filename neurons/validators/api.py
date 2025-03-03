@@ -13,7 +13,7 @@ from datura.protocol import Model, TwitterScraperTweet, WebSearchResultList, Res
 import uvicorn
 import bittensor as bt
 import traceback
-from validator import Neuron
+from neurons.validators.validator import Neuron
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
 from contextlib import asynccontextmanager
@@ -79,6 +79,11 @@ class SearchRequest(BaseModel):
         description=f"Model to use for scraping. {format_enum_values(Model)}",
         example=Model.NOVA.value,
     )
+    result_type: Optional[ResultType] = Field(
+        default=ResultType.LINKS_WITH_SUMMARIES,
+        description=f"Type of result. {format_enum_values(ResultType)}",
+        example=ResultType.LINKS_WITH_SUMMARIES.value,
+    )
 
 
 class LinksSearchRequest(BaseModel):
@@ -127,7 +132,9 @@ async def response_stream_event(data: SearchRequest):
 
         merged_chunks = ""
 
-        async for response in neu.advanced_scraper_validator.organic(query, data.model):
+        async for response in neu.advanced_scraper_validator.organic(
+            query, data.model, result_type=data.result_type
+        ):
             # Decode the chunk if necessary and merge
             chunk = str(response)  # Assuming response is already a string
             merged_chunks += chunk

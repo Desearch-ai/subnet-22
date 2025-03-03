@@ -6,7 +6,7 @@ import bittensor as bt
 from datura.protocol import (
     WebSearchSynapse,
 )
-from utils.mock import MockRewardModel
+from neurons.validators.utils.mock import MockRewardModel
 from datura.dataset import QuestionsDataset
 from datura import QUERY_MINERS
 from neurons.validators.base_validator import AbstractNeuron

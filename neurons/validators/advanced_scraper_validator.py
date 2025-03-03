@@ -5,8 +5,8 @@ import time
 from typing import List, Optional
 import bittensor as bt
 from datura.stream import collect_final_synapses
-from reward import RewardModelType, RewardScoringType
-from utils.mock import MockRewardModel
+from neurons.validators.reward import RewardModelType, RewardScoringType
+from neurons.validators.utils.mock import MockRewardModel
 
 from datura.dataset import QuestionsDataset
 from datura.dataset.date_filters import (
