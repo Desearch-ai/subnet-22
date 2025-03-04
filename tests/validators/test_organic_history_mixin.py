@@ -194,6 +194,68 @@ class TestOrganicHistoryMixin(unittest.TestCase):
         self.assertEqual(self.mixin.organic_history, organic_history)
 
     @patch("time.time", return_value=100000)
+    def test_get_random_organic_responses(self, mock_time):
+        organic_history = {
+            1: [
+                {
+                    "start_time": mock_time(),
+                    "response": "response1",
+                    "task": "task1",
+                    "event": {"name": "event1_name", "text": "event1_text"},
+                }
+            ],
+            2: [
+                {
+                    "start_time": mock_time() - 1000,
+                    "response": "response2",
+                    "task": "task2",
+                    "event": {"name": "event2_name", "text": "event2_text"},
+                },
+                {
+                    "start_time": mock_time(),
+                    "response": "response4",
+                    "task": "task4",
+                    "event": {"name": "event4_name", "text": "event4_text"},
+                },
+            ],
+            3: [
+                {
+                    "start_time": mock_time(),
+                    "response": "response3",
+                    "task": "task3",
+                    "event": {"name": "event3_name", "text": "event3_text"},
+                }
+            ],
+        }
+        self.mixin.organic_history = organic_history.copy()
+
+        event, tasks, responses, uids = (
+            self.mixin.get_random_organic_responses().values()
+        )
+
+        self.assertEqual(event["name"][0], "event1_name")
+        self.assertIn(event["name"][1], ["event2_name", "event4_name"])
+        self.assertEqual(event["name"][2], "event3_name")
+
+        self.assertEqual(event["text"][0], "event1_text")
+        self.assertIn(event["text"][1], ["event2_text", "event4_text"])
+        self.assertEqual(event["text"][2], "event3_text")
+
+        self.assertEqual(tasks[0], "task1")
+        self.assertIn(tasks[1], ["task2", "task4"])
+        self.assertEqual(tasks[2], "task3")
+
+        self.assertEqual(responses[0], "response1")
+        self.assertIn(responses[1], ["response2", "response4"])
+        self.assertEqual(responses[2], "response3")
+
+        self.assertEqual(uids[0], torch.tensor([1]))
+        self.assertIn(uids[1], [torch.tensor([2]), torch.tensor([4])])
+        self.assertEqual(uids[2], torch.tensor([3]))
+
+        self.assertEqual(self.mixin.organic_history, organic_history)
+
+    @patch("time.time", return_value=100000)
     def test_get_uids_with_no_hitory(self, mock_time):
         self.mixin.organic_history = {
             1: [

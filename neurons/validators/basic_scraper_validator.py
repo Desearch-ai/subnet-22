@@ -526,21 +526,28 @@ class BasicScraperValidator(OrganicHistoryMixin):
                     uids = torch.cat([uids, torch.tensor([random_uid])])
 
                 # Compute rewards and penalties
-                _, _, _, _, original_rewards = await self.compute_rewards_and_penalties(
-                    event=event,
-                    tasks=tasks,
-                    responses=final_responses,
-                    uids=uids,
-                    start_time=start_time,
-                    is_synthetic=False,
-                )
-
-                # Save organic queries if not an interval query
-                if not is_interval_query:
-                    self.basic_organic_query_state.save_organic_queries(
-                        final_responses, uids, original_rewards
+                if not self.neuron.config.neuron.synthetic_disabled:
+                    _, _, _, _, original_rewards = (
+                        await self.compute_rewards_and_penalties(
+                            event=event,
+                            tasks=tasks,
+                            responses=final_responses,
+                            uids=uids,
+                            start_time=start_time,
+                            is_synthetic=False,
+                        )
                     )
 
+                    if not is_interval_query:
+                        self.basic_organic_query_state.save_organic_queries(
+                            final_responses, uids, original_rewards
+                        )
+
+                # Save organic queries if not an interval query
+                if (
+                    self.neuron.config.neuron.synthetic_disabled
+                    and not is_interval_query
+                ):
                     self._save_organic_response(
                         uids, final_responses, tasks, event, start_time
                     )
@@ -606,31 +613,44 @@ class BasicScraperValidator(OrganicHistoryMixin):
                 deserialize=False,
             )
 
-            # 5) Build event, tasks, final_responses
-            event = {
-                "names": [task.task_name],
-                "task_types": [task.task_type],
-            }
-
-            final_responses = [synapse]
-
-            async def process_and_score_responses(uids_tensor):
-                _, _, _, _, original_rewards = await self.compute_rewards_and_penalties(
-                    event=event,
-                    tasks=[task],
-                    responses=final_responses,
-                    uids=uids_tensor,
-                    start_time=start_time,
-                    is_synthetic=False,
+            if self.neuron.config.neuron.synthetic_disabled:
+                self._save_organic_response(
+                    uids,
+                    [synapse],
+                    [task],
+                    {
+                        "names": [task.task_name],
+                        "task_types": [task.task_type],
+                    },
+                    start_time,
                 )
+            else:
+                event = {
+                    "names": [task.task_name],
+                    "task_types": [task.task_type],
+                }
 
-                self.basic_organic_query_state.save_organic_queries(
-                    final_responses, uids_tensor, original_rewards
-                )
+                final_responses = [synapse]
 
-            # Launch the scoring in the background
-            uids_tensor = torch.tensor([uid], dtype=torch.int)
-            asyncio.create_task(process_and_score_responses(uids_tensor))
+                async def process_and_score_responses(uids_tensor):
+                    _, _, _, _, original_rewards = (
+                        await self.compute_rewards_and_penalties(
+                            event=event,
+                            tasks=[task],
+                            responses=final_responses,
+                            uids=uids_tensor,
+                            start_time=start_time,
+                            is_synthetic=False,
+                        )
+                    )
+
+                    self.basic_organic_query_state.save_organic_queries(
+                        final_responses, uids_tensor, original_rewards
+                    )
+
+                # Launch the scoring in the background
+                uids_tensor = torch.tensor([uid], dtype=torch.int)
+                asyncio.create_task(process_and_score_responses(uids_tensor))
 
             # 7) Return the fetched tweets
             return synapse.results
@@ -695,30 +715,43 @@ class BasicScraperValidator(OrganicHistoryMixin):
                 deserialize=False,
             )
 
-            # 5) Build event, tasks, final_responses
-            event = {
-                "names": [task.task_name],
-                "task_types": [task.task_type],
-            }
-
-            final_responses = [synapse]
-
-            async def process_and_score_responses(uids_tensor):
-                _, _, _, _, original_rewards = await self.compute_rewards_and_penalties(
-                    event=event,
-                    tasks=[task],
-                    responses=final_responses,
-                    uids=uids_tensor,
-                    start_time=start_time,
-                    is_synthetic=False,
+            if self.neuron.config.neuron.synthetic_disabled:
+                self._save_organic_response(
+                    uids,
+                    [synapse],
+                    [task],
+                    {
+                        "names": [task.task_name],
+                        "task_types": [task.task_type],
+                    },
+                    start_time,
                 )
+            else:
+                event = {
+                    "names": [task.task_name],
+                    "task_types": [task.task_type],
+                }
 
-                self.basic_organic_query_state.save_organic_queries(
-                    final_responses, uids_tensor, original_rewards
-                )
+                final_responses = [synapse]
 
-            uids_tensor = torch.tensor([uid], dtype=torch.int)
-            asyncio.create_task(process_and_score_responses(uids_tensor))
+                async def process_and_score_responses(uids_tensor):
+                    _, _, _, _, original_rewards = (
+                        await self.compute_rewards_and_penalties(
+                            event=event,
+                            tasks=[task],
+                            responses=final_responses,
+                            uids=uids_tensor,
+                            start_time=start_time,
+                            is_synthetic=False,
+                        )
+                    )
+
+                    self.basic_organic_query_state.save_organic_queries(
+                        final_responses, uids_tensor, original_rewards
+                    )
+
+                uids_tensor = torch.tensor([uid], dtype=torch.int)
+                asyncio.create_task(process_and_score_responses(uids_tensor))
 
             return synapse.results
         except Exception as e:

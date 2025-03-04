@@ -1,5 +1,6 @@
 import time
 import torch
+import random
 
 
 class OrganicHistoryMixin:
@@ -41,6 +42,34 @@ class OrganicHistoryMixin:
                     "start_time": start_time,
                 }
             )
+
+    def get_random_organic_responses(self):
+        self._clean_organic_history()
+
+        event = {}
+        tasks = []
+        responses = []
+        uids = []
+
+        for uid, item in self.organic_history.items():
+            uids.append(torch.tensor([uid]))
+
+            random_index = random.randint(0, len(item) - 1)
+
+            responses.append(item[random_index]["response"])
+            tasks.append(item[random_index]["task"])
+            for key, value in item[random_index]["event"].items():
+                if not key in event:
+                    event[key] = []
+
+                event[key].append(value)
+
+        return {
+            "event": event,
+            "tasks": tasks,
+            "responses": responses,
+            "uids": torch.tensor(uids),
+        }
 
     def get_latest_organic_responses(self):
         self._clean_organic_history()
