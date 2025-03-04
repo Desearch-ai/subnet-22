@@ -455,21 +455,28 @@ class BasicWebScraperValidator(OrganicHistoryMixin):
                     uids = torch.cat([uids, torch.tensor([random_uid])])
 
                 # Compute rewards and penalties
-                _, _, _, _, original_rewards = await self.compute_rewards_and_penalties(
-                    event=event,
-                    tasks=tasks,
-                    responses=final_responses,
-                    uids=uids,
-                    start_time=start_time,
-                    is_synthetic=False,
-                )
-
-                # Save organic queries if not an interval query
-                if not is_interval_query:
-                    self.basic_organic_query_state.save_organic_queries(
-                        final_responses, uids, original_rewards
+                if not self.neuron.config.neuron.synthetic_disabled:
+                    _, _, _, _, original_rewards = (
+                        await self.compute_rewards_and_penalties(
+                            event=event,
+                            tasks=tasks,
+                            responses=final_responses,
+                            uids=uids,
+                            start_time=start_time,
+                            is_synthetic=False,
+                        )
                     )
 
+                    # Save organic queries if not an interval query
+                    if not is_interval_query:
+                        self.basic_organic_query_state.save_organic_queries(
+                            final_responses, uids, original_rewards
+                        )
+
+                if (
+                    self.neuron.config.neuron.synthetic_disabled
+                    and not is_interval_query
+                ):
                     self._save_organic_response(
                         uids, final_responses, tasks, event, start_time
                     )
