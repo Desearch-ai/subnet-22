@@ -333,6 +333,7 @@ class TwitterSearchRequest(BaseModel):
     min_retweets: Optional[int] = None
     min_replies: Optional[int] = None
     min_likes: Optional[int] = None
+    count: Optional[int] = None
 
 
 @app.post(
