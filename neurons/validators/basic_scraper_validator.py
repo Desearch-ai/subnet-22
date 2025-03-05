@@ -12,6 +12,7 @@ from datura.protocol import (
     TwitterURLsSearchSynapse,
 )
 from neurons.validators.utils.mock import MockRewardModel
+from datura.synapse import collect_responses
 from datura.dataset import QuestionsDataset
 from datura import QUERY_MINERS
 from neurons.validators.base_validator import AbstractNeuron
@@ -144,9 +145,9 @@ class BasicScraperValidator(OrganicHistoryMixin):
                 all_tasks.append(task)
 
         # Await all tasks concurrently
-        all_responses = await asyncio.gather(*all_tasks, return_exceptions=True)
+        # all_responses = await asyncio.gather(*all_tasks, return_exceptions=True)
 
-        return all_responses, uids, event, start_time
+        return all_tasks, uids, event, start_time
 
     async def compute_rewards_and_penalties(
         self,
@@ -439,7 +440,7 @@ class BasicScraperValidator(OrganicHistoryMixin):
             )
 
             # 4) Run the basic Twitter search
-            responses, uids, event, start_time = (
+            async_responses, uids, event, start_time = (
                 await self.run_twitter_basic_search_and_score(
                     tasks=tasks,
                     strategy=strategy,
@@ -449,6 +450,8 @@ class BasicScraperValidator(OrganicHistoryMixin):
                     is_synthetic=True,
                 )
             )
+
+            responses = await collect_responses(async_responses)
 
             if self.neuron.config.neuron.synthetic_disabled:
                 self._save_organic_response(uids, responses, tasks, event, start_time)
@@ -510,7 +513,8 @@ class BasicScraperValidator(OrganicHistoryMixin):
             final_responses = []
 
             # Process responses and collect successful ones
-            for response in async_responses:
+            for async_response in async_responses:
+                response = await async_response
                 if response:
                     final_responses.append(response)
                     yield response
