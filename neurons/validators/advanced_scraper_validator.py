@@ -613,20 +613,26 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
                     final_synapses.append(random_synapse)
                     uids = torch.cat([uids, torch.tensor([random_uid])])
 
-                _, _, _, _, original_rewards = await self.compute_rewards_and_penalties(
-                    event=event,
-                    tasks=tasks,
-                    responses=final_synapses,
-                    uids=uids,
-                    start_time=start_time,
-                    is_synthetic=False,
-                )
-
-                if not is_interval_query:
-                    self.organic_query_state.save_organic_queries(
-                        final_synapses, uids, original_rewards
+                if not self.neuron.config.neuron.synthetic_disabled:
+                    _, _, _, _, original_rewards = (
+                        await self.compute_rewards_and_penalties(
+                            event=event,
+                            tasks=tasks,
+                            responses=final_synapses,
+                            uids=uids,
+                            start_time=start_time,
+                            is_synthetic=False,
+                        )
                     )
 
+                    if not is_interval_query:
+                        self.organic_query_state.save_organic_queries(
+                            final_synapses, uids, original_rewards
+                        )
+                if (
+                    self.neuron.config.neuron.synthetic_disabled
+                    and not is_interval_query
+                ):
                     self._save_organic_response(
                         uids, final_synapses, tasks, event, start_time
                     )

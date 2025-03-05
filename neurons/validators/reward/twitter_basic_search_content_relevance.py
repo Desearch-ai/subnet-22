@@ -39,7 +39,7 @@ from datura.utils import (
     scrape_tweets_with_retries,
 )
 
-APIFY_LINK_SCRAPE_AMOUNT = 2
+APIFY_LINK_SCRAPE_AMOUNT = 1
 
 # Only a percentage-based threshold:
 INT_DIFF_PERCENT = 0.60  # 60% difference allowed

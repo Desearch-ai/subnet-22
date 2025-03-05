@@ -495,15 +495,16 @@ class Neuron(AbstractNeuron):
         specified_uids = self.advanced_scraper_validator.get_uids_with_no_history(
             self.available_uids
         )
-        bt.logging.info(
-            f"Running advanced synthetic queries with specified uids: {specified_uids}"
-        )
-        await self.advanced_scraper_validator.query_and_score(
-            strategy=QUERY_MINERS.ALL, specified_uids=specified_uids
-        )
+        if specified_uids:
+            bt.logging.info(
+                f"Running advanced synthetic queries with specified uids: {specified_uids}"
+            )
+            await self.advanced_scraper_validator.query_and_score(
+                strategy=QUERY_MINERS.ALL, specified_uids=specified_uids
+            )
 
         await self.advanced_scraper_validator.compute_rewards_and_penalties(
-            **self.advanced_scraper_validator.get_latest_organic_responses(),
+            **self.advanced_scraper_validator.get_random_organic_responses(),
             start_time=time.time(),
         )
 
@@ -511,15 +512,17 @@ class Neuron(AbstractNeuron):
         specified_uids = self.basic_scraper_validator.get_uids_with_no_history(
             self.available_uids
         )
-        bt.logging.info(
-            f"Running basic synthetic queries with specified uids: {specified_uids}"
-        )
-        await self.basic_scraper_validator.query_and_score_twitter_basic(
-            strategy=QUERY_MINERS.ALL, specified_uids=specified_uids
-        )
+
+        if specified_uids:
+            bt.logging.info(
+                f"Running basic synthetic queries with specified uids: {specified_uids}"
+            )
+            await self.basic_scraper_validator.query_and_score_twitter_basic(
+                strategy=QUERY_MINERS.ALL, specified_uids=specified_uids
+            )
 
         await self.basic_scraper_validator.compute_rewards_and_penalties(
-            **self.basic_scraper_validator.get_latest_organic_responses(),
+            **self.basic_scraper_validator.get_random_organic_responses(),
             start_time=time.time(),
         )
 
@@ -527,15 +530,16 @@ class Neuron(AbstractNeuron):
         specified_uids = self.basic_web_scraper_validator.get_uids_with_no_history(
             self.available_uids
         )
-        bt.logging.info(
-            f"Running basic web synthetic queries with specified uids: {specified_uids}"
-        )
-        await self.basic_web_scraper_validator.query_and_score_web_basic(
-            strategy=QUERY_MINERS.ALL, specified_uids=specified_uids
-        )
+        if specified_uids:
+            bt.logging.info(
+                f"Running basic web synthetic queries with specified uids: {specified_uids}"
+            )
+            await self.basic_web_scraper_validator.query_and_score_web_basic(
+                strategy=QUERY_MINERS.ALL, specified_uids=specified_uids
+            )
 
         await self.basic_web_scraper_validator.compute_rewards_and_penalties(
-            **self.basic_web_scraper_validator.get_latest_organic_responses(),
+            **self.basic_web_scraper_validator.get_random_organic_responses(),
             start_time=time.time(),
         )
 
