@@ -23,6 +23,7 @@ from neurons.validators.reward.performance_reward import PerformanceRewardModel
 from neurons.validators.utils.tasks import SearchTask
 from neurons.validators.basic_organic_query_state import BasicOrganicQueryState
 from neurons.validators.penalty.exponential_penalty import ExponentialTimePenaltyModel
+from neurons.validators.penalty.twitter_count_penalty import TwitterCountPenaltyModel
 from neurons.validators.organic_history_mixin import OrganicHistoryMixin
 
 
@@ -82,6 +83,7 @@ class BasicScraperValidator(OrganicHistoryMixin):
 
         self.penalty_functions = [
             ExponentialTimePenaltyModel(max_penalty=1),
+            TwitterCountPenaltyModel(max_penalty=1),
         ]
 
     async def run_twitter_basic_search_and_score(
