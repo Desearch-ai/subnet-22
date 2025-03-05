@@ -3,7 +3,7 @@ import os
 os.environ["USE_TORCH"] = "1"
 
 from typing import Optional, Annotated, List, Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, conint
 from fastapi.responses import StreamingResponse
 from fastapi import FastAPI, HTTPException, Header, Query, Path
 from neurons.validators.env import PORT, EXPECTED_ACCESS_KEY
@@ -333,6 +333,7 @@ class TwitterSearchRequest(BaseModel):
     min_retweets: Optional[int] = None
     min_replies: Optional[int] = None
     min_likes: Optional[int] = None
+    count: Optional[conint(le=100)] = None
 
 
 @app.post(
@@ -463,7 +464,7 @@ async def web_search_endpoint(
     query: str = Query(
         ..., description="The search query string, e.g., 'latest news on AI'."
     ),
-    num: int = Query(10, description="The maximum number of results to fetch."),
+    num: int = Query(10, le=100, description="The maximum number of results to fetch."),
     start: int = Query(
         0, description="The number of results to skip (used for pagination)."
     ),
