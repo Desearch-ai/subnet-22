@@ -262,12 +262,6 @@ class TwitterBasicSearchContentRelevanceModel(BaseRewardModel):
             miner_data_list = response.results
             validator_tweets = response.validator_tweets
 
-            if isinstance(response, TwitterSearchSynapse) and (
-                len(validator_tweets) > response.count
-                or len(miner_data_list) > response.count
-            ):
-                return 0.0
-
             # 2) Build map of miner tweets by ID
             miner_map = {}
 
