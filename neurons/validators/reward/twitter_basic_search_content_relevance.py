@@ -56,7 +56,6 @@ TWEET_EXACT_MATCH_FIELDS = {
     "in_reply_to_status_id",
     "in_reply_to_user_id",
     "quoted_status_id",
-    "display_text_range",
     "lang",
 }
 
