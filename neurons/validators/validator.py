@@ -24,8 +24,8 @@ from datura.misc import ttl_get_block
 from datura.utils import (
     resync_metagraph,
     save_logs_in_chunks,
-    save_logs_in_chunks_for_basic,
 )
+from datura.redis.utils import load_moving_averaged_scores, save_moving_averaged_scores
 from neurons.validators.proxy.uid_manager import UIDManager
 
 
@@ -85,8 +85,8 @@ class Neuron(AbstractNeuron):
 
         # Init Weights.
         bt.logging.debug("loading", "moving_averaged_scores")
-        self.moving_averaged_scores = torch.zeros((self.metagraph.n)).to(
-            self.config.neuron.device
+        self.moving_averaged_scores = load_moving_averaged_scores(
+            self.metagraph, self.config
         )
         bt.logging.debug(str(self.moving_averaged_scores))
         self.available_uids = []
@@ -342,6 +342,7 @@ class Neuron(AbstractNeuron):
             self.moving_averaged_scores = alpha * scattered_rewards + (
                 1 - alpha
             ) * self.moving_averaged_scores.to(self.config.neuron.device)
+            save_moving_averaged_scores(self.moving_averaged_scores)
             bt.logging.info(
                 f"Moving averaged scores: {torch.mean(self.moving_averaged_scores):.6f}"
             )  # Rounds to 6 decimal places for logging
@@ -582,6 +583,7 @@ class Neuron(AbstractNeuron):
                 if self.config.neuron.synthetic_disabled:
                     if blocks_left <= 100:
                         if not self.organic_responses_computed:
+                            bt.logging.info("Computing organic responses")
                             tasks = [
                                 self.compute_basic_organic_responses,
                                 self.compute_organic_responses,
