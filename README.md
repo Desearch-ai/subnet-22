@@ -75,7 +75,8 @@ These validators are designed to run and update themselves automatically. To run
 
 1. Install this repository, you can do so by following the steps outlined in [the installation section](#installation).
 2. Install [Weights and Biases](https://docs.wandb.ai/quickstart) and run `wandb login` within this repository. This will initialize Weights and Biases, enabling you to view KPIs and Metrics on your validator. (Strongly recommended to help the network improve from data sharing)
-3. Install [PM2](https://pm2.io/docs/runtime/guide/installation/) and the [`jq` package](https://jqlang.github.io/jq/) on your system.
+3. Install [Redis](https://redis.io/docs/latest/operate/oss_and_stack/install/install-redis/) and run the server.
+4. Install [PM2](https://pm2.io/docs/runtime/guide/installation/) and the [`jq` package](https://jqlang.github.io/jq/) on your system.
    **On Linux**:
    ```bash
    sudo apt update && sudo apt install jq && sudo apt install npm && sudo npm install pm2 -g && pm2 update
@@ -84,7 +85,7 @@ These validators are designed to run and update themselves automatically. To run
    ```bash
    brew update && brew install jq && brew install npm && sudo npm install pm2 -g && pm2 update
    ```
-4. Run the `run.sh` script which will handle running your validator and pulling the latest updates as they are issued. 
+5. Run the `run.sh` script which will handle running your validator and pulling the latest updates as they are issued. 
    ```bash
    pm2 start run.sh --name smart_scrape_validators_autoupdate -- --wallet.name <your-wallet-name> --wallet.hotkey <your-wallet-hot-key>
    ```
