@@ -81,6 +81,8 @@ class Neuron(AbstractNeuron):
         self.step = 0
         self.check_registered()
 
+        self.organic_responses_computed = False
+
         # Init Weights.
         bt.logging.debug("loading", "moving_averaged_scores")
         self.moving_averaged_scores = torch.zeros((self.metagraph.n)).to(
@@ -577,10 +579,23 @@ class Neuron(AbstractNeuron):
                     )
                     await asyncio.sleep(300)
 
-                if blocks_left <= 100 and self.config.neuron.synthetic_disabled:
-                    self.loop.create_task(self.compute_basic_organic_responses())
-                    self.loop.create_task(self.compute_organic_responses())
-                    self.loop.create_task(self.compute_web_basic_organic_responses())
+                if self.config.neuron.synthetic_disabled:
+                    if blocks_left <= 100:
+                        if not self.organic_responses_computed:
+                            tasks = [
+                                self.compute_basic_organic_responses,
+                                self.compute_organic_responses,
+                                self.compute_web_basic_organic_responses,
+                            ]
+                            self.loop.create_task(random.choice(tasks)())
+
+                            self.organic_responses_computed = True
+                        else:
+                            bt.logging.info(
+                                "Skipping compute organic responses: Already executed."
+                            )
+                    else:
+                        self.organic_responses_computed = False
 
             except Exception as e:
                 bt.logging.error(f"Error in validator sync: {e}")
