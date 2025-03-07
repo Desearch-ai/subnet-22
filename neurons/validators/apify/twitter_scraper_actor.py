@@ -56,6 +56,9 @@ def toTwitterScraperTweet(item):
         quote=toTwitterScraperTweet(item.get("quote")),
         entities=item.get("entities"),
         extended_entities=item.get("extendedEntities"),
+        in_reply_to_screen_name=item.get("inReplyToUsername"),
+        in_reply_to_status_id=item.get("inReplyToId"),
+        quoted_status_id=item.get("quote", {}).get("id"),
         user=TwitterScraperUser(
             id=author.get("id"),
             created_at=author.get("createdAt"),
