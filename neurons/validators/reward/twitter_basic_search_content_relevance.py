@@ -196,46 +196,54 @@ class TwitterBasicSearchContentRelevanceModel(BaseRewardModel):
         return is_allowed
 
     def compare_nested_fields(
-        self, val1: Optional[Dict[str, Any]], val2: Optional[Dict[str, Any]]
-    ) -> bool:
+        self,
+        val1: Optional[Dict[str, Any]],
+        val2: Optional[Dict[str, Any]],
+        path: Optional[str] = "",
+    ) -> Tuple[str, Any, Any]:
         """
         Returns True if all the nested fields within the values are equal.
         """
 
         if val1 is None and val2 is None:
-            return True
+            return "", None, None
 
         if val1 is None or val2 is None:
-            return False
+            return path, val1, val2
 
         if isinstance(val1, dict) and isinstance(val2, dict):
             for key in set(val1) | set(val2):
-                if not self.compare_nested_fields(val1.get(key), val2.get(key)):
-                    return False
+                _path, _val1, _val2 = self.compare_nested_fields(
+                    val1.get(key), val2.get(key), f"{path}.{key}"
+                )
+                if _path:
+                    return _path, _val1, _val2
 
-            return True
+            return "", None, None
 
         if isinstance(val1, list) and isinstance(val2, list):
             if len(val1) != len(val2):
-                return False
+                return path, val1, val2
 
-            for x, y in zip(val1, val2):
-                if not self.compare_nested_fields(x, y):
-                    return False
+            for i, (x, y) in enumerate(zip(val1, val2)):
+                _path, _val1, _val2 = self.compare_nested_fields(x, y, f"{path}[{i}]")
+                if _path:
+                    return _path, _val1, _val2
 
-            return True
+            return "", None, None
 
         if isinstance(val1, tuple) and isinstance(val2, tuple):
             if len(val1) != len(val2):
-                return False
+                return path, val1, val2
 
-            for x, y in zip(val1, val2):
-                if not self.compare_nested_fields(x, y):
-                    return False
+            for i, (x, y) in enumerate(zip(val1, val2)):
+                _path, _val1, _val2 = self.compare_nested_fields(x, y, f"{path}[{i}]")
+                if _path:
+                    return _path, _val1, _val2
 
-            return True
+            return "", None, None
 
-        return val1 == val2
+        return ("", None, None) if val1 == val2 else (path, val1, val2)
 
     def compare_media(self, media1: List[dict], media2: List[dict]) -> bool:
         if len(media1) != len(media2):
@@ -448,12 +456,13 @@ class TwitterBasicSearchContentRelevanceModel(BaseRewardModel):
 
                 # Compare nested fields
                 for f in TWEET_NESTED_FIELDS:
-                    if not self.compare_nested_fields(
+                    path, val1, val2 = self.compare_nested_fields(
                         miner_tweet.get(f), val_tweet_dict.get(f)
-                    ):
+                    )
+                    if path:
                         tweet_scores.append(0)
                         bt.logging.debug(
-                            f"Field mismatch: {f} => {miner_tweet.get(f)} vs {val_tweet_dict.get(f)}"
+                            f"Field mismatch: {f}{path} => {val1} vs {val2}"
                         )
                         loop_terminated = True
                         break
@@ -493,12 +502,13 @@ class TwitterBasicSearchContentRelevanceModel(BaseRewardModel):
                     continue
 
                 for f in USER_NESTED_FIELDS:
-                    if not self.compare_nested_fields(
+                    path, val1, val2 = self.compare_nested_fields(
                         miner_user.get(f), val_user.get(f)
-                    ):
+                    )
+                    if path:
                         tweet_scores.append(0)
                         bt.logging.debug(
-                            f"User field mismatch: {f} => {miner_user.get(f)} vs {val_user.get(f)}"
+                            f"User field mismatch: {f}{path} => {val1} vs {val2}"
                         )
                         loop_terminated = True
                         break
