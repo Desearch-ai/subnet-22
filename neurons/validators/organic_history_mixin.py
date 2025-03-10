@@ -1,12 +1,28 @@
 import time
 import torch
 import random
+from datura.redis.redis_client import redis_client
+import jsonpickle
 
 
 class OrganicHistoryMixin:
+    HISTORY_EXPIRY_TIME = 2 * 3600
+
     def __init__(self):
-        self.organic_history = {}
-        self.HISTORY_EXPIRY_TIME = 2 * 3600
+        self.organic_history = self._load_history()
+
+    @property
+    def redis_key(self):
+        return f"{self.__class__.__name__}:organic_history"
+
+    def _load_history(self):
+        data = jsonpickle.decode(redis_client.get(self.redis_key) or "{}")
+        return {int(uid): values for uid, values in data.items()}
+
+    def _save_history(self, history):
+        redis_client.set(
+            self.redis_key, jsonpickle.encode(history), ex=self.HISTORY_EXPIRY_TIME
+        )
 
     def _clean_organic_history(self):
         current_time = time.time()
@@ -25,6 +41,10 @@ class OrganicHistoryMixin:
             if len(values) > 0
         }
 
+        self._save_history(self.organic_history)
+
+        return self.organic_history
+
     def _save_organic_response(self, uids, responses, tasks, event, start_time) -> None:
         for uid, response, task, *event_values in zip(
             uids, responses, tasks, *event.values()
@@ -42,6 +62,8 @@ class OrganicHistoryMixin:
                     "start_time": start_time,
                 }
             )
+
+        self._save_history(self.organic_history)
 
     def get_random_organic_responses(self):
         self._clean_organic_history()
