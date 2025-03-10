@@ -192,6 +192,14 @@ class WebBasicSearchContentRelevanceModel(BaseRewardModel):
 
         return default_val_score_responses
 
+    def check_title(self, miner_title, validator_title):
+        miner_title = miner_title.rstrip(" .")
+
+        if miner_title in validator_title or validator_title in miner_title:
+            return True
+
+        return False
+
     def check_response_random_link(self, response: WebSearchSynapse) -> float:
         try:
             miner_results = response.results
@@ -216,7 +224,7 @@ class WebBasicSearchContentRelevanceModel(BaseRewardModel):
                     scores.append(0)
                     continue
 
-                if miner_item.get("title") != validator_item.title:
+                if not self.check_title(miner_item.get("title"), validator_item.title):
                     scores.append(0)
                     continue
 
