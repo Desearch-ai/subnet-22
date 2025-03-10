@@ -233,9 +233,11 @@ class WebBasicSearchContentRelevanceModel(BaseRewardModel):
                     continue
 
                 if not all(
-                    text in self.normalize_html_content(validator_item.html_content)
-                    or text in self.normalize_html_content(validator_item.html_text)
-                    for text in miner_item.get("snippet").lower().split(".")
+                    text.strip()
+                    in self.normalize_html_content(validator_item.html_content)
+                    or text.strip()
+                    in self.normalize_html_content(validator_item.html_text)
+                    for text in re.split(r"[.·]", miner_item.get("snippet").lower())
                 ):
                     scores.append(0)
                     continue
