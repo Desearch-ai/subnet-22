@@ -87,6 +87,12 @@ class BasicScraperValidator(OrganicHistoryMixin):
             TwitterCountPenaltyModel(max_penalty=1),
         ]
 
+    def calc_max_execution_time(self, count):
+        if not count or count <= 20:
+            return self.max_execution_time
+
+        return self.max_execution_time + int((count - 20) / 20) * 5
+
     async def run_twitter_basic_search_and_score(
         self,
         tasks: List[SearchTask],
@@ -115,7 +121,7 @@ class BasicScraperValidator(OrganicHistoryMixin):
             TwitterSearchSynapse(
                 **params,
                 query=task.compose_prompt(),
-                max_execution_time=self.max_execution_time,
+                max_execution_time=self.calc_max_execution_time(params.get("count")),
                 is_synthetic=is_synthetic,
             )
             for task, params in zip(tasks, params_list)
@@ -131,7 +137,6 @@ class BasicScraperValidator(OrganicHistoryMixin):
         synapse_groups = [synapses[:80], synapses[80:160], synapses[160:]]
 
         all_tasks = []  # List to collect all asyncio tasks
-        timeout = self.max_execution_time + 5
 
         for dendrite, axon_group, synapse_group in zip(
             dendrites, axon_groups, synapse_groups
@@ -141,7 +146,7 @@ class BasicScraperValidator(OrganicHistoryMixin):
                 task = dendrite.call(
                     target_axon=axon,
                     synapse=syn.copy(),
-                    timeout=timeout,
+                    timeout=syn.max_execution_time + 5,
                     deserialize=False,
                 )
                 all_tasks.append(task)
@@ -707,12 +712,12 @@ class BasicScraperValidator(OrganicHistoryMixin):
 
             synapse = TwitterURLsSearchSynapse(
                 urls=urls,
-                max_execution_time=self.max_execution_time,
+                max_execution_time=self.calc_max_execution_time(len(urls)),
                 validator_tweets=[],
                 results=[],
             )
 
-            timeout = self.max_execution_time + 5
+            timeout = synapse.max_execution_time + 5
 
             synapse: TwitterURLsSearchSynapse = await self.neuron.dendrite.call(
                 target_axon=axon,
