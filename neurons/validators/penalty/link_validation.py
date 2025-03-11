@@ -68,7 +68,10 @@ class LinkValidationPenaltyModel(BasePenaltyModel):
         return await self.client.get_tweets_by_ids(tweet_ids)
 
     async def calculate_penalties(
-        self, task: TwitterTask, responses: List[ScraperStreamingSynapse]
+        self,
+        task: TwitterTask,
+        responses: List[ScraperStreamingSynapse],
+        additional_params=None,
     ) -> torch.FloatTensor:
         """
         Calculates the penalties for each completion based on the presence and relevance of Twitter links.

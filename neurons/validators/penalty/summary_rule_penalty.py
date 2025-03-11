@@ -42,7 +42,10 @@ class SummaryRulePenaltyModel(BasePenaltyModel):
         return summary_rule_prompt.extract_score(response)
 
     async def calculate_penalties(
-        self, responses: List[ScraperStreamingSynapse], tasks: List[Task]
+        self,
+        responses: List[ScraperStreamingSynapse],
+        tasks: List[Task],
+        additional_params=None,
     ) -> torch.FloatTensor:
 
         penalties = torch.zeros(len(responses), dtype=torch.float32)

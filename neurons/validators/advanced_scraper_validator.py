@@ -32,6 +32,7 @@ from neurons.validators.organic_query_state import OrganicQueryState
 from neurons.validators.penalty.streaming_penalty import StreamingPenaltyModel
 from neurons.validators.penalty.exponential_penalty import ExponentialTimePenaltyModel
 from neurons.validators.penalty.summary_rule_penalty import SummaryRulePenaltyModel
+from neurons.validators.penalty.miner_score_penalty import MinerScorePenaltyModel
 from neurons.validators.organic_history_mixin import OrganicHistoryMixin
 
 
@@ -157,6 +158,7 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
             StreamingPenaltyModel(max_penalty=1),
             ExponentialTimePenaltyModel(max_penalty=1),
             SummaryRulePenaltyModel(max_penalty=1),
+            MinerScorePenaltyModel(max_penalty=1),
         ]
 
     def get_random_execution_time(self):
@@ -324,9 +326,19 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
                     f"Applied reward function: {reward_fn_i.name} in {execution_time / 60:.2f} minutes"
                 )
 
+            val_scores = []
+            for val_score_responses, reward_function in zip(
+                val_score_responses_list, self.reward_functions
+            ):
+                if reward_function.name in [
+                    RewardModelType.twitter_content_relevance.value,
+                    RewardModelType.search_content_relevance.value,
+                ]:
+                    val_scores.append(val_score_responses)
+
             for penalty_fn_i in self.penalty_functions:
                 raw_penalty_i, adjusted_penalty_i, applied_penalty_i = (
-                    await penalty_fn_i.apply_penalties(responses, tasks)
+                    await penalty_fn_i.apply_penalties(responses, tasks, val_scores)
                 )
                 penalty_start_time = time.time()
                 rewards *= applied_penalty_i.to(self.neuron.config.neuron.device)

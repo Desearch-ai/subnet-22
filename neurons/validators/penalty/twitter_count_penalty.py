@@ -17,7 +17,10 @@ class TwitterCountPenaltyModel(BasePenaltyModel):
         return PenaltyModelType.twitter_count_penalty.value
 
     async def calculate_penalties(
-        self, responses: List[TwitterSearchSynapse], tasks: List[Task]
+        self,
+        responses: List[TwitterSearchSynapse],
+        tasks: List[Task],
+        additional_params=None,
     ) -> torch.FloatTensor:
 
         penalties = torch.zeros(len(responses), dtype=torch.float32)

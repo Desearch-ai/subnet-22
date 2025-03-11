@@ -20,7 +20,10 @@ class ExponentialTimePenaltyModel(BasePenaltyModel):
         return PenaltyModelType.exponential_penalty.value
 
     async def calculate_penalties(
-        self, responses: List[bt.Synapse], tasks: List[Task]
+        self,
+        responses: List[bt.Synapse],
+        tasks: List[Task],
+        additional_params=None,
     ) -> torch.FloatTensor:
 
         penalties = torch.zeros(len(responses), dtype=torch.float32)

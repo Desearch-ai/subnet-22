@@ -28,7 +28,10 @@ class TaskValidationPenaltyModel(BasePenaltyModel):
         return PenaltyModelType.task_validation_penalty.value
 
     async def calculate_penalties(
-        self, task: Task, responses: List[bt.Synapse]
+        self,
+        task: Task,
+        responses: List[bt.Synapse],
+        additional_params=None,
     ) -> torch.FloatTensor:
         completions = [response.completion for response in responses]
         accumulated_penalties: torch.FloatTensor = torch.zeros(

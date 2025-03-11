@@ -251,6 +251,12 @@ class Model(str, Enum):
     HORIZON = "HORIZON"
 
 
+class ContextualRelevance(Enum):
+    HIGH = "HIGH"  # Exact match, deep context understanding
+    MEDIUM = "MEDIUM"  # Partially relevant, missing some context
+    LOW = "LOW"  # Weak or loose connection to query
+
+
 class ScraperStreamingSynapse(StreamingSynapse):
     prompt: str = pydantic.Field(
         ...,
@@ -327,6 +333,11 @@ class ScraperStreamingSynapse(StreamingSynapse):
 
     validator_links: Optional[List[Dict]] = pydantic.Field(
         default_factory=list, title="Links", description="Fetched Links Data."
+    )
+
+    miner_link_scores: Optional[Dict[str, ContextualRelevance]] = pydantic.Field(
+        default_factory=dict,
+        title="Miner link scores",
     )
 
     miner_tweets: Optional[List[Dict[str, Any]]] = pydantic.Field(
