@@ -77,7 +77,10 @@ class AccuracyPenaltyModel(BasePenaltyModel):
         )
 
     async def calculate_penalties(
-        self, task: TwitterTask, responses: List[ScraperStreamingSynapse]
+        self,
+        task: TwitterTask,
+        responses: List[ScraperStreamingSynapse],
+        additional_params=None,
     ) -> torch.FloatTensor:
         """
         Calculates the penalties for each completion based on the absence of
