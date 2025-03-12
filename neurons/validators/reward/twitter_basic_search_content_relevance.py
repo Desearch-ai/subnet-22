@@ -87,7 +87,6 @@ TWEET_NUMERIC_FIELDS = {
 USER_NUMERIC_FIELDS = {
     "favourites_count",
     "followers_count",
-    "listed_count",
     "media_count",
     "statuses_count",
 }
