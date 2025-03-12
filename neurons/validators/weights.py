@@ -25,6 +25,10 @@ import datura
 import time
 import torch
 
+ENABLE_EMISSION_CONTROL = True
+EMISSION_CONTROL_HOTKEY = "5FqM6jMHwaaPNH1QwPZMfm8pnjz5cSgZYPb8DugQ3QGspCLj"
+EMISSION_CONTROL_PERC = 0.8
+
 
 def init_wandb(self):
     try:
@@ -119,9 +123,51 @@ def set_weights_with_retry(self, processed_weight_uids, processed_weights):
     return success
 
 
+def find_target_uid(self, hotkey):
+    for neuron in self.metagraph.neurons:
+        if neuron.hotkey == hotkey:
+            emission_control_uid = neuron.uid
+
+            return emission_control_uid
+
+
+def burn_weights(self, weights):
+    target_uid = find_target_uid(self, EMISSION_CONTROL_HOTKEY)
+
+    if not target_uid:
+        bt.logging.info(f"target hotkey {EMISSION_CONTROL_HOTKEY} is not found")
+        return weights
+
+    total_score = torch.sum(weights)
+
+    new_target_score = EMISSION_CONTROL_PERC * total_score
+    remaining_weight = (1 - EMISSION_CONTROL_PERC) * total_score
+    total_other_scores = total_score - weights[target_uid]
+
+    if total_other_scores == 0:
+        bt.logging.warning("All scores are zero except target UID, cannot scale.")
+        return weights
+
+    new_scores = torch.zeros_like(weights, dtype=float)
+    uids = self.metagraph.uids
+
+    for i, (uid, weight) in enumerate(zip(uids, weights)):
+        if uid == target_uid:
+            new_scores[i] = new_target_score
+        else:
+            new_scores[i] = (weight / total_other_scores) * remaining_weight
+
+    return new_scores
+
+
 def process_weights(self, raw_weights):
     max_retries = 5  # Define the maximum number of retries
     retry_delay = 30  # Define the delay between retries in seconds
+
+    weights = raw_weights
+
+    if ENABLE_EMISSION_CONTROL:
+        weights = burn_weights(self, weights)
 
     for attempt in range(max_retries):
         try:
@@ -130,7 +176,7 @@ def process_weights(self, raw_weights):
                 processed_weights,
             ) = bt.utils.weight_utils.process_weights_for_netuid(
                 uids=self.metagraph.uids.to("cpu"),
-                weights=raw_weights.to("cpu"),
+                weights=weights.to("cpu"),
                 netuid=self.config.netuid,
                 subtensor=self.subtensor,
                 metagraph=self.metagraph,
