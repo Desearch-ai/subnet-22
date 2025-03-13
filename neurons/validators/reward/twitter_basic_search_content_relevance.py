@@ -273,7 +273,10 @@ class TwitterBasicSearchContentRelevanceModel(BaseRewardModel):
 
             for tweet_dict in miner_data_list:
                 if "id" in tweet_dict:
-                    miner_map[tweet_dict["id"]] = tweet_dict
+                    if miner_map.get(tweet_dict["id"]):
+                        return 0.0
+                    else:
+                        miner_map[tweet_dict["id"]] = tweet_dict
 
             tweet_scores = []
 
