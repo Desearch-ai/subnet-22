@@ -115,7 +115,7 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
             bt.logging.error(message)
             raise Exception(message)
 
-        self.reward_llm = RewardLLM()
+        self.reward_llm = RewardLLM(self.neuron.config.neuron.scoring_model)
 
         self.reward_functions = [
             (
@@ -217,6 +217,7 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
                 result_type=result_type,
                 is_synthetic=is_synthetic,
                 system_message=system_message,
+                scoring_model=self.neuron.config.neuron.scoring_model,
             )
             for task in tasks
         ]
