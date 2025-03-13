@@ -257,7 +257,22 @@ class ContextualRelevance(Enum):
     LOW = "LOW"  # Weak or loose connection to query
 
 
+class ScoringModel(str, Enum):
+    OPENAI_GPT4_MINI = "openai/gpt-4-mini"
+    QWEN_QWEN2_5_CODER_32B_INSTRUCT = "Qwen/Qwen2.5-Coder-32B-Instruct"
+    UNSLOTH_MISTRAL_SMALL_24B_INSTRUCT_2501 = "unsloth/Mistral-Small-24B-Instruct-2501"
+    DEEPSEEK_AI_DEEPSEEK_R1_DISTILL_QWEN_32B = (
+        "deepseek-ai/DeepSeek-R1-Distill-Qwen-32B"
+    )
+
+
 class ScraperStreamingSynapse(StreamingSynapse):
+    scoring_model: ScoringModel = pydantic.Field(
+        ScoringModel.OPENAI_GPT4_MINI,
+        title="scoring model",
+        description="The llm model to score synapse result.",
+    )
+
     prompt: str = pydantic.Field(
         ...,
         title="Prompt",
