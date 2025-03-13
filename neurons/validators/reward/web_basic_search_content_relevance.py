@@ -209,7 +209,10 @@ class WebBasicSearchContentRelevanceModel(BaseRewardModel):
 
             for miner_item in miner_results:
                 if "link" in miner_item:
-                    miner_map[miner_item["link"]] = miner_item
+                    if miner_map.get(miner_item["link"]):
+                        return 0.0
+                    else:
+                        miner_map[miner_item["link"]] = miner_item
 
             scores = []
 
