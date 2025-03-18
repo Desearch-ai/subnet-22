@@ -5,6 +5,7 @@ import random
 from typing import List, Dict, Tuple
 import json
 import asyncio
+import html
 import bittensor as bt
 from .config import RewardModelType
 from .reward import BaseRewardModel, BaseRewardEvent
@@ -14,7 +15,7 @@ from datura.utils import is_valid_web_search_result
 from neurons.validators.apify.cheerio_scraper_actor import CheerioScraperActor
 from neurons.validators.apify.reddit_scraper_actor import RedditScraperActor
 
-APIFY_LINK_SCRAPE_AMOUNT = 2
+APIFY_LINK_SCRAPE_AMOUNT = 1
 
 
 class WebBasicSearchContentRelevanceModel(BaseRewardModel):
@@ -34,7 +35,7 @@ class WebBasicSearchContentRelevanceModel(BaseRewardModel):
         normalized_content = re.sub(
             r"\s+", " ", content.replace("\n", " ").replace("\r", " ").strip()
         )
-        return normalized_content.lower()
+        return html.unescape(normalized_content).lower()
 
     async def scrape_with_retries(
         self, urls, scraper_actor_class, group_size, max_attempts
