@@ -809,6 +809,71 @@ class WebSearchSynapse(Synapse):
         return self
 
 
+class PeopleSearchResult(BaseModel):
+    link: str
+    summary: str
+    criteria_summary: List[str]
+    full_name: str
+    avatar: str
+    title: str
+    extra_information: Optional[Dict[str, Any]]
+
+
+class PeopleSearchResultList(BaseModel):
+    data: List[PeopleSearchResult]
+
+
+class PeopleSearchSynapse(Synapse):
+    """A class to represent web search synapse"""
+
+    query: str = pydantic.Field(
+        "",
+        title="Query",
+        description="The query string to fetch results for. Example: 'Former investment bankers who transitioned into startup CFO roles'. Immutable.",
+        allow_mutation=False,
+    )
+
+    num: int = pydantic.Field(
+        10,
+        title="Number of Results",
+        description="The maximum number of results to fetch. Immutable.",
+        allow_mutation=False,
+    )
+
+    is_synthetic: Optional[bool] = pydantic.Field(
+        False,
+        title="Is Synthetic",
+        description="A boolean flag to indicate if the prompt is synthetic.",
+    )
+
+    max_execution_time: Optional[int] = pydantic.Field(
+        None,
+        title="Max Execution Time (timeout)",
+        description="Maximum time to execute concrete request",
+    )
+
+    criteria: Optional[List[str]] = pydantic.Field(
+        default_factory=list,
+        title="Search criteria",
+        description="Search criteria based on query.",
+    )
+
+    results: Optional[List[Dict[str, Any]]] = pydantic.Field(
+        default_factory=list,
+        title="Web",
+        description="Fetched Web Data.",
+    )
+
+    validator_results: Optional[List[PeopleSearchResult]] = pydantic.Field(
+        default_factory=list,
+        title="Validator Web",
+        description="Fetched validator Web Data.",
+    )
+
+    def deserialize(self) -> str:
+        return self
+
+
 class TwitterSearchSynapse(Synapse):
     """A class to represent Twitter Advanced Search Synapse"""
 
