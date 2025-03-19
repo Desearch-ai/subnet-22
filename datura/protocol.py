@@ -624,6 +624,16 @@ class ScraperStreamingSynapse(StreamingSynapse):
                             {"type": "hacker_news_search", "content": search_json}
                         )
 
+                    elif content_type == "miner_link_scores":
+                        miner_link_scores_json = json_data.get("content", {})
+                        self.miner_link_scores = miner_link_scores_json
+                        yield json.dumps(
+                            {
+                                "type": "miner_link_scores",
+                                "content": miner_link_scores_json,
+                            }
+                        )
+
         except json.JSONDecodeError as e:
             port = response.real_url.port
             host = response.real_url.host
