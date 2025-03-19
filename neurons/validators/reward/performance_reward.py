@@ -29,6 +29,7 @@ from datura.protocol import (
     TwitterSearchSynapse,
     TwitterIDSearchSynapse,
     TwitterURLsSearchSynapse,
+    WebSearchSynapse,
 )
 from neurons.validators.constants import STEEPNESS, FACTOR
 
@@ -120,6 +121,7 @@ class PerformanceRewardModel(BaseRewardModel):
                     TwitterSearchSynapse,
                     TwitterIDSearchSynapse,
                     TwitterURLsSearchSynapse,
+                    WebSearchSynapse,
                 ),
             ):
                 axon_times = self.get_global_response_times(uids, responses)

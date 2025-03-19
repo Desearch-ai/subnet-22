@@ -32,5 +32,7 @@ class BaseToolkit(BaseModel):
         pass
 
     @abstractmethod
-    async def summarize(self, prompt, model, data) -> Tuple[Any, ScraperTextRole]:
+    async def summarize(
+        self, prompt, model, data, system_message
+    ) -> Tuple[Any, ScraperTextRole]:
         pass

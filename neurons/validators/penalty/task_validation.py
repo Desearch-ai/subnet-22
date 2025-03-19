@@ -21,13 +21,17 @@ from neurons.validators.utils.tasks import Task
 from neurons.validators.penalty.penalty import BasePenaltyModel, PenaltyModelType
 import bittensor as bt
 
+
 class TaskValidationPenaltyModel(BasePenaltyModel):
     @property
     def name(self) -> str:
         return PenaltyModelType.task_validation_penalty.value
 
-    def calculate_penalties(
-        self, task: Task,  responses: List[bt.Synapse]
+    async def calculate_penalties(
+        self,
+        task: Task,
+        responses: List[bt.Synapse],
+        additional_params=None,
     ) -> torch.FloatTensor:
         completions = [response.completion for response in responses]
         accumulated_penalties: torch.FloatTensor = torch.zeros(

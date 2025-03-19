@@ -9,19 +9,23 @@ import bittensor as bt
 import time
 import sys
 from datura.protocol import IsAlive
+from datura.bittensor.dendrite import Dendrite
+from datura.bittensor.subtensor import Subtensor
+from datura.bittensor.wallet import Wallet
 from neurons.validators.advanced_scraper_validator import AdvancedScraperValidator
 from neurons.validators.basic_scraper_validator import BasicScraperValidator
-from config import add_args, check_config, config
-from weights import init_wandb, set_weights, get_weights
+from neurons.validators.basic_web_scraper_validator import BasicWebScraperValidator
+from neurons.validators.config import add_args, check_config, config
+from neurons.validators.weights import init_wandb, set_weights, get_weights
 from traceback import print_exception
-from base_validator import AbstractNeuron
+from neurons.validators.base_validator import AbstractNeuron
 from datura import QUERY_MINERS
 from datura.misc import ttl_get_block
 from datura.utils import (
     resync_metagraph,
     save_logs_in_chunks,
-    save_logs_in_chunks_for_basic,
 )
+from datura.redis.utils import load_moving_averaged_scores, save_moving_averaged_scores
 from neurons.validators.proxy.uid_manager import UIDManager
 
 
@@ -47,6 +51,7 @@ class Neuron(AbstractNeuron):
 
     advanced_scraper_validator: "AdvancedScraperValidator"
     basic_scraper_validator: "BasicScraperValidator"
+    basic_web_scraper_validator: "BasicWebScraperValidator"
     moving_average_scores: torch.Tensor = None
     uid: int = None
     shutdown_event: asyncio.Event()
@@ -70,15 +75,18 @@ class Neuron(AbstractNeuron):
 
         self.advanced_scraper_validator = AdvancedScraperValidator(neuron=self)
         self.basic_scraper_validator = BasicScraperValidator(neuron=self)
+        self.basic_web_scraper_validator = BasicWebScraperValidator(neuron=self)
         bt.logging.info("initialized_validators")
 
         self.step = 0
         self.check_registered()
 
+        self.organic_responses_computed = False
+
         # Init Weights.
         bt.logging.debug("loading", "moving_averaged_scores")
-        self.moving_averaged_scores = torch.zeros((self.metagraph.n)).to(
-            self.config.neuron.device
+        self.moving_averaged_scores = load_moving_averaged_scores(
+            self.metagraph, self.config
         )
         bt.logging.debug(str(self.moving_averaged_scores))
         self.available_uids = []
@@ -94,14 +102,25 @@ class Neuron(AbstractNeuron):
         bt.logging.info(
             f"Running validator for subnet: {self.config.netuid} on network: {self.config.subtensor.chain_endpoint}"
         )
-        self.wallet = bt.wallet(config=self.config)
-        self.subtensor = bt.subtensor(config=self.config)
-        self.metagraph = self.subtensor.metagraph(self.config.netuid)
-        self.hotkeys = copy.deepcopy(self.metagraph.hotkeys)
-        self.dendrite = bt.dendrite(wallet=self.wallet)
-        self.dendrite1 = bt.dendrite(wallet=self.wallet)
-        self.dendrite2 = bt.dendrite(wallet=self.wallet)
-        self.dendrite3 = bt.dendrite(wallet=self.wallet)
+        if self.config.neuron.offline:
+            self.wallet = Wallet(config=self.config)
+            self.subtensor = Subtensor(config=self.config)
+            self.metagraph = self.subtensor.metagraph(self.config.netuid)
+            self.hotkeys = copy.deepcopy(self.metagraph.hotkeys)
+            self.dendrite = Dendrite(wallet=self.wallet)
+            self.dendrite1 = Dendrite(wallet=self.wallet)
+            self.dendrite2 = Dendrite(wallet=self.wallet)
+            self.dendrite3 = Dendrite(wallet=self.wallet)
+        else:
+            self.wallet = bt.wallet(config=self.config)
+            self.subtensor = bt.subtensor(config=self.config)
+            self.metagraph = self.subtensor.metagraph(self.config.netuid)
+            self.hotkeys = copy.deepcopy(self.metagraph.hotkeys)
+            self.dendrite = bt.dendrite(wallet=self.wallet)
+            self.dendrite1 = bt.dendrite(wallet=self.wallet)
+            self.dendrite2 = bt.dendrite(wallet=self.wallet)
+            self.dendrite3 = bt.dendrite(wallet=self.wallet)
+
         self.uid = self.metagraph.hotkeys.index(self.wallet.hotkey.ss58_address)
         if self.wallet.hotkey.ss58_address not in self.metagraph.hotkeys:
             bt.logging.error(
@@ -323,6 +342,7 @@ class Neuron(AbstractNeuron):
             self.moving_averaged_scores = alpha * scattered_rewards + (
                 1 - alpha
             ) * self.moving_averaged_scores.to(self.config.neuron.device)
+            save_moving_averaged_scores(self.moving_averaged_scores)
             bt.logging.info(
                 f"Moving averaged scores: {torch.mean(self.moving_averaged_scores):.6f}"
             )  # Rounds to 6 decimal places for logging
@@ -474,6 +494,58 @@ class Neuron(AbstractNeuron):
         ):
             pass
 
+    async def compute_organic_responses(self):
+        specified_uids = self.advanced_scraper_validator.get_uids_with_no_history(
+            self.available_uids
+        )
+        if specified_uids:
+            bt.logging.info(
+                f"Running advanced synthetic queries with specified uids: {specified_uids}"
+            )
+            await self.advanced_scraper_validator.query_and_score(
+                strategy=QUERY_MINERS.ALL, specified_uids=specified_uids
+            )
+
+        await self.advanced_scraper_validator.compute_rewards_and_penalties(
+            **self.advanced_scraper_validator.get_random_organic_responses(),
+            start_time=time.time(),
+        )
+
+    async def compute_basic_organic_responses(self):
+        specified_uids = self.basic_scraper_validator.get_uids_with_no_history(
+            self.available_uids
+        )
+
+        if specified_uids:
+            bt.logging.info(
+                f"Running basic synthetic queries with specified uids: {specified_uids}"
+            )
+            await self.basic_scraper_validator.query_and_score_twitter_basic(
+                strategy=QUERY_MINERS.ALL, specified_uids=specified_uids
+            )
+
+        await self.basic_scraper_validator.compute_rewards_and_penalties(
+            **self.basic_scraper_validator.get_random_organic_responses(),
+            start_time=time.time(),
+        )
+
+    async def compute_web_basic_organic_responses(self):
+        specified_uids = self.basic_web_scraper_validator.get_uids_with_no_history(
+            self.available_uids
+        )
+        if specified_uids:
+            bt.logging.info(
+                f"Running basic web synthetic queries with specified uids: {specified_uids}"
+            )
+            await self.basic_web_scraper_validator.query_and_score_web_basic(
+                strategy=QUERY_MINERS.ALL, specified_uids=specified_uids
+            )
+
+        await self.basic_web_scraper_validator.compute_rewards_and_penalties(
+            **self.basic_web_scraper_validator.get_random_organic_responses(),
+            start_time=time.time(),
+        )
+
     def blocks_until_next_epoch(self):
         current_block = self.subtensor.get_current_block()
         tempo = self.subtensor.tempo(self.config.netuid, current_block)
@@ -507,6 +579,26 @@ class Neuron(AbstractNeuron):
                         f"Weight setting execution time: {weight_set_end_time - weight_set_start_time:.2f} seconds"
                     )
                     await asyncio.sleep(300)
+
+                if self.config.neuron.synthetic_disabled:
+                    if blocks_left <= 100:
+                        if not self.organic_responses_computed:
+                            bt.logging.info("Computing organic responses")
+                            tasks = [
+                                self.compute_basic_organic_responses,
+                                self.compute_organic_responses,
+                                self.compute_web_basic_organic_responses,
+                            ]
+                            self.loop.create_task(random.choice(tasks)())
+
+                            self.organic_responses_computed = True
+                        else:
+                            bt.logging.info(
+                                "Skipping compute organic responses: Already executed."
+                            )
+                    else:
+                        self.organic_responses_computed = False
+
             except Exception as e:
                 bt.logging.error(f"Error in validator sync: {e}")
 
@@ -604,21 +696,22 @@ class Neuron(AbstractNeuron):
                         bt.logging.error(f"Error during task execution: {e}")
                         await asyncio.sleep(interval)  # Wait before retrying
 
-            if self.config.neuron.run_random_miner_syn_qs_interval > 0:
-                self.loop.create_task(
-                    run_with_interval(
-                        self.config.neuron.run_all_miner_syn_qs_interval,
-                        QUERY_MINERS.RANDOM,
+            if not self.config.neuron.synthetic_disabled:
+                if self.config.neuron.run_random_miner_syn_qs_interval > 0:
+                    self.loop.create_task(
+                        run_with_interval(
+                            self.config.neuron.run_all_miner_syn_qs_interval,
+                            QUERY_MINERS.RANDOM,
+                        )
                     )
-                )
 
-            if self.config.neuron.run_all_miner_syn_qs_interval > 0:
-                self.loop.create_task(
-                    run_with_interval(
-                        self.config.neuron.run_all_miner_syn_qs_interval,
-                        QUERY_MINERS.ALL,
+                if self.config.neuron.run_all_miner_syn_qs_interval > 0:
+                    self.loop.create_task(
+                        run_with_interval(
+                            self.config.neuron.run_all_miner_syn_qs_interval,
+                            QUERY_MINERS.ALL,
+                        )
                     )
-                )
             # If someone intentionally stops the validator, it'll safely terminate operations.
 
             three_hours_in_seconds = 10800

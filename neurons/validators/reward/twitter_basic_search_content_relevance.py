@@ -19,7 +19,7 @@
 import traceback
 import time
 import random
-from typing import List, Optional
+from typing import List, Optional, Dict, Any, Tuple
 import json
 from datetime import datetime
 import pytz
@@ -39,7 +39,7 @@ from datura.utils import (
     scrape_tweets_with_retries,
 )
 
-APIFY_LINK_SCRAPE_AMOUNT = 2
+APIFY_LINK_SCRAPE_AMOUNT = 1
 
 # Only a percentage-based threshold:
 INT_DIFF_PERCENT = 0.60  # 60% difference allowed
@@ -51,6 +51,12 @@ TWEET_EXACT_MATCH_FIELDS = {
     "created_at",
     "is_quote_tweet",
     "is_retweet",
+    "conversation_id",
+    "in_reply_to_screen_name",
+    "in_reply_to_status_id",
+    "in_reply_to_user_id",
+    "quoted_status_id",
+    "lang",
 }
 
 USER_EXACT_FIELDS = {
@@ -61,7 +67,13 @@ USER_EXACT_FIELDS = {
     "created_at",
     "description",
     "profile_image_url",
+    "profile_banner_url",
     "verified",
+    "can_dm",
+    "can_media_tag",
+    "location",
+    "pinned_tweet_ids",
+    "is_blue_verified",
 }
 
 TWEET_NUMERIC_FIELDS = {
@@ -78,6 +90,10 @@ USER_NUMERIC_FIELDS = {
     "media_count",
     "statuses_count",
 }
+
+TWEET_NESTED_FIELDS = {"quote", "entities", "extended_entities"}
+
+USER_NESTED_FIELDS = {"entities"}
 
 
 class TwitterBasicSearchContentRelevanceModel(BaseRewardModel):
@@ -160,6 +176,9 @@ class TwitterBasicSearchContentRelevanceModel(BaseRewardModel):
         is within the specified percentage threshold of the validator_value.
         """
 
+        if val1 is None and val2 is None:
+            return True
+
         if val1 is None or val2 is None:
             return False
 
@@ -174,6 +193,56 @@ class TwitterBasicSearchContentRelevanceModel(BaseRewardModel):
             )
 
         return is_allowed
+
+    def compare_nested_fields(
+        self,
+        val1: Optional[Dict[str, Any]],
+        val2: Optional[Dict[str, Any]],
+        path: Optional[str] = "",
+    ) -> Tuple[str, Any, Any]:
+        """
+        Returns True if all the nested fields within the values are equal.
+        """
+
+        if val1 is None and val2 is None:
+            return "", None, None
+
+        if val1 is None or val2 is None:
+            return path, val1, val2
+
+        if isinstance(val1, dict) and isinstance(val2, dict):
+            for key in set(val1) | set(val2):
+                _path, _val1, _val2 = self.compare_nested_fields(
+                    val1.get(key), val2.get(key), f"{path}.{key}"
+                )
+                if _path:
+                    return _path, _val1, _val2
+
+            return "", None, None
+
+        if isinstance(val1, list) and isinstance(val2, list):
+            if len(val1) != len(val2):
+                return path, val1, val2
+
+            for i, (x, y) in enumerate(zip(val1, val2)):
+                _path, _val1, _val2 = self.compare_nested_fields(x, y, f"{path}[{i}]")
+                if _path:
+                    return _path, _val1, _val2
+
+            return "", None, None
+
+        if isinstance(val1, tuple) and isinstance(val2, tuple):
+            if len(val1) != len(val2):
+                return path, val1, val2
+
+            for i, (x, y) in enumerate(zip(val1, val2)):
+                _path, _val1, _val2 = self.compare_nested_fields(x, y, f"{path}[{i}]")
+                if _path:
+                    return _path, _val1, _val2
+
+            return "", None, None
+
+        return ("", None, None) if val1 == val2 else (path, val1, val2)
 
     def compare_media(self, media1: List[dict], media2: List[dict]) -> bool:
         if len(media1) != len(media2):
@@ -204,7 +273,10 @@ class TwitterBasicSearchContentRelevanceModel(BaseRewardModel):
 
             for tweet_dict in miner_data_list:
                 if "id" in tweet_dict:
-                    miner_map[tweet_dict["id"]] = tweet_dict
+                    if miner_map.get(tweet_dict["id"]):
+                        return 0.0
+                    else:
+                        miner_map[tweet_dict["id"]] = tweet_dict
 
             tweet_scores = []
 
@@ -339,14 +411,29 @@ class TwitterBasicSearchContentRelevanceModel(BaseRewardModel):
                             tweet_scores.append(0)
                             continue
 
+                    if response.lang is not None:
+                        if response.lang != val_tweet.lang:
+                            tweet_scores.append(0)
+                            continue
+
+                    if response.blue_verified is not None:
+                        if response.blue_verified != val_tweet.user.is_blue_verified:
+                            tweet_scores.append(0)
+                            continue
+
                 val_tweet_dict = val_tweet.model_dump()
 
+                loop_terminated = False
                 # # Compare tweet basic fields
-                if any(
-                    miner_tweet.get(f) != val_tweet_dict.get(f)
-                    for f in TWEET_EXACT_MATCH_FIELDS
-                ):
-                    tweet_scores.append(0)
+                for f in TWEET_EXACT_MATCH_FIELDS:
+                    if miner_tweet.get(f) != val_tweet_dict.get(f):
+                        tweet_scores.append(0)
+                        bt.logging.debug(
+                            f"Field mismatch: {f} => {miner_tweet.get(f)} vs {val_tweet_dict.get(f)}"
+                        )
+                        loop_terminated = True
+                        break
+                if loop_terminated:
                     continue
 
                 if not self.compare_content(
@@ -356,13 +443,32 @@ class TwitterBasicSearchContentRelevanceModel(BaseRewardModel):
                     continue
 
                 # Compare numeric fields
-                if any(
-                    not self.compare_numeric(
+                for f in TWEET_NUMERIC_FIELDS:
+                    if not self.compare_numeric(
                         f, miner_tweet.get(f), val_tweet_dict.get(f)
+                    ):
+                        tweet_scores.append(0)
+                        bt.logging.debug(
+                            f"Field mismatch: {f} => {miner_tweet.get(f)} vs {val_tweet_dict.get(f)}"
+                        )
+                        loop_terminated = True
+                        break
+                if loop_terminated:
+                    continue
+
+                # Compare nested fields
+                for f in TWEET_NESTED_FIELDS:
+                    path, val1, val2 = self.compare_nested_fields(
+                        miner_tweet.get(f), val_tweet_dict.get(f)
                     )
-                    for f in TWEET_NUMERIC_FIELDS
-                ):
-                    tweet_scores.append(0)
+                    if path:
+                        tweet_scores.append(0)
+                        bt.logging.debug(
+                            f"Field mismatch: {f}{path} => {val1} vs {val2}"
+                        )
+                        loop_terminated = True
+                        break
+                if loop_terminated:
                     continue
 
                 # Compare media
@@ -375,15 +481,40 @@ class TwitterBasicSearchContentRelevanceModel(BaseRewardModel):
                 miner_user = miner_tweet.get("user")
                 val_user = val_tweet_dict.get("user")
 
-                if any(miner_user.get(f) != val_user.get(f) for f in USER_EXACT_FIELDS):
-                    tweet_scores.append(0)
+                for f in USER_EXACT_FIELDS:
+                    if miner_user.get(f) != val_user.get(f):
+                        tweet_scores.append(0)
+                        bt.logging.debug(
+                            f"User field mismatch: {f} => {miner_user.get(f)} vs {val_user.get(f)}"
+                        )
+                        loop_terminated = True
+                        break
+                if loop_terminated:
                     continue
 
-                if any(
-                    not self.compare_numeric(f, miner_user.get(f), val_user.get(f))
-                    for f in USER_NUMERIC_FIELDS
-                ):
-                    tweet_scores.append(0)
+                for f in USER_NUMERIC_FIELDS:
+                    if not self.compare_numeric(f, miner_user.get(f), val_user.get(f)):
+                        tweet_scores.append(0)
+                        bt.logging.debug(
+                            f"User field mismatch: {f} => {miner_user.get(f)} vs {val_user.get(f)}"
+                        )
+                        loop_terminated = True
+                        break
+                if loop_terminated:
+                    continue
+
+                for f in USER_NESTED_FIELDS:
+                    path, val1, val2 = self.compare_nested_fields(
+                        miner_user.get(f), val_user.get(f)
+                    )
+                    if path:
+                        tweet_scores.append(0)
+                        bt.logging.debug(
+                            f"User field mismatch: {f}{path} => {val1} vs {val2}"
+                        )
+                        loop_terminated = True
+                        break
+                if loop_terminated:
                     continue
 
                 # All checks passed => score = 1
@@ -398,7 +529,7 @@ class TwitterBasicSearchContentRelevanceModel(BaseRewardModel):
 
     async def get_rewards(
         self, responses: List[TwitterSearchSynapse], uids: List[int]
-    ) -> List[BaseRewardEvent]:
+    ) -> Tuple[List[BaseRewardEvent], Dict[int, float]]:
         try:
             # Step 1: fetch and fill validator_tweets
             _ = await self.process_tweets(responses=responses)

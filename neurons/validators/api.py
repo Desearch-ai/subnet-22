@@ -3,18 +3,17 @@ import os
 os.environ["USE_TORCH"] = "1"
 
 from typing import Optional, Annotated, List, Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, conint
 from fastapi.responses import StreamingResponse
 from fastapi import FastAPI, HTTPException, Header, Query, Path
 from neurons.validators.env import PORT, EXPECTED_ACCESS_KEY
 from datura import __version__
-from datura.dataset.tool_return import ResponseOrder
 from datura.dataset.date_filters import DateFilterType
 from datura.protocol import Model, TwitterScraperTweet, WebSearchResultList, ResultType
 import uvicorn
 import bittensor as bt
 import traceback
-from validator import Neuron
+from neurons.validators.validator import Neuron
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
 from contextlib import asynccontextmanager
@@ -70,10 +69,6 @@ class SearchRequest(BaseModel):
     tools: List[str] = Field(
         ..., description="List of tools to search with", example=available_tools
     )
-    response_order: Optional[ResponseOrder] = Field(
-        default=ResponseOrder.LINKS_FIRST,
-        description=f"Order of the search results. {format_enum_values(ResponseOrder)}",
-    )
     date_filter: Optional[DateFilterType] = Field(
         default=DateFilterType.PAST_WEEK,
         description=f"Date filter for the search results.{format_enum_values(DateFilterType)}",
@@ -83,6 +78,17 @@ class SearchRequest(BaseModel):
         default=Model.NOVA,
         description=f"Model to use for scraping. {format_enum_values(Model)}",
         example=Model.NOVA.value,
+    )
+    result_type: Optional[ResultType] = Field(
+        default=ResultType.LINKS_WITH_SUMMARIES,
+        description=f"Type of result. {format_enum_values(ResultType)}",
+        example=ResultType.LINKS_WITH_SUMMARIES.value,
+    )
+
+    system_message: Optional[str] = Field(
+        default=None,
+        description="Rules influencing how summaries are generated",
+        example="Summarize the content by categorizing key points into 'Pros' and 'Cons' sections.",
     )
 
 
@@ -128,12 +134,14 @@ async def response_stream_event(data: SearchRequest):
             "content": data.prompt,
             "tools": data.tools,
             "date_filter": data.date_filter.value,
-            "response_order": data.response_order,
+            "system_message": data.system_message,
         }
 
         merged_chunks = ""
 
-        async for response in neu.advanced_scraper_validator.organic(query, data.model):
+        async for response in neu.advanced_scraper_validator.organic(
+            query, data.model, result_type=data.result_type
+        ):
             # Decode the chunk if necessary and merge
             chunk = str(response)  # Assuming response is already a string
             merged_chunks += chunk
@@ -325,6 +333,7 @@ class TwitterSearchRequest(BaseModel):
     min_retweets: Optional[int] = None
     min_replies: Optional[int] = None
     min_likes: Optional[int] = None
+    count: Optional[conint(le=100)] = 20
 
 
 @app.post(
@@ -455,7 +464,7 @@ async def web_search_endpoint(
     query: str = Query(
         ..., description="The search query string, e.g., 'latest news on AI'."
     ),
-    num: int = Query(10, description="The maximum number of results to fetch."),
+    num: int = Query(10, le=100, description="The maximum number of results to fetch."),
     start: int = Query(
         0, description="The number of results to skip (used for pagination)."
     ),
@@ -482,20 +491,33 @@ async def web_search_endpoint(
             f"Performing web search with query: '{query}', num: {num}, start: {start}"
         )
 
-        result = await neu.advanced_scraper_validator.web_search(
-            query=query,
-            num=num,
-            start=start,
-        )
+        # Collect all yielded synapses from organic
+        final_synapses = []
 
-        return {"data": result}
+        async for synapse in neu.basic_web_scraper_validator.organic(
+            query={"query": query, "num": num, "start": start}
+        ):
+            final_synapses.append(synapse)
+
+        # Transform final synapses into a flattened list of links
+        results = []
+
+        for syn in final_synapses:
+            # Each synapse (if successful) should have a 'results' field of WebSearchResult
+            if hasattr(syn, "results") and isinstance(syn.results, list):
+                results.extend(syn.results)
+
+        return {"data": results}
     except Exception as e:
         bt.logging.error(f"Error in web search: {e}")
         raise HTTPException(status_code=500, detail=f"An error occurred: {str(e)}")
 
 
 @app.get("/")
-async def health_check():
+async def health_check(access_key: Annotated[str | None, Header()] = None):
+    if access_key != EXPECTED_ACCESS_KEY:
+        raise HTTPException(status_code=401, detail="Invalid access key")
+
     return {"status": "healthy", "version": __version__}
 
 

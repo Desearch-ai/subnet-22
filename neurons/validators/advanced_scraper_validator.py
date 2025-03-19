@@ -5,11 +5,10 @@ import time
 from typing import List, Optional
 import bittensor as bt
 from datura.stream import collect_final_synapses
-from reward import RewardModelType, RewardScoringType
-from utils.mock import MockRewardModel
+from neurons.validators.reward import RewardModelType, RewardScoringType
+from neurons.validators.utils.mock import MockRewardModel
 
 from datura.dataset import QuestionsDataset
-from datura.dataset.tool_return import ResponseOrder
 from datura.dataset.date_filters import (
     get_random_date_filter,
     get_specified_date_filter,
@@ -32,10 +31,15 @@ from neurons.validators.utils.tasks import TwitterTask
 from neurons.validators.organic_query_state import OrganicQueryState
 from neurons.validators.penalty.streaming_penalty import StreamingPenaltyModel
 from neurons.validators.penalty.exponential_penalty import ExponentialTimePenaltyModel
+from neurons.validators.penalty.summary_rule_penalty import SummaryRulePenaltyModel
+from neurons.validators.penalty.miner_score_penalty import MinerScorePenaltyModel
+from neurons.validators.organic_history_mixin import OrganicHistoryMixin
 
 
-class AdvancedScraperValidator:
+class AdvancedScraperValidator(OrganicHistoryMixin):
     def __init__(self, neuron: AbstractNeuron):
+        super().__init__()
+
         self.neuron = neuron
         self.timeout = 180
         self.execution_time_options = [Model.NOVA, Model.ORBIT, Model.HORIZON]
@@ -111,7 +115,7 @@ class AdvancedScraperValidator:
             bt.logging.error(message)
             raise Exception(message)
 
-        self.reward_llm = RewardLLM()
+        self.reward_llm = RewardLLM(self.neuron.config.neuron.scoring_model)
 
         self.reward_functions = [
             (
@@ -153,6 +157,8 @@ class AdvancedScraperValidator:
         self.penalty_functions = [
             StreamingPenaltyModel(max_penalty=1),
             ExponentialTimePenaltyModel(max_penalty=1),
+            SummaryRulePenaltyModel(max_penalty=1),
+            MinerScorePenaltyModel(max_penalty=1),
         ]
 
     def get_random_execution_time(self):
@@ -171,10 +177,10 @@ class AdvancedScraperValidator:
         language="en",
         region="us",
         google_date_filter="qdr:w",
-        response_order=ResponseOrder.SUMMARY_FIRST,
         model: Optional[Model] = Model.NOVA,
         result_type: Optional[ResultType] = ResultType.LINKS_WITH_SUMMARIES,
         is_synthetic=False,
+        system_message: Optional[str] = None,
     ):
         max_execution_time = get_max_execution_time(model)
 
@@ -207,10 +213,11 @@ class AdvancedScraperValidator:
                 language=language,
                 region=region,
                 google_date_filter=google_date_filter,
-                response_order=response_order.value,
                 max_execution_time=max_execution_time,
                 result_type=result_type,
                 is_synthetic=is_synthetic,
+                system_message=system_message,
+                scoring_model=self.neuron.config.neuron.scoring_model,
             )
             for task in tasks
         ]
@@ -320,9 +327,19 @@ class AdvancedScraperValidator:
                     f"Applied reward function: {reward_fn_i.name} in {execution_time / 60:.2f} minutes"
                 )
 
+            val_scores = []
+            for val_score_responses, reward_function in zip(
+                val_score_responses_list, self.reward_functions
+            ):
+                if reward_function.name in [
+                    RewardModelType.twitter_content_relevance.value,
+                    RewardModelType.search_content_relevance.value,
+                ]:
+                    val_scores.append(val_score_responses)
+
             for penalty_fn_i in self.penalty_functions:
                 raw_penalty_i, adjusted_penalty_i, applied_penalty_i = (
-                    penalty_fn_i.apply_penalties(responses, tasks)
+                    await penalty_fn_i.apply_penalties(responses, tasks, val_scores)
                 )
                 penalty_start_time = time.time()
                 rewards *= applied_penalty_i.to(self.neuron.config.neuron.device)
@@ -448,7 +465,7 @@ class AdvancedScraperValidator:
 
         bt.logging.debug("Run Task event:", event)
 
-    async def query_and_score(self, strategy):
+    async def query_and_score(self, strategy, specified_uids=None):
         try:
 
             if not len(self.neuron.available_uids):
@@ -461,8 +478,20 @@ class AdvancedScraperValidator:
             prompts = await asyncio.gather(
                 *[
                     dataset.generate_new_question_with_openai(tools)
-                    for _ in range(len(self.neuron.available_uids))
+                    for _ in range(
+                        len(
+                            specified_uids
+                            if specified_uids
+                            else self.neuron.available_uids
+                        )
+                    )
                 ]
+            )
+
+            system_message = (
+                (await dataset.generate_user_system_message_with_openai())
+                if random.choice([True, False])
+                else ""
             )
 
             tasks = [
@@ -493,20 +522,27 @@ class AdvancedScraperValidator:
                 google_date_filter=self.date_filter,
                 model=random_model,
                 is_synthetic=True,
+                specified_uids=specified_uids,
+                system_message=system_message,
             )
 
             final_synapses = await collect_final_synapses(
                 async_responses, uids, start_time, max_execution_time
             )
 
-            await self.compute_rewards_and_penalties(
-                event=event,
-                tasks=tasks,
-                responses=final_synapses,
-                uids=uids,
-                start_time=start_time,
-                is_synthetic=True,
-            )
+            if self.neuron.config.neuron.synthetic_disabled:
+                self._save_organic_response(
+                    uids, final_synapses, tasks, event, start_time
+                )
+            else:
+                await self.compute_rewards_and_penalties(
+                    event=event,
+                    tasks=tasks,
+                    responses=final_synapses,
+                    uids=uids,
+                    start_time=start_time,
+                    is_synthetic=True,
+                )
         except Exception as e:
             bt.logging.error(f"Error in query_and_score: {e}")
             raise e
@@ -534,7 +570,7 @@ class AdvancedScraperValidator:
             prompt = query["content"]
             tools = query.get("tools", [])
             date_filter = query.get("date_filter", DateFilterType.PAST_WEEK.value)
-            response_order = query.get("response_order", ResponseOrder.LINKS_FIRST)
+            system_message = query.get("system_message")
 
             if isinstance(date_filter, str):
                 date_filter_type = DateFilterType(date_filter)
@@ -559,9 +595,9 @@ class AdvancedScraperValidator:
                 date_filter=date_filter,
                 google_date_filter=self.date_filter,
                 specified_uids=specified_uids,
-                response_order=response_order,
                 model=model,
                 result_type=result_type,
+                system_message=system_message,
             )
 
             final_synapses = []
@@ -590,18 +626,28 @@ class AdvancedScraperValidator:
                     final_synapses.append(random_synapse)
                     uids = torch.cat([uids, torch.tensor([random_uid])])
 
-                _, _, _, _, original_rewards = await self.compute_rewards_and_penalties(
-                    event=event,
-                    tasks=tasks,
-                    responses=final_synapses,
-                    uids=uids,
-                    start_time=start_time,
-                    is_synthetic=False,
-                )
+                if not self.neuron.config.neuron.synthetic_disabled:
+                    _, _, _, _, original_rewards = (
+                        await self.compute_rewards_and_penalties(
+                            event=event,
+                            tasks=tasks,
+                            responses=final_synapses,
+                            uids=uids,
+                            start_time=start_time,
+                            is_synthetic=False,
+                        )
+                    )
 
-                if not is_interval_query:
-                    self.organic_query_state.save_organic_queries(
-                        final_synapses, uids, original_rewards
+                    if not is_interval_query:
+                        self.organic_query_state.save_organic_queries(
+                            final_synapses, uids, original_rewards
+                        )
+                if (
+                    self.neuron.config.neuron.synthetic_disabled
+                    and not is_interval_query
+                ):
+                    self._save_organic_response(
+                        uids, final_synapses, tasks, event, start_time
                     )
 
             asyncio.create_task(process_and_score_responses(uids))

@@ -56,8 +56,8 @@ class RedditScraperActor:
                 result.append(
                     {
                         "title": web_title,
-                        "description": description,
-                        "url": url,
+                        "snippet": description,
+                        "link": url,
                     }
                 )
 

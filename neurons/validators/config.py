@@ -21,8 +21,9 @@ import torch
 import argparse
 import bittensor as bt
 from loguru import logger
-from reward import DefaultRewardFrameworkConfig
+from neurons.validators.reward import DefaultRewardFrameworkConfig
 from distutils.util import strtobool
+from datura.protocol import ScoringModel
 
 
 def str2bool(v):
@@ -196,6 +197,27 @@ def add_args(cls, parser):
         action="store_true",
         help="Disables setting weights.",
         default=False,
+    )
+
+    parser.add_argument(
+        "--neuron.synthetic_disabled",
+        action="store_true",
+        help="Disables synthetic queries.",
+        default=False,
+    )
+
+    parser.add_argument(
+        "--neuron.offline",
+        action="store_true",
+        help="Run validator in offline mode",
+        default=False,
+    )
+
+    parser.add_argument(
+        "--neuron.scoring_model",
+        type=ScoringModel,
+        help="Name of llm model used for scoring.",
+        default=ScoringModel.OPENAI_GPT4_MINI,
     )
 
     # parser.add_argument(

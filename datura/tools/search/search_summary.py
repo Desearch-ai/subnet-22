@@ -1,28 +1,17 @@
 from openai import AsyncOpenAI
-from datura.dataset.tool_return import ResponseOrder
 from datura.protocol import ScraperTextRole
 
 client = AsyncOpenAI(timeout=60.0)
 
 
-def system_message(response_order: ResponseOrder):
-    output_example = ""
-    if response_order == ResponseOrder.LINKS_FIRST:
-        output_example = """
-            Key Sources:
-                - [Title and explanation.](https://bbc.com/aw/456)
-                - [Title and explanation.](https://bbc.com/w2/123)
-            Search Summary:
-             Georgia, as a country, hosts a diverse range of sports events catering to various interests. Popular sports in Georgia include football, basketball, rugby union, wrestling, judo, and weightlifting. The sports industry in Georgia is thriving, with a growing interest in modern sports like rugby union, weightlifting, basketball, judo, and football. The country offers a wide array of sporting activities from traditional sports like polo to modern events like football matches, showcasing a rich sporting culture.
-        """
-    else:
-        output_example = """
-            Search Summary:
-             Georgia, as a country, hosts a diverse range of sports events catering to various interests. Popular sports in Georgia include football, basketball, rugby union, wrestling, judo, and weightlifting. The sports industry in Georgia is thriving, with a growing interest in modern sports like rugby union, weightlifting, basketball, judo, and football. The country offers a wide array of sporting activities from traditional sports like polo to modern events like football matches, showcasing a rich sporting culture.
-            Key Sources:
-                - [Title and explanation.](https://bbc.com/aw/456)
-                - [Title and explanation.](https://bbc.com/w2/123)
-        """
+def system_message(user_system_message):
+    output_example = """
+        Key Sources:
+            - [Title and explanation.](https://bbc.com/aw/456)
+            - [Title and explanation.](https://bbc.com/w2/123)
+        Search Summary:
+            Georgia, as a country, hosts a diverse range of sports events catering to various interests. Popular sports in Georgia include football, basketball, rugby union, wrestling, judo, and weightlifting. The sports industry in Georgia is thriving, with a growing interest in modern sports like rugby union, weightlifting, basketball, judo, and football. The country offers a wide array of sporting activities from traditional sports like polo to modern events like football matches, showcasing a rich sporting culture.
+    """
 
     return f"""
     As search data analyst, your task is to provide users with a clear and concise summary derived from the given search data and the user's query.
@@ -36,6 +25,10 @@ def system_message(response_order: ResponseOrder):
     {output_example}
     </OutputExample>
 
+    <SearchSummaryRule>
+    {user_system_message}
+    </SearchSummaryRule>
+
     Operational Rules:
     1. No <SearchData> Scenario: If no SearchData is provided, inform the user that current insights related to their topic are unavailable.
     2. Emphasis on Critical Issues: Focus on and clearly explain any significant issues or points of interest that emerge from the analysis.
@@ -47,10 +40,12 @@ def system_message(response_order: ResponseOrder):
     9. Do not number the "key Sources"; instead, provide each on a new line.
     10. always maintain the order as shown in <OutputExample>, first providing "Key Sources", followed by "Search Summary".
     11. For each link, include a explanation that connects its relevance to the user's question. The link's description should be 10-25 words, which emphasizes the main topic from that link. [Title and explanation.](https://bbc.com/w2/123)
+    
+    **Follow the rules on <SearchSummaryRule> for writing "Search Summary".**
     """
 
 
-async def summarize_search_data(prompt: str, model: str, data, response_order):
+async def summarize_search_data(prompt: str, model: str, data, user_system_message):
     content = f"""
     In <UserPrompt> provided User's prompt (Question).
     In <SearchData> I fetch data from Google, Youtube or Wikipedia.
@@ -65,7 +60,7 @@ async def summarize_search_data(prompt: str, model: str, data, response_order):
     """
 
     messages = [
-        {"role": "system", "content": system_message(response_order)},
+        {"role": "system", "content": system_message(user_system_message)},
         {"role": "user", "content": content},
     ]
 

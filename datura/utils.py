@@ -24,7 +24,7 @@ from datura.misc import ttl_get_block
 import re
 import html
 import unicodedata
-from datura.protocol import Model, TwitterScraperTweet
+from datura.protocol import Model, TwitterScraperTweet, WebSearchResult
 from neurons.validators.apify.twitter_scraper_actor import TwitterScraperActor
 from typing import List
 from datura.services.twitter_utils import TwitterUtils
@@ -221,9 +221,45 @@ def extract_python_list(text: str):
     return None
 
 
-async def call_openai(
-    messages, temperature, model, seed=1234, response_format=None, top_p=None
-):
+async def call_chutes(messages, temperature, model, seed=1234, response_format=None):
+    api_key = os.environ.get("CHUTES_API_TOKEN")
+
+    if not api_key:
+        bt.logging.warning("Please set the CHUTES_API_TOKEN environment variable.")
+        return None
+
+    url = "https://llm.chutes.ai/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "model": model,
+        "messages": messages,
+        "temperature": temperature,
+        "response_format": response_format,
+        "seed": seed,
+    }
+
+    for attempt in range(2):
+        bt.logging.trace(
+            f"Calling chutes. Temperature = {temperature}, Model = {model}, Seed = {seed},  Messages = {messages}"
+        )
+        try:
+            response = requests.post(url, headers=headers, json=payload)
+
+            if response.status_code == 200:
+                data = response.json()
+                return data["choices"][0]["message"]["content"]
+
+        except Exception as e:
+            bt.logging.error(f"Error when calling chutes: {e}")
+            await asyncio.sleep(0.5)
+
+    return None
+
+
+async def call_openai(messages, temperature, model, seed=1234, response_format=None):
     api_key = os.environ.get("OPENAI_API_KEY")
 
     if not api_key:
@@ -241,7 +277,6 @@ async def call_openai(
                 temperature=temperature,
                 seed=seed,
                 response_format=response_format,
-                top_p=top_p,
             )
             response = response.choices[0].message.content
             bt.logging.trace(f"validator response is {response}")
@@ -719,5 +754,14 @@ def is_valid_tweet(tweet):
         _ = TwitterScraperTweet(**tweet)
     except ValidationError as e:
         bt.logging.error(f"Invalid miner tweet data: {e}")
+        return False
+    return True
+
+
+def is_valid_web_search_result(result):
+    try:
+        WebSearchResult(**result)
+    except ValidationError as e:
+        bt.logging.error(f"Invalid miner web search result: {e}")
         return False
     return True

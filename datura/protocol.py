@@ -49,6 +49,138 @@ class TwitterScraperMedia(BaseModel):
     type: str = ""
 
 
+class TwitterScraperEntitiesUserMention(BaseModel):
+    id_str: str
+    name: str
+    screen_name: str
+    indices: List[int]
+
+
+class TwitterScraperEntitiesSymbol(BaseModel):
+    indices: List[int]
+    text: str
+
+
+class TwitterScraperEntitiesMediaAdditionalInfo(BaseModel):
+    monetizable: Optional[bool] = None
+    source_user: Optional[Dict[str, Any]] = None
+
+
+class TwitterScraperEntitiesMediaExtAvailability(BaseModel):
+    status: Optional[str] = None
+
+
+class MediaSize(BaseModel):
+    w: int
+    h: int
+    resize: str
+
+
+class Rect(BaseModel):
+    x: int
+    y: int
+    w: int
+    h: int
+
+
+class TwitterScraperEntitiesMediaSizes(BaseModel):
+    large: Optional[MediaSize] = None
+    medium: Optional[MediaSize] = None
+    small: Optional[MediaSize] = None
+    thumb: Optional[MediaSize] = None
+
+
+class TwitterScraperEntitiesMediaOriginalInfo(BaseModel):
+    height: int
+    width: int
+    focus_rects: Optional[List[Rect]] = []
+
+
+class TwitterScraperEntitiesMediaAllowDownloadStatus(BaseModel):
+    allow_download: Optional[bool] = None
+
+
+class TwitterScraperEntitiesMediaVideoInfoVariant(BaseModel):
+    content_type: str
+    url: str
+    bitrate: Optional[int] = None
+
+
+class TwitterScraperEntitiesMediaVideoInfo(BaseModel):
+    duration_millis: Optional[int] = None
+    aspect_ratio: Optional[List[int]] = []
+    variants: Optional[List[TwitterScraperEntitiesMediaVideoInfoVariant]] = []
+
+
+class TwitterScraperEntitiesMediaResult(BaseModel):
+    media_key: str
+
+
+class TwitterScraperEntitiesMediaResults(BaseModel):
+    result: Optional[TwitterScraperEntitiesMediaResult] = None
+
+
+class TwitterScraperEntitiesMediaFeature(BaseModel):
+    faces: Optional[List[Rect]] = []
+
+
+class TwitterScraperEntitiesMediaFeatures(BaseModel):
+    large: Optional[TwitterScraperEntitiesMediaFeature] = None
+    medium: Optional[TwitterScraperEntitiesMediaFeature] = None
+    small: Optional[TwitterScraperEntitiesMediaFeature] = None
+    orig: Optional[TwitterScraperEntitiesMediaFeature] = None
+
+
+class TwitterScraperEntitiesMedia(BaseModel):
+    display_url: Optional[str] = None
+    expanded_url: Optional[str] = None
+    id_str: Optional[str] = None
+    indices: Optional[List[int]] = None
+    media_key: Optional[str] = None
+    media_url_https: Optional[str] = None
+    type: Optional[str] = None
+    url: Optional[str] = None
+    additional_media_info: Optional[TwitterScraperEntitiesMediaAdditionalInfo] = None
+    ext_media_availability: Optional[TwitterScraperEntitiesMediaExtAvailability] = None
+    features: Optional[TwitterScraperEntitiesMediaFeatures] = None
+    sizes: Optional[TwitterScraperEntitiesMediaSizes] = None
+    original_info: Optional[TwitterScraperEntitiesMediaOriginalInfo] = None
+    allow_download_status: Optional[TwitterScraperEntitiesMediaAllowDownloadStatus] = (
+        None
+    )
+    video_info: Optional[TwitterScraperEntitiesMediaVideoInfo] = None
+    media_results: Optional[TwitterScraperEntitiesMediaResults] = None
+
+
+class TwitterScraperEntityUrl(BaseModel):
+    display_url: str
+    expanded_url: str
+    url: str
+    indices: List[int]
+
+
+class TwitterScraperEntities(BaseModel):
+    hashtags: Optional[List[TwitterScraperEntitiesSymbol]] = []
+    media: Optional[List[TwitterScraperEntitiesMedia]] = []
+    symbols: Optional[List[TwitterScraperEntitiesSymbol]] = []
+    timestamps: Optional[List[Any]] = []
+    urls: Optional[List[TwitterScraperEntityUrl]] = []
+    user_mentions: Optional[List[TwitterScraperEntitiesUserMention]] = []
+
+
+class TwitterScraperExtendedEntities(BaseModel):
+    media: Optional[List[TwitterScraperEntitiesMedia]] = []
+
+
+class TwitterScraperUserEntitiesDescription(BaseModel):
+    urls: Optional[List[TwitterScraperEntityUrl]] = []
+
+
+class TwitterScraperUserEntities(BaseModel):
+    description: Optional[TwitterScraperUserEntitiesDescription] = None
+    url: Optional[TwitterScraperUserEntitiesDescription] = None
+
+
 class TwitterScraperUser(BaseModel):
     id: str
     url: Optional[str] = None
@@ -65,7 +197,7 @@ class TwitterScraperUser(BaseModel):
     statuses_count: Optional[int] = None
     verified: Optional[bool] = None
     is_blue_verified: Optional[bool] = None
-    entities: Optional[Dict[str, Any]] = None
+    entities: Optional[TwitterScraperUserEntities] = None
     can_dm: Optional[bool] = None
     can_media_tag: Optional[bool] = None
     location: Optional[str] = None
@@ -81,21 +213,21 @@ class TwitterScraperTweet(BaseModel):
     like_count: int
     quote_count: int
     bookmark_count: int
-    url: str
+    url: Optional[str]
     created_at: str
     media: Optional[List[TwitterScraperMedia]] = []
-    is_quote_tweet: bool
-    is_retweet: bool
+    is_quote_tweet: Optional[bool]
+    is_retweet: Optional[bool]
     lang: Optional[str] = None
     conversation_id: Optional[str] = None
     in_reply_to_screen_name: Optional[str] = None
     in_reply_to_status_id: Optional[str] = None
     in_reply_to_user_id: Optional[str] = None
     quoted_status_id: Optional[str] = None
-    quote: Optional[Dict[str, Any]] = None
+    quote: Optional["TwitterScraperTweet"] = None
     display_text_range: Optional[List[int]] = None
-    entities: Optional[Dict[str, Any]] = None
-    extended_entities: Optional[Dict[str, Any]] = None
+    entities: Optional[TwitterScraperEntities] = None
+    extended_entities: Optional[TwitterScraperExtendedEntities] = None
 
 
 class ScraperTextRole(str, Enum):
@@ -119,7 +251,28 @@ class Model(str, Enum):
     HORIZON = "HORIZON"
 
 
+class ContextualRelevance(Enum):
+    HIGH = "HIGH"  # Exact match, deep context understanding
+    MEDIUM = "MEDIUM"  # Partially relevant, missing some context
+    LOW = "LOW"  # Weak or loose connection to query
+
+
+class ScoringModel(str, Enum):
+    OPENAI_GPT4_MINI = "openai/gpt-4-mini"
+    QWEN_QWEN2_5_CODER_32B_INSTRUCT = "Qwen/Qwen2.5-Coder-32B-Instruct"
+    UNSLOTH_MISTRAL_SMALL_24B_INSTRUCT_2501 = "unsloth/Mistral-Small-24B-Instruct-2501"
+    DEEPSEEK_AI_DEEPSEEK_R1_DISTILL_QWEN_32B = (
+        "deepseek-ai/DeepSeek-R1-Distill-Qwen-32B"
+    )
+
+
 class ScraperStreamingSynapse(StreamingSynapse):
+    scoring_model: ScoringModel = pydantic.Field(
+        ScoringModel.OPENAI_GPT4_MINI,
+        title="scoring model",
+        description="The llm model to score synapse result.",
+    )
+
     prompt: str = pydantic.Field(
         ...,
         title="Prompt",
@@ -137,6 +290,12 @@ class ScraperStreamingSynapse(StreamingSynapse):
         Model.NOVA,
         title="model",
         description="The model to define the max execution time.",
+    )
+
+    system_message: Optional[str] = pydantic.Field(
+        "",
+        title="Sysmtem Message",
+        description="System message for formatting the response.",
     )
 
     tools: Optional[List[str]] = pydantic.Field(
@@ -189,6 +348,11 @@ class ScraperStreamingSynapse(StreamingSynapse):
 
     validator_links: Optional[List[Dict]] = pydantic.Field(
         default_factory=list, title="Links", description="Fetched Links Data."
+    )
+
+    miner_link_scores: Optional[Dict[str, ContextualRelevance]] = pydantic.Field(
+        default_factory=dict,
+        title="Miner link scores",
     )
 
     miner_tweets: Optional[List[Dict[str, Any]]] = pydantic.Field(
@@ -265,12 +429,6 @@ class ScraperStreamingSynapse(StreamingSynapse):
             texts[key] = "".join(self.text_chunks[key])
 
         return texts
-
-    response_order: Optional[str] = pydantic.Field(
-        "",
-        title="Response Order",
-        description="Preffered order type of response, by default it will be SUMMARY_FIRST",
-    )
 
     max_execution_time: Optional[int] = pydantic.Field(
         None,
@@ -466,6 +624,16 @@ class ScraperStreamingSynapse(StreamingSynapse):
                             {"type": "hacker_news_search", "content": search_json}
                         )
 
+                    elif content_type == "miner_link_scores":
+                        miner_link_scores_json = json_data.get("content", {})
+                        self.miner_link_scores = miner_link_scores_json
+                        yield json.dumps(
+                            {
+                                "type": "miner_link_scores",
+                                "content": miner_link_scores_json,
+                            }
+                        )
+
         except json.JSONDecodeError as e:
             port = response.real_url.port
             host = response.real_url.host
@@ -540,6 +708,8 @@ class ScraperStreamingSynapse(StreamingSynapse):
             "max_items": self.max_items,
             "language": self.language,
             "region": self.region,
+            "system_message": self.system_message,
+            "miner_link_scores": self.miner_link_scores,
         }
 
     class Config:
@@ -586,12 +756,12 @@ class WebSearchResult(BaseModel):
     title: str
     snippet: str
     link: str
-    date: str
-    source: str
-    author: Optional[str] = None
-    image: Optional[str] = None
-    favicon: Optional[str] = None
-    highlights: List[str]
+    date: Optional[str] = None
+
+
+class WebSearchValidatorResult(WebSearchResult):
+    html_content: Optional[str] = None
+    html_text: Optional[str] = None
 
 
 class WebSearchResultList(BaseModel):
@@ -622,16 +792,28 @@ class WebSearchSynapse(Synapse):
         allow_mutation=False,
     )
 
+    is_synthetic: Optional[bool] = pydantic.Field(
+        False,
+        title="Is Synthetic",
+        description="A boolean flag to indicate if the prompt is synthetic.",
+    )
+
     max_execution_time: Optional[int] = pydantic.Field(
         None,
         title="Max Execution Time (timeout)",
         description="Maximum time to execute concrete request",
     )
 
-    results: Optional[List[WebSearchResult]] = pydantic.Field(
+    results: Optional[List[Dict[str, Any]]] = pydantic.Field(
         default_factory=list,
         title="Web",
         description="Fetched Web Data.",
+    )
+
+    validator_links: Optional[List[WebSearchValidatorResult]] = pydantic.Field(
+        default_factory=list,
+        title="Validator Web",
+        description="Fetched validator Web Data.",
     )
 
     def deserialize(self) -> str:
@@ -744,6 +926,12 @@ class TwitterSearchSynapse(Synapse):
         title="Minimum Likes",
         description="Minimum number of likes.",
         allow_mutation=False,
+    )
+
+    is_synthetic: Optional[bool] = pydantic.Field(
+        False,
+        title="Is Synthetic",
+        description="A boolean flag to indicate if the prompt is synthetic.",
     )
 
     max_execution_time: Optional[int] = pydantic.Field(

@@ -2,6 +2,8 @@ import base64
 import sys
 import json
 import bittensor as bt
+import random
+import asyncio
 
 
 def synapse_to_headers(self) -> dict:
@@ -72,3 +74,35 @@ class Synapse(bt.Synapse):
 class StreamingSynapse(bt.StreamingSynapse):
     def to_headers(self) -> dict:
         return synapse_to_headers(self)
+
+
+async def collect_response(response):
+    return await response
+
+
+async def collect_responses_chunk(async_responses):
+    tasks = [asyncio.create_task(collect_response(resp)) for resp in async_responses]
+
+    return await asyncio.gather(*tasks)
+
+
+async def collect_responses(async_responses, group_size=15):
+    responses = [None] * len(async_responses)
+
+    async_responses_groups = [
+        async_responses[i : i + group_size]
+        for i in range(0, len(async_responses), group_size)
+    ]
+
+    group_indices = list(range(len(async_responses_groups)))
+    random.shuffle(group_indices)
+
+    for group_index in group_indices:
+        async_responses_group = async_responses_groups[group_index]
+
+        group_final_synapses = await collect_responses_chunk(async_responses_group)
+
+        for i, synapse in enumerate(group_final_synapses):
+            responses[group_index * group_size + i] = synapse
+
+    return responses

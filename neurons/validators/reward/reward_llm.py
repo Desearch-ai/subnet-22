@@ -7,8 +7,10 @@ import asyncio
 import bittensor as bt
 import re
 import time
-from datura.utils import call_openai
+from datura.utils import call_openai, call_chutes
 from transformers import AutoTokenizer, AutoModelForCausalLM
+from datura.synapse import collect_responses
+from datura.protocol import ScoringModel
 
 from neurons.validators.utils.prompts import ScoringPrompt
 
@@ -30,12 +32,13 @@ class ScoringSource(Enum):
 
 
 class RewardLLM:
-    def __init__(self):
+    def __init__(self, scoring_model: ScoringModel = ScoringModel.OPENAI_GPT4_MINI):
         self.tokenizer = None
         self.model = None
         self.device = None
         self.pipe = None
         self.scoring_prompt = ScoringPrompt()
+        self.scoring_model = scoring_model
 
     def init_tokenizer(self, device, model_name):
         # https://huggingface.co/VMware/open-llama-7b-open-instruct
@@ -133,12 +136,18 @@ class RewardLLM:
 
                 async def query_openai(message):
                     try:
-                        return await call_openai(
-                            messages=message,
-                            temperature=0.0001,
-                            top_p=0.0001,
-                            model="gpt-4o-mini",
-                        )
+                        if self.scoring_model == ScoringModel.OPENAI_GPT4_MINI:
+                            return await call_openai(
+                                messages=message,
+                                temperature=0.0001,
+                                model="gpt-4o-mini",
+                            )
+                        else:
+                            return await call_chutes(
+                                messages=message,
+                                temperature=0.0001,
+                                model=self.scoring_model,
+                            )
                     except Exception as e:
                         print(f"Error sending message to OpenAI: {e}")
                         return ""  # Return an empty string to indicate failure
@@ -146,7 +155,8 @@ class RewardLLM:
                 task = query_openai(message_list)
                 query_tasks.append(task)
 
-            query_responses = await asyncio.gather(*query_tasks, return_exceptions=True)
+            query_responses = await collect_responses(query_tasks, group_size=100)
+            # query_responses = await asyncio.gather(*query_tasks, return_exceptions=True)
 
             result = {}
             for response, message_dict in zip(query_responses, messages):

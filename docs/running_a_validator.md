@@ -75,6 +75,7 @@ pm2 start neurons/validators/api.py --interpreter /usr/bin/python3  --name valid
 - `--neuron.only_allowed_miners`: A list of miner identifiers, hotkey
 - `--neuron.disable_twitter_completion_links_fetch`: Enables the option to skip fetching content data for Twitter links, relying solely on the data provided by miners
 - `--neuron.update_available_uids_interval`: Specifies the interval, in seconds, for updating the list of available UIDs. The default interval is 600 seconds (10 minutes).
+- `--neuron.scoring_model`: Specifies which llm model to use for scoring. The default model is `openai/gpt-4-mini`. Available llm models: `openai/gpt-4-mini`, `Qwen/Qwen2.5-Coder-32B-Instruct`, `unsloth/Mistral-Small-24B-Instruct-2501`, `deepseek-ai/DeepSeek-R1-Distill-Qwen-32B`.
 
 ## 7. Monitor Your Process
 Monitor the status and logs:

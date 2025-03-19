@@ -16,8 +16,11 @@ class StreamingPenaltyModel(BasePenaltyModel):
     def name(self) -> str:
         return PenaltyModelType.streaming_penalty.value
 
-    def calculate_penalties(
-        self, responses: List[ScraperStreamingSynapse], tasks: List[Task]
+    async def calculate_penalties(
+        self,
+        responses: List[ScraperStreamingSynapse],
+        tasks: List[Task],
+        additional_params=None,
     ) -> torch.FloatTensor:
         accumulated_penalties = torch.zeros(len(responses), dtype=torch.float32)
         encoding = tiktoken.get_encoding("cl100k_base")

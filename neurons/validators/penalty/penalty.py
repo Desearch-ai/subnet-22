@@ -38,14 +38,16 @@ class BasePenaltyModel(ABC):
         return str(self.name)
 
     @abstractmethod
-    def calculate_penalties(
-        responses: List[bt.Synapse], tasks: List[Task]
+    async def calculate_penalties(
+        responses: List[bt.Synapse], tasks: List[Task], additional_params=None
     ) -> torch.FloatTensor: ...
 
-    def apply_penalties(
-        self, responses: List[bt.Synapse], tasks: List[Task]
+    async def apply_penalties(
+        self, responses: List[bt.Synapse], tasks: List[Task], additional_params=None
     ) -> torch.FloatTensor:
-        raw_penalties = self.calculate_penalties(responses, tasks)
+        raw_penalties = await self.calculate_penalties(
+            responses, tasks, additional_params
+        )
 
         # Clip penalties between 0 and 1
         adjusted_penalties = torch.clip(raw_penalties, 0, 1)
@@ -65,3 +67,6 @@ class PenaltyModelType(Enum):
     link_validation_penalty = "link_validation_penalty"
     streaming_penalty = "streaming_penalty"
     exponential_penalty = "exponential_penalty"
+    summary_rule_penalty = "summary_rule_penalty"
+    twitter_count_penalty = "twitter_count_penalty"
+    miner_score_penalty = "miner_score_penalty"

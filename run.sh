@@ -1,5 +1,18 @@
 #!/bin/bash
 
+check_root() {
+    if [ "$(id -u)" -ne 0 ]; then
+        echo "You are not running as root. Commands requiring root will use 'sudo'."
+        SUDO="sudo"
+    else
+        echo "You are running as root. 'sudo' is not required."
+        SUDO=""
+    fi
+}
+
+# Run the root check
+check_root
+
 # Initialize variables
 script="neurons/validators/api.py"
 autoRunLoc=$(readlink -f "$0")
@@ -179,6 +192,28 @@ done
 if [[ -z "$script" ]]; then
     echo "The --script argument is required."
     exit 1
+fi
+
+# Verify installation
+if redis-cli --version; then
+    echo "Redis already installed."
+else
+    $SUDO apt update
+    # Install Redis
+    $SUDO apt install -y redis
+fi
+
+echo "Attempting to start Redis using systemctl..."
+if $SUDO systemctl start redis 2>/dev/null; then
+    echo "Redis started successfully using systemctl."
+else
+    echo "systemctl not available or failed. Starting Redis manually..."
+    if redis-server --daemonize yes; then
+        echo "Redis started manually in the background."
+    else
+        echo "Failed to start Redis. Check your setup."
+        exit 1
+    fi
 fi
 
 branch=$(git branch --show-current)            # get current branch.

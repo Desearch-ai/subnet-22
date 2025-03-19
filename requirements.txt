@@ -1,5 +1,5 @@
-bittensor==9.0.0
-torch==2.5.1
+bittensor==9.0.3
+torch==2.6.0
 numpy==2.0.2
 wandb==0.17.2
 requests==2.31.0
@@ -21,3 +21,6 @@ faker==25.9.1
 sentence_transformers==3.3.1
 tiktoken==0.8.0
 loguru==0.7.3
+substrate-interface==1.7.11
+redis==5.2.1
+jsonpickle==4.0.2

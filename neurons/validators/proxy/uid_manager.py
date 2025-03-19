@@ -16,7 +16,7 @@ class UIDManager:
     ) -> None:
         self.wallet = wallet
         self.metagraph = metagraph
-        self.max_miners_to_use = 100
+        self.max_miners_to_use = 200
         self.uids = []
         self.available_uids = []
 

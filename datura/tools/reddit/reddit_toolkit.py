@@ -14,12 +14,11 @@ class RedditToolkit(BaseToolkit, ABC):
     def get_tools(self) -> List[BaseTool]:
         return [RedditSearchTool()]
 
-    async def summarize(self, prompt, model, data):
-        response_order = self.tool_manager.response_order
+    async def summarize(self, prompt, model, data, system_message):
         data = next(iter(data.values()))
         return await summarize_reddit_data(
             prompt=prompt,
             model=model,
             filtered_posts=data,
-            response_order=response_order
+            user_system_message=system_message,
         )

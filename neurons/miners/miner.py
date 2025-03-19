@@ -406,7 +406,7 @@ class StreamMiner(ABC):
                     < self.config.miner.blocks_per_epoch
                 ):
                     # --- Wait for next bloc.
-                    time.sleep(1)
+                    time.sleep(60)
                     current_block = self.subtensor.get_current_block()
                     # --- Check if we should exit.
                     if self.should_exit:

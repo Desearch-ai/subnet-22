@@ -4,7 +4,6 @@ import asyncio
 import os
 import json
 import bittensor as bt
-from datura.dataset.tool_return import ResponseOrder
 from datura.tools.base import BaseTool
 from datura.tools.get_tools import (
     TOOLKITS,
@@ -68,7 +67,6 @@ class ToolManager:
 
     twitter_prompt_analysis: Optional[TwitterPromptAnalysisResult]
     twitter_data: Optional[Dict[str, Any]]
-    response_order: ResponseOrder
 
     def __init__(
         self,
@@ -81,7 +79,7 @@ class ToolManager:
         region,
         date_filter,
         google_date_filter,
-        response_order,
+        system_message,
     ):
         self.prompt = prompt
         self.manual_tool_names = manual_tool_names
@@ -91,6 +89,7 @@ class ToolManager:
         self.region = region
         self.date_filter = date_filter
         self.google_date_filter = google_date_filter
+        self.system_message = system_message
 
         self.response_streamer = ResponseStreamer(send=send)
         self.send = send
@@ -101,8 +100,6 @@ class ToolManager:
         self.toolkit_name_to_instance = {toolkit.name: toolkit for toolkit in TOOLKITS}
         self.twitter_prompt_analysis = None
         self.twitter_data = None
-
-        self.response_order = response_order
 
     async def run(self):
         actions = await self.detect_tools_to_use()
@@ -144,7 +141,10 @@ class ToolManager:
 
             if results:
                 response, role = await find_toolkit_by_name(toolkit_name).summarize(
-                    prompt=self.prompt, model=self.openai_summary_model, data=results
+                    prompt=self.prompt,
+                    model=self.openai_summary_model,
+                    data=results,
+                    system_message=self.system_message,
                 )
 
                 streaming_task = asyncio.create_task(
@@ -306,6 +306,9 @@ class ToolManager:
         3. Not return text like <UserPrompt> to your response, make response easy to understand to any user.
         4. Start text with bold text "Summary:".
         """
+
+        if self.system_message:
+            system_message += f"5. Follow the next rules for summarizing the content: {self.system_message}"
 
         messages = [
             {"role": "system", "content": system_message},
