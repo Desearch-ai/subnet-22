@@ -816,7 +816,7 @@ class PeopleSearchResult(BaseModel):
     full_name: str
     avatar: str
     title: str
-    extra_information: Optional[Dict[str, Any]]
+    extra_information: Optional[Dict[str, Any]] = None
 
 
 class PeopleSearchResultList(BaseModel):

@@ -525,7 +525,7 @@ async def web_search_endpoint(
     description="Search the people using a query",
     response_model=PeopleSearchResultList,
 )
-async def web_search_endpoint(
+async def people_search_endpoint(
     query: str = Query(
         ...,
         description="The search query string, e.g., 'AI startup founders in London with a PhD in machine learning'.",
@@ -560,7 +560,7 @@ async def web_search_endpoint(
         results = []
 
         for syn in final_synapses:
-            # Each synapse (if successful) should have a 'results' field of WebSearchResult
+            # Each synapse (if successful) should have a 'results' field of PeopleSearchResult
             if hasattr(syn, "results") and isinstance(syn.results, list):
                 results.extend(syn.results)
 

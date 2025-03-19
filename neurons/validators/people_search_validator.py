@@ -39,12 +39,12 @@ class PeopleSearchValidator(OrganicHistoryMixin):
         )
 
         # Hardcoded weights here because the advanced scraper validator implementation is based on args.
-        # self.web_content_weight = 0.70
-        self.performance_weight = 1
+        self.web_content_weight = 0.70
+        self.performance_weight = 0.30
 
         self.reward_weights = torch.tensor(
             [
-                # self.web_content_weight,
+                self.web_content_weight,
                 self.performance_weight,
             ],
             dtype=torch.float32,
@@ -67,6 +67,13 @@ class PeopleSearchValidator(OrganicHistoryMixin):
             #     if self.neuron.config.reward.web_search_relavance_weight > 0
             #     else MockRewardModel(RewardModelType.search_content_relevance.value)
             # ),
+            (
+                PerformanceRewardModel(
+                    device=self.neuron.config.neuron.device,
+                )
+                if self.neuron.config.reward.performance_weight > 0
+                else MockRewardModel(RewardModelType.performance_score.value)
+            ),
             (
                 PerformanceRewardModel(
                     device=self.neuron.config.neuron.device,

@@ -3,12 +3,14 @@ import time
 from functools import partial
 from neurons.miners.twitter_search_miner import TwitterSearchMiner
 from neurons.miners.web_search_miner import WebSearchMiner
+from neurons.miners.people_search_miner import PeopleSearchMiner
 from neurons.miners.scraper_miner import ScraperMiner
 from datura.protocol import (
     TwitterURLsSearchSynapse,
     TwitterIDSearchSynapse,
     TwitterSearchSynapse,
     WebSearchSynapse,
+    PeopleSearchSynapse,
     IsAlive,
     ScraperStreamingSynapse,
 )
@@ -36,6 +38,7 @@ class Dendrite(bt.dendrite):
 
         self.twitter_search_miner = TwitterSearchMiner(self.miner)
         self.web_search_miner = WebSearchMiner(self.miner)
+        self.people_search_miner = PeopleSearchMiner(self.miner)
         self.scraper_miner = ScraperMiner(self.miner)
 
     async def call(self, target_axon, synapse, timeout=12, deserialize=True):
@@ -61,6 +64,12 @@ class Dendrite(bt.dendrite):
         if isinstance(synapse, WebSearchSynapse):
             bt.logging.info("MockDendrite--call web_search_miner.search")
             synapse = await self.web_search_miner.search(synapse)
+            synapse.dendrite.process_time = str(time.time() - start_time)
+            return synapse
+
+        if isinstance(synapse, PeopleSearchSynapse):
+            bt.logging.info("MockDendrite--call people_search_miner.search")
+            synapse = await self.people_search_miner.search(synapse)
             synapse.dendrite.process_time = str(time.time() - start_time)
             return synapse
 

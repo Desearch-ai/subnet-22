@@ -28,10 +28,12 @@ from datura.protocol import (
     WebSearchSynapse,
     TwitterURLsSearchSynapse,
     TwitterIDSearchSynapse,
+    PeopleSearchSynapse,
 )
 from neurons.miners.scraper_miner import ScraperMiner
 from neurons.miners.twitter_search_miner import TwitterSearchMiner
 from neurons.miners.web_search_miner import WebSearchMiner
+from neurons.miners.people_search_miner import PeopleSearchMiner
 
 OpenAI.api_key = os.environ.get("OPENAI_API_KEY")
 if not OpenAI.api_key:
@@ -148,6 +150,9 @@ class StreamMiner(ABC):
         ).attach(
             forward_fn=self.web_search,
             blacklist_fn=self.blacklist_web_search,
+        ).attach(
+            forward_fn=self.people_search,
+            blacklist_fn=self.blacklist_people_search,
         )
 
         bt.logging.info(f"Axon created: {self.axon}")
@@ -186,6 +191,9 @@ class StreamMiner(ABC):
 
     async def _web_search(self, synapse: WebSearchSynapse) -> WebSearchSynapse:
         return await self.web_search(synapse)
+
+    async def _people_search(self, synapse: PeopleSearchSynapse) -> PeopleSearchSynapse:
+        return await self.people_search(synapse)
 
     def base_blacklist(self, synapse, blacklist_amt=20000) -> Tuple[bool, str]:
         try:
@@ -303,6 +311,13 @@ class StreamMiner(ABC):
         bt.logging.info(blacklist[1])
         return blacklist
 
+    def blacklist_people_search(self, synapse: PeopleSearchSynapse) -> Tuple[bool, str]:
+        blacklist = self.base_blacklist(
+            synapse, datura.TWITTER_SCRAPPER_BLACKLIST_STAKE
+        )
+        bt.logging.info(blacklist[1])
+        return blacklist
+
     @classmethod
     @abstractmethod
     def add_args(cls, parser: argparse.ArgumentParser): ...
@@ -339,6 +354,11 @@ class StreamMiner(ABC):
 
     @abstractmethod
     async def web_search(self, synapse: WebSearchSynapse) -> WebSearchSynapse: ...
+
+    @abstractmethod
+    async def people_search(
+        self, synapse: PeopleSearchSynapse
+    ) -> PeopleSearchSynapse: ...
 
     def sync_metagraph_with_interval(self):
         first_run = True
@@ -509,6 +529,11 @@ class StreamingTemplateMiner(StreamMiner):
         bt.logging.info(f"started processing for Web search  synapse {synapse}")
         web_search_miner = WebSearchMiner(self)
         return await web_search_miner.search(synapse)
+
+    async def people_search(self, synapse: PeopleSearchSynapse) -> PeopleSearchSynapse:
+        bt.logging.info(f"started processing for People search  synapse {synapse}")
+        people_search_miner = PeopleSearchMiner(self)
+        return await people_search_miner.search(synapse)
 
 
 def get_valid_hotkeys(config):
