@@ -699,6 +699,7 @@ class ScraperStreamingSynapse(StreamingSynapse):
             "language": self.language,
             "region": self.region,
             "system_message": self.system_message,
+            "miner_link_scores": self.miner_link_scores,
         }
 
     class Config:
