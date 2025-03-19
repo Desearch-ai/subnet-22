@@ -419,11 +419,11 @@ class PeopleSearchValidator(OrganicHistoryMixin):
         is_interval_query = random_synapse is not None
 
         try:
-            query = query.get("query", "")
+            prompt = query.get("query", "")
 
             tasks = [
                 SearchTask(
-                    base_text=query,
+                    base_text=prompt,
                     task_name="people search",
                     task_type="people_search",
                     criteria=[],

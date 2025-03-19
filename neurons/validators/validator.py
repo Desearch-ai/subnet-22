@@ -15,6 +15,7 @@ from datura.bittensor.wallet import Wallet
 from neurons.validators.advanced_scraper_validator import AdvancedScraperValidator
 from neurons.validators.basic_scraper_validator import BasicScraperValidator
 from neurons.validators.basic_web_scraper_validator import BasicWebScraperValidator
+from neurons.validators.people_search_validator import PeopleSearchValidator
 from neurons.validators.config import add_args, check_config, config
 from neurons.validators.weights import init_wandb, set_weights, get_weights
 from traceback import print_exception
@@ -52,6 +53,7 @@ class Neuron(AbstractNeuron):
     advanced_scraper_validator: "AdvancedScraperValidator"
     basic_scraper_validator: "BasicScraperValidator"
     basic_web_scraper_validator: "BasicWebScraperValidator"
+    people_search_validator: "PeopleSearchValidator"
     moving_average_scores: torch.Tensor = None
     uid: int = None
     shutdown_event: asyncio.Event()
@@ -76,6 +78,7 @@ class Neuron(AbstractNeuron):
         self.advanced_scraper_validator = AdvancedScraperValidator(neuron=self)
         self.basic_scraper_validator = BasicScraperValidator(neuron=self)
         self.basic_web_scraper_validator = BasicWebScraperValidator(neuron=self)
+        self.people_search_validator = PeopleSearchValidator(neuron=self)
         bt.logging.info("initialized_validators")
 
         self.step = 0

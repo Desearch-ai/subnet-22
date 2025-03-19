@@ -9,7 +9,13 @@ from fastapi import FastAPI, HTTPException, Header, Query, Path
 from neurons.validators.env import PORT, EXPECTED_ACCESS_KEY
 from datura import __version__
 from datura.dataset.date_filters import DateFilterType
-from datura.protocol import Model, TwitterScraperTweet, WebSearchResultList, ResultType
+from datura.protocol import (
+    Model,
+    TwitterScraperTweet,
+    WebSearchResultList,
+    ResultType,
+    PeopleSearchResultList,
+)
 import uvicorn
 import bittensor as bt
 import traceback
@@ -496,6 +502,57 @@ async def web_search_endpoint(
 
         async for synapse in neu.basic_web_scraper_validator.organic(
             query={"query": query, "num": num, "start": start}
+        ):
+            final_synapses.append(synapse)
+
+        # Transform final synapses into a flattened list of links
+        results = []
+
+        for syn in final_synapses:
+            # Each synapse (if successful) should have a 'results' field of WebSearchResult
+            if hasattr(syn, "results") and isinstance(syn.results, list):
+                results.extend(syn.results)
+
+        return {"data": results}
+    except Exception as e:
+        bt.logging.error(f"Error in web search: {e}")
+        raise HTTPException(status_code=500, detail=f"An error occurred: {str(e)}")
+
+
+@app.get(
+    "/people/search",
+    summary="People Search",
+    description="Search the people using a query",
+    response_model=PeopleSearchResultList,
+)
+async def web_search_endpoint(
+    query: str = Query(
+        ...,
+        description="The search query string, e.g., 'AI startup founders in London with a PhD in machine learning'.",
+    ),
+    access_key: Annotated[str | None, Header()] = None,
+):
+    """
+    Perform a people search using the given query.
+
+    Parameters:
+        query (str): The search query string.
+
+    Returns:
+        List[PeopleSearchResult]: A list of people search results.
+    """
+
+    if access_key != EXPECTED_ACCESS_KEY:
+        raise HTTPException(status_code=401, detail="Invalid access key")
+
+    try:
+        bt.logging.info(f"Performing people search with query: '{query}'")
+
+        # Collect all yielded synapses from organic
+        final_synapses = []
+
+        async for synapse in neu.people_search_validator.organic(
+            query={"query": query}
         ):
             final_synapses.append(synapse)
 
