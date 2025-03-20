@@ -384,16 +384,6 @@ class Neuron(AbstractNeuron):
                 f"Completed gathering coroutines for query_synapse in {end_time - start_time:.2f} seconds"
             )
 
-            sync_start_time = time.time()
-            bt.logging.info("Calling sync metagraph method")
-            await self.sync_metagraph()
-            bt.logging.info("Completed calling sync metagraph method")
-
-            sync_end_time = time.time()
-            bt.logging.info(
-                f"Sync metagraph method execution time: {sync_end_time - sync_start_time:.2f} seconds"
-            )
-
             self.step += 1
             bt.logging.info(f"Incremented step to {self.step}")
         except Exception as err:
@@ -427,16 +417,6 @@ class Neuron(AbstractNeuron):
 
             bt.logging.info(
                 f"Completed gathering coroutines for basic_query_synapse in {end_time - start_time:.2f} seconds"
-            )
-
-            sync_start_time = time.time()
-            bt.logging.info("Calling sync metagraph method")
-            await self.sync_metagraph()
-            bt.logging.info("Completed calling sync metagraph method")
-
-            sync_end_time = time.time()
-            bt.logging.info(
-                f"Sync metagraph method execution time: {sync_end_time - sync_start_time:.2f} seconds"
             )
 
             self.step += 1
@@ -546,27 +526,50 @@ class Neuron(AbstractNeuron):
             start_time=time.time(),
         )
 
-    def blocks_until_next_epoch(self):
-        current_block = self.subtensor.get_current_block()
+    async def get_current_block(self):
+        return await self.run_sync_in_async(self.subtensor.get_current_block)
+
+    async def blocks_until_next_epoch(self):
+        try:
+            current_block = await self.get_current_block()
+        except Exception as e:
+            bt.logging.error(
+                f"Error getting current block: {e}, reinitializing subtensor..."
+            )
+
+            self.subtensor = bt.subtensor(config=self.config)
+            current_block = await self.get_current_block()
+
         tempo = self.subtensor.tempo(self.config.netuid, current_block)
 
         return tempo - (current_block + self.config.netuid + 1) % (tempo + 1)
 
     async def sync_metagraph(self):
-        # Ensure validator hotkey is still registered on the network.
-        self.check_registered()
-        bt.logging.info("Syncing metagraph.")
-        await self.run_sync_in_async(lambda: resync_metagraph(self))
+        while True:
+            await asyncio.sleep(30 * 60)  # 30 minutes
+
+            sync_start_time = time.time()
+
+            bt.logging.info("Calling sync metagraph method")
+            await self.run_sync_in_async(lambda: resync_metagraph(self))
+            bt.logging.info("Completed calling sync metagraph method")
+
+            sync_end_time = time.time()
+            bt.logging.info(
+                f"Sync metagraph method execution time: {sync_end_time - sync_start_time:.2f} seconds"
+            )
+
+            # Ensure validator hotkey is still registered on the network.
+            self.check_registered()
 
     async def sync(self):
         """
         Wrapper for synchronizing the state of the network for the given miner or validator.
         """
-        await self.sync_metagraph()
 
         while True:
             try:
-                blocks_left = self.blocks_until_next_epoch()
+                blocks_left = await self.blocks_until_next_epoch()
 
                 bt.logging.debug(f"Blocks left until next epoch: {blocks_left}")
 
@@ -616,19 +619,6 @@ class Neuron(AbstractNeuron):
             )
             sys.exit()
 
-    def should_sync_metagraph(self):
-        """
-        Check if enough epoch blocks have elapsed since the last checkpoint to sync.
-        """
-        difference = self.block - self.metagraph.last_update[self.uid]
-        print(
-            f"Current block: {self.block}, Last update for UID {self.uid}: {self.metagraph.last_update[self.uid]}, Difference: {difference}"
-        )
-        should_set = difference > self.config.neuron.checkpoint_block_length
-        bt.logging.info(f"Should set weights: {should_set}")
-        # return should_set
-        return True  # Update right not based on interval of synthetic data
-
     def should_set_weights(self) -> bool:
         # Don't set weights on initialization.
         # if self.step == 0:
@@ -653,6 +643,7 @@ class Neuron(AbstractNeuron):
     async def run(self):
         self.loop = asyncio.get_event_loop()
 
+        self.loop.create_task(self.sync_metagraph())
         self.loop.create_task(self.sync())
         self.loop.create_task(self.update_available_uids_periodically())
         bt.logging.info(f"Validator starting at block: {self.block}")
