@@ -131,6 +131,13 @@ def add_args(cls, parser):
     )
 
     parser.add_argument(
+        "--reward.people_search_relavance_weight",
+        type=float,
+        help="Specifies the weight for the reward model that evaluates the relevance and quality of people searech result",
+        default=DefaultRewardFrameworkConfig.people_search_relavance_weight,
+    )
+
+    parser.add_argument(
         "--reward.performance_weight",
         type=float,
         help="Specifies the weight for the reward model that evaluates the relevance and quality of search summary text in conjunction with linked content data.",

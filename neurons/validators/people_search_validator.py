@@ -13,6 +13,7 @@ from datura import QUERY_MINERS
 from neurons.validators.base_validator import AbstractNeuron
 from neurons.validators.reward import RewardModelType, RewardScoringType
 from neurons.validators.reward.performance_reward import PerformanceRewardModel
+from neurons.validators.reward.people_search_relevance import PeopleSearchRelevanceModel
 from neurons.validators.utils.tasks import SearchTask
 from neurons.validators.basic_organic_query_state import BasicOrganicQueryState
 from neurons.validators.penalty.exponential_penalty import ExponentialTimePenaltyModel
@@ -39,12 +40,12 @@ class PeopleSearchValidator(OrganicHistoryMixin):
         )
 
         # Hardcoded weights here because the advanced scraper validator implementation is based on args.
-        self.web_content_weight = 0.70
+        self.people_search_weight = 0.70
         self.performance_weight = 0.30
 
         self.reward_weights = torch.tensor(
             [
-                self.web_content_weight,
+                self.people_search_weight,
                 self.performance_weight,
             ],
             dtype=torch.float32,
@@ -59,20 +60,13 @@ class PeopleSearchValidator(OrganicHistoryMixin):
             raise Exception(message)
 
         self.reward_functions = [
-            # (
-            #     WebBasicSearchContentRelevanceModel(
-            #         device=self.neuron.config.neuron.device,
-            #         scoring_type=RewardScoringType.search_relevance_score_template,
-            #     )
-            #     if self.neuron.config.reward.web_search_relavance_weight > 0
-            #     else MockRewardModel(RewardModelType.search_content_relevance.value)
-            # ),
             (
-                PerformanceRewardModel(
+                PeopleSearchRelevanceModel(
                     device=self.neuron.config.neuron.device,
+                    scoring_type=RewardScoringType.search_relevance_score_template,
                 )
-                if self.neuron.config.reward.performance_weight > 0
-                else MockRewardModel(RewardModelType.performance_score.value)
+                if self.neuron.config.reward.people_search_relavance_weight > 0
+                else MockRewardModel(RewardModelType.people_search_relevance.value)
             ),
             (
                 PerformanceRewardModel(

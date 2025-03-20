@@ -25,6 +25,7 @@ class RewardModelType(Enum):
     sentence_match_penalty = "sentence_match_penalty"
     summary_relavance_match = "summary_relavance_match"
     twitter_content_relevance = "twitter_content_relevance"
+    people_search_relevance = "people_search_relevance"
     search_content_relevance = "search_content_relevance"
     performance_score = "performance_score"
 
@@ -45,6 +46,7 @@ class DefaultRewardFrameworkConfig:
     summary_relevance_weight: float = 0.20
     twitter_content_weight: float = 0.45
     web_search_relavance_weight: float = 0.30
+    people_search_relavance_weight: float = 0.30
     performance_weight: float = 0.05
 
 

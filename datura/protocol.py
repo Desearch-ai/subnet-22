@@ -809,13 +809,42 @@ class WebSearchSynapse(Synapse):
         return self
 
 
+class LinkedinExperienceItem(BaseModel):
+    company_id: Optional[str] = None
+    company_link: Optional[str] = None
+    title: str
+    subtitle: Optional[str] = None
+    caption: Optional[str] = None
+    metadata: Optional[str] = None
+
+
+class LinkedinEducationItem(BaseModel):
+    company_id: Optional[str] = None
+    company_link: Optional[str] = None
+    title: str
+    subtitle: Optional[str] = None
+    caption: Optional[str] = None
+
+
+class LinkedinLanguageItem(BaseModel):
+    title: str
+    caption: str
+
+
 class PeopleSearchResult(BaseModel):
     link: str
-    summary: str
-    criteria_summary: List[str]
+    first_name: str
+    last_name: str
     full_name: str
-    avatar: str
     title: str
+    summary: str
+    avatar: str
+    experiences: List[LinkedinExperienceItem]
+    educations: List[LinkedinEducationItem]
+    languages: List[LinkedinLanguageItem]
+
+    relevance_summary: Optional[str] = None
+    criteria_summary: Optional[List[str]] = []
     extra_information: Optional[Dict[str, Any]] = None
 
 
@@ -830,13 +859,6 @@ class PeopleSearchSynapse(Synapse):
         "",
         title="Query",
         description="The query string to fetch results for. Example: 'Former investment bankers who transitioned into startup CFO roles'. Immutable.",
-        allow_mutation=False,
-    )
-
-    num: int = pydantic.Field(
-        10,
-        title="Number of Results",
-        description="The maximum number of results to fetch. Immutable.",
         allow_mutation=False,
     )
 
