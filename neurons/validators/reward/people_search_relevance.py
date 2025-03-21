@@ -10,6 +10,9 @@ from .config import RewardModelType
 from .reward import BaseRewardModel, BaseRewardEvent
 from datura.protocol import PeopleSearchSynapse, PeopleSearchResult
 from neurons.validators.apify.linkedin_scraper_actor import LinkedinScraperActor
+from neurons.validators.utils.prompt.criteria_relevance_profile import (
+    SearchCriteriaRelevancePrompt,
+)
 from datura.utils import is_valid_linkedin_profile
 
 APIFY_LINK_SCRAPE_AMOUNT = 2
@@ -145,10 +148,21 @@ class PeopleSearchRelevanceModel(BaseRewardModel):
 
         return set1 == set2
 
-    def check_relevance(self, response: PeopleSearchSynapse) -> float:
-        return 1.0
+    async def check_criteria(
+        self, synapse: PeopleSearchSynapse, profile: dict
+    ) -> float:
+        criteria_relevance_prompt = SearchCriteriaRelevancePrompt()
+        scores = []
+        for criteria in synapse.criteria:
+            response = await criteria_relevance_prompt.get_response(
+                criteria, profile.__str__()
+            )
+            score = criteria_relevance_prompt.extract_score(response) / 10
+            scores.append(score)
 
-    def check_response(self, response: PeopleSearchSynapse) -> float:
+        return sum(scores) / len(scores) if scores else 0.0
+
+    async def check_response(self, response: PeopleSearchSynapse) -> float:
         try:
             # 1) Gather miner & validator tweets
             miner_results = response.results
@@ -207,7 +221,7 @@ class PeopleSearchRelevanceModel(BaseRewardModel):
                     continue
 
                 # All checks passed => score = 1
-                scores.append(self.check_relevance(response))
+                scores.append(await self.check_criteria(response, miner_profile))
 
             # Return average of all validated profiles
             return sum(scores) / len(scores) if scores else 0.0
@@ -233,7 +247,7 @@ class PeopleSearchRelevanceModel(BaseRewardModel):
                 # If uid_tensor is a PyTorch or NumPy scalar, .item() extracts the integer
                 uid = uid_tensor.item() if hasattr(uid_tensor, "item") else uid_tensor
 
-                final_score = self.check_response(response)
+                final_score = await self.check_response(response)
 
                 bt.logging.info(
                     f"UID {uid}: check_response_random_link => {final_score}"

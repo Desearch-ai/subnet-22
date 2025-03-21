@@ -9,5 +9,6 @@ def mock_neuron():
     neuron.metagraph.uids = torch.tensor([0, 1, 2, 3])
     neuron.config.neuron.device = "cpu"
     neuron.config.reward.performance_weight = 0.05
+    neuron.config.reward.people_search_relavance_weight = 0.7
 
     return neuron

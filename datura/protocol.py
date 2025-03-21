@@ -828,7 +828,7 @@ class LinkedinEducationItem(BaseModel):
 
 class LinkedinLanguageItem(BaseModel):
     title: str
-    caption: str
+    caption: Optional[str] = None
 
 
 class PeopleSearchResult(BaseModel):
@@ -839,13 +839,27 @@ class PeopleSearchResult(BaseModel):
     title: str
     summary: str
     avatar: str
-    experiences: List[LinkedinExperienceItem]
-    educations: List[LinkedinEducationItem]
-    languages: List[LinkedinLanguageItem]
+    experiences: Optional[List[LinkedinExperienceItem]] = []
+    educations: Optional[List[LinkedinEducationItem]] = []
+    languages: Optional[List[LinkedinLanguageItem]] = []
+    license_and_certificates: Optional[List[Dict[str, Any]]] = []
+    honors_and_awards: Optional[List[Dict[str, Any]]] = []
+    volunteer_and_awards: Optional[List[Dict[str, Any]]] = []
+    verifications: Optional[List[Dict[str, Any]]] = []
+    promos: Optional[List[Dict[str, Any]]] = []
+    highlights: Optional[List[Dict[str, Any]]] = []
+    projects: Optional[List[Dict[str, Any]]] = []
+    publications: Optional[List[Dict[str, Any]]] = []
+    patents: Optional[List[Dict[str, Any]]] = []
+    courses: Optional[List[Dict[str, Any]]] = []
+    organizations: Optional[List[Dict[str, Any]]] = []
+    volunteer_causes: Optional[List[Dict[str, Any]]] = []
+    interests: Optional[List[Dict[str, Any]]] = []
+    recommendations: Optional[List[Dict[str, Any]]] = []
+    skills: Optional[List[Dict[str, Any]]] = []
 
     relevance_summary: Optional[str] = None
     criteria_summary: Optional[List[str]] = []
-    extra_information: Optional[Dict[str, Any]] = None
 
 
 class PeopleSearchResultList(BaseModel):

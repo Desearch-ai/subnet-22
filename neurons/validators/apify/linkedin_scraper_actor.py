@@ -9,7 +9,6 @@ from datura.protocol import (
     PeopleSearchResult,
     LinkedinEducationItem,
     LinkedinExperienceItem,
-    LinkedinLanguageItem,
 )
 
 
@@ -59,6 +58,21 @@ def toPeopleSearchResult(item):
             for experience in (item.get("educations") or [])
         ],
         languages=item.get("languages"),
+        courses=item.get("courses"),
+        highlights=item.get("highlights"),
+        honors_and_awards=item.get("honorsAndAwards"),
+        interests=item.get("interests"),
+        license_and_certificates=item.get("licenseAndCertificates"),
+        organizations=item.get("organizations"),
+        patents=item.get("patents"),
+        projects=item.get("projects"),
+        promos=item.get("promos"),
+        publications=item.get("publications"),
+        recommendations=item.get("recommendations"),
+        skills=item.get("skills"),
+        verifications=item.get("verifications"),
+        volunteer_and_awards=item.get("volunteerAndAwards"),
+        volunteer_causes=item.get("VolunterCauses"),
     )
 
     return profile
