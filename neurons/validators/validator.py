@@ -661,7 +661,7 @@ class Neuron(AbstractNeuron):
                             await asyncio.sleep(10)
                             continue
 
-                        if random.choice([True, False]):
+                        if random.choices([True, False], weights=[0.7, 0.3])[0]:
                             self.loop.create_task(self.run_synthetic_queries(strategy))
                         else:
                             self.loop.create_task(
