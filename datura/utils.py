@@ -779,3 +779,16 @@ def is_valid_web_search_result(result):
         bt.logging.error(f"Invalid miner web search result: {e}")
         return False
     return True
+
+
+def str_linkedin_profile(profile):
+    if isinstance(profile, PeopleSearchResult):
+        profile = profile.model_dump()
+
+    filtered_profile = {
+        key: value
+        for key, value in profile.items()
+        if key not in ["relevance_summary", "criteria_summary"]
+    }
+
+    return filtered_profile.__str__()

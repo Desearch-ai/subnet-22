@@ -13,7 +13,7 @@ from neurons.validators.apify.linkedin_scraper_actor import LinkedinScraperActor
 from neurons.validators.utils.prompt.criteria_relevance_profile import (
     SearchCriteriaRelevancePrompt,
 )
-from datura.utils import is_valid_linkedin_profile
+from datura.utils import is_valid_linkedin_profile, str_linkedin_profile
 
 APIFY_LINK_SCRAPE_AMOUNT = 2
 
@@ -155,7 +155,7 @@ class PeopleSearchRelevanceModel(BaseRewardModel):
         scores = []
         for criteria in synapse.criteria:
             response = await criteria_relevance_prompt.get_response(
-                criteria, profile.__str__()
+                criteria, str_linkedin_profile(profile)
             )
             score = criteria_relevance_prompt.extract_score(response) / 10
             scores.append(score)

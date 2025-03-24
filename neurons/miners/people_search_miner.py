@@ -6,7 +6,7 @@ from neurons.validators.utils.prompt.criteria_relevance_profile import (
     SearchCriteriaRelevancePrompt,
 )
 from datura.synapse import collect_responses
-
+from datura.utils import str_linkedin_profile
 
 SERPAPI_API_KEY = os.environ.get("SERPAPI_API_KEY")
 
@@ -47,8 +47,12 @@ class PeopleSearchMiner:
                     if not profile.get("criteria_summary"):
                         profile["criteria_summary"] = [""] * len(synapse.criteria)
 
-                    response = await prompt.get_response(criteria, profile.__str__())
-                    profile["criteria_summary"][i] = prompt.extract_explanation(response.strip())
+                    response = await prompt.get_response(
+                        criteria, str_linkedin_profile(profile)
+                    )
+                    profile["criteria_summary"][i] = prompt.extract_explanation(
+                        response.strip()
+                    )
 
                 async_actions.append(generate_criteria_summary(i, criteria, profile))
 

@@ -68,5 +68,6 @@ class PenaltyModelType(Enum):
     streaming_penalty = "streaming_penalty"
     exponential_penalty = "exponential_penalty"
     summary_rule_penalty = "summary_rule_penalty"
+    criteria_summary_penalty = "criteria_summary_penalty"
     twitter_count_penalty = "twitter_count_penalty"
     miner_score_penalty = "miner_score_penalty"
