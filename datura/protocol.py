@@ -73,7 +73,7 @@ class TwitterScraperEntitiesMediaExtAvailability(BaseModel):
 class MediaSize(BaseModel):
     w: int
     h: int
-    resize: str
+    resize: Optional[str] = None
 
 
 class Rect(BaseModel):
@@ -205,7 +205,7 @@ class TwitterScraperUser(BaseModel):
 
 
 class TwitterScraperTweet(BaseModel):
-    user: TwitterScraperUser
+    user: Optional[TwitterScraperUser] = None
     id: str
     text: str
     reply_count: int
