@@ -532,6 +532,23 @@ class Neuron(AbstractNeuron):
             start_time=time.time(),
         )
 
+    async def compute_people_search_organic_responses(self):
+        specified_uids = self.people_search_validator.get_uids_with_no_history(
+            self.available_uids
+        )
+        if specified_uids:
+            bt.logging.info(
+                f"Running basic web synthetic queries with specified uids: {specified_uids}"
+            )
+            await self.people_search_validator.query_and_score_people_search(
+                strategy=QUERY_MINERS.ALL, specified_uids=specified_uids
+            )
+
+        await self.people_search_validator.compute_rewards_and_penalties(
+            **self.people_search_validator.get_random_organic_responses(),
+            start_time=time.time(),
+        )
+
     async def compute_web_basic_organic_responses(self):
         specified_uids = self.basic_web_scraper_validator.get_uids_with_no_history(
             self.available_uids
@@ -588,9 +605,10 @@ class Neuron(AbstractNeuron):
                         if not self.organic_responses_computed:
                             bt.logging.info("Computing organic responses")
                             tasks = [
-                                self.compute_basic_organic_responses,
-                                self.compute_organic_responses,
-                                self.compute_web_basic_organic_responses,
+                                # self.compute_basic_organic_responses,
+                                # self.compute_organic_responses,
+                                # self.compute_web_basic_organic_responses,
+                                self.compute_people_search_organic_responses,
                             ]
                             self.loop.create_task(random.choice(tasks)())
 
