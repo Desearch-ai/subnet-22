@@ -201,7 +201,7 @@ class SummaryRelevanceRewardModel(BaseRewardModel):
                             validator_link
                             for validator_link in response.validator_links
                             if WebSearchUtils.remove_trailing_slash(
-                                validator_link.get("url")
+                                validator_link.get("url", "")
                             )
                             == link
                         ),
