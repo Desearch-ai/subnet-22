@@ -45,7 +45,7 @@ Follow these steps.
 """
 
 
-class SearchCriteriaRelevancePrompt(BasePrompt):
+class SearchCriteriaSummaryRelevancePrompt(BasePrompt):
     def __init__(self):
         super().__init__()
         self.template = user_template

@@ -17,9 +17,6 @@ from neurons.validators.reward.people_search_relevance import PeopleSearchReleva
 from neurons.validators.utils.tasks import SearchTask
 from neurons.validators.basic_organic_query_state import BasicOrganicQueryState
 from neurons.validators.penalty.exponential_penalty import ExponentialTimePenaltyModel
-from neurons.validators.penalty.criteria_summary_penalty import (
-    CriteriaSummaryPenaltyModel,
-)
 from neurons.validators.organic_history_mixin import OrganicHistoryMixin
 from neurons.validators.utils.prompt.search_criteria_generate_prompt import (
     SearchCriteriaGeneratePrompt,
@@ -82,7 +79,6 @@ class PeopleSearchValidator(OrganicHistoryMixin):
 
         self.penalty_functions = [
             ExponentialTimePenaltyModel(max_penalty=1),
-            CriteriaSummaryPenaltyModel(max_penalty=1),
         ]
 
     async def generate_criteria(self, synapse: PeopleSearchSynapse):

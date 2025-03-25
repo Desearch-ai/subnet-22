@@ -13,7 +13,11 @@ from neurons.validators.apify.linkedin_scraper_actor import LinkedinScraperActor
 from neurons.validators.utils.prompt.criteria_relevance_profile import (
     SearchCriteriaRelevancePrompt,
 )
+from neurons.validators.utils.prompt.search_criteria_summary_relevance import (
+    SearchCriteriaSummaryRelevancePrompt,
+)
 from datura.utils import is_valid_linkedin_profile, str_linkedin_profile
+from datura.synapse import collect_responses
 
 APIFY_LINK_SCRAPE_AMOUNT = 2
 
@@ -148,17 +152,58 @@ class PeopleSearchRelevanceModel(BaseRewardModel):
 
         return set1 == set2
 
-    async def check_criteria(
-        self, synapse: PeopleSearchSynapse, profile: dict
-    ) -> float:
+    async def check_criteria(self, synapse: PeopleSearchSynapse, profile) -> float:
         criteria_relevance_prompt = SearchCriteriaRelevancePrompt()
         scores = []
         for criteria in synapse.criteria:
-            response = await criteria_relevance_prompt.get_response(
-                criteria, str_linkedin_profile(profile)
-            )
+            response = await criteria_relevance_prompt.get_response(criteria, profile)
             score = criteria_relevance_prompt.extract_score(response) / 10
             scores.append(score)
+
+        return sum(scores) / len(scores) if scores else 0.0
+
+    async def check_criteria_summary(self, synapse: PeopleSearchSynapse) -> float:
+        search_criteria_summary_relevance_prompt = (
+            SearchCriteriaSummaryRelevancePrompt()
+        )
+
+        scores = []
+        async_actions = []
+        for result in synapse.results:
+            for i, criterion in enumerate(synapse.criteria):
+
+                async def calculate_score(result, criterion, i):
+                    try:
+                        criterion_summary = result.get("criteria_summary")
+
+                        if not criterion_summary:
+                            scores.append(0.0)
+                            return
+
+                        response = (
+                            await search_criteria_summary_relevance_prompt.get_response(
+                                str_linkedin_profile(result),
+                                criterion,
+                                criterion_summary[i],
+                            )
+                        )
+
+                        if (
+                            search_criteria_summary_relevance_prompt.extract_score(
+                                response
+                            )
+                            < 10
+                        ):
+                            scores.append(0.0)
+                            return
+
+                        scores.append(1.0)
+                    except:
+                        scores.append(0.0)
+
+                async_actions.append(calculate_score(result, criterion, i))
+
+        await collect_responses(async_actions)
 
         return sum(scores) / len(scores) if scores else 0.0
 
@@ -221,7 +266,11 @@ class PeopleSearchRelevanceModel(BaseRewardModel):
                     continue
 
                 # All checks passed => score = 1
-                scores.append(await self.check_criteria(response, miner_profile))
+                summary_score = await self.check_criteria_summary(response)
+                profile_score = await self.check_criteria(
+                    response, str_linkedin_profile(val_profile_data)
+                )
+                scores.append((summary_score + profile_score) / 2)
 
             # Return average of all validated profiles
             return sum(scores) / len(scores) if scores else 0.0
