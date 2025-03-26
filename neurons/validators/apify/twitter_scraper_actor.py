@@ -5,11 +5,13 @@ from typing import List, Optional
 import traceback
 import bittensor as bt
 from apify_client import ApifyClientAsync
+
 from datura.protocol import (
     TwitterScraperTweet,
     TwitterScraperMedia,
     TwitterScraperUser,
 )
+from datura.services.twitter_utils import TwitterUtils
 
 
 APIFY_API_KEY = os.environ.get("APIFY_API_KEY")
@@ -21,7 +23,7 @@ if not APIFY_API_KEY:
     )
 
 
-def toTwitterScraperTweet(item):
+def toTwitterScraperTweet(item, is_quote=False):
     if item is None:
         return None
 
@@ -35,6 +37,33 @@ def toTwitterScraperTweet(item):
     ]
 
     author = item.get("author", {})
+    quote = item.get("quoted_tweet")
+
+    user = None
+
+    if not is_quote:
+        user = TwitterScraperUser(
+            id=author.get("id"),
+            created_at=author.get("createdAt"),
+            description=author.get("description"),
+            followers_count=author.get("followers"),
+            favourites_count=author.get("favouritesCount"),
+            listed_count=author.get("listedCount"),
+            media_count=author.get("mediaCount"),
+            statuses_count=author.get("statusesCount"),
+            verified=author.get("isVerified"),
+            is_blue_verified=author.get("isBlueVerified"),
+            profile_image_url=author.get("profilePicture"),
+            profile_banner_url=author.get("coverPicture") or None,
+            url=author.get("url"),
+            name=author.get("name"),
+            username=author.get("userName"),
+            entities=author.get("entities"),
+            can_dm=author.get("canDm"),
+            can_media_tag=author.get("canMediaTag"),
+            location=author.get("location"),
+            pinned_tweet_ids=author.get("pinnedTweetIds"),
+        )
 
     tweet = TwitterScraperTweet(
         id=item.get("id"),
@@ -52,35 +81,14 @@ def toTwitterScraperTweet(item):
         media=media_list,
         lang=item.get("lang"),
         conversation_id=item.get("conversationId"),
-        in_reply_to_user_id=item.get("inReplyToUserId"),
-        quote=toTwitterScraperTweet(item.get("quote")),
+        quote=toTwitterScraperTweet(quote, is_quote=True),
         entities=item.get("entities"),
         extended_entities=item.get("extendedEntities"),
-        in_reply_to_screen_name=item.get("inReplyToUsername"),
+        # in_reply_to_user_id=item.get("inReplyToUserId"),
+        # in_reply_to_screen_name=item.get("inReplyToUsername"),
         in_reply_to_status_id=item.get("inReplyToId"),
-        quoted_status_id=item.get("quote", {}).get("id"),
-        user=TwitterScraperUser(
-            id=author.get("id"),
-            created_at=author.get("createdAt"),
-            description=author.get("description"),
-            followers_count=author.get("followers"),
-            favourites_count=author.get("favouritesCount"),
-            listed_count=author.get("listedCount"),
-            media_count=author.get("mediaCount"),
-            statuses_count=author.get("statusesCount"),
-            verified=author.get("isVerified"),
-            is_blue_verified=author.get("isBlueVerified"),
-            profile_image_url=author.get("profilePicture"),
-            profile_banner_url=author.get("coverPicture"),
-            url=author.get("url"),
-            name=author.get("name"),
-            username=author.get("userName"),
-            entities=author.get("entities"),
-            can_dm=author.get("canDm"),
-            can_media_tag=author.get("canMediaTag"),
-            location=author.get("location"),
-            pinned_tweet_ids=author.get("pinnedTweetIds"),
-        ),
+        quoted_status_id=quote.get("id") if quote else None,
+        user=user,
     )
 
     return tweet
@@ -90,6 +98,9 @@ class TwitterScraperActor:
     def __init__(self) -> None:
         # Actor: https://apify.com/apidojo/tweet-scraper
         self.actor_id = "61RPP7dywgiy0JPD0"
+
+        # Actor: https://apify.com/kaitoeasyapi/twitter-x-data-tweet-scraper-pay-per-result-cheapest
+        self.new_actor_id = "CJdippxWmn9uRfooo"
         self.user_scraper_actor_id = "V38PZzpEgOfeeWvZY"
         self.client = ApifyClientAsync(token=APIFY_API_KEY)
 
@@ -102,11 +113,14 @@ class TwitterScraperActor:
             )
             return []
         try:
+            tweet_ids = [TwitterUtils.extract_tweet_id(url) for url in urls]
+            tweet_ids = [tweet_id for tweet_id in tweet_ids if tweet_id is not None]
+
             run_input = {
-                "startUrls": urls,
+                "tweetIDs": tweet_ids,
             }
 
-            run = await self.client.actor(self.actor_id).call(run_input=run_input)
+            run = await self.client.actor(self.new_actor_id).call(run_input=run_input)
 
             tweets: List[TwitterScraperTweet] = []
 
@@ -114,7 +128,11 @@ class TwitterScraperActor:
                 run["defaultDatasetId"]
             ).iterate_items():
                 try:
-                    if item.get("noResults"):
+                    if (
+                        item.get("noResults")
+                        or item.get("type") == "mock_tweet"
+                        or item.get("url") == ""
+                    ):
                         continue
 
                     tweet = toTwitterScraperTweet(item)

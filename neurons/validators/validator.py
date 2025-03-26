@@ -592,7 +592,10 @@ class Neuron(AbstractNeuron):
                                 self.compute_organic_responses,
                                 self.compute_web_basic_organic_responses,
                             ]
-                            self.loop.create_task(random.choice(tasks)())
+
+                            self.loop.create_task(
+                                random.choices(tasks, weights=[0.2, 0.6, 0.2])[0]()
+                            )
 
                             self.organic_responses_computed = True
                         else:
@@ -661,7 +664,7 @@ class Neuron(AbstractNeuron):
                             await asyncio.sleep(10)
                             continue
 
-                        if random.choice([True, False]):
+                        if random.choices([True, False], weights=[0.6, 0.4])[0]:
                             self.loop.create_task(self.run_synthetic_queries(strategy))
                         else:
                             self.loop.create_task(

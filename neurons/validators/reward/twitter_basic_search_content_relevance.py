@@ -52,9 +52,9 @@ TWEET_EXACT_MATCH_FIELDS = {
     "is_quote_tweet",
     "is_retweet",
     "conversation_id",
-    "in_reply_to_screen_name",
+    # "in_reply_to_screen_name",
     "in_reply_to_status_id",
-    "in_reply_to_user_id",
+    # "in_reply_to_user_id",
     "quoted_status_id",
     "lang",
 }
@@ -85,7 +85,7 @@ TWEET_NUMERIC_FIELDS = {
 }
 
 USER_NUMERIC_FIELDS = {
-    "favourites_count",
+    # "favourites_count",
     "followers_count",
     "media_count",
     "statuses_count",
@@ -457,25 +457,32 @@ class TwitterBasicSearchContentRelevanceModel(BaseRewardModel):
                     continue
 
                 # Compare nested fields
-                for f in TWEET_NESTED_FIELDS:
-                    path, val1, val2 = self.compare_nested_fields(
-                        miner_tweet.get(f), val_tweet_dict.get(f)
-                    )
-                    if path:
-                        tweet_scores.append(0)
-                        bt.logging.debug(
-                            f"Field mismatch: {f}{path} => {val1} vs {val2}"
-                        )
-                        loop_terminated = True
-                        break
-                if loop_terminated:
-                    continue
+                # for f in TWEET_NESTED_FIELDS:
+                #     path, val1, val2 = self.compare_nested_fields(
+                #         miner_tweet.get(f), val_tweet_dict.get(f)
+                #     )
+                #     if path:
+                #         tweet_scores.append(0)
+                #         bt.logging.debug(
+                #             f"Field mismatch: {f}{path} => {val1} vs {val2}"
+                #         )
+                #         loop_terminated = True
+                #         break
+                # if loop_terminated:
+                #     continue
 
                 # Compare media
                 if not self.compare_media(
                     miner_tweet.get("media"), val_tweet_dict.get("media")
                 ):
                     tweet_scores.append(0)
+                    bt.logging.debug(
+                        f"Tweet media mismatch: {f} => {miner_user.get('media')} vs {val_user.get('media')}"
+                    )
+                    loop_terminated = True
+                    break
+
+                if loop_terminated:
                     continue
 
                 miner_user = miner_tweet.get("user")
