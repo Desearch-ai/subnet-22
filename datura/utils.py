@@ -436,7 +436,14 @@ async def save_logs_in_chunks(
                 "validator_tweets": [
                     val_tweet.dict() for val_tweet in response.validator_tweets
                 ],
-                "validator_links": response.validator_links,
+                "validator_links": [
+                    {
+                        "title": item.get("title"),
+                        "snippet": item.get("snippet"),
+                        "link": item.get("link"),
+                    }
+                    for item in response.validator_links
+                ],
                 "search_completion_links": response.search_completion_links,
                 "twitter_completion_links": response.completion_links,
                 "weight": weights.get(str(uid)),
@@ -510,7 +517,7 @@ async def save_logs_in_chunks(
                 f"max_items: {log.get('max_items')}"
                 f"result_type: {log.get('result_type')}"
             )
-        chunk_size = 20
+        chunk_size = 10
 
         log_chunks = [logs[i : i + chunk_size] for i in range(0, len(logs), chunk_size)]
 
