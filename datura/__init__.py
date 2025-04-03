@@ -19,7 +19,7 @@
 
 
 # version must stay on line 22
-__version__ = "0.0.177"
+__version__ = "0.0.178"
 version_split = __version__.split(".")
 __spec_version__ = (
     (1000 * int(version_split[0]))

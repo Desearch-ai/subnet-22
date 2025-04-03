@@ -2,6 +2,8 @@ from typing import List
 import random
 import bittensor as bt
 
+from neurons.validators.weights import EMISSION_CONTROL_HOTKEY
+
 
 class UIDManager:
     """
@@ -26,6 +28,21 @@ class UIDManager:
         """
         if not len(available_uids):
             return
+
+        if EMISSION_CONTROL_HOTKEY:
+            # Exclude emission control miner from organic requests
+            emission_control_uid = next(
+                (
+                    neuron.uid
+                    for neuron in self.metagraph.neurons
+                    if neuron.hotkey == EMISSION_CONTROL_HOTKEY
+                ),
+                None,
+            )
+
+            available_uids = [
+                uid for uid in available_uids if uid != emission_control_uid
+            ]
 
         self.available_uids = available_uids
 
