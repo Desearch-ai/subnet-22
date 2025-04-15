@@ -8,6 +8,8 @@ import copy
 import bittensor as bt
 import time
 import sys
+import itertools
+
 from datura.protocol import IsAlive
 from datura.bittensor.dendrite import Dendrite
 from datura.bittensor.subtensor import Subtensor
@@ -121,6 +123,14 @@ class Neuron(AbstractNeuron):
             self.dendrite2 = bt.dendrite(wallet=self.wallet)
             self.dendrite3 = bt.dendrite(wallet=self.wallet)
 
+        self.dendrites = itertools.cycle(
+            [
+                self.dendrite1,
+                self.dendrite2,
+                self.dendrite3,
+            ]
+        )
+
         self.uid = self.metagraph.hotkeys.index(self.wallet.hotkey.ss58_address)
         if self.wallet.hotkey.ss58_address not in self.metagraph.hotkeys:
             bt.logging.error(
@@ -211,22 +221,22 @@ class Neuron(AbstractNeuron):
             bt.logging.info("No available UIDs, attempting to refresh list.")
             return self.available_uids
 
-        # Filter uid_list based on specified_uids and only_allowed_miners
-        uid_list = [
-            uid
-            for uid in self.available_uids
-            if (not specified_uids or uid in specified_uids)
-            and (
-                not is_only_allowed_miner
-                or self.metagraph.axons[uid].coldkey
-                in self.config.neuron.only_allowed_miners
-            )
-        ]
-
         if strategy == QUERY_MINERS.RANDOM:
             uid = self.uid_manager.get_miner_uid()
             uids = torch.tensor([uid]) if uid else torch.tensor([])
         elif strategy == QUERY_MINERS.ALL:
+            # Filter uid_list based on specified_uids and only_allowed_miners
+            uid_list = [
+                uid
+                for uid in self.metagraph.uids
+                if (not specified_uids or uid in specified_uids)
+                and (
+                    not is_only_allowed_miner
+                    or self.metagraph.axons[uid].coldkey
+                    in self.config.neuron.only_allowed_miners
+                )
+            ]
+
             uids = torch.tensor(uid_list) if uid_list else torch.tensor([])
         bt.logging.info(f"Run uids ---------- Amount: {len(uids)} | {uids}")
         # uid_list = list(available_uids.keys())
@@ -330,9 +340,14 @@ class Neuron(AbstractNeuron):
             if not isinstance(rewards, torch.Tensor):
                 rewards = torch.tensor(rewards, device=self.config.neuron.device)
 
-            scattered_rewards = self.moving_averaged_scores.scatter(
-                0, uids, rewards
-            ).to(self.config.neuron.device)
+            empty_rewards = torch.zeros(self.moving_averaged_scores.size()).to(
+                self.config.neuron.device
+            )
+
+            scattered_rewards = empty_rewards.scatter(0, uids, rewards).to(
+                self.config.neuron.device
+            )
+
             average_reward = torch.mean(scattered_rewards)
             bt.logging.info(
                 f"Scattered reward: {average_reward:.6f}"
@@ -661,7 +676,7 @@ class Neuron(AbstractNeuron):
                             bt.logging.info(
                                 "No available UIDs, sleeping for 10 seconds."
                             )
-                            await asyncio.sleep(10)
+                            await asyncio.sleep(5)
                             continue
 
                         if random.choices([True, False], weights=[0.6, 0.4])[0]:
@@ -680,7 +695,7 @@ class Neuron(AbstractNeuron):
                 while True:
                     try:
                         if not self.available_uids:
-                            await asyncio.sleep(10)
+                            await asyncio.sleep(5)
                             continue
                         self.loop.create_task(self.run_organic_queries())
                         self.loop.create_task(self.run_basic_organic_queries())

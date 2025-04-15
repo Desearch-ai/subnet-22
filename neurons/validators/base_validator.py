@@ -1,5 +1,6 @@
 from abc import ABC, abstractmethod
 import asyncio
+import itertools
 import torch
 import bittensor as bt
 import argparse
@@ -15,6 +16,7 @@ class AbstractNeuron(ABC):
         self.dendrite1: "bt.dendrite" = None
         self.dendrite2: "bt.dendrite" = None
         self.dendrite3: "bt.dendrite" = None
+        self.dendrites: itertools.cycle[bt.dendrite]
 
     @classmethod
     @abstractmethod
