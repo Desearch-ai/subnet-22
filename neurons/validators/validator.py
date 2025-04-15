@@ -8,6 +8,8 @@ import copy
 import bittensor as bt
 import time
 import sys
+import itertools
+
 from datura.protocol import IsAlive
 from datura.bittensor.dendrite import Dendrite
 from datura.bittensor.subtensor import Subtensor
@@ -120,6 +122,14 @@ class Neuron(AbstractNeuron):
             self.dendrite1 = bt.dendrite(wallet=self.wallet)
             self.dendrite2 = bt.dendrite(wallet=self.wallet)
             self.dendrite3 = bt.dendrite(wallet=self.wallet)
+
+        self.dendrites = itertools.cycle(
+            [
+                self.neuron.dendrite1,
+                self.neuron.dendrite2,
+                self.neuron.dendrite3,
+            ]
+        )
 
         self.uid = self.metagraph.hotkeys.index(self.wallet.hotkey.ss58_address)
         if self.wallet.hotkey.ss58_address not in self.metagraph.hotkeys:

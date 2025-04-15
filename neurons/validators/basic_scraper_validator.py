@@ -4,7 +4,9 @@ import asyncio
 import time
 from datetime import datetime, timedelta
 import pytz
+from itertools import cycle
 from typing import Any, Dict, List
+
 import bittensor as bt
 from datura.protocol import (
     TwitterSearchSynapse,
@@ -127,32 +129,18 @@ class BasicScraperValidator(OrganicHistoryMixin):
             for task, params in zip(tasks, params_list)
         ]
 
-        dendrites = [
-            self.neuron.dendrite1,
-            self.neuron.dendrite2,
-            self.neuron.dendrite3,
-        ]
-
-        axon_groups = [axons[:80], axons[80:160], axons[160:]]
-        synapse_groups = [synapses[:80], synapses[80:160], synapses[160:]]
-
         all_tasks = []  # List to collect all asyncio tasks
 
-        for dendrite, axon_group, synapse_group in zip(
-            dendrites, axon_groups, synapse_groups
-        ):
-            for axon, syn in zip(axon_group, synapse_group):
-                # Create a task for each dendrite call
-                task = dendrite.call(
-                    target_axon=axon,
-                    synapse=syn.copy(),
-                    timeout=syn.max_execution_time + 5,
-                    deserialize=False,
-                )
-                all_tasks.append(task)
-
-        # Await all tasks concurrently
-        # all_responses = await asyncio.gather(*all_tasks, return_exceptions=True)
+        for axon, synapse in zip(axons, synapses):
+            dendrite = next(self.neuron.dendrites)
+            # Create a task for each dendrite call
+            task = dendrite.call(
+                target_axon=axon,
+                synapse=synapse.model_copy(),
+                timeout=synapse.max_execution_time + 5,
+                deserialize=False,
+            )
+            all_tasks.append(task)
 
         return all_tasks, uids, event, start_time
 
