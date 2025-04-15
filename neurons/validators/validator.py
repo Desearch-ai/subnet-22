@@ -676,7 +676,7 @@ class Neuron(AbstractNeuron):
                             bt.logging.info(
                                 "No available UIDs, sleeping for 10 seconds."
                             )
-                            await asyncio.sleep(10)
+                            await asyncio.sleep(5)
                             continue
 
                         if random.choices([True, False], weights=[0.6, 0.4])[0]:
@@ -695,7 +695,7 @@ class Neuron(AbstractNeuron):
                 while True:
                     try:
                         if not self.available_uids:
-                            await asyncio.sleep(10)
+                            await asyncio.sleep(5)
                             continue
                         self.loop.create_task(self.run_organic_queries())
                         self.loop.create_task(self.run_basic_organic_queries())
