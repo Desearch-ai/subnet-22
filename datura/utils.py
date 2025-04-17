@@ -20,7 +20,8 @@ import aiohttp
 from . import client
 from collections import deque
 from datetime import datetime
-from datura.misc import ttl_get_block
+
+# from datura.misc import ttl_get_block
 import re
 import html
 import unicodedata

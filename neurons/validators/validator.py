@@ -22,13 +22,15 @@ from neurons.validators.weights import init_wandb, set_weights, get_weights
 from traceback import print_exception
 from neurons.validators.base_validator import AbstractNeuron
 from datura import QUERY_MINERS
-from datura.misc import ttl_get_block
+
+# from datura.misc import ttl_get_block
 from datura.utils import (
     resync_metagraph,
     save_logs_in_chunks,
 )
 from datura.redis.utils import load_moving_averaged_scores, save_moving_averaged_scores
 from neurons.validators.proxy.uid_manager import UIDManager
+from bittensor.core.metagraph import AsyncMetagraph
 
 
 class Neuron(AbstractNeuron):
@@ -44,9 +46,10 @@ class Neuron(AbstractNeuron):
     def config(cls):
         return config(cls)
 
-    subtensor: "bt.subtensor"
+    # subtensor: "bt.subtensor"
+    subtensor: "bt.AsyncSubtensor"
     wallet: "bt.wallet"
-    metagraph: "bt.metagraph"
+    metagraph: AsyncMetagraph
     dendrite: "bt.dendrite"
 
     loop: asyncio.AbstractEventLoop
@@ -60,9 +63,9 @@ class Neuron(AbstractNeuron):
 
     uid_manager: UIDManager
 
-    @property
-    def block(self):
-        return ttl_get_block(self)
+    # @property
+    # def block(self):
+    # return ttl_get_block(self)
 
     def __init__(self):
         self.config = Neuron.config()
@@ -70,8 +73,6 @@ class Neuron(AbstractNeuron):
         bt.logging(config=self.config, logging_dir=self.config.neuron.full_path)
         print(self.config)
         bt.logging.info("neuron.__init__()")
-
-        self.initialize_components()
 
         init_wandb(self)
 
@@ -81,16 +82,10 @@ class Neuron(AbstractNeuron):
         bt.logging.info("initialized_validators")
 
         self.step = 0
-        self.check_registered()
+        # self.check_registered()
 
         self.organic_responses_computed = False
 
-        # Init Weights.
-        bt.logging.debug("loading", "moving_averaged_scores")
-        self.moving_averaged_scores = load_moving_averaged_scores(
-            self.metagraph, self.config
-        )
-        bt.logging.debug(str(self.moving_averaged_scores))
         self.available_uids = []
         self.thread_executor = concurrent.futures.ThreadPoolExecutor(
             thread_name_prefix="asyncio"
@@ -99,7 +94,7 @@ class Neuron(AbstractNeuron):
     async def run_sync_in_async(self, fn):
         return await self.loop.run_in_executor(self.thread_executor, fn)
 
-    def initialize_components(self):
+    async def initialize_components(self, subtensor):
         bt.logging(config=self.config, logging_dir=self.config.full_path)
         bt.logging.info(
             f"Running validator for subnet: {self.config.netuid} on network: {self.config.subtensor.chain_endpoint}"
@@ -115,8 +110,10 @@ class Neuron(AbstractNeuron):
             self.dendrite3 = Dendrite(wallet=self.wallet)
         else:
             self.wallet = bt.wallet(config=self.config)
-            self.subtensor = bt.subtensor(config=self.config)
-            self.metagraph = self.subtensor.metagraph(self.config.netuid)
+            # self.subtensor = bt.AsyncSubtensor(config=self.config)
+            self.subtensor = subtensor
+            # self.subtensor = bt.subtensor(config=self.config)
+            self.metagraph = await self.subtensor.metagraph(self.config.netuid)
             self.hotkeys = copy.deepcopy(self.metagraph.hotkeys)
             self.dendrite = bt.dendrite(wallet=self.wallet)
             self.dendrite1 = bt.dendrite(wallet=self.wallet)
@@ -542,7 +539,8 @@ class Neuron(AbstractNeuron):
         )
 
     async def get_current_block(self):
-        return await self.run_sync_in_async(self.subtensor.get_current_block)
+        # return await self.run_sync_in_async(self.subtensor.get_current_block)
+        return await self.subtensor.get_current_block()
 
     async def blocks_until_next_epoch(self):
         try:
@@ -552,10 +550,11 @@ class Neuron(AbstractNeuron):
                 f"Error getting current block: {e}, reinitializing subtensor..."
             )
 
-            self.subtensor = bt.subtensor(config=self.config)
+            # self.subtensor = bt.subtensor(config=self.config)
+            self.subtensor = bt.AsyncSubtensor(config=self.config)
             current_block = await self.get_current_block()
 
-        tempo = self.subtensor.tempo(self.config.netuid, current_block)
+        tempo = await self.subtensor.tempo(self.config.netuid, current_block)
 
         return tempo - (current_block + self.config.netuid + 1) % (tempo + 1)
 
@@ -575,7 +574,7 @@ class Neuron(AbstractNeuron):
             )
 
             # Ensure validator hotkey is still registered on the network.
-            self.check_registered()
+            await self.check_registered()
 
     async def sync(self):
         """
@@ -623,11 +622,11 @@ class Neuron(AbstractNeuron):
             except Exception as e:
                 bt.logging.error(f"Error in validator sync: {e}")
 
-            await asyncio.sleep(60)
+            await asyncio.sleep(1)
 
-    def check_registered(self):
+    async def check_registered(self):
         # --- Check for registration
-        if not self.subtensor.is_hotkey_registered(
+        if not await self.subtensor.is_hotkey_registered(
             netuid=self.config.netuid,
             hotkey_ss58=self.wallet.hotkey.ss58_address,
         ):
@@ -659,83 +658,96 @@ class Neuron(AbstractNeuron):
         return True  # Update right not based on interval of synthetic data
 
     async def run(self):
-        self.loop = asyncio.get_event_loop()
+        async with bt.AsyncSubtensor(config=self.config) as subtensor:
+            await self.initialize_components(subtensor)
 
-        self.loop.create_task(self.sync_metagraph())
-        self.loop.create_task(self.sync())
-        self.loop.create_task(self.update_available_uids_periodically())
-        bt.logging.info(f"Validator starting at block: {self.block}")
+            # Init Weights.
+            bt.logging.debug("loading", "moving_averaged_scores")
+            self.moving_averaged_scores = load_moving_averaged_scores(
+                self.metagraph, self.config
+            )
+            bt.logging.debug(str(self.moving_averaged_scores))
 
-        try:
+            self.loop = asyncio.get_event_loop()
 
-            async def run_with_interval(interval, strategy):
-                query_count = 0  # Initialize query count
-                while True:
-                    try:
-                        if not self.available_uids:
-                            bt.logging.info(
-                                "No available UIDs, sleeping for 10 seconds."
+            self.loop.create_task(self.sync_metagraph())
+            self.loop.create_task(self.sync())
+            self.loop.create_task(self.update_available_uids_periodically())
+            block = await self.get_current_block()
+            bt.logging.info(f"Validator starting at block: {block}")
+
+            try:
+
+                async def run_with_interval(interval, strategy):
+                    query_count = 0  # Initialize query count
+                    while True:
+                        try:
+                            if not self.available_uids:
+                                bt.logging.info(
+                                    "No available UIDs, sleeping for 10 seconds."
+                                )
+                                await asyncio.sleep(5)
+                                continue
+
+                            if random.choices([True, False], weights=[0.6, 0.4])[0]:
+                                self.loop.create_task(
+                                    self.run_synthetic_queries(strategy)
+                                )
+                            else:
+                                self.loop.create_task(
+                                    self.run_basic_synthetic_queries(strategy)
+                                )
+
+                            await asyncio.sleep(interval)  # Wait for synthetic interval
+                        except Exception as e:
+                            bt.logging.error(f"Error during task execution: {e}")
+                            await asyncio.sleep(interval)  # Wait before retrying
+
+                async def run_organic_with_interval(interval):
+                    while True:
+                        try:
+                            if not self.available_uids:
+                                await asyncio.sleep(5)
+                                continue
+                            self.loop.create_task(self.run_organic_queries())
+                            self.loop.create_task(self.run_basic_organic_queries())
+
+                            await asyncio.sleep(interval)
+                        except Exception as e:
+                            bt.logging.error(f"Error during task execution: {e}")
+                            await asyncio.sleep(interval)  # Wait before retrying
+
+                if not self.config.neuron.synthetic_disabled:
+                    if self.config.neuron.run_random_miner_syn_qs_interval > 0:
+                        self.loop.create_task(
+                            run_with_interval(
+                                self.config.neuron.run_all_miner_syn_qs_interval,
+                                QUERY_MINERS.RANDOM,
                             )
-                            await asyncio.sleep(5)
-                            continue
+                        )
 
-                        if random.choices([True, False], weights=[0.6, 0.4])[0]:
-                            self.loop.create_task(self.run_synthetic_queries(strategy))
-                        else:
-                            self.loop.create_task(
-                                self.run_basic_synthetic_queries(strategy)
+                    if self.config.neuron.run_all_miner_syn_qs_interval > 0:
+                        self.loop.create_task(
+                            run_with_interval(
+                                self.config.neuron.run_all_miner_syn_qs_interval,
+                                QUERY_MINERS.ALL,
                             )
-
-                        await asyncio.sleep(interval)  # Wait for synthetic interval
-                    except Exception as e:
-                        bt.logging.error(f"Error during task execution: {e}")
-                        await asyncio.sleep(interval)  # Wait before retrying
-
-            async def run_organic_with_interval(interval):
-                while True:
-                    try:
-                        if not self.available_uids:
-                            await asyncio.sleep(5)
-                            continue
-                        self.loop.create_task(self.run_organic_queries())
-                        self.loop.create_task(self.run_basic_organic_queries())
-
-                        await asyncio.sleep(interval)
-                    except Exception as e:
-                        bt.logging.error(f"Error during task execution: {e}")
-                        await asyncio.sleep(interval)  # Wait before retrying
-
-            if not self.config.neuron.synthetic_disabled:
-                if self.config.neuron.run_random_miner_syn_qs_interval > 0:
-                    self.loop.create_task(
-                        run_with_interval(
-                            self.config.neuron.run_all_miner_syn_qs_interval,
-                            QUERY_MINERS.RANDOM,
                         )
-                    )
+                # If someone intentionally stops the validator, it'll safely terminate operations.
 
-                if self.config.neuron.run_all_miner_syn_qs_interval > 0:
-                    self.loop.create_task(
-                        run_with_interval(
-                            self.config.neuron.run_all_miner_syn_qs_interval,
-                            QUERY_MINERS.ALL,
-                        )
-                    )
-            # If someone intentionally stops the validator, it'll safely terminate operations.
+                three_hours_in_seconds = 10800
+                self.loop.create_task(run_organic_with_interval(three_hours_in_seconds))
 
-            three_hours_in_seconds = 10800
-            self.loop.create_task(run_organic_with_interval(three_hours_in_seconds))
+            except KeyboardInterrupt:
+                self.axon.stop()
+                bt.logging.success("Validator killed by keyboard interrupt.")
+                sys.exit()
 
-        except KeyboardInterrupt:
-            self.axon.stop()
-            bt.logging.success("Validator killed by keyboard interrupt.")
-            sys.exit()
-
-        # In case of unforeseen errors, the validator will log the error and quit
-        except Exception as err:
-            bt.logging.error("Error during validation", str(err))
-            bt.logging.debug(print_exception(type(err), err, err.__traceback__))
-            self.should_exit = True
+            # In case of unforeseen errors, the validator will log the error and quit
+            except Exception as err:
+                bt.logging.error("Error during validation", str(err))
+                bt.logging.debug(print_exception(type(err), err, err.__traceback__))
+                self.should_exit = True
 
 
 def main():

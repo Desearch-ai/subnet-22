@@ -50,7 +50,7 @@ def _ttl_hash_gen(seconds: int):
         yield floor((time.time() - start_time) / seconds)
 
 
-# 12 seconds updating block.
-@ttl_cache(maxsize=1, ttl=12)
-def ttl_get_block(self) -> int:
-    return self.subtensor.get_current_block()
+# # 12 seconds updating block.
+# @ttl_cache(maxsize=1, ttl=12)
+# def ttl_get_block(self) -> int:
+#     return self.subtensor.get_current_block()
