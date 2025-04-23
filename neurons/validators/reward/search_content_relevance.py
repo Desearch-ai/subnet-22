@@ -118,8 +118,11 @@ class WebSearchContentRelevanceModel(BaseRewardModel):
             reddit_fetched_links_with_metadata, reddit_non_fetched_links = (
                 await self.scrape_with_retries(
                     urls=reddit_urls,
-                    scraper_actor_class=RedditScraperActor,
-                    group_size=200,
+                    scraper_actor_class=CheerioScraperActor,
+                    group_size=100,
+                    # TODO Find new working solution for scraping Reddit. Until now it is disabled
+                    # scraper_actor_class=RedditScraperActor,
+                    # group_size=200,
                     max_attempts=2,
                 )
             )

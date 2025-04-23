@@ -1,10 +1,5 @@
 import bittensor as bt
 import time
-from functools import partial
-from neurons.miners.twitter_search_miner import TwitterSearchMiner
-from neurons.miners.web_search_miner import WebSearchMiner
-from neurons.miners.people_search_miner import PeopleSearchMiner
-from neurons.miners.scraper_miner import ScraperMiner
 from datura.protocol import (
     TwitterURLsSearchSynapse,
     TwitterIDSearchSynapse,
@@ -23,6 +18,11 @@ from unittest.mock import AsyncMock
 
 class Dendrite(bt.dendrite):
     def __init__(self, wallet=None):
+        from neurons.miners.twitter_search_miner import TwitterSearchMiner
+        from neurons.miners.web_search_miner import WebSearchMiner
+        from neurons.miners.scraper_miner import ScraperMiner
+        from neurons.miners.people_search_miner import PeopleSearchMiner
+
         try:
             super().__init__(wallet)
         except:

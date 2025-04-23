@@ -411,20 +411,22 @@ async def get_tweets_by_urls(
     if access_key != EXPECTED_ACCESS_KEY:
         raise HTTPException(status_code=401, detail="Invalid access key")
 
+    results = []
+
     try:
         urls = list(set(request.urls))
 
         bt.logging.info(f"Fetching tweets for URLs: {urls}")
 
         results = await neu.basic_scraper_validator.twitter_urls_search(urls)
-
-        if results:
-            return results
-        else:
-            raise HTTPException(status_code=404, detail="Tweets not found")
     except Exception as e:
         bt.logging.error(f"Error fetching tweets by URLs: {e}")
         raise HTTPException(status_code=500, detail=f"An error occurred: {str(e)}")
+
+    if results:
+        return results
+    else:
+        raise HTTPException(status_code=404, detail="Tweets not found")
 
 
 @app.get(
@@ -446,18 +448,20 @@ async def get_tweet_by_id(
     if access_key != EXPECTED_ACCESS_KEY:
         raise HTTPException(status_code=401, detail="Invalid access key")
 
+    results = []
+
     try:
         bt.logging.info(f"Fetching tweet with ID: {id}")
 
         results = await neu.basic_scraper_validator.twitter_id_search(id)
-
-        if results:
-            return results[0]
-        else:
-            raise HTTPException(status_code=404, detail="Tweet not found")
     except Exception as e:
         bt.logging.error(f"Error fetching tweet by ID: {e}")
         raise HTTPException(status_code=500, detail=f"An error occurred: {str(e)}")
+
+    if results:
+        return results[0]
+    else:
+        raise HTTPException(status_code=404, detail="Tweet not found")
 
 
 @app.get(

@@ -8,6 +8,8 @@ import copy
 import bittensor as bt
 import time
 import sys
+import itertools
+
 from datura.protocol import IsAlive
 from datura.bittensor.dendrite import Dendrite
 from datura.bittensor.subtensor import Subtensor
@@ -124,6 +126,14 @@ class Neuron(AbstractNeuron):
             self.dendrite2 = bt.dendrite(wallet=self.wallet)
             self.dendrite3 = bt.dendrite(wallet=self.wallet)
 
+        self.dendrites = itertools.cycle(
+            [
+                self.dendrite1,
+                self.dendrite2,
+                self.dendrite3,
+            ]
+        )
+
         self.uid = self.metagraph.hotkeys.index(self.wallet.hotkey.ss58_address)
         if self.wallet.hotkey.ss58_address not in self.metagraph.hotkeys:
             bt.logging.error(
@@ -214,22 +224,22 @@ class Neuron(AbstractNeuron):
             bt.logging.info("No available UIDs, attempting to refresh list.")
             return self.available_uids
 
-        # Filter uid_list based on specified_uids and only_allowed_miners
-        uid_list = [
-            uid
-            for uid in self.available_uids
-            if (not specified_uids or uid in specified_uids)
-            and (
-                not is_only_allowed_miner
-                or self.metagraph.axons[uid].coldkey
-                in self.config.neuron.only_allowed_miners
-            )
-        ]
-
         if strategy == QUERY_MINERS.RANDOM:
             uid = self.uid_manager.get_miner_uid()
             uids = torch.tensor([uid]) if uid else torch.tensor([])
         elif strategy == QUERY_MINERS.ALL:
+            # Filter uid_list based on specified_uids and only_allowed_miners
+            uid_list = [
+                uid
+                for uid in self.metagraph.uids
+                if (not specified_uids or uid in specified_uids)
+                and (
+                    not is_only_allowed_miner
+                    or self.metagraph.axons[uid].coldkey
+                    in self.config.neuron.only_allowed_miners
+                )
+            ]
+
             uids = torch.tensor(uid_list) if uid_list else torch.tensor([])
         bt.logging.info(f"Run uids ---------- Amount: {len(uids)} | {uids}")
         # uid_list = list(available_uids.keys())
@@ -333,9 +343,14 @@ class Neuron(AbstractNeuron):
             if not isinstance(rewards, torch.Tensor):
                 rewards = torch.tensor(rewards, device=self.config.neuron.device)
 
-            scattered_rewards = self.moving_averaged_scores.scatter(
-                0, uids, rewards
-            ).to(self.config.neuron.device)
+            empty_rewards = torch.zeros(self.moving_averaged_scores.size()).to(
+                self.config.neuron.device
+            )
+
+            scattered_rewards = empty_rewards.scatter(0, uids, rewards).to(
+                self.config.neuron.device
+            )
+
             average_reward = torch.mean(scattered_rewards)
             bt.logging.info(
                 f"Scattered reward: {average_reward:.6f}"
@@ -387,16 +402,6 @@ class Neuron(AbstractNeuron):
                 f"Completed gathering coroutines for query_synapse in {end_time - start_time:.2f} seconds"
             )
 
-            sync_start_time = time.time()
-            bt.logging.info("Calling sync metagraph method")
-            await self.sync_metagraph()
-            bt.logging.info("Completed calling sync metagraph method")
-
-            sync_end_time = time.time()
-            bt.logging.info(
-                f"Sync metagraph method execution time: {sync_end_time - sync_start_time:.2f} seconds"
-            )
-
             self.step += 1
             bt.logging.info(f"Incremented step to {self.step}")
         except Exception as err:
@@ -430,16 +435,6 @@ class Neuron(AbstractNeuron):
 
             bt.logging.info(
                 f"Completed gathering coroutines for basic_query_synapse in {end_time - start_time:.2f} seconds"
-            )
-
-            sync_start_time = time.time()
-            bt.logging.info("Calling sync metagraph method")
-            await self.sync_metagraph()
-            bt.logging.info("Completed calling sync metagraph method")
-
-            sync_end_time = time.time()
-            bt.logging.info(
-                f"Sync metagraph method execution time: {sync_end_time - sync_start_time:.2f} seconds"
             )
 
             self.step += 1
@@ -566,27 +561,50 @@ class Neuron(AbstractNeuron):
             start_time=time.time(),
         )
 
-    def blocks_until_next_epoch(self):
-        current_block = self.subtensor.get_current_block()
+    async def get_current_block(self):
+        return await self.run_sync_in_async(self.subtensor.get_current_block)
+
+    async def blocks_until_next_epoch(self):
+        try:
+            current_block = await self.get_current_block()
+        except Exception as e:
+            bt.logging.error(
+                f"Error getting current block: {e}, reinitializing subtensor..."
+            )
+
+            self.subtensor = bt.subtensor(config=self.config)
+            current_block = await self.get_current_block()
+
         tempo = self.subtensor.tempo(self.config.netuid, current_block)
 
         return tempo - (current_block + self.config.netuid + 1) % (tempo + 1)
 
     async def sync_metagraph(self):
-        # Ensure validator hotkey is still registered on the network.
-        self.check_registered()
-        bt.logging.info("Syncing metagraph.")
-        await self.run_sync_in_async(lambda: resync_metagraph(self))
+        while True:
+            await asyncio.sleep(30 * 60)  # 30 minutes
+
+            sync_start_time = time.time()
+
+            bt.logging.info("Calling sync metagraph method")
+            await self.run_sync_in_async(lambda: resync_metagraph(self))
+            bt.logging.info("Completed calling sync metagraph method")
+
+            sync_end_time = time.time()
+            bt.logging.info(
+                f"Sync metagraph method execution time: {sync_end_time - sync_start_time:.2f} seconds"
+            )
+
+            # Ensure validator hotkey is still registered on the network.
+            self.check_registered()
 
     async def sync(self):
         """
         Wrapper for synchronizing the state of the network for the given miner or validator.
         """
-        await self.sync_metagraph()
 
         while True:
             try:
-                blocks_left = self.blocks_until_next_epoch()
+                blocks_left = await self.blocks_until_next_epoch()
 
                 bt.logging.debug(f"Blocks left until next epoch: {blocks_left}")
 
@@ -610,7 +628,10 @@ class Neuron(AbstractNeuron):
                                 # self.compute_web_basic_organic_responses,
                                 self.compute_people_search_organic_responses,
                             ]
-                            self.loop.create_task(random.choice(tasks)())
+
+                            self.loop.create_task(
+                                random.choices(tasks, weights=[0.2, 0.6, 0.2])[0]()
+                            )
 
                             self.organic_responses_computed = True
                         else:
@@ -637,19 +658,6 @@ class Neuron(AbstractNeuron):
             )
             sys.exit()
 
-    def should_sync_metagraph(self):
-        """
-        Check if enough epoch blocks have elapsed since the last checkpoint to sync.
-        """
-        difference = self.block - self.metagraph.last_update[self.uid]
-        print(
-            f"Current block: {self.block}, Last update for UID {self.uid}: {self.metagraph.last_update[self.uid]}, Difference: {difference}"
-        )
-        should_set = difference > self.config.neuron.checkpoint_block_length
-        bt.logging.info(f"Should set weights: {should_set}")
-        # return should_set
-        return True  # Update right not based on interval of synthetic data
-
     def should_set_weights(self) -> bool:
         # Don't set weights on initialization.
         # if self.step == 0:
@@ -674,6 +682,7 @@ class Neuron(AbstractNeuron):
     async def run(self):
         self.loop = asyncio.get_event_loop()
 
+        self.loop.create_task(self.sync_metagraph())
         self.loop.create_task(self.sync())
         self.loop.create_task(self.update_available_uids_periodically())
         bt.logging.info(f"Validator starting at block: {self.block}")
@@ -688,10 +697,10 @@ class Neuron(AbstractNeuron):
                             bt.logging.info(
                                 "No available UIDs, sleeping for 10 seconds."
                             )
-                            await asyncio.sleep(10)
+                            await asyncio.sleep(5)
                             continue
 
-                        if random.choice([True, False]):
+                        if random.choices([True, False], weights=[0.6, 0.4])[0]:
                             self.loop.create_task(self.run_synthetic_queries(strategy))
                         else:
                             self.loop.create_task(
@@ -707,7 +716,7 @@ class Neuron(AbstractNeuron):
                 while True:
                     try:
                         if not self.available_uids:
-                            await asyncio.sleep(10)
+                            await asyncio.sleep(5)
                             continue
                         self.loop.create_task(self.run_organic_queries())
                         self.loop.create_task(self.run_basic_organic_queries())

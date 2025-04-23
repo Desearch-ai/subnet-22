@@ -23,6 +23,9 @@ class IsAlive(Synapse):
         description="Completion status of the current StreamPrompting object. This attribute is mutable and can be updated.",
     )
 
+    def get_required_fields(self):
+        return []
+
 
 class TwitterPromptAnalysisResult(BaseModel):
     api_params: Dict[str, Any] = {}
@@ -73,7 +76,7 @@ class TwitterScraperEntitiesMediaExtAvailability(BaseModel):
 class MediaSize(BaseModel):
     w: int
     h: int
-    resize: str
+    resize: Optional[str] = None
 
 
 class Rect(BaseModel):
@@ -205,7 +208,7 @@ class TwitterScraperUser(BaseModel):
 
 
 class TwitterScraperTweet(BaseModel):
-    user: TwitterScraperUser
+    user: Optional[TwitterScraperUser] = None
     id: str
     text: str
     reply_count: int
@@ -660,6 +663,10 @@ class ScraperStreamingSynapse(StreamingSynapse):
     def deserialize(self) -> str:
         return self.completion
 
+    def get_required_fields(self) -> List[str]:
+        """Returns a list of required fields for the Twitter search query."""
+        return ["prompt"]
+
     def extract_response_json(self, response: ClientResponse) -> dict:
         headers = {
             k.decode("utf-8"): v.decode("utf-8")
@@ -818,6 +825,10 @@ class WebSearchSynapse(Synapse):
 
     def deserialize(self) -> str:
         return self
+
+    def get_required_fields(self) -> List[str]:
+        """Returns a list of required fields for the Twitter search query."""
+        return []
 
 
 class LinkedinExperienceItem(BaseModel):
@@ -1056,6 +1067,10 @@ class TwitterSearchSynapse(Synapse):
     def deserialize(self) -> str:
         return self
 
+    def get_required_fields(self) -> List[str]:
+        """Returns a list of required fields for the Twitter search query."""
+        return ["query"]
+
 
 class TwitterIDSearchSynapse(Synapse):
     """A class to represent Twitter ID Advanced Search Synapse"""
@@ -1088,6 +1103,10 @@ class TwitterIDSearchSynapse(Synapse):
     def deserialize(self) -> str:
         return self
 
+    def get_required_fields(self) -> List[str]:
+        """Returns a list of required fields for the Twitter search query."""
+        return ["id"]
+
 
 class TwitterURLsSearchSynapse(Synapse):
     """A class to represent Twitter URLs Advanced Search Synapse"""
@@ -1119,3 +1138,7 @@ class TwitterURLsSearchSynapse(Synapse):
 
     def deserialize(self) -> str:
         return self
+
+    def get_required_fields(self) -> List[str]:
+        """Returns a list of required fields for the Twitter search query."""
+        return ["urls"]
