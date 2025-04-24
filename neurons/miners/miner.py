@@ -29,8 +29,10 @@ from datura.protocol import (
     TwitterURLsSearchSynapse,
     TwitterIDSearchSynapse,
     PeopleSearchSynapse,
+    DeepResearchSynapse,
 )
 from neurons.miners.scraper_miner import ScraperMiner
+from neurons.miners.deep_research_miner import DeepResearchMiner
 from neurons.miners.twitter_search_miner import TwitterSearchMiner
 from neurons.miners.web_search_miner import WebSearchMiner
 from neurons.miners.people_search_miner import PeopleSearchMiner
@@ -153,6 +155,9 @@ class StreamMiner(ABC):
         ).attach(
             forward_fn=self.people_search,
             blacklist_fn=self.blacklist_people_search,
+        ).attach(
+            forward_fn=self.deep_research,
+            blacklist_fn=self.blacklist_deep_research,
         )
 
         bt.logging.info(f"Axon created: {self.axon}")
@@ -173,6 +178,9 @@ class StreamMiner(ABC):
         self, synapse: ScraperStreamingSynapse
     ) -> ScraperStreamingSynapse:
         return self.smart_scraper(synapse)
+
+    def _deep_research(self, synapse: DeepResearchSynapse) -> DeepResearchSynapse:
+        return self.deep_research(synapse)
 
     async def _twitter_search(
         self, synapse: TwitterSearchSynapse
@@ -277,6 +285,13 @@ class StreamMiner(ABC):
         bt.logging.info(blacklist[1])
         return blacklist
 
+    def blacklist_deep_research(self, synapse: DeepResearchSynapse) -> Tuple[bool, str]:
+        blacklist = self.base_blacklist(
+            synapse, datura.TWITTER_SCRAPPER_BLACKLIST_STAKE
+        )
+        bt.logging.info(blacklist[1])
+        return blacklist
+
     def blacklist_twitter_search(
         self, synapse: TwitterSearchSynapse
     ) -> Tuple[bool, str]:
@@ -327,6 +342,9 @@ class StreamMiner(ABC):
     ) -> ScraperStreamingSynapse:
         return self.smart_scraper(synapse)
 
+    async def _deep_research(self, synapse: DeepResearchSynapse) -> DeepResearchSynapse:
+        return self.deep_research(synapse)
+
     def _is_alive(self, synapse: IsAlive) -> IsAlive:
         bt.logging.info("answered to be active")
         synapse.completion = "True"
@@ -336,6 +354,9 @@ class StreamMiner(ABC):
     def smart_scraper(
         self, synapse: ScraperStreamingSynapse
     ) -> ScraperStreamingSynapse: ...
+
+    @abstractmethod
+    def deep_research(self, synapse: DeepResearchSynapse) -> DeepResearchSynapse: ...
 
     @abstractmethod
     async def twitter_search(
@@ -502,6 +523,12 @@ class StreamingTemplateMiner(StreamMiner):
         bt.logging.info(f"started processing for synapse {synapse}")
         tw_miner = ScraperMiner(self)
         token_streamer = partial(tw_miner.smart_scraper, synapse)
+        return synapse.create_streaming_response(token_streamer)
+
+    def deep_research(self, synapse: DeepResearchSynapse) -> DeepResearchSynapse:
+        bt.logging.info(f"started processing for synapse {synapse}")
+        tw_miner = DeepResearchMiner(self)
+        token_streamer = partial(tw_miner.deep_research, synapse)
         return synapse.create_streaming_response(token_streamer)
 
     async def twitter_search(
