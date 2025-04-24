@@ -18,6 +18,7 @@ from neurons.validators.advanced_scraper_validator import AdvancedScraperValidat
 from neurons.validators.basic_scraper_validator import BasicScraperValidator
 from neurons.validators.basic_web_scraper_validator import BasicWebScraperValidator
 from neurons.validators.people_search_validator import PeopleSearchValidator
+from neurons.validators.deep_research_validator import DeepResearchValidator
 from neurons.validators.config import add_args, check_config, config
 from neurons.validators.weights import init_wandb, set_weights, get_weights
 from traceback import print_exception
@@ -27,6 +28,7 @@ from datura.misc import ttl_get_block
 from datura.utils import (
     resync_metagraph,
     save_logs_in_chunks,
+    save_logs_in_chunks_for_deep_research,
 )
 from datura.redis.utils import load_moving_averaged_scores, save_moving_averaged_scores
 from neurons.validators.proxy.uid_manager import UIDManager
@@ -56,6 +58,7 @@ class Neuron(AbstractNeuron):
     basic_scraper_validator: "BasicScraperValidator"
     basic_web_scraper_validator: "BasicWebScraperValidator"
     people_search_validator: "PeopleSearchValidator"
+    deep_research_validator: "DeepResearchValidator"
     moving_average_scores: torch.Tensor = None
     uid: int = None
     shutdown_event: asyncio.Event()
@@ -81,6 +84,7 @@ class Neuron(AbstractNeuron):
         self.basic_scraper_validator = BasicScraperValidator(neuron=self)
         self.basic_web_scraper_validator = BasicWebScraperValidator(neuron=self)
         self.people_search_validator = PeopleSearchValidator(neuron=self)
+        self.deep_research_validator = DeepResearchValidator(neuron=self)
         bt.logging.info("initialized_validators")
 
         self.step = 0
@@ -292,6 +296,59 @@ class Neuron(AbstractNeuron):
             bt.logging.error(f"Error in update_scores: {e}")
             raise e
 
+    async def update_scores_for_deep_research(
+        self,
+        wandb_data,
+        responses,
+        uids,
+        rewards,
+        all_rewards,
+        all_original_rewards,
+        val_score_responses_list,
+        organic_penalties,
+        neuron,
+        query_type,
+    ):
+        try:
+            if self.config.wandb_on:
+                wandb.log(wandb_data)
+
+            weights = await self.run_sync_in_async(lambda: get_weights(self))
+
+            asyncio.create_task(
+                save_logs_in_chunks_for_deep_research(
+                    self,
+                    responses=responses,
+                    uids=uids,
+                    rewards=rewards,
+                    content_rewards=all_rewards[0],
+                    data_rewards=all_rewards[1],
+                    logical_coherence_rewards=all_rewards[2],
+                    source_links_rewards=all_rewards[3],
+                    system_message_rewards=all_rewards[4],
+                    performance_rewards=all_rewards[5],
+                    original_content_rewards=all_original_rewards[0],
+                    original_data_rewards=all_original_rewards[1],
+                    original_logical_coherence_rewards=all_original_rewards[2],
+                    original_source_links_rewards=all_original_rewards[3],
+                    original_system_message_rewards=all_original_rewards[4],
+                    original_performance_rewards=all_original_rewards[5],
+                    content_scores=val_score_responses_list[0],
+                    data_scores=val_score_responses_list[1],
+                    logical_coherence_scores=val_score_responses_list[2],
+                    source_links_scores=val_score_responses_list[3],
+                    system_message_scores=val_score_responses_list[4],
+                    weights=weights,
+                    neuron=neuron,
+                    netuid=self.config.netuid,
+                    organic_penalties=organic_penalties,
+                    query_type=query_type,
+                )
+            )
+        except Exception as e:
+            bt.logging.error(f"Error in update_scores: {e}")
+            raise e
+
     async def update_scores_for_basic(
         self,
         wandb_data,
@@ -369,22 +426,17 @@ class Neuron(AbstractNeuron):
             bt.logging.error(f"Error in update_moving_averaged_scores: {e}")
             raise e
 
-    async def query_synapse(self, strategy):
+    async def query_synapse(self, validator, strategy):
         try:
-            await self.advanced_scraper_validator.query_and_score(strategy)
+            await validator.query_and_score(strategy)
         except Exception as e:
             bt.logging.error(f"General exception: {e}\n{traceback.format_exc()}")
             await asyncio.sleep(100)
 
-    async def basic_query_synapse(self, strategy):
-        try:
-            await self.basic_scraper_validator.query_and_score_twitter_basic(strategy)
-        except Exception as e:
-            bt.logging.error(f"General exception: {e}\n{traceback.format_exc()}")
-            await asyncio.sleep(100)
-
-    async def run_synthetic_queries(self, strategy):
-        bt.logging.info(f"Starting run_synthetic_queries with strategy={strategy}")
+    async def run_synthetic_queries(self, validator, strategy):
+        bt.logging.info(
+            f"Starting run_synthetic_queries with validator={validator}, strategy={strategy}"
+        )
         total_start_time = time.time()
 
         try:
@@ -394,7 +446,9 @@ class Neuron(AbstractNeuron):
                 f"Running step forward for query_synapse, Step: {self.step}"
             )
 
-            await asyncio.gather(*[self.query_synapse(strategy) for _ in range(1)])
+            await asyncio.gather(
+                *[self.query_synapse(validator, strategy) for _ in range(1)]
+            )
 
             end_time = time.time()
 
@@ -412,41 +466,6 @@ class Neuron(AbstractNeuron):
             total_execution_time = (total_end_time - total_start_time) / 60
             bt.logging.info(
                 f"Total execution time for run_synthetic_queries: {total_execution_time:.2f} minutes"
-            )
-
-    async def run_basic_synthetic_queries(self, strategy):
-        bt.logging.info(
-            f"Starting run_basic_synthetic_queries with strategy={strategy}"
-        )
-        total_start_time = time.time()
-
-        try:
-            start_time = time.time()
-
-            bt.logging.info(
-                f"Running step forward for basic_query_synapse, Step: {self.step}"
-            )
-
-            await asyncio.gather(
-                *[self.basic_query_synapse(strategy) for _ in range(1)]
-            )
-
-            end_time = time.time()
-
-            bt.logging.info(
-                f"Completed gathering coroutines for basic_query_synapse in {end_time - start_time:.2f} seconds"
-            )
-
-            self.step += 1
-            bt.logging.info(f"Incremented step to {self.step}")
-        except Exception as err:
-            bt.logging.error("Error in run_basic_synthetic_queries", str(err))
-            bt.logging.debug(print_exception(type(err), err, err.__traceback__))
-        finally:
-            total_end_time = time.time()
-            total_execution_time = (total_end_time - total_start_time) / 60
-            bt.logging.info(
-                f"Total execution time for run_basic_synthetic_queries: {total_execution_time:.2f} minutes"
             )
 
     async def run_organic_queries(self):
@@ -518,7 +537,7 @@ class Neuron(AbstractNeuron):
             bt.logging.info(
                 f"Running basic synthetic queries with specified uids: {specified_uids}"
             )
-            await self.basic_scraper_validator.query_and_score_twitter_basic(
+            await self.basic_scraper_validator.query_and_score(
                 strategy=QUERY_MINERS.ALL, specified_uids=specified_uids
             )
 
@@ -533,7 +552,7 @@ class Neuron(AbstractNeuron):
         )
         if specified_uids:
             bt.logging.info(
-                f"Running basic web synthetic queries with specified uids: {specified_uids}"
+                f"Running people search synthetic queries with specified uids: {specified_uids}"
             )
             await self.people_search_validator.query_and_score_people_search(
                 strategy=QUERY_MINERS.ALL, specified_uids=specified_uids
@@ -541,6 +560,23 @@ class Neuron(AbstractNeuron):
 
         await self.people_search_validator.compute_rewards_and_penalties(
             **self.people_search_validator.get_random_organic_responses(),
+            start_time=time.time(),
+        )
+
+    async def compute_deep_research_organic_responses(self):
+        specified_uids = self.deep_research_validator.get_uids_with_no_history(
+            self.available_uids
+        )
+        if specified_uids:
+            bt.logging.info(
+                f"Running deep research synthetic queries with specified uids: {specified_uids}"
+            )
+            await self.deep_research_validator.query_and_score(
+                strategy=QUERY_MINERS.ALL, specified_uids=specified_uids
+            )
+
+        await self.deep_research_validator.compute_rewards_and_penalties(
+            **self.deep_research_validator.get_random_organic_responses(),
             start_time=time.time(),
         )
 
@@ -623,14 +659,15 @@ class Neuron(AbstractNeuron):
                         if not self.organic_responses_computed:
                             bt.logging.info("Computing organic responses")
                             tasks = [
-                                # self.compute_basic_organic_responses,
-                                # self.compute_organic_responses,
-                                # self.compute_web_basic_organic_responses,
-                                self.compute_people_search_organic_responses,
+                                self.compute_organic_responses,
+                                self.compute_basic_organic_responses,
+                                self.compute_deep_research_organic_responses,
+                                self.compute_web_basic_organic_responses,
+                                # self.compute_people_search_organic_responses,
                             ]
 
                             self.loop.create_task(
-                                random.choices(tasks, weights=[0.2, 0.6, 0.2])[0]()
+                                random.choices(tasks, weights=[0.4, 0.2, 0.2, 0.2])[0]()
                             )
 
                             self.organic_responses_computed = True
@@ -700,12 +737,18 @@ class Neuron(AbstractNeuron):
                             await asyncio.sleep(5)
                             continue
 
-                        if random.choices([True, False], weights=[0.6, 0.4])[0]:
-                            self.loop.create_task(self.run_synthetic_queries(strategy))
-                        else:
-                            self.loop.create_task(
-                                self.run_basic_synthetic_queries(strategy)
-                            )
+                        choice = random.choices(
+                            [
+                                self.advanced_scraper_validator,
+                                self.basic_scraper_validator,
+                                self.deep_research_validator,
+                            ],
+                            weights=[0.5, 0.25, 0.25],
+                        )[0]
+
+                        self.loop.create_task(
+                            self.run_synthetic_queries(choice, strategy)
+                        )
 
                         await asyncio.sleep(interval)  # Wait for synthetic interval
                     except Exception as e:

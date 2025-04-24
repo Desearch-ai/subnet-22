@@ -390,7 +390,7 @@ class BasicScraperValidator(OrganicHistoryMixin):
 
         return params
 
-    async def query_and_score_twitter_basic(self, strategy, specified_uids=None):
+    async def query_and_score(self, strategy, specified_uids=None):
         try:
             if not len(self.neuron.available_uids):
                 bt.logging.info(
