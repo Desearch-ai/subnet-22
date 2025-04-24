@@ -8,6 +8,7 @@ from datura.protocol import (
     PeopleSearchSynapse,
     IsAlive,
     ScraperStreamingSynapse,
+    DeepResearchSynapse,
 )
 from bittensor_wallet import Wallet
 from .miner import Miner
@@ -22,6 +23,7 @@ class Dendrite(bt.dendrite):
         from neurons.miners.web_search_miner import WebSearchMiner
         from neurons.miners.scraper_miner import ScraperMiner
         from neurons.miners.people_search_miner import PeopleSearchMiner
+        from neurons.miners.deep_research_miner import DeepResearchMiner
 
         try:
             super().__init__(wallet)
@@ -40,6 +42,7 @@ class Dendrite(bt.dendrite):
         self.web_search_miner = WebSearchMiner(self.miner)
         self.people_search_miner = PeopleSearchMiner(self.miner)
         self.scraper_miner = ScraperMiner(self.miner)
+        self.deep_research_miner = DeepResearchMiner(self.miner)
 
     async def call(self, target_axon, synapse, timeout=12, deserialize=True):
         start_time = time.time()
@@ -86,47 +89,42 @@ class Dendrite(bt.dendrite):
 
     async def call_stream(self, target_axon, synapse, timeout=12.0, deserialize=True):
         start_time = time.time()
+        responses = []
+
+        async def mockSend(data):
+            responses.append(data["body"])
+
+        async def generateResponse():
+            for data in responses:
+                yield data
+
         if isinstance(synapse, ScraperStreamingSynapse):
-            responses = []
-
-            async def mockSend(data):
-                responses.append(data["body"])
-
-            async def generateResponse():
-                for data in responses:
-                    yield data
-
             await self.scraper_miner.smart_scraper(synapse, mockSend)
+        elif isinstance(synapse, DeepResearchSynapse):
+            await self.deep_research_miner.deep_research(synapse, mockSend)
 
-            # Mock ClientResponse
-            response = AsyncMock(spec=ClientResponse)
-            response.content.iter_any = generateResponse
-            response.__dict__["_raw_headers"] = {}
-            response.status = 200
-            response.headers = {}
+        # Mock ClientResponse
+        response = AsyncMock(spec=ClientResponse)
+        response.content.iter_any = generateResponse
+        response.__dict__["_raw_headers"] = {}
+        response.status = 200
+        response.headers = {}
 
-            async for chunk in synapse.process_streaming_response(response):  # type: ignore
-                yield chunk  # Yield each chunk as it's processed
-            json_response = synapse.extract_response_json(response)
-            # Process the server response
-            self.process_server_response(response, json_response, synapse)
-            synapse.dendrite.process_time = str(time.time() - start_time)  # type: ignore
+        async for chunk in synapse.process_streaming_response(response):  # type: ignore
+            yield chunk  # Yield each chunk as it's processed
+        json_response = synapse.extract_response_json(response)
+        # Process the server response
+        self.process_server_response(response, json_response, synapse)
+        synapse.dendrite.process_time = str(time.time() - start_time)  # type: ignore
+        synapse.dendrite.status_code = 200
 
-            self._log_incoming_response(synapse)
+        self._log_incoming_response(synapse)
 
-            # Log synapse event history
-            self.synapse_history.append(Synapse.from_headers(synapse.to_headers()))
+        # Log synapse event history
+        self.synapse_history.append(Synapse.from_headers(synapse.to_headers()))
 
-            # Return the updated synapse object after deserializing if requested
-            if deserialize:
-                yield synapse.deserialize()
-            else:
-                yield synapse
-
-            return
-
-        bt.logging.info("MockDendrite--call_stream with super(), synapse=", synapse)
-        async for chunk in super().call_stream(
-            target_axon, synapse, timeout, deserialize
-        ):
-            yield chunk
+        # Return the updated synapse object after deserializing if requested
+        if deserialize:
+            yield synapse.deserialize()
+        else:
+            yield synapse
