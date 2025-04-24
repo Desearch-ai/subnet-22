@@ -27,6 +27,13 @@ class RewardModelType(Enum):
     twitter_content_relevance = "twitter_content_relevance"
     people_search_relevance = "people_search_relevance"
     search_content_relevance = "search_content_relevance"
+    deep_research_data_relevance = "deep_research_data_relevance"
+    deep_research_system_message_relevance = "deep_research_system_message_relevance"
+    deep_research_logical_coherence_relevance = (
+        "deep_research_logical_coherence_relevance"
+    )
+    deep_research_content_relevance = "deep_research_content_relevance"
+    deep_research_source_links_relevance = "deep_research_source_links_relevance"
     performance_score = "performance_score"
 
 
@@ -47,6 +54,11 @@ class DefaultRewardFrameworkConfig:
     twitter_content_weight: float = 0.45
     web_search_relavance_weight: float = 0.30
     people_search_relavance_weight: float = 0.30
+    deep_research_content_relevance_weight: float = 0.35
+    deep_research_data_relevance_weight: float = 0.2
+    deep_research_source_links_relevance_weight: float = 0.1
+    deep_research_system_message_relevance_weight: float = 0.1
+    deep_research_logical_coherence_relevance_weight: float = 0.2
     performance_weight: float = 0.05
 
 
