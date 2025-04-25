@@ -617,21 +617,24 @@ class Neuron(AbstractNeuron):
 
     async def sync_metagraph(self):
         while True:
-            await asyncio.sleep(30 * 60)  # 30 minutes
+            try:
+                await asyncio.sleep(30 * 60)  # 30 minutes
 
-            sync_start_time = time.time()
+                sync_start_time = time.time()
 
-            bt.logging.info("Calling sync metagraph method")
-            await self.run_sync_in_async(lambda: resync_metagraph(self))
-            bt.logging.info("Completed calling sync metagraph method")
+                bt.logging.info("Calling sync metagraph method")
+                await self.run_sync_in_async(lambda: resync_metagraph(self))
+                bt.logging.info("Completed calling sync metagraph method")
 
-            sync_end_time = time.time()
-            bt.logging.info(
-                f"Sync metagraph method execution time: {sync_end_time - sync_start_time:.2f} seconds"
-            )
+                sync_end_time = time.time()
+                bt.logging.info(
+                    f"Sync metagraph method execution time: {sync_end_time - sync_start_time:.2f} seconds"
+                )
 
-            # Ensure validator hotkey is still registered on the network.
-            self.check_registered()
+                # Ensure validator hotkey is still registered on the network.
+                self.check_registered()
+            except Exception as e:
+                bt.logging.error(f"Error in sync_metagraph: {e}")
 
     async def sync(self):
         """

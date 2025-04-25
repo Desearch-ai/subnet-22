@@ -335,8 +335,13 @@ def resync_metagraph(self):
     # Copies state of metagraph before syncing.
     previous_metagraph = copy.deepcopy(self.metagraph)
 
-    # Sync the metagraph.
-    self.metagraph.sync(subtensor=self.subtensor)
+    try:
+        # Sync the metagraph.
+        self.metagraph.sync(subtensor=self.subtensor)
+    except Exception as e:
+        bt.logging.error(f"Error in resync_metagraph: {e}")
+        self.subtensor = bt.subtensor(config=self.config)
+        self.metagraph = self.subtensor.metagraph(self.config.netuid)
 
     # Check if the metagraph axon info has changed.
     if previous_metagraph.axons == self.metagraph.axons:
