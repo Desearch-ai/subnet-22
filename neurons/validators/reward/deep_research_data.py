@@ -13,7 +13,8 @@ from neurons.validators.utils.prompt.deep_research.deep_research_data_relevance_
 from neurons.validators.apify.cheerio_scraper_actor import CheerioScraperActor
 from neurons.validators.apify.utils import scrape_links_with_retries
 
-RANDOM_SECTIONS_COUNT = 3
+RANDOM_SECTIONS_COUNT = 2
+RANDOM_SECTION_LINKS_COUNT = 1
 
 
 class DeepResearchDataRelevanceModel(BaseRewardModel):
@@ -58,7 +59,8 @@ class DeepResearchDataRelevanceModel(BaseRewardModel):
     ) -> float:
         try:
             # Get contents for this section's links from the pre-fetched dictionary
-            result_texts = [url_to_content.get(link, "") for link in section.links]
+            result_texts = [url_to_content.get(link) for link in section.links]
+            result_texts = [text for text in result_texts if text]
 
             response = await self.relevance_prompt.get_response(
                 section.description, result_texts.__str__()
@@ -83,21 +85,33 @@ class DeepResearchDataRelevanceModel(BaseRewardModel):
             response_sections = []
 
             for response in responses:
-                if len(response.report) < RANDOM_SECTIONS_COUNT:
-                    sections = response.report
-                else:
-                    sections = random.sample(response.report, k=RANDOM_SECTIONS_COUNT)
+                sections = []
 
-                response_sections.append(sections)
+                # Add section and subsections of response to the list
+                for section in response.report:
+                    sections.append(section)
+                    sections.extend(section.subsections)
 
-                for section in sections:
-                    all_links.update(section.links)
+                random_sections = random.sample(
+                    response.report, k=min(RANDOM_SECTIONS_COUNT, len(response.report))
+                )
+
+                response_sections.append(random_sections)
+
+                # Pick random links from random sections that were selected
+                for section in random_sections:
+                    random_section_links = random.sample(
+                        section.links,
+                        k=min(RANDOM_SECTION_LINKS_COUNT, len(section.links)),
+                    )
+
+                    all_links.update(random_section_links)
 
             # Step 2: Fetch all contents in a single batch
             url_to_content = await self.fetch_contents_batch(list(all_links))
 
             # Step 3: Process each response with the pre-fetched contents
-            for response, sections, uid_tensor in zip(
+            for response, random_sections, uid_tensor in zip(
                 responses, response_sections, uids
             ):
                 # If uid_tensor is a PyTorch or NumPy scalar, .item() extracts the integer
@@ -107,7 +121,7 @@ class DeepResearchDataRelevanceModel(BaseRewardModel):
                 scores = await asyncio.gather(
                     *[
                         self.check_section_data(section, url_to_content)
-                        for section in sections
+                        for section in random_sections
                     ]
                 )
 
