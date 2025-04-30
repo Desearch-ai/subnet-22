@@ -350,6 +350,16 @@ class DeepResearchSynapse(StreamingSynapse):
         description="Deep research report",
     )
 
+    validator_items: Optional[List[ReportItem]] = pydantic.Field(
+        default_factory=list,
+        title="Validator Items",
+        description="Validator items",
+    )
+
+    validator_links: Optional[Dict[str, str]] = pydantic.Field(
+        default_factory=dict, title="Links", description="Fetched Links Data."
+    )
+
     def to_xml_report(self):
         res = ""
 

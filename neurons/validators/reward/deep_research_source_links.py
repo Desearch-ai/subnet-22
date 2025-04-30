@@ -1,6 +1,5 @@
 import asyncio
 import traceback
-import random
 from typing import List, Dict, Tuple
 import json
 import bittensor as bt
@@ -10,12 +9,9 @@ from datura.protocol import DeepResearchSynapse, ReportItem
 from neurons.validators.utils.prompt.deep_research.deep_research_source_links_relevance_prompt import (
     DeepResearchSourceLinksRelevancePrompt,
 )
-from datura.synapse import collect_responses
 from neurons.validators.apify.cheerio_scraper_actor import CheerioScraperActor
 from neurons.validators.apify.utils import scrape_links_with_retries
-
-RANDOM_SECTIONS_COUNT = 1
-RANDOM_LINKS_COUNT = 3
+from .deep_research_data import RANDOM_SECTION_LINKS_COUNT, RANDOM_SECTIONS_COUNT
 
 
 class DeepResearchSourceLinksRelevanceModel(BaseRewardModel):
@@ -31,36 +27,6 @@ class DeepResearchSourceLinksRelevanceModel(BaseRewardModel):
         self.cheerio_scraper_actor = CheerioScraperActor()
 
         self.is_default_normalization = False
-
-    def get_section_links(self, section: ReportItem):
-        links = section.links
-        return links
-
-    async def fetch_contents_batch(self, all_links: List[str]) -> Dict[str, str]:
-        try:
-            if not all_links:
-                return {}
-
-            links_with_metadata = await scrape_links_with_retries(
-                urls=all_links,
-                scraper_actor_class=CheerioScraperActor,
-                group_size=100,
-                max_attempts=2,
-            )
-
-            # Create a mapping from URL to content
-            url_to_content = {}
-            for link_data in links_with_metadata:
-                url = link_data.get("url", "")
-                content = link_data.get("html_text", "")
-                url_to_content[url] = content
-
-            return url_to_content
-        except Exception as e:
-            bt.logging.error(
-                f"deep_research_source_links fetch_contents_batch error: {str(e)}"
-            )
-            return {}
 
     async def check_section_link_content(self, content: str, prompt: str):
         try:
@@ -78,68 +44,53 @@ class DeepResearchSourceLinksRelevanceModel(BaseRewardModel):
         self, section: ReportItem, prompt: str, url_to_content: Dict[str, str]
     ):
         try:
-            links = self.get_section_links(section)
+            links = section.links
 
-            if len(links) == 0:
-                return 1.0, "Doesn't have any links"
-
-            # Select random links to check
-            if len(links) > RANDOM_LINKS_COUNT:
-                selected_links = random.sample(links, k=RANDOM_LINKS_COUNT)
-            else:
-                selected_links = links
+            if not links:
+                return 0.0, "Doesn't have any links"
 
             # Get the content for each link from the pre-fetched dictionary
-            selected_contents = [
-                url_to_content.get(link, "") for link in selected_links
-            ]
+            selected_contents = [url_to_content.get(link, "") for link in links]
 
             # Check each content
-            scores = await collect_responses(
-                [
+            scores = await asyncio.gather(
+                *[
                     self.check_section_link_content(content, prompt)
                     for content in selected_contents
                 ]
             )
+
             llm_responses = [score[1] for score in scores]
             scores = [score[0] for score in scores]
 
-            return sum(scores) / len(selected_links) if scores else 0.0, llm_responses
+            return (
+                sum(scores) / RANDOM_SECTION_LINKS_COUNT if scores else 0.0
+            ), llm_responses
         except Exception as e:
             bt.logging.error(
                 f"deep_research_source_links check_section_links error: {str(e)}"
             )
             return 0.0, "Error"
 
-    async def check_response(
-        self, synapse: DeepResearchSynapse, url_to_content: Dict[str, str]
-    ) -> float:
+    async def check_response(self, synapse: DeepResearchSynapse) -> float:
         try:
-            all_sections = [item for item in synapse.report if len(item.links) > 0]
-            for report in synapse.report:
-                all_sections.extend(
-                    [item for item in report.subsections if len(item.links) > 0]
-                )
+            sections = synapse.validator_items
 
-            if not all_sections:
+            if not sections:
                 return 0.0
 
-            if len(all_sections) > RANDOM_SECTIONS_COUNT:
-                sections = random.sample(all_sections, k=RANDOM_SECTIONS_COUNT)
-            else:
-                sections = all_sections
-
-            scores = await collect_responses(
-                [
-                    self.check_section_links(section, synapse.prompt, url_to_content)
+            scores = await asyncio.gather(
+                *[
+                    self.check_section_links(
+                        section, synapse.prompt, synapse.validator_links
+                    )
                     for section in sections
                 ]
             )
 
             scores = [score[0] for score in scores]
 
-            return sum(scores) / len(scores) if scores else 0.0
-
+            return sum(scores) / RANDOM_SECTIONS_COUNT if scores else 0.0
         except Exception as e:
             bt.logging.error(
                 f"deep_research_source_links check_response error: {str(e)}"
@@ -155,34 +106,12 @@ class DeepResearchSourceLinksRelevanceModel(BaseRewardModel):
             non_zero_scores = {}
             grouped_val_score_responses = {}
 
-            # Step 1: Collect all links from all responses and sections
-            all_links = set()
-
-            for response in responses:
-                all_sections = [item for item in response.report if len(item.links) > 0]
-                for report in response.report:
-                    all_sections.extend(
-                        [item for item in report.subsections if len(item.links) > 0]
-                    )
-
-                # Collect links from all sections that might be selected
-                for section in all_sections:
-                    links = self.get_section_links(section)
-                    if len(links) > RANDOM_LINKS_COUNT:
-                        # Add a sample of links that might be selected during evaluation
-                        all_links.update(random.sample(links, k=RANDOM_LINKS_COUNT))
-                    else:
-                        all_links.update(links)
-
-            # Step 2: Fetch all contents in a single batch
-            url_to_content = await self.fetch_contents_batch(list(all_links))
-
-            # Step 3: Process each response with the pre-fetched contents
+            # Step 1: Process each response with the pre-fetched contents
             for response, uid_tensor in zip(responses, uids):
                 # If uid_tensor is a PyTorch or NumPy scalar, .item() extracts the integer
                 uid = uid_tensor.item() if hasattr(uid_tensor, "item") else uid_tensor
 
-                final_score = await self.check_response(response, url_to_content)
+                final_score = await self.check_response(response)
 
                 bt.logging.info(
                     f"UID {uid}: deep research source links relevance score => {final_score}"

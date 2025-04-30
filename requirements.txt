@@ -24,3 +24,4 @@ loguru==0.7.3
 substrate-interface==1.7.11
 redis==5.2.1
 jsonpickle==4.0.2
+newspaper3k==0.2.8

@@ -4,6 +4,8 @@ import random
 from typing import List, Dict, Tuple
 import json
 import bittensor as bt
+from newspaper import Article
+
 from .config import RewardModelType
 from .reward import BaseRewardModel, BaseRewardEvent
 from datura.protocol import DeepResearchSynapse, ReportItem
@@ -35,7 +37,7 @@ class DeepResearchDataRelevanceModel(BaseRewardModel):
             if not all_links:
                 return {}
 
-            links_with_metadata = await scrape_links_with_retries(
+            links_with_metadata, _ = await scrape_links_with_retries(
                 urls=all_links,
                 scraper_actor_class=CheerioScraperActor,
                 group_size=100,
@@ -44,10 +46,16 @@ class DeepResearchDataRelevanceModel(BaseRewardModel):
 
             # Create a mapping from URL to content
             url_to_content = {}
+
             for link_data in links_with_metadata:
-                url = link_data.get("url", "")
-                content = link_data.get("html_text", "")
-                url_to_content[url] = content
+                url = link_data.get("link", "")
+                html = link_data.get("html_text", "")
+
+                article = Article(url="")
+                article.set_html(html)
+                article.parse()
+
+                url_to_content[url] = article.text
 
             return url_to_content
         except Exception as e:
@@ -82,7 +90,8 @@ class DeepResearchDataRelevanceModel(BaseRewardModel):
 
             # Step 1: Collect all links from all responses and sections
             all_links = set()
-            response_sections = []
+
+            response_random_links = []
 
             for response in responses:
                 sections = []
@@ -96,24 +105,33 @@ class DeepResearchDataRelevanceModel(BaseRewardModel):
                     response.report, k=min(RANDOM_SECTIONS_COUNT, len(response.report))
                 )
 
-                response_sections.append(random_sections)
+                response.validator_items = random_sections
 
                 # Pick random links from random sections that were selected
+                random_links = set()
+
                 for section in random_sections:
-                    random_section_links = random.sample(
+                    links = random.sample(
                         section.links,
                         k=min(RANDOM_SECTION_LINKS_COUNT, len(section.links)),
                     )
 
-                    all_links.update(random_section_links)
+                    all_links.update(links)
+                    random_links.update(links)
+
+                response_random_links.append(list(random_links))
 
             # Step 2: Fetch all contents in a single batch
             url_to_content = await self.fetch_contents_batch(list(all_links))
 
             # Step 3: Process each response with the pre-fetched contents
-            for response, random_sections, uid_tensor in zip(
-                responses, response_sections, uids
+            for response, random_links, uid_tensor in zip(
+                responses, response_random_links, uids
             ):
+                for link in random_links:
+                    content = url_to_content.get(link, "")
+                    response.validator_links[link] = content
+
                 # If uid_tensor is a PyTorch or NumPy scalar, .item() extracts the integer
                 uid = uid_tensor.item() if hasattr(uid_tensor, "item") else uid_tensor
 
@@ -121,7 +139,7 @@ class DeepResearchDataRelevanceModel(BaseRewardModel):
                 scores = await asyncio.gather(
                     *[
                         self.check_section_data(section, url_to_content)
-                        for section in random_sections
+                        for section in response.validator_items
                     ]
                 )
 
