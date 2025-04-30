@@ -527,7 +527,7 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
             )
 
             final_synapses = await collect_final_synapses(
-                async_responses, uids, start_time, max_execution_time
+                async_responses, uids, start_time
             )
 
             if self.neuron.config.neuron.synthetic_disabled:
@@ -605,7 +605,7 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
             if specified_uids or is_collect_final_synapses:
                 # Collect specified uids from responses and score
                 final_synapses = await collect_final_synapses(
-                    async_responses, uids, start_time, max_execution_time
+                    async_responses, uids, start_time
                 )
 
                 if is_collect_final_synapses:

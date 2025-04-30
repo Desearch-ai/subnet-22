@@ -521,7 +521,7 @@ class DeepResearchValidator(OrganicHistoryMixin):
             )
 
             final_synapses = await collect_final_synapses(
-                async_responses, uids, start_time, self.max_execution_time
+                async_responses, uids, start_time, 30
             )
 
             if self.neuron.config.neuron.synthetic_disabled:
@@ -592,7 +592,7 @@ class DeepResearchValidator(OrganicHistoryMixin):
             if specified_uids or is_collect_final_synapses:
                 # Collect specified uids from responses and score
                 final_synapses = await collect_final_synapses(
-                    async_responses, uids, start_time, self.max_execution_time
+                    async_responses, uids, start_time
                 )
 
                 if is_collect_final_synapses:
