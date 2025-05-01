@@ -140,8 +140,9 @@ class SyntheticQueryRunnerMixin:
                 self.loop.create_task(
                     self.run_organic_queries(self.advanced_scraper_validator)
                 )
+
                 self.loop.create_task(
-                    self.run_basic_organic_queries(self.basic_scraper_validator)
+                    self.run_organic_queries(self.basic_scraper_validator)
                 )
 
                 await asyncio.sleep(interval)
