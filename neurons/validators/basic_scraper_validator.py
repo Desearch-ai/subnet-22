@@ -605,7 +605,9 @@ class BasicScraperValidator(OrganicHistoryMixin):
 
             timeout = self.max_execution_time + 5
 
-            synapse: TwitterIDSearchSynapse = await self.neuron.dendrite.call(
+            dendrite = next(self.neuron.dendrites)
+
+            synapse: TwitterIDSearchSynapse = await dendrite.call(
                 target_axon=axon,
                 synapse=synapse,
                 timeout=timeout,
@@ -707,7 +709,9 @@ class BasicScraperValidator(OrganicHistoryMixin):
 
             timeout = synapse.max_execution_time + 5
 
-            synapse: TwitterURLsSearchSynapse = await self.neuron.dendrite.call(
+            dendrite = next(self.neuron.dendrites)
+
+            synapse: TwitterURLsSearchSynapse = await dendrite.call(
                 target_axon=axon,
                 synapse=synapse,
                 timeout=timeout,
