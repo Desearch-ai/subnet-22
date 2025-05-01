@@ -746,7 +746,7 @@ class Neuron(AbstractNeuron):
                                 self.basic_scraper_validator,
                                 self.deep_research_validator,
                             ],
-                            weights=[0.5, 0.25, 0.25],
+                            weights=[0.6, 0.25, 0.15],
                         )[0]
 
                         self.loop.create_task(
