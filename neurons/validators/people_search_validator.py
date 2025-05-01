@@ -21,7 +21,10 @@ from neurons.validators.organic_history_mixin import OrganicHistoryMixin
 from neurons.validators.utils.prompt.search_criteria_generate_prompt import (
     SearchCriteriaGeneratePrompt,
 )
-from neurons.validators.utils.prompt.people_search_question_generate_prompt import PeopleSearchQuestionGeneratePrompt
+from neurons.validators.utils.prompt.people_search_question_generate_prompt import (
+    PeopleSearchQuestionGeneratePrompt,
+)
+
 
 class PeopleSearchValidator(OrganicHistoryMixin):
     def __init__(self, neuron: AbstractNeuron):
@@ -343,7 +346,7 @@ class PeopleSearchValidator(OrganicHistoryMixin):
     async def generate_prompt_with_openai(self):
         return await PeopleSearchQuestionGeneratePrompt().get_response()
 
-    async def query_and_score_people_search(self, strategy, specified_uids=None):
+    async def query_and_score(self, strategy, specified_uids=None):
         try:
             if not len(self.neuron.available_uids):
                 bt.logging.info("No available UIDs, skipping basic people search task.")

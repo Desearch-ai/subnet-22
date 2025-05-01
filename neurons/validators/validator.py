@@ -427,89 +427,22 @@ class Neuron(SyntheticQueryRunnerMixin, AbstractNeuron):
             bt.logging.error(f"Error in update_moving_averaged_scores: {e}")
             raise e
 
-    async def compute_organic_responses(self):
-        specified_uids = self.advanced_scraper_validator.get_uids_with_no_history(
-            self.available_uids
-        )
-        if specified_uids:
-            bt.logging.info(
-                f"Running advanced synthetic queries with specified uids: {specified_uids}"
-            )
-            await self.advanced_scraper_validator.query_and_score(
-                strategy=QUERY_MINERS.ALL, specified_uids=specified_uids
-            )
-
-        await self.advanced_scraper_validator.compute_rewards_and_penalties(
-            **self.advanced_scraper_validator.get_random_organic_responses(),
-            start_time=time.time(),
-        )
-
-    async def compute_basic_organic_responses(self):
-        specified_uids = self.basic_scraper_validator.get_uids_with_no_history(
-            self.available_uids
-        )
+    async def compute_organic_responses(self, validator):
+        specified_uids = validator.get_uids_with_no_history(self.available_uids)
 
         if specified_uids:
             bt.logging.info(
-                f"Running basic synthetic queries with specified uids: {specified_uids}"
+                f"Running {validator.__class__.__name__} synthetic queries with specified uids: {specified_uids}"
             )
-            await self.basic_scraper_validator.query_and_score(
+
+            # Call the appropriate query function based on validator type
+            await validator.query_and_score(
                 strategy=QUERY_MINERS.ALL, specified_uids=specified_uids
             )
 
-        await self.basic_scraper_validator.compute_rewards_and_penalties(
-            **self.basic_scraper_validator.get_random_organic_responses(),
-            start_time=time.time(),
-        )
-
-    async def compute_people_search_organic_responses(self):
-        specified_uids = self.people_search_validator.get_uids_with_no_history(
-            self.available_uids
-        )
-        if specified_uids:
-            bt.logging.info(
-                f"Running people search synthetic queries with specified uids: {specified_uids}"
-            )
-            await self.people_search_validator.query_and_score_people_search(
-                strategy=QUERY_MINERS.ALL, specified_uids=specified_uids
-            )
-
-        await self.people_search_validator.compute_rewards_and_penalties(
-            **self.people_search_validator.get_random_organic_responses(),
-            start_time=time.time(),
-        )
-
-    async def compute_deep_research_organic_responses(self):
-        specified_uids = self.deep_research_validator.get_uids_with_no_history(
-            self.available_uids
-        )
-        if specified_uids:
-            bt.logging.info(
-                f"Running deep research synthetic queries with specified uids: {specified_uids}"
-            )
-            await self.deep_research_validator.query_and_score(
-                strategy=QUERY_MINERS.ALL, specified_uids=specified_uids
-            )
-
-        await self.deep_research_validator.compute_rewards_and_penalties(
-            **self.deep_research_validator.get_random_organic_responses(),
-            start_time=time.time(),
-        )
-
-    async def compute_web_basic_organic_responses(self):
-        specified_uids = self.basic_web_scraper_validator.get_uids_with_no_history(
-            self.available_uids
-        )
-        if specified_uids:
-            bt.logging.info(
-                f"Running basic web synthetic queries with specified uids: {specified_uids}"
-            )
-            await self.basic_web_scraper_validator.query_and_score_web_basic(
-                strategy=QUERY_MINERS.ALL, specified_uids=specified_uids
-            )
-
-        await self.basic_web_scraper_validator.compute_rewards_and_penalties(
-            **self.basic_web_scraper_validator.get_random_organic_responses(),
+        # Compute rewards and penalties using random organic responses
+        await validator.compute_rewards_and_penalties(
+            **validator.get_random_organic_responses(),
             start_time=time.time(),
         )
 
@@ -577,16 +510,21 @@ class Neuron(SyntheticQueryRunnerMixin, AbstractNeuron):
                     if blocks_left <= 100:
                         if not self.organic_responses_computed:
                             bt.logging.info("Computing organic responses")
-                            tasks = [
-                                self.compute_organic_responses,
-                                self.compute_basic_organic_responses,
-                                self.compute_deep_research_organic_responses,
-                                self.compute_web_basic_organic_responses,
-                                # self.compute_people_search_organic_responses,
+
+                            validators = [
+                                self.advanced_scraper_validator,
+                                self.basic_scraper_validator,
+                                self.deep_research_validator,
+                                self.basic_web_scraper_validator,
+                                # self.people_search_validator,
                             ]
 
+                            random_validator = random.choices(
+                                validators, weights=[0.4, 0.2, 0.2, 0.2]
+                            )[0]
+
                             self.loop.create_task(
-                                random.choices(tasks, weights=[0.4, 0.2, 0.2, 0.2])[0]()
+                                self.compute_organic_responses(random_validator)
                             )
 
                             self.organic_responses_computed = True

@@ -328,7 +328,7 @@ class BasicWebScraperValidator(OrganicHistoryMixin):
 
         bt.logging.debug("Run Task event:", event)
 
-    async def query_and_score_web_basic(self, strategy, specified_uids=None):
+    async def query_and_score(self, strategy, specified_uids=None):
         try:
             if not len(self.neuron.available_uids):
                 bt.logging.info("No available UIDs, skipping basic web search task.")
