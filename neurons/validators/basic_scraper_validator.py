@@ -38,7 +38,7 @@ class BasicScraperValidator(OrganicHistoryMixin):
         self.timeout = 180
         self.max_execution_time = 10
 
-        self.basic_organic_query_state = BasicOrganicQueryState()
+        self.organic_query_state = BasicOrganicQueryState()
 
         # Init device.
         bt.logging.debug("loading", "device")
@@ -176,7 +176,7 @@ class BasicScraperValidator(OrganicHistoryMixin):
                 penalized_uids = []
 
                 for uid, response in zip(uids.tolist(), responses):
-                    has_penalty = self.basic_organic_query_state.has_penalty(
+                    has_penalty = self.organic_query_state.has_penalty(
                         response.axon.hotkey
                     )
 
@@ -538,7 +538,7 @@ class BasicScraperValidator(OrganicHistoryMixin):
                     )
 
                     if not is_interval_query:
-                        self.basic_organic_query_state.save_organic_queries(
+                        self.organic_query_state.save_organic_queries(
                             final_responses, uids, original_rewards
                         )
 
@@ -749,7 +749,7 @@ class BasicScraperValidator(OrganicHistoryMixin):
                         )
                     )
 
-                    self.basic_organic_query_state.save_organic_queries(
+                    self.organic_query_state.save_organic_queries(
                         final_responses, uids_tensor, original_rewards
                     )
 

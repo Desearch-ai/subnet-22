@@ -32,9 +32,10 @@ from datura.utils import (
 )
 from datura.redis.utils import load_moving_averaged_scores, save_moving_averaged_scores
 from neurons.validators.proxy.uid_manager import UIDManager
+from neurons.validators.synthetic_query_runner import SyntheticQueryRunnerMixin
 
 
-class Neuron(AbstractNeuron):
+class Neuron(SyntheticQueryRunnerMixin, AbstractNeuron):
     @classmethod
     def check_config(cls, config: "bt.Config"):
         check_config(cls, config)
@@ -161,7 +162,7 @@ class Neuron(AbstractNeuron):
                 self.advanced_scraper_validator.organic_query_state.remove_deregistered_hotkeys(
                     self.metagraph.axons
                 )
-                self.basic_scraper_validator.basic_organic_query_state.remove_deregistered_hotkeys(
+                self.basic_scraper_validator.organic_query_state.remove_deregistered_hotkeys(
                     self.metagraph.axons
                 )
 
@@ -426,91 +427,6 @@ class Neuron(AbstractNeuron):
             bt.logging.error(f"Error in update_moving_averaged_scores: {e}")
             raise e
 
-    async def query_synapse(self, validator, strategy):
-        try:
-            await validator.query_and_score(strategy)
-        except Exception as e:
-            bt.logging.error(f"General exception: {e}\n{traceback.format_exc()}")
-            await asyncio.sleep(100)
-
-    async def run_synthetic_queries(self, validator, strategy):
-        bt.logging.info(
-            f"Starting run_synthetic_queries with validator={validator}, strategy={strategy}"
-        )
-        total_start_time = time.time()
-
-        try:
-            start_time = time.time()
-
-            bt.logging.info(
-                f"Running step forward for query_synapse, Step: {self.step}"
-            )
-
-            await asyncio.gather(
-                *[self.query_synapse(validator, strategy) for _ in range(1)]
-            )
-
-            end_time = time.time()
-
-            bt.logging.info(
-                f"Completed gathering coroutines for query_synapse in {end_time - start_time:.2f} seconds"
-            )
-
-            self.step += 1
-            bt.logging.info(f"Incremented step to {self.step}")
-        except Exception as err:
-            bt.logging.error("Error in run_synthetic_queries", str(err))
-            bt.logging.debug(print_exception(type(err), err, err.__traceback__))
-        finally:
-            total_end_time = time.time()
-            total_execution_time = (total_end_time - total_start_time) / 60
-            bt.logging.info(
-                f"Total execution time for run_synthetic_queries: {total_execution_time:.2f} minutes"
-            )
-
-    async def run_organic_queries(self):
-        result = self.advanced_scraper_validator.organic_query_state.get_random_organic_query(
-            self.available_uids, self.metagraph.neurons
-        )
-
-        if not result:
-            bt.logging.info("No organic queries are in history to run")
-            return
-
-        synapse, query, synapse_uid, specified_uids = result
-
-        bt.logging.info(f"Running organic queries for prompt: {synapse.prompt}")
-
-        async for _ in self.advanced_scraper_validator.organic(
-            query=query,
-            model=synapse.model,
-            random_synapse=synapse,
-            random_uid=synapse_uid,
-            specified_uids=specified_uids,
-        ):
-            pass
-
-    async def run_basic_organic_queries(self):
-        result = self.basic_scraper_validator.basic_organic_query_state.get_random_organic_query(
-            self.available_uids, self.metagraph.neurons
-        )
-
-        if not result:
-            bt.logging.info("No organic queries are in history to run")
-            return
-
-        synapse, query, synapse_uid, specified_uids = result
-
-        bt.logging.info(f"Running organic queries for prompt: {synapse.query}")
-
-        async for _ in self.basic_scraper_validator.organic(
-            query=query,
-            random_synapse=synapse,
-            random_uid=synapse_uid,
-            specified_uids=specified_uids,
-        ):
-            pass
-
     async def compute_organic_responses(self):
         specified_uids = self.advanced_scraper_validator.get_uids_with_no_history(
             self.available_uids
@@ -728,71 +644,7 @@ class Neuron(AbstractNeuron):
         bt.logging.info(f"Validator starting at block: {self.block}")
 
         try:
-
-            async def run_with_interval(interval, strategy):
-                query_count = 0  # Initialize query count
-                while True:
-                    try:
-                        if not self.available_uids:
-                            bt.logging.info(
-                                "No available UIDs, sleeping for 10 seconds."
-                            )
-                            await asyncio.sleep(5)
-                            continue
-
-                        choice = random.choices(
-                            [
-                                self.advanced_scraper_validator,
-                                self.basic_scraper_validator,
-                                self.deep_research_validator,
-                            ],
-                            weights=[0.6, 0.25, 0.15],
-                        )[0]
-
-                        self.loop.create_task(
-                            self.run_synthetic_queries(choice, strategy)
-                        )
-
-                        await asyncio.sleep(interval)  # Wait for synthetic interval
-                    except Exception as e:
-                        bt.logging.error(f"Error during task execution: {e}")
-                        await asyncio.sleep(interval)  # Wait before retrying
-
-            async def run_organic_with_interval(interval):
-                while True:
-                    try:
-                        if not self.available_uids:
-                            await asyncio.sleep(5)
-                            continue
-                        self.loop.create_task(self.run_organic_queries())
-                        self.loop.create_task(self.run_basic_organic_queries())
-
-                        await asyncio.sleep(interval)
-                    except Exception as e:
-                        bt.logging.error(f"Error during task execution: {e}")
-                        await asyncio.sleep(interval)  # Wait before retrying
-
-            if not self.config.neuron.synthetic_disabled:
-                if self.config.neuron.run_random_miner_syn_qs_interval > 0:
-                    self.loop.create_task(
-                        run_with_interval(
-                            self.config.neuron.run_all_miner_syn_qs_interval,
-                            QUERY_MINERS.RANDOM,
-                        )
-                    )
-
-                if self.config.neuron.run_all_miner_syn_qs_interval > 0:
-                    self.loop.create_task(
-                        run_with_interval(
-                            self.config.neuron.run_all_miner_syn_qs_interval,
-                            QUERY_MINERS.ALL,
-                        )
-                    )
-            # If someone intentionally stops the validator, it'll safely terminate operations.
-
-            three_hours_in_seconds = 10800
-            self.loop.create_task(run_organic_with_interval(three_hours_in_seconds))
-
+            self.start_query_tasks()
         except KeyboardInterrupt:
             self.axon.stop()
             bt.logging.success("Validator killed by keyboard interrupt.")
