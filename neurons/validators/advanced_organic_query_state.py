@@ -6,7 +6,7 @@ from datura.dataset.date_filters import DateFilter, DateFilterType
 from neurons.validators.base_organic_query_state import BaseOrganicQueryState
 
 
-class OrganicQueryState(BaseOrganicQueryState):
+class AdvancedOrganicQueryState(BaseOrganicQueryState):
     def save_organic_queries(
         self,
         final_synapses: List[ScraperStreamingSynapse],

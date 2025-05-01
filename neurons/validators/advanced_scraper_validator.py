@@ -28,7 +28,7 @@ from neurons.validators.reward.search_content_relevance import (
 from neurons.validators.reward.performance_reward import PerformanceRewardModel
 from neurons.validators.reward.reward_llm import RewardLLM
 from neurons.validators.utils.tasks import TwitterTask
-from neurons.validators.organic_query_state import OrganicQueryState
+from neurons.validators.advanced_organic_query_state import AdvancedOrganicQueryState
 from neurons.validators.penalty.streaming_penalty import StreamingPenaltyModel
 from neurons.validators.penalty.exponential_penalty import ExponentialTimePenaltyModel
 from neurons.validators.penalty.summary_rule_penalty import SummaryRulePenaltyModel
@@ -89,7 +89,7 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
         self.region = "us"
         self.date_filter = "qdr:w"  # Past week
 
-        self.organic_query_state = OrganicQueryState()
+        self.organic_query_state = AdvancedOrganicQueryState()
 
         # Init device.
         bt.logging.debug("loading", "device")
