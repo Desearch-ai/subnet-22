@@ -550,9 +550,6 @@ class DeepResearchValidator(OrganicHistoryMixin):
         is_collect_final_synapses: bool = False,  # Flag to collect final synapses
     ):
         """Receives question from user and returns the response from the miners."""
-        if not len(self.neuron.available_uids):
-            bt.logging.info("Not available uids")
-            raise StopAsyncIteration("Not available uids")
 
         is_interval_query = random_synapse is not None
 

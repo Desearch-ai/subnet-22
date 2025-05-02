@@ -32,14 +32,12 @@ class SyntheticQueryRunnerMixin:
                 f"Running step forward for query_synapse, Step: {self.step}"
             )
 
-            await asyncio.gather(
-                *[self.query_synapse(validator, strategy) for _ in range(1)]
-            )
+            await self.run_query_and_score(validator, strategy)
 
             end_time = time.time()
 
             bt.logging.info(
-                f"Completed gathering coroutines for query_synapse in {end_time - start_time:.2f} seconds"
+                f"Completed gathering coroutines for run_query_and_score in {end_time - start_time:.2f} seconds"
             )
 
             self.step += 1
@@ -56,7 +54,7 @@ class SyntheticQueryRunnerMixin:
                 f"Total execution time for run_synthetic_queries: {total_execution_time:.2f} minutes"
             )
 
-    async def query_synapse(self, validator, strategy):
+    async def run_query_and_score(self, validator, strategy):
         """
         Query a synapse using the provided validator and strategy.
 
@@ -82,7 +80,7 @@ class SyntheticQueryRunnerMixin:
 
         synapse, query, synapse_uid, specified_uids = result
 
-        bt.logging.info(f"Running organic queries for prompt: {synapse.prompt}")
+        bt.logging.info(f"Running organic queries for synapse: {synapse}")
 
         async for _ in validator.organic(
             query=query,

@@ -348,10 +348,6 @@ class PeopleSearchValidator(OrganicHistoryMixin):
 
     async def query_and_score(self, strategy, specified_uids=None):
         try:
-            if not len(self.neuron.available_uids):
-                bt.logging.info("No available UIDs, skipping basic people search task.")
-                return
-
             # Question generation
             prompts = await asyncio.gather(
                 *[
@@ -416,10 +412,6 @@ class PeopleSearchValidator(OrganicHistoryMixin):
         specified_uids=None,
     ):
         """Receives question from user and returns the response from the miners."""
-
-        if not len(self.neuron.available_uids):
-            bt.logging.info("No available UIDs")
-            raise StopAsyncIteration("No available UIDs")
 
         is_interval_query = random_synapse is not None
 
