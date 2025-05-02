@@ -106,13 +106,17 @@ class PeopleSearchValidator(OrganicHistoryMixin):
 
         start_time = time.time()
 
-        uids = await self.neuron.get_uids(
-            strategy=strategy,
-            is_only_allowed_miner=is_only_allowed_miner,
-            specified_uids=specified_uids,
-        )
-
-        axons = [self.neuron.metagraph.axons[uid] for uid in uids]
+        if is_synthetic:
+            uids = await self.neuron.get_uids(
+                strategy=strategy,
+                is_only_allowed_miner=is_only_allowed_miner,
+                specified_uids=specified_uids,
+            )
+            axons = [self.neuron.metagraph.axons[uid] for uid in uids]
+        else:
+            uid, axon = await self.neuron.get_random_miner()
+            uids = torch.tensor([uid])
+            axons = [axon]
 
         synapses: List[PeopleSearchSynapse] = [
             PeopleSearchSynapse(

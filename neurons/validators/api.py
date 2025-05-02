@@ -2,6 +2,7 @@ import os
 
 os.environ["USE_TORCH"] = "1"
 
+import asyncio
 from typing import Optional, Annotated, List, Optional
 from pydantic import BaseModel, Field, conint
 from fastapi.responses import StreamingResponse
@@ -17,21 +18,43 @@ from datura.protocol import (
     PeopleSearchResultList,
 )
 import uvicorn
+import aiohttp
 import bittensor as bt
 import traceback
 from neurons.validators.validator import Neuron
+from neurons.validators.validator_service_client import ValidatorServiceClient
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
 from contextlib import asynccontextmanager
 import json
 
-neu = Neuron()
+neu: Neuron = None
+
+
+async def get_validator_config():
+    async with ValidatorServiceClient() as client:
+        while True:
+            print("Waiting for validator service to start...")
+
+            try:
+                config = await client.get_config()
+                print("Validator config fetched successfully.")
+                return config
+            except aiohttp.ClientError:
+                print("Waiting for validator service to start...")
+            finally:
+                await asyncio.sleep(5)
 
 
 @asynccontextmanager
 async def lifespan(app):
     # Start the neuron when the app starts
+    global neu
+
+    config = await get_validator_config()
+    neu = Neuron(lite=True, config=config)
     await neu.run()
+
     yield
 
 
@@ -605,9 +628,5 @@ def custom_openapi():
 app.openapi = custom_openapi
 
 
-def run_fastapi():
-    uvicorn.run(app, host="0.0.0.0", port=PORT, timeout_keep_alive=300)
-
-
 if __name__ == "__main__":
-    run_fastapi()
+    uvicorn.run(app, host="0.0.0.0", port=PORT, timeout_keep_alive=300)

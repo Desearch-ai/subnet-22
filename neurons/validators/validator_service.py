@@ -41,7 +41,7 @@ async def get_config():
 @app.get(
     "/uid/random",
 )
-async def get_uids():
+async def get_random_uid():
     if not neuron.available_uids:
         raise HTTPException(
             status_code=503,
@@ -65,7 +65,7 @@ async def get_uids():
         }
 
     raise HTTPException(
-        status_code=404,
+        status_code=503,
         detail="No available UID found.",
     )
 

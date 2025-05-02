@@ -46,6 +46,10 @@ class AbstractNeuron(ABC):
         pass
 
     @abstractmethod
+    async def get_random_miner(self) -> tuple[int, bt.AxonInfo]:
+        pass
+
+    @abstractmethod
     async def update_scores(self, scores: torch.Tensor, wandb_data):
         pass
 

@@ -111,13 +111,17 @@ class BasicScraperValidator(OrganicHistoryMixin):
 
         start_time = time.time()
 
-        uids = await self.neuron.get_uids(
-            strategy=strategy,
-            is_only_allowed_miner=is_only_allowed_miner,
-            specified_uids=specified_uids,
-        )
-
-        axons = [self.neuron.metagraph.axons[uid] for uid in uids]
+        if is_synthetic:
+            uids = await self.neuron.get_uids(
+                strategy=strategy,
+                is_only_allowed_miner=is_only_allowed_miner,
+                specified_uids=specified_uids,
+            )
+            axons = [self.neuron.metagraph.axons[uid] for uid in uids]
+        else:
+            uid, axon = await self.neuron.get_random_miner()
+            uids = torch.tensor([uid])
+            axons = [axon]
 
         synapses: List[TwitterSearchSynapse] = [
             TwitterSearchSynapse(
@@ -566,24 +570,8 @@ class BasicScraperValidator(OrganicHistoryMixin):
                 criteria=[],
             )
 
-            if not len(self.neuron.available_uids):
-                bt.logging.info("No available UIDs.")
-                raise StopAsyncIteration("No available UIDs.")
-
-            bt.logging.debug("run_task", task_name)
-
-            uids = await self.neuron.get_uids(
-                strategy=QUERY_MINERS.RANDOM,
-                is_only_allowed_miner=False,
-                specified_uids=None,
-            )
-
-            if not uids:
-                raise StopAsyncIteration("No available UIDs.")
-
-            uid = uids[0]
-
-            axon = self.neuron.metagraph.axons[uid]
+            uid, axon = await self.neuron.get_random_miner()
+            uids = torch.tensor([uid])
 
             synapse = TwitterIDSearchSynapse(
                 id=tweet_id,
@@ -664,19 +652,8 @@ class BasicScraperValidator(OrganicHistoryMixin):
 
             bt.logging.debug("run_task", task_name)
 
-            # 1) Retrieve a random UID and axon
-            uids = await self.neuron.get_uids(
-                strategy=QUERY_MINERS.RANDOM,
-                is_only_allowed_miner=False,
-                specified_uids=None,
-            )
-
-            if not uids:
-                raise StopAsyncIteration("No available UIDs.")
-
-            uid = uids[0]
-
-            axon = self.neuron.metagraph.axons[uid]
+            uid, axon = await self.neuron.get_random_miner()
+            uids = torch.tensor([uid])
 
             task = SearchTask(
                 base_text=f"Fetch tweets for URLs: {urls}",

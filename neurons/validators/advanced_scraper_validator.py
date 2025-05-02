@@ -191,16 +191,21 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
         }
         start_time = time.time()
 
-        # Get random id on that step
-        uids = await self.neuron.get_uids(
-            strategy=strategy,
-            is_only_allowed_miner=is_only_allowed_miner,
-            specified_uids=specified_uids,
-        )
+        if is_synthetic:
+            uids = await self.neuron.get_uids(
+                strategy=strategy,
+                is_only_allowed_miner=is_only_allowed_miner,
+                specified_uids=specified_uids,
+            )
+
+            axons = [self.neuron.metagraph.axons[uid] for uid in uids]
+        else:
+            uid, axon = await self.neuron.get_random_miner()
+            uids = torch.tensor([uid])
+            axons = [axon]
 
         start_date = date_filter.start_date.strftime("%Y-%m-%dT%H:%M:%SZ")
         end_date = date_filter.end_date.strftime("%Y-%m-%dT%H:%M:%SZ")
-        axons = [self.neuron.metagraph.axons[uid] for uid in uids]
 
         synapses = [
             ScraperStreamingSynapse(

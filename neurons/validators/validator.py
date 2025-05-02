@@ -20,6 +20,7 @@ from neurons.validators.basic_web_scraper_validator import BasicWebScraperValida
 from neurons.validators.people_search_validator import PeopleSearchValidator
 from neurons.validators.deep_research_validator import DeepResearchValidator
 from neurons.validators.config import add_args, check_config, config
+from neurons.validators.validator_service_client import ValidatorServiceClient
 from neurons.validators.weights import init_wandb, set_weights, get_weights
 from traceback import print_exception
 from neurons.validators.base_validator import AbstractNeuron
@@ -70,16 +71,15 @@ class Neuron(SyntheticQueryRunnerMixin, AbstractNeuron):
     def block(self):
         return ttl_get_block(self)
 
-    def __init__(self):
-        self.config = Neuron.config()
+    def __init__(self, lite: bool = False, config: bt.Config = None):
+        self.lite = lite
+        self.config = config or Neuron.config()
         self.check_config(self.config)
         bt.logging(config=self.config, logging_dir=self.config.neuron.full_path)
         print(self.config)
         bt.logging.info("neuron.__init__()")
 
         self.initialize_components()
-
-        init_wandb(self)
 
         self.advanced_scraper_validator = AdvancedScraperValidator(neuron=self)
         self.basic_scraper_validator = BasicScraperValidator(neuron=self)
@@ -91,15 +91,21 @@ class Neuron(SyntheticQueryRunnerMixin, AbstractNeuron):
         self.step = 0
         self.check_registered()
 
-        self.organic_responses_computed = False
+        self.validator_service_client = ValidatorServiceClient()
 
-        # Init Weights.
-        bt.logging.debug("loading", "moving_averaged_scores")
-        self.moving_averaged_scores = load_moving_averaged_scores(
-            self.metagraph, self.config
-        )
-        bt.logging.debug(str(self.moving_averaged_scores))
-        self.available_uids = []
+        if not lite:
+            init_wandb(self)
+
+            self.organic_responses_computed = False
+
+            # Init Weights.
+            bt.logging.debug("loading", "moving_averaged_scores")
+            self.moving_averaged_scores = load_moving_averaged_scores(
+                self.metagraph, self.config
+            )
+            bt.logging.debug(str(self.moving_averaged_scores))
+            self.available_uids = []
+
         self.thread_executor = concurrent.futures.ThreadPoolExecutor(
             thread_name_prefix="asyncio"
         )
@@ -145,6 +151,9 @@ class Neuron(SyntheticQueryRunnerMixin, AbstractNeuron):
                 f"Your validator: {self.wallet} is not registered to chain connection: {self.subtensor}. Run btcli register --netuid 18 and try again."
             )
             exit()
+
+    async def get_random_miner(self):
+        return await self.validator_service_client.get_random_miner()
 
     async def update_available_uids_periodically(self):
         while True:
@@ -576,23 +585,23 @@ class Neuron(SyntheticQueryRunnerMixin, AbstractNeuron):
     async def run(self):
         self.loop = asyncio.get_event_loop()
 
-        self.loop.create_task(self.sync_metagraph())
-        self.loop.create_task(self.sync())
-        self.loop.create_task(self.update_available_uids_periodically())
-        bt.logging.info(f"Validator starting at block: {self.block}")
+        if not self.lite:
+            self.loop.create_task(self.sync_metagraph())
+            self.loop.create_task(self.sync())
+            bt.logging.info(f"Validator starting at block: {self.block}")
+            self.loop.create_task(self.update_available_uids_periodically())
 
-        try:
-            self.start_query_tasks()
-        except KeyboardInterrupt:
-            self.axon.stop()
-            bt.logging.success("Validator killed by keyboard interrupt.")
-            sys.exit()
-
-        # In case of unforeseen errors, the validator will log the error and quit
-        except Exception as err:
-            bt.logging.error("Error during validation", str(err))
-            bt.logging.debug(print_exception(type(err), err, err.__traceback__))
-            self.should_exit = True
+            try:
+                self.start_query_tasks()
+            except KeyboardInterrupt:
+                self.axon.stop()
+                bt.logging.success("Validator killed by keyboard interrupt.")
+                sys.exit()
+            except Exception as err:
+                # In case of unforeseen errors, the validator will log the error and quit
+                bt.logging.error("Error during validation", str(err))
+                bt.logging.debug(print_exception(type(err), err, err.__traceback__))
+                self.should_exit = True
 
 
 def main():
