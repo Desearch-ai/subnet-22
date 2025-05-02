@@ -1,60 +1,71 @@
-from typing import List, Tuple, Dict, Any, Optional, Type
-import random
+from typing import List, Tuple, Any
 import bittensor as bt
 from datetime import datetime
 import pytz
+import json
+import jsonpickle
+from datura.redis.redis_client import redis_client
 
 
 class BaseOrganicQueryState:
     """
     Base class for organic query state tracking.
-    Provides common functionality for tracking penalties and query history.
+    Provides common functionality for tracking penalties and query history using Redis.
     """
 
     def __init__(self) -> None:
-        # Tracks failed organic queries and in the next synthetic query, we will penalize the miner
-        self.organic_penalties: Dict[str, int] = {}
-
-        # Tracks all organic synapses
-        self.organic_history: Dict[str, List[Tuple[Any, bool]]] = {}
+        # Redis keys with class name as prefix for namespace isolation
+        self.prefix = self.__class__.__name__
+        self.penalties_key = f"{self.prefix}:organic_penalties"
+        self.history_key = f"{self.prefix}:organic_history"
 
     def has_penalty(self, hotkey: str) -> bool:
-        """Check if the miner has a penalty and decrement it"""
-        penalties = self.organic_penalties.get(hotkey, 0)
+        """Check if the miner has a penalty and decrement it with atomic operations"""
+        penalties = redis_client.hget(self.penalties_key, hotkey)
+        penalties = int(penalties) if penalties else 0
 
         if penalties > 0:
-            self.organic_penalties[hotkey] -= 1
+            # Use atomic decrement
+            redis_client.hincrby(self.penalties_key, hotkey, -1)
             return True
-
         return False
 
     def record_failed_organic_query(self, uid: int, hotkey: str) -> None:
-        """Record a failed organic query and increment penalty counter"""
+        """Record a failed organic query and increment penalty counter atomically"""
         bt.logging.info(f"Failed organic query by miner UID: {uid}, Hotkey: {hotkey}")
-        self.organic_penalties[hotkey] = self.organic_penalties.get(hotkey, 0) + 1
+        # Use atomic increment
+        redis_client.hincrby(self.penalties_key, hotkey, 1)
 
     def remove_deregistered_hotkeys(self, axons) -> None:
         """Called after metagraph resync to remove any hotkeys that are no longer registered"""
         hotkeys = [axon.hotkey for axon in axons]
 
-        original_history_count = len(self.organic_history)
-        original_penalties_count = len(self.organic_penalties)
+        # Get all current hotkeys in redis
+        organic_history_hotkeys = redis_client.hkeys(self.history_key)
+        organic_penalties_hotkeys = redis_client.hkeys(self.penalties_key)
 
-        self.organic_history = {
-            hotkey: synapses
-            for hotkey, synapses in self.organic_history.items()
-            if hotkey in hotkeys
-        }
+        original_history_count = len(organic_history_hotkeys)
+        original_penalties_count = len(organic_penalties_hotkeys)
 
-        self.organic_penalties = {
-            hotkey: penalty
-            for hotkey, penalty in self.organic_penalties.items()
-            if hotkey in hotkeys
-        }
+        # Remove hotkeys not in the axon list (pipeline for efficiency)
+        pipe = redis_client.pipeline()
+        for hotkey in organic_history_hotkeys:
+            if hotkey not in hotkeys:
+                pipe.hdel(self.history_key, hotkey)
+
+        for hotkey in organic_penalties_hotkeys:
+            if hotkey not in hotkeys:
+                pipe.hdel(self.penalties_key, hotkey)
+
+        pipe.execute()
+
+        # Count how many were removed
+        current_history_count = len(redis_client.hkeys(self.history_key))
+        current_penalties_count = len(redis_client.hkeys(self.penalties_key))
 
         log_data = {
-            "organic_history": original_history_count - len(self.organic_history),
-            "organic_penalties": original_penalties_count - len(self.organic_penalties),
+            "organic_history": original_history_count - current_history_count,
+            "organic_penalties": original_penalties_count - current_penalties_count,
         }
 
         bt.logging.info(
@@ -65,23 +76,43 @@ class BaseOrganicQueryState:
         self, hotkey: str, synapse: Any, is_failed: bool
     ) -> None:
         """Save a synapse and its failed state to the history"""
-        if hotkey not in self.organic_history:
-            self.organic_history[hotkey] = []
-        self.organic_history[hotkey].append((synapse, is_failed))
+        # Get current history for this hotkey
+        history_json = redis_client.hget(self.history_key, hotkey)
+        history = json.loads(history_json) if history_json else []
+
+        # Serialize the synapse object
+        serialized_synapse = jsonpickle.encode(synapse)
+
+        # Add the new entry
+        history.append([serialized_synapse, is_failed])
+
+        # Store back to Redis
+        redis_client.hset(self.history_key, hotkey, json.dumps(history))
 
     def collect_failed_synapses(self) -> List[Tuple[str, Any]]:
         """Collect all failed synapses from history"""
         failed_synapses = []
 
-        for hotkey, synapses in self.organic_history.items():
-            failed_synapses.extend(
-                [(hotkey, synapse) for synapse, is_failed in synapses if is_failed]
-            )
+        # Get all hotkeys and their history
+        all_histories = redis_client.hgetall(self.history_key)
+
+        for hotkey, history_json in all_histories.items():
+            history = json.loads(history_json)
+
+            # Extract failed synapses
+            for serialized_synapse, is_failed in history:
+                if is_failed:
+                    synapse = jsonpickle.decode(serialized_synapse)
+                    failed_synapses.append((hotkey, synapse))
 
         # If there are no failed synapses, collect all synapses
         if not failed_synapses:
-            for hotkey, synapses in self.organic_history.items():
-                failed_synapses.extend([(hotkey, synapse) for synapse, _ in synapses])
+            for hotkey, history_json in all_histories.items():
+                history = json.loads(history_json)
+
+                for serialized_synapse, _ in history:
+                    synapse = jsonpickle.decode(serialized_synapse)
+                    failed_synapses.append((hotkey, synapse))
 
         return failed_synapses
 
@@ -95,4 +126,4 @@ class BaseOrganicQueryState:
 
     def clear_history(self) -> None:
         """Clear the organic history"""
-        self.organic_history = {}
+        redis_client.delete(self.history_key)
