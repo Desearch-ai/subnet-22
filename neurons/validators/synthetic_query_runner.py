@@ -84,7 +84,7 @@ class SyntheticQueryRunnerMixin:
 
         async for _ in validator.organic(
             query=query,
-            model=synapse.model,
+            model=synapse.model if hasattr(synapse, "model") else None,
             random_synapse=synapse,
             random_uid=synapse_uid,
             specified_uids=specified_uids,

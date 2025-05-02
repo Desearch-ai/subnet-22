@@ -58,7 +58,7 @@ class AbstractNeuron(ABC):
         pass
 
     @abstractmethod
-    async def query_synapse(self):
+    async def run_query_and_score(self):
         pass
 
     @abstractmethod
