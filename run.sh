@@ -22,6 +22,10 @@ args=()
 version_location="./datura/__init__.py"
 version="__version__"
 
+# Default values for API configuration
+api_port="8005"
+api_workers="4"
+
 old_args=$@
 
 # Check if pm2 is installed
@@ -166,12 +170,19 @@ while [[ $# -gt 0 ]]; do
 
   # Check if the argument starts with a hyphen (flag)
   if [[ "$arg" == -* ]]; then
+    # Check for standard param format 
+    if [[ "$arg" == "--port" && $# -gt 1 ]]; then
+      api_port="$2"
+      shift 2
+    elif [[ "$arg" == "--workers" && $# -gt 1 ]]; then
+      api_workers="$2"
+      shift 2
     # Check if the argument has a value
-    if [[ $# -gt 1 && "$2" != -* ]]; then
-        # Add '=' sign between flag and value
-        args+=("'$arg'");
-        args+=("'$2'");
-        shift 2
+    elif [[ $# -gt 1 && "$2" != -* ]]; then
+      # Add '=' sign between flag and value
+      args+=("'$arg'");
+      args+=("'$2'");
+      shift 2
     else
       # Add '=True' for flags with no value
       args+=("'$arg'");
@@ -229,7 +240,7 @@ joined_args=$(printf "%s," "${args[@]}")
 # Remove the trailing comma
 joined_args=${joined_args%,}
 
-# Create the pm2 config file
+# Create the pm2 config file with configurable port and workers
 echo "module.exports = {
     apps: [
         {
@@ -241,9 +252,9 @@ echo "module.exports = {
                 '--host',
                 '0.0.0.0',
                 '--port',
-                '8005',
+                '$api_port',
                 '--workers',
-                '4',
+                '$api_workers',
             ],
             exec_mode: 'fork',
         },
@@ -261,6 +272,7 @@ echo "module.exports = {
 # Print configuration to be used
 echo "Running with the following pm2 config:"
 cat app.config.js
+echo "API Configuration: Port=$api_port, Workers=$api_workers"
 
 pm2 start app.config.js
 
