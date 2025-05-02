@@ -3,15 +3,16 @@ import asyncio
 import itertools
 import torch
 import bittensor as bt
+from bittensor.core.metagraph import AsyncMetagraph
 import argparse
 
 
 class AbstractNeuron(ABC):
     @abstractmethod
     def __init__(self):
-        self.subtensor: "bt.subtensor" = None
+        self.subtensor: "bt.AsyncSubtensor" = None
         self.wallet: "bt.wallet" = None
-        self.metagraph: "bt.metagraph" = None
+        self.metagraph: "AsyncMetagraph" = None
         self.dendrite: "bt.dendrite" = None
         self.dendrite1: "bt.dendrite" = None
         self.dendrite2: "bt.dendrite" = None

@@ -17,10 +17,11 @@ import bittensor as bt
 import threading
 import multiprocessing
 import aiohttp
+
+from datura.redis.utils import save_moving_averaged_scores
 from . import client
 from collections import deque
 from datetime import datetime
-from datura.misc import ttl_get_block
 import re
 import html
 import unicodedata
@@ -328,7 +329,7 @@ def send_discord_alert(message, webhook_url):
         print(f"Failed to send Discord alert: {e}", exc_info=True)
 
 
-def resync_metagraph(self):
+async def resync_metagraph(self):
     """Resyncs the metagraph and updates the hotkeys and moving averages based on the new metagraph."""
     bt.logging.info("resync_metagraph()")
 
@@ -337,11 +338,13 @@ def resync_metagraph(self):
 
     try:
         # Sync the metagraph.
-        self.metagraph.sync(subtensor=self.subtensor)
+        await self.metagraph.sync(subtensor=self.subtensor)
     except Exception as e:
         bt.logging.error(f"Error in resync_metagraph: {e}")
-        self.subtensor = bt.subtensor(config=self.config)
-        self.metagraph = self.subtensor.metagraph(self.config.netuid)
+
+        await self.subtensor.close()
+        self.subtensor = bt.AsyncSubtensor(config=self.config)
+        self.metagraph = await self.subtensor.metagraph(self.config.netuid)
 
     # Check if the metagraph axon info has changed.
     if previous_metagraph.axons == self.metagraph.axons:
@@ -350,6 +353,7 @@ def resync_metagraph(self):
     bt.logging.info(
         "Metagraph updated, re-syncing hotkeys, dendrite pool and moving averages"
     )
+
     # Zero out all hotkeys that have been replaced.
     for uid, hotkey in enumerate(self.hotkeys):
         if hotkey != self.metagraph.hotkeys[uid]:
@@ -363,6 +367,9 @@ def resync_metagraph(self):
         min_len = min(len(self.hotkeys), len(self.moving_averaged_scores))
         new_moving_average[:min_len] = self.moving_averaged_scores[:min_len]
         self.moving_averaged_scores = new_moving_average
+
+    bt.logging.info("Saving moving averaged scores to Redis after metagraph update")
+    save_moving_averaged_scores(self.moving_averaged_scores)
 
     # Update the hotkeys.
     self.hotkeys = copy.deepcopy(self.metagraph.hotkeys)
