@@ -25,3 +25,4 @@ substrate-interface==1.7.11
 redis==5.2.1
 jsonpickle==4.0.2
 newspaper3k==0.2.8
+lxml-html-clean==0.4.2

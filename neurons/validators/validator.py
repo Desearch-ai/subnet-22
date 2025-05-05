@@ -87,8 +87,6 @@ class Neuron(SyntheticQueryRunnerMixin, AbstractNeuron):
         self.validator_service_client = ValidatorServiceClient()
 
         if not lite:
-            init_wandb(self)
-
             self.organic_responses_computed = False
 
             self.available_uids = []
@@ -585,6 +583,8 @@ class Neuron(SyntheticQueryRunnerMixin, AbstractNeuron):
         self.loop = asyncio.get_event_loop()
 
         if not self.lite:
+            init_wandb(self)
+
             self.loop.create_task(self.sync_metagraph())
             self.loop.create_task(self.sync())
             bt.logging.info(

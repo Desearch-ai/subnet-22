@@ -171,6 +171,8 @@ def process_weights(self, raw_weights):
 
     for attempt in range(max_retries):
         try:
+            subtensor = bt.subtensor(config=self.config)
+
             (
                 processed_weight_uids,
                 processed_weights,
@@ -178,7 +180,7 @@ def process_weights(self, raw_weights):
                 uids=self.metagraph.uids.to("cpu"),
                 weights=weights.to("cpu"),
                 netuid=self.config.netuid,
-                subtensor=self.subtensor,
+                subtensor=subtensor,
                 metagraph=self.metagraph,
             )
 
