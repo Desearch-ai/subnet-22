@@ -30,6 +30,8 @@ from datura.protocol import (
     TwitterIDSearchSynapse,
     TwitterURLsSearchSynapse,
     WebSearchSynapse,
+    PeopleSearchSynapse,
+    DeepResearchSynapse,
 )
 from neurons.validators.constants import STEEPNESS, FACTOR
 
@@ -60,6 +62,28 @@ class PerformanceRewardModel(BaseRewardModel):
             )
             for idx, response in enumerate(responses)
         }
+        return axon_times
+
+    def get_deep_research_response_times(
+        self, uids: List[int], responses: List[DeepResearchSynapse]
+    ) -> Dict[int, float]:
+        """
+        Returns a dictionary of axons based on their response times for global results.
+        If get_successful_result returns an invalid result (e.g., an empty list), the score is 0.
+        """
+        axon_times = {}
+        for idx, response in enumerate(responses):
+            uid = uids[idx]
+            successful_result = self.get_successful_deep_research_result(response)
+
+            if successful_result:  # If successful_result is valid and non-empty
+                axon_times[uid] = response.dendrite.process_time or 0.0
+            else:  # Invalid result or empty list
+                bt.logging.warning(
+                    f"Invalid or empty result for UID: {uid}, setting score to 0."
+                )
+                axon_times[uid] = 0.0
+
         return axon_times
 
     def get_global_response_times(
@@ -115,6 +139,8 @@ class PerformanceRewardModel(BaseRewardModel):
             # Determine response type and select the appropriate response time function
             if isinstance(responses[0], ScraperStreamingSynapse):
                 axon_times = self.get_response_times(uids, responses)
+            elif isinstance(responses[0], DeepResearchSynapse):
+                axon_times = self.get_deep_research_response_times(uids, responses)
             elif isinstance(
                 responses[0],
                 (
@@ -122,6 +148,7 @@ class PerformanceRewardModel(BaseRewardModel):
                     TwitterIDSearchSynapse,
                     TwitterURLsSearchSynapse,
                     WebSearchSynapse,
+                    PeopleSearchSynapse,
                 ),
             ):
                 axon_times = self.get_global_response_times(uids, responses)

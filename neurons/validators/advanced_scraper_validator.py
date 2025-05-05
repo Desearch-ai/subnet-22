@@ -28,7 +28,7 @@ from neurons.validators.reward.search_content_relevance import (
 from neurons.validators.reward.performance_reward import PerformanceRewardModel
 from neurons.validators.reward.reward_llm import RewardLLM
 from neurons.validators.utils.tasks import TwitterTask
-from neurons.validators.organic_query_state import OrganicQueryState
+from neurons.validators.advanced_organic_query_state import AdvancedOrganicQueryState
 from neurons.validators.penalty.streaming_penalty import StreamingPenaltyModel
 from neurons.validators.penalty.exponential_penalty import ExponentialTimePenaltyModel
 from neurons.validators.penalty.summary_rule_penalty import SummaryRulePenaltyModel
@@ -89,7 +89,7 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
         self.region = "us"
         self.date_filter = "qdr:w"  # Past week
 
-        self.organic_query_state = OrganicQueryState()
+        self.organic_query_state = AdvancedOrganicQueryState()
 
         # Init device.
         bt.logging.debug("loading", "device")
@@ -191,16 +191,21 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
         }
         start_time = time.time()
 
-        # Get random id on that step
-        uids = await self.neuron.get_uids(
-            strategy=strategy,
-            is_only_allowed_miner=is_only_allowed_miner,
-            specified_uids=specified_uids,
-        )
+        if is_synthetic:
+            uids = await self.neuron.get_uids(
+                strategy=strategy,
+                is_only_allowed_miner=is_only_allowed_miner,
+                specified_uids=specified_uids,
+            )
+
+            axons = [self.neuron.metagraph.axons[uid] for uid in uids]
+        else:
+            uid, axon = await self.neuron.get_random_miner()
+            uids = torch.tensor([uid])
+            axons = [axon]
 
         start_date = date_filter.start_date.strftime("%Y-%m-%dT%H:%M:%SZ")
         end_date = date_filter.end_date.strftime("%Y-%m-%dT%H:%M:%SZ")
-        axons = [self.neuron.metagraph.axons[uid] for uid in uids]
 
         synapses = [
             ScraperStreamingSynapse(
@@ -467,11 +472,6 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
 
     async def query_and_score(self, strategy, specified_uids=None):
         try:
-
-            if not len(self.neuron.available_uids):
-                bt.logging.info("No available UIDs, skipping task execution.")
-                return
-
             dataset = QuestionsDataset()
             tools = random.choice(self.tools)
 
@@ -527,7 +527,7 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
             )
 
             final_synapses = await collect_final_synapses(
-                async_responses, uids, start_time, max_execution_time
+                async_responses, uids, start_time
             )
 
             if self.neuron.config.neuron.synthetic_disabled:
@@ -558,11 +558,6 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
         is_collect_final_synapses: bool = False,  # Flag to collect final synapses
     ):
         """Receives question from user and returns the response from the miners."""
-        max_execution_time = get_max_execution_time(model)
-
-        if not len(self.neuron.available_uids):
-            bt.logging.info("Not available uids")
-            raise StopAsyncIteration("Not available uids")
 
         is_interval_query = random_synapse is not None
 
@@ -605,7 +600,7 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
             if specified_uids or is_collect_final_synapses:
                 # Collect specified uids from responses and score
                 final_synapses = await collect_final_synapses(
-                    async_responses, uids, start_time, max_execution_time
+                    async_responses, uids, start_time
                 )
 
                 if is_collect_final_synapses:

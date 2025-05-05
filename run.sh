@@ -14,12 +14,17 @@ check_root() {
 check_root
 
 # Initialize variables
-script="neurons/validators/api.py"
+validator_script="neurons/validators/validator_service.py"
 autoRunLoc=$(readlink -f "$0")
-proc_name="smart_scrape_validators_api_main_process" 
+api_proc_name="desearch_api_process"
+validator_proc_name="desearch_validator_process"
 args=()
 version_location="./datura/__init__.py"
 version="__version__"
+
+# Default values for API configuration
+api_port="8005"
+api_workers="4"
 
 old_args=$@
 
@@ -165,17 +170,19 @@ while [[ $# -gt 0 ]]; do
 
   # Check if the argument starts with a hyphen (flag)
   if [[ "$arg" == -* ]]; then
+    # Check for standard param format 
+    if [[ "$arg" == "--port" && $# -gt 1 ]]; then
+      api_port="$2"
+      shift 2
+    elif [[ "$arg" == "--workers" && $# -gt 1 ]]; then
+      api_workers="$2"
+      shift 2
     # Check if the argument has a value
-    if [[ $# -gt 1 && "$2" != -* ]]; then
-          if [[ "$arg" == "--script" ]]; then
-            script="$2";
-            shift 2
-        else
-            # Add '=' sign between flag and value
-            args+=("'$arg'");
-            args+=("'$2'");
-            shift 2
-        fi
+    elif [[ $# -gt 1 && "$2" != -* ]]; then
+      # Add '=' sign between flag and value
+      args+=("'$arg'");
+      args+=("'$2'");
+      shift 2
     else
       # Add '=True' for flags with no value
       args+=("'$arg'");
@@ -187,12 +194,6 @@ while [[ $# -gt 0 ]]; do
     shift
   fi
 done
-
-# Check if script argument was provided
-if [[ -z "$script" ]]; then
-    echo "The --script argument is required."
-    exit 1
-fi
 
 # Verify installation
 if redis-cli --version; then
@@ -218,19 +219,20 @@ fi
 
 branch=$(git branch --show-current)            # get current branch.
 echo watching branch: $branch
-echo pm2 process name: $proc_name
 
 # Get the current version locally.
 current_version=$(read_version_value)
 
-# Check if script is already running with pm2
-if pm2 status | grep -q $proc_name; then
-    echo "The script is already running with pm2. Stopping and restarting..."
-    pm2 delete $proc_name
+# Check if scripts are already running with pm2
+if pm2 status | grep -q $api_proc_name; then
+    echo "The API process is already running with pm2. Stopping and restarting..."
+    pm2 delete $api_proc_name
 fi
 
-# Run the Python script with the arguments using pm2
-echo "Running $script with the following pm2 config:"
+if pm2 status | grep -q $validator_proc_name; then
+    echo "The validator process is already running with pm2. Stopping and restarting..."
+    pm2 delete $validator_proc_name
+fi
 
 # Join the arguments with commas using printf
 joined_args=$(printf "%s," "${args[@]}")
@@ -238,20 +240,39 @@ joined_args=$(printf "%s," "${args[@]}")
 # Remove the trailing comma
 joined_args=${joined_args%,}
 
-# Create the pm2 config file
+# Create the pm2 config file with configurable port and workers
 echo "module.exports = {
-  apps : [{
-    name   : '$proc_name',
-    script : '$script',
-    interpreter: 'python3',
-    min_uptime: '5m',
-    max_restarts: '5',
-    args: [$joined_args]
-  }]
+    apps: [
+        {
+            name: '$api_proc_name',
+            script: 'uvicorn',
+            interpreter: 'python3',
+            args: [
+                'neurons.validators.api:app',
+                '--host',
+                '0.0.0.0',
+                '--port',
+                '$api_port',
+                '--workers',
+                '$api_workers',
+            ],
+            exec_mode: 'fork',
+        },
+        {
+            name: '$validator_proc_name',
+            script: '$validator_script',
+            interpreter: 'python3',
+            min_uptime: '5m',
+            max_restarts: '5',
+            args: [$joined_args],
+        },
+    ],
 }" > app.config.js
 
 # Print configuration to be used
+echo "Running with the following pm2 config:"
 cat app.config.js
+echo "API Configuration: Port=$api_port, Workers=$api_workers"
 
 pm2 start app.config.js
 
@@ -266,7 +287,7 @@ if [ "$?" -eq 1 ]; then
             # check value on github remotely
             # Attempt to check the variable value on GitHub for both repositories
             latest_version=""
-            repos=("datura-ai/smart-scrape" "datura-ai/desearch")
+            repos=("Desearch-ai/subnet-22" "datura-ai/smart-scrape" "datura-ai/desearch")
 
             for repo in "${repos[@]}"; do
                 latest_version=$(check_variable_value_on_github "$repo" "datura/__init__.py" "__version__")
@@ -307,9 +328,10 @@ if [ "$?" -eq 1 ]; then
                         # Install latest changes just in case.
                         pip install -e .
 
-                        # # Run the Python script with the arguments using pm2
-                        echo "Restarting PM2 process"
-                        pm2 restart $proc_name
+                        # Restart PM2 processes
+                        echo "Restarting PM2 processes"
+                        pm2 restart $api_proc_name
+                        pm2 restart $validator_proc_name
 
                         # Update current version:
                         current_version=$(read_version_value)

@@ -28,10 +28,14 @@ from datura.protocol import (
     WebSearchSynapse,
     TwitterURLsSearchSynapse,
     TwitterIDSearchSynapse,
+    PeopleSearchSynapse,
+    DeepResearchSynapse,
 )
 from neurons.miners.scraper_miner import ScraperMiner
+from neurons.miners.deep_research_miner import DeepResearchMiner
 from neurons.miners.twitter_search_miner import TwitterSearchMiner
 from neurons.miners.web_search_miner import WebSearchMiner
+from neurons.miners.people_search_miner import PeopleSearchMiner
 
 OpenAI.api_key = os.environ.get("OPENAI_API_KEY")
 if not OpenAI.api_key:
@@ -148,6 +152,12 @@ class StreamMiner(ABC):
         ).attach(
             forward_fn=self.web_search,
             blacklist_fn=self.blacklist_web_search,
+        ).attach(
+            forward_fn=self.people_search,
+            blacklist_fn=self.blacklist_people_search,
+        ).attach(
+            forward_fn=self.deep_research,
+            blacklist_fn=self.blacklist_deep_research,
         )
 
         bt.logging.info(f"Axon created: {self.axon}")
@@ -169,6 +179,9 @@ class StreamMiner(ABC):
     ) -> ScraperStreamingSynapse:
         return self.smart_scraper(synapse)
 
+    def _deep_research(self, synapse: DeepResearchSynapse) -> DeepResearchSynapse:
+        return self.deep_research(synapse)
+
     async def _twitter_search(
         self, synapse: TwitterSearchSynapse
     ) -> TwitterSearchSynapse:
@@ -186,6 +199,9 @@ class StreamMiner(ABC):
 
     async def _web_search(self, synapse: WebSearchSynapse) -> WebSearchSynapse:
         return await self.web_search(synapse)
+
+    async def _people_search(self, synapse: PeopleSearchSynapse) -> PeopleSearchSynapse:
+        return await self.people_search(synapse)
 
     def base_blacklist(self, synapse, blacklist_amt=20000) -> Tuple[bool, str]:
         try:
@@ -269,6 +285,13 @@ class StreamMiner(ABC):
         bt.logging.info(blacklist[1])
         return blacklist
 
+    def blacklist_deep_research(self, synapse: DeepResearchSynapse) -> Tuple[bool, str]:
+        blacklist = self.base_blacklist(
+            synapse, datura.TWITTER_SCRAPPER_BLACKLIST_STAKE
+        )
+        bt.logging.info(blacklist[1])
+        return blacklist
+
     def blacklist_twitter_search(
         self, synapse: TwitterSearchSynapse
     ) -> Tuple[bool, str]:
@@ -303,6 +326,13 @@ class StreamMiner(ABC):
         bt.logging.info(blacklist[1])
         return blacklist
 
+    def blacklist_people_search(self, synapse: PeopleSearchSynapse) -> Tuple[bool, str]:
+        blacklist = self.base_blacklist(
+            synapse, datura.TWITTER_SCRAPPER_BLACKLIST_STAKE
+        )
+        bt.logging.info(blacklist[1])
+        return blacklist
+
     @classmethod
     @abstractmethod
     def add_args(cls, parser: argparse.ArgumentParser): ...
@@ -311,6 +341,9 @@ class StreamMiner(ABC):
         self, synapse: ScraperStreamingSynapse
     ) -> ScraperStreamingSynapse:
         return self.smart_scraper(synapse)
+
+    async def _deep_research(self, synapse: DeepResearchSynapse) -> DeepResearchSynapse:
+        return self.deep_research(synapse)
 
     def _is_alive(self, synapse: IsAlive) -> IsAlive:
         bt.logging.info("answered to be active")
@@ -321,6 +354,9 @@ class StreamMiner(ABC):
     def smart_scraper(
         self, synapse: ScraperStreamingSynapse
     ) -> ScraperStreamingSynapse: ...
+
+    @abstractmethod
+    def deep_research(self, synapse: DeepResearchSynapse) -> DeepResearchSynapse: ...
 
     @abstractmethod
     async def twitter_search(
@@ -339,6 +375,11 @@ class StreamMiner(ABC):
 
     @abstractmethod
     async def web_search(self, synapse: WebSearchSynapse) -> WebSearchSynapse: ...
+
+    @abstractmethod
+    async def people_search(
+        self, synapse: PeopleSearchSynapse
+    ) -> PeopleSearchSynapse: ...
 
     def sync_metagraph_with_interval(self):
         first_run = True
@@ -484,6 +525,12 @@ class StreamingTemplateMiner(StreamMiner):
         token_streamer = partial(tw_miner.smart_scraper, synapse)
         return synapse.create_streaming_response(token_streamer)
 
+    def deep_research(self, synapse: DeepResearchSynapse) -> DeepResearchSynapse:
+        bt.logging.info(f"started processing for synapse {synapse}")
+        tw_miner = DeepResearchMiner(self)
+        token_streamer = partial(tw_miner.deep_research, synapse)
+        return synapse.create_streaming_response(token_streamer)
+
     async def twitter_search(
         self, synapse: TwitterSearchSynapse
     ) -> TwitterSearchSynapse:
@@ -509,6 +556,11 @@ class StreamingTemplateMiner(StreamMiner):
         bt.logging.info(f"started processing for Web search  synapse {synapse}")
         web_search_miner = WebSearchMiner(self)
         return await web_search_miner.search(synapse)
+
+    async def people_search(self, synapse: PeopleSearchSynapse) -> PeopleSearchSynapse:
+        bt.logging.info(f"started processing for People search  synapse {synapse}")
+        people_search_miner = PeopleSearchMiner(self)
+        return await people_search_miner.search(synapse)
 
 
 def get_valid_hotkeys(config):

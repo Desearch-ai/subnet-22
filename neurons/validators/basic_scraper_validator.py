@@ -38,7 +38,7 @@ class BasicScraperValidator(OrganicHistoryMixin):
         self.timeout = 180
         self.max_execution_time = 10
 
-        self.basic_organic_query_state = BasicOrganicQueryState()
+        self.organic_query_state = BasicOrganicQueryState()
 
         # Init device.
         bt.logging.debug("loading", "device")
@@ -111,13 +111,17 @@ class BasicScraperValidator(OrganicHistoryMixin):
 
         start_time = time.time()
 
-        uids = await self.neuron.get_uids(
-            strategy=strategy,
-            is_only_allowed_miner=is_only_allowed_miner,
-            specified_uids=specified_uids,
-        )
-
-        axons = [self.neuron.metagraph.axons[uid] for uid in uids]
+        if is_synthetic:
+            uids = await self.neuron.get_uids(
+                strategy=strategy,
+                is_only_allowed_miner=is_only_allowed_miner,
+                specified_uids=specified_uids,
+            )
+            axons = [self.neuron.metagraph.axons[uid] for uid in uids]
+        else:
+            uid, axon = await self.neuron.get_random_miner()
+            uids = torch.tensor([uid])
+            axons = [axon]
 
         synapses: List[TwitterSearchSynapse] = [
             TwitterSearchSynapse(
@@ -176,7 +180,7 @@ class BasicScraperValidator(OrganicHistoryMixin):
                 penalized_uids = []
 
                 for uid, response in zip(uids.tolist(), responses):
-                    has_penalty = self.basic_organic_query_state.has_penalty(
+                    has_penalty = self.organic_query_state.has_penalty(
                         response.axon.hotkey
                     )
 
@@ -390,14 +394,8 @@ class BasicScraperValidator(OrganicHistoryMixin):
 
         return params
 
-    async def query_and_score_twitter_basic(self, strategy, specified_uids=None):
+    async def query_and_score(self, strategy, specified_uids=None):
         try:
-            if not len(self.neuron.available_uids):
-                bt.logging.info(
-                    "No available UIDs, skipping basic Twitter search task."
-                )
-                return
-
             dataset = QuestionsDataset()
 
             # Question generation
@@ -471,11 +469,6 @@ class BasicScraperValidator(OrganicHistoryMixin):
         specified_uids=None,
     ):
         """Receives question from user and returns the response from the miners."""
-
-        if not len(self.neuron.available_uids):
-            bt.logging.info("No available UIDs")
-            raise StopAsyncIteration("No available UIDs")
-
         is_interval_query = random_synapse is not None
 
         try:
@@ -538,7 +531,7 @@ class BasicScraperValidator(OrganicHistoryMixin):
                     )
 
                     if not is_interval_query:
-                        self.basic_organic_query_state.save_organic_queries(
+                        self.organic_query_state.save_organic_queries(
                             final_responses, uids, original_rewards
                         )
 
@@ -577,24 +570,8 @@ class BasicScraperValidator(OrganicHistoryMixin):
                 criteria=[],
             )
 
-            if not len(self.neuron.available_uids):
-                bt.logging.info("No available UIDs.")
-                raise StopAsyncIteration("No available UIDs.")
-
-            bt.logging.debug("run_task", task_name)
-
-            uids = await self.neuron.get_uids(
-                strategy=QUERY_MINERS.RANDOM,
-                is_only_allowed_miner=False,
-                specified_uids=None,
-            )
-
-            if not uids:
-                raise StopAsyncIteration("No available UIDs.")
-
-            uid = uids[0]
-
-            axon = self.neuron.metagraph.axons[uid]
+            uid, axon = await self.neuron.get_random_miner()
+            uids = torch.tensor([uid])
 
             synapse = TwitterIDSearchSynapse(
                 id=tweet_id,
@@ -605,7 +582,9 @@ class BasicScraperValidator(OrganicHistoryMixin):
 
             timeout = self.max_execution_time + 5
 
-            synapse: TwitterIDSearchSynapse = await self.neuron.dendrite.call(
+            dendrite = next(self.neuron.dendrites)
+
+            synapse: TwitterIDSearchSynapse = await dendrite.call(
                 target_axon=axon,
                 synapse=synapse,
                 timeout=timeout,
@@ -643,7 +622,7 @@ class BasicScraperValidator(OrganicHistoryMixin):
                         )
                     )
 
-                    self.basic_organic_query_state.save_organic_queries(
+                    self.organic_query_state.save_organic_queries(
                         final_responses, uids_tensor, original_rewards
                     )
 
@@ -671,25 +650,10 @@ class BasicScraperValidator(OrganicHistoryMixin):
 
             task_name = "twitter urls search"
 
-            if not len(self.neuron.available_uids):
-                bt.logging.info("No available UIDs.")
-                raise StopAsyncIteration("No available UIDs.")
-
             bt.logging.debug("run_task", task_name)
 
-            # 1) Retrieve a random UID and axon
-            uids = await self.neuron.get_uids(
-                strategy=QUERY_MINERS.RANDOM,
-                is_only_allowed_miner=False,
-                specified_uids=None,
-            )
-
-            if not uids:
-                raise StopAsyncIteration("No available UIDs.")
-
-            uid = uids[0]
-
-            axon = self.neuron.metagraph.axons[uid]
+            uid, axon = await self.neuron.get_random_miner()
+            uids = torch.tensor([uid])
 
             task = SearchTask(
                 base_text=f"Fetch tweets for URLs: {urls}",
@@ -707,7 +671,9 @@ class BasicScraperValidator(OrganicHistoryMixin):
 
             timeout = synapse.max_execution_time + 5
 
-            synapse: TwitterURLsSearchSynapse = await self.neuron.dendrite.call(
+            dendrite = next(self.neuron.dendrites)
+
+            synapse: TwitterURLsSearchSynapse = await dendrite.call(
                 target_axon=axon,
                 synapse=synapse,
                 timeout=timeout,
@@ -745,7 +711,7 @@ class BasicScraperValidator(OrganicHistoryMixin):
                         )
                     )
 
-                    self.basic_organic_query_state.save_organic_queries(
+                    self.organic_query_state.save_organic_queries(
                         final_responses, uids_tensor, original_rewards
                     )
 

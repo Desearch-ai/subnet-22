@@ -95,13 +95,17 @@ class BasicWebScraperValidator(OrganicHistoryMixin):
 
         start_time = time.time()
 
-        uids = await self.neuron.get_uids(
-            strategy=strategy,
-            is_only_allowed_miner=is_only_allowed_miner,
-            specified_uids=specified_uids,
-        )
-
-        axons = [self.neuron.metagraph.axons[uid] for uid in uids]
+        if is_synthetic:
+            uids = await self.neuron.get_uids(
+                strategy=strategy,
+                is_only_allowed_miner=is_only_allowed_miner,
+                specified_uids=specified_uids,
+            )
+            axons = [self.neuron.metagraph.axons[uid] for uid in uids]
+        else:
+            uid, axon = await self.neuron.get_random_miner()
+            uids = torch.tensor([uid])
+            axons = [axon]
 
         synapses: List[WebSearchSynapse] = [
             WebSearchSynapse(
@@ -328,12 +332,8 @@ class BasicWebScraperValidator(OrganicHistoryMixin):
 
         bt.logging.debug("Run Task event:", event)
 
-    async def query_and_score_web_basic(self, strategy, specified_uids=None):
+    async def query_and_score(self, strategy, specified_uids=None):
         try:
-            if not len(self.neuron.available_uids):
-                bt.logging.info("No available UIDs, skipping basic web search task.")
-                return
-
             dataset = QuestionsDataset()
 
             # Question generation
@@ -402,10 +402,6 @@ class BasicWebScraperValidator(OrganicHistoryMixin):
         specified_uids=None,
     ):
         """Receives question from user and returns the response from the miners."""
-
-        if not len(self.neuron.available_uids):
-            bt.logging.info("No available UIDs")
-            raise StopAsyncIteration("No available UIDs")
 
         is_interval_query = random_synapse is not None
 

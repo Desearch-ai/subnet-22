@@ -68,7 +68,7 @@ setup(
     description="Decentralized AI Search",
     long_description=long_description,
     long_description_content_type="text/markdown",
-    url="https://github.com/Datura-ai/desearch",
+    url="https://github.com/Desearch-ai/subnet-22",
     author="Fish",
     packages=find_packages(),
     include_package_data=True,

@@ -2,6 +2,7 @@ import os
 
 os.environ["USE_TORCH"] = "1"
 
+import asyncio
 from typing import Optional, Annotated, List, Optional
 from pydantic import BaseModel, Field, conint
 from fastapi.responses import StreamingResponse
@@ -9,23 +10,51 @@ from fastapi import FastAPI, HTTPException, Header, Query, Path
 from neurons.validators.env import PORT, EXPECTED_ACCESS_KEY
 from datura import __version__
 from datura.dataset.date_filters import DateFilterType
-from datura.protocol import Model, TwitterScraperTweet, WebSearchResultList, ResultType
+from datura.protocol import (
+    Model,
+    TwitterScraperTweet,
+    WebSearchResultList,
+    ResultType,
+    PeopleSearchResultList,
+)
 import uvicorn
+import aiohttp
 import bittensor as bt
 import traceback
 from neurons.validators.validator import Neuron
+from neurons.validators.validator_service_client import ValidatorServiceClient
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
 from contextlib import asynccontextmanager
 import json
 
-neu = Neuron()
+neu: Neuron = None
+
+
+async def get_validator_config():
+    async with ValidatorServiceClient() as client:
+        while True:
+            print("Waiting for validator service to start...")
+
+            try:
+                config = await client.get_config()
+                print("Validator config fetched successfully.")
+                return config
+            except aiohttp.ClientError:
+                print("Waiting for validator service to start...")
+            finally:
+                await asyncio.sleep(5)
 
 
 @asynccontextmanager
 async def lifespan(app):
     # Start the neuron when the app starts
+    global neu
+
+    config = await get_validator_config()
+    neu = Neuron(lite=True, config=config)
     await neu.run()
+
     yield
 
 
@@ -517,6 +546,57 @@ async def web_search_endpoint(
         raise HTTPException(status_code=500, detail=f"An error occurred: {str(e)}")
 
 
+@app.get(
+    "/people/search",
+    summary="People Search",
+    description="Search the people using a query",
+    response_model=PeopleSearchResultList,
+)
+async def people_search_endpoint(
+    query: str = Query(
+        ...,
+        description="The search query string, e.g., 'AI startup founders in London with a PhD in machine learning'.",
+    ),
+    access_key: Annotated[str | None, Header()] = None,
+):
+    """
+    Perform a people search using the given query.
+
+    Parameters:
+        query (str): The search query string.
+
+    Returns:
+        List[PeopleSearchResult]: A list of people search results.
+    """
+
+    if access_key != EXPECTED_ACCESS_KEY:
+        raise HTTPException(status_code=401, detail="Invalid access key")
+
+    try:
+        bt.logging.info(f"Performing people search with query: '{query}'")
+
+        # Collect all yielded synapses from organic
+        final_synapses = []
+
+        async for synapse in neu.people_search_validator.organic(
+            query={"query": query}
+        ):
+            final_synapses.append(synapse)
+
+        # Transform final synapses into a flattened list of links
+        results = []
+
+        for syn in final_synapses:
+            # Each synapse (if successful) should have a 'results' field of PeopleSearchResult
+            if hasattr(syn, "results") and isinstance(syn.results, list):
+                results.extend(syn.results)
+
+        return {"data": results}
+    except Exception as e:
+        bt.logging.error(f"Error in web search: {e}")
+        raise HTTPException(status_code=500, detail=f"An error occurred: {str(e)}")
+
+
 @app.get("/")
 async def health_check(access_key: Annotated[str | None, Header()] = None):
     if access_key != EXPECTED_ACCESS_KEY:
@@ -548,9 +628,5 @@ def custom_openapi():
 app.openapi = custom_openapi
 
 
-def run_fastapi():
-    uvicorn.run(app, host="0.0.0.0", port=PORT, timeout_keep_alive=300)
-
-
 if __name__ == "__main__":
-    run_fastapi()
+    uvicorn.run(app, host="0.0.0.0", port=PORT, timeout_keep_alive=300)
