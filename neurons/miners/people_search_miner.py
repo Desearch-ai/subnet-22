@@ -7,6 +7,7 @@ from neurons.validators.utils.prompt.criteria_relevance_profile import (
 )
 from datura.synapse import collect_responses
 from datura.utils import str_linkedin_profile
+import requests
 
 SERPAPI_API_KEY = os.environ.get("SERPAPI_API_KEY")
 
@@ -28,13 +29,13 @@ class PeopleSearchMiner:
         # Log the mock search execution
         bt.logging.info(f"Executing people search with query: {query}")
 
-        links = [
-            "https://uk.linkedin.com/in/ethanghoreishi",
-            "https://uk.linkedin.com/in/vitali-avagyan-phd-a1566234",
-            "https://uk.linkedin.com/in/olly-styles-090437132",
-            "https://uk.linkedin.com/in/nvedd",
-            "https://www.linkedin.com/in/jean-kaddour-344837267",
-        ]
+        response = requests.get(
+            "http://localhost:8008/people-search",
+            params={"query": query, "criteria": synapse.criteria},
+            json={"query": query, "criteria": synapse.criteria},
+        )
+
+        links = response.json()
 
         profiles = await self.linkedin_scraper_actor.get_profiles(links)
 

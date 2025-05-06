@@ -1,4 +1,5 @@
 import bittensor as bt
+from bittensor.core.metagraph import AsyncMetagraph
 import torch
 from bittensor.core.chain_data import (
     AxonInfo,
@@ -89,7 +90,7 @@ def generateMockNeurons(count: int = 2):
     return neurons
 
 
-class Metagraph(bt.metagraph):
+class Metagraph(AsyncMetagraph):
     def __init__(
         self,
         netuid: int,
@@ -107,13 +108,13 @@ class Metagraph(bt.metagraph):
         self.netuid = netuid
         self.network = network
 
-    def sync(self, subtensor, block=None, lite=False):
+    async def sync(self, subtensor, block=None, lite=False):
         self.lite = lite
 
         self.n = self._create_tensor(len(self.neurons), dtype=torch.int64)
         self.version = self._create_tensor([1], dtype=torch.int64)
         self.block = self._create_tensor(
-            block if block else subtensor.block, dtype=torch.int64
+            block if block else (await subtensor.block), dtype=torch.int64
         )
         self.uids = self._create_tensor(
             [neuron.uid for neuron in self.neurons], dtype=torch.int64
