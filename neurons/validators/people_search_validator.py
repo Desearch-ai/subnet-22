@@ -360,7 +360,7 @@ class PeopleSearchValidator(OrganicHistoryMixin):
                         len(
                             specified_uids
                             if specified_uids
-                            else self.neuron.available_uids
+                            else self.neuron.metagraph.uids
                         )
                     )
                 ]

@@ -47,16 +47,16 @@ class SearchCriteriaRelevancePrompt(BasePrompt):
                     "content": self.text(criteria, profile),
                 },
             ],
-            temperature=0.8,
+            temperature=0.1,
             model="gpt-4o-mini",
         )
-    
+
     def extract_explanation(self, response: str) -> str:
         match = re.search(r"(?<=Explanation:\s)(.*)", response)
-        
+
         if match:
             return match.group(1)
-    
+
         return ""
 
     def extract_score(self, response: str) -> float:
