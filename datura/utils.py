@@ -379,9 +379,9 @@ async def save_logs(logs, netuid):
     logging_endpoint_url = None
 
     if netuid == 22:
-        logging_endpoint_url = "https://api-logs.smartscrape.ai"
+        logging_endpoint_url = "https://logs.desearch.ai"
     else:
-        logging_endpoint_url = "https://api-logs-dev.smartscrape.ai"
+        logging_endpoint_url = "https://logs-dev.desearch.ai"
 
     try:
         timeout = aiohttp.ClientTimeout(total=600)
