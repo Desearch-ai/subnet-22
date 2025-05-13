@@ -261,7 +261,7 @@ class Neuron(SyntheticQueryRunnerMixin, AbstractNeuron):
         query_type,
     ):
         try:
-            if self.config.wandb_on:
+            if self.config.wandb_on and not self.lite:
                 wandb.log(wandb_data)
 
             weights = await self.run_sync_in_async(lambda: get_weights(self))
@@ -308,7 +308,7 @@ class Neuron(SyntheticQueryRunnerMixin, AbstractNeuron):
         query_type,
     ):
         try:
-            if self.config.wandb_on:
+            if self.config.wandb_on and not self.lite:
                 wandb.log(wandb_data)
 
             weights = await self.run_sync_in_async(lambda: get_weights(self))
@@ -360,7 +360,7 @@ class Neuron(SyntheticQueryRunnerMixin, AbstractNeuron):
         neuron,
     ):
         try:
-            if self.config.wandb_on:
+            if self.config.wandb_on and not self.lite:
                 wandb.log(wandb_data)
 
             # weights = await self.run_sync_in_async(lambda: get_weights(self))
