@@ -1074,12 +1074,12 @@ class LinkedinLanguageItem(BaseModel):
 
 class PeopleSearchResult(BaseModel):
     link: str
-    first_name: str
-    last_name: str
-    full_name: str
-    title: str
-    summary: str
-    avatar: str
+    first_name: Optional[str]
+    last_name: Optional[str]
+    full_name: Optional[str]
+    title: Optional[str]
+    summary: Optional[str]
+    avatar: Optional[str]
     experiences: Optional[List[LinkedinExperienceItem]] = []
     educations: Optional[List[LinkedinEducationItem]] = []
     languages: Optional[List[LinkedinLanguageItem]] = []
@@ -1114,6 +1114,13 @@ class PeopleSearchSynapse(Synapse):
         "",
         title="Query",
         description="The query string to fetch results for. Example: 'Former investment bankers who transitioned into startup CFO roles'. Immutable.",
+        allow_mutation=False,
+    )
+
+    num: int = pydantic.Field(
+        10,
+        title="Number of Results",
+        description="The maximum number of results to fetch. Immutable.",
         allow_mutation=False,
     )
 

@@ -557,6 +557,7 @@ async def people_search_endpoint(
         ...,
         description="The search query string, e.g., 'AI startup founders in London with a PhD in machine learning'.",
     ),
+    num: int = Query(10, le=100, description="The maximum number of results to fetch."),
     access_key: Annotated[str | None, Header()] = None,
 ):
     """
@@ -579,7 +580,7 @@ async def people_search_endpoint(
         final_synapses = []
 
         async for synapse in neu.people_search_validator.organic(
-            query={"query": query}
+            query={"query": query, "num": num}
         ):
             final_synapses.append(synapse)
 
