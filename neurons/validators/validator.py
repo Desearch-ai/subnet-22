@@ -107,7 +107,8 @@ class Neuron(SyntheticQueryRunnerMixin, AbstractNeuron):
         if self.config.neuron.offline:
             self.wallet = Wallet(config=self.config)
             self.subtensor = Subtensor(config=self.config)
-            self.metagraph = self.subtensor.metagraph(self.config.netuid)
+            await self.subtensor.initialize()
+            self.metagraph = await self.subtensor.metagraph(self.config.netuid)
             self.hotkeys = copy.deepcopy(self.metagraph.hotkeys)
             self.dendrite = Dendrite(wallet=self.wallet)
             self.dendrite1 = Dendrite(wallet=self.wallet)
@@ -260,7 +261,7 @@ class Neuron(SyntheticQueryRunnerMixin, AbstractNeuron):
         query_type,
     ):
         try:
-            if self.config.wandb_on:
+            if self.config.wandb_on and not self.lite:
                 wandb.log(wandb_data)
 
             weights = await self.run_sync_in_async(lambda: get_weights(self))
@@ -307,7 +308,7 @@ class Neuron(SyntheticQueryRunnerMixin, AbstractNeuron):
         query_type,
     ):
         try:
-            if self.config.wandb_on:
+            if self.config.wandb_on and not self.lite:
                 wandb.log(wandb_data)
 
             weights = await self.run_sync_in_async(lambda: get_weights(self))
@@ -359,7 +360,7 @@ class Neuron(SyntheticQueryRunnerMixin, AbstractNeuron):
         neuron,
     ):
         try:
-            if self.config.wandb_on:
+            if self.config.wandb_on and not self.lite:
                 wandb.log(wandb_data)
 
             # weights = await self.run_sync_in_async(lambda: get_weights(self))

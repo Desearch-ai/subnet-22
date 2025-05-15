@@ -121,6 +121,30 @@ class SearchRequest(BaseModel):
     )
 
 
+class DeepResearchRequest(BaseModel):
+    prompt: str = Field(
+        ...,
+        description="Search query prompt",
+        example="What are the recent sport events?",
+    )
+
+    tools: List[str] = Field(
+        ..., description="List of tools to search with", example=available_tools
+    )
+
+    date_filter: Optional[DateFilterType] = Field(
+        default=DateFilterType.PAST_WEEK,
+        description=f"Date filter for the search results.{format_enum_values(DateFilterType)}",
+        example=DateFilterType.PAST_WEEK.value,
+    )
+
+    system_message: Optional[str] = Field(
+        default=None,
+        description="Rules influencing how summaries are generated",
+        example="Summarize the content by categorizing key points into 'Pros' and 'Cons' sections.",
+    )
+
+
 class LinksSearchRequest(BaseModel):
     prompt: str = Field(
         ...,
@@ -294,6 +318,47 @@ async def search(
         raise HTTPException(status_code=401, detail="Invalid access key")
 
     return StreamingResponse(response_stream_event(body))
+
+
+async def stream_deep_research(data: DeepResearchRequest):
+    try:
+        query = {
+            "content": data.prompt,
+            "tools": data.tools,
+            "date_filter": data.date_filter.value,
+            "system_message": data.system_message,
+        }
+
+        merged_chunks = ""
+
+        async for response in neu.deep_research_validator.organic(query):
+            # Decode the chunk if necessary and merge
+            chunk = str(response)  # Assuming response is already a string
+            merged_chunks += chunk
+            lines = chunk.split("\n")
+            sse_data = "\n".join(f"data: {line if line else ' '}" for line in lines)
+            yield f"{sse_data}\n\n"
+    except Exception as e:
+        bt.logging.error(f"error in stream_deep_research: {traceback.format_exc()}")
+        yield f"data: {json.dumps({'error': str(e)})}\n\n"
+
+
+@app.post(
+    "/deep-research",
+    summary="Deep research",
+    response_description="A stream of search results",
+)
+async def deep_search(
+    body: DeepResearchRequest, access_key: Annotated[str | None, Header()] = None
+):
+    """
+    Search endpoint that accepts a JSON body with search parameters.
+    """
+
+    if access_key != EXPECTED_ACCESS_KEY:
+        raise HTTPException(status_code=401, detail="Invalid access key")
+
+    return StreamingResponse(stream_deep_research(body))
 
 
 @app.post(
@@ -557,6 +622,7 @@ async def people_search_endpoint(
         ...,
         description="The search query string, e.g., 'AI startup founders in London with a PhD in machine learning'.",
     ),
+    num: int = Query(10, le=100, description="The maximum number of results to fetch."),
     access_key: Annotated[str | None, Header()] = None,
 ):
     """
@@ -579,7 +645,7 @@ async def people_search_endpoint(
         final_synapses = []
 
         async for synapse in neu.people_search_validator.organic(
-            query={"query": query}
+            query={"query": query, "num": num}
         ):
             final_synapses.append(synapse)
 

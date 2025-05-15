@@ -32,7 +32,7 @@ class PeopleSearchValidator(OrganicHistoryMixin):
 
         self.neuron = neuron
         self.timeout = 180
-        self.max_execution_time = 10
+        self.max_execution_time = 100
 
         self.basic_organic_query_state = BasicOrganicQueryState()
 
@@ -360,7 +360,7 @@ class PeopleSearchValidator(OrganicHistoryMixin):
                         len(
                             specified_uids
                             if specified_uids
-                            else self.neuron.available_uids
+                            else self.neuron.metagraph.uids
                         )
                     )
                 ]
