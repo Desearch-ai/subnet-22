@@ -39,6 +39,9 @@ from neurons.validators.organic_history_mixin import OrganicHistoryMixin
 from neurons.validators.deep_research_organic_query_state import (
     DeepResearchOrganicQueryState,
 )
+from neurons.validators.penalty.deep_research_streaming_penalty import (
+    DeepResearchStreamingPenaltyModel,
+)
 
 
 class DeepResearchValidator(OrganicHistoryMixin):
@@ -187,7 +190,7 @@ class DeepResearchValidator(OrganicHistoryMixin):
         ]
 
         self.penalty_functions = [
-            # StreamingPenaltyModel(max_penalty=1),
+            DeepResearchStreamingPenaltyModel(max_penalty=1),
             ExponentialTimePenaltyModel(max_penalty=1),
         ]
 
