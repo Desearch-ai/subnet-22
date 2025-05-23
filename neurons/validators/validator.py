@@ -520,16 +520,14 @@ class Neuron(SyntheticQueryRunnerMixin, AbstractNeuron):
                         if not self.organic_responses_computed:
                             bt.logging.info("Computing organic responses")
 
-                            validators = [
-                                self.advanced_scraper_validator,
-                                self.basic_scraper_validator,
-                                self.deep_research_validator,
-                                self.basic_web_scraper_validator,
-                                # self.people_search_validator,
-                            ]
-
                             random_validator = random.choices(
-                                validators, weights=[0.4, 0.2, 0.2, 0.2]
+                                [
+                                    self.advanced_scraper_validator,
+                                    self.basic_scraper_validator,
+                                    self.deep_research_validator,
+                                    self.people_search_validator,
+                                ],
+                                weights=[0.5, 0.20, 0.15, 0.15],
                             )[0]
 
                             self.loop.create_task(
