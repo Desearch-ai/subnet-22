@@ -264,7 +264,11 @@ class Neuron(SyntheticQueryRunnerMixin, AbstractNeuron):
             if self.config.wandb_on and not self.lite:
                 wandb.log(wandb_data)
 
-            weights = await self.run_sync_in_async(lambda: get_weights(self))
+            weights = (
+                await self.run_sync_in_async(lambda: get_weights(self))
+                if not self.lite
+                else {}
+            )
 
             asyncio.create_task(
                 save_logs_in_chunks(
@@ -311,7 +315,11 @@ class Neuron(SyntheticQueryRunnerMixin, AbstractNeuron):
             if self.config.wandb_on and not self.lite:
                 wandb.log(wandb_data)
 
-            weights = await self.run_sync_in_async(lambda: get_weights(self))
+            weights = (
+                await self.run_sync_in_async(lambda: get_weights(self))
+                if not self.lite
+                else {}
+            )
 
             asyncio.create_task(
                 save_logs_in_chunks_for_deep_research(
@@ -363,7 +371,11 @@ class Neuron(SyntheticQueryRunnerMixin, AbstractNeuron):
             if self.config.wandb_on and not self.lite:
                 wandb.log(wandb_data)
 
-            # weights = await self.run_sync_in_async(lambda: get_weights(self))
+            # weights = (
+            #     await self.run_sync_in_async(lambda: get_weights(self))
+            #     if not self.lite
+            #     else {}
+            # )
 
             # asyncio.create_task(
             #     save_logs_in_chunks_for_basic(
@@ -574,17 +586,17 @@ class Neuron(SyntheticQueryRunnerMixin, AbstractNeuron):
         await self.initialize_components()
         await self.check_registered()
 
-        # Init Weights.
-        bt.logging.debug("loading", "moving_averaged_scores")
-        self.moving_averaged_scores = load_moving_averaged_scores(
-            self.metagraph, self.config
-        )
-        bt.logging.debug(str(self.moving_averaged_scores))
-
         self.loop = asyncio.get_event_loop()
 
         if not self.lite:
             init_wandb(self)
+
+            # Init Weights.
+            bt.logging.debug("loading", "moving_averaged_scores")
+            self.moving_averaged_scores = load_moving_averaged_scores(
+                self.metagraph, self.config
+            )
+            bt.logging.debug(str(self.moving_averaged_scores))
 
             self.loop.create_task(self.sync_metagraph())
             self.loop.create_task(self.sync())
