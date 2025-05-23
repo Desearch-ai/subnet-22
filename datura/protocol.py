@@ -278,6 +278,7 @@ class ReportItem(BaseModel):
 
 
 class FlowItem(BaseModel):
+    id: str
     type: Literal["Sources", "Description", "Queries"]
     content: str | List[str]
     time: int
