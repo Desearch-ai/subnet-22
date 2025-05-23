@@ -289,7 +289,7 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
                 penalized_uids = []
 
                 for uid, response in zip(uids.tolist(), responses):
-                    has_penalty = self.organic_query_state.has_penalty(
+                    has_penalty = await self.organic_query_state.has_penalty(
                         response.axon.hotkey
                     )
 
@@ -359,7 +359,7 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
                 )
 
             if is_synthetic:
-                scattered_rewards = self.neuron.update_moving_averaged_scores(
+                scattered_rewards = await self.neuron.update_moving_averaged_scores(
                     uids, rewards
                 )
                 self.log_event(tasks, event, start_time, uids, rewards)
@@ -531,7 +531,7 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
             )
 
             if self.neuron.config.neuron.synthetic_disabled:
-                self._save_organic_response(
+                await self._save_organic_response(
                     uids, final_synapses, tasks, event, start_time
                 )
             else:
@@ -634,14 +634,14 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
                     )
 
                     if not is_interval_query:
-                        self.organic_query_state.save_organic_queries(
+                        await self.organic_query_state.save_organic_queries(
                             final_synapses, uids, original_rewards
                         )
                 if (
                     self.neuron.config.neuron.synthetic_disabled
                     and not is_interval_query
                 ):
-                    self._save_organic_response(
+                    await self._save_organic_response(
                         uids, final_synapses, tasks, event, start_time
                     )
 

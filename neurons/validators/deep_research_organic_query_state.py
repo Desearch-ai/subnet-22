@@ -7,7 +7,7 @@ from neurons.validators.base_organic_query_state import BaseOrganicQueryState
 
 
 class DeepResearchOrganicQueryState(BaseOrganicQueryState):
-    def save_organic_queries(
+    async def save_organic_queries(
         self,
         final_synapses: List[DeepResearchSynapse],
         uids,
@@ -59,13 +59,13 @@ class DeepResearchOrganicQueryState(BaseOrganicQueryState):
 
             # Save penalty for the miner for the next synthetic query
             if is_failed_organic:
-                self.record_failed_organic_query(uid, hotkey)
+                await self.record_failed_organic_query(uid, hotkey)
 
-            self.save_organic_query_history(hotkey, synapse, is_failed_organic)
+            await self.save_organic_query_history(hotkey, synapse, is_failed_organic)
 
-    def get_random_organic_query(self, uids, neurons):
+    async def get_random_organic_query(self, uids, neurons):
         """Gets a random organic query from the history to score with other miners"""
-        failed_synapses = self.collect_failed_synapses()
+        failed_synapses = await self.collect_failed_synapses()
 
         # If there are still no synapses, return None
         if not failed_synapses:
@@ -95,6 +95,6 @@ class DeepResearchOrganicQueryState(BaseOrganicQueryState):
         # All miners to call except the one that made the query
         specified_uids = self.get_specified_uids(uids, synapse_uid)
 
-        self.clear_history()
+        await self.clear_history()
 
         return synapse, query, synapse_uid, specified_uids
