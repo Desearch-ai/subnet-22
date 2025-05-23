@@ -280,7 +280,8 @@ class ReportItem(BaseModel):
 class FlowItem(BaseModel):
     id: str
     type: Literal["Sources", "Description", "Queries"]
-    content: str | List[str]
+    content: Optional[str | List[str]] = None
+    status: Literal["in_progress", "finished"] = "finished"
     time: int
 
 
