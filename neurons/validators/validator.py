@@ -32,6 +32,7 @@ from datura.utils import (
     save_logs_in_chunks_for_deep_research,
 )
 from datura.redis.utils import load_moving_averaged_scores, save_moving_averaged_scores
+from datura.redis.redis_client import initialize_redis
 from neurons.validators.proxy.uid_manager import UIDManager
 from neurons.validators.synthetic_query_runner import SyntheticQueryRunnerMixin
 
@@ -140,6 +141,8 @@ class Neuron(SyntheticQueryRunnerMixin, AbstractNeuron):
             )
             exit()
 
+        await initialize_redis()
+
     async def get_random_miner(self):
         return await self.validator_service_client.get_random_miner()
 
@@ -156,10 +159,10 @@ class Neuron(SyntheticQueryRunnerMixin, AbstractNeuron):
                     )
 
                 self.uid_manager.resync(self.available_uids)
-                self.advanced_scraper_validator.organic_query_state.remove_deregistered_hotkeys(
+                await self.advanced_scraper_validator.organic_query_state.remove_deregistered_hotkeys(
                     self.metagraph.axons
                 )
-                self.basic_scraper_validator.organic_query_state.remove_deregistered_hotkeys(
+                await self.basic_scraper_validator.organic_query_state.remove_deregistered_hotkeys(
                     self.metagraph.axons
                 )
 
@@ -228,7 +231,7 @@ class Neuron(SyntheticQueryRunnerMixin, AbstractNeuron):
 
         if strategy == QUERY_MINERS.RANDOM:
             uid = self.uid_manager.get_miner_uid()
-            uids = torch.tensor([uid]) if uid else torch.tensor([])
+            uids = torch.tensor([uid]) if uid is not None else torch.tensor([])
         elif strategy == QUERY_MINERS.ALL:
             # Filter uid_list based on specified_uids and only_allowed_miners
             uid_list = [
@@ -264,7 +267,11 @@ class Neuron(SyntheticQueryRunnerMixin, AbstractNeuron):
             if self.config.wandb_on and not self.lite:
                 wandb.log(wandb_data)
 
-            weights = await self.run_sync_in_async(lambda: get_weights(self))
+            weights = (
+                await self.run_sync_in_async(lambda: get_weights(self))
+                if not self.lite
+                else {}
+            )
 
             asyncio.create_task(
                 save_logs_in_chunks(
@@ -311,7 +318,11 @@ class Neuron(SyntheticQueryRunnerMixin, AbstractNeuron):
             if self.config.wandb_on and not self.lite:
                 wandb.log(wandb_data)
 
-            weights = await self.run_sync_in_async(lambda: get_weights(self))
+            weights = (
+                await self.run_sync_in_async(lambda: get_weights(self))
+                if not self.lite
+                else {}
+            )
 
             asyncio.create_task(
                 save_logs_in_chunks_for_deep_research(
@@ -363,7 +374,11 @@ class Neuron(SyntheticQueryRunnerMixin, AbstractNeuron):
             if self.config.wandb_on and not self.lite:
                 wandb.log(wandb_data)
 
-            # weights = await self.run_sync_in_async(lambda: get_weights(self))
+            # weights = (
+            #     await self.run_sync_in_async(lambda: get_weights(self))
+            #     if not self.lite
+            #     else {}
+            # )
 
             # asyncio.create_task(
             #     save_logs_in_chunks_for_basic(
@@ -386,7 +401,7 @@ class Neuron(SyntheticQueryRunnerMixin, AbstractNeuron):
             bt.logging.error(f"Error in update_scores_for_basic: {e}")
             raise e
 
-    def update_moving_averaged_scores(self, uids, rewards):
+    async def update_moving_averaged_scores(self, uids, rewards):
         try:
             # Ensure uids is a tensor
             if not isinstance(uids, torch.Tensor):
@@ -415,7 +430,7 @@ class Neuron(SyntheticQueryRunnerMixin, AbstractNeuron):
             self.moving_averaged_scores = alpha * scattered_rewards + (
                 1 - alpha
             ) * self.moving_averaged_scores.to(self.config.neuron.device)
-            save_moving_averaged_scores(self.moving_averaged_scores)
+            await save_moving_averaged_scores(self.moving_averaged_scores)
             bt.logging.info(
                 f"Moving averaged scores: {torch.mean(self.moving_averaged_scores):.6f}"
             )  # Rounds to 6 decimal places for logging
@@ -425,7 +440,7 @@ class Neuron(SyntheticQueryRunnerMixin, AbstractNeuron):
             raise e
 
     async def compute_organic_responses(self, validator):
-        specified_uids = validator.get_uids_with_no_history(self.available_uids)
+        specified_uids = await validator.get_uids_with_no_history(self.available_uids)
 
         if specified_uids:
             bt.logging.info(
@@ -437,9 +452,11 @@ class Neuron(SyntheticQueryRunnerMixin, AbstractNeuron):
                 strategy=QUERY_MINERS.ALL, specified_uids=specified_uids
             )
 
+        random_organic_responses = await validator.get_random_organic_responses()
+
         # Compute rewards and penalties using random organic responses
         await validator.compute_rewards_and_penalties(
-            **validator.get_random_organic_responses(),
+            **random_organic_responses,
             start_time=time.time(),
         )
 
@@ -508,16 +525,14 @@ class Neuron(SyntheticQueryRunnerMixin, AbstractNeuron):
                         if not self.organic_responses_computed:
                             bt.logging.info("Computing organic responses")
 
-                            validators = [
-                                self.advanced_scraper_validator,
-                                self.basic_scraper_validator,
-                                self.deep_research_validator,
-                                self.basic_web_scraper_validator,
-                                # self.people_search_validator,
-                            ]
-
                             random_validator = random.choices(
-                                validators, weights=[0.4, 0.2, 0.2, 0.2]
+                                [
+                                    self.advanced_scraper_validator,
+                                    self.basic_scraper_validator,
+                                    self.deep_research_validator,
+                                    self.people_search_validator,
+                                ],
+                                weights=[0.5, 0.20, 0.15, 0.15],
                             )[0]
 
                             self.loop.create_task(
@@ -574,17 +589,17 @@ class Neuron(SyntheticQueryRunnerMixin, AbstractNeuron):
         await self.initialize_components()
         await self.check_registered()
 
-        # Init Weights.
-        bt.logging.debug("loading", "moving_averaged_scores")
-        self.moving_averaged_scores = load_moving_averaged_scores(
-            self.metagraph, self.config
-        )
-        bt.logging.debug(str(self.moving_averaged_scores))
-
         self.loop = asyncio.get_event_loop()
 
         if not self.lite:
             init_wandb(self)
+
+            # Init Weights.
+            bt.logging.debug("loading", "moving_averaged_scores")
+            self.moving_averaged_scores = await load_moving_averaged_scores(
+                self.metagraph, self.config
+            )
+            bt.logging.debug(str(self.moving_averaged_scores))
 
             self.loop.create_task(self.sync_metagraph())
             self.loop.create_task(self.sync())

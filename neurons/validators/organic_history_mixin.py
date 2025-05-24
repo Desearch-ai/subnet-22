@@ -9,22 +9,34 @@ class OrganicHistoryMixin:
     HISTORY_EXPIRY_TIME = 2 * 3600
 
     def __init__(self):
-        self.organic_history = self._load_history()
+        self.organic_history = {}
+        self._history_loaded = False
 
     @property
     def redis_key(self):
         return f"{self.__class__.__name__}:organic_history"
 
-    def _load_history(self):
-        data = jsonpickle.decode(redis_client.get(self.redis_key) or "{}")
-        return {int(uid): values for uid, values in data.items()}
+    async def _ensure_history_loaded(self):
+        """Ensure history is loaded from Redis"""
+        if not self._history_loaded:
+            self.organic_history = await self._load_history()
+            self._history_loaded = True
 
-    def _save_history(self, history):
-        redis_client.set(
+    async def _load_history(self):
+        data = await redis_client.get(self.redis_key)
+        if data:
+            decoded_data = jsonpickle.decode(data)
+            return {int(uid): values for uid, values in decoded_data.items()}
+        return {}
+
+    async def _save_history(self, history):
+        await redis_client.set(
             self.redis_key, jsonpickle.encode(history), ex=self.HISTORY_EXPIRY_TIME
         )
 
-    def _clean_organic_history(self):
+    async def _clean_organic_history(self):
+        await self._ensure_history_loaded()
+
         current_time = time.time()
         self.organic_history = {
             uid: [
@@ -41,11 +53,15 @@ class OrganicHistoryMixin:
             if len(values) > 0
         }
 
-        self._save_history(self.organic_history)
+        await self._save_history(self.organic_history)
 
         return self.organic_history
 
-    def _save_organic_response(self, uids, responses, tasks, event, start_time) -> None:
+    async def _save_organic_response(
+        self, uids, responses, tasks, event, start_time
+    ) -> None:
+        await self._ensure_history_loaded()
+
         for uid, response, task, *event_values in zip(
             uids, responses, tasks, *event.values()
         ):
@@ -63,10 +79,10 @@ class OrganicHistoryMixin:
                 }
             )
 
-        self._save_history(self.organic_history)
+        await self._save_history(self.organic_history)
 
-    def get_random_organic_responses(self):
-        self._clean_organic_history()
+    async def get_random_organic_responses(self):
+        await self._clean_organic_history()
 
         event = {}
         tasks = []
@@ -93,8 +109,8 @@ class OrganicHistoryMixin:
             "uids": torch.tensor(uids),
         }
 
-    def get_latest_organic_responses(self):
-        self._clean_organic_history()
+    async def get_latest_organic_responses(self):
+        await self._clean_organic_history()
 
         event = {}
         tasks = []
@@ -118,8 +134,8 @@ class OrganicHistoryMixin:
             "uids": torch.tensor(uids),
         }
 
-    def get_uids_with_no_history(self, available_uids):
-        self._clean_organic_history()
+    async def get_uids_with_no_history(self, available_uids):
+        await self._clean_organic_history()
 
         uids = [uid for uid in available_uids if uid not in self.organic_history]
 

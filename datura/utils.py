@@ -369,7 +369,7 @@ async def resync_metagraph(self):
         self.moving_averaged_scores = new_moving_average
 
     bt.logging.info("Saving moving averaged scores to Redis after metagraph update")
-    save_moving_averaged_scores(self.moving_averaged_scores)
+    await save_moving_averaged_scores(self.moving_averaged_scores)
 
     # Update the hotkeys.
     self.hotkeys = copy.deepcopy(self.metagraph.hotkeys)

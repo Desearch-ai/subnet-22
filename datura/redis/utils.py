@@ -5,8 +5,8 @@ import jsonpickle
 REDIS_MOVING_AVERAGED_SCORES_KEY = "moving_averaged_scores"
 
 
-def load_moving_averaged_scores(metagraph, config):
-    scores = redis_client.get(REDIS_MOVING_AVERAGED_SCORES_KEY)
+async def load_moving_averaged_scores(metagraph, config):
+    scores = await redis_client.get(REDIS_MOVING_AVERAGED_SCORES_KEY)
 
     if scores:
         return jsonpickle.decode(scores)
@@ -14,5 +14,5 @@ def load_moving_averaged_scores(metagraph, config):
     return torch.zeros((metagraph.n)).to(config.neuron.device)
 
 
-def save_moving_averaged_scores(scores):
-    redis_client.set(REDIS_MOVING_AVERAGED_SCORES_KEY, jsonpickle.encode(scores))
+async def save_moving_averaged_scores(scores):
+    await redis_client.set(REDIS_MOVING_AVERAGED_SCORES_KEY, jsonpickle.encode(scores))

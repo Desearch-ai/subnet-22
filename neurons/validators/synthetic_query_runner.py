@@ -70,7 +70,7 @@ class SyntheticQueryRunnerMixin:
 
     async def run_organic_queries(self, validator):
         """Run organic queries using the advanced scraper validator."""
-        result = validator.organic_query_state.get_random_organic_query(
+        result = await validator.organic_query_state.get_random_organic_query(
             self.available_uids, self.metagraph.neurons
         )
 
