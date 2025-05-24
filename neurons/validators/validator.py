@@ -231,7 +231,7 @@ class Neuron(SyntheticQueryRunnerMixin, AbstractNeuron):
 
         if strategy == QUERY_MINERS.RANDOM:
             uid = self.uid_manager.get_miner_uid()
-            uids = torch.tensor([uid]) if uid else torch.tensor([])
+            uids = torch.tensor([uid]) if uid is not None else torch.tensor([])
         elif strategy == QUERY_MINERS.ALL:
             # Filter uid_list based on specified_uids and only_allowed_miners
             uid_list = [
