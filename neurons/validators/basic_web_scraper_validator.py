@@ -136,7 +136,7 @@ class BasicWebScraperValidator(OrganicHistoryMixin):
                 # Create a task for each dendrite call
                 task = dendrite.call(
                     target_axon=axon,
-                    synapse=syn.copy(),
+                    synapse=syn.model_copy(),
                     timeout=timeout,
                     deserialize=False,
                 )

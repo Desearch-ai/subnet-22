@@ -261,7 +261,7 @@ class DeepResearchValidator(OrganicHistoryMixin):
                 [
                     dendrite.call_stream(
                         target_axon=axon,
-                        synapse=synapse.copy(),
+                        synapse=synapse.model_copy(),
                         timeout=timeout,
                         deserialize=False,
                     )
