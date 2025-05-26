@@ -121,61 +121,6 @@ class TestOrganicHistoryMixin(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.mixin.organic_history, expected)
 
     @patch("time.time", return_value=100000)
-    async def test_get_latest_organic_responses(self, mock_time):
-        # Prepare a history with multiple entries
-        organic_history = {
-            1: [
-                {
-                    "start_time": mock_time(),
-                    "response": "response1",
-                    "task": "task1",
-                    "event": {"name": "event1_name", "text": "event1_text"},
-                }
-            ],
-            2: [
-                {
-                    "start_time": mock_time() - 1000,
-                    "response": "response2",
-                    "task": "task2",
-                    "event": {"name": "event2_name", "text": "event2_text"},
-                },
-                {
-                    "start_time": mock_time(),
-                    "response": "response4",
-                    "task": "task4",
-                    "event": {"name": "event4_name", "text": "event4_text"},
-                },
-            ],
-            3: [
-                {
-                    "start_time": mock_time(),
-                    "response": "response3",
-                    "task": "task3",
-                    "event": {"name": "event3_name", "text": "event3_text"},
-                }
-            ],
-        }
-        self.mixin.organic_history = organic_history.copy()
-
-        # Fetch latest
-        result = await self.mixin.get_latest_organic_responses()
-        event = result["event"]
-        tasks = result["tasks"]
-        responses = result["responses"]
-        uids = result["uids"]
-
-        self.assertEqual(
-            event,
-            {
-                "name": ["event1_name", "event4_name", "event3_name"],
-                "text": ["event1_text", "event4_text", "event3_text"],
-            },
-        )
-        self.assertEqual(tasks, ["task1", "task4", "task3"])
-        self.assertEqual(responses, ["response1", "response4", "response3"])
-        self.assertEqual(uids.tolist(), [1, 2, 3])
-
-    @patch("time.time", return_value=100000)
     async def test_get_random_organic_responses(self, mock_time):
         organic_history = {
             1: [

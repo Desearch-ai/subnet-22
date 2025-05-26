@@ -441,7 +441,7 @@ class Neuron(SyntheticQueryRunnerMixin, AbstractNeuron):
 
     async def compute_organic_responses(self, validator):
         specified_uids = await validator.get_uids_with_no_history(
-            self.neuron.metagraph.uids
+            self.metagraph.uids.tolist()
         )
 
         if specified_uids:
@@ -523,7 +523,7 @@ class Neuron(SyntheticQueryRunnerMixin, AbstractNeuron):
                     await asyncio.sleep(300)
 
                 if self.config.neuron.synthetic_disabled:
-                    if blocks_left <= 200:
+                    if blocks_left <= 100:
                         if not self.organic_responses_computed:
                             bt.logging.info("Computing organic responses")
 

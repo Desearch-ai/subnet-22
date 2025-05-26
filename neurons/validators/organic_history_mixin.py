@@ -1,142 +1,160 @@
 import time
 import torch
 import random
-from datura.redis.redis_client import redis_client
+import json
 import jsonpickle
+from typing import List, Dict
+from datura.redis.redis_client import redis_client
 
 
 class OrganicHistoryMixin:
-    HISTORY_EXPIRY_TIME = 2 * 3600
+    HISTORY_EXPIRY_TIME = 2 * 3600  # 2 hours in seconds
 
     def __init__(self):
-        self.organic_history = {}
-        self._history_loaded = False
+        pass
 
-    @property
-    def redis_key(self):
-        return f"{self.__class__.__name__}:organic_history"
+    def _get_uid_key(self, uid: int) -> str:
+        """Get Redis key for a specific UID"""
+        return f"{self.__class__.__name__}:organic_history:uid:{uid}"
 
-    async def _ensure_history_loaded(self):
-        """Ensure history is loaded from Redis"""
-        if not self._history_loaded:
-            self.organic_history = await self._load_history()
-            self._history_loaded = True
-
-    async def _load_history(self):
-        data = await redis_client.get(self.redis_key)
-        if data:
-            decoded_data = jsonpickle.decode(data)
-            return {int(uid): values for uid, values in decoded_data.items()}
-        return {}
-
-    async def _save_history(self, history):
-        await redis_client.set(
-            self.redis_key, jsonpickle.encode(history), ex=self.HISTORY_EXPIRY_TIME
-        )
-
-    async def _clean_organic_history(self):
-        await self._ensure_history_loaded()
-
-        current_time = time.time()
-        self.organic_history = {
-            uid: [
-                value
-                for value in values
-                if value["start_time"] >= current_time - self.HISTORY_EXPIRY_TIME
-            ]
-            for uid, values in self.organic_history.items()
-        }
-
-        self.organic_history = {
-            uid: values
-            for uid, values in self.organic_history.items()
-            if len(values) > 0
-        }
-
-        await self._save_history(self.organic_history)
-
-        return self.organic_history
+    def _get_all_keys_pattern(self) -> str:
+        """Get pattern to match all UID keys"""
+        return f"{self.__class__.__name__}:organic_history:uid:*"
 
     async def _save_organic_response(
         self, uids, responses, tasks, event, start_time
     ) -> None:
-        await self._ensure_history_loaded()
+        """Save organic responses to Redis using sorted sets"""
+        pipeline = redis_client.pipeline()
 
         for uid, response, task, *event_values in zip(
             uids, responses, tasks, *event.values()
         ):
-            event = dict(zip(event.keys(), event_values))
+            event_dict = dict(zip(event.keys(), event_values))
 
-            if uid.item() not in self.organic_history:
-                self.organic_history[uid.item()] = []
+            # Prepare data to store
+            data = {
+                "response": response,
+                "task": task,
+                "event": event_dict,
+                "start_time": start_time,
+            }
 
-            self.organic_history[uid.item()].append(
-                {
-                    "response": response,
-                    "task": task,
-                    "event": event,
-                    "start_time": start_time,
-                }
-            )
+            # Use ZADD with timestamp as score
+            # Use jsonpickle for serialization to handle Pydantic models
+            key = self._get_uid_key(uid.item())
+            pipeline.zadd(key, {jsonpickle.encode(data): start_time})
 
-        await self._save_history(self.organic_history)
+            # Set key expiry to slightly longer than HISTORY_EXPIRY_TIME
+            # This ensures Redis eventually cleans up abandoned keys
+            pipeline.expire(key, self.HISTORY_EXPIRY_TIME + 3600)
+
+        await pipeline.execute()
+
+    async def _clean_uid_history(self, uid: int) -> int:
+        """Clean expired entries for a specific UID and delete key if empty"""
+        key = self._get_uid_key(uid)
+        current_time = time.time()
+        cutoff_time = current_time - self.HISTORY_EXPIRY_TIME
+
+        # Remove old entries
+        removed_count = await redis_client.zremrangebyscore(key, "-inf", cutoff_time)
+
+        # Check if sorted set is empty and delete if so
+        if await redis_client.zcard(key) == 0:
+            await redis_client.delete(key)
+
+        return removed_count
+
+    async def _clean_all_history(self) -> Dict[int, int]:
+        """Clean expired entries for all UIDs"""
+        # Get all UID keys
+        keys_pattern = self._get_all_keys_pattern()
+        keys = await redis_client.keys(keys_pattern)
+
+        if not keys:
+            return {}
+
+        # Extract UIDs from keys
+        removed_counts = {}
+        for key in keys:
+            # Extract UID from key format
+            uid = int(key.split(":")[-1])
+            removed_count = await self._clean_uid_history(uid)
+            if removed_count > 0:
+                removed_counts[uid] = removed_count
+
+        return removed_counts
 
     async def get_random_organic_responses(self):
-        await self._clean_organic_history()
+        """Get random organic responses from all UIDs with history"""
+        # Clean all history first
+        await self._clean_all_history()
+
+        # Get all UID keys that still exist
+        keys = await redis_client.keys(self._get_all_keys_pattern())
+
+        if not keys:
+            return {
+                "event": {},
+                "tasks": [],
+                "responses": [],
+                "uids": torch.tensor([]),
+            }
 
         event = {}
         tasks = []
         responses = []
         uids = []
 
-        for uid, item in self.organic_history.items():
+        # Use pipeline for efficiency
+        pipeline = redis_client.pipeline()
+        for key in keys:
+            pipeline.zrange(key, 0, -1)  # Get all members
+
+        all_histories = await pipeline.execute()
+
+        for key, history_data in zip(keys, all_histories):
+            if not history_data:  # Skip if no data
+                continue
+
+            # Extract UID from key
+            uid = int(key.split(":")[-1])
             uids.append(torch.tensor([uid]))
 
-            random_index = random.randint(0, len(item) - 1)
+            # Pick random entry
+            random_entry = random.choice(history_data)
+            data = jsonpickle.decode(random_entry)
 
-            responses.append(item[random_index]["response"])
-            tasks.append(item[random_index]["task"])
-            for key, value in item[random_index]["event"].items():
-                if not key in event:
+            responses.append(data["response"])
+            tasks.append(data["task"])
+
+            # Aggregate event data
+            for key, value in data["event"].items():
+                if key not in event:
                     event[key] = []
-
                 event[key].append(value)
 
         return {
             "event": event,
             "tasks": tasks,
             "responses": responses,
-            "uids": torch.tensor(uids),
+            "uids": torch.tensor(uids) if uids else torch.tensor([]),
         }
 
-    async def get_latest_organic_responses(self):
-        await self._clean_organic_history()
+    async def get_uids_with_no_history(self, available_uids: List[int]) -> List[int]:
+        """Get UIDs that have no history in Redis"""
+        # Clean all history first
+        await self._clean_all_history()
 
-        event = {}
-        tasks = []
-        responses = []
-        uids = []
+        # Check which UIDs have keys in Redis
+        pipeline = redis_client.pipeline()
+        for uid in available_uids:
+            pipeline.exists(self._get_uid_key(uid))
 
-        for uid, item in self.organic_history.items():
-            uids.append(torch.tensor([uid]))
-            responses.append(item[-1]["response"])
-            tasks.append(item[-1]["task"])
-            for key, value in item[-1]["event"].items():
-                if not key in event:
-                    event[key] = []
+        exists_results = await pipeline.execute()
 
-                event[key].append(value)
-
-        return {
-            "event": event,
-            "tasks": tasks,
-            "responses": responses,
-            "uids": torch.tensor(uids),
-        }
-
-    async def get_uids_with_no_history(self, available_uids):
-        await self._clean_organic_history()
-
-        uids = [uid for uid in available_uids if uid not in self.organic_history]
-
-        return uids
+        # Return UIDs where key doesn't exist
+        return [
+            uid for uid, exists in zip(available_uids, exists_results) if not exists
+        ]
