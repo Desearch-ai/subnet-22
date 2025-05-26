@@ -7,7 +7,7 @@ from neurons.validators.weights import EMISSION_CONTROL_HOTKEY
 
 class UIDManager:
     """
-    UID manager class that chooses random miner UID from top 200 miners
+    UID manager class that chooses random miner UID from top miners
     UIDs are updated on metagraph resync
     """
 
@@ -18,7 +18,7 @@ class UIDManager:
     ) -> None:
         self.wallet = wallet
         self.metagraph = metagraph
-        self.max_miners_to_use = 200
+        self.max_miners_to_use = 120
         self.uids = []
         self.available_uids = []
 
