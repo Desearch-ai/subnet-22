@@ -224,14 +224,14 @@ class Neuron(SyntheticQueryRunnerMixin, AbstractNeuron):
         is_only_allowed_miner=False,
         specified_uids=None,
     ):
-
         if len(self.available_uids) == 0:
             bt.logging.info("No available UIDs, attempting to refresh list.")
             return self.available_uids
 
         if strategy == QUERY_MINERS.RANDOM:
             uid = self.uid_manager.get_miner_uid()
-            uids = torch.tensor([uid]) if uid is not None else torch.tensor([])
+            bt.logging.info(f"Run uids ---------- Amount: 1 | {uid}")
+            return uid
         elif strategy == QUERY_MINERS.ALL:
             # Filter uid_list based on specified_uids and only_allowed_miners
             uid_list = [
@@ -246,9 +246,8 @@ class Neuron(SyntheticQueryRunnerMixin, AbstractNeuron):
             ]
 
             uids = torch.tensor(uid_list) if uid_list else torch.tensor([])
-        bt.logging.info(f"Run uids ---------- Amount: {len(uids)} | {uids}")
-        # uid_list = list(available_uids.keys())
-        return uids.to(self.config.neuron.device)
+            bt.logging.info(f"Run uids ---------- Amount: {len(uids)} | {uids}")
+            return uids.to(self.config.neuron.device)
 
     async def update_scores(
         self,
