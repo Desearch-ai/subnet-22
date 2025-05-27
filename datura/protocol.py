@@ -3,7 +3,8 @@ import bittensor as bt
 import typing
 import json
 import asyncio
-from typing import List, Dict, Optional, Any
+import time
+from typing import List, Dict, Optional, Any, Literal
 from starlette.responses import StreamingResponse
 from pydantic import BaseModel
 from enum import Enum
@@ -276,6 +277,14 @@ class ReportItem(BaseModel):
     subsections: Optional[List["ReportItem"]] = []
 
 
+class FlowItem(BaseModel):
+    id: str
+    type: Literal["Sources", "Description", "Queries"]
+    content: Optional[str | List[str]] = None
+    status: Literal["in_progress", "finished"] = "finished"
+    time: int
+
+
 class DeepResearchSynapse(StreamingSynapse):
     scoring_model: ScoringModel = pydantic.Field(
         ScoringModel.OPENAI_GPT4_MINI,
@@ -360,6 +369,12 @@ class DeepResearchSynapse(StreamingSynapse):
         default_factory=dict, title="Links", description="Fetched Links Data."
     )
 
+    flow_items: Optional[List[FlowItem]] = pydantic.Field(
+        default_factory=list,
+        title="Flow Items",
+        description="flow items",
+    )
+
     def to_xml_report(self):
         res = ""
 
@@ -428,7 +443,13 @@ class DeepResearchSynapse(StreamingSynapse):
 
                     if content_type == "report":
                         self.report = content
-                        print("###", self.report)
+                    elif content_type == "flow":
+                        self.flow_items.append(
+                            FlowItem(
+                                **content,
+                                time=int(time.time()),
+                            )
+                        )
 
                     yield json_data
 
@@ -485,6 +506,7 @@ class DeepResearchSynapse(StreamingSynapse):
             "region": self.region,
             "system_message": self.system_message,
             "report": self.report,
+            "flow_items": self.flow_items,
         }
 
 
@@ -640,6 +662,12 @@ class ScraperStreamingSynapse(StreamingSynapse):
         False,
         title="Is Synthetic",
         description="A boolean flag to indicate if the prompt is synthetic.",
+    )
+
+    flow_items: Optional[List[FlowItem]] = pydantic.Field(
+        default_factory=list,
+        title="Flow Items",
+        description="flow items",
     )
 
     @property
@@ -855,6 +883,13 @@ class ScraperStreamingSynapse(StreamingSynapse):
                                 "content": miner_link_scores_json,
                             }
                         )
+                    elif content_type == "flow":
+                        self.flow_items.append(
+                            FlowItem(
+                                **json_data.get("content", {}),
+                                time=int(time.time()),
+                            )
+                        )
 
         except json.JSONDecodeError as e:
             port = response.real_url.port
@@ -936,6 +971,7 @@ class ScraperStreamingSynapse(StreamingSynapse):
             "region": self.region,
             "system_message": self.system_message,
             "miner_link_scores": self.miner_link_scores,
+            "flow_items": self.flow_items,
         }
 
     class Config:

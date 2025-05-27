@@ -44,30 +44,28 @@ async def get_config():
 async def get_random_uid():
     if not neuron.available_uids:
         raise HTTPException(
-            status_code=503,
+            status_code=500,
             detail="Neuron is not available.",
         )
 
-    uids = await neuron.get_uids(
+    uid = await neuron.get_uids(
         strategy=QUERY_MINERS.RANDOM,
         is_only_allowed_miner=False,
         specified_uids=None,
     )
 
-    if uids:
-        uid = uids[0].item()
+    if uid is None:
+        raise HTTPException(
+            status_code=500,
+            detail="No available UID found.",
+        )
 
-        axon = neuron.metagraph.axons[uid]
+    axon = neuron.metagraph.axons[uid]
 
-        return {
-            "uid": uid,
-            "axon": axon,
-        }
-
-    raise HTTPException(
-        status_code=503,
-        detail="No available UID found.",
-    )
+    return {
+        "uid": uid,
+        "axon": axon,
+    }
 
 
 PORT = 8006
