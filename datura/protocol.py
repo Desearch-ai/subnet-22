@@ -884,6 +884,12 @@ class ScraperStreamingSynapse(StreamingSynapse):
                             }
                         )
                     elif content_type == "flow":
+                        yield json.dumps(
+                            {
+                                "type": "flow",
+                                "content": json_data.get("content", {}),
+                            }
+                        )
                         self.flow_items.append(
                             FlowItem(
                                 **json_data.get("content", {}),
