@@ -451,7 +451,7 @@ class DeepResearchSynapse(StreamingSynapse):
                             )
                         )
 
-                    yield json_data
+                    yield json.dumps(json_data)
 
         except json.JSONDecodeError as e:
             port = response.real_url.port
