@@ -57,6 +57,40 @@ class DeepResearchMiner:
             },
         ]
 
+        # list of sources used for report
+        await send(
+            {
+                "type": "http.response.body",
+                "body": json.dumps(
+                    {
+                        "type": "search",
+                        "content": [
+                            {
+                                "title": "Blockchain",
+                                "link": "https://www.geeksforgeeks.org/components-of-blockchain-network/",
+                                "snippet": "Buy Bitcoin, Ethereum, and other leading cryptocurrencies on a platform trusted by millions.",
+                            }
+                        ],
+                    }
+                ).encode("utf-8"),
+                "more_body": True,
+            }
+        )
+
+        # return streaming chunks of report content in md format
+        await send(
+            {
+                "type": "http.response.body",
+                "body": json.dumps(
+                    {
+                        "type": "report_md",
+                        "content": "chunks for report content in md format",
+                    }
+                ).encode("utf-8"),
+                "more_body": True,
+            }
+        )
+
         report = [ReportItem(**section).model_dump() for section in sections]
 
         await send(
