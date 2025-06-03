@@ -120,6 +120,8 @@ class SearchRequest(BaseModel):
         example="Summarize the content by categorizing key points into 'Pros' and 'Cons' sections.",
     )
 
+    uid: Optional[int] = Query(default=None)
+
 
 class DeepResearchRequest(BaseModel):
     prompt: str = Field(
@@ -144,6 +146,10 @@ class DeepResearchRequest(BaseModel):
         example="Summarize the content by categorizing key points into 'Pros' and 'Cons' sections.",
     )
 
+    uid: Optional[int] = Field(
+        default=None,
+    )
+
 
 class LinksSearchRequest(BaseModel):
     prompt: str = Field(
@@ -160,6 +166,8 @@ class LinksSearchRequest(BaseModel):
         description=f"Model to use for scraping. {format_enum_values(Model)}",
         example=Model.NOVA.value,
     )
+
+    uid: Optional[int] = Field(default=None)
 
 
 fields = "\n".join(
@@ -193,7 +201,10 @@ async def response_stream_event(data: SearchRequest):
         merged_chunks = ""
 
         async for response in neu.advanced_scraper_validator.organic(
-            query, data.model, result_type=data.result_type
+            query,
+            data.model,
+            result_type=data.result_type,
+            uid=data.uid,
         ):
             # Decode the chunk if necessary and merge
             chunk = str(response)  # Assuming response is already a string
@@ -288,6 +299,7 @@ async def handle_search_links(
             body.model,
             is_collect_final_synapses=True,
             result_type=ResultType.ONLY_LINKS,
+            uid=body.uid,
         ):
             synapses.append(item)
 
@@ -331,7 +343,7 @@ async def stream_deep_research(data: DeepResearchRequest):
 
         merged_chunks = ""
 
-        async for response in neu.deep_research_validator.organic(query):
+        async for response in neu.deep_research_validator.organic(query, uid=data.uid):
             # Decode the chunk if necessary and merge
             chunk = str(response)  # Assuming response is already a string
             merged_chunks += chunk
@@ -429,6 +441,8 @@ class TwitterSearchRequest(BaseModel):
     min_likes: Optional[int] = None
     count: Optional[conint(le=100)] = 20
 
+    uid: Optional[int] = None
+
 
 @app.post(
     "/twitter/search",
@@ -456,7 +470,9 @@ async def advanced_twitter_search(
         # Collect all yielded synapses from organic
         final_synapses = []
 
-        async for synapse in neu.basic_scraper_validator.organic(query=query_dict):
+        async for synapse in neu.basic_scraper_validator.organic(
+            query=query_dict, uid=request.uid
+        ):
             final_synapses.append(synapse)
 
         # Transform final synapses into a flattened list of tweets
@@ -475,6 +491,10 @@ async def advanced_twitter_search(
 
 class TwitterURLSearchRequest(BaseModel):
     urls: List[str]
+
+    uid: Optional[int] = Field(
+        default=None,
+    )
 
 
 @app.post(
@@ -506,7 +526,9 @@ async def get_tweets_by_urls(
 
         bt.logging.info(f"Fetching tweets for URLs: {urls}")
 
-        results = await neu.basic_scraper_validator.twitter_urls_search(urls)
+        results = await neu.basic_scraper_validator.twitter_urls_search(
+            urls, uid=request.uid
+        )
     except Exception as e:
         bt.logging.error(f"Error fetching tweets by URLs: {e}")
         raise HTTPException(status_code=500, detail=f"An error occurred: {str(e)}")
@@ -525,6 +547,7 @@ async def get_tweets_by_urls(
 )
 async def get_tweet_by_id(
     id: str = Path(..., description="The unique ID of the tweet to fetch"),
+    uid: Optional[int] = Query(default=None),
     access_key: Annotated[str | None, Header()] = None,
 ):
     """
@@ -541,7 +564,7 @@ async def get_tweet_by_id(
     try:
         bt.logging.info(f"Fetching tweet with ID: {id}")
 
-        results = await neu.basic_scraper_validator.twitter_id_search(id)
+        results = await neu.basic_scraper_validator.twitter_id_search(id, uid=uid)
     except Exception as e:
         bt.logging.error(f"Error fetching tweet by ID: {e}")
         raise HTTPException(status_code=500, detail=f"An error occurred: {str(e)}")
@@ -566,6 +589,7 @@ async def web_search_endpoint(
     start: int = Query(
         0, description="The number of results to skip (used for pagination)."
     ),
+    uid: Optional[int] = Query(default=None),
     access_key: Annotated[str | None, Header()] = None,
 ):
     """
@@ -593,7 +617,7 @@ async def web_search_endpoint(
         final_synapses = []
 
         async for synapse in neu.basic_web_scraper_validator.organic(
-            query={"query": query, "num": num, "start": start}
+            query={"query": query, "num": num, "start": start}, uid=uid
         ):
             final_synapses.append(synapse)
 
@@ -623,6 +647,7 @@ async def people_search_endpoint(
         description="The search query string, e.g., 'AI startup founders in London with a PhD in machine learning'.",
     ),
     num: int = Query(10, le=100, description="The maximum number of results to fetch."),
+    uid: Optional[int] = Query(default=None),
     access_key: Annotated[str | None, Header()] = None,
 ):
     """
@@ -645,7 +670,7 @@ async def people_search_endpoint(
         final_synapses = []
 
         async for synapse in neu.people_search_validator.organic(
-            query={"query": query, "num": num}
+            query={"query": query, "num": num}, uid=uid
         ):
             final_synapses.append(synapse)
 
@@ -680,7 +705,6 @@ def custom_openapi():
         summary="API for searching across multiple platforms",
         routes=app.routes,
         servers=[
-            {"url": "https://api.smartscrape.ai", "description": "Datura API"},
             {"url": "http://localhost:8005", "description": "Datura API"},
         ],
     )
