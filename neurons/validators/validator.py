@@ -1,4 +1,5 @@
 import random
+from typing import Optional, Tuple
 import torch
 import wandb
 import asyncio
@@ -143,7 +144,12 @@ class Neuron(SyntheticQueryRunnerMixin, AbstractNeuron):
 
         await initialize_redis()
 
-    async def get_random_miner(self):
+    async def get_random_miner(
+        self, uid: Optional[int] = None
+    ) -> Tuple[int, bt.AxonInfo]:
+        if uid is not None:
+            return uid, self.metagraph.axons[uid]
+
         return await self.validator_service_client.get_random_miner()
 
     async def update_available_uids_periodically(self):

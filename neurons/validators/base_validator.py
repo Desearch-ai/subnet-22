@@ -1,6 +1,7 @@
 from abc import ABC, abstractmethod
 import asyncio
 import itertools
+from typing import Optional, Tuple
 import torch
 import bittensor as bt
 from bittensor.core.metagraph import AsyncMetagraph
@@ -47,7 +48,9 @@ class AbstractNeuron(ABC):
         pass
 
     @abstractmethod
-    async def get_random_miner(self) -> tuple[int, bt.AxonInfo]:
+    async def get_random_miner(
+        self, uid: Optional[int] = None
+    ) -> Tuple[int, bt.AxonInfo]:
         pass
 
     @abstractmethod

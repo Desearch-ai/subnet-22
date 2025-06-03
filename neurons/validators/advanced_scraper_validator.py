@@ -181,6 +181,7 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
         result_type: Optional[ResultType] = ResultType.LINKS_WITH_SUMMARIES,
         is_synthetic=False,
         system_message: Optional[str] = None,
+        uid: Optional[int] = None,
     ):
         max_execution_time = get_max_execution_time(model)
 
@@ -200,7 +201,7 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
 
             axons = [self.neuron.metagraph.axons[uid] for uid in uids]
         else:
-            uid, axon = await self.neuron.get_random_miner()
+            uid, axon = await self.neuron.get_random_miner(uid=uid)
             uids = torch.tensor([uid])
             axons = [axon]
 
@@ -554,6 +555,7 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
         random_synapse: ScraperStreamingSynapse = None,
         random_uid=None,
         specified_uids=None,
+        uid: Optional[int] = None,
         result_type: Optional[ResultType] = ResultType.LINKS_WITH_SUMMARIES,
         is_collect_final_synapses: bool = False,  # Flag to collect final synapses
     ):
@@ -593,6 +595,7 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
                 model=model,
                 result_type=result_type,
                 system_message=system_message,
+                uid=uid,
             )
 
             final_synapses = []
