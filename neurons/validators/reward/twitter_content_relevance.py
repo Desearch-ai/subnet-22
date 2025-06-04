@@ -305,10 +305,9 @@ class TwitterContentRelevanceModel(BaseRewardModel):
         self, responses: List[ScraperStreamingSynapse], uids
     ) -> List[BaseRewardEvent]:
         try:
-            # completions: List[str] = self.get_successful_twitter_completions(responses)
-            # bt.logging.debug(
-            #     f"TwitterContentRelevanceModel | Calculating {len(completions)} rewards (typically < 1 sec/reward)."
-            # )
+            bt.logging.debug(
+                f"TwitterContentRelevanceModel | Calculating {len(responses)} rewards (typically < 1 sec/reward)."
+            )
 
             val_score_responses_list = await self.process_tweets(responses=responses)
             bt.logging.info(f"VAL_SCORE_RESPONSES: {val_score_responses_list}")

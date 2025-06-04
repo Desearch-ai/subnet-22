@@ -191,49 +191,10 @@ class BaseRewardModel:
 
     def get_successful_twitter_completion(self, response: ScraperStreamingSynapse):
         # Check if the response is successful.
-        if response.dendrite.status_code == 200 and response.completion_links:
-            # Get the completion from the successful response.
-            successful_completion = response.get_twitter_completion().strip()
+        if response.dendrite.status_code == 200 and response.miner_tweets:
+            return True
 
-            if re.search(pattern_to_check, successful_completion, flags=re.IGNORECASE):
-                bt.logging.info(
-                    f"Pattern validation issue Hotkey ID: {response.axon.hotkey}."
-                )
-                return None
-
-            return successful_completion.strip()
         return None
-
-    def get_successful_completions_for_summary(
-        self, responses: List[ScraperStreamingSynapse]
-    ):
-        successful_completions = []
-
-        for response in responses:
-            if "Twitter Search" in response.tools:
-                completion = self.get_successful_twitter_completion(response)
-            else:
-                completion = self.get_successful_search_summary_completion(response)
-
-            successful_completions.append(completion)
-
-        return [
-            completion
-            for completion in successful_completions
-            if completion is not None
-        ]
-
-    def get_successful_twitter_completions(
-        self, responses: List[ScraperStreamingSynapse]
-    ):
-        successful_completions = [
-            self.get_successful_twitter_completion(response) for response in responses
-        ]
-        return [
-            completion
-            for completion in successful_completions
-            if completion is not None
-        ]
 
     def get_successful_search_summary_completion(
         self, response: ScraperStreamingSynapse
