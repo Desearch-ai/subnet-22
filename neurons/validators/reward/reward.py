@@ -200,24 +200,11 @@ class BaseRewardModel:
         self, response: ScraperStreamingSynapse
     ):
         # Check if the response is successful.
-        search_completion_dict, _ = response.get_search_completion()
-        search_completion = "\n".join(search_completion_dict.values())
+        links, _ = response.get_links_from_search_results()
 
-        if (
-            response.dendrite.status_code == 200
-            and search_completion
-            and response.completion
-        ):
-            # Get the completion from the successful response.
-            successful_completion = search_completion.strip()
+        if response.dendrite.status_code == 200 and links:
+            return True
 
-            if re.search(pattern_to_check, successful_completion, flags=re.IGNORECASE):
-                bt.logging.info(
-                    f"Pattern validation issue Hotkey ID: {response.axon.hotkey}."
-                )
-                return None
-
-            return successful_completion.strip()
         return None
 
     def get_successful_search_completions(

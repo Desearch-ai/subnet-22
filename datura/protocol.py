@@ -4,7 +4,7 @@ import typing
 import json
 import asyncio
 import time
-from typing import List, Dict, Optional, Any, Literal
+from typing import List, Dict, Optional, Any, Literal, Tuple
 from starlette.responses import StreamingResponse
 from pydantic import BaseModel
 from enum import Enum
@@ -283,6 +283,12 @@ class FlowItem(BaseModel):
     content: Optional[str | List[str]] = None
     status: Literal["in_progress", "finished"] = "finished"
     time: int
+
+
+class SearchResultItem(BaseModel):
+    title: str
+    link: str
+    snippet: str
 
 
 class DeepResearchSynapse(StreamingSynapse):
@@ -605,49 +611,51 @@ class ScraperStreamingSynapse(StreamingSynapse):
         description="Optional JSON object containing tweets data from the miner.",
     )
 
+    # TODO Remove later
     search_completion_links: Optional[List[str]] = pydantic.Field(
         default_factory=list,
         title="Links Content",
         description="A list of links extracted from search summary text.",
     )
 
+    # TODO Remove later
     completion_links: Optional[List[str]] = pydantic.Field(
         default_factory=list,
         title="Links Content",
         description="A list of JSON objects representing the extracted links content from the tweets.",
     )
 
-    search_results: Optional[Any] = pydantic.Field(
+    search_results: Optional[List[SearchResultItem]] = pydantic.Field(
         default_factory=dict,
         title="Search Results",
         description="Optional JSON object containing search results from SERP",
     )
 
-    wikipedia_search_results: Optional[Any] = pydantic.Field(
+    wikipedia_search_results: Optional[List[SearchResultItem]] = pydantic.Field(
         default_factory=dict,
         title="Wikipedia Search Results",
         description="Optional JSON object containing search results from Wikipedia",
     )
 
-    youtube_search_results: Optional[Any] = pydantic.Field(
+    youtube_search_results: Optional[List[SearchResultItem]] = pydantic.Field(
         default_factory=dict,
         title="YouTube Search Results",
         description="Optional JSON object containing search results from YouTube",
     )
 
-    arxiv_search_results: Optional[Any] = pydantic.Field(
+    arxiv_search_results: Optional[List[SearchResultItem]] = pydantic.Field(
         default_factory=dict,
         title="Arxiv Search Results",
         description="Optional JSON object containing search results from Arxiv",
     )
 
-    reddit_search_results: Optional[Any] = pydantic.Field(
+    reddit_search_results: Optional[List[SearchResultItem]] = pydantic.Field(
         default_factory=dict,
         title="Reddit Search Results",
         description="Optional JSON object containing search results from Reddit",
     )
 
-    hacker_news_search_results: Optional[Any] = pydantic.Field(
+    hacker_news_search_results: Optional[List[SearchResultItem]] = pydantic.Field(
         default_factory=dict,
         title="Hacker News Search Results",
         description="Optional JSON object containing search results from Hacker News",
@@ -703,6 +711,92 @@ class ScraperStreamingSynapse(StreamingSynapse):
 
     def get_twitter_completion(self) -> Optional[str]:
         return self.texts.get(ScraperTextRole.TWITTER_SUMMARY.value, "")
+
+    def get_search_results_by_tools(self) -> Tuple[Dict[str, List], int]:
+        """Gets the search results from the appropriate *_search_results lists based on tools used."""
+
+        search_results = {}
+
+        links_per_toolkit = 10
+
+        # Group 1: General search tools
+        if any(
+            tool in self.tools
+            for tool in [
+                "Web Search",
+                "Wikipedia Search",
+                "Youtube Search",
+                "ArXiv Search",
+            ]
+        ):
+            results = []
+
+            if "Web Search" in self.tools and self.search_results:
+                results.extend(self.search_results)
+
+            if "Wikipedia Search" in self.tools and self.wikipedia_search_results:
+                results.extend(self.wikipedia_search_results)
+
+            if "Youtube Search" in self.tools and self.youtube_search_results:
+                results.extend(self.youtube_search_results)
+
+            if "ArXiv Search" in self.tools and self.arxiv_search_results:
+                results.extend(self.arxiv_search_results)
+
+            if results:
+                search_results[ScraperTextRole.SEARCH_SUMMARY.value] = results
+
+        # Group 2: Reddit search
+        if "Reddit Search" in self.tools and self.reddit_search_results:
+            search_results[ScraperTextRole.REDDIT_SUMMARY.value] = (
+                self.reddit_search_results
+            )
+
+        # Group 3: Hacker News search
+        if "Hacker News Search" in self.tools and self.hacker_news_search_results:
+            search_results[ScraperTextRole.HACKER_NEWS_SUMMARY.value] = (
+                self.hacker_news_search_results
+            )
+
+        links_expected = len(search_results) * links_per_toolkit
+
+        return search_results, links_expected
+
+    def get_links_from_search_results(self) -> Tuple[List[str], Dict[str, List[str]]]:
+        """Extracts links from search results based on tools used.
+
+        Returns:
+            Tuple containing:
+            - List of all links from search results
+            - Dictionary mapping tool group to list of links
+        """
+
+        search_results_by_tools, _ = self.get_search_results_by_tools()
+        all_links = []
+        links_per_tool_group = {}
+
+        for tool_group, results in search_results_by_tools.items():
+            links = []
+
+            # Extract links from search results
+            for result in results:
+                if isinstance(result, dict) and "link" in result:
+                    link = result["link"]
+                    if link:
+                        links.append(link)
+                elif hasattr(result, "link") and result.link:
+                    links.append(result.link)
+
+            # Remove duplicates while preserving order
+            unique_links = list(dict.fromkeys(links))
+
+            all_links.extend(unique_links)
+            links_per_tool_group[tool_group] = unique_links
+
+        # Remove duplicates from all_links while preserving order
+        all_unique_links = list(dict.fromkeys(all_links))
+
+        return all_unique_links, links_per_tool_group
 
     def get_search_completion(self) -> Dict[str, str]:
         """Gets the search completion text from the texts dictionary based on tools used."""
@@ -940,8 +1034,8 @@ class ScraperStreamingSynapse(StreamingSynapse):
                 if key.startswith(prefix)
             }
 
-        completion_links = TwitterUtils().find_twitter_links(self.completion)
-        search_completion_links, _ = self.get_search_links()
+        # completion_links = TwitterUtils().find_twitter_links(self.completion)
+        # search_completion_links, _ = self.get_search_links()
 
         return {
             "name": headers.get("name", ""),
@@ -960,9 +1054,8 @@ class ScraperStreamingSynapse(StreamingSynapse):
             "arxiv_search_results": self.arxiv_search_results,
             "hacker_news_search_results": self.hacker_news_search_results,
             "reddit_search_results": self.reddit_search_results,
-            # "prompt_analysis": self.prompt_analysis.dict(),
-            "completion_links": completion_links,
-            "search_completion_links": search_completion_links,
+            "completion_links": [],
+            "search_completion_links": [],
             "texts": self.texts,
             "start_date": self.start_date,
             "end_date": self.end_date,
