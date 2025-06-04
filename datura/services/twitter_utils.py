@@ -30,7 +30,7 @@ class TwitterUtils:
         return match.group(1) if match else None
 
     @staticmethod
-    def is_valid_twitter_link(self, url: str) -> bool:
+    def is_valid_twitter_link(url: str) -> bool:
         """
         Check if the given URL is a valid Twitter link.
 
@@ -40,8 +40,16 @@ class TwitterUtils:
         Returns:
             True if the URL is a valid Twitter link, False otherwise.
         """
-        parsed_url = urlparse(url)
-        return parsed_url.netloc.lower() in VALID_DOMAINS
+        # Use the existing regex pattern to validate the full Twitter link format
+        regex = re.compile(
+            r"https?://(?:"
+            + "|".join(re.escape(domain) for domain in VALID_DOMAINS)
+            + r")/(?![^/]*?(?:Twitter|Admin)[^/]*?/)"
+            r"(?P<username>[a-zA-Z0-9_]{1,15})/status/(?P<id>\d+)$",
+            re.IGNORECASE,
+        )
+
+        return bool(regex.match(url))
 
     def find_twitter_links(self, text: str) -> List[str]:
         """
