@@ -510,7 +510,6 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
             )
 
             random_model = self.get_random_execution_time()
-            max_execution_time = get_max_execution_time(random_model)
 
             async_responses, uids, event, start_time = await self.run_task_and_score(
                 tasks=tasks,
