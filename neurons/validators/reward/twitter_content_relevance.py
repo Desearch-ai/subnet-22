@@ -24,6 +24,7 @@ import re
 import html
 import random
 from typing import List
+
 from .config import RewardModelType
 from .reward import BaseRewardModel, BaseRewardEvent, pattern_to_check
 from neurons.validators.utils.prompts import (
@@ -43,9 +44,8 @@ from datura.utils import (
     is_valid_tweet,
     scrape_tweets_with_retries,
 )
+from datura.services.twitter_utils import TwitterUtils
 import json
-from datetime import datetime
-import pytz
 from datetime import datetime
 import pytz
 
@@ -105,11 +105,19 @@ class TwitterContentRelevanceModel(BaseRewardModel):
             all_links = []
 
             for response, random_links in zip(responses, responses_random_links):
-                if response.completion_links:
-                    sample_links = random.sample(
-                        response.completion_links,
-                        min(APIFY_LINK_SCRAPE_AMOUNT, len(response.completion_links)),
+                if response.miner_tweets:
+                    sample_tweets = random.sample(
+                        response.miner_tweets,
+                        min(APIFY_LINK_SCRAPE_AMOUNT, len(response.miner_tweets)),
                     )
+
+                    sample_links = [
+                        tweet.get("url")
+                        for tweet in sample_tweets
+                        if tweet.get("url")
+                        and TwitterUtils.is_valid_twitter_link(tweet.get("url"))
+                    ]
+
                     all_links.extend(sample_links)
                     random_links.extend(sample_links)
 
@@ -168,18 +176,9 @@ class TwitterContentRelevanceModel(BaseRewardModel):
                 return 0
 
             tweets_data = response.miner_tweets
-            # miner_tweets_meta = miner_tweets.get('meta', {})
             tweets_amount = len(tweets_data)
 
-            # Assign completion links and validator tweets from the response
-            completion_links = response.completion_links
-
-            if (
-                not completion_links
-                or len(completion_links) < 2
-                or tweets_amount == 0
-                or not response.validator_tweets
-            ):
+            if tweets_amount < 2 or not response.validator_tweets:
                 # Ensure there are at least two twitter links provided by miners and check for the presence of miner and validator tweets
                 return 0
 
@@ -303,13 +302,12 @@ class TwitterContentRelevanceModel(BaseRewardModel):
             return None
 
     async def get_rewards(
-        self, responses: List[bt.Synapse], uids
+        self, responses: List[ScraperStreamingSynapse], uids
     ) -> List[BaseRewardEvent]:
         try:
-            # completions: List[str] = self.get_successful_twitter_completions(responses)
-            # bt.logging.debug(
-            #     f"TwitterContentRelevanceModel | Calculating {len(completions)} rewards (typically < 1 sec/reward)."
-            # )
+            bt.logging.debug(
+                f"TwitterContentRelevanceModel | Calculating {len(responses)} rewards (typically < 1 sec/reward)."
+            )
 
             val_score_responses_list = await self.process_tweets(responses=responses)
             bt.logging.info(f"VAL_SCORE_RESPONSES: {val_score_responses_list}")
@@ -330,8 +328,9 @@ class TwitterContentRelevanceModel(BaseRewardModel):
                 uid = uid_tensor.item()
                 reward_event = BaseRewardEvent()
                 reward_event.reward = 0
+
                 if "Twitter Search" not in response.tools:
-                    if response.completion_links:
+                    if response.miner_tweets:
                         reward_event.reward = 0
                     else:
                         reward_event.reward = 1
@@ -342,6 +341,7 @@ class TwitterContentRelevanceModel(BaseRewardModel):
                 score_result = None
                 response_scores = {}
                 total_score = 0
+
                 max_links_considered = (
                     len(response.validator_tweets)
                     if len(response.validator_tweets) > 10
@@ -378,7 +378,7 @@ class TwitterContentRelevanceModel(BaseRewardModel):
                             total_score / max_links_considered * apify_score
                         )  # len(response.validator_tweets)
                         reward_event.reward = self.calculate_adjusted_score(
-                            links_count=len(response.completion_links),
+                            links_count=len(response.miner_tweets),
                             score=average_score,
                             duplicate_tweets_count=duplicate_tweets_count,
                         )
