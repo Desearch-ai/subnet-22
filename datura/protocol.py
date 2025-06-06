@@ -626,37 +626,37 @@ class ScraperStreamingSynapse(StreamingSynapse):
     )
 
     search_results: Optional[List[SearchResultItem]] = pydantic.Field(
-        default_factory=dict,
+        default_factory=list,
         title="Search Results",
         description="Optional JSON object containing search results from SERP",
     )
 
     wikipedia_search_results: Optional[List[SearchResultItem]] = pydantic.Field(
-        default_factory=dict,
+        default_factory=list,
         title="Wikipedia Search Results",
         description="Optional JSON object containing search results from Wikipedia",
     )
 
     youtube_search_results: Optional[List[SearchResultItem]] = pydantic.Field(
-        default_factory=dict,
+        default_factory=list,
         title="YouTube Search Results",
         description="Optional JSON object containing search results from YouTube",
     )
 
     arxiv_search_results: Optional[List[SearchResultItem]] = pydantic.Field(
-        default_factory=dict,
+        default_factory=list,
         title="Arxiv Search Results",
         description="Optional JSON object containing search results from Arxiv",
     )
 
     reddit_search_results: Optional[List[SearchResultItem]] = pydantic.Field(
-        default_factory=dict,
+        default_factory=list,
         title="Reddit Search Results",
         description="Optional JSON object containing search results from Reddit",
     )
 
     hacker_news_search_results: Optional[List[SearchResultItem]] = pydantic.Field(
-        default_factory=dict,
+        default_factory=list,
         title="Hacker News Search Results",
         description="Optional JSON object containing search results from Hacker News",
     )
