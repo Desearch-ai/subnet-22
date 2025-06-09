@@ -291,6 +291,10 @@ class SearchResultItem(BaseModel):
     snippet: str
 
 
+class ChatHistoryItem(BaseModel):
+    completion: str = ""
+
+
 class DeepResearchSynapse(StreamingSynapse):
     scoring_model: ScoringModel = pydantic.Field(
         ScoringModel.OPENAI_GPT4_MINI,
@@ -676,6 +680,12 @@ class ScraperStreamingSynapse(StreamingSynapse):
         default_factory=list,
         title="Flow Items",
         description="flow items",
+    )
+
+    chat_history: Optional[List[ChatHistoryItem]] = pydantic.Field(
+        default_factory=list,
+        title="Chat History",
+        description="A list of chat history items for the synapse.",
     )
 
     @property
