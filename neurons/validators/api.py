@@ -11,6 +11,7 @@ from neurons.validators.env import PORT, EXPECTED_ACCESS_KEY
 from datura import __version__
 from datura.dataset.date_filters import DateFilterType
 from datura.protocol import (
+    ChatHistoryItem,
     Model,
     TwitterScraperTweet,
     WebSearchResultList,
@@ -118,6 +119,12 @@ class SearchRequest(BaseModel):
         default=None,
         description="Rules influencing how summaries are generated",
         example="Summarize the content by categorizing key points into 'Pros' and 'Cons' sections.",
+    )
+
+    chat_history: Optional[List[ChatHistoryItem]] = Field(
+        default_factory=list,
+        title="Chat History",
+        description="A list of chat history items.",
     )
 
     uid: Optional[int] = Query(default=None)
