@@ -292,6 +292,7 @@ class SearchResultItem(BaseModel):
 
 
 class ChatHistoryItem(BaseModel):
+    prompt: str
     completion: str = ""
 
 
