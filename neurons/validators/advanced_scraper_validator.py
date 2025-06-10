@@ -15,7 +15,7 @@ from datura.dataset.date_filters import (
     DateFilterType,
 )
 from datura import QUERY_MINERS
-from datura.protocol import Model, ResultType, ScraperStreamingSynapse
+from datura.protocol import ChatHistoryItem, Model, ResultType, ScraperStreamingSynapse
 from datura.utils import get_max_execution_time
 from neurons.validators.base_validator import AbstractNeuron
 from neurons.validators.reward.summary_relevance import SummaryRelevanceRewardModel
@@ -182,6 +182,7 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
         is_synthetic=False,
         system_message: Optional[str] = None,
         uid: Optional[int] = None,
+        chat_history: Optional[List[ChatHistoryItem]] = [],
     ):
         max_execution_time = get_max_execution_time(model)
 
@@ -224,6 +225,7 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
                 is_synthetic=is_synthetic,
                 system_message=system_message,
                 scoring_model=self.neuron.config.neuron.scoring_model,
+                chat_history=chat_history,
             )
             for task in tasks
         ]
@@ -567,6 +569,7 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
             tools = query.get("tools", [])
             date_filter = query.get("date_filter", DateFilterType.PAST_WEEK.value)
             system_message = query.get("system_message")
+            chat_history = query.get("chat_history", [])
 
             if isinstance(date_filter, str):
                 date_filter_type = DateFilterType(date_filter)
@@ -595,6 +598,7 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
                 result_type=result_type,
                 system_message=system_message,
                 uid=uid,
+                chat_history=chat_history,
             )
 
             final_synapses = []

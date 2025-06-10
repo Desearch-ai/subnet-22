@@ -203,6 +203,7 @@ async def response_stream_event(data: SearchRequest):
             "tools": data.tools,
             "date_filter": data.date_filter.value,
             "system_message": data.system_message,
+            "chat_history": data.chat_history,
         }
 
         merged_chunks = ""
