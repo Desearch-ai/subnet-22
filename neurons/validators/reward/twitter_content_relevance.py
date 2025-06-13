@@ -342,12 +342,6 @@ class TwitterContentRelevanceModel(BaseRewardModel):
                 response_scores = {}
                 total_score = 0
 
-                max_links_considered = (
-                    len(response.validator_tweets)
-                    if len(response.validator_tweets) > 10
-                    else 10
-                )
-
                 unique_tweet_texts = {}
                 for val_tweet in response.validator_tweets:
                     text = format_text_for_match(val_tweet.text)
@@ -373,14 +367,17 @@ class TwitterContentRelevanceModel(BaseRewardModel):
                                 score = scoring_prompt.extract_score(score_result)
                                 total_score += score / 10.0
                                 response_scores[val_tweet_id] = score
+
                     if total_score > 0:
                         average_score = (
-                            total_score / max_links_considered * apify_score
-                        )  # len(response.validator_tweets)
+                            total_score / APIFY_LINK_SCRAPE_AMOUNT * apify_score
+                        )
+
                         reward_event.reward = self.calculate_adjusted_score(
                             links_count=len(response.miner_tweets),
                             score=average_score,
                             duplicate_tweets_count=duplicate_tweets_count,
+                            max_links_threshold=response.count,
                         )
                 else:
                     bt.logging.info(f"UID '{uid}' has no validator tweets.")
