@@ -547,6 +547,14 @@ class ScraperStreamingSynapse(StreamingSynapse):
         description="The model to define the max execution time.",
     )
 
+    count: Optional[int] = pydantic.Field(
+        10,
+        title="Count",
+        description="The number of results to return per source. Min 10. Max 200.",
+        ge=10,
+        le=200,
+    )
+
     system_message: Optional[str] = pydantic.Field(
         "",
         title="Sysmtem Message",

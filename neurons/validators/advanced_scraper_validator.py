@@ -183,8 +183,9 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
         system_message: Optional[str] = None,
         uid: Optional[int] = None,
         chat_history: Optional[List[ChatHistoryItem]] = [],
+        count: Optional[int] = 10,
     ):
-        max_execution_time = get_max_execution_time(model)
+        max_execution_time = get_max_execution_time(model, count)
 
         # Record event start time.
         event = {
@@ -226,6 +227,7 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
                 system_message=system_message,
                 scoring_model=self.neuron.config.neuron.scoring_model,
                 chat_history=chat_history,
+                count=count,
             )
             for task in tasks
         ]
@@ -568,6 +570,7 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
             prompt = query["content"]
             tools = query.get("tools", [])
             date_filter = query.get("date_filter", DateFilterType.PAST_WEEK.value)
+            count = query.get("count")
             system_message = query.get("system_message")
             chat_history = query.get("chat_history", [])
 
@@ -599,6 +602,7 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
                 system_message=system_message,
                 uid=uid,
                 chat_history=chat_history,
+                count=count,
             )
 
             final_synapses = []

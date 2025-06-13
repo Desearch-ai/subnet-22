@@ -81,7 +81,11 @@ def save_state_to_file(state, filename="state.json"):
         json.dump(state, file)
 
 
-def get_max_execution_time(model: Model):
+def get_max_execution_time(model: Model, count: int):
+    if count > 10:
+        # For every 50 items add additional 5s for execution time
+        return 15 + math.ceil((count - 50) / 50) * 5
+
     if model == Model.NOVA:
         return 15
     elif model == Model.ORBIT:

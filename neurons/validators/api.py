@@ -104,11 +104,21 @@ class SearchRequest(BaseModel):
         description=f"Date filter for the search results.{format_enum_values(DateFilterType)}",
         example=DateFilterType.PAST_WEEK.value,
     )
+
     model: Optional[Model] = Field(
         default=Model.NOVA,
         description=f"Model to use for scraping. {format_enum_values(Model)}",
         example=Model.NOVA.value,
     )
+
+    count: Optional[int] = Field(
+        10,
+        title="Count",
+        description="The number of results to return per source. Min 10. Max 200.",
+        ge=10,
+        le=200,
+    )
+
     result_type: Optional[ResultType] = Field(
         default=ResultType.LINKS_WITH_SUMMARIES,
         description=f"Type of result. {format_enum_values(ResultType)}",
@@ -201,6 +211,7 @@ async def response_stream_event(data: SearchRequest):
         query = {
             "content": data.prompt,
             "tools": data.tools,
+            "count": data.count,
             "date_filter": data.date_filter.value,
             "system_message": data.system_message,
             "chat_history": data.chat_history,
