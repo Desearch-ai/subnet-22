@@ -5,7 +5,7 @@ import time
 from datetime import datetime, timedelta
 import pytz
 from itertools import cycle
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import bittensor as bt
 from datura.protocol import (
@@ -103,6 +103,7 @@ class BasicScraperValidator(OrganicHistoryMixin):
         is_only_allowed_miner=True,
         specified_uids=None,
         is_synthetic=False,
+        uid: Optional[int] = None,
     ):
         event = {
             "names": [task.task_name for task in tasks],
@@ -119,7 +120,7 @@ class BasicScraperValidator(OrganicHistoryMixin):
             )
             axons = [self.neuron.metagraph.axons[uid] for uid in uids]
         else:
-            uid, axon = await self.neuron.get_random_miner()
+            uid, axon = await self.neuron.get_random_miner(uid=uid)
             uids = torch.tensor([uid])
             axons = [axon]
 
@@ -469,6 +470,7 @@ class BasicScraperValidator(OrganicHistoryMixin):
         random_synapse: TwitterSearchSynapse = None,
         random_uid=None,
         specified_uids=None,
+        uid: Optional[int] = None,
     ):
         """Receives question from user and returns the response from the miners."""
         is_interval_query = random_synapse is not None
@@ -497,6 +499,7 @@ class BasicScraperValidator(OrganicHistoryMixin):
                     params_list=[
                         {key: value for key, value in query.items() if key != "query"}
                     ],
+                    uid=uid,
                 )
             )
 
@@ -555,6 +558,7 @@ class BasicScraperValidator(OrganicHistoryMixin):
     async def twitter_id_search(
         self,
         tweet_id: str,
+        uid: Optional[int] = None,
     ):
         """
         Perform a Twitter search using a specific tweet ID, then compute rewards and save the query.
@@ -572,7 +576,7 @@ class BasicScraperValidator(OrganicHistoryMixin):
                 criteria=[],
             )
 
-            uid, axon = await self.neuron.get_random_miner()
+            uid, axon = await self.neuron.get_random_miner(uid=uid)
             uids = torch.tensor([uid])
 
             synapse = TwitterIDSearchSynapse(
@@ -642,6 +646,7 @@ class BasicScraperValidator(OrganicHistoryMixin):
     async def twitter_urls_search(
         self,
         urls: List[str],
+        uid: Optional[int] = None,
     ):
         """
         Perform a Twitter search using multiple tweet URLs, then compute rewards and save the query.
@@ -654,7 +659,7 @@ class BasicScraperValidator(OrganicHistoryMixin):
 
             bt.logging.debug("run_task", task_name)
 
-            uid, axon = await self.neuron.get_random_miner()
+            uid, axon = await self.neuron.get_random_miner(uid=uid)
             uids = torch.tensor([uid])
 
             task = SearchTask(

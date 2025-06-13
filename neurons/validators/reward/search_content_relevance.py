@@ -1,8 +1,8 @@
-from typing import List
+from typing import List, Tuple, Dict
 from .reward import BaseRewardModel, BaseRewardEvent
 from .config import RewardModelType
 from neurons.validators.reward.reward_llm import RewardLLM
-from datura.protocol import ScraperStreamingSynapse
+from datura.protocol import ScraperStreamingSynapse, ScraperTextRole
 import traceback
 import bittensor as bt
 from datura.utils import clean_text
@@ -28,7 +28,6 @@ class WebSearchContentRelevanceModel(BaseRewardModel):
         super().__init__()
         self.device = device
         self.reward_llm = llm_reward
-
         self.scoring_type = scoring_type
 
     async def llm_process_validator_links(self, response: ScraperStreamingSynapse):
@@ -120,24 +119,25 @@ class WebSearchContentRelevanceModel(BaseRewardModel):
         responses_random_links = [[] for _ in responses]
 
         for response, random_links in zip(responses, responses_random_links):
-            # Extract random links from each summary (Search, Reddit, Hacker News)
+            # Extract random links from search results based on tools
             completion = self.get_successful_search_summary_completion(response)
 
             if not completion:
                 continue
 
-            _, links_per_summary = response.get_search_links()
+            # Get links directly from search results
+            _, links_per_tool_group = response.get_links_from_search_results()
 
-            # If scoring single summary 2 link is selected, for 2 or 3 summaries 1 link is selected from each
-            random_links_per_summary = 2 if len(links_per_summary) == 1 else 1
+            # If scoring single tool group 2 links are selected, for 2 or 3 tool groups 1 link is selected from each
+            random_links_per_tool_group = 2 if len(links_per_tool_group) == 1 else 1
 
             links = []
 
-            for summary_links in links_per_summary.values():
+            for tool_group_links in links_per_tool_group.values():
                 links.extend(
                     random.sample(
-                        summary_links,
-                        min(random_links_per_summary, len(summary_links)),
+                        tool_group_links,
+                        min(random_links_per_tool_group, len(tool_group_links)),
                     )
                 )
 
@@ -193,13 +193,13 @@ class WebSearchContentRelevanceModel(BaseRewardModel):
             if not completion:
                 return 0
 
-            search_completion_links = response.search_completion_links
+            search_result_links, _ = response.get_links_from_search_results()
             validator_links = response.validator_links
 
-            if not search_completion_links or not validator_links:
+            if not search_result_links or not validator_links:
                 return 0
 
-            if len(search_completion_links) < 2:
+            if len(search_result_links) < 2:
                 # at least miners should provide two search links
                 return 0
 
@@ -302,7 +302,7 @@ class WebSearchContentRelevanceModel(BaseRewardModel):
             ):
                 uid = uid_tensor.item()
 
-                #  If only the Twitter tool is used, automatically assign reward=1 and skip normal scoring
+                # If only the Twitter tool is used, automatically assign reward=1 and skip normal scoring
                 if len(response.tools) == 1 and "Twitter Search" in response.tools:
                     reward_event = BaseRewardEvent()
                     reward_event.reward = 1.0
@@ -317,7 +317,8 @@ class WebSearchContentRelevanceModel(BaseRewardModel):
                 response_scores = {}
                 total_score = 0
                 num_links = len(response.validator_links)
-                _, links_expected = response.get_search_completion()
+
+                _, links_expected = response.get_search_results_by_tools()
 
                 max_links_considered = max(num_links, links_expected)
 
@@ -333,14 +334,21 @@ class WebSearchContentRelevanceModel(BaseRewardModel):
 
                     if total_score > 0:
                         average_score = total_score / max_links_considered
+
+                        # Get search result links count
+                        search_result_links, _ = (
+                            response.get_links_from_search_results()
+                        )
+
                         reward_event.reward = self.calculate_adjusted_score(
-                            links_count=len(response.search_completion_links),
+                            links_count=len(search_result_links),
                             score=average_score,
                             max_links_threshold=links_expected,
                         )
                 else:
                     bt.logging.info(f"UID '{uid}' has no validator links.")
                     reward_event.reward = 0  # Handle case with no validator links
+
                 reward_event.reward = min(reward_event.reward * apify_score, 1)
                 reward_events.append(reward_event)
                 grouped_val_score_responses.append(response_scores)
@@ -353,7 +361,6 @@ class WebSearchContentRelevanceModel(BaseRewardModel):
             ):
                 uid = uid_tensor.item()
                 if reward_e.reward == 0:
-                    # score_explain = score_responses.get(str(uid), "")
                     zero_scores[uid] = reward_e.reward
                 else:
                     non_zero_scores[uid] = reward_e.reward
