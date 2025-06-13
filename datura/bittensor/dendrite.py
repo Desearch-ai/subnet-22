@@ -71,12 +71,6 @@ class Dendrite(bt.dendrite):
             synapse.dendrite.process_time = str(time.time() - start_time)
             return synapse
 
-        if isinstance(synapse, PeopleSearchSynapse):
-            bt.logging.info("MockDendrite--call people_search_miner.search")
-            synapse = await self.people_search_miner.search(synapse)
-            synapse.dendrite.process_time = str(time.time() - start_time)
-            return synapse
-
         if isinstance(synapse, IsAlive):
             bt.logging.info("MockDendrite--call is_alive")
             if target_axon.hotkey.startswith("hotkey"):
@@ -111,6 +105,8 @@ class Dendrite(bt.dendrite):
             asyncio.create_task(
                 self.deep_research_miner.deep_research(synapse, mockSend)
             )
+        elif isinstance(synapse, PeopleSearchSynapse):
+            asyncio.create_task(self.people_search_miner.search(synapse, mockSend))
 
         # Mock ClientResponse
         response = AsyncMock(spec=ClientResponse)
