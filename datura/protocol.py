@@ -1253,7 +1253,7 @@ class PeopleSearchResultList(BaseModel):
     data: List[PeopleSearchResult]
 
 
-class PeopleSearchSynapse(Synapse):
+class PeopleSearchSynapse(StreamingSynapse):
     """A class to represent web search synapse"""
 
     query: str = pydantic.Field(
@@ -1302,6 +1302,73 @@ class PeopleSearchSynapse(Synapse):
 
     def deserialize(self) -> str:
         return self
+
+    async def process_streaming_response(self, response: StreamingResponse):
+        buffer = ""  # Initialize an empty buffer to accumulate data across chunks
+
+        try:
+            async for chunk in response.content.iter_any():
+                chunk_str = chunk.decode("utf-8", errors="ignore")
+
+                # Attempt to parse the chunk as JSON, updating the buffer with remaining incomplete JSON data
+                json_objects, buffer = extract_json_chunk(
+                    chunk_str, response, self.axon.hotkey, buffer
+                )
+
+                for json_data in json_objects:
+                    content_type = json_data.get("type")
+                    content = json_data.get("content")
+
+                    yield json.dumps(json_data)
+
+        except json.JSONDecodeError as e:
+            port = response.real_url.port
+            host = response.real_url.host
+            hotkey = self.axon.hotkey
+            bt.logging.debug(
+                f"process_streaming_response: Host: {host}:{port}, hotkey: {hotkey}, ERROR: json.JSONDecodeError: {e}, "
+            )
+        except (TimeoutError, asyncio.exceptions.TimeoutError) as e:
+            port = response.real_url.port
+            host = response.real_url.host
+            hotkey = self.axon.hotkey
+            print(
+                f"process_streaming_response TimeoutError: Host: {host}:{port}, hotkey: {hotkey}, Error: {e}"
+            )
+        except Exception as e:
+            port = response.real_url.port
+            host = response.real_url.host
+            hotkey = self.axon.hotkey
+            error_details = traceback.format_exc()
+            bt.logging.debug(
+                f"process_streaming_response: Host: {host}:{port}, hotkey: {hotkey}, ERROR: {e}, DETAILS: {error_details}, chunk: {chunk}"
+            )
+
+    def extract_response_json(self, response: ClientResponse) -> dict:
+        headers = {
+            k.decode("utf-8"): v.decode("utf-8")
+            for k, v in response.__dict__["_raw_headers"]
+        }
+
+        def extract_info(prefix):
+            return {
+                key.split("_")[-1]: value
+                for key, value in headers.items()
+                if key.startswith(prefix)
+            }
+
+        return {
+            "name": headers.get("name", ""),
+            "timeout": float(headers.get("timeout", 0)),
+            "total_size": int(headers.get("total_size", 0)),
+            "header_size": int(headers.get("header_size", 0)),
+            "dendrite": extract_info("bt_header_dendrite"),
+            "axon": extract_info("bt_header_axon"),
+            "query": self.query,
+            "results": self.results,
+            "criteria": self.criteria,
+            "max_execution_time": self.max_execution_time,
+        }
 
 
 class TwitterSearchSynapse(Synapse):
