@@ -943,9 +943,9 @@ class ScraperStreamingSynapse(StreamingSynapse):
                         yield json.dumps({"type": "completion", "content": completion})
 
                     elif content_type == "tweets":
-                        tweets_json = json_data.get("content", "[]")
-                        self.miner_tweets = tweets_json
-                        yield json.dumps({"type": "tweets", "content": tweets_json})
+                        tweets = json_data.get("content", "[]")
+                        self.miner_tweets.extend(tweets)
+                        yield json.dumps({"type": "tweets", "content": tweets})
 
                     elif content_type == "search":
                         search_json = json_data.get("content", "{}")
