@@ -1,12 +1,12 @@
 import torch
 import asyncio
 import time
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 import bittensor as bt
 from datura.protocol import (
     PeopleSearchSynapse,
 )
-from datura.synapse import collect_responses
+from datura.stream import collect_final_synapses
 from neurons.validators.utils.mock import MockRewardModel
 from datura.dataset import QuestionsDataset
 from datura import QUERY_MINERS
@@ -98,6 +98,7 @@ class PeopleSearchValidator(OrganicHistoryMixin):
         is_only_allowed_miner=True,
         specified_uids=None,
         is_synthetic=False,
+        uid: Optional[int] = None,
     ):
         event = {
             "names": [task.task_name for task in tasks],
@@ -114,7 +115,7 @@ class PeopleSearchValidator(OrganicHistoryMixin):
             )
             axons = [self.neuron.metagraph.axons[uid] for uid in uids]
         else:
-            uid, axon = await self.neuron.get_random_miner()
+            uid, axon = await self.neuron.get_random_miner(uid=uid)
             uids = torch.tensor([uid])
             axons = [axon]
 
@@ -128,9 +129,9 @@ class PeopleSearchValidator(OrganicHistoryMixin):
             for task, params in zip(tasks, params_list)
         ]
 
-        await collect_responses(
-            [self.generate_criteria(synapse) for synapse in synapses]
-        )
+        # await collect_responses(
+        #     [self.generate_criteria(synapse) for synapse in synapses]
+        # )
 
         dendrites = [
             self.neuron.dendrite1,
@@ -149,7 +150,7 @@ class PeopleSearchValidator(OrganicHistoryMixin):
         ):
             for axon, syn in zip(axon_group, synapse_group):
                 # Create a task for each dendrite call
-                task = dendrite.call(
+                task = dendrite.call_stream(
                     target_axon=axon,
                     synapse=syn.model_copy(),
                     timeout=timeout,
@@ -157,10 +158,7 @@ class PeopleSearchValidator(OrganicHistoryMixin):
                 )
                 all_tasks.append(task)
 
-        # Await all tasks concurrently
-        all_responses = await asyncio.gather(*all_tasks, return_exceptions=True)
-
-        return all_responses, uids, event, start_time
+        return all_tasks, uids, event, start_time
 
     async def compute_rewards_and_penalties(
         self,
@@ -384,24 +382,30 @@ class PeopleSearchValidator(OrganicHistoryMixin):
             )
 
             # 4) Run the basic people search
-            responses, uids, event, start_time = await self.run_people_search_and_score(
-                tasks=tasks,
-                strategy=strategy,
-                is_only_allowed_miner=False,
-                specified_uids=specified_uids,
-                params_list=params,
-                is_synthetic=True,
+            async_responses, uids, event, start_time = (
+                await self.run_people_search_and_score(
+                    tasks=tasks,
+                    strategy=strategy,
+                    is_only_allowed_miner=False,
+                    specified_uids=specified_uids,
+                    params_list=params,
+                    is_synthetic=True,
+                )
+            )
+
+            final_synapses = await collect_final_synapses(
+                async_responses, uids, start_time, 30
             )
 
             if self.neuron.config.neuron.synthetic_disabled:
                 await self._save_organic_response(
-                    uids, responses, tasks, event, start_time
+                    uids, final_synapses, tasks, event, start_time
                 )
             else:
                 await self.compute_rewards_and_penalties(
                     event=event,
                     tasks=tasks,
-                    responses=responses,
+                    responses=final_synapses,
                     uids=uids,
                     start_time=start_time,
                     is_synthetic=True,
@@ -416,6 +420,8 @@ class PeopleSearchValidator(OrganicHistoryMixin):
         random_synapse: PeopleSearchSynapse = None,
         random_uid=None,
         specified_uids=None,
+        is_collect_final_synapses: bool = False,
+        uid: Optional[int] = None,
     ):
         """Receives question from user and returns the response from the miners."""
 
@@ -445,25 +451,34 @@ class PeopleSearchValidator(OrganicHistoryMixin):
                     params_list=[
                         {key: value for key, value in query.items() if key != "query"}
                     ],
+                    uid=uid,
                 )
             )
 
-            final_responses = []
+            final_synapses = []
 
-            # Process responses and collect successful ones
-            for response in async_responses:
-                if response:
-                    final_responses.append(response)
-                    yield response
-                else:
-                    bt.logging.warning(
-                        f"Invalid response for UID: {response.axon.hotkey if response else 'Unknown'}"
-                    )
+            if specified_uids or is_collect_final_synapses:
+                # Collect specified uids from responses and score
+                final_synapses = await collect_final_synapses(
+                    async_responses, uids, start_time
+                )
+
+                if is_collect_final_synapses:
+                    for synapse in final_synapses:
+                        yield synapse
+            else:
+                # Stream random miner to the UI
+                for response in async_responses:
+                    async for value in response:
+                        if isinstance(value, bt.Synapse):
+                            final_synapses.append(value)
+                        else:
+                            yield value
 
             async def process_and_score_responses(uids):
                 if is_interval_query:
                     # Add the random_synapse to final_responses and its UID to uids
-                    final_responses.append(random_synapse)
+                    final_synapses.append(random_synapse)
                     uids = torch.cat([uids, torch.tensor([random_uid])])
 
                 # Compute rewards and penalties
@@ -472,7 +487,7 @@ class PeopleSearchValidator(OrganicHistoryMixin):
                         await self.compute_rewards_and_penalties(
                             event=event,
                             tasks=tasks,
-                            responses=final_responses,
+                            responses=final_synapses,
                             uids=uids,
                             start_time=start_time,
                             is_synthetic=False,
@@ -482,7 +497,7 @@ class PeopleSearchValidator(OrganicHistoryMixin):
                     # Save organic queries if not an interval query
                     if not is_interval_query:
                         await self.basic_organic_query_state.save_organic_queries(
-                            final_responses, uids, original_rewards
+                            final_synapses, uids, original_rewards
                         )
 
                 if (
@@ -490,7 +505,7 @@ class PeopleSearchValidator(OrganicHistoryMixin):
                     and not is_interval_query
                 ):
                     await self._save_organic_response(
-                        uids, final_responses, tasks, event, start_time
+                        uids, final_synapses, tasks, event, start_time
                     )
 
             # Schedule scoring task

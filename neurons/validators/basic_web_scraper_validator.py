@@ -1,7 +1,7 @@
 import torch
 import asyncio
 import time
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 import bittensor as bt
 from datura.protocol import (
     WebSearchSynapse,
@@ -87,6 +87,7 @@ class BasicWebScraperValidator(OrganicHistoryMixin):
         is_only_allowed_miner=True,
         specified_uids=None,
         is_synthetic=False,
+        uid: Optional[int] = None,
     ):
         event = {
             "names": [task.task_name for task in tasks],
@@ -103,7 +104,7 @@ class BasicWebScraperValidator(OrganicHistoryMixin):
             )
             axons = [self.neuron.metagraph.axons[uid] for uid in uids]
         else:
-            uid, axon = await self.neuron.get_random_miner()
+            uid, axon = await self.neuron.get_random_miner(uid=uid)
             uids = torch.tensor([uid])
             axons = [axon]
 
@@ -402,6 +403,7 @@ class BasicWebScraperValidator(OrganicHistoryMixin):
         random_synapse: WebSearchSynapse = None,
         random_uid=None,
         specified_uids=None,
+        uid: Optional[int] = None,
     ):
         """Receives question from user and returns the response from the miners."""
 
@@ -431,6 +433,7 @@ class BasicWebScraperValidator(OrganicHistoryMixin):
                     params_list=[
                         {key: value for key, value in query.items() if key != "query"}
                     ],
+                    uid=uid,
                 )
             )
 

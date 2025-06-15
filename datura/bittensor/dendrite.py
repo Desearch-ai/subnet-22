@@ -15,6 +15,7 @@ from .miner import Miner
 from bittensor.core.synapse import Synapse
 from aiohttp import ClientResponse
 from unittest.mock import AsyncMock
+import asyncio
 
 
 class Dendrite(bt.dendrite):
@@ -70,12 +71,6 @@ class Dendrite(bt.dendrite):
             synapse.dendrite.process_time = str(time.time() - start_time)
             return synapse
 
-        if isinstance(synapse, PeopleSearchSynapse):
-            bt.logging.info("MockDendrite--call people_search_miner.search")
-            synapse = await self.people_search_miner.search(synapse)
-            synapse.dendrite.process_time = str(time.time() - start_time)
-            return synapse
-
         if isinstance(synapse, IsAlive):
             bt.logging.info("MockDendrite--call is_alive")
             if target_axon.hotkey.startswith("hotkey"):
@@ -92,16 +87,26 @@ class Dendrite(bt.dendrite):
         responses = []
 
         async def mockSend(data):
-            responses.append(data["body"])
+            responses.append(data)
 
         async def generateResponse():
-            for data in responses:
-                yield data
+            while True:
+                if responses:
+                    for data in responses:
+                        if data["more_body"] == False:
+                            return
+                        yield data["body"]
+                responses.clear()
+                await asyncio.sleep(1)
 
         if isinstance(synapse, ScraperStreamingSynapse):
-            await self.scraper_miner.smart_scraper(synapse, mockSend)
+            asyncio.create_task(self.scraper_miner.smart_scraper(synapse, mockSend))
         elif isinstance(synapse, DeepResearchSynapse):
-            await self.deep_research_miner.deep_research(synapse, mockSend)
+            asyncio.create_task(
+                self.deep_research_miner.deep_research(synapse, mockSend)
+            )
+        elif isinstance(synapse, PeopleSearchSynapse):
+            asyncio.create_task(self.people_search_miner.search(synapse, mockSend))
 
         # Mock ClientResponse
         response = AsyncMock(spec=ClientResponse)
