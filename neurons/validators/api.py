@@ -320,6 +320,8 @@ async def handle_search_links(
     query = {"content": body.prompt, "tools": tools, "count": body.count}
     synapses = []
 
+    bt.logging.info(f"Handle search links, query: {query}")
+
     try:
         async for item in neu.advanced_scraper_validator.organic(
             query,
@@ -352,6 +354,8 @@ async def search(
     """
     Search endpoint that accepts a JSON body with search parameters.
     """
+
+    bt.logging.info(f"/search request: {body}")
 
     if access_key != EXPECTED_ACCESS_KEY:
         raise HTTPException(status_code=401, detail="Invalid access key")
@@ -394,6 +398,8 @@ async def deep_search(
     Search endpoint that accepts a JSON body with search parameters.
     """
 
+    bt.logging.info(f"/deep-research request: {body}")
+
     if access_key != EXPECTED_ACCESS_KEY:
         raise HTTPException(status_code=401, detail="Invalid access key")
 
@@ -409,11 +415,12 @@ async def deep_search(
 async def search_links_web(
     body: LinksSearchRequest, access_key: Annotated[str | None, Header()] = None
 ):
+    bt.logging.info(f"/search/links/web request: {body}")
+
     if access_key != EXPECTED_ACCESS_KEY:
         raise HTTPException(status_code=401, detail="Invalid access key")
 
-    web_tools = [tool for tool in body.tools if tool != "Twitter Search"]
-    return await handle_search_links(body, access_key, EXPECTED_ACCESS_KEY, web_tools)
+    return await handle_search_links(body, access_key, EXPECTED_ACCESS_KEY, body.tools)
 
 
 @app.post(
@@ -425,13 +432,12 @@ async def search_links_web(
 async def search_links_twitter(
     body: LinksSearchRequest, access_key: Annotated[str | None, Header()] = None
 ):
+    bt.logging.info(f"/search/links/twitter request: {body}")
+
     if access_key != EXPECTED_ACCESS_KEY:
         raise HTTPException(status_code=401, detail="Invalid access key")
 
-    twitter_tools = twitter_tool
-    return await handle_search_links(
-        body, access_key, EXPECTED_ACCESS_KEY, twitter_tools
-    )
+    return await handle_search_links(body, access_key, EXPECTED_ACCESS_KEY, body.tools)
 
 
 @app.post(
@@ -443,6 +449,8 @@ async def search_links_twitter(
 async def search_links(
     body: LinksSearchRequest, access_key: Annotated[str | None, Header()] = None
 ):
+    bt.logging.info(f"/search/links request: {body}")
+
     if access_key != EXPECTED_ACCESS_KEY:
         raise HTTPException(status_code=401, detail="Invalid access key")
 
@@ -486,6 +494,9 @@ async def advanced_twitter_search(
     Returns:
         List[TwitterScraperTweet]: A list of fetched tweets.
     """
+
+    bt.logging.info(f"/twitter/search request: {request}")
+
     if access_key != EXPECTED_ACCESS_KEY:
         raise HTTPException(status_code=401, detail="Invalid access key")
 
@@ -543,6 +554,8 @@ async def get_tweets_by_urls(
         List[TwitterScraperTweet]: A list of fetched tweets.
     """
 
+    bt.logging.info(f"/twitter/urls request: {request}")
+
     if access_key != EXPECTED_ACCESS_KEY:
         raise HTTPException(status_code=401, detail="Invalid access key")
 
@@ -583,6 +596,9 @@ async def get_tweet_by_id(
     Returns:
         List[TwitterScraperTweet]: A list containing the tweet details.
     """
+
+    bt.logging.info(f"/twitter/id request: id={id}")
+
     if access_key != EXPECTED_ACCESS_KEY:
         raise HTTPException(status_code=401, detail="Invalid access key")
 
@@ -631,6 +647,8 @@ async def web_search_endpoint(
     Returns:
         List[WebSearchResult]: A list of web search results.
     """
+
+    bt.logging.info(f"/web/search request: query={query}, num={num}, start={start}")
 
     if access_key != EXPECTED_ACCESS_KEY:
         raise HTTPException(status_code=401, detail="Invalid access key")
@@ -694,6 +712,8 @@ async def stream_people_search(data: PeopleSearchRequest):
             "criteria": data.criteria,
         }
 
+        bt.logging.info(f"People search query: {query}")
+
         merged_chunks = ""
 
         async for response in neu.people_search_validator.organic(query, uid=data.uid):
@@ -704,7 +724,7 @@ async def stream_people_search(data: PeopleSearchRequest):
             sse_data = "\n".join(f"data: {line if line else ' '}" for line in lines)
             yield f"{sse_data}\n\n"
     except Exception as e:
-        bt.logging.error(f"error in stream_deep_research: {traceback.format_exc()}")
+        bt.logging.error(f"error in stream_people_search: {traceback.format_exc()}")
         yield f"data: {json.dumps({'error': str(e)})}\n\n"
 
 
@@ -727,6 +747,8 @@ async def people_search_endpoint(
     Returns:
         List[PeopleSearchResult]: A list of people search results.
     """
+
+    bt.logging.info(f"/people/search request: {request}")
 
     if access_key != EXPECTED_ACCESS_KEY:
         raise HTTPException(status_code=401, detail="Invalid access key")
