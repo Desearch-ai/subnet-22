@@ -1090,6 +1090,7 @@ class ScraperStreamingSynapse(StreamingSynapse):
             "system_message": self.system_message,
             "miner_link_scores": self.miner_link_scores,
             "flow_items": self.flow_items,
+            "count": self.count,
         }
 
     class Config:

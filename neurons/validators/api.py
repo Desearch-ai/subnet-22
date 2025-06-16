@@ -184,6 +184,14 @@ class LinksSearchRequest(BaseModel):
         example=Model.NOVA.value,
     )
 
+    count: Optional[int] = Field(
+        10,
+        title="Count",
+        description="The number of results to return per source. Min 10. Max 200.",
+        ge=10,
+        le=200,
+    )
+
     uid: Optional[int] = Field(default=None)
 
 
@@ -309,7 +317,7 @@ async def handle_search_links(
     if access_key != expected_access_key:
         raise HTTPException(status_code=401, detail="Invalid access key")
 
-    query = {"content": body.prompt, "tools": tools}
+    query = {"content": body.prompt, "tools": tools, "count": body.count}
     synapses = []
 
     try:
