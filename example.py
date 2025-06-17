@@ -4,8 +4,7 @@ import json
 
 
 async def search_desearch():
-    url = "https://api.smartscrape.ai/search"
-    # url = "http://localhost:8005/search"  # Local
+    url = "http://localhost:8005/search"
 
     body = {
         "prompt": "What are the recent sport news?",
