@@ -584,12 +584,23 @@ async def save_logs_in_chunks(
                 "link_scores": search_score,
                 "summary_link_scores": summary_link_score,
                 "search_results": {
-                    "google": response.search_results,
-                    "wikipedia": response.wikipedia_search_results,
-                    "youtube": response.youtube_search_results,
-                    "arxiv": response.arxiv_search_results,
-                    "reddit": response.reddit_search_results,
-                    "hacker_news": response.hacker_news_search_results,
+                    "google": [item.model_dump() for item in response.search_results],
+                    "wikipedia": [
+                        item.model_dump() for item in response.wikipedia_search_results
+                    ],
+                    "youtube": [
+                        item.model_dump() for item in response.youtube_search_results
+                    ],
+                    "arxiv": [
+                        item.model_dump() for item in response.arxiv_search_results
+                    ],
+                    "reddit": [
+                        item.model_dump() for item in response.reddit_search_results
+                    ],
+                    "hacker_news": [
+                        item.model_dump()
+                        for item in response.hacker_news_search_results
+                    ],
                 },
                 "texts": response.texts,
                 "validator_tweets": [
