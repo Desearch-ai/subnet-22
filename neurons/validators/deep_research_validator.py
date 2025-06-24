@@ -203,6 +203,7 @@ class DeepResearchValidator(OrganicHistoryMixin):
         region="us",
         is_synthetic=False,
         system_message: Optional[str] = None,
+        uid: Optional[int] = None,
     ):
         # Record event start time.
         event = {
@@ -219,7 +220,7 @@ class DeepResearchValidator(OrganicHistoryMixin):
             )
             axons = [self.neuron.metagraph.axons[uid] for uid in uids]
         else:
-            uid, axon = await self.neuron.get_random_miner()
+            uid, axon = await self.neuron.get_random_miner(uid=uid)
             uids = torch.tensor([uid])
             axons = [axon]
 
@@ -552,6 +553,7 @@ class DeepResearchValidator(OrganicHistoryMixin):
         random_uid=None,
         specified_uids=None,
         is_collect_final_synapses: bool = False,  # Flag to collect final synapses
+        uid: Optional[int] = None,
     ):
         """Receives question from user and returns the response from the miners."""
 
@@ -586,6 +588,7 @@ class DeepResearchValidator(OrganicHistoryMixin):
                 date_filter=date_filter,
                 specified_uids=specified_uids,
                 system_message=system_message,
+                uid=uid,
             )
 
             final_synapses = []

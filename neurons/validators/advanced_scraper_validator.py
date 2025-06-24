@@ -15,7 +15,7 @@ from datura.dataset.date_filters import (
     DateFilterType,
 )
 from datura import QUERY_MINERS
-from datura.protocol import Model, ResultType, ScraperStreamingSynapse
+from datura.protocol import ChatHistoryItem, Model, ResultType, ScraperStreamingSynapse
 from datura.utils import get_max_execution_time
 from neurons.validators.base_validator import AbstractNeuron
 from neurons.validators.reward.summary_relevance import SummaryRelevanceRewardModel
@@ -181,8 +181,11 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
         result_type: Optional[ResultType] = ResultType.LINKS_WITH_SUMMARIES,
         is_synthetic=False,
         system_message: Optional[str] = None,
+        uid: Optional[int] = None,
+        chat_history: Optional[List[ChatHistoryItem]] = [],
+        count: Optional[int] = 10,
     ):
-        max_execution_time = get_max_execution_time(model)
+        max_execution_time = get_max_execution_time(model, count)
 
         # Record event start time.
         event = {
@@ -200,7 +203,7 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
 
             axons = [self.neuron.metagraph.axons[uid] for uid in uids]
         else:
-            uid, axon = await self.neuron.get_random_miner()
+            uid, axon = await self.neuron.get_random_miner(uid=uid)
             uids = torch.tensor([uid])
             axons = [axon]
 
@@ -223,6 +226,8 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
                 is_synthetic=is_synthetic,
                 system_message=system_message,
                 scoring_model=self.neuron.config.neuron.scoring_model,
+                chat_history=chat_history,
+                count=count,
             )
             for task in tasks
         ]
@@ -509,7 +514,6 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
             )
 
             random_model = self.get_random_execution_time()
-            max_execution_time = get_max_execution_time(random_model)
 
             async_responses, uids, event, start_time = await self.run_task_and_score(
                 tasks=tasks,
@@ -554,6 +558,7 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
         random_synapse: ScraperStreamingSynapse = None,
         random_uid=None,
         specified_uids=None,
+        uid: Optional[int] = None,
         result_type: Optional[ResultType] = ResultType.LINKS_WITH_SUMMARIES,
         is_collect_final_synapses: bool = False,  # Flag to collect final synapses
     ):
@@ -565,7 +570,9 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
             prompt = query["content"]
             tools = query.get("tools", [])
             date_filter = query.get("date_filter", DateFilterType.PAST_WEEK.value)
+            count = query.get("count")
             system_message = query.get("system_message")
+            chat_history = query.get("chat_history", [])
 
             if isinstance(date_filter, str):
                 date_filter_type = DateFilterType(date_filter)
@@ -593,6 +600,9 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
                 model=model,
                 result_type=result_type,
                 system_message=system_message,
+                uid=uid,
+                chat_history=chat_history,
+                count=count,
             )
 
             final_synapses = []

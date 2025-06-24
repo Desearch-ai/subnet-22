@@ -68,29 +68,6 @@ class SyntheticQueryRunnerMixin:
             bt.logging.error(f"General exception: {e}\n{traceback.format_exc()}")
             await asyncio.sleep(100)
 
-    async def run_organic_queries(self, validator):
-        """Run organic queries using the advanced scraper validator."""
-        result = await validator.organic_query_state.get_random_organic_query(
-            self.available_uids, self.metagraph.neurons
-        )
-
-        if not result:
-            bt.logging.info("No organic queries are in history to run")
-            return
-
-        synapse, query, synapse_uid, specified_uids = result
-
-        bt.logging.info(f"Running organic queries for synapse: {synapse}")
-
-        async for _ in validator.organic(
-            query=query,
-            model=synapse.model if hasattr(synapse, "model") else None,
-            random_synapse=synapse,
-            random_uid=synapse_uid,
-            specified_uids=specified_uids,
-        ):
-            pass
-
     async def run_with_interval(self, interval, strategy):
         """
         Run synthetic queries at specified intervals with the given strategy.
@@ -123,32 +100,6 @@ class SyntheticQueryRunnerMixin:
                 bt.logging.error(f"Error during task execution: {e}")
                 await asyncio.sleep(interval)  # Wait before retrying
 
-    async def run_organic_with_interval(self, interval):
-        """
-        Run organic queries at specified intervals.
-
-        Args:
-            interval: Time in seconds between query runs
-        """
-        while True:
-            try:
-                if not self.available_uids:
-                    await asyncio.sleep(5)
-                    continue
-
-                self.loop.create_task(
-                    self.run_organic_queries(self.advanced_scraper_validator)
-                )
-
-                self.loop.create_task(
-                    self.run_organic_queries(self.basic_scraper_validator)
-                )
-
-                await asyncio.sleep(interval)
-            except Exception as e:
-                bt.logging.error(f"Error during task execution: {e}")
-                await asyncio.sleep(interval)  # Wait before retrying
-
     def start_query_tasks(self):
         """
         Start all query tasks based on configuration.
@@ -170,9 +121,3 @@ class SyntheticQueryRunnerMixin:
                         QUERY_MINERS.ALL,
                     )
                 )
-
-            # Run organic queries every three hours
-            three_hours_in_seconds = 10800
-            self.loop.create_task(
-                self.run_organic_with_interval(three_hours_in_seconds)
-            )

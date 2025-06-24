@@ -11,6 +11,7 @@ from neurons.validators.env import PORT, EXPECTED_ACCESS_KEY
 from datura import __version__
 from datura.dataset.date_filters import DateFilterType
 from datura.protocol import (
+    ChatHistoryItem,
     Model,
     TwitterScraperTweet,
     WebSearchResultList,
@@ -103,11 +104,21 @@ class SearchRequest(BaseModel):
         description=f"Date filter for the search results.{format_enum_values(DateFilterType)}",
         example=DateFilterType.PAST_WEEK.value,
     )
+
     model: Optional[Model] = Field(
         default=Model.NOVA,
         description=f"Model to use for scraping. {format_enum_values(Model)}",
         example=Model.NOVA.value,
     )
+
+    count: Optional[int] = Field(
+        10,
+        title="Count",
+        description="The number of results to return per source. Min 10. Max 200.",
+        ge=10,
+        le=200,
+    )
+
     result_type: Optional[ResultType] = Field(
         default=ResultType.LINKS_WITH_SUMMARIES,
         description=f"Type of result. {format_enum_values(ResultType)}",
@@ -119,6 +130,14 @@ class SearchRequest(BaseModel):
         description="Rules influencing how summaries are generated",
         example="Summarize the content by categorizing key points into 'Pros' and 'Cons' sections.",
     )
+
+    chat_history: Optional[List[ChatHistoryItem]] = Field(
+        default_factory=list,
+        title="Chat History",
+        description="A list of chat history items.",
+    )
+
+    uid: Optional[int] = Query(default=None)
 
 
 class DeepResearchRequest(BaseModel):
@@ -144,6 +163,10 @@ class DeepResearchRequest(BaseModel):
         example="Summarize the content by categorizing key points into 'Pros' and 'Cons' sections.",
     )
 
+    uid: Optional[int] = Field(
+        default=None,
+    )
+
 
 class LinksSearchRequest(BaseModel):
     prompt: str = Field(
@@ -160,6 +183,16 @@ class LinksSearchRequest(BaseModel):
         description=f"Model to use for scraping. {format_enum_values(Model)}",
         example=Model.NOVA.value,
     )
+
+    count: Optional[int] = Field(
+        10,
+        title="Count",
+        description="The number of results to return per source. Min 10. Max 200.",
+        ge=10,
+        le=200,
+    )
+
+    uid: Optional[int] = Field(default=None)
 
 
 fields = "\n".join(
@@ -186,14 +219,19 @@ async def response_stream_event(data: SearchRequest):
         query = {
             "content": data.prompt,
             "tools": data.tools,
+            "count": data.count,
             "date_filter": data.date_filter.value,
             "system_message": data.system_message,
+            "chat_history": data.chat_history,
         }
 
         merged_chunks = ""
 
         async for response in neu.advanced_scraper_validator.organic(
-            query, data.model, result_type=data.result_type
+            query,
+            data.model,
+            result_type=data.result_type,
+            uid=data.uid,
         ):
             # Decode the chunk if necessary and merge
             chunk = str(response)  # Assuming response is already a string
@@ -279,8 +317,10 @@ async def handle_search_links(
     if access_key != expected_access_key:
         raise HTTPException(status_code=401, detail="Invalid access key")
 
-    query = {"content": body.prompt, "tools": tools}
+    query = {"content": body.prompt, "tools": tools, "count": body.count}
     synapses = []
+
+    bt.logging.info(f"Handle search links, query: {query}")
 
     try:
         async for item in neu.advanced_scraper_validator.organic(
@@ -288,6 +328,7 @@ async def handle_search_links(
             body.model,
             is_collect_final_synapses=True,
             result_type=ResultType.ONLY_LINKS,
+            uid=body.uid,
         ):
             synapses.append(item)
 
@@ -314,6 +355,8 @@ async def search(
     Search endpoint that accepts a JSON body with search parameters.
     """
 
+    bt.logging.info(f"/search request: {body}")
+
     if access_key != EXPECTED_ACCESS_KEY:
         raise HTTPException(status_code=401, detail="Invalid access key")
 
@@ -331,7 +374,7 @@ async def stream_deep_research(data: DeepResearchRequest):
 
         merged_chunks = ""
 
-        async for response in neu.deep_research_validator.organic(query):
+        async for response in neu.deep_research_validator.organic(query, uid=data.uid):
             # Decode the chunk if necessary and merge
             chunk = str(response)  # Assuming response is already a string
             merged_chunks += chunk
@@ -355,6 +398,8 @@ async def deep_search(
     Search endpoint that accepts a JSON body with search parameters.
     """
 
+    bt.logging.info(f"/deep-research request: {body}")
+
     if access_key != EXPECTED_ACCESS_KEY:
         raise HTTPException(status_code=401, detail="Invalid access key")
 
@@ -370,11 +415,12 @@ async def deep_search(
 async def search_links_web(
     body: LinksSearchRequest, access_key: Annotated[str | None, Header()] = None
 ):
+    bt.logging.info(f"/search/links/web request: {body}")
+
     if access_key != EXPECTED_ACCESS_KEY:
         raise HTTPException(status_code=401, detail="Invalid access key")
 
-    web_tools = [tool for tool in body.tools if tool != "Twitter Search"]
-    return await handle_search_links(body, access_key, EXPECTED_ACCESS_KEY, web_tools)
+    return await handle_search_links(body, access_key, EXPECTED_ACCESS_KEY, body.tools)
 
 
 @app.post(
@@ -386,13 +432,12 @@ async def search_links_web(
 async def search_links_twitter(
     body: LinksSearchRequest, access_key: Annotated[str | None, Header()] = None
 ):
+    bt.logging.info(f"/search/links/twitter request: {body}")
+
     if access_key != EXPECTED_ACCESS_KEY:
         raise HTTPException(status_code=401, detail="Invalid access key")
 
-    twitter_tools = twitter_tool
-    return await handle_search_links(
-        body, access_key, EXPECTED_ACCESS_KEY, twitter_tools
-    )
+    return await handle_search_links(body, access_key, EXPECTED_ACCESS_KEY, body.tools)
 
 
 @app.post(
@@ -404,6 +449,8 @@ async def search_links_twitter(
 async def search_links(
     body: LinksSearchRequest, access_key: Annotated[str | None, Header()] = None
 ):
+    bt.logging.info(f"/search/links request: {body}")
+
     if access_key != EXPECTED_ACCESS_KEY:
         raise HTTPException(status_code=401, detail="Invalid access key")
 
@@ -429,6 +476,8 @@ class TwitterSearchRequest(BaseModel):
     min_likes: Optional[int] = None
     count: Optional[conint(le=100)] = 20
 
+    uid: Optional[int] = None
+
 
 @app.post(
     "/twitter/search",
@@ -445,6 +494,9 @@ async def advanced_twitter_search(
     Returns:
         List[TwitterScraperTweet]: A list of fetched tweets.
     """
+
+    bt.logging.info(f"/twitter/search request: {request}")
+
     if access_key != EXPECTED_ACCESS_KEY:
         raise HTTPException(status_code=401, detail="Invalid access key")
 
@@ -456,7 +508,9 @@ async def advanced_twitter_search(
         # Collect all yielded synapses from organic
         final_synapses = []
 
-        async for synapse in neu.basic_scraper_validator.organic(query=query_dict):
+        async for synapse in neu.basic_scraper_validator.organic(
+            query=query_dict, uid=request.uid
+        ):
             final_synapses.append(synapse)
 
         # Transform final synapses into a flattened list of tweets
@@ -475,6 +529,10 @@ async def advanced_twitter_search(
 
 class TwitterURLSearchRequest(BaseModel):
     urls: List[str]
+
+    uid: Optional[int] = Field(
+        default=None,
+    )
 
 
 @app.post(
@@ -496,6 +554,8 @@ async def get_tweets_by_urls(
         List[TwitterScraperTweet]: A list of fetched tweets.
     """
 
+    bt.logging.info(f"/twitter/urls request: {request}")
+
     if access_key != EXPECTED_ACCESS_KEY:
         raise HTTPException(status_code=401, detail="Invalid access key")
 
@@ -506,7 +566,9 @@ async def get_tweets_by_urls(
 
         bt.logging.info(f"Fetching tweets for URLs: {urls}")
 
-        results = await neu.basic_scraper_validator.twitter_urls_search(urls)
+        results = await neu.basic_scraper_validator.twitter_urls_search(
+            urls, uid=request.uid
+        )
     except Exception as e:
         bt.logging.error(f"Error fetching tweets by URLs: {e}")
         raise HTTPException(status_code=500, detail=f"An error occurred: {str(e)}")
@@ -525,6 +587,7 @@ async def get_tweets_by_urls(
 )
 async def get_tweet_by_id(
     id: str = Path(..., description="The unique ID of the tweet to fetch"),
+    uid: Optional[int] = Query(default=None),
     access_key: Annotated[str | None, Header()] = None,
 ):
     """
@@ -533,6 +596,9 @@ async def get_tweet_by_id(
     Returns:
         List[TwitterScraperTweet]: A list containing the tweet details.
     """
+
+    bt.logging.info(f"/twitter/id request: id={id}")
+
     if access_key != EXPECTED_ACCESS_KEY:
         raise HTTPException(status_code=401, detail="Invalid access key")
 
@@ -541,7 +607,7 @@ async def get_tweet_by_id(
     try:
         bt.logging.info(f"Fetching tweet with ID: {id}")
 
-        results = await neu.basic_scraper_validator.twitter_id_search(id)
+        results = await neu.basic_scraper_validator.twitter_id_search(id, uid=uid)
     except Exception as e:
         bt.logging.error(f"Error fetching tweet by ID: {e}")
         raise HTTPException(status_code=500, detail=f"An error occurred: {str(e)}")
@@ -566,6 +632,7 @@ async def web_search_endpoint(
     start: int = Query(
         0, description="The number of results to skip (used for pagination)."
     ),
+    uid: Optional[int] = Query(default=None),
     access_key: Annotated[str | None, Header()] = None,
 ):
     """
@@ -581,6 +648,8 @@ async def web_search_endpoint(
         List[WebSearchResult]: A list of web search results.
     """
 
+    bt.logging.info(f"/web/search request: query={query}, num={num}, start={start}")
+
     if access_key != EXPECTED_ACCESS_KEY:
         raise HTTPException(status_code=401, detail="Invalid access key")
 
@@ -593,7 +662,7 @@ async def web_search_endpoint(
         final_synapses = []
 
         async for synapse in neu.basic_web_scraper_validator.organic(
-            query={"query": query, "num": num, "start": start}
+            query={"query": query, "num": num, "start": start}, uid=uid
         ):
             final_synapses.append(synapse)
 
@@ -611,18 +680,62 @@ async def web_search_endpoint(
         raise HTTPException(status_code=500, detail=f"An error occurred: {str(e)}")
 
 
-@app.get(
+class PeopleSearchRequest(BaseModel):
+    query: str = Field(
+        ...,
+        title="Query",
+        description="The query string to fetch results for. Example: 'Former investment bankers who transitioned into startup CFO roles'. Immutable.",
+    )
+
+    num: int = Field(
+        10,
+        title="Number of Results",
+        description="The maximum number of results to fetch. Immutable.",
+    )
+
+    criteria: Optional[List[str]] = Field(
+        ...,
+        title="Search criteria",
+        description="Search criteria based on query.",
+    )
+
+    uid: Optional[int] = Field(
+        default=None,
+    )
+
+
+async def stream_people_search(data: PeopleSearchRequest):
+    try:
+        query = {
+            "query": data.query,
+            "num": data.num,
+            "criteria": data.criteria,
+        }
+
+        bt.logging.info(f"People search query: {query}")
+
+        merged_chunks = ""
+
+        async for response in neu.people_search_validator.organic(query, uid=data.uid):
+            # Decode the chunk if necessary and merge
+            chunk = str(response)  # Assuming response is already a string
+            merged_chunks += chunk
+            lines = chunk.split("\n")
+            sse_data = "\n".join(f"data: {line if line else ' '}" for line in lines)
+            yield f"{sse_data}\n\n"
+    except Exception as e:
+        bt.logging.error(f"error in stream_people_search: {traceback.format_exc()}")
+        yield f"data: {json.dumps({'error': str(e)})}\n\n"
+
+
+@app.post(
     "/people/search",
     summary="People Search",
     description="Search the people using a query",
     response_model=PeopleSearchResultList,
 )
 async def people_search_endpoint(
-    query: str = Query(
-        ...,
-        description="The search query string, e.g., 'AI startup founders in London with a PhD in machine learning'.",
-    ),
-    num: int = Query(10, le=100, description="The maximum number of results to fetch."),
+    request: PeopleSearchRequest,
     access_key: Annotated[str | None, Header()] = None,
 ):
     """
@@ -635,32 +748,12 @@ async def people_search_endpoint(
         List[PeopleSearchResult]: A list of people search results.
     """
 
+    bt.logging.info(f"/people/search request: {request}")
+
     if access_key != EXPECTED_ACCESS_KEY:
         raise HTTPException(status_code=401, detail="Invalid access key")
 
-    try:
-        bt.logging.info(f"Performing people search with query: '{query}'")
-
-        # Collect all yielded synapses from organic
-        final_synapses = []
-
-        async for synapse in neu.people_search_validator.organic(
-            query={"query": query, "num": num}
-        ):
-            final_synapses.append(synapse)
-
-        # Transform final synapses into a flattened list of links
-        results = []
-
-        for syn in final_synapses:
-            # Each synapse (if successful) should have a 'results' field of PeopleSearchResult
-            if hasattr(syn, "results") and isinstance(syn.results, list):
-                results.extend(syn.results)
-
-        return {"data": results}
-    except Exception as e:
-        bt.logging.error(f"Error in web search: {e}")
-        raise HTTPException(status_code=500, detail=f"An error occurred: {str(e)}")
+    return StreamingResponse(stream_people_search(request))
 
 
 @app.get("/")
@@ -680,7 +773,6 @@ def custom_openapi():
         summary="API for searching across multiple platforms",
         routes=app.routes,
         servers=[
-            {"url": "https://api.smartscrape.ai", "description": "Datura API"},
             {"url": "http://localhost:8005", "description": "Datura API"},
         ],
     )

@@ -4,7 +4,7 @@ import typing
 import json
 import asyncio
 import time
-from typing import List, Dict, Optional, Any, Literal
+from typing import List, Dict, Optional, Any, Literal, Tuple
 from starlette.responses import StreamingResponse
 from pydantic import BaseModel
 from enum import Enum
@@ -285,6 +285,17 @@ class FlowItem(BaseModel):
     time: int
 
 
+class SearchResultItem(BaseModel):
+    title: str
+    link: str
+    snippet: str
+
+
+class ChatHistoryItem(BaseModel):
+    prompt: str
+    completion: str = ""
+
+
 class DeepResearchSynapse(StreamingSynapse):
     scoring_model: ScoringModel = pydantic.Field(
         ScoringModel.OPENAI_GPT4_MINI,
@@ -451,7 +462,7 @@ class DeepResearchSynapse(StreamingSynapse):
                             )
                         )
 
-                    yield json_data
+                    yield json.dumps(json_data)
 
         except json.JSONDecodeError as e:
             port = response.real_url.port
@@ -536,6 +547,14 @@ class ScraperStreamingSynapse(StreamingSynapse):
         description="The model to define the max execution time.",
     )
 
+    count: Optional[int] = pydantic.Field(
+        10,
+        title="Count",
+        description="The number of results to return per source. Min 10. Max 200.",
+        ge=10,
+        le=200,
+    )
+
     system_message: Optional[str] = pydantic.Field(
         "",
         title="Sysmtem Message",
@@ -605,50 +624,52 @@ class ScraperStreamingSynapse(StreamingSynapse):
         description="Optional JSON object containing tweets data from the miner.",
     )
 
+    # TODO Remove later
     search_completion_links: Optional[List[str]] = pydantic.Field(
         default_factory=list,
         title="Links Content",
         description="A list of links extracted from search summary text.",
     )
 
+    # TODO Remove later
     completion_links: Optional[List[str]] = pydantic.Field(
         default_factory=list,
         title="Links Content",
         description="A list of JSON objects representing the extracted links content from the tweets.",
     )
 
-    search_results: Optional[Any] = pydantic.Field(
-        default_factory=dict,
+    search_results: Optional[List[SearchResultItem]] = pydantic.Field(
+        default_factory=list,
         title="Search Results",
         description="Optional JSON object containing search results from SERP",
     )
 
-    wikipedia_search_results: Optional[Any] = pydantic.Field(
-        default_factory=dict,
+    wikipedia_search_results: Optional[List[SearchResultItem]] = pydantic.Field(
+        default_factory=list,
         title="Wikipedia Search Results",
         description="Optional JSON object containing search results from Wikipedia",
     )
 
-    youtube_search_results: Optional[Any] = pydantic.Field(
-        default_factory=dict,
+    youtube_search_results: Optional[List[SearchResultItem]] = pydantic.Field(
+        default_factory=list,
         title="YouTube Search Results",
         description="Optional JSON object containing search results from YouTube",
     )
 
-    arxiv_search_results: Optional[Any] = pydantic.Field(
-        default_factory=dict,
+    arxiv_search_results: Optional[List[SearchResultItem]] = pydantic.Field(
+        default_factory=list,
         title="Arxiv Search Results",
         description="Optional JSON object containing search results from Arxiv",
     )
 
-    reddit_search_results: Optional[Any] = pydantic.Field(
-        default_factory=dict,
+    reddit_search_results: Optional[List[SearchResultItem]] = pydantic.Field(
+        default_factory=list,
         title="Reddit Search Results",
         description="Optional JSON object containing search results from Reddit",
     )
 
-    hacker_news_search_results: Optional[Any] = pydantic.Field(
-        default_factory=dict,
+    hacker_news_search_results: Optional[List[SearchResultItem]] = pydantic.Field(
+        default_factory=list,
         title="Hacker News Search Results",
         description="Optional JSON object containing search results from Hacker News",
     )
@@ -668,6 +689,12 @@ class ScraperStreamingSynapse(StreamingSynapse):
         default_factory=list,
         title="Flow Items",
         description="flow items",
+    )
+
+    chat_history: Optional[List[ChatHistoryItem]] = pydantic.Field(
+        default_factory=list,
+        title="Chat History",
+        description="A list of chat history items for the synapse.",
     )
 
     @property
@@ -703,6 +730,92 @@ class ScraperStreamingSynapse(StreamingSynapse):
 
     def get_twitter_completion(self) -> Optional[str]:
         return self.texts.get(ScraperTextRole.TWITTER_SUMMARY.value, "")
+
+    def get_search_results_by_tools(self) -> Tuple[Dict[str, List], int]:
+        """Gets the search results from the appropriate *_search_results lists based on tools used."""
+
+        search_results = {}
+
+        links_per_toolkit = 10
+
+        # Group 1: General search tools
+        if any(
+            tool in self.tools
+            for tool in [
+                "Web Search",
+                "Wikipedia Search",
+                "Youtube Search",
+                "ArXiv Search",
+            ]
+        ):
+            results = []
+
+            if "Web Search" in self.tools and self.search_results:
+                results.extend(self.search_results)
+
+            if "Wikipedia Search" in self.tools and self.wikipedia_search_results:
+                results.extend(self.wikipedia_search_results)
+
+            if "Youtube Search" in self.tools and self.youtube_search_results:
+                results.extend(self.youtube_search_results)
+
+            if "ArXiv Search" in self.tools and self.arxiv_search_results:
+                results.extend(self.arxiv_search_results)
+
+            if results:
+                search_results[ScraperTextRole.SEARCH_SUMMARY.value] = results
+
+        # Group 2: Reddit search
+        if "Reddit Search" in self.tools and self.reddit_search_results:
+            search_results[ScraperTextRole.REDDIT_SUMMARY.value] = (
+                self.reddit_search_results
+            )
+
+        # Group 3: Hacker News search
+        if "Hacker News Search" in self.tools and self.hacker_news_search_results:
+            search_results[ScraperTextRole.HACKER_NEWS_SUMMARY.value] = (
+                self.hacker_news_search_results
+            )
+
+        links_expected = len(search_results) * links_per_toolkit
+
+        return search_results, links_expected
+
+    def get_links_from_search_results(self) -> Tuple[List[str], Dict[str, List[str]]]:
+        """Extracts links from search results based on tools used.
+
+        Returns:
+            Tuple containing:
+            - List of all links from search results
+            - Dictionary mapping tool group to list of links
+        """
+
+        search_results_by_tools, _ = self.get_search_results_by_tools()
+        all_links = []
+        links_per_tool_group = {}
+
+        for tool_group, results in search_results_by_tools.items():
+            links = []
+
+            # Extract links from search results
+            for result in results:
+                if isinstance(result, dict) and "link" in result:
+                    link = result["link"]
+                    if link:
+                        links.append(link)
+                elif hasattr(result, "link") and result.link:
+                    links.append(result.link)
+
+            # Remove duplicates while preserving order
+            unique_links = list(dict.fromkeys(links))
+
+            all_links.extend(unique_links)
+            links_per_tool_group[tool_group] = unique_links
+
+        # Remove duplicates from all_links while preserving order
+        all_unique_links = list(dict.fromkeys(all_links))
+
+        return all_unique_links, links_per_tool_group
 
     def get_search_completion(self) -> Dict[str, str]:
         """Gets the search completion text from the texts dictionary based on tools used."""
@@ -830,9 +943,9 @@ class ScraperStreamingSynapse(StreamingSynapse):
                         yield json.dumps({"type": "completion", "content": completion})
 
                     elif content_type == "tweets":
-                        tweets_json = json_data.get("content", "[]")
-                        self.miner_tweets = tweets_json
-                        yield json.dumps({"type": "tweets", "content": tweets_json})
+                        tweets = json_data.get("content", "[]")
+                        self.miner_tweets.extend(tweets)
+                        yield json.dumps({"type": "tweets", "content": tweets})
 
                     elif content_type == "search":
                         search_json = json_data.get("content", "{}")
@@ -884,6 +997,12 @@ class ScraperStreamingSynapse(StreamingSynapse):
                             }
                         )
                     elif content_type == "flow":
+                        yield json.dumps(
+                            {
+                                "type": "flow",
+                                "content": json_data.get("content", {}),
+                            }
+                        )
                         self.flow_items.append(
                             FlowItem(
                                 **json_data.get("content", {}),
@@ -934,8 +1053,8 @@ class ScraperStreamingSynapse(StreamingSynapse):
                 if key.startswith(prefix)
             }
 
-        completion_links = TwitterUtils().find_twitter_links(self.completion)
-        search_completion_links, _ = self.get_search_links()
+        # completion_links = TwitterUtils().find_twitter_links(self.completion)
+        # search_completion_links, _ = self.get_search_links()
 
         return {
             "name": headers.get("name", ""),
@@ -954,9 +1073,8 @@ class ScraperStreamingSynapse(StreamingSynapse):
             "arxiv_search_results": self.arxiv_search_results,
             "hacker_news_search_results": self.hacker_news_search_results,
             "reddit_search_results": self.reddit_search_results,
-            # "prompt_analysis": self.prompt_analysis.dict(),
-            "completion_links": completion_links,
-            "search_completion_links": search_completion_links,
+            "completion_links": [],
+            "search_completion_links": [],
             "texts": self.texts,
             "start_date": self.start_date,
             "end_date": self.end_date,
@@ -972,6 +1090,7 @@ class ScraperStreamingSynapse(StreamingSynapse):
             "system_message": self.system_message,
             "miner_link_scores": self.miner_link_scores,
             "flow_items": self.flow_items,
+            "count": self.count,
         }
 
     class Config:
@@ -1143,7 +1262,7 @@ class PeopleSearchResultList(BaseModel):
     data: List[PeopleSearchResult]
 
 
-class PeopleSearchSynapse(Synapse):
+class PeopleSearchSynapse(StreamingSynapse):
     """A class to represent web search synapse"""
 
     query: str = pydantic.Field(
@@ -1192,6 +1311,73 @@ class PeopleSearchSynapse(Synapse):
 
     def deserialize(self) -> str:
         return self
+
+    async def process_streaming_response(self, response: StreamingResponse):
+        buffer = ""  # Initialize an empty buffer to accumulate data across chunks
+
+        try:
+            async for chunk in response.content.iter_any():
+                chunk_str = chunk.decode("utf-8", errors="ignore")
+
+                # Attempt to parse the chunk as JSON, updating the buffer with remaining incomplete JSON data
+                json_objects, buffer = extract_json_chunk(
+                    chunk_str, response, self.axon.hotkey, buffer
+                )
+
+                for json_data in json_objects:
+                    content_type = json_data.get("type")
+                    content = json_data.get("content")
+
+                    yield json.dumps(json_data)
+
+        except json.JSONDecodeError as e:
+            port = response.real_url.port
+            host = response.real_url.host
+            hotkey = self.axon.hotkey
+            bt.logging.debug(
+                f"process_streaming_response: Host: {host}:{port}, hotkey: {hotkey}, ERROR: json.JSONDecodeError: {e}, "
+            )
+        except (TimeoutError, asyncio.exceptions.TimeoutError) as e:
+            port = response.real_url.port
+            host = response.real_url.host
+            hotkey = self.axon.hotkey
+            print(
+                f"process_streaming_response TimeoutError: Host: {host}:{port}, hotkey: {hotkey}, Error: {e}"
+            )
+        except Exception as e:
+            port = response.real_url.port
+            host = response.real_url.host
+            hotkey = self.axon.hotkey
+            error_details = traceback.format_exc()
+            bt.logging.debug(
+                f"process_streaming_response: Host: {host}:{port}, hotkey: {hotkey}, ERROR: {e}, DETAILS: {error_details}, chunk: {chunk}"
+            )
+
+    def extract_response_json(self, response: ClientResponse) -> dict:
+        headers = {
+            k.decode("utf-8"): v.decode("utf-8")
+            for k, v in response.__dict__["_raw_headers"]
+        }
+
+        def extract_info(prefix):
+            return {
+                key.split("_")[-1]: value
+                for key, value in headers.items()
+                if key.startswith(prefix)
+            }
+
+        return {
+            "name": headers.get("name", ""),
+            "timeout": float(headers.get("timeout", 0)),
+            "total_size": int(headers.get("total_size", 0)),
+            "header_size": int(headers.get("header_size", 0)),
+            "dendrite": extract_info("bt_header_dendrite"),
+            "axon": extract_info("bt_header_axon"),
+            "query": self.query,
+            "results": self.results,
+            "criteria": self.criteria,
+            "max_execution_time": self.max_execution_time,
+        }
 
 
 class TwitterSearchSynapse(Synapse):

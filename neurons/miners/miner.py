@@ -559,8 +559,9 @@ class StreamingTemplateMiner(StreamMiner):
 
     async def people_search(self, synapse: PeopleSearchSynapse) -> PeopleSearchSynapse:
         bt.logging.info(f"started processing for People search  synapse {synapse}")
-        people_search_miner = PeopleSearchMiner(self)
-        return await people_search_miner.search(synapse)
+        tw_miner = PeopleSearchMiner(self)
+        token_streamer = partial(tw_miner.search, synapse)
+        return synapse.create_streaming_response(token_streamer)
 
 
 def get_valid_hotkeys(config):
