@@ -6,6 +6,8 @@ from typing import List, Dict, Tuple
 import json
 import asyncio
 import bittensor as bt
+
+from neurons.validators.base_validator import AbstractNeuron
 from .config import RewardModelType
 from .reward import BaseRewardModel, BaseRewardEvent
 from datura.protocol import PeopleSearchSynapse, PeopleSearchResult
@@ -39,8 +41,8 @@ class PeopleSearchRelevanceModel(BaseRewardModel):
     def name(self) -> str:
         return RewardModelType.twitter_content_relevance.value
 
-    def __init__(self, device: str, scoring_type: None):
-        super().__init__()
+    def __init__(self, device: str, scoring_type: None, neuron: AbstractNeuron):
+        super().__init__(neuron)
         self.device = device
         self.scoring_type = scoring_type
         self.linkedin_scraper_actor = LinkedinScraperActor()

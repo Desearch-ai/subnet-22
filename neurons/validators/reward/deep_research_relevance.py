@@ -3,6 +3,8 @@ from typing import List, Dict, Tuple
 import json
 import random
 import bittensor as bt
+
+from neurons.validators.base_validator import AbstractNeuron
 from .config import RewardModelType
 from .reward import BaseRewardModel, BaseRewardEvent
 from datura.protocol import DeepResearchSynapse, ReportItem
@@ -19,8 +21,8 @@ class DeepResearchContentRelevanceModel(BaseRewardModel):
     def name(self) -> str:
         return RewardModelType.deep_research_content_relevance.value
 
-    def __init__(self, device: str, scoring_type: None):
-        super().__init__()
+    def __init__(self, device: str, scoring_type: None, neuron: AbstractNeuron):
+        super().__init__(neuron)
         self.device = device
         self.scoring_type = scoring_type
         self.relevance_prompt = DeepResearchContentRelevancePrompt()

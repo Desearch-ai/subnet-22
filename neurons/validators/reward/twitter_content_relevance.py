@@ -25,6 +25,8 @@ import html
 import random
 from typing import List
 
+from neurons.validators.base_validator import AbstractNeuron
+
 from .config import RewardModelType
 from .reward import BaseRewardModel, BaseRewardEvent, pattern_to_check
 from neurons.validators.utils.prompts import (
@@ -59,8 +61,14 @@ class TwitterContentRelevanceModel(BaseRewardModel):
     def name(self) -> str:
         return RewardModelType.twitter_content_relevance.value
 
-    def __init__(self, device: str, scoring_type: None, llm_reward: RewardLLM):
-        super().__init__()
+    def __init__(
+        self,
+        device: str,
+        scoring_type: None,
+        llm_reward: RewardLLM,
+        neuron: AbstractNeuron,
+    ):
+        super().__init__(neuron)
         self.device = device
         self.reward_llm = llm_reward
 

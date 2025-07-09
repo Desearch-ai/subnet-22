@@ -24,6 +24,8 @@ import json
 from datetime import datetime
 import pytz
 import bittensor as bt
+
+from neurons.validators.base_validator import AbstractNeuron
 from .config import RewardModelType
 from .reward import BaseRewardModel, BaseRewardEvent
 from datura.protocol import (
@@ -101,8 +103,8 @@ class TwitterBasicSearchContentRelevanceModel(BaseRewardModel):
     def name(self) -> str:
         return RewardModelType.twitter_content_relevance.value
 
-    def __init__(self, device: str, scoring_type: None):
-        super().__init__()
+    def __init__(self, device: str, scoring_type: None, neuron: AbstractNeuron):
+        super().__init__(neuron)
         self.device = device
         self.scoring_type = scoring_type
         self.twitter_utils = TwitterUtils()

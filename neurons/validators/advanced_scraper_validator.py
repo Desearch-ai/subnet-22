@@ -123,6 +123,7 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
                     device=self.neuron.config.neuron.device,
                     scoring_type=RewardScoringType.summary_relevance_score_template,
                     llm_reward=self.reward_llm,
+                    neuron=self.neuron,
                 )
                 if self.neuron.config.reward.twitter_content_weight > 0
                 else MockRewardModel(RewardModelType.twitter_content_relevance.value)
@@ -132,6 +133,7 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
                     device=self.neuron.config.neuron.device,
                     scoring_type=RewardScoringType.search_relevance_score_template,
                     llm_reward=self.reward_llm,
+                    neuron=self.neuron,
                 )
                 if self.neuron.config.reward.web_search_relavance_weight > 0
                 else MockRewardModel(RewardModelType.search_content_relevance.value)
@@ -141,6 +143,7 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
                     device=self.neuron.config.neuron.device,
                     scoring_type=RewardScoringType.summary_relevance_score_template,
                     llm_reward=self.reward_llm,
+                    neuron=self.neuron,
                 )
                 if self.neuron.config.reward.summary_relevance_weight > 0
                 else MockRewardModel(RewardModelType.summary_relavance_match.value)
@@ -148,6 +151,7 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
             (
                 PerformanceRewardModel(
                     device=self.neuron.config.neuron.device,
+                    neuron=self.neuron,
                 )
                 if self.neuron.config.reward.performance_weight > 0
                 else MockRewardModel(RewardModelType.performance_score.value)

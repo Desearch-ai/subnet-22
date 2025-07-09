@@ -6,6 +6,8 @@ import json
 import bittensor as bt
 from newspaper import Article
 
+from neurons.validators.base_validator import AbstractNeuron
+
 from .config import RewardModelType
 from .reward import BaseRewardModel, BaseRewardEvent
 from datura.protocol import DeepResearchSynapse, ReportItem
@@ -24,8 +26,8 @@ class DeepResearchDataRelevanceModel(BaseRewardModel):
     def name(self) -> str:
         return RewardModelType.deep_research_data_relevance.value
 
-    def __init__(self, device: str, scoring_type: None):
-        super().__init__()
+    def __init__(self, device: str, scoring_type: None, neuron: AbstractNeuron):
+        super().__init__(neuron)
         self.device = device
         self.scoring_type = scoring_type
         self.relevance_prompt = DeepResearchDataRelevancePrompt1()

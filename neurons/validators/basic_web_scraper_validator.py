@@ -62,6 +62,7 @@ class BasicWebScraperValidator(OrganicHistoryMixin):
                 WebBasicSearchContentRelevanceModel(
                     device=self.neuron.config.neuron.device,
                     scoring_type=RewardScoringType.search_relevance_score_template,
+                    neuron=self.neuron,
                 )
                 if self.neuron.config.reward.web_search_relavance_weight > 0
                 else MockRewardModel(RewardModelType.search_content_relevance.value)
@@ -69,6 +70,7 @@ class BasicWebScraperValidator(OrganicHistoryMixin):
             (
                 PerformanceRewardModel(
                     device=self.neuron.config.neuron.device,
+                    neuron=self.neuron,
                 )
                 if self.neuron.config.reward.performance_weight > 0
                 else MockRewardModel(RewardModelType.performance_score.value)

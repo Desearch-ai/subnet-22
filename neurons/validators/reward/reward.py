@@ -30,6 +30,7 @@ import re
 import numpy as np  # Ensure numpy is imported
 import asyncio
 from itertools import islice
+from neurons.validators.base_validator import AbstractNeuron
 
 
 @dataclass
@@ -71,11 +72,12 @@ class BaseRewardModel:
         self, responses: List[ScraperStreamingSynapse], name: str, uids
     ) -> Union[torch.FloatTensor, dict]: ...
 
-    def __init__(self) -> None:
+    def __init__(self, neuron: AbstractNeuron) -> None:
         self.count = 0
         self.mean = 0.0
         self.var = 0.0
         self.is_default_normalization = True
+        self.neuron = neuron
 
     def normalize_rewards(self, rewards: torch.FloatTensor) -> torch.FloatTensor:
         # if self.var > 0:
