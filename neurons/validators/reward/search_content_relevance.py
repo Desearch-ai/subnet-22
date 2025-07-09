@@ -1,4 +1,6 @@
 from typing import List, Tuple, Dict
+
+from neurons.validators.base_validator import AbstractNeuron
 from .reward import BaseRewardModel, BaseRewardEvent
 from .config import RewardModelType
 from neurons.validators.reward.reward_llm import RewardLLM
@@ -24,8 +26,14 @@ class WebSearchContentRelevanceModel(BaseRewardModel):
     def name(self) -> str:
         return RewardModelType.search_content_relevance.value
 
-    def __init__(self, device: str, scoring_type: None, llm_reward: RewardLLM):
-        super().__init__()
+    def __init__(
+        self,
+        device: str,
+        scoring_type: None,
+        llm_reward: RewardLLM,
+        neuron: AbstractNeuron,
+    ):
+        super().__init__(neuron)
         self.device = device
         self.reward_llm = llm_reward
         self.scoring_type = scoring_type

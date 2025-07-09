@@ -71,6 +71,7 @@ class BasicScraperValidator(OrganicHistoryMixin):
                 TwitterBasicSearchContentRelevanceModel(
                     device=self.neuron.config.neuron.device,
                     scoring_type=RewardScoringType.search_relevance_score_template,
+                    neuron=self.neuron,
                 )
                 if self.neuron.config.reward.twitter_content_weight > 0
                 else MockRewardModel(RewardModelType.twitter_content_relevance.value)
@@ -78,6 +79,7 @@ class BasicScraperValidator(OrganicHistoryMixin):
             (
                 PerformanceRewardModel(
                     device=self.neuron.config.neuron.device,
+                    neuron=self.neuron,
                 )
                 if self.neuron.config.reward.performance_weight > 0
                 else MockRewardModel(RewardModelType.performance_score.value)

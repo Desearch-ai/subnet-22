@@ -67,13 +67,14 @@ class PeopleSearchValidator(OrganicHistoryMixin):
                 PeopleSearchRelevanceModel(
                     device=self.neuron.config.neuron.device,
                     scoring_type=RewardScoringType.search_relevance_score_template,
+                    neuron=self.neuron,
                 )
                 if self.neuron.config.reward.people_search_relavance_weight > 0
                 else MockRewardModel(RewardModelType.people_search_relevance.value)
             ),
             (
                 PerformanceRewardModel(
-                    device=self.neuron.config.neuron.device,
+                    device=self.neuron.config.neuron.device, neuron=self.neuron
                 )
                 if self.neuron.config.reward.performance_weight > 0
                 else MockRewardModel(RewardModelType.performance_score.value)
