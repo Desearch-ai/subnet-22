@@ -45,7 +45,11 @@ class BasePenaltyModel(ABC):
     ) -> torch.FloatTensor: ...
 
     async def apply_penalties(
-        self, responses: List[bt.Synapse], tasks: List[Task], additional_params=None
+        self,
+        responses: List[bt.Synapse],
+        tasks: List[Task],
+        uids,
+        additional_params=None,
     ) -> torch.FloatTensor:
         raw_penalties = await self.calculate_penalties(
             responses, tasks, additional_params
