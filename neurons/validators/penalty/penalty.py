@@ -20,12 +20,14 @@ import bittensor as bt
 from enum import Enum
 from typing import List
 from abc import ABC, abstractmethod
+from neurons.validators.base_validator import AbstractNeuron
 from neurons.validators.utils.tasks import Task
 
 
 class BasePenaltyModel(ABC):
-    def __init__(self, max_penalty: float):
+    def __init__(self, max_penalty: float, neuron: AbstractNeuron):
         self.max_penalty = max_penalty
+        self.neuron = neuron
 
     @property
     @abstractmethod

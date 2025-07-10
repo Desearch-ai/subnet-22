@@ -4,6 +4,7 @@ import json
 import time
 from typing import List
 from urllib.parse import urlparse
+from neurons.validators.base_validator import AbstractNeuron
 from neurons.validators.utils.tasks import TwitterTask
 from neurons.validators.penalty import BasePenaltyModel, PenaltyModelType
 from datura.protocol import ScraperStreamingSynapse
@@ -16,7 +17,7 @@ class LinkValidationPenaltyModel(BasePenaltyModel):
     Inherits from BasePenaltyModel.
     """
 
-    def __init__(self, max_penalty: float):
+    def __init__(self, max_penalty: float, neuron: AbstractNeuron):
         """
         Initialize the TwitterLinkValidator with a maximum penalty and the user's prompt content.
 
@@ -24,7 +25,7 @@ class LinkValidationPenaltyModel(BasePenaltyModel):
             max_penalty: The maximum penalty that can be applied to a completion.
             prompt_content: The content of the user's prompt to check relevance.
         """
-        super().__init__(max_penalty)
+        super().__init__(max_penalty, neuron)
         self.client = TwitterAPIClient()
 
     @property

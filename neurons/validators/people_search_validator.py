@@ -82,7 +82,7 @@ class PeopleSearchValidator(OrganicHistoryMixin):
         ]
 
         self.penalty_functions = [
-            ExponentialTimePenaltyModel(max_penalty=1),
+            ExponentialTimePenaltyModel(max_penalty=1, neuron=self.neuron),
         ]
 
     async def generate_criteria(self, synapse: PeopleSearchSynapse):

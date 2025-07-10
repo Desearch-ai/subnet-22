@@ -24,7 +24,7 @@ APIFY_LINK_SCRAPE_AMOUNT = 1
 class WebBasicSearchContentRelevanceModel(BaseRewardModel):
     @property
     def name(self) -> str:
-        return RewardModelType.twitter_content_relevance.value
+        return RewardModelType.web_basic_search_content_relevance.value
 
     def __init__(self, device: str, scoring_type: None, neuron: AbstractNeuron):
         super().__init__(neuron)

@@ -2,6 +2,7 @@ import torch
 import re
 from typing import List
 from datura.protocol import TwitterPromptAnalysisResult
+from neurons.validators.base_validator import AbstractNeuron
 from neurons.validators.utils.tasks import TwitterTask
 from neurons.validators.penalty import PenaltyModelType, BasePenaltyModel
 from datura.protocol import ScraperStreamingSynapse
@@ -16,14 +17,15 @@ class AccuracyPenaltyModel(BasePenaltyModel):
         max_penalty: The maximum penalty that can be applied to a completion.
     """
 
-    def __init__(self, max_penalty: float):
+    def __init__(self, max_penalty: float, neuron: AbstractNeuron):
         """
         Initializes the AccuracyPenaltyModel with a specified maximum penalty.
 
         Args:
             max_penalty: The maximum penalty that can be applied to a completion.
+            neuron: The neuron associated with this penalty model.
         """
-        super().__init__(max_penalty)
+        super().__init__(max_penalty, neuron)
 
     @property
     def name(self) -> str:

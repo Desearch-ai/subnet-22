@@ -159,10 +159,10 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
         ]
 
         self.penalty_functions = [
-            StreamingPenaltyModel(max_penalty=1),
-            ExponentialTimePenaltyModel(max_penalty=1),
-            SummaryRulePenaltyModel(max_penalty=1),
-            MinerScorePenaltyModel(max_penalty=1),
+            StreamingPenaltyModel(max_penalty=1, neuron=self.neuron),
+            ExponentialTimePenaltyModel(max_penalty=1, neuron=self.neuron),
+            SummaryRulePenaltyModel(max_penalty=1, neuron=self.neuron),
+            MinerScorePenaltyModel(max_penalty=1, neuron=self.neuron),
         ]
 
     def get_random_execution_time(self):

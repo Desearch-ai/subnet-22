@@ -78,7 +78,7 @@ class BasicWebScraperValidator(OrganicHistoryMixin):
         ]
 
         self.penalty_functions = [
-            ExponentialTimePenaltyModel(max_penalty=1),
+            ExponentialTimePenaltyModel(max_penalty=1, neuron=self.neuron),
         ]
 
     async def run_web_basic_search_and_score(

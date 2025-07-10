@@ -193,8 +193,8 @@ class DeepResearchValidator(OrganicHistoryMixin):
         ]
 
         self.penalty_functions = [
-            # StreamingPenaltyModel(max_penalty=1),
-            ExponentialTimePenaltyModel(max_penalty=1),
+            # StreamingPenaltyModel(max_penalty=1, neuron=self.neuron),
+            ExponentialTimePenaltyModel(max_penalty=1, neuron=self.neuron),
         ]
 
     async def run_task_and_score(

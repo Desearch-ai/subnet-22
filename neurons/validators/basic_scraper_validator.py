@@ -87,8 +87,8 @@ class BasicScraperValidator(OrganicHistoryMixin):
         ]
 
         self.penalty_functions = [
-            ExponentialTimePenaltyModel(max_penalty=1),
-            TwitterCountPenaltyModel(max_penalty=1),
+            ExponentialTimePenaltyModel(max_penalty=1, neuron=self.neuron),
+            TwitterCountPenaltyModel(max_penalty=1, neuron=self.neuron),
         ]
 
     def calc_max_execution_time(self, count):
