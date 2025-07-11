@@ -310,8 +310,77 @@ class TwitterBasicSearchContentRelevanceModel(BaseRewardModel):
                 tweet_score = []
                 # d) If it's TwitterSearchSynapse => check min_likes/min_retweets/min_replies
                 if isinstance(response, TwitterSearchSynapse):
+                    synapse = response.copy(deep=True)
+                    query = response.query.strip().lower()
 
-                    query_words = response.query.strip().lower().split(" ")
+                    if "from:" in query:
+                        try:
+                            synapse.user = query.split("from:")[1].split(" ")[0].strip()
+                        except:
+                            pass
+
+                    if "min_faves:" in query:
+                        try:
+                            synapse.min_likes = int(
+                                query.split("min_faves:")[1].split(" ")[0].strip()
+                            )
+                        except:
+                            pass
+
+                    if "min_retweets:" in query:
+                        try:
+                            synapse.min_retweets = int(
+                                query.split("min_retweets:")[1].split(" ")[0].strip()
+                            )
+                        except:
+                            pass
+
+                    if "min_replies:" in query:
+                        try:
+                            synapse.min_replies = int(
+                                query.split("min_replies:")[1].split(" ")[0].strip()
+                            )
+                        except:
+                            pass
+
+                    if "filter:verified" in query:
+                        synapse.verified = True
+
+                    if "filter:blue_verified" in query:
+                        synapse.blue_verified = True
+
+                    if "filter:quote" in query:
+                        synapse.is_quote = True
+
+                    if "filter:images" in query:
+                        synapse.is_image = True
+
+                    if "filter:videos" in query:
+                        synapse.is_video = True
+
+                    if "since:" in query:
+                        try:
+                            synapse.start_date = int(
+                                query.split("since:")[1].split(" ")[0].strip()
+                            )
+                        except:
+                            pass
+
+                    if "until:" in query:
+                        try:
+                            synapse.end_date = int(
+                                query.split("until:")[1].split(" ")[0].strip()
+                            )
+                        except:
+                            pass
+
+                    if "lang:" in query:
+                        try:
+                            synapse.lang = query.split("lang:")[1].split(" ")[0].strip()
+                        except:
+                            pass
+
+                    query_words = synapse.query.strip().lower().split(" ")
 
                     texts = [
                         val_tweet.text.lower(),
@@ -320,77 +389,74 @@ class TwitterBasicSearchContentRelevanceModel(BaseRewardModel):
                     ]
 
                     # Check any of query words to be in tweet text
-                    if response.query and not any(
+                    if synapse.query and not any(
                         word in text for word in query_words for text in texts
                     ):
                         tweet_score.append(0)
                     else:
                         tweet_score.append(1)
 
-                    if response.min_likes is not None:
+                    if synapse.min_likes is not None:
                         if (
                             val_tweet.like_count is None
-                            or val_tweet.like_count < response.min_likes
+                            or val_tweet.like_count < synapse.min_likes
                         ):
                             tweet_score.append(0)
                         else:
                             tweet_score.append(1)
 
-
-                    if response.min_retweets is not None:
+                    if synapse.min_retweets is not None:
                         if (
                             val_tweet.retweet_count is None
-                            or val_tweet.retweet_count < response.min_retweets
+                            or val_tweet.retweet_count < synapse.min_retweets
                         ):
                             tweet_score.append(0)
                         else:
                             tweet_score.append(1)
-                            
 
-                    if response.min_replies is not None:
+                    if synapse.min_replies is not None:
                         if (
                             val_tweet.reply_count is None
-                            or val_tweet.reply_count < response.min_replies
+                            or val_tweet.reply_count < synapse.min_replies
                         ):
                             tweet_score.append(0)
                         else:
                             tweet_score.append(1)
 
-                    if response.user is not None:
-                        if response.user != val_tweet.user.username:
+                    if synapse.user is not None:
+                        if synapse.user != val_tweet.user.username:
                             tweet_score.append(0)
                         else:
                             tweet_score.append(1)
 
-
-                    if response.verified is not None:
-                        if response.verified != val_tweet.user.verified:
+                    if synapse.verified is not None:
+                        if synapse.verified != val_tweet.user.verified:
                             tweet_score.append(0)
                         else:
                             tweet_score.append(1)
 
-                    if response.is_quote is not None:
-                        if response.is_quote != val_tweet.is_quote_tweet:
+                    if synapse.is_quote is not None:
+                        if synapse.is_quote != val_tweet.is_quote_tweet:
                             tweet_score.append(0)
                         else:
                             tweet_score.append(1)
 
-                    if response.is_image is not None:
+                    if synapse.is_image is not None:
                         has_image_media = any(
                             m.type == "photo" for m in val_tweet.media
                         )
 
-                        if response.is_image != has_image_media:
+                        if synapse.is_image != has_image_media:
                             tweet_score.append(0)
                         else:
                             tweet_score.append(1)
 
-                    if response.is_video is not None:
+                    if synapse.is_video is not None:
                         has_video_media = any(
                             m.type == "video" for m in val_tweet.media
                         )
 
-                        if response.is_video != has_video_media:
+                        if synapse.is_video != has_video_media:
                             tweet_score.append(0)
                         else:
                             tweet_score.append(1)
@@ -399,14 +465,14 @@ class TwitterBasicSearchContentRelevanceModel(BaseRewardModel):
                         val_tweet.created_at, "%a %b %d %H:%M:%S %z %Y"
                     ).replace(tzinfo=pytz.UTC)
 
-                    if response.start_date is not None:
+                    if synapse.start_date is not None:
                         try:
                             start_date = datetime.strptime(
-                                response.start_date, "%Y-%m-%d_%H:%M:%S_%Z"
+                                synapse.start_date, "%Y-%m-%d_%H:%M:%S_%Z"
                             ).replace(tzinfo=pytz.UTC)
                         except ValueError:
                             start_date = datetime.strptime(
-                                response.start_date, "%Y-%m-%d"
+                                synapse.start_date, "%Y-%m-%d"
                             ).replace(tzinfo=pytz.UTC)
 
                         if tweet_date < start_date:
@@ -414,14 +480,14 @@ class TwitterBasicSearchContentRelevanceModel(BaseRewardModel):
                         else:
                             tweet_score.append(1)
 
-                    if response.end_date is not None:
+                    if synapse.end_date is not None:
                         try:
                             end_date = datetime.strptime(
-                                response.end_date, "%Y-%m-%d_%H:%M:%S_%Z"
+                                synapse.end_date, "%Y-%m-%d_%H:%M:%S_%Z"
                             ).replace(tzinfo=pytz.UTC)
                         except ValueError:
                             end_date = datetime.strptime(
-                                response.end_date, "%Y-%m-%d"
+                                synapse.end_date, "%Y-%m-%d"
                             ).replace(tzinfo=pytz.UTC)
 
                         if tweet_date > end_date:
@@ -429,14 +495,14 @@ class TwitterBasicSearchContentRelevanceModel(BaseRewardModel):
                         else:
                             tweet_score.append(1)
 
-                    if response.lang is not None:
-                        if response.lang != val_tweet.lang:
+                    if synapse.lang is not None:
+                        if synapse.lang != val_tweet.lang:
                             tweet_score.append(0)
                         else:
                             tweet_score.append(1)
 
-                    if response.blue_verified is not None:
-                        if response.blue_verified != val_tweet.user.is_blue_verified:
+                    if synapse.blue_verified is not None:
+                        if synapse.blue_verified != val_tweet.user.is_blue_verified:
                             tweet_score.append(0)
                         else:
                             tweet_score.append(1)
@@ -498,7 +564,6 @@ class TwitterBasicSearchContentRelevanceModel(BaseRewardModel):
                 else:
                     tweet_score.append(1)
 
-
                 miner_user = miner_tweet.get("user")
                 val_user = val_tweet_dict.get("user")
 
@@ -533,7 +598,9 @@ class TwitterBasicSearchContentRelevanceModel(BaseRewardModel):
                         tweet_score.append(1)
 
                 # All checks passed => score = 1
-                tweet_scores.append(sum(tweet_score) / len(tweet_score) if tweet_score else 0.0)
+                tweet_scores.append(
+                    sum(tweet_score) / len(tweet_score) if tweet_score else 0.0
+                )
 
             # Return average of all validated tweets
             return sum(tweet_scores) / len(tweet_scores) if tweet_scores else 0.0
