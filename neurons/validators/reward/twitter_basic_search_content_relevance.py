@@ -307,8 +307,10 @@ class TwitterBasicSearchContentRelevanceModel(BaseRewardModel):
                         tweet_scores.append(0)
                         continue
 
+                tweet_score = []
                 # d) If it's TwitterSearchSynapse => check min_likes/min_retweets/min_replies
                 if isinstance(response, TwitterSearchSynapse):
+
                     query_words = response.query.strip().lower().split(" ")
 
                     texts = [
@@ -321,47 +323,57 @@ class TwitterBasicSearchContentRelevanceModel(BaseRewardModel):
                     if response.query and not any(
                         word in text for word in query_words for text in texts
                     ):
-                        tweet_scores.append(0)
-                        continue
+                        tweet_score.append(0)
+                    else:
+                        tweet_score.append(1)
 
                     if response.min_likes is not None:
                         if (
                             val_tweet.like_count is None
                             or val_tweet.like_count < response.min_likes
                         ):
-                            tweet_scores.append(0)
-                            continue
+                            tweet_score.append(0)
+                        else:
+                            tweet_score.append(1)
+
 
                     if response.min_retweets is not None:
                         if (
                             val_tweet.retweet_count is None
                             or val_tweet.retweet_count < response.min_retweets
                         ):
-                            tweet_scores.append(0)
-                            continue
+                            tweet_score.append(0)
+                        else:
+                            tweet_score.append(1)
+                            
 
                     if response.min_replies is not None:
                         if (
                             val_tweet.reply_count is None
                             or val_tweet.reply_count < response.min_replies
                         ):
-                            tweet_scores.append(0)
-                            continue
+                            tweet_score.append(0)
+                        else:
+                            tweet_score.append(1)
 
                     if response.user is not None:
                         if response.user != val_tweet.user.username:
-                            tweet_scores.append(0)
-                            continue
+                            tweet_score.append(0)
+                        else:
+                            tweet_score.append(1)
+
 
                     if response.verified is not None:
                         if response.verified != val_tweet.user.verified:
-                            tweet_scores.append(0)
-                            continue
+                            tweet_score.append(0)
+                        else:
+                            tweet_score.append(1)
 
                     if response.is_quote is not None:
                         if response.is_quote != val_tweet.is_quote_tweet:
-                            tweet_scores.append(0)
-                            continue
+                            tweet_score.append(0)
+                        else:
+                            tweet_score.append(1)
 
                     if response.is_image is not None:
                         has_image_media = any(
@@ -369,8 +381,9 @@ class TwitterBasicSearchContentRelevanceModel(BaseRewardModel):
                         )
 
                         if response.is_image != has_image_media:
-                            tweet_scores.append(0)
-                            continue
+                            tweet_score.append(0)
+                        else:
+                            tweet_score.append(1)
 
                     if response.is_video is not None:
                         has_video_media = any(
@@ -378,8 +391,9 @@ class TwitterBasicSearchContentRelevanceModel(BaseRewardModel):
                         )
 
                         if response.is_video != has_video_media:
-                            tweet_scores.append(0)
-                            continue
+                            tweet_score.append(0)
+                        else:
+                            tweet_score.append(1)
 
                     tweet_date = datetime.strptime(
                         val_tweet.created_at, "%a %b %d %H:%M:%S %z %Y"
@@ -396,8 +410,9 @@ class TwitterBasicSearchContentRelevanceModel(BaseRewardModel):
                             ).replace(tzinfo=pytz.UTC)
 
                         if tweet_date < start_date:
-                            tweet_scores.append(0)
-                            continue
+                            tweet_score.append(0)
+                        else:
+                            tweet_score.append(1)
 
                     if response.end_date is not None:
                         try:
@@ -410,53 +425,52 @@ class TwitterBasicSearchContentRelevanceModel(BaseRewardModel):
                             ).replace(tzinfo=pytz.UTC)
 
                         if tweet_date > end_date:
-                            tweet_scores.append(0)
-                            continue
+                            tweet_score.append(0)
+                        else:
+                            tweet_score.append(1)
 
                     if response.lang is not None:
                         if response.lang != val_tweet.lang:
-                            tweet_scores.append(0)
-                            continue
+                            tweet_score.append(0)
+                        else:
+                            tweet_score.append(1)
 
                     if response.blue_verified is not None:
                         if response.blue_verified != val_tweet.user.is_blue_verified:
-                            tweet_scores.append(0)
-                            continue
+                            tweet_score.append(0)
+                        else:
+                            tweet_score.append(1)
 
                 val_tweet_dict = val_tweet.model_dump()
 
-                loop_terminated = False
                 # # Compare tweet basic fields
                 for f in TWEET_EXACT_MATCH_FIELDS:
                     if miner_tweet.get(f) != val_tweet_dict.get(f):
-                        tweet_scores.append(0)
+                        tweet_score.append(0)
                         bt.logging.debug(
                             f"Field mismatch: {f} => {miner_tweet.get(f)} vs {val_tweet_dict.get(f)}"
                         )
-                        loop_terminated = True
-                        break
-                if loop_terminated:
-                    continue
+                    else:
+                        tweet_score.append(1)
 
                 if not self.compare_content(
                     miner_tweet.get("text"), val_tweet_dict.get("text")
                 ):
-                    tweet_scores.append(0)
-                    continue
+                    tweet_score.append(0)
+                else:
+                    tweet_score.append(1)
 
                 # Compare numeric fields
                 for f in TWEET_NUMERIC_FIELDS:
                     if not self.compare_numeric(
                         f, miner_tweet.get(f), val_tweet_dict.get(f)
                     ):
-                        tweet_scores.append(0)
+                        tweet_score.append(0)
                         bt.logging.debug(
                             f"Field mismatch: {f} => {miner_tweet.get(f)} vs {val_tweet_dict.get(f)}"
                         )
-                        loop_terminated = True
-                        break
-                if loop_terminated:
-                    continue
+                    else:
+                        tweet_score.append(1)
 
                 # Compare nested fields
                 # for f in TWEET_NESTED_FIELDS:
@@ -477,57 +491,49 @@ class TwitterBasicSearchContentRelevanceModel(BaseRewardModel):
                 if not self.compare_media(
                     miner_tweet.get("media"), val_tweet_dict.get("media")
                 ):
-                    tweet_scores.append(0)
+                    tweet_score.append(0)
                     bt.logging.debug(
                         f"Tweet media mismatch: {f} => {miner_user.get('media')} vs {val_user.get('media')}"
                     )
-                    loop_terminated = True
-                    break
+                else:
+                    tweet_score.append(1)
 
-                if loop_terminated:
-                    continue
 
                 miner_user = miner_tweet.get("user")
                 val_user = val_tweet_dict.get("user")
 
                 for f in USER_EXACT_FIELDS:
                     if miner_user.get(f) != val_user.get(f):
-                        tweet_scores.append(0)
+                        tweet_score.append(0)
                         bt.logging.debug(
                             f"User field mismatch: {f} => {miner_user.get(f)} vs {val_user.get(f)}"
                         )
-                        loop_terminated = True
-                        break
-                if loop_terminated:
-                    continue
+                    else:
+                        tweet_score.append(1)
 
                 for f in USER_NUMERIC_FIELDS:
                     if not self.compare_numeric(f, miner_user.get(f), val_user.get(f)):
-                        tweet_scores.append(0)
+                        tweet_score.append(0)
                         bt.logging.debug(
                             f"User field mismatch: {f} => {miner_user.get(f)} vs {val_user.get(f)}"
                         )
-                        loop_terminated = True
-                        break
-                if loop_terminated:
-                    continue
+                    else:
+                        tweet_score.append(1)
 
                 for f in USER_NESTED_FIELDS:
                     path, val1, val2 = self.compare_nested_fields(
                         miner_user.get(f), val_user.get(f)
                     )
                     if path:
-                        tweet_scores.append(0)
+                        tweet_score.append(0)
                         bt.logging.debug(
                             f"User field mismatch: {f}{path} => {val1} vs {val2}"
                         )
-                        loop_terminated = True
-                        break
-                if loop_terminated:
-                    continue
+                    else:
+                        tweet_score.append(1)
 
                 # All checks passed => score = 1
-                tweet_scores.append(1)
+                tweet_scores.append(sum(tweet_score) / len(tweet_score) if tweet_score else 0.0)
 
             # Return average of all validated tweets
             return sum(tweet_scores) / len(tweet_scores) if tweet_scores else 0.0
