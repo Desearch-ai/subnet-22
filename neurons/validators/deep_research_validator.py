@@ -193,8 +193,8 @@ class DeepResearchValidator(OrganicHistoryMixin):
         ]
 
         self.penalty_functions = [
-            # StreamingPenaltyModel(max_penalty=1),
-            ExponentialTimePenaltyModel(max_penalty=1),
+            # StreamingPenaltyModel(max_penalty=1, neuron=self.neuron),
+            ExponentialTimePenaltyModel(max_penalty=1, neuron=self.neuron),
         ]
 
     async def run_task_and_score(
@@ -353,7 +353,7 @@ class DeepResearchValidator(OrganicHistoryMixin):
 
             for penalty_fn_i in self.penalty_functions:
                 raw_penalty_i, adjusted_penalty_i, applied_penalty_i = (
-                    await penalty_fn_i.apply_penalties(responses, tasks)
+                    await penalty_fn_i.apply_penalties(responses, tasks, uids)
                 )
                 penalty_start_time = time.time()
                 rewards *= applied_penalty_i.to(self.neuron.config.neuron.device)

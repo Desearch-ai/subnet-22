@@ -159,10 +159,10 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
         ]
 
         self.penalty_functions = [
-            StreamingPenaltyModel(max_penalty=1),
-            ExponentialTimePenaltyModel(max_penalty=1),
-            SummaryRulePenaltyModel(max_penalty=1),
-            MinerScorePenaltyModel(max_penalty=1),
+            StreamingPenaltyModel(max_penalty=1, neuron=self.neuron),
+            ExponentialTimePenaltyModel(max_penalty=1, neuron=self.neuron),
+            SummaryRulePenaltyModel(max_penalty=1, neuron=self.neuron),
+            MinerScorePenaltyModel(max_penalty=1, neuron=self.neuron),
         ]
 
     def get_random_execution_time(self):
@@ -353,7 +353,9 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
 
             for penalty_fn_i in self.penalty_functions:
                 raw_penalty_i, adjusted_penalty_i, applied_penalty_i = (
-                    await penalty_fn_i.apply_penalties(responses, tasks, val_scores)
+                    await penalty_fn_i.apply_penalties(
+                        responses, tasks, uids, val_scores
+                    )
                 )
                 penalty_start_time = time.time()
                 rewards *= applied_penalty_i.to(self.neuron.config.neuron.device)

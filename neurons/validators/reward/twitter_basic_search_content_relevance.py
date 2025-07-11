@@ -101,7 +101,7 @@ USER_NESTED_FIELDS = {"entities"}
 class TwitterBasicSearchContentRelevanceModel(BaseRewardModel):
     @property
     def name(self) -> str:
-        return RewardModelType.twitter_content_relevance.value
+        return RewardModelType.twitter_basic_search_content_relevance.value
 
     def __init__(self, device: str, scoring_type: None, neuron: AbstractNeuron):
         super().__init__(neuron)
