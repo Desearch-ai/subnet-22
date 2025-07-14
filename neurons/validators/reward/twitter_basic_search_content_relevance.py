@@ -79,6 +79,7 @@ USER_EXACT_FIELDS = {
 }
 
 TWEET_NUMERIC_FIELDS = {
+    "view_count",
     "reply_count",
     "retweet_count",
     "like_count",
