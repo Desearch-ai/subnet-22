@@ -230,6 +230,7 @@ class TwitterScraperTweet(BaseModel):
     in_reply_to_user_id: Optional[str] = None
     quoted_status_id: Optional[str] = None
     quote: Optional["TwitterScraperTweet"] = None
+    replies: Optional[List["TwitterScraperTweet"]] = None
     display_text_range: Optional[List[int]] = None
     entities: Optional[TwitterScraperEntities] = None
     extended_entities: Optional[TwitterScraperExtendedEntities] = None
