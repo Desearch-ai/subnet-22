@@ -69,6 +69,7 @@ def toTwitterScraperTweet(item, is_quote=False):
         id=item.get("id"),
         text=item.get("text"),
         reply_count=item.get("replyCount"),
+        view_count=item.get("viewCount"),
         retweet_count=item.get("retweetCount"),
         like_count=item.get("likeCount"),
         quote_count=item.get("quoteCount"),

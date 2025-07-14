@@ -213,6 +213,7 @@ class TwitterScraperTweet(BaseModel):
     id: str
     text: str
     reply_count: int
+    view_count: int
     retweet_count: int
     like_count: int
     quote_count: int
@@ -229,6 +230,7 @@ class TwitterScraperTweet(BaseModel):
     in_reply_to_user_id: Optional[str] = None
     quoted_status_id: Optional[str] = None
     quote: Optional["TwitterScraperTweet"] = None
+    replies: Optional[List["TwitterScraperTweet"]] = None
     display_text_range: Optional[List[int]] = None
     entities: Optional[TwitterScraperEntities] = None
     extended_entities: Optional[TwitterScraperExtendedEntities] = None
