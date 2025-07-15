@@ -360,7 +360,7 @@ class TwitterBasicSearchContentRelevanceModel(BaseRewardModel):
 
                     if "since:" in query:
                         try:
-                            synapse.start_date = int(
+                            synapse.start_date = (
                                 query.split("since:")[1].split(" ")[0].strip()
                             )
                         except:
@@ -368,7 +368,7 @@ class TwitterBasicSearchContentRelevanceModel(BaseRewardModel):
 
                     if "until:" in query:
                         try:
-                            synapse.end_date = int(
+                            synapse.end_date = (
                                 query.split("until:")[1].split(" ")[0].strip()
                             )
                         except:
