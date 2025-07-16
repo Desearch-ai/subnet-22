@@ -88,7 +88,10 @@ class TwitterContentRelevanceModel(BaseRewardModel):
             val_text = validator_tweet.text
             val_tweet_id = validator_tweet.id
             result = self.get_scoring_text(
-                prompt=response.prompt, content=val_text, response=None
+                prompt=response.prompt,
+                content=val_text,
+                system_message=response.scoring_system_message,
+                response=None,
             )
             if result:
                 _, scoring_text = result
@@ -277,7 +280,7 @@ class TwitterContentRelevanceModel(BaseRewardModel):
             return 0
 
     def get_scoring_text(
-        self, prompt: str, content: str, response: bt.Synapse
+        self, prompt: str, content: str, system_message: str, response: bt.Synapse
     ) -> BaseRewardEvent:
         try:
             if response:
@@ -300,7 +303,10 @@ class TwitterContentRelevanceModel(BaseRewardModel):
             scoring_prompt_text = scoring_prompt.text(prompt, content)
 
             return scoring_prompt, [
-                {"role": "system", "content": scoring_prompt.get_system_message()},
+                {
+                    "role": "system",
+                    "content": system_message or scoring_prompt.get_system_message(),
+                },
                 {"role": "user", "content": scoring_prompt_text},
             ]
         except Exception as e:

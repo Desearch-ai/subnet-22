@@ -185,6 +185,7 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
         result_type: Optional[ResultType] = ResultType.LINKS_WITH_SUMMARIES,
         is_synthetic=False,
         system_message: Optional[str] = None,
+        scoring_system_message: Optional[str] = None,
         uid: Optional[int] = None,
         chat_history: Optional[List[ChatHistoryItem]] = [],
         count: Optional[int] = 10,
@@ -229,6 +230,7 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
                 result_type=result_type,
                 is_synthetic=is_synthetic,
                 system_message=system_message,
+                scoring_system_message=scoring_system_message,
                 scoring_model=self.neuron.config.neuron.scoring_model,
                 chat_history=chat_history,
                 count=count,
@@ -578,6 +580,7 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
             date_filter = query.get("date_filter", DateFilterType.PAST_WEEK.value)
             count = query.get("count")
             system_message = query.get("system_message")
+            scoring_system_message = query.get("scoring_system_message")
             chat_history = query.get("chat_history", [])
 
             if isinstance(date_filter, str):
@@ -606,6 +609,7 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
                 model=model,
                 result_type=result_type,
                 system_message=system_message,
+                scoring_system_message=scoring_system_message,
                 uid=uid,
                 chat_history=chat_history,
                 count=count,

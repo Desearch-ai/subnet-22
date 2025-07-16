@@ -52,6 +52,7 @@ class WebSearchContentRelevanceModel(BaseRewardModel):
             result = self.get_scoring_text(
                 prompt=response.prompt,
                 content=f"Title: {title}, Description: {description}",
+                system_message=response.scoring_system_message,
                 response=None,
             )
             if result:
@@ -254,7 +255,11 @@ class WebSearchContentRelevanceModel(BaseRewardModel):
             return 0
 
     def get_scoring_text(
-        self, prompt: str, content: str, response: ScraperStreamingSynapse
+        self,
+        prompt: str,
+        content: str,
+        system_message: str,
+        response: ScraperStreamingSynapse,
     ) -> BaseRewardEvent:
         try:
             if response:
@@ -278,7 +283,10 @@ class WebSearchContentRelevanceModel(BaseRewardModel):
                 scoring_prompt_text = scoring_prompt.text(prompt, content)
 
             return scoring_prompt, [
-                {"role": "system", "content": scoring_prompt.get_system_message()},
+                {
+                    "role": "system",
+                    "content": system_message or scoring_prompt.get_system_message(),
+                },
                 {"role": "user", "content": scoring_prompt_text},
             ]
         except Exception as e:
