@@ -260,7 +260,7 @@ class TwitterBasicSearchContentRelevanceModel(BaseRewardModel):
     def compare_content(self, text1: str, text2: str) -> bool:
         return format_text_for_match(text1) == format_text_for_match(text2)
 
-    def check_tweet_content(
+    async def check_tweet_content(
         self,
         response: (
             TwitterSearchSynapse | TwitterIDSearchSynapse | TwitterURLsSearchSynapse
@@ -603,6 +603,20 @@ class TwitterBasicSearchContentRelevanceModel(BaseRewardModel):
                     sum(tweet_score) / len(tweet_score) if tweet_score else 0.0
                 )
 
+            if not response.results:
+                if isinstance(response, TwitterIDSearchSynapse):
+                    fetched, _ = await scrape_tweets_with_retries(
+                        [f"/status/{response.id}"], 200, 3
+                    )
+
+                    if not fetched:
+                        return 1.0
+                if isinstance(response, TwitterURLsSearchSynapse):
+                    fetched, _ = await scrape_tweets_with_retries(response.urls, 200, 3)
+
+                    if not fetched:
+                        return 1.0
+
             # Return average of all validated tweets
             return sum(tweet_scores) / len(tweet_scores) if tweet_scores else 0.0
 
@@ -627,7 +641,7 @@ class TwitterBasicSearchContentRelevanceModel(BaseRewardModel):
                 # If uid_tensor is a PyTorch or NumPy scalar, .item() extracts the integer
                 uid = uid_tensor.item() if hasattr(uid_tensor, "item") else uid_tensor
 
-                final_score = self.check_tweet_content(response)
+                final_score = await self.check_tweet_content(response)
 
                 bt.logging.info(f"UID {uid}: check_tweet_content => {final_score}")
 
