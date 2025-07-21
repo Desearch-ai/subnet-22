@@ -1098,6 +1098,7 @@ class ScraperStreamingSynapse(StreamingSynapse):
             "system_message": self.system_message,
             "scoring_system_message": self.scoring_system_message,
             "miner_link_scores": self.miner_link_scores,
+            "chat_history": self.chat_history,
             "flow_items": self.flow_items,
             "count": self.count,
         }

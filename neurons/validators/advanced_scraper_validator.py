@@ -33,6 +33,7 @@ from neurons.validators.penalty.streaming_penalty import StreamingPenaltyModel
 from neurons.validators.penalty.exponential_penalty import ExponentialTimePenaltyModel
 from neurons.validators.penalty.summary_rule_penalty import SummaryRulePenaltyModel
 from neurons.validators.penalty.miner_score_penalty import MinerScorePenaltyModel
+from neurons.validators.penalty.chat_history_penalty import ChatHistoryPenaltyModel
 from neurons.validators.organic_history_mixin import OrganicHistoryMixin
 
 
@@ -163,6 +164,7 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
             ExponentialTimePenaltyModel(max_penalty=1, neuron=self.neuron),
             SummaryRulePenaltyModel(max_penalty=1, neuron=self.neuron),
             MinerScorePenaltyModel(max_penalty=1, neuron=self.neuron),
+            ChatHistoryPenaltyModel(max_penalty=1, neuron=self.neuron),
         ]
 
     def get_random_execution_time(self):
