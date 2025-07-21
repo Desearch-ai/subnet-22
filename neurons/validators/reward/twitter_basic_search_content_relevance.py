@@ -57,7 +57,7 @@ TWEET_EXACT_MATCH_FIELDS = {
     # "in_reply_to_screen_name",
     "in_reply_to_status_id",
     # "in_reply_to_user_id",
-    "quoted_status_id",
+    # "quoted_status_id",
     "lang",
 }
 
@@ -170,6 +170,29 @@ class TwitterBasicSearchContentRelevanceModel(BaseRewardModel):
         except Exception as e:
             bt.logging.error(f"Error in process_tweets: {str(e)}")
             return default_val_score_responses
+
+    def preprocess_tweet(self, tweet: Dict[str, Any]) -> None:
+        """
+        Removes unnecessary fields and formats the tweet for comparison.
+        """
+        if tweet.get("quote"):
+            tweet["quote"]["display_text_range"] = None
+            tweet["quote"]["entities"] = None
+            tweet["quote"]["user"] = None
+            for f in TWEET_NUMERIC_FIELDS:
+                if f in tweet["quote"]:
+                    tweet["quote"][f] = None
+
+        if tweet.get("entities"):
+            tweet["entities"]["media"] = None
+
+        if tweet.get("extended_entities"):
+            medias = tweet["extended_entities"].get("media", [])
+            for index, media in enumerate(medias):
+                if media.get("expanded_url"):
+                    medias[index] = media["expanded_url"].replace(
+                        "twitter.com", "x.com"
+                    )
 
     def compare_numeric(
         self, field: str, val1: Optional[int], val2: Optional[int]
@@ -510,6 +533,20 @@ class TwitterBasicSearchContentRelevanceModel(BaseRewardModel):
 
                 val_tweet_dict = val_tweet.model_dump()
 
+                # Compare quoted status ID
+                if miner_tweet.get("quoted_status_id") != val_tweet_dict.get(
+                    "quoted_status_id"
+                ):
+                    if (
+                        val_tweet_dict.get("is_quote_tweet") == True
+                        and val_tweet_dict.get("quote") == None
+                    ):
+                        tweet_score.append(1)
+                    else:
+                        tweet_score.append(0)
+                else:
+                    tweet_score.append(1)
+
                 # # Compare tweet basic fields
                 for f in TWEET_EXACT_MATCH_FIELDS:
                     if miner_tweet.get(f) != val_tweet_dict.get(f):
@@ -539,20 +576,36 @@ class TwitterBasicSearchContentRelevanceModel(BaseRewardModel):
                     else:
                         tweet_score.append(1)
 
+                self.preprocess_tweet(miner_tweet)
+                self.preprocess_tweet(val_tweet_dict)
+
                 # Compare nested fields
-                # for f in TWEET_NESTED_FIELDS:
-                #     path, val1, val2 = self.compare_nested_fields(
-                #         miner_tweet.get(f), val_tweet_dict.get(f)
-                #     )
-                #     if path:
-                #         tweet_scores.append(0)
-                #         bt.logging.debug(
-                #             f"Field mismatch: {f}{path} => {val1} vs {val2}"
-                #         )
-                #         loop_terminated = True
-                #         break
-                # if loop_terminated:
-                #     continue
+                for f in TWEET_NESTED_FIELDS:
+                    path, val1, val2 = self.compare_nested_fields(
+                        miner_tweet.get(f), val_tweet_dict.get(f)
+                    )
+                    if path:
+                        tweet_score.append(0)
+                        bt.logging.debug(
+                            f"Field mismatch: {f}{path} => {val1} vs {val2}"
+                        )
+                    else:
+                        tweet_score.append(1)
+
+                if val_tweet_dict.get("quote") and miner_tweet.get("quote"):
+                    miner_quote = miner_tweet.get("quote", {})
+                    val_quote = val_tweet_dict.get("quote", {})
+                    # Compare quote numeric fields
+                    for f in TWEET_NUMERIC_FIELDS:
+                        if not self.compare_numeric(
+                            f, miner_quote.get(f), val_quote.get(f)
+                        ):
+                            tweet_score.append(0)
+                            bt.logging.debug(
+                                f"Quote field mismatch: {f} => {miner_quote.get(f)} vs {val_quote.get(f)}"
+                            )
+                        else:
+                            tweet_score.append(1)
 
                 # Compare media
                 if not self.compare_media(
@@ -607,6 +660,8 @@ class TwitterBasicSearchContentRelevanceModel(BaseRewardModel):
             return sum(tweet_scores) / len(tweet_scores) if tweet_scores else 0.0
 
         except Exception as e:
+            tb_str = traceback.format_exception(type(e), e, e.__traceback__)
+            bt.logging.error("\n".join(tb_str))
             bt.logging.error(f"check_tweet_content error: {str(e)}")
             return 0.0
 
