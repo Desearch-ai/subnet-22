@@ -77,3 +77,4 @@ class PenaltyModelType(Enum):
     criteria_summary_penalty = "criteria_summary_penalty"
     twitter_count_penalty = "twitter_count_penalty"
     miner_score_penalty = "miner_score_penalty"
+    chat_history_penalty = "chat_history_penalty"

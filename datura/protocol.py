@@ -1091,6 +1091,7 @@ class ScraperStreamingSynapse(StreamingSynapse):
             "region": self.region,
             "system_message": self.system_message,
             "miner_link_scores": self.miner_link_scores,
+            "chat_history": self.chat_history,
             "flow_items": self.flow_items,
             "count": self.count,
         }
