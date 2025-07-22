@@ -213,7 +213,7 @@ class TwitterScraperTweet(BaseModel):
     id: str
     text: str
     reply_count: int
-    view_count: int
+    view_count: Optional[int] = None
     retweet_count: int
     like_count: int
     quote_count: int
