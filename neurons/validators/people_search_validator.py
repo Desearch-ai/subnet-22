@@ -67,13 +67,14 @@ class PeopleSearchValidator(OrganicHistoryMixin):
                 PeopleSearchRelevanceModel(
                     device=self.neuron.config.neuron.device,
                     scoring_type=RewardScoringType.search_relevance_score_template,
+                    neuron=self.neuron,
                 )
                 if self.neuron.config.reward.people_search_relavance_weight > 0
                 else MockRewardModel(RewardModelType.people_search_relevance.value)
             ),
             (
                 PerformanceRewardModel(
-                    device=self.neuron.config.neuron.device,
+                    device=self.neuron.config.neuron.device, neuron=self.neuron
                 )
                 if self.neuron.config.reward.performance_weight > 0
                 else MockRewardModel(RewardModelType.performance_score.value)
@@ -81,7 +82,7 @@ class PeopleSearchValidator(OrganicHistoryMixin):
         ]
 
         self.penalty_functions = [
-            ExponentialTimePenaltyModel(max_penalty=1),
+            ExponentialTimePenaltyModel(max_penalty=1, neuron=self.neuron),
         ]
 
     async def generate_criteria(self, synapse: PeopleSearchSynapse):
@@ -235,7 +236,7 @@ class PeopleSearchValidator(OrganicHistoryMixin):
 
             for penalty_fn_i in self.penalty_functions:
                 raw_penalty_i, adjusted_penalty_i, applied_penalty_i = (
-                    await penalty_fn_i.apply_penalties(responses, tasks)
+                    await penalty_fn_i.apply_penalties(responses, tasks, uids)
                 )
                 penalty_start_time = time.time()
                 rewards *= applied_penalty_i.to(self.neuron.config.neuron.device)

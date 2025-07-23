@@ -256,11 +256,11 @@ async def call_chutes(messages, temperature, model, seed=1234, response_format=N
             f"Calling chutes. Temperature = {temperature}, Model = {model}, Seed = {seed},  Messages = {messages}"
         )
         try:
-            response = requests.post(url, headers=headers, json=payload)
-
-            if response.status_code == 200:
-                data = response.json()
-                return data["choices"][0]["message"]["content"]
+            async with aiohttp.ClientSession() as session:
+                async with session.post(url, headers=headers, json=payload) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        return data["choices"][0]["message"]["content"]
 
         except Exception as e:
             bt.logging.error(f"Error when calling chutes: {e}")

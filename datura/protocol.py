@@ -213,6 +213,7 @@ class TwitterScraperTweet(BaseModel):
     id: str
     text: str
     reply_count: int
+    view_count: Optional[int] = None
     retweet_count: int
     like_count: int
     quote_count: int
@@ -229,6 +230,7 @@ class TwitterScraperTweet(BaseModel):
     in_reply_to_user_id: Optional[str] = None
     quoted_status_id: Optional[str] = None
     quote: Optional["TwitterScraperTweet"] = None
+    replies: Optional[List["TwitterScraperTweet"]] = None
     display_text_range: Optional[List[int]] = None
     entities: Optional[TwitterScraperEntities] = None
     extended_entities: Optional[TwitterScraperExtendedEntities] = None
@@ -557,8 +559,14 @@ class ScraperStreamingSynapse(StreamingSynapse):
 
     system_message: Optional[str] = pydantic.Field(
         "",
-        title="Sysmtem Message",
+        title="System Message",
         description="System message for formatting the response.",
+    )
+
+    scoring_system_message: Optional[str] = pydantic.Field(
+        "",
+        title="Scoring System Message",
+        description="System message for scoring the response.",
     )
 
     tools: Optional[List[str]] = pydantic.Field(
@@ -1088,7 +1096,9 @@ class ScraperStreamingSynapse(StreamingSynapse):
             "language": self.language,
             "region": self.region,
             "system_message": self.system_message,
+            "scoring_system_message": self.scoring_system_message,
             "miner_link_scores": self.miner_link_scores,
+            "chat_history": self.chat_history,
             "flow_items": self.flow_items,
             "count": self.count,
         }

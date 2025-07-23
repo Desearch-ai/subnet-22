@@ -7,6 +7,8 @@ import json
 import asyncio
 import html
 import bittensor as bt
+
+from neurons.validators.base_validator import AbstractNeuron
 from .config import RewardModelType
 from .reward import BaseRewardModel, BaseRewardEvent
 from datura.protocol import WebSearchSynapse, WebSearchValidatorResult
@@ -22,10 +24,10 @@ APIFY_LINK_SCRAPE_AMOUNT = 1
 class WebBasicSearchContentRelevanceModel(BaseRewardModel):
     @property
     def name(self) -> str:
-        return RewardModelType.twitter_content_relevance.value
+        return RewardModelType.web_basic_search_content_relevance.value
 
-    def __init__(self, device: str, scoring_type: None):
-        super().__init__()
+    def __init__(self, device: str, scoring_type: None, neuron: AbstractNeuron):
+        super().__init__(neuron)
         self.device = device
         self.scoring_type = scoring_type
 

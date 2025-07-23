@@ -129,6 +129,7 @@ class DeepResearchValidator(OrganicHistoryMixin):
                 DeepResearchContentRelevanceModel(
                     device=self.neuron.config.neuron.device,
                     scoring_type=RewardScoringType.summary_relevance_score_template,
+                    neuron=self.neuron,
                 )
                 if DefaultRewardFrameworkConfig.deep_research_content_relevance_weight
                 > 0
@@ -140,6 +141,7 @@ class DeepResearchValidator(OrganicHistoryMixin):
                 DeepResearchDataRelevanceModel(
                     device=self.neuron.config.neuron.device,
                     scoring_type=RewardScoringType.search_relevance_score_template,
+                    neuron=self.neuron,
                 )
                 if DefaultRewardFrameworkConfig.deep_research_data_relevance_weight > 0
                 else MockRewardModel(RewardModelType.deep_research_data_relevance.value)
@@ -148,6 +150,7 @@ class DeepResearchValidator(OrganicHistoryMixin):
                 DeepResearchLogicalCoherenceRelevanceModel(
                     device=self.neuron.config.neuron.device,
                     scoring_type=RewardScoringType.summary_relevance_score_template,
+                    neuron=self.neuron,
                 )
                 if DefaultRewardFrameworkConfig.deep_research_logical_coherence_relevance_weight
                 > 0
@@ -159,6 +162,7 @@ class DeepResearchValidator(OrganicHistoryMixin):
                 DeepResearchSourceLinksRelevanceModel(
                     device=self.neuron.config.neuron.device,
                     scoring_type=RewardScoringType.link_content_relevance_template,
+                    neuron=self.neuron,
                 )
                 if DefaultRewardFrameworkConfig.deep_research_source_links_relevance_weight
                 > 0
@@ -170,6 +174,7 @@ class DeepResearchValidator(OrganicHistoryMixin):
                 DeepResearchSystemMessageRelevanceModel(
                     device=self.neuron.config.neuron.device,
                     scoring_type=RewardScoringType.summary_relevance_score_template,
+                    neuron=self.neuron,
                 )
                 if DefaultRewardFrameworkConfig.deep_research_system_message_relevance_weight
                 > 0
@@ -180,6 +185,7 @@ class DeepResearchValidator(OrganicHistoryMixin):
             (
                 PerformanceRewardModel(
                     device=self.neuron.config.neuron.device,
+                    neuron=self.neuron,
                 )
                 if self.neuron.config.reward.performance_weight > 0
                 else MockRewardModel(RewardModelType.performance_score.value)
@@ -187,8 +193,8 @@ class DeepResearchValidator(OrganicHistoryMixin):
         ]
 
         self.penalty_functions = [
-            # StreamingPenaltyModel(max_penalty=1),
-            ExponentialTimePenaltyModel(max_penalty=1),
+            # StreamingPenaltyModel(max_penalty=1, neuron=self.neuron),
+            ExponentialTimePenaltyModel(max_penalty=1, neuron=self.neuron),
         ]
 
     async def run_task_and_score(
@@ -347,7 +353,7 @@ class DeepResearchValidator(OrganicHistoryMixin):
 
             for penalty_fn_i in self.penalty_functions:
                 raw_penalty_i, adjusted_penalty_i, applied_penalty_i = (
-                    await penalty_fn_i.apply_penalties(responses, tasks)
+                    await penalty_fn_i.apply_penalties(responses, tasks, uids)
                 )
                 penalty_start_time = time.time()
                 rewards *= applied_penalty_i.to(self.neuron.config.neuron.device)

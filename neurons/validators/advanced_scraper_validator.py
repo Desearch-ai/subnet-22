@@ -33,6 +33,7 @@ from neurons.validators.penalty.streaming_penalty import StreamingPenaltyModel
 from neurons.validators.penalty.exponential_penalty import ExponentialTimePenaltyModel
 from neurons.validators.penalty.summary_rule_penalty import SummaryRulePenaltyModel
 from neurons.validators.penalty.miner_score_penalty import MinerScorePenaltyModel
+from neurons.validators.penalty.chat_history_penalty import ChatHistoryPenaltyModel
 from neurons.validators.organic_history_mixin import OrganicHistoryMixin
 
 
@@ -123,6 +124,7 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
                     device=self.neuron.config.neuron.device,
                     scoring_type=RewardScoringType.summary_relevance_score_template,
                     llm_reward=self.reward_llm,
+                    neuron=self.neuron,
                 )
                 if self.neuron.config.reward.twitter_content_weight > 0
                 else MockRewardModel(RewardModelType.twitter_content_relevance.value)
@@ -132,6 +134,7 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
                     device=self.neuron.config.neuron.device,
                     scoring_type=RewardScoringType.search_relevance_score_template,
                     llm_reward=self.reward_llm,
+                    neuron=self.neuron,
                 )
                 if self.neuron.config.reward.web_search_relavance_weight > 0
                 else MockRewardModel(RewardModelType.search_content_relevance.value)
@@ -141,6 +144,7 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
                     device=self.neuron.config.neuron.device,
                     scoring_type=RewardScoringType.summary_relevance_score_template,
                     llm_reward=self.reward_llm,
+                    neuron=self.neuron,
                 )
                 if self.neuron.config.reward.summary_relevance_weight > 0
                 else MockRewardModel(RewardModelType.summary_relavance_match.value)
@@ -148,6 +152,7 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
             (
                 PerformanceRewardModel(
                     device=self.neuron.config.neuron.device,
+                    neuron=self.neuron,
                 )
                 if self.neuron.config.reward.performance_weight > 0
                 else MockRewardModel(RewardModelType.performance_score.value)
@@ -155,10 +160,11 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
         ]
 
         self.penalty_functions = [
-            StreamingPenaltyModel(max_penalty=1),
-            ExponentialTimePenaltyModel(max_penalty=1),
-            SummaryRulePenaltyModel(max_penalty=1),
-            MinerScorePenaltyModel(max_penalty=1),
+            StreamingPenaltyModel(max_penalty=1, neuron=self.neuron),
+            ExponentialTimePenaltyModel(max_penalty=1, neuron=self.neuron),
+            SummaryRulePenaltyModel(max_penalty=1, neuron=self.neuron),
+            MinerScorePenaltyModel(max_penalty=1, neuron=self.neuron),
+            ChatHistoryPenaltyModel(max_penalty=1, neuron=self.neuron),
         ]
 
     def get_random_execution_time(self):
@@ -181,6 +187,7 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
         result_type: Optional[ResultType] = ResultType.LINKS_WITH_SUMMARIES,
         is_synthetic=False,
         system_message: Optional[str] = None,
+        scoring_system_message: Optional[str] = None,
         uid: Optional[int] = None,
         chat_history: Optional[List[ChatHistoryItem]] = [],
         count: Optional[int] = 10,
@@ -225,6 +232,7 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
                 result_type=result_type,
                 is_synthetic=is_synthetic,
                 system_message=system_message,
+                scoring_system_message=scoring_system_message,
                 scoring_model=self.neuron.config.neuron.scoring_model,
                 chat_history=chat_history,
                 count=count,
@@ -349,7 +357,9 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
 
             for penalty_fn_i in self.penalty_functions:
                 raw_penalty_i, adjusted_penalty_i, applied_penalty_i = (
-                    await penalty_fn_i.apply_penalties(responses, tasks, val_scores)
+                    await penalty_fn_i.apply_penalties(
+                        responses, tasks, uids, val_scores
+                    )
                 )
                 penalty_start_time = time.time()
                 rewards *= applied_penalty_i.to(self.neuron.config.neuron.device)
@@ -572,6 +582,7 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
             date_filter = query.get("date_filter", DateFilterType.PAST_WEEK.value)
             count = query.get("count")
             system_message = query.get("system_message")
+            scoring_system_message = query.get("scoring_system_message")
             chat_history = query.get("chat_history", [])
 
             if isinstance(date_filter, str):
@@ -600,6 +611,7 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
                 model=model,
                 result_type=result_type,
                 system_message=system_message,
+                scoring_system_message=scoring_system_message,
                 uid=uid,
                 chat_history=chat_history,
                 count=count,

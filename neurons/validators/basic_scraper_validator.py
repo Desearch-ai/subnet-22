@@ -71,6 +71,7 @@ class BasicScraperValidator(OrganicHistoryMixin):
                 TwitterBasicSearchContentRelevanceModel(
                     device=self.neuron.config.neuron.device,
                     scoring_type=RewardScoringType.search_relevance_score_template,
+                    neuron=self.neuron,
                 )
                 if self.neuron.config.reward.twitter_content_weight > 0
                 else MockRewardModel(RewardModelType.twitter_content_relevance.value)
@@ -78,6 +79,7 @@ class BasicScraperValidator(OrganicHistoryMixin):
             (
                 PerformanceRewardModel(
                     device=self.neuron.config.neuron.device,
+                    neuron=self.neuron,
                 )
                 if self.neuron.config.reward.performance_weight > 0
                 else MockRewardModel(RewardModelType.performance_score.value)
@@ -85,8 +87,8 @@ class BasicScraperValidator(OrganicHistoryMixin):
         ]
 
         self.penalty_functions = [
-            ExponentialTimePenaltyModel(max_penalty=1),
-            TwitterCountPenaltyModel(max_penalty=1),
+            ExponentialTimePenaltyModel(max_penalty=1, neuron=self.neuron),
+            TwitterCountPenaltyModel(max_penalty=1, neuron=self.neuron),
         ]
 
     def calc_max_execution_time(self, count):
@@ -224,7 +226,7 @@ class BasicScraperValidator(OrganicHistoryMixin):
 
             for penalty_fn_i in self.penalty_functions:
                 raw_penalty_i, adjusted_penalty_i, applied_penalty_i = (
-                    await penalty_fn_i.apply_penalties(responses, tasks)
+                    await penalty_fn_i.apply_penalties(responses, tasks, uids)
                 )
                 penalty_start_time = time.time()
                 rewards *= applied_penalty_i.to(self.neuron.config.neuron.device)

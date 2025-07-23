@@ -1,5 +1,6 @@
 import torch
 from typing import List
+from neurons.validators.base_validator import AbstractNeuron
 from neurons.validators.utils.tasks import Task
 from neurons.validators.penalty.penalty import BasePenaltyModel, PenaltyModelType
 import bittensor as bt
@@ -9,8 +10,8 @@ MAX_PENALTY = 1.0
 
 
 class TwitterCountPenaltyModel(BasePenaltyModel):
-    def __init__(self, max_penalty: float = MAX_PENALTY):
-        super().__init__(max_penalty)
+    def __init__(self, max_penalty: float = MAX_PENALTY, neuron: AbstractNeuron = None):
+        super().__init__(max_penalty, neuron)
 
     @property
     def name(self) -> str:

@@ -1,5 +1,6 @@
 import torch
 from typing import List
+from neurons.validators.base_validator import AbstractNeuron
 from neurons.validators.utils.tasks import Task
 from neurons.validators.penalty.penalty import BasePenaltyModel, PenaltyModelType
 import bittensor as bt
@@ -29,8 +30,8 @@ def score_to_contextual_relevance(score):
 
 
 class MinerScorePenaltyModel(BasePenaltyModel):
-    def __init__(self, max_penalty: float = MAX_PENALTY):
-        super().__init__(max_penalty)
+    def __init__(self, max_penalty: float = MAX_PENALTY, neuron: AbstractNeuron = None):
+        super().__init__(max_penalty, neuron)
         bt.logging.debug(
             "Initialized MinerScorePenaltyModel using max_execution_time from responses."
         )

@@ -22,6 +22,8 @@ import bittensor as bt
 from typing import List, Tuple, Dict
 import math
 import json
+
+from neurons.validators.base_validator import AbstractNeuron
 from .config import RewardModelType
 from .reward import BaseRewardModel, BaseRewardEvent
 from datura.protocol import (
@@ -41,8 +43,8 @@ class PerformanceRewardModel(BaseRewardModel):
     def name(self) -> str:
         return RewardModelType.performance_score.value
 
-    def __init__(self, device: str):
-        super().__init__()
+    def __init__(self, device: str, neuron: AbstractNeuron):
+        super().__init__(neuron)
         self.device = device
         self.is_default_normalization = False
 

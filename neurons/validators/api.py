@@ -131,6 +131,12 @@ class SearchRequest(BaseModel):
         example="Summarize the content by categorizing key points into 'Pros' and 'Cons' sections.",
     )
 
+    scoring_system_message: Optional[str] = Field(
+        default=None,
+        description="System message for scoring the response",
+        example='Business Relevance Scoring Guide:\n\n                    Task: As an evaluator, determine how well a tweet represents a business opportunity for the agent based on contextual relevance to the specific agent use case provided.\n\n                    IMPORTANT: Only score highly for needs that directly relate to the agent\'s specific use case. Similar but different problems should receive lower scores unless they specifically mention the agent\'s domain.\n\n                    Agent use case: Find people who needs SERP API service and is looking for cheaper options for scraping\n\n                    Scoring Criteria:\n\n                    Score 2 - No Business Opportunity:\n                    - Criteria: Tweet is completely unrelated to the agent\'s use case or shows no indication of need for the agent\'s specific offering\n                    - Context: Author is not expressing any pain point, question, or situation relevant to the agent\'s domain\n                    - Examples:\n                    - Agent Use Case: "Find people needing SERP API services"\n                    - Tweet: "Just had amazing pizza for lunch!" → Score 2 (completely unrelated)\n                    - Tweet: "Our streaming API is having problems" → Score 2 (different API domain)\n\n                    Score 5 - Potential Interest:\n                    - Criteria: Tweet shows indirect relevance to the agent\'s domain but lacks clear intent, urgency, or specific need\n                    - Context: Author mentions related topics but doesn\'t express explicit need for the agent\'s specific solution\n                    - Examples:\n                    - Agent Use Case: "Find people needing SERP API services"\n                    - Tweet: "Working on a new web scraping project" → Score 5 (related activity, no explicit SERP need)\n                    - Tweet: "APIs are getting expensive these days" → Score 5 (general API concern, not SERP-specific)\n\n                    Score 9 - Strong Business Opportunity:\n                    - Criteria: Tweet indicates a clear need, problem, or interest that directly aligns with the agent\'s specific use case\n                    - Context: Author is seeking solutions, expressing frustration, asking for recommendations, or describing challenges specifically in the agent\'s domain\n                    - Examples:\n                    - Agent Use Case: "Find people needing SERP API services"\n                    - Tweet: "Anyone know a reliable API for Google search results? Current one keeps failing" → Score 9 (direct SERP API need)\n                    - Tweet: "SERP API costs are killing our budget, need alternatives" → Score 9 (specific SERP API problem)\n                    \n                    Output Format:\n                    Score: [2, 5, or 9], Explanation: [Brief explanation focusing on how specifically this relates to the agent\'s use case and the level of expressed need]',
+    )
+
     chat_history: Optional[List[ChatHistoryItem]] = Field(
         default_factory=list,
         title="Chat History",
@@ -222,6 +228,7 @@ async def response_stream_event(data: SearchRequest):
             "count": data.count,
             "date_filter": data.date_filter.value,
             "system_message": data.system_message,
+            "scoring_system_message": data.scoring_system_message,
             "chat_history": data.chat_history,
         }
 

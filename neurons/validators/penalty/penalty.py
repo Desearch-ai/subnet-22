@@ -20,12 +20,14 @@ import bittensor as bt
 from enum import Enum
 from typing import List
 from abc import ABC, abstractmethod
+from neurons.validators.base_validator import AbstractNeuron
 from neurons.validators.utils.tasks import Task
 
 
 class BasePenaltyModel(ABC):
-    def __init__(self, max_penalty: float):
+    def __init__(self, max_penalty: float, neuron: AbstractNeuron):
         self.max_penalty = max_penalty
+        self.neuron = neuron
 
     @property
     @abstractmethod
@@ -43,7 +45,11 @@ class BasePenaltyModel(ABC):
     ) -> torch.FloatTensor: ...
 
     async def apply_penalties(
-        self, responses: List[bt.Synapse], tasks: List[Task], additional_params=None
+        self,
+        responses: List[bt.Synapse],
+        tasks: List[Task],
+        uids,
+        additional_params=None,
     ) -> torch.FloatTensor:
         raw_penalties = await self.calculate_penalties(
             responses, tasks, additional_params
@@ -71,3 +77,4 @@ class PenaltyModelType(Enum):
     criteria_summary_penalty = "criteria_summary_penalty"
     twitter_count_penalty = "twitter_count_penalty"
     miner_score_penalty = "miner_score_penalty"
+    chat_history_penalty = "chat_history_penalty"
