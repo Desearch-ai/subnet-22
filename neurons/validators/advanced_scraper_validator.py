@@ -184,7 +184,7 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
         region="us",
         google_date_filter="qdr:w",
         model: Optional[Model] = Model.NOVA,
-        result_type: Optional[ResultType] = ResultType.LINKS_WITH_SUMMARIES,
+        result_type: Optional[ResultType] = ResultType.LINKS_WITH_FINAL_SUMMARY,
         is_synthetic=False,
         system_message: Optional[str] = None,
         scoring_system_message: Optional[str] = None,
@@ -296,7 +296,7 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
             organic_penalties = []
 
             if result_type is None:
-                result_type = ResultType.LINKS_WITH_SUMMARIES
+                result_type = ResultType.LINKS_WITH_FINAL_SUMMARY
 
             if is_synthetic:
                 penalized_uids = []
@@ -569,7 +569,7 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
         random_uid=None,
         specified_uids=None,
         uid: Optional[int] = None,
-        result_type: Optional[ResultType] = ResultType.LINKS_WITH_SUMMARIES,
+        result_type: Optional[ResultType] = ResultType.LINKS_WITH_FINAL_SUMMARY,
         is_collect_final_synapses: bool = False,  # Flag to collect final synapses
     ):
         """Receives question from user and returns the response from the miners."""
