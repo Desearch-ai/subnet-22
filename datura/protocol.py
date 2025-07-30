@@ -247,7 +247,6 @@ class ScraperTextRole(str, Enum):
 
 class ResultType(str, Enum):
     ONLY_LINKS = "ONLY_LINKS"
-    LINKS_WITH_SUMMARIES = "LINKS_WITH_SUMMARIES"
     LINKS_WITH_FINAL_SUMMARY = "LINKS_WITH_FINAL_SUMMARY"
 
 
