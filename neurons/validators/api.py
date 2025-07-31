@@ -120,9 +120,9 @@ class SearchRequest(BaseModel):
     )
 
     result_type: Optional[ResultType] = Field(
-        default=ResultType.LINKS_WITH_SUMMARIES,
+        default=ResultType.LINKS_WITH_FINAL_SUMMARY,
         description=f"Type of result. {format_enum_values(ResultType)}",
-        example=ResultType.LINKS_WITH_SUMMARIES.value,
+        example=ResultType.LINKS_WITH_FINAL_SUMMARY.value,
     )
 
     system_message: Optional[str] = Field(

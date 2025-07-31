@@ -341,7 +341,11 @@ class SummaryRelevanceRewardModel(BaseRewardModel):
         if response.result_type == ResultType.ONLY_LINKS:
             # For ONLY_LINKS type, check if links are present
             links, _ = response.get_links_from_search_results()
+
             if links:
+                if response.completion or response.text_chunks:
+                    return 0.0, "ONLY_LINKS type with summary"
+
                 return (
                     1.0,
                     "ONLY_LINKS type with valid links",
