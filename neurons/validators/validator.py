@@ -465,6 +465,7 @@ class Neuron(SyntheticQueryRunnerMixin, AbstractNeuron):
         await validator.compute_rewards_and_penalties(
             **random_organic_responses,
             start_time=time.time(),
+            is_synthetic=True,
         )
 
     async def blocks_until_next_epoch(self):

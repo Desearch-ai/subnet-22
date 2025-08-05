@@ -96,12 +96,26 @@ class SearchRequest(BaseModel):
         description="Search query prompt",
         example="What are the recent sport events?",
     )
+
     tools: List[str] = Field(
         ..., description="List of tools to search with", example=available_tools
     )
+
+    start_date: Optional[str] = Field(
+        default=None,
+        description="The start date for the search query. Format: YYYY-MM-DDTHH:MM:SSZ (UTC)",
+        examples="2025-05-01T00:00:00Z",
+    )
+
+    end_date: Optional[str] = Field(
+        default=None,
+        description="The end date for the search query. Format: YYYY-MM-DDTHH:MM:SSZ (UTC)",
+        examples="2025-05-03T00:00:00Z",
+    )
+
     date_filter: Optional[DateFilterType] = Field(
         default=DateFilterType.PAST_WEEK,
-        description=f"Date filter for the search results.{format_enum_values(DateFilterType)}",
+        description=f"Predefined date filters for the search results, or you can use specific start and end dates {format_enum_values(DateFilterType)}",
         example=DateFilterType.PAST_WEEK.value,
     )
 
@@ -180,6 +194,7 @@ class LinksSearchRequest(BaseModel):
         description="Search query prompt",
         example="What are the recent sport events?",
     )
+
     tools: List[str] = Field(
         ..., description="List of tools to search with", example=available_tools
     )
@@ -227,6 +242,8 @@ async def response_stream_event(data: SearchRequest):
             "tools": data.tools,
             "count": data.count,
             "date_filter": data.date_filter.value,
+            "start_date": data.start_date,
+            "end_date": data.end_date,
             "system_message": data.system_message,
             "scoring_system_message": data.scoring_system_message,
             "chat_history": data.chat_history,

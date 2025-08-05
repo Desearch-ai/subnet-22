@@ -10,6 +10,7 @@ from neurons.validators.utils.mock import MockRewardModel
 
 from datura.dataset import QuestionsDataset
 from datura.dataset.date_filters import (
+    DateFilter,
     get_random_date_filter,
     get_specified_date_filter,
     DateFilterType,
@@ -175,10 +176,10 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
     async def run_task_and_score(
         self,
         tasks: List[TwitterTask],
+        date_filter: DateFilter,
         strategy=QUERY_MINERS.RANDOM,
         is_only_allowed_miner=True,
         specified_uids=None,
-        date_filter=None,
         tools=[],
         language="en",
         region="us",
@@ -214,8 +215,17 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
             uids = torch.tensor([uid])
             axons = [axon]
 
-        start_date = date_filter.start_date.strftime("%Y-%m-%dT%H:%M:%SZ")
-        end_date = date_filter.end_date.strftime("%Y-%m-%dT%H:%M:%SZ")
+        start_date = (
+            date_filter.start_date.strftime("%Y-%m-%dT%H:%M:%SZ")
+            if date_filter.start_date
+            else None
+        )
+        end_date = (
+            date_filter.end_date.strftime("%Y-%m-%dT%H:%M:%SZ")
+            if date_filter.end_date
+            else None
+        )
+        date_filter_type = date_filter.date_filter_type
 
         synapses = [
             ScraperStreamingSynapse(
@@ -223,7 +233,7 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
                 model=model,
                 start_date=start_date,
                 end_date=end_date,
-                date_filter_type=date_filter.date_filter_type.value,
+                date_filter_type=date_filter_type.value if date_filter_type else None,
                 tools=tools,
                 language=language,
                 region=region,
@@ -584,8 +594,12 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
             system_message = query.get("system_message")
             scoring_system_message = query.get("scoring_system_message")
             chat_history = query.get("chat_history", [])
+            start_date = query.get("start_date")
+            end_date = query.get("end_date")
 
-            if isinstance(date_filter, str):
+            if start_date or end_date:
+                date_filter = DateFilter(start_date=start_date, end_date=end_date)
+            elif isinstance(date_filter, str):
                 date_filter_type = DateFilterType(date_filter)
                 date_filter = get_specified_date_filter(date_filter_type)
 
