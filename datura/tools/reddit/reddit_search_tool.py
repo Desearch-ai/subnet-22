@@ -4,7 +4,6 @@ from pydantic import BaseModel, Field
 import json
 import bittensor as bt
 
-# from datura.services.reddit_api_wrapper import RedditAPIWrapper
 from datura.tools.search.serp_advanced_google_search import SerpAdvancedGoogleSearch
 from datura.tools.base import BaseTool
 
@@ -32,9 +31,7 @@ class RedditSearchTool(BaseTool):
     def _run():
         pass
 
-    async def _arun(
-        self, query: str
-    ) -> str:
+    async def _arun(self, query: str) -> str:
         """Search Reddit and return the results."""
         search = SerpAdvancedGoogleSearch(
             site="reddit.com",
