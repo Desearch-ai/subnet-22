@@ -1,28 +1,16 @@
 import re
 import os
-import ast
 import math
-import json
 from pydantic import ValidationError
-import wandb
 import base64
-import random
 import asyncio
-import datura
 import copy
 import torch
 import requests
-import traceback
 import bittensor as bt
-import threading
-import multiprocessing
 import aiohttp
-
 from datura.redis.utils import save_moving_averaged_scores
 from . import client
-from collections import deque
-from datetime import datetime
-import re
 import html
 import unicodedata
 from datura.protocol import (
@@ -33,51 +21,7 @@ from datura.protocol import (
 from neurons.validators.apify.twitter_scraper_actor import TwitterScraperActor
 from typing import List
 from datura.services.twitter_utils import TwitterUtils
-from sentence_transformers import util
 from neurons.validators.env import EXPECTED_ACCESS_KEY, PORT
-
-
-list_update_lock = asyncio.Lock()
-_text_questions_buffer = deque()
-
-
-def load_state_from_file(filename="validators/state.json"):
-    if os.path.exists(filename):
-        with open(filename, "r") as file:
-            bt.logging.info("loaded previous state")
-            return json.load(file)
-    else:
-        bt.logging.info("initialized new global state")
-        return {
-            "text": {
-                "themes": None,
-                "questions": None,
-                "theme_counter": 0,
-                "question_counter": 0,
-            },
-            "images": {
-                "themes": None,
-                "questions": None,
-                "theme_counter": 0,
-                "question_counter": 0,
-            },
-        }
-
-
-state = load_state_from_file()
-
-
-def get_state():
-    global state
-    if state is None:
-        load_state_from_file()
-    return state
-
-
-def save_state_to_file(state, filename="state.json"):
-    with open(filename, "w") as file:
-        bt.logging.success(f"saved global state to {filename}")
-        json.dump(state, file)
 
 
 def get_max_execution_time(model: Model, count: int):
@@ -91,143 +35,6 @@ def get_max_execution_time(model: Model, count: int):
         return 30
     elif model == Model.HORIZON:
         return 120
-
-
-def preprocess_string(text):
-    processed_text = text.replace("\t", "")
-    placeholder = "___SINGLE_QUOTE___"
-    processed_text = re.sub(r"(?<=\w)'(?=\w)", placeholder, processed_text)
-    processed_text = processed_text.replace("'", '"').replace(placeholder, "'")
-
-    # First, remove all comments, ending at the next quote
-    no_comments_text = ""
-    i = 0
-    in_comment = False
-    while i < len(processed_text):
-        if processed_text[i] == "#":
-            in_comment = True
-        elif processed_text[i] == '"' and in_comment:
-            in_comment = False
-            no_comments_text += processed_text[
-                i
-            ]  # Keep the quote that ends the comment
-            i += 1
-            continue
-        if not in_comment:
-            no_comments_text += processed_text[i]
-        i += 1
-
-    # Now process the text without comments for quotes
-    cleaned_text = []
-    inside_quotes = False
-    found_first_bracket = False
-
-    i = 0
-    while i < len(no_comments_text):
-        char = no_comments_text[i]
-
-        if not found_first_bracket:
-            if char == "[":
-                found_first_bracket = True
-            cleaned_text.append(char)
-            i += 1
-            continue
-
-        if char == '"':
-            # Look for preceding comma or bracket, skipping spaces
-            preceding_char_index = i - 1
-            found_comma_or_bracket = False
-
-            while preceding_char_index >= 0:
-                if (
-                    no_comments_text[preceding_char_index] in "[,"
-                ):  # Check for comma or opening bracket
-                    found_comma_or_bracket = True
-                    break
-                elif (
-                    no_comments_text[preceding_char_index] not in " \n"
-                ):  # Ignore spaces and new lines
-                    break
-                preceding_char_index -= 1
-
-            following_char_index = i + 1
-            while (
-                following_char_index < len(no_comments_text)
-                and no_comments_text[following_char_index] in " \n"
-            ):
-                following_char_index += 1
-
-            if found_comma_or_bracket or (
-                following_char_index < len(no_comments_text)
-                and no_comments_text[following_char_index] in "],"
-            ):
-                inside_quotes = not inside_quotes
-            else:
-                i += 1
-                continue  # Skip this quote
-
-            cleaned_text.append(char)
-            i += 1
-            continue
-
-        if char == " ":
-            # Skip spaces if not inside quotes and if the space is not between words
-            if not inside_quotes and (
-                i == 0
-                or no_comments_text[i - 1] in " ,["
-                or no_comments_text[i + 1] in " ,]"
-            ):
-                i += 1
-                continue
-
-        cleaned_text.append(char)
-        i += 1
-
-    cleaned_str = "".join(cleaned_text)
-    cleaned_str = re.sub(r"\[\s+", "[", cleaned_str)
-    cleaned_str = re.sub(r"\s+\]", "]", cleaned_str)
-    cleaned_str = re.sub(
-        r"\s*,\s*", ", ", cleaned_str
-    )  # Ensure single space after commas
-
-    start, end = cleaned_str.find("["), cleaned_str.rfind("]")
-    if start != -1 and end != -1 and end > start:
-        cleaned_str = cleaned_str[start : end + 1]
-
-    return cleaned_str
-
-
-def convert_to_list(text):
-    pattern = r"\d+\.\s"
-    items = [item.strip() for item in re.split(pattern, text) if item]
-    return items
-
-
-def extract_python_list(text: str):
-    try:
-        if re.match(r"\d+\.\s", text):
-            return convert_to_list(text)
-
-        bt.logging.debug(f"Preprocessed text = {text}")
-        text = preprocess_string(text)
-        bt.logging.debug(f"Postprocessed text = {text}")
-
-        # Extracting list enclosed in square brackets
-        match = re.search(r'\[((?:[^][]|"(?:\\.|[^"\\])*")*)\]', text, re.DOTALL)
-        if match:
-            list_str = match.group(1)
-
-            # Using ast.literal_eval to safely evaluate the string as a list
-            evaluated = ast.literal_eval("[" + list_str + "]")
-            if isinstance(evaluated, list):
-                return evaluated
-
-    except Exception as e:
-        bt.logging.error(
-            f"Unexpected error when extracting list: {e}\n{traceback.format_exc()}"
-        )
-
-    return None
 
 
 async def call_chutes(messages, temperature, model, seed=1234, response_format=None):
@@ -318,18 +125,6 @@ def get_version(line_number=22):
     else:
         bt.logging.error("github api call failed")
         return None
-
-
-def send_discord_alert(message, webhook_url):
-    data = {"content": f"@everyone {message}", "username": "Subnet22 Updates"}
-    try:
-        response = requests.post(webhook_url, json=data)
-        if response.status_code == 204:
-            print("Discord alert sent successfully!")
-        else:
-            print(f"Failed to send Discord alert. Status code: {response.status_code}")
-    except Exception as e:
-        print(f"Failed to send Discord alert: {e}", exc_info=True)
 
 
 async def resync_metagraph(self):
@@ -804,27 +599,6 @@ async def save_logs_in_chunks_for_basic(
         raise e
 
 
-def calculate_bonus_score(
-    original_score, link_count, max_bonus=0.2, link_sensitivity=2
-):
-    """
-    Calculate the new score with a bonus based on the number of links.
-
-    :param original_score: The original score ranging from 0.1 to 1.
-    :param link_count: The number of links in the tweet.
-    :param max_bonus: The maximum bonus to add to the score. Default is 0.2.
-    :param link_sensitivity: Controls how quickly the bonus grows with the number of links. Higher values mean slower growth.
-    :return: The new score with the bonus included.
-    """
-    # Calculate the bonus
-    bonus = max_bonus * (1 - 1 / (1 + link_count / link_sensitivity))
-
-    # Ensure the total score does not exceed 1
-    new_score = min(1, original_score + bonus)
-
-    return new_score
-
-
 def clean_text(text):
     # Unescape HTML entities
     text = html.unescape(text)
@@ -917,12 +691,6 @@ async def scrape_tweets_with_retries(
         attempt += 1
 
     return fetched_tweets, non_fetched_links
-
-
-def calculate_similarity_percentage(tensor1, tensor2):
-    cos_sim = util.pytorch_cos_sim(tensor1, tensor2).item()  # in [-1,1]
-    similarity_percentage = (cos_sim + 1) / 2 * 100
-    return similarity_percentage
 
 
 def is_valid_tweet(tweet):
