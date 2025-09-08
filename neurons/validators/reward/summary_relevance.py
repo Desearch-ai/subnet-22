@@ -344,7 +344,7 @@ class SummaryRelevanceRewardModel(BaseRewardModel):
 
             if links:
                 if response.completion or response.text_chunks:
-                    return 0.0, "ONLY_LINKS type with summary"
+                    return 0.0, "ONLY_LINKS type with summary", {}
 
                 return (
                     1.0,

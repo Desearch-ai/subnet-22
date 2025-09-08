@@ -88,9 +88,8 @@ class SyntheticQueryRunnerMixin:
                         self.advanced_scraper_validator,
                         self.basic_scraper_validator,
                         self.deep_research_validator,
-                        self.people_search_validator,
                     ],
-                    weights=[0.5, 0.20, 0.15, 0.15],
+                    weights=[0.6, 0.25, 0.15],
                 )[0]
 
                 self.loop.create_task(self.run_synthetic_queries(choice, strategy))

@@ -5,7 +5,6 @@ from datura.protocol import (
     TwitterIDSearchSynapse,
     TwitterSearchSynapse,
     WebSearchSynapse,
-    PeopleSearchSynapse,
     IsAlive,
     ScraperStreamingSynapse,
     DeepResearchSynapse,
@@ -23,7 +22,6 @@ class Dendrite(bt.dendrite):
         from neurons.miners.twitter_search_miner import TwitterSearchMiner
         from neurons.miners.web_search_miner import WebSearchMiner
         from neurons.miners.scraper_miner import ScraperMiner
-        from neurons.miners.people_search_miner import PeopleSearchMiner
         from neurons.miners.deep_research_miner import DeepResearchMiner
 
         try:
@@ -41,7 +39,6 @@ class Dendrite(bt.dendrite):
 
         self.twitter_search_miner = TwitterSearchMiner(self.miner)
         self.web_search_miner = WebSearchMiner(self.miner)
-        self.people_search_miner = PeopleSearchMiner(self.miner)
         self.scraper_miner = ScraperMiner(self.miner)
         self.deep_research_miner = DeepResearchMiner(self.miner)
 
@@ -105,8 +102,6 @@ class Dendrite(bt.dendrite):
             asyncio.create_task(
                 self.deep_research_miner.deep_research(synapse, mockSend)
             )
-        elif isinstance(synapse, PeopleSearchSynapse):
-            asyncio.create_task(self.people_search_miner.search(synapse, mockSend))
 
         # Mock ClientResponse
         response = AsyncMock(spec=ClientResponse)

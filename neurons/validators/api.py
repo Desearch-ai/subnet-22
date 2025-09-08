@@ -16,7 +16,6 @@ from datura.protocol import (
     TwitterScraperTweet,
     WebSearchResultList,
     ResultType,
-    PeopleSearchResultList,
 )
 import uvicorn
 import aiohttp
@@ -96,12 +95,26 @@ class SearchRequest(BaseModel):
         description="Search query prompt",
         example="What are the recent sport events?",
     )
+
     tools: List[str] = Field(
         ..., description="List of tools to search with", example=available_tools
     )
+
+    start_date: Optional[str] = Field(
+        default=None,
+        description="The start date for the search query. Format: YYYY-MM-DDTHH:MM:SSZ (UTC)",
+        examples="2025-05-01T00:00:00Z",
+    )
+
+    end_date: Optional[str] = Field(
+        default=None,
+        description="The end date for the search query. Format: YYYY-MM-DDTHH:MM:SSZ (UTC)",
+        examples="2025-05-03T00:00:00Z",
+    )
+
     date_filter: Optional[DateFilterType] = Field(
         default=DateFilterType.PAST_WEEK,
-        description=f"Date filter for the search results.{format_enum_values(DateFilterType)}",
+        description=f"Predefined date filters for the search results, or you can use specific start and end dates {format_enum_values(DateFilterType)}",
         example=DateFilterType.PAST_WEEK.value,
     )
 
@@ -180,6 +193,7 @@ class LinksSearchRequest(BaseModel):
         description="Search query prompt",
         example="What are the recent sport events?",
     )
+
     tools: List[str] = Field(
         ..., description="List of tools to search with", example=available_tools
     )
@@ -227,6 +241,8 @@ async def response_stream_event(data: SearchRequest):
             "tools": data.tools,
             "count": data.count,
             "date_filter": data.date_filter.value,
+            "start_date": data.start_date,
+            "end_date": data.end_date,
             "system_message": data.system_message,
             "scoring_system_message": data.scoring_system_message,
             "chat_history": data.chat_history,
@@ -685,82 +701,6 @@ async def web_search_endpoint(
     except Exception as e:
         bt.logging.error(f"Error in web search: {e}")
         raise HTTPException(status_code=500, detail=f"An error occurred: {str(e)}")
-
-
-class PeopleSearchRequest(BaseModel):
-    query: str = Field(
-        ...,
-        title="Query",
-        description="The query string to fetch results for. Example: 'Former investment bankers who transitioned into startup CFO roles'. Immutable.",
-    )
-
-    num: int = Field(
-        10,
-        title="Number of Results",
-        description="The maximum number of results to fetch. Immutable.",
-    )
-
-    criteria: Optional[List[str]] = Field(
-        ...,
-        title="Search criteria",
-        description="Search criteria based on query.",
-    )
-
-    uid: Optional[int] = Field(
-        default=None,
-    )
-
-
-async def stream_people_search(data: PeopleSearchRequest):
-    try:
-        query = {
-            "query": data.query,
-            "num": data.num,
-            "criteria": data.criteria,
-        }
-
-        bt.logging.info(f"People search query: {query}")
-
-        merged_chunks = ""
-
-        async for response in neu.people_search_validator.organic(query, uid=data.uid):
-            # Decode the chunk if necessary and merge
-            chunk = str(response)  # Assuming response is already a string
-            merged_chunks += chunk
-            lines = chunk.split("\n")
-            sse_data = "\n".join(f"data: {line if line else ' '}" for line in lines)
-            yield f"{sse_data}\n\n"
-    except Exception as e:
-        bt.logging.error(f"error in stream_people_search: {traceback.format_exc()}")
-        yield f"data: {json.dumps({'error': str(e)})}\n\n"
-
-
-@app.post(
-    "/people/search",
-    summary="People Search",
-    description="Search the people using a query",
-    response_model=PeopleSearchResultList,
-)
-async def people_search_endpoint(
-    request: PeopleSearchRequest,
-    access_key: Annotated[str | None, Header()] = None,
-):
-    """
-    Perform a people search using the given query.
-
-    Parameters:
-        query (str): The search query string.
-
-    Returns:
-        List[PeopleSearchResult]: A list of people search results.
-    """
-
-    bt.logging.info(f"/people/search request: {request}")
-
-    if access_key != EXPECTED_ACCESS_KEY:
-        raise HTTPException(status_code=401, detail="Invalid access key")
-
-    return StreamingResponse(stream_people_search(request))
 
 
 @app.get("/")

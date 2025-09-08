@@ -19,7 +19,6 @@ from datura.bittensor.wallet import Wallet
 from neurons.validators.advanced_scraper_validator import AdvancedScraperValidator
 from neurons.validators.basic_scraper_validator import BasicScraperValidator
 from neurons.validators.basic_web_scraper_validator import BasicWebScraperValidator
-from neurons.validators.people_search_validator import PeopleSearchValidator
 from neurons.validators.deep_research_validator import DeepResearchValidator
 from neurons.validators.config import add_args, check_config, config
 from neurons.validators.validator_service_client import ValidatorServiceClient
@@ -61,7 +60,6 @@ class Neuron(SyntheticQueryRunnerMixin, AbstractNeuron):
     advanced_scraper_validator: "AdvancedScraperValidator"
     basic_scraper_validator: "BasicScraperValidator"
     basic_web_scraper_validator: "BasicWebScraperValidator"
-    people_search_validator: "PeopleSearchValidator"
     deep_research_validator: "DeepResearchValidator"
     moving_average_scores: torch.Tensor = None
     uid: int = None
@@ -80,7 +78,6 @@ class Neuron(SyntheticQueryRunnerMixin, AbstractNeuron):
         self.advanced_scraper_validator = AdvancedScraperValidator(neuron=self)
         self.basic_scraper_validator = BasicScraperValidator(neuron=self)
         self.basic_web_scraper_validator = BasicWebScraperValidator(neuron=self)
-        self.people_search_validator = PeopleSearchValidator(neuron=self)
         self.deep_research_validator = DeepResearchValidator(neuron=self)
         bt.logging.info("initialized_validators")
 
@@ -465,6 +462,7 @@ class Neuron(SyntheticQueryRunnerMixin, AbstractNeuron):
         await validator.compute_rewards_and_penalties(
             **random_organic_responses,
             start_time=time.time(),
+            is_synthetic=True,
         )
 
     async def blocks_until_next_epoch(self):
@@ -537,9 +535,8 @@ class Neuron(SyntheticQueryRunnerMixin, AbstractNeuron):
                                     self.advanced_scraper_validator,
                                     self.basic_scraper_validator,
                                     self.deep_research_validator,
-                                    self.people_search_validator,
                                 ],
-                                weights=[0.5, 0.20, 0.15, 0.15],
+                                weights=[0.6, 0.25, 0.15],
                             )[0]
 
                             self.loop.create_task(
