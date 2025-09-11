@@ -1,4 +1,4 @@
-bittensor==9.0.3
+bittensor==9.10.1
 torch==2.6.0
 numpy==2.0.2
 wandb==0.17.2
