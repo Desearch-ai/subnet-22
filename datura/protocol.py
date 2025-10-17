@@ -185,6 +185,16 @@ class TwitterScraperUserEntities(BaseModel):
     url: Optional[TwitterScraperUserEntitiesDescription] = None
 
 
+class TwitterScraperUserProfessionalCategory(BaseModel):
+    id: int
+    name: str
+
+
+class TwitterScraperUserProfessional(BaseModel):
+    professional_type: str
+    category: List[TwitterScraperUserProfessionalCategory] = []
+
+
 class TwitterScraperUser(BaseModel):
     id: str
     url: Optional[str] = None
@@ -194,6 +204,7 @@ class TwitterScraperUser(BaseModel):
     description: Optional[str] = None
     favourites_count: Optional[int] = None
     followers_count: Optional[int] = None
+    followings_count: Optional[int] = None
     listed_count: Optional[int] = None
     media_count: Optional[int] = None
     profile_image_url: Optional[str] = None
@@ -206,6 +217,7 @@ class TwitterScraperUser(BaseModel):
     can_media_tag: Optional[bool] = None
     location: Optional[str] = None
     pinned_tweet_ids: Optional[List[str]] = None
+    professional: Optional[TwitterScraperUserProfessional] = None
 
 
 class TwitterScraperTweet(BaseModel):

@@ -708,7 +708,12 @@ async def health_check(access_key: Annotated[str | None, Header()] = None):
     if access_key != EXPECTED_ACCESS_KEY:
         raise HTTPException(status_code=401, detail="Invalid access key")
 
-    return {"status": "healthy", "version": __version__}
+    async with ValidatorServiceClient() as client:
+        try:
+            await client.get_config()
+            return {"status": "healthy", "version": __version__}
+        except aiohttp.ClientError:
+            raise HTTPException(status_code=503)
 
 
 def custom_openapi():
