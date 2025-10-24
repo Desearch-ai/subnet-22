@@ -6,12 +6,12 @@ import traceback
 import bittensor as bt
 from apify_client import ApifyClientAsync
 
-from datura.protocol import (
+from desearch.protocol import (
     TwitterScraperTweet,
     TwitterScraperMedia,
     TwitterScraperUser,
 )
-from datura.services.twitter_utils import TwitterUtils
+from desearch.services.twitter_utils import TwitterUtils
 
 
 APIFY_API_KEY = os.environ.get("APIFY_API_KEY")

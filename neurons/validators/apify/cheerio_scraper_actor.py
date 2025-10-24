@@ -2,7 +2,7 @@ import os
 from typing import List
 import bittensor as bt
 from apify_client import ApifyClientAsync
-from datura.protocol import TwitterScraperTweet
+from desearch.protocol import TwitterScraperTweet
 
 APIFY_API_KEY = os.environ.get("APIFY_API_KEY")
 

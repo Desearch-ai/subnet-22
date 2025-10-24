@@ -8,15 +8,15 @@ from itertools import cycle
 from typing import Any, Dict, List, Optional
 
 import bittensor as bt
-from datura.protocol import (
+from desearch.protocol import (
     TwitterSearchSynapse,
     TwitterIDSearchSynapse,
     TwitterURLsSearchSynapse,
 )
 from neurons.validators.utils.mock import MockRewardModel
-from datura.synapse import collect_responses
-from datura.dataset import QuestionsDataset
-from datura import QUERY_MINERS
+from desearch.synapse import collect_responses
+from desearch.dataset import QuestionsDataset
+from desearch import QUERY_MINERS
 from neurons.validators.base_validator import AbstractNeuron
 from neurons.validators.reward import RewardModelType, RewardScoringType
 from neurons.validators.reward.twitter_basic_search_content_relevance import (

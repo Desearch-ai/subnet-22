@@ -4,8 +4,8 @@ from neurons.validators.base_validator import AbstractNeuron
 from neurons.validators.utils.tasks import Task
 from neurons.validators.penalty.penalty import BasePenaltyModel, PenaltyModelType
 import bittensor as bt
-from datura.protocol import ScraperStreamingSynapse, ScraperTextRole
-from datura.utils import call_openai
+from desearch.protocol import ScraperStreamingSynapse, ScraperTextRole
+from desearch.utils import call_openai
 from neurons.validators.utils.prompts import SummaryRulePrompt
 
 MAX_PENALTY = 1.0

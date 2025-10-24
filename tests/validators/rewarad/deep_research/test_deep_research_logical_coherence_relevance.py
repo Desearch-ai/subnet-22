@@ -2,7 +2,7 @@ import unittest
 from neurons.validators.reward.deep_research_logical_coherence import (
     DeepResearchLogicalCoherenceRelevanceModel,
 )
-from datura.protocol import DeepResearchSynapse
+from desearch.protocol import DeepResearchSynapse
 from tests_data.reports.what_is_blockchain import report_what_is_blockchain
 
 

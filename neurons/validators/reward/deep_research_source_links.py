@@ -7,7 +7,7 @@ import bittensor as bt
 from neurons.validators.base_validator import AbstractNeuron
 from .config import RewardModelType
 from .reward import BaseRewardModel, BaseRewardEvent
-from datura.protocol import DeepResearchSynapse, ReportItem
+from desearch.protocol import DeepResearchSynapse, ReportItem
 from neurons.validators.utils.prompt.deep_research.deep_research_source_links_relevance_prompt import (
     DeepResearchSourceLinksRelevancePrompt,
 )

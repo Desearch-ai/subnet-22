@@ -3,7 +3,7 @@ from typing import List
 from neurons.validators.utils.tasks import Task
 from neurons.validators.penalty.penalty import BasePenaltyModel, PenaltyModelType
 import bittensor as bt
-from datura.protocol import ChatHistoryItem, ScraperStreamingSynapse, ScraperTextRole
+from desearch.protocol import ChatHistoryItem, ScraperStreamingSynapse, ScraperTextRole
 from neurons.validators.utils.prompt.chat_history_relevance_prompt import (
     ChatHistoryRelevancePrompt,
 )

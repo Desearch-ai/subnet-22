@@ -2,7 +2,7 @@ import unittest
 from neurons.validators.reward.web_basic_search_content_relevance import (
     WebBasicSearchContentRelevanceModel,
 )
-from datura.protocol import WebSearchSynapse, WebSearchValidatorResult
+from desearch.protocol import WebSearchSynapse, WebSearchValidatorResult
 from tests_data.links.links import link1, link2, link3, link4, link5
 
 

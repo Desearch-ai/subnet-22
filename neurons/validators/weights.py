@@ -21,7 +21,7 @@
 import wandb
 import torch
 import bittensor as bt
-import datura
+import desearch as datura
 import time
 import torch
 

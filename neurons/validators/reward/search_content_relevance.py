@@ -4,10 +4,10 @@ from neurons.validators.base_validator import AbstractNeuron
 from .reward import BaseRewardModel, BaseRewardEvent
 from .config import RewardModelType
 from neurons.validators.reward.reward_llm import RewardLLM
-from datura.protocol import ScraperStreamingSynapse, ScraperTextRole
+from desearch.protocol import ScraperStreamingSynapse, ScraperTextRole
 import traceback
 import bittensor as bt
-from datura.utils import clean_text
+from desearch.utils import clean_text
 from neurons.validators.apify.cheerio_scraper_actor import CheerioScraperActor
 from neurons.validators.apify.reddit_scraper_actor import RedditScraperActor
 from neurons.validators.apify.utils import scrape_links_with_retries

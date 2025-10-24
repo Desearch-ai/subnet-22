@@ -1,6 +1,6 @@
 import bittensor as bt
 from starlette.types import Send
-from datura.protocol import (
+from desearch.protocol import (
     DeepResearchSynapse,
     ReportItem,
 )

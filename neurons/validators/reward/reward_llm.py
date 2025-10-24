@@ -7,10 +7,10 @@ import asyncio
 import bittensor as bt
 import re
 import time
-from datura.utils import call_openai, call_chutes
+from desearch.utils import call_openai, call_chutes
 from transformers import AutoTokenizer, AutoModelForCausalLM
-from datura.synapse import collect_responses
-from datura.protocol import ScoringModel
+from desearch.synapse import collect_responses
+from desearch.protocol import ScoringModel
 
 from neurons.validators.utils.prompts import ScoringPrompt
 

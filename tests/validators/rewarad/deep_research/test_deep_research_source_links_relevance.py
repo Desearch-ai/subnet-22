@@ -2,7 +2,7 @@ import unittest
 from neurons.validators.reward.deep_research_source_links import (
     DeepResearchSourceLinksRelevanceModel,
 )
-from datura.protocol import ReportItem
+from desearch.protocol import ReportItem
 from tests_data.reports.what_is_blockchain import report_what_is_blockchain
 
 

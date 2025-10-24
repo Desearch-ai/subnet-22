@@ -1,7 +1,7 @@
 import os
 import bittensor as bt
-from datura.protocol import WebSearchSynapse, WebSearchResult
-from datura.tools.search.serp_api_wrapper import SerpAPIWrapper
+from desearch.protocol import WebSearchSynapse, WebSearchResult
+from desearch.tools.search.serp_api_wrapper import SerpAPIWrapper
 
 
 SERPAPI_API_KEY = os.environ.get("SERPAPI_API_KEY")

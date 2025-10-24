@@ -4,7 +4,7 @@ import random
 import json
 import jsonpickle
 from typing import List, Dict
-from datura.redis.redis_client import redis_client
+from desearch.redis.redis_client import redis_client
 
 
 class OrganicHistoryMixin:

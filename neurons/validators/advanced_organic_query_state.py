@@ -1,8 +1,8 @@
 from typing import List
 import random
 
-from datura.protocol import ScraperStreamingSynapse
-from datura.dataset.date_filters import DateFilter, DateFilterType
+from desearch.protocol import ScraperStreamingSynapse
+from desearch.dataset.date_filters import DateFilter, DateFilterType
 from neurons.validators.base_organic_query_state import BaseOrganicQueryState
 
 

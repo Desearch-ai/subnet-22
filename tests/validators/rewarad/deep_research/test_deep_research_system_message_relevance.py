@@ -3,7 +3,7 @@ from neurons.validators.reward.deep_research_system_message import (
     DeepResearchSystemMessageRelevanceModel,
 )
 from tests_data.reports.what_is_blockchain import report_what_is_blockchain
-from datura.protocol import DeepResearchSynapse
+from desearch.protocol import DeepResearchSynapse
 
 
 class DeepResearchSystemMessageRelevanceModelTestCase(unittest.IsolatedAsyncioTestCase):

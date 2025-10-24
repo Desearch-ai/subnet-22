@@ -8,9 +8,9 @@ from pydantic import BaseModel, Field, conint
 from fastapi.responses import StreamingResponse
 from fastapi import FastAPI, HTTPException, Header, Query, Path
 from neurons.validators.env import PORT, EXPECTED_ACCESS_KEY
-from datura import __version__
-from datura.dataset.date_filters import DateFilterType
-from datura.protocol import (
+from desearch import __version__
+from desearch.dataset.date_filters import DateFilterType
+from desearch.protocol import (
     ChatHistoryItem,
     Model,
     TwitterScraperTweet,

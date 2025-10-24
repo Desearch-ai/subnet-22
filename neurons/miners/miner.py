@@ -5,7 +5,7 @@ import wandb
 import json
 import pathlib
 import asyncio
-import datura
+import desearch as datura
 import argparse
 import threading
 import traceback
@@ -19,9 +19,9 @@ from abc import ABC, abstractmethod
 from neurons.miners.config import get_config, check_config
 from typing import Dict, Tuple
 
-from datura.utils import get_version
+from desearch.utils import get_version
 
-from datura.protocol import (
+from desearch.protocol import (
     IsAlive,
     ScraperStreamingSynapse,
     TwitterSearchSynapse,

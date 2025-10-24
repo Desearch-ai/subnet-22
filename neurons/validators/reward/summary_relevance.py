@@ -25,9 +25,9 @@ from neurons.validators.reward.config import RewardModelType
 from neurons.validators.reward.reward import BaseRewardModel, BaseRewardEvent
 from neurons.validators.utils.prompts import SummaryRelevancePrompt
 from neurons.validators.reward.reward_llm import RewardLLM
-from datura.protocol import ScraperStreamingSynapse, ScraperTextRole
-from datura.services.web_search_utils import WebSearchUtils
-from datura.protocol import ResultType
+from desearch.protocol import ScraperStreamingSynapse, ScraperTextRole
+from desearch.services.web_search_utils import WebSearchUtils
+from desearch.protocol import ResultType
 
 
 class SummaryRelevanceRewardModel(BaseRewardModel):

@@ -11,9 +11,9 @@ import bittensor as bt
 from neurons.validators.base_validator import AbstractNeuron
 from .config import RewardModelType
 from .reward import BaseRewardModel, BaseRewardEvent
-from datura.protocol import WebSearchSynapse, WebSearchValidatorResult
-from datura.services.twitter_utils import TwitterUtils
-from datura.utils import is_valid_web_search_result
+from desearch.protocol import WebSearchSynapse, WebSearchValidatorResult
+from desearch.services.twitter_utils import TwitterUtils
+from desearch.utils import is_valid_web_search_result
 from neurons.validators.apify.cheerio_scraper_actor import CheerioScraperActor
 from neurons.validators.apify.reddit_scraper_actor import RedditScraperActor
 from neurons.validators.apify.utils import scrape_links_with_retries

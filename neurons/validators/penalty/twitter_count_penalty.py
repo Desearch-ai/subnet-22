@@ -4,7 +4,7 @@ from neurons.validators.base_validator import AbstractNeuron
 from neurons.validators.utils.tasks import Task
 from neurons.validators.penalty.penalty import BasePenaltyModel, PenaltyModelType
 import bittensor as bt
-from datura.protocol import TwitterSearchSynapse
+from desearch.protocol import TwitterSearchSynapse
 
 MAX_PENALTY = 1.0
 

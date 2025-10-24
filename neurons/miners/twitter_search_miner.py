@@ -1,5 +1,5 @@
 import bittensor as bt
-from datura.protocol import (
+from desearch.protocol import (
     TwitterSearchSynapse,
     TwitterIDSearchSynapse,
     TwitterURLsSearchSynapse,
