@@ -1,4 +1,4 @@
-from enum import Enum, auto
+from enum import Enum
 import random
 from datetime import datetime, timedelta
 import pytz

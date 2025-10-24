@@ -1,9 +1,5 @@
 import random
-import datetime
 import bittensor as bt
-
-# from datasets import load_dataset
-# from bs4 import BeautifulSoup
 import time
 import requests
 import html
@@ -11,13 +7,10 @@ from desearch.utils import call_openai
 from faker import Faker
 from faker.providers import company, address, person, lorem, geo, currency
 
-# import json
-
 
 class MockTwitterQuestionsDataset:
     def __init__(self):
         # Extended list of templates for questions
-
         self.question_templates = [
             "What's currently trending about {} on Twitter?",
             "Could you provide the latest updates on {}?",
@@ -1218,114 +1211,6 @@ class MockTwitterQuestionsDataset:
         return self.generate_question()
 
 
-class StackOverflowDataset:
-    def __init__(self):
-        self.questions = []
-
-    def get_stack_questions(self):
-        url = "https://api.stackexchange.com/2.3/questions"
-
-        params = {
-            "order": "desc",
-            "sort": "votes",  # Sorting by votes means that it's likely that the same questions will be fetched again
-            "site": "stackoverflow",
-            "pagesize": 100,  # Fetch 100 questions per API call
-            "page": random.randint(1, 25),  # Max 25 questions allowed on free API
-        }
-
-        # Fetch questions
-        response = requests.get(url, params=params)
-        response.raise_for_status()
-
-        # Parse response
-        questions = response.json()["items"]
-
-        # Filter questions by minimum upvotes
-        min_upvotes = 10
-        filtered_questions = [q for q in questions if q["score"] >= min_upvotes]
-        # Shuffle the questions
-        random.shuffle(filtered_questions)
-
-        # Add the questions to the list of questions
-        self.questions.extend(filtered_questions)
-        return
-
-    def get_stack_question(self) -> dict:
-        # If the list of questions is empty, fetch more questions
-        if not self.questions:
-            self.get_stack_questions()
-        question = self.questions.pop()
-        return question["title"]
-
-    def next(self):
-        bt.logging.debug("Retrieving data from prompting.dataset...")
-        t0 = time.time()
-        question = self.get_stack_question()
-        fetch_time = time.time() - t0
-        return html.unescape(question)
-
-
-class MockDiscordQuestionsDataset:
-    def __init__(self):
-        self.question_templates = [
-            "What are the recent announcements in #alpha",  # in:alpha announcements
-            "What are the recent announcements in #announcements",  # in:announcements
-            "Tell me the recent news about bittensor",  # bittensor news
-            "What @professor is asking in subnet 22",  # from:professor in:22
-            "What is latest release version of Bittensor?",  # bittensor release
-            "What are the Hyper parameters of subnet 22?",  # hyper parameters in:22
-            "What people are talking about TAO wallet?",  # TAO wallet
-            "Axon configurations in translation subnet",  # axon config in:translation
-            "What are the recent discussions about the new bittensor server update?",  # bittensor server update
-            "How do I configure my axon for the image classification subnet?",  # axon image classification
-            "What are people saying about the new Desearch tokenomics proposal?",  # Desearch tokenomics
-            "Has there been any news on the upcoming Bittensor hackathon?",  # bittensor hackathon
-            "What are the system requirements for running a full Desearch node?",  # system requirements chi model
-            "How can I stake my TAO tokens and earn rewards?",  # stake tao tokens
-            "What are the latest performance benchmarks for different subnet configurations?",  # performance benchmarks days_before:3d
-            "Are there any updates on the integration with other AI platforms?",  # bittensor integrations
-            "What's the best way to contribute to the Bittensor codebase as a developer?",  # contribute bittensor codebase
-            "What people discussed today?",  # days_before:1d
-            "How can we deploy a subnet",  # subnet deployment or deploy subnet
-            "Test network",  # test network
-            "Which subnets has implementation of Youtube Search tool?",  # subnet youtube search
-            "Which subnets can interact with Google",  # subnet google
-            "Is there any subnet that generates images?",  # subnet image generation
-            "When testnet will be fixed?",  # testnet issue
-            "Whats the best image generation tool on bittensor?",  # image generation tool
-        ]
-
-    def generate_question(self):
-        template = random.choice(self.question_templates)
-        return template
-
-    def next(self):
-        return self.generate_question()
-
-
-class MockBittensiorQuestionsDataset:
-    def __init__(self):
-        self.question_templates = [
-            "How to install Bittensor?",
-            "How to install Bittensor on M2?",
-            "How can i use Bittensor CLI?",
-            "What is purpose of subnet 22?",
-            "How to create a wallet with bittensor CLI?",
-            "How emissions works on Bittensor?",
-            "What is Yuma Consensus, and how it works",
-            "How the Senate operates?",
-            "List basic subnet tutorials",
-            "What are subtensor node requirements?",
-        ]
-
-    def generate_question(self):
-        template = random.choice(self.question_templates)
-        return template
-
-    def next(self):
-        return self.generate_question()
-
-
 class QuestionsDataset:
     def __init__(self) -> None:
         self.datasets = [
@@ -1333,7 +1218,6 @@ class QuestionsDataset:
             MockTwitterQuestionsDataset(),
             MockTwitterQuestionsDataset(),
             MockTwitterQuestionsDataset(),
-            # StackOverflowDataset(),
         ]
         self.faker = Faker()
         # Removed commerce provider
@@ -1463,15 +1347,7 @@ class QuestionsDataset:
 
     def next(self):
         random_dataset = random.choice(self.datasets)
-        if isinstance(random_dataset, StackOverflowDataset):
-            try:
-                return random_dataset.next()
-            except Exception as e:
-                print(f"Error with StackOverflowDataset: {e}")
-                fallback_dataset = MockTwitterQuestionsDataset()
-                return fallback_dataset.next()
-        else:
-            return random_dataset.next()
+        return random_dataset.next()
 
     async def generate_basic_question_with_openai(self):
         try:
