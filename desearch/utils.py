@@ -107,7 +107,7 @@ async def call_openai(messages, temperature, model, seed=1234, response_format=N
 
 # Github unauthorized rate limit of requests per hour is 60. Authorized is 5000.
 def get_version(line_number=22):
-    url = f"https://api.github.com/repos/datura-ai/desearch/contents/datura/__init__.py"
+    url = f"https://api.github.com/repos/Desearch-ai/subnet-22/contents/desearch/__init__.py"
     response = requests.get(url)
     if response.status_code == 200:
         content = response.json()["content"]

@@ -38,13 +38,13 @@ from neurons.miners.web_search_miner import WebSearchMiner
 OpenAI.api_key = os.environ.get("OPENAI_API_KEY")
 if not OpenAI.api_key:
     raise ValueError(
-        "Please set the OPENAI_API_KEY environment variable. See here: https://github.com/Datura-ai/desearch/blob/main/docs/env_variables.md"
+        "Please set the OPENAI_API_KEY environment variable. See here: https://github.com/Desearch-ai/subnet-22/blob/main/docs/env_variables.md"
     )
 
 TWITTER_BEARER_TOKEN = os.environ.get("TWITTER_BEARER_TOKEN")
 if not TWITTER_BEARER_TOKEN:
     raise ValueError(
-        "Please set the TWITTER_BEARER_TOKEN environment variable. See here: https://github.com/Datura-ai/desearch/blob/main/docs/env_variables.md"
+        "Please set the TWITTER_BEARER_TOKEN environment variable. See here: https://github.com/Desearch-ai/subnet-22/blob/main/docs/env_variables.md"
     )
 
 netrc_path = pathlib.Path.home() / ".netrc"

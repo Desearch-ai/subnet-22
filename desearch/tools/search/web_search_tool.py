@@ -12,7 +12,7 @@ SERPAPI_API_KEY = os.environ.get("SERPAPI_API_KEY")
 
 if not SERPAPI_API_KEY:
     raise ValueError(
-        "Please set the SERPAPI_API_KEY environment variable. See here: https://github.com/Datura-ai/desearch/blob/main/docs/env_variables.md"
+        "Please set the SERPAPI_API_KEY environment variable. See here: https://github.com/Desearch-ai/subnet-22/blob/main/docs/env_variables.md"
     )
 
 

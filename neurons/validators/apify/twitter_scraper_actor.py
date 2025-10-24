@@ -19,7 +19,7 @@ APIFY_API_KEY = os.environ.get("APIFY_API_KEY")
 # todo at ths moment just warning, later it will be required
 if not APIFY_API_KEY:
     raise ValueError(
-        "Please set the APIFY_API_KEY environment variable. See here: https://github.com/Datura-ai/desearch/blob/main/docs/env_variables.md"
+        "Please set the APIFY_API_KEY environment variable. See here: https://github.com/Desearch-ai/subnet-22/blob/main/docs/env_variables.md"
     )
 
 
@@ -110,7 +110,7 @@ class TwitterScraperActor:
     ) -> List[TwitterScraperTweet]:
         if not APIFY_API_KEY:
             bt.logging.warning(
-                "Please set the APIFY_API_KEY environment variable. See here: https://github.com/Datura-ai/desearch/blob/main/docs/env_variables.md. This will be required in the next release."
+                "Please set the APIFY_API_KEY environment variable. See here: https://github.com/Desearch-ai/subnet-22/blob/main/docs/env_variables.md. This will be required in the next release."
             )
             return []
         try:
@@ -183,7 +183,7 @@ class TwitterScraperActor:
         withinRadius: Optional[str] = None,
     ) -> dict:
         if not APIFY_API_KEY:
-            error = "Please set the APIFY_API_KEY environment variable. See here: https://github.com/Datura-ai/desearch/blob/main/docs/env_variables.md. This will be required in the next release."
+            error = "Please set the APIFY_API_KEY environment variable. See here: https://github.com/Desearch-ai/subnet-22/blob/main/docs/env_variables.md. This will be required in the next release."
             bt.logging.warning(error)
             return {"error": error}
         try:
@@ -245,7 +245,7 @@ class TwitterScraperActor:
         id: str,
     ) -> dict:
         if not APIFY_API_KEY:
-            error = "Please set the APIFY_API_KEY environment variable. See here: https://github.com/Datura-ai/desearch/blob/main/docs/env_variables.md. This will be required in the next release."
+            error = "Please set the APIFY_API_KEY environment variable. See here: https://github.com/Desearch-ai/subnet-22/blob/main/docs/env_variables.md. This will be required in the next release."
             bt.logging.warning(error)
             return {"error": error}
         try:
@@ -284,7 +284,7 @@ class TwitterScraperActor:
         username: str,
     ) -> dict:
         if not APIFY_API_KEY:
-            error = "Please set the APIFY_API_KEY environment variable. See here: https://github.com/Datura-ai/desearch/blob/main/docs/env_variables.md. This will be required in the next release."
+            error = "Please set the APIFY_API_KEY environment variable. See here: https://github.com/Desearch-ai/subnet-22/blob/main/docs/env_variables.md. This will be required in the next release."
             bt.logging.warning(error)
             return {"error": error}
         try:
@@ -326,7 +326,7 @@ class TwitterScraperActor:
         maxUsersPerQuery: Optional[int] = 10,
     ) -> dict:
         if not APIFY_API_KEY:
-            error = "Please set the APIFY_API_KEY environment variable. See here: https://github.com/Datura-ai/desearch/blob/main/docs/env_variables.md. This will be required in the next release."
+            error = "Please set the APIFY_API_KEY environment variable. See here: https://github.com/Desearch-ai/subnet-22/blob/main/docs/env_variables.md. This will be required in the next release."
             bt.logging.warning(error)
             return {"error": error}
         try:
@@ -366,7 +366,7 @@ class TwitterScraperActor:
         maxUsersPerQuery: Optional[int] = 10,
     ) -> dict:
         if not APIFY_API_KEY:
-            error = "Please set the APIFY_API_KEY environment variable. See here: https://github.com/Datura-ai/desearch/blob/main/docs/env_variables.md. This will be required in the next release."
+            error = "Please set the APIFY_API_KEY environment variable. See here: https://github.com/Desearch-ai/subnet-22/blob/main/docs/env_variables.md. This will be required in the next release."
             bt.logging.warning(error)
             return {"error": error}
         try:

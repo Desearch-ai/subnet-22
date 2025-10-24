@@ -16,7 +16,7 @@ class CheerioScraperActor:
     async def scrape_metadata(self, urls: List[str]) -> List[TwitterScraperTweet]:
         if not APIFY_API_KEY:
             bt.logging.warning(
-                "Please set the APIFY_API_KEY environment variable. See here: https://github.com/Datura-ai/desearch/blob/main/docs/env_variables.md. This will be required in the next release."
+                "Please set the APIFY_API_KEY environment variable. See here: https://github.com/Desearch-ai/subnet-22/blob/main/docs/env_variables.md. This will be required in the next release."
             )
             return []
 

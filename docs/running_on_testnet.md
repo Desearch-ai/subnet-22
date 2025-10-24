@@ -7,7 +7,7 @@ This tutorial shows how to use the bittensor testnetwork to create a subnetwork 
 This clones and installs the datura if you dont already have it (if you do, skip this step)
 ```bash
 cd .. # back out of the subtensor repo
-git clone https://github.com/Datura-ai/desearch.git # Clone the desearch repo
+git clone https://github.com/Desearch-ai/subnet-22.git # Clone the desearch repo
 cd desearch # Enter the  desearch  repo
 python -m pip install -e . # Install the  desearch  package
 ```

@@ -93,7 +93,7 @@ class RewardLLM:
         try:
             if not URL_SUBNET_18:
                 bt.logging.warning(
-                    "Please set the URL_SUBNET_18 environment variable. See here: https://github.com/Datura-ai/desearch/blob/main/docs/env_variables.md"
+                    "Please set the URL_SUBNET_18 environment variable. See here: https://github.com/Desearch-ai/subnet-22/blob/main/docs/env_variables.md"
                 )
                 return None
 
