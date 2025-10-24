@@ -720,12 +720,12 @@ def custom_openapi():
     if app.openapi_schema:
         return app.openapi_schema
     openapi_schema = get_openapi(
-        title="Datura API",
+        title="Desearch API",
         version="1.0.0",
         summary="API for searching across multiple platforms",
         routes=app.routes,
         servers=[
-            {"url": "http://localhost:8005", "description": "Datura API"},
+            {"url": "http://localhost:8005", "description": "Desearch API"},
         ],
     )
     openapi_schema["info"]["x-logo"] = {

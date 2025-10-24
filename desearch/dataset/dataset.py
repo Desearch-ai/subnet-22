@@ -1278,9 +1278,9 @@ class MockDiscordQuestionsDataset:
             "Axon configurations in translation subnet",  # axon config in:translation
             "What are the recent discussions about the new bittensor server update?",  # bittensor server update
             "How do I configure my axon for the image classification subnet?",  # axon image classification
-            "What are people saying about the new Datura tokenomics proposal?",  # datura tokenomics
+            "What are people saying about the new Desearch tokenomics proposal?",  # Desearch tokenomics
             "Has there been any news on the upcoming Bittensor hackathon?",  # bittensor hackathon
-            "What are the system requirements for running a full datura node?",  # system requirements chi model
+            "What are the system requirements for running a full Desearch node?",  # system requirements chi model
             "How can I stake my TAO tokens and earn rewards?",  # stake tao tokens
             "What are the latest performance benchmarks for different subnet configurations?",  # performance benchmarks days_before:3d
             "Are there any updates on the integration with other AI platforms?",  # bittensor integrations
