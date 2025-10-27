@@ -1,12 +1,12 @@
 import traceback
 import bittensor as bt
 from starlette.types import Send
-from datura.protocol import (
+from desearch.protocol import (
     ScraperStreamingSynapse,
     ResultType,
 )
-from datura.tools.tool_manager import ToolManager
-from datura.dataset.date_filters import (
+from desearch.tools.tool_manager import ToolManager
+from desearch.dataset.date_filters import (
     DateFilter,
     DateFilterType,
     get_specified_date_filter,

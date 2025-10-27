@@ -21,7 +21,7 @@ import random
 from dataclasses import dataclass, field
 from abc import ABC, abstractmethod
 from typing import List
-from datura.protocol import TwitterPromptAnalysisResult
+from desearch.protocol import TwitterPromptAnalysisResult
 from .criteria import (
     TaskCriterion,
 )

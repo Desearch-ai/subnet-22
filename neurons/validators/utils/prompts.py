@@ -20,7 +20,7 @@ import re
 import random
 from typing import List, Optional
 import json
-from datura.protocol import ResultType, ScraperTextRole
+from desearch.protocol import ResultType, ScraperTextRole
 
 
 class BasePrompt:

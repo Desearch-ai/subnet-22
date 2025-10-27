@@ -28,13 +28,13 @@ import bittensor as bt
 from neurons.validators.base_validator import AbstractNeuron
 from .config import RewardModelType
 from .reward import BaseRewardModel, BaseRewardEvent
-from datura.protocol import (
+from desearch.protocol import (
     TwitterSearchSynapse,
     TwitterIDSearchSynapse,
     TwitterURLsSearchSynapse,
 )
-from datura.services.twitter_utils import TwitterUtils
-from datura.utils import (
+from desearch.services.twitter_utils import TwitterUtils
+from desearch.utils import (
     clean_text,
     format_text_for_match,
     is_valid_tweet,

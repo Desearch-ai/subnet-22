@@ -1,6 +1,6 @@
 import unittest
 from neurons.miners.twitter_search_miner import TwitterSearchMiner
-from datura.protocol import (
+from desearch.protocol import (
     TwitterSearchSynapse,
     TwitterIDSearchSynapse,
     TwitterURLsSearchSynapse,

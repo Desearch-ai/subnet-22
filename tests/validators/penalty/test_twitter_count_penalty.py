@@ -1,6 +1,6 @@
 import unittest
 from neurons.validators.penalty.twitter_count_penalty import TwitterCountPenaltyModel
-from datura.protocol import TwitterSearchSynapse, TwitterIDSearchSynapse
+from desearch.protocol import TwitterSearchSynapse, TwitterIDSearchSynapse
 import torch
 
 

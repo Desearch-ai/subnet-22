@@ -4,7 +4,7 @@ from datetime import datetime
 import pytz
 import json
 import jsonpickle
-from datura.redis.redis_client import redis_client
+from desearch.redis.redis_client import redis_client
 
 
 class BaseOrganicQueryState:

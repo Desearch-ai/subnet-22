@@ -1,6 +1,6 @@
 import unittest
 from neurons.validators.penalty.miner_score_penalty import MinerScorePenaltyModel
-from datura.protocol import (
+from desearch.protocol import (
     ScraperTextRole,
     ScraperStreamingSynapse,
     ContextualRelevance,

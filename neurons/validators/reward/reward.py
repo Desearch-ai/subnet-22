@@ -21,7 +21,7 @@ import bittensor as bt
 from typing import List, Union
 from abc import abstractmethod
 from dataclasses import dataclass, asdict, fields
-from datura.protocol import (
+from desearch.protocol import (
     ScraperStreamingSynapse,
     TwitterSearchSynapse,
     DeepResearchSynapse,

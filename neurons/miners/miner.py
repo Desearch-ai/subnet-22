@@ -5,7 +5,7 @@ import wandb
 import json
 import pathlib
 import asyncio
-import datura
+import desearch
 import argparse
 import threading
 import traceback
@@ -19,9 +19,9 @@ from abc import ABC, abstractmethod
 from neurons.miners.config import get_config, check_config
 from typing import Dict, Tuple
 
-from datura.utils import get_version
+from desearch.utils import get_version
 
-from datura.protocol import (
+from desearch.protocol import (
     IsAlive,
     ScraperStreamingSynapse,
     TwitterSearchSynapse,
@@ -38,13 +38,13 @@ from neurons.miners.web_search_miner import WebSearchMiner
 OpenAI.api_key = os.environ.get("OPENAI_API_KEY")
 if not OpenAI.api_key:
     raise ValueError(
-        "Please set the OPENAI_API_KEY environment variable. See here: https://github.com/Datura-ai/desearch/blob/main/docs/env_variables.md"
+        "Please set the OPENAI_API_KEY environment variable. See here: https://github.com/Desearch-ai/subnet-22/blob/main/docs/env_variables.md"
     )
 
 TWITTER_BEARER_TOKEN = os.environ.get("TWITTER_BEARER_TOKEN")
 if not TWITTER_BEARER_TOKEN:
     raise ValueError(
-        "Please set the TWITTER_BEARER_TOKEN environment variable. See here: https://github.com/Datura-ai/desearch/blob/main/docs/env_variables.md"
+        "Please set the TWITTER_BEARER_TOKEN environment variable. See here: https://github.com/Desearch-ai/subnet-22/blob/main/docs/env_variables.md"
     )
 
 netrc_path = pathlib.Path.home() / ".netrc"
@@ -200,13 +200,13 @@ class StreamMiner(ABC):
             hotkey = synapse.dendrite.hotkey
             synapse_type = type(synapse).__name__
 
-            if hotkey in datura.BLACKLISTED_KEYS:
+            if hotkey in desearch.BLACKLISTED_KEYS:
                 return True, f"Blacklisted a {synapse_type} request from {hotkey}"
 
-            # if hotkey in datura.WHITELISTED_KEYS:
+            # if hotkey in desearch.WHITELISTED_KEYS:
             #     return False, f"accepting {synapse_type} request from {hotkey}"
 
-            # if hotkey not in datura.valid_validators:
+            # if hotkey not in desearch.valid_validators:
             #     return (
             #         True,
             #         f"Blacklisted a {synapse_type} request from a non-valid hotkey: {hotkey}",
@@ -220,7 +220,7 @@ class StreamMiner(ABC):
                     axon = _axon
                     break
 
-            if uid is None and datura.ALLOW_NON_REGISTERED == False:
+            if uid is None and desearch.ALLOW_NON_REGISTERED == False:
                 return (
                     True,
                     f"Blacklisted a non registered hotkey's {synapse_type} request from {hotkey}",
@@ -236,7 +236,7 @@ class StreamMiner(ABC):
                         f"Blacklisted a low stake {synapse_type} request: {tao} < {blacklist_amt} from {hotkey}",
                     )
 
-            time_window = datura.MIN_REQUEST_PERIOD * 60
+            time_window = desearch.MIN_REQUEST_PERIOD * 60
             current_time = time.time()
 
             if hotkey not in self.request_timestamps:
@@ -250,10 +250,10 @@ class StreamMiner(ABC):
                 self.request_timestamps[hotkey].popleft()
 
             # Check if the number of requests exceeds the limit
-            if len(self.request_timestamps[hotkey]) >= datura.MAX_REQUESTS:
+            if len(self.request_timestamps[hotkey]) >= desearch.MAX_REQUESTS:
                 return (
                     True,
-                    f"Request frequency for {hotkey} exceeded: {len(self.request_timestamps[hotkey])} requests in {datura.MIN_REQUEST_PERIOD} minutes. Limit is {datura.MAX_REQUESTS} requests.",
+                    f"Request frequency for {hotkey} exceeded: {len(self.request_timestamps[hotkey])} requests in {desearch.MIN_REQUEST_PERIOD} minutes. Limit is {desearch.MAX_REQUESTS} requests.",
                 )
 
             self.request_timestamps[hotkey].append(current_time)
@@ -264,7 +264,7 @@ class StreamMiner(ABC):
             bt.logging.error(f"errror in blacklist {traceback.format_exc()}")
 
     def blacklist_is_alive(self, synapse: IsAlive) -> Tuple[bool, str]:
-        blacklist = self.base_blacklist(synapse, datura.ISALIVE_BLACKLIST_STAKE)
+        blacklist = self.base_blacklist(synapse, desearch.ISALIVE_BLACKLIST_STAKE)
         bt.logging.debug(blacklist[1])
         return blacklist
 
@@ -272,14 +272,14 @@ class StreamMiner(ABC):
         self, synapse: ScraperStreamingSynapse
     ) -> Tuple[bool, str]:
         blacklist = self.base_blacklist(
-            synapse, datura.TWITTER_SCRAPPER_BLACKLIST_STAKE
+            synapse, desearch.TWITTER_SCRAPPER_BLACKLIST_STAKE
         )
         bt.logging.info(blacklist[1])
         return blacklist
 
     def blacklist_deep_research(self, synapse: DeepResearchSynapse) -> Tuple[bool, str]:
         blacklist = self.base_blacklist(
-            synapse, datura.TWITTER_SCRAPPER_BLACKLIST_STAKE
+            synapse, desearch.TWITTER_SCRAPPER_BLACKLIST_STAKE
         )
         bt.logging.info(blacklist[1])
         return blacklist
@@ -288,7 +288,7 @@ class StreamMiner(ABC):
         self, synapse: TwitterSearchSynapse
     ) -> Tuple[bool, str]:
         blacklist = self.base_blacklist(
-            synapse, datura.TWITTER_SCRAPPER_BLACKLIST_STAKE
+            synapse, desearch.TWITTER_SCRAPPER_BLACKLIST_STAKE
         )
         bt.logging.info(blacklist[1])
         return blacklist
@@ -297,7 +297,7 @@ class StreamMiner(ABC):
         self, synapse: TwitterIDSearchSynapse
     ) -> Tuple[bool, str]:
         blacklist = self.base_blacklist(
-            synapse, datura.TWITTER_SCRAPPER_BLACKLIST_STAKE
+            synapse, desearch.TWITTER_SCRAPPER_BLACKLIST_STAKE
         )
         bt.logging.info(blacklist[1])
         return blacklist
@@ -306,14 +306,14 @@ class StreamMiner(ABC):
         self, synapse: TwitterURLsSearchSynapse
     ) -> Tuple[bool, str]:
         blacklist = self.base_blacklist(
-            synapse, datura.TWITTER_SCRAPPER_BLACKLIST_STAKE
+            synapse, desearch.TWITTER_SCRAPPER_BLACKLIST_STAKE
         )
         bt.logging.info(blacklist[1])
         return blacklist
 
     def blacklist_web_search(self, synapse: WebSearchSynapse) -> Tuple[bool, str]:
         blacklist = self.base_blacklist(
-            synapse, datura.TWITTER_SCRAPPER_BLACKLIST_STAKE
+            synapse, desearch.TWITTER_SCRAPPER_BLACKLIST_STAKE
         )
         bt.logging.info(blacklist[1])
         return blacklist
@@ -545,7 +545,7 @@ def get_valid_hotkeys(config):
     while True:
         metagraph = subtensor.metagraph(config.netuid)
         try:
-            runs = api.runs(f"{datura.ENTITY}/{datura.PROJECT_NAME}")
+            runs = api.runs(f"{desearch.ENTITY}/{desearch.PROJECT_NAME}")
             latest_version = get_version()
             for run in runs:
                 if run.state == "running":

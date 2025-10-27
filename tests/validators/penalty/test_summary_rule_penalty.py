@@ -1,6 +1,6 @@
 import unittest
 from neurons.validators.penalty.summary_rule_penalty import SummaryRulePenaltyModel
-from datura.protocol import ScraperStreamingSynapse, ScraperTextRole
+from desearch.protocol import ScraperStreamingSynapse, ScraperTextRole
 import torch
 
 

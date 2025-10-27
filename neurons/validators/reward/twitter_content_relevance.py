@@ -32,21 +32,21 @@ from .reward import BaseRewardModel, BaseRewardEvent, pattern_to_check
 from neurons.validators.utils.prompts import (
     LinkContentPrompt,
 )
-from datura.protocol import (
+from desearch.protocol import (
     ScraperStreamingSynapse,
     TwitterScraperTweet,
 )
 from neurons.validators.apify.twitter_scraper_actor import TwitterScraperActor
-from datura.services.twitter_api_wrapper import TwitterAPIClient
+from desearch.services.twitter_api_wrapper import TwitterAPIClient
 from neurons.validators.reward.reward_llm import RewardLLM
 from neurons.validators.utils.prompts import LinkContentPrompt
-from datura.utils import (
+from desearch.utils import (
     clean_text,
     format_text_for_match,
     is_valid_tweet,
     scrape_tweets_with_retries,
 )
-from datura.services.twitter_utils import TwitterUtils
+from desearch.services.twitter_utils import TwitterUtils
 import json
 from datetime import datetime
 import pytz

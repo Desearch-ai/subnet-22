@@ -1,5 +1,5 @@
 from neurons.validators.utils.prompts import BasePrompt
-from datura.utils import call_openai
+from desearch.utils import call_openai
 
 
 user_template = """

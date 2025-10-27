@@ -15,7 +15,7 @@ Before starting, ensure you have:
 Clone and install the Desearch repository in editable mode:
 
 ```sh
-git clone https://github.com/Datura-ai/desearch.git
+git clone https://github.com/Desearch-ai/subnet-22.git
 cd desearch
 python -m pip install -r requirements.txt
 python -m pip install -e .

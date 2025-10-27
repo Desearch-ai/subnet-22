@@ -26,7 +26,7 @@ import json
 from neurons.validators.base_validator import AbstractNeuron
 from .config import RewardModelType
 from .reward import BaseRewardModel, BaseRewardEvent
-from datura.protocol import (
+from desearch.protocol import (
     ScraperStreamingSynapse,
     TwitterSearchSynapse,
     TwitterIDSearchSynapse,

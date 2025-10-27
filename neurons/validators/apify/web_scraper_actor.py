@@ -2,7 +2,7 @@ import os
 from typing import List
 import bittensor as bt
 from apify_client import ApifyClientAsync
-from datura.protocol import TwitterScraperTweet
+from desearch.protocol import TwitterScraperTweet
 
 APIFY_API_KEY = os.environ.get("APIFY_API_KEY")
 
@@ -16,7 +16,7 @@ class WebScraperActor:
     async def scrape_metadata(self, urls: List[str]) -> List[TwitterScraperTweet]:
         if not APIFY_API_KEY:
             bt.logging.warning(
-                "Please set the APIFY_API_KEY environment variable. See here: https://github.com/Datura-ai/desearch/blob/main/docs/env_variables.md. This will be required in the next release."
+                "Please set the APIFY_API_KEY environment variable. See here: https://github.com/Desearch-ai/subnet-22/blob/main/docs/env_variables.md. This will be required in the next release."
             )
             return []
 

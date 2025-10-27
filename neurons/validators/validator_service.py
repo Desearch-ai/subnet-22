@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 
 from neurons.validators.validator import Neuron
-from datura import QUERY_MINERS
+from desearch import QUERY_MINERS
 
 
 neuron = Neuron()

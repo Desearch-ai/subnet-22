@@ -21,7 +21,7 @@
 import wandb
 import torch
 import bittensor as bt
-import datura
+import desearch
 import time
 import torch
 
@@ -33,21 +33,21 @@ EMISSION_CONTROL_PERC = 0.8
 def init_wandb(self):
     try:
         if self.config.wandb_on:
-            run_name = f"validator-{self.uid}-{datura.__version__}"
+            run_name = f"validator-{self.uid}-{desearch.__version__}"
             self.config.uid = self.uid
             self.config.hotkey = self.wallet.hotkey.ss58_address
             self.config.run_name = run_name
-            self.config.version = datura.__version__
+            self.config.version = desearch.__version__
             self.config.type = "validator"
 
             # Initialize the wandb run for the single project
             run = wandb.init(
                 name=run_name,
-                project=datura.PROJECT_NAME,
-                entity=datura.ENTITY,
+                project=desearch.PROJECT_NAME,
+                entity=desearch.ENTITY,
                 config=self.config,
                 dir=self.config.full_path,
-                reinit=True,
+                reinit="default",
             )
 
             # Sign the run to ensure it's from the correct hotkey
@@ -55,7 +55,9 @@ def init_wandb(self):
             self.config.signature = signature
             wandb.config.update(self.config, allow_val_change=True)
 
-            bt.logging.success(f"Started wandb run for project '{datura.PROJECT_NAME}'")
+            bt.logging.success(
+                f"Started wandb run for project '{desearch.PROJECT_NAME}'"
+            )
     except Exception as e:
         bt.logging.error(f"Error in init_wandb: {e}")
         raise
@@ -95,7 +97,7 @@ def set_weights_with_retry(self, processed_weight_uids, processed_weights):
             processed_weight_uids,
             processed_weights,
             self.config,
-            datura.__weights_version__,
+            desearch.__weights_version__,
         )
 
         if success:

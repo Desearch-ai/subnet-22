@@ -6,6 +6,7 @@ desearch.egg-info/
 smart-scrape_template.egg-info/
 smart-scrape.egg-info/
 datura/__pycache__/
+desearch/__pycache__/
 __pycache__/
 *.pyc
 wandb/

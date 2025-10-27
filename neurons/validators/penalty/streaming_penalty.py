@@ -3,7 +3,7 @@ from typing import List
 from neurons.validators.utils.tasks import Task
 from neurons.validators.penalty.penalty import BasePenaltyModel, PenaltyModelType
 import bittensor as bt
-from datura.protocol import ScraperStreamingSynapse
+from desearch.protocol import ScraperStreamingSynapse
 import tiktoken
 
 

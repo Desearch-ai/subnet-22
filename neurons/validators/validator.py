@@ -12,10 +12,10 @@ import time
 import sys
 import itertools
 
-from datura.protocol import IsAlive
-from datura.bittensor.dendrite import Dendrite
-from datura.bittensor.subtensor import Subtensor
-from datura.bittensor.wallet import Wallet
+from desearch.protocol import IsAlive
+from desearch.bittensor.dendrite import Dendrite
+from desearch.bittensor.subtensor import Subtensor
+from desearch.bittensor.wallet import Wallet
 from neurons.validators.advanced_scraper_validator import AdvancedScraperValidator
 from neurons.validators.basic_scraper_validator import BasicScraperValidator
 from neurons.validators.basic_web_scraper_validator import BasicWebScraperValidator
@@ -25,14 +25,17 @@ from neurons.validators.validator_service_client import ValidatorServiceClient
 from neurons.validators.weights import init_wandb, set_weights, get_weights
 from traceback import print_exception
 from neurons.validators.base_validator import AbstractNeuron
-from datura import QUERY_MINERS
-from datura.utils import (
+from desearch import QUERY_MINERS
+from desearch.utils import (
     resync_metagraph,
     save_logs_in_chunks,
     save_logs_in_chunks_for_deep_research,
 )
-from datura.redis.utils import load_moving_averaged_scores, save_moving_averaged_scores
-from datura.redis.redis_client import initialize_redis
+from desearch.redis.utils import (
+    load_moving_averaged_scores,
+    save_moving_averaged_scores,
+)
+from desearch.redis.redis_client import initialize_redis
 from neurons.validators.proxy.uid_manager import UIDManager
 from neurons.validators.synthetic_query_runner import SyntheticQueryRunnerMixin
 

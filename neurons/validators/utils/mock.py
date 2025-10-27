@@ -19,7 +19,7 @@
 import torch
 from typing import Union, List
 from neurons.validators.reward import BaseRewardModel, BaseRewardEvent
-from datura.protocol import ScraperStreamingSynapse
+from desearch.protocol import ScraperStreamingSynapse
 
 
 class MockRewardModel(BaseRewardModel):

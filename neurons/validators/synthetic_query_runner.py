@@ -1,7 +1,7 @@
 import asyncio
 import random
 import bittensor as bt
-from datura import QUERY_MINERS
+from desearch import QUERY_MINERS
 import traceback
 import time
 

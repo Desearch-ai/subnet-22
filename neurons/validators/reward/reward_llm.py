@@ -7,10 +7,10 @@ import asyncio
 import bittensor as bt
 import re
 import time
-from datura.utils import call_openai, call_chutes
+from desearch.utils import call_openai, call_chutes
 from transformers import AutoTokenizer, AutoModelForCausalLM
-from datura.synapse import collect_responses
-from datura.protocol import ScoringModel
+from desearch.synapse import collect_responses
+from desearch.protocol import ScoringModel
 
 from neurons.validators.utils.prompts import ScoringPrompt
 
@@ -93,7 +93,7 @@ class RewardLLM:
         try:
             if not URL_SUBNET_18:
                 bt.logging.warning(
-                    "Please set the URL_SUBNET_18 environment variable. See here: https://github.com/Datura-ai/desearch/blob/main/docs/env_variables.md"
+                    "Please set the URL_SUBNET_18 environment variable. See here: https://github.com/Desearch-ai/subnet-22/blob/main/docs/env_variables.md"
                 )
                 return None
 

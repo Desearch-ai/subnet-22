@@ -4,19 +4,19 @@ import asyncio
 import time
 from typing import List, Optional
 import bittensor as bt
-from datura.stream import collect_final_synapses
+from desearch.stream import collect_final_synapses
 from neurons.validators.reward import RewardModelType, RewardScoringType
 from neurons.validators.reward.config import DefaultRewardFrameworkConfig
 from neurons.validators.utils.mock import MockRewardModel
 
-from datura.dataset import QuestionsDataset
-from datura.dataset.date_filters import (
+from desearch.dataset import QuestionsDataset
+from desearch.dataset.date_filters import (
     get_random_date_filter,
     get_specified_date_filter,
     DateFilterType,
 )
-from datura import QUERY_MINERS
-from datura.protocol import DeepResearchSynapse
+from desearch import QUERY_MINERS
+from desearch.protocol import DeepResearchSynapse
 from neurons.validators.base_validator import AbstractNeuron
 from neurons.validators.reward.deep_research_relevance import (
     DeepResearchContentRelevanceModel,

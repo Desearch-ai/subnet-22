@@ -25,7 +25,7 @@ sys.argv = [
 
 
 from neurons.validators.api import app
-from datura.protocol import Model, ResultType
+from desearch.protocol import Model, ResultType
 
 
 sys.argv = [sys.argv[0]]

@@ -3,7 +3,7 @@ from neurons.validators.reward.deep_research_data import (
     DeepResearchDataRelevanceModel,
 )
 from tests_data.reports.what_is_blockchain import report_what_is_blockchain
-from datura.protocol import ReportItem
+from desearch.protocol import ReportItem
 
 
 class DeepResearchDataRelevanceModelTestCase(unittest.IsolatedAsyncioTestCase):
@@ -29,7 +29,6 @@ class DeepResearchDataRelevanceModelTestCase(unittest.IsolatedAsyncioTestCase):
             )
         )
         self.assertEqual(score, 0.2)
-
 
 
 if __name__ == "__main__":

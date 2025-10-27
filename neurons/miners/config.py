@@ -14,9 +14,8 @@ def check_config(cls, config: "bt.Config"):
     full_path = os.path.expanduser(
         "{}/{}/{}/{}".format(
             config.logging.logging_dir,
-            config.wallet.get("name", bt.DEFAULTS['wallet']['name']),
-            config.wallet.get("hotkey", bt.DEFAULTS['wallet']['hotkey']),
-
+            config.wallet.get("name", bt.DEFAULTS["wallet"]["name"]),
+            config.wallet.get("hotkey", bt.DEFAULTS["wallet"]["hotkey"]),
             config.miner.name,
         )
     )
@@ -30,9 +29,12 @@ def get_config() -> "bt.Config":
     parser.add_argument(
         "--axon.port", type=int, default=8098, help="Port to run the axon on."
     )
-    # External IP 
+    # External IP
     parser.add_argument(
-        "--axon.external_ip", type=str, default=bt.utils.networking.get_external_ip(), help="IP for the metagraph"
+        "--axon.external_ip",
+        type=str,
+        default=bt.utils.networking.get_external_ip(),
+        help="IP for the metagraph",
     )
     # Subtensor network to connect to
     parser.add_argument(
@@ -117,7 +119,7 @@ def get_config() -> "bt.Config":
     bt.axon.add_args(parser)
 
     # Activating the parser to read any command-line inputs.
-    # To print help message, run python3 datura/miner.py --help
+    # To print help message, run python3 desearch/miner.py --help
     config = bt.config(parser)
 
     # Logging captures events for diagnosis or understanding miner's behavior.

@@ -1,6 +1,6 @@
 import unittest
 from neurons.miners.web_search_miner import WebSearchMiner
-from datura.protocol import WebSearchSynapse
+from desearch.protocol import WebSearchSynapse
 
 
 class TestWebSearchMiner(unittest.IsolatedAsyncioTestCase):

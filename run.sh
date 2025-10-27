@@ -19,7 +19,7 @@ autoRunLoc=$(readlink -f "$0")
 api_proc_name="desearch_api_process"
 validator_proc_name="desearch_validator_process"
 args=()
-version_location="./datura/__init__.py"
+version_location="./desearch/__init__.py"
 version="__version__"
 
 # Default values for API configuration
@@ -287,10 +287,10 @@ if [ "$?" -eq 1 ]; then
             # check value on github remotely
             # Attempt to check the variable value on GitHub for both repositories
             latest_version=""
-            repos=("Desearch-ai/subnet-22" "datura-ai/smart-scrape" "datura-ai/desearch")
+            repos=("Desearch-ai/subnet-22")
 
             for repo in "${repos[@]}"; do
-                latest_version=$(check_variable_value_on_github "$repo" "datura/__init__.py" "__version__")
+                latest_version=$(check_variable_value_on_github "$repo" "desearch/__init__.py" "__version__")
                 if [ $? -eq 0 ]; then
                     echo "Successfully retrieved version from $repo"
                     

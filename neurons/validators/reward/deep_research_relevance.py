@@ -7,11 +7,11 @@ import bittensor as bt
 from neurons.validators.base_validator import AbstractNeuron
 from .config import RewardModelType
 from .reward import BaseRewardModel, BaseRewardEvent
-from datura.protocol import DeepResearchSynapse, ReportItem
+from desearch.protocol import DeepResearchSynapse, ReportItem
 from neurons.validators.utils.prompt.deep_research.deep_research_content_relevance_prompt import (
     DeepResearchContentRelevancePrompt,
 )
-from datura.synapse import collect_responses
+from desearch.synapse import collect_responses
 
 RANDOM_SECTIONS_COUNT = 3
 

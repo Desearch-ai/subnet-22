@@ -23,7 +23,7 @@ import bittensor as bt
 from loguru import logger
 from neurons.validators.reward import DefaultRewardFrameworkConfig
 from distutils.util import strtobool
-from datura.protocol import ScoringModel
+from desearch.protocol import ScoringModel
 
 
 def str2bool(v):

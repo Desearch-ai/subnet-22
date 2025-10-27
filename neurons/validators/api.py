@@ -8,9 +8,9 @@ from pydantic import BaseModel, Field, conint
 from fastapi.responses import StreamingResponse
 from fastapi import FastAPI, HTTPException, Header, Query, Path
 from neurons.validators.env import PORT, EXPECTED_ACCESS_KEY
-from datura import __version__
-from datura.dataset.date_filters import DateFilterType
-from datura.protocol import (
+from desearch import __version__
+from desearch.dataset.date_filters import DateFilterType
+from desearch.protocol import (
     ChatHistoryItem,
     Model,
     TwitterScraperTweet,
@@ -720,12 +720,12 @@ def custom_openapi():
     if app.openapi_schema:
         return app.openapi_schema
     openapi_schema = get_openapi(
-        title="Datura API",
+        title="Desearch API",
         version="1.0.0",
         summary="API for searching across multiple platforms",
         routes=app.routes,
         servers=[
-            {"url": "http://localhost:8005", "description": "Datura API"},
+            {"url": "http://localhost:8005", "description": "Desearch API"},
         ],
     )
     openapi_schema["info"]["x-logo"] = {
