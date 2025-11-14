@@ -13,10 +13,10 @@ from functools import partial
 from typing import Dict, Tuple
 
 import bittensor as bt
+import wandb
 from openai import AsyncOpenAI, OpenAI
 
 import desearch
-import wandb
 from desearch.protocol import (
     IsAlive,
     ScraperStreamingSynapse,
@@ -25,7 +25,6 @@ from desearch.protocol import (
     TwitterURLsSearchSynapse,
     WebSearchSynapse,
 )
-from desearch.utils import get_version
 from neurons.miners.config import check_config, get_config
 from neurons.miners.scraper_miner import ScraperMiner
 from neurons.miners.twitter_search_miner import TwitterSearchMiner
@@ -156,8 +155,6 @@ class StreamMiner(ABC):
         self.thread: threading.Thread = None
         self.lock = asyncio.Lock()
         self.request_timestamps: Dict = {}
-        thread = threading.Thread(target=get_valid_hotkeys, args=(self.config,))
-        # thread.start()
 
     @abstractmethod
     def config(self) -> "bt.Config": ...
@@ -507,66 +504,6 @@ class StreamingTemplateMiner(StreamMiner):
         bt.logging.info(f"started processing for Web search  synapse {synapse}")
         web_search_miner = WebSearchMiner(self)
         return await web_search_miner.search(synapse)
-
-
-def get_valid_hotkeys(config):
-    global valid_hotkeys
-    api = wandb.Api()
-    subtensor = bt.subtensor(config=config)
-    while True:
-        metagraph = subtensor.metagraph(config.netuid)
-        try:
-            runs = api.runs(f"{desearch.ENTITY}/{desearch.PROJECT_NAME}")
-            latest_version = get_version()
-            for run in runs:
-                if run.state == "running":
-                    try:
-                        # Extract hotkey and signature from the run's configuration
-                        hotkey = run.config["hotkey"]
-                        signature = run.config["signature"]
-                        version = run.config["version"]
-                        bt.logging.debug(
-                            f"found running run of hotkey {hotkey}, {version} "
-                        )
-
-                        if latest_version == None:
-                            bt.logging.error(f"Github API call failed!")
-                            continue
-
-                        if version != latest_version and latest_version != None:
-                            bt.logging.debug(
-                                f"Version Mismatch: Run version {version} does not match GitHub version {latest_version}"
-                            )
-                            continue
-
-                        # Check if the hotkey is registered in the metagraph
-                        if hotkey not in metagraph.hotkeys:
-                            bt.logging.debug(
-                                f"Invalid running run: The hotkey: {hotkey} is not in the metagraph."
-                            )
-                            continue
-
-                        # Verify the signature using the hotkey
-                        if not bt.Keypair(ss58_address=hotkey).verify(
-                            run.id, bytes.fromhex(signature)
-                        ):
-                            bt.logging.debug(
-                                f"Failed Signature: The signature: {signature} is not valid"
-                            )
-                            continue
-
-                        if hotkey not in valid_hotkeys:
-                            valid_hotkeys.append(hotkey)
-                    except Exception as e:
-                        bt.logging.debug(
-                            f"exception in get_valid_hotkeys: {traceback.format_exc()}"
-                        )
-
-            bt.logging.info(f"total valid hotkeys list = {valid_hotkeys}")
-            time.sleep(180)
-
-        except json.JSONDecodeError as e:
-            bt.logging.debug(f"JSON decoding error: {e} {run.id}")
 
 
 if __name__ == "__main__":

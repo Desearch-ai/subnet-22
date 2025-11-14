@@ -1,5 +1,4 @@
 import asyncio
-import base64
 import copy
 import html
 import math
@@ -10,7 +9,6 @@ from typing import List
 
 import aiohttp
 import bittensor as bt
-import requests
 import torch
 from pydantic import ValidationError
 
@@ -106,28 +104,6 @@ async def call_openai(messages, temperature, model, seed=1234, response_format=N
             await asyncio.sleep(0.5)
 
     return None
-
-
-# Github unauthorized rate limit of requests per hour is 60. Authorized is 5000.
-def get_version(line_number=22):
-    url = f"https://api.github.com/repos/Desearch-ai/subnet-22/contents/desearch/__init__.py"
-    response = requests.get(url)
-    if response.status_code == 200:
-        content = response.json()["content"]
-        decoded_content = base64.b64decode(content).decode("utf-8")
-        lines = decoded_content.split("\n")
-        if line_number <= len(lines):
-            version_line = lines[line_number - 1]
-            version_match = re.search(r'__version__ = "(.*?)"', version_line)
-            if version_match:
-                return version_match.group(1)
-            else:
-                raise Exception("Version information not found in the specified line")
-        else:
-            raise Exception("Line number exceeds file length")
-    else:
-        bt.logging.error("github api call failed")
-        return None
 
 
 async def resync_metagraph(self):

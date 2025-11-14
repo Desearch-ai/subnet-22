@@ -1,11 +1,10 @@
 import random
+
 import bittensor as bt
-import time
-import requests
-import html
-from desearch.utils import call_openai
 from faker import Faker
-from faker.providers import company, address, person, lorem, geo, currency
+from faker.providers import address, company, currency, geo, lorem, person
+
+from desearch.utils import call_openai
 
 
 class MockTwitterQuestionsDataset:
