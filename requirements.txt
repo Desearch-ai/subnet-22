@@ -14,7 +14,6 @@ youtube-search==2.1.2
 arxiv==2.1.0
 aiostream==0.5.2
 openai==1.59.6
-python-dateutil==2.9.0.post0
 pytz==2024.2
 faker==25.9.1
 tiktoken==0.8.0
@@ -22,5 +21,3 @@ loguru==0.7.3
 substrate-interface==1.7.11
 redis[hiredis]==5.2.1
 jsonpickle==4.0.2
-newspaper3k==0.2.8
-lxml-html-clean==0.4.2
