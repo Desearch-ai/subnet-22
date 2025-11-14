@@ -105,13 +105,13 @@ class SearchRequest(BaseModel):
     start_date: Optional[str] = Field(
         default=None,
         description="The start date for the search query. Format: YYYY-MM-DDTHH:MM:SSZ (UTC)",
-        examples="2025-05-01T00:00:00Z",
+        example="2025-05-01T00:00:00Z",
     )
 
     end_date: Optional[str] = Field(
         default=None,
         description="The end date for the search query. Format: YYYY-MM-DDTHH:MM:SSZ (UTC)",
-        examples="2025-05-03T00:00:00Z",
+        example="2025-05-03T00:00:00Z",
     )
 
     date_filter: Optional[DateFilterType] = Field(
@@ -191,7 +191,7 @@ class LinksSearchRequest(BaseModel):
 
 fields = "\n".join(
     f"- {key}: {item.get('description')}"
-    for key, item in SearchRequest.schema().get("properties", {}).items()
+    for key, item in SearchRequest.model_json_schema().get("properties", {}).items()
 )
 
 SEARCH_DESCRIPTION = f"""Performs a search across multiple platforms. Available tools are:
