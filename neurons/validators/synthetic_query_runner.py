@@ -1,9 +1,11 @@
 import asyncio
 import random
-import bittensor as bt
-from desearch import QUERY_MINERS
-import traceback
 import time
+import traceback
+
+import bittensor as bt
+
+from desearch import QUERY_MINERS
 
 
 class SyntheticQueryRunnerMixin:
@@ -87,9 +89,8 @@ class SyntheticQueryRunnerMixin:
                     [
                         self.advanced_scraper_validator,
                         self.basic_scraper_validator,
-                        self.deep_research_validator,
                     ],
-                    weights=[0.6, 0.25, 0.15],
+                    weights=[0.6, 0.4],
                 )[0]
 
                 self.loop.create_task(self.run_synthetic_queries(choice, strategy))

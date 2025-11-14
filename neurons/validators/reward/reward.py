@@ -16,20 +16,21 @@
 # OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 # DEALINGS IN THE SOFTWARE.
 
-import torch
-import bittensor as bt
-from typing import List, Union
+import asyncio
+import re
 from abc import abstractmethod
-from dataclasses import dataclass, asdict, fields
+from dataclasses import asdict, dataclass, fields
+from itertools import islice
+from typing import List, Union
+
+import bittensor as bt
+import numpy as np  # Ensure numpy is imported
+import torch
+
 from desearch.protocol import (
     ScraperStreamingSynapse,
     TwitterSearchSynapse,
-    DeepResearchSynapse,
 )
-import re
-import numpy as np  # Ensure numpy is imported
-import asyncio
-from itertools import islice
 from neurons.validators.base_validator import AbstractNeuron
 
 
@@ -141,25 +142,6 @@ class BaseRewardModel:
                 return None
 
             return successful_completion.strip()
-        return None
-
-    def get_successful_deep_research_result(self, response: DeepResearchSynapse):
-        """
-        Check if the response is successful and contains non-empty results.
-        """
-        if response.dendrite.status_code == 200:
-            # Ensure results is not empty
-            if response.report:
-                return response.report
-            else:
-                bt.logging.warning(
-                    f"Response results are empty for Hotkey ID: {response.axon.hotkey}."
-                )
-        else:
-            bt.logging.warning(
-                f"Response failed with status code {response.dendrite.status_code} for Hotkey ID: {response.axon.hotkey}."
-            )
-
         return None
 
     def get_successful_result(self, response: TwitterSearchSynapse):

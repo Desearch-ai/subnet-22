@@ -16,25 +16,26 @@
 # OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 # DEALINGS IN THE SOFTWARE.
 
-import traceback
-import torch
-import bittensor as bt
-from typing import List, Tuple, Dict
-import math
 import json
+import math
+import traceback
+from typing import Dict, List, Tuple
 
-from neurons.validators.base_validator import AbstractNeuron
-from .config import RewardModelType
-from .reward import BaseRewardModel, BaseRewardEvent
+import bittensor as bt
+import torch
+
 from desearch.protocol import (
     ScraperStreamingSynapse,
-    TwitterSearchSynapse,
     TwitterIDSearchSynapse,
+    TwitterSearchSynapse,
     TwitterURLsSearchSynapse,
     WebSearchSynapse,
-    DeepResearchSynapse,
 )
-from neurons.validators.constants import STEEPNESS, FACTOR
+from neurons.validators.base_validator import AbstractNeuron
+from neurons.validators.constants import FACTOR, STEEPNESS
+
+from .config import RewardModelType
+from .reward import BaseRewardEvent, BaseRewardModel
 
 
 class PerformanceRewardModel(BaseRewardModel):
@@ -63,28 +64,6 @@ class PerformanceRewardModel(BaseRewardModel):
             )
             for idx, response in enumerate(responses)
         }
-        return axon_times
-
-    def get_deep_research_response_times(
-        self, uids: List[int], responses: List[DeepResearchSynapse]
-    ) -> Dict[int, float]:
-        """
-        Returns a dictionary of axons based on their response times for global results.
-        If get_successful_result returns an invalid result (e.g., an empty list), the score is 0.
-        """
-        axon_times = {}
-        for idx, response in enumerate(responses):
-            uid = uids[idx]
-            successful_result = self.get_successful_deep_research_result(response)
-
-            if successful_result:  # If successful_result is valid and non-empty
-                axon_times[uid] = response.dendrite.process_time or 0.0
-            else:  # Invalid result or empty list
-                bt.logging.warning(
-                    f"Invalid or empty result for UID: {uid}, setting score to 0."
-                )
-                axon_times[uid] = 0.0
-
         return axon_times
 
     def get_global_response_times(
@@ -140,8 +119,6 @@ class PerformanceRewardModel(BaseRewardModel):
             # Determine response type and select the appropriate response time function
             if isinstance(responses[0], ScraperStreamingSynapse):
                 axon_times = self.get_response_times(uids, responses)
-            elif isinstance(responses[0], DeepResearchSynapse):
-                axon_times = self.get_deep_research_response_times(uids, responses)
             elif isinstance(
                 responses[0],
                 (

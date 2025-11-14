@@ -1,37 +1,33 @@
-import os
-import time
-import copy
-import wandb
-import json
-import pathlib
-import asyncio
-import desearch
 import argparse
+import asyncio
+import copy
+import json
+import os
+import pathlib
 import threading
+import time
 import traceback
-import bittensor as bt
-
-from openai import OpenAI
-from functools import partial
-from collections import deque
-from openai import AsyncOpenAI
 from abc import ABC, abstractmethod
-from neurons.miners.config import get_config, check_config
+from collections import deque
+from functools import partial
 from typing import Dict, Tuple
 
-from desearch.utils import get_version
+import bittensor as bt
+from openai import AsyncOpenAI, OpenAI
 
+import desearch
+import wandb
 from desearch.protocol import (
     IsAlive,
     ScraperStreamingSynapse,
-    TwitterSearchSynapse,
-    WebSearchSynapse,
-    TwitterURLsSearchSynapse,
     TwitterIDSearchSynapse,
-    DeepResearchSynapse,
+    TwitterSearchSynapse,
+    TwitterURLsSearchSynapse,
+    WebSearchSynapse,
 )
+from desearch.utils import get_version
+from neurons.miners.config import check_config, get_config
 from neurons.miners.scraper_miner import ScraperMiner
-from neurons.miners.deep_research_miner import DeepResearchMiner
 from neurons.miners.twitter_search_miner import TwitterSearchMiner
 from neurons.miners.web_search_miner import WebSearchMiner
 
@@ -150,9 +146,6 @@ class StreamMiner(ABC):
         ).attach(
             forward_fn=self.web_search,
             blacklist_fn=self.blacklist_web_search,
-        ).attach(
-            forward_fn=self.deep_research,
-            blacklist_fn=self.blacklist_deep_research,
         )
 
         bt.logging.info(f"Axon created: {self.axon}")
@@ -173,9 +166,6 @@ class StreamMiner(ABC):
         self, synapse: ScraperStreamingSynapse
     ) -> ScraperStreamingSynapse:
         return self.smart_scraper(synapse)
-
-    def _deep_research(self, synapse: DeepResearchSynapse) -> DeepResearchSynapse:
-        return self.deep_research(synapse)
 
     async def _twitter_search(
         self, synapse: TwitterSearchSynapse
@@ -277,13 +267,6 @@ class StreamMiner(ABC):
         bt.logging.info(blacklist[1])
         return blacklist
 
-    def blacklist_deep_research(self, synapse: DeepResearchSynapse) -> Tuple[bool, str]:
-        blacklist = self.base_blacklist(
-            synapse, desearch.TWITTER_SCRAPPER_BLACKLIST_STAKE
-        )
-        bt.logging.info(blacklist[1])
-        return blacklist
-
     def blacklist_twitter_search(
         self, synapse: TwitterSearchSynapse
     ) -> Tuple[bool, str]:
@@ -327,9 +310,6 @@ class StreamMiner(ABC):
     ) -> ScraperStreamingSynapse:
         return self.smart_scraper(synapse)
 
-    async def _deep_research(self, synapse: DeepResearchSynapse) -> DeepResearchSynapse:
-        return self.deep_research(synapse)
-
     def _is_alive(self, synapse: IsAlive) -> IsAlive:
         bt.logging.info("answered to be active")
         synapse.completion = "True"
@@ -339,9 +319,6 @@ class StreamMiner(ABC):
     def smart_scraper(
         self, synapse: ScraperStreamingSynapse
     ) -> ScraperStreamingSynapse: ...
-
-    @abstractmethod
-    def deep_research(self, synapse: DeepResearchSynapse) -> DeepResearchSynapse: ...
 
     @abstractmethod
     async def twitter_search(
@@ -447,7 +424,7 @@ class StreamMiner(ABC):
                     f"Stake:{metagraph.S[self.my_subnet_uid]} | "
                     f"Rank:{metagraph.R[self.my_subnet_uid]} | "
                     f"Trust:{metagraph.T[self.my_subnet_uid]} | "
-                    f"Consensus:{metagraph.C[self.my_subnet_uid] } | "
+                    f"Consensus:{metagraph.C[self.my_subnet_uid]} | "
                     f"Incentive:{metagraph.I[self.my_subnet_uid]} | "
                     f"Emission:{metagraph.E[self.my_subnet_uid]}"
                 )
@@ -503,12 +480,6 @@ class StreamingTemplateMiner(StreamMiner):
         bt.logging.info(f"started processing for synapse {synapse}")
         tw_miner = ScraperMiner(self)
         token_streamer = partial(tw_miner.smart_scraper, synapse)
-        return synapse.create_streaming_response(token_streamer)
-
-    def deep_research(self, synapse: DeepResearchSynapse) -> DeepResearchSynapse:
-        bt.logging.info(f"started processing for synapse {synapse}")
-        tw_miner = DeepResearchMiner(self)
-        token_streamer = partial(tw_miner.deep_research, synapse)
         return synapse.create_streaming_response(token_streamer)
 
     async def twitter_search(
