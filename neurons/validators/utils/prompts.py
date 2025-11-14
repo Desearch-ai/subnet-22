@@ -16,11 +16,8 @@
 # OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 # DEALINGS IN THE SOFTWARE.
 
-import re
 import random
-from typing import List, Optional
-import json
-from desearch.protocol import ResultType, ScraperTextRole
+import re
 
 
 class BasePrompt:
@@ -209,38 +206,6 @@ class SummaryRulePrompt(ScoringPrompt):
                 return 0
 
         return 0
-
-
-class LinkContentAndDescriptionPrompt(ScoringPrompt):
-    r"""Compares a tweet or link title with summarized description in markdown and prompt
-    Used to score each link from twitter or search summary
-    """
-
-    def __init__(self):
-        super().__init__()
-        self.template = text_and_summarized_description_template
-        self.weights = {
-            "relevance": 0.4,
-            "brevity": 0.1,
-            "clarity": 0.3,
-            "coverage": 0.2,
-        }
-
-    def get_system_message(self):
-        return text_and_summarized_description_scoring_template
-
-    def extract_score(self, response: str) -> float:
-        try:
-            scores = json.loads(response)
-
-            final_score = sum(
-                scores.get(criterion, 0) * weight / 2
-                for criterion, weight in self.weights.items()
-            )
-
-            return min(final_score, 1)
-        except json.JSONDecodeError:
-            return 0
 
 
 class SearchSummaryRelevancePrompt(ScoringPrompt):
@@ -432,47 +397,6 @@ Follow these steps.
   - Score 10: The generated summary effectively captures all the main points, mirros the tone and style of the user system message, adheres to the length requirements, and include all the necessary keywords.
 """
 
-text_and_summarized_description_scoring_template = """
-# Text and Summary Comparison Mechanism
-
-## 1. Define Criteria for Evaluation
-Establish clear criteria for evaluating a summary:
-- **Relevance**: Captures the main points of the original text.
-- **Brevity**: Concise without losing essential information.
-- **Clarity**: Readable and understandable.
-- **Coverage**: Comprehensive coverage of key aspects.
-
-## 2. Develop a Scoring Rubric
-Create a scoring rubric with specific guidelines for assigning scores. Use a binary scoring system (0 or 1) for each criterion.
-
-### Example Rubric:
-- **Relevance**:
-  - 2: Captures all main points.
-  - 1: Captures some main points but misses others.
-  - 0: Misses major points or includes irrelevant details.
-- **Brevity**:
-  - 2: Concise and to the point.
-  - 1: Somewhat concise but could be more succinct.
-  - 0: Overly lengthy or too brief.
-- **Clarity**:
-  - 2: Clear and easy to understand.
-  - 1: Some parts are unclear or confusing.
-  - 0: Confusing or poorly written.
-- **Coverage**:
-  - 2: Covers all key aspects.
-  - 1: Covers some key aspects but omits others.
-  - 0: Omits critical information.
-
-## Output JSON format:
-{
-  "relevance": 1,
-  "brevity": 0,
-  "clarity": 2,
-  "coverage": 0,
-  "explanation": "Explain why each criterion received its score."
-}
-"""
-
 user_message_question_answer_template = """
 Here is the question:
 <Question>
@@ -485,20 +409,6 @@ And the answer content:
 </Answer>
 
 Please evaluate the above <Question></Question> and <Answer></Answer> using relevance Scoring Guide in the system message.
-"""
-
-text_and_summarized_description_template = """
-Here is the text content:
-<Text>
-{}
-</Text>
-
-And the summarized description of the text content:
-<SummarizedText>
-{}
-</SummarizedText>
-
-Please evaluate the above, <Text></Text> and <SummarizedText></SummarizedText> using relevance Scoring Guide in the system message.
 """
 
 user_summary_validation_template = """

@@ -15,11 +15,13 @@
 # THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
 # OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 # DEALINGS IN THE SOFTWARE.
-import torch
-import bittensor as bt
+from abc import ABC, abstractmethod
 from enum import Enum
 from typing import List
-from abc import ABC, abstractmethod
+
+import bittensor as bt
+import torch
+
 from neurons.validators.base_validator import AbstractNeuron
 from neurons.validators.utils.tasks import Task
 
@@ -70,11 +72,9 @@ class BasePenaltyModel(ABC):
 class PenaltyModelType(Enum):
     task_validation_penalty = "task_validation_penalty"
     accuracy_match_penalty = "accuracy_match_penalty"
-    link_validation_penalty = "link_validation_penalty"
     streaming_penalty = "streaming_penalty"
     exponential_penalty = "exponential_penalty"
     summary_rule_penalty = "summary_rule_penalty"
-    criteria_summary_penalty = "criteria_summary_penalty"
     twitter_count_penalty = "twitter_count_penalty"
     miner_score_penalty = "miner_score_penalty"
     chat_history_penalty = "chat_history_penalty"

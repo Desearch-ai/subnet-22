@@ -505,9 +505,6 @@ class ScraperStreamingSynapse(StreamingSynapse):
         description="The result type for miners",
     )
 
-    def set_tweets(self, data: any):
-        self.tweets = data
-
     def get_twitter_completion(self) -> Optional[str]:
         return self.texts.get(ScraperTextRole.TWITTER_SUMMARY.value, "")
 
@@ -632,59 +629,6 @@ class ScraperStreamingSynapse(StreamingSynapse):
         links_expected = len(completions) * links_per_completion
 
         return completions, links_expected
-
-    def get_all_completions(self) -> Dict[str, str]:
-        completions, _ = self.get_search_completion()
-
-        if "Twitter Search" in self.tools:
-            completions[ScraperTextRole.TWITTER_SUMMARY.value] = (
-                self.get_twitter_completion()
-            )
-
-        return completions
-
-    def get_search_links(self) -> List[str]:
-        """Extracts web links from each summary making sure to filter by domain for each tool used.
-        In Reddit and Hacker News Search, the links are filtered by domains.
-        In search summary part, if Web Search is used, the links are allowed from any domain,
-        Otherwise search summary will only look for Wikipedia, ArXiv, Youtube links.
-        Returns list of all links and links per each summary role.
-        """
-
-        completions, _ = self.get_search_completion()
-        all_links = []
-        links_per_summary = {}
-
-        for key, value in completions.items():
-            links = []
-
-            if key == ScraperTextRole.REDDIT_SUMMARY.value:
-                links.extend(WebSearchUtils.find_links_by_domain(value, "reddit.com"))
-            elif key == ScraperTextRole.HACKER_NEWS_SUMMARY.value:
-                links.extend(
-                    WebSearchUtils.find_links_by_domain(value, "news.ycombinator.com")
-                )
-            elif key == ScraperTextRole.SEARCH_SUMMARY.value:
-                if any(tool in self.tools for tool in ["Web Search"]):
-                    links.extend(WebSearchUtils.find_links(value))
-                else:
-                    if "Wikipedia Search" in self.tools:
-                        links.extend(
-                            WebSearchUtils.find_links_by_domain(value, "wikipedia.org")
-                        )
-                    if "ArXiv Search" in self.tools:
-                        links.extend(
-                            WebSearchUtils.find_links_by_domain(value, "arxiv.org")
-                        )
-                    if "Youtube Search" in self.tools:
-                        links.extend(
-                            WebSearchUtils.find_links_by_domain(value, "youtube.com")
-                        )
-
-            all_links.extend(links)
-            links_per_summary[key] = links
-
-        return all_links, links_per_summary
 
     async def process_streaming_response(self, response: StreamingResponse):
         if self.completion is None:
