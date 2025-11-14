@@ -418,20 +418,6 @@ class ScraperStreamingSynapse(StreamingSynapse):
         description="Optional JSON object containing tweets data from the miner.",
     )
 
-    # TODO Remove later
-    search_completion_links: Optional[List[str]] = pydantic.Field(
-        default_factory=list,
-        title="Links Content",
-        description="A list of links extracted from search summary text.",
-    )
-
-    # TODO Remove later
-    completion_links: Optional[List[str]] = pydantic.Field(
-        default_factory=list,
-        title="Links Content",
-        description="A list of JSON objects representing the extracted links content from the tweets.",
-    )
-
     search_results: Optional[List[SearchResultItem]] = pydantic.Field(
         default_factory=list,
         title="Search Results",
@@ -847,9 +833,6 @@ class ScraperStreamingSynapse(StreamingSynapse):
                 if key.startswith(prefix)
             }
 
-        # completion_links = TwitterUtils().find_twitter_links(self.completion)
-        # search_completion_links, _ = self.get_search_links()
-
         return {
             "name": headers.get("name", ""),
             "timeout": float(headers.get("timeout", 0)),
@@ -867,8 +850,6 @@ class ScraperStreamingSynapse(StreamingSynapse):
             "arxiv_search_results": self.arxiv_search_results,
             "hacker_news_search_results": self.hacker_news_search_results,
             "reddit_search_results": self.reddit_search_results,
-            "completion_links": [],
-            "search_completion_links": [],
             "texts": self.texts,
             "start_date": self.start_date,
             "end_date": self.end_date,

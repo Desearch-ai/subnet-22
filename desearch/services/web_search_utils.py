@@ -1,6 +1,5 @@
 import re
-
-from typing import List, Tuple
+from typing import List
 
 
 class WebSearchUtils:
@@ -21,27 +20,6 @@ class WebSearchUtils:
             link = match.group(1)
             links.append(link)
         return links
-
-    @staticmethod
-    def find_links_with_descriptions(text: str) -> List[Tuple[str, str]]:
-        """
-        Find all links in the given text along with their descriptions.
-
-        Args:
-        text: The text to search for links and descriptions.
-
-        Returns:
-        A list of tuples, each containing a link and its description.
-        """
-        link_regex = r"\[(.*?)\]\((https?://[^\s\)]+)\)"
-        results = []
-
-        for match in re.finditer(link_regex, text):
-            description = match.group(1)
-            link = match.group(2)
-            results.append((link, description))
-
-        return results
 
     @staticmethod
     def remove_trailing_slash(url: str) -> str:

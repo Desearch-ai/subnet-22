@@ -16,14 +16,16 @@
 # OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 # DEALINGS IN THE SOFTWARE.
 
-import os
-import torch
 import argparse
-import bittensor as bt
-from loguru import logger
-from neurons.validators.reward import DefaultRewardFrameworkConfig
+import os
 from distutils.util import strtobool
+
+import bittensor as bt
+import torch
+from loguru import logger
+
 from desearch.protocol import ScoringModel
+from neurons.validators.reward import DefaultRewardFrameworkConfig
 
 
 def str2bool(v):
@@ -163,13 +165,6 @@ def add_args(cls, parser):
         type=int,
         help="The maximum number of TAO allowed to query a validator with a vpermit.",
         default=4096,
-    )
-
-    parser.add_argument(
-        "--neuron.disable_twitter_completion_links_fetch",
-        action="store_true",
-        help="Enables the option to skip fetching content data for Twitter links, relying solely on the data provided by miners.",
-        default=True,
     )
 
     parser.add_argument(

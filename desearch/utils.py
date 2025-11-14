@@ -273,8 +273,6 @@ async def save_logs_in_chunks(
                     }
                     for item in response.validator_links
                 ],
-                "search_completion_links": response.search_completion_links,
-                "twitter_completion_links": response.completion_links,
                 "weight": weights.get(str(uid)),
                 "miner": {
                     "uid": uid,
