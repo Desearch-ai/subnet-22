@@ -1,7 +1,6 @@
 import argparse
 import asyncio
 import copy
-import json
 import os
 import pathlib
 import threading
@@ -13,7 +12,6 @@ from functools import partial
 from typing import Dict, Tuple
 
 import bittensor as bt
-import wandb
 from openai import AsyncOpenAI, OpenAI
 
 import desearch
@@ -124,7 +122,7 @@ class StreamMiner(ABC):
             self.axon = bt.axon(wallet=self.wallet, port=self.config.axon.port)
 
         # Attach determiners which functions are called when servicing a request.
-        bt.logging.info(f"Attaching forward function to axon.")
+        bt.logging.info("Attaching forward function to axon.")
         print(f"Attaching forward function to axon. {self._is_alive}")
 
         self.axon.attach(
@@ -385,7 +383,7 @@ class StreamMiner(ABC):
         self.axon.start()
         self.last_epoch_block = self.subtensor.get_current_block()
         bt.logging.info(f"Miner starting at block: {self.last_epoch_block}")
-        bt.logging.info(f"Starting main loop")
+        bt.logging.info("Starting main loop")
 
         self.start_background_sync()
 
