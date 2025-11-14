@@ -1,31 +1,20 @@
-from typing import List
-import torch
-import random
-import requests
 import os
-import asyncio
-import bittensor as bt
-import re
 import time
-from desearch.utils import call_openai, call_chutes
-from transformers import AutoTokenizer, AutoModelForCausalLM
-from desearch.synapse import collect_responses
-from desearch.protocol import ScoringModel
-
-from neurons.validators.utils.prompts import ScoringPrompt
-
 from enum import Enum
+
+import bittensor as bt
 import torch
-from transformers import pipeline
+from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline
+
+from desearch.protocol import ScoringModel
+from desearch.synapse import collect_responses
+from desearch.utils import call_chutes, call_openai
+from neurons.validators.utils.prompts import ScoringPrompt
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
-EXPECTED_ACCESS_KEY = os.environ.get("EXPECTED_ACCESS_KEY", "hello")
-URL_SUBNET_18 = os.environ.get("URL_SUBNET_18")
-
 
 class ScoringSource(Enum):
-    Subnet18 = 1
     OpenAI = 2
     LocalLLM = 3
     LocalZephyr = 4
@@ -70,62 +59,6 @@ class RewardLLM:
         )
         self.pipe = pipe
         return pipe
-
-    def clean_text(self, text):
-        # Remove newline characters and replace with a space
-        text = text.replace("\n", " ")
-
-        # Remove URLs
-        text = re.sub(
-            r"http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+",
-            "",
-            text,
-        )
-
-        # Keep hashtags, alphanumeric characters, and spaces
-        # Remove other special characters but ensure to keep structured elements like <Question>, <Answer>, etc., intact
-        text = re.sub(r"(?<![\w<>#])[^\w\s#<>]+", "", text)
-
-        return text
-
-    def call_to_subnet_18_scoring(self, data):
-        start_time = time.time()  # Start timing for execution
-        try:
-            if not URL_SUBNET_18:
-                bt.logging.warning(
-                    "Please set the URL_SUBNET_18 environment variable. See here: https://github.com/Desearch-ai/subnet-22/blob/main/docs/env_variables.md"
-                )
-                return None
-
-            headers = {
-                "access-key": EXPECTED_ACCESS_KEY,
-                "Content-Type": "application/json",
-            }
-            response = requests.post(
-                url=f"{URL_SUBNET_18}/text-validator/",
-                headers=headers,
-                json=data,
-                timeout=10 * 60,  # Timeout after 10 minutes
-            )  # Using json parameter to automatically set the content-type to application/json
-
-            if response.status_code in [401, 403]:
-                bt.logging.error(f"Connection issue with Subnet 18: {response.text}")
-                return {}
-            if response.status_code != 200:
-                bt.logging.error(
-                    f"ERROR connect to Subnet 18: Status code: {response.status_code}"
-                )
-                return None
-            execution_time = (
-                time.time() - start_time
-            ) / 60  # Calculate execution time in minutes
-            bt.logging.info(
-                f"Subnet 18 scoring call execution time: {execution_time:.2f} minutes"
-            )
-            return response
-        except Exception as e:
-            bt.logging.warning(f"Error calling Subnet 18 scoring: {e}")
-            return None
 
     async def get_score_by_openai(self, messages):
         try:
@@ -176,10 +109,7 @@ class RewardLLM:
             return None
 
     async def get_score_by_source(self, messages, source: ScoringSource):
-        if source == ScoringSource.Subnet18:
-            return self.call_to_subnet_18_scoring(messages)
-        else:
-            return await self.get_score_by_openai(messages=messages)
+        return await self.get_score_by_openai(messages=messages)
 
     async def llm_processing(self, messages):
         # Initialize score_responses as an empty dictionary to hold the scoring results
@@ -189,7 +119,6 @@ class RewardLLM:
         scoring_sources = [
             ScoringSource.OpenAI,  # Attempt scoring with OpenAI
             # ScoringSource.LocalZephyr,  # Fallback to Local LLM if OpenAI fails
-            # ScoringSource.Subnet18,  # First attempt with Subnet 18
         ]
 
         # Attempt to score messages using the defined sources in order

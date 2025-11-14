@@ -12,7 +12,6 @@ from aiohttp import ClientResponse
 from pydantic import BaseModel
 from starlette.responses import StreamingResponse
 
-from desearch.services.web_search_utils import WebSearchUtils
 from desearch.synapse import StreamingSynapse, Synapse
 
 
