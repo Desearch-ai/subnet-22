@@ -3,16 +3,10 @@ import bittensor as bt
 from desearch.protocol import ScoringModel
 from desearch.synapse import collect_responses
 from desearch.utils import call_chutes, call_openai
-from neurons.validators.utils.prompts import ScoringPrompt
 
 
 class RewardLLM:
     def __init__(self, scoring_model: ScoringModel = ScoringModel.OPENAI_GPT4_MINI):
-        self.tokenizer = None
-        self.model = None
-        self.device = None
-        self.pipe = None
-        self.scoring_prompt = ScoringPrompt()
         self.scoring_model = scoring_model
 
     async def get_scores(self, messages):

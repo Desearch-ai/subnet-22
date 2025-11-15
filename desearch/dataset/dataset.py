@@ -1402,3 +1402,68 @@ Pick random format from <ExamplePrompts> and write system prompt accordingly..""
         except Exception as e:
             print(f"Failed to call OpenAI: {e}")
             return ""
+
+
+class BasicQuestionsDataset:
+    POPULAR_CRYPTO_KEYWORDS = [
+        "bitcoin",
+        "btc",
+        "eth",
+        "ethereum",
+        "solana",
+        "xrp",
+        "dogecoin",
+        "doge",
+        "cardano",
+        "ada",
+        "avalanche",
+        "avax",
+        "matic",
+        "link",
+    ]
+
+    # Accounts you want to hit with from: filter
+    POPULAR_ACCOUNTS = [
+        "Google",
+        "Tesla",
+        "NatGeo",
+        "MrBeast",
+        "elonmusk",
+        "binance",
+        "coinbase",
+        "coindesk",
+        "cointelegraph",
+    ]
+
+    def __init__(self):
+        self.dataset = MockTwitterQuestionsDataset()
+
+    def generate_random_x_query(self) -> str:
+        """
+        Generate a short Twitter search query.
+
+        Modes:
+          - A: general topic
+          - B: hashtag crypto keyword (#bitcoin, #eth, etc.)
+          - C: from:account  (ALWAYS single token, no extra word)
+        """
+
+        mode = random.random()
+
+        # Mode C: from:account (must be ONE token only)
+        if mode < 0.2:
+            account = random.choice(self.POPULAR_ACCOUNTS)
+            # Twitter search is case-insensitive; handles often work as-is
+            return f"from:{account}"
+
+        # Mode A: general topic
+        if mode < 0.8:
+            topic = random.choice(self.dataset.topics)
+
+            return topic
+
+        # Mode B: hashtag crypto keyword (only for crypto)
+        crypto_kw = random.choice(self.POPULAR_CRYPTO_KEYWORDS)
+
+        # #bitcoin / #btc / #solana
+        return f"#{crypto_kw}"

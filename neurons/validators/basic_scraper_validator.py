@@ -10,7 +10,7 @@ import pytz
 import torch
 
 from desearch import QUERY_MINERS
-from desearch.dataset import QuestionsDataset
+from desearch.dataset import BasicQuestionsDataset
 from desearch.protocol import (
     TwitterIDSearchSynapse,
     TwitterSearchSynapse,
@@ -356,18 +356,22 @@ class BasicScraperValidator(OrganicHistoryMixin):
             "date_range",
         ]
 
-        num_fields = random.randint(1, 3)
+        num_fields = 1
         selected_fields = random.sample(all_fields, num_fields)
 
         params: Dict[str, Any] = {}
 
+        THREE_YEAR_IN_DAYS = 3 * 365
+
         # Generate random date range if selected
         if "date_range" in selected_fields:
-            # Generate end date (now to 1 year ago)
-            end_date = datetime.now(pytz.UTC) - timedelta(days=random.randint(0, 365))
+            # Generate end date in past three years
+            end_date = datetime.now(pytz.UTC) - timedelta(
+                days=random.randint(0, THREE_YEAR_IN_DAYS)
+            )
 
             # Randomly choose time window
-            start_date = end_date - timedelta(days=random.randint(1, 7))
+            start_date = end_date - timedelta(days=random.randint(7, 14))
 
             params["start_date"] = start_date.strftime("%Y-%m-%d_%H:%M:%S_UTC")
             params["end_date"] = end_date.strftime("%Y-%m-%d_%H:%M:%S_UTC")
@@ -402,21 +406,17 @@ class BasicScraperValidator(OrganicHistoryMixin):
 
     async def query_and_score(self, strategy, specified_uids=None):
         try:
-            dataset = QuestionsDataset()
+            dataset = BasicQuestionsDataset()
 
             # Question generation
-            prompts = await asyncio.gather(
-                *[
-                    dataset.generate_basic_question_with_openai()
-                    for _ in range(
-                        len(
-                            specified_uids
-                            if specified_uids
-                            else self.neuron.metagraph.uids
-                        )
+            prompts = [
+                dataset.generate_random_x_query()
+                for _ in range(
+                    len(
+                        specified_uids if specified_uids else self.neuron.metagraph.uids
                     )
-                ]
-            )
+                )
+            ]
 
             params = [
                 self.generate_random_twitter_search_params()
