@@ -1,28 +1,29 @@
-import bittensor as bt
+import asyncio
 import time
+from unittest.mock import AsyncMock
+
+import bittensor as bt
+from aiohttp import ClientResponse
+from bittensor.core.synapse import Synapse
+from bittensor_wallet import Wallet
+
 from desearch.protocol import (
-    TwitterURLsSearchSynapse,
-    TwitterIDSearchSynapse,
-    TwitterSearchSynapse,
-    WebSearchSynapse,
     IsAlive,
     ScraperStreamingSynapse,
-    DeepResearchSynapse,
+    TwitterIDSearchSynapse,
+    TwitterSearchSynapse,
+    TwitterURLsSearchSynapse,
+    WebSearchSynapse,
 )
-from bittensor_wallet import Wallet
+
 from .miner import Miner
-from bittensor.core.synapse import Synapse
-from aiohttp import ClientResponse
-from unittest.mock import AsyncMock
-import asyncio
 
 
 class Dendrite(bt.dendrite):
     def __init__(self, wallet=None):
+        from neurons.miners.scraper_miner import ScraperMiner
         from neurons.miners.twitter_search_miner import TwitterSearchMiner
         from neurons.miners.web_search_miner import WebSearchMiner
-        from neurons.miners.scraper_miner import ScraperMiner
-        from neurons.miners.deep_research_miner import DeepResearchMiner
 
         try:
             super().__init__(wallet)
@@ -40,7 +41,6 @@ class Dendrite(bt.dendrite):
         self.twitter_search_miner = TwitterSearchMiner(self.miner)
         self.web_search_miner = WebSearchMiner(self.miner)
         self.scraper_miner = ScraperMiner(self.miner)
-        self.deep_research_miner = DeepResearchMiner(self.miner)
 
     async def call(self, target_axon, synapse, timeout=12, deserialize=True):
         start_time = time.time()
@@ -98,10 +98,6 @@ class Dendrite(bt.dendrite):
 
         if isinstance(synapse, ScraperStreamingSynapse):
             asyncio.create_task(self.scraper_miner.smart_scraper(synapse, mockSend))
-        elif isinstance(synapse, DeepResearchSynapse):
-            asyncio.create_task(
-                self.deep_research_miner.deep_research(synapse, mockSend)
-            )
 
         # Mock ClientResponse
         response = AsyncMock(spec=ClientResponse)

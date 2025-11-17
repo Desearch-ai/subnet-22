@@ -83,24 +83,23 @@ pm2 start uvicorn \
 
 ### Variable Explanation
 
--   `--wallet.name`: Provide the name of your wallet.
--   `--wallet.hotkey`: Enter your wallet's hotkey.
--   `--netuid`: Use `41` for testnet.
--   `--subtensor.network`: Specify the network you want to use (`finney`, `test`, `local`, etc).
--   `--logging.debug`: Adjust the logging level according to your preference.
--   `--axon.port`: Specify the port number you want to use.
--   `--neuron.name`: Trials for this miner go in miner.root / (wallet_cold - wallet_hot) / miner.name.
--   `--neuron.device`: Device to run the validator on. cuda or cpu
--   `--neuron.disable_log_rewards`: Disable all reward logging, suppresses reward functions and their values from being logged to wandb. Default: False
--   `--neuron.moving_average_alpha`: Moving average alpha parameter, how much to add of the new observation. Default: 0.05
--   `--neuron.run_random_miner_syn_qs_interval`: Sets the interval, in seconds, for querying a random subset of miners with synthetic questions. Set to a positive value to enable. A value of 0 disables this feature.
--   `--neuron.run_all_miner_syn_qs_interval`: Sets the interval, in seconds, for querying all miners with synthetic questions. Set to a positive value to enable. A value of 0 disables this feature.
--   `--reward.summary_relevance_weight`: adjusts the influence of a scoring model that evaluates the accuracy and relevance of a node's responses to given prompts.
--   `--reward.twitter_content_weight`: Specifies the weight for the reward model that evaluates the relevance and quality of summary text in conjunction with linked content data.
--   `--neuron.only_allowed_miners`: A list of miner identifiers, hotkey
--   `--neuron.disable_twitter_completion_links_fetch`: Enables the option to skip fetching content data for Twitter links, relying solely on the data provided by miners
--   `--neuron.update_available_uids_interval`: Specifies the interval, in seconds, for updating the list of available UIDs. The default interval is 600 seconds (10 minutes).
--   `--neuron.scoring_model`: Specifies which llm model to use for scoring. The default model is `openai/gpt-4-mini`. Available llm models: `openai/gpt-4-mini`, `Qwen/Qwen2.5-Coder-32B-Instruct`, `unsloth/Mistral-Small-24B-Instruct-2501`, `deepseek-ai/DeepSeek-R1-Distill-Qwen-32B`.
+- `--wallet.name`: Provide the name of your wallet.
+- `--wallet.hotkey`: Enter your wallet's hotkey.
+- `--netuid`: Use `41` for testnet.
+- `--subtensor.network`: Specify the network you want to use (`finney`, `test`, `local`, etc).
+- `--logging.debug`: Adjust the logging level according to your preference.
+- `--axon.port`: Specify the port number you want to use.
+- `--neuron.name`: Trials for this miner go in miner.root / (wallet_cold - wallet_hot) / miner.name.
+- `--neuron.device`: Device to run the validator on. cuda or cpu
+- `--neuron.disable_log_rewards`: Disable all reward logging, suppresses reward functions and their values from being logged to wandb. Default: False
+- `--neuron.moving_average_alpha`: Moving average alpha parameter, how much to add of the new observation. Default: 0.05
+- `--neuron.run_random_miner_syn_qs_interval`: Sets the interval, in seconds, for querying a random subset of miners with synthetic questions. Set to a positive value to enable. A value of 0 disables this feature.
+- `--neuron.run_all_miner_syn_qs_interval`: Sets the interval, in seconds, for querying all miners with synthetic questions. Set to a positive value to enable. A value of 0 disables this feature.
+- `--reward.summary_relevance_weight`: adjusts the influence of a scoring model that evaluates the accuracy and relevance of a node's responses to given prompts.
+- `--reward.twitter_content_weight`: Specifies the weight for the reward model that evaluates the relevance and quality of summary text in conjunction with linked content data.
+- `--neuron.only_allowed_miners`: A list of miner identifiers, hotkey
+- `--neuron.update_available_uids_interval`: Specifies the interval, in seconds, for updating the list of available UIDs. The default interval is 600 seconds (10 minutes).
+- `--neuron.scoring_model`: Specifies which llm model to use for scoring. The default model is `openai/gpt-4-mini`. Available llm models: `openai/gpt-4-mini`, `Qwen/Qwen2.5-Coder-32B-Instruct`, `unsloth/Mistral-Small-24B-Instruct-2501`, `deepseek-ai/DeepSeek-R1-Distill-Qwen-32B`.
 
 ## 7. Monitor Your Process
 

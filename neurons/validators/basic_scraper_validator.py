@@ -1,33 +1,34 @@
-import torch
-import random
 import asyncio
+import random
 import time
 from datetime import datetime, timedelta
-import pytz
 from itertools import cycle
 from typing import Any, Dict, List, Optional
 
 import bittensor as bt
+import pytz
+import torch
+
+from desearch import QUERY_MINERS
+from desearch.dataset import BasicQuestionsDataset
 from desearch.protocol import (
-    TwitterSearchSynapse,
     TwitterIDSearchSynapse,
+    TwitterSearchSynapse,
     TwitterURLsSearchSynapse,
 )
-from neurons.validators.utils.mock import MockRewardModel
 from desearch.synapse import collect_responses
-from desearch.dataset import QuestionsDataset
-from desearch import QUERY_MINERS
 from neurons.validators.base_validator import AbstractNeuron
+from neurons.validators.basic_organic_query_state import BasicOrganicQueryState
+from neurons.validators.organic_history_mixin import OrganicHistoryMixin
+from neurons.validators.penalty.exponential_penalty import ExponentialTimePenaltyModel
+from neurons.validators.penalty.twitter_count_penalty import TwitterCountPenaltyModel
 from neurons.validators.reward import RewardModelType, RewardScoringType
+from neurons.validators.reward.performance_reward import PerformanceRewardModel
 from neurons.validators.reward.twitter_basic_search_content_relevance import (
     TwitterBasicSearchContentRelevanceModel,
 )
-from neurons.validators.reward.performance_reward import PerformanceRewardModel
+from neurons.validators.utils.mock import MockRewardModel
 from neurons.validators.utils.tasks import SearchTask
-from neurons.validators.basic_organic_query_state import BasicOrganicQueryState
-from neurons.validators.penalty.exponential_penalty import ExponentialTimePenaltyModel
-from neurons.validators.penalty.twitter_count_penalty import TwitterCountPenaltyModel
-from neurons.validators.organic_history_mixin import OrganicHistoryMixin
 
 
 class BasicScraperValidator(OrganicHistoryMixin):
@@ -225,9 +226,11 @@ class BasicScraperValidator(OrganicHistoryMixin):
                 )
 
             for penalty_fn_i in self.penalty_functions:
-                raw_penalty_i, adjusted_penalty_i, applied_penalty_i = (
-                    await penalty_fn_i.apply_penalties(responses, tasks, uids)
-                )
+                (
+                    raw_penalty_i,
+                    adjusted_penalty_i,
+                    applied_penalty_i,
+                ) = await penalty_fn_i.apply_penalties(responses, tasks, uids)
                 penalty_start_time = time.time()
                 rewards *= applied_penalty_i.to(self.neuron.config.neuron.device)
                 penalty_execution_time = time.time() - penalty_start_time
@@ -353,18 +356,22 @@ class BasicScraperValidator(OrganicHistoryMixin):
             "date_range",
         ]
 
-        num_fields = random.randint(1, 3)
+        num_fields = 1
         selected_fields = random.sample(all_fields, num_fields)
 
         params: Dict[str, Any] = {}
 
+        THREE_YEAR_IN_DAYS = 3 * 365
+
         # Generate random date range if selected
         if "date_range" in selected_fields:
-            # Generate end date (now to 1 year ago)
-            end_date = datetime.now(pytz.UTC) - timedelta(days=random.randint(0, 365))
+            # Generate end date in past three years
+            end_date = datetime.now(pytz.UTC) - timedelta(
+                days=random.randint(0, THREE_YEAR_IN_DAYS)
+            )
 
             # Randomly choose time window
-            start_date = end_date - timedelta(days=random.randint(1, 7))
+            start_date = end_date - timedelta(days=random.randint(7, 14))
 
             params["start_date"] = start_date.strftime("%Y-%m-%d_%H:%M:%S_UTC")
             params["end_date"] = end_date.strftime("%Y-%m-%d_%H:%M:%S_UTC")
@@ -399,21 +406,17 @@ class BasicScraperValidator(OrganicHistoryMixin):
 
     async def query_and_score(self, strategy, specified_uids=None):
         try:
-            dataset = QuestionsDataset()
+            dataset = BasicQuestionsDataset()
 
             # Question generation
-            prompts = await asyncio.gather(
-                *[
-                    dataset.generate_basic_question_with_openai()
-                    for _ in range(
-                        len(
-                            specified_uids
-                            if specified_uids
-                            else self.neuron.metagraph.uids
-                        )
+            prompts = [
+                dataset.generate_random_x_query()
+                for _ in range(
+                    len(
+                        specified_uids if specified_uids else self.neuron.metagraph.uids
                     )
-                ]
-            )
+                )
+            ]
 
             params = [
                 self.generate_random_twitter_search_params()
@@ -436,15 +439,18 @@ class BasicScraperValidator(OrganicHistoryMixin):
             )
 
             # 4) Run the basic Twitter search
-            async_responses, uids, event, start_time = (
-                await self.run_twitter_basic_search_and_score(
-                    tasks=tasks,
-                    strategy=strategy,
-                    is_only_allowed_miner=False,
-                    specified_uids=specified_uids,
-                    params_list=params,
-                    is_synthetic=True,
-                )
+            (
+                async_responses,
+                uids,
+                event,
+                start_time,
+            ) = await self.run_twitter_basic_search_and_score(
+                tasks=tasks,
+                strategy=strategy,
+                is_only_allowed_miner=False,
+                specified_uids=specified_uids,
+                params_list=params,
+                is_synthetic=True,
             )
 
             responses = await collect_responses(async_responses)
@@ -489,20 +495,20 @@ class BasicScraperValidator(OrganicHistoryMixin):
                 )
             ]
 
-            async_responses, uids, event, start_time = (
-                await self.run_twitter_basic_search_and_score(
-                    tasks=tasks,
-                    strategy=(
-                        QUERY_MINERS.ALL if specified_uids else QUERY_MINERS.RANDOM
-                    ),
-                    is_only_allowed_miner=self.neuron.config.subtensor.network
-                    != "finney",
-                    specified_uids=specified_uids,
-                    params_list=[
-                        {key: value for key, value in query.items() if key != "query"}
-                    ],
-                    uid=uid,
-                )
+            (
+                async_responses,
+                uids,
+                event,
+                start_time,
+            ) = await self.run_twitter_basic_search_and_score(
+                tasks=tasks,
+                strategy=(QUERY_MINERS.ALL if specified_uids else QUERY_MINERS.RANDOM),
+                is_only_allowed_miner=self.neuron.config.subtensor.network != "finney",
+                specified_uids=specified_uids,
+                params_list=[
+                    {key: value for key, value in query.items() if key != "query"}
+                ],
+                uid=uid,
             )
 
             final_responses = []
@@ -526,15 +532,19 @@ class BasicScraperValidator(OrganicHistoryMixin):
 
                 # Compute rewards and penalties
                 if not self.neuron.config.neuron.synthetic_disabled:
-                    _, _, _, _, original_rewards = (
-                        await self.compute_rewards_and_penalties(
-                            event=event,
-                            tasks=tasks,
-                            responses=final_responses,
-                            uids=uids,
-                            start_time=start_time,
-                            is_synthetic=False,
-                        )
+                    (
+                        _,
+                        _,
+                        _,
+                        _,
+                        original_rewards,
+                    ) = await self.compute_rewards_and_penalties(
+                        event=event,
+                        tasks=tasks,
+                        responses=final_responses,
+                        uids=uids,
+                        start_time=start_time,
+                        is_synthetic=False,
                     )
 
                     if not is_interval_query:
@@ -619,15 +629,19 @@ class BasicScraperValidator(OrganicHistoryMixin):
                 final_responses = [synapse]
 
                 async def process_and_score_responses(uids_tensor):
-                    _, _, _, _, original_rewards = (
-                        await self.compute_rewards_and_penalties(
-                            event=event,
-                            tasks=[task],
-                            responses=final_responses,
-                            uids=uids_tensor,
-                            start_time=start_time,
-                            is_synthetic=False,
-                        )
+                    (
+                        _,
+                        _,
+                        _,
+                        _,
+                        original_rewards,
+                    ) = await self.compute_rewards_and_penalties(
+                        event=event,
+                        tasks=[task],
+                        responses=final_responses,
+                        uids=uids_tensor,
+                        start_time=start_time,
+                        is_synthetic=False,
                     )
 
                     await self.organic_query_state.save_organic_queries(
@@ -709,15 +723,19 @@ class BasicScraperValidator(OrganicHistoryMixin):
                 final_responses = [synapse]
 
                 async def process_and_score_responses(uids_tensor):
-                    _, _, _, _, original_rewards = (
-                        await self.compute_rewards_and_penalties(
-                            event=event,
-                            tasks=[task],
-                            responses=final_responses,
-                            uids=uids_tensor,
-                            start_time=start_time,
-                            is_synthetic=False,
-                        )
+                    (
+                        _,
+                        _,
+                        _,
+                        _,
+                        original_rewards,
+                    ) = await self.compute_rewards_and_penalties(
+                        event=event,
+                        tasks=[task],
+                        responses=final_responses,
+                        uids=uids_tensor,
+                        start_time=start_time,
+                        is_synthetic=False,
                     )
 
                     await self.organic_query_state.save_organic_queries(

@@ -3,30 +3,32 @@ import os
 os.environ["USE_TORCH"] = "1"
 
 import asyncio
-from typing import Optional, Annotated, List, Optional
-from pydantic import BaseModel, Field, conint
+import json
+import traceback
+from contextlib import asynccontextmanager
+from typing import Annotated, List, Optional
+
+import aiohttp
+import bittensor as bt
+import uvicorn
+from fastapi import FastAPI, Header, HTTPException, Path, Query
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.openapi.utils import get_openapi
 from fastapi.responses import StreamingResponse
-from fastapi import FastAPI, HTTPException, Header, Query, Path
-from neurons.validators.env import PORT, EXPECTED_ACCESS_KEY
+from pydantic import BaseModel, Field, conint
+
 from desearch import __version__
 from desearch.dataset.date_filters import DateFilterType
 from desearch.protocol import (
     ChatHistoryItem,
     Model,
+    ResultType,
     TwitterScraperTweet,
     WebSearchResultList,
-    ResultType,
 )
-import uvicorn
-import aiohttp
-import bittensor as bt
-import traceback
+from neurons.validators.env import EXPECTED_ACCESS_KEY, PORT
 from neurons.validators.validator import Neuron
 from neurons.validators.validator_service_client import ValidatorServiceClient
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.openapi.utils import get_openapi
-from contextlib import asynccontextmanager
-import json
 
 neu: Neuron = None
 
@@ -103,13 +105,13 @@ class SearchRequest(BaseModel):
     start_date: Optional[str] = Field(
         default=None,
         description="The start date for the search query. Format: YYYY-MM-DDTHH:MM:SSZ (UTC)",
-        examples="2025-05-01T00:00:00Z",
+        example="2025-05-01T00:00:00Z",
     )
 
     end_date: Optional[str] = Field(
         default=None,
         description="The end date for the search query. Format: YYYY-MM-DDTHH:MM:SSZ (UTC)",
-        examples="2025-05-03T00:00:00Z",
+        example="2025-05-03T00:00:00Z",
     )
 
     date_filter: Optional[DateFilterType] = Field(
@@ -159,34 +161,6 @@ class SearchRequest(BaseModel):
     uid: Optional[int] = Query(default=None)
 
 
-class DeepResearchRequest(BaseModel):
-    prompt: str = Field(
-        ...,
-        description="Search query prompt",
-        example="What are the recent sport events?",
-    )
-
-    tools: List[str] = Field(
-        ..., description="List of tools to search with", example=available_tools
-    )
-
-    date_filter: Optional[DateFilterType] = Field(
-        default=DateFilterType.PAST_WEEK,
-        description=f"Date filter for the search results.{format_enum_values(DateFilterType)}",
-        example=DateFilterType.PAST_WEEK.value,
-    )
-
-    system_message: Optional[str] = Field(
-        default=None,
-        description="Rules influencing how summaries are generated",
-        example="Summarize the content by categorizing key points into 'Pros' and 'Cons' sections.",
-    )
-
-    uid: Optional[int] = Field(
-        default=None,
-    )
-
-
 class LinksSearchRequest(BaseModel):
     prompt: str = Field(
         ...,
@@ -217,7 +191,7 @@ class LinksSearchRequest(BaseModel):
 
 fields = "\n".join(
     f"- {key}: {item.get('description')}"
-    for key, item in SearchRequest.schema().get("properties", {}).items()
+    for key, item in SearchRequest.model_json_schema().get("properties", {}).items()
 )
 
 SEARCH_DESCRIPTION = f"""Performs a search across multiple platforms. Available tools are:
@@ -296,7 +270,6 @@ async def aggregate_search_results(responses: List[bt.Synapse], tools: List[str]
                 result = getattr(synapse, field_name)
 
                 if result:
-
                     # If result is a list, extend the existing aggregated list
                     if isinstance(result, list):
                         if field_name not in aggregated:
@@ -384,49 +357,6 @@ async def search(
         raise HTTPException(status_code=401, detail="Invalid access key")
 
     return StreamingResponse(response_stream_event(body))
-
-
-async def stream_deep_research(data: DeepResearchRequest):
-    try:
-        query = {
-            "content": data.prompt,
-            "tools": data.tools,
-            "date_filter": data.date_filter.value,
-            "system_message": data.system_message,
-        }
-
-        merged_chunks = ""
-
-        async for response in neu.deep_research_validator.organic(query, uid=data.uid):
-            # Decode the chunk if necessary and merge
-            chunk = str(response)  # Assuming response is already a string
-            merged_chunks += chunk
-            lines = chunk.split("\n")
-            sse_data = "\n".join(f"data: {line if line else ' '}" for line in lines)
-            yield f"{sse_data}\n\n"
-    except Exception as e:
-        bt.logging.error(f"error in stream_deep_research: {traceback.format_exc()}")
-        yield f"data: {json.dumps({'error': str(e)})}\n\n"
-
-
-@app.post(
-    "/deep-research",
-    summary="Deep research",
-    response_description="A stream of search results",
-)
-async def deep_search(
-    body: DeepResearchRequest, access_key: Annotated[str | None, Header()] = None
-):
-    """
-    Search endpoint that accepts a JSON body with search parameters.
-    """
-
-    bt.logging.info(f"/deep-research request: {body}")
-
-    if access_key != EXPECTED_ACCESS_KEY:
-        raise HTTPException(status_code=401, detail="Invalid access key")
-
-    return StreamingResponse(stream_deep_research(body))
 
 
 @app.post(

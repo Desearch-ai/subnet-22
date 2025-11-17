@@ -16,21 +16,19 @@
 # OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 # DEALINGS IN THE SOFTWARE.
 
-import traceback
-import time
-import random
-from typing import List, Optional, Dict, Any, Tuple
 import json
+import random
+import time
+import traceback
 from datetime import datetime
-import pytz
-import bittensor as bt
+from typing import Any, Dict, List, Optional, Tuple
 
-from neurons.validators.base_validator import AbstractNeuron
-from .config import RewardModelType
-from .reward import BaseRewardModel, BaseRewardEvent
+import bittensor as bt
+import pytz
+
 from desearch.protocol import (
-    TwitterSearchSynapse,
     TwitterIDSearchSynapse,
+    TwitterSearchSynapse,
     TwitterURLsSearchSynapse,
 )
 from desearch.services.twitter_utils import TwitterUtils
@@ -40,6 +38,10 @@ from desearch.utils import (
     is_valid_tweet,
     scrape_tweets_with_retries,
 )
+from neurons.validators.base_validator import AbstractNeuron
+
+from .config import RewardModelType
+from .reward import BaseRewardEvent, BaseRewardModel
 
 APIFY_LINK_SCRAPE_AMOUNT = 1
 
@@ -614,6 +616,9 @@ class TwitterBasicSearchContentRelevanceModel(BaseRewardModel):
                         else:
                             tweet_score.append(1)
 
+                miner_user = miner_tweet.get("user")
+                val_user = val_tweet_dict.get("user")
+
                 # Compare media
                 if not self.compare_media(
                     miner_tweet.get("media"), val_tweet_dict.get("media")
@@ -624,9 +629,6 @@ class TwitterBasicSearchContentRelevanceModel(BaseRewardModel):
                     )
                 else:
                     tweet_score.append(1)
-
-                miner_user = miner_tweet.get("user")
-                val_user = val_tweet_dict.get("user")
 
                 for f in USER_EXACT_FIELDS:
                     if miner_user.get(f) != val_user.get(f):

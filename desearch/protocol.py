@@ -1,18 +1,18 @@
-import pydantic
-import bittensor as bt
-import typing
-import json
 import asyncio
+import json
 import time
-from typing import List, Dict, Optional, Any, Literal, Tuple
-from starlette.responses import StreamingResponse
-from pydantic import BaseModel
+import traceback
+import typing
 from enum import Enum
+from typing import Any, Dict, List, Literal, Optional, Tuple
+
+import bittensor as bt
+import pydantic
 from aiohttp import ClientResponse
-import traceback
-from desearch.services.web_search_utils import WebSearchUtils
-import traceback
-from desearch.synapse import Synapse, StreamingSynapse
+from pydantic import BaseModel
+from starlette.responses import StreamingResponse
+
+from desearch.synapse import StreamingSynapse, Synapse
 
 
 class IsAlive(Synapse):
@@ -308,231 +308,6 @@ class ChatHistoryItem(BaseModel):
     completion: str = ""
 
 
-class DeepResearchSynapse(StreamingSynapse):
-    scoring_model: ScoringModel = pydantic.Field(
-        ScoringModel.OPENAI_GPT4_MINI,
-        title="scoring model",
-        description="The llm model to score synapse result.",
-    )
-
-    prompt: str = pydantic.Field(
-        ...,
-        title="Prompt",
-        description="The initial input or question provided by the user to guide the scraping and data collection process.",
-        allow_mutation=False,
-    )
-
-    system_message: Optional[str] = pydantic.Field(
-        "",
-        title="Sysmtem Message",
-        description="System message for formatting the response.",
-    )
-
-    tools: Optional[List[str]] = pydantic.Field(
-        default_factory=list,
-        title="Tools",
-        description="A list of tools specified by user to use to answer question.",
-    )
-
-    start_date: Optional[str] = pydantic.Field(
-        None,
-        title="Start Date",
-        description="The start date for the search query.",
-    )
-
-    end_date: Optional[str] = pydantic.Field(
-        None,
-        title="End Date",
-        description="The end date for the search query.",
-    )
-
-    date_filter_type: Optional[str] = pydantic.Field(
-        None,
-        title="Date filter enum",
-        description="The date filter enum.",
-    )
-
-    language: Optional[str] = pydantic.Field(
-        "en",
-        title="Language",
-        description="Language specified by user.",
-    )
-
-    region: Optional[str] = pydantic.Field(
-        "us",
-        title="Region",
-        description="Region specified by user.",
-    )
-
-    is_synthetic: Optional[bool] = pydantic.Field(
-        False,
-        title="Is Synthetic",
-        description="A boolean flag to indicate if the prompt is synthetic.",
-    )
-
-    max_execution_time: Optional[int] = pydantic.Field(
-        None,
-        title="Max Execution Time (timeout)",
-        description="Maximum time to execute concrete request",
-    )
-
-    report: Optional[List[ReportItem]] = pydantic.Field(
-        default_factory=list,
-        title="Report",
-        description="Deep research report",
-    )
-
-    validator_items: Optional[List[ReportItem]] = pydantic.Field(
-        default_factory=list,
-        title="Validator Items",
-        description="Validator items",
-    )
-
-    validator_links: Optional[Dict[str, str]] = pydantic.Field(
-        default_factory=dict, title="Links", description="Fetched Links Data."
-    )
-
-    flow_items: Optional[List[FlowItem]] = pydantic.Field(
-        default_factory=list,
-        title="Flow Items",
-        description="flow items",
-    )
-
-    def to_xml_report(self):
-        res = ""
-
-        def process_section(section: ReportItem, i: int, depth: int = 0):
-            subsections = "\n".join(
-                [
-                    process_section(subsection, i, depth + 1)
-                    for i, subsection in enumerate(section.subsections)
-                ]
-            )
-
-            label = "Section" if depth == 0 else "SubSection"
-
-            return f"""<{label}{i + 1} title=\"{section.title}\">
-            {section.description}
-            {subsections}
-            </{label}{i + 1}>"""
-
-        for i, section in enumerate(self.report):
-            res += process_section(section, i)
-
-        return res
-
-    def to_md_report(self):
-        md = ""
-
-        # Function to process a section and its subsections
-        def process_section(section, level=1):
-            nonlocal md
-            title = section.get("title", "")
-            description = section.get("description", "")
-            subsections = section.get("subsections", [])
-
-            # Add section title with appropriate heading
-            md += f"{'#' * level} {title}\n\n"
-
-            # Add section description
-            md += f"{description}\n\n"
-
-            # Process subsections recursively
-            if subsections:
-                for subsection in subsections:
-                    process_section(subsection, level + 1)
-
-        # Convert the provided report data to markdown format
-        for section in self.report:
-            process_section(section.model_dump())
-
-        return md
-
-    async def process_streaming_response(self, response: StreamingResponse):
-        buffer = ""  # Initialize an empty buffer to accumulate data across chunks
-
-        try:
-            async for chunk in response.content.iter_any():
-                chunk_str = chunk.decode("utf-8", errors="ignore")
-
-                # Attempt to parse the chunk as JSON, updating the buffer with remaining incomplete JSON data
-                json_objects, buffer = extract_json_chunk(
-                    chunk_str, response, self.axon.hotkey, buffer
-                )
-
-                for json_data in json_objects:
-                    content_type = json_data.get("type")
-                    content = json_data.get("content")
-
-                    if content_type == "report":
-                        self.report = content
-                    elif content_type == "flow":
-                        self.flow_items.append(
-                            FlowItem(
-                                **content,
-                                time=int(time.time()),
-                            )
-                        )
-
-                    yield json.dumps(json_data)
-
-        except json.JSONDecodeError as e:
-            port = response.real_url.port
-            host = response.real_url.host
-            hotkey = self.axon.hotkey
-            bt.logging.debug(
-                f"process_streaming_response: Host: {host}:{port}, hotkey: {hotkey}, ERROR: json.JSONDecodeError: {e}, "
-            )
-        except (TimeoutError, asyncio.exceptions.TimeoutError) as e:
-            port = response.real_url.port
-            host = response.real_url.host
-            hotkey = self.axon.hotkey
-            print(
-                f"process_streaming_response TimeoutError: Host: {host}:{port}, hotkey: {hotkey}, Error: {e}"
-            )
-        except Exception as e:
-            port = response.real_url.port
-            host = response.real_url.host
-            hotkey = self.axon.hotkey
-            error_details = traceback.format_exc()
-            bt.logging.debug(
-                f"process_streaming_response: Host: {host}:{port}, hotkey: {hotkey}, ERROR: {e}, DETAILS: {error_details}, chunk: {chunk}"
-            )
-
-    def extract_response_json(self, response: ClientResponse) -> dict:
-        headers = {
-            k.decode("utf-8"): v.decode("utf-8")
-            for k, v in response.__dict__["_raw_headers"]
-        }
-
-        def extract_info(prefix):
-            return {
-                key.split("_")[-1]: value
-                for key, value in headers.items()
-                if key.startswith(prefix)
-            }
-
-        return {
-            "name": headers.get("name", ""),
-            "timeout": float(headers.get("timeout", 0)),
-            "total_size": int(headers.get("total_size", 0)),
-            "header_size": int(headers.get("header_size", 0)),
-            "dendrite": extract_info("bt_header_dendrite"),
-            "axon": extract_info("bt_header_axon"),
-            "prompt": self.prompt,
-            "start_date": self.start_date,
-            "end_date": self.end_date,
-            "date_filter_type": self.date_filter_type,
-            "tools": self.tools,
-            "max_execution_time": self.max_execution_time,
-            "language": self.language,
-            "region": self.region,
-            "system_message": self.system_message,
-            "report": self.report,
-            "flow_items": self.flow_items,
-        }
-
-
 class ScraperStreamingSynapse(StreamingSynapse):
     scoring_model: ScoringModel = pydantic.Field(
         ScoringModel.OPENAI_GPT4_MINI,
@@ -642,20 +417,6 @@ class ScraperStreamingSynapse(StreamingSynapse):
         description="Optional JSON object containing tweets data from the miner.",
     )
 
-    # TODO Remove later
-    search_completion_links: Optional[List[str]] = pydantic.Field(
-        default_factory=list,
-        title="Links Content",
-        description="A list of links extracted from search summary text.",
-    )
-
-    # TODO Remove later
-    completion_links: Optional[List[str]] = pydantic.Field(
-        default_factory=list,
-        title="Links Content",
-        description="A list of JSON objects representing the extracted links content from the tweets.",
-    )
-
     search_results: Optional[List[SearchResultItem]] = pydantic.Field(
         default_factory=list,
         title="Search Results",
@@ -742,9 +503,6 @@ class ScraperStreamingSynapse(StreamingSynapse):
         title="Result Type",
         description="The result type for miners",
     )
-
-    def set_tweets(self, data: any):
-        self.tweets = data
 
     def get_twitter_completion(self) -> Optional[str]:
         return self.texts.get(ScraperTextRole.TWITTER_SUMMARY.value, "")
@@ -870,59 +628,6 @@ class ScraperStreamingSynapse(StreamingSynapse):
         links_expected = len(completions) * links_per_completion
 
         return completions, links_expected
-
-    def get_all_completions(self) -> Dict[str, str]:
-        completions, _ = self.get_search_completion()
-
-        if "Twitter Search" in self.tools:
-            completions[ScraperTextRole.TWITTER_SUMMARY.value] = (
-                self.get_twitter_completion()
-            )
-
-        return completions
-
-    def get_search_links(self) -> List[str]:
-        """Extracts web links from each summary making sure to filter by domain for each tool used.
-        In Reddit and Hacker News Search, the links are filtered by domains.
-        In search summary part, if Web Search is used, the links are allowed from any domain,
-        Otherwise search summary will only look for Wikipedia, ArXiv, Youtube links.
-        Returns list of all links and links per each summary role.
-        """
-
-        completions, _ = self.get_search_completion()
-        all_links = []
-        links_per_summary = {}
-
-        for key, value in completions.items():
-            links = []
-
-            if key == ScraperTextRole.REDDIT_SUMMARY.value:
-                links.extend(WebSearchUtils.find_links_by_domain(value, "reddit.com"))
-            elif key == ScraperTextRole.HACKER_NEWS_SUMMARY.value:
-                links.extend(
-                    WebSearchUtils.find_links_by_domain(value, "news.ycombinator.com")
-                )
-            elif key == ScraperTextRole.SEARCH_SUMMARY.value:
-                if any(tool in self.tools for tool in ["Web Search"]):
-                    links.extend(WebSearchUtils.find_links(value))
-                else:
-                    if "Wikipedia Search" in self.tools:
-                        links.extend(
-                            WebSearchUtils.find_links_by_domain(value, "wikipedia.org")
-                        )
-                    if "ArXiv Search" in self.tools:
-                        links.extend(
-                            WebSearchUtils.find_links_by_domain(value, "arxiv.org")
-                        )
-                    if "Youtube Search" in self.tools:
-                        links.extend(
-                            WebSearchUtils.find_links_by_domain(value, "youtube.com")
-                        )
-
-            all_links.extend(links)
-            links_per_summary[key] = links
-
-        return all_links, links_per_summary
 
     async def process_streaming_response(self, response: StreamingResponse):
         if self.completion is None:
@@ -1071,9 +776,6 @@ class ScraperStreamingSynapse(StreamingSynapse):
                 if key.startswith(prefix)
             }
 
-        # completion_links = TwitterUtils().find_twitter_links(self.completion)
-        # search_completion_links, _ = self.get_search_links()
-
         return {
             "name": headers.get("name", ""),
             "timeout": float(headers.get("timeout", 0)),
@@ -1091,8 +793,6 @@ class ScraperStreamingSynapse(StreamingSynapse):
             "arxiv_search_results": self.arxiv_search_results,
             "hacker_news_search_results": self.hacker_news_search_results,
             "reddit_search_results": self.reddit_search_results,
-            "completion_links": [],
-            "search_completion_links": [],
             "texts": self.texts,
             "start_date": self.start_date,
             "end_date": self.end_date,

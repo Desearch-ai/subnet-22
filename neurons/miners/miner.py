@@ -1,37 +1,29 @@
-import os
-import time
-import copy
-import wandb
-import json
-import pathlib
-import asyncio
-import desearch
 import argparse
+import asyncio
+import copy
+import os
 import threading
+import time
 import traceback
-import bittensor as bt
-
-from openai import OpenAI
-from functools import partial
-from collections import deque
-from openai import AsyncOpenAI
 from abc import ABC, abstractmethod
-from neurons.miners.config import get_config, check_config
+from collections import deque
+from functools import partial
 from typing import Dict, Tuple
 
-from desearch.utils import get_version
+import bittensor as bt
+from openai import OpenAI
 
+import desearch
 from desearch.protocol import (
     IsAlive,
     ScraperStreamingSynapse,
-    TwitterSearchSynapse,
-    WebSearchSynapse,
-    TwitterURLsSearchSynapse,
     TwitterIDSearchSynapse,
-    DeepResearchSynapse,
+    TwitterSearchSynapse,
+    TwitterURLsSearchSynapse,
+    WebSearchSynapse,
 )
+from neurons.miners.config import check_config, get_config
 from neurons.miners.scraper_miner import ScraperMiner
-from neurons.miners.deep_research_miner import DeepResearchMiner
 from neurons.miners.twitter_search_miner import TwitterSearchMiner
 from neurons.miners.web_search_miner import WebSearchMiner
 
@@ -46,20 +38,6 @@ if not TWITTER_BEARER_TOKEN:
     raise ValueError(
         "Please set the TWITTER_BEARER_TOKEN environment variable. See here: https://github.com/Desearch-ai/subnet-22/blob/main/docs/env_variables.md"
     )
-
-netrc_path = pathlib.Path.home() / ".netrc"
-wandb_api_key = os.getenv("WANDB_API_KEY")
-
-print("WANDB_API_KEY is set:", bool(wandb_api_key))
-print("~/.netrc exists:", netrc_path.exists())
-
-if not wandb_api_key and not netrc_path.exists():
-    raise ValueError(
-        "Please log in to wandb using `wandb login` or set the WANDB_API_KEY environment variable."
-    )
-
-client = AsyncOpenAI(timeout=60.0)
-valid_hotkeys = []
 
 
 class StreamMiner(ABC):
@@ -102,7 +80,7 @@ class StreamMiner(ABC):
 
         if self.wallet.hotkey.ss58_address not in self.metagraph.hotkeys:
             bt.logging.error(
-                f"\nYour validator: {self.wallet} if not registered to chain connection: {self.subtensor} \nRun btcli register and try again. "
+                f"\nYour miner: {self.wallet} if not registered to chain connection: {self.subtensor} \nRun btcli register and try again. "
             )
             exit()
         else:
@@ -129,7 +107,7 @@ class StreamMiner(ABC):
             self.axon = bt.axon(wallet=self.wallet, port=self.config.axon.port)
 
         # Attach determiners which functions are called when servicing a request.
-        bt.logging.info(f"Attaching forward function to axon.")
+        bt.logging.info("Attaching forward function to axon.")
         print(f"Attaching forward function to axon. {self._is_alive}")
 
         self.axon.attach(
@@ -150,9 +128,6 @@ class StreamMiner(ABC):
         ).attach(
             forward_fn=self.web_search,
             blacklist_fn=self.blacklist_web_search,
-        ).attach(
-            forward_fn=self.deep_research,
-            blacklist_fn=self.blacklist_deep_research,
         )
 
         bt.logging.info(f"Axon created: {self.axon}")
@@ -163,8 +138,6 @@ class StreamMiner(ABC):
         self.thread: threading.Thread = None
         self.lock = asyncio.Lock()
         self.request_timestamps: Dict = {}
-        thread = threading.Thread(target=get_valid_hotkeys, args=(self.config,))
-        # thread.start()
 
     @abstractmethod
     def config(self) -> "bt.Config": ...
@@ -173,9 +146,6 @@ class StreamMiner(ABC):
         self, synapse: ScraperStreamingSynapse
     ) -> ScraperStreamingSynapse:
         return self.smart_scraper(synapse)
-
-    def _deep_research(self, synapse: DeepResearchSynapse) -> DeepResearchSynapse:
-        return self.deep_research(synapse)
 
     async def _twitter_search(
         self, synapse: TwitterSearchSynapse
@@ -277,13 +247,6 @@ class StreamMiner(ABC):
         bt.logging.info(blacklist[1])
         return blacklist
 
-    def blacklist_deep_research(self, synapse: DeepResearchSynapse) -> Tuple[bool, str]:
-        blacklist = self.base_blacklist(
-            synapse, desearch.TWITTER_SCRAPPER_BLACKLIST_STAKE
-        )
-        bt.logging.info(blacklist[1])
-        return blacklist
-
     def blacklist_twitter_search(
         self, synapse: TwitterSearchSynapse
     ) -> Tuple[bool, str]:
@@ -327,9 +290,6 @@ class StreamMiner(ABC):
     ) -> ScraperStreamingSynapse:
         return self.smart_scraper(synapse)
 
-    async def _deep_research(self, synapse: DeepResearchSynapse) -> DeepResearchSynapse:
-        return self.deep_research(synapse)
-
     def _is_alive(self, synapse: IsAlive) -> IsAlive:
         bt.logging.info("answered to be active")
         synapse.completion = "True"
@@ -339,9 +299,6 @@ class StreamMiner(ABC):
     def smart_scraper(
         self, synapse: ScraperStreamingSynapse
     ) -> ScraperStreamingSynapse: ...
-
-    @abstractmethod
-    def deep_research(self, synapse: DeepResearchSynapse) -> DeepResearchSynapse: ...
 
     @abstractmethod
     async def twitter_search(
@@ -411,15 +368,13 @@ class StreamMiner(ABC):
         self.axon.start()
         self.last_epoch_block = self.subtensor.get_current_block()
         bt.logging.info(f"Miner starting at block: {self.last_epoch_block}")
-        bt.logging.info(f"Starting main loop")
+        bt.logging.info("Starting main loop")
 
         self.start_background_sync()
 
         step = 0
         try:
             while not self.should_exit:
-                start_epoch = time.time()
-
                 # --- Wait until next epoch.
                 current_block = self.subtensor.get_current_block()
                 while (
@@ -447,7 +402,7 @@ class StreamMiner(ABC):
                     f"Stake:{metagraph.S[self.my_subnet_uid]} | "
                     f"Rank:{metagraph.R[self.my_subnet_uid]} | "
                     f"Trust:{metagraph.T[self.my_subnet_uid]} | "
-                    f"Consensus:{metagraph.C[self.my_subnet_uid] } | "
+                    f"Consensus:{metagraph.C[self.my_subnet_uid]} | "
                     f"Incentive:{metagraph.I[self.my_subnet_uid]} | "
                     f"Emission:{metagraph.E[self.my_subnet_uid]}"
                 )
@@ -505,12 +460,6 @@ class StreamingTemplateMiner(StreamMiner):
         token_streamer = partial(tw_miner.smart_scraper, synapse)
         return synapse.create_streaming_response(token_streamer)
 
-    def deep_research(self, synapse: DeepResearchSynapse) -> DeepResearchSynapse:
-        bt.logging.info(f"started processing for synapse {synapse}")
-        tw_miner = DeepResearchMiner(self)
-        token_streamer = partial(tw_miner.deep_research, synapse)
-        return synapse.create_streaming_response(token_streamer)
-
     async def twitter_search(
         self, synapse: TwitterSearchSynapse
     ) -> TwitterSearchSynapse:
@@ -536,66 +485,6 @@ class StreamingTemplateMiner(StreamMiner):
         bt.logging.info(f"started processing for Web search  synapse {synapse}")
         web_search_miner = WebSearchMiner(self)
         return await web_search_miner.search(synapse)
-
-
-def get_valid_hotkeys(config):
-    global valid_hotkeys
-    api = wandb.Api()
-    subtensor = bt.subtensor(config=config)
-    while True:
-        metagraph = subtensor.metagraph(config.netuid)
-        try:
-            runs = api.runs(f"{desearch.ENTITY}/{desearch.PROJECT_NAME}")
-            latest_version = get_version()
-            for run in runs:
-                if run.state == "running":
-                    try:
-                        # Extract hotkey and signature from the run's configuration
-                        hotkey = run.config["hotkey"]
-                        signature = run.config["signature"]
-                        version = run.config["version"]
-                        bt.logging.debug(
-                            f"found running run of hotkey {hotkey}, {version} "
-                        )
-
-                        if latest_version == None:
-                            bt.logging.error(f"Github API call failed!")
-                            continue
-
-                        if version != latest_version and latest_version != None:
-                            bt.logging.debug(
-                                f"Version Mismatch: Run version {version} does not match GitHub version {latest_version}"
-                            )
-                            continue
-
-                        # Check if the hotkey is registered in the metagraph
-                        if hotkey not in metagraph.hotkeys:
-                            bt.logging.debug(
-                                f"Invalid running run: The hotkey: {hotkey} is not in the metagraph."
-                            )
-                            continue
-
-                        # Verify the signature using the hotkey
-                        if not bt.Keypair(ss58_address=hotkey).verify(
-                            run.id, bytes.fromhex(signature)
-                        ):
-                            bt.logging.debug(
-                                f"Failed Signature: The signature: {signature} is not valid"
-                            )
-                            continue
-
-                        if hotkey not in valid_hotkeys:
-                            valid_hotkeys.append(hotkey)
-                    except Exception as e:
-                        bt.logging.debug(
-                            f"exception in get_valid_hotkeys: {traceback.format_exc()}"
-                        )
-
-            bt.logging.info(f"total valid hotkeys list = {valid_hotkeys}")
-            time.sleep(180)
-
-        except json.JSONDecodeError as e:
-            bt.logging.debug(f"JSON decoding error: {e} {run.id}")
 
 
 if __name__ == "__main__":

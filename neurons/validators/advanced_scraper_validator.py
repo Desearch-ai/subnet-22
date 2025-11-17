@@ -1,46 +1,47 @@
-import torch
-import random
 import asyncio
+import random
 import time
 from typing import List, Optional
-import bittensor as bt
-from desearch.stream import collect_final_synapses
-from neurons.validators.reward import RewardModelType, RewardScoringType
-from neurons.validators.utils.mock import MockRewardModel
 
+import bittensor as bt
+import torch
+
+from desearch import QUERY_MINERS
 from desearch.dataset import QuestionsDataset
 from desearch.dataset.date_filters import (
     DateFilter,
+    DateFilterType,
     get_random_date_filter,
     get_specified_date_filter,
-    DateFilterType,
 )
-from desearch import QUERY_MINERS
 from desearch.protocol import (
     ChatHistoryItem,
     Model,
     ResultType,
     ScraperStreamingSynapse,
 )
+from desearch.stream import collect_final_synapses
 from desearch.utils import get_max_execution_time
+from neurons.validators.advanced_organic_query_state import AdvancedOrganicQueryState
 from neurons.validators.base_validator import AbstractNeuron
+from neurons.validators.organic_history_mixin import OrganicHistoryMixin
+from neurons.validators.penalty.chat_history_penalty import ChatHistoryPenaltyModel
+from neurons.validators.penalty.exponential_penalty import ExponentialTimePenaltyModel
+from neurons.validators.penalty.miner_score_penalty import MinerScorePenaltyModel
+from neurons.validators.penalty.streaming_penalty import StreamingPenaltyModel
+from neurons.validators.penalty.summary_rule_penalty import SummaryRulePenaltyModel
+from neurons.validators.reward import RewardModelType, RewardScoringType
+from neurons.validators.reward.performance_reward import PerformanceRewardModel
+from neurons.validators.reward.reward_llm import RewardLLM
+from neurons.validators.reward.search_content_relevance import (
+    WebSearchContentRelevanceModel,
+)
 from neurons.validators.reward.summary_relevance import SummaryRelevanceRewardModel
 from neurons.validators.reward.twitter_content_relevance import (
     TwitterContentRelevanceModel,
 )
-from neurons.validators.reward.search_content_relevance import (
-    WebSearchContentRelevanceModel,
-)
-from neurons.validators.reward.performance_reward import PerformanceRewardModel
-from neurons.validators.reward.reward_llm import RewardLLM
+from neurons.validators.utils.mock import MockRewardModel
 from neurons.validators.utils.tasks import TwitterTask
-from neurons.validators.advanced_organic_query_state import AdvancedOrganicQueryState
-from neurons.validators.penalty.streaming_penalty import StreamingPenaltyModel
-from neurons.validators.penalty.exponential_penalty import ExponentialTimePenaltyModel
-from neurons.validators.penalty.summary_rule_penalty import SummaryRulePenaltyModel
-from neurons.validators.penalty.miner_score_penalty import MinerScorePenaltyModel
-from neurons.validators.penalty.chat_history_penalty import ChatHistoryPenaltyModel
-from neurons.validators.organic_history_mixin import OrganicHistoryMixin
 
 
 class AdvancedScraperValidator(OrganicHistoryMixin):
@@ -371,10 +372,12 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
                     val_scores.append(val_score_responses)
 
             for penalty_fn_i in self.penalty_functions:
-                raw_penalty_i, adjusted_penalty_i, applied_penalty_i = (
-                    await penalty_fn_i.apply_penalties(
-                        responses, tasks, uids, val_scores
-                    )
+                (
+                    raw_penalty_i,
+                    adjusted_penalty_i,
+                    applied_penalty_i,
+                ) = await penalty_fn_i.apply_penalties(
+                    responses, tasks, uids, val_scores
                 )
                 penalty_start_time = time.time()
                 rewards *= applied_penalty_i.to(self.neuron.config.neuron.device)
@@ -417,14 +420,9 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
                 completion_length = (
                     len(response.completion) if response.completion is not None else 0
                 )
-                completion_links_length = (
-                    len(response.completion_links)
-                    if response.completion_links is not None
-                    else 0
-                )
                 # Accumulate log messages instead of logging them immediately
                 log_messages.append(
-                    f"UID: {uid}, R: {round(reward, 3)}, C: {completion_length}, L: {completion_links_length}"
+                    f"UID: {uid}, R: {round(reward, 3)}, C: {completion_length}"
                 )
                 bt.logging.trace(f"{response.completion}")
 
@@ -663,15 +661,19 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
                     uids = torch.cat([uids, torch.tensor([random_uid])])
 
                 if not self.neuron.config.neuron.synthetic_disabled:
-                    _, _, _, _, original_rewards = (
-                        await self.compute_rewards_and_penalties(
-                            event=event,
-                            tasks=tasks,
-                            responses=final_synapses,
-                            uids=uids,
-                            start_time=start_time,
-                            is_synthetic=False,
-                        )
+                    (
+                        _,
+                        _,
+                        _,
+                        _,
+                        original_rewards,
+                    ) = await self.compute_rewards_and_penalties(
+                        event=event,
+                        tasks=tasks,
+                        responses=final_synapses,
+                        uids=uids,
+                        start_time=start_time,
+                        is_synthetic=False,
                     )
 
                     if not is_interval_query:

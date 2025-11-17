@@ -1,43 +1,42 @@
-import random
-from typing import Optional, Tuple
-import torch
-import wandb
 import asyncio
 import concurrent
-import traceback
 import copy
-import bittensor as bt
-from bittensor.core.metagraph import AsyncMetagraph
-import time
-import sys
 import itertools
+import random
+import sys
+import time
+import traceback
+from traceback import print_exception
+from typing import Optional, Tuple
 
-from desearch.protocol import IsAlive
+import bittensor as bt
+import torch
+from bittensor.core.metagraph import AsyncMetagraph
+
+import wandb
+from desearch import QUERY_MINERS
 from desearch.bittensor.dendrite import Dendrite
 from desearch.bittensor.subtensor import Subtensor
 from desearch.bittensor.wallet import Wallet
-from neurons.validators.advanced_scraper_validator import AdvancedScraperValidator
-from neurons.validators.basic_scraper_validator import BasicScraperValidator
-from neurons.validators.basic_web_scraper_validator import BasicWebScraperValidator
-from neurons.validators.deep_research_validator import DeepResearchValidator
-from neurons.validators.config import add_args, check_config, config
-from neurons.validators.validator_service_client import ValidatorServiceClient
-from neurons.validators.weights import init_wandb, set_weights, get_weights
-from traceback import print_exception
-from neurons.validators.base_validator import AbstractNeuron
-from desearch import QUERY_MINERS
-from desearch.utils import (
-    resync_metagraph,
-    save_logs_in_chunks,
-    save_logs_in_chunks_for_deep_research,
-)
+from desearch.protocol import IsAlive
+from desearch.redis.redis_client import initialize_redis
 from desearch.redis.utils import (
     load_moving_averaged_scores,
     save_moving_averaged_scores,
 )
-from desearch.redis.redis_client import initialize_redis
+from desearch.utils import (
+    resync_metagraph,
+    save_logs_in_chunks,
+)
+from neurons.validators.advanced_scraper_validator import AdvancedScraperValidator
+from neurons.validators.base_validator import AbstractNeuron
+from neurons.validators.basic_scraper_validator import BasicScraperValidator
+from neurons.validators.basic_web_scraper_validator import BasicWebScraperValidator
+from neurons.validators.config import add_args, check_config, config
 from neurons.validators.proxy.uid_manager import UIDManager
 from neurons.validators.synthetic_query_runner import SyntheticQueryRunnerMixin
+from neurons.validators.validator_service_client import ValidatorServiceClient
+from neurons.validators.weights import get_weights, init_wandb, set_weights
 
 
 class Neuron(SyntheticQueryRunnerMixin, AbstractNeuron):
@@ -63,7 +62,6 @@ class Neuron(SyntheticQueryRunnerMixin, AbstractNeuron):
     advanced_scraper_validator: "AdvancedScraperValidator"
     basic_scraper_validator: "BasicScraperValidator"
     basic_web_scraper_validator: "BasicWebScraperValidator"
-    deep_research_validator: "DeepResearchValidator"
     moving_average_scores: torch.Tensor = None
     uid: int = None
     shutdown_event: asyncio.Event()
@@ -81,7 +79,6 @@ class Neuron(SyntheticQueryRunnerMixin, AbstractNeuron):
         self.advanced_scraper_validator = AdvancedScraperValidator(neuron=self)
         self.basic_scraper_validator = BasicScraperValidator(neuron=self)
         self.basic_web_scraper_validator = BasicWebScraperValidator(neuron=self)
-        self.deep_research_validator = DeepResearchValidator(neuron=self)
         bt.logging.info("initialized_validators")
 
         self.step = 0
@@ -306,63 +303,6 @@ class Neuron(SyntheticQueryRunnerMixin, AbstractNeuron):
             bt.logging.error(f"Error in update_scores: {e}")
             raise e
 
-    async def update_scores_for_deep_research(
-        self,
-        wandb_data,
-        responses,
-        uids,
-        rewards,
-        all_rewards,
-        all_original_rewards,
-        val_score_responses_list,
-        organic_penalties,
-        neuron,
-        query_type,
-    ):
-        try:
-            if self.config.wandb_on and not self.lite:
-                wandb.log(wandb_data)
-
-            weights = (
-                await self.run_sync_in_async(lambda: get_weights(self))
-                if not self.lite
-                else {}
-            )
-
-            asyncio.create_task(
-                save_logs_in_chunks_for_deep_research(
-                    self,
-                    responses=responses,
-                    uids=uids,
-                    rewards=rewards,
-                    content_rewards=all_rewards[0],
-                    data_rewards=all_rewards[1],
-                    logical_coherence_rewards=all_rewards[2],
-                    source_links_rewards=all_rewards[3],
-                    system_message_rewards=all_rewards[4],
-                    performance_rewards=all_rewards[5],
-                    original_content_rewards=all_original_rewards[0],
-                    original_data_rewards=all_original_rewards[1],
-                    original_logical_coherence_rewards=all_original_rewards[2],
-                    original_source_links_rewards=all_original_rewards[3],
-                    original_system_message_rewards=all_original_rewards[4],
-                    original_performance_rewards=all_original_rewards[5],
-                    content_scores=val_score_responses_list[0],
-                    data_scores=val_score_responses_list[1],
-                    logical_coherence_scores=val_score_responses_list[2],
-                    source_links_scores=val_score_responses_list[3],
-                    system_message_scores=val_score_responses_list[4],
-                    weights=weights,
-                    neuron=neuron,
-                    netuid=self.config.netuid,
-                    organic_penalties=organic_penalties,
-                    query_type=query_type,
-                )
-            )
-        except Exception as e:
-            bt.logging.error(f"Error in update_scores: {e}")
-            raise e
-
     async def update_scores_for_basic(
         self,
         wandb_data,
@@ -537,9 +477,8 @@ class Neuron(SyntheticQueryRunnerMixin, AbstractNeuron):
                                 [
                                     self.advanced_scraper_validator,
                                     self.basic_scraper_validator,
-                                    self.deep_research_validator,
                                 ],
-                                weights=[0.6, 0.25, 0.15],
+                                weights=[0.6, 0.4],
                             )[0]
 
                             self.loop.create_task(
