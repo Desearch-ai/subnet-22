@@ -2,7 +2,6 @@ import argparse
 import asyncio
 import copy
 import os
-import pathlib
 import threading
 import time
 import traceback
@@ -12,7 +11,7 @@ from functools import partial
 from typing import Dict, Tuple
 
 import bittensor as bt
-from openai import AsyncOpenAI, OpenAI
+from openai import OpenAI
 
 import desearch
 from desearch.protocol import (
@@ -39,20 +38,6 @@ if not TWITTER_BEARER_TOKEN:
     raise ValueError(
         "Please set the TWITTER_BEARER_TOKEN environment variable. See here: https://github.com/Desearch-ai/subnet-22/blob/main/docs/env_variables.md"
     )
-
-netrc_path = pathlib.Path.home() / ".netrc"
-wandb_api_key = os.getenv("WANDB_API_KEY")
-
-print("WANDB_API_KEY is set:", bool(wandb_api_key))
-print("~/.netrc exists:", netrc_path.exists())
-
-if not wandb_api_key and not netrc_path.exists():
-    raise ValueError(
-        "Please log in to wandb using `wandb login` or set the WANDB_API_KEY environment variable."
-    )
-
-client = AsyncOpenAI(timeout=60.0)
-valid_hotkeys = []
 
 
 class StreamMiner(ABC):
@@ -95,7 +80,7 @@ class StreamMiner(ABC):
 
         if self.wallet.hotkey.ss58_address not in self.metagraph.hotkeys:
             bt.logging.error(
-                f"\nYour validator: {self.wallet} if not registered to chain connection: {self.subtensor} \nRun btcli register and try again. "
+                f"\nYour miner: {self.wallet} if not registered to chain connection: {self.subtensor} \nRun btcli register and try again. "
             )
             exit()
         else:
@@ -390,8 +375,6 @@ class StreamMiner(ABC):
         step = 0
         try:
             while not self.should_exit:
-                start_epoch = time.time()
-
                 # --- Wait until next epoch.
                 current_block = self.subtensor.get_current_block()
                 while (
