@@ -110,8 +110,8 @@ async def resync_metagraph(self):
     """Resyncs the metagraph and updates the hotkeys and moving averages based on the new metagraph."""
     bt.logging.info("resync_metagraph()")
 
-    # Copies state of metagraph before syncing.
-    previous_metagraph = copy.deepcopy(self.metagraph)
+    # Copies axons before syncing.
+    previous_axons = list(self.metagraph.axons)  # Only copy what you need
 
     try:
         # Sync the metagraph.
@@ -124,7 +124,7 @@ async def resync_metagraph(self):
         self.metagraph = await self.subtensor.metagraph(self.config.netuid)
 
     # Check if the metagraph axon info has changed.
-    if previous_metagraph.axons == self.metagraph.axons:
+    if previous_axons == list(self.metagraph.axons):
         return
 
     bt.logging.info(
@@ -149,7 +149,7 @@ async def resync_metagraph(self):
     await save_moving_averaged_scores(self.moving_averaged_scores)
 
     # Update the hotkeys.
-    self.hotkeys = copy.deepcopy(self.metagraph.hotkeys)
+    self.hotkeys = list(self.metagraph.hotkeys)
 
 
 async def save_logs(logs, netuid):
