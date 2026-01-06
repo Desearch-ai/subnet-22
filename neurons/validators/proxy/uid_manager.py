@@ -1,6 +1,8 @@
-from typing import List
 import random
+from typing import List
+
 import bittensor as bt
+from bittensor.core.metagraph import AsyncMetagraph
 
 from neurons.validators.weights import EMISSION_CONTROL_HOTKEY
 
@@ -13,8 +15,8 @@ class UIDManager:
 
     def __init__(
         self,
-        wallet: bt.wallet,
-        metagraph: bt.metagraph,
+        wallet: bt.Wallet,
+        metagraph: "AsyncMetagraph",
     ) -> None:
         self.wallet = wallet
         self.metagraph = metagraph

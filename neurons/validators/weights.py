@@ -18,12 +18,13 @@
 
 # Utils for weights setting on chain.
 
-import wandb
-import torch
-import bittensor as bt
-import desearch
 import time
+
+import bittensor as bt
 import torch
+
+import desearch
+import wandb
 
 ENABLE_EMISSION_CONTROL = True
 EMISSION_CONTROL_HOTKEY = "5CUu1QhvrfyMDBELUPJLt4c7uJFbi7TKqDHkS1Zz41oD4dyP"
@@ -65,8 +66,8 @@ def init_wandb(self):
 
 def set_weights_subtensor(netuid, uids, weights, config, version_key):
     try:
-        wallet = bt.wallet(config=config)
-        subtensor = bt.subtensor(config=config)
+        wallet = bt.Wallet(config=config)
+        subtensor = bt.Subtensor(config=config)
         success, message = subtensor.set_weights(
             wallet=wallet,
             netuid=netuid,
@@ -80,7 +81,7 @@ def set_weights_subtensor(netuid, uids, weights, config, version_key):
         # Send the success status back to the main process
         return success, message
     except Exception as e:
-        bt.logging.error(f"Failed to set weights on chain with exception: { e }")
+        bt.logging.error(f"Failed to set weights on chain with exception: {e}")
         return False, message
 
 
@@ -173,7 +174,7 @@ def process_weights(self, raw_weights):
 
     for attempt in range(max_retries):
         try:
-            subtensor = bt.subtensor(config=self.config)
+            subtensor = bt.Subtensor(config=self.config)
 
             (
                 processed_weight_uids,

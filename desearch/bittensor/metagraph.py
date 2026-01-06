@@ -1,13 +1,12 @@
-import bittensor as bt
-from bittensor.core.metagraph import AsyncMetagraph
 import torch
 from bittensor.core.chain_data import (
     AxonInfo,
     NeuronInfoLite,
     PrometheusInfo,
 )
-from bittensor.core.chain_data.prometheus_info import PrometheusInfo
+from bittensor.core.metagraph import AsyncMetagraph
 from bittensor.utils.balance import Balance
+
 from .wallet import MOCK_WALLET_KEY
 
 NEURON_COUNT = 3

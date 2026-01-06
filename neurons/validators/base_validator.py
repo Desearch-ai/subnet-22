@@ -1,29 +1,24 @@
-from abc import ABC, abstractmethod
-import asyncio
-import itertools
-from typing import Optional, Tuple
-import torch
-import bittensor as bt
-from bittensor.core.metagraph import AsyncMetagraph
 import argparse
+import itertools
+from abc import ABC, abstractmethod
+from typing import Optional, Tuple
+
+import bittensor as bt
+import torch
+from bittensor.core.metagraph import AsyncMetagraph
 
 
 class AbstractNeuron(ABC):
     @abstractmethod
     def __init__(self):
         self.subtensor: "bt.AsyncSubtensor" = None
-        self.wallet: "bt.wallet" = None
+        self.wallet: "bt.Wallet" = None
         self.metagraph: "AsyncMetagraph" = None
-        self.dendrite: "bt.dendrite" = None
-        self.dendrite1: "bt.dendrite" = None
-        self.dendrite2: "bt.dendrite" = None
-        self.dendrite3: "bt.dendrite" = None
-        self.dendrites: itertools.cycle[bt.dendrite]
-
-    @classmethod
-    @abstractmethod
-    def check_config(cls, config: "bt.config"):
-        pass
+        self.dendrite: "bt.Dendrite" = None
+        self.dendrite1: "bt.Dendrite" = None
+        self.dendrite2: "bt.Dendrite" = None
+        self.dendrite3: "bt.Dendrite" = None
+        self.dendrites: itertools.cycle[bt.Dendrite]
 
     @classmethod
     @abstractmethod

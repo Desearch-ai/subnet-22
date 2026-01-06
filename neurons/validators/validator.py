@@ -41,10 +41,6 @@ from neurons.validators.weights import get_weights, init_wandb, set_weights
 
 class Neuron(SyntheticQueryRunnerMixin, AbstractNeuron):
     @classmethod
-    def check_config(cls, config: "bt.Config"):
-        check_config(cls, config)
-
-    @classmethod
     def add_args(cls, parser):
         add_args(cls, parser)
 
@@ -53,9 +49,9 @@ class Neuron(SyntheticQueryRunnerMixin, AbstractNeuron):
         return config(cls)
 
     subtensor: "bt.AsyncSubtensor"
-    wallet: "bt.wallet"
+    wallet: "bt.Wallet"
     metagraph: "AsyncMetagraph"
-    dendrite: "bt.dendrite"
+    dendrite: "bt.Dendrite"
 
     loop: asyncio.AbstractEventLoop
 
@@ -71,7 +67,7 @@ class Neuron(SyntheticQueryRunnerMixin, AbstractNeuron):
     def __init__(self, lite: bool = False, config: bt.Config = None):
         self.lite = lite
         self.config = config or Neuron.config()
-        self.check_config(self.config)
+        check_config(self.config)
         bt.logging(config=self.config, logging_dir=self.config.neuron.full_path)
         print(self.config)
         bt.logging.info("neuron.__init__()")
@@ -114,15 +110,15 @@ class Neuron(SyntheticQueryRunnerMixin, AbstractNeuron):
             self.dendrite2 = Dendrite(wallet=self.wallet)
             self.dendrite3 = Dendrite(wallet=self.wallet)
         else:
-            self.wallet = bt.wallet(config=self.config)
+            self.wallet = bt.Wallet(config=self.config)
             self.subtensor = bt.AsyncSubtensor(config=self.config)
             await self.subtensor.initialize()
             self.metagraph = await self.subtensor.metagraph(self.config.netuid)
             self.hotkeys = list(self.metagraph.hotkeys)
-            self.dendrite = bt.dendrite(wallet=self.wallet)
-            self.dendrite1 = bt.dendrite(wallet=self.wallet)
-            self.dendrite2 = bt.dendrite(wallet=self.wallet)
-            self.dendrite3 = bt.dendrite(wallet=self.wallet)
+            self.dendrite = bt.Dendrite(wallet=self.wallet)
+            self.dendrite1 = bt.Dendrite(wallet=self.wallet)
+            self.dendrite2 = bt.Dendrite(wallet=self.wallet)
+            self.dendrite3 = bt.Dendrite(wallet=self.wallet)
 
         self.dendrites = itertools.cycle(
             [
