@@ -1,6 +1,5 @@
 import asyncio
 import concurrent
-import copy
 import itertools
 import random
 import sys
@@ -265,11 +264,7 @@ class Neuron(SyntheticQueryRunnerMixin, AbstractNeuron):
             if self.config.wandb_on and not self.lite:
                 wandb.log(wandb_data)
 
-            weights = (
-                await self.run_sync_in_async(lambda: get_weights(self))
-                if not self.lite
-                else {}
-            )
+            weights = await get_weights(self) if not self.lite else {}
 
             asyncio.create_task(
                 save_logs_in_chunks(
@@ -457,7 +452,7 @@ class Neuron(SyntheticQueryRunnerMixin, AbstractNeuron):
                 if blocks_left <= 20 and self.should_set_weights():
                     weight_set_start_time = time.time()
                     bt.logging.info("Setting weights as per condition.")
-                    await self.run_sync_in_async(lambda: set_weights(self))
+                    await set_weights(self)
                     weight_set_end_time = time.time()
                     bt.logging.info(
                         f"Weight setting execution time: {weight_set_end_time - weight_set_start_time:.2f} seconds"
@@ -507,25 +502,11 @@ class Neuron(SyntheticQueryRunnerMixin, AbstractNeuron):
             sys.exit()
 
     def should_set_weights(self) -> bool:
-        # Don't set weights on initialization.
-        # if self.step == 0:
-        #     bt.logging.info("Skipping weight setting on initialization.")
-        #     return False
-
-        # Check if enough epoch blocks have elapsed since the last epoch.
         if self.config.neuron.disable_set_weights:
             bt.logging.info("Weight setting is disabled by configuration.")
             return False
 
-        # Define appropriate logic for when set weights.
-        # difference = self.block - self.metagraph.last_update[self.uid]
-        # print(
-        #     f"Current block: {self.block}, Last update for UID {self.uid}: {self.metagraph.last_update[self.uid]}, Difference: {difference}"
-        # )
-        # should_set = difference > self.config.neuron.checkpoint_block_length
-        # bt.logging.info(f"Should set weights: {should_set}")
-        # return should_set
-        return True  # Update right not based on interval of synthetic data
+        return True
 
     async def run(self):
         await self.initialize_components()
