@@ -42,7 +42,7 @@ async def get_validator_config():
                 config = await client.get_config()
                 print("Validator config fetched successfully.")
                 return config
-            except aiohttp.ClientError:
+            except Exception:
                 print("Waiting for validator service to start...")
             finally:
                 await asyncio.sleep(5)

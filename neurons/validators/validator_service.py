@@ -2,14 +2,14 @@ import os
 
 os.environ["USE_TORCH"] = "1"
 
-from fastapi import FastAPI, HTTPException
 from contextlib import asynccontextmanager
-from fastapi.middleware.cors import CORSMiddleware
+
 import uvicorn
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 
-from neurons.validators.validator import Neuron
 from desearch import QUERY_MINERS
-
+from neurons.validators.validator import Neuron
 
 neuron = Neuron()
 
@@ -34,6 +34,12 @@ app.add_middleware(
 
 @app.get("/config")
 async def get_config():
+    if not neuron.available_uids:
+        raise HTTPException(
+            status_code=500,
+            detail="Neuron is not available.",
+        )
+
     config = neuron.config
     return config
 
