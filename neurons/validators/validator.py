@@ -56,7 +56,6 @@ class Neuron(SyntheticQueryRunnerMixin, AbstractNeuron):
     basic_web_scraper_validator: "BasicWebScraperValidator"
     moving_average_scores: torch.Tensor = None
     uid: int = None
-    shutdown_event: asyncio.Event()
 
     uid_manager: UIDManager
 
@@ -65,6 +64,7 @@ class Neuron(SyntheticQueryRunnerMixin, AbstractNeuron):
         self.config = config or Neuron.config()
         check_config(self.config)
         bt.logging(config=self.config, logging_dir=self.config.neuron.full_path)
+        bt.logging.set_debug(True)
         print(self.config)
         bt.logging.info("neuron.__init__()")
 
@@ -73,21 +73,12 @@ class Neuron(SyntheticQueryRunnerMixin, AbstractNeuron):
         self.basic_web_scraper_validator = BasicWebScraperValidator(neuron=self)
         bt.logging.info("initialized_validators")
 
-        self.step = 0
-
         self.validator_service_client = ValidatorServiceClient()
 
         if not lite:
             self.organic_responses_computed = False
 
             self.available_uids = []
-
-        self.thread_executor = concurrent.futures.ThreadPoolExecutor(
-            thread_name_prefix="asyncio"
-        )
-
-    async def run_sync_in_async(self, fn):
-        return await self.loop.run_in_executor(self.thread_executor, fn)
 
     async def initialize_components(self):
         bt.logging(config=self.config, logging_dir=self.config.full_path)
@@ -543,11 +534,3 @@ class Neuron(SyntheticQueryRunnerMixin, AbstractNeuron):
                 bt.logging.error("Error during validation", str(err))
                 bt.logging.debug(print_exception(type(err), err, err.__traceback__))
                 self.should_exit = True
-
-
-def main():
-    asyncio.run(Neuron().run())
-
-
-if __name__ == "__main__":
-    main()
