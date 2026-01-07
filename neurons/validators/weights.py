@@ -49,7 +49,7 @@ def init_wandb(self):
                 entity=desearch.ENTITY,
                 config=self.config,
                 dir=self.config.full_path,
-                reinit="default",
+                reinit="finish_previous",
             )
 
             # Sign the run to ensure it's from the correct hotkey

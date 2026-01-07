@@ -14,9 +14,6 @@ from bittensor.core.metagraph import AsyncMetagraph
 
 import wandb
 from desearch import QUERY_MINERS
-from desearch.bittensor.dendrite import Dendrite
-from desearch.bittensor.subtensor import Subtensor
-from desearch.bittensor.wallet import Wallet
 from desearch.protocol import IsAlive
 from desearch.redis.redis_client import initialize_redis
 from desearch.redis.utils import (
@@ -99,6 +96,10 @@ class Neuron(SyntheticQueryRunnerMixin, AbstractNeuron):
         )
 
         if self.config.neuron.offline:
+            from desearch.bittensor.dendrite import Dendrite
+            from desearch.bittensor.subtensor import Subtensor
+            from desearch.bittensor.wallet import Wallet
+
             self.wallet = Wallet(config=self.config)
             self.subtensor = Subtensor(config=self.config)
             await self.subtensor.initialize()
