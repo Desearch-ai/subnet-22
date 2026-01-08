@@ -22,7 +22,9 @@ class ValidatorServiceClient:
     async def session(self):
         """Get or create the session."""
         if self._session is None:
-            self._session = aiohttp.ClientSession()
+            self._session = aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=10),
+            )
         return self._session
 
     async def get_random_miner(self):
@@ -46,3 +48,9 @@ class ValidatorServiceClient:
                 return config.fromDict(config_dict)
             else:
                 raise Exception(f"Failed to fetch config: {response.status}")
+
+    async def health_check(self):
+        session = await self.session
+        async with session.get(f"{VALIDATOR_SERVICE_URL}") as response:
+            if response.status != 200:
+                raise Exception(f"Health check failed: {response.status}")

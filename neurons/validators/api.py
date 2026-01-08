@@ -640,7 +640,7 @@ async def health_check(access_key: Annotated[str | None, Header()] = None):
 
     async with ValidatorServiceClient() as client:
         try:
-            await client.get_config()
+            await client.health_check()
             return {"status": "healthy", "version": __version__}
         except aiohttp.ClientError:
             raise HTTPException(status_code=503)

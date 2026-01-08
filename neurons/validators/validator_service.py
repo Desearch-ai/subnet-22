@@ -74,6 +74,17 @@ async def get_random_uid():
     }
 
 
+@app.get("/")
+async def health():
+    if not neuron.available_uids:
+        raise HTTPException(
+            status_code=500,
+            detail="No available UIDs.",
+        )
+
+    return {"status": "healthy"}
+
+
 PORT = 8006
 
 if __name__ == "__main__":
