@@ -138,7 +138,7 @@ class BasicScraperValidator(OrganicHistoryMixin):
 
         for axon, synapse in zip(axons, synapses):
             dendrite = next(self.neuron.dendrites)
-            # Create a task for each dendrite call
+
             task = dendrite.call(
                 target_axon=axon,
                 synapse=synapse.model_copy(),

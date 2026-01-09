@@ -1,5 +1,4 @@
 import asyncio
-import concurrent
 import itertools
 import random
 import sys

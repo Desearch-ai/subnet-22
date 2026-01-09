@@ -119,30 +119,20 @@ class BasicWebScraperValidator(OrganicHistoryMixin):
             for task, params in zip(tasks, params_list)
         ]
 
-        dendrites = [
-            self.neuron.dendrite1,
-            self.neuron.dendrite2,
-            self.neuron.dendrite3,
-        ]
-
-        axon_groups = [axons[:80], axons[80:160], axons[160:]]
-        synapse_groups = [synapses[:80], synapses[80:160], synapses[160:]]
-
         all_tasks = []  # List to collect all asyncio tasks
         timeout = self.max_execution_time + 5
 
-        for dendrite, axon_group, synapse_group in zip(
-            dendrites, axon_groups, synapse_groups
-        ):
-            for axon, syn in zip(axon_group, synapse_group):
-                # Create a task for each dendrite call
-                task = dendrite.call(
+        for axon, synapse in zip(axons, synapses):
+            dendrite = next(self.neuron.dendrites)
+
+            all_tasks.append(
+                dendrite.call(
                     target_axon=axon,
-                    synapse=syn.model_copy(),
+                    synapse=synapse.model_copy(),
                     timeout=timeout,
                     deserialize=False,
                 )
-                all_tasks.append(task)
+            )
 
         # Await all tasks concurrently
         all_responses = await asyncio.gather(*all_tasks, return_exceptions=True)

@@ -253,30 +253,19 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
             for task in tasks
         ]
 
-        axon_groups = [axons[:80], axons[80:160], axons[160:]]
-        synapse_groups = [synapses[:80], synapses[80:160], synapses[160:]]
-        dendrites = [
-            self.neuron.dendrite1,
-            self.neuron.dendrite2,
-            self.neuron.dendrite3,
-        ]
-
         async_responses = []
         timeout = max_execution_time + 5
 
-        for dendrite, axon_group, synapse_group in zip(
-            dendrites, axon_groups, synapse_groups
-        ):
-            async_responses.extend(
-                [
-                    dendrite.call_stream(
-                        target_axon=axon,
-                        synapse=synapse.model_copy(),
-                        timeout=timeout,
-                        deserialize=False,
-                    )
-                    for axon, synapse in zip(axon_group, synapse_group)
-                ]
+        for axon, synapse in zip(axons, synapses):
+            dendrite = next(self.neuron.dendrites)
+
+            async_responses.append(
+                dendrite.call_stream(
+                    target_axon=axon,
+                    synapse=synapse.model_copy(),
+                    timeout=timeout,
+                    deserialize=False,
+                )
             )
 
         return async_responses, uids, event, start_time
