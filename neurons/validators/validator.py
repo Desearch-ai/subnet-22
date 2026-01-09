@@ -136,7 +136,7 @@ class Neuron(SyntheticQueryRunnerMixin, AbstractNeuron):
 
         return await self.validator_service_client.get_random_miner()
 
-    async def update_available_uids_periodically(self):
+    async def sync_available_uids(self):
         while True:
             start_time = time.time()
             try:
@@ -155,14 +155,14 @@ class Neuron(SyntheticQueryRunnerMixin, AbstractNeuron):
                 )
             except Exception as e:
                 bt.logging.error(
-                    f"update_available_uids_periodically Failed to update available UIDs: {e}"
+                    f"sync_available_uids Failed to update available UIDs: {e}"
                 )
                 # Consider whether to continue or break the loop upon certain errors.
 
             end_time = time.time()
             execution_time = end_time - start_time
             bt.logging.info(
-                f"update_available_uids_periodically Execution time for getting available UIDs amount is: {execution_time} seconds"
+                f"sync_available_uids Execution time for getting available UIDs amount is: {execution_time} seconds"
             )
 
             await asyncio.sleep(self.config.neuron.update_available_uids_interval)
@@ -508,10 +508,7 @@ class Neuron(SyntheticQueryRunnerMixin, AbstractNeuron):
 
             self.loop.create_task(self.sync_metagraph())
             self.loop.create_task(self.sync())
-            bt.logging.info(
-                f"Validator starting at block: {await self.subtensor.get_current_block()}"
-            )
-            self.loop.create_task(self.update_available_uids_periodically())
+            self.loop.create_task(self.sync_available_uids())
 
             try:
                 self.start_query_tasks()
