@@ -22,7 +22,6 @@ from desearch.protocol import (
 )
 from desearch.stream import collect_final_synapses
 from desearch.utils import get_max_execution_time
-from neurons.validators.advanced_organic_query_state import AdvancedOrganicQueryState
 from neurons.validators.base_validator import AbstractNeuron
 from neurons.validators.organic_history_mixin import OrganicHistoryMixin
 from neurons.validators.penalty.chat_history_penalty import ChatHistoryPenaltyModel
@@ -96,8 +95,6 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
         self.language = "en"
         self.region = "us"
         self.date_filter = "qdr:w"  # Past week
-
-        self.organic_query_state = AdvancedOrganicQueryState()
 
         # Init device.
         bt.logging.debug("loading", "device")
@@ -309,29 +306,8 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
             all_original_rewards = []
             val_score_responses_list = []
 
-            organic_penalties = []
-
             if result_type is None:
                 result_type = ResultType.LINKS_WITH_FINAL_SUMMARY
-
-            if is_synthetic:
-                penalized_uids = []
-
-                for uid, response in zip(uids.tolist(), responses):
-                    has_penalty = await self.organic_query_state.has_penalty(
-                        response.axon.hotkey
-                    )
-
-                    organic_penalties.append(has_penalty)
-
-                    if has_penalty:
-                        penalized_uids.append(uid)
-
-                bt.logging.info(
-                    f"Following UIDs will be penalized as they failed organic query: {penalized_uids}"
-                )
-            else:
-                organic_penalties = [False] * len(uids)
 
             query_type = "synthetic" if is_synthetic else "organic"
 
@@ -344,7 +320,7 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
                     reward_event,
                     val_score_responses,
                     original_rewards,
-                ) = await reward_fn_i.apply(responses, uids, organic_penalties)
+                ) = await reward_fn_i.apply(responses, uids)
 
                 all_rewards.append(reward_i_normalized)
                 all_original_rewards.append(original_rewards)
@@ -476,7 +452,6 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
                 all_rewards=all_rewards,
                 all_original_rewards=all_original_rewards,
                 val_score_responses_list=val_score_responses_list,
-                organic_penalties=organic_penalties,
                 neuron=self.neuron,
                 query_type=query_type,
             )
@@ -578,16 +553,12 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
         self,
         query,
         model: Optional[Model] = Model.NOVA,
-        random_synapse: ScraperStreamingSynapse = None,
-        random_uid=None,
         specified_uids=None,
         uid: Optional[int] = None,
         result_type: Optional[ResultType] = ResultType.LINKS_WITH_FINAL_SUMMARY,
         is_collect_final_synapses: bool = False,  # Flag to collect final synapses
     ):
         """Receives question from user and returns the response from the miners."""
-
-        is_interval_query = random_synapse is not None
 
         try:
             prompt = query["content"]
@@ -654,41 +625,9 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
                         else:
                             yield value
 
-            async def process_and_score_responses(uids):
-                if is_interval_query:
-                    # Add the random_synapse to final_synapses and its UID to uids
-                    final_synapses.append(random_synapse)
-                    uids = torch.cat([uids, torch.tensor([random_uid])])
-
-                if not self.neuron.config.neuron.synthetic_disabled:
-                    (
-                        _,
-                        _,
-                        _,
-                        _,
-                        original_rewards,
-                    ) = await self.compute_rewards_and_penalties(
-                        event=event,
-                        tasks=tasks,
-                        responses=final_synapses,
-                        uids=uids,
-                        start_time=start_time,
-                        is_synthetic=False,
-                    )
-
-                    if not is_interval_query:
-                        await self.organic_query_state.save_organic_queries(
-                            final_synapses, uids, original_rewards
-                        )
-                if (
-                    self.neuron.config.neuron.synthetic_disabled
-                    and not is_interval_query
-                ):
-                    await self._save_organic_response(
-                        uids, final_synapses, tasks, event, start_time
-                    )
-
-            asyncio.create_task(process_and_score_responses(uids))
+            await self._save_organic_response(
+                uids, final_synapses, tasks, event, start_time
+            )
         except Exception as e:
             bt.logging.error(f"Error in organic: {e}")
             raise e

@@ -149,12 +149,6 @@ class Neuron(SyntheticQueryRunnerMixin, AbstractNeuron):
                     )
 
                 self.uid_manager.resync(self.available_uids)
-                await self.advanced_scraper_validator.organic_query_state.remove_deregistered_hotkeys(
-                    self.metagraph.axons
-                )
-                await self.basic_scraper_validator.organic_query_state.remove_deregistered_hotkeys(
-                    self.metagraph.axons
-                )
 
                 bt.logging.info(
                     f"Number of available UIDs for periodic update: Amount: {len(self.available_uids)}, UIDs: {self.available_uids}"
@@ -248,7 +242,6 @@ class Neuron(SyntheticQueryRunnerMixin, AbstractNeuron):
         all_rewards,
         all_original_rewards,
         val_score_responses_list,
-        organic_penalties,
         neuron,
         query_type,
     ):
@@ -278,7 +271,6 @@ class Neuron(SyntheticQueryRunnerMixin, AbstractNeuron):
                     weights=weights,
                     neuron=neuron,
                     netuid=self.config.netuid,
-                    organic_penalties=organic_penalties,
                     query_type=query_type,
                 )
             )
@@ -295,7 +287,6 @@ class Neuron(SyntheticQueryRunnerMixin, AbstractNeuron):
         all_rewards,
         all_original_rewards,
         val_score_responses_list,
-        organic_penalties,
         neuron,
     ):
         try:
@@ -322,7 +313,6 @@ class Neuron(SyntheticQueryRunnerMixin, AbstractNeuron):
             #         weights=weights,
             #         neuron=neuron,
             #         netuid=self.config.netuid,
-            #         organic_penalties=organic_penalties,
             #     )
             # )
         except Exception as e:

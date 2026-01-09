@@ -16,10 +16,12 @@
 # OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 # DEALINGS IN THE SOFTWARE.
 
+from typing import List, Union
+
 import torch
-from typing import Union, List
-from neurons.validators.reward import BaseRewardModel, BaseRewardEvent
+
 from desearch.protocol import ScraperStreamingSynapse
+from neurons.validators.reward import BaseRewardEvent, BaseRewardModel
 
 
 class MockRewardModel(BaseRewardModel):
@@ -46,7 +48,6 @@ class MockRewardModel(BaseRewardModel):
         self,
         responses: List[ScraperStreamingSynapse],
         uids,
-        organic_penalties: List[bool] = [],
     ) -> Union[torch.FloatTensor, dict]:
         reward_normalized = torch.tensor([1 for _ in responses], dtype=torch.float32)
         reward_events = [BaseRewardEvent(reward=1) for _ in responses]
