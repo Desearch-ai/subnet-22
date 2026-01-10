@@ -28,7 +28,7 @@ from neurons.validators.utils.mock import MockRewardModel
 from neurons.validators.utils.tasks import SearchTask
 
 
-class BasicScraperValidator(OrganicHistoryMixin):
+class XScraperValidator(OrganicHistoryMixin):
     def __init__(self, neuron: AbstractNeuron):
         super().__init__()
 

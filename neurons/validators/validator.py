@@ -5,7 +5,6 @@ import sys
 import time
 import traceback
 from traceback import print_exception
-from typing import Optional, Tuple
 
 import bittensor as bt
 import torch
@@ -25,13 +24,11 @@ from desearch.utils import (
 )
 from neurons.validators.advanced_scraper_validator import AdvancedScraperValidator
 from neurons.validators.base_validator import AbstractNeuron
-from neurons.validators.basic_scraper_validator import BasicScraperValidator
-from neurons.validators.basic_web_scraper_validator import BasicWebScraperValidator
 from neurons.validators.config import add_args, check_config, config
 from neurons.validators.proxy.uid_manager import UIDManager
 from neurons.validators.synthetic_query_runner import SyntheticQueryRunnerMixin
-from neurons.validators.validator_service_client import ValidatorServiceClient
 from neurons.validators.weights import get_weights, init_wandb, set_weights
+from neurons.validators.x_scraper_validator import XScraperValidator
 
 
 class Neuron(SyntheticQueryRunnerMixin, AbstractNeuron):
@@ -50,7 +47,7 @@ class Neuron(SyntheticQueryRunnerMixin, AbstractNeuron):
     loop: asyncio.AbstractEventLoop
 
     advanced_scraper_validator: "AdvancedScraperValidator"
-    x_scraper_validator: "BasicScraperValidator"
+    x_scraper_validator: "XScraperValidator"
 
     moving_average_scores: torch.Tensor = None
     uid: int = None
@@ -66,9 +63,7 @@ class Neuron(SyntheticQueryRunnerMixin, AbstractNeuron):
         bt.logging.info("neuron.__init__()")
 
         self.advanced_scraper_validator = AdvancedScraperValidator(neuron=self)
-        self.x_scraper_validator = BasicScraperValidator(neuron=self)
-
-        bt.logging.info("initialized_validators")
+        self.x_scraper_validator = XScraperValidator(neuron=self)
 
         self.organic_responses_computed = False
         self.available_uids = []

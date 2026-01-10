@@ -5,9 +5,9 @@ import bittensor as bt
 
 from desearch.redis.redis_client import close_redis, initialize_redis
 from neurons.validators.advanced_scraper_validator import AdvancedScraperValidator
-from neurons.validators.basic_scraper_validator import BasicScraperValidator
-from neurons.validators.basic_web_scraper_validator import BasicWebScraperValidator
+from neurons.validators.web_scraper_validator import WebScraperValidator
 from neurons.validators.validator_service_client import ValidatorServiceClient
+from neurons.validators.x_scraper_validator import XScraperValidator
 
 
 class ValidatorAPI:
@@ -20,16 +20,16 @@ class ValidatorAPI:
     dendrite_list: list[bt.Dendrite]
     dendrites: itertools.cycle
     advanced_scraper_validator: "AdvancedScraperValidator"
-    x_scraper_validator: "BasicScraperValidator"
-    web_scraper_validator: "BasicWebScraperValidator"
+    x_scraper_validator: "XScraperValidator"
+    web_scraper_validator: "WebScraperValidator"
 
     def __init__(self, config: bt.Config):
         self.config = config
         bt.logging.set_config(self.config)
 
         self.advanced_scraper_validator = AdvancedScraperValidator(neuron=self)
-        self.x_scraper_validator = BasicScraperValidator(neuron=self)
-        self.web_scraper_validator = BasicWebScraperValidator(neuron=self)
+        self.x_scraper_validator = XScraperValidator(neuron=self)
+        self.web_scraper_validator = WebScraperValidator(neuron=self)
 
         self.validator_service_client = ValidatorServiceClient()
 
