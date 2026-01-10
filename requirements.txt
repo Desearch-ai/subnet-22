@@ -4,7 +4,6 @@ numpy==2.0.2
 wandb==0.23.1
 aiohttp==3.10.2
 apify-client==1.6.1
-sentencepiece==0.1.99
 google-search-results==2.4.2
 wikipedia==1.4.0
 youtube-search==2.1.2
