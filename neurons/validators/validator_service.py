@@ -1,4 +1,7 @@
 import os
+from typing import Optional
+
+from pydantic import BaseModel
 
 os.environ["USE_TORCH"] = "1"
 
@@ -17,7 +20,7 @@ neuron = Neuron()
 @asynccontextmanager
 async def lifespan(app):
     # Start the neuron when the app starts
-    await neuron.run()
+    await neuron.start()
     yield
 
 
@@ -44,15 +47,23 @@ async def get_config():
     return config
 
 
-@app.get(
+class GetRandomUidRequest(BaseModel):
+    # Specific UID to request
+    uid: Optional[int] = None
+
+
+@app.post(
     "/uid/random",
 )
-async def get_random_uid():
+async def get_random_uid(body: GetRandomUidRequest):
     if not neuron.available_uids:
         raise HTTPException(
             status_code=500,
             detail="Neuron is not available.",
         )
+
+    if body.uid is not None and body.uid in neuron.available_uids:
+        return {"uid": body.uid, "axon": neuron.metagraph.axons[body.uid]}
 
     uid = await neuron.get_uids(
         strategy=QUERY_MINERS.RANDOM,
@@ -68,10 +79,7 @@ async def get_random_uid():
 
     axon = neuron.metagraph.axons[uid]
 
-    return {
-        "uid": uid,
-        "axon": axon,
-    }
+    return {"uid": uid, "axon": axon}
 
 
 @app.get("/")

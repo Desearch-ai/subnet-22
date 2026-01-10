@@ -61,10 +61,7 @@ class ValidatorAPI:
     async def get_random_miner(
         self, uid: Optional[int] = None
     ) -> Tuple[int, bt.AxonInfo]:
-        if uid is not None:
-            return uid, self.metagraph.axons[uid]
-
-        return await self.validator_service_client.get_random_miner()
+        return await self.validator_service_client.get_random_miner(uid)
 
     async def start(self):
         bt.logging.info("Starting ValidatorAPI")

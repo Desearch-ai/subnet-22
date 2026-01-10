@@ -48,7 +48,7 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
         super().__init__()
 
         self.neuron = neuron
-        self.timeout = 180
+
         self.execution_time_options = [Model.NOVA, Model.ORBIT, Model.HORIZON]
         self.execution_time_probabilities = [0.8, 0.1, 0.1]
 
@@ -542,7 +542,6 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
         self,
         query,
         model: Optional[Model] = Model.NOVA,
-        specified_uids=None,
         uid: Optional[int] = None,
         result_type: Optional[ResultType] = ResultType.LINKS_WITH_FINAL_SUMMARY,
         is_collect_final_synapses: bool = False,  # Flag to collect final synapses
@@ -577,14 +576,13 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
 
             async_responses, uids, event, start_time = await self.run_task_and_score(
                 tasks=tasks,
-                strategy=QUERY_MINERS.ALL if specified_uids else QUERY_MINERS.RANDOM,
+                strategy=QUERY_MINERS.RANDOM,
                 is_only_allowed_miner=self.neuron.config.subtensor.network != "finney",
                 tools=tools,
                 language=self.language,
                 region=self.region,
                 date_filter=date_filter,
                 google_date_filter=self.date_filter,
-                specified_uids=specified_uids,
                 model=model,
                 result_type=result_type,
                 system_message=system_message,
@@ -596,15 +594,14 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
 
             final_synapses = []
 
-            if specified_uids or is_collect_final_synapses:
+            if is_collect_final_synapses:
                 # Collect specified uids from responses and score
                 final_synapses = await collect_final_synapses(
                     async_responses, uids, start_time
                 )
 
-                if is_collect_final_synapses:
-                    for synapse in final_synapses:
-                        yield synapse
+                for synapse in final_synapses:
+                    yield synapse
             else:
                 # Stream random miner to the UI
                 for response in async_responses:

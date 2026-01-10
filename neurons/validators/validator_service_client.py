@@ -1,3 +1,5 @@
+from typing import Optional
+
 import aiohttp
 import bittensor as bt
 
@@ -27,10 +29,13 @@ class ValidatorServiceClient:
             )
         return self._session
 
-    async def get_random_miner(self):
+    async def get_random_miner(self, uid: Optional[int] = None):
         """Fetch a random miner UID and axon."""
         session = await self.session
-        async with session.get(f"{VALIDATOR_SERVICE_URL}/uid/random") as response:
+
+        async with session.post(
+            f"{VALIDATOR_SERVICE_URL}/uid/random", json={"uid": uid}
+        ) as response:
             if response.status == 200:
                 data = await response.json()
                 uid = data["uid"]

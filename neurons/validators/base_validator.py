@@ -1,7 +1,6 @@
 import argparse
 import itertools
 from abc import ABC, abstractmethod
-from typing import Optional, Tuple
 
 import bittensor as bt
 import torch
@@ -14,10 +13,6 @@ class AbstractNeuron(ABC):
         self.subtensor: "bt.AsyncSubtensor" = None
         self.wallet: "bt.Wallet" = None
         self.metagraph: "AsyncMetagraph" = None
-        self.dendrite: "bt.Dendrite" = None
-        self.dendrite1: "bt.Dendrite" = None
-        self.dendrite2: "bt.Dendrite" = None
-        self.dendrite3: "bt.Dendrite" = None
         self.dendrites: itertools.cycle[bt.Dendrite]
 
     @classmethod
@@ -43,12 +38,6 @@ class AbstractNeuron(ABC):
         pass
 
     @abstractmethod
-    async def get_random_miner(
-        self, uid: Optional[int] = None
-    ) -> Tuple[int, bt.AxonInfo]:
-        pass
-
-    @abstractmethod
     async def update_scores(self, scores: torch.Tensor, wandb_data):
         pass
 
@@ -58,12 +47,4 @@ class AbstractNeuron(ABC):
 
     @abstractmethod
     async def update_moving_averaged_scores(self, uids, rewards):
-        pass
-
-    @abstractmethod
-    async def run_query_and_score(self):
-        pass
-
-    @abstractmethod
-    def run(self):
         pass

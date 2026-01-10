@@ -14,7 +14,7 @@ from bittensor.core.metagraph import AsyncMetagraph
 import wandb
 from desearch import QUERY_MINERS
 from desearch.protocol import IsAlive
-from desearch.redis.redis_client import initialize_redis
+from desearch.redis.redis_client import close_redis, initialize_redis
 from desearch.redis.utils import (
     load_moving_averaged_scores,
     save_moving_averaged_scores,
@@ -46,41 +46,34 @@ class Neuron(SyntheticQueryRunnerMixin, AbstractNeuron):
     subtensor: "bt.AsyncSubtensor"
     wallet: "bt.Wallet"
     metagraph: "AsyncMetagraph"
-    dendrite: "bt.Dendrite"
 
     loop: asyncio.AbstractEventLoop
 
     advanced_scraper_validator: "AdvancedScraperValidator"
-    basic_scraper_validator: "BasicScraperValidator"
-    basic_web_scraper_validator: "BasicWebScraperValidator"
+    x_scraper_validator: "BasicScraperValidator"
+
     moving_average_scores: torch.Tensor = None
     uid: int = None
 
     uid_manager: UIDManager
 
-    def __init__(self, lite: bool = False, config: bt.Config = None):
-        self.lite = lite
-        self.config = config or Neuron.config()
+    def __init__(self):
+        self.config = Neuron.config()
         check_config(self.config)
         bt.logging(config=self.config, logging_dir=self.config.neuron.full_path)
-        bt.logging.set_debug(True)
+        bt.logging.set_config(self.config)
         print(self.config)
         bt.logging.info("neuron.__init__()")
 
         self.advanced_scraper_validator = AdvancedScraperValidator(neuron=self)
-        self.basic_scraper_validator = BasicScraperValidator(neuron=self)
-        self.basic_web_scraper_validator = BasicWebScraperValidator(neuron=self)
+        self.x_scraper_validator = BasicScraperValidator(neuron=self)
+
         bt.logging.info("initialized_validators")
 
-        self.validator_service_client = ValidatorServiceClient()
-
-        if not lite:
-            self.organic_responses_computed = False
-
-            self.available_uids = []
+        self.organic_responses_computed = False
+        self.available_uids = []
 
     async def initialize_components(self):
-        bt.logging(config=self.config, logging_dir=self.config.full_path)
         bt.logging.info(
             f"Running validator for subnet: {self.config.netuid} on network: {self.config.subtensor.chain_endpoint}"
         )
@@ -95,28 +88,26 @@ class Neuron(SyntheticQueryRunnerMixin, AbstractNeuron):
             await self.subtensor.initialize()
             self.metagraph = await self.subtensor.metagraph(self.config.netuid)
             self.hotkeys = list(self.metagraph.hotkeys)
-            self.dendrite = Dendrite(wallet=self.wallet)
-            self.dendrite1 = Dendrite(wallet=self.wallet)
-            self.dendrite2 = Dendrite(wallet=self.wallet)
-            self.dendrite3 = Dendrite(wallet=self.wallet)
+
+            self.dendrite_list = [
+                Dendrite(wallet=self.wallet),
+                Dendrite(wallet=self.wallet),
+                Dendrite(wallet=self.wallet),
+            ]
         else:
             self.wallet = bt.Wallet(config=self.config)
             self.subtensor = bt.AsyncSubtensor(config=self.config)
             await self.subtensor.initialize()
             self.metagraph = await self.subtensor.metagraph(self.config.netuid)
             self.hotkeys = list(self.metagraph.hotkeys)
-            self.dendrite = bt.Dendrite(wallet=self.wallet)
-            self.dendrite1 = bt.Dendrite(wallet=self.wallet)
-            self.dendrite2 = bt.Dendrite(wallet=self.wallet)
-            self.dendrite3 = bt.Dendrite(wallet=self.wallet)
 
-        self.dendrites = itertools.cycle(
-            [
-                self.dendrite1,
-                self.dendrite2,
-                self.dendrite3,
+            self.dendrite_list = [
+                bt.Dendrite(wallet=self.wallet),
+                bt.Dendrite(wallet=self.wallet),
+                bt.Dendrite(wallet=self.wallet),
             ]
-        )
+
+        self.dendrites = itertools.cycle(self.dendrite_list)
 
         self.uid = self.metagraph.hotkeys.index(self.wallet.hotkey.ss58_address)
         if self.wallet.hotkey.ss58_address not in self.metagraph.hotkeys:
@@ -126,14 +117,6 @@ class Neuron(SyntheticQueryRunnerMixin, AbstractNeuron):
             exit()
 
         await initialize_redis()
-
-    async def get_random_miner(
-        self, uid: Optional[int] = None
-    ) -> Tuple[int, bt.AxonInfo]:
-        if uid is not None:
-            return uid, self.metagraph.axons[uid]
-
-        return await self.validator_service_client.get_random_miner()
 
     async def sync_available_uids(self):
         while True:
@@ -169,9 +152,8 @@ class Neuron(SyntheticQueryRunnerMixin, AbstractNeuron):
     async def check_uid(self, axon, uid):
         """Asynchronously check if a UID is available."""
         try:
-            response = await self.dendrite(
-                axon, IsAlive(), deserialize=False, timeout=15
-            )
+            dendrite = next(self.dendrites)
+            response = await dendrite(axon, IsAlive(), deserialize=False, timeout=10)
             if response.is_success:
                 bt.logging.debug(f"UID {uid} is active")
                 return axon  # Return the axon info instead of the UID
@@ -245,10 +227,10 @@ class Neuron(SyntheticQueryRunnerMixin, AbstractNeuron):
         query_type,
     ):
         try:
-            if self.config.wandb_on and not self.lite:
+            if self.config.wandb_on:
                 wandb.log(wandb_data)
 
-            weights = await get_weights(self) if not self.lite else {}
+            weights = await get_weights(self)
 
             asyncio.create_task(
                 save_logs_in_chunks(
@@ -289,13 +271,11 @@ class Neuron(SyntheticQueryRunnerMixin, AbstractNeuron):
         neuron,
     ):
         try:
-            if self.config.wandb_on and not self.lite:
+            if self.config.wandb_on:
                 wandb.log(wandb_data)
 
             # weights = (
             #     await self.run_sync_in_async(lambda: get_weights(self))
-            #     if not self.lite
-            #     else {}
             # )
 
             # asyncio.create_task(
@@ -448,7 +428,7 @@ class Neuron(SyntheticQueryRunnerMixin, AbstractNeuron):
                             random_validator = random.choices(
                                 [
                                     self.advanced_scraper_validator,
-                                    self.basic_scraper_validator,
+                                    self.x_scraper_validator,
                                 ],
                                 weights=[0.6, 0.4],
                             )[0]
@@ -489,34 +469,45 @@ class Neuron(SyntheticQueryRunnerMixin, AbstractNeuron):
 
         return True
 
-    async def run(self):
+    async def start(self):
+        bt.logging.info("Starting Neuron")
+
         await self.initialize_components()
         await self.check_registered()
 
         self.loop = asyncio.get_event_loop()
 
-        if not self.lite:
-            init_wandb(self)
+        init_wandb(self)
 
-            # Init Weights.
-            bt.logging.debug("loading", "moving_averaged_scores")
-            self.moving_averaged_scores = await load_moving_averaged_scores(
-                self.metagraph, self.config
-            )
-            bt.logging.debug(str(self.moving_averaged_scores))
+        # Init Weights.
+        bt.logging.debug("loading", "moving_averaged_scores")
+        self.moving_averaged_scores = await load_moving_averaged_scores(
+            self.metagraph, self.config
+        )
+        bt.logging.debug(str(self.moving_averaged_scores))
 
-            self.loop.create_task(self.sync_metagraph())
-            self.loop.create_task(self.sync())
-            self.loop.create_task(self.sync_available_uids())
+        self.loop.create_task(self.sync_metagraph())
+        self.loop.create_task(self.sync())
+        self.loop.create_task(self.sync_available_uids())
 
-            try:
-                self.start_query_tasks()
-            except KeyboardInterrupt:
-                self.axon.stop()
-                bt.logging.success("Validator killed by keyboard interrupt.")
-                sys.exit()
-            except Exception as err:
-                # In case of unforeseen errors, the validator will log the error and quit
-                bt.logging.error("Error during validation", str(err))
-                bt.logging.debug(print_exception(type(err), err, err.__traceback__))
-                self.should_exit = True
+        try:
+            self.start_query_tasks()
+        except KeyboardInterrupt:
+            self.axon.stop()
+            bt.logging.success("Validator killed by keyboard interrupt.")
+            sys.exit()
+        except Exception as err:
+            # In case of unforeseen errors, the validator will log the error and quit
+            bt.logging.error("Error during validation", str(err))
+            bt.logging.debug(print_exception(type(err), err, err.__traceback__))
+            self.should_exit = True
+
+    async def stop(self):
+        bt.logging.info("Stopping Neuron")
+
+        await close_redis()
+
+        await self.subtensor.close()
+
+        for dendrite in self.dendrite_list:
+            dendrite.close_session()

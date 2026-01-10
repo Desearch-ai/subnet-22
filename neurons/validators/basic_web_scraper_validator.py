@@ -374,7 +374,6 @@ class BasicWebScraperValidator(OrganicHistoryMixin):
     async def organic(
         self,
         query,
-        specified_uids=None,
         uid: Optional[int] = None,
     ):
         """Receives question from user and returns the response from the miners."""
@@ -398,9 +397,8 @@ class BasicWebScraperValidator(OrganicHistoryMixin):
                 start_time,
             ) = await self.run_web_basic_search_and_score(
                 tasks=tasks,
-                strategy=(QUERY_MINERS.ALL if specified_uids else QUERY_MINERS.RANDOM),
+                strategy=QUERY_MINERS.RANDOM,
                 is_only_allowed_miner=self.neuron.config.subtensor.network != "finney",
-                specified_uids=specified_uids,
                 params_list=[
                     {key: value for key, value in query.items() if key != "query"}
                 ],
