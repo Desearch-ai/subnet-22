@@ -68,7 +68,7 @@ class Neuron(SyntheticQueryRunnerMixin, AbstractNeuron):
         self.organic_responses_computed = False
         self.available_uids = []
 
-    async def initialize_components(self):
+    async def initialize(self):
         bt.logging.info(
             f"Running validator for subnet: {self.config.netuid} on network: {self.config.subtensor.chain_endpoint}"
         )
@@ -91,9 +91,16 @@ class Neuron(SyntheticQueryRunnerMixin, AbstractNeuron):
             ]
         else:
             self.wallet = bt.Wallet(config=self.config)
-            self.subtensor = bt.AsyncSubtensor(config=self.config)
-            await self.subtensor.initialize()
-            self.metagraph = await self.subtensor.metagraph(self.config.netuid)
+
+            self.subtensor = bt.AsyncSubtensor(
+                config=self.config, log_verbose=True, retry_forever=True
+            )
+
+            async with self.subtensor as subtensor:
+                await self.check_registered(subtensor)
+
+                self.metagraph = await subtensor.metagraph(self.config.netuid)
+
             self.hotkeys = list(self.metagraph.hotkeys)
 
             self.dendrite_list = [
@@ -105,11 +112,6 @@ class Neuron(SyntheticQueryRunnerMixin, AbstractNeuron):
         self.dendrites = itertools.cycle(self.dendrite_list)
 
         self.uid = self.metagraph.hotkeys.index(self.wallet.hotkey.ss58_address)
-        if self.wallet.hotkey.ss58_address not in self.metagraph.hotkeys:
-            bt.logging.error(
-                f"Your validator: {self.wallet} is not registered to chain connection: {self.subtensor}. Run btcli register --netuid 18 and try again."
-            )
-            exit()
 
         await initialize_redis()
 
@@ -360,32 +362,27 @@ class Neuron(SyntheticQueryRunnerMixin, AbstractNeuron):
         )
 
     async def blocks_until_next_epoch(self):
-        try:
-            current_block = await self.subtensor.get_current_block()
-        except Exception as e:
-            bt.logging.error(
-                f"Error getting current block: {e}, reinitializing subtensor..."
-            )
+        bt.logging.debug("Calculating block until next epoch")
 
-            await self.subtensor.close()
-
-            self.subtensor = bt.AsyncSubtensor(config=self.config)
-            self.metagraph = await self.subtensor.metagraph(self.config.netuid)
-            current_block = await self.subtensor.get_current_block()
-
-        tempo = await self.subtensor.tempo(self.config.netuid, current_block)
-
-        return tempo - (current_block + self.config.netuid + 1) % (tempo + 1)
+        async with self.subtensor as subtensor:
+            current_block = await subtensor.get_current_block()
+            tempo = await subtensor.tempo(self.config.netuid, current_block)
+            bt.logging.debug(f"Current block: {current_block}, Tempo: {tempo}")
+            return tempo - (current_block + self.config.netuid + 1) % (tempo + 1)
 
     async def sync_metagraph(self):
         while True:
             try:
-                await asyncio.sleep(30 * 60)  # 30 minutes
+                await asyncio.sleep(1 * 30)  # 30 minutes
 
                 sync_start_time = time.time()
 
                 bt.logging.info("Calling sync metagraph method")
-                await resync_metagraph(self)
+
+                async with self.subtensor as subtensor:
+                    await self.check_registered(subtensor)
+                    await resync_metagraph(self, subtensor)
+
                 bt.logging.info("Completed calling sync metagraph method")
 
                 sync_end_time = time.time()
@@ -394,7 +391,6 @@ class Neuron(SyntheticQueryRunnerMixin, AbstractNeuron):
                 )
 
                 # Ensure validator hotkey is still registered on the network.
-                await self.check_registered()
             except Exception as e:
                 bt.logging.error(f"Error in sync_metagraph: {e}")
 
@@ -449,9 +445,8 @@ class Neuron(SyntheticQueryRunnerMixin, AbstractNeuron):
 
             await asyncio.sleep(60)
 
-    async def check_registered(self):
-        # --- Check for registration
-        if not await self.subtensor.is_hotkey_registered(
+    async def check_registered(self, subtensor: bt.AsyncSubtensor):
+        if not await subtensor.is_hotkey_registered(
             netuid=self.config.netuid,
             hotkey_ss58=self.wallet.hotkey.ss58_address,
         ):
@@ -471,8 +466,7 @@ class Neuron(SyntheticQueryRunnerMixin, AbstractNeuron):
     async def start(self):
         bt.logging.info("Starting Neuron")
 
-        await self.initialize_components()
-        await self.check_registered()
+        await self.initialize()
 
         self.loop = asyncio.get_event_loop()
 

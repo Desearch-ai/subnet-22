@@ -106,22 +106,14 @@ async def call_openai(messages, temperature, model, seed=1234, response_format=N
     return None
 
 
-async def resync_metagraph(self):
+async def resync_metagraph(self, subtensor: bt.AsyncSubtensor):
     """Resyncs the metagraph and updates the hotkeys and moving averages based on the new metagraph."""
     bt.logging.info("resync_metagraph()")
 
     # Copies axons before syncing.
     previous_axons = list(self.metagraph.axons)  # Only copy what you need
 
-    try:
-        # Sync the metagraph.
-        await self.metagraph.sync(subtensor=self.subtensor)
-    except Exception as e:
-        bt.logging.error(f"Error in resync_metagraph: {e}")
-
-        await self.subtensor.close()
-        self.subtensor = bt.AsyncSubtensor(config=self.config)
-        self.metagraph = await self.subtensor.metagraph(self.config.netuid)
+    self.metagraph = await subtensor.metagraph(self.config.netuid)
 
     # Check if the metagraph axon info has changed.
     if previous_axons == list(self.metagraph.axons):
@@ -147,6 +139,7 @@ async def resync_metagraph(self):
 
     bt.logging.info("Saving moving averaged scores to Redis after metagraph update")
     await save_moving_averaged_scores(self.moving_averaged_scores)
+    bt.logging.info("Saved weights to Redis after metagraph update")
 
     # Update the hotkeys.
     self.hotkeys = list(self.metagraph.hotkeys)

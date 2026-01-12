@@ -26,7 +26,7 @@ class AbstractNeuron(ABC):
         pass
 
     @abstractmethod
-    async def initialize_components(self):
+    async def initialize(self):
         pass
 
     @abstractmethod
