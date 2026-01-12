@@ -126,10 +126,6 @@ class Neuron(SyntheticQueryRunnerMixin, AbstractNeuron):
                     )
 
                 self.uid_manager.resync(self.available_uids)
-
-                bt.logging.info(
-                    f"Number of available UIDs for periodic update: Amount: {len(self.available_uids)}, UIDs: {self.available_uids}"
-                )
             except Exception as e:
                 bt.logging.error(
                     f"sync_available_uids Failed to update available UIDs: {e}"
@@ -146,20 +142,18 @@ class Neuron(SyntheticQueryRunnerMixin, AbstractNeuron):
 
     async def check_uid(self, axon, uid):
         """Asynchronously check if a UID is available."""
-        try:
-            dendrite = next(self.dendrites)
-            response = await dendrite(axon, IsAlive(), deserialize=False, timeout=10)
-            if response.is_success:
-                bt.logging.debug(f"UID {uid} is active")
-                return axon  # Return the axon info instead of the UID
-            else:
-                raise Exception(f"UID {uid} is not active")
-        except Exception as e:
-            bt.logging.debug(f"Checking UID {uid}: {e}\n{traceback.format_exc()}")
-            raise e
+
+        dendrite = next(self.dendrites)
+        response = await dendrite(axon, IsAlive(), deserialize=False, timeout=10)
+
+        if response.is_success:
+            return axon
+        else:
+            raise Exception(f"UID {uid} is not active")
 
     async def get_available_uids_is_alive(self):
         """Get a dictionary of available UIDs and their axons asynchronously."""
+
         tasks = {
             uid.item(): self.check_uid(
                 self.metagraph.axons[uid.item()],
@@ -167,14 +161,24 @@ class Neuron(SyntheticQueryRunnerMixin, AbstractNeuron):
             )
             for uid in self.metagraph.uids
         }
+
         results = await asyncio.gather(*tasks.values(), return_exceptions=True)
 
-        # Filter out the exceptions and keep the successful results
-        available_uids = [
-            uid
-            for uid, result in zip(tasks.keys(), results)
-            if not isinstance(result, Exception)
-        ]
+        available_uids = []
+        unavailable_uids = []
+
+        for uid, result in zip(tasks.keys(), results):
+            if not isinstance(result, Exception):
+                available_uids.append(uid)
+            else:
+                unavailable_uids.append(uid)
+
+        bt.logging.info(
+            f"Available UIDs: {available_uids}, total: {len(available_uids)}"
+        )
+        bt.logging.info(
+            f"Unavailable UIDs: {unavailable_uids}, total: {len(unavailable_uids)}"
+        )
 
         return available_uids
 
