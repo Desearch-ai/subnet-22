@@ -152,13 +152,6 @@ def add_args(cls, parser):
     )
 
     parser.add_argument(
-        "--neuron.update_available_uids_interval",
-        type=int,
-        help="Specifies the interval, in seconds, for updating the list of available UIDs. The default interval is 600 seconds (10 minutes).",
-        default=600,
-    )
-
-    parser.add_argument(
         "--neuron.only_allowed_miners",
         type=lambda x: x.split(","),
         help="A list of miner identifiers, hotkey",

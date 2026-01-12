@@ -98,7 +98,6 @@ pm2 start uvicorn \
 - `--reward.summary_relevance_weight`: adjusts the influence of a scoring model that evaluates the accuracy and relevance of a node's responses to given prompts.
 - `--reward.twitter_content_weight`: Specifies the weight for the reward model that evaluates the relevance and quality of summary text in conjunction with linked content data.
 - `--neuron.only_allowed_miners`: A list of miner identifiers, hotkey
-- `--neuron.update_available_uids_interval`: Specifies the interval, in seconds, for updating the list of available UIDs. The default interval is 600 seconds (10 minutes).
 - `--neuron.scoring_model`: Specifies which llm model to use for scoring. The default model is `openai/gpt-4-mini`. Available llm models: `openai/gpt-4-mini`, `Qwen/Qwen2.5-Coder-32B-Instruct`, `unsloth/Mistral-Small-24B-Instruct-2501`, `deepseek-ai/DeepSeek-R1-Distill-Qwen-32B`.
 
 ## 7. Monitor Your Process

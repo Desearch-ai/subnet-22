@@ -68,6 +68,8 @@ class Neuron(SyntheticQueryRunnerMixin, AbstractNeuron):
         self.organic_responses_computed = False
         self.available_uids = []
 
+        self.uid_manager = UIDManager()
+
     async def initialize(self):
         bt.logging.info(
             f"Running validator for subnet: {self.config.netuid} on network: {self.config.subtensor.chain_endpoint}"
@@ -92,9 +94,7 @@ class Neuron(SyntheticQueryRunnerMixin, AbstractNeuron):
         else:
             self.wallet = bt.Wallet(config=self.config)
 
-            self.subtensor = bt.AsyncSubtensor(
-                config=self.config, log_verbose=True, retry_forever=True
-            )
+            self.subtensor = bt.AsyncSubtensor(config=self.config, retry_forever=True)
 
             async with self.subtensor as subtensor:
                 await self.check_registered(subtensor)
@@ -116,31 +116,22 @@ class Neuron(SyntheticQueryRunnerMixin, AbstractNeuron):
         await initialize_redis()
 
     async def sync_available_uids(self):
-        while True:
-            start_time = time.time()
-            try:
-                self.available_uids = await self.get_available_uids_is_alive()
+        start_time = time.time()
 
-                if not hasattr(self, "uid_manager"):
-                    self.uid_manager = UIDManager(
-                        wallet=self.wallet,
-                        metagraph=self.metagraph,
-                    )
+        try:
+            self.available_uids = await self.get_available_uids_is_alive()
 
-                self.uid_manager.resync(self.available_uids)
-            except Exception as e:
-                bt.logging.error(
-                    f"sync_available_uids Failed to update available UIDs: {e}"
-                )
-                # Consider whether to continue or break the loop upon certain errors.
-
-            end_time = time.time()
-            execution_time = end_time - start_time
-            bt.logging.info(
-                f"sync_available_uids Execution time for getting available UIDs amount is: {execution_time} seconds"
+            self.uid_manager.resync(
+                available_uids=self.available_uids, metagraph=self.metagraph
+            )
+        except Exception as e:
+            bt.logging.error(
+                f"sync_available_uids Failed to update available UIDs: {e}"
             )
 
-            await asyncio.sleep(self.config.neuron.update_available_uids_interval)
+        end_time = time.time()
+        execution_time = end_time - start_time
+        bt.logging.info(f"sync_available_uids finished in: {execution_time}s")
 
     async def check_uid(self, axon, uid):
         """Asynchronously check if a UID is available."""
@@ -373,7 +364,7 @@ class Neuron(SyntheticQueryRunnerMixin, AbstractNeuron):
     async def sync_metagraph(self):
         while True:
             try:
-                await asyncio.sleep(1 * 30)  # 30 minutes
+                await asyncio.sleep(10 * 60)  # 10 minutes
 
                 sync_start_time = time.time()
 
@@ -382,6 +373,8 @@ class Neuron(SyntheticQueryRunnerMixin, AbstractNeuron):
                 async with self.subtensor as subtensor:
                     await self.check_registered(subtensor)
                     await resync_metagraph(self, subtensor)
+
+                await self.sync_available_uids()
 
                 bt.logging.info("Completed calling sync metagraph method")
 
@@ -467,6 +460,7 @@ class Neuron(SyntheticQueryRunnerMixin, AbstractNeuron):
         bt.logging.info("Starting Neuron")
 
         await self.initialize()
+        await self.sync_available_uids()  # Initial sync
 
         self.loop = asyncio.get_event_loop()
 
@@ -481,7 +475,6 @@ class Neuron(SyntheticQueryRunnerMixin, AbstractNeuron):
 
         self.loop.create_task(self.sync_metagraph())
         self.loop.create_task(self.sync())
-        self.loop.create_task(self.sync_available_uids())
 
         try:
             self.start_query_tasks()
