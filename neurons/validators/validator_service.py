@@ -22,6 +22,7 @@ async def lifespan(app):
     # Start the neuron when the app starts
     await neuron.start()
     yield
+    await neuron.stop()
 
 
 app = FastAPI(lifespan=lifespan)

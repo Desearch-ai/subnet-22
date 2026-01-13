@@ -5,8 +5,8 @@ import bittensor as bt
 
 from desearch.redis.redis_client import close_redis, initialize_redis
 from neurons.validators.advanced_scraper_validator import AdvancedScraperValidator
-from neurons.validators.web_scraper_validator import WebScraperValidator
 from neurons.validators.validator_service_client import ValidatorServiceClient
+from neurons.validators.web_scraper_validator import WebScraperValidator
 from neurons.validators.x_scraper_validator import XScraperValidator
 
 
@@ -73,4 +73,4 @@ class ValidatorAPI:
         await close_redis()
 
         for dendrite in self.dendrite_list:
-            dendrite.close_session()
+            await dendrite.aclose_session()

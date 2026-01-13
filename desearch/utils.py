@@ -106,14 +106,14 @@ async def call_openai(messages, temperature, model, seed=1234, response_format=N
     return None
 
 
-async def resync_metagraph(self, subtensor: bt.AsyncSubtensor):
+async def resync_metagraph(self):
     """Resyncs the metagraph and updates the hotkeys and moving averages based on the new metagraph."""
     bt.logging.info("resync_metagraph()")
 
     # Copies axons before syncing.
     previous_axons = list(self.metagraph.axons)  # Only copy what you need
 
-    self.metagraph = await subtensor.metagraph(self.config.netuid)
+    self.metagraph = await self.subtensor.metagraph(self.config.netuid)
 
     # Check if the metagraph axon info has changed.
     if previous_axons == list(self.metagraph.axons):

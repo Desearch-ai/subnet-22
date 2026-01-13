@@ -3,7 +3,6 @@ import itertools
 import random
 import sys
 import time
-import traceback
 from traceback import print_exception
 
 import bittensor as bt
@@ -94,12 +93,12 @@ class Neuron(SyntheticQueryRunnerMixin, AbstractNeuron):
         else:
             self.wallet = bt.Wallet(config=self.config)
 
-            self.subtensor = bt.AsyncSubtensor(config=self.config, retry_forever=True)
+            self.subtensor = bt.AsyncSubtensor(
+                config=self.config, websocket_shutdown_timer=None
+            )
+            await self.subtensor.initialize()
 
-            async with self.subtensor as subtensor:
-                await self.check_registered(subtensor)
-
-                self.metagraph = await subtensor.metagraph(self.config.netuid)
+            self.metagraph = await self.subtensor.metagraph(self.config.netuid)
 
             self.hotkeys = list(self.metagraph.hotkeys)
 
@@ -353,37 +352,31 @@ class Neuron(SyntheticQueryRunnerMixin, AbstractNeuron):
         )
 
     async def blocks_until_next_epoch(self):
-        bt.logging.debug("Calculating block until next epoch")
+        bt.logging.info("Calculating block until next epoch")
 
-        async with self.subtensor as subtensor:
-            current_block = await subtensor.get_current_block()
-            tempo = await subtensor.tempo(self.config.netuid, current_block)
-            bt.logging.debug(f"Current block: {current_block}, Tempo: {tempo}")
-            return tempo - (current_block + self.config.netuid + 1) % (tempo + 1)
+        current_block = await self.subtensor.get_current_block()
+        tempo = await self.subtensor.tempo(self.config.netuid, current_block)
+        return tempo - (current_block + self.config.netuid + 1) % (tempo + 1)
 
     async def sync_metagraph(self):
         while True:
             try:
                 await asyncio.sleep(10 * 60)  # 10 minutes
 
+                bt.logging.info("Syncing metagraph and available UIDs")
+
                 sync_start_time = time.time()
 
-                bt.logging.info("Calling sync metagraph method")
+                # Ensure validator hotkey is still registered on the network.
+                await self.check_registered()
 
-                async with self.subtensor as subtensor:
-                    await self.check_registered(subtensor)
-                    await resync_metagraph(self, subtensor)
-
+                await resync_metagraph(self)
                 await self.sync_available_uids()
 
-                bt.logging.info("Completed calling sync metagraph method")
-
-                sync_end_time = time.time()
                 bt.logging.info(
-                    f"Sync metagraph method execution time: {sync_end_time - sync_start_time:.2f} seconds"
+                    f"Completed syncing metagraph and available UIDs: {time.time() - sync_start_time:.2f} seconds"
                 )
 
-                # Ensure validator hotkey is still registered on the network.
             except Exception as e:
                 bt.logging.error(f"Error in sync_metagraph: {e}")
 
@@ -396,7 +389,7 @@ class Neuron(SyntheticQueryRunnerMixin, AbstractNeuron):
             try:
                 blocks_left = await self.blocks_until_next_epoch()
 
-                bt.logging.debug(f"Blocks left until next epoch: {blocks_left}")
+                bt.logging.info(f"Blocks left until next epoch: {blocks_left}")
 
                 if blocks_left <= 20 and self.should_set_weights():
                     weight_set_start_time = time.time()
@@ -438,8 +431,8 @@ class Neuron(SyntheticQueryRunnerMixin, AbstractNeuron):
 
             await asyncio.sleep(60)
 
-    async def check_registered(self, subtensor: bt.AsyncSubtensor):
-        if not await subtensor.is_hotkey_registered(
+    async def check_registered(self):
+        if not await self.subtensor.is_hotkey_registered(
             netuid=self.config.netuid,
             hotkey_ss58=self.wallet.hotkey.ss58_address,
         ):
@@ -496,4 +489,4 @@ class Neuron(SyntheticQueryRunnerMixin, AbstractNeuron):
         await self.subtensor.close()
 
         for dendrite in self.dendrite_list:
-            dendrite.close_session()
+            await dendrite.aclose_session()
