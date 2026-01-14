@@ -108,6 +108,7 @@ class Neuron(SyntheticQueryRunnerMixin, AbstractNeuron):
                 bt.Dendrite(wallet=self.wallet),
             ]
 
+        self.dendrite = self.dendrite_list[0]
         self.dendrites = itertools.cycle(self.dendrite_list)
 
         self.uid = self.metagraph.hotkeys.index(self.wallet.hotkey.ss58_address)
