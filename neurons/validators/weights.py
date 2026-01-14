@@ -95,15 +95,14 @@ async def set_weights_with_retry(self, processed_weight_uids, processed_weights)
     bt.logging.info("Starting to set weights...")
 
     for attempt in range(max_retries):
-        async with self.subtensor as subtensor:
-            success, message = await set_weights_subtensor(
-                subtensor=subtensor,
-                wallet=self.wallet,
-                netuid=self.config.netuid,
-                uids=processed_weight_uids,
-                weights=processed_weights,
-                version_key=desearch.__weights_version__,
-            )
+        success, message = await set_weights_subtensor(
+            subtensor=self.subtensor,
+            wallet=self.wallet,
+            netuid=self.config.netuid,
+            uids=processed_weight_uids,
+            weights=processed_weights,
+            version_key=desearch.__weights_version__,
+        )
 
         if success:
             bt.logging.success(f"Set weights completed with message: '{message}'")
@@ -173,29 +172,30 @@ async def process_weights_with_retry(self, raw_weights):
 
     for attempt in range(max_retries):
         try:
-            async with self.subtensor as subtensor:
-                # process_weights_for_netuid uses sync subtensor calls for retrieving min and max values, we can directly call process_weight
-                # https://github.com/opentensor/bittensor/blob/master/bittensor/utils/weight_utils.py#L253
-                min_allowed_weights = await subtensor.min_allowed_weights(netuid=netuid)
-                max_weight_limit = await subtensor.max_weight_limit(netuid=netuid)
+            # process_weights_for_netuid uses sync subtensor calls for retrieving min and max values, we can directly call process_weight
+            # https://github.com/opentensor/bittensor/blob/master/bittensor/utils/weight_utils.py#L253
+            min_allowed_weights = await self.subtensor.min_allowed_weights(
+                netuid=netuid
+            )
+            max_weight_limit = await self.subtensor.max_weight_limit(netuid=netuid)
 
-                (
-                    processed_weight_uids,
-                    processed_weights,
-                ) = process_weights(
-                    uids=self.metagraph.uids.to("cpu"),
-                    weights=weights.to("cpu"),
-                    num_neurons=self.metagraph.n,
-                    min_allowed_weights=min_allowed_weights,
-                    max_weight_limit=max_weight_limit,
-                )
+            (
+                processed_weight_uids,
+                processed_weights,
+            ) = process_weights(
+                uids=self.metagraph.uids.to("cpu"),
+                weights=weights.to("cpu"),
+                num_neurons=self.metagraph.n,
+                min_allowed_weights=min_allowed_weights,
+                max_weight_limit=max_weight_limit,
+            )
 
-                weights_dict = {
-                    str(uid.item()): weight.item()
-                    for uid, weight in zip(processed_weight_uids, processed_weights)
-                }
+            weights_dict = {
+                str(uid.item()): weight.item()
+                for uid, weight in zip(processed_weight_uids, processed_weights)
+            }
 
-                return weights_dict, processed_weight_uids, processed_weights
+            return weights_dict, processed_weight_uids, processed_weights
         except Exception as e:
             bt.logging.error(f"Error in process_weights (attempt {attempt + 1}): {e}")
 

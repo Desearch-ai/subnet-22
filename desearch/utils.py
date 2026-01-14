@@ -1,5 +1,4 @@
 import asyncio
-import copy
 import html
 import math
 import os
