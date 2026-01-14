@@ -1,3 +1,5 @@
+from typing import Optional
+
 import aiohttp
 import bittensor as bt
 
@@ -22,13 +24,18 @@ class ValidatorServiceClient:
     async def session(self):
         """Get or create the session."""
         if self._session is None:
-            self._session = aiohttp.ClientSession()
+            self._session = aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=10),
+            )
         return self._session
 
-    async def get_random_miner(self):
+    async def get_random_miner(self, uid: Optional[int] = None):
         """Fetch a random miner UID and axon."""
         session = await self.session
-        async with session.get(f"{VALIDATOR_SERVICE_URL}/uid/random") as response:
+
+        async with session.post(
+            f"{VALIDATOR_SERVICE_URL}/uid/random", json={"uid": uid}
+        ) as response:
             if response.status == 200:
                 data = await response.json()
                 uid = data["uid"]
@@ -46,3 +53,9 @@ class ValidatorServiceClient:
                 return config.fromDict(config_dict)
             else:
                 raise Exception(f"Failed to fetch config: {response.status}")
+
+    async def health_check(self):
+        session = await self.session
+        async with session.get(f"{VALIDATOR_SERVICE_URL}") as response:
+            if response.status != 200:
+                raise Exception(f"Health check failed: {response.status}")

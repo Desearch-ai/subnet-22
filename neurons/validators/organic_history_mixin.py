@@ -1,9 +1,10 @@
-import time
-import torch
 import random
-import json
+import time
+from typing import Dict, List
+
 import jsonpickle
-from typing import List, Dict
+import torch
+
 from desearch.redis.redis_client import redis_client
 
 

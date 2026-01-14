@@ -18,12 +18,14 @@
 
 # Utils for weights setting on chain.
 
-import wandb
-import torch
+import asyncio
+
 import bittensor as bt
-import desearch
-import time
 import torch
+from bittensor.utils.weight_utils import process_weights
+
+import desearch
+import wandb
 
 ENABLE_EMISSION_CONTROL = True
 EMISSION_CONTROL_HOTKEY = "5CUu1QhvrfyMDBELUPJLt4c7uJFbi7TKqDHkS1Zz41oD4dyP"
@@ -47,7 +49,7 @@ def init_wandb(self):
                 entity=desearch.ENTITY,
                 config=self.config,
                 dir=self.config.full_path,
-                reinit="default",
+                reinit="finish_previous",
             )
 
             # Sign the run to ensure it's from the correct hotkey
@@ -63,11 +65,11 @@ def init_wandb(self):
         raise
 
 
-def set_weights_subtensor(netuid, uids, weights, config, version_key):
+async def set_weights_subtensor(
+    subtensor: bt.AsyncSubtensor, wallet: bt.Wallet, netuid, uids, weights, version_key
+):
     try:
-        wallet = bt.wallet(config=config)
-        subtensor = bt.subtensor(config=config)
-        success, message = subtensor.set_weights(
+        success, message = await subtensor.set_weights(
             wallet=wallet,
             netuid=netuid,
             uids=uids,
@@ -80,47 +82,43 @@ def set_weights_subtensor(netuid, uids, weights, config, version_key):
         # Send the success status back to the main process
         return success, message
     except Exception as e:
-        bt.logging.error(f"Failed to set weights on chain with exception: { e }")
+        bt.logging.error(f"Failed to set weights on chain with exception: {e}")
         return False, message
 
 
-def set_weights_with_retry(self, processed_weight_uids, processed_weights):
+async def set_weights_with_retry(self, processed_weight_uids, processed_weights):
     max_retries = 9  # Maximum number of retries
     retry_delay = 45  # Delay between retries in seconds
 
     success = False
 
-    bt.logging.info("Initiating weight setting process on Bittensor network.")
+    bt.logging.info("Starting to set weights...")
+
     for attempt in range(max_retries):
-        success, message = set_weights_subtensor(
-            self.config.netuid,
-            processed_weight_uids,
-            processed_weights,
-            self.config,
-            desearch.__weights_version__,
+        success, message = await set_weights_subtensor(
+            subtensor=self.subtensor,
+            wallet=self.wallet,
+            netuid=self.config.netuid,
+            uids=processed_weight_uids,
+            weights=processed_weights,
+            version_key=desearch.__weights_version__,
         )
 
         if success:
-            bt.logging.success(
-                f"Set Weights Completed set weights action successfully. Message: '{message}'"
-            )
+            bt.logging.success(f"Set weights completed with message: '{message}'")
 
             break
         else:
             bt.logging.info(
-                f"Set Weights Attempt failed with message: '{message}', retrying in {retry_delay} seconds..."
+                f"Set weights failed with message: '{message}', retrying in {retry_delay} seconds..."
             )
 
-            time.sleep(retry_delay)
+            await asyncio.sleep(retry_delay)
 
     if success:
-        bt.logging.success(
-            f"Final Result: Successfully set weights after {attempt + 1} attempts."
-        )
+        bt.logging.success(f"Successfully set weights after {attempt + 1} attempts.")
     else:
-        bt.logging.error(
-            f"Final Result: Failed to set weights after {attempt + 1} attempts."
-        )
+        bt.logging.error(f"Failed to set weights after {attempt + 1} attempts.")
 
     return success
 
@@ -162,10 +160,11 @@ def burn_weights(self, weights):
     return new_scores
 
 
-def process_weights(self, raw_weights):
+async def process_weights_with_retry(self, raw_weights):
     max_retries = 5  # Define the maximum number of retries
     retry_delay = 30  # Define the delay between retries in seconds
 
+    netuid = self.config.netuid
     weights = raw_weights
 
     if ENABLE_EMISSION_CONTROL:
@@ -173,17 +172,22 @@ def process_weights(self, raw_weights):
 
     for attempt in range(max_retries):
         try:
-            subtensor = bt.subtensor(config=self.config)
+            # process_weights_for_netuid uses sync subtensor calls for retrieving min and max values, we can directly call process_weight
+            # https://github.com/opentensor/bittensor/blob/master/bittensor/utils/weight_utils.py#L253
+            min_allowed_weights = await self.subtensor.min_allowed_weights(
+                netuid=netuid
+            )
+            max_weight_limit = await self.subtensor.max_weight_limit(netuid=netuid)
 
             (
                 processed_weight_uids,
                 processed_weights,
-            ) = bt.utils.weight_utils.process_weights_for_netuid(
+            ) = process_weights(
                 uids=self.metagraph.uids.to("cpu"),
                 weights=weights.to("cpu"),
-                netuid=self.config.netuid,
-                subtensor=subtensor,
-                metagraph=self.metagraph,
+                num_neurons=self.metagraph.n,
+                min_allowed_weights=min_allowed_weights,
+                max_weight_limit=max_weight_limit,
             )
 
             weights_dict = {
@@ -197,12 +201,12 @@ def process_weights(self, raw_weights):
 
             if attempt < max_retries - 1:
                 bt.logging.info(f"Retrying in {retry_delay} seconds...")
-                time.sleep(retry_delay)
+                await asyncio.sleep(retry_delay)
             else:
                 return {}, None, None
 
 
-def get_weights(self):
+async def get_weights(self):
     if torch.all(self.moving_averaged_scores == 0):
         bt.logging.info(
             "All moving averaged scores are zero. Skipping weight retrieval."
@@ -211,15 +215,16 @@ def get_weights(self):
 
     raw_weights = torch.nn.functional.normalize(self.moving_averaged_scores, p=1, dim=0)
 
-    weights_dict, _, _ = process_weights(self, raw_weights)
+    weights_dict, _, _ = await process_weights_with_retry(self, raw_weights)
 
     return weights_dict
 
 
-def set_weights(self):
+async def set_weights(self):
     if torch.all(self.moving_averaged_scores == 0):
         bt.logging.info("All moving averaged scores are zero, skipping weight setting.")
         return
+
     # Calculate the average reward for each uid across non-zero values.
     # Replace any NaN values with 0.
     raw_weights = torch.nn.functional.normalize(self.moving_averaged_scores, p=1, dim=0)
@@ -228,9 +233,11 @@ def set_weights(self):
     bt.logging.trace("top10 uids", raw_weights.sort()[1])
 
     # Process the raw weights to final_weights via subtensor limitations.
-    weights_dict, processed_weight_uids, processed_weights = process_weights(
-        self, raw_weights
-    )
+    (
+        weights_dict,
+        processed_weight_uids,
+        processed_weights,
+    ) = await process_weights_with_retry(self, raw_weights)
 
     if processed_weight_uids is None:
         return
@@ -247,8 +254,11 @@ def set_weights(self):
     ]
     for i in range(0, len(uids_weights), 4):
         bt.logging.info(" | ".join(uids_weights[i : i + 4]))
-    bt.logging.info(f"Attempting to set weights details ends: ================")
+    bt.logging.info("Attempting to set weights details ends: ================")
 
     # Call the new method to handle the process with retry logic
-    success = set_weights_with_retry(self, processed_weight_uids, processed_weights)
+    success = await set_weights_with_retry(
+        self, processed_weight_uids, processed_weights
+    )
+
     return success

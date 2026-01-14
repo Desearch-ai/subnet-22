@@ -19,7 +19,7 @@ from desearch.protocol import (
 from .miner import Miner
 
 
-class Dendrite(bt.dendrite):
+class Dendrite(bt.Dendrite):
     def __init__(self, wallet=None):
         from neurons.miners.scraper_miner import ScraperMiner
         from neurons.miners.twitter_search_miner import TwitterSearchMiner

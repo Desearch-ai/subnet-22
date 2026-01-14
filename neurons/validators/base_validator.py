@@ -1,29 +1,19 @@
-from abc import ABC, abstractmethod
-import asyncio
-import itertools
-from typing import Optional, Tuple
-import torch
-import bittensor as bt
-from bittensor.core.metagraph import AsyncMetagraph
 import argparse
+import itertools
+from abc import ABC, abstractmethod
+
+import bittensor as bt
+import torch
+from bittensor.core.metagraph import AsyncMetagraph
 
 
 class AbstractNeuron(ABC):
     @abstractmethod
     def __init__(self):
         self.subtensor: "bt.AsyncSubtensor" = None
-        self.wallet: "bt.wallet" = None
+        self.wallet: "bt.Wallet" = None
         self.metagraph: "AsyncMetagraph" = None
-        self.dendrite: "bt.dendrite" = None
-        self.dendrite1: "bt.dendrite" = None
-        self.dendrite2: "bt.dendrite" = None
-        self.dendrite3: "bt.dendrite" = None
-        self.dendrites: itertools.cycle[bt.dendrite]
-
-    @classmethod
-    @abstractmethod
-    def check_config(cls, config: "bt.config"):
-        pass
+        self.dendrites: itertools.cycle[bt.Dendrite]
 
     @classmethod
     @abstractmethod
@@ -36,7 +26,7 @@ class AbstractNeuron(ABC):
         pass
 
     @abstractmethod
-    async def initialize_components(self):
+    async def initialize(self):
         pass
 
     @abstractmethod
@@ -45,12 +35,6 @@ class AbstractNeuron(ABC):
 
     @abstractmethod
     async def get_uids(self, axon, uid: int):
-        pass
-
-    @abstractmethod
-    async def get_random_miner(
-        self, uid: Optional[int] = None
-    ) -> Tuple[int, bt.AxonInfo]:
         pass
 
     @abstractmethod
@@ -63,12 +47,4 @@ class AbstractNeuron(ABC):
 
     @abstractmethod
     async def update_moving_averaged_scores(self, uids, rewards):
-        pass
-
-    @abstractmethod
-    async def run_query_and_score(self):
-        pass
-
-    @abstractmethod
-    def run(self):
         pass

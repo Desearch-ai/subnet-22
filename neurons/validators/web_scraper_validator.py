@@ -1,35 +1,34 @@
-import torch
 import asyncio
 import time
 from typing import Any, Dict, List, Optional
+
 import bittensor as bt
+import torch
+
+from desearch import QUERY_MINERS
+from desearch.dataset import QuestionsDataset
 from desearch.protocol import (
     WebSearchSynapse,
 )
-from neurons.validators.utils.mock import MockRewardModel
-from desearch.dataset import QuestionsDataset
-from desearch import QUERY_MINERS
 from neurons.validators.base_validator import AbstractNeuron
+from neurons.validators.organic_history_mixin import OrganicHistoryMixin
+from neurons.validators.penalty.exponential_penalty import ExponentialTimePenaltyModel
 from neurons.validators.reward import RewardModelType, RewardScoringType
+from neurons.validators.reward.performance_reward import PerformanceRewardModel
 from neurons.validators.reward.web_basic_search_content_relevance import (
     WebBasicSearchContentRelevanceModel,
 )
-from neurons.validators.reward.performance_reward import PerformanceRewardModel
+from neurons.validators.utils.mock import MockRewardModel
 from neurons.validators.utils.tasks import SearchTask
-from neurons.validators.basic_organic_query_state import BasicOrganicQueryState
-from neurons.validators.penalty.exponential_penalty import ExponentialTimePenaltyModel
-from neurons.validators.organic_history_mixin import OrganicHistoryMixin
 
 
-class BasicWebScraperValidator(OrganicHistoryMixin):
+class WebScraperValidator(OrganicHistoryMixin):
     def __init__(self, neuron: AbstractNeuron):
         super().__init__()
 
         self.neuron = neuron
         self.timeout = 180
         self.max_execution_time = 10
-
-        self.basic_organic_query_state = BasicOrganicQueryState()
 
         # Init device.
         bt.logging.debug("loading", "device")
@@ -120,30 +119,20 @@ class BasicWebScraperValidator(OrganicHistoryMixin):
             for task, params in zip(tasks, params_list)
         ]
 
-        dendrites = [
-            self.neuron.dendrite1,
-            self.neuron.dendrite2,
-            self.neuron.dendrite3,
-        ]
-
-        axon_groups = [axons[:80], axons[80:160], axons[160:]]
-        synapse_groups = [synapses[:80], synapses[80:160], synapses[160:]]
-
         all_tasks = []  # List to collect all asyncio tasks
         timeout = self.max_execution_time + 5
 
-        for dendrite, axon_group, synapse_group in zip(
-            dendrites, axon_groups, synapse_groups
-        ):
-            for axon, syn in zip(axon_group, synapse_group):
-                # Create a task for each dendrite call
-                task = dendrite.call(
+        for axon, synapse in zip(axons, synapses):
+            dendrite = next(self.neuron.dendrites)
+
+            all_tasks.append(
+                dendrite.call(
                     target_axon=axon,
-                    synapse=syn.model_copy(),
+                    synapse=synapse.model_copy(),
                     timeout=timeout,
                     deserialize=False,
                 )
-                all_tasks.append(task)
+            )
 
         # Await all tasks concurrently
         all_responses = await asyncio.gather(*all_tasks, return_exceptions=True)
@@ -174,28 +163,7 @@ class BasicWebScraperValidator(OrganicHistoryMixin):
             all_original_rewards = []
             val_score_responses_list = []
 
-            organic_penalties = []
-
             bt.logging.trace(f"Received responses: {responses}")
-
-            if is_synthetic:
-                penalized_uids = []
-
-                for uid, response in zip(uids.tolist(), responses):
-                    has_penalty = await self.basic_organic_query_state.has_penalty(
-                        response.axon.hotkey
-                    )
-
-                    organic_penalties.append(has_penalty)
-
-                    if has_penalty:
-                        penalized_uids.append(uid)
-
-                bt.logging.info(
-                    f"Following UIDs will be penalized as they failed organic query: {penalized_uids}"
-                )
-            else:
-                organic_penalties = [False] * len(uids)
 
             for weight_i, reward_fn_i in zip(
                 self.reward_weights, self.reward_functions
@@ -206,7 +174,7 @@ class BasicWebScraperValidator(OrganicHistoryMixin):
                     reward_event,
                     val_score_responses,
                     original_rewards,
-                ) = await reward_fn_i.apply(responses, uids, organic_penalties)
+                ) = await reward_fn_i.apply(responses, uids)
 
                 all_rewards.append(reward_i_normalized)
                 all_original_rewards.append(original_rewards)
@@ -224,9 +192,11 @@ class BasicWebScraperValidator(OrganicHistoryMixin):
                 )
 
             for penalty_fn_i in self.penalty_functions:
-                raw_penalty_i, adjusted_penalty_i, applied_penalty_i = (
-                    await penalty_fn_i.apply_penalties(responses, tasks, uids)
-                )
+                (
+                    raw_penalty_i,
+                    adjusted_penalty_i,
+                    applied_penalty_i,
+                ) = await penalty_fn_i.apply_penalties(responses, tasks, uids)
                 penalty_start_time = time.time()
                 rewards *= applied_penalty_i.to(self.neuron.config.neuron.device)
                 penalty_execution_time = time.time() - penalty_start_time
@@ -314,7 +284,6 @@ class BasicWebScraperValidator(OrganicHistoryMixin):
                 all_rewards=all_rewards,
                 all_original_rewards=all_original_rewards,
                 val_score_responses_list=val_score_responses_list,
-                organic_penalties=organic_penalties,
                 neuron=self.neuron,
             )
 
@@ -371,15 +340,18 @@ class BasicWebScraperValidator(OrganicHistoryMixin):
             )
 
             # 4) Run the basic web search
-            responses, uids, event, start_time = (
-                await self.run_web_basic_search_and_score(
-                    tasks=tasks,
-                    strategy=strategy,
-                    is_only_allowed_miner=False,
-                    specified_uids=specified_uids,
-                    params_list=params,
-                    is_synthetic=True,
-                )
+            (
+                responses,
+                uids,
+                event,
+                start_time,
+            ) = await self.run_web_basic_search_and_score(
+                tasks=tasks,
+                strategy=strategy,
+                is_only_allowed_miner=False,
+                specified_uids=specified_uids,
+                params_list=params,
+                is_synthetic=True,
             )
 
             if self.neuron.config.neuron.synthetic_disabled:
@@ -402,14 +374,9 @@ class BasicWebScraperValidator(OrganicHistoryMixin):
     async def organic(
         self,
         query,
-        random_synapse: WebSearchSynapse = None,
-        random_uid=None,
-        specified_uids=None,
         uid: Optional[int] = None,
     ):
         """Receives question from user and returns the response from the miners."""
-
-        is_interval_query = random_synapse is not None
 
         try:
             prompt = query.get("query", "")
@@ -423,20 +390,19 @@ class BasicWebScraperValidator(OrganicHistoryMixin):
                 )
             ]
 
-            async_responses, uids, event, start_time = (
-                await self.run_web_basic_search_and_score(
-                    tasks=tasks,
-                    strategy=(
-                        QUERY_MINERS.ALL if specified_uids else QUERY_MINERS.RANDOM
-                    ),
-                    is_only_allowed_miner=self.neuron.config.subtensor.network
-                    != "finney",
-                    specified_uids=specified_uids,
-                    params_list=[
-                        {key: value for key, value in query.items() if key != "query"}
-                    ],
-                    uid=uid,
-                )
+            (
+                async_responses,
+                uids,
+                event,
+                start_time,
+            ) = await self.run_web_basic_search_and_score(
+                tasks=tasks,
+                strategy=QUERY_MINERS.RANDOM,
+                is_only_allowed_miner=self.neuron.config.subtensor.network != "finney",
+                params_list=[
+                    {key: value for key, value in query.items() if key != "query"}
+                ],
+                uid=uid,
             )
 
             final_responses = []
@@ -451,41 +417,9 @@ class BasicWebScraperValidator(OrganicHistoryMixin):
                         f"Invalid response for UID: {response.axon.hotkey if response else 'Unknown'}"
                     )
 
-            async def process_and_score_responses(uids):
-                if is_interval_query:
-                    # Add the random_synapse to final_responses and its UID to uids
-                    final_responses.append(random_synapse)
-                    uids = torch.cat([uids, torch.tensor([random_uid])])
-
-                # Compute rewards and penalties
-                if not self.neuron.config.neuron.synthetic_disabled:
-                    _, _, _, _, original_rewards = (
-                        await self.compute_rewards_and_penalties(
-                            event=event,
-                            tasks=tasks,
-                            responses=final_responses,
-                            uids=uids,
-                            start_time=start_time,
-                            is_synthetic=False,
-                        )
-                    )
-
-                    # Save organic queries if not an interval query
-                    if not is_interval_query:
-                        await self.basic_organic_query_state.save_organic_queries(
-                            final_responses, uids, original_rewards
-                        )
-
-                if (
-                    self.neuron.config.neuron.synthetic_disabled
-                    and not is_interval_query
-                ):
-                    await self._save_organic_response(
-                        uids, final_responses, tasks, event, start_time
-                    )
-
-            # Schedule scoring task
-            asyncio.create_task(process_and_score_responses(uids))
+            await self._save_organic_response(
+                uids, final_responses, tasks, event, start_time
+            )
         except Exception as e:
             bt.logging.error(f"Error in organic: {e}")
             raise e

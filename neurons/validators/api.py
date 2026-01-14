@@ -27,10 +27,8 @@ from desearch.protocol import (
     WebSearchResultList,
 )
 from neurons.validators.env import EXPECTED_ACCESS_KEY, PORT
-from neurons.validators.validator import Neuron
+from neurons.validators.validator_api import ValidatorAPI
 from neurons.validators.validator_service_client import ValidatorServiceClient
-
-neu: Neuron = None
 
 
 async def get_validator_config():
@@ -42,22 +40,28 @@ async def get_validator_config():
                 config = await client.get_config()
                 print("Validator config fetched successfully.")
                 return config
-            except aiohttp.ClientError:
+            except Exception:
                 print("Waiting for validator service to start...")
             finally:
                 await asyncio.sleep(5)
 
 
+api: ValidatorAPI = None
+
+
 @asynccontextmanager
 async def lifespan(app):
-    # Start the neuron when the app starts
-    global neu
+    # Start the validator api when the app starts
+    global api
 
     config = await get_validator_config()
-    neu = Neuron(lite=True, config=config)
-    await neu.run()
+
+    api = ValidatorAPI(config=config)
+    await api.start()
 
     yield
+
+    await api.stop()
 
 
 app = FastAPI(lifespan=lifespan)
@@ -224,7 +228,7 @@ async def response_stream_event(data: SearchRequest):
 
         merged_chunks = ""
 
-        async for response in neu.advanced_scraper_validator.organic(
+        async for response in api.advanced_scraper_validator.organic(
             query,
             data.model,
             result_type=data.result_type,
@@ -319,7 +323,7 @@ async def handle_search_links(
     bt.logging.info(f"Handle search links, query: {query}")
 
     try:
-        async for item in neu.advanced_scraper_validator.organic(
+        async for item in api.advanced_scraper_validator.organic(
             query,
             body.model,
             is_collect_final_synapses=True,
@@ -461,7 +465,7 @@ async def advanced_twitter_search(
         # Collect all yielded synapses from organic
         final_synapses = []
 
-        async for synapse in neu.basic_scraper_validator.organic(
+        async for synapse in api.x_scraper_validator.organic(
             query=query_dict, uid=request.uid
         ):
             final_synapses.append(synapse)
@@ -519,7 +523,7 @@ async def get_tweets_by_urls(
 
         bt.logging.info(f"Fetching tweets for URLs: {urls}")
 
-        results = await neu.basic_scraper_validator.twitter_urls_search(
+        results = await api.x_scraper_validator.twitter_urls_search(
             urls, uid=request.uid
         )
     except Exception as e:
@@ -560,7 +564,7 @@ async def get_tweet_by_id(
     try:
         bt.logging.info(f"Fetching tweet with ID: {id}")
 
-        results = await neu.basic_scraper_validator.twitter_id_search(id, uid=uid)
+        results = await api.x_scraper_validator.twitter_id_search(id, uid=uid)
     except Exception as e:
         bt.logging.error(f"Error fetching tweet by ID: {e}")
         raise HTTPException(status_code=500, detail=f"An error occurred: {str(e)}")
@@ -614,7 +618,7 @@ async def web_search_endpoint(
         # Collect all yielded synapses from organic
         final_synapses = []
 
-        async for synapse in neu.basic_web_scraper_validator.organic(
+        async for synapse in api.web_scraper_validator.organic(
             query={"query": query, "num": num, "start": start}, uid=uid
         ):
             final_synapses.append(synapse)
@@ -640,7 +644,7 @@ async def health_check(access_key: Annotated[str | None, Header()] = None):
 
     async with ValidatorServiceClient() as client:
         try:
-            await client.get_config()
+            await client.health_check()
             return {"status": "healthy", "version": __version__}
         except aiohttp.ClientError:
             raise HTTPException(status_code=503)

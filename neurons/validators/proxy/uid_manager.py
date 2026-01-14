@@ -1,6 +1,7 @@
-from typing import List
 import random
-import bittensor as bt
+from typing import List
+
+from bittensor.core.metagraph import AsyncMetagraph
 
 from neurons.validators.weights import EMISSION_CONTROL_HOTKEY
 
@@ -11,21 +12,26 @@ class UIDManager:
     UIDs are updated on metagraph resync
     """
 
+    metagraph: AsyncMetagraph
+
     def __init__(
         self,
-        wallet: bt.wallet,
-        metagraph: bt.metagraph,
     ) -> None:
-        self.wallet = wallet
-        self.metagraph = metagraph
         self.max_miners_to_use = 120
         self.uids = []
         self.available_uids = []
 
-    def resync(self, available_uids: List[int]):
+    def resync(
+        self,
+        available_uids: List[int],
+        metagraph: AsyncMetagraph = None,
+    ):
         """
         Resync the state after metagraph resync
         """
+        if metagraph:
+            self.metagraph = metagraph
+
         if not len(available_uids):
             return
 
@@ -67,7 +73,7 @@ class UIDManager:
         Get random miner UID from top 200 miners and remove it from the list
         """
         if len(self.uids) == 0:
-            self.resync(self.available_uids)
+            self.resync(available_uids=self.available_uids)
 
         uid = random.choice(self.uids)
         self.uids.remove(uid)
