@@ -88,7 +88,7 @@ class SyntheticQueryRunnerMixin:
                 choice = random.choices(
                     [
                         self.advanced_scraper_validator,
-                        self.basic_scraper_validator,
+                        self.x_scraper_validator,
                     ],
                     weights=[0.6, 0.4],
                 )[0]
