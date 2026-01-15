@@ -222,31 +222,31 @@ class Neuron(SyntheticQueryRunnerMixin, AbstractNeuron):
             if self.config.wandb_on:
                 wandb.log(wandb_data)
 
-            weights = await get_weights(self)
+            # weights = await get_weights(self)
 
-            asyncio.create_task(
-                save_logs_in_chunks(
-                    self,
-                    responses=responses,
-                    uids=uids,
-                    rewards=rewards,
-                    twitter_rewards=all_rewards[0],
-                    search_rewards=all_rewards[1],
-                    summary_rewards=all_rewards[2],
-                    performance_rewards=all_rewards[3],
-                    original_twitter_rewards=all_original_rewards[0],
-                    original_search_rewards=all_original_rewards[1],
-                    original_summary_rewards=all_original_rewards[2],
-                    original_performance_rewards=all_original_rewards[3],
-                    tweet_scores=val_score_responses_list[0],
-                    search_scores=val_score_responses_list[1],
-                    summary_link_scores=val_score_responses_list[2],
-                    weights=weights,
-                    neuron=neuron,
-                    netuid=self.config.netuid,
-                    query_type=query_type,
-                )
-            )
+            # asyncio.create_task(
+            #     save_logs_in_chunks(
+            #         self,
+            #         responses=responses,
+            #         uids=uids,
+            #         rewards=rewards,
+            #         twitter_rewards=all_rewards[0],
+            #         search_rewards=all_rewards[1],
+            #         summary_rewards=all_rewards[2],
+            #         performance_rewards=all_rewards[3],
+            #         original_twitter_rewards=all_original_rewards[0],
+            #         original_search_rewards=all_original_rewards[1],
+            #         original_summary_rewards=all_original_rewards[2],
+            #         original_performance_rewards=all_original_rewards[3],
+            #         tweet_scores=val_score_responses_list[0],
+            #         search_scores=val_score_responses_list[1],
+            #         summary_link_scores=val_score_responses_list[2],
+            #         weights=weights,
+            #         neuron=neuron,
+            #         netuid=self.config.netuid,
+            #         query_type=query_type,
+            #     )
+            # )
         except Exception as e:
             bt.logging.error(f"Error in update_scores: {e}")
             raise e
