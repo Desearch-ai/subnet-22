@@ -521,19 +521,9 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
                 async_responses, uids, start_time
             )
 
-            if self.neuron.config.neuron.synthetic_disabled:
-                await self._save_organic_response(
-                    uids, final_synapses, tasks, event, start_time
-                )
-            else:
-                await self.compute_rewards_and_penalties(
-                    event=event,
-                    tasks=tasks,
-                    responses=final_synapses,
-                    uids=uids,
-                    start_time=start_time,
-                    is_synthetic=True,
-                )
+            await self._save_organic_response(
+                uids, final_synapses, tasks, event, start_time
+            )
         except Exception as e:
             bt.logging.error(f"Error in query_and_score: {e}")
             raise e

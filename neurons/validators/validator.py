@@ -25,12 +25,11 @@ from neurons.validators.advanced_scraper_validator import AdvancedScraperValidat
 from neurons.validators.base_validator import AbstractNeuron
 from neurons.validators.config import add_args, check_config, config
 from neurons.validators.proxy.uid_manager import UIDManager
-from neurons.validators.synthetic_query_runner import SyntheticQueryRunnerMixin
 from neurons.validators.weights import get_weights, init_wandb, set_weights
 from neurons.validators.x_scraper_validator import XScraperValidator
 
 
-class Neuron(SyntheticQueryRunnerMixin, AbstractNeuron):
+class Neuron(AbstractNeuron):
     @classmethod
     def add_args(cls, parser):
         add_args(cls, parser)
@@ -344,7 +343,7 @@ class Neuron(SyntheticQueryRunnerMixin, AbstractNeuron):
 
         random_organic_responses = await validator.get_random_organic_responses()
 
-        # Compute rewards and penalties using random organic responses
+        # Start scoring and compute rewards and penalties using random organic + synthetic responses
         await validator.compute_rewards_and_penalties(
             **random_organic_responses,
             start_time=time.time(),
@@ -401,30 +400,29 @@ class Neuron(SyntheticQueryRunnerMixin, AbstractNeuron):
                     )
                     await asyncio.sleep(300)
 
-                if self.config.neuron.synthetic_disabled:
-                    if blocks_left <= 100:
-                        if not self.organic_responses_computed:
-                            bt.logging.info("Computing organic responses")
+                if blocks_left <= 100:
+                    if not self.organic_responses_computed:
+                        bt.logging.info("Computing organic responses")
 
-                            random_validator = random.choices(
-                                [
-                                    self.advanced_scraper_validator,
-                                    self.x_scraper_validator,
-                                ],
-                                weights=[0.6, 0.4],
-                            )[0]
+                        random_validator = random.choices(
+                            [
+                                self.advanced_scraper_validator,
+                                self.x_scraper_validator,
+                            ],
+                            weights=[0.6, 0.4],
+                        )[0]
 
-                            self.loop.create_task(
-                                self.compute_organic_responses(random_validator)
-                            )
+                        self.loop.create_task(
+                            self.compute_organic_responses(random_validator)
+                        )
 
-                            self.organic_responses_computed = True
-                        else:
-                            bt.logging.info(
-                                "Skipping compute organic responses: Already executed."
-                            )
+                        self.organic_responses_computed = True
                     else:
-                        self.organic_responses_computed = False
+                        bt.logging.info(
+                            "Skipping compute organic responses: Already executed."
+                        )
+                else:
+                    self.organic_responses_computed = False
 
             except Exception as e:
                 bt.logging.error(f"Error in validator sync: {e}")
@@ -450,27 +448,25 @@ class Neuron(SyntheticQueryRunnerMixin, AbstractNeuron):
         return True
 
     async def start(self):
-        bt.logging.info("Starting Neuron")
-
-        await self.initialize()
-        await self.sync_available_uids()  # Initial sync
-
-        self.loop = asyncio.get_event_loop()
-
-        init_wandb(self)
-
-        # Init Weights.
-        bt.logging.debug("loading", "moving_averaged_scores")
-        self.moving_averaged_scores = await load_moving_averaged_scores(
-            self.metagraph, self.config
-        )
-        bt.logging.debug(str(self.moving_averaged_scores))
-
-        self.loop.create_task(self.sync_metagraph())
-        self.loop.create_task(self.sync())
-
         try:
-            self.start_query_tasks()
+            bt.logging.info("Starting Neuron")
+
+            await self.initialize()
+            await self.sync_available_uids()  # Initial sync
+
+            self.loop = asyncio.get_event_loop()
+
+            init_wandb(self)
+
+            # Init Weights.
+            bt.logging.debug("loading", "moving_averaged_scores")
+            self.moving_averaged_scores = await load_moving_averaged_scores(
+                self.metagraph, self.config
+            )
+            bt.logging.debug(str(self.moving_averaged_scores))
+
+            self.loop.create_task(self.sync_metagraph())
+            self.loop.create_task(self.sync())
         except KeyboardInterrupt:
             self.axon.stop()
             bt.logging.success("Validator killed by keyboard interrupt.")

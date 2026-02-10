@@ -428,19 +428,7 @@ class XScraperValidator(OrganicHistoryMixin):
 
             responses = await collect_responses(async_responses)
 
-            if self.neuron.config.neuron.synthetic_disabled:
-                await self._save_organic_response(
-                    uids, responses, tasks, event, start_time
-                )
-            else:
-                await self.compute_rewards_and_penalties(
-                    event=event,
-                    tasks=tasks,
-                    responses=responses,
-                    uids=uids,
-                    start_time=start_time,
-                    is_synthetic=True,
-                )
+            await self._save_organic_response(uids, responses, tasks, event, start_time)
         except Exception as e:
             bt.logging.error(f"Error in query_and_score_twitter_basic: {e}")
             raise
