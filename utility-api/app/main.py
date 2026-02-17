@@ -1,10 +1,34 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
+
+from app.config import NETUID, SUBTENSOR_NETWORK
+from app.domains.dataset.router import close_epoch_cache, init_epoch_cache
+from app.domains.dataset.router import router as dataset_router
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
+    await init_epoch_cache(
+        netuid=NETUID,
+        subtensor_network=SUBTENSOR_NETWORK,
+    )
+
+    yield
+
+    # Shutdown
+    await close_epoch_cache()
+
 
 app = FastAPI(
     title="SN22 Utility API",
     description="Subnet-22 (Desearch) dataset & logging utility API",
     version="0.1.0",
+    lifespan=lifespan,
 )
+
+app.include_router(dataset_router)
 
 
 @app.get("/")
