@@ -1,17 +1,14 @@
 import asyncio
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import bittensor as bt
 import torch
 
-from desearch import QUERY_MINERS
-from desearch.dataset import QuestionsDataset
 from desearch.protocol import (
     WebSearchSynapse,
 )
 from neurons.validators.base_validator import AbstractNeuron
-from neurons.validators.organic_history_mixin import OrganicHistoryMixin
 from neurons.validators.penalty.exponential_penalty import ExponentialTimePenaltyModel
 from neurons.validators.reward import RewardModelType, RewardScoringType
 from neurons.validators.reward.performance_reward import PerformanceRewardModel
@@ -22,10 +19,8 @@ from neurons.validators.utils.mock import MockRewardModel
 from neurons.validators.utils.tasks import SearchTask
 
 
-class WebScraperValidator(OrganicHistoryMixin):
+class WebScraperValidator:
     def __init__(self, neuron: AbstractNeuron):
-        super().__init__()
-
         self.neuron = neuron
         self.timeout = 180
         self.max_execution_time = 10
@@ -84,10 +79,6 @@ class WebScraperValidator(OrganicHistoryMixin):
         self,
         tasks: List[SearchTask],
         params_list: List[Dict[str, Any]],
-        strategy=QUERY_MINERS.RANDOM,
-        is_only_allowed_miner=True,
-        specified_uids=None,
-        is_synthetic=False,
         uid: Optional[int] = None,
     ):
         event = {
@@ -97,24 +88,15 @@ class WebScraperValidator(OrganicHistoryMixin):
 
         start_time = time.time()
 
-        if is_synthetic:
-            uids = await self.neuron.get_uids(
-                strategy=strategy,
-                is_only_allowed_miner=is_only_allowed_miner,
-                specified_uids=specified_uids,
-            )
-            axons = [self.neuron.metagraph.axons[uid] for uid in uids]
-        else:
-            uid, axon = await self.neuron.get_random_miner(uid=uid)
-            uids = torch.tensor([uid])
-            axons = [axon]
+        uid, axon = await self.neuron.get_random_miner(uid=uid)
+        uids = torch.tensor([uid])
+        axons = [axon]
 
         synapses: List[WebSearchSynapse] = [
             WebSearchSynapse(
                 **params,
                 query=task.compose_prompt(),
                 max_execution_time=self.max_execution_time,
-                is_synthetic=is_synthetic,
             )
             for task, params in zip(tasks, params_list)
         ]
@@ -146,7 +128,6 @@ class WebScraperValidator(OrganicHistoryMixin):
         responses,
         uids,
         start_time,
-        is_synthetic=False,
     ):
         try:
             if not len(uids):
@@ -209,11 +190,8 @@ class WebScraperValidator(OrganicHistoryMixin):
                     f"Applied penalty function: {penalty_fn_i.name} in {penalty_execution_time:.2f} seconds"
                 )
 
-            if is_synthetic:
-                scattered_rewards = await self.neuron.update_moving_averaged_scores(
-                    uids, rewards
-                )
-                self.log_event(tasks, event, start_time, uids, rewards)
+            await self.neuron.update_moving_averaged_scores(uids, rewards)
+            self.log_event(tasks, event, start_time, uids, rewards)
 
             scores = torch.zeros(len(self.neuron.metagraph.hotkeys))
             uid_scores_dict = {}
@@ -304,60 +282,42 @@ class WebScraperValidator(OrganicHistoryMixin):
 
         bt.logging.debug("Run Task event:", event)
 
-    async def query_and_score(self, strategy, specified_uids=None):
-        try:
-            dataset = QuestionsDataset()
+    async def send_scoring_query(
+        self,
+        query: dict,
+        uid: int,
+    ) -> Tuple[Optional[object], SearchTask]:
+        """
+        Send a scoring query to a specific miner and return (response, task).
+        Called by QueryScheduler; awaits the full response without streaming.
+        """
+        prompt = query.get("query", "")
+        params = {k: v for k, v in query.items() if k != "query"}
 
-            # Question generation
-            prompts = await asyncio.gather(
-                *[
-                    dataset.generate_basic_question_with_openai()
-                    for _ in range(
-                        len(
-                            specified_uids
-                            if specified_uids
-                            else self.neuron.metagraph.uids
-                        )
-                    )
-                ]
-            )
+        task = SearchTask(
+            base_text=prompt,
+            task_name="web search",
+            task_type="web_search",
+            criteria=[],
+        )
 
-            params = [{} for _ in range(len(prompts))]
+        (
+            all_responses,
+            uids,
+            event,
+            start_time,
+        ) = await self.run_web_basic_search_and_score(
+            tasks=[task],
+            params_list=[params],
+            uid=uid,
+        )
 
-            # 2) Build tasks from the generated prompts
-            tasks = [
-                SearchTask(
-                    base_text=prompt,
-                    task_name="web search",
-                    task_type="web_search",
-                    criteria=[],
-                )
-                for prompt in prompts
-            ]
-
-            bt.logging.debug(
-                f"[query_and_score_web_basic] Running with prompts: {prompts}"
-            )
-
-            # 4) Run the basic web search
-            (
-                responses,
-                uids,
-                event,
-                start_time,
-            ) = await self.run_web_basic_search_and_score(
-                tasks=tasks,
-                strategy=strategy,
-                is_only_allowed_miner=False,
-                specified_uids=specified_uids,
-                params_list=params,
-                is_synthetic=True,
-            )
-
-            await self._save_organic_response(uids, responses, tasks, event, start_time)
-        except Exception as e:
-            bt.logging.error(f"Error in query_and_score_web_basic: {e}")
-            raise
+        response = (
+            all_responses[0]
+            if all_responses and not isinstance(all_responses[0], Exception)
+            else None
+        )
+        return response, task
 
     async def organic(
         self,
@@ -385,8 +345,6 @@ class WebScraperValidator(OrganicHistoryMixin):
                 start_time,
             ) = await self.run_web_basic_search_and_score(
                 tasks=tasks,
-                strategy=QUERY_MINERS.RANDOM,
-                is_only_allowed_miner=self.neuron.config.subtensor.network != "finney",
                 params_list=[
                     {key: value for key, value in query.items() if key != "query"}
                 ],
@@ -405,9 +363,6 @@ class WebScraperValidator(OrganicHistoryMixin):
                         f"Invalid response for UID: {response.axon.hotkey if response else 'Unknown'}"
                     )
 
-            await self._save_organic_response(
-                uids, final_responses, tasks, event, start_time
-            )
         except Exception as e:
             bt.logging.error(f"Error in organic: {e}")
             raise e

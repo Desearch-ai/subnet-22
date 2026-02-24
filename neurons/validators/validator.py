@@ -1,9 +1,9 @@
 import asyncio
 import itertools
-import random
 import sys
 import time
 from traceback import print_exception
+from typing import Optional, Tuple
 
 import bittensor as bt
 import torch
@@ -25,6 +25,10 @@ from neurons.validators.advanced_scraper_validator import AdvancedScraperValidat
 from neurons.validators.base_validator import AbstractNeuron
 from neurons.validators.config import add_args, check_config, config
 from neurons.validators.proxy.uid_manager import UIDManager
+from neurons.validators.query_scheduler import QueryScheduler
+from neurons.validators.scoring_store import ScoringStore
+from neurons.validators.utility_api_client import UtilityAPIClient
+from neurons.validators.web_scraper_validator import WebScraperValidator
 from neurons.validators.weights import get_weights, init_wandb, set_weights
 from neurons.validators.x_scraper_validator import XScraperValidator
 
@@ -46,6 +50,7 @@ class Neuron(AbstractNeuron):
 
     advanced_scraper_validator: "AdvancedScraperValidator"
     x_scraper_validator: "XScraperValidator"
+    web_scraper_validator: "WebScraperValidator"
 
     moving_average_scores: torch.Tensor = None
     uid: int = None
@@ -62,10 +67,9 @@ class Neuron(AbstractNeuron):
 
         self.advanced_scraper_validator = AdvancedScraperValidator(neuron=self)
         self.x_scraper_validator = XScraperValidator(neuron=self)
+        self.web_scraper_validator = WebScraperValidator(neuron=self)
 
-        self.organic_responses_computed = False
         self.available_uids = []
-
         self.uid_manager = UIDManager()
 
     async def initialize(self):
@@ -204,6 +208,17 @@ class Neuron(AbstractNeuron):
             bt.logging.info(f"Run uids ---------- Amount: {len(uids)} | {uids}")
             return uids.to(self.config.neuron.device)
 
+    async def get_random_miner(
+        self, uid: Optional[int] = None
+    ) -> Tuple[int, bt.AxonInfo]:
+        """Return (uid, axon) for the given uid, or a random miner if uid is None."""
+        if uid is not None:
+            return uid, self.metagraph.axons[uid]
+        selected_uid = self.uid_manager.get_miner_uid()
+        if isinstance(selected_uid, torch.Tensor):
+            selected_uid = selected_uid.item()
+        return selected_uid, self.metagraph.axons[selected_uid]
+
     async def update_scores(
         self,
         wandb_data,
@@ -326,30 +341,6 @@ class Neuron(AbstractNeuron):
             bt.logging.error(f"Error in update_moving_averaged_scores: {e}")
             raise e
 
-    async def compute_organic_responses(self, validator):
-        specified_uids = await validator.get_uids_with_no_history(
-            self.metagraph.uids.tolist()
-        )
-
-        if specified_uids:
-            bt.logging.info(
-                f"Running {validator.__class__.__name__} synthetic queries with specified uids: {specified_uids}"
-            )
-
-            # Call the appropriate query function based on validator type
-            await validator.query_and_score(
-                strategy=QUERY_MINERS.ALL, specified_uids=specified_uids
-            )
-
-        random_organic_responses = await validator.get_random_organic_responses()
-
-        # Start scoring and compute rewards and penalties using random organic + synthetic responses
-        await validator.compute_rewards_and_penalties(
-            **random_organic_responses,
-            start_time=time.time(),
-            is_synthetic=True,
-        )
-
     async def blocks_until_next_epoch(self):
         bt.logging.info("Calculating block until next epoch")
 
@@ -381,7 +372,8 @@ class Neuron(AbstractNeuron):
 
     async def sync(self):
         """
-        Wrapper for synchronizing the state of the network for the given miner or validator.
+        Weight-setting loop. Runs set_weights when within the last 20 blocks
+        of an epoch.
         """
 
         while True:
@@ -399,30 +391,6 @@ class Neuron(AbstractNeuron):
                         f"Weight setting execution time: {weight_set_end_time - weight_set_start_time:.2f} seconds"
                     )
                     await asyncio.sleep(300)
-
-                if blocks_left <= 100:
-                    if not self.organic_responses_computed:
-                        bt.logging.info("Computing organic responses")
-
-                        random_validator = random.choices(
-                            [
-                                self.advanced_scraper_validator,
-                                self.x_scraper_validator,
-                            ],
-                            weights=[0.6, 0.4],
-                        )[0]
-
-                        self.loop.create_task(
-                            self.compute_organic_responses(random_validator)
-                        )
-
-                        self.organic_responses_computed = True
-                    else:
-                        bt.logging.info(
-                            "Skipping compute organic responses: Already executed."
-                        )
-                else:
-                    self.organic_responses_computed = False
 
             except Exception as e:
                 bt.logging.error(f"Error in validator sync: {e}")
@@ -465,8 +433,30 @@ class Neuron(AbstractNeuron):
             )
             bt.logging.debug(str(self.moving_averaged_scores))
 
+            scoring_store = ScoringStore()
+
+            utility_api = UtilityAPIClient(
+                base_url=self.config.neuron.utility_api_url,
+                wallet=self.wallet,
+            )
+
+            validators = {
+                "ai_search": self.advanced_scraper_validator,
+                "x_search": self.x_scraper_validator,
+                "web_search": self.web_scraper_validator,
+            }
+
+            query_scheduler = QueryScheduler(
+                neuron=self,
+                utility_api=utility_api,
+                scoring_store=scoring_store,
+                validators=validators,
+            )
+
             self.loop.create_task(self.sync_metagraph())
             self.loop.create_task(self.sync())
+            self.loop.create_task(query_scheduler.run())
+
         except KeyboardInterrupt:
             self.axon.stop()
             bt.logging.success("Validator killed by keyboard interrupt.")

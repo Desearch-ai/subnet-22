@@ -1,13 +1,10 @@
-import asyncio
 import random
 import time
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 import bittensor as bt
 import torch
 
-from desearch import QUERY_MINERS
-from desearch.dataset import QuestionsDataset
 from desearch.dataset.date_filters import (
     DateFilter,
     DateFilterType,
@@ -23,7 +20,6 @@ from desearch.protocol import (
 from desearch.stream import collect_final_synapses
 from desearch.utils import get_max_execution_time
 from neurons.validators.base_validator import AbstractNeuron
-from neurons.validators.organic_history_mixin import OrganicHistoryMixin
 from neurons.validators.penalty.chat_history_penalty import ChatHistoryPenaltyModel
 from neurons.validators.penalty.exponential_penalty import ExponentialTimePenaltyModel
 from neurons.validators.penalty.miner_score_penalty import MinerScorePenaltyModel
@@ -43,10 +39,8 @@ from neurons.validators.utils.mock import MockRewardModel
 from neurons.validators.utils.tasks import TwitterTask
 
 
-class AdvancedScraperValidator(OrganicHistoryMixin):
+class AdvancedScraperValidator:
     def __init__(self, neuron: AbstractNeuron):
-        super().__init__()
-
         self.neuron = neuron
 
         self.execution_time_options = [Model.NOVA, Model.ORBIT, Model.HORIZON]
@@ -180,16 +174,12 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
         self,
         tasks: List[TwitterTask],
         date_filter: DateFilter,
-        strategy=QUERY_MINERS.RANDOM,
-        is_only_allowed_miner=True,
-        specified_uids=None,
         tools=[],
         language="en",
         region="us",
         google_date_filter="qdr:w",
         model: Optional[Model] = Model.NOVA,
         result_type: Optional[ResultType] = ResultType.LINKS_WITH_FINAL_SUMMARY,
-        is_synthetic=False,
         system_message: Optional[str] = None,
         scoring_system_message: Optional[str] = None,
         uid: Optional[int] = None,
@@ -205,18 +195,9 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
         }
         start_time = time.time()
 
-        if is_synthetic:
-            uids = await self.neuron.get_uids(
-                strategy=strategy,
-                is_only_allowed_miner=is_only_allowed_miner,
-                specified_uids=specified_uids,
-            )
-
-            axons = [self.neuron.metagraph.axons[uid] for uid in uids]
-        else:
-            uid, axon = await self.neuron.get_random_miner(uid=uid)
-            uids = torch.tensor([uid])
-            axons = [axon]
+        uid, axon = await self.neuron.get_random_miner(uid=uid)
+        uids = torch.tensor([uid])
+        axons = [axon]
 
         start_date = (
             date_filter.start_date.strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -243,7 +224,6 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
                 google_date_filter=google_date_filter,
                 max_execution_time=max_execution_time,
                 result_type=result_type,
-                is_synthetic=is_synthetic,
                 system_message=system_message,
                 scoring_system_message=scoring_system_message,
                 scoring_model=self.neuron.config.neuron.scoring_model,
@@ -277,7 +257,6 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
         responses,
         uids,
         start_time,
-        is_synthetic=False,
         result_type: Optional[ResultType] = None,
     ):
         try:
@@ -298,7 +277,7 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
             if result_type is None:
                 result_type = ResultType.LINKS_WITH_FINAL_SUMMARY
 
-            query_type = "synthetic" if is_synthetic else "organic"
+            query_type = "synthetic"
 
             for weight_i, reward_fn_i in zip(
                 self.reward_weights, self.reward_functions
@@ -356,11 +335,8 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
                     f"Applied penalty function: {penalty_fn_i.name} in {penalty_execution_time:.2f} seconds"
                 )
 
-            if is_synthetic:
-                scattered_rewards = await self.neuron.update_moving_averaged_scores(
-                    uids, rewards
-                )
-                self.log_event(tasks, event, start_time, uids, rewards)
+            await self.neuron.update_moving_averaged_scores(uids, rewards)
+            self.log_event(tasks, event, start_time, uids, rewards)
 
             scores = torch.zeros(len(self.neuron.metagraph.hotkeys))
             uid_scores_dict = {}
@@ -462,71 +438,43 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
 
         bt.logging.debug("Run Task event:", event)
 
-    async def query_and_score(self, strategy, specified_uids=None):
-        try:
-            dataset = QuestionsDataset()
-            tools = random.choice(self.tools)
+    async def send_scoring_query(
+        self,
+        query: dict,
+        uid: int,
+        model: Optional[Model] = None,
+    ) -> Tuple[Optional[object], TwitterTask]:
+        """
+        Send a scoring query to a specific miner and return (response, task).
+        Called by QueryScheduler; collects the full synapse.
+        """
+        prompt = query["content"]
+        tools = query.get("tools", [])
 
-            prompts = await asyncio.gather(
-                *[
-                    dataset.generate_new_question_with_openai(tools)
-                    for _ in range(
-                        len(
-                            specified_uids
-                            if specified_uids
-                            else self.neuron.metagraph.uids
-                        )
-                    )
-                ]
-            )
+        if model is None:
+            model = self.get_random_execution_time()
 
-            system_message = (
-                (await dataset.generate_user_system_message_with_openai())
-                if random.choice([True, False])
-                else ""
-            )
+        task = TwitterTask(
+            base_text=prompt,
+            task_name="augment",
+            task_type="twitter_scraper",
+            criteria=[],
+        )
 
-            tasks = [
-                TwitterTask(
-                    base_text=prompt,
-                    task_name="augment",
-                    task_type="twitter_scraper",
-                    criteria=[],
-                )
-                for prompt in prompts
-            ]
+        async_responses, uids, event, start_time = await self.run_task_and_score(
+            tasks=[task],
+            date_filter=get_random_date_filter(),
+            tools=tools,
+            language=self.language,
+            region=self.region,
+            google_date_filter=self.date_filter,
+            model=model,
+            uid=uid,
+        )
 
-            bt.logging.debug(
-                f"Query and score running with prompts: {prompts} and tools: {tools}"
-            )
-
-            random_model = self.get_random_execution_time()
-
-            async_responses, uids, event, start_time = await self.run_task_and_score(
-                tasks=tasks,
-                strategy=strategy,
-                is_only_allowed_miner=False,
-                date_filter=get_random_date_filter(),
-                tools=tools,
-                language=self.language,
-                region=self.region,
-                google_date_filter=self.date_filter,
-                model=random_model,
-                is_synthetic=True,
-                specified_uids=specified_uids,
-                system_message=system_message,
-            )
-
-            final_synapses = await collect_final_synapses(
-                async_responses, uids, start_time
-            )
-
-            await self._save_organic_response(
-                uids, final_synapses, tasks, event, start_time
-            )
-        except Exception as e:
-            bt.logging.error(f"Error in query_and_score: {e}")
-            raise e
+        final_synapses = await collect_final_synapses(async_responses, uids, start_time)
+        response = final_synapses[0] if final_synapses else None
+        return response, task
 
     async def organic(
         self,
@@ -566,8 +514,6 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
 
             async_responses, uids, event, start_time = await self.run_task_and_score(
                 tasks=tasks,
-                strategy=QUERY_MINERS.RANDOM,
-                is_only_allowed_miner=self.neuron.config.subtensor.network != "finney",
                 tools=tools,
                 language=self.language,
                 region=self.region,
@@ -600,10 +546,6 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
                             final_synapses.append(value)
                         else:
                             yield value
-
-            await self._save_organic_response(
-                uids, final_synapses, tasks, event, start_time
-            )
         except Exception as e:
             bt.logging.error(f"Error in organic: {e}")
             raise e

@@ -178,6 +178,13 @@ def add_args(cls, parser):
         default=ScoringModel.OPENAI_GPT4_MINI,
     )
 
+    parser.add_argument(
+        "--neuron.utility_api_url",
+        type=str,
+        help="Base URL of the utility API that provides scoring questions.",
+        default="http://localhost:8000",  # TODO: Update after deployment
+    )
+
 
 def config(cls):
     parser = argparse.ArgumentParser()
