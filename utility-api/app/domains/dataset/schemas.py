@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from pydantic import BaseModel
 
 
@@ -12,7 +14,7 @@ class QuestionOut(BaseModel):
 class NextQuestionResponse(BaseModel):
     """Response for GET /dataset/next."""
 
-    epoch_id: int
+    time_range_start: datetime
     uid: int
     search_type: str
     question: QuestionOut

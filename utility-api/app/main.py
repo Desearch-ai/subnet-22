@@ -3,14 +3,14 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from app.config import NETUID, SUBTENSOR_NETWORK
-from app.domains.dataset.router import close_epoch_cache, init_epoch_cache
+from app.domains.dataset.router import close_question_cache, init_question_cache
 from app.domains.dataset.router import router as dataset_router
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
-    await init_epoch_cache(
+    await init_question_cache(
         netuid=NETUID,
         subtensor_network=SUBTENSOR_NETWORK,
     )
@@ -18,7 +18,7 @@ async def lifespan(app: FastAPI):
     yield
 
     # Shutdown
-    await close_epoch_cache()
+    await close_question_cache()
 
 
 app = FastAPI(
