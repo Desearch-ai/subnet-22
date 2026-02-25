@@ -4,9 +4,13 @@ import time
 from bittensor import Keypair
 from fastapi import HTTPException, Request
 
+from app.config import ENV
+
 logger = logging.getLogger(__name__)
 
 TIMESTAMP_TOLERANCE = 60  # 1 minute
+
+DEV_HOTKEY = "dev"
 
 
 async def validate_hotkey_signature(request: Request) -> str:
@@ -47,3 +51,10 @@ async def validate_hotkey_signature(request: Request) -> str:
         raise HTTPException(status_code=401, detail="Invalid signature")
 
     return hotkey
+
+
+async def get_hotkey(request: Request) -> str:
+    if ENV == "production":
+        return await validate_hotkey_signature(request)
+
+    return DEV_HOTKEY

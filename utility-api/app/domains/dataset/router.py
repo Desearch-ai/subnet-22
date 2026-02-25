@@ -1,6 +1,6 @@
 import time
 
-from app.auth import validate_hotkey_signature
+from app.auth import get_hotkey
 from app.db.session import get_session
 from app.domains.dataset.question_cache import QuestionCache
 from app.domains.dataset.schemas import NextQuestionResponse
@@ -43,11 +43,10 @@ async def close_question_cache():
 
 @router.get("/next", response_model=NextQuestionResponse)
 async def get_next_question(
-    # hotkey: str = Depends(validate_hotkey_signature),
+    hotkey: str = Depends(get_hotkey),
     session: AsyncSession = Depends(get_session),
     cache: QuestionCache = Depends(get_question_cache),
 ):
-    hotkey = "test"
     """
     Return one random question with search_type and target miner UID.
 
