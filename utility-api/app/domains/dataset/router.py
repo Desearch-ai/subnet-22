@@ -15,7 +15,7 @@ _question_cache: QuestionCache | None = None
 # Per-validator rate limiting
 _last_request: dict[str, float] = {}
 
-MIN_REQUEST_INTERVAL = 2.0  # seconds
+MIN_REQUEST_INTERVAL = 4  # seconds
 
 
 def get_question_cache() -> QuestionCache:
@@ -27,9 +27,7 @@ def get_question_cache() -> QuestionCache:
 async def init_question_cache(netuid: int, subtensor_network: str):
     """Call this from your FastAPI lifespan/startup."""
     global _question_cache
-    _question_cache = QuestionCache(
-        netuid=netuid, subtensor_network=subtensor_network
-    )
+    _question_cache = QuestionCache(netuid=netuid, subtensor_network=subtensor_network)
     await _question_cache.initialize()
 
 

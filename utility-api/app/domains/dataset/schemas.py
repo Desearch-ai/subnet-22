@@ -7,6 +7,7 @@ class QuestionOut(BaseModel):
     """Single question returned by the API."""
 
     query: str
+    params: dict = {}
 
     model_config = {"from_attributes": True}
 

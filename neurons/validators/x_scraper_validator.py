@@ -1,10 +1,7 @@
-import random
 import time
-from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
 import bittensor as bt
-import pytz
 import torch
 
 from desearch.protocol import (
@@ -271,71 +268,6 @@ class XScraperValidator:
         )
 
         bt.logging.debug("Run Task event:", event)
-
-    def generate_random_twitter_search_params(self) -> Dict[str, Any]:
-        """
-        Generate random logical parameters for Twitter search queries.
-        Returns a dictionary with randomly selected parameters.
-        """
-
-        # Define which fields will be used (randomly select 1-6 fields)
-        all_fields = [
-            "is_quote",
-            "is_video",
-            "is_image",
-            "min_retweets",
-            "min_replies",
-            "min_likes",
-            "date_range",
-        ]
-
-        num_fields = 1
-        selected_fields = random.sample(all_fields, num_fields)
-
-        params: Dict[str, Any] = {}
-
-        THREE_YEAR_IN_DAYS = 3 * 365
-
-        # Generate random date range if selected
-        if "date_range" in selected_fields:
-            # Generate end date in past three years
-            end_date = datetime.now(pytz.UTC) - timedelta(
-                days=random.randint(0, THREE_YEAR_IN_DAYS)
-            )
-
-            # Randomly choose time window
-            start_date = end_date - timedelta(days=random.randint(7, 14))
-
-            params["start_date"] = start_date.strftime("%Y-%m-%d_%H:%M:%S_UTC")
-            params["end_date"] = end_date.strftime("%Y-%m-%d_%H:%M:%S_UTC")
-
-        # Handle media type flags (ensuring is_video and is_image aren't both True)
-        if "is_video" in selected_fields and "is_image" in selected_fields:
-            # If both selected, ensure they're not both True
-            video_val = random.choice([True, False])
-
-            params["is_video"] = video_val
-
-            if video_val is False:
-                params["is_image"] = random.choice([True, False])
-        elif "is_video" in selected_fields:
-            params["is_video"] = random.choice([True, False])
-        elif "is_image" in selected_fields:
-            params["is_image"] = random.choice([True, False])
-
-        # Handle quote status
-        if "is_quote" in selected_fields:
-            params["is_quote"] = random.choice([True, False])
-
-        # Handle engagement metrics with logical ranges
-        if "min_likes" in selected_fields:
-            params["min_likes"] = random.randint(5, 100)
-        if "min_replies" in selected_fields:
-            params["min_replies"] = random.randint(5, 20)
-        if "min_retweets" in selected_fields:
-            params["min_retweets"] = random.randint(5, 20)
-
-        return params
 
     async def send_scoring_query(
         self,

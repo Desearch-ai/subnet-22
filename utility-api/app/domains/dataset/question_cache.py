@@ -1,21 +1,128 @@
 import asyncio
 import logging
 import random
+from collections import Counter
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from typing import Dict, List, Optional, Set, Tuple
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import bittensor as bt
+from app.domains.dataset.enums import SearchType
+from app.domains.dataset.models.question import Question
+from app.domains.dataset.schemas import QuestionOut
 from fastapi import HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.domains.dataset.enums import SearchType
-from app.domains.dataset.models.question import Question
-from app.domains.dataset.schemas import QuestionOut
-
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
+
+_AI_SEARCH_TOOLS: List[List[str]] = [
+    ["Twitter Search", "Reddit Search"],
+    ["Twitter Search", "Web Search"],
+    ["Twitter Search", "Web Search"],
+    ["Twitter Search", "Web Search"],
+    ["Twitter Search", "Web Search"],
+    ["Twitter Search", "Hacker News Search"],
+    ["Twitter Search", "Hacker News Search"],
+    ["Twitter Search", "Youtube Search"],
+    ["Twitter Search", "Youtube Search"],
+    ["Twitter Search", "Youtube Search"],
+    ["Twitter Search", "Web Search"],
+    ["Twitter Search", "Reddit Search"],
+    ["Twitter Search", "Reddit Search"],
+    ["Twitter Search", "Hacker News Search"],
+    ["Twitter Search", "ArXiv Search"],
+    ["Twitter Search", "ArXiv Search"],
+    ["Twitter Search", "Wikipedia Search"],
+    ["Twitter Search", "Wikipedia Search"],
+    ["Twitter Search", "Web Search"],
+    ["Twitter Search", "Web Search"],
+    ["Twitter Search", "Web Search"],
+    ["Web Search"],
+    ["Reddit Search"],
+    ["Hacker News Search"],
+    ["Youtube Search"],
+    ["ArXiv Search"],
+    ["Wikipedia Search"],
+    ["Twitter Search", "Youtube Search", "ArXiv Search", "Wikipedia Search"],
+    ["Twitter Search", "Web Search", "Reddit Search", "Hacker News Search"],
+    [
+        "Twitter Search",
+        "Web Search",
+        "Reddit Search",
+        "Hacker News Search",
+        "Youtube Search",
+        "ArXiv Search",
+        "Wikipedia Search",
+    ],
+]
+
+_AI_SEARCH_DATE_FILTERS: List[str] = list(
+    Counter(
+        {
+            "PAST_24_HOURS": 4,
+            "PAST_2_DAYS": 5,
+            "PAST_WEEK": 5,
+            "PAST_2_WEEKS": 5,
+            "PAST_MONTH": 1,
+            "PAST_YEAR": 1,
+        }
+    ).elements()
+)
+
+_X_SEARCH_PARAM_FIELDS: List[str] = [
+    "is_quote",
+    "is_video",
+    "is_image",
+    "min_retweets",
+    "min_replies",
+    "min_likes",
+    "date_range",
+]
+
+_THREE_YEARS_IN_DAYS = 3 * 365
+
+
+def _generate_ai_search_params() -> Dict[str, Any]:
+    return {
+        "tools": random.choice(_AI_SEARCH_TOOLS),
+        "date_filter_type": random.choice(_AI_SEARCH_DATE_FILTERS),
+    }
+
+
+def _generate_x_search_params() -> Dict[str, Any]:
+    selected_field = random.choice(_X_SEARCH_PARAM_FIELDS)
+    params: Dict[str, Any] = {}
+
+    if selected_field == "date_range":
+        now = datetime.now(timezone.utc)
+        end_date = now - timedelta(days=random.randint(0, _THREE_YEARS_IN_DAYS))
+        start_date = end_date - timedelta(days=random.randint(7, 14))
+        params["start_date"] = start_date.strftime("%Y-%m-%d_%H:%M:%S_UTC")
+        params["end_date"] = end_date.strftime("%Y-%m-%d_%H:%M:%S_UTC")
+    elif selected_field == "is_video":
+        params["is_video"] = random.choice([True, False])
+    elif selected_field == "is_image":
+        params["is_image"] = random.choice([True, False])
+    elif selected_field == "is_quote":
+        params["is_quote"] = random.choice([True, False])
+    elif selected_field == "min_likes":
+        params["min_likes"] = random.randint(5, 100)
+    elif selected_field == "min_replies":
+        params["min_replies"] = random.randint(5, 20)
+    elif selected_field == "min_retweets":
+        params["min_retweets"] = random.randint(5, 20)
+
+    return params
+
+
+def _generate_params_for(search_type: "SearchType") -> Dict[str, Any]:
+    if search_type == SearchType.AI_SEARCH:
+        return _generate_ai_search_params()
+    if search_type == SearchType.X_SEARCH:
+        return _generate_x_search_params()
+    return {}  # web_search — no extra params
 
 
 def _current_hour_utc() -> datetime:
@@ -30,7 +137,7 @@ class TimeRangeCache:
 
     time_range_start: Optional[datetime] = None
     miner_uids: List[int] = field(default_factory=list)
-    # Deterministic mapping: search_type -> {uid: question}
+    # Deterministic mapping: search_type -> {uid: question} (params embedded in QuestionOut)
     assignments: Dict[SearchType, Dict[int, QuestionOut]] = field(default_factory=dict)
 
 
@@ -102,9 +209,13 @@ class QuestionCache:
                 assignments[search_type] = {}
                 continue
 
-            # uid[i] -> question[i % len(questions)]
+            # uid[i] -> question[i % len(questions)] with per-uid params embedded
             assignments[search_type] = {
-                uid: questions[i % len(questions)] for i, uid in enumerate(miner_uids)
+                uid: QuestionOut(
+                    query=questions[i % len(questions)].query,
+                    params=_generate_params_for(search_type),
+                )
+                for i, uid in enumerate(miner_uids)
             }
 
             logger.info(
@@ -133,9 +244,10 @@ class QuestionCache:
         self, session: AsyncSession, hotkey: str
     ) -> Tuple[datetime, int, SearchType, QuestionOut]:
         """
-        Return one random unserved (uid, search_type, question) for this
-        validator. All validators get the same question for the same
-        (uid, search_type) pair within the current UTC hour.
+        Return one random unserved (uid, search_type, question) for this validator.
+        Params are embedded inside the returned QuestionOut. All validators get the
+        same question and params for the same (uid, search_type) pair within the
+        current UTC hour.
 
         Raises HTTPException 404 when all questions have been served for the hour.
         """

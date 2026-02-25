@@ -1,5 +1,4 @@
 import asyncio
-import random
 import time
 from datetime import datetime
 from typing import Dict, Optional
@@ -42,12 +41,9 @@ class QueryScheduler:
         # Skip scoring on the first epoch boundary (incomplete responses)
         self.is_first_epoch = True
 
-    def _build_query(self, search_type: str, question_query: str) -> dict:
+    def _build_query(self, question_query: str, params: dict) -> dict:
         """Format a query dict for the appropriate validator's send_scoring_query()."""
-        if search_type == "ai_search":
-            tools = random.choice(self.validators["ai_search"].tools)
-            return {"content": question_query, "tools": tools}
-        return {"query": question_query}
+        return {"query": question_query, **params}
 
     async def _send_and_save(
         self,
@@ -129,6 +125,7 @@ class QueryScheduler:
                 uid: int = item["uid"]
                 search_type: str = item["search_type"]
                 question_query: str = item["question"]["query"]
+                params: dict = item["question"].get("params", {})
 
                 # Detect hour boundary
                 if (
@@ -147,7 +144,7 @@ class QueryScheduler:
                 self.current_time_range = time_range_start
 
                 # Dispatch scoring query in background
-                query = self._build_query(search_type, question_query)
+                query = self._build_query(question_query, params)
 
                 asyncio.create_task(
                     self._send_and_save(search_type, uid, query, time_range_start)
@@ -160,12 +157,12 @@ class QueryScheduler:
                     # All questions for this hour have been served
                     bt.logging.info(
                         "[QueryScheduler] All questions served for current hour. "
-                        "Waiting 60 s..."
+                        "Waiting 30 s..."
                     )
-                    await asyncio.sleep(60)
+                    await asyncio.sleep(30)
                 elif status == 429:
-                    # Rate limited — back off slightly beyond the 2 s window
-                    await asyncio.sleep(2.2)
+                    # Rate limited — back off slightly beyond the 4 s window
+                    await asyncio.sleep(4.1)
                 else:
                     bt.logging.error(f"[QueryScheduler] Unexpected error: {e}")
-                    await asyncio.sleep(10)
+                    await asyncio.sleep(5)

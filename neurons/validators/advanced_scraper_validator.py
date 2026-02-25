@@ -1,4 +1,3 @@
-import random
 import time
 from typing import List, Optional, Tuple
 
@@ -8,7 +7,6 @@ import torch
 from desearch.dataset.date_filters import (
     DateFilter,
     DateFilterType,
-    get_random_date_filter,
     get_specified_date_filter,
 )
 from desearch.protocol import (
@@ -41,9 +39,6 @@ from neurons.validators.utils.mock import MockRewardModel
 class AdvancedScraperValidator:
     def __init__(self, neuron: AbstractNeuron):
         self.neuron = neuron
-
-        self.execution_time_options = [Model.NOVA, Model.ORBIT, Model.HORIZON]
-        self.execution_time_probabilities = [0.8, 0.1, 0.1]
 
         self.tools = [
             ["Twitter Search", "Reddit Search"],
@@ -163,11 +158,6 @@ class AdvancedScraperValidator:
             MinerScorePenaltyModel(max_penalty=1, neuron=self.neuron),
             ChatHistoryPenaltyModel(max_penalty=1, neuron=self.neuron),
         ]
-
-    def get_random_execution_time(self):
-        return random.choices(
-            self.execution_time_options, self.execution_time_probabilities
-        )[0]
 
     async def call_miner(
         self,
@@ -427,26 +417,25 @@ class AdvancedScraperValidator:
         self,
         query: dict,
         uid: int,
-        model: Optional[Model] = None,
     ) -> Tuple[Optional[object], dict]:
         """
         Send a scoring query to a specific miner and return (response, task).
         Called by QueryScheduler; collects the full synapse.
         """
-        prompt = query["content"]
+        prompt = query["query"]
         tools = query.get("tools", [])
-
-        if model is None:
-            model = self.get_random_execution_time()
+        date_filter = get_specified_date_filter(
+            DateFilterType(query.get("date_filter_type", DateFilterType.PAST_WEEK.value))
+        )
 
         async_response, uids, start_time = await self.call_miner(
             prompt=prompt,
-            date_filter=get_random_date_filter(),
+            date_filter=date_filter,
             tools=tools,
             language=self.language,
             region=self.region,
             google_date_filter=self.date_filter,
-            model=model,
+            model=Model.NOVA,
             uid=uid,
         )
 
