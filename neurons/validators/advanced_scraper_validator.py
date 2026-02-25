@@ -36,7 +36,6 @@ from neurons.validators.reward.twitter_content_relevance import (
     TwitterContentRelevanceModel,
 )
 from neurons.validators.utils.mock import MockRewardModel
-from neurons.validators.utils.tasks import TwitterTask
 
 
 class AdvancedScraperValidator:
@@ -170,9 +169,9 @@ class AdvancedScraperValidator:
             self.execution_time_options, self.execution_time_probabilities
         )[0]
 
-    async def run_task_and_score(
+    async def call_miner(
         self,
-        tasks: List[TwitterTask],
+        prompt: str,
         date_filter: DateFilter,
         tools=[],
         language="en",
@@ -188,16 +187,10 @@ class AdvancedScraperValidator:
     ):
         max_execution_time = get_max_execution_time(model, count)
 
-        # Record event start time.
-        event = {
-            "names": [task.task_name for task in tasks],
-            "task_types": [task.task_type for task in tasks],
-        }
         start_time = time.time()
 
         uid, axon = await self.neuron.get_random_miner(uid=uid)
         uids = torch.tensor([uid])
-        axons = [axon]
 
         start_date = (
             date_filter.start_date.strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -211,49 +204,41 @@ class AdvancedScraperValidator:
         )
         date_filter_type = date_filter.date_filter_type
 
-        synapses = [
-            ScraperStreamingSynapse(
-                prompt=task.compose_prompt(),
-                model=model,
-                start_date=start_date,
-                end_date=end_date,
-                date_filter_type=date_filter_type.value if date_filter_type else None,
-                tools=tools,
-                language=language,
-                region=region,
-                google_date_filter=google_date_filter,
-                max_execution_time=max_execution_time,
-                result_type=result_type,
-                system_message=system_message,
-                scoring_system_message=scoring_system_message,
-                scoring_model=self.neuron.config.neuron.scoring_model,
-                chat_history=chat_history,
-                count=count,
-            )
-            for task in tasks
-        ]
+        synapse = ScraperStreamingSynapse(
+            prompt=prompt,
+            model=model,
+            start_date=start_date,
+            end_date=end_date,
+            date_filter_type=date_filter_type.value if date_filter_type else None,
+            tools=tools,
+            language=language,
+            region=region,
+            google_date_filter=google_date_filter,
+            max_execution_time=max_execution_time,
+            result_type=result_type,
+            system_message=system_message,
+            scoring_system_message=scoring_system_message,
+            scoring_model=self.neuron.config.neuron.scoring_model,
+            chat_history=chat_history,
+            count=count,
+        )
 
-        async_responses = []
         timeout = max_execution_time + 5
+        dendrite = next(self.neuron.dendrites)
 
-        for axon, synapse in zip(axons, synapses):
-            dendrite = next(self.neuron.dendrites)
+        async_response = dendrite.call_stream(
+            target_axon=axon,
+            synapse=synapse.model_copy(),
+            timeout=timeout,
+            deserialize=False,
+        )
 
-            async_responses.append(
-                dendrite.call_stream(
-                    target_axon=axon,
-                    synapse=synapse.model_copy(),
-                    timeout=timeout,
-                    deserialize=False,
-                )
-            )
-
-        return async_responses, uids, event, start_time
+        return async_response, uids, start_time
 
     async def compute_rewards_and_penalties(
         self,
         event,
-        tasks,
+        prompts: List[str],
         responses,
         uids,
         start_time,
@@ -321,7 +306,7 @@ class AdvancedScraperValidator:
                     adjusted_penalty_i,
                     applied_penalty_i,
                 ) = await penalty_fn_i.apply_penalties(
-                    responses, tasks, uids, val_scores
+                    responses, uids, val_scores
                 )
                 penalty_start_time = time.time()
                 rewards *= applied_penalty_i.to(self.neuron.config.neuron.device)
@@ -336,7 +321,7 @@ class AdvancedScraperValidator:
                 )
 
             await self.neuron.update_moving_averaged_scores(uids, rewards)
-            self.log_event(tasks, event, start_time, uids, rewards)
+            self.log_event(prompts, event, start_time, uids, rewards)
 
             scores = torch.zeros(len(self.neuron.metagraph.hotkeys))
             uid_scores_dict = {}
@@ -426,11 +411,11 @@ class AdvancedScraperValidator:
             bt.logging.error(f"Error in compute_rewards_and_penalties: {e}")
             raise e
 
-    def log_event(self, tasks, event, start_time, uids, rewards):
+    def log_event(self, prompts: List[str], event, start_time, uids, rewards):
         event.update(
             {
                 "step_length": time.time() - start_time,
-                "prompts": [task.compose_prompt() for task in tasks],
+                "prompts": prompts,
                 "uids": uids.tolist(),
                 "rewards": rewards.tolist(),
             }
@@ -443,7 +428,7 @@ class AdvancedScraperValidator:
         query: dict,
         uid: int,
         model: Optional[Model] = None,
-    ) -> Tuple[Optional[object], TwitterTask]:
+    ) -> Tuple[Optional[object], dict]:
         """
         Send a scoring query to a specific miner and return (response, task).
         Called by QueryScheduler; collects the full synapse.
@@ -454,15 +439,8 @@ class AdvancedScraperValidator:
         if model is None:
             model = self.get_random_execution_time()
 
-        task = TwitterTask(
-            base_text=prompt,
-            task_name="augment",
-            task_type="twitter_scraper",
-            criteria=[],
-        )
-
-        async_responses, uids, event, start_time = await self.run_task_and_score(
-            tasks=[task],
+        async_response, uids, start_time = await self.call_miner(
+            prompt=prompt,
             date_filter=get_random_date_filter(),
             tools=tools,
             language=self.language,
@@ -472,9 +450,9 @@ class AdvancedScraperValidator:
             uid=uid,
         )
 
-        final_synapses = await collect_final_synapses(async_responses, uids, start_time)
+        final_synapses = await collect_final_synapses([async_response], uids, start_time)
         response = final_synapses[0] if final_synapses else None
-        return response, task
+        return response, prompt
 
     async def organic(
         self,
@@ -503,17 +481,8 @@ class AdvancedScraperValidator:
                 date_filter_type = DateFilterType(date_filter)
                 date_filter = get_specified_date_filter(date_filter_type)
 
-            tasks = [
-                TwitterTask(
-                    base_text=prompt,
-                    task_name="augment",
-                    task_type="twitter_scraper",
-                    criteria=[],
-                )
-            ]
-
-            async_responses, uids, event, start_time = await self.run_task_and_score(
-                tasks=tasks,
+            async_response, uids, start_time = await self.call_miner(
+                prompt=prompt,
                 tools=tools,
                 language=self.language,
                 region=self.region,
@@ -533,19 +502,18 @@ class AdvancedScraperValidator:
             if is_collect_final_synapses:
                 # Collect specified uids from responses and score
                 final_synapses = await collect_final_synapses(
-                    async_responses, uids, start_time
+                    [async_response], uids, start_time
                 )
 
                 for synapse in final_synapses:
                     yield synapse
             else:
-                # Stream random miner to the UI
-                for response in async_responses:
-                    async for value in response:
-                        if isinstance(value, bt.Synapse):
-                            final_synapses.append(value)
-                        else:
-                            yield value
+                # Stream miner response to the UI
+                async for value in async_response:
+                    if isinstance(value, bt.Synapse):
+                        final_synapses.append(value)
+                    else:
+                        yield value
         except Exception as e:
             bt.logging.error(f"Error in organic: {e}")
             raise e

@@ -94,11 +94,8 @@ class QueryScheduler:
 
                 uids = torch.tensor([item["uid"] for item in items])
                 responses = [item["response"] for item in items]
-                tasks = [item["task"] for item in items]
-                event = {
-                    "names": [task.task_name for task in tasks],
-                    "task_types": [task.task_type for task in tasks],
-                }
+                prompts = [item["task"] for item in items]
+                event = {}
 
                 bt.logging.info(
                     f"[QueryScheduler] Scoring {search_type}: {len(items)} responses"
@@ -106,11 +103,10 @@ class QueryScheduler:
 
                 await validator.compute_rewards_and_penalties(
                     event=event,
-                    tasks=tasks,
+                    prompts=prompts,
                     responses=responses,
                     uids=uids,
                     start_time=time.time(),
-                    is_synthetic=True,
                 )
 
         except Exception as e:

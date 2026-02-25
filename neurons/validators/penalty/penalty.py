@@ -23,7 +23,6 @@ import bittensor as bt
 import torch
 
 from neurons.validators.base_validator import AbstractNeuron
-from neurons.validators.utils.tasks import Task
 
 
 class BasePenaltyModel(ABC):
@@ -43,18 +42,17 @@ class BasePenaltyModel(ABC):
 
     @abstractmethod
     async def calculate_penalties(
-        responses: List[bt.Synapse], tasks: List[Task], additional_params=None
+        responses: List[bt.Synapse], additional_params=None
     ) -> torch.FloatTensor: ...
 
     async def apply_penalties(
         self,
         responses: List[bt.Synapse],
-        tasks: List[Task],
         uids,
         additional_params=None,
     ) -> torch.FloatTensor:
         raw_penalties = await self.calculate_penalties(
-            responses, tasks, additional_params
+            responses, additional_params
         )
 
         # Clip penalties between 0 and 1

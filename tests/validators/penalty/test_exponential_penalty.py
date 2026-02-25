@@ -1,8 +1,6 @@
 import unittest
 import torch
 import math
-from typing import List
-from neurons.validators.utils.tasks import TwitterTask
 from desearch.protocol import ScraperStreamingSynapse  # Ensure this import is correct
 from neurons.validators.penalty.exponential_penalty import ExponentialTimePenaltyModel
 
@@ -52,13 +50,7 @@ class ExponentialTimePenaltyModelTestCase(unittest.TestCase):
             self.create_mock_response(process_time=5),  # well within limit
             self.create_mock_response(process_time=10),  # exactly at the limit
         ]
-        tasks = [
-            TwitterTask(
-                base_text="Test", task_name="test", task_type="test", criteria=[]
-            )
-        ] * len(responses)
-
-        penalties = self.penalty_model.calculate_penalties(responses, tasks)
+        penalties = self.penalty_model.calculate_penalties(responses)
         print(f"Calculated penalties: {penalties.tolist()}")
 
         for idx, p in enumerate(penalties):
@@ -81,13 +73,7 @@ class ExponentialTimePenaltyModelTestCase(unittest.TestCase):
         responses = [
             self.create_mock_response(process_time=20),
         ]
-        tasks = [
-            TwitterTask(
-                base_text="Test", task_name="test", task_type="test", criteria=[]
-            )
-        ]
-
-        penalties = self.penalty_model.calculate_penalties(responses, tasks)
+        penalties = self.penalty_model.calculate_penalties(responses)
         print(f"Calculated penalties: {penalties.tolist()}")
 
         process_time = responses[0].dendrite.get("process_time")
@@ -108,13 +94,7 @@ class ExponentialTimePenaltyModelTestCase(unittest.TestCase):
         responses = [
             self.create_mock_response(process_time=11),
         ]
-        tasks = [
-            TwitterTask(
-                base_text="Test", task_name="test", task_type="test", criteria=[]
-            )
-        ]
-
-        penalties = self.penalty_model.calculate_penalties(responses, tasks)
+        penalties = self.penalty_model.calculate_penalties(responses)
         expected_penalty = 1 - math.exp(-1)  # about 0.63212
         print(f"Calculated penalties: {penalties.tolist()}")
 

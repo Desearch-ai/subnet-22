@@ -1,4 +1,3 @@
-import asyncio
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -16,7 +15,6 @@ from neurons.validators.reward.web_basic_search_content_relevance import (
     WebBasicSearchContentRelevanceModel,
 )
 from neurons.validators.utils.mock import MockRewardModel
-from neurons.validators.utils.tasks import SearchTask
 
 
 class WebScraperValidator:
@@ -75,56 +73,35 @@ class WebScraperValidator:
             ExponentialTimePenaltyModel(max_penalty=1, neuron=self.neuron),
         ]
 
-    async def run_web_basic_search_and_score(
+    async def call_miner(
         self,
-        tasks: List[SearchTask],
-        params_list: List[Dict[str, Any]],
+        prompt: str,
+        params: Dict[str, Any],
         uid: Optional[int] = None,
     ):
-        event = {
-            "names": [task.task_name for task in tasks],
-            "task_types": [task.task_type for task in tasks],
-        }
-
-        start_time = time.time()
-
         uid, axon = await self.neuron.get_random_miner(uid=uid)
-        uids = torch.tensor([uid])
-        axons = [axon]
 
-        synapses: List[WebSearchSynapse] = [
-            WebSearchSynapse(
-                **params,
-                query=task.compose_prompt(),
-                max_execution_time=self.max_execution_time,
-            )
-            for task, params in zip(tasks, params_list)
-        ]
+        synapse = WebSearchSynapse(
+            **params,
+            query=prompt,
+            max_execution_time=self.max_execution_time,
+        )
 
-        all_tasks = []  # List to collect all asyncio tasks
-        timeout = self.max_execution_time + 5
+        dendrite = next(self.neuron.dendrites)
 
-        for axon, synapse in zip(axons, synapses):
-            dendrite = next(self.neuron.dendrites)
+        response = await dendrite.call(
+            target_axon=axon,
+            synapse=synapse.model_copy(),
+            timeout=self.max_execution_time + 5,
+            deserialize=False,
+        )
 
-            all_tasks.append(
-                dendrite.call(
-                    target_axon=axon,
-                    synapse=synapse.model_copy(),
-                    timeout=timeout,
-                    deserialize=False,
-                )
-            )
-
-        # Await all tasks concurrently
-        all_responses = await asyncio.gather(*all_tasks, return_exceptions=True)
-
-        return all_responses, uids, event, start_time
+        return response
 
     async def compute_rewards_and_penalties(
         self,
         event,
-        tasks,
+        prompts: List[str],
         responses,
         uids,
         start_time,
@@ -177,7 +154,7 @@ class WebScraperValidator:
                     raw_penalty_i,
                     adjusted_penalty_i,
                     applied_penalty_i,
-                ) = await penalty_fn_i.apply_penalties(responses, tasks, uids)
+                ) = await penalty_fn_i.apply_penalties(responses, uids)
                 penalty_start_time = time.time()
                 rewards *= applied_penalty_i.to(self.neuron.config.neuron.device)
                 penalty_execution_time = time.time() - penalty_start_time
@@ -191,7 +168,7 @@ class WebScraperValidator:
                 )
 
             await self.neuron.update_moving_averaged_scores(uids, rewards)
-            self.log_event(tasks, event, start_time, uids, rewards)
+            self.log_event(prompts, event, start_time, uids, rewards)
 
             scores = torch.zeros(len(self.neuron.metagraph.hotkeys))
             uid_scores_dict = {}
@@ -270,11 +247,11 @@ class WebScraperValidator:
             bt.logging.error(f"Error in compute_rewards_and_penalties: {e}")
             raise e
 
-    def log_event(self, tasks, event, start_time, uids, rewards):
+    def log_event(self, prompts: List[str], event, start_time, uids, rewards):
         event.update(
             {
                 "step_length": time.time() - start_time,
-                "prompts": [task.compose_prompt() for task in tasks],
+                "prompts": prompts,
                 "uids": uids.tolist(),
                 "rewards": rewards.tolist(),
             }
@@ -286,7 +263,7 @@ class WebScraperValidator:
         self,
         query: dict,
         uid: int,
-    ) -> Tuple[Optional[object], SearchTask]:
+    ) -> Tuple[Optional[object], dict]:
         """
         Send a scoring query to a specific miner and return (response, task).
         Called by QueryScheduler; awaits the full response without streaming.
@@ -294,30 +271,8 @@ class WebScraperValidator:
         prompt = query.get("query", "")
         params = {k: v for k, v in query.items() if k != "query"}
 
-        task = SearchTask(
-            base_text=prompt,
-            task_name="web search",
-            task_type="web_search",
-            criteria=[],
-        )
-
-        (
-            all_responses,
-            uids,
-            event,
-            start_time,
-        ) = await self.run_web_basic_search_and_score(
-            tasks=[task],
-            params_list=[params],
-            uid=uid,
-        )
-
-        response = (
-            all_responses[0]
-            if all_responses and not isinstance(all_responses[0], Exception)
-            else None
-        )
-        return response, task
+        response = await self.call_miner(prompt=prompt, params=params, uid=uid)
+        return response, prompt
 
     async def organic(
         self,
@@ -328,40 +283,14 @@ class WebScraperValidator:
 
         try:
             prompt = query.get("query", "")
+            params = {key: value for key, value in query.items() if key != "query"}
 
-            tasks = [
-                SearchTask(
-                    base_text=prompt,
-                    task_name="web search",
-                    task_type="web_search",
-                    criteria=[],
-                )
-            ]
+            response = await self.call_miner(prompt=prompt, params=params, uid=uid)
 
-            (
-                async_responses,
-                uids,
-                event,
-                start_time,
-            ) = await self.run_web_basic_search_and_score(
-                tasks=tasks,
-                params_list=[
-                    {key: value for key, value in query.items() if key != "query"}
-                ],
-                uid=uid,
-            )
-
-            final_responses = []
-
-            # Process responses and collect successful ones
-            for response in async_responses:
-                if response:
-                    final_responses.append(response)
-                    yield response
-                else:
-                    bt.logging.warning(
-                        f"Invalid response for UID: {response.axon.hotkey if response else 'Unknown'}"
-                    )
+            if response:
+                yield response
+            else:
+                bt.logging.warning("Invalid response for UID: Unknown")
 
         except Exception as e:
             bt.logging.error(f"Error in organic: {e}")
