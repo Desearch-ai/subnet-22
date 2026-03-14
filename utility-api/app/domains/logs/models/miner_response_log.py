@@ -60,4 +60,11 @@ class MinerResponseLog(Base):
             "search_type",
             "created_at",
         ),
+        Index(
+            "ix_miner_response_logs_query_kind_epoch_miner_search_type",
+            "query_kind",
+            "scoring_epoch_start",
+            "miner_uid",
+            "search_type",
+        ),
     )
