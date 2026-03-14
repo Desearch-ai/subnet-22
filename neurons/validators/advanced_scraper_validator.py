@@ -1,5 +1,5 @@
 import time
-from typing import List, Optional, Tuple
+from typing import List, Optional
 
 import bittensor as bt
 import torch
@@ -18,6 +18,11 @@ from desearch.protocol import (
 from desearch.stream import collect_final_synapses
 from desearch.utils import get_max_execution_time
 from neurons.validators.base_validator import AbstractNeuron
+from neurons.validators.miner_response_logger import (
+    build_log_entry,
+    build_reward_payload,
+    submit_logs_best_effort,
+)
 from neurons.validators.penalty.chat_history_penalty import ChatHistoryPenaltyModel
 from neurons.validators.penalty.exponential_penalty import ExponentialTimePenaltyModel
 from neurons.validators.penalty.miner_score_penalty import MinerScorePenaltyModel
@@ -223,7 +228,7 @@ class AdvancedScraperValidator:
             deserialize=False,
         )
 
-        return async_response, uids, start_time
+        return async_response, uids, start_time, axon
 
     async def compute_rewards_and_penalties(
         self,
@@ -233,6 +238,7 @@ class AdvancedScraperValidator:
         uids,
         start_time,
         result_type: Optional[ResultType] = None,
+        scoring_epoch_start=None,
     ):
         try:
             if not len(uids):
@@ -252,7 +258,7 @@ class AdvancedScraperValidator:
             if result_type is None:
                 result_type = ResultType.LINKS_WITH_FINAL_SUMMARY
 
-            query_type = "synthetic"
+            query_type = "scoring"
 
             for weight_i, reward_fn_i in zip(
                 self.reward_weights, self.reward_functions
@@ -295,9 +301,7 @@ class AdvancedScraperValidator:
                     raw_penalty_i,
                     adjusted_penalty_i,
                     applied_penalty_i,
-                ) = await penalty_fn_i.apply_penalties(
-                    responses, uids, val_scores
-                )
+                ) = await penalty_fn_i.apply_penalties(responses, uids, val_scores)
                 penalty_start_time = time.time()
                 rewards *= applied_penalty_i.to(self.neuron.config.neuron.device)
                 penalty_execution_time = time.time() - penalty_start_time
@@ -396,6 +400,39 @@ class AdvancedScraperValidator:
                 query_type=query_type,
             )
 
+            scoring_logs = []
+            response_count = len(responses)
+
+            for index, (uid_tensor, response, reward) in enumerate(
+                zip(uids, responses, rewards.tolist())
+            ):
+                uid = uid_tensor.item()
+                reward_payload = build_reward_payload(
+                    search_type="ai_search",
+                    response_count=response_count,
+                    index=index,
+                    uid=uid,
+                    total_reward=reward,
+                    all_rewards=all_rewards,
+                    all_original_rewards=all_original_rewards,
+                    validator_scores=val_score_responses_list,
+                    event=event,
+                )
+                scoring_logs.append(
+                    build_log_entry(
+                        owner=self.neuron,
+                        search_type="ai_search",
+                        query_kind="scoring",
+                        response=response,
+                        miner_uid=uid,
+                        total_reward=reward,
+                        reward_payload=reward_payload,
+                        scoring_epoch_start=scoring_epoch_start,
+                    )
+                )
+
+            submit_logs_best_effort(self.neuron, scoring_logs)
+
             return rewards, uids, val_score_responses_list, event, all_original_rewards
         except Exception as e:
             bt.logging.error(f"Error in compute_rewards_and_penalties: {e}")
@@ -417,18 +454,20 @@ class AdvancedScraperValidator:
         self,
         query: dict,
         uid: int,
-    ) -> Tuple[Optional[object], dict]:
+    ) -> Optional[object]:
         """
-        Send a scoring query to a specific miner and return (response, task).
+        Send a scoring query to a specific miner and return the full synapse.
         Called by QueryScheduler; collects the full synapse.
         """
         prompt = query["query"]
         tools = query.get("tools", [])
         date_filter = get_specified_date_filter(
-            DateFilterType(query.get("date_filter_type", DateFilterType.PAST_WEEK.value))
+            DateFilterType(
+                query.get("date_filter_type", DateFilterType.PAST_WEEK.value)
+            )
         )
 
-        async_response, uids, start_time = await self.call_miner(
+        async_response, uids, start_time, _ = await self.call_miner(
             prompt=prompt,
             date_filter=date_filter,
             tools=tools,
@@ -439,9 +478,10 @@ class AdvancedScraperValidator:
             uid=uid,
         )
 
-        final_synapses = await collect_final_synapses([async_response], uids, start_time)
-        response = final_synapses[0] if final_synapses else None
-        return response, prompt
+        final_synapses = await collect_final_synapses(
+            [async_response], uids, start_time
+        )
+        return final_synapses[0] if final_synapses else None
 
     async def organic(
         self,
@@ -470,7 +510,7 @@ class AdvancedScraperValidator:
                 date_filter_type = DateFilterType(date_filter)
                 date_filter = get_specified_date_filter(date_filter_type)
 
-            async_response, uids, start_time = await self.call_miner(
+            async_response, uids, start_time, axon = await self.call_miner(
                 prompt=prompt,
                 tools=tools,
                 language=self.language,
@@ -487,6 +527,7 @@ class AdvancedScraperValidator:
             )
 
             final_synapses = []
+            selected_uid = uids[0].item() if len(uids) else None
 
             if is_collect_final_synapses:
                 # Collect specified uids from responses and score
@@ -494,15 +535,50 @@ class AdvancedScraperValidator:
                     [async_response], uids, start_time
                 )
 
+                if final_synapses:
+                    submit_logs_best_effort(
+                        self.neuron,
+                        [
+                            build_log_entry(
+                                owner=self.neuron,
+                                search_type="ai_search",
+                                query_kind="organic",
+                                response=synapse,
+                                miner_uid=selected_uid,
+                                miner_hotkey=getattr(axon, "hotkey", None),
+                                miner_coldkey=getattr(axon, "coldkey", None),
+                            )
+                            for synapse in final_synapses
+                            if synapse is not None
+                        ],
+                    )
+
                 for synapse in final_synapses:
                     yield synapse
             else:
                 # Stream miner response to the UI
+                final_synapse = None
                 async for value in async_response:
                     if isinstance(value, bt.Synapse):
-                        final_synapses.append(value)
+                        final_synapse = value
                     else:
                         yield value
+
+                if final_synapse is not None:
+                    submit_logs_best_effort(
+                        self.neuron,
+                        [
+                            build_log_entry(
+                                owner=self.neuron,
+                                search_type="ai_search",
+                                query_kind="organic",
+                                response=final_synapse,
+                                miner_uid=selected_uid,
+                                miner_hotkey=getattr(axon, "hotkey", None),
+                                miner_coldkey=getattr(axon, "coldkey", None),
+                            )
+                        ],
+                    )
         except Exception as e:
             bt.logging.error(f"Error in organic: {e}")
             raise e

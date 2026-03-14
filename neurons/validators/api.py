@@ -54,9 +54,12 @@ async def lifespan(app):
     # Start the validator api when the app starts
     global api
 
-    config = await get_validator_config()
+    config_payload = await get_validator_config()
 
-    api = ValidatorAPI(config=config)
+    api = ValidatorAPI(
+        config=config_payload["config"],
+        validator_identity=config_payload["validator_identity"],
+    )
     await api.start()
 
     yield

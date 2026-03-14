@@ -26,7 +26,6 @@ class MinerResponseLog(Base):
     netuid = Column(Integer, nullable=False)
 
     scoring_epoch_start = Column(DateTime(timezone=True), nullable=True)
-    dedupe_key = Column(String, nullable=True)
 
     miner_uid = Column(Integer, nullable=True)
     miner_hotkey = Column(String, nullable=False)
@@ -41,7 +40,6 @@ class MinerResponseLog(Base):
     process_time = Column(Float, nullable=True)
     total_reward = Column(Float, nullable=True)
 
-    request_payload = Column(JSONB, nullable=False)
     response_payload = Column(JSONB, nullable=False)
     reward_payload = Column(JSONB, nullable=True)
 
@@ -61,10 +59,5 @@ class MinerResponseLog(Base):
             "query_kind",
             "search_type",
             "created_at",
-        ),
-        Index(
-            "uq_miner_response_logs_dedupe_key",
-            "dedupe_key",
-            unique=True,
         ),
     )

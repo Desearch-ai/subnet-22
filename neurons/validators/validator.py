@@ -17,10 +17,7 @@ from desearch.redis.utils import (
     load_moving_averaged_scores,
     save_moving_averaged_scores,
 )
-from desearch.utils import (
-    resync_metagraph,
-    save_logs_in_chunks,
-)
+from desearch.utils import resync_metagraph
 from neurons.validators.advanced_scraper_validator import AdvancedScraperValidator
 from neurons.validators.base_validator import AbstractNeuron
 from neurons.validators.config import add_args, check_config, config
@@ -29,7 +26,7 @@ from neurons.validators.query_scheduler import QueryScheduler
 from neurons.validators.scoring_store import ScoringStore
 from neurons.validators.utility_api_client import UtilityAPIClient
 from neurons.validators.web_scraper_validator import WebScraperValidator
-from neurons.validators.weights import get_weights, init_wandb, set_weights
+from neurons.validators.weights import init_wandb, set_weights
 from neurons.validators.x_scraper_validator import XScraperValidator
 
 
@@ -54,6 +51,8 @@ class Neuron(AbstractNeuron):
 
     moving_average_scores: torch.Tensor = None
     uid: int = None
+    utility_api: UtilityAPIClient
+    validator_identity: dict | None = None
 
     uid_manager: UIDManager
 
@@ -71,6 +70,7 @@ class Neuron(AbstractNeuron):
 
         self.available_uids = []
         self.uid_manager = UIDManager()
+        self.validator_identity = None
 
     async def initialize(self):
         bt.logging.info(
@@ -114,8 +114,33 @@ class Neuron(AbstractNeuron):
         self.dendrites = itertools.cycle(self.dendrite_list)
 
         self.uid = self.metagraph.hotkeys.index(self.wallet.hotkey.ss58_address)
+        self.validator_identity = self._build_validator_identity()
 
         await initialize_redis()
+
+    def _build_validator_identity(self) -> dict:
+        hotkey = self.wallet.hotkey.ss58_address
+        coldkey = next(
+            (nr.coldkey for nr in self.metagraph.neurons if nr.hotkey == hotkey),
+            None,
+        )
+
+        identity = {
+            "uid": self.uid,
+            "hotkey": hotkey,
+            "coldkey": coldkey,
+            "netuid": self.config.netuid,
+        }
+
+        external_ip = getattr(self.config.axon, "external_ip", None)
+        port = getattr(self.config.axon, "port", None)
+
+        if external_ip:
+            identity["ip"] = external_ip
+        if port:
+            identity["port"] = port
+
+        return identity
 
     async def sync_available_uids(self):
         start_time = time.time()
@@ -234,32 +259,6 @@ class Neuron(AbstractNeuron):
         try:
             if self.config.wandb_on:
                 wandb.log(wandb_data)
-
-            weights = await get_weights(self)
-
-            asyncio.create_task(
-                save_logs_in_chunks(
-                    self,
-                    responses=responses,
-                    uids=uids,
-                    rewards=rewards,
-                    twitter_rewards=all_rewards[0],
-                    search_rewards=all_rewards[1],
-                    summary_rewards=all_rewards[2],
-                    performance_rewards=all_rewards[3],
-                    original_twitter_rewards=all_original_rewards[0],
-                    original_search_rewards=all_original_rewards[1],
-                    original_summary_rewards=all_original_rewards[2],
-                    original_performance_rewards=all_original_rewards[3],
-                    tweet_scores=val_score_responses_list[0],
-                    search_scores=val_score_responses_list[1],
-                    summary_link_scores=val_score_responses_list[2],
-                    weights=weights,
-                    neuron=neuron,
-                    netuid=self.config.netuid,
-                    query_type=query_type,
-                )
-            )
         except Exception as e:
             bt.logging.error(f"Error in update_scores: {e}")
             raise e
@@ -278,27 +277,6 @@ class Neuron(AbstractNeuron):
         try:
             if self.config.wandb_on:
                 wandb.log(wandb_data)
-
-            # weights = (
-            #     await self.run_sync_in_async(lambda: get_weights(self))
-            # )
-
-            # asyncio.create_task(
-            #     save_logs_in_chunks_for_basic(
-            #         self,
-            #         responses=responses,
-            #         uids=uids,
-            #         rewards=rewards,
-            #         twitter_rewards=all_rewards[0],
-            #         performance_rewards=all_rewards[1],
-            #         original_twitter_rewards=all_original_rewards[0],
-            #         original_performance_rewards=all_original_rewards[1],
-            #         tweet_scores=val_score_responses_list[0],
-            #         weights=weights,
-            #         neuron=neuron,
-            #         netuid=self.config.netuid,
-            #     )
-            # )
         except Exception as e:
             bt.logging.error(f"Error in update_scores_for_basic: {e}")
             raise e
@@ -439,6 +417,7 @@ class Neuron(AbstractNeuron):
                 base_url=self.config.neuron.utility_api_url,
                 wallet=self.wallet,
             )
+            self.utility_api = utility_api
 
             validators = {
                 "ai_search": self.advanced_scraper_validator,
@@ -471,6 +450,9 @@ class Neuron(AbstractNeuron):
         bt.logging.info("Stopping Neuron")
 
         await close_redis()
+
+        if hasattr(self, "utility_api"):
+            await self.utility_api.close()
 
         await self.subtensor.close()
 

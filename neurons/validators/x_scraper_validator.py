@@ -1,5 +1,5 @@
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 import bittensor as bt
 import torch
@@ -10,6 +10,11 @@ from desearch.protocol import (
     TwitterURLsSearchSynapse,
 )
 from neurons.validators.base_validator import AbstractNeuron
+from neurons.validators.miner_response_logger import (
+    build_log_entry,
+    build_reward_payload,
+    submit_logs_best_effort,
+)
 from neurons.validators.penalty.exponential_penalty import ExponentialTimePenaltyModel
 from neurons.validators.penalty.twitter_count_penalty import TwitterCountPenaltyModel
 from neurons.validators.reward import RewardModelType, RewardScoringType
@@ -106,7 +111,7 @@ class XScraperValidator:
             deserialize=False,
         )
 
-        return response
+        return response, uid, axon
 
     async def compute_rewards_and_penalties(
         self,
@@ -115,6 +120,7 @@ class XScraperValidator:
         responses,
         uids,
         start_time,
+        scoring_epoch_start=None,
     ):
         try:
             if not len(uids):
@@ -252,6 +258,39 @@ class XScraperValidator:
                 neuron=self.neuron,
             )
 
+            scoring_logs = []
+            response_count = len(responses)
+
+            for index, (uid_tensor, response, reward) in enumerate(
+                zip(uids, responses, rewards.tolist())
+            ):
+                uid = uid_tensor.item()
+                reward_payload = build_reward_payload(
+                    search_type="x_search",
+                    response_count=response_count,
+                    index=index,
+                    uid=uid,
+                    total_reward=reward,
+                    all_rewards=all_rewards,
+                    all_original_rewards=all_original_rewards,
+                    validator_scores=val_score_responses_list,
+                    event=event,
+                )
+                scoring_logs.append(
+                    build_log_entry(
+                        owner=self.neuron,
+                        search_type="x_search",
+                        query_kind="scoring",
+                        response=response,
+                        miner_uid=uid,
+                        total_reward=reward,
+                        reward_payload=reward_payload,
+                        scoring_epoch_start=scoring_epoch_start,
+                    )
+                )
+
+            submit_logs_best_effort(self.neuron, scoring_logs)
+
             return rewards, uids, val_score_responses_list, event, all_original_rewards
         except Exception as e:
             bt.logging.error(f"Error in compute_rewards_and_penalties: {e}")
@@ -273,16 +312,16 @@ class XScraperValidator:
         self,
         query: dict,
         uid: int,
-    ) -> Tuple[Optional[object], dict]:
+    ) -> Optional[object]:
         """
-        Send a scoring query to a specific miner and return (response, task).
+        Send a scoring query to a specific miner and return the full synapse.
         Called by QueryScheduler; awaits the full response without streaming.
         """
         prompt = query.get("query", "")
         params = {k: v for k, v in query.items() if k != "query"}
 
-        response = await self.call_miner(prompt=prompt, params=params, uid=uid)
-        return response, prompt
+        response, _, _ = await self.call_miner(prompt=prompt, params=params, uid=uid)
+        return response
 
     async def organic(
         self,
@@ -295,9 +334,16 @@ class XScraperValidator:
             prompt = query.get("query", "")
             params = {key: value for key, value in query.items() if key != "query"}
 
-            response = await self.call_miner(prompt=prompt, params=params, uid=uid)
+            response, selected_uid, axon = await self.call_miner(
+                prompt=prompt, params=params, uid=uid
+            )
 
             if response:
+                self._save_organic_log(
+                    response=response,
+                    miner_uid=selected_uid,
+                    axon=axon,
+                )
                 yield response
             else:
                 bt.logging.warning("Invalid response for UID: Unknown")
@@ -334,6 +380,12 @@ class XScraperValidator:
                 synapse=synapse,
                 timeout=timeout,
                 deserialize=False,
+            )
+
+            self._save_organic_log(
+                response=synapse,
+                miner_uid=uid,
+                axon=axon,
             )
 
             return synapse.results
@@ -373,7 +425,29 @@ class XScraperValidator:
                 deserialize=False,
             )
 
+            self._save_organic_log(
+                response=synapse,
+                miner_uid=uid,
+                axon=axon,
+            )
+
             return synapse.results
         except Exception as e:
             bt.logging.error(f"Error in URLs search: {e}")
             raise e
+
+    def _save_organic_log(self, response, miner_uid: int, axon) -> None:
+        submit_logs_best_effort(
+            self.neuron,
+            [
+                build_log_entry(
+                    owner=self.neuron,
+                    search_type="x_search",
+                    query_kind="organic",
+                    response=response,
+                    miner_uid=miner_uid,
+                    miner_hotkey=getattr(axon, "hotkey", None),
+                    miner_coldkey=getattr(axon, "coldkey", None),
+                )
+            ],
+        )

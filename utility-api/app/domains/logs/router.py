@@ -24,7 +24,6 @@ async def save_logs(
     values = [log.model_dump(mode="json") for log in body.logs]
 
     stmt = insert(MinerResponseLog).values(values)
-    stmt = stmt.on_conflict_do_nothing(index_elements=["dedupe_key"])
 
     result = await session.execute(stmt)
     await session.commit()

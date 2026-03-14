@@ -45,6 +45,28 @@ class QueryScheduler:
         """Format a query dict for the appropriate validator's send_scoring_query()."""
         return {"query": question_query, **params}
 
+    def _extract_prompt(self, response) -> str:
+        if isinstance(response, dict):
+            for key in ("prompt", "query", "content", "id"):
+                value = response.get(key)
+                if value:
+                    return str(value)
+            urls = response.get("urls")
+            if urls:
+                return ", ".join(str(url) for url in urls)
+            return ""
+
+        for key in ("prompt", "query", "content", "id"):
+            value = getattr(response, key, None)
+            if value:
+                return str(value)
+
+        urls = getattr(response, "urls", None)
+        if urls:
+            return ", ".join(str(url) for url in urls)
+
+        return ""
+
     async def _send_and_save(
         self,
         search_type: str,
@@ -55,10 +77,10 @@ class QueryScheduler:
         """Send one scoring query to a specific miner and persist the response."""
         try:
             validator = self.validators[search_type]
-            response, task = await validator.send_scoring_query(query, uid=uid)
+            response = await validator.send_scoring_query(query, uid=uid)
             if response is not None:
                 await self.scoring_store.save_response(
-                    time_range_start, uid, search_type, response, task
+                    time_range_start, uid, search_type, response
                 )
                 bt.logging.debug(
                     f"[QueryScheduler] Saved response uid={uid} type={search_type}"
@@ -90,7 +112,7 @@ class QueryScheduler:
 
                 uids = torch.tensor([item["uid"] for item in items])
                 responses = [item["response"] for item in items]
-                prompts = [item["task"] for item in items]
+                prompts = [self._extract_prompt(response) for response in responses]
                 event = {}
 
                 bt.logging.info(
@@ -103,6 +125,7 @@ class QueryScheduler:
                     responses=responses,
                     uids=uids,
                     start_time=time.time(),
+                    scoring_epoch_start=time_range_start,
                 )
 
         except Exception as e:

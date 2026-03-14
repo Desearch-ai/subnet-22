@@ -16,7 +16,7 @@ class ScoringStore:
 
     Organizes responses by (time_range_start, search_type) using Redis hashes.
     Key format: scoring:{unix_ts}:{search_type}
-    Field:      {uid}  →  jsonpickle-encoded {"response": ..., "task": ...}
+    Field:      {uid}  →  jsonpickle-encoded response
 
     Responses expire after 2 hours.
     """
@@ -33,12 +33,11 @@ class ScoringStore:
         uid: int,
         search_type: str,
         response: Any,
-        task: Any,
     ) -> None:
         """Save a single miner response for later scoring."""
 
         key = self._key(time_range_start, search_type)
-        data = jsonpickle.encode({"response": response, "task": task})
+        data = jsonpickle.encode(response)
         pipeline = redis_client.pipeline()
         pipeline.hset(key, str(uid), data)
         pipeline.expire(key, EXPIRY)
@@ -52,7 +51,7 @@ class ScoringStore:
 
         Returns:
             {
-                "ai_search": [{"uid": int, "response": ..., "task": ...}, ...],
+                "ai_search": [{"uid": int, "response": ...}, ...],
                 "x_search":  [...],
                 "web_search": [...],
             }
@@ -72,11 +71,15 @@ class ScoringStore:
 
             for uid_str, encoded in raw.items():
                 data = jsonpickle.decode(encoded)
+                response = (
+                    data["response"]
+                    if isinstance(data, dict) and "response" in data
+                    else data
+                )
                 items.append(
                     {
                         "uid": int(uid_str),
-                        "response": data["response"],
-                        "task": data["task"],
+                        "response": response,
                     }
                 )
 

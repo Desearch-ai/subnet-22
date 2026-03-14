@@ -48,9 +48,12 @@ class ValidatorServiceClient:
         session = await self.session
         async with session.get(f"{VALIDATOR_SERVICE_URL}/config") as response:
             if response.status == 200:
-                config_dict = await response.json()
+                payload = await response.json()
                 config = bt.Config()
-                return config.fromDict(config_dict)
+                return {
+                    "config": config.fromDict(payload["config"]),
+                    "validator_identity": payload["validator_identity"],
+                }
             else:
                 raise Exception(f"Failed to fetch config: {response.status}")
 

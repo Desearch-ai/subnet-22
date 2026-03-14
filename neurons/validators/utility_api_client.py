@@ -18,7 +18,17 @@ class UtilityAPIClient:
     def __init__(self, base_url: str, wallet: bt.Wallet):
         self.base_url = base_url.rstrip("/")
         self.wallet = wallet
-        self._session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30))
+        self._session = aiohttp.ClientSession()
+
+    def _auth_headers(self) -> dict[str, str]:
+        timestamp = str(int(time.time()))
+        signature = self.wallet.hotkey.sign(timestamp.encode()).hex()
+
+        return {
+            "X-Hotkey": self.wallet.hotkey.ss58_address,
+            "X-Timestamp": timestamp,
+            "X-Signature": signature,
+        }
 
     async def fetch_next_question(self) -> dict:
         """
@@ -38,16 +48,20 @@ class UtilityAPIClient:
                                          or 429 for rate limiting)
         """
 
-        timestamp = str(int(time.time()))
-        signature = self.wallet.hotkey.sign(timestamp.encode()).hex()
-
         async with self._session.get(
             f"{self.base_url}/dataset/next",
-            headers={
-                "X-Hotkey": self.wallet.hotkey.ss58_address,
-                "X-Timestamp": timestamp,
-                "X-Signature": signature,
-            },
+            headers=self._auth_headers(),
+            timeout=aiohttp.ClientTimeout(total=30),
+        ) as response:
+            response.raise_for_status()
+            return await response.json()
+
+    async def save_logs(self, logs: list[dict]) -> dict:
+        async with self._session.post(
+            f"{self.base_url}/logs",
+            headers=self._auth_headers(),
+            json={"logs": logs},
+            timeout=aiohttp.ClientTimeout(total=120),
         ) as response:
             response.raise_for_status()
             return await response.json()

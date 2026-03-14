@@ -12,7 +12,6 @@ class MinerResponseLogCreate(BaseModel):
     netuid: int
 
     scoring_epoch_start: datetime | None = None
-    dedupe_key: str | None = None
 
     miner_uid: int | None = None
     miner_hotkey: str
@@ -27,7 +26,6 @@ class MinerResponseLogCreate(BaseModel):
     process_time: float | None = None
     total_reward: float | None = None
 
-    request_payload: dict[str, Any] = Field(default_factory=dict)
     response_payload: dict[str, Any] = Field(default_factory=dict)
     reward_payload: dict[str, Any] | None = None
 
