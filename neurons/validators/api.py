@@ -519,7 +519,7 @@ async def get_tweets_by_urls(
     results = []
 
     try:
-        urls = list(set(request.urls))
+        urls = list(dict.fromkeys(request.urls))
 
         bt.logging.info(f"Fetching tweets for URLs: {urls}")
 
