@@ -182,7 +182,7 @@ def add_args(cls, parser):
         "--neuron.utility_api_url",
         type=str,
         help="Base URL of the utility API that provides scoring questions.",
-        default="http://localhost:8000",  # TODO: Update after deployment
+        default="https://utility-api.desearch.ai",
     )
 
 
