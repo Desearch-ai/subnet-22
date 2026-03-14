@@ -5,6 +5,7 @@ from fastapi import FastAPI
 from app.config import NETUID, SUBTENSOR_NETWORK
 from app.domains.dataset.router import close_question_cache, init_question_cache
 from app.domains.dataset.router import router as dataset_router
+from app.domains.logs.router import router as logs_router
 
 
 @asynccontextmanager
@@ -29,6 +30,7 @@ app = FastAPI(
 )
 
 app.include_router(dataset_router)
+app.include_router(logs_router)
 
 
 @app.get("/")
