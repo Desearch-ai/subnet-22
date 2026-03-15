@@ -82,6 +82,11 @@ _X_SEARCH_PARAM_FIELDS: List[str] = [
 ]
 
 _THREE_YEARS_IN_DAYS = 3 * 365
+_SCORING_SEARCH_TYPES: Tuple[SearchType, ...] = (
+    SearchType.AI_SEARCH,
+    SearchType.X_SEARCH,
+    SearchType.WEB_SEARCH,
+)
 
 
 def _generate_ai_search_params() -> Dict[str, Any]:
@@ -193,7 +198,7 @@ class QuestionCache:
         # Build deterministic assignments per search type
         assignments: Dict[SearchType, Dict[int, QuestionOut]] = {}
 
-        for search_type in SearchType:
+        for search_type in _SCORING_SEARCH_TYPES:
             stmt = (
                 select(Question)
                 .where(Question.search_types.contains([search_type.value]))

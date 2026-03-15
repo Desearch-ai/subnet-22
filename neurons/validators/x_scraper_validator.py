@@ -323,7 +323,7 @@ class XScraperValidator:
         response, _, _ = await self.call_miner(prompt=prompt, params=params, uid=uid)
         return response
 
-    async def organic(
+    async def x_search(
         self,
         query,
         uid: Optional[int] = None,
@@ -343,6 +343,7 @@ class XScraperValidator:
                     response=response,
                     miner_uid=selected_uid,
                     axon=axon,
+                    search_type="x_search",
                 )
                 yield response
             else:
@@ -352,7 +353,7 @@ class XScraperValidator:
             bt.logging.error(f"Error in organic: {e}")
             raise e
 
-    async def twitter_id_search(
+    async def x_post_by_id(
         self,
         tweet_id: str,
         uid: Optional[int] = None,
@@ -386,6 +387,7 @@ class XScraperValidator:
                 response=synapse,
                 miner_uid=uid,
                 axon=axon,
+                search_type="x_post_by_id",
             )
 
             return synapse.results
@@ -393,7 +395,7 @@ class XScraperValidator:
             bt.logging.error(f"Error in ID search: {e}")
             raise e
 
-    async def twitter_urls_search(
+    async def x_posts_by_urls(
         self,
         urls: List[str],
         uid: Optional[int] = None,
@@ -429,6 +431,7 @@ class XScraperValidator:
                 response=synapse,
                 miner_uid=uid,
                 axon=axon,
+                search_type="x_posts_by_urls",
             )
 
             return synapse.results
@@ -436,13 +439,15 @@ class XScraperValidator:
             bt.logging.error(f"Error in URLs search: {e}")
             raise e
 
-    def _save_organic_log(self, response, miner_uid: int, axon) -> None:
+    def _save_organic_log(
+        self, response, miner_uid: int, axon, search_type: str
+    ) -> None:
         submit_logs_best_effort(
             self.neuron,
             [
                 build_log_entry(
                     owner=self.neuron,
-                    search_type="x_search",
+                    search_type=search_type,
                     query_kind="organic",
                     response=response,
                     miner_uid=miner_uid,

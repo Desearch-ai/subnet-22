@@ -6,6 +6,8 @@ class SearchType(str, enum.Enum):
 
     AI_SEARCH = "ai_search"
     X_SEARCH = "x_search"
+    X_POST_BY_ID = "x_post_by_id"
+    X_POSTS_BY_URLS = "x_posts_by_urls"
     WEB_SEARCH = "web_search"
 
 

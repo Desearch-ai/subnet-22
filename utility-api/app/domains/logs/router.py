@@ -1,7 +1,9 @@
 from datetime import datetime
+from uuid import uuid4
 
 from app.auth import get_hotkey
 from app.db.session import get_session
+from app.domains.dataset.models.question import Question
 from app.domains.logs.enums import QueryKind
 from app.domains.logs.models.miner_response_log import MinerResponseLog
 from app.domains.logs.schemas import (
@@ -12,11 +14,100 @@ from app.domains.logs.schemas import (
     ScoringValidatorLogResponse,
 )
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 router = APIRouter(prefix="/logs", tags=["logs"])
+
+
+def _normalize_question_query(query: str) -> str:
+    return query.strip()
+
+
+def _merge_search_types(existing_search_types, new_search_types) -> list[str]:
+    merged: list[str] = []
+
+    for search_type in existing_search_types or []:
+        search_type_value = getattr(search_type, "value", search_type)
+        if search_type_value not in merged:
+            merged.append(search_type_value)
+
+    for search_type in new_search_types:
+        search_type_value = getattr(search_type, "value", search_type)
+        if search_type_value not in merged:
+            merged.append(search_type_value)
+
+    return merged
+
+
+async def _upsert_organic_questions(
+    session: AsyncSession, body: SaveMinerResponseLogsRequest
+) -> None:
+    search_types_by_query: dict[str, list] = {}
+
+    for log in body.logs:
+        if log.query_kind != QueryKind.ORGANIC:
+            continue
+
+        normalized_query = _normalize_question_query(log.request_query)
+        if not normalized_query:
+            continue
+
+        query_search_types = search_types_by_query.setdefault(normalized_query, [])
+        if log.search_type not in query_search_types:
+            query_search_types.append(log.search_type)
+
+    if not search_types_by_query:
+        return
+
+    result = await session.execute(
+        select(Question).where(Question.query.in_(search_types_by_query.keys()))
+    )
+    existing_questions = result.scalars().all()
+    existing_questions_by_query: dict[str, list[Question]] = {}
+
+    for question in existing_questions:
+        existing_questions_by_query.setdefault(question.query, []).append(question)
+
+    question_values = []
+
+    for query, search_types in search_types_by_query.items():
+        matching_questions = existing_questions_by_query.get(query, [])
+
+        if not matching_questions:
+            question_values.append(
+                {
+                    "id": uuid4(),
+                    "query": query,
+                    "search_types": [search_type.value for search_type in search_types],
+                    "ai_search_tools": None,
+                    "source": "desearch",
+                }
+            )
+            continue
+
+        merged_search_types = [
+            search_type.value for search_type in search_types
+        ]
+
+        for question in matching_questions:
+            next_search_types = _merge_search_types(
+                question.search_types, merged_search_types
+            )
+
+            current_search_types = _merge_search_types(question.search_types, [])
+            if next_search_types == current_search_types:
+                continue
+
+            await session.execute(
+                update(Question)
+                .where(Question.id == question.id)
+                .values(search_types=next_search_types)
+            )
+
+    if question_values:
+        await session.execute(insert(Question).values(question_values))
 
 
 @router.post("", response_model=SaveMinerResponseLogsResponse)
@@ -33,6 +124,7 @@ async def save_logs(
     stmt = insert(MinerResponseLog).values(values)
 
     result = await session.execute(stmt)
+    await _upsert_organic_questions(session, body)
     await session.commit()
 
     return SaveMinerResponseLogsResponse(inserted=result.rowcount or 0)

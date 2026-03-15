@@ -34,7 +34,7 @@ def _fake_response():
 
 
 @pytest.mark.asyncio
-async def test_x_organic_logs_selected_uid():
+async def test_x_search_logs_selected_uid():
     validator = object.__new__(XScraperValidator)
     validator.neuron = _fake_owner()
     response = _fake_response()
@@ -55,7 +55,7 @@ async def test_x_organic_logs_selected_uid():
             "neurons.validators.x_scraper_validator.submit_logs_best_effort"
         ) as submit_logs_best_effort,
     ):
-        items = [item async for item in validator.organic({"query": "bittensor"})]
+        items = [item async for item in validator.x_search({"query": "bittensor"})]
 
     assert items == [response]
     build_log_entry.assert_called_once()
@@ -147,7 +147,7 @@ async def test_submit_logs_swallows_utility_api_failures():
 
 
 @pytest.mark.asyncio
-async def test_x_twitter_id_search_logs_organic():
+async def test_x_post_by_id_logs_organic():
     validator = object.__new__(XScraperValidator)
     validator.neuron = _fake_owner()
     validator.max_execution_time = 10
@@ -174,7 +174,7 @@ async def test_x_twitter_id_search_logs_organic():
             "neurons.validators.x_scraper_validator.submit_logs_best_effort"
         ) as submit_logs_best_effort,
     ):
-        results = await validator.twitter_id_search("123", uid=42)
+        results = await validator.x_post_by_id("123", uid=42)
 
     assert results == [{"id": "123"}]
     assert build_log_entry.call_args.kwargs["miner_uid"] == 42
@@ -182,7 +182,7 @@ async def test_x_twitter_id_search_logs_organic():
 
 
 @pytest.mark.asyncio
-async def test_x_twitter_urls_search_logs_organic():
+async def test_x_posts_by_urls_logs_organic():
     validator = object.__new__(XScraperValidator)
     validator.neuron = _fake_owner()
     validator.calc_max_execution_time = lambda count: 10
@@ -209,7 +209,7 @@ async def test_x_twitter_urls_search_logs_organic():
             "neurons.validators.x_scraper_validator.submit_logs_best_effort"
         ) as submit_logs_best_effort,
     ):
-        results = await validator.twitter_urls_search(
+        results = await validator.x_posts_by_urls(
             ["https://x.com/a/status/1", "https://x.com/b/status/2"], uid=99
         )
 

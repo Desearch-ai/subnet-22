@@ -11,7 +11,8 @@ class Question(Base):
     """
     Stores dataset questions used by SN22 validators.
 
-    - search_types:    which search modes this question applies to (ai, x, web).
+    - search_types:    which search modes this question applies to
+                       (ai, x, x-post lookups, web).
     - ai_search_tools: relevant AI-search tools (arxiv, wikipedia, …). Nullable
                        — only meaningful when ai_search is in search_types.
     - source:          origin of the question, e.g. "huggingface:squad",

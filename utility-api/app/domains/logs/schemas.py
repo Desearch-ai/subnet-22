@@ -8,8 +8,12 @@ from pydantic import BaseModel, Field
 
 
 class MinerResponseLogCreate(BaseModel):
-    query_kind: QueryKind
-    search_type: SearchType
+    query_kind: QueryKind = Field(
+        description="Log origin. `organic` is customer-originated input; `scoring` is validator scoring traffic."
+    )
+    search_type: SearchType = Field(
+        description="Search input type such as ai_search, x_search, x_post_by_id, x_posts_by_urls, or web_search."
+    )
     netuid: int
 
     scoring_epoch_start: datetime | None = None
