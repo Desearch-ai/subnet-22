@@ -5,6 +5,7 @@ import bittensor as bt
 
 from desearch.redis.redis_client import close_redis, initialize_redis
 from neurons.validators.advanced_scraper_validator import AdvancedScraperValidator
+from neurons.validators.utility_api_client import UtilityAPIClient
 from neurons.validators.validator_service_client import ValidatorServiceClient
 from neurons.validators.web_scraper_validator import WebScraperValidator
 from neurons.validators.x_scraper_validator import XScraperValidator
@@ -22,10 +23,13 @@ class ValidatorAPI:
     advanced_scraper_validator: "AdvancedScraperValidator"
     x_scraper_validator: "XScraperValidator"
     web_scraper_validator: "WebScraperValidator"
+    utility_api: UtilityAPIClient
+    validator_identity: dict | None
 
-    def __init__(self, config: bt.Config):
+    def __init__(self, config: bt.Config, validator_identity: dict | None = None):
         self.config = config
         bt.logging.set_config(self.config)
+        self.validator_identity = validator_identity
 
         self.advanced_scraper_validator = AdvancedScraperValidator(neuron=self)
         self.x_scraper_validator = XScraperValidator(neuron=self)
@@ -54,7 +58,12 @@ class ValidatorAPI:
                 bt.Dendrite(wallet=wallet),
             ]
 
+        self.wallet = wallet
         self.dendrites = itertools.cycle(self.dendrite_list)
+        self.utility_api = UtilityAPIClient(
+            base_url=self.config.neuron.utility_api_url,
+            wallet=self.wallet,
+        )
 
         await initialize_redis()
 
@@ -71,6 +80,9 @@ class ValidatorAPI:
         bt.logging.info("Stopping ValidatorAPI")
 
         await close_redis()
+
+        if hasattr(self, "utility_api"):
+            await self.utility_api.close()
 
         for dendrite in self.dendrite_list:
             await dendrite.aclose_session()

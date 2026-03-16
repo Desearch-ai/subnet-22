@@ -64,11 +64,11 @@ class StreamMiner(ABC):
         bt.logging.info("Setting up bittensor objects.")
 
         # Wallet holds cryptographic information, ensuring secure transactions and communication.
-        self.wallet = wallet or bt.wallet(config=self.config)
+        self.wallet = wallet or bt.Wallet(config=self.config)
         bt.logging.info(f"Wallet {self.wallet}")
 
         # subtensor manages the blockchain connection, facilitating interaction with the Bittensor blockchain.
-        self.subtensor = subtensor or bt.subtensor(config=self.config)
+        self.subtensor = subtensor or bt.Subtensor(config=self.config)
         bt.logging.info(f"Subtensor: {self.subtensor}")
         bt.logging.info(
             f"Running miner for subnet: {self.config.netuid} on network: {self.subtensor.chain_endpoint} with config:"
@@ -97,14 +97,14 @@ class StreamMiner(ABC):
             bt.logging.debug(
                 f"Starting axon on port {self.config.axon.port} and external ip {self.config.axon.external_ip}"
             )
-            self.axon = bt.axon(
+            self.axon = bt.Axon(
                 wallet=self.wallet,
                 port=self.config.axon.port,
                 external_ip=self.config.axon.external_ip,
             )
         else:
             bt.logging.debug(f"Starting axon on port {self.config.axon.port}")
-            self.axon = bt.axon(wallet=self.wallet, port=self.config.axon.port)
+            self.axon = bt.Axon(wallet=self.wallet, port=self.config.axon.port)
 
         # Attach determiners which functions are called when servicing a request.
         bt.logging.info("Attaching forward function to axon.")
@@ -334,7 +334,7 @@ class StreamMiner(ABC):
                 bt.logging.error(f"Error during metagraph sync: {e}")
 
                 try:
-                    self.subtensor = bt.subtensor(config=self.config)
+                    self.subtensor = bt.Subtensor(config=self.config)
                     self.metagraph = self.subtensor.metagraph(self.config.netuid)
                 except Exception as e:
                     bt.logging.error(
@@ -447,7 +447,7 @@ class StreamingTemplateMiner(StreamMiner):
     def config(self) -> "bt.Config":
         parser = argparse.ArgumentParser(description="Streaming Miner Configs")
         self.add_args(parser)
-        return bt.config(parser)
+        return bt.Config(parser)
 
     def add_args(cls, parser: argparse.ArgumentParser):
         pass

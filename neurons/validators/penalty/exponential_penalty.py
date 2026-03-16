@@ -1,7 +1,6 @@
 import torch
 from typing import List
 from neurons.validators.base_validator import AbstractNeuron
-from neurons.validators.utils.tasks import Task
 from neurons.validators.penalty.penalty import BasePenaltyModel, PenaltyModelType
 import bittensor as bt
 import math
@@ -23,7 +22,6 @@ class ExponentialTimePenaltyModel(BasePenaltyModel):
     async def calculate_penalties(
         self,
         responses: List[bt.Synapse],
-        tasks: List[Task],
         additional_params=None,
     ) -> torch.FloatTensor:
 

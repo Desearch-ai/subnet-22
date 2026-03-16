@@ -458,12 +458,6 @@ class ScraperStreamingSynapse(StreamingSynapse):
         title="Text Chunks",
     )
 
-    is_synthetic: Optional[bool] = pydantic.Field(
-        False,
-        title="Is Synthetic",
-        description="A boolean flag to indicate if the prompt is synthetic.",
-    )
-
     flow_items: Optional[List[FlowItem]] = pydantic.Field(
         default_factory=list,
         title="Flow Items",
@@ -893,12 +887,6 @@ class WebSearchSynapse(Synapse):
         allow_mutation=False,
     )
 
-    is_synthetic: Optional[bool] = pydantic.Field(
-        False,
-        title="Is Synthetic",
-        description="A boolean flag to indicate if the prompt is synthetic.",
-    )
-
     max_execution_time: Optional[int] = pydantic.Field(
         None,
         title="Max Execution Time (timeout)",
@@ -1031,12 +1019,6 @@ class TwitterSearchSynapse(Synapse):
         title="Minimum Likes",
         description="Minimum number of likes.",
         allow_mutation=False,
-    )
-
-    is_synthetic: Optional[bool] = pydantic.Field(
-        False,
-        title="Is Synthetic",
-        description="A boolean flag to indicate if the prompt is synthetic.",
     )
 
     max_execution_time: Optional[int] = pydantic.Field(
