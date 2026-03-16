@@ -30,10 +30,6 @@ class SyntheticQueryRunnerMixin:
         try:
             start_time = time.time()
 
-            bt.logging.info(
-                f"Running step forward for query_synapse, Step: {self.step}"
-            )
-
             await self.run_query_and_score(validator, strategy)
 
             end_time = time.time()
@@ -41,9 +37,6 @@ class SyntheticQueryRunnerMixin:
             bt.logging.info(
                 f"Completed gathering coroutines for run_query_and_score in {end_time - start_time:.2f} seconds"
             )
-
-            self.step += 1
-            bt.logging.info(f"Incremented step to {self.step}")
         except Exception as err:
             bt.logging.error("Error in run_synthetic_queries", str(err))
             bt.logging.debug(
