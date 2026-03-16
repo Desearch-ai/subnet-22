@@ -8,10 +8,9 @@ import bittensor as bt
 
 from desearch.protocol import ScraperStreamingSynapse
 from desearch.utils import clean_text
-from neurons.validators.apify.utils import scrape_links_with_retries
 from neurons.validators.base_validator import AbstractNeuron
 from neurons.validators.reward.reward_llm import RewardLLM
-from neurons.validators.scrapingdog_scraper import ScrapingDogScraper
+from neurons.validators.scrapingdog_scraper import scrape_links_with_retries
 from neurons.validators.utils.prompts import (
     SearchSummaryRelevancePrompt,
 )
@@ -69,8 +68,6 @@ class WebSearchContentRelevanceModel(BaseRewardModel):
             non_fetched_links,
         ) = await scrape_links_with_retries(
             urls=urls,
-            scraper_actor_class=ScrapingDogScraper,
-            group_size=25,
             max_attempts=2,
         )
 

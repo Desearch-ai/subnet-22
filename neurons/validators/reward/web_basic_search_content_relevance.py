@@ -10,11 +10,11 @@ from typing import Dict, List, Tuple
 import bittensor as bt
 
 from desearch.protocol import WebSearchSynapse, WebSearchValidatorResult
-from desearch.services.twitter_utils import TwitterUtils
 from desearch.utils import is_valid_web_search_result
-from neurons.validators.apify.utils import scrape_links_with_retries
 from neurons.validators.base_validator import AbstractNeuron
-from neurons.validators.scrapingdog_scraper import ScrapingDogScraper
+from neurons.validators.scrapingdog_scraper import (
+    scrape_links_with_retries,
+)
 
 from .config import RewardModelType
 from .reward import BaseRewardEvent, BaseRewardModel
@@ -47,8 +47,6 @@ class WebBasicSearchContentRelevanceModel(BaseRewardModel):
             non_fetched_links,
         ) = await scrape_links_with_retries(
             urls=urls,
-            scraper_actor_class=ScrapingDogScraper,
-            group_size=25,
             max_attempts=2,
         )
 

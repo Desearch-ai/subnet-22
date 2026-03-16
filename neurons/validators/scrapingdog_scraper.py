@@ -1,14 +1,21 @@
 import asyncio
 import os
 import re
+import weakref
 from html.parser import HTMLParser
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
 import aiohttp
 import bittensor as bt
 
 SCRAPINGDOG_API_KEY = os.environ.get("SCRAPINGDOG_API_KEY")
+
+if not SCRAPINGDOG_API_KEY:
+    raise ValueError(
+        "Please set the SCRAPINGDOG_API_KEY environment variable. "
+        "See here: https://github.com/Desearch-ai/subnet-22/blob/main/docs/env_variables.md."
+    )
 
 
 class _ScrapingDogHTMLParser(HTMLParser):
@@ -33,9 +40,7 @@ class _ScrapingDogHTMLParser(HTMLParser):
     def handle_starttag(self, tag: str, attrs) -> None:
         tag = tag.lower()
         attrs_dict = {
-            key.lower(): (value or "")
-            for key, value in attrs
-            if key is not None
+            key.lower(): (value or "") for key, value in attrs if key is not None
         }
 
         if tag in self._IGNORED_TAGS:
@@ -107,9 +112,7 @@ class _ScrapingDogHTMLParser(HTMLParser):
         elif tag == "p" and self._paragraph_depth:
             self._paragraph_depth -= 1
             if self._paragraph_depth == 0:
-                self._finalize_capture(
-                    self._current_paragraph_chunks, self.paragraphs
-                )
+                self._finalize_capture(self._current_paragraph_chunks, self.paragraphs)
                 self._current_paragraph_chunks = []
 
         if finalize_hacker_news_comment:
@@ -156,20 +159,25 @@ class _ScrapingDogHTMLParser(HTMLParser):
 class ScrapingDogScraper:
     api_url = "https://api.scrapingdog.com/scrape"
     request_timeout_seconds = 30
-    max_concurrent_requests = 10
+    max_concurrent_requests = 50
+    _shared_semaphores = weakref.WeakKeyDictionary()
+
+    @classmethod
+    def _get_shared_semaphore(cls) -> asyncio.Semaphore:
+        loop = asyncio.get_running_loop()
+        semaphore = cls._shared_semaphores.get(loop)
+
+        if semaphore is None:
+            semaphore = asyncio.Semaphore(cls.max_concurrent_requests)
+            cls._shared_semaphores[loop] = semaphore
+
+        return semaphore
 
     async def scrape_metadata(self, urls: List[str]) -> List[Dict[str, Optional[str]]]:
-        if not SCRAPINGDOG_API_KEY:
-            bt.logging.warning(
-                "Please set the SCRAPINGDOG_API_KEY environment variable. "
-                "See here: https://github.com/Desearch-ai/subnet-22/blob/main/docs/env_variables.md."
-            )
-            return []
-
         if not urls:
             return []
 
-        semaphore = asyncio.Semaphore(self.max_concurrent_requests)
+        semaphore = self._get_shared_semaphore()
         timeout = aiohttp.ClientTimeout(total=self.request_timeout_seconds)
         connector = aiohttp.TCPConnector(limit=self.max_concurrent_requests)
 
@@ -196,6 +204,37 @@ class ScrapingDogScraper:
                 scraped_results.append(result)
 
         return scraped_results
+
+    async def scrape_metadata_with_retries(
+        self, urls: List[str], max_attempts: int = 2
+    ) -> Tuple[List[Dict[str, Optional[str]]], List[str]]:
+        fetched_links_with_metadata: List[Dict[str, Optional[str]]] = []
+        non_fetched_links = list(dict.fromkeys(urls))
+        attempt = 1
+
+        while attempt <= max_attempts and non_fetched_links:
+            bt.logging.info(
+                "ScrapingDog attempt "
+                f"{attempt}/{max_attempts}, processing "
+                f"{len(non_fetched_links)} links with concurrency limit "
+                f"{self.max_concurrent_requests}."
+            )
+
+            fetched_links_with_metadata.extend(
+                await self.scrape_metadata(non_fetched_links)
+            )
+
+            fetched_urls = {
+                link.get("link")
+                for link in fetched_links_with_metadata
+                if link.get("link")
+            }
+            non_fetched_links = [
+                url for url in non_fetched_links if url not in fetched_urls
+            ]
+            attempt += 1
+
+        return fetched_links_with_metadata, non_fetched_links
 
     async def _scrape_url(
         self,
@@ -225,9 +264,7 @@ class ScrapingDogScraper:
             "dynamic": "false",
         }
 
-    def _build_metadata(
-        self, url: str, html_content: str
-    ) -> Dict[str, Optional[str]]:
+    def _build_metadata(self, url: str, html_content: str) -> Dict[str, Optional[str]]:
         parser = _ScrapingDogHTMLParser()
         parser.feed(html_content)
         parser.close()
@@ -240,9 +277,7 @@ class ScrapingDogScraper:
             "html_text": " ".join(parser.text_chunks).strip(),
         }
 
-    def _extract_description(
-        self, url: str, parser: _ScrapingDogHTMLParser
-    ) -> str:
+    def _extract_description(self, url: str, parser: _ScrapingDogHTMLParser) -> str:
         hostname = (urlparse(url).hostname or "").lower()
 
         if "wikipedia.org" in hostname:
@@ -272,3 +307,12 @@ class ScrapingDogScraper:
         cleaned_text = re.sub(r"\[\d+\]", "", text)
         cleaned_text = re.sub(r"\s+", " ", cleaned_text).strip()
         return cleaned_text.rstrip(" .")
+
+
+async def scrape_links_with_retries(
+    urls: List[str], max_attempts: int = 2
+) -> Tuple[List[Dict[str, Optional[str]]], List[str]]:
+    return await ScrapingDogScraper().scrape_metadata_with_retries(
+        urls=urls,
+        max_attempts=max_attempts,
+    )
