@@ -9,7 +9,6 @@ import bittensor as bt
 import torch
 from bittensor.core.metagraph import AsyncMetagraph
 
-import wandb
 from desearch import QUERY_MINERS
 from desearch.protocol import IsAlive
 from desearch.redis.redis_client import close_redis, initialize_redis
@@ -243,43 +242,6 @@ class Neuron(AbstractNeuron):
         if isinstance(selected_uid, torch.Tensor):
             selected_uid = selected_uid.item()
         return selected_uid, self.metagraph.axons[selected_uid]
-
-    async def update_scores(
-        self,
-        wandb_data,
-        responses,
-        uids,
-        rewards,
-        all_rewards,
-        all_original_rewards,
-        val_score_responses_list,
-        neuron,
-        query_type,
-    ):
-        try:
-            if self.config.wandb_on:
-                wandb.log(wandb_data)
-        except Exception as e:
-            bt.logging.error(f"Error in update_scores: {e}")
-            raise e
-
-    async def update_scores_for_basic(
-        self,
-        wandb_data,
-        responses,
-        uids,
-        rewards,
-        all_rewards,
-        all_original_rewards,
-        val_score_responses_list,
-        neuron,
-    ):
-        try:
-            if self.config.wandb_on:
-                wandb.log(wandb_data)
-        except Exception as e:
-            bt.logging.error(f"Error in update_scores_for_basic: {e}")
-            raise e
 
     async def update_moving_averaged_scores(self, uids, rewards):
         try:

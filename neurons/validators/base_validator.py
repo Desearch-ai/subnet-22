@@ -38,13 +38,5 @@ class AbstractNeuron(ABC):
         pass
 
     @abstractmethod
-    async def update_scores(self, scores: torch.Tensor, wandb_data):
-        pass
-
-    @abstractmethod
-    async def update_scores_for_basic(self, scores: torch.Tensor, wandb_data):
-        pass
-
-    @abstractmethod
     async def update_moving_averaged_scores(self, uids, rewards):
         pass

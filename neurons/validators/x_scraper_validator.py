@@ -3,6 +3,7 @@ from typing import Any, Dict, List, Optional
 
 import bittensor as bt
 import torch
+import wandb
 
 from desearch.protocol import (
     TwitterIDSearchSynapse,
@@ -247,16 +248,8 @@ class XScraperValidator:
                 wandb_data["twitter_reward"][uid] = twitter_reward
                 wandb_data["latency_reward"][uid] = latency_reward
 
-            await self.neuron.update_scores_for_basic(
-                wandb_data=wandb_data,
-                responses=responses,
-                uids=uids,
-                rewards=rewards,
-                all_rewards=all_rewards,
-                all_original_rewards=all_original_rewards,
-                val_score_responses_list=val_score_responses_list,
-                neuron=self.neuron,
-            )
+            if self.neuron.config.wandb_on:
+                wandb.log(wandb_data)
 
             scoring_logs = []
             response_count = len(responses)
