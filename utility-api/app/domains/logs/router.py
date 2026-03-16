@@ -3,6 +3,7 @@ from uuid import uuid4
 
 from app.auth import get_hotkey
 from app.db.session import get_session
+from app.domains.dataset.enums import SearchType
 from app.domains.dataset.models.question import Question
 from app.domains.logs.enums import QueryKind
 from app.domains.logs.models.miner_response_log import MinerResponseLog
@@ -263,9 +264,12 @@ async def get_scoring_logs(
     scoring_epoch_start: datetime = Query(
         ..., description="UTC scoring epoch start timestamp."
     ),
-    miner_uid: int | None = Query(
+    search_type: SearchType = Query(
+        ..., description="Search type to inspect for the selected hour."
+    ),
+    miner_uids: list[int] | None = Query(
         None,
-        description="Optional miner UID to inspect for the selected hour.",
+        description="Optional miner UIDs to inspect for the selected hour.",
     ),
     session: AsyncSession = Depends(get_session),
 ):
@@ -273,9 +277,10 @@ async def get_scoring_logs(
         MinerResponseLog.query_kind == QueryKind.SCORING
     )
     stmt = stmt.where(MinerResponseLog.scoring_epoch_start == scoring_epoch_start)
+    stmt = stmt.where(MinerResponseLog.search_type == search_type)
 
-    if miner_uid is not None:
-        stmt = stmt.where(MinerResponseLog.miner_uid == miner_uid)
+    if miner_uids:
+        stmt = stmt.where(MinerResponseLog.miner_uid.in_(miner_uids))
 
     stmt = stmt.order_by(
         MinerResponseLog.miner_uid,
