@@ -22,7 +22,7 @@ class AbstractNeuron(ABC):
 
     @classmethod
     @abstractmethod
-    def config(cls) -> "bt.config":
+    def config(cls) -> "bt.Config":
         pass
 
     @abstractmethod
