@@ -193,15 +193,18 @@ class ScrapingDogScraper:
 
         scraped_results: List[Dict[str, Optional[str]]] = []
 
+        failed_urls = []
+
         for url, result in zip(urls, results):
             if isinstance(result, Exception):
-                bt.logging.warning(
-                    f"ScrapingDogScraper: Failed to scrape web link {url}: {result}"
-                )
+                failed_urls.append(url)
                 continue
 
             if result:
                 scraped_results.append(result)
+
+        if failed_urls:
+            bt.logging.warning(f"ScrapingDog failed to fetch links: {failed_urls}")
 
         return scraped_results
 

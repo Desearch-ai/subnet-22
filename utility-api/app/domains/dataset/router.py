@@ -100,8 +100,7 @@ async def get_next_question(
             else None
         )
         logger.exception(
-            f"dataset/next failed: hotkey={hotkey} "
-            f"cache_time_range={cache_time_range}"
+            f"dataset/next failed: hotkey={hotkey} cache_time_range={cache_time_range}"
         )
         raise
 

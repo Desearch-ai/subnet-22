@@ -90,6 +90,35 @@ class QueryScheduler:
                 f"[QueryScheduler] Scoring query failed uid={uid} type={search_type}: {e}"
             )
 
+    async def _score_search_type(
+        self,
+        search_type: str,
+        items: list,
+        time_range_start: datetime,
+    ) -> None:
+        """Score one search type for a completed epoch."""
+        validator = self.validators.get(search_type)
+        if validator is None or not items:
+            return
+
+        uids = torch.tensor([item["uid"] for item in items])
+        responses = [item["response"] for item in items]
+        prompts = [self._extract_prompt(response) for response in responses]
+        event = {}
+
+        bt.logging.info(
+            f"[QueryScheduler] Scoring {search_type}: {len(items)} responses"
+        )
+
+        await validator.compute_rewards_and_penalties(
+            event=event,
+            prompts=prompts,
+            responses=responses,
+            uids=uids,
+            start_time=time.time(),
+            scoring_epoch_start=time_range_start,
+        )
+
     async def score_epoch(self, time_range_start: datetime) -> None:
         """Load all responses for a completed hour and run reward/penalty computation."""
         try:
@@ -105,28 +134,26 @@ class QueryScheduler:
                 )
                 return
 
-            for search_type, items in all_responses.items():
-                validator = self.validators.get(search_type)
-                if validator is None or not items:
-                    continue
+            score_tasks = [
+                self._score_search_type(search_type, items, time_range_start)
+                for search_type, items in all_responses.items()
+                if self.validators.get(search_type) is not None and items
+            ]
 
-                uids = torch.tensor([item["uid"] for item in items])
-                responses = [item["response"] for item in items]
-                prompts = [self._extract_prompt(response) for response in responses]
-                event = {}
-
-                bt.logging.info(
-                    f"[QueryScheduler] Scoring {search_type}: {len(items)} responses"
+            if not score_tasks:
+                bt.logging.warning(
+                    f"[QueryScheduler] No scoreable responses for epoch "
+                    f"{time_range_start.isoformat()}, skipping scoring."
                 )
+                return
 
-                await validator.compute_rewards_and_penalties(
-                    event=event,
-                    prompts=prompts,
-                    responses=responses,
-                    uids=uids,
-                    start_time=time.time(),
-                    scoring_epoch_start=time_range_start,
-                )
+            results = await asyncio.gather(*score_tasks, return_exceptions=True)
+
+            for result in results:
+                if isinstance(result, Exception):
+                    bt.logging.error(
+                        f"[QueryScheduler] Error scoring epoch task: {result}"
+                    )
 
         except Exception as e:
             bt.logging.error(f"[QueryScheduler] Error in score_epoch: {e}")

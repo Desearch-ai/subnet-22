@@ -43,6 +43,27 @@ def _merge_search_types(existing_search_types, new_search_types) -> list[str]:
     return merged
 
 
+def _build_log_values(body: SaveMinerResponseLogsRequest) -> list[dict]:
+    """Keep Python-native datatypes for SQLAlchemy inserts."""
+    return [_sanitize_log_value(log.model_dump(mode="python")) for log in body.logs]
+
+
+def _sanitize_log_value(value):
+    """Strip null bytes that Postgres cannot store in text/JSONB values."""
+    if isinstance(value, str):
+        return value.replace("\x00", "")
+    if isinstance(value, dict):
+        return {
+            _sanitize_log_value(key): _sanitize_log_value(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_sanitize_log_value(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_sanitize_log_value(item) for item in value)
+    return value
+
+
 async def _upsert_organic_questions(
     session: AsyncSession, body: SaveMinerResponseLogsRequest
 ) -> None:
@@ -134,7 +155,7 @@ async def save_logs(
         return SaveMinerResponseLogsResponse(inserted=0)
 
     try:
-        values = [log.model_dump(mode="json") for log in body.logs]
+        values = _build_log_values(body)
         stmt = insert(MinerResponseLog).values(values)
 
         result = await session.execute(stmt)

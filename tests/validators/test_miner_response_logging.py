@@ -5,7 +5,7 @@ import pytest
 import torch
 
 from neurons.validators.advanced_scraper_validator import AdvancedScraperValidator
-from neurons.validators.miner_response_logger import submit_logs
+from neurons.validators.miner_response_logger import build_log_entry, submit_logs
 from neurons.validators.web_scraper_validator import WebScraperValidator
 from neurons.validators.x_scraper_validator import XScraperValidator
 
@@ -144,6 +144,39 @@ async def test_submit_logs_swallows_utility_api_failures():
     owner.utility_api.save_logs.side_effect = RuntimeError("boom")
 
     await submit_logs(owner, [{"log": 1}])
+
+
+def test_build_log_entry_excludes_html_fields_from_response_payload():
+    owner = _fake_owner()
+    response = SimpleNamespace(
+        prompt="what is bittensor",
+        validator_links=[
+            {
+                "link": "https://example.com",
+                "title": "Example",
+                "snippet": "Summary",
+                "html_content": "<html>big payload</html>",
+                "html_text": "big payload",
+            }
+        ],
+        axon=SimpleNamespace(
+            hotkey="miner-hotkey",
+            coldkey="miner-coldkey",
+        ),
+        dendrite=SimpleNamespace(status_code=200, process_time="1.5"),
+    )
+
+    log_entry = build_log_entry(
+        owner=owner,
+        search_type="web_search",
+        query_kind="scoring",
+        response=response,
+    )
+
+    assert "html_content" not in log_entry["response_payload"]["validator_links"][0]
+    assert "html_text" not in log_entry["response_payload"]["validator_links"][0]
+    assert response.validator_links[0]["html_content"] == "<html>big payload</html>"
+    assert response.validator_links[0]["html_text"] == "big payload"
 
 
 @pytest.mark.asyncio

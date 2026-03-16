@@ -13,6 +13,7 @@ REWARD_COMPONENT_NAMES = {
     "x_search": ["twitter", "performance"],
     "web_search": ["search", "performance"],
 }
+_RESPONSE_PAYLOAD_EXCLUDED_KEYS = {"html_content", "html_text"}
 
 
 def to_jsonable(value: Any) -> Any:
@@ -146,6 +147,20 @@ def _slice_event_value(value: Any, index: int, response_count: int) -> Any:
     return serialized
 
 
+def _sanitize_response_payload(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: _sanitize_response_payload(item)
+            for key, item in value.items()
+            if key not in _RESPONSE_PAYLOAD_EXCLUDED_KEYS
+        }
+    if isinstance(value, list):
+        return [_sanitize_response_payload(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_sanitize_response_payload(item) for item in value)
+    return value
+
+
 def build_reward_payload(
     search_type: str,
     response_count: int,
@@ -227,7 +242,7 @@ def build_log_entry(
     scoring_epoch_start: Optional[datetime] = None,
 ) -> dict[str, Any]:
     validator_identity = get_validator_identity(owner)
-    response_payload = to_jsonable(response)
+    response_payload = _sanitize_response_payload(to_jsonable(response))
     response_axon = getattr(response, "axon", None)
 
     miner_hotkey = miner_hotkey or getattr(response_axon, "hotkey", None)
@@ -239,7 +254,8 @@ def build_log_entry(
     return {
         "query_kind": query_kind,
         "search_type": search_type,
-        "netuid": validator_identity.get("netuid") or getattr(owner.config, "netuid", 0),
+        "netuid": validator_identity.get("netuid")
+        or getattr(owner.config, "netuid", 0),
         "scoring_epoch_start": to_jsonable(scoring_epoch_start),
         "miner_uid": miner_uid,
         "miner_hotkey": miner_hotkey or "",
@@ -270,9 +286,11 @@ async def submit_logs(owner, logs: list[dict[str, Any]]) -> None:
         return
 
     try:
+        bt.logging.debug(f"Saving miner response logs count={len(logs)}")
         await utility_api.save_logs(logs)
+        bt.logging.debug(f"Saved miner response logs count={len(logs)}")
     except Exception as exc:
-        bt.logging.error(f"Failed to save miner response logs: {exc}")
+        bt.logging.error(f"Failed to save miner response logs count={len(logs)}: {exc}")
 
 
 def submit_logs_best_effort(owner, logs: list[dict[str, Any]]) -> None:

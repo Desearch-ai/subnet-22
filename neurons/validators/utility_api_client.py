@@ -56,7 +56,7 @@ class UtilityAPIClient:
 
         Returns:
             {
-                "epoch_id": int,
+                "time_range_start": str,
                 "uid": int,
                 "search_type": str,      # e.g. "ai_search", "x_search"
                 "question": {"query": str}
@@ -64,7 +64,7 @@ class UtilityAPIClient:
 
         Raises:
             aiohttp.ClientResponseError: on 4xx/5xx responses (including 404 when
-                                         all questions for this epoch are served,
+                                         all questions for this scoring window are served,
                                          or 429 for rate limiting)
         """
 
