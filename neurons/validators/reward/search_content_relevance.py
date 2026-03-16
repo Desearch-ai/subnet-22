@@ -1,22 +1,23 @@
-from typing import List, Tuple, Dict
-
-from neurons.validators.base_validator import AbstractNeuron
-from .reward import BaseRewardModel, BaseRewardEvent
-from .config import RewardModelType
-from neurons.validators.reward.reward_llm import RewardLLM
-from desearch.protocol import ScraperStreamingSynapse, ScraperTextRole
+import json
+import random
+import time
 import traceback
+from typing import Dict, List, Tuple
+
 import bittensor as bt
+
+from desearch.protocol import ScraperStreamingSynapse, ScraperTextRole
 from desearch.utils import clean_text
-from neurons.validators.apify.cheerio_scraper_actor import CheerioScraperActor
-from neurons.validators.apify.reddit_scraper_actor import RedditScraperActor
 from neurons.validators.apify.utils import scrape_links_with_retries
+from neurons.validators.base_validator import AbstractNeuron
+from neurons.validators.reward.reward_llm import RewardLLM
+from neurons.validators.scrapingdog_scraper import ScrapingDogScraper
 from neurons.validators.utils.prompts import (
     SearchSummaryRelevancePrompt,
 )
-import random
-import json
-import time
+
+from .config import RewardModelType
+from .reward import BaseRewardEvent, BaseRewardModel
 
 
 class WebSearchContentRelevanceModel(BaseRewardModel):
@@ -63,53 +64,14 @@ class WebSearchContentRelevanceModel(BaseRewardModel):
         return score_responses
 
     async def scrape_links(self, urls):
-        # Separate Reddit URLs from other URLs
-        reddit_urls = []
-        other_urls = []
-
-        for url in urls:
-            if "reddit.com" in url and "comments" in url:
-                reddit_urls.append(url)
-            else:
-                other_urls.append(url)
-
-        # Scrape Reddit URLs with retries
-        reddit_fetched_links_with_metadata = []
-        reddit_non_fetched_links = []
-
-        if reddit_urls:
-            reddit_fetched_links_with_metadata, reddit_non_fetched_links = (
-                await scrape_links_with_retries(
-                    urls=reddit_urls,
-                    scraper_actor_class=CheerioScraperActor,
-                    group_size=100,
-                    # TODO Find new working solution for scraping Reddit. Until now it is disabled
-                    # scraper_actor_class=RedditScraperActor,
-                    # group_size=200,
-                    max_attempts=2,
-                )
-            )
-
-        # Scrape other URLs with retries
-        other_fetched_links_with_metadata = []
-        other_non_fetched_links = []
-
-        if other_urls:
-            other_fetched_links_with_metadata, other_non_fetched_links = (
-                await scrape_links_with_retries(
-                    urls=other_urls,
-                    scraper_actor_class=CheerioScraperActor,
-                    group_size=100,
-                    max_attempts=2,
-                )
-            )
-
-        # Combine non-fetched links
-        non_fetched_links = reddit_non_fetched_links + other_non_fetched_links
-
-        # Combine all fetched links
-        fetched_links_with_metadata = (
-            reddit_fetched_links_with_metadata + other_fetched_links_with_metadata
+        (
+            fetched_links_with_metadata,
+            non_fetched_links,
+        ) = await scrape_links_with_retries(
+            urls=urls,
+            scraper_actor_class=ScrapingDogScraper,
+            group_size=25,
+            max_attempts=2,
         )
 
         # Filter out any entries without a URL
@@ -174,7 +136,7 @@ class WebSearchContentRelevanceModel(BaseRewardModel):
         bt.logging.info(
             f"Fetched Web links method took {end_time - start_time} seconds. "
             f"All links count: {len(all_links)}, Unique links count: {len(unique_links)}, "
-            f"APIFY fetched web links count: {len(links_with_metadata)}"
+            f"Validator fetched web links count: {len(links_with_metadata)}"
         )
 
         bt.logging.info(
