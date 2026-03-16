@@ -4,10 +4,12 @@ from app.auth import get_hotkey
 from app.db.session import get_session
 from app.domains.dataset.question_cache import QuestionCache
 from app.domains.dataset.schemas import NextQuestionResponse
+from app.logger import get_logger
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 router = APIRouter(prefix="/dataset", tags=["dataset"])
+logger = get_logger(__name__)
 
 # Will be set during app startup via init_question_cache()
 _question_cache: QuestionCache | None = None
@@ -27,6 +29,10 @@ def get_question_cache() -> QuestionCache:
 async def init_question_cache(netuid: int, subtensor_network: str):
     """Call this from your FastAPI lifespan/startup."""
     global _question_cache
+    logger.info(
+        f"Initializing question cache: netuid={netuid} "
+        f"subtensor_network={subtensor_network}"
+    )
     _question_cache = QuestionCache(netuid=netuid, subtensor_network=subtensor_network)
     await _question_cache.initialize()
 
@@ -35,6 +41,7 @@ async def close_question_cache():
     """Call this from your FastAPI lifespan/shutdown."""
     global _question_cache
     if _question_cache:
+        logger.info("Closing question cache")
         await _question_cache.close()
         _question_cache = None
 
@@ -68,6 +75,11 @@ async def get_next_question(
     last = _last_request.get(hotkey, 0)
 
     if now - last < MIN_REQUEST_INTERVAL:
+        logger.warning(
+            f"Rate limit hit for dataset/next: hotkey={hotkey} "
+            f"elapsed={now - last:.3f}s "
+            f"min_interval={MIN_REQUEST_INTERVAL}s"
+        )
         raise HTTPException(
             status_code=429,
             detail=f"Too many requests. Wait {MIN_REQUEST_INTERVAL}s between calls.",
@@ -75,8 +87,31 @@ async def get_next_question(
 
     _last_request[hotkey] = now
 
-    time_range_start, uid, search_type, question = await cache.get_next_question(
-        session, hotkey
+    try:
+        time_range_start, uid, search_type, question = await cache.get_next_question(
+            session, hotkey
+        )
+    except HTTPException:
+        raise
+    except Exception:
+        cache_time_range = (
+            cache._cache.time_range_start.isoformat()
+            if cache._cache.time_range_start
+            else None
+        )
+        logger.exception(
+            f"dataset/next failed: hotkey={hotkey} "
+            f"cache_time_range={cache_time_range}"
+        )
+        raise
+
+    logger.debug(
+        f"dataset/next served: hotkey={hotkey} "
+        f"time_range={time_range_start.isoformat()} "
+        f"uid={uid} "
+        f"search_type={search_type.value} "
+        f"params={question.params} "
+        f"query={question.query[:120]!r}"
     )
 
     return NextQuestionResponse(

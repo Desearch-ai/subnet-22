@@ -1,5 +1,4 @@
 import asyncio
-import logging
 import random
 from collections import Counter
 from dataclasses import dataclass, field
@@ -10,12 +9,12 @@ import bittensor as bt
 from app.domains.dataset.enums import SearchType
 from app.domains.dataset.models.question import Question
 from app.domains.dataset.schemas import QuestionOut
+from app.logger import get_logger
 from fastapi import HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
+logger = get_logger(__name__)
 
 _AI_SEARCH_TOOLS: List[List[str]] = [
     ["Twitter Search", "Reddit Search"],
@@ -168,13 +167,21 @@ class QuestionCache:
         # Track served (search_type, uid) per validator hotkey
         self._served: Dict[str, Set[Tuple[SearchType, int]]] = {}
 
+    def _assignment_counts(self) -> dict[str, int]:
+        return {
+            search_type.value: len(uid_map)
+            for search_type, uid_map in self._cache.assignments.items()
+        }
+
     async def initialize(self):
         """Connect to subtensor."""
         self._subtensor = bt.AsyncSubtensor(network=self.subtensor_network)
         await self._subtensor.initialize()
         current_block = await self._subtensor.get_current_block()
         logger.info(
-            f"QuestionCache initialized: netuid={self.netuid}, block={current_block}"
+            f"QuestionCache initialized: netuid={self.netuid} "
+            f"subtensor_network={self.subtensor_network} "
+            f"block={current_block}"
         )
 
     async def close(self):
@@ -185,64 +192,101 @@ class QuestionCache:
     async def _refresh_cache(self, session: AsyncSession):
         """Fetch metagraph for miner UIDs and build question assignments."""
         time_range_start = _current_hour_utc()
-
-        # Get all UIDs from metagraph
-        metagraph = await self._subtensor.metagraph(self.netuid)
-        miner_uids = [uid for uid in metagraph.uids]
+        previous_time_range = self._cache.time_range_start
 
         logger.info(
-            f"Refreshing question cache: time_range={time_range_start.isoformat()}, "
-            f"uid_count={len(miner_uids)}"
+            "Refreshing question cache: "
+            f"previous_time_range="
+            f"{previous_time_range.isoformat() if previous_time_range else None} "
+            f"next_time_range={time_range_start.isoformat()}"
         )
 
-        # Build deterministic assignments per search type
-        assignments: Dict[SearchType, Dict[int, QuestionOut]] = {}
-
-        for search_type in _SCORING_SEARCH_TYPES:
-            stmt = (
-                select(Question)
-                .where(Question.search_types.contains([search_type.value]))
-                .order_by(func.random())
-                .limit(len(miner_uids))
-            )
-            result = await session.execute(stmt)
-            rows = result.scalars().all()
-            questions = [QuestionOut.model_validate(q) for q in rows]
-
-            if not questions:
-                logger.warning(f"No questions found for {search_type.value}")
-                assignments[search_type] = {}
-                continue
-
-            # uid[i] -> question[i % len(questions)] with per-uid params embedded
-            assignments[search_type] = {
-                uid: QuestionOut(
-                    query=questions[i % len(questions)].query,
-                    params=_generate_params_for(search_type),
-                )
-                for i, uid in enumerate(miner_uids)
-            }
+        try:
+            # Get all UIDs from metagraph
+            metagraph = await self._subtensor.metagraph(self.netuid)
+            miner_uids = [int(uid) for uid in metagraph.uids]
 
             logger.info(
-                f"Assigned {len(assignments[search_type])} questions "
-                f"for {search_type.value} (time_range {time_range_start.isoformat()})"
+                f"Fetched metagraph for refresh: "
+                f"time_range={time_range_start.isoformat()} "
+                f"uid_count={len(miner_uids)}"
             )
 
-        self._cache = TimeRangeCache(
-            time_range_start=time_range_start,
-            miner_uids=miner_uids,
-            assignments=assignments,
-        )
+            # Build deterministic assignments per search type
+            assignments: Dict[SearchType, Dict[int, QuestionOut]] = {}
 
-        # Clear serving state on time range change
-        self._served.clear()
+            for search_type in _SCORING_SEARCH_TYPES:
+                stmt = (
+                    select(Question)
+                    .where(Question.search_types.contains([search_type.value]))
+                    .order_by(func.random())
+                    .limit(len(miner_uids))
+                )
+                result = await session.execute(stmt)
+                rows = result.scalars().all()
+                questions = [QuestionOut.model_validate(q) for q in rows]
+
+                if not questions:
+                    logger.warning(
+                        f"No questions found for search_type={search_type.value} "
+                        f"time_range={time_range_start.isoformat()}"
+                    )
+                    assignments[search_type] = {}
+                    continue
+
+                assignments[search_type] = {
+                    uid: QuestionOut(
+                        query=questions[i % len(questions)].query,
+                        params=_generate_params_for(search_type),
+                    )
+                    for i, uid in enumerate(miner_uids)
+                }
+
+                sample_question = questions[0].query if questions else ""
+                logger.info(
+                    f"Assigned questions: "
+                    f"time_range={time_range_start.isoformat()} "
+                    f"search_type={search_type.value} "
+                    f"assignment_count={len(assignments[search_type])} "
+                    f"sampled_questions={len(questions)} "
+                    f"sample_query={sample_question[:120]!r}"
+                )
+
+            self._cache = TimeRangeCache(
+                time_range_start=time_range_start,
+                miner_uids=miner_uids,
+                assignments=assignments,
+            )
+
+            self._served.clear()
+            logger.info(
+                f"Question cache refresh complete: "
+                f"time_range={time_range_start.isoformat()} "
+                f"assignments={self._assignment_counts()}"
+            )
+        except Exception:
+            logger.exception(
+                "Question cache refresh failed: "
+                f"previous_time_range="
+                f"{previous_time_range.isoformat() if previous_time_range else None} "
+                f"next_time_range={time_range_start.isoformat()}"
+            )
+            raise
 
     async def _ensure_fresh(self, session: AsyncSession):
         """Refresh cache if the current UTC hour differs from the cached one."""
-        if _current_hour_utc() != self._cache.time_range_start:
+        current_hour = _current_hour_utc()
+        if current_hour != self._cache.time_range_start:
+            logger.info(
+                f"Detected cache rollover: "
+                f"cached_time_range="
+                f"{self._cache.time_range_start.isoformat() if self._cache.time_range_start else None} "
+                f"current_hour={current_hour.isoformat()}"
+            )
             async with self._lock:
                 # Re-check after acquiring lock to avoid double refresh
-                if _current_hour_utc() != self._cache.time_range_start:
+                current_hour = _current_hour_utc()
+                if current_hour != self._cache.time_range_start:
                     await self._refresh_cache(session)
 
     async def get_next_question(
@@ -268,6 +312,17 @@ class QuestionCache:
                     unserved.append((search_type, uid))
 
         if not unserved:
+            cache_time_range = (
+                self._cache.time_range_start.isoformat()
+                if self._cache.time_range_start
+                else None
+            )
+            logger.info(
+                f"All questions served for validator: hotkey={hotkey} "
+                f"time_range={cache_time_range} "
+                f"served_count={len(served)} "
+                f"assignments={self._assignment_counts()}"
+            )
             raise HTTPException(
                 status_code=404,
                 detail="All questions served for this time range",
@@ -278,4 +333,19 @@ class QuestionCache:
         served.add((search_type, uid))
 
         question = self._cache.assignments[search_type][uid]
+        cache_time_range = (
+            self._cache.time_range_start.isoformat()
+            if self._cache.time_range_start
+            else None
+        )
+        logger.debug(
+            f"Serving question: hotkey={hotkey} "
+            f"time_range={cache_time_range} "
+            f"search_type={search_type.value} "
+            f"uid={uid} "
+            f"served_count={len(served)} "
+            f"remaining={len(unserved) - 1} "
+            f"params={question.params} "
+            f"query={question.query[:120]!r}"
+        )
         return self._cache.time_range_start, uid, search_type, question

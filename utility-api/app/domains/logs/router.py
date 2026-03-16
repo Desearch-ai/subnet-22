@@ -13,12 +13,14 @@ from app.domains.logs.schemas import (
     ScoringLogGroupResponse,
     ScoringValidatorLogResponse,
 )
+from app.logger import get_logger
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 router = APIRouter(prefix="/logs", tags=["logs"])
+logger = get_logger(__name__)
 
 
 def _normalize_question_query(query: str) -> str:
@@ -59,6 +61,7 @@ async def _upsert_organic_questions(
             query_search_types.append(log.search_type)
 
     if not search_types_by_query:
+        logger.debug("No organic questions to upsert from log batch")
         return
 
     result = await session.execute(
@@ -71,6 +74,7 @@ async def _upsert_organic_questions(
         existing_questions_by_query.setdefault(question.query, []).append(question)
 
     question_values = []
+    updated_question_count = 0
 
     for query, search_types in search_types_by_query.items():
         matching_questions = existing_questions_by_query.get(query, [])
@@ -87,9 +91,7 @@ async def _upsert_organic_questions(
             )
             continue
 
-        merged_search_types = [
-            search_type.value for search_type in search_types
-        ]
+        merged_search_types = [search_type.value for search_type in search_types]
 
         for question in matching_questions:
             next_search_types = _merge_search_types(
@@ -105,29 +107,54 @@ async def _upsert_organic_questions(
                 .where(Question.id == question.id)
                 .values(search_types=next_search_types)
             )
+            updated_question_count += 1
 
     if question_values:
         await session.execute(insert(Question).values(question_values))
+
+    logger.info(
+        f"Organic question sync complete: "
+        f"distinct_queries={len(search_types_by_query)} "
+        f"inserted={len(question_values)} "
+        f"updated={updated_question_count}"
+    )
 
 
 @router.post("", response_model=SaveMinerResponseLogsResponse)
 async def save_logs(
     body: SaveMinerResponseLogsRequest,
-    _: str = Depends(get_hotkey),
+    requester_hotkey: str = Depends(get_hotkey),
     session: AsyncSession = Depends(get_session),
 ):
     if not body.logs:
+        logger.info(
+            f"Received empty miner response log batch: "
+            f"requester_hotkey={requester_hotkey}"
+        )
         return SaveMinerResponseLogsResponse(inserted=0)
 
-    values = [log.model_dump(mode="json") for log in body.logs]
+    try:
+        values = [log.model_dump(mode="json") for log in body.logs]
+        stmt = insert(MinerResponseLog).values(values)
 
-    stmt = insert(MinerResponseLog).values(values)
+        result = await session.execute(stmt)
+        await _upsert_organic_questions(session, body)
+        await session.commit()
 
-    result = await session.execute(stmt)
-    await _upsert_organic_questions(session, body)
-    await session.commit()
+        inserted = result.rowcount or 0
+        logger.info(
+            f"Saved miner response logs: "
+            f"requester_hotkey={requester_hotkey} "
+            f"inserted={inserted}"
+        )
 
-    return SaveMinerResponseLogsResponse(inserted=result.rowcount or 0)
+        return SaveMinerResponseLogsResponse(inserted=inserted)
+    except Exception as e:
+        logger.exception(
+            f"Failed to save miner response logs: {e}"
+            f"requester_hotkey={requester_hotkey}"
+        )
+        raise
 
 
 def _build_reward_stats(

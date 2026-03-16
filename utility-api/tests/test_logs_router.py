@@ -260,8 +260,6 @@ def test_save_logs_updates_existing_question_search_types():
 
     question_update_stmt = session.execute.await_args_list[2].args[0]
     assert question_update_stmt.table.name == "questions"
-
-
 def test_get_scoring_logs_returns_grouped_validator_runs():
     app = create_test_app()
     session = AsyncMock()
