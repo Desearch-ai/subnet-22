@@ -1,10 +1,7 @@
-import logging
 import time
 
 import aiohttp
 import bittensor as bt
-
-logger = logging.getLogger(__name__)
 
 
 class UtilityAPIClient:
@@ -30,6 +27,29 @@ class UtilityAPIClient:
             "X-Signature": signature,
         }
 
+    async def _raise_for_status_with_context(
+        self,
+        response: aiohttp.ClientResponse,
+        *,
+        context: str,
+        skip_logging_statuses: set[int] | None = None,
+    ) -> None:
+        if response.status < 400:
+            return
+
+        if response.status not in (skip_logging_statuses or set()):
+            body = (await response.text()).strip()
+            body_preview = body[:1000]
+            message = (
+                f"[UtilityAPIClient] {context} failed status={response.status} "
+                f"url={response.url}"
+            )
+            if body_preview:
+                message = f"{message} body={body_preview}"
+            bt.logging.error(message)
+
+        response.raise_for_status()
+
     async def fetch_next_question(self) -> dict:
         """
         Fetch one (question, search_type, uid) from the utility API.
@@ -53,7 +73,11 @@ class UtilityAPIClient:
             headers=self._auth_headers(),
             timeout=aiohttp.ClientTimeout(total=30),
         ) as response:
-            response.raise_for_status()
+            await self._raise_for_status_with_context(
+                response,
+                context="fetch_next_question",
+                skip_logging_statuses={404, 429},
+            )
             return await response.json()
 
     async def save_logs(self, logs: list[dict]) -> dict:
@@ -63,7 +87,10 @@ class UtilityAPIClient:
             json={"logs": logs},
             timeout=aiohttp.ClientTimeout(total=120),
         ) as response:
-            response.raise_for_status()
+            await self._raise_for_status_with_context(
+                response,
+                context="save_logs",
+            )
             return await response.json()
 
     async def close(self):

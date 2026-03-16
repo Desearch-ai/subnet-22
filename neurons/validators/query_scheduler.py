@@ -155,6 +155,12 @@ class QueryScheduler:
                     self.current_time_range is not None
                     and time_range_start != self.current_time_range
                 ):
+                    bt.logging.info(
+                        "[QueryScheduler] Hour boundary detected "
+                        f"previous={self.current_time_range.isoformat()} "
+                        f"next={time_range_start.isoformat()} "
+                        f"is_first_epoch={self.is_first_epoch}"
+                    )
                     if not self.is_first_epoch:
                         asyncio.create_task(self.score_epoch(self.current_time_range))
                     else:
@@ -187,5 +193,10 @@ class QueryScheduler:
                     # Rate limited — back off slightly beyond the 4 s window
                     await asyncio.sleep(4.1)
                 else:
-                    bt.logging.error(f"[QueryScheduler] Unexpected error: {e}")
+                    bt.logging.error(
+                        "[QueryScheduler] Unexpected error while polling "
+                        f"dataset/next current_time_range="
+                        f"{self.current_time_range.isoformat() if self.current_time_range else None} "
+                        f"status={status}: {e}"
+                    )
                     await asyncio.sleep(5)

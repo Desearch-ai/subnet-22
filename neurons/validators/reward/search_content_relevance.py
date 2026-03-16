@@ -2,11 +2,11 @@ import json
 import random
 import time
 import traceback
-from typing import Dict, List, Tuple
+from typing import List
 
 import bittensor as bt
 
-from desearch.protocol import ScraperStreamingSynapse, ScraperTextRole
+from desearch.protocol import ScraperStreamingSynapse
 from desearch.utils import clean_text
 from neurons.validators.apify.utils import scrape_links_with_retries
 from neurons.validators.base_validator import AbstractNeuron
