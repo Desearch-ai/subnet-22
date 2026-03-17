@@ -37,12 +37,13 @@ class SerpAPIWrapper:
             return url, params
 
         url, params = construct_url_and_params()
+        timeout = aiohttp.ClientTimeout(total=60)
         if not self.aiosession:
             async with aiohttp.ClientSession() as session:
-                async with session.get(url, params=params) as response:
+                async with session.get(url, params=params, timeout=timeout) as response:
                     res = await response.json()
         else:
-            async with self.aiosession.get(url, params=params) as response:
+            async with self.aiosession.get(url, params=params, timeout=timeout) as response:
                 res = await response.json()
 
         return res
