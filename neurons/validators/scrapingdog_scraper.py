@@ -11,12 +11,6 @@ import bittensor as bt
 
 SCRAPINGDOG_API_KEY = os.environ.get("SCRAPINGDOG_API_KEY")
 
-if not SCRAPINGDOG_API_KEY:
-    raise ValueError(
-        "Please set the SCRAPINGDOG_API_KEY environment variable. "
-        "See here: https://github.com/Desearch-ai/subnet-22/blob/main/docs/env_variables.md."
-    )
-
 
 class _ScrapingDogHTMLParser(HTMLParser):
     _IGNORED_TAGS = {"script", "style", "noscript", "svg"}
@@ -174,6 +168,12 @@ class ScrapingDogScraper:
         return semaphore
 
     async def scrape_metadata(self, urls: List[str]) -> List[Dict[str, Optional[str]]]:
+        if not SCRAPINGDOG_API_KEY:
+            raise ValueError(
+                "Please set the SCRAPINGDOG_API_KEY environment variable. "
+                "See here: https://github.com/Desearch-ai/subnet-22/blob/main/docs/env_variables.md."
+            )
+
         if not urls:
             return []
 

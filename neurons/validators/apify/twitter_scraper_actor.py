@@ -1,22 +1,19 @@
 import os
+import traceback
 from typing import List, Optional
 
-# DEALINGS IN THE SOFTWARE.p
-import traceback
 import bittensor as bt
 from apify_client import ApifyClientAsync
 
 from desearch.protocol import (
-    TwitterScraperTweet,
     TwitterScraperMedia,
+    TwitterScraperTweet,
     TwitterScraperUser,
 )
 from desearch.services.twitter_utils import TwitterUtils
 
-
 APIFY_API_KEY = os.environ.get("APIFY_API_KEY")
 
-# todo at ths moment just warning, later it will be required
 if not APIFY_API_KEY:
     raise ValueError(
         "Please set the APIFY_API_KEY environment variable. See here: https://github.com/Desearch-ai/subnet-22/blob/main/docs/env_variables.md"
@@ -233,168 +230,6 @@ class TwitterScraperActor:
         except Exception as e:
             error_message = (
                 f"TwitterScraperActor: Failed to scrape tweets {searchTerms}: {str(e)}"
-            )
-            tb_str = traceback.format_exception(type(e), e, e.__traceback__)
-            bt.logging.warning("\n".join(tb_str) + error_message)
-            return {
-                "error": error_message,
-            }
-
-    async def get_user_by_id(
-        self,
-        id: str,
-    ) -> dict:
-        if not APIFY_API_KEY:
-            error = "Please set the APIFY_API_KEY environment variable. See here: https://github.com/Desearch-ai/subnet-22/blob/main/docs/env_variables.md. This will be required in the next release."
-            bt.logging.warning(error)
-            return {"error": error}
-        try:
-            run_input = {
-                "twitterUserIds": [id],
-                "maxItems": 1,
-                "getFollowing": True,
-                "getRetweeters": False,
-                "getFollowers": False,
-                "includeUnavailableUsers": False,
-            }
-            run_input = {k: v for k, v in run_input.items() if v is not None}
-
-            run = await self.client.actor(self.user_scraper_actor_id).call(
-                run_input=run_input
-            )
-
-            user = None
-            async for item in self.client.dataset(
-                run["defaultDatasetId"]
-            ).iterate_items():
-                if item.get("id") == id:
-                    user = item
-
-            return {"data": user}
-        except Exception as e:
-            error_message = f"TwitterScraperActor: Failed to scrape user {id}: {str(e)}"
-            tb_str = traceback.format_exception(type(e), e, e.__traceback__)
-            bt.logging.warning("\n".join(tb_str) + error_message)
-            return {
-                "error": error_message,
-            }
-
-    async def get_user_by_username(
-        self,
-        username: str,
-    ) -> dict:
-        if not APIFY_API_KEY:
-            error = "Please set the APIFY_API_KEY environment variable. See here: https://github.com/Desearch-ai/subnet-22/blob/main/docs/env_variables.md. This will be required in the next release."
-            bt.logging.warning(error)
-            return {"error": error}
-        try:
-            run_input = {
-                "twitterHandles": [username],
-                "maxItems": 1,
-                "getFollowing": True,
-                "getRetweeters": False,
-                "getFollowers": False,
-                "includeUnavailableUsers": False,
-            }
-            run_input = {k: v for k, v in run_input.items() if v is not None}
-
-            run = await self.client.actor(self.user_scraper_actor_id).call(
-                run_input=run_input
-            )
-
-            user = None
-            async for item in self.client.dataset(
-                run["defaultDatasetId"]
-            ).iterate_items():
-                if item.get("userName") == username:
-                    user = item
-
-            return {"data": user}
-        except Exception as e:
-            error_message = (
-                f"TwitterScraperActor: Failed to scrape user {username}: {str(e)}"
-            )
-            tb_str = traceback.format_exception(type(e), e, e.__traceback__)
-            bt.logging.warning("\n".join(tb_str) + error_message)
-            return {
-                "error": error_message,
-            }
-
-    async def get_user_followings(
-        self,
-        id: str,
-        maxUsersPerQuery: Optional[int] = 10,
-    ) -> dict:
-        if not APIFY_API_KEY:
-            error = "Please set the APIFY_API_KEY environment variable. See here: https://github.com/Desearch-ai/subnet-22/blob/main/docs/env_variables.md. This will be required in the next release."
-            bt.logging.warning(error)
-            return {"error": error}
-        try:
-            run_input = {
-                "twitterUserIds": [id],
-                "maxItems": maxUsersPerQuery,
-                "getFollowing": True,
-                "getRetweeters": False,
-                "getFollowers": False,
-                "includeUnavailableUsers": False,
-            }
-            run_input = {k: v for k, v in run_input.items() if v is not None}
-
-            run = await self.client.actor(self.user_scraper_actor_id).call(
-                run_input=run_input
-            )
-
-            users: List[dict] = []
-
-            async for item in self.client.dataset(
-                run["defaultDatasetId"]
-            ).iterate_items():
-                users.append(item)
-
-            return {"data": users}
-        except Exception as e:
-            error_message = f"TwitterScraperActor: Failed to scrape user's followings {id}: {str(e)}"
-            tb_str = traceback.format_exception(type(e), e, e.__traceback__)
-            bt.logging.warning("\n".join(tb_str) + error_message)
-            return {
-                "error": error_message,
-            }
-
-    async def get_user_followers(
-        self,
-        id: str,
-        maxUsersPerQuery: Optional[int] = 10,
-    ) -> dict:
-        if not APIFY_API_KEY:
-            error = "Please set the APIFY_API_KEY environment variable. See here: https://github.com/Desearch-ai/subnet-22/blob/main/docs/env_variables.md. This will be required in the next release."
-            bt.logging.warning(error)
-            return {"error": error}
-        try:
-            run_input = {
-                "twitterUserIds": [id],
-                "maxItems": maxUsersPerQuery,
-                "getFollowing": False,
-                "getRetweeters": False,
-                "getFollowers": True,
-                "includeUnavailableUsers": False,
-            }
-            run_input = {k: v for k, v in run_input.items() if v is not None}
-
-            run = await self.client.actor(self.user_scraper_actor_id).call(
-                run_input=run_input
-            )
-
-            users: List[dict] = []
-
-            async for item in self.client.dataset(
-                run["defaultDatasetId"]
-            ).iterate_items():
-                users.append(item)
-
-            return {"data": users}
-        except Exception as e:
-            error_message = (
-                f"TwitterScraperActor: Failed to scrape user's followers {id}: {str(e)}"
             )
             tb_str = traceback.format_exception(type(e), e, e.__traceback__)
             bt.logging.warning("\n".join(tb_str) + error_message)
