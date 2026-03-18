@@ -36,6 +36,10 @@ app.add_middleware(
 )
 
 
+def get_validator_identity():
+    return neuron.validator_identity
+
+
 @app.get("/config")
 async def get_config():
     if not neuron.available_uids:
@@ -44,8 +48,10 @@ async def get_config():
             detail="Neuron is not available.",
         )
 
-    config = neuron.config
-    return config
+    return {
+        "config": neuron.config,
+        "validator_identity": get_validator_identity(),
+    }
 
 
 class GetRandomUidRequest(BaseModel):

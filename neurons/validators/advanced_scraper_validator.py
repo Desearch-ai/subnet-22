@@ -1,17 +1,13 @@
-import asyncio
-import random
 import time
 from typing import List, Optional
 
 import bittensor as bt
 import torch
+import wandb
 
-from desearch import QUERY_MINERS
-from desearch.dataset import QuestionsDataset
 from desearch.dataset.date_filters import (
     DateFilter,
     DateFilterType,
-    get_random_date_filter,
     get_specified_date_filter,
 )
 from desearch.protocol import (
@@ -23,7 +19,11 @@ from desearch.protocol import (
 from desearch.stream import collect_final_synapses
 from desearch.utils import get_max_execution_time
 from neurons.validators.base_validator import AbstractNeuron
-from neurons.validators.organic_history_mixin import OrganicHistoryMixin
+from neurons.validators.miner_response_logger import (
+    build_log_entry,
+    build_reward_payload,
+    submit_logs_best_effort,
+)
 from neurons.validators.penalty.chat_history_penalty import ChatHistoryPenaltyModel
 from neurons.validators.penalty.exponential_penalty import ExponentialTimePenaltyModel
 from neurons.validators.penalty.miner_score_penalty import MinerScorePenaltyModel
@@ -40,17 +40,11 @@ from neurons.validators.reward.twitter_content_relevance import (
     TwitterContentRelevanceModel,
 )
 from neurons.validators.utils.mock import MockRewardModel
-from neurons.validators.utils.tasks import TwitterTask
 
 
-class AdvancedScraperValidator(OrganicHistoryMixin):
+class AdvancedScraperValidator:
     def __init__(self, neuron: AbstractNeuron):
-        super().__init__()
-
         self.neuron = neuron
-
-        self.execution_time_options = [Model.NOVA, Model.ORBIT, Model.HORIZON]
-        self.execution_time_probabilities = [0.8, 0.1, 0.1]
 
         self.tools = [
             ["Twitter Search", "Reddit Search"],
@@ -171,25 +165,16 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
             ChatHistoryPenaltyModel(max_penalty=1, neuron=self.neuron),
         ]
 
-    def get_random_execution_time(self):
-        return random.choices(
-            self.execution_time_options, self.execution_time_probabilities
-        )[0]
-
-    async def run_task_and_score(
+    async def call_miner(
         self,
-        tasks: List[TwitterTask],
+        prompt: str,
         date_filter: DateFilter,
-        strategy=QUERY_MINERS.RANDOM,
-        is_only_allowed_miner=True,
-        specified_uids=None,
         tools=[],
         language="en",
         region="us",
         google_date_filter="qdr:w",
         model: Optional[Model] = Model.NOVA,
         result_type: Optional[ResultType] = ResultType.LINKS_WITH_FINAL_SUMMARY,
-        is_synthetic=False,
         system_message: Optional[str] = None,
         scoring_system_message: Optional[str] = None,
         uid: Optional[int] = None,
@@ -198,25 +183,10 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
     ):
         max_execution_time = get_max_execution_time(model, count)
 
-        # Record event start time.
-        event = {
-            "names": [task.task_name for task in tasks],
-            "task_types": [task.task_type for task in tasks],
-        }
         start_time = time.time()
 
-        if is_synthetic:
-            uids = await self.neuron.get_uids(
-                strategy=strategy,
-                is_only_allowed_miner=is_only_allowed_miner,
-                specified_uids=specified_uids,
-            )
-
-            axons = [self.neuron.metagraph.axons[uid] for uid in uids]
-        else:
-            uid, axon = await self.neuron.get_random_miner(uid=uid)
-            uids = torch.tensor([uid])
-            axons = [axon]
+        uid, axon = await self.neuron.get_random_miner(uid=uid)
+        uids = torch.tensor([uid])
 
         start_date = (
             date_filter.start_date.strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -230,55 +200,46 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
         )
         date_filter_type = date_filter.date_filter_type
 
-        synapses = [
-            ScraperStreamingSynapse(
-                prompt=task.compose_prompt(),
-                model=model,
-                start_date=start_date,
-                end_date=end_date,
-                date_filter_type=date_filter_type.value if date_filter_type else None,
-                tools=tools,
-                language=language,
-                region=region,
-                google_date_filter=google_date_filter,
-                max_execution_time=max_execution_time,
-                result_type=result_type,
-                is_synthetic=is_synthetic,
-                system_message=system_message,
-                scoring_system_message=scoring_system_message,
-                scoring_model=self.neuron.config.neuron.scoring_model,
-                chat_history=chat_history,
-                count=count,
-            )
-            for task in tasks
-        ]
+        synapse = ScraperStreamingSynapse(
+            prompt=prompt,
+            model=model,
+            start_date=start_date,
+            end_date=end_date,
+            date_filter_type=date_filter_type.value if date_filter_type else None,
+            tools=tools,
+            language=language,
+            region=region,
+            google_date_filter=google_date_filter,
+            max_execution_time=max_execution_time,
+            result_type=result_type,
+            system_message=system_message,
+            scoring_system_message=scoring_system_message,
+            scoring_model=self.neuron.config.neuron.scoring_model,
+            chat_history=chat_history,
+            count=count,
+        )
 
-        async_responses = []
         timeout = max_execution_time + 5
+        dendrite = next(self.neuron.dendrites)
 
-        for axon, synapse in zip(axons, synapses):
-            dendrite = next(self.neuron.dendrites)
+        async_response = dendrite.call_stream(
+            target_axon=axon,
+            synapse=synapse.model_copy(),
+            timeout=timeout,
+            deserialize=False,
+        )
 
-            async_responses.append(
-                dendrite.call_stream(
-                    target_axon=axon,
-                    synapse=synapse.model_copy(),
-                    timeout=timeout,
-                    deserialize=False,
-                )
-            )
-
-        return async_responses, uids, event, start_time
+        return async_response, uids, start_time, axon
 
     async def compute_rewards_and_penalties(
         self,
         event,
-        tasks,
+        prompts: List[str],
         responses,
         uids,
         start_time,
-        is_synthetic=False,
         result_type: Optional[ResultType] = None,
+        scoring_epoch_start=None,
     ):
         try:
             if not len(uids):
@@ -298,7 +259,7 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
             if result_type is None:
                 result_type = ResultType.LINKS_WITH_FINAL_SUMMARY
 
-            query_type = "synthetic" if is_synthetic else "organic"
+            query_type = "scoring"
 
             for weight_i, reward_fn_i in zip(
                 self.reward_weights, self.reward_functions
@@ -341,9 +302,7 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
                     raw_penalty_i,
                     adjusted_penalty_i,
                     applied_penalty_i,
-                ) = await penalty_fn_i.apply_penalties(
-                    responses, tasks, uids, val_scores
-                )
+                ) = await penalty_fn_i.apply_penalties(responses, uids, val_scores)
                 penalty_start_time = time.time()
                 rewards *= applied_penalty_i.to(self.neuron.config.neuron.device)
                 penalty_execution_time = time.time() - penalty_start_time
@@ -356,11 +315,8 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
                     f"Applied penalty function: {penalty_fn_i.name} in {penalty_execution_time:.2f} seconds"
                 )
 
-            if is_synthetic:
-                scattered_rewards = await self.neuron.update_moving_averaged_scores(
-                    uids, rewards
-                )
-                self.log_event(tasks, event, start_time, uids, rewards)
+            await self.neuron.update_moving_averaged_scores(uids, rewards)
+            self.log_event(prompts, event, start_time, uids, rewards)
 
             scores = torch.zeros(len(self.neuron.metagraph.hotkeys))
             uid_scores_dict = {}
@@ -433,28 +389,52 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
                 wandb_data["search_reward"][uid] = search_reward
                 wandb_data["latency_reward"][uid] = latency_reward
 
-            await self.neuron.update_scores(
-                wandb_data=wandb_data,
-                responses=responses,
-                uids=uids,
-                rewards=rewards,
-                all_rewards=all_rewards,
-                all_original_rewards=all_original_rewards,
-                val_score_responses_list=val_score_responses_list,
-                neuron=self.neuron,
-                query_type=query_type,
-            )
+            if self.neuron.config.wandb_on:
+                wandb.log(wandb_data)
+
+            scoring_logs = []
+            response_count = len(responses)
+
+            for index, (uid_tensor, response, reward) in enumerate(
+                zip(uids, responses, rewards.tolist())
+            ):
+                uid = uid_tensor.item()
+                reward_payload = build_reward_payload(
+                    search_type="ai_search",
+                    response_count=response_count,
+                    index=index,
+                    uid=uid,
+                    total_reward=reward,
+                    all_rewards=all_rewards,
+                    all_original_rewards=all_original_rewards,
+                    validator_scores=val_score_responses_list,
+                    event=event,
+                )
+                scoring_logs.append(
+                    build_log_entry(
+                        owner=self.neuron,
+                        search_type="ai_search",
+                        query_kind="scoring",
+                        response=response,
+                        miner_uid=uid,
+                        total_reward=reward,
+                        reward_payload=reward_payload,
+                        scoring_epoch_start=scoring_epoch_start,
+                    )
+                )
+
+            submit_logs_best_effort(self.neuron, scoring_logs)
 
             return rewards, uids, val_score_responses_list, event, all_original_rewards
         except Exception as e:
             bt.logging.error(f"Error in compute_rewards_and_penalties: {e}")
             raise e
 
-    def log_event(self, tasks, event, start_time, uids, rewards):
+    def log_event(self, prompts: List[str], event, start_time, uids, rewards):
         event.update(
             {
                 "step_length": time.time() - start_time,
-                "prompts": [task.compose_prompt() for task in tasks],
+                "prompts": prompts,
                 "uids": uids.tolist(),
                 "rewards": rewards.tolist(),
             }
@@ -462,81 +442,38 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
 
         bt.logging.debug("Run Task event:", event)
 
-    async def query_and_score(self, strategy, specified_uids=None):
-        try:
-            dataset = QuestionsDataset()
-            tools = random.choice(self.tools)
-
-            prompts = await asyncio.gather(
-                *[
-                    dataset.generate_new_question_with_openai(tools)
-                    for _ in range(
-                        len(
-                            specified_uids
-                            if specified_uids
-                            else self.neuron.metagraph.uids
-                        )
-                    )
-                ]
+    async def send_scoring_query(
+        self,
+        query: dict,
+        uid: int,
+    ) -> Optional[object]:
+        """
+        Send a scoring query to a specific miner and return the full synapse.
+        Called by QueryScheduler; collects the full synapse.
+        """
+        prompt = query["query"]
+        tools = query.get("tools", [])
+        date_filter = get_specified_date_filter(
+            DateFilterType(
+                query.get("date_filter_type", DateFilterType.PAST_WEEK.value)
             )
+        )
 
-            system_message = (
-                (await dataset.generate_user_system_message_with_openai())
-                if random.choice([True, False])
-                else ""
-            )
+        async_response, uids, start_time, _ = await self.call_miner(
+            prompt=prompt,
+            date_filter=date_filter,
+            tools=tools,
+            language=self.language,
+            region=self.region,
+            google_date_filter=self.date_filter,
+            model=Model.NOVA,
+            uid=uid,
+        )
 
-            tasks = [
-                TwitterTask(
-                    base_text=prompt,
-                    task_name="augment",
-                    task_type="twitter_scraper",
-                    criteria=[],
-                )
-                for prompt in prompts
-            ]
-
-            bt.logging.debug(
-                f"Query and score running with prompts: {prompts} and tools: {tools}"
-            )
-
-            random_model = self.get_random_execution_time()
-
-            async_responses, uids, event, start_time = await self.run_task_and_score(
-                tasks=tasks,
-                strategy=strategy,
-                is_only_allowed_miner=False,
-                date_filter=get_random_date_filter(),
-                tools=tools,
-                language=self.language,
-                region=self.region,
-                google_date_filter=self.date_filter,
-                model=random_model,
-                is_synthetic=True,
-                specified_uids=specified_uids,
-                system_message=system_message,
-            )
-
-            final_synapses = await collect_final_synapses(
-                async_responses, uids, start_time
-            )
-
-            if self.neuron.config.neuron.synthetic_disabled:
-                await self._save_organic_response(
-                    uids, final_synapses, tasks, event, start_time
-                )
-            else:
-                await self.compute_rewards_and_penalties(
-                    event=event,
-                    tasks=tasks,
-                    responses=final_synapses,
-                    uids=uids,
-                    start_time=start_time,
-                    is_synthetic=True,
-                )
-        except Exception as e:
-            bt.logging.error(f"Error in query_and_score: {e}")
-            raise e
+        final_synapses = await collect_final_synapses(
+            [async_response], uids, start_time
+        )
+        return final_synapses[0] if final_synapses else None
 
     async def organic(
         self,
@@ -565,19 +502,8 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
                 date_filter_type = DateFilterType(date_filter)
                 date_filter = get_specified_date_filter(date_filter_type)
 
-            tasks = [
-                TwitterTask(
-                    base_text=prompt,
-                    task_name="augment",
-                    task_type="twitter_scraper",
-                    criteria=[],
-                )
-            ]
-
-            async_responses, uids, event, start_time = await self.run_task_and_score(
-                tasks=tasks,
-                strategy=QUERY_MINERS.RANDOM,
-                is_only_allowed_miner=self.neuron.config.subtensor.network != "finney",
+            async_response, uids, start_time, axon = await self.call_miner(
+                prompt=prompt,
                 tools=tools,
                 language=self.language,
                 region=self.region,
@@ -593,27 +519,58 @@ class AdvancedScraperValidator(OrganicHistoryMixin):
             )
 
             final_synapses = []
+            selected_uid = uids[0].item() if len(uids) else None
 
             if is_collect_final_synapses:
                 # Collect specified uids from responses and score
                 final_synapses = await collect_final_synapses(
-                    async_responses, uids, start_time
+                    [async_response], uids, start_time
                 )
+
+                if final_synapses:
+                    submit_logs_best_effort(
+                        self.neuron,
+                        [
+                            build_log_entry(
+                                owner=self.neuron,
+                                search_type="ai_search",
+                                query_kind="organic",
+                                response=synapse,
+                                miner_uid=selected_uid,
+                                miner_hotkey=getattr(axon, "hotkey", None),
+                                miner_coldkey=getattr(axon, "coldkey", None),
+                            )
+                            for synapse in final_synapses
+                            if synapse is not None
+                        ],
+                    )
 
                 for synapse in final_synapses:
                     yield synapse
             else:
-                # Stream random miner to the UI
-                for response in async_responses:
-                    async for value in response:
-                        if isinstance(value, bt.Synapse):
-                            final_synapses.append(value)
-                        else:
-                            yield value
+                # Stream miner response to the UI
+                final_synapse = None
+                async for value in async_response:
+                    if isinstance(value, bt.Synapse):
+                        final_synapse = value
+                    else:
+                        yield value
 
-            await self._save_organic_response(
-                uids, final_synapses, tasks, event, start_time
-            )
+                if final_synapse is not None:
+                    submit_logs_best_effort(
+                        self.neuron,
+                        [
+                            build_log_entry(
+                                owner=self.neuron,
+                                search_type="ai_search",
+                                query_kind="organic",
+                                response=final_synapse,
+                                miner_uid=selected_uid,
+                                miner_hotkey=getattr(axon, "hotkey", None),
+                                miner_coldkey=getattr(axon, "coldkey", None),
+                            )
+                        ],
+                    )
         except Exception as e:
             bt.logging.error(f"Error in organic: {e}")
             raise e

@@ -39,11 +39,16 @@ Here's a breakdown of the environment variables necessary for the Desearch syste
 
 5. **APIFY_API_KEY**
 
-    - **Usage**: Used for Apify actors
+    - **Usage**: Used for scraping X (Twitter).
     - **How to Create**: Sign up or log in at [Apify](https://apify.com/), and generate a key in your account settings.
-    - **Required for**: Validator and Miners.
+    - **Required for**: Validators and Miners that use Twitter scraping.
 
-6. **SERPAPI_API_KEY**
+6. **SCRAPINGDOG_API_KEY**
+    - **Usage**: Used by validator web-content verification to scrape general webpages.
+    - **How to Create**: Sign up or log in at [ScrapingDog](https://www.scrapingdog.com/), and generate a key in your dashboard. Standard plan with $90/month is recommended.
+    - **Required for**: Validators.
+
+7. **SERPAPI_API_KEY**
     - **Usage**: Used to search web using Serp API
     - **How to Create**: Sign up or log in at [Serp API](https://serpapi.com/), and generate a key in your account settings.
     - **Required for**: Miners exclusively.
@@ -57,8 +62,9 @@ export OPENAI_API_KEY=<your_openai_api_key_here>
 export TWITTER_BEARER_TOKEN=<your_twitter_bearer_token_here>  # Only for Miners
 export EXPECTED_ACCESS_KEY=<your_EXPECTED_ACCESS_KEY_here>  # Only for Validators
 export WANDB_API_KEY=<your_wandb_api_key_here>
-export APIFY_API_KEY=<your_apify_api_key_here>  # Only for Validators
-export SERPAPI_API_KEY<your_serp_api_key_here> # Only for Miners
+export APIFY_API_KEY=<your_apify_api_key_here>  # Validators/Miners using Twitter scraping
+export SCRAPINGDOG_API_KEY=<your_scrapingdog_api_key_here>  # Only for Validators
+export SERPAPI_API_KEY=<your_serp_api_key_here> # Only for Miners
 ```
 
 ### Setting Environment Variables Using `.bashrc`
@@ -70,7 +76,8 @@ echo 'export OPENAI_API_KEY="<your_openai_api_key>"' >> ~/.bashrc # Both for Val
 echo 'export TWITTER_BEARER_TOKEN="<your_twitter_bearer_token>"' >> ~/.bashrc  # Only for Miners
 echo 'export EXPECTED_ACCESS_KEY="<your_EXPECTED_ACCESS_KEY>"' >> ~/.bashrc  # Only for Validators
 echo 'export WANDB_API_KEY="<your_wandb_api_key>"' >> ~/.bashrc # Only for Validators
-echo 'export APIFY_API_KEY="<your_apify_api_key>"' >> ~/.bashrc # Both for Validators and Miners
+echo 'export APIFY_API_KEY="<your_apify_api_key>"' >> ~/.bashrc # Validators/Miners using Twitter scraping
+echo 'export SCRAPINGDOG_API_KEY="<your_scrapingdog_api_key>"' >> ~/.bashrc # Only for Validators
 echo 'export SERPAPI_API_KEY="<your_serp_api_key_here>"' >> ~/.bashrc # Only for Miners
 
 

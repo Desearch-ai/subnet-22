@@ -22,7 +22,7 @@ class AbstractNeuron(ABC):
 
     @classmethod
     @abstractmethod
-    def config(cls) -> "bt.config":
+    def config(cls) -> "bt.Config":
         pass
 
     @abstractmethod
@@ -35,14 +35,6 @@ class AbstractNeuron(ABC):
 
     @abstractmethod
     async def get_uids(self, axon, uid: int):
-        pass
-
-    @abstractmethod
-    async def update_scores(self, scores: torch.Tensor, wandb_data):
-        pass
-
-    @abstractmethod
-    async def update_scores_for_basic(self, scores: torch.Tensor, wandb_data):
         pass
 
     @abstractmethod

@@ -54,9 +54,12 @@ async def lifespan(app):
     # Start the validator api when the app starts
     global api
 
-    config = await get_validator_config()
+    config_payload = await get_validator_config()
 
-    api = ValidatorAPI(config=config)
+    api = ValidatorAPI(
+        config=config_payload["config"],
+        validator_identity=config_payload["validator_identity"],
+    )
     await api.start()
 
     yield
@@ -465,7 +468,7 @@ async def advanced_twitter_search(
         # Collect all yielded synapses from organic
         final_synapses = []
 
-        async for synapse in api.x_scraper_validator.organic(
+        async for synapse in api.x_scraper_validator.x_search(
             query=query_dict, uid=request.uid
         ):
             final_synapses.append(synapse)
@@ -519,11 +522,11 @@ async def get_tweets_by_urls(
     results = []
 
     try:
-        urls = list(set(request.urls))
+        urls = list(dict.fromkeys(request.urls))
 
         bt.logging.info(f"Fetching tweets for URLs: {urls}")
 
-        results = await api.x_scraper_validator.twitter_urls_search(
+        results = await api.x_scraper_validator.x_posts_by_urls(
             urls, uid=request.uid
         )
     except Exception as e:
@@ -564,7 +567,7 @@ async def get_tweet_by_id(
     try:
         bt.logging.info(f"Fetching tweet with ID: {id}")
 
-        results = await api.x_scraper_validator.twitter_id_search(id, uid=uid)
+        results = await api.x_scraper_validator.x_post_by_id(id, uid=uid)
     except Exception as e:
         bt.logging.error(f"Error fetching tweet by ID: {e}")
         raise HTTPException(status_code=500, detail=f"An error occurred: {str(e)}")

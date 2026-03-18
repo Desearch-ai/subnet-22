@@ -93,8 +93,6 @@ pm2 start uvicorn \
 - `--neuron.device`: Device to run the validator on. cuda or cpu
 - `--neuron.disable_log_rewards`: Disable all reward logging, suppresses reward functions and their values from being logged to wandb. Default: False
 - `--neuron.moving_average_alpha`: Moving average alpha parameter, how much to add of the new observation. Default: 0.05
-- `--neuron.run_random_miner_syn_qs_interval`: Sets the interval, in seconds, for querying a random subset of miners with synthetic questions. Set to a positive value to enable. A value of 0 disables this feature.
-- `--neuron.run_all_miner_syn_qs_interval`: Sets the interval, in seconds, for querying all miners with synthetic questions. Set to a positive value to enable. A value of 0 disables this feature.
 - `--reward.summary_relevance_weight`: adjusts the influence of a scoring model that evaluates the accuracy and relevance of a node's responses to given prompts.
 - `--reward.twitter_content_weight`: Specifies the weight for the reward model that evaluates the relevance and quality of summary text in conjunction with linked content data.
 - `--neuron.only_allowed_miners`: A list of miner identifiers, hotkey

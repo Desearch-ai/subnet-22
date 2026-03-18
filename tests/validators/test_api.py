@@ -1,8 +1,8 @@
-from unittest.mock import patch, AsyncMock, Mock
-import unittest
-from fastapi.testclient import TestClient
 import sys
+import unittest
+from unittest.mock import AsyncMock, Mock, patch
 
+from fastapi.testclient import TestClient
 
 sys.argv = [
     sys.argv[0],
@@ -20,13 +20,11 @@ sys.argv = [
     "--neuron.run_all_miner_syn_qs_interval",
     "0",
     "--neuron.offline",
-    "--neuron.synthetic_disabled",
 ]
 
 
-from neurons.validators.api import app
 from desearch.protocol import Model, ResultType
-
+from neurons.validators.api import app
 
 sys.argv = [sys.argv[0]]
 
