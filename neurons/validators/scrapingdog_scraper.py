@@ -168,12 +168,6 @@ class ScrapingDogScraper:
         return semaphore
 
     async def scrape_metadata(self, urls: List[str]) -> List[Dict[str, Optional[str]]]:
-        if not SCRAPINGDOG_API_KEY:
-            raise ValueError(
-                "Please set the SCRAPINGDOG_API_KEY environment variable. "
-                "See here: https://github.com/Desearch-ai/subnet-22/blob/main/docs/env_variables.md."
-            )
-
         if not urls:
             return []
 
@@ -213,6 +207,15 @@ class ScrapingDogScraper:
     ) -> Tuple[List[Dict[str, Optional[str]]], List[str]]:
         fetched_links_with_metadata: List[Dict[str, Optional[str]]] = []
         non_fetched_links = list(dict.fromkeys(urls))
+
+        if not SCRAPINGDOG_API_KEY:
+            bt.logging.warning(
+                "SCRAPINGDOG_API_KEY is not set. Returning empty scraped links. "
+                f"0 fetched links for {len(non_fetched_links)} urls. "
+                "See here: https://github.com/Desearch-ai/subnet-22/blob/main/docs/env_variables.md."
+            )
+            return fetched_links_with_metadata, non_fetched_links
+
         attempt = 1
 
         while attempt <= max_attempts and non_fetched_links:

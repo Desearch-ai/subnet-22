@@ -87,6 +87,12 @@ class WebBasicSearchContentRelevanceModel(BaseRewardModel):
 
         links_with_metadata, non_fetched_links = await self.scrape_links(unique_links)
 
+        if not links_with_metadata:
+            bt.logging.info(
+                "No validator web links were fetched. Returning empty score responses."
+            )
+            return default_val_score_responses
+
         for response, random_links in zip(responses, responses_random_links):
             for link_with_metadata in links_with_metadata:
                 url = link_with_metadata.get("link")
