@@ -45,7 +45,7 @@ Here's a breakdown of the environment variables necessary for the Desearch syste
 
 6. **SCRAPINGDOG_API_KEY**
     - **Usage**: Used by validator web-content verification to scrape general webpages.
-    - **How to Create**: Sign up or log in at [ScrapingDog](https://www.scrapingdog.com/), and generate a key in your dashboard.
+    - **How to Create**: Sign up or log in at [ScrapingDog](https://www.scrapingdog.com/), and generate a key in your dashboard. Standard plan with $90/month is recommended.
     - **Required for**: Validators.
 
 7. **SERPAPI_API_KEY**

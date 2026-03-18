@@ -153,7 +153,7 @@ class _ScrapingDogHTMLParser(HTMLParser):
 class ScrapingDogScraper:
     api_url = "https://api.scrapingdog.com/scrape"
     request_timeout_seconds = 30
-    max_concurrent_requests = 50
+    max_concurrent_requests = 30
     _shared_semaphores = weakref.WeakKeyDictionary()
 
     @classmethod
