@@ -1,6 +1,6 @@
 import asyncio
 import time
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Dict, Optional
 
 import bittensor as bt
@@ -21,7 +21,7 @@ class QueryScheduler:
       4. On hour boundary → score the previous hour's responses (if not first epoch).
 
     The API returns 404 when all questions for the current hour are served;
-    we sleep until the next minute past the boundary then resume polling.
+    we sleep until the next UTC hour begins and then resume polling.
     """
 
     def __init__(
@@ -37,6 +37,8 @@ class QueryScheduler:
         self.validators = validators
 
         self.current_time_range: Optional[datetime] = None
+        self.min_request_interval_seconds = 4.1
+        self._next_poll_at = 0.0
 
         # Skip scoring on the first epoch boundary (incomplete responses)
         self.is_first_epoch = True
@@ -158,13 +160,32 @@ class QueryScheduler:
         except Exception as e:
             bt.logging.error(f"[QueryScheduler] Error in score_epoch: {e}")
 
+    async def _wait_for_poll_window(self) -> None:
+        delay = self._next_poll_at - time.monotonic()
+        if delay > 0:
+            await asyncio.sleep(delay)
+
+    def _schedule_next_poll(self, request_started_at: float) -> None:
+        self._next_poll_at = request_started_at + self.min_request_interval_seconds
+
+    def _seconds_until_next_hour(self) -> float:
+        now = datetime.now(timezone.utc)
+        next_hour = now.replace(minute=0, second=0, microsecond=0) + timedelta(
+            hours=1
+        )
+        return max((next_hour - now).total_seconds() + 1, 1)
+
     async def run(self) -> None:
         """Entry point — run as a long-lived asyncio task."""
         bt.logging.info("[QueryScheduler] Starting")
 
         while True:
+            request_started_at: Optional[float] = None
             try:
+                await self._wait_for_poll_window()
+                request_started_at = time.monotonic()
                 item = await self.utility_api.fetch_next_question()
+                self._schedule_next_poll(request_started_at)
 
                 time_range_start = item["time_range_start"]
                 if isinstance(time_range_start, str):
@@ -211,14 +232,22 @@ class QueryScheduler:
 
                 if status == 404:
                     # All questions for this hour have been served
+                    sleep_seconds = self._seconds_until_next_hour()
+                    self._next_poll_at = 0.0
                     bt.logging.info(
                         "[QueryScheduler] All questions served for current hour. "
-                        "Waiting 30 s..."
+                        f"Waiting {sleep_seconds:.1f}s for next UTC hour..."
                     )
-                    await asyncio.sleep(30)
+                    await asyncio.sleep(sleep_seconds)
                 elif status == 429:
-                    # Rate limited — back off slightly beyond the 4 s window
-                    await asyncio.sleep(4.1)
+                    # Unexpected rate limit — re-align to the server window.
+                    if request_started_at is not None:
+                        self._schedule_next_poll(request_started_at)
+                    else:
+                        self._next_poll_at = time.monotonic() + (
+                            self.min_request_interval_seconds
+                        )
+                    await self._wait_for_poll_window()
                 else:
                     bt.logging.error(
                         "[QueryScheduler] Unexpected error while polling "

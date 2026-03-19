@@ -62,7 +62,7 @@ async def get_next_question(
 
     The cache resets at each UTC hour boundary (e.g. 11:00, 12:00, ...).
 
-    Rate limited to one request per validator every 2 seconds.
+    Rate limited to one request per validator every 4 seconds.
 
     Requires headers:
         X-Hotkey:    Validator hotkey SS58 address
@@ -83,6 +83,7 @@ async def get_next_question(
         raise HTTPException(
             status_code=429,
             detail=f"Too many requests. Wait {MIN_REQUEST_INTERVAL}s between calls.",
+            headers={"Retry-After": str(MIN_REQUEST_INTERVAL)},
         )
 
     _last_request[hotkey] = now
