@@ -67,4 +67,23 @@ class MinerResponseLog(Base):
             "miner_uid",
             "search_type",
         ),
+        Index(
+            "ix_miner_response_logs_query_kind_search_type_epoch",
+            query_kind,
+            search_type,
+            scoring_epoch_start.desc(),
+        ),
+        Index(
+            "ix_miner_response_logs_query_kind_search_type_miner_uid_epoch",
+            query_kind,
+            search_type,
+            miner_uid,
+            scoring_epoch_start.desc(),
+        ),
+        Index(
+            "ix_miner_response_logs_request_query_trgm",
+            "request_query",
+            postgresql_using="gin",
+            postgresql_ops={"request_query": "gin_trgm_ops"},
+        ),
     )

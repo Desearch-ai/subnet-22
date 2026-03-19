@@ -16,16 +16,26 @@ from app.domains.logs.schemas import (
 )
 from app.logger import get_logger
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import select, update
+from sqlalchemy import and_, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 router = APIRouter(prefix="/logs", tags=["logs"])
 logger = get_logger(__name__)
 
+SCORING_GROUP_LIMIT = 20
+
 
 def _normalize_question_query(query: str) -> str:
     return query.strip()
+
+
+def _normalize_optional_query(query: str | None) -> str | None:
+    if query is None:
+        return None
+
+    normalized_query = query.strip()
+    return normalized_query or None
 
 
 def _merge_search_types(existing_search_types, new_search_types) -> list[str]:
@@ -212,7 +222,7 @@ def _build_scoring_groups(
             key=lambda log: (
                 log.validator_uid is None,
                 log.validator_uid if log.validator_uid is not None else 0,
-                log.created_at,
+                str(log.id),
             ),
         )
         first_log = sorted_logs[0]
@@ -251,6 +261,7 @@ def _build_scoring_groups(
     return sorted(
         groups,
         key=lambda group: (
+            -group.scoring_epoch_start.timestamp(),
             group.miner_uid is None,
             group.miner_uid if group.miner_uid is not None else 0,
             group.search_type.value,
@@ -259,38 +270,126 @@ def _build_scoring_groups(
     )
 
 
-@router.get("/scoring", response_model=GetScoringLogsResponse)
-async def get_scoring_logs(
-    scoring_epoch_start: datetime = Query(
-        ..., description="UTC scoring epoch start timestamp."
-    ),
-    search_type: SearchType = Query(
-        ..., description="Search type to inspect for the selected hour."
-    ),
-    miner_uids: list[int] | None = Query(
-        None,
-        description="Optional miner UIDs to inspect for the selected hour.",
-    ),
-    session: AsyncSession = Depends(get_session),
+def _build_scoring_group_filter(
+    scoring_epoch_start: datetime | None,
+    miner_uid: int | None,
+    request_query: str,
+    search_type: SearchType,
 ):
-    stmt = select(MinerResponseLog).where(
-        MinerResponseLog.query_kind == QueryKind.SCORING
+    return and_(
+        (
+            MinerResponseLog.scoring_epoch_start.is_(None)
+            if scoring_epoch_start is None
+            else MinerResponseLog.scoring_epoch_start == scoring_epoch_start
+        ),
+        (
+            MinerResponseLog.miner_uid.is_(None)
+            if miner_uid is None
+            else MinerResponseLog.miner_uid == miner_uid
+        ),
+        MinerResponseLog.request_query == request_query,
+        MinerResponseLog.search_type == search_type,
     )
-    stmt = stmt.where(MinerResponseLog.scoring_epoch_start == scoring_epoch_start)
-    stmt = stmt.where(MinerResponseLog.search_type == search_type)
+
+
+async def _load_scoring_logs(
+    session: AsyncSession,
+    scoring_epoch_start: datetime | None,
+    search_type: SearchType,
+    miner_uids: list[int] | None,
+    query: str | None,
+) -> list[MinerResponseLog]:
+    normalized_query = _normalize_optional_query(query)
+    filters = [
+        MinerResponseLog.query_kind == QueryKind.SCORING,
+        MinerResponseLog.search_type == search_type,
+    ]
+
+    if scoring_epoch_start is not None:
+        filters.append(MinerResponseLog.scoring_epoch_start == scoring_epoch_start)
 
     if miner_uids:
-        stmt = stmt.where(MinerResponseLog.miner_uid.in_(miner_uids))
+        filters.append(MinerResponseLog.miner_uid.in_(miner_uids))
 
-    stmt = stmt.order_by(
-        MinerResponseLog.miner_uid,
-        MinerResponseLog.search_type,
-        MinerResponseLog.request_query,
-        MinerResponseLog.validator_uid,
-        MinerResponseLog.created_at,
+    if normalized_query is not None:
+        filters.append(MinerResponseLog.request_query.ilike(f"%{normalized_query}%"))
+
+    if not miner_uids and normalized_query is None:
+        limited_group_keys_stmt = (
+            select(
+                MinerResponseLog.scoring_epoch_start,
+                MinerResponseLog.miner_uid,
+                MinerResponseLog.request_query,
+                MinerResponseLog.search_type,
+            )
+            .where(*filters)
+            .distinct()
+            .order_by(
+                MinerResponseLog.scoring_epoch_start.desc().nullslast(),
+                MinerResponseLog.miner_uid,
+                MinerResponseLog.search_type,
+                MinerResponseLog.request_query,
+            )
+            .limit(SCORING_GROUP_LIMIT)
+        )
+        group_key_rows = (await session.execute(limited_group_keys_stmt)).all()
+
+        if not group_key_rows:
+            return []
+
+        filters.append(
+            or_(
+                *[
+                    _build_scoring_group_filter(
+                        scoring_epoch_start=row[0],
+                        miner_uid=row[1],
+                        request_query=row[2],
+                        search_type=row[3],
+                    )
+                    for row in group_key_rows
+                ]
+            )
+        )
+
+    stmt = (
+        select(MinerResponseLog)
+        .where(*filters)
+        .order_by(
+            MinerResponseLog.scoring_epoch_start.desc().nullslast(),
+            MinerResponseLog.miner_uid,
+            MinerResponseLog.search_type,
+            MinerResponseLog.request_query,
+            MinerResponseLog.validator_uid,
+            MinerResponseLog.id,
+        )
     )
 
     result = await session.execute(stmt)
-    logs = result.scalars().all()
+    return result.scalars().all()
+
+
+@router.get("/scoring", response_model=GetScoringLogsResponse)
+async def get_scoring_logs(
+    scoring_epoch_start: datetime | None = Query(
+        None, description="Optional UTC scoring epoch start timestamp."
+    ),
+    search_type: SearchType = Query(..., description="Search type to inspect."),
+    miner_uids: list[int] | None = Query(
+        None,
+        description="Optional miner UIDs to inspect.",
+    ),
+    query: str | None = Query(
+        None,
+        description="Optional case-insensitive substring match for request_query.",
+    ),
+    session: AsyncSession = Depends(get_session),
+):
+    logs = await _load_scoring_logs(
+        session=session,
+        scoring_epoch_start=scoring_epoch_start,
+        search_type=search_type,
+        miner_uids=miner_uids,
+        query=query,
+    )
 
     return GetScoringLogsResponse(groups=_build_scoring_groups(logs))
