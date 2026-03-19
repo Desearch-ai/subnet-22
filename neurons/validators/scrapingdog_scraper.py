@@ -9,7 +9,13 @@ from urllib.parse import urlparse
 import aiohttp
 import bittensor as bt
 
-SCRAPINGDOG_API_KEY = os.environ.get("SCRAPINGDOG_API_KEY")
+
+def get_scrapingdog_api_key() -> str:
+    return os.environ.get("SCRAPINGDOG_API_KEY", "")
+
+
+def has_scrapingdog_api_key() -> bool:
+    return bool(get_scrapingdog_api_key())
 
 
 class _ScrapingDogHTMLParser(HTMLParser):
@@ -208,7 +214,7 @@ class ScrapingDogScraper:
         fetched_links_with_metadata: List[Dict[str, Optional[str]]] = []
         non_fetched_links = list(dict.fromkeys(urls))
 
-        if not SCRAPINGDOG_API_KEY:
+        if not has_scrapingdog_api_key():
             bt.logging.warning(
                 "SCRAPINGDOG_API_KEY is not set. Returning empty scraped links. "
                 f"0 fetched links for {len(non_fetched_links)} urls. "
@@ -265,7 +271,7 @@ class ScrapingDogScraper:
 
     def _build_request_params(self, url: str) -> Dict[str, str]:
         return {
-            "api_key": SCRAPINGDOG_API_KEY or "",
+            "api_key": get_scrapingdog_api_key(),
             "url": url,
             "dynamic": "false",
         }
@@ -318,7 +324,33 @@ class ScrapingDogScraper:
 async def scrape_links_with_retries(
     urls: List[str], max_attempts: int = 2
 ) -> Tuple[List[Dict[str, Optional[str]]], List[str]]:
-    return await ScrapingDogScraper().scrape_metadata_with_retries(
+    if has_scrapingdog_api_key():
+        bt.logging.info("Using ScrapingDog for validator web scraping.")
+        return await ScrapingDogScraper().scrape_metadata_with_retries(
+            urls=urls,
+            max_attempts=max_attempts,
+        )
+
+    bt.logging.info(
+        "SCRAPINGDOG_API_KEY is not set. Falling back to Apify Cheerio "
+        "scraper for validator web scraping."
+    )
+
+    try:
+        from neurons.validators.apify.cheerio_scraper_actor import CheerioScraperActor
+        from neurons.validators.apify.utils import (
+            scrape_links_with_retries as scrape_links_with_apify_retries,
+        )
+    except Exception as exc:
+        bt.logging.warning(
+            "Apify fallback is unavailable for validator web scraping: "
+            f"{exc}"
+        )
+        return [], list(dict.fromkeys(urls))
+
+    return await scrape_links_with_apify_retries(
         urls=urls,
+        scraper_actor_class=CheerioScraperActor,
+        group_size=100,
         max_attempts=max_attempts,
     )
