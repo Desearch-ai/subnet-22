@@ -12,6 +12,24 @@ TIMESTAMP_TOLERANCE = 60  # 1 minute
 
 DEV_HOTKEY = "dev"
 
+HOTKEY_WHITELIST = frozenset(
+    {
+        "5CkmTfQH8UbYAbohFr2m3jPm5gWJ6L3XrSqHd1ijKuzz4iZ5",
+        "5FbSFsLtGYVh5UwHWYvQWQCmQdftApS6V2xzknTnjkz22MUV",
+        "5HdxEhjFBPMhbp1qS9vLtUQ3ZfDpP5eLAzm9w2ZFmtk6fVWV",
+        "5Dw3g8BujZQwX9ae4PFmWhWthP1PHRdwqcQJrXUf7ARn5qF2",
+        "5E2LP6EnZ54m3wS8s1yPvD5c3xo71kQroBw7aUVK32TKeZ5u",
+        "5CsvRJXuR955WojnGMdok1hbhffZyB4N5ocrv82f3p5A2zVp",
+        "5EtUYRu7sFqs9obCrN6JSNTnAAcpk98oJ27YV2EF9gC4tvzs",
+        "5HQhXWGtKUH4cuYneBdJ77PyGqTbhGfoNZRdc1dVRmBL2268",
+        "5FBk8NbxWLRboCqEL2oj1KXwSmmaC1nFmBBL4AzLEN5Qjs22",
+        "5HbScNssaEfioJHXjcXdpyqo1AKnYjymidGF8opcF9rTFZdT",
+        "5GQqVoRAWUA2wZ3CQRkbaG6fhpbgTjWNKQg2Y16FtwvUCneq",
+        "5EeCK27ZN7ePNbwXunoQewRaJmU3BUpPXu9kcBm24FShBuiD",
+        "5CBB4ot3bBypHanWQkEkMknTCXeewUaGwHmuQTbQ446Rsn22",
+    }
+)
+
 
 async def validate_hotkey_signature(request: Request) -> str:
     """
@@ -48,6 +66,10 @@ async def validate_hotkey_signature(request: Request) -> str:
     if abs(time.time() - ts) > TIMESTAMP_TOLERANCE:
         logger.warning(f"Expired timestamp for hotkey={hotkey} timestamp={timestamp}")
         raise HTTPException(status_code=401, detail="Timestamp expired")
+
+    if hotkey not in HOTKEY_WHITELIST:
+        logger.warning(f"Rejected non-whitelisted hotkey={hotkey}")
+        raise HTTPException(status_code=403, detail="Hotkey is not whitelisted")
 
     # Verify signature
     try:
