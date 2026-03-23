@@ -71,6 +71,7 @@ _AI_SEARCH_DATE_FILTERS: List[str] = list(
 )
 
 _X_SEARCH_PARAM_FIELDS: List[str] = [
+    "sort",
     "is_quote",
     "is_video",
     "is_image",
@@ -99,7 +100,9 @@ def _generate_x_search_params() -> Dict[str, Any]:
     selected_field = random.choice(_X_SEARCH_PARAM_FIELDS)
     params: Dict[str, Any] = {}
 
-    if selected_field == "date_range":
+    if selected_field == "sort":
+        params["sort"] = "Latest"
+    elif selected_field == "date_range":
         now = datetime.now(timezone.utc)
         end_date = now - timedelta(days=random.randint(0, _THREE_YEARS_IN_DAYS))
         start_date = end_date - timedelta(days=random.randint(7, 14))
