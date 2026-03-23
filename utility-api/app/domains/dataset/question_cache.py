@@ -234,10 +234,23 @@ class QuestionCache:
                     assignments[search_type] = {}
                     continue
 
+                # AI search params should be identical for every miner within the
+                # scoring window, while other search types keep their current
+                # per-miner generation behavior.
+                shared_params = (
+                    _generate_params_for(search_type)
+                    if search_type == SearchType.AI_SEARCH
+                    else None
+                )
+
                 assignments[search_type] = {
                     uid: QuestionOut(
                         query=questions[i % len(questions)].query,
-                        params=_generate_params_for(search_type),
+                        params=(
+                            dict(shared_params)
+                            if shared_params is not None
+                            else _generate_params_for(search_type)
+                        ),
                     )
                     for i, uid in enumerate(miner_uids)
                 }
@@ -249,6 +262,7 @@ class QuestionCache:
                     f"search_type={search_type.value} "
                     f"assignment_count={len(assignments[search_type])} "
                     f"sampled_questions={len(questions)} "
+                    f"shared_params={shared_params} "
                     f"sample_query={sample_question[:120]!r}"
                 )
 
