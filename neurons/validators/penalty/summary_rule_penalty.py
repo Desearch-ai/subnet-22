@@ -1,19 +1,17 @@
-import torch
 from typing import List
-from neurons.validators.base_validator import AbstractNeuron
-from neurons.validators.penalty.penalty import BasePenaltyModel, PenaltyModelType
+
 import bittensor as bt
+import torch
+
 from desearch.protocol import ScraperStreamingSynapse, ScraperTextRole
 from desearch.utils import call_openai
+from neurons.validators.base_validator import AbstractNeuron
+from neurons.validators.penalty.penalty import BasePenaltyModel, PenaltyModelType
 from neurons.validators.utils.prompts import SummaryRulePrompt
 
 MAX_PENALTY = 1.0
 
 SUMMARIES = [
-    ScraperTextRole.TWITTER_SUMMARY,
-    ScraperTextRole.SEARCH_SUMMARY,
-    ScraperTextRole.HACKER_NEWS_SUMMARY,
-    ScraperTextRole.REDDIT_SUMMARY,
     ScraperTextRole.FINAL_SUMMARY,
 ]
 

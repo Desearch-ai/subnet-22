@@ -1,20 +1,14 @@
-import torch
 from typing import List
+
+import bittensor as bt
+import torch
+
+from desearch.protocol import (
+    ContextualRelevance,
+    ScraperStreamingSynapse,
+)
 from neurons.validators.base_validator import AbstractNeuron
 from neurons.validators.penalty.penalty import BasePenaltyModel, PenaltyModelType
-import bittensor as bt
-from desearch.protocol import (
-    ScraperStreamingSynapse,
-    ScraperTextRole,
-    ContextualRelevance,
-)
-from desearch.utils import call_openai
-from neurons.validators.utils.prompts import (
-    SearchSummaryRelevancePrompt,
-)
-from desearch.services.twitter_utils import TwitterUtils
-from desearch.services.web_search_utils import WebSearchUtils
-from desearch.synapse import collect_responses
 
 MAX_PENALTY = 1.0
 
@@ -37,7 +31,7 @@ class MinerScorePenaltyModel(BasePenaltyModel):
 
     @property
     def name(self) -> str:
-        return PenaltyModelType.summary_rule_penalty.value
+        return PenaltyModelType.miner_score_penalty.value
 
     async def calculate_penalties(
         self,
