@@ -95,11 +95,18 @@ class WebScraperValidator:
         uids,
         start_time,
         scoring_epoch_start=None,
+        scoring_seeds=None,
     ):
         try:
             if not len(uids):
                 bt.logging.warning("No UIDs provided for logging event.")
                 return
+
+            # Attach scoring seeds to response objects so reward models can use
+            # them for deterministic random sampling across all validators.
+            if scoring_seeds:
+                for response, seed in zip(responses, scoring_seeds):
+                    response.scoring_seed = seed
 
             bt.logging.info("Computing rewards and penalties")
 

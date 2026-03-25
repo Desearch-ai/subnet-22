@@ -33,11 +33,12 @@ class ScoringStore:
         uid: int,
         search_type: str,
         response: Any,
+        scoring_seed: int | None = None,
     ) -> None:
-        """Save a single miner response for later scoring."""
+        """Save a single miner response (with optional scoring seed) for later scoring."""
 
         key = self._key(time_range_start, search_type)
-        data = jsonpickle.encode(response)
+        data = jsonpickle.encode({"response": response, "scoring_seed": scoring_seed})
         pipeline = redis_client.pipeline()
         pipeline.hset(key, str(uid), data)
         pipeline.expire(key, EXPIRY)
@@ -71,15 +72,17 @@ class ScoringStore:
 
             for uid_str, encoded in raw.items():
                 data = jsonpickle.decode(encoded)
-                response = (
-                    data["response"]
-                    if isinstance(data, dict) and "response" in data
-                    else data
-                )
+                if isinstance(data, dict) and "response" in data:
+                    response = data["response"]
+                    scoring_seed = data.get("scoring_seed")
+                else:
+                    response = data
+                    scoring_seed = None
                 items.append(
                     {
                         "uid": int(uid_str),
                         "response": response,
+                        "scoring_seed": scoring_seed,
                     }
                 )
 

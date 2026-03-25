@@ -75,6 +75,7 @@ class QueryScheduler:
         uid: int,
         query: dict,
         time_range_start: datetime,
+        scoring_seed: Optional[int] = None,
     ) -> None:
         """Send one scoring query to a specific miner and persist the response."""
         try:
@@ -82,7 +83,11 @@ class QueryScheduler:
             response = await validator.send_scoring_query(query, uid=uid)
             if response is not None:
                 await self.scoring_store.save_response(
-                    time_range_start, uid, search_type, response
+                    time_range_start,
+                    uid,
+                    search_type,
+                    response,
+                    scoring_seed=scoring_seed,
                 )
                 bt.logging.debug(
                     f"[QueryScheduler] Saved response uid={uid} type={search_type}"
@@ -105,6 +110,7 @@ class QueryScheduler:
 
         uids = torch.tensor([item["uid"] for item in items])
         responses = [item["response"] for item in items]
+        scoring_seeds = [item.get("scoring_seed") for item in items]
         prompts = [self._extract_prompt(response) for response in responses]
         event = {}
 
@@ -119,6 +125,7 @@ class QueryScheduler:
             uids=uids,
             start_time=time.time(),
             scoring_epoch_start=time_range_start,
+            scoring_seeds=scoring_seeds,
         )
 
     async def score_epoch(self, time_range_start: datetime) -> None:
@@ -170,9 +177,7 @@ class QueryScheduler:
 
     def _seconds_until_next_hour(self) -> float:
         now = datetime.now(timezone.utc)
-        next_hour = now.replace(minute=0, second=0, microsecond=0) + timedelta(
-            hours=1
-        )
+        next_hour = now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
         return max((next_hour - now).total_seconds() + 1, 1)
 
     async def run(self) -> None:
@@ -197,6 +202,7 @@ class QueryScheduler:
                 search_type: str = item["search_type"]
                 question_query: str = item["question"]["query"]
                 params: dict = item["question"].get("params", {})
+                scoring_seed: Optional[int] = item.get("scoring_seed")
 
                 # Detect hour boundary
                 if (
@@ -224,7 +230,13 @@ class QueryScheduler:
                 query = self._build_query(question_query, params)
 
                 asyncio.create_task(
-                    self._send_and_save(search_type, uid, query, time_range_start)
+                    self._send_and_save(
+                        search_type,
+                        uid,
+                        query,
+                        time_range_start,
+                        scoring_seed=scoring_seed,
+                    )
                 )
 
             except Exception as e:

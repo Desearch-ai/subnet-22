@@ -138,6 +138,10 @@ def _current_hour_utc() -> datetime:
     return now.replace(minute=0, second=0, microsecond=0)
 
 
+def _generate_random_seed() -> int:
+    return random.SystemRandom().randint(0, 0x7FFFFFFF)
+
+
 @dataclass
 class TimeRangeCache:
     """Holds the cached question assignments for a single hourly time range."""
@@ -146,6 +150,9 @@ class TimeRangeCache:
     miner_uids: List[int] = field(default_factory=list)
     # Deterministic mapping: search_type -> {uid: question} (params embedded in QuestionOut)
     assignments: Dict[SearchType, Dict[int, QuestionOut]] = field(default_factory=dict)
+
+    # Shared scoring seeds for the current cache instance: search_type -> {uid: seed}
+    scoring_seeds: Dict[SearchType, Dict[int, int]] = field(default_factory=dict)
 
 
 class QuestionCache:
@@ -215,8 +222,9 @@ class QuestionCache:
                 f"uid_count={len(miner_uids)}"
             )
 
-            # Build deterministic assignments per search type
+            # Build deterministic assignments and per-cache scoring seeds per search type
             assignments: Dict[SearchType, Dict[int, QuestionOut]] = {}
+            scoring_seeds: Dict[SearchType, Dict[int, int]] = {}
 
             for search_type in _SCORING_SEARCH_TYPES:
                 stmt = (
@@ -235,6 +243,7 @@ class QuestionCache:
                         f"time_range={time_range_start.isoformat()}"
                     )
                     assignments[search_type] = {}
+                    scoring_seeds[search_type] = {}
                     continue
 
                 # AI search params should be identical for every miner within the
@@ -246,8 +255,10 @@ class QuestionCache:
                     else None
                 )
 
-                assignments[search_type] = {
-                    uid: QuestionOut(
+                uid_questions = {}
+                uid_seeds = {}
+                for i, uid in enumerate(miner_uids):
+                    uid_questions[uid] = QuestionOut(
                         query=questions[i % len(questions)].query,
                         params=(
                             dict(shared_params)
@@ -255,8 +266,10 @@ class QuestionCache:
                             else _generate_params_for(search_type)
                         ),
                     )
-                    for i, uid in enumerate(miner_uids)
-                }
+                    uid_seeds[uid] = _generate_random_seed()
+
+                assignments[search_type] = uid_questions
+                scoring_seeds[search_type] = uid_seeds
 
                 sample_question = questions[0].query if questions else ""
                 logger.info(
@@ -273,6 +286,7 @@ class QuestionCache:
                 time_range_start=time_range_start,
                 miner_uids=miner_uids,
                 assignments=assignments,
+                scoring_seeds=scoring_seeds,
             )
 
             self._served.clear()
@@ -308,12 +322,17 @@ class QuestionCache:
 
     async def get_next_question(
         self, session: AsyncSession, hotkey: str
-    ) -> Tuple[datetime, int, SearchType, QuestionOut]:
+    ) -> Tuple[datetime, int, SearchType, QuestionOut, int]:
         """
-        Return one random unserved (uid, search_type, question) for this validator.
-        Params are embedded inside the returned QuestionOut. All validators get the
-        same question and params for the same (uid, search_type) pair within the
-        current UTC hour.
+        Return one random unserved (uid, search_type, question, scoring_seed) for
+        this validator. Params are embedded inside the returned QuestionOut. All
+        validators get the same question, params, and scoring_seed for the same
+        (uid, search_type) pair for the current cache window.
+
+        The scoring_seed is generated when the hourly cache is refreshed and
+        should be used by validators to seed random selection of tweets/links
+        for validation, ensuring consistent scoring across validators while the
+        cache remains in memory.
 
         Raises HTTPException 404 when all questions have been served for the hour.
         """
@@ -355,6 +374,9 @@ class QuestionCache:
             if self._cache.time_range_start
             else None
         )
+
+        scoring_seed = self._cache.scoring_seeds.get(search_type, {}).get(uid, 0)
+
         logger.debug(
             f"Serving question: hotkey={hotkey} "
             f"time_range={cache_time_range} "
@@ -363,6 +385,7 @@ class QuestionCache:
             f"served_count={len(served)} "
             f"remaining={len(unserved) - 1} "
             f"params={question.params} "
+            f"scoring_seed={scoring_seed} "
             f"query={question.query[:120]!r}"
         )
-        return self._cache.time_range_start, uid, search_type, question
+        return self._cache.time_range_start, uid, search_type, question, scoring_seed

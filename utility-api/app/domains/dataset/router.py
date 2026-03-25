@@ -89,8 +89,8 @@ async def get_next_question(
     _last_request[hotkey] = now
 
     try:
-        time_range_start, uid, search_type, question = await cache.get_next_question(
-            session, hotkey
+        time_range_start, uid, search_type, question, scoring_seed = (
+            await cache.get_next_question(session, hotkey)
         )
     except HTTPException:
         raise
@@ -111,6 +111,7 @@ async def get_next_question(
         f"uid={uid} "
         f"search_type={search_type.value} "
         f"params={question.params} "
+        f"scoring_seed={scoring_seed} "
         f"query={question.query[:120]!r}"
     )
 
@@ -119,4 +120,5 @@ async def get_next_question(
         uid=uid,
         search_type=search_type.value,
         question=question,
+        scoring_seed=scoring_seed,
     )
