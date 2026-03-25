@@ -201,46 +201,18 @@ class Neuron(AbstractNeuron):
 
         return available_uids
 
-    async def get_uids(
-        self,
-        strategy=QUERY_MINERS.RANDOM,
-        is_only_allowed_miner=False,
-        specified_uids=None,
-    ):
-        if len(self.available_uids) == 0:
-            bt.logging.info("No available UIDs, attempting to refresh list.")
-            return self.available_uids
-
-        if strategy == QUERY_MINERS.RANDOM:
-            uid = self.uid_manager.get_miner_uid()
-            bt.logging.info(f"Run uids ---------- Amount: 1 | {uid}")
-            return uid
-        elif strategy == QUERY_MINERS.ALL:
-            # Filter uid_list based on specified_uids and only_allowed_miners
-            uid_list = [
-                uid
-                for uid in self.metagraph.uids
-                if (not specified_uids or uid in specified_uids)
-                and (
-                    not is_only_allowed_miner
-                    or self.metagraph.axons[uid].coldkey
-                    in self.config.neuron.only_allowed_miners
-                )
-            ]
-
-            uids = torch.tensor(uid_list) if uid_list else torch.tensor([])
-            bt.logging.info(f"Run uids ---------- Amount: {len(uids)} | {uids}")
-            return uids.to(self.config.neuron.device)
-
     async def get_random_miner(
         self, uid: Optional[int] = None
     ) -> Tuple[int, bt.AxonInfo]:
         """Return (uid, axon) for the given uid, or a random miner if uid is None."""
         if uid is not None:
+            bt.logging.info(f"Run specific UID: {uid}")
             return uid, self.metagraph.axons[uid]
+
         selected_uid = self.uid_manager.get_miner_uid()
-        if isinstance(selected_uid, torch.Tensor):
-            selected_uid = selected_uid.item()
+
+        bt.logging.info(f"Run random UID: {selected_uid}")
+
         return selected_uid, self.metagraph.axons[selected_uid]
 
     async def update_moving_averaged_scores(self, uids, rewards):

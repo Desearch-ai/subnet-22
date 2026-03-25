@@ -114,19 +114,6 @@ def add_args(cls, parser):
         help="A list of miner identifiers, hotkey",
         default=[],
     )
-    parser.add_argument(
-        "--neuron.checkpoint_block_length",
-        type=int,
-        help="Blocks before a checkpoint is saved.",
-        default=50,
-    )
-
-    parser.add_argument(
-        "--neuron.is_disable_tokenizer_reward",
-        action="store_true",
-        help="If enabled, activates a mock reward system for testing and development purposes without affecting the live reward mechanisms.",
-        default=False,
-    )
 
     parser.add_argument(
         "--neuron.disable_set_weights",

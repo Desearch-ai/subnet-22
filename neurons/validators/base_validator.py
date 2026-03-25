@@ -34,9 +34,5 @@ class AbstractNeuron(ABC):
         pass
 
     @abstractmethod
-    async def get_uids(self, axon, uid: int):
-        pass
-
-    @abstractmethod
     async def update_moving_averaged_scores(self, uids, rewards):
         pass

@@ -69,22 +69,7 @@ async def get_random_uid(body: GetRandomUidRequest):
             detail="Neuron is not available.",
         )
 
-    if body.uid is not None and body.uid in neuron.available_uids:
-        return {"uid": body.uid, "axon": neuron.metagraph.axons[body.uid]}
-
-    uid = await neuron.get_uids(
-        strategy=QUERY_MINERS.RANDOM,
-        is_only_allowed_miner=False,
-        specified_uids=None,
-    )
-
-    if uid is None:
-        raise HTTPException(
-            status_code=500,
-            detail="No available UID found.",
-        )
-
-    axon = neuron.metagraph.axons[uid]
+    uid, axon = await neuron.get_random_miner(uid=body.uid)
 
     return {"uid": uid, "axon": axon}
 
