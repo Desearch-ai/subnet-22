@@ -33,8 +33,9 @@ __weights_version__ = u64_max
 print("__version__", __version__)
 
 import os
-from openai import AsyncOpenAI
 from enum import Enum
+
+from openai import AsyncOpenAI
 
 AsyncOpenAI.api_key = os.environ.get("OPENAI_API_KEY")
 if not AsyncOpenAI.api_key:
@@ -90,12 +91,5 @@ ENTITY = "smart-scrape"
 PROJECT_NAME = "smart-scrape-1.0"
 
 
-class QUERY_MINERS(Enum):
-    ALL = "all"
-    RANDOM = "random"
-
-
 # Import all submodules.
-from . import protocol
-from . import utils
-from . import tools
+from . import protocol, tools, utils

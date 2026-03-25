@@ -9,7 +9,6 @@ import bittensor as bt
 import torch
 from bittensor.core.metagraph import AsyncMetagraph
 
-from desearch import QUERY_MINERS
 from desearch.protocol import IsAlive
 from desearch.redis.redis_client import close_redis, initialize_redis
 from desearch.redis.utils import (
