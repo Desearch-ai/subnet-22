@@ -3,8 +3,8 @@ from typing import Any, Dict, List, Optional
 
 import bittensor as bt
 import torch
-import wandb
 
+import wandb
 from desearch.protocol import (
     WebSearchSynapse,
 )
@@ -15,12 +15,10 @@ from neurons.validators.miner_response_logger import (
     submit_logs_best_effort,
 )
 from neurons.validators.penalty.exponential_penalty import ExponentialTimePenaltyModel
-from neurons.validators.reward import RewardModelType, RewardScoringType
-from neurons.validators.reward.performance_reward import PerformanceRewardModel
+from neurons.validators.reward import RewardScoringType
 from neurons.validators.reward.web_basic_search_content_relevance import (
     WebBasicSearchContentRelevanceModel,
 )
-from neurons.validators.utils.mock import MockRewardModel
 
 
 class WebScraperValidator:
@@ -35,14 +33,11 @@ class WebScraperValidator:
             "self.neuron.config.neuron.device = ", str(self.neuron.config.neuron.device)
         )
 
-        # Hardcoded weights here because the advanced scraper validator implementation is based on args.
-        self.web_content_weight = 0.70
-        self.performance_weight = 0.30
+        self.web_content_weight = 1.0
 
         self.reward_weights = torch.tensor(
             [
                 self.web_content_weight,
-                self.performance_weight,
             ],
             dtype=torch.float32,
         ).to(self.neuron.config.neuron.device)
@@ -56,22 +51,10 @@ class WebScraperValidator:
             raise Exception(message)
 
         self.reward_functions = [
-            (
-                WebBasicSearchContentRelevanceModel(
-                    device=self.neuron.config.neuron.device,
-                    scoring_type=RewardScoringType.search_relevance_score_template,
-                    neuron=self.neuron,
-                )
-                if self.neuron.config.reward.web_search_relavance_weight > 0
-                else MockRewardModel(RewardModelType.search_content_relevance.value)
-            ),
-            (
-                PerformanceRewardModel(
-                    device=self.neuron.config.neuron.device,
-                    neuron=self.neuron,
-                )
-                if self.neuron.config.reward.performance_weight > 0
-                else MockRewardModel(RewardModelType.performance_score.value)
+            WebBasicSearchContentRelevanceModel(
+                device=self.neuron.config.neuron.device,
+                scoring_type=RewardScoringType.search_relevance_score_template,
+                neuron=self.neuron,
             ),
         ]
 
@@ -186,7 +169,6 @@ class WebScraperValidator:
                 "scores": {},
                 "timestamps": {},
                 "search_reward": {},
-                "latency_reward": {},
             }
             bt.logging.info(
                 f"======================== Reward ==========================="
@@ -209,22 +191,9 @@ class WebScraperValidator:
             bt.logging.info(f"this is a all reward {all_rewards} ")
 
             search_rewards = all_rewards[0]
-            latency_rewards = all_rewards[1]
-            zipped_rewards = zip(
-                uids,
-                rewards.tolist(),
-                responses,
-                search_rewards,
-                latency_rewards,
-            )
+            zipped_rewards = zip(uids, rewards.tolist(), responses, search_rewards)
 
-            for (
-                uid_tensor,
-                reward,
-                response,
-                search_reward,
-                latency_reward,
-            ) in zipped_rewards:
+            for uid_tensor, reward, response, search_reward in zipped_rewards:
                 uid = uid_tensor.item()  # Convert tensor to int
                 uid_scores_dict[uid] = reward
                 scores[uid] = reward  # Now 'uid' is an int, which is a valid key type
@@ -236,7 +205,6 @@ class WebScraperValidator:
                 elif hasattr(response, "urls"):
                     wandb_data["prompts"][uid] = response.urls
                 wandb_data["search_reward"][uid] = search_reward
-                wandb_data["latency_reward"][uid] = latency_reward
 
             if self.neuron.config.wandb_on:
                 wandb.log(wandb_data)

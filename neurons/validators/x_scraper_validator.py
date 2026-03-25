@@ -3,8 +3,8 @@ from typing import Any, Dict, List, Optional
 
 import bittensor as bt
 import torch
-import wandb
 
+import wandb
 from desearch.protocol import (
     TwitterIDSearchSynapse,
     TwitterSearchSynapse,
@@ -18,12 +18,10 @@ from neurons.validators.miner_response_logger import (
 )
 from neurons.validators.penalty.exponential_penalty import ExponentialTimePenaltyModel
 from neurons.validators.penalty.twitter_count_penalty import TwitterCountPenaltyModel
-from neurons.validators.reward import RewardModelType, RewardScoringType
-from neurons.validators.reward.performance_reward import PerformanceRewardModel
+from neurons.validators.reward import RewardScoringType
 from neurons.validators.reward.twitter_basic_search_content_relevance import (
     TwitterBasicSearchContentRelevanceModel,
 )
-from neurons.validators.utils.mock import MockRewardModel
 
 
 class XScraperValidator:
@@ -38,14 +36,11 @@ class XScraperValidator:
             "self.neuron.config.neuron.device = ", str(self.neuron.config.neuron.device)
         )
 
-        # Hardcoded weights here because the advanced scraper validator implementation is based on args.
-        self.twitter_content_weight = 0.70
-        self.performance_weight = 0.30
+        self.twitter_content_weight = 1.0
 
         self.reward_weights = torch.tensor(
             [
                 self.twitter_content_weight,
-                self.performance_weight,
             ],
             dtype=torch.float32,
         ).to(self.neuron.config.neuron.device)
@@ -59,22 +54,10 @@ class XScraperValidator:
             raise Exception(message)
 
         self.reward_functions = [
-            (
-                TwitterBasicSearchContentRelevanceModel(
-                    device=self.neuron.config.neuron.device,
-                    scoring_type=RewardScoringType.search_relevance_score_template,
-                    neuron=self.neuron,
-                )
-                if self.neuron.config.reward.twitter_content_weight > 0
-                else MockRewardModel(RewardModelType.twitter_content_relevance.value)
-            ),
-            (
-                PerformanceRewardModel(
-                    device=self.neuron.config.neuron.device,
-                    neuron=self.neuron,
-                )
-                if self.neuron.config.reward.performance_weight > 0
-                else MockRewardModel(RewardModelType.performance_score.value)
+            TwitterBasicSearchContentRelevanceModel(
+                device=self.neuron.config.neuron.device,
+                scoring_type=RewardScoringType.search_relevance_score_template,
+                neuron=self.neuron,
             ),
         ]
 
@@ -196,7 +179,6 @@ class XScraperValidator:
                 "scores": {},
                 "timestamps": {},
                 "twitter_reward": {},
-                "latency_reward": {},
             }
             bt.logging.info(
                 f"======================== Reward ==========================="
@@ -219,22 +201,9 @@ class XScraperValidator:
             bt.logging.info(f"this is a all reward {all_rewards} ")
 
             twitter_rewards = all_rewards[0]
-            latency_rewards = all_rewards[1]
-            zipped_rewards = zip(
-                uids,
-                rewards.tolist(),
-                responses,
-                twitter_rewards,
-                latency_rewards,
-            )
+            zipped_rewards = zip(uids, rewards.tolist(), responses, twitter_rewards)
 
-            for (
-                uid_tensor,
-                reward,
-                response,
-                twitter_reward,
-                latency_reward,
-            ) in zipped_rewards:
+            for uid_tensor, reward, response, twitter_reward in zipped_rewards:
                 uid = uid_tensor.item()  # Convert tensor to int
                 uid_scores_dict[uid] = reward
                 scores[uid] = reward  # Now 'uid' is an int, which is a valid key type
@@ -246,7 +215,6 @@ class XScraperValidator:
                 elif hasattr(response, "urls"):
                     wandb_data["prompts"][uid] = response.urls
                 wandb_data["twitter_reward"][uid] = twitter_reward
-                wandb_data["latency_reward"][uid] = latency_reward
 
             if self.neuron.config.wandb_on:
                 wandb.log(wandb_data)

@@ -30,7 +30,6 @@ from neurons.validators.penalty.miner_score_penalty import MinerScorePenaltyMode
 from neurons.validators.penalty.streaming_penalty import StreamingPenaltyModel
 from neurons.validators.penalty.summary_rule_penalty import SummaryRulePenaltyModel
 from neurons.validators.reward import RewardModelType, RewardScoringType
-from neurons.validators.reward.performance_reward import PerformanceRewardModel
 from neurons.validators.reward.reward_llm import RewardLLM
 from neurons.validators.reward.search_content_relevance import (
     WebSearchContentRelevanceModel,
@@ -39,7 +38,6 @@ from neurons.validators.reward.summary_relevance import SummaryRelevanceRewardMo
 from neurons.validators.reward.twitter_content_relevance import (
     TwitterContentRelevanceModel,
 )
-from neurons.validators.utils.mock import MockRewardModel
 
 
 class AdvancedScraperValidator:
@@ -96,12 +94,15 @@ class AdvancedScraperValidator:
             "self.neuron.config.neuron.device = ", str(self.neuron.config.neuron.device)
         )
 
+        self.twitter_content_weight = 0.40
+        self.web_search_weight = 0.30
+        self.summary_relevance_weight = 0.30
+
         self.reward_weights = torch.tensor(
             [
-                self.neuron.config.reward.twitter_content_weight,
-                self.neuron.config.reward.web_search_relavance_weight,
-                self.neuron.config.reward.summary_relevance_weight,
-                self.neuron.config.reward.performance_weight,
+                self.twitter_content_weight,
+                self.web_search_weight,
+                self.summary_relevance_weight,
             ],
             dtype=torch.float32,
         ).to(self.neuron.config.neuron.device)
@@ -117,43 +118,23 @@ class AdvancedScraperValidator:
         self.reward_llm = RewardLLM(self.neuron.config.neuron.scoring_model)
 
         self.reward_functions = [
-            (
-                TwitterContentRelevanceModel(
-                    device=self.neuron.config.neuron.device,
-                    scoring_type=RewardScoringType.summary_relevance_score_template,
-                    llm_reward=self.reward_llm,
-                    neuron=self.neuron,
-                )
-                if self.neuron.config.reward.twitter_content_weight > 0
-                else MockRewardModel(RewardModelType.twitter_content_relevance.value)
+            TwitterContentRelevanceModel(
+                device=self.neuron.config.neuron.device,
+                scoring_type=RewardScoringType.summary_relevance_score_template,
+                llm_reward=self.reward_llm,
+                neuron=self.neuron,
             ),
-            (
-                WebSearchContentRelevanceModel(
-                    device=self.neuron.config.neuron.device,
-                    scoring_type=RewardScoringType.search_relevance_score_template,
-                    llm_reward=self.reward_llm,
-                    neuron=self.neuron,
-                )
-                if self.neuron.config.reward.web_search_relavance_weight > 0
-                else MockRewardModel(RewardModelType.search_content_relevance.value)
+            WebSearchContentRelevanceModel(
+                device=self.neuron.config.neuron.device,
+                scoring_type=RewardScoringType.search_relevance_score_template,
+                llm_reward=self.reward_llm,
+                neuron=self.neuron,
             ),
-            (
-                SummaryRelevanceRewardModel(
-                    device=self.neuron.config.neuron.device,
-                    scoring_type=RewardScoringType.summary_relevance_score_template,
-                    llm_reward=self.reward_llm,
-                    neuron=self.neuron,
-                )
-                if self.neuron.config.reward.summary_relevance_weight > 0
-                else MockRewardModel(RewardModelType.summary_relavance_match.value)
-            ),
-            (
-                PerformanceRewardModel(
-                    device=self.neuron.config.neuron.device,
-                    neuron=self.neuron,
-                )
-                if self.neuron.config.reward.performance_weight > 0
-                else MockRewardModel(RewardModelType.performance_score.value)
+            SummaryRelevanceRewardModel(
+                device=self.neuron.config.neuron.device,
+                scoring_type=RewardScoringType.summary_relevance_score_template,
+                llm_reward=self.reward_llm,
+                neuron=self.neuron,
             ),
         ]
 
@@ -329,7 +310,6 @@ class AdvancedScraperValidator:
                 "summary_reward": {},
                 "twitter_reward": {},
                 "search_reward": {},
-                "latency_reward": {},
             }
             bt.logging.info(
                 f"======================== Reward ==========================="
@@ -358,7 +338,6 @@ class AdvancedScraperValidator:
             twitter_rewards = all_rewards[0]
             search_rewards = all_rewards[1]
             summary_rewards = all_rewards[2]
-            latency_rewards = all_rewards[3]
             zipped_rewards = zip(
                 uids,
                 rewards.tolist(),
@@ -366,7 +345,6 @@ class AdvancedScraperValidator:
                 summary_rewards,
                 twitter_rewards,
                 search_rewards,
-                latency_rewards,
             )
 
             for (
@@ -376,7 +354,6 @@ class AdvancedScraperValidator:
                 summary_reward,
                 twitter_reward,
                 search_reward,
-                latency_reward,
             ) in zipped_rewards:
                 uid = uid_tensor.item()  # Convert tensor to int
                 uid_scores_dict[uid] = reward
@@ -387,7 +364,6 @@ class AdvancedScraperValidator:
                 wandb_data["summary_reward"][uid] = summary_reward
                 wandb_data["twitter_reward"][uid] = twitter_reward
                 wandb_data["search_reward"][uid] = search_reward
-                wandb_data["latency_reward"][uid] = latency_reward
 
             if self.neuron.config.wandb_on:
                 wandb.log(wandb_data)

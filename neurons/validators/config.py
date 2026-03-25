@@ -25,7 +25,6 @@ import torch
 from loguru import logger
 
 from desearch.protocol import ScoringModel
-from neurons.validators.reward import DefaultRewardFrameworkConfig
 
 
 def str2bool(v):
@@ -107,34 +106,6 @@ def add_args(cls, parser):
         type=float,
         help="Moving average alpha parameter, how much to add of the new observation.",
         default=0.2,
-    )
-
-    parser.add_argument(
-        "--reward.summary_relevance_weight",
-        type=float,
-        help="adjusts the influence of a scoring model that evaluates the accuracy and relevance of a node's responses to given prompts.",
-        default=DefaultRewardFrameworkConfig.summary_relevance_weight,
-    )
-
-    parser.add_argument(
-        "--reward.twitter_content_weight",
-        type=float,
-        help="Specifies the weight for the reward model that evaluates the relevance and quality of summary text in conjunction with linked content data.",
-        default=DefaultRewardFrameworkConfig.twitter_content_weight,
-    )
-
-    parser.add_argument(
-        "--reward.web_search_relavance_weight",
-        type=float,
-        help="Specifies the weight for the reward model that evaluates the relevance and quality of search summary text in conjunction with linked content data.",
-        default=DefaultRewardFrameworkConfig.web_search_relavance_weight,
-    )
-
-    parser.add_argument(
-        "--reward.performance_weight",
-        type=float,
-        help="Specifies the weight for the reward model that evaluates the relevance and quality of search summary text in conjunction with linked content data.",
-        default=DefaultRewardFrameworkConfig.performance_weight,
     )
 
     parser.add_argument(
