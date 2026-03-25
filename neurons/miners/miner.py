@@ -395,7 +395,6 @@ class StreamMiner(ABC):
                     f"Step:{step} | "
                     f"Block:{metagraph.block.item()} | "
                     f"Stake:{metagraph.S[self.my_subnet_uid]} | "
-                    f"Trust:{metagraph.T[self.my_subnet_uid]} | "
                     f"Consensus:{metagraph.C[self.my_subnet_uid]} | "
                     f"Incentive:{metagraph.I[self.my_subnet_uid]} | "
                     f"Emission:{metagraph.E[self.my_subnet_uid]}"
