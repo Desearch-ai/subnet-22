@@ -1,11 +1,10 @@
-from typing import Optional, Type
+from typing import Type
 
 from pydantic import BaseModel, Field
-import json
 import bittensor as bt
 
-from desearch.tools.search.serp_advanced_google_search import SerpAdvancedGoogleSearch
 from desearch.tools.base import BaseTool
+from desearch.tools.search.scrapingdog_google_search import ScrapingDogGoogleSearch
 
 
 class RedditSearchSchema(BaseModel):
@@ -33,37 +32,16 @@ class RedditSearchTool(BaseTool):
 
     async def _arun(self, query: str) -> str:
         """Search Reddit and return the results."""
-        search = SerpAdvancedGoogleSearch(
+        search = ScrapingDogGoogleSearch(
             site="reddit.com",
-            language=self.tool_manager.language if self.tool_manager else "en",
-            region=self.tool_manager.region if self.tool_manager else "us",
-            date_filter=(
-                self.tool_manager.google_date_filter if self.tool_manager else "qdr:w"
-            ),
+            query_suffix="inurl:comments",
         )
-        result = await search.run(query)
-        if not result or result == "Could not search Google. Please try again later.":
-            return []
-        result = search.process_response(result)
-        return result
+        return await search.search(query)
 
     async def send_event(self, send, response_streamer, data):
         if not data:
             return
 
-        search_results_response_body = {
-            "type": "reddit_search",
-            "content": data,
-        }
-
-        response_streamer.more_body = False
-
-        await send(
-            {
-                "type": "http.response.body",
-                "body": json.dumps(search_results_response_body).encode("utf-8"),
-                "more_body": False,
-            }
-        )
+        await response_streamer.send_event("reddit_search", data)
 
         bt.logging.info("Reddit search results data sent")

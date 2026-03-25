@@ -1,9 +1,9 @@
 import traceback
+import time
 import bittensor as bt
 from starlette.types import Send
 from desearch.protocol import (
     ScraperStreamingSynapse,
-    ResultType,
 )
 from desearch.tools.tool_manager import ToolManager
 from desearch.dataset.date_filters import (
@@ -11,6 +11,7 @@ from desearch.dataset.date_filters import (
     DateFilterType,
     get_specified_date_filter,
 )
+from desearch.utils import get_max_execution_time
 from datetime import datetime
 import pytz
 
@@ -21,13 +22,7 @@ class ScraperMiner:
 
     async def smart_scraper(self, synapse: ScraperStreamingSynapse, send: Send):
         try:
-            # model = synapse.model
             prompt = synapse.prompt
-            # seed = synapse.seed
-            tools = synapse.tools
-            # is_intro_text = synapse.is_intro_text
-            result_type = ResultType(synapse.result_type)
-            system_message = synapse.system_message
 
             bt.logging.trace(synapse)
 
@@ -56,17 +51,16 @@ class ScraperMiner:
                     date_filter_type=DateFilterType(synapse.date_filter_type),
                 )
 
+            if synapse.max_execution_time is None:
+                synapse.max_execution_time = get_max_execution_time(
+                    synapse.model, synapse.count or 10
+                )
+
             tool_manager = ToolManager(
-                prompt=prompt,
-                manual_tool_names=tools,
-                send=send,
-                # is_intro_text=is_intro_text,
-                miner=self.miner,
-                language=synapse.language,
-                region=synapse.region,
+                synapse=synapse,
                 date_filter=date_filter,
-                google_date_filter=synapse.google_date_filter,
-                system_message=system_message,
+                send=send,
+                start_time=time.time(),
             )
 
             await tool_manager.run()
@@ -74,4 +68,4 @@ class ScraperMiner:
             bt.logging.info("End of Streaming")
 
         except Exception as e:
-            bt.logging.error(f"error in twitter scraper {e}\n{traceback.format_exc()}")
+            bt.logging.error(f"error in scraper miner {e}\n{traceback.format_exc()}")

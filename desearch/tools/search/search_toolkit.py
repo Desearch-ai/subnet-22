@@ -5,7 +5,6 @@ from .web_search_tool import WebSearchTool
 from .wikipedia_search_tool import WikipediaSearchTool
 from .youtube_search_tool import YoutubeSearchTool
 from .arxiv_search_tool import ArxivSearchTool
-from .search_summary import summarize_search_data, prepare_search_data_for_summary
 
 
 TOOLS = [
@@ -27,11 +26,3 @@ class SearchToolkit(BaseToolkit, ABC):
 
     def get_tools(self) -> List[BaseTool]:
         return TOOLS
-
-    async def summarize(self, prompt, model, data, system_message):
-        return await summarize_search_data(
-            prompt=prompt,
-            model=model,
-            data=prepare_search_data_for_summary(data),
-            user_system_message=system_message,
-        )

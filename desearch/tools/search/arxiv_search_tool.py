@@ -1,10 +1,8 @@
-from typing import Optional, Type
-
-import json
+from typing import Type
 import bittensor as bt
 from pydantic import BaseModel, Field
-import arxiv
 from desearch.tools.base import BaseTool
+from desearch.tools.search.scrapingdog_google_search import ScrapingDogGoogleSearch
 
 
 class ArxivSearchSchema(BaseModel):
@@ -36,41 +34,16 @@ class ArxivSearchTool(BaseTool):
 
     async def _arun(self, query: str) -> str:
         """Search Arxiv and return the results."""
-        client = arxiv.Client()
-
-        search = arxiv.Search(
-            query=query, max_results=10, sort_by=arxiv.SortCriterion.Relevance
+        search = ScrapingDogGoogleSearch(
+            site="arxiv.org",
+            query_suffix="-inurl:pdf",
         )
-
-        results = []
-
-        for r in client.results(search):
-            results.append(
-                {
-                    "title": r.title,
-                    "arxiv_url": r.entry_id,
-                }
-            )
-
-        return results
+        return await search.search(query)
 
     async def send_event(self, send, response_streamer, data):
         if not data:
             return
 
-        search_results_response_body = {
-            "type": "arxiv_search",
-            "content": data,
-        }
-
-        response_streamer.more_body = False
-
-        await send(
-            {
-                "type": "http.response.body",
-                "body": json.dumps(search_results_response_body).encode("utf-8"),
-                "more_body": False,
-            }
-        )
+        await response_streamer.send_event("arxiv_search", data)
 
         bt.logging.info("ArXiv search results data sent")

@@ -1,7 +1,6 @@
 from abc import abstractmethod, ABC
-from typing import List, Optional, Tuple, Any
+from typing import List, Optional, Any
 from pydantic import BaseModel, Field
-from desearch.protocol import ScraperTextRole
 
 
 class BaseTool(ABC):
@@ -29,10 +28,4 @@ class BaseToolkit(BaseModel):
 
     @abstractmethod
     def get_tools(self) -> List[BaseTool]:
-        pass
-
-    @abstractmethod
-    async def summarize(
-        self, prompt, model, data, system_message
-    ) -> Tuple[Any, ScraperTextRole]:
         pass

@@ -1,11 +1,10 @@
-from typing import Optional, Type
-import json
+from typing import Type
 
 import bittensor as bt
 from pydantic import BaseModel, Field
 
-from desearch.tools.search.wikipedia_api_wrapper import WikipediaAPIWrapper
 from desearch.tools.base import BaseTool
+from desearch.tools.search.scrapingdog_google_search import ScrapingDogGoogleSearch
 
 
 class WikipediaSearchSchema(BaseModel):
@@ -35,27 +34,14 @@ class WikipediaSearchTool(BaseTool):
 
     async def _arun(self, query: str) -> str:
         """Search Wikipedia and return the results."""
-        wikipedia = WikipediaAPIWrapper()
-        return wikipedia.run(query)
+        search = ScrapingDogGoogleSearch(site="wikipedia.org")
+        return await search.search(query)
 
     async def send_event(self, send, response_streamer, data):
         if not data:
             return
 
-        search_results_response_body = {
-            "type": "wikipedia_search",
-            "content": data,
-        }
-
-        response_streamer.more_body = False
-
-        await send(
-            {
-                "type": "http.response.body",
-                "body": json.dumps(search_results_response_body).encode("utf-8"),
-                "more_body": False,
-            }
-        )
+        await response_streamer.send_event("wikipedia_search", data)
 
         bt.logging.info("Wikipedia search results data sent")
 

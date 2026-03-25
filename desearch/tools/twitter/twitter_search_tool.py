@@ -1,12 +1,10 @@
-import json
 from typing import Type
 import bittensor as bt
 from pydantic import BaseModel, Field
 from starlette.types import Send
 from desearch.tools.base import BaseTool
-from desearch.services.twitter_prompt_analyzer import TwitterPromptAnalyzer
 from desearch.dataset.date_filters import get_specified_date_filter, DateFilterType
-from desearch.tools.twitter.twitter_utils import generalize_tweet_structure
+from neurons.validators.apify.twitter_scraper_actor import TwitterScraperActor
 
 
 class TwitterSearchToolSchema(BaseModel):
@@ -37,80 +35,41 @@ class TwitterSearchTool(BaseTool):
         query: str,  # run_manager: Optional[CallbackManagerForToolRun] = None
     ) -> str:
         """Tweet message and return."""
-        openai_query_model = (
-            self.tool_manager.miner.config.miner.openai_query_model
-            if self.tool_manager
-            else "gpt-3.5-turbo-0125"
-        )
-        openai_fix_query_model = (
-            self.tool_manager.miner.config.miner.openai_fix_query_model
-            if self.tool_manager
-            else "gpt-4-1106-preview"
-        )
         date_filter = (
             self.tool_manager.date_filter
             if self.tool_manager
             else get_specified_date_filter(DateFilterType.PAST_WEEK)
         )
+        start_date = date_filter.start_date.date()
+        end_date = date_filter.end_date.date()
 
-        client = TwitterPromptAnalyzer(
-            openai_query_model=openai_query_model,
-            openai_fix_query_model=openai_fix_query_model,
+        max_items = 10
+
+        if self.tool_manager and self.tool_manager.synapse:
+            max_items = self.tool_manager.synapse.count or 10
+
+        client = TwitterScraperActor()
+        tweets = await client.get_tweets_advanced(
+            start=start_date,
+            end=end_date,
+            maxItems=max_items,
+            searchTerms=[query],
         )
 
-        result, prompt_analysis = await client.analyse_prompt_and_fetch_tweets(
-            query,
-            date_filter=date_filter,
-        )
+        if isinstance(tweets, dict) and tweets.get("error"):
+            bt.logging.error(f"Twitter search failed: {tweets['error']}")
+            return []
 
-        bt.logging.info(
-            "================================== Prompt analysis ==================================="
-        )
-        bt.logging.info(prompt_analysis)
-        bt.logging.info(
-            "================================== Prompt analysis ===================================="
-        )
-
-        if self.tool_manager:
-            self.tool_manager.twitter_data = result
-            self.tool_manager.twitter_prompt_analysis = prompt_analysis
-
-        return (result, prompt_analysis)
+        return [
+            tweet.model_dump() if hasattr(tweet, "model_dump") else tweet
+            for tweet in tweets
+        ]
 
     async def send_event(self, send: Send, response_streamer, data):
         if not data:
             return
 
-        tweets, prompt_analysis = data
+        await response_streamer.send_event("tweets", data)
 
-        # # Send prompt_analysis
-        # if prompt_analysis:
-        #     prompt_analysis_response_body = {
-        #         "type": "prompt_analysis",
-        #         "content": prompt_analysis.dict(),
-        #     }
-
-        #     await send(
-        #         {
-        #             "type": "http.response.body",
-        #             "body": json.dumps(prompt_analysis_response_body).encode("utf-8"),
-        #             "more_body": True,
-        #         }
-        #     )
-        #     bt.logging.info("Prompt Analysis sent")
-
-        if tweets:
-            modified_tweets = generalize_tweet_structure(tweets=tweets)
-            tweets_response_body = {"type": "tweets", "content": modified_tweets}
-            response_streamer.more_body = False
-
-            await send(
-                {
-                    "type": "http.response.body",
-                    "body": json.dumps(tweets_response_body).encode("utf-8"),
-                    "more_body": False,
-                }
-            )
-            bt.logging.info(
-                f"Tweet data sent. Number of tweets: {len(modified_tweets)}"
-            )
+        if data:
+            bt.logging.info(f"Tweet data sent. Number of tweets: {len(data)}")

@@ -33,12 +33,6 @@ if not OpenAI.api_key:
         "Please set the OPENAI_API_KEY environment variable. See here: https://github.com/Desearch-ai/subnet-22/blob/main/docs/env_variables.md"
     )
 
-TWITTER_BEARER_TOKEN = os.environ.get("TWITTER_BEARER_TOKEN")
-if not TWITTER_BEARER_TOKEN:
-    raise ValueError(
-        "Please set the TWITTER_BEARER_TOKEN environment variable. See here: https://github.com/Desearch-ai/subnet-22/blob/main/docs/env_variables.md"
-    )
-
 
 class StreamMiner(ABC):
     def __init__(self, config=None, axon=None, wallet=None, subtensor=None):
@@ -396,16 +390,17 @@ class StreamMiner(ABC):
                     lite=True,
                     block=self.last_epoch_block,
                 )
+
                 log = (
                     f"Step:{step} | "
                     f"Block:{metagraph.block.item()} | "
                     f"Stake:{metagraph.S[self.my_subnet_uid]} | "
-                    f"Rank:{metagraph.R[self.my_subnet_uid]} | "
                     f"Trust:{metagraph.T[self.my_subnet_uid]} | "
                     f"Consensus:{metagraph.C[self.my_subnet_uid]} | "
                     f"Incentive:{metagraph.I[self.my_subnet_uid]} | "
                     f"Emission:{metagraph.E[self.my_subnet_uid]}"
                 )
+
                 bt.logging.info(log)
 
                 step += 1
