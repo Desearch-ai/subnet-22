@@ -14,7 +14,7 @@ from neurons.validators.miner_response_logger import (
     build_reward_payload,
     submit_logs_best_effort,
 )
-from neurons.validators.penalty.exponential_penalty import ExponentialTimePenaltyModel
+from neurons.validators.penalty.timeout_penalty import TimeoutPenaltyModel
 from neurons.validators.reward import RewardScoringType
 from neurons.validators.reward.web_basic_search_content_relevance import (
     WebBasicSearchContentRelevanceModel,
@@ -59,7 +59,7 @@ class WebScraperValidator:
         ]
 
         self.penalty_functions = [
-            ExponentialTimePenaltyModel(max_penalty=1, neuron=self.neuron),
+            TimeoutPenaltyModel(max_penalty=1, neuron=self.neuron),
         ]
 
     async def call_miner(

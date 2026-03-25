@@ -71,7 +71,7 @@ class PenaltyModelType(Enum):
     task_validation_penalty = "task_validation_penalty"
     accuracy_match_penalty = "accuracy_match_penalty"
     streaming_penalty = "streaming_penalty"
-    exponential_penalty = "exponential_penalty"
+    timeout_penalty = "timeout_penalty"
     summary_rule_penalty = "summary_rule_penalty"
     twitter_count_penalty = "twitter_count_penalty"
     miner_score_penalty = "miner_score_penalty"

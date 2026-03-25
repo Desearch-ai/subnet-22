@@ -3,8 +3,8 @@ from typing import List, Optional
 
 import bittensor as bt
 import torch
-import wandb
 
+import wandb
 from desearch.dataset.date_filters import (
     DateFilter,
     DateFilterType,
@@ -24,11 +24,9 @@ from neurons.validators.miner_response_logger import (
     build_reward_payload,
     submit_logs_best_effort,
 )
-from neurons.validators.penalty.chat_history_penalty import ChatHistoryPenaltyModel
-from neurons.validators.penalty.exponential_penalty import ExponentialTimePenaltyModel
 from neurons.validators.penalty.miner_score_penalty import MinerScorePenaltyModel
 from neurons.validators.penalty.streaming_penalty import StreamingPenaltyModel
-from neurons.validators.penalty.summary_rule_penalty import SummaryRulePenaltyModel
+from neurons.validators.penalty.timeout_penalty import TimeoutPenaltyModel
 from neurons.validators.reward import RewardModelType, RewardScoringType
 from neurons.validators.reward.reward_llm import RewardLLM
 from neurons.validators.reward.search_content_relevance import (
@@ -140,10 +138,8 @@ class AdvancedScraperValidator:
 
         self.penalty_functions = [
             StreamingPenaltyModel(max_penalty=1, neuron=self.neuron),
-            ExponentialTimePenaltyModel(max_penalty=1, neuron=self.neuron),
-            SummaryRulePenaltyModel(max_penalty=1, neuron=self.neuron),
+            TimeoutPenaltyModel(max_penalty=1, neuron=self.neuron),
             MinerScorePenaltyModel(max_penalty=1, neuron=self.neuron),
-            ChatHistoryPenaltyModel(max_penalty=1, neuron=self.neuron),
         ]
 
     async def call_miner(
