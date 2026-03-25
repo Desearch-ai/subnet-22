@@ -21,7 +21,6 @@ import os
 from distutils.util import strtobool
 
 import bittensor as bt
-import torch
 from loguru import logger
 
 from desearch.protocol import ScoringModel
@@ -99,20 +98,6 @@ def add_args(cls, parser):
         action="store_true",
         help="Disable all reward logging, suppresses reward functions and their values from being logged to wandb.",
         default=False,
-    )
-
-    parser.add_argument(
-        "--neuron.moving_average_alpha",
-        type=float,
-        help="Moving average alpha parameter, how much to add of the new observation.",
-        default=0.2,
-    )
-
-    parser.add_argument(
-        "--neuron.only_allowed_miners",
-        type=lambda x: x.split(","),
-        help="A list of miner identifiers, hotkey",
-        default=[],
     )
 
     parser.add_argument(

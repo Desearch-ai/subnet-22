@@ -240,11 +240,14 @@ class Neuron(AbstractNeuron):
                 f"Scattered reward: {average_reward:.6f}"
             )  # Rounds to 6 decimal places for logging
 
-            alpha = self.config.neuron.moving_average_alpha
+            alpha = 0.2
+
             self.moving_averaged_scores = alpha * scattered_rewards + (
                 1 - alpha
             ) * self.moving_averaged_scores.to(self.config.neuron.device)
+
             await save_moving_averaged_scores(self.moving_averaged_scores)
+
             bt.logging.info(
                 f"Moving averaged scores: {torch.mean(self.moving_averaged_scores):.6f}"
             )  # Rounds to 6 decimal places for logging
