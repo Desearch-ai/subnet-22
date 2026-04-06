@@ -9,6 +9,7 @@ import bittensor as bt
 import torch
 from bittensor.core.metagraph import AsyncMetagraph
 
+from desearch import MIN_ALPHA_STAKE, MIN_TOTAL_STAKE
 from desearch.protocol import IsAlive
 from desearch.redis.redis_client import close_redis, initialize_redis
 from desearch.redis.utils import (
@@ -139,6 +140,34 @@ class Neuron(AbstractNeuron):
             identity["port"] = port
 
         return identity
+
+    async def get_validators(self):
+        validators = []
+
+        for neuron in self.metagraph.neurons:
+            if not neuron.validator_permit:
+                continue
+
+            alpha_stake = float(getattr(neuron.stake, "tao", neuron.stake))
+            total_stake = float(self.metagraph.total_stake[neuron.uid])
+
+            print(
+                f"Neuron {neuron.uid}: ALPHA STAKE: {alpha_stake}, TOTAL STAKE: {total_stake}"
+            )
+
+            if alpha_stake < MIN_ALPHA_STAKE or total_stake < MIN_TOTAL_STAKE:
+                continue
+
+            validators.append(neuron)
+
+        bt.logging.info(
+            "Active validators for local scoring: "
+            f"count={len(validators)} "
+            f"min_alpha_stake={MIN_ALPHA_STAKE} "
+            f"min_total_stake={MIN_TOTAL_STAKE}"
+        )
+
+        return validators
 
     async def sync_available_uids(self):
         start_time = time.time()
@@ -363,7 +392,6 @@ class Neuron(AbstractNeuron):
 
             query_scheduler = QueryScheduler(
                 neuron=self,
-                utility_api=utility_api,
                 scoring_store=scoring_store,
                 validators=validators,
             )

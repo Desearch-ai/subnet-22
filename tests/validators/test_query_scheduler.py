@@ -28,7 +28,6 @@ async def test_score_epoch_extracts_prompts_from_responses_and_passes_epoch_star
     validator = SimpleNamespace(compute_rewards_and_penalties=AsyncMock())
     scheduler = QueryScheduler(
         neuron=SimpleNamespace(),
-        utility_api=SimpleNamespace(),
         scoring_store=scoring_store,
         validators={"web_search": validator},
     )

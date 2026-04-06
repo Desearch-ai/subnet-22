@@ -1,50 +1,60 @@
 import asyncio
 import time
 from datetime import datetime, timedelta, timezone
-from typing import Dict, Optional
+from typing import TYPE_CHECKING, Dict, Optional
 
 import bittensor as bt
 import torch
 
-from neurons.validators.scoring_store import ScoringStore
-from neurons.validators.utility_api_client import UtilityAPIClient
+from neurons.validators.scoring_dataset import (
+    SCORING_CONCURRENCY,
+    ScoringAssignment,
+    build_question_pool,
+    build_scoring_assignments,
+    current_scoring_window,
+)
+from neurons.validators.seed_commitment import build_window_seed_state
+
+if TYPE_CHECKING:
+    from neurons.validators.scoring_store import ScoringStore
 
 
 class QueryScheduler:
     """
-    Background scheduler that drives scoring queries from the utility API.
+    Background scheduler that drives scoring queries from a local Hugging Face dataset.
 
     Lifecycle per UTC hour:
-      1. Poll utility API for (uid, search_type, question) items.
-      2. Dispatch each as a fire-and-forget scoring query to the target miner.
-      3. Save the miner's response in ScoringStore.
-      4. On hour boundary → score the previous hour's responses (if not first epoch).
+      1. Load or reuse the local dataset question pool.
+      2. Publish this validator's seed commitment.
+      3. After the reveal delay, fetch current validator commitments and derive a
+         shared combined seed.
+      4. Build deterministic (uid, search_type, question) assignments locally.
+      5. Execute one ai/x/web scoring query for every miner and save the
+         responses in ScoringStore.
+      6. On the next hour boundary, score the previous hour's saved responses.
 
-    The API returns 404 when all questions for the current hour are served;
-    we sleep until the next UTC hour begins and then resume polling.
+    The Utility API remains available for log submission and backward compatibility,
+    but scheduling no longer depends on `/dataset/next`.
     """
 
     def __init__(
         self,
         neuron,
-        utility_api: UtilityAPIClient,
-        scoring_store: ScoringStore,
+        scoring_store: "ScoringStore",
         validators: Dict,  # {"ai_search": ..., "x_search": ..., "web_search": ...}
     ):
         self.neuron = neuron
-        self.utility_api = utility_api
         self.scoring_store = scoring_store
         self.validators = validators
+        self.question_pool = build_question_pool()
+        self.scoring_concurrency = SCORING_CONCURRENCY
 
         self.current_time_range: Optional[datetime] = None
-        self.min_request_interval_seconds = 4.1
-        self._next_poll_at = 0.0
 
         # Skip scoring on the first epoch boundary (incomplete responses)
         self.is_first_epoch = True
 
     def _build_query(self, question_query: str, params: dict) -> dict:
-        """Format a query dict for the appropriate validator's send_scoring_query()."""
         return {"query": question_query, **params}
 
     def _extract_prompt(self, response) -> str:
@@ -69,33 +79,39 @@ class QueryScheduler:
 
         return ""
 
-    async def _send_and_save(
-        self,
-        search_type: str,
-        uid: int,
-        query: dict,
-        time_range_start: datetime,
-        scoring_seed: Optional[int] = None,
-    ) -> None:
-        """Send one scoring query to a specific miner and persist the response."""
+    async def _send_and_save(self, assignment: ScoringAssignment) -> None:
         try:
-            validator = self.validators[search_type]
-            response = await validator.send_scoring_query(query, uid=uid)
+            validator = self.validators[assignment.search_type]
+            query = self._build_query(
+                assignment.question.query,
+                assignment.question.params,
+            )
+            response = await validator.send_scoring_query(query, uid=assignment.uid)
             if response is not None:
                 await self.scoring_store.save_response(
-                    time_range_start,
-                    uid,
-                    search_type,
+                    assignment.time_range_start,
+                    assignment.uid,
+                    assignment.search_type,
                     response,
-                    scoring_seed=scoring_seed,
+                    scoring_seed=assignment.scoring_seed,
                 )
                 bt.logging.debug(
-                    f"[QueryScheduler] Saved response uid={uid} type={search_type}"
+                    "[QueryScheduler] Saved response "
+                    f"uid={assignment.uid} type={assignment.search_type}"
                 )
         except Exception as e:
             bt.logging.error(
-                f"[QueryScheduler] Scoring query failed uid={uid} type={search_type}: {e}"
+                "[QueryScheduler] Scoring query failed "
+                f"uid={assignment.uid} type={assignment.search_type}: {e}"
             )
+
+    async def _run_assignment(
+        self,
+        assignment: ScoringAssignment,
+        semaphore: asyncio.Semaphore,
+    ) -> None:
+        async with semaphore:
+            await self._send_and_save(assignment)
 
     async def _score_search_type(
         self,
@@ -103,7 +119,6 @@ class QueryScheduler:
         items: list,
         time_range_start: datetime,
     ) -> None:
-        """Score one search type for a completed epoch."""
         validator = self.validators.get(search_type)
         if validator is None or not items:
             return
@@ -129,7 +144,6 @@ class QueryScheduler:
         )
 
     async def score_epoch(self, time_range_start: datetime) -> None:
-        """Load all responses for a completed hour and run reward/penalty computation."""
         try:
             bt.logging.info(
                 f"[QueryScheduler] Scoring epoch {time_range_start.isoformat()}"
@@ -138,7 +152,7 @@ class QueryScheduler:
 
             if not all_responses:
                 bt.logging.warning(
-                    f"[QueryScheduler] No responses for epoch "
+                    "[QueryScheduler] No responses for epoch "
                     f"{time_range_start.isoformat()}, skipping scoring."
                 )
                 return
@@ -151,7 +165,7 @@ class QueryScheduler:
 
             if not score_tasks:
                 bt.logging.warning(
-                    f"[QueryScheduler] No scoreable responses for epoch "
+                    "[QueryScheduler] No scoreable responses for epoch "
                     f"{time_range_start.isoformat()}, skipping scoring."
                 )
                 return
@@ -167,104 +181,106 @@ class QueryScheduler:
         except Exception as e:
             bt.logging.error(f"[QueryScheduler] Error in score_epoch: {e}")
 
-    async def _wait_for_poll_window(self) -> None:
-        delay = self._next_poll_at - time.monotonic()
+    def _collect_miner_uids(self) -> list[int]:
+        metagraph_uids = self.neuron.metagraph.uids
+        if hasattr(metagraph_uids, "tolist"):
+            return [int(uid) for uid in metagraph_uids.tolist()]
+
+        return [int(uid) for uid in metagraph_uids]
+
+    async def _run_window(self, time_range_start: datetime) -> None:
+        validators = await self.neuron.get_validators()
+
+        window_state = await build_window_seed_state(
+            subtensor=self.neuron.subtensor,
+            wallet=self.neuron.wallet,
+            netuid=self.neuron.config.netuid,
+            uid=self.neuron.uid,
+            validators=validators,
+            time_range_start=time_range_start,
+        )
+
+        if window_state.validator_count == 0:
+            bt.logging.warning(
+                "[QueryScheduler] No validator commitments available for "
+                f"{time_range_start.isoformat()}, skipping window."
+            )
+            return
+
+        miner_uids = self._collect_miner_uids()
+
+        assignments = build_scoring_assignments(
+            time_range_start=time_range_start,
+            miner_uids=miner_uids,
+            question_pool=self.question_pool,
+            combined_seed=window_state.combined_seed,
+        )
+
+        bt.logging.info(
+            "[QueryScheduler] Built local scoring plan "
+            f"time_range={time_range_start.isoformat()} "
+            f"validators={window_state.validator_count} "
+            f"assignments_total={len(assignments)} "
+            f"combined_seed={window_state.combined_seed}"
+        )
+
+        if not assignments:
+            return
+
+        semaphore = asyncio.Semaphore(self.scoring_concurrency)
+
+        tasks = [
+            asyncio.create_task(self._run_assignment(assignment, semaphore))
+            for assignment in assignments
+        ]
+
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        for result in results:
+            if isinstance(result, Exception):
+                bt.logging.error(f"[QueryScheduler] Window task failed: {result}")
+
+    async def _sleep_until_next_window(self, time_range_start: datetime) -> None:
+        next_window_start = time_range_start + timedelta(hours=1)
+        delay = (next_window_start - datetime.now(timezone.utc)).total_seconds()
         if delay > 0:
             await asyncio.sleep(delay)
 
-    def _schedule_next_poll(self, request_started_at: float) -> None:
-        self._next_poll_at = request_started_at + self.min_request_interval_seconds
-
-    def _seconds_until_next_hour(self) -> float:
-        now = datetime.now(timezone.utc)
-        next_hour = now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
-        return max((next_hour - now).total_seconds() + 1, 1)
-
     async def run(self) -> None:
-        """Entry point — run as a long-lived asyncio task."""
         bt.logging.info("[QueryScheduler] Starting")
+        await self.question_pool.initialize()
 
         while True:
-            request_started_at: Optional[float] = None
             try:
-                await self._wait_for_poll_window()
-                request_started_at = time.monotonic()
-                item = await self.utility_api.fetch_next_question()
-                self._schedule_next_poll(request_started_at)
+                window_start = current_scoring_window()
 
-                time_range_start = item["time_range_start"]
-                if isinstance(time_range_start, str):
-                    time_range_start = datetime.fromisoformat(
-                        time_range_start.replace("Z", "+00:00")
-                    )
-
-                uid: int = item["uid"]
-                search_type: str = item["search_type"]
-                question_query: str = item["question"]["query"]
-                params: dict = item["question"].get("params", {})
-                scoring_seed: Optional[int] = item.get("scoring_seed")
-
-                # Detect hour boundary
                 if (
                     self.current_time_range is not None
-                    and time_range_start != self.current_time_range
+                    and window_start != self.current_time_range
                 ):
                     bt.logging.info(
                         "[QueryScheduler] Hour boundary detected "
                         f"previous={self.current_time_range.isoformat()} "
-                        f"next={time_range_start.isoformat()} "
+                        f"next={window_start.isoformat()} "
                         f"is_first_epoch={self.is_first_epoch}"
                     )
+
                     if not self.is_first_epoch:
-                        asyncio.create_task(self.score_epoch(self.current_time_range))
+                        await self.score_epoch(self.current_time_range)
                     else:
                         bt.logging.info(
-                            "[QueryScheduler] First epoch boundary — "
+                            "[QueryScheduler] First epoch boundary - "
                             "skipping scoring (incomplete data)."
                         )
+
                     self.is_first_epoch = False
 
-                self.current_time_range = time_range_start
-
-                # Dispatch scoring query in background
-                query = self._build_query(question_query, params)
-
-                asyncio.create_task(
-                    self._send_and_save(
-                        search_type,
-                        uid,
-                        query,
-                        time_range_start,
-                        scoring_seed=scoring_seed,
-                    )
-                )
-
+                self.current_time_range = window_start
+                await self._run_window(window_start)
+                await self._sleep_until_next_window(window_start)
             except Exception as e:
-                status = getattr(e, "status", None)
-
-                if status == 404:
-                    # All questions for this hour have been served
-                    sleep_seconds = self._seconds_until_next_hour()
-                    self._next_poll_at = 0.0
-                    bt.logging.info(
-                        "[QueryScheduler] All questions served for current hour. "
-                        f"Waiting {sleep_seconds:.1f}s for next UTC hour..."
-                    )
-                    await asyncio.sleep(sleep_seconds)
-                elif status == 429:
-                    # Unexpected rate limit — re-align to the server window.
-                    if request_started_at is not None:
-                        self._schedule_next_poll(request_started_at)
-                    else:
-                        self._next_poll_at = time.monotonic() + (
-                            self.min_request_interval_seconds
-                        )
-                    await self._wait_for_poll_window()
-                else:
-                    bt.logging.error(
-                        "[QueryScheduler] Unexpected error while polling "
-                        f"dataset/next current_time_range="
-                        f"{self.current_time_range.isoformat() if self.current_time_range else None} "
-                        f"status={status}: {e}"
-                    )
-                    await asyncio.sleep(5)
+                bt.logging.error(
+                    "[QueryScheduler] Unexpected scheduler error "
+                    f"time_range={self.current_time_range.isoformat() if self.current_time_range else None}: {e}"
+                )
+                await asyncio.sleep(5)

@@ -43,6 +43,10 @@ if not AsyncOpenAI.api_key:
 
 client = AsyncOpenAI(timeout=90.0)
 
+
+MIN_TOTAL_STAKE = 10000
+MIN_ALPHA_STAKE = 20
+
 # Blacklist variables
 ALLOW_NON_REGISTERED = False
 PROMPT_BLACKLIST_STAKE = 20000
