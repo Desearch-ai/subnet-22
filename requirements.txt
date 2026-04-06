@@ -18,3 +18,4 @@ substrate-interface==1.7.11
 redis[hiredis]==5.2.1
 jsonpickle==4.0.2
 datasets==4.5.0
+huggingface_hub==1.4.1

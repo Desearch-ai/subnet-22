@@ -3,7 +3,16 @@ from datetime import datetime, timezone
 from neurons.validators.scoring_dataset import (
     HuggingFaceQuestionPool,
     build_scoring_assignments,
+    filter_scoring_assignments,
 )
+from neurons.validators.seed_commitment import CommittedValidator
+
+
+def build_validators():
+    return [
+        CommittedValidator(uid=1, hotkey="validator-a", seed=111),
+        CommittedValidator(uid=2, hotkey="validator-b", seed=222),
+    ]
 
 
 def build_question_pool():
@@ -29,12 +38,14 @@ def test_build_scoring_assignments_is_deterministic():
     assignments_a = build_scoring_assignments(
         time_range_start=time_range_start,
         miner_uids=[3, 7, 11],
+        validators=build_validators(),
         question_pool=pool,
         combined_seed=123456,
     )
     assignments_b = build_scoring_assignments(
         time_range_start=time_range_start,
         miner_uids=[3, 7, 11],
+        validators=build_validators(),
         question_pool=pool,
         combined_seed=123456,
     )
@@ -55,3 +66,16 @@ def test_build_scoring_assignments_is_deterministic():
         "x_search",
         "x_search",
     ]
+
+    owners_by_miner = {
+        uid: {
+            (item.validator_uid, item.validator_hotkey)
+            for item in assignments_a
+            if item.uid == uid
+        }
+        for uid in [3, 7, 11]
+    }
+    assert all(len(owners) == 1 for owners in owners_by_miner.values())
+
+    local_assignments = filter_scoring_assignments(assignments_a, validator_uid=1)
+    assert all(item.validator_uid == 1 for item in local_assignments)

@@ -23,6 +23,7 @@ from neurons.validators.config import add_args, check_config, config
 from neurons.validators.proxy.uid_manager import UIDManager
 from neurons.validators.query_scheduler import QueryScheduler
 from neurons.validators.scoring_store import ScoringStore
+from neurons.validators.storage import build_object_storage
 from neurons.validators.utility_api_client import UtilityAPIClient
 from neurons.validators.web_scraper_validator import WebScraperValidator
 from neurons.validators.weights import init_wandb, set_weights
@@ -376,7 +377,12 @@ class Neuron(AbstractNeuron):
             )
             bt.logging.debug(str(self.moving_averaged_scores))
 
-            scoring_store = ScoringStore()
+            scoring_store = ScoringStore(
+                object_storage=build_object_storage(),
+                netuid=self.config.netuid,
+                validator_uid=self.uid,
+                validator_hotkey=self.wallet.hotkey.ss58_address,
+            )
 
             utility_api = UtilityAPIClient(
                 base_url=self.config.neuron.utility_api_url,

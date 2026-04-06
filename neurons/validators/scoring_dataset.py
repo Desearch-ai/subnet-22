@@ -191,6 +191,8 @@ class ScoringAssignment:
     time_range_start: datetime
     uid: int
     search_type: str
+    validator_uid: int
+    validator_hotkey: str
     question: ScoringQuestion
     scoring_seed: int
 
@@ -285,14 +287,22 @@ def build_scoring_assignments(
     *,
     time_range_start: datetime,
     miner_uids: Sequence[int],
+    validators: Sequence[Any],
     question_pool: HuggingFaceQuestionPool,
     combined_seed: int,
 ) -> list[ScoringAssignment]:
-    if not miner_uids:
+    if not miner_uids or not validators:
         return []
 
     assignments: list[ScoringAssignment] = []
     ordered_miner_uids = sorted(int(uid) for uid in miner_uids)
+
+    validator_ownership = build_validator_ownership(
+        time_range_start=time_range_start,
+        miner_uids=ordered_miner_uids,
+        validators=validators,
+        combined_seed=combined_seed,
+    )
 
     for search_type in SCORING_SEARCH_TYPES:
         questions = question_pool.get_questions_for(search_type)
@@ -307,6 +317,7 @@ def build_scoring_assignments(
         ).shuffle(question_order)
 
         for index, uid in enumerate(ordered_miner_uids):
+            owner_validator = validator_ownership[uid]
             question_index = question_order[index % len(question_order)]
             query = questions[question_index]
             params = generate_params_for(
@@ -327,6 +338,8 @@ def build_scoring_assignments(
                     time_range_start=time_range_start,
                     uid=uid,
                     search_type=search_type,
+                    validator_uid=int(owner_validator.uid),
+                    validator_hotkey=owner_validator.hotkey,
                     question=ScoringQuestion(query=query, params=params),
                     scoring_seed=scoring_seed,
                 )
@@ -340,3 +353,50 @@ def build_scoring_assignments(
     task_order_rng.shuffle(assignments)
     return assignments
 
+
+def build_validator_ownership(
+    *,
+    time_range_start: datetime,
+    miner_uids: Sequence[int],
+    validators: Sequence[Any],
+    combined_seed: int,
+) -> dict[int, Any]:
+    if not miner_uids or not validators:
+        return {}
+
+    ordered_validators = sorted(
+        validators, key=lambda item: (int(item.uid), item.hotkey)
+    )
+
+    validator_order = list(ordered_validators)
+
+    random.Random(
+        derive_deterministic_int(
+            combined_seed,
+            time_range_start.isoformat(),
+            "validator-order",
+        )
+    ).shuffle(validator_order)
+
+    miner_order = sorted(int(uid) for uid in miner_uids)
+    random.Random(
+        derive_deterministic_int(
+            combined_seed,
+            time_range_start.isoformat(),
+            "miner-order",
+        )
+    ).shuffle(miner_order)
+
+    ownership: dict[int, Any] = {}
+    for index, uid in enumerate(miner_order):
+        ownership[uid] = validator_order[index % len(validator_order)]
+
+    return ownership
+
+
+def filter_scoring_assignments(
+    assignments: Sequence[ScoringAssignment],
+    *,
+    validator_uid: int,
+) -> list[ScoringAssignment]:
+    return [item for item in assignments if item.validator_uid == int(validator_uid)]

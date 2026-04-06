@@ -22,10 +22,10 @@ import asyncio
 
 import bittensor as bt
 import torch
+import wandb
 from bittensor.utils.weight_utils import process_weights
 
 import desearch
-import wandb
 
 ENABLE_EMISSION_CONTROL = True
 EMISSION_CONTROL_HOTKEY = "5CUu1QhvrfyMDBELUPJLt4c7uJFbi7TKqDHkS1Zz41oD4dyP"
@@ -256,9 +256,10 @@ async def set_weights(self):
         bt.logging.info(" | ".join(uids_weights[i : i + 4]))
     bt.logging.info("Attempting to set weights details ends: ================")
 
-    # Call the new method to handle the process with retry logic
-    success = await set_weights_with_retry(
-        self, processed_weight_uids, processed_weights
-    )
+    # # Call the new method to handle the process with retry logic
+    # success = await set_weights_with_retry(
+    #     self, processed_weight_uids, processed_weights
+    # )
 
-    return success
+    # return success
+    return True

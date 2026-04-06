@@ -3,8 +3,11 @@ from datetime import datetime, timezone
 from neurons.validators.seed_commitment import (
     CommittedValidator,
     combine_validator_seeds,
+    format_bucket_payload,
     format_seed_payload,
+    merge_bucket_commitment,
     merge_seed_commitment,
+    parse_bucket_commitment,
     parse_seed_commitment,
 )
 
@@ -47,3 +50,16 @@ def test_combine_validator_seeds_is_stable_for_same_validators():
     )
 
     assert combined_a == combined_b
+
+
+def test_bucket_commitment_round_trip_preserves_other_data():
+    time_range_start = datetime(2026, 4, 6, 10, 30, tzinfo=timezone.utc)
+    payload = format_bucket_payload(time_range_start, "hf:namespace/repo-name")
+    merged = merge_bucket_commitment("https://example.com/data", payload)
+
+    parsed = parse_bucket_commitment(merged)
+
+    assert merged.startswith("https://example.com/data")
+    assert parsed is not None
+    assert parsed.time_range_start == time_range_start
+    assert parsed.bucket_locator == "hf:namespace/repo-name"

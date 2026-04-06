@@ -12,11 +12,22 @@ from neurons.validators.scoring_dataset import (
     build_question_pool,
     build_scoring_assignments,
     current_scoring_window,
+    filter_scoring_assignments,
 )
-from neurons.validators.seed_commitment import build_window_seed_state
+from neurons.validators.seed_commitment import (
+    DEFAULT_BUCKET_COMMITMENT_REVEAL_DELAY_SECONDS,
+    WindowBucketState,
+    WindowSeedState,
+    build_window_bucket_state,
+    build_window_seed_state,
+    load_window_bucket_state,
+    load_window_seed_state,
+)
 
 if TYPE_CHECKING:
     from neurons.validators.scoring_store import ScoringStore
+
+SCORING_STORAGE_PUBLISH_OFFSET = timedelta(minutes=30)
 
 
 class QueryScheduler:
@@ -28,10 +39,11 @@ class QueryScheduler:
       2. Publish this validator's seed commitment.
       3. After the reveal delay, fetch current validator commitments and derive a
          shared combined seed.
-      4. Build deterministic (uid, search_type, question) assignments locally.
-      5. Execute one ai/x/web scoring query for every miner and save the
-         responses in ScoringStore.
-      6. On the next hour boundary, score the previous hour's saved responses.
+      4. Split miner UIDs deterministically across committed validators.
+      5. Between `HH:00` and `HH:30`, execute this validator's owned ai/x/web
+         scoring queries and save the responses in public object storage.
+      6. At `HH:30`, publish this validator's bucket locator, wait for bucket
+         commitments, then read the expected stored responses and score them.
 
     The Utility API remains available for log submission and backward compatibility,
     but scheduling no longer depends on `/dataset/next`.
@@ -45,14 +57,13 @@ class QueryScheduler:
     ):
         self.neuron = neuron
         self.scoring_store = scoring_store
-        self.validators = validators
+        self.search_validators = validators
         self.question_pool = build_question_pool()
         self.scoring_concurrency = SCORING_CONCURRENCY
 
         self.current_time_range: Optional[datetime] = None
-
-        # Skip scoring on the first epoch boundary (incomplete responses)
-        self.is_first_epoch = True
+        self.window_assignments: dict[datetime, tuple[ScoringAssignment, ...]] = {}
+        self.window_bucket_states: dict[datetime, WindowBucketState] = {}
 
     def _build_query(self, question_query: str, params: dict) -> dict:
         return {"query": question_query, **params}
@@ -81,20 +92,14 @@ class QueryScheduler:
 
     async def _send_and_save(self, assignment: ScoringAssignment) -> None:
         try:
-            validator = self.validators[assignment.search_type]
+            validator = self.search_validators[assignment.search_type]
             query = self._build_query(
                 assignment.question.query,
                 assignment.question.params,
             )
             response = await validator.send_scoring_query(query, uid=assignment.uid)
             if response is not None:
-                await self.scoring_store.save_response(
-                    assignment.time_range_start,
-                    assignment.uid,
-                    assignment.search_type,
-                    response,
-                    scoring_seed=assignment.scoring_seed,
-                )
+                await self.scoring_store.save_response(assignment, response)
                 bt.logging.debug(
                     "[QueryScheduler] Saved response "
                     f"uid={assignment.uid} type={assignment.search_type}"
@@ -119,7 +124,7 @@ class QueryScheduler:
         items: list,
         time_range_start: datetime,
     ) -> None:
-        validator = self.validators.get(search_type)
+        validator = self.search_validators.get(search_type)
         if validator is None or not items:
             return
 
@@ -148,7 +153,13 @@ class QueryScheduler:
             bt.logging.info(
                 f"[QueryScheduler] Scoring epoch {time_range_start.isoformat()}"
             )
-            all_responses = await self.scoring_store.get_all_for_range(time_range_start)
+            assignments = await self._get_window_assignments(time_range_start)
+            all_responses = await self.scoring_store.get_all_for_assignments(
+                assignments,
+                bucket_locators=(
+                    await self._get_window_bucket_state(time_range_start)
+                ).bucket_locators,
+            )
 
             if not all_responses:
                 bt.logging.warning(
@@ -160,7 +171,7 @@ class QueryScheduler:
             score_tasks = [
                 self._score_search_type(search_type, items, time_range_start)
                 for search_type, items in all_responses.items()
-                if self.validators.get(search_type) is not None and items
+                if self.search_validators.get(search_type) is not None and items
             ]
 
             if not score_tasks:
@@ -182,21 +193,130 @@ class QueryScheduler:
             bt.logging.error(f"[QueryScheduler] Error in score_epoch: {e}")
 
     def _collect_miner_uids(self) -> list[int]:
+        neurons = getattr(self.neuron.metagraph, "neurons", None)
+        if neurons is not None:
+            return sorted(
+                int(neuron.uid)
+                for neuron in neurons
+                if not getattr(neuron, "validator_permit", False)
+            )
+
         metagraph_uids = self.neuron.metagraph.uids
         if hasattr(metagraph_uids, "tolist"):
             return [int(uid) for uid in metagraph_uids.tolist()]
 
         return [int(uid) for uid in metagraph_uids]
 
+    def _store_window_assignments(
+        self,
+        time_range_start: datetime,
+        assignments: list[ScoringAssignment],
+    ) -> None:
+        self.window_assignments[time_range_start] = tuple(assignments)
+
+        cutoff = time_range_start - timedelta(hours=2)
+        self.window_assignments = {
+            current_window: items
+            for current_window, items in self.window_assignments.items()
+            if current_window >= cutoff
+        }
+        self.window_bucket_states = {
+            current_window: items
+            for current_window, items in self.window_bucket_states.items()
+            if current_window >= cutoff
+        }
+
+    def _build_assignments_for_window(
+        self,
+        *,
+        time_range_start: datetime,
+        window_state: WindowSeedState,
+    ) -> list[ScoringAssignment]:
+        if window_state.validator_count == 0:
+            return []
+
+        assignments = build_scoring_assignments(
+            time_range_start=time_range_start,
+            miner_uids=self._collect_miner_uids(),
+            validators=window_state.committed_validators,
+            question_pool=self.question_pool,
+            combined_seed=window_state.combined_seed,
+        )
+        self._store_window_assignments(time_range_start, assignments)
+        return assignments
+
+    async def _get_window_assignments(
+        self,
+        time_range_start: datetime,
+    ) -> list[ScoringAssignment]:
+        cached_assignments = self.window_assignments.get(time_range_start)
+        if cached_assignments is not None:
+            return list(cached_assignments)
+
+        active_validators = await self.neuron.get_validators()
+        window_state = await load_window_seed_state(
+            subtensor=self.neuron.subtensor,
+            netuid=self.neuron.config.netuid,
+            validators=active_validators,
+            time_range_start=time_range_start,
+        )
+
+        assignments = self._build_assignments_for_window(
+            time_range_start=time_range_start,
+            window_state=window_state,
+        )
+
+        if assignments:
+            bt.logging.info(
+                "[QueryScheduler] Rebuilt missing window assignments "
+                f"time_range={time_range_start.isoformat()} "
+                f"validators={window_state.validator_count} "
+                f"assignments_total={len(assignments)}"
+            )
+
+        return assignments
+
+    def _store_window_bucket_state(
+        self,
+        time_range_start: datetime,
+        bucket_state: WindowBucketState,
+    ) -> None:
+        self.window_bucket_states[time_range_start] = bucket_state
+
+    async def _get_window_bucket_state(
+        self,
+        time_range_start: datetime,
+    ) -> WindowBucketState:
+        cached_bucket_state = self.window_bucket_states.get(time_range_start)
+        if cached_bucket_state is not None:
+            return cached_bucket_state
+
+        active_validators = await self.neuron.get_validators()
+        bucket_state = await load_window_bucket_state(
+            subtensor=self.neuron.subtensor,
+            netuid=self.neuron.config.netuid,
+            validators=active_validators,
+            time_range_start=time_range_start,
+        )
+        self._store_window_bucket_state(time_range_start, bucket_state)
+        return bucket_state
+
+    async def _sleep_until_score_phase(self, time_range_start: datetime) -> None:
+        score_phase_start = time_range_start + SCORING_STORAGE_PUBLISH_OFFSET
+        delay = (score_phase_start - datetime.now(timezone.utc)).total_seconds()
+        if delay > 0:
+            await asyncio.sleep(delay)
+
     async def _run_window(self, time_range_start: datetime) -> None:
-        validators = await self.neuron.get_validators()
+        active_validators = await self.neuron.get_validators()
+        score_phase_start = time_range_start + SCORING_STORAGE_PUBLISH_OFFSET
 
         window_state = await build_window_seed_state(
             subtensor=self.neuron.subtensor,
             wallet=self.neuron.wallet,
             netuid=self.neuron.config.netuid,
             uid=self.neuron.uid,
-            validators=validators,
+            validators=active_validators,
             time_range_start=time_range_start,
         )
 
@@ -207,13 +327,13 @@ class QueryScheduler:
             )
             return
 
-        miner_uids = self._collect_miner_uids()
-
-        assignments = build_scoring_assignments(
+        assignments = self._build_assignments_for_window(
             time_range_start=time_range_start,
-            miner_uids=miner_uids,
-            question_pool=self.question_pool,
-            combined_seed=window_state.combined_seed,
+            window_state=window_state,
+        )
+        local_assignments = filter_scoring_assignments(
+            assignments,
+            validator_uid=self.neuron.uid,
         )
 
         bt.logging.info(
@@ -221,24 +341,52 @@ class QueryScheduler:
             f"time_range={time_range_start.isoformat()} "
             f"validators={window_state.validator_count} "
             f"assignments_total={len(assignments)} "
+            f"local_assignments={len(local_assignments)} "
             f"combined_seed={window_state.combined_seed}"
         )
 
-        if not assignments:
+        if local_assignments and datetime.now(timezone.utc) < score_phase_start:
+            semaphore = asyncio.Semaphore(self.scoring_concurrency)
+
+            tasks = [
+                asyncio.create_task(self._run_assignment(assignment, semaphore))
+                for assignment in local_assignments
+            ]
+
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+
+            for result in results:
+                if isinstance(result, Exception):
+                    bt.logging.error(f"[QueryScheduler] Window task failed: {result}")
+        elif local_assignments:
+            bt.logging.warning(
+                "[QueryScheduler] Query phase already ended for "
+                f"{time_range_start.isoformat()}, skipping late local scoring queries."
+            )
+
+        await self._sleep_until_score_phase(time_range_start)
+
+        bucket_state = await build_window_bucket_state(
+            subtensor=self.neuron.subtensor,
+            wallet=self.neuron.wallet,
+            netuid=self.neuron.config.netuid,
+            uid=self.neuron.uid,
+            validators=active_validators,
+            time_range_start=time_range_start,
+            bucket_locator=self.scoring_store.bucket_locator,
+            publish_offset=SCORING_STORAGE_PUBLISH_OFFSET,
+            reveal_delay_seconds=DEFAULT_BUCKET_COMMITMENT_REVEAL_DELAY_SECONDS,
+        )
+        self._store_window_bucket_state(time_range_start, bucket_state)
+
+        if bucket_state.validator_count == 0:
+            bt.logging.warning(
+                "[QueryScheduler] No validator bucket commitments available for "
+                f"{time_range_start.isoformat()}, skipping scoring."
+            )
             return
 
-        semaphore = asyncio.Semaphore(self.scoring_concurrency)
-
-        tasks = [
-            asyncio.create_task(self._run_assignment(assignment, semaphore))
-            for assignment in assignments
-        ]
-
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-
-        for result in results:
-            if isinstance(result, Exception):
-                bt.logging.error(f"[QueryScheduler] Window task failed: {result}")
+        await self.score_epoch(time_range_start)
 
     async def _sleep_until_next_window(self, time_range_start: datetime) -> None:
         next_window_start = time_range_start + timedelta(hours=1)
@@ -253,28 +401,6 @@ class QueryScheduler:
         while True:
             try:
                 window_start = current_scoring_window()
-
-                if (
-                    self.current_time_range is not None
-                    and window_start != self.current_time_range
-                ):
-                    bt.logging.info(
-                        "[QueryScheduler] Hour boundary detected "
-                        f"previous={self.current_time_range.isoformat()} "
-                        f"next={window_start.isoformat()} "
-                        f"is_first_epoch={self.is_first_epoch}"
-                    )
-
-                    if not self.is_first_epoch:
-                        await self.score_epoch(self.current_time_range)
-                    else:
-                        bt.logging.info(
-                            "[QueryScheduler] First epoch boundary - "
-                            "skipping scoring (incomplete data)."
-                        )
-
-                    self.is_first_epoch = False
-
                 self.current_time_range = window_start
                 await self._run_window(window_start)
                 await self._sleep_until_next_window(window_start)

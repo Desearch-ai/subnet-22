@@ -17,6 +17,7 @@ venv/
 .idea/
 
 state.json
+tmp/
 
 app.config.js
 
