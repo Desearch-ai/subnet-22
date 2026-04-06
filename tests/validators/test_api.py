@@ -40,13 +40,13 @@ class TestAPI(unittest.TestCase):
         for item in items:
             yield item
 
-    @patch("neurons.validators.api.neu")
-    def test_search(self, mock_neu):
+    @patch("neurons.validators.api.app.api")
+    def test_search(self, mock_api):
 
         mock_organic = AsyncMock()
         mock_organic.return_value = self.mock_async_generator(["chunk1", "chunk2"])
 
-        mock_neu.advanced_scraper_validator.organic = mock_organic
+        mock_api.advanced_scraper_validator.organic = mock_organic
 
         payload = {
             "prompt": "What is blockchain?",

@@ -1,6 +1,6 @@
 from unittest.mock import Mock, patch
 import unittest
-from neurons.validators.weights import burn_weights
+from neurons.validators.service.weights import burn_weights
 from desearch.bittensor.metagraph import generateMockNeurons
 import torch
 
@@ -11,7 +11,7 @@ class TestWeights(unittest.TestCase):
         self.neuron.metagraph.neurons = generateMockNeurons(4)
         self.neuron.metagraph.uids = torch.tensor([0, 1, 2, 3])
 
-    @patch("neurons.validators.weights.EMISSION_CONTROL_HOTKEY", "hotkey1")
+    @patch("neurons.validators.service.weights.EMISSION_CONTROL_HOTKEY", "hotkey1")
     def test_burn_weights(self):
         weights = burn_weights(self.neuron, torch.tensor([0, 1, 1, 1]))
         self.assertEqual(weights[0], torch.tensor([0]))

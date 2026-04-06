@@ -4,10 +4,12 @@ from unittest.mock import AsyncMock, patch
 import pytest
 import torch
 
-from neurons.validators.advanced_scraper_validator import AdvancedScraperValidator
+from neurons.validators.scrapers.advanced_scraper_validator import (
+    AdvancedScraperValidator,
+)
 from neurons.validators.miner_response_logger import build_log_entry, submit_logs
-from neurons.validators.web_scraper_validator import WebScraperValidator
-from neurons.validators.x_scraper_validator import XScraperValidator
+from neurons.validators.scrapers.web_scraper_validator import WebScraperValidator
+from neurons.validators.scrapers.x_scraper_validator import XScraperValidator
 
 
 def _fake_owner():
@@ -48,11 +50,11 @@ async def test_x_search_logs_selected_uid():
 
     with (
         patch(
-            "neurons.validators.x_scraper_validator.build_log_entry",
+            "neurons.validators.scrapers.x_scraper_validator.build_log_entry",
             return_value={"ok": True},
         ) as build_log_entry,
         patch(
-            "neurons.validators.x_scraper_validator.submit_logs_best_effort"
+            "neurons.validators.scrapers.x_scraper_validator.submit_logs_best_effort"
         ) as submit_logs_best_effort,
     ):
         items = [item async for item in validator.x_search({"query": "bittensor"})]
@@ -78,11 +80,11 @@ async def test_web_organic_logs_selected_uid():
 
     with (
         patch(
-            "neurons.validators.web_scraper_validator.build_log_entry",
+            "neurons.validators.scrapers.web_scraper_validator.build_log_entry",
             return_value={"ok": True},
         ) as build_log_entry,
         patch(
-            "neurons.validators.web_scraper_validator.submit_logs_best_effort"
+            "neurons.validators.scrapers.web_scraper_validator.submit_logs_best_effort"
         ) as submit_logs_best_effort,
     ):
         items = [item async for item in validator.organic({"query": "tao"})]
@@ -117,11 +119,11 @@ async def test_ai_organic_logs_after_stream_finishes():
 
     with (
         patch(
-            "neurons.validators.advanced_scraper_validator.build_log_entry",
+            "neurons.validators.scrapers.advanced_scraper_validator.build_log_entry",
             return_value={"ok": True},
         ) as build_log_entry,
         patch(
-            "neurons.validators.advanced_scraper_validator.submit_logs_best_effort"
+            "neurons.validators.scrapers.advanced_scraper_validator.submit_logs_best_effort"
         ) as submit_logs_best_effort,
     ):
         chunks = [
@@ -200,11 +202,11 @@ async def test_x_post_by_id_logs_organic():
 
     with (
         patch(
-            "neurons.validators.x_scraper_validator.build_log_entry",
+            "neurons.validators.scrapers.x_scraper_validator.build_log_entry",
             return_value={"ok": True},
         ) as build_log_entry,
         patch(
-            "neurons.validators.x_scraper_validator.submit_logs_best_effort"
+            "neurons.validators.scrapers.x_scraper_validator.submit_logs_best_effort"
         ) as submit_logs_best_effort,
     ):
         results = await validator.x_post_by_id("123", uid=42)
@@ -235,11 +237,11 @@ async def test_x_posts_by_urls_logs_organic():
 
     with (
         patch(
-            "neurons.validators.x_scraper_validator.build_log_entry",
+            "neurons.validators.scrapers.x_scraper_validator.build_log_entry",
             return_value={"ok": True},
         ) as build_log_entry,
         patch(
-            "neurons.validators.x_scraper_validator.submit_logs_best_effort"
+            "neurons.validators.scrapers.x_scraper_validator.submit_logs_best_effort"
         ) as submit_logs_best_effort,
     ):
         results = await validator.x_posts_by_urls(

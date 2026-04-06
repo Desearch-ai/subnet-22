@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Dict, Optional
 import bittensor as bt
 import torch
 
-from neurons.validators.scoring_dataset import (
+from neurons.validators.service.scoring_dataset import (
     SCORING_CONCURRENCY,
     ScoringAssignment,
     build_question_pool,
@@ -14,7 +14,7 @@ from neurons.validators.scoring_dataset import (
     current_scoring_window,
     filter_scoring_assignments,
 )
-from neurons.validators.seed_commitment import (
+from neurons.validators.service.seed_commitment import (
     DEFAULT_BUCKET_COMMITMENT_REVEAL_DELAY_SECONDS,
     WindowBucketState,
     WindowSeedState,
@@ -25,7 +25,7 @@ from neurons.validators.seed_commitment import (
 )
 
 if TYPE_CHECKING:
-    from neurons.validators.scoring_store import ScoringStore
+    from neurons.validators.service.scoring_store import ScoringStore
 
 SCORING_STORAGE_PUBLISH_OFFSET = timedelta(minutes=30)
 

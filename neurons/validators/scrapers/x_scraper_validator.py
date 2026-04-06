@@ -8,7 +8,6 @@ from desearch.protocol import (
     TwitterSearchSynapse,
     TwitterURLsSearchSynapse,
 )
-from neurons.validators.base_scraper_validator import BaseScraperValidator
 from neurons.validators.base_validator import AbstractNeuron
 from neurons.validators.miner_response_logger import (
     build_log_entry,
@@ -20,6 +19,7 @@ from neurons.validators.reward import RewardScoringType
 from neurons.validators.reward.twitter_basic_search_content_relevance import (
     TwitterBasicSearchContentRelevanceModel,
 )
+from neurons.validators.scrapers.base_scraper_validator import BaseScraperValidator
 
 
 class XScraperValidator(BaseScraperValidator):

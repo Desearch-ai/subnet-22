@@ -26,9 +26,9 @@ from desearch.protocol import (
     TwitterScraperTweet,
     WebSearchResultList,
 )
+from neurons.validators.api.validator_api import ValidatorAPI
+from neurons.validators.api.validator_service_client import ValidatorServiceClient
 from neurons.validators.env import EXPECTED_ACCESS_KEY, PORT
-from neurons.validators.validator_api import ValidatorAPI
-from neurons.validators.validator_service_client import ValidatorServiceClient
 
 
 async def get_validator_config():
@@ -526,9 +526,7 @@ async def get_tweets_by_urls(
 
         bt.logging.info(f"Fetching tweets for URLs: {urls}")
 
-        results = await api.x_scraper_validator.x_posts_by_urls(
-            urls, uid=request.uid
-        )
+        results = await api.x_scraper_validator.x_posts_by_urls(urls, uid=request.uid)
     except Exception as e:
         bt.logging.error(f"Error fetching tweets by URLs: {e}")
         raise HTTPException(status_code=500, detail=f"An error occurred: {str(e)}")

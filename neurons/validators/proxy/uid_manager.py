@@ -3,7 +3,7 @@ from typing import List
 
 from bittensor.core.metagraph import AsyncMetagraph
 
-from neurons.validators.weights import EMISSION_CONTROL_HOTKEY
+from neurons.validators.service.weights import EMISSION_CONTROL_HOTKEY
 
 
 class UIDManager:

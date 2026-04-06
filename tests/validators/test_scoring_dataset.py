@@ -1,11 +1,11 @@
 from datetime import datetime, timezone
 
-from neurons.validators.scoring_dataset import (
+from neurons.validators.service.scoring_dataset import (
     HuggingFaceQuestionPool,
     build_scoring_assignments,
     filter_scoring_assignments,
 )
-from neurons.validators.seed_commitment import CommittedValidator
+from neurons.validators.service.seed_commitment import CommittedValidator
 
 
 def build_validators():

@@ -17,17 +17,19 @@ from desearch.redis.utils import (
     save_moving_averaged_scores,
 )
 from desearch.utils import resync_metagraph
-from neurons.validators.advanced_scraper_validator import AdvancedScraperValidator
 from neurons.validators.base_validator import AbstractNeuron
 from neurons.validators.config import add_args, check_config, config
 from neurons.validators.proxy.uid_manager import UIDManager
-from neurons.validators.query_scheduler import QueryScheduler
-from neurons.validators.scoring_store import ScoringStore
+from neurons.validators.scrapers.advanced_scraper_validator import (
+    AdvancedScraperValidator,
+)
+from neurons.validators.scrapers.web_scraper_validator import WebScraperValidator
+from neurons.validators.scrapers.x_scraper_validator import XScraperValidator
+from neurons.validators.service.query_scheduler import QueryScheduler
+from neurons.validators.service.scoring_store import ScoringStore
+from neurons.validators.service.weights import init_wandb, set_weights
 from neurons.validators.storage import build_object_storage
 from neurons.validators.utility_api_client import UtilityAPIClient
-from neurons.validators.web_scraper_validator import WebScraperValidator
-from neurons.validators.weights import init_wandb, set_weights
-from neurons.validators.x_scraper_validator import XScraperValidator
 
 
 class Neuron(AbstractNeuron):

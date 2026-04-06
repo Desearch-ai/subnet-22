@@ -4,9 +4,12 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from neurons.validators.query_scheduler import QueryScheduler
-from neurons.validators.scoring_dataset import ScoringAssignment, ScoringQuestion
-from neurons.validators.seed_commitment import WindowBucketState
+from neurons.validators.service.query_scheduler import QueryScheduler
+from neurons.validators.service.scoring_dataset import (
+    ScoringAssignment,
+    ScoringQuestion,
+)
+from neurons.validators.service.seed_commitment import WindowBucketState
 
 
 @pytest.mark.asyncio

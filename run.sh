@@ -14,7 +14,7 @@ check_root() {
 check_root
 
 # Initialize variables
-validator_script="neurons/validators/validator_service.py"
+validator_script="neurons/validators/service/validator_service.py"
 autoRunLoc=$(readlink -f "$0")
 api_proc_name="desearch_api_process"
 validator_proc_name="desearch_validator_process"

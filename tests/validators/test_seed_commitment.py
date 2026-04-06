@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from neurons.validators.seed_commitment import (
+from neurons.validators.service.seed_commitment import (
     CommittedValidator,
     combine_validator_seeds,
     format_bucket_payload,

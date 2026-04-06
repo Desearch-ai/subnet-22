@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Iterable
 
-from neurons.validators.scoring_dataset import derive_deterministic_int
+from neurons.validators.service.scoring_dataset import derive_deterministic_int
 
 logger = logging.getLogger(__name__)
 

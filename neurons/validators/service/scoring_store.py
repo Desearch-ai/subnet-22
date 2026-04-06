@@ -7,7 +7,10 @@ from typing import Any, Dict, List, Mapping, Sequence
 import bittensor as bt
 import jsonpickle
 
-from neurons.validators.scoring_dataset import SCORING_SEARCH_TYPES, ScoringAssignment
+from neurons.validators.service.scoring_dataset import (
+    SCORING_SEARCH_TYPES,
+    ScoringAssignment,
+)
 from neurons.validators.storage import (
     ObjectStorage,
     StorageObject,

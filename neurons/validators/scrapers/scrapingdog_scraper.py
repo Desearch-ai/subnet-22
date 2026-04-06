@@ -343,8 +343,7 @@ async def scrape_links_with_retries(
         )
     except Exception as exc:
         bt.logging.warning(
-            "Apify fallback is unavailable for validator web scraping: "
-            f"{exc}"
+            f"Apify fallback is unavailable for validator web scraping: {exc}"
         )
         return [], list(dict.fromkeys(urls))
 

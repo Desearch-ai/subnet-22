@@ -1,4 +1,4 @@
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 import bittensor as bt
 import torch
@@ -6,7 +6,6 @@ import torch
 from desearch.protocol import (
     WebSearchSynapse,
 )
-from neurons.validators.base_scraper_validator import BaseScraperValidator
 from neurons.validators.base_validator import AbstractNeuron
 from neurons.validators.miner_response_logger import (
     build_log_entry,
@@ -17,6 +16,7 @@ from neurons.validators.reward import RewardScoringType
 from neurons.validators.reward.web_basic_search_content_relevance import (
     WebBasicSearchContentRelevanceModel,
 )
+from neurons.validators.scrapers.base_scraper_validator import BaseScraperValidator
 
 
 class WebScraperValidator(BaseScraperValidator):

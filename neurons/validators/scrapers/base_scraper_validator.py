@@ -1,10 +1,10 @@
 import time
-from typing import List, Optional
+from typing import List
 
 import bittensor as bt
 import torch
-
 import wandb
+
 from neurons.validators.base_validator import AbstractNeuron
 from neurons.validators.miner_response_logger import (
     build_log_entry,
@@ -170,9 +170,7 @@ class BaseScraperValidator:
             log_messages = []
             for uid_tensor, reward, response in zip(uids, rewards.tolist(), responses):
                 uid = uid_tensor.item()
-                log_messages.append(
-                    self.build_uid_log_message(uid, reward, response)
-                )
+                log_messages.append(self.build_uid_log_message(uid, reward, response))
 
             # Log the accumulated messages in groups of three
             for i in range(0, len(log_messages), 3):
@@ -183,7 +181,18 @@ class BaseScraperValidator:
             )
 
             # Build per-uid reward values for wandb
-            reward_values_per_uid = list(zip(*[r.tolist() if hasattr(r, 'tolist') else r for r in all_rewards])) if all_rewards else [() for _ in uids]
+            reward_values_per_uid = (
+                list(
+                    zip(
+                        *[
+                            r.tolist() if hasattr(r, "tolist") else r
+                            for r in all_rewards
+                        ]
+                    )
+                )
+                if all_rewards
+                else [() for _ in uids]
+            )
 
             for uid_tensor, reward, response, reward_values in zip(
                 uids, rewards.tolist(), responses, reward_values_per_uid
@@ -191,7 +200,9 @@ class BaseScraperValidator:
                 uid = uid_tensor.item()
                 uid_scores_dict[uid] = reward
                 scores[uid] = reward
-                self.populate_wandb_uid_data(wandb_data, uid, reward, response, reward_values)
+                self.populate_wandb_uid_data(
+                    wandb_data, uid, reward, response, reward_values
+                )
 
             if self.neuron.config.wandb_on:
                 wandb.log(wandb_data)

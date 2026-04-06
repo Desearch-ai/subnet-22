@@ -3,8 +3,11 @@ from datetime import datetime, timezone
 
 import pytest
 
-from neurons.validators.scoring_dataset import ScoringAssignment, ScoringQuestion
-from neurons.validators.scoring_store import ScoringStore
+from neurons.validators.service.scoring_dataset import (
+    ScoringAssignment,
+    ScoringQuestion,
+)
+from neurons.validators.service.scoring_store import ScoringStore
 from neurons.validators.storage.local import LocalObjectStorage
 
 

@@ -12,7 +12,7 @@ import bittensor as bt
 from desearch.protocol import WebSearchSynapse, WebSearchValidatorResult
 from desearch.utils import is_valid_web_search_result
 from neurons.validators.base_validator import AbstractNeuron
-from neurons.validators.scrapingdog_scraper import (
+from neurons.validators.scrapers.scrapingdog_scraper import (
     scrape_links_with_retries,
 )
 

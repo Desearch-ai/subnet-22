@@ -256,10 +256,9 @@ async def set_weights(self):
         bt.logging.info(" | ".join(uids_weights[i : i + 4]))
     bt.logging.info("Attempting to set weights details ends: ================")
 
-    # # Call the new method to handle the process with retry logic
-    # success = await set_weights_with_retry(
-    #     self, processed_weight_uids, processed_weights
-    # )
+    # Call the new method to handle the process with retry logic
+    success = await set_weights_with_retry(
+        self, processed_weight_uids, processed_weights
+    )
 
-    # return success
-    return True
+    return success

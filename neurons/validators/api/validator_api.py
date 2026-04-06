@@ -4,11 +4,13 @@ from typing import Optional, Tuple
 import bittensor as bt
 
 from desearch.redis.redis_client import close_redis, initialize_redis
-from neurons.validators.advanced_scraper_validator import AdvancedScraperValidator
+from neurons.validators.api.validator_service_client import ValidatorServiceClient
+from neurons.validators.scrapers.advanced_scraper_validator import (
+    AdvancedScraperValidator,
+)
+from neurons.validators.scrapers.web_scraper_validator import WebScraperValidator
+from neurons.validators.scrapers.x_scraper_validator import XScraperValidator
 from neurons.validators.utility_api_client import UtilityAPIClient
-from neurons.validators.validator_service_client import ValidatorServiceClient
-from neurons.validators.web_scraper_validator import WebScraperValidator
-from neurons.validators.x_scraper_validator import XScraperValidator
 
 
 class ValidatorAPI:

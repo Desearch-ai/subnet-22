@@ -11,7 +11,7 @@ import uvicorn
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
-from neurons.validators.validator import Neuron
+from neurons.validators.service.validator import Neuron
 
 neuron = Neuron()
 

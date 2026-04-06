@@ -10,7 +10,7 @@ from desearch.protocol import ScraperStreamingSynapse
 from desearch.utils import clean_text
 from neurons.validators.base_validator import AbstractNeuron
 from neurons.validators.reward.reward_llm import RewardLLM
-from neurons.validators.scrapingdog_scraper import scrape_links_with_retries
+from neurons.validators.scrapers.scrapingdog_scraper import scrape_links_with_retries
 from neurons.validators.utils.prompts import (
     SearchSummaryRelevancePrompt,
 )

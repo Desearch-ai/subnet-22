@@ -17,7 +17,6 @@ from desearch.protocol import (
 )
 from desearch.stream import collect_final_synapses
 from desearch.utils import get_max_execution_time
-from neurons.validators.base_scraper_validator import BaseScraperValidator
 from neurons.validators.base_validator import AbstractNeuron
 from neurons.validators.miner_response_logger import (
     build_log_entry,
@@ -35,6 +34,7 @@ from neurons.validators.reward.summary_relevance import SummaryRelevanceRewardMo
 from neurons.validators.reward.twitter_content_relevance import (
     TwitterContentRelevanceModel,
 )
+from neurons.validators.scrapers.base_scraper_validator import BaseScraperValidator
 
 
 class AdvancedScraperValidator(BaseScraperValidator):
