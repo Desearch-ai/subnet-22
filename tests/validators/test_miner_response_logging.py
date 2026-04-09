@@ -207,7 +207,7 @@ async def test_x_post_by_id_logs_organic():
             "neurons.validators.x_scraper_validator.submit_logs_best_effort"
         ) as submit_logs_best_effort,
     ):
-        results = await validator.x_post_by_id("123", uid=42)
+        results = await validator.x_post_by_id("123")
 
     assert results == [{"id": "123"}]
     assert build_log_entry.call_args.kwargs["miner_uid"] == 42
@@ -243,7 +243,7 @@ async def test_x_posts_by_urls_logs_organic():
         ) as submit_logs_best_effort,
     ):
         results = await validator.x_posts_by_urls(
-            ["https://x.com/a/status/1", "https://x.com/b/status/2"], uid=99
+            ["https://x.com/a/status/1", "https://x.com/b/status/2"]
         )
 
     assert results == [{"id": "abc"}]

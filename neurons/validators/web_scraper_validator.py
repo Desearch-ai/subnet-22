@@ -309,7 +309,6 @@ class WebScraperValidator:
     async def organic(
         self,
         query,
-        uid: Optional[int] = None,
     ):
         """Receives question from user and returns the response from the miners."""
 
@@ -318,7 +317,7 @@ class WebScraperValidator:
             params = {key: value for key, value in query.items() if key != "query"}
 
             response, selected_uid, axon = await self.call_miner(
-                prompt=prompt, params=params, uid=uid
+                prompt=prompt, params=params
             )
 
             if response:

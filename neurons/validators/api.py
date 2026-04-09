@@ -166,8 +166,6 @@ class SearchRequest(BaseModel):
         description="A list of chat history items.",
     )
 
-    uid: Optional[int] = Query(default=None)
-
 
 class LinksSearchRequest(BaseModel):
     prompt: str = Field(
@@ -193,8 +191,6 @@ class LinksSearchRequest(BaseModel):
         ge=10,
         le=200,
     )
-
-    uid: Optional[int] = Field(default=None)
 
 
 fields = "\n".join(
@@ -236,7 +232,6 @@ async def response_stream_event(data: SearchRequest):
             query,
             data.model,
             result_type=data.result_type,
-            uid=data.uid,
         ):
             # Decode the chunk if necessary and merge
             chunk = str(response)  # Assuming response is already a string
@@ -327,7 +322,6 @@ async def handle_search_links(
             body.model,
             is_collect_final_synapses=True,
             result_type=ResultType.ONLY_LINKS,
-            uid=body.uid,
         ):
             synapses.append(item)
 
@@ -410,8 +404,6 @@ class TwitterSearchRequest(BaseModel):
     min_likes: Optional[int] = None
     count: Optional[conint(le=100)] = 20
 
-    uid: Optional[int] = None
-
 
 @app.post(
     "/twitter/search",
@@ -439,9 +431,7 @@ async def advanced_twitter_search(
         # Collect all yielded synapses from organic
         final_synapses = []
 
-        async for synapse in api.x_scraper_validator.x_search(
-            query=query_dict, uid=request.uid
-        ):
+        async for synapse in api.x_scraper_validator.x_search(query=query_dict):
             final_synapses.append(synapse)
 
         # Transform final synapses into a flattened list of tweets
@@ -460,10 +450,6 @@ async def advanced_twitter_search(
 
 class TwitterURLSearchRequest(BaseModel):
     urls: List[str]
-
-    uid: Optional[int] = Field(
-        default=None,
-    )
 
 
 @app.post(
@@ -494,7 +480,7 @@ async def get_tweets_by_urls(
 
         bt.logging.info(f"Fetching tweets for URLs: {urls}")
 
-        results = await api.x_scraper_validator.x_posts_by_urls(urls, uid=request.uid)
+        results = await api.x_scraper_validator.x_posts_by_urls(urls)
     except Exception as e:
         bt.logging.error(f"Error fetching tweets by URLs: {e}")
         raise HTTPException(status_code=500, detail=f"An error occurred: {str(e)}")
@@ -513,7 +499,6 @@ async def get_tweets_by_urls(
 )
 async def get_tweet_by_id(
     id: str = Path(..., description="The unique ID of the tweet to fetch"),
-    uid: Optional[int] = Query(default=None),
     _=Depends(verify_access_key),
 ):
     """
@@ -530,7 +515,7 @@ async def get_tweet_by_id(
     try:
         bt.logging.info(f"Fetching tweet with ID: {id}")
 
-        results = await api.x_scraper_validator.x_post_by_id(id, uid=uid)
+        results = await api.x_scraper_validator.x_post_by_id(id)
     except Exception as e:
         bt.logging.error(f"Error fetching tweet by ID: {e}")
         raise HTTPException(status_code=500, detail=f"An error occurred: {str(e)}")
@@ -555,7 +540,6 @@ async def web_search_endpoint(
     start: int = Query(
         0, description="The number of results to skip (used for pagination)."
     ),
-    uid: Optional[int] = Query(default=None),
     _=Depends(verify_access_key),
 ):
     """
@@ -565,7 +549,6 @@ async def web_search_endpoint(
         query (str): The search query string.
         num (int): The maximum number of results to fetch.
         start (int): The number of results to skip (for pagination).
-        uid (Optional[int]): The unique identifier of the target axon. Defaults to None.
 
     Returns:
         List[WebSearchResult]: A list of web search results.
@@ -582,7 +565,7 @@ async def web_search_endpoint(
         final_synapses = []
 
         async for synapse in api.web_scraper_validator.organic(
-            query={"query": query, "num": num, "start": start}, uid=uid
+            query={"query": query, "num": num, "start": start}
         ):
             final_synapses.append(synapse)
 
