@@ -8,7 +8,11 @@ from app.domains.dataset.models.question import Question
 from app.domains.logs.enums import QueryKind
 from app.domains.logs.models.miner_response_log import MinerResponseLog
 from app.domains.logs.schemas import (
+    BatchOrganicMatchResult,
+    BatchOrganicSearchRequest,
+    BatchOrganicSearchResponse,
     GetScoringLogsResponse,
+    OrganicLogResponse,
     SaveMinerResponseLogsRequest,
     SaveMinerResponseLogsResponse,
     ScoringLogGroupResponse,
@@ -298,6 +302,7 @@ async def _load_scoring_logs(
     search_type: SearchType,
     miner_uids: list[int] | None,
     query: str | None,
+    miner_coldkey: str | None = None,
 ) -> list[MinerResponseLog]:
     normalized_query = _normalize_optional_query(query)
     filters = [
@@ -310,6 +315,9 @@ async def _load_scoring_logs(
 
     if miner_uids:
         filters.append(MinerResponseLog.miner_uid.in_(miner_uids))
+
+    if miner_coldkey is not None:
+        filters.append(MinerResponseLog.miner_coldkey == miner_coldkey)
 
     if normalized_query is not None:
         filters.append(MinerResponseLog.request_query.ilike(f"%{normalized_query}%"))
@@ -382,6 +390,10 @@ async def get_scoring_logs(
         None,
         description="Optional case-insensitive substring match for request_query.",
     ),
+    miner_coldkey: str | None = Query(
+        None,
+        description="Optional miner coldkey to filter by.",
+    ),
     session: AsyncSession = Depends(get_session),
 ):
     logs = await _load_scoring_logs(
@@ -390,6 +402,84 @@ async def get_scoring_logs(
         search_type=search_type,
         miner_uids=miner_uids,
         query=query,
+        miner_coldkey=miner_coldkey,
     )
 
     return GetScoringLogsResponse(groups=_build_scoring_groups(logs))
+
+
+ORGANIC_LOG_LIMIT = 500
+
+
+def _build_organic_log_response(log: MinerResponseLog) -> OrganicLogResponse:
+    return OrganicLogResponse(
+        id=log.id,
+        created_at=log.created_at,
+        search_type=log.search_type,
+        miner_uid=log.miner_uid,
+        miner_hotkey=log.miner_hotkey,
+        miner_coldkey=log.miner_coldkey,
+        validator_uid=log.validator_uid,
+        validator_hotkey=log.validator_hotkey,
+        validator_coldkey=log.validator_coldkey,
+        request_query=log.request_query,
+        status_code=log.status_code,
+        process_time=log.process_time,
+    )
+
+
+@router.post("/organic/search", response_model=BatchOrganicSearchResponse)
+async def batch_search_organic_logs(
+    body: BatchOrganicSearchRequest,
+    session: AsyncSession = Depends(get_session),
+):
+    """Search organic logs for multiple exact queries in a single request."""
+    if not body.queries:
+        return BatchOrganicSearchResponse(
+            matches=[], total_matched_queries=0, total_logs=0
+        )
+
+    filters = [
+        MinerResponseLog.query_kind == QueryKind.ORGANIC,
+        MinerResponseLog.search_type == body.search_type,
+        MinerResponseLog.created_at >= body.created_at_start,
+        MinerResponseLog.created_at <= body.created_at_end,
+        MinerResponseLog.request_query.in_(body.queries),
+    ]
+
+    if body.validator_hotkey is not None:
+        filters.append(MinerResponseLog.validator_hotkey == body.validator_hotkey)
+
+    if body.miner_coldkey is not None:
+        filters.append(MinerResponseLog.miner_coldkey == body.miner_coldkey)
+
+    if body.miner_hotkey is not None:
+        filters.append(MinerResponseLog.miner_hotkey == body.miner_hotkey)
+
+    stmt = (
+        select(MinerResponseLog)
+        .where(*filters)
+        .order_by(MinerResponseLog.created_at.asc())
+        .limit(ORGANIC_LOG_LIMIT)
+    )
+
+    result = await session.execute(stmt)
+    logs = result.scalars().all()
+
+    # Group results by request_query
+    logs_by_query: dict[str, list[OrganicLogResponse]] = {}
+    for log in logs:
+        logs_by_query.setdefault(log.request_query, []).append(
+            _build_organic_log_response(log)
+        )
+
+    matches = [
+        BatchOrganicMatchResult(request_query=query, logs=query_logs)
+        for query, query_logs in logs_by_query.items()
+    ]
+
+    return BatchOrganicSearchResponse(
+        matches=matches,
+        total_matched_queries=len(matches),
+        total_logs=len(logs),
+    )
