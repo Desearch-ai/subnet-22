@@ -1,4 +1,6 @@
 import asyncio
+import hashlib
+import json
 import random
 from collections import Counter
 from dataclasses import dataclass, field
@@ -10,11 +12,18 @@ from app.domains.dataset.enums import SearchType
 from app.domains.dataset.models.question import Question
 from app.domains.dataset.schemas import QuestionOut
 from app.logger import get_logger
+from app.redis_client import get_redis
 from fastapi import HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = get_logger(__name__)
+
+_KEY_UIDS = "qcache:uids:{hour}"
+_KEY_ASSIGN = "qcache:assign:{hour}:{search_type}"
+_KEY_SERVED = "qcache:served:{hour}:{hotkey}"
+_KEY_ACTIVE = "scoring:active:{hour}"
+_TTL = 7200
 
 _AI_SEARCH_TOOLS: List[List[str]] = [
     ["Twitter Search", "Reddit Search"],
@@ -129,10 +138,20 @@ def _generate_params_for(search_type: "SearchType") -> Dict[str, Any]:
     return {}  # web_search — no extra params
 
 
+def compute_scoring_fingerprint(search_type: str, query: str) -> str:
+    blob = json.dumps({"q": query, "s": search_type}, sort_keys=True)
+    return hashlib.sha256(blob.encode()).hexdigest()
+
+
 def _current_hour_utc() -> datetime:
     """Return the start of the current UTC hour (wall-clock aligned)."""
     now = datetime.now(timezone.utc)
     return now.replace(minute=0, second=0, microsecond=0)
+
+
+def _hour_key(dt: datetime) -> str:
+    """ISO-format key for Redis, e.g. '2026-04-10T14:00:00+00:00'."""
+    return dt.isoformat()
 
 
 @dataclass
@@ -141,7 +160,6 @@ class TimeRangeCache:
 
     time_range_start: Optional[datetime] = None
     miner_uids: List[int] = field(default_factory=list)
-    # Deterministic mapping: search_type -> {uid: question} (params embedded in QuestionOut)
     assignments: Dict[SearchType, Dict[int, QuestionOut]] = field(default_factory=dict)
 
 
@@ -149,12 +167,12 @@ class QuestionCache:
     """
     Manages per-hour question caching with per-validator serving state.
 
+    Redis-backed so that redeployments within the same hour do not reset state.
+
     Each UTC hour, questions are assigned deterministically to (uid, search_type)
     pairs. All validators receive the same question for the same pair, but in
     random order. The cache tracks which pairs have been served to each
     validator so duplicates are never returned within the hour.
-
-    At the start of a new hour the cache is refreshed lazily on the next request.
     """
 
     def __init__(self, netuid: int, subtensor_network: str):
@@ -163,15 +181,6 @@ class QuestionCache:
         self._cache = TimeRangeCache()
         self._lock = asyncio.Lock()
         self._subtensor: Optional[bt.AsyncSubtensor] = None
-
-        # Track served (search_type, uid) per validator hotkey
-        self._served: Dict[str, Set[Tuple[SearchType, int]]] = {}
-
-    def _assignment_counts(self) -> dict[str, int]:
-        return {
-            search_type.value: len(uid_map)
-            for search_type, uid_map in self._cache.assignments.items()
-        }
 
     async def initialize(self):
         """Connect to subtensor."""
@@ -188,6 +197,99 @@ class QuestionCache:
         """Clean up subtensor connection."""
         if self._subtensor:
             await self._subtensor.close()
+
+    async def _save_to_redis(self) -> None:
+        """Persist current in-memory cache to Redis (pipeline for atomicity)."""
+        r = get_redis()
+        hour = _hour_key(self._cache.time_range_start)
+        pipe = r.pipeline()
+
+        # Miner UIDs
+        pipe.set(
+            _KEY_UIDS.format(hour=hour),
+            json.dumps(self._cache.miner_uids),
+            ex=_TTL,
+        )
+
+        fingerprints: list[str] = []
+        for search_type, uid_map in self._cache.assignments.items():
+            hash_key = _KEY_ASSIGN.format(hour=hour, search_type=search_type.value)
+            for uid, question in uid_map.items():
+                pipe.hset(hash_key, str(uid), question.model_dump_json())
+                fp = compute_scoring_fingerprint(
+                    search_type.value, question.query
+                )
+                fingerprints.append(fp)
+            pipe.expire(hash_key, _TTL)
+
+        if fingerprints:
+            active_key = _KEY_ACTIVE.format(hour=hour)
+            pipe.sadd(active_key, *fingerprints)
+            pipe.expire(active_key, _TTL)
+
+        await pipe.execute()
+        logger.info(f"Saved cache to Redis: hour={hour}")
+
+    async def _load_from_redis(self, hour_dt: datetime) -> bool:
+        """
+        Try to load assignments for *hour_dt* from Redis.
+
+        Returns True if Redis had a complete cache for this hour,
+        False otherwise (caller should regenerate from the DB).
+        """
+        r = get_redis()
+        hour = _hour_key(hour_dt)
+
+        uids_json = await r.get(_KEY_UIDS.format(hour=hour))
+        if not uids_json:
+            return False
+
+        miner_uids: List[int] = json.loads(uids_json)
+        assignments: Dict[SearchType, Dict[int, QuestionOut]] = {}
+
+        for search_type in _SCORING_SEARCH_TYPES:
+            hash_key = _KEY_ASSIGN.format(hour=hour, search_type=search_type.value)
+            raw = await r.hgetall(hash_key)
+            if raw:
+                assignments[search_type] = {
+                    int(uid_str): QuestionOut.model_validate_json(q_json)
+                    for uid_str, q_json in raw.items()
+                }
+            else:
+                assignments[search_type] = {}
+
+        self._cache = TimeRangeCache(
+            time_range_start=hour_dt,
+            miner_uids=miner_uids,
+            assignments=assignments,
+        )
+
+        total = sum(len(m) for m in assignments.values())
+        logger.info(
+            f"Loaded cache from Redis: hour={hour} "
+            f"uids={len(miner_uids)} total_assignments={total}"
+        )
+        return True
+
+    async def _get_served(self, hour: str, hotkey: str) -> Set[str]:
+        """Return the set of 'search_type:uid' strings already served."""
+        r = get_redis()
+        return await r.smembers(_KEY_SERVED.format(hour=hour, hotkey=hotkey))
+
+    async def _mark_served(
+        self, hour: str, hotkey: str, search_type: str, uid: int
+    ) -> None:
+        """Record that (search_type, uid) was served to this validator."""
+        r = get_redis()
+        key = _KEY_SERVED.format(hour=hour, hotkey=hotkey)
+        await r.sadd(key, f"{search_type}:{uid}")
+        await r.expire(key, _TTL)
+
+    def _assignment_counts(self) -> dict[str, int]:
+        return {
+            search_type.value: len(uid_map)
+            for search_type, uid_map in self._cache.assignments.items()
+        }
 
     async def _refresh_cache(self, session: AsyncSession):
         """Fetch metagraph for miner UIDs and build question assignments."""
@@ -258,7 +360,8 @@ class QuestionCache:
                 assignments=assignments,
             )
 
-            self._served.clear()
+            await self._save_to_redis()
+
             logger.info(
                 f"Question cache refresh complete: "
                 f"time_range={time_range_start.isoformat()} "
@@ -287,13 +390,16 @@ class QuestionCache:
                 # Re-check after acquiring lock to avoid double refresh
                 current_hour = _current_hour_utc()
                 if current_hour != self._cache.time_range_start:
-                    await self._refresh_cache(session)
+                    loaded = await self._load_from_redis(current_hour)
+                    if not loaded:
+                        await self._refresh_cache(session)
 
     async def get_next_question(
         self, session: AsyncSession, hotkey: str
     ) -> Tuple[datetime, int, SearchType, QuestionOut]:
         """
         Return one random unserved (uid, search_type, question) for this validator.
+
         Params are embedded inside the returned QuestionOut. All validators get the
         same question and params for the same (uid, search_type) pair within the
         current UTC hour.
@@ -302,24 +408,21 @@ class QuestionCache:
         """
         await self._ensure_fresh(session)
 
-        served = self._served.setdefault(hotkey, set())
+        hour = _hour_key(self._cache.time_range_start)
+        served = await self._get_served(hour, hotkey)
 
         # Build list of unserved combos
         unserved = []
         for search_type, uid_map in self._cache.assignments.items():
             for uid in uid_map:
-                if (search_type, uid) not in served:
+                member = f"{search_type.value}:{uid}"
+                if member not in served:
                     unserved.append((search_type, uid))
 
         if not unserved:
-            cache_time_range = (
-                self._cache.time_range_start.isoformat()
-                if self._cache.time_range_start
-                else None
-            )
             logger.info(
                 f"All questions served for validator: hotkey={hotkey} "
-                f"time_range={cache_time_range} "
+                f"time_range={hour} "
                 f"served_count={len(served)} "
                 f"assignments={self._assignment_counts()}"
             )
@@ -330,20 +433,16 @@ class QuestionCache:
 
         # Pick random unserved combo
         search_type, uid = random.choice(unserved)
-        served.add((search_type, uid))
+
+        await self._mark_served(hour, hotkey, search_type.value, uid)
 
         question = self._cache.assignments[search_type][uid]
-        cache_time_range = (
-            self._cache.time_range_start.isoformat()
-            if self._cache.time_range_start
-            else None
-        )
         logger.debug(
             f"Serving question: hotkey={hotkey} "
-            f"time_range={cache_time_range} "
+            f"time_range={hour} "
             f"search_type={search_type.value} "
             f"uid={uid} "
-            f"served_count={len(served)} "
+            f"served_count={len(served) + 1} "
             f"remaining={len(unserved) - 1} "
             f"params={question.params} "
             f"query={question.query[:120]!r}"
