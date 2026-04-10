@@ -72,3 +72,41 @@ class ScoringLogGroupResponse(BaseModel):
 
 class GetScoringLogsResponse(BaseModel):
     groups: list[ScoringLogGroupResponse]
+
+
+class OrganicLogResponse(BaseModel):
+    id: UUID
+    created_at: datetime
+    search_type: SearchType
+    miner_uid: int | None = None
+    miner_hotkey: str
+    miner_coldkey: str | None = None
+    validator_uid: int | None = None
+    validator_hotkey: str
+    validator_coldkey: str | None = None
+    request_query: str
+    status_code: int | None = None
+    process_time: float | None = None
+
+
+class BatchOrganicSearchRequest(BaseModel):
+    search_type: SearchType
+    created_at_start: datetime
+    created_at_end: datetime
+    queries: list[str] = Field(
+        description="List of exact request_query strings to match against organic logs."
+    )
+    validator_hotkey: str | None = None
+    miner_coldkey: str | None = None
+    miner_hotkey: str | None = None
+
+
+class BatchOrganicMatchResult(BaseModel):
+    request_query: str
+    logs: list[OrganicLogResponse]
+
+
+class BatchOrganicSearchResponse(BaseModel):
+    matches: list[BatchOrganicMatchResult]
+    total_matched_queries: int
+    total_logs: int
