@@ -319,7 +319,6 @@ class XScraperValidator:
     async def x_search(
         self,
         query,
-        uid: Optional[int] = None,
     ):
         """Receives question from user and returns the response from the miners."""
 
@@ -328,7 +327,7 @@ class XScraperValidator:
             params = {key: value for key, value in query.items() if key != "query"}
 
             response, selected_uid, axon = await self.call_miner(
-                prompt=prompt, params=params, uid=uid
+                prompt=prompt, params=params
             )
 
             if response:
@@ -349,14 +348,13 @@ class XScraperValidator:
     async def x_post_by_id(
         self,
         tweet_id: str,
-        uid: Optional[int] = None,
     ):
         """
         Perform a Twitter search using a specific tweet ID.
         """
 
         try:
-            uid, axon = await self.neuron.get_random_miner(uid=uid)
+            uid, axon = await self.neuron.get_random_miner()
 
             synapse = TwitterIDSearchSynapse(
                 id=tweet_id,
@@ -391,7 +389,6 @@ class XScraperValidator:
     async def x_posts_by_urls(
         self,
         urls: List[str],
-        uid: Optional[int] = None,
     ):
         """
         Perform a Twitter search using multiple tweet URLs.
@@ -400,7 +397,7 @@ class XScraperValidator:
         try:
             bt.logging.debug("run_task", "twitter urls search")
 
-            uid, axon = await self.neuron.get_random_miner(uid=uid)
+            uid, axon = await self.neuron.get_random_miner()
 
             synapse = TwitterURLsSearchSynapse(
                 urls=urls,
