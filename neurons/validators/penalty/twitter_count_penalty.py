@@ -34,6 +34,10 @@ class TwitterCountPenaltyModel(BasePenaltyModel):
 
             results_count = len(response.results)
 
+            if response.count == 0:
+                penalties[index] = 0.0
+                continue
+
             if results_count > response.count:
                 penalties[index] = 0
             else:
