@@ -68,6 +68,8 @@ def init_wandb(self):
 async def set_weights_subtensor(
     subtensor: bt.AsyncSubtensor, wallet: bt.Wallet, netuid, uids, weights, version_key
 ):
+    success = False
+    message = ""
     try:
         success, message = await subtensor.set_weights(
             wallet=wallet,
