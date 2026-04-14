@@ -14,6 +14,7 @@ import bittensor as bt
 from openai import OpenAI
 
 import desearch
+from desearch.miner_config import load_miner_manifest
 from desearch.protocol import (
     IsAlive,
     ScraperStreamingSynapse,
@@ -44,6 +45,7 @@ class StreamMiner(ABC):
         bt.logging.info(self.config)  # TODO: duplicate print?
         self.prompt_cache: Dict[str, Tuple[str, int]] = {}
         self.request_timestamps = {}
+        self.worker_manifest = load_miner_manifest(self.config.miner.config_path)
 
         # Activating Bittensor's logging with the set configurations.
         bt.logging(config=self.config, logging_dir=self.config.full_path)
@@ -286,7 +288,7 @@ class StreamMiner(ABC):
 
     def _is_alive(self, synapse: IsAlive) -> IsAlive:
         bt.logging.info("answered to be active")
-        synapse.completion = "True"
+        synapse.manifest = self.worker_manifest.model_dump()
         return synapse
 
     @abstractmethod

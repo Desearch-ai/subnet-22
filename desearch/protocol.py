@@ -2,7 +2,6 @@ import asyncio
 import json
 import time
 import traceback
-import typing
 from enum import Enum
 from typing import Any, Dict, List, Literal, Optional, Tuple
 
@@ -16,11 +15,10 @@ from desearch.synapse import StreamingSynapse, Synapse
 
 
 class IsAlive(Synapse):
-    answer: typing.Optional[str] = None
-    completion: str = pydantic.Field(
-        "",
-        title="Completion",
-        description="Completion status of the current StreamPrompting object. This attribute is mutable and can be updated.",
+    manifest: Dict[str, Any] = pydantic.Field(
+        default_factory=dict,
+        title="Miner Manifest",
+        description="Miner worker manifest: worker_url and per-search-type concurrency.",
     )
 
     def get_required_fields(self):

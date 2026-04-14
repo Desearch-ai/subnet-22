@@ -19,6 +19,7 @@ venv/
 state.json
 
 app.config.js
+neurons/miners/workers.json
 
 .DS_Store
 Makefile
