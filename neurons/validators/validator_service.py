@@ -11,6 +11,7 @@ import uvicorn
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
+from neurons.validators.env import VALIDATOR_SERVICE_PORT
 from neurons.validators.validator import Neuron
 
 neuron = Neuron()
@@ -84,7 +85,7 @@ async def health():
     return {"status": "healthy"}
 
 
-PORT = 8006
-
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=PORT, timeout_keep_alive=300)
+    uvicorn.run(
+        app, host="0.0.0.0", port=VALIDATOR_SERVICE_PORT, timeout_keep_alive=300
+    )

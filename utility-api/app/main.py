@@ -9,6 +9,7 @@ from app.domains.dataset.router import close_question_cache, init_question_cache
 from app.domains.dataset.router import router as dataset_router
 from app.domains.logs.router import router as logs_router
 from app.logger import get_logger
+from app.redis_client import close_redis, init_redis
 
 logger = get_logger(__name__)
 
@@ -21,6 +22,8 @@ async def lifespan(app: FastAPI):
         f"subtensor_network={SUBTENSOR_NETWORK}"
     )
 
+    await init_redis()
+
     await init_question_cache(
         netuid=NETUID,
         subtensor_network=SUBTENSOR_NETWORK,
@@ -31,6 +34,7 @@ async def lifespan(app: FastAPI):
     # Shutdown
     logger.info("Stopping utility API lifespan")
     await close_question_cache()
+    await close_redis()
 
 
 app = FastAPI(

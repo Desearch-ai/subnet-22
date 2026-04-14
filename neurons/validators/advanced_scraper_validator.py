@@ -271,7 +271,6 @@ class AdvancedScraperValidator(BaseScraperValidator):
         self,
         query,
         model: Optional[Model] = Model.NOVA,
-        uid: Optional[int] = None,
         result_type: Optional[ResultType] = ResultType.LINKS_WITH_FINAL_SUMMARY,
         is_collect_final_synapses: bool = False,  # Flag to collect final synapses
     ):
@@ -305,7 +304,6 @@ class AdvancedScraperValidator(BaseScraperValidator):
                 result_type=result_type,
                 system_message=system_message,
                 scoring_system_message=scoring_system_message,
-                uid=uid,
                 chat_history=chat_history,
                 count=count,
             )

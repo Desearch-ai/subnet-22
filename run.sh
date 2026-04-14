@@ -287,7 +287,7 @@ if [ "$?" -eq 1 ]; then
             # check value on github remotely
             # Attempt to check the variable value on GitHub for both repositories
             latest_version=""
-            repos=("Desearch-ai/subnet-22-desearch" "Desearch-ai/subnet-22")
+            repos=("Desearch-ai/subnet-22")
 
             for repo in "${repos[@]}"; do
                 latest_version=$(check_variable_value_on_github "$repo" "desearch/__init__.py" "__version__")

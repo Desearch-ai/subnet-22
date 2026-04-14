@@ -6,12 +6,12 @@ import asyncio
 import json
 import traceback
 from contextlib import asynccontextmanager
-from typing import Annotated, List, Optional
+from typing import List, Optional
 
 import aiohttp
 import bittensor as bt
 import uvicorn
-from fastapi import FastAPI, Header, HTTPException, Path, Query
+from fastapi import Depends, FastAPI, HTTPException, Path, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
 from fastapi.responses import StreamingResponse
@@ -26,7 +26,8 @@ from desearch.protocol import (
     TwitterScraperTweet,
     WebSearchResultList,
 )
-from neurons.validators.env import EXPECTED_ACCESS_KEY, PORT
+from neurons.validators.dependencies import verify_access_key
+from neurons.validators.env import PORT
 from neurons.validators.validator_api import ValidatorAPI
 from neurons.validators.validator_service_client import ValidatorServiceClient
 
@@ -165,8 +166,6 @@ class SearchRequest(BaseModel):
         description="A list of chat history items.",
     )
 
-    uid: Optional[int] = Query(default=None)
-
 
 class LinksSearchRequest(BaseModel):
     prompt: str = Field(
@@ -192,8 +191,6 @@ class LinksSearchRequest(BaseModel):
         ge=10,
         le=200,
     )
-
-    uid: Optional[int] = Field(default=None)
 
 
 fields = "\n".join(
@@ -235,7 +232,6 @@ async def response_stream_event(data: SearchRequest):
             query,
             data.model,
             result_type=data.result_type,
-            uid=data.uid,
         ):
             # Decode the chunk if necessary and merge
             chunk = str(response)  # Assuming response is already a string
@@ -313,13 +309,8 @@ async def aggregate_search_results(responses: List[bt.Synapse], tools: List[str]
 
 async def handle_search_links(
     body: LinksSearchRequest,
-    access_key: str | None,
-    expected_access_key: str,
     tools: List[str],
 ):
-    if access_key != expected_access_key:
-        raise HTTPException(status_code=401, detail="Invalid access key")
-
     query = {"content": body.prompt, "tools": tools, "count": body.count}
     synapses = []
 
@@ -331,7 +322,6 @@ async def handle_search_links(
             body.model,
             is_collect_final_synapses=True,
             result_type=ResultType.ONLY_LINKS,
-            uid=body.uid,
         ):
             synapses.append(item)
 
@@ -351,17 +341,12 @@ async def handle_search_links(
     description=SEARCH_DESCRIPTION,
     response_description="A stream of search results from the specified tools.",
 )
-async def search(
-    body: SearchRequest, access_key: Annotated[str | None, Header()] = None
-):
+async def search(body: SearchRequest, _=Depends(verify_access_key)):
     """
     Search endpoint that accepts a JSON body with search parameters.
     """
 
     bt.logging.info(f"/search request: {body}")
-
-    if access_key != EXPECTED_ACCESS_KEY:
-        raise HTTPException(status_code=401, detail="Invalid access key")
 
     return StreamingResponse(response_stream_event(body))
 
@@ -372,15 +357,10 @@ async def search(
     description="Search links using all tools except Twitter Search.",
     response_description="A JSON object mapping tool names to their search results.",
 )
-async def search_links_web(
-    body: LinksSearchRequest, access_key: Annotated[str | None, Header()] = None
-):
+async def search_links_web(body: LinksSearchRequest, _=Depends(verify_access_key)):
     bt.logging.info(f"/search/links/web request: {body}")
 
-    if access_key != EXPECTED_ACCESS_KEY:
-        raise HTTPException(status_code=401, detail="Invalid access key")
-
-    return await handle_search_links(body, access_key, EXPECTED_ACCESS_KEY, body.tools)
+    return await handle_search_links(body, tools=body.tools)
 
 
 @app.post(
@@ -389,15 +369,10 @@ async def search_links_web(
     description="Search links using only Twitter Search.",
     response_description="A JSON object mapping Twitter Search to its search results.",
 )
-async def search_links_twitter(
-    body: LinksSearchRequest, access_key: Annotated[str | None, Header()] = None
-):
+async def search_links_twitter(body: LinksSearchRequest, _=Depends(verify_access_key)):
     bt.logging.info(f"/search/links/twitter request: {body}")
 
-    if access_key != EXPECTED_ACCESS_KEY:
-        raise HTTPException(status_code=401, detail="Invalid access key")
-
-    return await handle_search_links(body, access_key, EXPECTED_ACCESS_KEY, body.tools)
+    return await handle_search_links(body, tools=body.tools)
 
 
 @app.post(
@@ -406,17 +381,10 @@ async def search_links_twitter(
     description="Search links using all tools.",
     response_description="A JSON object mapping all tools to their search results.",
 )
-async def search_links(
-    body: LinksSearchRequest, access_key: Annotated[str | None, Header()] = None
-):
+async def search_links(body: LinksSearchRequest, _=Depends(verify_access_key)):
     bt.logging.info(f"/search/links request: {body}")
 
-    if access_key != EXPECTED_ACCESS_KEY:
-        raise HTTPException(status_code=401, detail="Invalid access key")
-
-    return await handle_search_links(
-        body, access_key, EXPECTED_ACCESS_KEY, available_tools
-    )
+    return await handle_search_links(body, tools=available_tools)
 
 
 class TwitterSearchRequest(BaseModel):
@@ -436,8 +404,6 @@ class TwitterSearchRequest(BaseModel):
     min_likes: Optional[int] = None
     count: Optional[conint(le=100)] = 20
 
-    uid: Optional[int] = None
-
 
 @app.post(
     "/twitter/search",
@@ -446,7 +412,7 @@ class TwitterSearchRequest(BaseModel):
     response_model=List[TwitterScraperTweet],
 )
 async def advanced_twitter_search(
-    request: TwitterSearchRequest, access_key: Annotated[str | None, Header()] = None
+    request: TwitterSearchRequest, _=Depends(verify_access_key)
 ):
     """
     Perform an advanced Twitter search using multiple filtering parameters.
@@ -457,9 +423,6 @@ async def advanced_twitter_search(
 
     bt.logging.info(f"/twitter/search request: {request}")
 
-    if access_key != EXPECTED_ACCESS_KEY:
-        raise HTTPException(status_code=401, detail="Invalid access key")
-
     try:
         bt.logging.info("Advanced Twitter search initiated with organic approach.")
 
@@ -468,9 +431,7 @@ async def advanced_twitter_search(
         # Collect all yielded synapses from organic
         final_synapses = []
 
-        async for synapse in api.x_scraper_validator.x_search(
-            query=query_dict, uid=request.uid
-        ):
+        async for synapse in api.x_scraper_validator.x_search(query=query_dict):
             final_synapses.append(synapse)
 
         # Transform final synapses into a flattened list of tweets
@@ -490,10 +451,6 @@ async def advanced_twitter_search(
 class TwitterURLSearchRequest(BaseModel):
     urls: List[str]
 
-    uid: Optional[int] = Field(
-        default=None,
-    )
-
 
 @app.post(
     "/twitter/urls",
@@ -502,7 +459,7 @@ class TwitterURLSearchRequest(BaseModel):
     response_model=List[TwitterScraperTweet],
 )
 async def get_tweets_by_urls(
-    request: TwitterURLSearchRequest, access_key: Annotated[str | None, Header()] = None
+    request: TwitterURLSearchRequest, _=Depends(verify_access_key)
 ):
     """
     Fetch the details of multiple tweets using their URLs.
@@ -516,9 +473,6 @@ async def get_tweets_by_urls(
 
     bt.logging.info(f"/twitter/urls request: {request}")
 
-    if access_key != EXPECTED_ACCESS_KEY:
-        raise HTTPException(status_code=401, detail="Invalid access key")
-
     results = []
 
     try:
@@ -526,9 +480,7 @@ async def get_tweets_by_urls(
 
         bt.logging.info(f"Fetching tweets for URLs: {urls}")
 
-        results = await api.x_scraper_validator.x_posts_by_urls(
-            urls, uid=request.uid
-        )
+        results = await api.x_scraper_validator.x_posts_by_urls(urls)
     except Exception as e:
         bt.logging.error(f"Error fetching tweets by URLs: {e}")
         raise HTTPException(status_code=500, detail=f"An error occurred: {str(e)}")
@@ -547,8 +499,7 @@ async def get_tweets_by_urls(
 )
 async def get_tweet_by_id(
     id: str = Path(..., description="The unique ID of the tweet to fetch"),
-    uid: Optional[int] = Query(default=None),
-    access_key: Annotated[str | None, Header()] = None,
+    _=Depends(verify_access_key),
 ):
     """
     Fetch the details of a tweet by its ID.
@@ -559,15 +510,12 @@ async def get_tweet_by_id(
 
     bt.logging.info(f"/twitter/id request: id={id}")
 
-    if access_key != EXPECTED_ACCESS_KEY:
-        raise HTTPException(status_code=401, detail="Invalid access key")
-
     results = []
 
     try:
         bt.logging.info(f"Fetching tweet with ID: {id}")
 
-        results = await api.x_scraper_validator.x_post_by_id(id, uid=uid)
+        results = await api.x_scraper_validator.x_post_by_id(id)
     except Exception as e:
         bt.logging.error(f"Error fetching tweet by ID: {e}")
         raise HTTPException(status_code=500, detail=f"An error occurred: {str(e)}")
@@ -592,8 +540,7 @@ async def web_search_endpoint(
     start: int = Query(
         0, description="The number of results to skip (used for pagination)."
     ),
-    uid: Optional[int] = Query(default=None),
-    access_key: Annotated[str | None, Header()] = None,
+    _=Depends(verify_access_key),
 ):
     """
     Perform a web search using the given query, number of results, and start index.
@@ -602,16 +549,12 @@ async def web_search_endpoint(
         query (str): The search query string.
         num (int): The maximum number of results to fetch.
         start (int): The number of results to skip (for pagination).
-        uid (Optional[int]): The unique identifier of the target axon. Defaults to None.
 
     Returns:
         List[WebSearchResult]: A list of web search results.
     """
 
     bt.logging.info(f"/web/search request: query={query}, num={num}, start={start}")
-
-    if access_key != EXPECTED_ACCESS_KEY:
-        raise HTTPException(status_code=401, detail="Invalid access key")
 
     try:
         bt.logging.info(
@@ -622,7 +565,7 @@ async def web_search_endpoint(
         final_synapses = []
 
         async for synapse in api.web_scraper_validator.organic(
-            query={"query": query, "num": num, "start": start}, uid=uid
+            query={"query": query, "num": num, "start": start}
         ):
             final_synapses.append(synapse)
 
@@ -641,9 +584,7 @@ async def web_search_endpoint(
 
 
 @app.get("/")
-async def health_check(access_key: Annotated[str | None, Header()] = None):
-    if access_key != EXPECTED_ACCESS_KEY:
-        raise HTTPException(status_code=401, detail="Invalid access key")
+async def health_check(_=Depends(verify_access_key)):
 
     async with ValidatorServiceClient() as client:
         try:
