@@ -14,6 +14,7 @@ from neurons.validators.miner_response_logger import (
 )
 from neurons.validators.penalty.timeout_penalty import TimeoutPenaltyModel
 from neurons.validators.reward import RewardScoringType
+from neurons.validators.reward.performance_reward import PerformanceRewardModel
 from neurons.validators.reward.web_basic_search_content_relevance import (
     WebBasicSearchContentRelevanceModel,
 )
@@ -34,11 +35,13 @@ class WebScraperValidator(BaseScraperValidator):
             "self.neuron.config.neuron.device = ", str(neuron.config.neuron.device)
         )
 
-        self.web_content_weight = 1.0
+        self.web_content_weight = 0.80
+        self.performance_weight = 0.20
 
         reward_weights = torch.tensor(
             [
                 self.web_content_weight,
+                self.performance_weight,
             ],
             dtype=torch.float32,
         )
@@ -47,6 +50,10 @@ class WebScraperValidator(BaseScraperValidator):
             WebBasicSearchContentRelevanceModel(
                 device=neuron.config.neuron.device,
                 scoring_type=RewardScoringType.search_relevance_score_template,
+                neuron=neuron,
+            ),
+            PerformanceRewardModel(
+                device=neuron.config.neuron.device,
                 neuron=neuron,
             ),
         ]

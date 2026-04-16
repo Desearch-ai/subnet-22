@@ -27,6 +27,7 @@ from neurons.validators.penalty.miner_score_penalty import MinerScorePenaltyMode
 from neurons.validators.penalty.streaming_penalty import StreamingPenaltyModel
 from neurons.validators.penalty.timeout_penalty import TimeoutPenaltyModel
 from neurons.validators.reward import RewardModelType, RewardScoringType
+from neurons.validators.reward.performance_reward import PerformanceRewardModel
 from neurons.validators.reward.reward_llm import RewardLLM
 from neurons.validators.reward.search_content_relevance import (
     WebSearchContentRelevanceModel,
@@ -93,9 +94,10 @@ class AdvancedScraperValidator(BaseScraperValidator):
             "self.neuron.config.neuron.device = ", str(neuron.config.neuron.device)
         )
 
-        self.twitter_content_weight = 0.40
-        self.web_search_weight = 0.30
+        self.twitter_content_weight = 0.30
+        self.web_search_weight = 0.25
         self.summary_relevance_weight = 0.30
+        self.performance_weight = 0.15
 
         self.reward_llm = RewardLLM(neuron.config.neuron.scoring_model)
 
@@ -104,6 +106,7 @@ class AdvancedScraperValidator(BaseScraperValidator):
                 self.twitter_content_weight,
                 self.web_search_weight,
                 self.summary_relevance_weight,
+                self.performance_weight,
             ],
             dtype=torch.float32,
         )
@@ -125,6 +128,10 @@ class AdvancedScraperValidator(BaseScraperValidator):
                 device=neuron.config.neuron.device,
                 scoring_type=RewardScoringType.summary_relevance_score_template,
                 llm_reward=self.reward_llm,
+                neuron=neuron,
+            ),
+            PerformanceRewardModel(
+                device=neuron.config.neuron.device,
                 neuron=neuron,
             ),
         ]
