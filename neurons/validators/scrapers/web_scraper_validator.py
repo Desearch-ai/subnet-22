@@ -154,6 +154,9 @@ class WebScraperValidator(BaseScraperValidator):
                         )
                     ],
                 )
+                await self._save_organic_for_scoring(
+                    uid=selected_uid, response=response
+                )
                 yield response
             else:
                 bt.logging.warning("Invalid response for UID: Unknown")

@@ -78,6 +78,7 @@ class Neuron(AbstractNeuron):
         self.validator_identity = None
         self.miner_worker_urls: dict[int, str] = {}
         self.worker_client: Optional[WorkerClient] = None
+        self.scoring_store: Optional[ScoringStore] = None
 
     async def initialize(self):
         bt.logging.info(
@@ -382,6 +383,7 @@ class Neuron(AbstractNeuron):
             bt.logging.debug(str(self.moving_averaged_scores))
 
             scoring_store = ScoringStore()
+            self.scoring_store = scoring_store
 
             utility_api = UtilityAPIClient(
                 base_url=self.config.neuron.utility_api_url,

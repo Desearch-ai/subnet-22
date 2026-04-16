@@ -156,6 +156,9 @@ class XScraperValidator(BaseScraperValidator):
                     axon=axon,
                     search_type="x_search",
                 )
+                await self._save_organic_for_scoring(
+                    uid=selected_uid, response=response
+                )
                 yield response
             else:
                 bt.logging.warning("Invalid response for UID: Unknown")
@@ -173,9 +176,7 @@ class XScraperValidator(BaseScraperValidator):
         """
 
         try:
-            uid, axon = await self.neuron.get_random_miner(
-                search_type=self.search_type
-            )
+            uid, axon = await self.neuron.get_random_miner(search_type=self.search_type)
 
             synapse = TwitterIDSearchSynapse(
                 id=tweet_id,
@@ -218,9 +219,7 @@ class XScraperValidator(BaseScraperValidator):
         try:
             bt.logging.debug("run_task", "twitter urls search")
 
-            uid, axon = await self.neuron.get_random_miner(
-                search_type=self.search_type
-            )
+            uid, axon = await self.neuron.get_random_miner(search_type=self.search_type)
 
             synapse = TwitterURLsSearchSynapse(
                 urls=urls,

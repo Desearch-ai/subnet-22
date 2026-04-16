@@ -1,10 +1,11 @@
 import time
+from datetime import datetime, timezone
 from typing import List, Optional
 
 import bittensor as bt
 import torch
-
 import wandb
+
 from neurons.validators.base_validator import AbstractNeuron
 from neurons.validators.clients.miner_response_logger import (
     build_log_entry,
@@ -40,6 +41,19 @@ class BaseScraperValidator:
 
         self.reward_functions = reward_functions
         self.penalty_functions = penalty_functions
+
+    async def _save_organic_for_scoring(self, uid: int, response) -> None:
+        """Persist an organic response in ScoringStore under the current UTC hour."""
+        store = getattr(self.neuron, "scoring_store", None)
+        if store is None or uid is None or response is None:
+            return
+        hour_bucket = datetime.now(timezone.utc).replace(
+            minute=0, second=0, microsecond=0
+        )
+        try:
+            await store.save_organic(hour_bucket, uid, self.search_type, response)
+        except Exception as e:
+            bt.logging.warning(f"[Organic] save_organic failed uid={uid}: {e}")
 
     def get_penalty_additional_params(self, val_score_responses_list):
         """Override in subclasses that need to pass additional params to penalties (e.g. val_scores)."""
@@ -83,18 +97,11 @@ class BaseScraperValidator:
         start_time,
         result_type=None,
         scoring_epoch_start=None,
-        scoring_seeds=None,
     ):
         try:
             if not len(uids):
                 bt.logging.warning("No UIDs provided for logging event.")
                 return
-
-            # Attach scoring seeds to response objects so reward models can use
-            # them for deterministic random sampling across all validators.
-            if scoring_seeds:
-                for response, seed in zip(responses, scoring_seeds):
-                    response.scoring_seed = seed
 
             bt.logging.info("Computing rewards and penalties")
 
@@ -169,9 +176,7 @@ class BaseScraperValidator:
             log_messages = []
             for uid_tensor, reward, response in zip(uids, rewards.tolist(), responses):
                 uid = uid_tensor.item()
-                log_messages.append(
-                    self.build_uid_log_message(uid, reward, response)
-                )
+                log_messages.append(self.build_uid_log_message(uid, reward, response))
 
             # Log the accumulated messages in groups of three
             for i in range(0, len(log_messages), 3):
@@ -182,7 +187,18 @@ class BaseScraperValidator:
             )
 
             # Build per-uid reward values for wandb
-            reward_values_per_uid = list(zip(*[r.tolist() if hasattr(r, 'tolist') else r for r in all_rewards])) if all_rewards else [() for _ in uids]
+            reward_values_per_uid = (
+                list(
+                    zip(
+                        *[
+                            r.tolist() if hasattr(r, "tolist") else r
+                            for r in all_rewards
+                        ]
+                    )
+                )
+                if all_rewards
+                else [() for _ in uids]
+            )
 
             for uid_tensor, reward, response, reward_values in zip(
                 uids, rewards.tolist(), responses, reward_values_per_uid
@@ -190,7 +206,9 @@ class BaseScraperValidator:
                 uid = uid_tensor.item()
                 uid_scores_dict[uid] = reward
                 scores[uid] = reward
-                self.populate_wandb_uid_data(wandb_data, uid, reward, response, reward_values)
+                self.populate_wandb_uid_data(
+                    wandb_data, uid, reward, response, reward_values
+                )
 
             if self.neuron.config.wandb_on:
                 wandb.log(wandb_data)

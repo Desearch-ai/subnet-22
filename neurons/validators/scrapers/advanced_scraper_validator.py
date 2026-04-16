@@ -329,6 +329,11 @@ class AdvancedScraperValidator(BaseScraperValidator):
                             if synapse is not None
                         ],
                     )
+                    for synapse in final_synapses:
+                        if synapse is not None:
+                            await self._save_organic_for_scoring(
+                                uid=selected_uid, response=synapse
+                            )
 
                 for synapse in final_synapses:
                     yield synapse
@@ -355,6 +360,9 @@ class AdvancedScraperValidator(BaseScraperValidator):
                                 miner_coldkey=getattr(axon, "coldkey", None),
                             )
                         ],
+                    )
+                    await self._save_organic_for_scoring(
+                        uid=selected_uid, response=final_synapse
                     )
         except Exception as e:
             bt.logging.error(f"Error in organic: {e}")

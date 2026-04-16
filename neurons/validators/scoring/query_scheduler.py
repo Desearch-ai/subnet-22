@@ -1,4 +1,5 @@
 import asyncio
+import random
 import time
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
@@ -17,6 +18,9 @@ SEARCH_TYPE_WEIGHTS = {
     "web_search": 0.25,
 }
 
+ORGANIC_DEEP_SCORE_WEIGHT = 5
+ORGANIC_SCORE_CAP_PER_TYPE = 100
+
 
 class QueryScheduler:
     """
@@ -30,6 +34,10 @@ class QueryScheduler:
       2. Dispatch each query at its random fire time spread over ~55 minutes.
       3. Save the miner's response in ScoringStore.
       4. On hour boundary -> score the previous hour's responses and update capacity.
+
+    Organic responses collected during the epoch are also loaded and a
+    capped-random sample is deep-scored. Organic rewards carry
+    ``ORGANIC_DEEP_SCORE_WEIGHT`` weight in the per-UID mean.
 
     Each validator generates its own synthetics independently.
     """
@@ -79,19 +87,14 @@ class QueryScheduler:
         uid: int,
         query: dict,
         time_range_start: datetime,
-        scoring_seed: Optional[int] = None,
     ) -> None:
         """Send one scoring query to a specific miner and persist the response."""
         try:
             validator = self.validators[search_type]
             response = await validator.send_scoring_query(query, uid=uid)
             if response is not None:
-                await self.scoring_store.save_response(
-                    time_range_start,
-                    uid,
-                    search_type,
-                    response,
-                    scoring_seed=scoring_seed,
+                await self.scoring_store.save_synthetic(
+                    time_range_start, uid, search_type, response
                 )
                 bt.logging.debug(
                     f"[QueryScheduler] Saved response uid={uid} type={search_type}"
@@ -107,14 +110,20 @@ class QueryScheduler:
         items: list,
         time_range_start: datetime,
     ) -> dict[int, float]:
-        """Score one search type for a completed epoch. Returns per-UID mean quality."""
+        """
+        Score one search type for a completed epoch.
+
+        Each item carries a ``kind`` of "synthetic" or "organic". Organic rewards
+        count ``ORGANIC_DEEP_SCORE_WEIGHT`` times when computing the per-UID
+        mean quality.
+        """
         validator = self.validators.get(search_type)
         if validator is None or not items:
             return {}
 
         uids = torch.tensor([item["uid"] for item in items])
         responses = [item["response"] for item in items]
-        scoring_seeds = [item.get("scoring_seed") for item in items]
+        kinds = [item.get("kind", "synthetic") for item in items]
         prompts = [self._extract_prompt(response) for response in responses]
         event = {}
 
@@ -129,7 +138,6 @@ class QueryScheduler:
             uids=uids,
             start_time=time.time(),
             scoring_epoch_start=time_range_start,
-            scoring_seeds=scoring_seeds,
         )
 
         if result is None:
@@ -137,16 +145,22 @@ class QueryScheduler:
 
         rewards = result[0]
 
-        # Compute per-UID mean quality from the rewards tensor
         uid_totals: dict[int, float] = defaultdict(float)
-        uid_counts: dict[int, int] = defaultdict(int)
+        uid_weights: dict[int, float] = defaultdict(float)
 
-        for uid_tensor, reward in zip(uids, rewards.tolist()):
+        for uid_tensor, reward, kind in zip(uids, rewards.tolist(), kinds):
             uid = uid_tensor.item()
-            uid_totals[uid] += reward
-            uid_counts[uid] += 1
+            weight = ORGANIC_DEEP_SCORE_WEIGHT if kind == "organic" else 1
+            uid_totals[uid] += weight * reward
+            uid_weights[uid] += weight
 
-        return {uid: uid_totals[uid] / uid_counts[uid] for uid in uid_totals}
+        return {uid: uid_totals[uid] / uid_weights[uid] for uid in uid_totals}
+
+    def _sample_organics(self, organics: list) -> list:
+        """Cap organics per search type using uniform random sampling."""
+        if len(organics) <= ORGANIC_SCORE_CAP_PER_TYPE:
+            return organics
+        return random.sample(organics, ORGANIC_SCORE_CAP_PER_TYPE)
 
     async def score_epoch(self, time_range_start: datetime) -> None:
         """Load all responses for a completed hour and run reward/penalty computation."""
@@ -154,9 +168,12 @@ class QueryScheduler:
             bt.logging.info(
                 f"[QueryScheduler] Scoring epoch {time_range_start.isoformat()}"
             )
-            all_responses = await self.scoring_store.get_all_for_range(time_range_start)
+            synthetics = await self.scoring_store.get_synthetics_for_range(
+                time_range_start
+            )
+            organics = await self.scoring_store.get_organics_for_range(time_range_start)
 
-            if not all_responses:
+            if not synthetics and not organics:
                 bt.logging.warning(
                     f"[QueryScheduler] No responses for epoch "
                     f"{time_range_start.isoformat()}, skipping scoring."
@@ -165,16 +182,34 @@ class QueryScheduler:
 
             window_start = time_range_start.isoformat()
 
-            # Score each search type, collect per-UID quality
             qualities_per_type: dict[str, dict[int, float]] = {}
 
-            for search_type, items in all_responses.items():
-                if not items or self.validators.get(search_type) is None:
+            for search_type in SEARCH_TYPES:
+                if self.validators.get(search_type) is None:
                     continue
+
+                synth_items = [
+                    {**item, "kind": "synthetic"}
+                    for item in synthetics.get(search_type, [])
+                ]
+                organic_pool = organics.get(search_type, [])
+                organic_sample = self._sample_organics(organic_pool)
+                organic_items = [{**item, "kind": "organic"} for item in organic_sample]
+
+                merged = synth_items + organic_items
+
+                if not merged:
+                    continue
+
+                bt.logging.info(
+                    f"[QueryScheduler] {search_type}: "
+                    f"{len(synth_items)} synthetic + {len(organic_items)} organic "
+                    f"(pool={len(organic_pool)}, cap={ORGANIC_SCORE_CAP_PER_TYPE})"
+                )
 
                 try:
                     uid_qualities = await self._score_search_type(
-                        search_type, items, time_range_start
+                        search_type, merged, time_range_start
                     )
                     qualities_per_type[search_type] = uid_qualities
 
@@ -315,7 +350,6 @@ class QueryScheduler:
                             item["uid"],
                             item["query"],
                             time_range_start,
-                            scoring_seed=item["scoring_seed"],
                         )
                     )
 

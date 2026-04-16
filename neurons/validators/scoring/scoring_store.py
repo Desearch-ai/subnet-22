@@ -13,58 +13,63 @@ SEARCH_TYPES = ["ai_search", "x_search", "web_search"]
 
 class ScoringStore:
     """
-    Redis-backed store for scoring query responses.
+    Redis-backed store for scoring responses (synthetic + organic).
 
-    Organizes responses by (time_range_start, search_type) using Redis hashes.
-    Key format: scoring:{unix_ts}:{search_type}
-    Field:      {uid}:{suffix}  →  jsonpickle-encoded response
+    Keys:
+        scoring:{unix_ts}:synthetic:{search_type}
+        scoring:{unix_ts}:organic:{search_type}
 
-    Supports multiple responses per UID (one per synthetic query).
-    Responses expire after 2 hours.
+    Field layout inside each hash: {uid}:{suffix} → jsonpickle-encoded response.
+    Multiple responses per UID are supported; all entries expire after 2h.
     """
 
     KEY_PREFIX = "scoring"
 
-    def _key(self, time_range_start: datetime, search_type: str) -> str:
+    def _key(self, time_range_start: datetime, kind: str, search_type: str) -> str:
         unix_ts = int(time_range_start.timestamp())
-        return f"{self.KEY_PREFIX}:{unix_ts}:{search_type}"
+        return f"{self.KEY_PREFIX}:{unix_ts}:{kind}:{search_type}"
 
-    async def save_response(
+    async def _save(
         self,
         time_range_start: datetime,
+        kind: str,
         uid: int,
         search_type: str,
         response: Any,
-        scoring_seed: int | None = None,
     ) -> None:
-        """Save a single miner response (with optional scoring seed) for later scoring."""
-
-        key = self._key(time_range_start, search_type)
+        key = self._key(time_range_start, kind, search_type)
         field = f"{uid}:{uuid4().hex[:8]}"
-        data = jsonpickle.encode({"response": response, "scoring_seed": scoring_seed})
+        data = jsonpickle.encode(response)
         pipeline = redis_client.pipeline()
         pipeline.hset(key, field, data)
         pipeline.expire(key, EXPIRY)
         await pipeline.execute()
 
-    async def get_all_for_range(
-        self, time_range_start: datetime
+    async def save_synthetic(
+        self,
+        time_range_start: datetime,
+        uid: int,
+        search_type: str,
+        response: Any,
+    ) -> None:
+        await self._save(time_range_start, "synthetic", uid, search_type, response)
+
+    async def save_organic(
+        self,
+        time_range_start: datetime,
+        uid: int,
+        search_type: str,
+        response: Any,
+    ) -> None:
+        await self._save(time_range_start, "organic", uid, search_type, response)
+
+    async def _load(
+        self, time_range_start: datetime, kind: str
     ) -> Dict[str, List[Dict]]:
-        """
-        Load all saved responses for a completed epoch.
-
-        Returns:
-            {
-                "ai_search": [{"uid": int, "response": ...}, ...],
-                "x_search":  [...],
-                "web_search": [...],
-            }
-        """
-
         pipeline = redis_client.pipeline()
 
         for st in SEARCH_TYPES:
-            pipeline.hgetall(self._key(time_range_start, st))
+            pipeline.hgetall(self._key(time_range_start, kind, st))
 
         raw_results = await pipeline.execute()
 
@@ -72,26 +77,21 @@ class ScoringStore:
 
         for st, raw in zip(SEARCH_TYPES, raw_results):
             items = []
-
             for field_str, encoded in raw.items():
-                # Field format: "{uid}:{suffix}" or legacy "{uid}"
                 uid_part = field_str.split(":")[0] if ":" in field_str else field_str
-                data = jsonpickle.decode(encoded)
-                if isinstance(data, dict) and "response" in data:
-                    response = data["response"]
-                    scoring_seed = data.get("scoring_seed")
-                else:
-                    response = data
-                    scoring_seed = None
-                items.append(
-                    {
-                        "uid": int(uid_part),
-                        "response": response,
-                        "scoring_seed": scoring_seed,
-                    }
-                )
-
+                response = jsonpickle.decode(encoded)
+                items.append({"uid": int(uid_part), "response": response})
             if items:
                 result[st] = items
 
         return result
+
+    async def get_synthetics_for_range(
+        self, time_range_start: datetime
+    ) -> Dict[str, List[Dict]]:
+        return await self._load(time_range_start, "synthetic")
+
+    async def get_organics_for_range(
+        self, time_range_start: datetime
+    ) -> Dict[str, List[Dict]]:
+        return await self._load(time_range_start, "organic")

@@ -88,7 +88,7 @@ class SyntheticQueryGenerator:
         Each miner gets verified_concurrency queries per search type.
 
         Returns items sorted by fire-time delay, each containing:
-            uid, search_type, query (dict), delay_seconds, scoring_seed
+            uid, search_type, query (dict), delay_seconds
         """
         if verified_by_type is None:
             verified_by_type = {}
@@ -114,7 +114,6 @@ class SyntheticQueryGenerator:
                         "uid": uid,
                         "search_type": search_type,
                         "delay_seconds": random.uniform(0, spread_seconds),
-                        "scoring_seed": random.randint(0, 2**31 - 1),
                         "query": None,
                     }
 
