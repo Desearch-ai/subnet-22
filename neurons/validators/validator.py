@@ -155,7 +155,7 @@ class Neuron(AbstractNeuron):
         try:
             self.available_uids = await self.get_available_uids_is_alive()
 
-            self.uid_manager.resync(
+            await self.uid_manager.resync(
                 available_uids=self.available_uids, metagraph=self.metagraph
             )
         except Exception as e:
@@ -225,16 +225,16 @@ class Neuron(AbstractNeuron):
         return available_uids
 
     async def get_random_miner(
-        self, uid: Optional[int] = None
+        self, uid: Optional[int] = None, search_type: Optional[str] = None
     ) -> Tuple[int, bt.AxonInfo]:
-        """Return (uid, axon) for the given uid, or a random miner if uid is None."""
+        """Return (uid, axon) for the given uid, or a weighted-random miner."""
         if uid is not None:
             bt.logging.info(f"Run specific UID: {uid}")
             return uid, self.metagraph.axons[uid]
 
-        selected_uid = self.uid_manager.get_miner_uid()
+        selected_uid = self.uid_manager.get_miner_uid(search_type=search_type)
 
-        bt.logging.info(f"Run random UID: {selected_uid}")
+        bt.logging.info(f"Run random UID: {selected_uid} (search_type={search_type})")
 
         return selected_uid, self.metagraph.axons[selected_uid]
 
@@ -358,7 +358,12 @@ class Neuron(AbstractNeuron):
 
             await self.initialize()
 
-            db_path = os.path.join(self.config.neuron.full_path, "miner_state.db")
+            repo_root = os.path.abspath(
+                os.path.join(os.path.dirname(__file__), "..", "..")
+            )
+            state_dir = os.path.join(repo_root, ".state")
+            os.makedirs(state_dir, exist_ok=True)
+            db_path = os.path.join(state_dir, "miner_state.db")
             await miner_db.initialize(db_path)
 
             self.worker_client = WorkerClient(wallet=self.wallet)

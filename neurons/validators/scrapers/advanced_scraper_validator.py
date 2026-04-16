@@ -129,7 +129,9 @@ class AdvancedScraperValidator(BaseScraperValidator):
 
         start_time = time.time()
 
-        uid, axon = await self.neuron.get_random_miner(uid=uid)
+        uid, axon = await self.neuron.get_random_miner(
+            uid=uid, search_type=self.search_type
+        )
         uids = torch.tensor([uid])
 
         start_date = (

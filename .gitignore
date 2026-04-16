@@ -28,3 +28,4 @@ pyrightconfig.json
 
 .claude/
 .pytest_cache/
+.state/

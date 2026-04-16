@@ -57,6 +57,8 @@ async def get_config():
 class GetRandomUidRequest(BaseModel):
     # Specific UID to request
     uid: Optional[int] = None
+    # Search type used to weight the random selection
+    search_type: Optional[str] = None
 
 
 @app.post(
@@ -69,7 +71,9 @@ async def get_random_uid(body: GetRandomUidRequest):
             detail="Neuron is not available.",
         )
 
-    uid, axon = await neuron.get_random_miner(uid=body.uid)
+    uid, axon = await neuron.get_random_miner(
+        uid=body.uid, search_type=body.search_type
+    )
 
     return {"uid": uid, "axon": axon}
 

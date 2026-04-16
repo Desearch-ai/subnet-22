@@ -75,7 +75,9 @@ class WebScraperValidator(BaseScraperValidator):
         params: Dict[str, Any],
         uid: Optional[int] = None,
     ):
-        uid, axon = await self.neuron.get_random_miner(uid=uid)
+        uid, axon = await self.neuron.get_random_miner(
+            uid=uid, search_type=self.search_type
+        )
 
         synapse = WebSearchSynapse(
             **params,

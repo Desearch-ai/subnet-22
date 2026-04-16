@@ -85,7 +85,9 @@ class XScraperValidator(BaseScraperValidator):
         params: Dict[str, Any],
         uid: Optional[int] = None,
     ):
-        uid, axon = await self.neuron.get_random_miner(uid=uid)
+        uid, axon = await self.neuron.get_random_miner(
+            uid=uid, search_type=self.search_type
+        )
 
         synapse = TwitterSearchSynapse(
             **params,
@@ -171,7 +173,9 @@ class XScraperValidator(BaseScraperValidator):
         """
 
         try:
-            uid, axon = await self.neuron.get_random_miner()
+            uid, axon = await self.neuron.get_random_miner(
+                search_type=self.search_type
+            )
 
             synapse = TwitterIDSearchSynapse(
                 id=tweet_id,
@@ -214,7 +218,9 @@ class XScraperValidator(BaseScraperValidator):
         try:
             bt.logging.debug("run_task", "twitter urls search")
 
-            uid, axon = await self.neuron.get_random_miner()
+            uid, axon = await self.neuron.get_random_miner(
+                search_type=self.search_type
+            )
 
             synapse = TwitterURLsSearchSynapse(
                 urls=urls,

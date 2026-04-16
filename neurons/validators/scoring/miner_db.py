@@ -105,6 +105,15 @@ async def get_all_verified(search_type: str) -> dict[int, int]:
     return {row["uid"]: row["verified"] async for row in cursor}
 
 
+async def get_all_concurrency_data(search_type: str) -> dict[int, tuple[float, int]]:
+    """Return {uid: (quality_avg, verified)} for all miners of a given search type."""
+    cursor = await _db.execute(
+        "SELECT uid, quality_avg, verified FROM miner_concurrency WHERE search_type = ?",
+        (search_type,),
+    )
+    return {row["uid"]: (row["quality_avg"], row["verified"]) async for row in cursor}
+
+
 async def get_concurrency_row(uid: int, search_type: str) -> Optional[dict]:
     cursor = await _db.execute(
         "SELECT * FROM miner_concurrency WHERE uid = ? AND search_type = ?",

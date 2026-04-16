@@ -68,9 +68,9 @@ class ValidatorAPI:
         await initialize_redis()
 
     async def get_random_miner(
-        self, uid: Optional[int] = None
+        self, uid: Optional[int] = None, search_type: Optional[str] = None
     ) -> Tuple[int, bt.AxonInfo]:
-        return await self.validator_service_client.get_random_miner(uid)
+        return await self.validator_service_client.get_random_miner(uid, search_type)
 
     async def start(self):
         bt.logging.info("Starting ValidatorAPI")
