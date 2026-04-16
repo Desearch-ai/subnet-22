@@ -32,7 +32,9 @@ from desearch.protocol import (
     WebSearchSynapse,
 )
 from neurons.validators.base_validator import AbstractNeuron
-from neurons.validators.constants import FACTOR, STEEPNESS
+
+STEEPNESS = 0.1
+FACTOR = 2
 
 from .config import RewardModelType
 from .reward import BaseRewardEvent, BaseRewardModel

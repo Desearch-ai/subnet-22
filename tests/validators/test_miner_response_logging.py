@@ -4,10 +4,10 @@ from unittest.mock import AsyncMock, patch
 import pytest
 import torch
 
-from neurons.validators.advanced_scraper_validator import AdvancedScraperValidator
-from neurons.validators.miner_response_logger import build_log_entry, submit_logs
-from neurons.validators.web_scraper_validator import WebScraperValidator
-from neurons.validators.x_scraper_validator import XScraperValidator
+from neurons.validators.clients.miner_response_logger import build_log_entry, submit_logs
+from neurons.validators.scrapers.advanced_scraper_validator import AdvancedScraperValidator
+from neurons.validators.scrapers.web_scraper_validator import WebScraperValidator
+from neurons.validators.scrapers.x_scraper_validator import XScraperValidator
 
 
 def _fake_owner():

@@ -8,12 +8,12 @@ from desearch.protocol import (
     TwitterSearchSynapse,
     TwitterURLsSearchSynapse,
 )
-from neurons.validators.base_scraper_validator import BaseScraperValidator
 from neurons.validators.base_validator import AbstractNeuron
-from neurons.validators.miner_response_logger import (
+from neurons.validators.clients.miner_response_logger import (
     build_log_entry,
     submit_logs_best_effort,
 )
+from neurons.validators.scrapers.base_scraper_validator import BaseScraperValidator
 from neurons.validators.penalty.timeout_penalty import TimeoutPenaltyModel
 from neurons.validators.penalty.twitter_count_penalty import TwitterCountPenaltyModel
 from neurons.validators.reward import RewardScoringType

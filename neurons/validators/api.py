@@ -29,7 +29,7 @@ from desearch.protocol import (
 from neurons.validators.dependencies import verify_access_key
 from neurons.validators.env import PORT
 from neurons.validators.validator_api import ValidatorAPI
-from neurons.validators.validator_service_client import ValidatorServiceClient
+from neurons.validators.clients.validator_service_client import ValidatorServiceClient
 
 
 async def get_validator_config():

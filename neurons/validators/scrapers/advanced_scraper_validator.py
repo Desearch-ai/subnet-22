@@ -17,12 +17,12 @@ from desearch.protocol import (
 )
 from desearch.stream import collect_final_synapses
 from desearch.utils import get_max_execution_time
-from neurons.validators.base_scraper_validator import BaseScraperValidator
 from neurons.validators.base_validator import AbstractNeuron
-from neurons.validators.miner_response_logger import (
+from neurons.validators.clients.miner_response_logger import (
     build_log_entry,
     submit_logs_best_effort,
 )
+from neurons.validators.scrapers.base_scraper_validator import BaseScraperValidator
 from neurons.validators.penalty.miner_score_penalty import MinerScorePenaltyModel
 from neurons.validators.penalty.streaming_penalty import StreamingPenaltyModel
 from neurons.validators.penalty.timeout_penalty import TimeoutPenaltyModel

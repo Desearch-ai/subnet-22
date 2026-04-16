@@ -6,8 +6,8 @@ from typing import Dict, Optional
 import bittensor as bt
 import torch
 
-from neurons.validators.scoring_store import ScoringStore
-from neurons.validators.synthetic_query_generator import SyntheticQueryGenerator
+from neurons.validators.scoring.scoring_store import ScoringStore
+from neurons.validators.scoring.synthetic_query_generator import SyntheticQueryGenerator
 
 
 class QueryScheduler:

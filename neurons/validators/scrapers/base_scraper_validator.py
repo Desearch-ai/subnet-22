@@ -6,7 +6,7 @@ import torch
 
 import wandb
 from neurons.validators.base_validator import AbstractNeuron
-from neurons.validators.miner_response_logger import (
+from neurons.validators.clients.miner_response_logger import (
     build_log_entry,
     build_reward_payload,
     submit_logs_best_effort,
