@@ -20,7 +20,11 @@ state.json
 
 app.config.js
 neurons/miners/workers.json
+neurons/miners/.env
 
 .DS_Store
 Makefile
 pyrightconfig.json
+
+.claude/
+.pytest_cache/

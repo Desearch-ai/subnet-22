@@ -85,7 +85,16 @@ Example `neurons/miners/workers.json`:
 
 `concurrency` — per search type, per validator ceiling. Each validator may dispatch up to this many concurrent queries of that type to your miner. With 12 active validators, a miner advertising `web_search: 20` must provision for up to `20 × 12 = 240` concurrent web search requests in the worst case. Infrastructure sizing is your responsibility.
 
-Example with `pm2`:
+Copy the env template and fill in your values:
+
+```sh
+cp neurons/miners/.env.template neurons/miners/.env
+# edit neurons/miners/.env
+```
+
+All settings can be passed as CLI args or env vars (CLI takes precedence).
+
+Example with `pm2` using CLI args:
 
 ```sh
 pm2 start neurons/miners/api.py \
@@ -93,5 +102,9 @@ pm2 start neurons/miners/api.py \
   --name miner_worker_api_1 \
   -- \
   --host 0.0.0.0 \
-  --port 9101
+  --port 9101 \
+  --wallet.name miner \
+  --wallet.hotkey default \
+  --subtensor.network finney \
+  --netuid 22
 ```

@@ -1,9 +1,15 @@
 import argparse
 import asyncio
+import os
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+load_dotenv(Path(__file__).parent / ".env")
 
 import bittensor as bt
 import uvicorn
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.responses import Response
 
@@ -17,6 +23,7 @@ from desearch.protocol import (
 from neurons.miners.scraper_miner import ScraperMiner
 from neurons.miners.twitter_search_miner import TwitterSearchMiner
 from neurons.miners.web_search_miner import WebSearchMiner
+from neurons.miners.worker_auth import verify_worker_request
 
 bt.logging.on()
 bt.logging.set_info(True)
@@ -65,44 +72,94 @@ async def read_root():
 
 
 @app.post("/ai/search")
-async def ai_search(synapse: ScraperStreamingSynapse):
+async def ai_search(
+    synapse: ScraperStreamingSynapse,
+    _: str = Depends(verify_worker_request),
+):
     return JSONStreamResponse(synapse)
 
 
 @app.post("/twitter/search")
-async def twitter_search(synapse: TwitterSearchSynapse):
+async def twitter_search(
+    synapse: TwitterSearchSynapse,
+    _: str = Depends(verify_worker_request),
+):
     synapse = await twitter_search_miner.search(synapse)
     return synapse.model_dump()
 
 
 @app.post("/twitter/id")
-async def tweet_by_id(synapse: TwitterIDSearchSynapse):
+async def tweet_by_id(
+    synapse: TwitterIDSearchSynapse,
+    _: str = Depends(verify_worker_request),
+):
     synapse = await twitter_search_miner.search_by_id(synapse)
     return synapse.model_dump()
 
 
 @app.post("/twitter/urls")
-async def tweet_by_urls(synapse: TwitterURLsSearchSynapse):
+async def tweet_by_urls(
+    synapse: TwitterURLsSearchSynapse,
+    _: str = Depends(verify_worker_request),
+):
     synapse = await twitter_search_miner.search_by_urls(synapse)
     return synapse.model_dump()
 
 
 @app.post("/web/search")
-async def web_search(synapse: WebSearchSynapse):
+async def web_search(
+    synapse: WebSearchSynapse,
+    _: str = Depends(verify_worker_request),
+):
     synapse = await web_search_miner.search(synapse)
     return synapse.model_dump()
 
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Desearch Miner Worker API")
-    parser.add_argument("--host", type=str, default="0.0.0.0")
-    parser.add_argument("--port", type=int, default=8000)
+    parser.add_argument(
+        "--host", type=str, default=os.environ.get("WORKER_HOST", "0.0.0.0")
+    )
+    parser.add_argument(
+        "--port", type=int, default=int(os.environ.get("WORKER_PORT", "8000"))
+    )
     parser.add_argument("--timeout-keep-alive", type=int, default=300)
+    parser.add_argument(
+        "--wallet.name",
+        dest="wallet_name",
+        type=str,
+        default=os.environ.get("WALLET_NAME", "miner"),
+    )
+    parser.add_argument(
+        "--wallet.hotkey",
+        dest="wallet_hotkey",
+        type=str,
+        default=os.environ.get("WALLET_HOTKEY", "default"),
+    )
+    parser.add_argument(
+        "--subtensor.network",
+        dest="network",
+        type=str,
+        default=os.environ.get("SUBTENSOR_NETWORK", "test"),
+    )
+    parser.add_argument(
+        "--netuid", type=int, default=int(os.environ.get("NETUID", "41"))
+    )
     return parser.parse_args()
 
 
 async def main():
+    from neurons.miners import worker_auth
+
     args = parse_args()
+
+    wallet = bt.Wallet(name=args.wallet_name, hotkey=args.wallet_hotkey)
+    miner_hotkey = wallet.hotkey.ss58_address
+
+    worker_auth.init(miner_hotkey, args.network)
+    await worker_auth.init_metagraph(args.network, args.netuid)
+    asyncio.create_task(worker_auth.sync_metagraph_loop())
+
     config = uvicorn.Config(
         app,
         host=args.host,
