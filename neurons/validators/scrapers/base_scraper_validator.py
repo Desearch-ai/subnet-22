@@ -118,23 +118,23 @@ class BaseScraperValidator:
             ):
                 start_time = time.time()
                 (
-                    reward_i_normalized,
+                    reward_i,
                     reward_event,
                     val_score_responses,
                     original_rewards,
                 ) = await reward_fn_i.apply(responses, uids)
 
-                all_rewards.append(reward_i_normalized)
+                all_rewards.append(reward_i)
                 all_original_rewards.append(original_rewards)
                 val_score_responses_list.append(val_score_responses)
 
-                rewards += weight_i * reward_i_normalized.to(
-                    self.neuron.config.neuron.device
-                )
+                rewards += weight_i * reward_i.to(self.neuron.config.neuron.device)
+
                 if not self.neuron.config.neuron.disable_log_rewards:
                     event = {**event, **reward_event}
+
                 execution_time = time.time() - start_time
-                bt.logging.trace(str(reward_fn_i.name), reward_i_normalized.tolist())
+                bt.logging.trace(str(reward_fn_i.name), reward_i.tolist())
                 bt.logging.info(
                     f"Applied reward function: {reward_fn_i.name} in {execution_time / 60:.2f} minutes"
                 )

@@ -21,6 +21,38 @@ SEARCH_TYPE_WEIGHTS = {
 ORGANIC_DEEP_SCORE_WEIGHT = 5
 ORGANIC_SCORE_CAP_PER_TYPE = 100
 
+# Superlinear incentive formula: score = quality^alpha * volume^beta.
+# Both >1 make consolidating a UID strictly more profitable than splitting,
+# so two half-volume sybil UIDs always earn less than one full-volume UID.
+QUALITY_EXPONENT_ALPHA = 1.5
+VOLUME_EXPONENT_BETA = 1.5
+
+
+def combine_superlinear_scores(
+    qualities_per_type: dict[str, dict[int, tuple[float, int]]],
+) -> dict[int, float]:
+    """
+    Fold per-type ``(quality, volume)`` into one superlinear score per UID:
+    ``score = (sum_t w_t * q_t)^alpha * (sum_t w_t * v_t)^beta`` where
+    ``w_t`` is ``SEARCH_TYPE_WEIGHTS[t]``.
+    """
+    all_uids: set[int] = set()
+    for uid_q in qualities_per_type.values():
+        all_uids.update(uid_q.keys())
+
+    combined: dict[int, float] = {}
+    for uid in all_uids:
+        q_combined = 0.0
+        v_combined = 0.0
+        for st, weight in SEARCH_TYPE_WEIGHTS.items():
+            q, v = qualities_per_type.get(st, {}).get(uid, (0.0, 0))
+            q_combined += weight * q
+            v_combined += weight * v
+        combined[uid] = (
+            q_combined**QUALITY_EXPONENT_ALPHA * v_combined**VOLUME_EXPONENT_BETA
+        )
+    return combined
+
 
 class QueryScheduler:
     """
@@ -109,13 +141,12 @@ class QueryScheduler:
         search_type: str,
         items: list,
         time_range_start: datetime,
-    ) -> dict[int, float]:
+    ) -> dict[int, tuple[float, int]]:
         """
-        Score one search type for a completed epoch.
-
-        Each item carries a ``kind`` of "synthetic" or "organic". Organic rewards
-        count ``ORGANIC_DEEP_SCORE_WEIGHT`` times when computing the per-UID
-        mean quality.
+        Score one search type for a completed epoch. Returns per-UID
+        ``(quality, volume)``: quality is a 5x-organic-weighted mean of
+        per-response rewards (0-1); volume is the raw count of responses
+        scored for that UID.
         """
         validator = self.validators.get(search_type)
         if validator is None or not items:
@@ -147,20 +178,89 @@ class QueryScheduler:
 
         uid_totals: dict[int, float] = defaultdict(float)
         uid_weights: dict[int, float] = defaultdict(float)
+        uid_volumes: dict[int, int] = defaultdict(int)
 
         for uid_tensor, reward, kind in zip(uids, rewards.tolist(), kinds):
             uid = uid_tensor.item()
             weight = ORGANIC_DEEP_SCORE_WEIGHT if kind == "organic" else 1
             uid_totals[uid] += weight * reward
             uid_weights[uid] += weight
+            uid_volumes[uid] += 1
 
-        return {uid: uid_totals[uid] / uid_weights[uid] for uid in uid_totals}
+        return {
+            uid: (uid_totals[uid] / uid_weights[uid], uid_volumes[uid])
+            for uid in uid_totals
+        }
 
     def _sample_organics(self, organics: list) -> list:
         """Cap organics per search type using uniform random sampling."""
         if len(organics) <= ORGANIC_SCORE_CAP_PER_TYPE:
             return organics
         return random.sample(organics, ORGANIC_SCORE_CAP_PER_TYPE)
+
+    async def _score_one_type(
+        self,
+        search_type: str,
+        synthetics: dict,
+        organics: dict,
+        time_range_start: datetime,
+        window_start: str,
+    ) -> dict[int, tuple[float, int]]:
+        """Merge synth + organic sample for one type, score it, and update
+        capacity per UID. Returns per-UID ``(quality, volume)`` for the combine
+        step, or an empty dict if nothing scored."""
+        if self.validators.get(search_type) is None:
+            return {}
+
+        synth_items = [
+            {**item, "kind": "synthetic"} for item in synthetics.get(search_type, [])
+        ]
+        organic_pool = organics.get(search_type, [])
+        organic_sample = self._sample_organics(organic_pool)
+        organic_items = [{**item, "kind": "organic"} for item in organic_sample]
+
+        merged = synth_items + organic_items
+        if not merged:
+            return {}
+
+        bt.logging.info(
+            f"[QueryScheduler] {search_type}: "
+            f"{len(synth_items)} synthetic + {len(organic_items)} organic "
+            f"(pool={len(organic_pool)}, cap={ORGANIC_SCORE_CAP_PER_TYPE})"
+        )
+
+        try:
+            uid_results = await self._score_search_type(
+                search_type, merged, time_range_start
+            )
+        except Exception as e:
+            bt.logging.error(f"[QueryScheduler] Error scoring {search_type}: {e}")
+            return {}
+
+        for uid, (quality, _volume) in uid_results.items():
+            await capacity.update_after_scoring(
+                uid=uid,
+                search_type=search_type,
+                quality=quality,
+                window_start=window_start,
+            )
+        return uid_results
+
+    async def _dispatch_combined_scores(self, combined: dict[int, float]) -> None:
+        """Push the combined per-UID scores into the neuron's EMA."""
+        if not combined:
+            return
+        uids_tensor = torch.tensor(
+            list(combined.keys()),
+            dtype=torch.long,
+            device=self.neuron.config.neuron.device,
+        )
+        rewards_tensor = torch.tensor(
+            list(combined.values()),
+            dtype=torch.float32,
+            device=self.neuron.config.neuron.device,
+        )
+        await self.neuron.update_moving_averaged_scores(uids_tensor, rewards_tensor)
 
     async def score_epoch(self, time_range_start: datetime) -> None:
         """Load all responses for a completed hour and run reward/penalty computation."""
@@ -181,77 +281,21 @@ class QueryScheduler:
                 return
 
             window_start = time_range_start.isoformat()
-
-            qualities_per_type: dict[str, dict[int, float]] = {}
+            qualities_per_type: dict[str, dict[int, tuple[float, int]]] = {}
 
             for search_type in SEARCH_TYPES:
-                if self.validators.get(search_type) is None:
-                    continue
-
-                synth_items = [
-                    {**item, "kind": "synthetic"}
-                    for item in synthetics.get(search_type, [])
-                ]
-                organic_pool = organics.get(search_type, [])
-                organic_sample = self._sample_organics(organic_pool)
-                organic_items = [{**item, "kind": "organic"} for item in organic_sample]
-
-                merged = synth_items + organic_items
-
-                if not merged:
-                    continue
-
-                bt.logging.info(
-                    f"[QueryScheduler] {search_type}: "
-                    f"{len(synth_items)} synthetic + {len(organic_items)} organic "
-                    f"(pool={len(organic_pool)}, cap={ORGANIC_SCORE_CAP_PER_TYPE})"
+                uid_results = await self._score_one_type(
+                    search_type,
+                    synthetics,
+                    organics,
+                    time_range_start,
+                    window_start,
                 )
+                if uid_results:
+                    qualities_per_type[search_type] = uid_results
 
-                try:
-                    uid_qualities = await self._score_search_type(
-                        search_type, merged, time_range_start
-                    )
-                    qualities_per_type[search_type] = uid_qualities
-
-                    for uid, quality in uid_qualities.items():
-                        await capacity.update_after_scoring(
-                            uid=uid,
-                            search_type=search_type,
-                            quality=quality,
-                            window_start=window_start,
-                        )
-                except Exception as e:
-                    bt.logging.error(
-                        f"[QueryScheduler] Error scoring {search_type}: {e}"
-                    )
-
-            # Combine per-type scores into one weighted score per UID
-            # AI 50%, X 25%, Web 25% — then one EMA update
-            all_uids: set[int] = set()
-            for uid_q in qualities_per_type.values():
-                all_uids.update(uid_q.keys())
-
-            if all_uids:
-                combined: dict[int, float] = {}
-                for uid in all_uids:
-                    score = 0.0
-                    for st, weight in SEARCH_TYPE_WEIGHTS.items():
-                        score += weight * qualities_per_type.get(st, {}).get(uid, 0.0)
-                    combined[uid] = score
-
-                uids_tensor = torch.tensor(
-                    list(combined.keys()),
-                    dtype=torch.long,
-                    device=self.neuron.config.neuron.device,
-                )
-                rewards_tensor = torch.tensor(
-                    list(combined.values()),
-                    dtype=torch.float32,
-                    device=self.neuron.config.neuron.device,
-                )
-                await self.neuron.update_moving_averaged_scores(
-                    uids_tensor, rewards_tensor
-                )
+            combined = combine_superlinear_scores(qualities_per_type)
+            await self._dispatch_combined_scores(combined)
 
         except Exception as e:
             bt.logging.error(f"[QueryScheduler] Error in score_epoch: {e}")

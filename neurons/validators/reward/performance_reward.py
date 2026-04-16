@@ -48,7 +48,6 @@ class PerformanceRewardModel(BaseRewardModel):
     def __init__(self, device: str, neuron: AbstractNeuron):
         super().__init__(neuron)
         self.device = device
-        self.is_default_normalization = False
 
     def get_response_times(
         self, uids: List[int], responses: List[ScraperStreamingSynapse]

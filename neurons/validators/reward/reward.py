@@ -77,47 +77,7 @@ class BaseRewardModel:
         self.count = 0
         self.mean = 0.0
         self.var = 0.0
-        self.is_default_normalization = True
         self.neuron = neuron
-
-    def normalize_rewards(self, rewards: torch.FloatTensor) -> torch.FloatTensor:
-        # if self.var > 0:
-        #     rewards /= torch.sqrt(self.var)
-
-        # Identify rewards that are initially 0
-        zero_mask = rewards == 0
-
-        # Min-max normalize rewards to scale between 0 and 1
-        min_reward = (
-            torch.min(rewards[~zero_mask]) if rewards[~zero_mask].nelement() > 0 else 0
-        )
-        max_reward = (
-            torch.max(rewards[~zero_mask]) if rewards[~zero_mask].nelement() > 0 else 1
-        )
-
-        # Check if all non-zero rewards are the same
-        if min_reward == max_reward:
-            rewards[~zero_mask] = 1  # Set all non-zero rewards to 1
-        else:
-            epsilon = 1e-10
-            rewards[~zero_mask] = (rewards[~zero_mask] - min_reward) / (
-                max(max_reward - min_reward, epsilon)
-            )
-
-            # Apply a more aggressive exponential function to exaggerate differences
-            exaggeration_factor = 4
-            rewards[~zero_mask] = torch.pow(
-                rewards[~zero_mask] * exaggeration_factor, exaggeration_factor
-            )
-
-            # Re-scale to ensure the top score is close to 1 after exponential exaggeration
-            if rewards[~zero_mask].nelement() > 0:
-                rewards[~zero_mask] /= torch.max(rewards[~zero_mask])
-
-        # Ensure rewards that were initially 0 remain 0
-        rewards[zero_mask] = 0
-
-        return rewards
 
     def validate_successful_completion(self, response, completion: str):
         if response.dendrite.status_code == 200 and completion:
@@ -220,51 +180,34 @@ class BaseRewardModel:
 
         reward_events, val_score_responses = await self.get_rewards(responses, uids)
 
-        # Reward each completion.
         reward_events = BaseRewardEvent.parse_reward_events(reward_events)
-        successful_rewards = reward_events
         successful_rewards = torch.tensor(
             reward_events.pop("reward"), dtype=torch.float32
         )
 
         original_rewards = successful_rewards.tolist()
 
-        # Softmax rewards across samples.
-        if self.is_default_normalization:
-            successful_rewards_normalized = self.normalize_rewards(successful_rewards)
-        else:
-            successful_rewards_normalized = original_rewards
-
-        # Init zero rewards for all calls.
-        filled_rewards = torch.ones(len(responses), dtype=torch.float32) * torch.nan
-        filled_rewards_normalized = torch.zeros(len(responses), dtype=torch.float32)
-
+        filled_rewards = torch.zeros(len(responses), dtype=torch.float32)
         for idx in successful_completions_indices:
             filled_rewards[idx] = successful_rewards[idx]
-            filled_rewards_normalized[idx] = successful_rewards_normalized[idx]
 
-        # Fill every item of the reward_events
         for name, reward_values in reward_events.items():
             filled_values = [None] * len(responses)
             for idx, reward_value in zip(successful_completions_indices, reward_values):
                 filled_values[idx] = reward_value
             reward_events[name] = filled_values
 
-        # Name each item of the reward event with the reward model name.
         reward_events = {f"{self.name}_{k}": v for k, v in reward_events.items()}
         reward_events[self.name] = filled_rewards.tolist()
-        reward_events[self.name + "_normalized"] = filled_rewards_normalized.tolist()
 
-        # Warns unexpected behavior for rewards
-        if torch.isnan(filled_rewards_normalized).any():
+        if torch.isnan(filled_rewards).any():
             bt.logging.warning(
-                f"The tensor from {self.name} contains NaN values: {filled_rewards_normalized}"
+                f"The tensor from {self.name} contains NaN values: {filled_rewards}"
             )
-            filled_rewards_normalized = filled_rewards_normalized.nan_to_num_(nan=0.0)
+            filled_rewards = filled_rewards.nan_to_num_(nan=0.0)
 
-        # Return the filled rewards.
         return (
-            filled_rewards_normalized,
+            filled_rewards,
             reward_events,
             val_score_responses,
             original_rewards,
