@@ -1,5 +1,6 @@
 from datetime import datetime
 from typing import Any, Dict, List
+from uuid import uuid4
 
 import jsonpickle
 
@@ -16,8 +17,9 @@ class ScoringStore:
 
     Organizes responses by (time_range_start, search_type) using Redis hashes.
     Key format: scoring:{unix_ts}:{search_type}
-    Field:      {uid}  →  jsonpickle-encoded response
+    Field:      {uid}:{suffix}  →  jsonpickle-encoded response
 
+    Supports multiple responses per UID (one per synthetic query).
     Responses expire after 2 hours.
     """
 
@@ -38,9 +40,10 @@ class ScoringStore:
         """Save a single miner response (with optional scoring seed) for later scoring."""
 
         key = self._key(time_range_start, search_type)
+        field = f"{uid}:{uuid4().hex[:8]}"
         data = jsonpickle.encode({"response": response, "scoring_seed": scoring_seed})
         pipeline = redis_client.pipeline()
-        pipeline.hset(key, str(uid), data)
+        pipeline.hset(key, field, data)
         pipeline.expire(key, EXPIRY)
         await pipeline.execute()
 
@@ -70,7 +73,9 @@ class ScoringStore:
         for st, raw in zip(SEARCH_TYPES, raw_results):
             items = []
 
-            for uid_str, encoded in raw.items():
+            for field_str, encoded in raw.items():
+                # Field format: "{uid}:{suffix}" or legacy "{uid}"
+                uid_part = field_str.split(":")[0] if ":" in field_str else field_str
                 data = jsonpickle.decode(encoded)
                 if isinstance(data, dict) and "response" in data:
                     response = data["response"]
@@ -80,7 +85,7 @@ class ScoringStore:
                     scoring_seed = None
                 items.append(
                     {
-                        "uid": int(uid_str),
+                        "uid": int(uid_part),
                         "response": response,
                         "scoring_seed": scoring_seed,
                     }

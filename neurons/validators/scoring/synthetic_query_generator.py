@@ -75,6 +75,7 @@ class SyntheticQueryGenerator:
         self,
         available_uids: List[int],
         spread_seconds: float = 55 * 60,
+        verified_by_type: dict[str, dict[int, int]] | None = None,
     ) -> List[dict]:
         """
         Batch-generate all synthetic queries for one scoring epoch.
@@ -83,9 +84,15 @@ class SyntheticQueryGenerator:
         once and shared across all miners — only the question text differs.
         Questions are generated concurrently (throttled by semaphore).
 
+        verified_by_type: {search_type: {uid: verified_concurrency}}
+        Each miner gets verified_concurrency queries per search type.
+
         Returns items sorted by fire-time delay, each containing:
             uid, search_type, query (dict), delay_seconds, scoring_seed
         """
+        if verified_by_type is None:
+            verified_by_type = {}
+
         # --- Epoch-level params for ai_search (same for every miner) ---
         ai_tools = random.choice(AI_SEARCH_TOOL_SETS)
         ai_date_filter = random.choice(random_date_filters)
@@ -101,23 +108,24 @@ class SyntheticQueryGenerator:
 
         for uid in available_uids:
             for search_type in SEARCH_TYPES:
-                item = {
-                    "uid": uid,
-                    "search_type": search_type,
-                    "delay_seconds": random.uniform(0, spread_seconds),
-                    "scoring_seed": random.randint(0, 2**31 - 1),
-                    "query": None,
-                }
-
-                if search_type == "x_search":
-                    # Instant — no LLM needed
-                    item["query"] = {
-                        "query": self.basic_dataset.generate_random_x_query()
+                n = verified_by_type.get(search_type, {}).get(uid, 1)
+                for _ in range(n):
+                    item = {
+                        "uid": uid,
+                        "search_type": search_type,
+                        "delay_seconds": random.uniform(0, spread_seconds),
+                        "scoring_seed": random.randint(0, 2**31 - 1),
+                        "query": None,
                     }
-                else:
-                    llm_items.append(item)
 
-                items.append(item)
+                    if search_type == "x_search":
+                        item["query"] = {
+                            "query": self.basic_dataset.generate_random_x_query()
+                        }
+                    else:
+                        llm_items.append(item)
+
+                    items.append(item)
 
         # --- Batch LLM generation with throttling ---
         semaphore = asyncio.Semaphore(self.MAX_CONCURRENT_LLM)

@@ -22,7 +22,6 @@ from neurons.validators.clients.miner_response_logger import (
     build_log_entry,
     submit_logs_best_effort,
 )
-from neurons.validators.scrapers.base_scraper_validator import BaseScraperValidator
 from neurons.validators.penalty.miner_score_penalty import MinerScorePenaltyModel
 from neurons.validators.penalty.streaming_penalty import StreamingPenaltyModel
 from neurons.validators.penalty.timeout_penalty import TimeoutPenaltyModel
@@ -36,6 +35,7 @@ from neurons.validators.reward.summary_relevance import SummaryRelevanceRewardMo
 from neurons.validators.reward.twitter_content_relevance import (
     TwitterContentRelevanceModel,
 )
+from neurons.validators.scrapers.base_scraper_validator import BaseScraperValidator
 
 
 class AdvancedScraperValidator(BaseScraperValidator):
@@ -207,8 +207,8 @@ class AdvancedScraperValidator(BaseScraperValidator):
         uid: int,
     ) -> Optional[object]:
         """
-        Send a scoring query to a specific miner and return the full synapse.
-        Called by QueryScheduler; collects the full synapse.
+        Send a scoring query to a specific miner via worker URL.
+        Called by QueryScheduler; returns the fully-populated synapse.
         """
         prompt = query["query"]
         tools = query.get("tools", [])
@@ -218,21 +218,47 @@ class AdvancedScraperValidator(BaseScraperValidator):
             )
         )
 
-        async_response, uids, start_time, _ = await self.call_miner(
+        max_execution_time = get_max_execution_time(Model.NOVA, 10)
+
+        start_date = (
+            date_filter.start_date.strftime("%Y-%m-%dT%H:%M:%SZ")
+            if date_filter.start_date
+            else None
+        )
+        end_date = (
+            date_filter.end_date.strftime("%Y-%m-%dT%H:%M:%SZ")
+            if date_filter.end_date
+            else None
+        )
+
+        synapse = ScraperStreamingSynapse(
             prompt=prompt,
-            date_filter=date_filter,
+            model=Model.NOVA,
+            start_date=start_date,
+            end_date=end_date,
+            date_filter_type=(
+                date_filter.date_filter_type.value
+                if date_filter.date_filter_type
+                else None
+            ),
             tools=tools,
             language=self.language,
             region=self.region,
             google_date_filter=self.date_filter,
-            model=Model.NOVA,
-            uid=uid,
+            max_execution_time=max_execution_time,
+            scoring_model=self.neuron.config.neuron.scoring_model,
         )
 
-        final_synapses = await collect_final_synapses(
-            [async_response], uids, start_time
+        worker_url = self.neuron.miner_worker_urls.get(uid)
+        if not worker_url:
+            bt.logging.warning(f"[AI] No worker_url for uid={uid}, skipping")
+            return None
+
+        axon = self.neuron.metagraph.axons[uid]
+        response = await self.neuron.worker_client.call_ai_search(
+            worker_url, synapse, axon
         )
-        return final_synapses[0] if final_synapses else None
+        return response
 
     async def organic(
         self,

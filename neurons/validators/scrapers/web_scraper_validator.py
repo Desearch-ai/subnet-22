@@ -11,13 +11,13 @@ from neurons.validators.clients.miner_response_logger import (
     build_log_entry,
     submit_logs_best_effort,
 )
-from neurons.validators.scrapers.base_scraper_validator import BaseScraperValidator
 from neurons.validators.penalty.timeout_penalty import TimeoutPenaltyModel
 from neurons.validators.reward import RewardScoringType
 from neurons.validators.reward.performance_reward import PerformanceRewardModel
 from neurons.validators.reward.web_basic_search_content_relevance import (
     WebBasicSearchContentRelevanceModel,
 )
+from neurons.validators.scrapers.base_scraper_validator import BaseScraperValidator
 
 
 class WebScraperValidator(BaseScraperValidator):
@@ -100,13 +100,27 @@ class WebScraperValidator(BaseScraperValidator):
         uid: int,
     ) -> Optional[object]:
         """
-        Send a scoring query to a specific miner and return the full synapse.
-        Called by QueryScheduler; awaits the full response without streaming.
+        Send a scoring query to a specific miner via worker URL.
+        Called by QueryScheduler; returns the fully-populated synapse.
         """
         prompt = query.get("query", "")
         params = {k: v for k, v in query.items() if k != "query"}
 
-        response, _, _ = await self.call_miner(prompt=prompt, params=params, uid=uid)
+        worker_url = self.neuron.miner_worker_urls.get(uid)
+        if not worker_url:
+            bt.logging.warning(f"[Web] No worker_url for uid={uid}, skipping")
+            return None
+
+        synapse = WebSearchSynapse(
+            **params,
+            query=prompt,
+            max_execution_time=self.max_execution_time,
+        )
+
+        axon = self.neuron.metagraph.axons[uid]
+        response = await self.neuron.worker_client.call_json_search(
+            worker_url, "/web/search", synapse, WebSearchSynapse, axon
+        )
         return response
 
     async def organic(

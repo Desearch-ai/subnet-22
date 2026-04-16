@@ -156,7 +156,6 @@ class BaseScraperValidator:
                     f"Applied penalty function: {penalty_fn_i.name} in {penalty_execution_time:.2f} seconds"
                 )
 
-            await self.neuron.update_moving_averaged_scores(uids, rewards)
             self.log_event(prompts, event, start_time, uids, rewards)
 
             scores = torch.zeros(len(self.neuron.metagraph.hotkeys))

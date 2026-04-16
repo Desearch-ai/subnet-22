@@ -1,13 +1,21 @@
 import asyncio
 import time
+from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Optional
 
 import bittensor as bt
 import torch
 
-from neurons.validators.scoring.scoring_store import ScoringStore
+from neurons.validators.scoring import capacity
+from neurons.validators.scoring.scoring_store import SEARCH_TYPES, ScoringStore
 from neurons.validators.scoring.synthetic_query_generator import SyntheticQueryGenerator
+
+SEARCH_TYPE_WEIGHTS = {
+    "ai_search": 0.50,
+    "x_search": 0.25,
+    "web_search": 0.25,
+}
 
 
 class QueryScheduler:
@@ -18,12 +26,12 @@ class QueryScheduler:
     Lifecycle per UTC hour:
       1. Batch-generate all queries for every active UID via SyntheticQueryGenerator.
          Epoch-level params (tools, date_filter) are shared; only question text varies.
+         Each miner gets N queries per search type where N = verified concurrency.
       2. Dispatch each query at its random fire time spread over ~55 minutes.
       3. Save the miner's response in ScoringStore.
-      4. On hour boundary -> score the previous hour's responses.
+      4. On hour boundary -> score the previous hour's responses and update capacity.
 
-    Replaces the previous utility-API-polling approach.  Each validator now
-    generates its own synthetics independently.
+    Each validator generates its own synthetics independently.
     """
 
     SPREAD_SECONDS = 55 * 60  # Spread queries over 55 minutes of each hour
@@ -98,11 +106,11 @@ class QueryScheduler:
         search_type: str,
         items: list,
         time_range_start: datetime,
-    ) -> None:
-        """Score one search type for a completed epoch."""
+    ) -> dict[int, float]:
+        """Score one search type for a completed epoch. Returns per-UID mean quality."""
         validator = self.validators.get(search_type)
         if validator is None or not items:
-            return
+            return {}
 
         uids = torch.tensor([item["uid"] for item in items])
         responses = [item["response"] for item in items]
@@ -114,7 +122,7 @@ class QueryScheduler:
             f"[QueryScheduler] Scoring {search_type}: {len(items)} responses"
         )
 
-        await validator.compute_rewards_and_penalties(
+        result = await validator.compute_rewards_and_penalties(
             event=event,
             prompts=prompts,
             responses=responses,
@@ -123,6 +131,22 @@ class QueryScheduler:
             scoring_epoch_start=time_range_start,
             scoring_seeds=scoring_seeds,
         )
+
+        if result is None:
+            return {}
+
+        rewards = result[0]
+
+        # Compute per-UID mean quality from the rewards tensor
+        uid_totals: dict[int, float] = defaultdict(float)
+        uid_counts: dict[int, int] = defaultdict(int)
+
+        for uid_tensor, reward in zip(uids, rewards.tolist()):
+            uid = uid_tensor.item()
+            uid_totals[uid] += reward
+            uid_counts[uid] += 1
+
+        return {uid: uid_totals[uid] / uid_counts[uid] for uid in uid_totals}
 
     async def score_epoch(self, time_range_start: datetime) -> None:
         """Load all responses for a completed hour and run reward/penalty computation."""
@@ -139,26 +163,60 @@ class QueryScheduler:
                 )
                 return
 
-            score_tasks = [
-                self._score_search_type(search_type, items, time_range_start)
-                for search_type, items in all_responses.items()
-                if self.validators.get(search_type) is not None and items
-            ]
+            window_start = time_range_start.isoformat()
 
-            if not score_tasks:
-                bt.logging.warning(
-                    f"[QueryScheduler] No scoreable responses for epoch "
-                    f"{time_range_start.isoformat()}, skipping scoring."
-                )
-                return
+            # Score each search type, collect per-UID quality
+            qualities_per_type: dict[str, dict[int, float]] = {}
 
-            results = await asyncio.gather(*score_tasks, return_exceptions=True)
+            for search_type, items in all_responses.items():
+                if not items or self.validators.get(search_type) is None:
+                    continue
 
-            for result in results:
-                if isinstance(result, Exception):
-                    bt.logging.error(
-                        f"[QueryScheduler] Error scoring epoch task: {result}"
+                try:
+                    uid_qualities = await self._score_search_type(
+                        search_type, items, time_range_start
                     )
+                    qualities_per_type[search_type] = uid_qualities
+
+                    for uid, quality in uid_qualities.items():
+                        await capacity.update_after_scoring(
+                            uid=uid,
+                            search_type=search_type,
+                            quality=quality,
+                            window_start=window_start,
+                        )
+                except Exception as e:
+                    bt.logging.error(
+                        f"[QueryScheduler] Error scoring {search_type}: {e}"
+                    )
+
+            # Combine per-type scores into one weighted score per UID
+            # AI 50%, X 25%, Web 25% — then one EMA update
+            all_uids: set[int] = set()
+            for uid_q in qualities_per_type.values():
+                all_uids.update(uid_q.keys())
+
+            if all_uids:
+                combined: dict[int, float] = {}
+                for uid in all_uids:
+                    score = 0.0
+                    for st, weight in SEARCH_TYPE_WEIGHTS.items():
+                        score += weight * qualities_per_type.get(st, {}).get(uid, 0.0)
+                    combined[uid] = score
+
+                uids_tensor = torch.tensor(
+                    list(combined.keys()),
+                    dtype=torch.long,
+                    device=self.neuron.config.neuron.device,
+                )
+                rewards_tensor = torch.tensor(
+                    list(combined.values()),
+                    dtype=torch.float32,
+                    device=self.neuron.config.neuron.device,
+                )
+                await self.neuron.update_moving_averaged_scores(
+                    uids_tensor, rewards_tensor
+                )
 
         except Exception as e:
             bt.logging.error(f"[QueryScheduler] Error in score_epoch: {e}")
@@ -213,9 +271,16 @@ class QueryScheduler:
                     await asyncio.sleep(self._seconds_until_next_hour())
                     continue
 
+                # Fetch verified concurrency for all UIDs
+                verified_by_type: dict[str, dict[int, int]] = {}
+                for st in SEARCH_TYPES:
+                    verified_by_type[st] = await capacity.get_all_verified(st)
+
                 # Batch-generate all queries for this epoch
                 items = await self.generator.generate_epoch_queries(
-                    available_uids, self.SPREAD_SECONDS
+                    available_uids,
+                    self.SPREAD_SECONDS,
+                    verified_by_type=verified_by_type,
                 )
                 bt.logging.info(
                     f"[QueryScheduler] {len(items)} queries ready for "
