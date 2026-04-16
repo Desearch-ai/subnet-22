@@ -22,6 +22,7 @@ from neurons.validators.config import add_args, check_config, config
 from neurons.validators.proxy.uid_manager import UIDManager
 from neurons.validators.query_scheduler import QueryScheduler
 from neurons.validators.scoring_store import ScoringStore
+from neurons.validators.synthetic_query_generator import SyntheticQueryGenerator
 from neurons.validators.utility_api_client import UtilityAPIClient
 from neurons.validators.web_scraper_validator import WebScraperValidator
 from neurons.validators.weights import init_wandb, set_weights
@@ -355,6 +356,8 @@ class Neuron(AbstractNeuron):
             )
             self.utility_api = utility_api
 
+            generator = SyntheticQueryGenerator()
+
             validators = {
                 "ai_search": self.advanced_scraper_validator,
                 "x_search": self.x_scraper_validator,
@@ -363,7 +366,7 @@ class Neuron(AbstractNeuron):
 
             query_scheduler = QueryScheduler(
                 neuron=self,
-                utility_api=utility_api,
+                generator=generator,
                 scoring_store=scoring_store,
                 validators=validators,
             )

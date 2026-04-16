@@ -44,46 +44,6 @@ class AdvancedScraperValidator(BaseScraperValidator):
     wandb_reward_keys = ["twitter_reward", "search_reward", "summary_reward"]
 
     def __init__(self, neuron: AbstractNeuron):
-        self.tools = [
-            ["Twitter Search", "Reddit Search"],
-            ["Twitter Search", "Web Search"],
-            ["Twitter Search", "Web Search"],
-            ["Twitter Search", "Web Search"],
-            ["Twitter Search", "Web Search"],
-            ["Twitter Search", "Hacker News Search"],
-            ["Twitter Search", "Hacker News Search"],
-            ["Twitter Search", "Youtube Search"],
-            ["Twitter Search", "Youtube Search"],
-            ["Twitter Search", "Youtube Search"],
-            ["Twitter Search", "Web Search"],
-            ["Twitter Search", "Reddit Search"],
-            ["Twitter Search", "Reddit Search"],
-            ["Twitter Search", "Hacker News Search"],
-            ["Twitter Search", "ArXiv Search"],
-            ["Twitter Search", "ArXiv Search"],
-            ["Twitter Search", "Wikipedia Search"],
-            ["Twitter Search", "Wikipedia Search"],
-            ["Twitter Search", "Web Search"],
-            ["Twitter Search", "Web Search"],
-            ["Twitter Search", "Web Search"],
-            ["Web Search"],
-            ["Reddit Search"],
-            ["Hacker News Search"],
-            ["Youtube Search"],
-            ["ArXiv Search"],
-            ["Wikipedia Search"],
-            ["Twitter Search", "Youtube Search", "ArXiv Search", "Wikipedia Search"],
-            ["Twitter Search", "Web Search", "Reddit Search", "Hacker News Search"],
-            [
-                "Twitter Search",
-                "Web Search",
-                "Reddit Search",
-                "Hacker News Search",
-                "Youtube Search",
-                "ArXiv Search",
-                "Wikipedia Search",
-            ],
-        ]
         self.language = "en"
         self.region = "us"
         self.date_filter = "qdr:w"  # Past week
