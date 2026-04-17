@@ -18,13 +18,16 @@ RETENTION_DAYS = 3
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS miner_concurrency (
-    uid              INTEGER NOT NULL,
-    search_type      TEXT    NOT NULL,
-    verified         INTEGER NOT NULL DEFAULT 1,
-    declared         INTEGER NOT NULL DEFAULT 1,
-    quality_avg      REAL    NOT NULL DEFAULT 0.0,
-    frozen_until     TEXT,
-    updated_at       TEXT    NOT NULL,
+    uid                   INTEGER NOT NULL,
+    search_type           TEXT    NOT NULL,
+    verified              INTEGER NOT NULL DEFAULT 1,
+    declared              INTEGER NOT NULL DEFAULT 1,
+    quality_avg           REAL    NOT NULL DEFAULT 0.0,
+    frozen_until          TEXT,
+    consecutive_failures  INTEGER NOT NULL DEFAULT 0,
+    unreachable_since     TEXT,
+    last_decay_at         TEXT,
+    updated_at            TEXT    NOT NULL,
     PRIMARY KEY (uid, search_type)
 );
 
@@ -194,3 +197,153 @@ async def count_failed_windows(
     )
     row = await cursor.fetchone()
     return row["cnt"] if row else 0
+
+
+async def record_worker_success(uid: int, search_type: str) -> bool:
+    """Clear consecutive_failures + unreachable_since. Returns True if this
+    call ended an unreachable state (so the caller can log recovery)."""
+
+    cursor = await _db.execute(
+        """
+        SELECT consecutive_failures, unreachable_since
+        FROM miner_concurrency WHERE uid = ? AND search_type = ?
+        """,
+        (uid, search_type),
+    )
+    row = await cursor.fetchone()
+
+    if row is not None:
+        if row["consecutive_failures"] == 0 and row["unreachable_since"] is None:
+            return False  # already clean — no write needed
+        was_unreachable = bool(row["unreachable_since"])
+        await _db.execute(
+            """
+            UPDATE miner_concurrency
+            SET consecutive_failures = 0,
+                unreachable_since = NULL,
+                last_decay_at = NULL,
+                updated_at = ?
+            WHERE uid = ? AND search_type = ?
+            """,
+            (_now_iso(), uid, search_type),
+        )
+        await _db.commit()
+        return was_unreachable
+
+    # New miner — defensive insert; register_miner usually runs first.
+    await _db.execute(
+        """
+        INSERT OR IGNORE INTO miner_concurrency
+            (uid, search_type, verified, declared, quality_avg, updated_at)
+        VALUES (?, ?, 1, 1, 0.0, ?)
+        """,
+        (uid, search_type, _now_iso()),
+    )
+    await _db.commit()
+    return False
+
+
+async def record_worker_failure(uid: int, search_type: str, threshold: int) -> bool:
+    """Increment consecutive_failures and mark unreachable when the counter
+    crosses ``threshold`` for the first time. Returns True on that transition.
+
+    One SELECT + one conditional UPDATE/INSERT per call (two DB statements
+    instead of the previous four)."""
+    cursor = await _db.execute(
+        """
+        SELECT consecutive_failures, unreachable_since
+        FROM miner_concurrency WHERE uid = ? AND search_type = ?
+        """,
+        (uid, search_type),
+    )
+    row = await cursor.fetchone()
+    now = _now_iso()
+
+    if row is None:
+        new_count = 1
+        flip = new_count >= threshold
+        unreachable_since = now if flip else None
+        last_decay_at = now if flip else None
+        await _db.execute(
+            """
+            INSERT INTO miner_concurrency
+                (uid, search_type, verified, declared, quality_avg,
+                 consecutive_failures, unreachable_since, last_decay_at, updated_at)
+            VALUES (?, ?, 1, 1, 0.0, ?, ?, ?, ?)
+            """,
+            (
+                uid,
+                search_type,
+                new_count,
+                unreachable_since,
+                last_decay_at,
+                now,
+            ),
+        )
+        await _db.commit()
+        return flip
+
+    new_count = row["consecutive_failures"] + 1
+    was_unreachable = row["unreachable_since"] is not None
+    flip = new_count >= threshold and not was_unreachable
+
+    if flip:
+        await _db.execute(
+            """
+            UPDATE miner_concurrency
+            SET consecutive_failures = ?,
+                unreachable_since = ?,
+                last_decay_at = ?,
+                updated_at = ?
+            WHERE uid = ? AND search_type = ?
+            """,
+            (new_count, now, now, now, uid, search_type),
+        )
+    else:
+        await _db.execute(
+            """
+            UPDATE miner_concurrency
+            SET consecutive_failures = ?, updated_at = ?
+            WHERE uid = ? AND search_type = ?
+            """,
+            (new_count, now, uid, search_type),
+        )
+    await _db.commit()
+    return flip
+
+
+async def get_unreachable_uids(search_type: str) -> set[int]:
+    cursor = await _db.execute(
+        """
+        SELECT uid FROM miner_concurrency
+        WHERE search_type = ? AND unreachable_since IS NOT NULL
+        """,
+        (search_type,),
+    )
+    return {row["uid"] async for row in cursor}
+
+
+async def get_unreachable_rows(search_type: str) -> list[dict]:
+    cursor = await _db.execute(
+        """
+        SELECT uid, verified, last_decay_at, unreachable_since
+        FROM miner_concurrency
+        WHERE search_type = ? AND unreachable_since IS NOT NULL
+        """,
+        (search_type,),
+    )
+    return [dict(row) async for row in cursor]
+
+
+async def apply_decay_tick(
+    uid: int, search_type: str, new_verified: int, new_last_decay_at: str
+) -> None:
+    await _db.execute(
+        """
+        UPDATE miner_concurrency
+        SET verified = ?, last_decay_at = ?, updated_at = ?
+        WHERE uid = ? AND search_type = ?
+        """,
+        (new_verified, new_last_decay_at, _now_iso(), uid, search_type),
+    )
+    await _db.commit()

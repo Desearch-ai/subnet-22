@@ -5,6 +5,8 @@ from types import SimpleNamespace
 import aiohttp
 import bittensor as bt
 
+from neurons.validators.scoring import capacity
+
 
 def _sign_request(wallet, miner_hotkey: str, body: bytes) -> dict:
     """Build auth headers matching neurons/miners/worker_auth.py format."""
@@ -76,8 +78,21 @@ class WorkerClient:
         worker_url: str,
         synapse,
         axon_info=None,
+        uid: int | None = None,
     ):
         """POST to /ai/search, consume streaming response, return populated synapse."""
+        if not worker_url:
+            _attach_metadata(
+                synapse,
+                worker_url="",
+                status_code=500,
+                process_time=0.0,
+                axon_info=axon_info,
+            )
+            if uid is not None:
+                await capacity.note_worker_result(uid, "ai_search", False)
+            return synapse
+
         started_at = time.monotonic()
         body = synapse.model_dump_json().encode()
         miner_hotkey = axon_info.hotkey if axon_info else ""
@@ -95,6 +110,7 @@ class WorkerClient:
                 )
 
         session = self._get_session()
+        success = False
         try:
             async with session.post(
                 f"{worker_url}/ai/search",
@@ -113,6 +129,7 @@ class WorkerClient:
                     process_time=time.monotonic() - started_at,
                     axon_info=axon_info,
                 )
+                success = True
         except Exception as e:
             _attach_metadata(
                 synapse,
@@ -123,6 +140,9 @@ class WorkerClient:
             )
             bt.logging.error(f"[WorkerClient] ai_search failed for {worker_url}: {e}")
 
+        if uid is not None:
+            await capacity.note_worker_result(uid, "ai_search", success)
+
         return synapse
 
     async def call_json_search(
@@ -132,8 +152,22 @@ class WorkerClient:
         synapse,
         synapse_model,
         axon_info=None,
+        uid: int | None = None,
+        search_type: str | None = None,
     ):
         """POST to a JSON endpoint (/twitter/search, /web/search), return parsed synapse."""
+        if not worker_url:
+            _attach_metadata(
+                synapse,
+                worker_url="",
+                status_code=500,
+                process_time=0.0,
+                axon_info=axon_info,
+            )
+            if uid is not None and search_type is not None:
+                await capacity.note_worker_result(uid, search_type, False)
+            return synapse
+
         started_at = time.monotonic()
         body = synapse.model_dump_json().encode()
         miner_hotkey = axon_info.hotkey if axon_info else ""
@@ -141,6 +175,8 @@ class WorkerClient:
         timeout = aiohttp.ClientTimeout(total=synapse.max_execution_time + 30)
 
         session = self._get_session()
+        success = False
+        result = synapse
         try:
             async with session.post(
                 f"{worker_url}{endpoint}",
@@ -160,8 +196,8 @@ class WorkerClient:
                 process_time=time.monotonic() - started_at,
                 axon_info=axon_info,
             )
-            return parsed
-
+            result = parsed
+            success = True
         except Exception as e:
             bt.logging.error(f"[WorkerClient] {endpoint} failed for {worker_url}: {e}")
             _attach_metadata(
@@ -171,4 +207,86 @@ class WorkerClient:
                 process_time=time.monotonic() - started_at,
                 axon_info=axon_info,
             )
-            return synapse
+
+        if uid is not None and search_type is not None:
+            await capacity.note_worker_result(uid, search_type, success)
+
+        return result
+
+    async def call_ai_search_stream(
+        self,
+        worker_url: str,
+        synapse,
+        axon_info=None,
+        uid: int | None = None,
+    ):
+        """POST to /ai/search and yield streaming chunks as they arrive, then
+        yield the fully-populated synapse at the end. Mirrors the contract of
+        ``bt.Dendrite.call_stream`` so the organic path can consume either
+        interchangeably."""
+        if not worker_url:
+            _attach_metadata(
+                synapse,
+                worker_url="",
+                status_code=500,
+                process_time=0.0,
+                axon_info=axon_info,
+            )
+            if uid is not None:
+                await capacity.note_worker_result(uid, "ai_search", False)
+            yield synapse
+            return
+
+        started_at = time.monotonic()
+        body = synapse.model_dump_json().encode()
+        miner_hotkey = axon_info.hotkey if axon_info else ""
+        headers = _sign_request(self.wallet, miner_hotkey, body)
+        timeout = aiohttp.ClientTimeout(total=synapse.max_execution_time + 30)
+
+        if getattr(synapse, "axon", None) is None:
+            hotkey = axon_info.hotkey if axon_info else worker_url
+            coldkey = axon_info.coldkey if axon_info else None
+            try:
+                synapse.axon = SimpleNamespace(hotkey=hotkey, coldkey=coldkey)
+            except Exception:
+                object.__setattr__(
+                    synapse, "axon", SimpleNamespace(hotkey=hotkey, coldkey=coldkey)
+                )
+
+        session = self._get_session()
+        success = False
+        try:
+            async with session.post(
+                f"{worker_url}/ai/search",
+                data=body,
+                headers=headers,
+                timeout=timeout,
+            ) as resp:
+                resp.raise_for_status()
+                async for chunk in synapse.process_streaming_response(resp):
+                    yield chunk
+
+                _attach_metadata(
+                    synapse,
+                    worker_url=worker_url,
+                    status_code=resp.status,
+                    process_time=time.monotonic() - started_at,
+                    axon_info=axon_info,
+                )
+                success = True
+        except Exception as e:
+            _attach_metadata(
+                synapse,
+                worker_url=worker_url,
+                status_code=500,
+                process_time=time.monotonic() - started_at,
+                axon_info=axon_info,
+            )
+            bt.logging.error(
+                f"[WorkerClient] ai_search_stream failed for {worker_url}: {e}"
+            )
+
+        if uid is not None:
+            await capacity.note_worker_result(uid, "ai_search", success)
+
+        yield synapse

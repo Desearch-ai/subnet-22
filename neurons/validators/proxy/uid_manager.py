@@ -54,8 +54,12 @@ class UIDManager:
 
         for search_type in SEARCH_TYPES:
             rows = await miner_db.get_all_concurrency_data(search_type)
+            unreachable = await miner_db.get_unreachable_uids(search_type)
             weights: dict[int, float] = {}
             for uid in available_uids:
+                if uid in unreachable:
+                    weights[uid] = 0.0
+                    continue
                 quality_avg, verified = rows.get(uid, (0.0, 1))
                 weights[uid] = max(quality_avg, QUALITY_FLOOR) * max(verified, 1)
             self.weights_by_type[search_type] = weights

@@ -78,6 +78,7 @@ class WebScraperValidator(BaseScraperValidator):
         uid, axon = await self.neuron.get_random_miner(
             uid=uid, search_type=self.search_type
         )
+        worker_url = self.neuron.miner_worker_urls.get(uid)
 
         synapse = WebSearchSynapse(
             **params,
@@ -85,13 +86,14 @@ class WebScraperValidator(BaseScraperValidator):
             max_execution_time=self.max_execution_time,
         )
 
-        dendrite = next(self.neuron.dendrites)
-
-        response = await dendrite.call(
-            target_axon=axon,
-            synapse=synapse.model_copy(),
-            timeout=self.max_execution_time + 5,
-            deserialize=False,
+        response = await self.neuron.worker_client.call_json_search(
+            worker_url,
+            "/web/search",
+            synapse.model_copy(),
+            WebSearchSynapse,
+            axon,
+            uid=uid,
+            search_type=self.search_type,
         )
 
         return response, uid, axon
@@ -121,7 +123,13 @@ class WebScraperValidator(BaseScraperValidator):
 
         axon = self.neuron.metagraph.axons[uid]
         response = await self.neuron.worker_client.call_json_search(
-            worker_url, "/web/search", synapse, WebSearchSynapse, axon
+            worker_url,
+            "/web/search",
+            synapse,
+            WebSearchSynapse,
+            axon,
+            uid=uid,
+            search_type=self.search_type,
         )
         return response
 

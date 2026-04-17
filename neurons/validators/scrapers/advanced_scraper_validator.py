@@ -133,6 +133,7 @@ class AdvancedScraperValidator(BaseScraperValidator):
             uid=uid, search_type=self.search_type
         )
         uids = torch.tensor([uid])
+        worker_url = self.neuron.miner_worker_urls.get(uid)
 
         start_date = (
             date_filter.start_date.strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -165,14 +166,11 @@ class AdvancedScraperValidator(BaseScraperValidator):
             count=count,
         )
 
-        timeout = max_execution_time + 5
-        dendrite = next(self.neuron.dendrites)
-
-        async_response = dendrite.call_stream(
-            target_axon=axon,
-            synapse=synapse.model_copy(),
-            timeout=timeout,
-            deserialize=False,
+        async_response = self.neuron.worker_client.call_ai_search_stream(
+            worker_url,
+            synapse.model_copy(),
+            axon,
+            uid=uid,
         )
 
         return async_response, uids, start_time, axon
@@ -258,7 +256,7 @@ class AdvancedScraperValidator(BaseScraperValidator):
 
         axon = self.neuron.metagraph.axons[uid]
         response = await self.neuron.worker_client.call_ai_search(
-            worker_url, synapse, axon
+            worker_url, synapse, axon, uid=uid
         )
         return response
 

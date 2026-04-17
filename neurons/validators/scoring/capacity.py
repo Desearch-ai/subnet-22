@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 
 import bittensor as bt
 
+from desearch.miner_config import SEARCH_TYPES
 from neurons.validators.scoring import miner_db
 
 RAMP_RATE = 0.05
@@ -17,6 +18,11 @@ QUALITY_THRESHOLD = 0.5
 HARD_CAP = 100
 FREEZE_FAILURES = 4
 FREEZE_HOURS = 12
+
+# Unreachable-miner handling.
+UNREACHABLE_FAILURE_THRESHOLD = 3
+UNREACHABLE_DECAY_FACTOR = 0.9
+UNREACHABLE_DECAY_INTERVAL_SEC = 5 * 60
 
 
 async def get_verified(uid: int, search_type: str) -> int:
@@ -86,3 +92,66 @@ async def update_after_scoring(
             f"[Capacity] uid={uid} {search_type}: "
             f"verified {verified}->{new_verified} (quality={quality:.3f})"
         )
+
+
+async def note_worker_result(uid: int, search_type: str, success: bool) -> None:
+    """Record the outcome of a single worker HTTP call. After
+    ``UNREACHABLE_FAILURE_THRESHOLD`` consecutive failures the miner is
+    flagged unreachable and pulled from organic routing; the next success
+    clears the flag."""
+
+    try:
+        if success:
+            recovered = await miner_db.record_worker_success(uid, search_type)
+            if recovered:
+                bt.logging.info(
+                    f"[Capacity] uid={uid} {search_type} recovered from unreachable"
+                )
+        else:
+            newly = await miner_db.record_worker_failure(
+                uid, search_type, UNREACHABLE_FAILURE_THRESHOLD
+            )
+            if newly:
+                bt.logging.warning(
+                    f"[Capacity] uid={uid} {search_type} marked unreachable "
+                    f"after {UNREACHABLE_FAILURE_THRESHOLD} consecutive failures"
+                )
+    except Exception as e:
+        bt.logging.error(
+            f"[Capacity] note_worker_result failed uid={uid} {search_type}: {e}"
+        )
+
+
+async def decay_unreachable_tick() -> None:
+    """Apply 10% earned-concurrency decay per ``UNREACHABLE_DECAY_INTERVAL_SEC``
+    elapsed since the last tick for every miner currently marked unreachable.
+    Catches up multiple intervals in one call so that longer outages compound
+    without requiring the loop to fire on every interval."""
+
+    now = datetime.now(timezone.utc)
+
+    for search_type in SEARCH_TYPES:
+        rows = await miner_db.get_unreachable_rows(search_type)
+        for row in rows:
+            last_tick_iso = row["last_decay_at"] or row["unreachable_since"]
+            if not last_tick_iso:
+                continue
+            last_tick = datetime.fromisoformat(last_tick_iso)
+            elapsed = (now - last_tick).total_seconds()
+            ticks = int(elapsed // UNREACHABLE_DECAY_INTERVAL_SEC)
+            if ticks <= 0:
+                continue
+            new_verified = row["verified"]
+            for _ in range(ticks):
+                new_verified = max(1, int(new_verified * UNREACHABLE_DECAY_FACTOR))
+            new_last_decay = (
+                last_tick + timedelta(seconds=ticks * UNREACHABLE_DECAY_INTERVAL_SEC)
+            ).isoformat()
+            await miner_db.apply_decay_tick(
+                row["uid"], search_type, new_verified, new_last_decay
+            )
+            if new_verified != row["verified"]:
+                bt.logging.info(
+                    f"[Capacity] unreachable uid={row['uid']} {search_type}: "
+                    f"verified {row['verified']}->{new_verified} ({ticks} ticks)"
+                )

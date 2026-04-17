@@ -409,6 +409,7 @@ class Neuron(AbstractNeuron):
             self.loop.create_task(self.sync_metagraph())
             self.loop.create_task(self.sync())
             self.loop.create_task(query_scheduler.run())
+            self.loop.create_task(self.run_unreachable_decay_loop())
 
         except KeyboardInterrupt:
             self.axon.stop()
@@ -419,6 +420,17 @@ class Neuron(AbstractNeuron):
             bt.logging.error("Error during validation", str(err))
             bt.logging.debug(print_exception(type(err), err, err.__traceback__))
             self.should_exit = True
+
+    async def run_unreachable_decay_loop(self) -> None:
+        """Every minute, decay earned concurrency for miners still marked
+        unreachable. One tick = 10% cut per 5-minute interval elapsed."""
+
+        while not self.should_exit:
+            try:
+                await capacity.decay_unreachable_tick()
+            except Exception as e:
+                bt.logging.error(f"[UnreachableDecay] {e}")
+            await asyncio.sleep(60)
 
     async def stop(self):
         bt.logging.info("Stopping Neuron")
