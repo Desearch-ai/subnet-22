@@ -8,7 +8,7 @@ from typing import Dict, Optional
 import bittensor as bt
 import torch
 
-from neurons.validators.scoring import capacity
+from neurons.validators.scoring import capacity, miner_db
 from neurons.validators.scoring.scoring_store import SEARCH_TYPES, ScoringStore
 from neurons.validators.scoring.synthetic_query_generator import SyntheticQueryGenerator
 
@@ -321,16 +321,29 @@ class QueryScheduler:
             try:
                 time_range_start = self._current_hour_start()
 
-                # Score the previous hour on boundary crossing
+                # On hour boundary: promote any staged declared-concurrency
+                # changes *before* firing scoring, so the ramp for the window
+                # we just ended sees the miner's current declared capability.
+                # Scoring then runs in the background so this hour's dispatch
+                # keeps its full 55-minute spread.
                 if (
                     previous_time_range is not None
                     and time_range_start != previous_time_range
                 ):
                     if not self.is_first_epoch:
+                        promoted = await miner_db.promote_pending_declared()
+
+                        if promoted:
+                            bt.logging.info(
+                                f"[QueryScheduler] Promoted {promoted} "
+                                f"pending declared updates"
+                            )
+
                         bt.logging.info(
                             f"[QueryScheduler] Hour boundary: scoring epoch "
                             f"{previous_time_range.isoformat()}"
                         )
+
                         asyncio.create_task(self.score_epoch(previous_time_range))
                     else:
                         bt.logging.info(
@@ -343,6 +356,7 @@ class QueryScheduler:
 
                 # Snapshot the currently available UIDs
                 available_uids = list(self.neuron.available_uids)
+
                 if not available_uids:
                     bt.logging.warning(
                         "[QueryScheduler] No available UIDs, waiting for next hour."
@@ -352,6 +366,7 @@ class QueryScheduler:
 
                 # Fetch verified concurrency for all UIDs
                 verified_by_type: dict[str, dict[int, int]] = {}
+
                 for st in SEARCH_TYPES:
                     verified_by_type[st] = await capacity.get_all_verified(st)
 
@@ -361,6 +376,7 @@ class QueryScheduler:
                     self.SPREAD_SECONDS,
                     verified_by_type=verified_by_type,
                 )
+
                 bt.logging.info(
                     f"[QueryScheduler] {len(items)} queries ready for "
                     f"{time_range_start.isoformat()} "

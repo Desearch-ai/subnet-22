@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS miner_concurrency (
     search_type           TEXT    NOT NULL,
     verified              INTEGER NOT NULL DEFAULT 1,
     declared              INTEGER NOT NULL DEFAULT 1,
+    pending_declared      INTEGER,
     quality_avg           REAL    NOT NULL DEFAULT 0.0,
     frozen_until          TEXT,
     consecutive_failures  INTEGER NOT NULL DEFAULT 0,
@@ -151,20 +152,54 @@ async def upsert_concurrency(
 
 
 async def register_miner(uid: int, search_type: str, declared: int) -> None:
-    """Insert-or-ignore: only creates row if miner is new."""
+    """Create the row for a new miner, or stage a declared-concurrency change
+    into ``pending_declared`` for an existing one. Staged values are promoted
+    to live ``declared`` at the next hour boundary by ``promote_pending_declared``,
+    so mid-hour edits never disturb the scoring window in progress."""
+    now = _now_iso()
     await _db.execute(
         """
         INSERT OR IGNORE INTO miner_concurrency (uid, search_type, verified, declared, quality_avg, updated_at)
         VALUES (?, ?, 1, ?, 0.0, ?)
         """,
-        (uid, search_type, declared, _now_iso()),
+        (uid, search_type, declared, now),
     )
-    # Always update declared (miner may have changed config)
+    # For existing rows, only stage a pending update when declared actually changes.
     await _db.execute(
-        "UPDATE miner_concurrency SET declared = ?, updated_at = ? WHERE uid = ? AND search_type = ?",
-        (declared, _now_iso(), uid, search_type),
+        """
+        UPDATE miner_concurrency
+        SET pending_declared = ?, updated_at = ?
+        WHERE uid = ? AND search_type = ? AND declared != ?
+        """,
+        (declared, now, uid, search_type, declared),
+    )
+    # Clear stale pending if the miner reverted back to live declared.
+    await _db.execute(
+        """
+        UPDATE miner_concurrency
+        SET pending_declared = NULL, updated_at = ?
+        WHERE uid = ? AND search_type = ? AND declared = ? AND pending_declared IS NOT NULL
+        """,
+        (now, uid, search_type, declared),
     )
     await _db.commit()
+
+
+async def promote_pending_declared() -> int:
+    """Move ``pending_declared`` into live ``declared`` for every miner with a
+    staged update. Returns the number of rows promoted."""
+    cursor = await _db.execute(
+        """
+        UPDATE miner_concurrency
+        SET declared = pending_declared,
+            pending_declared = NULL,
+            updated_at = ?
+        WHERE pending_declared IS NOT NULL
+        """,
+        (_now_iso(),),
+    )
+    await _db.commit()
+    return cursor.rowcount or 0
 
 
 async def insert_window(

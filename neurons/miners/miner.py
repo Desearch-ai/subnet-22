@@ -275,6 +275,12 @@ class StreamMiner(ABC):
 
     def _is_alive(self, synapse: IsAlive) -> IsAlive:
         bt.logging.info("answered to be active")
+        try:
+            self.worker_manifest = load_miner_manifest(self.config.miner.config_path)
+        except Exception as e:
+            bt.logging.warning(
+                f"Failed to reload miner manifest, using cached value: {e}"
+            )
         synapse.manifest = self.worker_manifest.model_dump()
         return synapse
 
