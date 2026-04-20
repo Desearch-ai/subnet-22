@@ -1,111 +1,141 @@
-# Bittensor Validator Setup Guide
+# Running a Desearch Validator
 
-This document provides detailed instructions for setting up and running a Bittensor node using the Desearch repository. It is applicable for various networks including `finney`, `local`, and other custom endpoints using `--subtensor.chain_endpoint <ENDPOINT>`. Follow these steps to prepare your environment, install necessary packages, and start the Bittensor process.
+A validator runs three PM2 processes (managed by `run.sh`):
 
-We recommend using `pm2` for process management. For installation, see the [pm2 installation guide](https://pm2.io/docs/runtime/guide/installation/).
+1. `desearch_validator_process` — core neuron (`neurons/validators/validator_service.py`).
+   Syncs the metagraph, generates synthetic queries, dispatches to miners via signed HTTP,
+   scores responses, and writes weights on-chain.
+2. `desearch_api_process` — public FastAPI (`neurons/validators/api.py`) that serves organic
+   search requests to paying consumers.
+3. `desearch_autoupdate` — `run.sh` itself, which pulls new releases every 20 minutes and
+   restarts the other two processes.
 
-## 0. Install Conda Environment
+## Prerequisites
 
-Create and activate a new conda environment named `val` with Python 3.10:
+- Python ≥ 3.10 (recommended: conda env)
+- [Redis](https://redis.io/docs/latest/operate/oss_and_stack/install/install-redis/)
+- [PM2](https://pm2.io/docs/runtime/guide/installation/)
+- `jq`, `npm` for the autoupdate loop
+- A registered validator hotkey on netuid 22 (mainnet) or 41 (testnet)
+
+### SQLite
+
+Miner scoring state is persisted to `.state/miner_state.db` (auto-created on startup,
+3-day rolling retention). No manual SQLite setup is required: `aiosqlite` is installed
+via `requirements.txt` and uses Python's bundled `sqlite3` stdlib module. The `.state/`
+directory is under the repo root and gitignored.
+
+## Install
+
+Create a conda env, clone the repo, install deps:
 
 ```sh
-conda create -n val python=3.10
+conda create -n val python=3.10 -y
 conda activate val
-```
 
-## 1. Clone the Desearch repository and install dependencies
-
-Clone and install the Desearch repository in editable mode:
-
-```sh
 git clone https://github.com/Desearch-ai/subnet-22.git
-cddDesearch
+cd subnet-22
 python -m pip install -r requirements.txt
 python -m pip install -e .
 ```
 
-## 3. Set up Your Wallet
-
-Create new cold and hot keys:
+System packages (Ubuntu/Debian):
 
 ```sh
-btcli wallet new_coldkey
-btcli wallet new_hotkey
+sudo apt update && sudo apt install -y jq npm
+sudo npm install -g pm2 && pm2 update
 ```
 
-## 4. Register your UID on the Network
-
-Register your UID on the desired network:
+macOS:
 
 ```sh
-btcli subnets register --subtensor.network test
+brew update && brew install jq npm
+sudo npm install -g pm2 && pm2 update
 ```
 
-## 5. Environment Variables Configuration
+## Configure env vars
 
-Please ensure that all required environment variables are set prior to running the validator. For a comprehensive list and setup guide, refer to the [Environment Variables Guide](./env_variables.md).
-
-## 6. Start the Process
-
-Launch the process with `pm2`. Modify the command as needed:
+See [env_variables.md](./env_variables.md). At minimum export:
 
 ```sh
-pm2 start neurons/validators/validator_service.py --interpreter /usr/bin/python3  --name desearch_validator_service --
-    --wallet.name <your-wallet-name>
-    --netuid 22
-    --wallet.hotkey <your-wallet-hot-key>
-    --subtensor.network <network>
+export OPENAI_API_KEY="…"
+export APIFY_API_KEY="…"
+export SCRAPINGDOG_API_KEY="…"
+export WANDB_API_KEY="…"
+export EXPECTED_ACCESS_KEY="$(python scripts/generate_access_key.py)"
+```
+
+`EXPECTED_ACCESS_KEY` gates the validator's organic-search FastAPI. The Desearch
+backend calls this API on behalf of API consumers using the key as the `access-key`
+header — end users never see it. The generator script produces a key that satisfies
+the validator's length and character-class requirements (≥16 chars, uppercase +
+lowercase + digit + special char). Share it with the Desearch team.
+
+Run `wandb login` once before starting the validator.
+
+## Run
+
+Recommended entry point — autoupdate loop:
+
+```sh
+pm2 start run.sh --name desearch_autoupdate -- \
+  --wallet.name <wallet-name> \
+  --wallet.hotkey <hotkey-name> \
+  --netuid 22 \
+  --subtensor.network finney
+```
+
+Tune the API:
+
+```sh
+pm2 start run.sh --name desearch_autoupdate -- \
+  --workers 4 --port 8005 \
+  --wallet.name <wallet-name> \
+  --wallet.hotkey <hotkey-name> \
+  --netuid 22 \
+  --subtensor.network finney
+```
+
+Manual run (skip autoupdate):
+
+```sh
+pm2 start neurons/validators/validator_service.py \
+  --interpreter /usr/bin/python3 \
+  --name desearch_validator_process \
+  -- \
+  --wallet.name <wallet-name> \
+  --wallet.hotkey <hotkey-name> \
+  --netuid 22 \
+  --subtensor.network finney
 
 pm2 start uvicorn \
   --interpreter /usr/bin/python3 \
   --name desearch_api_process \
   -- \
   neurons.validators.api:app \
-  --host 0.0.0.0 \
-  --port 8005 \
-  --workers 4
+  --host 0.0.0.0 --port 8005 --workers 4
 ```
 
-### Example Command
+### Key flags
 
-```sh
-pm2 start neurons/validators/api.py --interpreter /usr/bin/python3  --name desearch_validator_service -- --wallet.name validator --netuid 41 --wallet.hotkey default --subtensor.network testnet
+- `--wallet.name` / `--wallet.hotkey` — validator wallet + hotkey
+- `--netuid` — `22` mainnet, `41` testnet
+- `--subtensor.network` — `finney`, `test`, or custom endpoint
+- `--neuron.device` — `cuda` or `cpu`
+- `--neuron.scoring_model` — LLM used for scoring. Default `openai/gpt-4-mini`. Also
+  accepts Qwen, Mistral, DeepSeek variants.
+- `--neuron.disable_log_rewards` — suppress per-reward wandb logs (default `False`)
 
-pm2 start uvicorn \
-  --interpreter /usr/bin/python3 \
-  --name desearch_api_process \
-  -- \
-  neurons.validators.api:app \
-  --host 0.0.0.0 \
-  --port 8005 \
-  --workers 4
-```
-
-### Variable Explanation
-
-- `--wallet.name`: Provide the name of your wallet.
-- `--wallet.hotkey`: Enter your wallet's hotkey.
-- `--netuid`: Use `41` for testnet.
-- `--subtensor.network`: Specify the network you want to use (`finney`, `test`, `local`, etc).
-- `--logging.debug`: Adjust the logging level according to your preference.
-- `--axon.port`: Specify the port number you want to use.
-- `--neuron.name`: Trials for this miner go in miner.root / (wallet_cold - wallet_hot) / miner.name.
-- `--neuron.device`: Device to run the validator on. cuda or cpu
-- `--neuron.disable_log_rewards`: Disable all reward logging, suppresses reward functions and their values from being logged to wandb. Default: False
-- `--neuron.scoring_model`: Specifies which llm model to use for scoring. The default model is `openai/gpt-4-mini`. Available llm models: `openai/gpt-4-mini`, `Qwen/Qwen2.5-Coder-32B-Instruct`, `unsloth/Mistral-Small-24B-Instruct-2501`, `deepseek-ai/DeepSeek-R1-Distill-Qwen-32B`.
-
-## 7. Monitor Your Process
-
-Monitor the status and logs:
+## Monitor
 
 ```sh
 pm2 status
-pm2 logs 0
-pm2 logs 1
+pm2 logs desearch_validator_process
+pm2 logs desearch_api_process
+pm2 logs desearch_autoupdate
 ```
 
-# Conclusion
+Metrics are streamed to W&B at
+https://wandb.ai/smart-scrape/smart-scrape-1.0 by default.
 
-Following these steps, you should have a Bittensor node running smoothly using the desearch repository. Regularly monitor your process and consult the [Bittensor documentation](https://github.com/opentensor/desearch/docs/) for further assistance.
-
-> Note: Ensure at least >50GB free disk space for wandb logs.
+> Allocate at least 50 GB of free disk for W&B logs.

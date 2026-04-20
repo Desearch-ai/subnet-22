@@ -1,85 +1,55 @@
-# Enhanced Guide for Setting Up Environment Variables in Desearch System
+# Environment Variables
 
-This comprehensive guide is designed to assist you in configuring the environment variables critical for the Desearch system. It highlights the specific variables required for Validators and Miners, ensuring they understand their roles and the importance of each key.
+Reference for every environment variable consumed by Desearch miners and validators.
+Each entry lists who needs it, what it's used for, and where to obtain it.
 
-## Detailed Steps for Environment Variable Configuration
+## Obtaining credentials
 
-### Prerequisites
+- **OpenAI** — https://platform.openai.com/ (API keys)
+- **Apify** — https://apify.com/ (Actor-based scraping for Twitter/X verification)
+- **ScrapingDog** — https://www.scrapingdog.com/ (web content verification; Standard plan ~$90/mo recommended)
+- **SerpAPI** — https://serpapi.com/ (miner web search)
+- **Twitter API** — https://developer.twitter.com/en/portal/dashboard (miner direct tweet access)
+- **Weights & Biases** — https://wandb.ai/ (validator metrics dashboard)
 
--   Access to a terminal interface.
--   Accounts on OpenAI, Weights & Biases, and Twitter Developer Portal.
+## Validator variables
 
-### Setting Up Variables
+| Variable | Required | Purpose |
+|----------|----------|---------|
+| `OPENAI_API_KEY` | yes | LLM scoring + summary generation. |
+| `EXPECTED_ACCESS_KEY` | yes | Gates the public validator API (`neurons/validators/api.py`). Must be ≥16 chars with uppercase, lowercase, digit, and special character. Generate with `python scripts/generate_access_key.py`. |
+| `APIFY_API_KEY` | yes | Twitter/X verification via Apify actors. |
+| `SCRAPINGDOG_API_KEY` | yes | Web content verification. |
+| `WANDB_API_KEY` | yes | Metrics dashboard. Run `wandb login` once after installing. |
+| `PORT` | no | Validator API port (default `8005`). |
+| `VALIDATOR_SERVICE_PORT` | no | IPC port between API and validator service (default `8006`). |
 
-Here's a breakdown of the environment variables necessary for the Desearch system, with detailed information on their significance for Validators and Miners:
-
-1. **OPENAI_API_KEY**
-
-    - **Usage**: Authenticates with the OpenAI API.
-    - **How to Obtain**: Sign up or log in at [OpenAI API](https://beta.openai.com/signup/), navigate to the API section, and generate a key.
-    - **Required for**: Validator and Miners.
-
-2. **TWITTER_BEARER_TOKEN**
-
-    - **Usage**: Grants access to the Twitter API.
-    - **How to Obtain**: Create a Twitter Developer account, create an app at [Twitter Developer Portal](https://developer.twitter.com/en/portal/dashboard), and generate a token.
-    - **Required for**: Miners exclusively.
-
-3. **WANDB_API_KEY**
-
-    - **Usage**: For experiment tracking with Weights & Biases.
-    - **How to Obtain**: Sign up or log in at [Weights & Biases](https://wandb.ai/), and generate a key in your account settings.
-    - **Required for**: Validator and Miners.
-
-4. **EXPECTED_ACCESS_KEY**
-
-    - **Usage**: Secures access to the validator service.
-    - **How to Create**: Generate a unique, strong, and random string.
-    - **Required for**: Validators exclusively.
-
-5. **APIFY_API_KEY**
-
-    - **Usage**: Used for scraping X (Twitter).
-    - **How to Create**: Sign up or log in at [Apify](https://apify.com/), and generate a key in your account settings.
-    - **Required for**: Validators and Miners that use Twitter scraping.
-
-6. **SCRAPINGDOG_API_KEY**
-    - **Usage**: Used by validator web-content verification to scrape general webpages.
-    - **How to Create**: Sign up or log in at [ScrapingDog](https://www.scrapingdog.com/), and generate a key in your dashboard. Standard plan with $90/month is recommended.
-    - **Required for**: Validators.
-
-7. **SERPAPI_API_KEY**
-    - **Usage**: Used to search web using Serp API
-    - **How to Create**: Sign up or log in at [Serp API](https://serpapi.com/), and generate a key in your account settings.
-    - **Required for**: Miners exclusively.
-
-### Executing Commands for Setting Environment Variables
-
-To set the environment variables, open a terminal and replace `<your_key_here>` with your actual keys. For Validators, secure and authenticated access is crucial:
+### Example `.bashrc`
 
 ```bash
-export OPENAI_API_KEY=<your_openai_api_key_here>
-export TWITTER_BEARER_TOKEN=<your_twitter_bearer_token_here>  # Only for Miners
-export EXPECTED_ACCESS_KEY=<your_EXPECTED_ACCESS_KEY_here>  # Only for Validators
-export WANDB_API_KEY=<your_wandb_api_key_here>
-export APIFY_API_KEY=<your_apify_api_key_here>  # Validators/Miners using Twitter scraping
-export SCRAPINGDOG_API_KEY=<your_scrapingdog_api_key_here>  # Only for Validators
-export SERPAPI_API_KEY=<your_serp_api_key_here> # Only for Miners
-```
-
-### Setting Environment Variables Using `.bashrc`
-
-If you prefer to use `.bashrc` for setting up environment variables, execute these commands:
-
-```bash
-echo 'export OPENAI_API_KEY="<your_openai_api_key>"' >> ~/.bashrc # Both for Validators and Miners
-echo 'export TWITTER_BEARER_TOKEN="<your_twitter_bearer_token>"' >> ~/.bashrc  # Only for Miners
-echo 'export EXPECTED_ACCESS_KEY="<your_EXPECTED_ACCESS_KEY>"' >> ~/.bashrc  # Only for Validators
-echo 'export WANDB_API_KEY="<your_wandb_api_key>"' >> ~/.bashrc # Only for Validators
-echo 'export APIFY_API_KEY="<your_apify_api_key>"' >> ~/.bashrc # Validators/Miners using Twitter scraping
-echo 'export SCRAPINGDOG_API_KEY="<your_scrapingdog_api_key>"' >> ~/.bashrc # Only for Validators
-echo 'export SERPAPI_API_KEY="<your_serp_api_key_here>"' >> ~/.bashrc # Only for Miners
-
-
+echo 'export OPENAI_API_KEY="<key>"' >> ~/.bashrc
+echo 'export APIFY_API_KEY="<key>"' >> ~/.bashrc
+echo 'export SCRAPINGDOG_API_KEY="<key>"' >> ~/.bashrc
+echo 'export WANDB_API_KEY="<key>"' >> ~/.bashrc
+echo "export EXPECTED_ACCESS_KEY=\"$(python scripts/generate_access_key.py)\"" >> ~/.bashrc
 source ~/.bashrc
 ```
+
+## Miner variables
+
+Miners configure values via `neurons/miners/.env` (copy from `neurons/miners/.env.template`).
+CLI args passed to `pm2 start … -- …` take precedence over `.env` values.
+
+| Variable | Required | Purpose |
+|----------|----------|---------|
+| `OPENAI_API_KEY` | yes | Summary/query generation inside `scraper_miner`. |
+| `SERPAPI_API_KEY` | yes | Web search (miners). |
+| `APIFY_API_KEY` | yes | Twitter/X scraping. |
+| `TWITTER_BEARER_TOKEN` | optional | Direct Twitter API access (`desearch/services/twitter_api_wrapper.py`). Not required if you rely on Apify alone. |
+| `WALLET_NAME` | no | Default wallet name used by axon and worker API (default `miner`). `--wallet.name` overrides. |
+| `WALLET_HOTKEY` | no | Default hotkey (default `default`). `--wallet.hotkey` overrides. |
+| `SUBTENSOR_NETWORK` | no | `finney` / `test` / `local` (default `finney`). `--subtensor.network` overrides. |
+| `NETUID` | no | Subnet UID (default `22`). `--netuid` overrides. |
+| `AXON_PORT` | no | Axon port (default `14000`). |
+| `WORKER_HOST` | no | Worker API bind address (default `0.0.0.0`). |
+| `WORKER_PORT` | no | Worker API port (default `8000`). |
