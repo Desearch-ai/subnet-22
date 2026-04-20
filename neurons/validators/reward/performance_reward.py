@@ -32,7 +32,9 @@ from desearch.protocol import (
     WebSearchSynapse,
 )
 from neurons.validators.base_validator import AbstractNeuron
-from neurons.validators.constants import FACTOR, STEEPNESS
+
+STEEPNESS = 0.1
+FACTOR = 2
 
 from .config import RewardModelType
 from .reward import BaseRewardEvent, BaseRewardModel
@@ -46,7 +48,6 @@ class PerformanceRewardModel(BaseRewardModel):
     def __init__(self, device: str, neuron: AbstractNeuron):
         super().__init__(neuron)
         self.device = device
-        self.is_default_normalization = False
 
     def get_response_times(
         self, uids: List[int], responses: List[ScraperStreamingSynapse]

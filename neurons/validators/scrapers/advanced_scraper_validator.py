@@ -17,9 +17,8 @@ from desearch.protocol import (
 )
 from desearch.stream import collect_final_synapses
 from desearch.utils import get_max_execution_time
-from neurons.validators.base_scraper_validator import BaseScraperValidator
 from neurons.validators.base_validator import AbstractNeuron
-from neurons.validators.miner_response_logger import (
+from neurons.validators.clients.miner_response_logger import (
     build_log_entry,
     submit_logs_best_effort,
 )
@@ -27,6 +26,7 @@ from neurons.validators.penalty.miner_score_penalty import MinerScorePenaltyMode
 from neurons.validators.penalty.streaming_penalty import StreamingPenaltyModel
 from neurons.validators.penalty.timeout_penalty import TimeoutPenaltyModel
 from neurons.validators.reward import RewardModelType, RewardScoringType
+from neurons.validators.reward.performance_reward import PerformanceRewardModel
 from neurons.validators.reward.reward_llm import RewardLLM
 from neurons.validators.reward.search_content_relevance import (
     WebSearchContentRelevanceModel,
@@ -35,6 +35,7 @@ from neurons.validators.reward.summary_relevance import SummaryRelevanceRewardMo
 from neurons.validators.reward.twitter_content_relevance import (
     TwitterContentRelevanceModel,
 )
+from neurons.validators.scrapers.base_scraper_validator import BaseScraperValidator
 
 
 class AdvancedScraperValidator(BaseScraperValidator):
@@ -43,46 +44,6 @@ class AdvancedScraperValidator(BaseScraperValidator):
     wandb_reward_keys = ["twitter_reward", "search_reward", "summary_reward"]
 
     def __init__(self, neuron: AbstractNeuron):
-        self.tools = [
-            ["Twitter Search", "Reddit Search"],
-            ["Twitter Search", "Web Search"],
-            ["Twitter Search", "Web Search"],
-            ["Twitter Search", "Web Search"],
-            ["Twitter Search", "Web Search"],
-            ["Twitter Search", "Hacker News Search"],
-            ["Twitter Search", "Hacker News Search"],
-            ["Twitter Search", "Youtube Search"],
-            ["Twitter Search", "Youtube Search"],
-            ["Twitter Search", "Youtube Search"],
-            ["Twitter Search", "Web Search"],
-            ["Twitter Search", "Reddit Search"],
-            ["Twitter Search", "Reddit Search"],
-            ["Twitter Search", "Hacker News Search"],
-            ["Twitter Search", "ArXiv Search"],
-            ["Twitter Search", "ArXiv Search"],
-            ["Twitter Search", "Wikipedia Search"],
-            ["Twitter Search", "Wikipedia Search"],
-            ["Twitter Search", "Web Search"],
-            ["Twitter Search", "Web Search"],
-            ["Twitter Search", "Web Search"],
-            ["Web Search"],
-            ["Reddit Search"],
-            ["Hacker News Search"],
-            ["Youtube Search"],
-            ["ArXiv Search"],
-            ["Wikipedia Search"],
-            ["Twitter Search", "Youtube Search", "ArXiv Search", "Wikipedia Search"],
-            ["Twitter Search", "Web Search", "Reddit Search", "Hacker News Search"],
-            [
-                "Twitter Search",
-                "Web Search",
-                "Reddit Search",
-                "Hacker News Search",
-                "Youtube Search",
-                "ArXiv Search",
-                "Wikipedia Search",
-            ],
-        ]
         self.language = "en"
         self.region = "us"
         self.date_filter = "qdr:w"  # Past week
@@ -93,9 +54,10 @@ class AdvancedScraperValidator(BaseScraperValidator):
             "self.neuron.config.neuron.device = ", str(neuron.config.neuron.device)
         )
 
-        self.twitter_content_weight = 0.40
-        self.web_search_weight = 0.30
+        self.twitter_content_weight = 0.30
+        self.web_search_weight = 0.25
         self.summary_relevance_weight = 0.30
+        self.performance_weight = 0.15
 
         self.reward_llm = RewardLLM(neuron.config.neuron.scoring_model)
 
@@ -104,6 +66,7 @@ class AdvancedScraperValidator(BaseScraperValidator):
                 self.twitter_content_weight,
                 self.web_search_weight,
                 self.summary_relevance_weight,
+                self.performance_weight,
             ],
             dtype=torch.float32,
         )
@@ -125,6 +88,10 @@ class AdvancedScraperValidator(BaseScraperValidator):
                 device=neuron.config.neuron.device,
                 scoring_type=RewardScoringType.summary_relevance_score_template,
                 llm_reward=self.reward_llm,
+                neuron=neuron,
+            ),
+            PerformanceRewardModel(
+                device=neuron.config.neuron.device,
                 neuron=neuron,
             ),
         ]
@@ -162,8 +129,11 @@ class AdvancedScraperValidator(BaseScraperValidator):
 
         start_time = time.time()
 
-        uid, axon = await self.neuron.get_random_miner(uid=uid)
+        uid, axon = await self.neuron.get_random_miner(
+            uid=uid, search_type=self.search_type
+        )
         uids = torch.tensor([uid])
+        worker_url = self.neuron.miner_worker_urls.get(uid)
 
         start_date = (
             date_filter.start_date.strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -196,14 +166,11 @@ class AdvancedScraperValidator(BaseScraperValidator):
             count=count,
         )
 
-        timeout = max_execution_time + 5
-        dendrite = next(self.neuron.dendrites)
-
-        async_response = dendrite.call_stream(
-            target_axon=axon,
-            synapse=synapse.model_copy(),
-            timeout=timeout,
-            deserialize=False,
+        async_response = self.neuron.worker_client.call_ai_search_stream(
+            worker_url,
+            synapse.model_copy(),
+            axon,
+            uid=uid,
         )
 
         return async_response, uids, start_time, axon
@@ -240,8 +207,8 @@ class AdvancedScraperValidator(BaseScraperValidator):
         uid: int,
     ) -> Optional[object]:
         """
-        Send a scoring query to a specific miner and return the full synapse.
-        Called by QueryScheduler; collects the full synapse.
+        Send a scoring query to a specific miner via worker URL.
+        Called by QueryScheduler; returns the fully-populated synapse.
         """
         prompt = query["query"]
         tools = query.get("tools", [])
@@ -251,21 +218,47 @@ class AdvancedScraperValidator(BaseScraperValidator):
             )
         )
 
-        async_response, uids, start_time, _ = await self.call_miner(
+        max_execution_time = get_max_execution_time(Model.NOVA, 10)
+
+        start_date = (
+            date_filter.start_date.strftime("%Y-%m-%dT%H:%M:%SZ")
+            if date_filter.start_date
+            else None
+        )
+        end_date = (
+            date_filter.end_date.strftime("%Y-%m-%dT%H:%M:%SZ")
+            if date_filter.end_date
+            else None
+        )
+
+        synapse = ScraperStreamingSynapse(
             prompt=prompt,
-            date_filter=date_filter,
+            model=Model.NOVA,
+            start_date=start_date,
+            end_date=end_date,
+            date_filter_type=(
+                date_filter.date_filter_type.value
+                if date_filter.date_filter_type
+                else None
+            ),
             tools=tools,
             language=self.language,
             region=self.region,
             google_date_filter=self.date_filter,
-            model=Model.NOVA,
-            uid=uid,
+            max_execution_time=max_execution_time,
+            scoring_model=self.neuron.config.neuron.scoring_model,
         )
 
-        final_synapses = await collect_final_synapses(
-            [async_response], uids, start_time
+        worker_url = self.neuron.miner_worker_urls.get(uid)
+        if not worker_url:
+            bt.logging.warning(f"[AI] No worker_url for uid={uid}, skipping")
+            return None
+
+        axon = self.neuron.metagraph.axons[uid]
+        response = await self.neuron.worker_client.call_ai_search(
+            worker_url, synapse, axon, uid=uid
         )
-        return final_synapses[0] if final_synapses else None
+        return response
 
     async def organic(
         self,
@@ -334,6 +327,11 @@ class AdvancedScraperValidator(BaseScraperValidator):
                             if synapse is not None
                         ],
                     )
+                    for synapse in final_synapses:
+                        if synapse is not None:
+                            await self._save_organic_for_scoring(
+                                uid=selected_uid, response=synapse
+                            )
 
                 for synapse in final_synapses:
                     yield synapse
@@ -360,6 +358,9 @@ class AdvancedScraperValidator(BaseScraperValidator):
                                 miner_coldkey=getattr(axon, "coldkey", None),
                             )
                         ],
+                    )
+                    await self._save_organic_for_scoring(
+                        uid=selected_uid, response=final_synapse
                     )
         except Exception as e:
             bt.logging.error(f"Error in organic: {e}")

@@ -1,5 +1,6 @@
 import asyncio
 import itertools
+import os
 import sys
 import time
 from traceback import print_exception
@@ -9,6 +10,7 @@ import bittensor as bt
 import torch
 from bittensor.core.metagraph import AsyncMetagraph
 
+from desearch.miner_config import SEARCH_TYPES, normalize_miner_manifest
 from desearch.protocol import IsAlive
 from desearch.redis.redis_client import close_redis, initialize_redis
 from desearch.redis.utils import (
@@ -16,16 +18,21 @@ from desearch.redis.utils import (
     save_moving_averaged_scores,
 )
 from desearch.utils import resync_metagraph
-from neurons.validators.advanced_scraper_validator import AdvancedScraperValidator
 from neurons.validators.base_validator import AbstractNeuron
+from neurons.validators.clients.utility_api_client import UtilityAPIClient
+from neurons.validators.clients.worker_client import WorkerClient
 from neurons.validators.config import add_args, check_config, config
 from neurons.validators.proxy.uid_manager import UIDManager
-from neurons.validators.query_scheduler import QueryScheduler
-from neurons.validators.scoring_store import ScoringStore
-from neurons.validators.utility_api_client import UtilityAPIClient
-from neurons.validators.web_scraper_validator import WebScraperValidator
-from neurons.validators.weights import init_wandb, set_weights
-from neurons.validators.x_scraper_validator import XScraperValidator
+from neurons.validators.scoring import capacity, miner_db
+from neurons.validators.scoring.query_scheduler import QueryScheduler
+from neurons.validators.scoring.scoring_store import ScoringStore
+from neurons.validators.scoring.synthetic_query_generator import SyntheticQueryGenerator
+from neurons.validators.scoring.weights import init_wandb, set_weights
+from neurons.validators.scrapers.advanced_scraper_validator import (
+    AdvancedScraperValidator,
+)
+from neurons.validators.scrapers.web_scraper_validator import WebScraperValidator
+from neurons.validators.scrapers.x_scraper_validator import XScraperValidator
 
 
 class Neuron(AbstractNeuron):
@@ -69,6 +76,10 @@ class Neuron(AbstractNeuron):
         self.available_uids = []
         self.uid_manager = UIDManager()
         self.validator_identity = None
+        self.miner_worker_urls: dict[int, str] = {}
+        self.worker_client: Optional[WorkerClient] = None
+        self.scoring_store: Optional[ScoringStore] = None
+        self.should_exit = False
 
     async def initialize(self):
         bt.logging.info(
@@ -146,7 +157,7 @@ class Neuron(AbstractNeuron):
         try:
             self.available_uids = await self.get_available_uids_is_alive()
 
-            self.uid_manager.resync(
+            await self.uid_manager.resync(
                 available_uids=self.available_uids, metagraph=self.metagraph
             )
         except Exception as e:
@@ -159,15 +170,30 @@ class Neuron(AbstractNeuron):
         bt.logging.info(f"sync_available_uids finished in: {execution_time}s")
 
     async def check_uid(self, axon, uid):
-        """Asynchronously check if a UID is available."""
+        """Asynchronously check if a UID is available and has a valid worker_url."""
 
         dendrite = next(self.dendrites)
         response = await dendrite(axon, IsAlive(), deserialize=False, timeout=10)
 
-        if response.is_success:
-            return axon
-        else:
+        if not response.is_success:
             raise Exception(f"UID {uid} is not active")
+
+        manifest_data = response.manifest
+        if not manifest_data:
+            raise Exception(f"UID {uid} has no manifest")
+
+        try:
+            manifest = normalize_miner_manifest(manifest_data)
+        except (ValueError, Exception) as e:
+            raise Exception(f"UID {uid} bad manifest: {e}")
+
+        self.miner_worker_urls[uid] = manifest.worker_url
+
+        for st in SEARCH_TYPES:
+            declared = getattr(manifest.concurrency, st, 1)
+            await capacity.register_miner(uid, st, declared)
+
+        return axon
 
     async def get_available_uids_is_alive(self):
         """Get a dictionary of available UIDs and their axons asynchronously."""
@@ -201,55 +227,54 @@ class Neuron(AbstractNeuron):
         return available_uids
 
     async def get_random_miner(
-        self, uid: Optional[int] = None
+        self, uid: Optional[int] = None, search_type: Optional[str] = None
     ) -> Tuple[int, bt.AxonInfo]:
-        """Return (uid, axon) for the given uid, or a random miner if uid is None."""
+        """Return (uid, axon) for the given uid, or a weighted-random miner."""
         if uid is not None:
             bt.logging.info(f"Run specific UID: {uid}")
             return uid, self.metagraph.axons[uid]
 
-        selected_uid = self.uid_manager.get_miner_uid()
+        selected_uid = self.uid_manager.get_miner_uid(search_type=search_type)
 
-        bt.logging.info(f"Run random UID: {selected_uid}")
+        bt.logging.info(f"Run random UID: {selected_uid} (search_type={search_type})")
 
         return selected_uid, self.metagraph.axons[selected_uid]
 
     async def update_moving_averaged_scores(self, uids, rewards):
         try:
-            # Ensure uids is a tensor
             if not isinstance(uids, torch.Tensor):
                 uids = torch.tensor(
                     uids, dtype=torch.long, device=self.config.neuron.device
                 )
 
-            # Ensure rewards is also a tensor and on the correct device
             if not isinstance(rewards, torch.Tensor):
                 rewards = torch.tensor(rewards, device=self.config.neuron.device)
 
-            empty_rewards = torch.zeros(self.moving_averaged_scores.size()).to(
-                self.config.neuron.device
-            )
+            device = self.config.neuron.device
+            size = self.moving_averaged_scores.size()
 
-            scattered_rewards = empty_rewards.scatter(0, uids, rewards).to(
-                self.config.neuron.device
-            )
+            # scatter_add + count to properly average when UIDs appear multiple times
+            scattered_rewards = torch.zeros(size, device=device)
+            counts = torch.zeros(size, device=device)
+            scattered_rewards.scatter_add_(0, uids, rewards)
+            counts.scatter_add_(0, uids, torch.ones_like(rewards))
+            mask = counts > 0
+            scattered_rewards[mask] = scattered_rewards[mask] / counts[mask]
 
             average_reward = torch.mean(scattered_rewards)
-            bt.logging.info(
-                f"Scattered reward: {average_reward:.6f}"
-            )  # Rounds to 6 decimal places for logging
+            bt.logging.info(f"Scattered reward: {average_reward:.6f}")
 
             alpha = 0.2
 
             self.moving_averaged_scores = alpha * scattered_rewards + (
                 1 - alpha
-            ) * self.moving_averaged_scores.to(self.config.neuron.device)
+            ) * self.moving_averaged_scores.to(device)
 
             await save_moving_averaged_scores(self.moving_averaged_scores)
 
             bt.logging.info(
                 f"Moving averaged scores: {torch.mean(self.moving_averaged_scores):.6f}"
-            )  # Rounds to 6 decimal places for logging
+            )
             return scattered_rewards
         except Exception as e:
             bt.logging.error(f"Error in update_moving_averaged_scores: {e}")
@@ -334,6 +359,17 @@ class Neuron(AbstractNeuron):
             bt.logging.info("Starting Neuron")
 
             await self.initialize()
+
+            repo_root = os.path.abspath(
+                os.path.join(os.path.dirname(__file__), "..", "..")
+            )
+            state_dir = os.path.join(repo_root, ".state")
+            os.makedirs(state_dir, exist_ok=True)
+            db_path = os.path.join(state_dir, "miner_state.db")
+            await miner_db.initialize(db_path)
+
+            self.worker_client = WorkerClient(wallet=self.wallet)
+
             await self.sync_available_uids()  # Initial sync
 
             self.loop = asyncio.get_event_loop()
@@ -348,12 +384,15 @@ class Neuron(AbstractNeuron):
             bt.logging.debug(str(self.moving_averaged_scores))
 
             scoring_store = ScoringStore()
+            self.scoring_store = scoring_store
 
             utility_api = UtilityAPIClient(
                 base_url=self.config.neuron.utility_api_url,
                 wallet=self.wallet,
             )
             self.utility_api = utility_api
+
+            generator = SyntheticQueryGenerator()
 
             validators = {
                 "ai_search": self.advanced_scraper_validator,
@@ -363,7 +402,7 @@ class Neuron(AbstractNeuron):
 
             query_scheduler = QueryScheduler(
                 neuron=self,
-                utility_api=utility_api,
+                generator=generator,
                 scoring_store=scoring_store,
                 validators=validators,
             )
@@ -371,6 +410,7 @@ class Neuron(AbstractNeuron):
             self.loop.create_task(self.sync_metagraph())
             self.loop.create_task(self.sync())
             self.loop.create_task(query_scheduler.run())
+            self.loop.create_task(self.run_unreachable_decay_loop())
 
         except KeyboardInterrupt:
             self.axon.stop()
@@ -382,10 +422,26 @@ class Neuron(AbstractNeuron):
             bt.logging.debug(print_exception(type(err), err, err.__traceback__))
             self.should_exit = True
 
+    async def run_unreachable_decay_loop(self) -> None:
+        """Every minute, decay earned concurrency for miners still marked
+        unreachable. One tick = 10% cut per 5-minute interval elapsed."""
+
+        while not self.should_exit:
+            try:
+                await capacity.decay_unreachable_tick()
+            except Exception as e:
+                bt.logging.error(f"[UnreachableDecay] {e}")
+            await asyncio.sleep(60)
+
     async def stop(self):
         bt.logging.info("Stopping Neuron")
 
         await close_redis()
+
+        if self.worker_client:
+            await self.worker_client.close()
+
+        await miner_db.close()
 
         if hasattr(self, "utility_api"):
             await self.utility_api.close()

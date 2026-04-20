@@ -1,42 +1,43 @@
 import random
-from typing import List
+from typing import List, Optional
 
+import bittensor as bt
 from bittensor.core.metagraph import AsyncMetagraph
 
-from neurons.validators.weights import EMISSION_CONTROL_HOTKEY
+from desearch.miner_config import SEARCH_TYPES
+from neurons.validators.scoring import miner_db
+from neurons.validators.scoring.weights import EMISSION_CONTROL_HOTKEY
+
+QUALITY_FLOOR = 0.1
 
 
 class UIDManager:
     """
-    UID manager class that chooses random miner UID from top miners
-    UIDs are updated on metagraph resync
+    Routes organic requests to miners weighted by quality * verified concurrency
+    per search type. Snapshots are refreshed on metagraph resync.
     """
 
     metagraph: AsyncMetagraph
 
-    def __init__(
-        self,
-    ) -> None:
-        self.max_miners_to_use = 120
-        self.uids = []
-        self.available_uids = []
+    def __init__(self) -> None:
+        self.available_uids: List[int] = []
+        self.weights_by_type: dict[str, dict[int, float]] = {
+            st: {} for st in SEARCH_TYPES
+        }
 
-    def resync(
+    async def resync(
         self,
         available_uids: List[int],
-        metagraph: AsyncMetagraph = None,
-    ):
-        """
-        Resync the state after metagraph resync
-        """
-        if metagraph:
+        metagraph: Optional[AsyncMetagraph] = None,
+    ) -> None:
+        if metagraph is not None:
             self.metagraph = metagraph
 
-        if not len(available_uids):
+        if not available_uids:
+            self.available_uids = []
             return
 
         if EMISSION_CONTROL_HOTKEY:
-            # Exclude emission control miner from organic requests
             emission_control_uid = next(
                 (
                     neuron.uid
@@ -45,36 +46,38 @@ class UIDManager:
                 ),
                 None,
             )
-
             available_uids = [
                 uid for uid in available_uids if uid != emission_control_uid
             ]
 
         self.available_uids = available_uids
 
-        self.top_uids = self.metagraph.I.argsort(descending=True)[
-            : self.max_miners_to_use
-        ]
+        for search_type in SEARCH_TYPES:
+            rows = await miner_db.get_all_concurrency_data(search_type)
+            unreachable = await miner_db.get_unreachable_uids(search_type)
+            weights: dict[int, float] = {}
+            for uid in available_uids:
+                if uid in unreachable:
+                    weights[uid] = 0.0
+                    continue
+                quality_avg, verified = rows.get(uid, (0.0, 1))
+                weights[uid] = max(quality_avg, QUALITY_FLOOR) * max(verified, 1)
+            self.weights_by_type[search_type] = weights
 
-        # Reuse uids from previous cycle if they are still in top 200 and available
-        if len(self.uids):
-            self.uids = [uid for uid in self.uids if uid in available_uids]
+        bt.logging.info(
+            f"[UIDManager] Resynced weights for {len(available_uids)} miners "
+            f"across {len(SEARCH_TYPES)} search types"
+        )
 
-        # If no uids are
-        if not len(self.uids):
-            self.uids = [
-                uid_tensor.item()
-                for uid_tensor in self.top_uids
-                if uid_tensor.item() in available_uids
-            ]
+    def get_miner_uid(self, search_type: Optional[str] = None) -> int:
+        if not self.available_uids:
+            raise RuntimeError("UIDManager has no available UIDs")
 
-    def get_miner_uid(self):
-        """
-        Get random miner UID from top 200 miners and remove it from the list
-        """
-        if len(self.uids) == 0:
-            self.resync(available_uids=self.available_uids)
+        if search_type and search_type in self.weights_by_type:
+            weights_map = self.weights_by_type[search_type]
+            uids = self.available_uids
+            weights = [weights_map.get(uid, 0.0) for uid in uids]
+            if sum(weights) > 0:
+                return random.choices(uids, weights=weights, k=1)[0]
 
-        uid = random.choice(self.uids)
-        self.uids.remove(uid)
-        return uid
+        return random.choice(self.available_uids)

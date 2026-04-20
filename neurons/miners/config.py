@@ -65,6 +65,13 @@ def get_config() -> "bt.Config":
         default="Bittensor Miner",
     )
 
+    parser.add_argument(
+        "--miner.config_path",
+        type=str,
+        help="Path to miner worker config JSON file.",
+        default="./neurons/miners/workers.json",
+    )
+
     # Run config.
     parser.add_argument(
         "--miner.blocks_per_epoch",

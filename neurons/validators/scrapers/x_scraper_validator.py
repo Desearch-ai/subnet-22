@@ -8,18 +8,19 @@ from desearch.protocol import (
     TwitterSearchSynapse,
     TwitterURLsSearchSynapse,
 )
-from neurons.validators.base_scraper_validator import BaseScraperValidator
 from neurons.validators.base_validator import AbstractNeuron
-from neurons.validators.miner_response_logger import (
+from neurons.validators.clients.miner_response_logger import (
     build_log_entry,
     submit_logs_best_effort,
 )
 from neurons.validators.penalty.timeout_penalty import TimeoutPenaltyModel
 from neurons.validators.penalty.twitter_count_penalty import TwitterCountPenaltyModel
 from neurons.validators.reward import RewardScoringType
+from neurons.validators.reward.performance_reward import PerformanceRewardModel
 from neurons.validators.reward.twitter_basic_search_content_relevance import (
     TwitterBasicSearchContentRelevanceModel,
 )
+from neurons.validators.scrapers.base_scraper_validator import BaseScraperValidator
 
 
 class XScraperValidator(BaseScraperValidator):
@@ -37,11 +38,13 @@ class XScraperValidator(BaseScraperValidator):
             "self.neuron.config.neuron.device = ", str(neuron.config.neuron.device)
         )
 
-        self.twitter_content_weight = 1.0
+        self.twitter_content_weight = 0.80
+        self.performance_weight = 0.20
 
         reward_weights = torch.tensor(
             [
                 self.twitter_content_weight,
+                self.performance_weight,
             ],
             dtype=torch.float32,
         )
@@ -50,6 +53,10 @@ class XScraperValidator(BaseScraperValidator):
             TwitterBasicSearchContentRelevanceModel(
                 device=neuron.config.neuron.device,
                 scoring_type=RewardScoringType.search_relevance_score_template,
+                neuron=neuron,
+            ),
+            PerformanceRewardModel(
+                device=neuron.config.neuron.device,
                 neuron=neuron,
             ),
         ]
@@ -78,7 +85,10 @@ class XScraperValidator(BaseScraperValidator):
         params: Dict[str, Any],
         uid: Optional[int] = None,
     ):
-        uid, axon = await self.neuron.get_random_miner(uid=uid)
+        uid, axon = await self.neuron.get_random_miner(
+            uid=uid, search_type=self.search_type
+        )
+        worker_url = self.neuron.miner_worker_urls.get(uid)
 
         synapse = TwitterSearchSynapse(
             **params,
@@ -86,13 +96,14 @@ class XScraperValidator(BaseScraperValidator):
             max_execution_time=self.calc_max_execution_time(params.get("count")),
         )
 
-        dendrite = next(self.neuron.dendrites)
-
-        response = await dendrite.call(
-            target_axon=axon,
-            synapse=synapse.model_copy(),
-            timeout=synapse.max_execution_time + 5,
-            deserialize=False,
+        response = await self.neuron.worker_client.call_json_search(
+            worker_url,
+            "/twitter/search",
+            synapse.model_copy(),
+            TwitterSearchSynapse,
+            axon,
+            uid=uid,
+            search_type=self.search_type,
         )
 
         return response, uid, axon
@@ -103,13 +114,33 @@ class XScraperValidator(BaseScraperValidator):
         uid: int,
     ) -> Optional[object]:
         """
-        Send a scoring query to a specific miner and return the full synapse.
-        Called by QueryScheduler; awaits the full response without streaming.
+        Send a scoring query to a specific miner via worker URL.
+        Called by QueryScheduler; returns the fully-populated synapse.
         """
         prompt = query.get("query", "")
         params = {k: v for k, v in query.items() if k != "query"}
 
-        response, _, _ = await self.call_miner(prompt=prompt, params=params, uid=uid)
+        worker_url = self.neuron.miner_worker_urls.get(uid)
+        if not worker_url:
+            bt.logging.warning(f"[X] No worker_url for uid={uid}, skipping")
+            return None
+
+        synapse = TwitterSearchSynapse(
+            **params,
+            query=prompt,
+            max_execution_time=self.calc_max_execution_time(params.get("count")),
+        )
+
+        axon = self.neuron.metagraph.axons[uid]
+        response = await self.neuron.worker_client.call_json_search(
+            worker_url,
+            "/twitter/search",
+            synapse,
+            TwitterSearchSynapse,
+            axon,
+            uid=uid,
+            search_type=self.search_type,
+        )
         return response
 
     async def x_search(
@@ -133,6 +164,9 @@ class XScraperValidator(BaseScraperValidator):
                     axon=axon,
                     search_type="x_search",
                 )
+                await self._save_organic_for_scoring(
+                    uid=selected_uid, response=response
+                )
                 yield response
             else:
                 bt.logging.warning("Invalid response for UID: Unknown")
@@ -150,7 +184,8 @@ class XScraperValidator(BaseScraperValidator):
         """
 
         try:
-            uid, axon = await self.neuron.get_random_miner()
+            uid, axon = await self.neuron.get_random_miner(search_type=self.search_type)
+            worker_url = self.neuron.miner_worker_urls.get(uid)
 
             synapse = TwitterIDSearchSynapse(
                 id=tweet_id,
@@ -159,15 +194,14 @@ class XScraperValidator(BaseScraperValidator):
                 results=[],
             )
 
-            timeout = self.max_execution_time + 5
-
-            dendrite = next(self.neuron.dendrites)
-
-            synapse: TwitterIDSearchSynapse = await dendrite.call(
-                target_axon=axon,
-                synapse=synapse,
-                timeout=timeout,
-                deserialize=False,
+            synapse = await self.neuron.worker_client.call_json_search(
+                worker_url,
+                "/twitter/id",
+                synapse,
+                TwitterIDSearchSynapse,
+                axon,
+                uid=uid,
+                search_type=self.search_type,
             )
 
             self._save_organic_log(
@@ -193,7 +227,8 @@ class XScraperValidator(BaseScraperValidator):
         try:
             bt.logging.debug("run_task", "twitter urls search")
 
-            uid, axon = await self.neuron.get_random_miner()
+            uid, axon = await self.neuron.get_random_miner(search_type=self.search_type)
+            worker_url = self.neuron.miner_worker_urls.get(uid)
 
             synapse = TwitterURLsSearchSynapse(
                 urls=urls,
@@ -202,15 +237,14 @@ class XScraperValidator(BaseScraperValidator):
                 results=[],
             )
 
-            timeout = synapse.max_execution_time + 5
-
-            dendrite = next(self.neuron.dendrites)
-
-            synapse: TwitterURLsSearchSynapse = await dendrite.call(
-                target_axon=axon,
-                synapse=synapse,
-                timeout=timeout,
-                deserialize=False,
+            synapse = await self.neuron.worker_client.call_json_search(
+                worker_url,
+                "/twitter/urls",
+                synapse,
+                TwitterURLsSearchSynapse,
+                axon,
+                uid=uid,
+                search_type=self.search_type,
             )
 
             self._save_organic_log(

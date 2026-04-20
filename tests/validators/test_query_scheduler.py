@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from neurons.validators.query_scheduler import QueryScheduler
+from neurons.validators.scoring.query_scheduler import QueryScheduler
 
 
 @pytest.mark.asyncio

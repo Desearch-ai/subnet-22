@@ -14,6 +14,7 @@ import bittensor as bt
 from openai import OpenAI
 
 import desearch
+from desearch.miner_config import load_miner_manifest
 from desearch.protocol import (
     IsAlive,
     ScraperStreamingSynapse,
@@ -44,6 +45,7 @@ class StreamMiner(ABC):
         bt.logging.info(self.config)  # TODO: duplicate print?
         self.prompt_cache: Dict[str, Tuple[str, int]] = {}
         self.request_timestamps = {}
+        self.worker_manifest = load_miner_manifest(self.config.miner.config_path)
 
         # Activating Bittensor's logging with the set configurations.
         bt.logging(config=self.config, logging_dir=self.config.full_path)
@@ -159,7 +161,7 @@ class StreamMiner(ABC):
     async def _web_search(self, synapse: WebSearchSynapse) -> WebSearchSynapse:
         return await self.web_search(synapse)
 
-    def base_blacklist(self, synapse, blacklist_amt=20000) -> Tuple[bool, str]:
+    def base_blacklist(self, synapse) -> Tuple[bool, str]:
         try:
             hotkey = synapse.dendrite.hotkey
             synapse_type = type(synapse).__name__
@@ -167,37 +169,34 @@ class StreamMiner(ABC):
             if hotkey in desearch.BLACKLISTED_KEYS:
                 return True, f"Blacklisted a {synapse_type} request from {hotkey}"
 
-            # if hotkey in desearch.WHITELISTED_KEYS:
-            #     return False, f"accepting {synapse_type} request from {hotkey}"
-
-            # if hotkey not in desearch.valid_validators:
-            #     return (
-            #         True,
-            #         f"Blacklisted a {synapse_type} request from a non-valid hotkey: {hotkey}",
-            #     )
-
             uid = None
-            axon = None
             for _uid, _axon in enumerate(self.metagraph.axons):
                 if _axon.hotkey == hotkey:
                     uid = _uid
-                    axon = _axon
                     break
 
-            if uid is None and desearch.ALLOW_NON_REGISTERED == False:
+            if uid is None:
                 return (
                     True,
                     f"Blacklisted a non registered hotkey's {synapse_type} request from {hotkey}",
                 )
 
             if self.config.subtensor.network == "finney":
-                # check the stake
-                tao = self.metagraph.neurons[uid].stake.tao
-                # metagraph.neurons[uid].S
-                if tao < blacklist_amt:
+                alpha_stake = float(self.metagraph.alpha_stake[uid].item())
+                total_stake = float(self.metagraph.total_stake[uid].item())
+
+                if (
+                    alpha_stake < desearch.MIN_ALPHA_STAKE
+                    or total_stake < desearch.MIN_TOTAL_STAKE
+                ):
                     return (
                         True,
-                        f"Blacklisted a low stake {synapse_type} request: {tao} < {blacklist_amt} from {hotkey}",
+                        (
+                            f"Blacklisted a low stake {synapse_type} request: "
+                            f"alpha_stake={alpha_stake} < {desearch.MIN_ALPHA_STAKE} "
+                            f"or total_stake={total_stake} < {desearch.MIN_TOTAL_STAKE} "
+                            f"from {hotkey}"
+                        ),
                     )
 
             time_window = desearch.MIN_REQUEST_PERIOD * 60
@@ -228,50 +227,40 @@ class StreamMiner(ABC):
             bt.logging.error(f"errror in blacklist {traceback.format_exc()}")
 
     def blacklist_is_alive(self, synapse: IsAlive) -> Tuple[bool, str]:
-        blacklist = self.base_blacklist(synapse, desearch.ISALIVE_BLACKLIST_STAKE)
+        blacklist = self.base_blacklist(synapse)
         bt.logging.debug(blacklist[1])
         return blacklist
 
     def blacklist_smart_scraper(
         self, synapse: ScraperStreamingSynapse
     ) -> Tuple[bool, str]:
-        blacklist = self.base_blacklist(
-            synapse, desearch.TWITTER_SCRAPPER_BLACKLIST_STAKE
-        )
+        blacklist = self.base_blacklist(synapse)
         bt.logging.info(blacklist[1])
         return blacklist
 
     def blacklist_twitter_search(
         self, synapse: TwitterSearchSynapse
     ) -> Tuple[bool, str]:
-        blacklist = self.base_blacklist(
-            synapse, desearch.TWITTER_SCRAPPER_BLACKLIST_STAKE
-        )
+        blacklist = self.base_blacklist(synapse)
         bt.logging.info(blacklist[1])
         return blacklist
 
     def blacklist_twitter_id_search(
         self, synapse: TwitterIDSearchSynapse
     ) -> Tuple[bool, str]:
-        blacklist = self.base_blacklist(
-            synapse, desearch.TWITTER_SCRAPPER_BLACKLIST_STAKE
-        )
+        blacklist = self.base_blacklist(synapse)
         bt.logging.info(blacklist[1])
         return blacklist
 
     def blacklist_twitter_urls_search(
         self, synapse: TwitterURLsSearchSynapse
     ) -> Tuple[bool, str]:
-        blacklist = self.base_blacklist(
-            synapse, desearch.TWITTER_SCRAPPER_BLACKLIST_STAKE
-        )
+        blacklist = self.base_blacklist(synapse)
         bt.logging.info(blacklist[1])
         return blacklist
 
     def blacklist_web_search(self, synapse: WebSearchSynapse) -> Tuple[bool, str]:
-        blacklist = self.base_blacklist(
-            synapse, desearch.TWITTER_SCRAPPER_BLACKLIST_STAKE
-        )
+        blacklist = self.base_blacklist(synapse)
         bt.logging.info(blacklist[1])
         return blacklist
 
@@ -286,7 +275,13 @@ class StreamMiner(ABC):
 
     def _is_alive(self, synapse: IsAlive) -> IsAlive:
         bt.logging.info("answered to be active")
-        synapse.completion = "True"
+        try:
+            self.worker_manifest = load_miner_manifest(self.config.miner.config_path)
+        except Exception as e:
+            bt.logging.warning(
+                f"Failed to reload miner manifest, using cached value: {e}"
+            )
+        synapse.manifest = self.worker_manifest.model_dump()
         return synapse
 
     @abstractmethod
