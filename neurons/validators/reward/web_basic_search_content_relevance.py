@@ -18,7 +18,6 @@ from neurons.validators.apify.scrapingdog_scraper import (
 
 from .config import RewardModelType
 from .reward import BaseRewardEvent, BaseRewardModel
-from .utils import seeded_sample, sort_links_for_sampling
 
 WEB_LINK_SCRAPE_AMOUNT = 1
 
@@ -70,12 +69,9 @@ class WebBasicSearchContentRelevanceModel(BaseRewardModel):
             urls = [result["link"] for result in response.results if "link" in result]
 
             if urls:
-                sorted_urls = sort_links_for_sampling(urls)
-                seed = getattr(response, "scoring_seed", None)
-                sample_links = seeded_sample(
-                    sorted_urls,
-                    min(WEB_LINK_SCRAPE_AMOUNT, len(sorted_urls)),
-                    seed=seed,
+                sample_links = random.sample(
+                    urls,
+                    min(WEB_LINK_SCRAPE_AMOUNT, len(urls)),
                 )
 
                 random_links.extend(sample_links)

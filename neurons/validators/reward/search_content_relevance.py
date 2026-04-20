@@ -17,7 +17,6 @@ from neurons.validators.utils.prompts import (
 
 from .config import RewardModelType
 from .reward import BaseRewardEvent, BaseRewardModel
-from .utils import seeded_sample, sort_links_for_sampling
 
 
 class WebSearchContentRelevanceModel(BaseRewardModel):
@@ -100,16 +99,13 @@ class WebSearchContentRelevanceModel(BaseRewardModel):
             # If scoring single tool group 2 links are selected, for 2 or 3 tool groups 1 link is selected from each
             random_links_per_tool_group = 2 if len(links_per_tool_group) == 1 else 1
 
-            seed = getattr(response, "scoring_seed", None)
             links = []
 
             for tool_group_links in links_per_tool_group.values():
-                sorted_links = sort_links_for_sampling(tool_group_links)
                 links.extend(
-                    seeded_sample(
-                        sorted_links,
-                        min(random_links_per_tool_group, len(sorted_links)),
-                        seed=seed,
+                    random.sample(
+                        tool_group_links,
+                        min(random_links_per_tool_group, len(tool_group_links)),
                     )
                 )
 

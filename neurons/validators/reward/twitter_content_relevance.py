@@ -51,8 +51,6 @@ import json
 from datetime import datetime
 import pytz
 
-from .utils import seeded_sample, sort_tweets_for_sampling
-
 APIFY_LINK_SCRAPE_AMOUNT = 3
 
 
@@ -119,14 +117,9 @@ class TwitterContentRelevanceModel(BaseRewardModel):
 
             for response, random_links in zip(responses, responses_random_links):
                 if response.miner_tweets:
-                    sorted_miner_tweets = sort_tweets_for_sampling(
-                        response.miner_tweets
-                    )
-                    seed = getattr(response, "scoring_seed", None)
-                    sample_tweets = seeded_sample(
-                        sorted_miner_tweets,
-                        min(APIFY_LINK_SCRAPE_AMOUNT, len(sorted_miner_tweets)),
-                        seed=seed,
+                    sample_tweets = random.sample(
+                        response.miner_tweets,
+                        min(APIFY_LINK_SCRAPE_AMOUNT, len(response.miner_tweets)),
                     )
 
                     sample_links = [

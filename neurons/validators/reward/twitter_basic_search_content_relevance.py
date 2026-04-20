@@ -42,7 +42,6 @@ from neurons.validators.base_validator import AbstractNeuron
 
 from .config import RewardModelType
 from .reward import BaseRewardEvent, BaseRewardModel
-from .utils import seeded_sample, sort_links_for_sampling
 
 APIFY_LINK_SCRAPE_AMOUNT = 1
 
@@ -131,12 +130,9 @@ class TwitterBasicSearchContentRelevanceModel(BaseRewardModel):
                 ]
 
                 if tweet_urls:
-                    sorted_tweet_urls = sort_links_for_sampling(tweet_urls)
-                    seed = getattr(response, "scoring_seed", None)
-                    sample_links = seeded_sample(
-                        sorted_tweet_urls,
-                        min(APIFY_LINK_SCRAPE_AMOUNT, len(sorted_tweet_urls)),
-                        seed=seed,
+                    sample_links = random.sample(
+                        tweet_urls,
+                        min(APIFY_LINK_SCRAPE_AMOUNT, len(tweet_urls)),
                     )
                     all_links.extend(sample_links)
                     random_links.extend(sample_links)
