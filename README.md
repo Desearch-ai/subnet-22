@@ -86,17 +86,14 @@ See the [Validator Setup Guide](./docs/running_a_validator.md) for full instruct
 - [Environment Variables](./docs/env_variables.md)
 - [Testnet Operations](./docs/running_on_testnet.md)
 - [Mainnet Operations](./docs/running_on_mainnet.md)
-- [Web Application Setup](./ui/README.md)
 
 ## Monitoring
 
 Validators stream metrics to Weights & Biases. Public dashboards are available at
 [wandb.ai/smart-scrape/smart-scrape-1.0](https://wandb.ai/smart-scrape/smart-scrape-1.0).
-Anonymous data is deleted after 7 days — see
-[W&B anonymous mode](https://docs.wandb.ai/guides/app/features/anon).
 
 ## Contact and Support
 
 - **Website** — [desearch.ai](https://desearch.ai)
-- **Subnet 22 channel (Bittensor Discord)** — https://discord.com/channels/799672011265015819/1189589759065067580
-- **Desearch Discord server** — https://discord.com/invite/eb6DTZNMF5
+- **Subnet 22 channel** — [Bittensor Discord](https://discord.com/channels/799672011265015819/1189589759065067580)
+- **Desearch Discord** — [Join the Desearch community server](https://discord.com/invite/eb6DTZNMF5)
