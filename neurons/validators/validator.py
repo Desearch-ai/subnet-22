@@ -79,6 +79,7 @@ class Neuron(AbstractNeuron):
         self.miner_worker_urls: dict[int, str] = {}
         self.worker_client: Optional[WorkerClient] = None
         self.scoring_store: Optional[ScoringStore] = None
+        self.should_exit = False
 
     async def initialize(self):
         bt.logging.info(
