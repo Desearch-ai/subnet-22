@@ -1,13 +1,8 @@
 # Running a Desearch Miner
 
-A miner runs two required processes, both bound to the same hotkey:
-
-1. **Axon** (`neurons/miners/miner.py`) — Bittensor axon that answers `IsAlive` pings from
-   validators. Miners that do not respond to `IsAlive` are marked unreachable and excluded
-   from scoring.
-2. **Worker API** (`neurons/miners/api.py`) — HTTP service that receives signed search
-   requests (AI / Twitter / Web) pushed by validators and returns results. This is the
-   scoring path.
+A miner runs a single process — a Bittensor axon (`neurons/miners/miner.py`) that answers
+`IsAlive` pings and all search synapses (AI / Twitter / Web). Validators call the axon
+directly via dendrite.
 
 ## Prerequisites
 
@@ -37,7 +32,6 @@ Example `neurons/miners/workers.json`:
 
 ```json
 {
-  "worker_url": "http://127.0.0.1:8000",
   "concurrency": {
     "web_search": 20,
     "x_search": 15,
@@ -46,11 +40,10 @@ Example `neurons/miners/workers.json`:
 }
 ```
 
-- `worker_url` — single endpoint that validators call. Place your load balancer or multiple
-  instances behind this URL.
 - `concurrency` — **per search type, per validator** ceiling. With 12 active validators,
   `web_search: 20` means up to `20 × 12 = 240` concurrent web search requests in the worst
-  case. Infrastructure sizing is your responsibility.
+  case. Infrastructure sizing is your responsibility (scale the axon host, or front it
+  with a load balancer routing to multiple backends).
 
 Updates to `workers.json` propagate via `IsAlive` and take effect at the next UTC hour
 boundary without restart.
@@ -66,14 +59,10 @@ See [env_variables.md](./env_variables.md) for the full list.
 
 ## Run with PM2
 
-Both processes are required. Run them on the same host with the same wallet + hotkey.
-
-### Axon
-
 ```sh
 pm2 start neurons/miners/miner.py \
   --interpreter /usr/bin/python3 \
-  --name desearch_miner_axon \
+  --name desearch_miner \
   -- \
   --wallet.name miner \
   --wallet.hotkey default \
@@ -82,32 +71,16 @@ pm2 start neurons/miners/miner.py \
   --axon.port 14000
 ```
 
-### Worker API
-
-```sh
-pm2 start neurons/miners/api.py \
-  --interpreter /usr/bin/python3 \
-  --name desearch_miner_worker \
-  -- \
-  --host 0.0.0.0 \
-  --port 8000 \
-  --wallet.name miner \
-  --wallet.hotkey default \
-  --subtensor.network finney \
-  --netuid 22
-```
-
-The worker API enforces signature auth on every request. Validators are accepted only if
-they are registered, hold a validator permit, and meet the minimum stake thresholds
-(`MIN_ALPHA_STAKE` and `MIN_TOTAL_STAKE` in `desearch/__init__.py`).
+Incoming synapses are stake-gated at the axon: the sender must be registered, hold a
+validator permit, and meet the minimum stake thresholds (`MIN_ALPHA_STAKE` and
+`MIN_TOTAL_STAKE` in `desearch/__init__.py`).
 
 ### Key flags
 
 - `--wallet.name` / `--wallet.hotkey` — registered wallet + hotkey
 - `--netuid` — `22` mainnet, `41` testnet
 - `--subtensor.network` — `finney`, `test`, or custom endpoint
-- `--axon.port` — public port for the axon (miner only)
-- `--host` / `--port` — worker API bind address and port
+- `--axon.port` — public port for the axon
 - `--miner.config_path` — path to `workers.json` (default `./neurons/miners/workers.json`)
 - `--logging.debug` / `--logging.trace` — increase log verbosity
 
@@ -115,6 +88,5 @@ they are registered, hold a validator permit, and meet the minimum stake thresho
 
 ```sh
 pm2 status
-pm2 logs desearch_miner_axon
-pm2 logs desearch_miner_worker
+pm2 logs desearch_miner
 ```

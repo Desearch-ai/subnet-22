@@ -1,5 +1,4 @@
 {
-  "worker_url": "http://127.0.0.1:8000",
   "concurrency": {
     "web_search": 1,
     "x_search": 1,

@@ -35,6 +35,7 @@ from neurons.validators.reward.summary_relevance import SummaryRelevanceRewardMo
 from neurons.validators.reward.twitter_content_relevance import (
     TwitterContentRelevanceModel,
 )
+from neurons.validators.scoring import capacity
 from neurons.validators.scrapers.base_scraper_validator import BaseScraperValidator
 
 
@@ -109,6 +110,37 @@ class AdvancedScraperValidator(BaseScraperValidator):
             penalty_functions=penalty_functions,
         )
 
+    async def _dendrite_stream(
+        self,
+        synapse: ScraperStreamingSynapse,
+        axon,
+        uid: int,
+        timeout: float,
+    ):
+        """Wrap ``dendrite.call_stream`` so chunks flow through to the caller
+        and per-call success is recorded once the stream ends."""
+        dendrite = next(self.neuron.dendrites)
+        final_synapse = None
+        success = False
+        try:
+            async for value in dendrite.call_stream(
+                target_axon=axon,
+                synapse=synapse,
+                timeout=timeout,
+                deserialize=False,
+            ):
+                if isinstance(value, bt.Synapse):
+                    final_synapse = value
+                yield value
+            status = getattr(
+                getattr(final_synapse, "dendrite", None), "status_code", None
+            )
+            success = status == 200
+        except Exception as e:
+            bt.logging.error(f"[{self.search_type}] dendrite stream failed uid={uid}: {e}")
+
+        await capacity.note_worker_result(uid, self.search_type, success)
+
     async def call_miner(
         self,
         prompt: str,
@@ -133,7 +165,6 @@ class AdvancedScraperValidator(BaseScraperValidator):
             uid=uid, search_type=self.search_type
         )
         uids = torch.tensor([uid])
-        worker_url = self.neuron.miner_worker_urls.get(uid)
 
         start_date = (
             date_filter.start_date.strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -166,11 +197,11 @@ class AdvancedScraperValidator(BaseScraperValidator):
             count=count,
         )
 
-        async_response = self.neuron.worker_client.call_ai_search_stream(
-            worker_url,
+        async_response = self._dendrite_stream(
             synapse.model_copy(),
             axon,
-            uid=uid,
+            uid,
+            timeout=max_execution_time + 5,
         )
 
         return async_response, uids, start_time, axon
@@ -206,10 +237,8 @@ class AdvancedScraperValidator(BaseScraperValidator):
         query: dict,
         uid: int,
     ) -> Optional[object]:
-        """
-        Send a scoring query to a specific miner via worker URL.
-        Called by QueryScheduler; returns the fully-populated synapse.
-        """
+        """Send a scoring query to a specific miner via dendrite (streaming).
+        Consumes the stream and returns the final populated synapse."""
         prompt = query["query"]
         tools = query.get("tools", [])
         date_filter = get_specified_date_filter(
@@ -249,16 +278,17 @@ class AdvancedScraperValidator(BaseScraperValidator):
             scoring_model=self.neuron.config.neuron.scoring_model,
         )
 
-        worker_url = self.neuron.miner_worker_urls.get(uid)
-        if not worker_url:
-            bt.logging.warning(f"[AI] No worker_url for uid={uid}, skipping")
-            return None
-
         axon = self.neuron.metagraph.axons[uid]
-        response = await self.neuron.worker_client.call_ai_search(
-            worker_url, synapse, axon, uid=uid
-        )
-        return response
+        final_synapse = None
+        async for value in self._dendrite_stream(
+            synapse,
+            axon,
+            uid,
+            timeout=max_execution_time + 5,
+        ):
+            if isinstance(value, bt.Synapse):
+                final_synapse = value
+        return final_synapse
 
     async def organic(
         self,

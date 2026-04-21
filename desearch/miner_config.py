@@ -1,6 +1,5 @@
 import json
 import os
-from urllib.parse import urlparse
 
 import bittensor as bt
 from pydantic import BaseModel, Field
@@ -17,24 +16,11 @@ class ConcurrencyConfig(BaseModel):
 
 
 class MinerManifest(BaseModel):
-    worker_url: str = Field(default="http://127.0.0.1:8000")
     concurrency: ConcurrencyConfig = Field(default_factory=ConcurrencyConfig)
 
 
-def _is_valid_worker_url(url: str) -> bool:
-    parsed = urlparse(url)
-    return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
-
-
 def normalize_miner_manifest(data: dict) -> MinerManifest:
-    """Parse and validate a miner manifest dict."""
-    manifest = MinerManifest.model_validate(data)
-
-    if not _is_valid_worker_url(manifest.worker_url):
-        raise ValueError(f"Invalid worker URL: {manifest.worker_url}")
-
-    manifest.worker_url = manifest.worker_url.rstrip("/")
-    return manifest
+    return MinerManifest.model_validate(data)
 
 
 def default_miner_manifest() -> MinerManifest:
@@ -56,6 +42,6 @@ def load_miner_manifest(path: str) -> MinerManifest:
     manifest = normalize_miner_manifest(data)
     bt.logging.info(
         f"Loaded miner manifest from {expanded_path}: "
-        f"worker_url={manifest.worker_url} concurrency={manifest.concurrency.model_dump()}"
+        f"concurrency={manifest.concurrency.model_dump()}"
     )
     return manifest

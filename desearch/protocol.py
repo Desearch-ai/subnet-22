@@ -15,10 +15,18 @@ from desearch.synapse import StreamingSynapse, Synapse
 
 
 class IsAlive(Synapse):
-    manifest: Dict[str, Any] = pydantic.Field(
-        default_factory=dict,
+    # Remove after migration
+    answer: Optional[str] = None
+    completion: Optional[str] = pydantic.Field(
+        None,
+        title="Completion",
+        description="Completion status of the current StreamPrompting object. This attribute is mutable and can be updated.",
+    )
+
+    manifest: Optional[Dict[str, Any]] = pydantic.Field(
+        None,
         title="Miner Manifest",
-        description="Miner worker manifest: worker_url and per-search-type concurrency.",
+        description="Miner manifest: per-search-type concurrency. Optional; older miners omit it.",
     )
 
     def get_required_fields(self):

@@ -1,4 +1,4 @@
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 import bittensor as bt
 import torch
@@ -69,6 +69,15 @@ class WebScraperValidator(BaseScraperValidator):
             penalty_functions=penalty_functions,
         )
 
+    def _build_synapse(
+        self, prompt: str, params: Dict[str, Any]
+    ) -> WebSearchSynapse:
+        return WebSearchSynapse(
+            **params,
+            query=prompt,
+            max_execution_time=self.max_execution_time,
+        )
+
     async def call_miner(
         self,
         prompt: str,
@@ -78,24 +87,8 @@ class WebScraperValidator(BaseScraperValidator):
         uid, axon = await self.neuron.get_random_miner(
             uid=uid, search_type=self.search_type
         )
-        worker_url = self.neuron.miner_worker_urls.get(uid)
-
-        synapse = WebSearchSynapse(
-            **params,
-            query=prompt,
-            max_execution_time=self.max_execution_time,
-        )
-
-        response = await self.neuron.worker_client.call_json_search(
-            worker_url,
-            "/web/search",
-            synapse.model_copy(),
-            WebSearchSynapse,
-            axon,
-            uid=uid,
-            search_type=self.search_type,
-        )
-
+        synapse = self._build_synapse(prompt, params)
+        response = await self._dendrite_call(axon, synapse.model_copy(), uid)
         return response, uid, axon
 
     async def send_scoring_query(
@@ -103,35 +96,14 @@ class WebScraperValidator(BaseScraperValidator):
         query: dict,
         uid: int,
     ) -> Optional[object]:
-        """
-        Send a scoring query to a specific miner via worker URL.
-        Called by QueryScheduler; returns the fully-populated synapse.
-        """
+        """Send a scoring query to a specific miner via dendrite.
+        Called by QueryScheduler; returns the fully-populated synapse."""
         prompt = query.get("query", "")
         params = {k: v for k, v in query.items() if k != "query"}
 
-        worker_url = self.neuron.miner_worker_urls.get(uid)
-        if not worker_url:
-            bt.logging.warning(f"[Web] No worker_url for uid={uid}, skipping")
-            return None
-
-        synapse = WebSearchSynapse(
-            **params,
-            query=prompt,
-            max_execution_time=self.max_execution_time,
-        )
-
+        synapse = self._build_synapse(prompt, params)
         axon = self.neuron.metagraph.axons[uid]
-        response = await self.neuron.worker_client.call_json_search(
-            worker_url,
-            "/web/search",
-            synapse,
-            WebSearchSynapse,
-            axon,
-            uid=uid,
-            search_type=self.search_type,
-        )
-        return response
+        return await self._dendrite_call(axon, synapse, uid)
 
     async def organic(
         self,

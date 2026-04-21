@@ -10,7 +10,11 @@ import bittensor as bt
 import torch
 from bittensor.core.metagraph import AsyncMetagraph
 
-from desearch.miner_config import SEARCH_TYPES, normalize_miner_manifest
+from desearch.miner_config import (
+    SEARCH_TYPES,
+    default_miner_manifest,
+    normalize_miner_manifest,
+)
 from desearch.protocol import IsAlive
 from desearch.redis.redis_client import close_redis, initialize_redis
 from desearch.redis.utils import (
@@ -20,7 +24,6 @@ from desearch.redis.utils import (
 from desearch.utils import resync_metagraph
 from neurons.validators.base_validator import AbstractNeuron
 from neurons.validators.clients.utility_api_client import UtilityAPIClient
-from neurons.validators.clients.worker_client import WorkerClient
 from neurons.validators.config import add_args, check_config, config
 from neurons.validators.proxy.uid_manager import UIDManager
 from neurons.validators.scoring import capacity, miner_db
@@ -76,8 +79,6 @@ class Neuron(AbstractNeuron):
         self.available_uids = []
         self.uid_manager = UIDManager()
         self.validator_identity = None
-        self.miner_worker_urls: dict[int, str] = {}
-        self.worker_client: Optional[WorkerClient] = None
         self.scoring_store: Optional[ScoringStore] = None
         self.should_exit = False
 
@@ -170,7 +171,9 @@ class Neuron(AbstractNeuron):
         bt.logging.info(f"sync_available_uids finished in: {execution_time}s")
 
     async def check_uid(self, axon, uid):
-        """Asynchronously check if a UID is available and has a valid worker_url."""
+        """Ping the miner's axon via IsAlive and register its declared
+        concurrency per search type. Miners that omit a manifest fall back
+        to the default concurrency (1 per type)."""
 
         dendrite = next(self.dendrites)
         response = await dendrite(axon, IsAlive(), deserialize=False, timeout=10)
@@ -178,16 +181,12 @@ class Neuron(AbstractNeuron):
         if not response.is_success:
             raise Exception(f"UID {uid} is not active")
 
-        manifest_data = response.manifest
-        if not manifest_data:
-            raise Exception(f"UID {uid} has no manifest")
-
+        manifest_data = getattr(response, "manifest", None) or {}
         try:
             manifest = normalize_miner_manifest(manifest_data)
-        except (ValueError, Exception) as e:
-            raise Exception(f"UID {uid} bad manifest: {e}")
-
-        self.miner_worker_urls[uid] = manifest.worker_url
+        except Exception as e:
+            bt.logging.warning(f"UID {uid} bad manifest, using defaults: {e}")
+            manifest = default_miner_manifest()
 
         for st in SEARCH_TYPES:
             declared = getattr(manifest.concurrency, st, 1)
@@ -368,8 +367,6 @@ class Neuron(AbstractNeuron):
             db_path = os.path.join(state_dir, "miner_state.db")
             await miner_db.initialize(db_path)
 
-            self.worker_client = WorkerClient(wallet=self.wallet)
-
             await self.sync_available_uids()  # Initial sync
 
             self.loop = asyncio.get_event_loop()
@@ -437,9 +434,6 @@ class Neuron(AbstractNeuron):
         bt.logging.info("Stopping Neuron")
 
         await close_redis()
-
-        if self.worker_client:
-            await self.worker_client.close()
 
         await miner_db.close()
 

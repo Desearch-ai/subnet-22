@@ -12,6 +12,7 @@ from neurons.validators.clients.miner_response_logger import (
     build_reward_payload,
     submit_logs_best_effort,
 )
+from neurons.validators.scoring import capacity
 
 
 class BaseScraperValidator:
@@ -41,6 +42,30 @@ class BaseScraperValidator:
 
         self.reward_functions = reward_functions
         self.penalty_functions = penalty_functions
+
+    async def _dendrite_call(self, axon, synapse, uid: int):
+        """Send a non-streaming synapse to a miner axon via dendrite. Tracks
+        per-call success so consecutive failures flag the miner unreachable."""
+        dendrite = next(self.neuron.dendrites)
+        success = False
+
+        try:
+            response = await dendrite.call(
+                target_axon=axon,
+                synapse=synapse,
+                timeout=synapse.max_execution_time + 5,
+                deserialize=False,
+            )
+            status = getattr(getattr(response, "dendrite", None), "status_code", None)
+            success = status == 200
+        except Exception as e:
+            bt.logging.error(
+                f"[{self.search_type}] dendrite call failed uid={uid}: {e}"
+            )
+            response = synapse
+
+        await capacity.note_worker_result(uid, self.search_type, success)
+        return response
 
     async def _save_organic_for_scoring(self, uid: int, response) -> None:
         """Persist an organic response in ScoringStore under the current UTC hour."""
