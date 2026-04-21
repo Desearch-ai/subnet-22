@@ -19,7 +19,6 @@ HARD_CAP = 100
 FREEZE_FAILURES = 4
 FREEZE_HOURS = 12
 
-# Unreachable-miner handling.
 UNREACHABLE_FAILURE_THRESHOLD = 3
 UNREACHABLE_DECAY_FACTOR = 0.9
 UNREACHABLE_DECAY_INTERVAL_SEC = 5 * 60
@@ -33,8 +32,20 @@ async def get_all_verified(search_type: str) -> dict[int, int]:
     return await miner_db.get_all_verified(search_type)
 
 
-async def register_miner(uid: int, search_type: str, declared: int) -> None:
-    await miner_db.register_miner(uid, search_type, declared)
+async def register_miner(
+    uid: int,
+    search_type: str,
+    declared: int,
+    hotkey: str,
+    coldkey: str,
+) -> None:
+    await miner_db.register_miner(
+        uid=uid,
+        search_type=search_type,
+        declared=declared,
+        hotkey=hotkey,
+        coldkey=coldkey,
+    )
 
 
 async def update_after_scoring(
@@ -45,8 +56,11 @@ async def update_after_scoring(
 ) -> None:
     row = await miner_db.get_concurrency_row(uid, search_type)
     if row is None:
-        await miner_db.register_miner(uid, search_type, declared=1)
-        row = await miner_db.get_concurrency_row(uid, search_type)
+        bt.logging.warning(
+            f"[Capacity] update_after_scoring skipped — no row for "
+            f"uid={uid} {search_type} (miner never registered?)"
+        )
+        return
 
     verified = row["verified"]
     declared = row["declared"]
@@ -64,7 +78,16 @@ async def update_after_scoring(
     else:
         new_verified = verified
 
-    await miner_db.insert_window(uid, search_type, window_start, quality, passed)
+    await miner_db.insert_window(
+        uid=uid,
+        search_type=search_type,
+        window_start=window_start,
+        hotkey=row["hotkey"],
+        coldkey=row["coldkey"],
+        quality_score=quality,
+        passed=passed,
+        verified_concurrency=new_verified,
+    )
 
     new_frozen_until = frozen_until
     if not passed:
@@ -72,8 +95,8 @@ async def update_after_scoring(
         if fail_count >= FREEZE_FAILURES and not is_frozen:
             new_frozen_until = (now + timedelta(hours=FREEZE_HOURS)).isoformat()
             bt.logging.warning(
-                f"[Capacity] Freezing uid={uid} {search_type} for {FREEZE_HOURS}h "
-                f"({fail_count} failures in {FREEZE_HOURS}h)"
+                f"[Capacity] Freezing uid={uid} {search_type} for "
+                f"{FREEZE_HOURS}h ({fail_count} failures in {FREEZE_HOURS}h)"
             )
 
     quality_avg = 0.8 * row["quality_avg"] + 0.2 * quality

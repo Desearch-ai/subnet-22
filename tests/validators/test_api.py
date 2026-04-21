@@ -1,6 +1,6 @@
 import sys
 import unittest
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from fastapi.testclient import TestClient
 
@@ -25,28 +25,30 @@ sys.argv = [
 
 from desearch.protocol import Model, ResultType
 from neurons.validators.api import app
+from neurons.validators.dependencies import verify_access_key
 
 sys.argv = [sys.argv[0]]
 
 
 class TestAPI(unittest.TestCase):
     def setUp(self):
+        app.dependency_overrides[verify_access_key] = lambda: None
         self.client = TestClient(app)
-
         self.headers = {"access-key": "test"}
+
+    def tearDown(self):
+        app.dependency_overrides.clear()
 
     @staticmethod
     async def mock_async_generator(items):
         for item in items:
             yield item
 
-    @patch("neurons.validators.api.neu")
-    def test_search(self, mock_neu):
-
+    @patch("neurons.validators.api.api")
+    def test_search(self, mock_api):
         mock_organic = AsyncMock()
         mock_organic.return_value = self.mock_async_generator(["chunk1", "chunk2"])
-
-        mock_neu.advanced_scraper_validator.organic = mock_organic
+        mock_api.advanced_scraper_validator.organic = mock_organic
 
         payload = {
             "prompt": "What is blockchain?",
@@ -58,16 +60,14 @@ class TestAPI(unittest.TestCase):
         response = self.client.post("/search", json=payload, headers=self.headers)
 
         self.assertEqual(response.status_code, 200)
-
-        mock_organic.assert_called_once_with(
-            {
-                "content": payload["prompt"],
-                "tools": payload["tools"],
-                "date_filter": payload["date_filter"],
-            },
-            Model(payload["model"]),
-            result_type=ResultType(payload["result_type"]),
-        )
+        mock_organic.assert_called_once()
+        call_args, call_kwargs = mock_organic.call_args
+        query_arg = call_args[0]
+        self.assertEqual(query_arg["content"], payload["prompt"])
+        self.assertEqual(query_arg["tools"], payload["tools"])
+        self.assertEqual(query_arg["date_filter"], payload["date_filter"])
+        self.assertEqual(call_args[1], Model(payload["model"]))
+        self.assertEqual(call_kwargs["result_type"], ResultType(payload["result_type"]))
 
 
 if __name__ == "__main__":

@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field, conint
 
 from desearch import __version__
 from desearch.dataset.date_filters import DateFilterType
+from desearch.miner_config import SEARCH_TYPES
 from desearch.protocol import (
     ChatHistoryItem,
     Model,
@@ -26,10 +27,11 @@ from desearch.protocol import (
     TwitterScraperTweet,
     WebSearchResultList,
 )
-from neurons.validators.dependencies import verify_access_key
-from neurons.validators.env import PORT
-from neurons.validators.validator_api import ValidatorAPI
 from neurons.validators.clients.validator_service_client import ValidatorServiceClient
+from neurons.validators.dependencies import verify_access_key
+from neurons.validators.env import MINER_DB_PATH, PORT
+from neurons.validators.scoring import miner_db
+from neurons.validators.validator_api import ValidatorAPI
 
 
 async def get_validator_config():
@@ -48,24 +50,31 @@ async def get_validator_config():
 
 
 api: ValidatorAPI = None
+validator_identity: Optional[dict] = None
 
 
 @asynccontextmanager
 async def lifespan(app):
     # Start the validator api when the app starts
-    global api
+    global api, validator_identity
 
     config_payload = await get_validator_config()
+    validator_identity = config_payload["validator_identity"]
+
+    await miner_db.initialize(MINER_DB_PATH, readonly=True)
 
     api = ValidatorAPI(
         config=config_payload["config"],
-        validator_identity=config_payload["validator_identity"],
+        validator_identity=validator_identity,
     )
     await api.start()
 
-    yield
-
-    await api.stop()
+    try:
+        yield
+    finally:
+        if api is not None:
+            await api.stop()
+        await miner_db.close()
 
 
 app = FastAPI(lifespan=lifespan)
@@ -592,6 +601,165 @@ async def health_check(_=Depends(verify_access_key)):
             return {"status": "healthy", "version": __version__}
         except aiohttp.ClientError:
             raise HTTPException(status_code=503)
+
+
+# Public miner stats
+# TODO: refactor API in the next release
+
+
+class MinerTypeStateOut(BaseModel):
+    verified: int
+    declared: int
+    quality_avg: float
+    frozen_until: Optional[str] = None
+    unreachable_since: Optional[str] = None
+
+
+class ScoringWindowOut(BaseModel):
+    window_start: str
+    quality_score: float
+    passed: bool
+    verified_concurrency: int
+
+
+class ValidatorIdentityOut(BaseModel):
+    uid: Optional[int] = None
+    hotkey: Optional[str] = None
+    coldkey: Optional[str] = None
+    netuid: Optional[int] = None
+
+
+class MinerListItemOut(BaseModel):
+    hotkey: str
+    uid: int
+    coldkey: str
+    per_type: dict[str, MinerTypeStateOut]
+
+
+class MinerDetailOut(BaseModel):
+    hotkey: str
+    uid: int
+    coldkey: str
+    per_type: dict[str, MinerTypeStateOut]
+    windows: dict[str, List[ScoringWindowOut]]
+
+
+class MinerListResponse(BaseModel):
+    validator: ValidatorIdentityOut
+    miners: List[MinerListItemOut]
+
+
+class MinerDetailResponse(BaseModel):
+    validator: ValidatorIdentityOut
+    miner: MinerDetailOut
+
+
+def _empty_miner_state() -> dict:
+    return {
+        "verified": 1,
+        "declared": 0,
+        "quality_avg": 0.0,
+        "frozen_until": None,
+        "unreachable_since": None,
+    }
+
+
+def _miner_state_from_row(row: dict) -> dict:
+    return {
+        "verified": row["verified"],
+        "declared": row["declared"],
+        "quality_avg": row["quality_avg"],
+        "frozen_until": row["frozen_until"],
+        "unreachable_since": row["unreachable_since"],
+    }
+
+
+@app.get(
+    "/public/miners",
+    response_model=MinerListResponse,
+    summary="List active miners (no auth)",
+    description="Aggregated miner state this validator has observed over the "
+    "last scoring windows. No authentication required.",
+    tags=["miners"],
+)
+async def public_list_miners():
+    try:
+        rows = await miner_db.get_all_rows()
+    except Exception as e:
+        bt.logging.error(f"/public/miners read failed: {e}")
+        raise HTTPException(status_code=503, detail="Miner state unavailable")
+
+    grouped: dict[str, dict] = {}
+    for row in rows:
+        hotkey = row["hotkey"]
+        entry = grouped.setdefault(
+            hotkey,
+            {
+                "hotkey": hotkey,
+                "uid": row["uid"],
+                "coldkey": row["coldkey"],
+                "per_type": {st: _empty_miner_state() for st in SEARCH_TYPES},
+            },
+        )
+        entry["per_type"][row["search_type"]] = _miner_state_from_row(row)
+
+    return {
+        "validator": validator_identity or {},
+        "miners": sorted(grouped.values(), key=lambda m: m["uid"]),
+    }
+
+
+@app.get(
+    "/public/miners/{hotkey}",
+    response_model=MinerDetailResponse,
+    summary="Per-miner state and 72h scoring history (no auth)",
+    description="Current per-search-type state plus the last 72 hours of "
+    "scoring windows. No authentication required.",
+    tags=["miners"],
+)
+async def public_miner_detail(
+    hotkey: str = Path(..., description="Miner hotkey (ss58)"),
+):
+    try:
+        rows = await miner_db.get_rows_for_hotkey(hotkey)
+    except Exception as e:
+        bt.logging.error(f"/public/miners/{{hotkey}} read failed: {e}")
+        raise HTTPException(status_code=503, detail="Miner state unavailable")
+
+    if not rows:
+        raise HTTPException(status_code=404, detail="Miner not found")
+
+    per_type: dict[str, dict] = {st: _empty_miner_state() for st in SEARCH_TYPES}
+    for row in rows:
+        per_type[row["search_type"]] = _miner_state_from_row(row)
+
+    windows: dict[str, list] = {}
+    try:
+        for st in SEARCH_TYPES:
+            rows_win = await miner_db.get_windows_for_hotkey(hotkey, st, since_hours=72)
+            windows[st] = [
+                {
+                    "window_start": w["window_start"],
+                    "quality_score": w["quality_score"],
+                    "passed": bool(w["passed"]),
+                    "verified_concurrency": w["verified_concurrency"],
+                }
+                for w in rows_win
+            ]
+    except Exception as e:
+        bt.logging.error(f"/public/miners/{hotkey} windows read failed: {e}")
+        raise HTTPException(status_code=503, detail="Miner state unavailable")
+
+    return {
+        "validator": validator_identity or {},
+        "miner": {
+            "hotkey": hotkey,
+            "uid": rows[0]["uid"],
+            "coldkey": rows[0]["coldkey"],
+            "per_type": per_type,
+            "windows": windows,
+        },
+    }
 
 
 def custom_openapi():
