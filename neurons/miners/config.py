@@ -28,7 +28,10 @@ def check_config(cls, config: "bt.Config"):
 def get_config() -> "bt.Config":
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--axon.port", type=int, default=8098, help="Port to run the axon on."
+        "--axon.port",
+        type=int,
+        default=int(os.environ.get("AXON_PORT", 8098)),
+        help="Port to run the axon on.",
     )
     # External IP
     parser.add_argument(
@@ -40,7 +43,7 @@ def get_config() -> "bt.Config":
     # Subtensor network to connect to
     parser.add_argument(
         "--subtensor.network",
-        default="finney",
+        default=os.environ.get("SUBTENSOR_NETWORK", "finney"),
         help="Bittensor network to connect to.",
     )
     # Chain endpoint to connect to
@@ -50,7 +53,12 @@ def get_config() -> "bt.Config":
         help="Chain endpoint to connect to.",
     )
     # Adds override arguments for network and netuid.
-    parser.add_argument("--netuid", type=int, default=22, help="The chain subnet uid.")
+    parser.add_argument(
+        "--netuid",
+        type=int,
+        default=int(os.environ.get("NETUID", 22)),
+        help="The chain subnet uid.",
+    )
 
     parser.add_argument(
         "--miner.root",
@@ -68,7 +76,7 @@ def get_config() -> "bt.Config":
     parser.add_argument(
         "--miner.config_path",
         type=str,
-        help="Path to miner worker config JSON file.",
+        help="Path to miner manifest JSON (per-search-type concurrency).",
         default="./neurons/miners/workers.json",
     )
 
@@ -125,6 +133,14 @@ def get_config() -> "bt.Config":
 
     # Adds axon specific arguments i.e. --axon.port ...
     bt.Axon.add_args(parser)
+
+    # Override wallet defaults from .env (CLI flags still win).
+    parser.set_defaults(
+        **{
+            "wallet.name": os.environ.get("WALLET_NAME", "miner"),
+            "wallet.hotkey": os.environ.get("WALLET_HOTKEY", "default"),
+        }
+    )
 
     # Activating the parser to read any command-line inputs.
     # To print help message, run python3 desearch/miner.py --help

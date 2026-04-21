@@ -3,7 +3,7 @@
 A validator runs three PM2 processes (managed by `run.sh`):
 
 1. `desearch_validator_process` — core neuron (`neurons/validators/validator_service.py`).
-   Syncs the metagraph, generates synthetic queries, dispatches to miners via signed HTTP,
+   Syncs the metagraph, generates synthetic queries, dispatches to miners via dendrite,
    scores responses, and writes weights on-chain.
 2. `desearch_api_process` — public FastAPI (`neurons/validators/api.py`) that serves organic
    search requests to paying consumers.

@@ -1,13 +1,21 @@
 import argparse
 import asyncio
 import copy
+import os
 import sys
 import time
 import traceback
 from abc import ABC, abstractmethod
 from collections import deque
 from functools import partial
+from pathlib import Path
 from typing import Dict, Tuple
+
+from dotenv import load_dotenv
+
+load_dotenv(Path(__file__).parent / ".env")
+
+print(os.environ)
 
 import bittensor as bt
 from bittensor.core.metagraph import AsyncMetagraph

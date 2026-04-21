@@ -20,7 +20,7 @@ python -m pip install -r requirements.txt
 python -m pip install -e .
 ```
 
-## Configure the worker manifest
+## Configure the miner manifest
 
 Copy the template and edit for your deployment:
 

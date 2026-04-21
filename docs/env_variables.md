@@ -46,10 +46,8 @@ CLI args passed to `pm2 start … -- …` take precedence over `.env` values.
 | `SERPAPI_API_KEY` | yes | Web search (miners). |
 | `APIFY_API_KEY` | yes | Twitter/X scraping. |
 | `TWITTER_BEARER_TOKEN` | optional | Direct Twitter API access (`desearch/services/twitter_api_wrapper.py`). Not required if you rely on Apify alone. |
-| `WALLET_NAME` | no | Default wallet name used by axon and worker API (default `miner`). `--wallet.name` overrides. |
+| `WALLET_NAME` | no | Default wallet name for the axon (default `miner`). `--wallet.name` overrides. |
 | `WALLET_HOTKEY` | no | Default hotkey (default `default`). `--wallet.hotkey` overrides. |
 | `SUBTENSOR_NETWORK` | no | `finney` / `test` / `local` (default `finney`). `--subtensor.network` overrides. |
 | `NETUID` | no | Subnet UID (default `22`). `--netuid` overrides. |
-| `AXON_PORT` | no | Axon port (default `14000`). |
-| `WORKER_HOST` | no | Worker API bind address (default `0.0.0.0`). |
-| `WORKER_PORT` | no | Worker API port (default `8000`). |
+| `AXON_PORT` | no | Axon port (default `14000`). `--axon.port` overrides. |
