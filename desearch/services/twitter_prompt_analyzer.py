@@ -6,7 +6,6 @@ import random
 from desearch.utils import call_openai
 from desearch.protocol import TwitterPromptAnalysisResult
 import bittensor as bt
-from desearch.dataset import MockTwitterQuestionsDataset
 from desearch.services.twitter_api_wrapper import TwitterAPIClient
 from desearch.dataset.date_filters import DateFilter, DateFilterType
 
@@ -425,41 +424,3 @@ class TwitterPromptAnalyzer:
                     )
 
 
-if __name__ == "__main__":
-    client = TwitterPromptAnalyzer()
-    # result = asyncio.run(client.analyse_prompt_and_fetch_tweets("Get tweets from user @gigch_eth"))
-
-    dt = MockTwitterQuestionsDataset()
-    questions = []
-    for topic in dt.topics:
-        questions = []
-        for template in dt.question_templates:
-            question = template.format(topic)
-            questions.append(question)
-
-        results = asyncio.run(
-            asyncio.gather(
-                *(
-                    client.analyse_prompt_and_fetch_tweets(question)
-                    for question in questions
-                )
-            )
-        )
-        for (result_json, prompt_analysis), qs in zip(results, questions):
-            tweets_amount = result_json.get("meta", {}).get("result_count", 0)
-            if tweets_amount <= 0:
-                print(
-                    "=====================START result_json======================================="
-                )
-                print(tweets_amount, "     ===  ", question)
-                print("   ")
-                print(
-                    "=====================START prompt_analysis ======================================="
-                )
-                print(prompt_analysis.api_params)
-                print(
-                    "=====================END prompt_analysis ======================================="
-                )
-                print(
-                    "=====================END result_json======================================="
-                )

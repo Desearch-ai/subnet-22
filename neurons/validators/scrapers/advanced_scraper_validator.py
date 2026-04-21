@@ -263,6 +263,7 @@ class AdvancedScraperValidator(BaseScraperValidator):
         synapse = ScraperStreamingSynapse(
             prompt=prompt,
             model=Model.NOVA,
+            result_type=ResultType.LINKS_WITH_FINAL_SUMMARY,
             start_date=start_date,
             end_date=end_date,
             date_filter_type=(
