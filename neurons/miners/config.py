@@ -77,7 +77,7 @@ def get_config() -> "bt.Config":
         "--miner.config_path",
         type=str,
         help="Path to miner manifest JSON (per-search-type concurrency).",
-        default="./neurons/miners/workers.json",
+        default="./neurons/miners/manifest.json",
     )
 
     # Run config.

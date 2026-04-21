@@ -43,8 +43,8 @@ into their products.
 
 ## High-Level Architecture
 
-- **Miners** run two processes: a Bittensor **axon** that responds to `IsAlive` pings, and
-  a signed-HTTP **worker API** that receives search queries pushed by validators.
+- **Miners** run a single Bittensor **axon** that answers `IsAlive` and all search synapses
+  (AI / Twitter / Web). Validators call the axon directly via dendrite.
 - **Validators** generate synthetic queries every UTC hour, dispatch them to miners,
   independently verify results against ground-truth scrapers (Apify, ScrapingDog), and
   write weights on-chain. They also expose an organic-search FastAPI that the Desearch
@@ -67,7 +67,8 @@ Expected setup steps:
 
 - Prepare a server with Python ≥ 3.10, PM2, and a registered hotkey on netuid 22.
 - Configure credentials for OpenAI, SerpAPI, and Apify.
-- Run the axon and worker API processes.
+- Declare per-search-type concurrency in `neurons/miners/manifest.json`.
+- Run the axon with PM2.
 
 See the [Miner Setup Guide](./docs/running_a_miner.md) for full instructions.
 
