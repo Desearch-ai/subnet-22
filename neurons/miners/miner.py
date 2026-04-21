@@ -1,7 +1,6 @@
 import argparse
 import asyncio
 import copy
-import os
 import sys
 import time
 import traceback
@@ -146,7 +145,9 @@ class StreamMiner(ABC):
         bt.logging.info("answered to be active")
 
         try:
-            self.manifest = load_miner_manifest(self.config.miner.config_path)
+            self.manifest = await asyncio.to_thread(
+                load_miner_manifest, self.config.miner.config_path
+            )
         except Exception as e:
             bt.logging.warning(
                 f"Failed to reload miner manifest, using cached value: {e}"
