@@ -1,7 +1,7 @@
 """
 SQLite persistence for miner concurrency state and scoring window history.
 
-Module-level functions operating on a shared async connection.
+Module-level functions operate on a shared async connection.
 Initialize once at startup with ``await initialize(db_path)``.
 """
 
@@ -20,6 +20,8 @@ _SCHEMA = """
 CREATE TABLE IF NOT EXISTS miner_concurrency (
     uid                   INTEGER NOT NULL,
     search_type           TEXT    NOT NULL,
+    hotkey                TEXT    NOT NULL,
+    coldkey               TEXT    NOT NULL,
     verified              INTEGER NOT NULL DEFAULT 1,
     declared              INTEGER NOT NULL DEFAULT 1,
     pending_declared      INTEGER,
@@ -36,11 +38,16 @@ CREATE TABLE IF NOT EXISTS scoring_windows (
     uid              INTEGER NOT NULL,
     search_type      TEXT    NOT NULL,
     window_start     TEXT    NOT NULL,
+    hotkey           TEXT    NOT NULL,
+    coldkey          TEXT    NOT NULL,
     quality_score    REAL    NOT NULL,
     passed           INTEGER NOT NULL DEFAULT 1,
     created_at       TEXT    NOT NULL,
     PRIMARY KEY (uid, search_type, window_start)
 );
+
+CREATE INDEX IF NOT EXISTS idx_scoring_windows_created
+    ON scoring_windows (created_at);
 """
 
 
@@ -80,7 +87,6 @@ async def _purge_old_history() -> None:
 
 
 async def _decay_stale_verified() -> None:
-    """Reset verified→1 for miners not updated within STALENESS_HOURS."""
     cutoff = (datetime.now(timezone.utc) - timedelta(hours=STALENESS_HOURS)).isoformat()
     result = await _db.execute(
         "UPDATE miner_concurrency SET verified = 1 WHERE updated_at < ?", (cutoff,)
@@ -109,10 +115,15 @@ async def get_all_verified(search_type: str) -> dict[int, int]:
     return {row["uid"]: row["verified"] async for row in cursor}
 
 
-async def get_all_concurrency_data(search_type: str) -> dict[int, tuple[float, int]]:
+async def get_all_concurrency_data(
+    search_type: str,
+) -> dict[int, tuple[float, int]]:
     """Return {uid: (quality_avg, verified)} for all miners of a given search type."""
     cursor = await _db.execute(
-        "SELECT uid, quality_avg, verified FROM miner_concurrency WHERE search_type = ?",
+        """
+        SELECT uid, quality_avg, verified
+        FROM miner_concurrency WHERE search_type = ?
+        """,
         (search_type,),
     )
     return {row["uid"]: (row["quality_avg"], row["verified"]) async for row in cursor}
@@ -137,57 +148,73 @@ async def upsert_concurrency(
 ) -> None:
     await _db.execute(
         """
-        INSERT INTO miner_concurrency (uid, search_type, verified, declared, quality_avg, frozen_until, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(uid, search_type) DO UPDATE SET
-            verified = excluded.verified,
-            declared = excluded.declared,
-            quality_avg = excluded.quality_avg,
-            frozen_until = excluded.frozen_until,
-            updated_at = excluded.updated_at
+        UPDATE miner_concurrency
+        SET verified = ?,
+            declared = ?,
+            quality_avg = ?,
+            frozen_until = ?,
+            updated_at = ?
+        WHERE uid = ? AND search_type = ?
         """,
-        (uid, search_type, verified, declared, quality_avg, frozen_until, _now_iso()),
+        (
+            verified,
+            declared,
+            quality_avg,
+            frozen_until,
+            _now_iso(),
+            uid,
+            search_type,
+        ),
     )
     await _db.commit()
 
 
-async def register_miner(uid: int, search_type: str, declared: int) -> None:
-    """Create the row for a new miner, or stage a declared-concurrency change
-    into ``pending_declared`` for an existing one. Staged values are promoted
-    to live ``declared`` at the next hour boundary by ``promote_pending_declared``,
-    so mid-hour edits never disturb the scoring window in progress."""
+async def register_miner(
+    uid: int,
+    search_type: str,
+    declared: int,
+    hotkey: str,
+    coldkey: str,
+) -> None:
+    """Insert a new miner row, or refresh an existing one with the current
+    hotkey/coldkey from the caller's metagraph snapshot.
+
+    If the hotkey at this UID *changed* (deregister/re-register of a new
+    miner under the same UID), the stale row is deleted first so the new
+    holder starts fresh at verified=1 with no carried quality or flags.
+    If the hotkey is unchanged, the UPSERT refreshes identity columns and
+    stages a ``declared`` change into ``pending_declared`` (promoted at the
+    next hour boundary by ``promote_pending_declared`` so mid-hour edits
+    don't disturb an in-flight scoring window)."""
     now = _now_iso()
     await _db.execute(
         """
-        INSERT OR IGNORE INTO miner_concurrency (uid, search_type, verified, declared, quality_avg, updated_at)
-        VALUES (?, ?, 1, ?, 0.0, ?)
+        DELETE FROM miner_concurrency
+        WHERE uid = ? AND search_type = ? AND hotkey != ?
         """,
-        (uid, search_type, declared, now),
+        (uid, search_type, hotkey),
     )
-    # For existing rows, only stage a pending update when declared actually changes.
     await _db.execute(
         """
-        UPDATE miner_concurrency
-        SET pending_declared = ?, updated_at = ?
-        WHERE uid = ? AND search_type = ? AND declared != ?
+        INSERT INTO miner_concurrency
+            (uid, search_type, hotkey, coldkey, verified, declared,
+             quality_avg, updated_at)
+        VALUES (?, ?, ?, ?, 1, ?, 0.0, ?)
+        ON CONFLICT(uid, search_type) DO UPDATE SET
+            coldkey = excluded.coldkey,
+            updated_at = excluded.updated_at,
+            pending_declared = CASE
+                WHEN miner_concurrency.declared != excluded.declared
+                    THEN excluded.declared
+                ELSE NULL
+            END
         """,
-        (declared, now, uid, search_type, declared),
-    )
-    # Clear stale pending if the miner reverted back to live declared.
-    await _db.execute(
-        """
-        UPDATE miner_concurrency
-        SET pending_declared = NULL, updated_at = ?
-        WHERE uid = ? AND search_type = ? AND declared = ? AND pending_declared IS NOT NULL
-        """,
-        (now, uid, search_type, declared),
+        (uid, search_type, hotkey, coldkey, declared, now),
     )
     await _db.commit()
 
 
 async def promote_pending_declared() -> int:
-    """Move ``pending_declared`` into live ``declared`` for every miner with a
-    staged update. Returns the number of rows promoted."""
     cursor = await _db.execute(
         """
         UPDATE miner_concurrency
@@ -206,15 +233,28 @@ async def insert_window(
     uid: int,
     search_type: str,
     window_start: str,
+    hotkey: str,
+    coldkey: str,
     quality_score: float,
     passed: bool,
 ) -> None:
     await _db.execute(
         """
-        INSERT OR REPLACE INTO scoring_windows (uid, search_type, window_start, quality_score, passed, created_at)
-        VALUES (?, ?, ?, ?, ?, ?)
+        INSERT OR REPLACE INTO scoring_windows
+            (uid, search_type, window_start, hotkey, coldkey,
+             quality_score, passed, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (uid, search_type, window_start, quality_score, int(passed), _now_iso()),
+        (
+            uid,
+            search_type,
+            window_start,
+            hotkey,
+            coldkey,
+            quality_score,
+            int(passed),
+            _now_iso(),
+        ),
     )
     await _db.commit()
 
@@ -235,9 +275,10 @@ async def count_failed_windows(
 
 
 async def record_call_success(uid: int, search_type: str) -> bool:
-    """Clear consecutive_failures + unreachable_since. Returns True if this
-    call ended an unreachable state (so the caller can log recovery)."""
-
+    """Clear consecutive_failures and unreachable_since for an already-registered
+    miner. Returns ``True`` when this call ended an unreachable state so the
+    caller can log the recovery. No-op (returns ``False``) if the row doesn't
+    exist — registration is the exclusive job of ``register_miner``."""
     cursor = await _db.execute(
         """
         SELECT consecutive_failures, unreachable_since
@@ -246,44 +287,31 @@ async def record_call_success(uid: int, search_type: str) -> bool:
         (uid, search_type),
     )
     row = await cursor.fetchone()
+    if row is None:
+        return False
+    if row["consecutive_failures"] == 0 and row["unreachable_since"] is None:
+        return False
 
-    if row is not None:
-        if row["consecutive_failures"] == 0 and row["unreachable_since"] is None:
-            return False  # already clean — no write needed
-        was_unreachable = bool(row["unreachable_since"])
-        await _db.execute(
-            """
-            UPDATE miner_concurrency
-            SET consecutive_failures = 0,
-                unreachable_since = NULL,
-                last_decay_at = NULL,
-                updated_at = ?
-            WHERE uid = ? AND search_type = ?
-            """,
-            (_now_iso(), uid, search_type),
-        )
-        await _db.commit()
-        return was_unreachable
-
-    # New miner — defensive insert; register_miner usually runs first.
+    was_unreachable = bool(row["unreachable_since"])
     await _db.execute(
         """
-        INSERT OR IGNORE INTO miner_concurrency
-            (uid, search_type, verified, declared, quality_avg, updated_at)
-        VALUES (?, ?, 1, 1, 0.0, ?)
+        UPDATE miner_concurrency
+        SET consecutive_failures = 0,
+            unreachable_since = NULL,
+            last_decay_at = NULL,
+            updated_at = ?
+        WHERE uid = ? AND search_type = ?
         """,
-        (uid, search_type, _now_iso()),
+        (_now_iso(), uid, search_type),
     )
     await _db.commit()
-    return False
+    return was_unreachable
 
 
 async def record_call_failure(uid: int, search_type: str, threshold: int) -> bool:
-    """Increment consecutive_failures and mark unreachable when the counter
-    crosses ``threshold`` for the first time. Returns True on that transition.
-
-    One SELECT + one conditional UPDATE/INSERT per call (two DB statements
-    instead of the previous four)."""
+    """Increment ``consecutive_failures`` and mark unreachable when the counter
+    crosses ``threshold`` for the first time. Returns ``True`` on that
+    transition. No-op (returns ``False``) if the row doesn't exist."""
     cursor = await _db.execute(
         """
         SELECT consecutive_failures, unreachable_since
@@ -292,32 +320,10 @@ async def record_call_failure(uid: int, search_type: str, threshold: int) -> boo
         (uid, search_type),
     )
     row = await cursor.fetchone()
-    now = _now_iso()
-
     if row is None:
-        new_count = 1
-        flip = new_count >= threshold
-        unreachable_since = now if flip else None
-        last_decay_at = now if flip else None
-        await _db.execute(
-            """
-            INSERT INTO miner_concurrency
-                (uid, search_type, verified, declared, quality_avg,
-                 consecutive_failures, unreachable_since, last_decay_at, updated_at)
-            VALUES (?, ?, 1, 1, 0.0, ?, ?, ?, ?)
-            """,
-            (
-                uid,
-                search_type,
-                new_count,
-                unreachable_since,
-                last_decay_at,
-                now,
-            ),
-        )
-        await _db.commit()
-        return flip
+        return False
 
+    now = _now_iso()
     new_count = row["consecutive_failures"] + 1
     was_unreachable = row["unreachable_since"] is not None
     flip = new_count >= threshold and not was_unreachable

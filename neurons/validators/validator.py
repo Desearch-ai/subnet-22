@@ -22,6 +22,7 @@ from desearch.redis.utils import (
     save_moving_averaged_scores,
 )
 from desearch.utils import resync_metagraph
+from neurons.validators import env
 from neurons.validators.base_validator import AbstractNeuron
 from neurons.validators.clients.utility_api_client import UtilityAPIClient
 from neurons.validators.config import add_args, check_config, config
@@ -188,9 +189,18 @@ class Neuron(AbstractNeuron):
             bt.logging.warning(f"UID {uid} bad manifest, using defaults: {e}")
             manifest = default_miner_manifest()
 
+        hotkey = self.metagraph.hotkeys[uid]
+        coldkey = self.metagraph.neurons[uid].coldkey
+
         for st in SEARCH_TYPES:
             declared = getattr(manifest.concurrency, st, 1)
-            await capacity.register_miner(uid, st, declared)
+            await capacity.register_miner(
+                uid=uid,
+                search_type=st,
+                declared=declared,
+                hotkey=hotkey,
+                coldkey=coldkey,
+            )
 
         return axon
 
@@ -359,13 +369,8 @@ class Neuron(AbstractNeuron):
 
             await self.initialize()
 
-            repo_root = os.path.abspath(
-                os.path.join(os.path.dirname(__file__), "..", "..")
-            )
-            state_dir = os.path.join(repo_root, ".state")
-            os.makedirs(state_dir, exist_ok=True)
-            db_path = os.path.join(state_dir, "miner_state.db")
-            await miner_db.initialize(db_path)
+            os.makedirs(os.path.dirname(env.MINER_DB_PATH), exist_ok=True)
+            await miner_db.initialize(env.MINER_DB_PATH)
 
             await self.sync_available_uids()  # Initial sync
 
