@@ -64,7 +64,7 @@ class BaseScraperValidator:
             )
             response = synapse
 
-        await capacity.note_worker_result(uid, self.search_type, success)
+        await capacity.note_call_result(uid, self.search_type, success)
         return response
 
     async def _save_organic_for_scoring(self, uid: int, response) -> None:

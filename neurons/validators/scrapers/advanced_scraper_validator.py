@@ -139,7 +139,7 @@ class AdvancedScraperValidator(BaseScraperValidator):
         except Exception as e:
             bt.logging.error(f"[{self.search_type}] dendrite stream failed uid={uid}: {e}")
 
-        await capacity.note_worker_result(uid, self.search_type, success)
+        await capacity.note_call_result(uid, self.search_type, success)
 
     async def call_miner(
         self,

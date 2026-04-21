@@ -94,21 +94,21 @@ async def update_after_scoring(
         )
 
 
-async def note_worker_result(uid: int, search_type: str, success: bool) -> None:
-    """Record the outcome of a single worker HTTP call. After
+async def note_call_result(uid: int, search_type: str, success: bool) -> None:
+    """Record the outcome of a single dendrite call to a miner axon. After
     ``UNREACHABLE_FAILURE_THRESHOLD`` consecutive failures the miner is
     flagged unreachable and pulled from organic routing; the next success
     clears the flag."""
 
     try:
         if success:
-            recovered = await miner_db.record_worker_success(uid, search_type)
+            recovered = await miner_db.record_call_success(uid, search_type)
             if recovered:
                 bt.logging.info(
                     f"[Capacity] uid={uid} {search_type} recovered from unreachable"
                 )
         else:
-            newly = await miner_db.record_worker_failure(
+            newly = await miner_db.record_call_failure(
                 uid, search_type, UNREACHABLE_FAILURE_THRESHOLD
             )
             if newly:
@@ -118,7 +118,7 @@ async def note_worker_result(uid: int, search_type: str, success: bool) -> None:
                 )
     except Exception as e:
         bt.logging.error(
-            f"[Capacity] note_worker_result failed uid={uid} {search_type}: {e}"
+            f"[Capacity] note_call_result failed uid={uid} {search_type}: {e}"
         )
 
 

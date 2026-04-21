@@ -234,7 +234,7 @@ async def count_failed_windows(
     return row["cnt"] if row else 0
 
 
-async def record_worker_success(uid: int, search_type: str) -> bool:
+async def record_call_success(uid: int, search_type: str) -> bool:
     """Clear consecutive_failures + unreachable_since. Returns True if this
     call ended an unreachable state (so the caller can log recovery)."""
 
@@ -278,7 +278,7 @@ async def record_worker_success(uid: int, search_type: str) -> bool:
     return False
 
 
-async def record_worker_failure(uid: int, search_type: str, threshold: int) -> bool:
+async def record_call_failure(uid: int, search_type: str, threshold: int) -> bool:
     """Increment consecutive_failures and mark unreachable when the counter
     crosses ``threshold`` for the first time. Returns True on that transition.
 
