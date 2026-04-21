@@ -273,7 +273,7 @@ class Neuron(AbstractNeuron):
             average_reward = torch.mean(scattered_rewards)
             bt.logging.info(f"Scattered reward: {average_reward:.6f}")
 
-            alpha = 0.2
+            alpha = 0.5
 
             self.moving_averaged_scores = alpha * scattered_rewards + (
                 1 - alpha
