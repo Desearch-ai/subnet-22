@@ -37,6 +37,7 @@ import os
 from openai import AsyncOpenAI
 
 AsyncOpenAI.api_key = os.environ.get("OPENAI_API_KEY")
+
 if not AsyncOpenAI.api_key:
     raise ValueError("Please set the OPENAI_API_KEY environment variable.")
 
@@ -44,9 +45,6 @@ client = AsyncOpenAI(timeout=90.0)
 
 MIN_ALPHA_STAKE = 20
 MIN_TOTAL_STAKE = 20000
-
-MIN_REQUEST_PERIOD = 2
-MAX_REQUESTS = 30
 
 BLACKLISTED_KEYS = [
     "5G1NjW9YhXLadMWajvTkfcJy6up3yH2q1YzMXDTi6ijanChe",

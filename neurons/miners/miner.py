@@ -1,7 +1,6 @@
 import argparse
 import asyncio
 import copy
-import os
 import sys
 import time
 import traceback
@@ -12,7 +11,6 @@ from typing import Dict, Tuple
 
 import bittensor as bt
 from bittensor.core.metagraph import AsyncMetagraph
-from openai import OpenAI
 
 import desearch
 from desearch.miner_config import load_miner_manifest
@@ -29,11 +27,8 @@ from neurons.miners.scraper_miner import ScraperMiner
 from neurons.miners.twitter_search_miner import TwitterSearchMiner
 from neurons.miners.web_search_miner import WebSearchMiner
 
-OpenAI.api_key = os.environ.get("OPENAI_API_KEY")
-if not OpenAI.api_key:
-    raise ValueError(
-        "Please set the OPENAI_API_KEY environment variable. See here: https://github.com/Desearch-ai/subnet-22/blob/main/docs/env_variables.md"
-    )
+RATE_LIMIT_WINDOW_MINUTES = 1
+RATE_LIMIT_MAX_REQUESTS = 500
 
 
 class StreamMiner(ABC):
@@ -51,7 +46,6 @@ class StreamMiner(ABC):
         check_config(StreamMiner, self.config)
         bt.logging.info(self.config)
 
-        self.prompt_cache: Dict[str, Tuple[str, int]] = {}
         self.request_timestamps: Dict = {}
         self.manifest = load_miner_manifest(self.config.miner.config_path)
 
@@ -216,32 +210,36 @@ class StreamMiner(ABC):
                         ),
                     )
 
-            time_window = desearch.MIN_REQUEST_PERIOD * 60
-            current_time = time.time()
+            rate_limited, reason = await self._check_rate_limit(hotkey)
 
-            async with self.lock:
-                if hotkey not in self.request_timestamps:
-                    self.request_timestamps[hotkey] = deque()
-
-                while (
-                    self.request_timestamps[hotkey]
-                    and current_time - self.request_timestamps[hotkey][0] > time_window
-                ):
-                    self.request_timestamps[hotkey].popleft()
-
-                if len(self.request_timestamps[hotkey]) >= desearch.MAX_REQUESTS:
-                    return (
-                        True,
-                        f"Request frequency for {hotkey} exceeded: {len(self.request_timestamps[hotkey])} requests in {desearch.MIN_REQUEST_PERIOD} minutes. Limit is {desearch.MAX_REQUESTS} requests.",
-                    )
-
-                self.request_timestamps[hotkey].append(current_time)
+            if rate_limited:
+                return True, reason
 
             return False, f"accepting {synapse_type} request from {hotkey}"
 
         except Exception:
             bt.logging.error(f"error in blacklist {traceback.format_exc()}")
             return True, "error in blacklist"
+
+    async def _check_rate_limit(self, hotkey: str) -> Tuple[bool, str]:
+        time_window = RATE_LIMIT_WINDOW_MINUTES * 60
+        current_time = time.time()
+
+        async with self.lock:
+            timestamps = self.request_timestamps.setdefault(hotkey, deque())
+
+            while timestamps and current_time - timestamps[0] > time_window:
+                timestamps.popleft()
+
+            if len(timestamps) >= RATE_LIMIT_MAX_REQUESTS:
+                return (
+                    True,
+                    f"Request frequency for {hotkey} exceeded: {len(timestamps)} requests in {RATE_LIMIT_WINDOW_MINUTES} minute(s). Limit is {RATE_LIMIT_MAX_REQUESTS} requests.",
+                )
+
+            timestamps.append(current_time)
+
+        return False, ""
 
     async def blacklist_is_alive(self, synapse: IsAlive) -> Tuple[bool, str]:
         blacklist = await self.base_blacklist(synapse)
