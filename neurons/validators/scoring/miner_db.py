@@ -34,6 +34,9 @@ CREATE TABLE IF NOT EXISTS miner_concurrency (
     PRIMARY KEY (uid, search_type)
 );
 
+CREATE INDEX IF NOT EXISTS idx_miner_concurrency_hotkey
+    ON miner_concurrency (hotkey);
+
 CREATE TABLE IF NOT EXISTS scoring_windows (
     uid              INTEGER NOT NULL,
     search_type      TEXT    NOT NULL,
@@ -42,12 +45,16 @@ CREATE TABLE IF NOT EXISTS scoring_windows (
     coldkey          TEXT    NOT NULL,
     quality_score    REAL    NOT NULL,
     passed           INTEGER NOT NULL DEFAULT 1,
+    verified_concurrency   INTEGER NOT NULL,
     created_at       TEXT    NOT NULL,
     PRIMARY KEY (uid, search_type, window_start)
 );
 
 CREATE INDEX IF NOT EXISTS idx_scoring_windows_created
     ON scoring_windows (created_at);
+
+CREATE INDEX IF NOT EXISTS idx_scoring_windows_hotkey
+    ON scoring_windows (hotkey, search_type, window_start);
 """
 
 
@@ -55,8 +62,21 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-async def initialize(db_path: str) -> None:
+async def initialize(db_path: str, readonly: bool = False) -> None:
+    """Open the shared async connection.
+
+    ``readonly=True`` opens the DB via the ``file:…?mode=ro`` URI so a process
+    that only serves reads (e.g. a public-API uvicorn worker) cannot mutate
+    state owned by the neuron. The neuron process calls this with
+    ``readonly=False`` and creates the schema + runs retention cleanup."""
     global _db
+    if readonly:
+        uri = f"file:{db_path}?mode=ro"
+        _db = await aiosqlite.connect(uri, uri=True)
+        _db.row_factory = aiosqlite.Row
+        bt.logging.info(f"[MinerDB] Opened read-only at {db_path}")
+        return
+
     _db = await aiosqlite.connect(db_path)
     _db.row_factory = aiosqlite.Row
     await _db.execute("PRAGMA journal_mode=WAL")
@@ -237,13 +257,14 @@ async def insert_window(
     coldkey: str,
     quality_score: float,
     passed: bool,
+    verified_concurrency: int,
 ) -> None:
     await _db.execute(
         """
         INSERT OR REPLACE INTO scoring_windows
             (uid, search_type, window_start, hotkey, coldkey,
-             quality_score, passed, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+             quality_score, passed, verified_concurrency, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             uid,
@@ -253,6 +274,7 @@ async def insert_window(
             coldkey,
             quality_score,
             int(passed),
+            verified_concurrency,
             _now_iso(),
         ),
     )
@@ -388,3 +410,37 @@ async def apply_decay_tick(
         (new_verified, new_last_decay_at, _now_iso(), uid, search_type),
     )
     await _db.commit()
+
+
+async def get_all_rows() -> list[dict]:
+    """All miner_concurrency rows across every search type.
+    Used by the public API to build the miner list."""
+    cursor = await _db.execute("SELECT * FROM miner_concurrency")
+    return [dict(row) async for row in cursor]
+
+
+async def get_rows_for_hotkey(hotkey: str) -> list[dict]:
+    cursor = await _db.execute(
+        "SELECT * FROM miner_concurrency WHERE hotkey = ?",
+        (hotkey,),
+    )
+    return [dict(row) async for row in cursor]
+
+
+async def get_windows_for_hotkey(
+    hotkey: str, search_type: str, since_hours: int = 72
+) -> list[dict]:
+    """Scoring windows for ``hotkey`` in ``search_type`` over the last
+    ``since_hours``. Filtering on ``hotkey`` (not ``uid``) ensures windows
+    from a prior holder of the same UID slot are excluded."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=since_hours)).isoformat()
+    cursor = await _db.execute(
+        """
+        SELECT window_start, quality_score, passed, verified_concurrency, created_at
+        FROM scoring_windows
+        WHERE hotkey = ? AND search_type = ? AND created_at >= ?
+        ORDER BY window_start ASC
+        """,
+        (hotkey, search_type, cutoff),
+    )
+    return [dict(row) async for row in cursor]

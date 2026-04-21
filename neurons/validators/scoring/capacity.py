@@ -86,6 +86,7 @@ async def update_after_scoring(
         coldkey=row["coldkey"],
         quality_score=quality,
         passed=passed,
+        verified_concurrency=new_verified,
     )
 
     new_frozen_until = frozen_until
