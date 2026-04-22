@@ -29,12 +29,15 @@ class ValidatorServiceClient:
             )
         return self._session
 
-    async def get_random_miner(self, uid: Optional[int] = None):
-        """Fetch a random miner UID and axon."""
+    async def get_random_miner(
+        self, uid: Optional[int] = None, search_type: Optional[str] = None
+    ):
+        """Fetch a random miner UID and axon weighted by quality * verified."""
         session = await self.session
 
         async with session.post(
-            f"{VALIDATOR_SERVICE_URL}/uid/random", json={"uid": uid}
+            f"{VALIDATOR_SERVICE_URL}/uid/random",
+            json={"uid": uid, "search_type": search_type},
         ) as response:
             if response.status == 200:
                 data = await response.json()

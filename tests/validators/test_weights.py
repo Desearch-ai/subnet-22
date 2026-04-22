@@ -1,6 +1,6 @@
 from unittest.mock import Mock, patch
 import unittest
-from neurons.validators.weights import burn_weights
+from neurons.validators.scoring.weights import burn_weights
 from desearch.bittensor.metagraph import generateMockNeurons
 import torch
 

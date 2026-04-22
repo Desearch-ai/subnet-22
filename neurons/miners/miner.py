@@ -1,19 +1,24 @@
 import argparse
 import asyncio
 import copy
-import os
-import threading
+import sys
 import time
 import traceback
 from abc import ABC, abstractmethod
 from collections import deque
 from functools import partial
+from pathlib import Path
 from typing import Dict, Tuple
 
+from dotenv import load_dotenv
+
+load_dotenv(Path(__file__).parent / ".env")
+
 import bittensor as bt
-from openai import OpenAI
+from bittensor.core.metagraph import AsyncMetagraph
 
 import desearch
+from desearch.miner_config import load_miner_manifest
 from desearch.protocol import (
     IsAlive,
     ScraperStreamingSynapse,
@@ -27,31 +32,28 @@ from neurons.miners.scraper_miner import ScraperMiner
 from neurons.miners.twitter_search_miner import TwitterSearchMiner
 from neurons.miners.web_search_miner import WebSearchMiner
 
-OpenAI.api_key = os.environ.get("OPENAI_API_KEY")
-if not OpenAI.api_key:
-    raise ValueError(
-        "Please set the OPENAI_API_KEY environment variable. See here: https://github.com/Desearch-ai/subnet-22/blob/main/docs/env_variables.md"
-    )
-
-TWITTER_BEARER_TOKEN = os.environ.get("TWITTER_BEARER_TOKEN")
-if not TWITTER_BEARER_TOKEN:
-    raise ValueError(
-        "Please set the TWITTER_BEARER_TOKEN environment variable. See here: https://github.com/Desearch-ai/subnet-22/blob/main/docs/env_variables.md"
-    )
+RATE_LIMIT_WINDOW_MINUTES = 1
+RATE_LIMIT_MAX_REQUESTS = 500
 
 
 class StreamMiner(ABC):
-    def __init__(self, config=None, axon=None, wallet=None, subtensor=None):
+    subtensor: "bt.AsyncSubtensor"
+    metagraph: "AsyncMetagraph"
+    wallet: "bt.Wallet"
+    axon: "bt.Axon"
+
+    def __init__(self, config=None, wallet=None):
         bt.logging.info("starting stream miner")
+
         base_config = copy.deepcopy(config or get_config())
         self.config = self.config()
         self.config.merge(base_config)
         check_config(StreamMiner, self.config)
-        bt.logging.info(self.config)  # TODO: duplicate print?
-        self.prompt_cache: Dict[str, Tuple[str, int]] = {}
-        self.request_timestamps = {}
+        bt.logging.info(self.config)
 
-        # Activating Bittensor's logging with the set configurations.
+        self.request_timestamps: Dict = {}
+        self.manifest = load_miner_manifest(self.config.miner.config_path)
+
         bt.logging(config=self.config, logging_dir=self.config.full_path)
         bt.logging.on()
         bt.logging.set_info(True)
@@ -63,37 +65,39 @@ class StreamMiner(ABC):
 
         bt.logging.info("Setting up bittensor objects.")
 
-        # Wallet holds cryptographic information, ensuring secure transactions and communication.
         self.wallet = wallet or bt.Wallet(config=self.config)
         bt.logging.info(f"Wallet {self.wallet}")
 
-        # subtensor manages the blockchain connection, facilitating interaction with the Bittensor blockchain.
-        self.subtensor = subtensor or bt.Subtensor(config=self.config)
+        self.should_exit: bool = False
+        self.my_subnet_uid: int | None = None
+        self.last_epoch_block: int | None = None
+        self.lock = asyncio.Lock()
+
+    async def initialize(self):
+        self.subtensor = bt.AsyncSubtensor(
+            config=self.config, websocket_shutdown_timer=None
+        )
+        await self.subtensor.initialize()
         bt.logging.info(f"Subtensor: {self.subtensor}")
         bt.logging.info(
-            f"Running miner for subnet: {self.config.netuid} on network: {self.subtensor.chain_endpoint} with config:"
+            f"Running miner for subnet: {self.config.netuid} on network: {self.subtensor.chain_endpoint}"
         )
 
-        # metagraph provides the network's current state, holding state about other participants in a subnet.
-        self.metagraph = self.subtensor.metagraph(self.config.netuid)
+        self.metagraph = await self.subtensor.metagraph(self.config.netuid)
         bt.logging.info(f"Metagraph: {self.metagraph}")
 
         if self.wallet.hotkey.ss58_address not in self.metagraph.hotkeys:
             bt.logging.error(
-                f"\nYour miner: {self.wallet} if not registered to chain connection: {self.subtensor} \nRun btcli register and try again. "
+                f"\nYour miner: {self.wallet} is not registered to chain connection: {self.subtensor} \nRun btcli register and try again. "
             )
-            exit()
-        else:
-            # Each miner gets a unique identity (UID) in the network for differentiation.
-            self.my_subnet_uid = self.metagraph.hotkeys.index(
-                self.wallet.hotkey.ss58_address
-            )
-            bt.logging.info(f"Running miner on uid: {self.my_subnet_uid}")
+            sys.exit()
 
-        # The axon handles request processing, allowing validators to send this process requests.
-        if axon is not None:
-            self.axon = axon
-        elif self.config.axon.external_ip is not None:
+        self.my_subnet_uid = self.metagraph.hotkeys.index(
+            self.wallet.hotkey.ss58_address
+        )
+        bt.logging.info(f"Running miner on uid: {self.my_subnet_uid}")
+
+        if self.config.axon.external_ip is not None:
             bt.logging.debug(
                 f"Starting axon on port {self.config.axon.port} and external ip {self.config.axon.external_ip}"
             )
@@ -106,9 +110,7 @@ class StreamMiner(ABC):
             bt.logging.debug(f"Starting axon on port {self.config.axon.port}")
             self.axon = bt.Axon(wallet=self.wallet, port=self.config.axon.port)
 
-        # Attach determiners which functions are called when servicing a request.
         bt.logging.info("Attaching forward function to axon.")
-        print(f"Attaching forward function to axon. {self._is_alive}")
 
         self.axon.attach(
             forward_fn=self._is_alive,
@@ -123,29 +125,41 @@ class StreamMiner(ABC):
             forward_fn=self._twitter_id_search,
             blacklist_fn=self.blacklist_twitter_id_search,
         ).attach(
-            forward_fn=self.twitter_urls_search,
+            forward_fn=self._twitter_urls_search,
             blacklist_fn=self.blacklist_twitter_urls_search,
         ).attach(
-            forward_fn=self.web_search,
+            forward_fn=self._web_search,
             blacklist_fn=self.blacklist_web_search,
         )
 
         bt.logging.info(f"Axon created: {self.axon}")
 
-        # Instantiate runners
-        self.should_exit: bool = False
-        self.is_running: bool = False
-        self.thread: threading.Thread = None
-        self.lock = asyncio.Lock()
-        self.request_timestamps: Dict = {}
-
     @abstractmethod
     def config(self) -> "bt.Config": ...
 
-    def _smart_scraper(
+    @classmethod
+    @abstractmethod
+    def add_args(cls, parser: argparse.ArgumentParser): ...
+
+    async def _is_alive(self, synapse: IsAlive) -> IsAlive:
+        bt.logging.info("answered to be active")
+
+        try:
+            self.manifest = await asyncio.to_thread(
+                load_miner_manifest, self.config.miner.config_path
+            )
+        except Exception as e:
+            bt.logging.warning(
+                f"Failed to reload miner manifest, using cached value: {e}"
+            )
+
+        synapse.manifest = self.manifest.model_dump()
+        return synapse
+
+    async def _smart_scraper(
         self, synapse: ScraperStreamingSynapse
     ) -> ScraperStreamingSynapse:
-        return self.smart_scraper(synapse)
+        return await self.smart_scraper(synapse)
 
     async def _twitter_search(
         self, synapse: TwitterSearchSynapse
@@ -165,7 +179,7 @@ class StreamMiner(ABC):
     async def _web_search(self, synapse: WebSearchSynapse) -> WebSearchSynapse:
         return await self.web_search(synapse)
 
-    def base_blacklist(self, synapse, blacklist_amt=20000) -> Tuple[bool, str]:
+    async def base_blacklist(self, synapse) -> Tuple[bool, str]:
         try:
             hotkey = synapse.dendrite.hotkey
             synapse_type = type(synapse).__name__
@@ -173,130 +187,107 @@ class StreamMiner(ABC):
             if hotkey in desearch.BLACKLISTED_KEYS:
                 return True, f"Blacklisted a {synapse_type} request from {hotkey}"
 
-            # if hotkey in desearch.WHITELISTED_KEYS:
-            #     return False, f"accepting {synapse_type} request from {hotkey}"
-
-            # if hotkey not in desearch.valid_validators:
-            #     return (
-            #         True,
-            #         f"Blacklisted a {synapse_type} request from a non-valid hotkey: {hotkey}",
-            #     )
-
             uid = None
-            axon = None
             for _uid, _axon in enumerate(self.metagraph.axons):
                 if _axon.hotkey == hotkey:
                     uid = _uid
-                    axon = _axon
                     break
 
-            if uid is None and desearch.ALLOW_NON_REGISTERED == False:
+            if uid is None:
                 return (
                     True,
                     f"Blacklisted a non registered hotkey's {synapse_type} request from {hotkey}",
                 )
 
             if self.config.subtensor.network == "finney":
-                # check the stake
-                tao = self.metagraph.neurons[uid].stake.tao
-                # metagraph.neurons[uid].S
-                if tao < blacklist_amt:
+                alpha_stake = float(self.metagraph.alpha_stake[uid].item())
+                total_stake = float(self.metagraph.total_stake[uid].item())
+
+                if (
+                    alpha_stake < desearch.MIN_ALPHA_STAKE
+                    or total_stake < desearch.MIN_TOTAL_STAKE
+                ):
                     return (
                         True,
-                        f"Blacklisted a low stake {synapse_type} request: {tao} < {blacklist_amt} from {hotkey}",
+                        (
+                            f"Blacklisted a low stake {synapse_type} request: "
+                            f"alpha_stake={alpha_stake} < {desearch.MIN_ALPHA_STAKE} "
+                            f"or total_stake={total_stake} < {desearch.MIN_TOTAL_STAKE} "
+                            f"from {hotkey}"
+                        ),
                     )
 
-            time_window = desearch.MIN_REQUEST_PERIOD * 60
-            current_time = time.time()
+            rate_limited, reason = await self._check_rate_limit(hotkey)
 
-            if hotkey not in self.request_timestamps:
-                self.request_timestamps[hotkey] = deque()
-
-            # Remove timestamps outside the current time window
-            while (
-                self.request_timestamps[hotkey]
-                and current_time - self.request_timestamps[hotkey][0] > time_window
-            ):
-                self.request_timestamps[hotkey].popleft()
-
-            # Check if the number of requests exceeds the limit
-            if len(self.request_timestamps[hotkey]) >= desearch.MAX_REQUESTS:
-                return (
-                    True,
-                    f"Request frequency for {hotkey} exceeded: {len(self.request_timestamps[hotkey])} requests in {desearch.MIN_REQUEST_PERIOD} minutes. Limit is {desearch.MAX_REQUESTS} requests.",
-                )
-
-            self.request_timestamps[hotkey].append(current_time)
+            if rate_limited:
+                return True, reason
 
             return False, f"accepting {synapse_type} request from {hotkey}"
 
-        except Exception as e:
-            bt.logging.error(f"errror in blacklist {traceback.format_exc()}")
+        except Exception:
+            bt.logging.error(f"error in blacklist {traceback.format_exc()}")
+            return True, "error in blacklist"
 
-    def blacklist_is_alive(self, synapse: IsAlive) -> Tuple[bool, str]:
-        blacklist = self.base_blacklist(synapse, desearch.ISALIVE_BLACKLIST_STAKE)
+    async def _check_rate_limit(self, hotkey: str) -> Tuple[bool, str]:
+        time_window = RATE_LIMIT_WINDOW_MINUTES * 60
+        current_time = time.time()
+
+        async with self.lock:
+            timestamps = self.request_timestamps.setdefault(hotkey, deque())
+
+            while timestamps and current_time - timestamps[0] > time_window:
+                timestamps.popleft()
+
+            if len(timestamps) >= RATE_LIMIT_MAX_REQUESTS:
+                return (
+                    True,
+                    f"Request frequency for {hotkey} exceeded: {len(timestamps)} requests in {RATE_LIMIT_WINDOW_MINUTES} minute(s). Limit is {RATE_LIMIT_MAX_REQUESTS} requests.",
+                )
+
+            timestamps.append(current_time)
+
+        return False, ""
+
+    async def blacklist_is_alive(self, synapse: IsAlive) -> Tuple[bool, str]:
+        blacklist = await self.base_blacklist(synapse)
         bt.logging.debug(blacklist[1])
         return blacklist
 
-    def blacklist_smart_scraper(
+    async def blacklist_smart_scraper(
         self, synapse: ScraperStreamingSynapse
     ) -> Tuple[bool, str]:
-        blacklist = self.base_blacklist(
-            synapse, desearch.TWITTER_SCRAPPER_BLACKLIST_STAKE
-        )
+        blacklist = await self.base_blacklist(synapse)
         bt.logging.info(blacklist[1])
         return blacklist
 
-    def blacklist_twitter_search(
+    async def blacklist_twitter_search(
         self, synapse: TwitterSearchSynapse
     ) -> Tuple[bool, str]:
-        blacklist = self.base_blacklist(
-            synapse, desearch.TWITTER_SCRAPPER_BLACKLIST_STAKE
-        )
+        blacklist = await self.base_blacklist(synapse)
         bt.logging.info(blacklist[1])
         return blacklist
 
-    def blacklist_twitter_id_search(
+    async def blacklist_twitter_id_search(
         self, synapse: TwitterIDSearchSynapse
     ) -> Tuple[bool, str]:
-        blacklist = self.base_blacklist(
-            synapse, desearch.TWITTER_SCRAPPER_BLACKLIST_STAKE
-        )
+        blacklist = await self.base_blacklist(synapse)
         bt.logging.info(blacklist[1])
         return blacklist
 
-    def blacklist_twitter_urls_search(
+    async def blacklist_twitter_urls_search(
         self, synapse: TwitterURLsSearchSynapse
     ) -> Tuple[bool, str]:
-        blacklist = self.base_blacklist(
-            synapse, desearch.TWITTER_SCRAPPER_BLACKLIST_STAKE
-        )
+        blacklist = await self.base_blacklist(synapse)
         bt.logging.info(blacklist[1])
         return blacklist
 
-    def blacklist_web_search(self, synapse: WebSearchSynapse) -> Tuple[bool, str]:
-        blacklist = self.base_blacklist(
-            synapse, desearch.TWITTER_SCRAPPER_BLACKLIST_STAKE
-        )
+    async def blacklist_web_search(self, synapse: WebSearchSynapse) -> Tuple[bool, str]:
+        blacklist = await self.base_blacklist(synapse)
         bt.logging.info(blacklist[1])
         return blacklist
 
-    @classmethod
     @abstractmethod
-    def add_args(cls, parser: argparse.ArgumentParser): ...
-
-    async def _smart_scraper(
-        self, synapse: ScraperStreamingSynapse
-    ) -> ScraperStreamingSynapse:
-        return self.smart_scraper(synapse)
-
-    def _is_alive(self, synapse: IsAlive) -> IsAlive:
-        bt.logging.info("answered to be active")
-        synapse.completion = "True"
-        return synapse
-
-    @abstractmethod
-    def smart_scraper(
+    async def smart_scraper(
         self, synapse: ScraperStreamingSynapse
     ) -> ScraperStreamingSynapse: ...
 
@@ -318,40 +309,38 @@ class StreamMiner(ABC):
     @abstractmethod
     async def web_search(self, synapse: WebSearchSynapse) -> WebSearchSynapse: ...
 
-    def sync_metagraph_with_interval(self):
+    async def sync_metagraph_loop(self):
         first_run = True
 
-        while True:
+        while not self.should_exit:
             try:
                 if first_run:
                     bt.logging.debug("Skipping first metagraph sync")
                     first_run = False
                 else:
-                    self.metagraph.sync(subtensor=self.subtensor)
+                    await self.metagraph.sync(subtensor=self.subtensor)
                     bt.logging.info("Resynced metagraph in background")
-                time.sleep(900)
+
+                await asyncio.sleep(900)
             except Exception as e:
                 bt.logging.error(f"Error during metagraph sync: {e}")
 
                 try:
-                    self.subtensor = bt.Subtensor(config=self.config)
-                    self.metagraph = self.subtensor.metagraph(self.config.netuid)
+                    self.subtensor = bt.AsyncSubtensor(
+                        config=self.config, websocket_shutdown_timer=None
+                    )
+                    await self.subtensor.initialize()
+                    self.metagraph = await self.subtensor.metagraph(self.config.netuid)
                 except Exception as e:
                     bt.logging.error(
                         f"Error during metagraph sync - reconnection to subtensor also failed: {e}"
                     )
 
                 bt.logging.info("Retrying in 2 minutes")
-                time.sleep(120)
+                await asyncio.sleep(120)
 
-    def start_background_sync(self):
-        self.sync_thread = threading.Thread(
-            target=self.sync_metagraph_with_interval, daemon=True
-        )
-        self.sync_thread.start()
-
-    def run(self):
-        if not self.subtensor.is_hotkey_registered(
+    async def run(self):
+        if not await self.subtensor.is_hotkey_registered(
             netuid=self.config.netuid,
             hotkey_ss58=self.wallet.hotkey.ss58_address,
         ):
@@ -359,49 +348,49 @@ class StreamMiner(ABC):
                 f"Wallet: {self.wallet} is not registered on netuid {self.config.netuid}"
                 f"Please register the hotkey using `btcli s register --netuid 18` before trying again"
             )
-            exit()
+            sys.exit()
+
         bt.logging.info(
             f"Serving axon {ScraperStreamingSynapse} on network: {self.config.subtensor.chain_endpoint} with netuid: {self.config.netuid}"
         )
-        self.subtensor.serve_axon(axon=self.axon, netuid=self.config.netuid)
+        await self.subtensor.serve_axon(axon=self.axon, netuid=self.config.netuid)
+
         bt.logging.info(f"Starting axon server on port: {self.config.axon.port}")
         self.axon.start()
-        self.last_epoch_block = self.subtensor.get_current_block()
+
+        self.last_epoch_block = await self.subtensor.get_current_block()
         bt.logging.info(f"Miner starting at block: {self.last_epoch_block}")
         bt.logging.info("Starting main loop")
 
-        self.start_background_sync()
+        sync_task = asyncio.create_task(self.sync_metagraph_loop())
 
         step = 0
         try:
             while not self.should_exit:
-                # --- Wait until next epoch.
-                current_block = self.subtensor.get_current_block()
+                current_block = await self.subtensor.get_current_block()
+
                 while (
                     current_block - self.last_epoch_block
                     < self.config.miner.blocks_per_epoch
                 ):
-                    # --- Wait for next bloc.
-                    time.sleep(60)
-                    current_block = self.subtensor.get_current_block()
-                    # --- Check if we should exit.
+                    await asyncio.sleep(60)
+                    current_block = await self.subtensor.get_current_block()
+
                     if self.should_exit:
                         break
 
-                # --- Update the metagraph with the latest network state.
-                self.last_epoch_block = self.subtensor.get_current_block()
+                self.last_epoch_block = await self.subtensor.get_current_block()
 
-                metagraph = self.subtensor.metagraph(
+                metagraph = await self.subtensor.metagraph(
                     netuid=self.config.netuid,
                     lite=True,
                     block=self.last_epoch_block,
                 )
+
                 log = (
                     f"Step:{step} | "
                     f"Block:{metagraph.block.item()} | "
                     f"Stake:{metagraph.S[self.my_subnet_uid]} | "
-                    f"Rank:{metagraph.R[self.my_subnet_uid]} | "
-                    f"Trust:{metagraph.T[self.my_subnet_uid]} | "
                     f"Consensus:{metagraph.C[self.my_subnet_uid]} | "
                     f"Incentive:{metagraph.I[self.my_subnet_uid]} | "
                     f"Emission:{metagraph.E[self.my_subnet_uid]}"
@@ -410,37 +399,33 @@ class StreamMiner(ABC):
 
                 step += 1
 
-        except KeyboardInterrupt:
-            self.axon.stop()
-            bt.logging.success("Miner killed by keyboard interrupt.")
-            exit()
-
-        except Exception as e:
+        except asyncio.CancelledError:
+            bt.logging.info("Miner run loop cancelled.")
+            raise
+        except Exception:
             bt.logging.error(traceback.format_exc())
-
-    def run_in_background_thread(self):
-        if not self.is_running:
-            bt.logging.debug("Starting miner in background thread.")
-            self.should_exit = False
-            self.thread = threading.Thread(target=self.run, daemon=True)
-            self.thread.start()
-            self.is_running = True
-            bt.logging.debug("Started")
-
-    def stop_run_thread(self):
-        if self.is_running:
-            bt.logging.debug("Stopping miner in background thread.")
+        finally:
             self.should_exit = True
-            self.sync_thread.join(5)
-            self.thread.join(5)
-            self.is_running = False
-            bt.logging.debug("Stopped")
+            sync_task.cancel()
 
-    def __enter__(self):
-        self.run_in_background_thread()
+            try:
+                await sync_task
+            except (asyncio.CancelledError, Exception):
+                pass
 
-    def __exit__(self, exc_type, exc_value, traceback):
-        self.stop_run_thread()
+    async def start(self):
+        await self.initialize()
+        await self.run()
+
+    async def stop(self):
+        bt.logging.info("Stopping miner.")
+        self.should_exit = True
+
+        if hasattr(self, "axon") and self.axon is not None:
+            self.axon.stop()
+
+        if hasattr(self, "subtensor"):
+            await self.subtensor.close()
 
 
 class StreamingTemplateMiner(StreamMiner):
@@ -452,7 +437,7 @@ class StreamingTemplateMiner(StreamMiner):
     def add_args(cls, parser: argparse.ArgumentParser):
         pass
 
-    def smart_scraper(
+    async def smart_scraper(
         self, synapse: ScraperStreamingSynapse
     ) -> ScraperStreamingSynapse:
         bt.logging.info(f"started processing for synapse {synapse}")
@@ -487,7 +472,16 @@ class StreamingTemplateMiner(StreamMiner):
         return await web_search_miner.search(synapse)
 
 
+async def main():
+    miner = StreamingTemplateMiner()
+
+    try:
+        await miner.start()
+    except KeyboardInterrupt:
+        bt.logging.success("Miner killed by keyboard interrupt.")
+    finally:
+        await miner.stop()
+
+
 if __name__ == "__main__":
-    with StreamingTemplateMiner():
-        while True:
-            time.sleep(1)
+    asyncio.run(main())

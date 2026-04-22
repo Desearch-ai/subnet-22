@@ -4,11 +4,12 @@ from typing import Optional, Tuple
 import bittensor as bt
 
 from desearch.redis.redis_client import close_redis, initialize_redis
-from neurons.validators.advanced_scraper_validator import AdvancedScraperValidator
-from neurons.validators.utility_api_client import UtilityAPIClient
-from neurons.validators.validator_service_client import ValidatorServiceClient
-from neurons.validators.web_scraper_validator import WebScraperValidator
-from neurons.validators.x_scraper_validator import XScraperValidator
+from neurons.validators.clients.utility_api_client import UtilityAPIClient
+from neurons.validators.clients.validator_service_client import ValidatorServiceClient
+from neurons.validators.scoring.scoring_store import ScoringStore
+from neurons.validators.scrapers.advanced_scraper_validator import AdvancedScraperValidator
+from neurons.validators.scrapers.web_scraper_validator import WebScraperValidator
+from neurons.validators.scrapers.x_scraper_validator import XScraperValidator
 
 
 class ValidatorAPI:
@@ -36,6 +37,7 @@ class ValidatorAPI:
         self.web_scraper_validator = WebScraperValidator(neuron=self)
 
         self.validator_service_client = ValidatorServiceClient()
+        self.scoring_store = ScoringStore()
 
     async def initialize(self):
         if self.config.neuron.offline:
@@ -68,9 +70,9 @@ class ValidatorAPI:
         await initialize_redis()
 
     async def get_random_miner(
-        self, uid: Optional[int] = None
+        self, uid: Optional[int] = None, search_type: Optional[str] = None
     ) -> Tuple[int, bt.AxonInfo]:
-        return await self.validator_service_client.get_random_miner(uid)
+        return await self.validator_service_client.get_random_miner(uid, search_type)
 
     async def start(self):
         bt.logging.info("Starting ValidatorAPI")

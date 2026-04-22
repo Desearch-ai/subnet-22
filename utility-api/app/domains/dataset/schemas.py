@@ -19,3 +19,4 @@ class NextQuestionResponse(BaseModel):
     uid: int
     search_type: str
     question: QuestionOut
+    scoring_seed: int

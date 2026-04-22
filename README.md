@@ -1,128 +1,100 @@
 <div align="center">
 
-# **Desearch (Subnet 22) on Bittensor**
+<img src="./docs/assets/desearch-logo.png" alt="Desearch" width="480" />
+
+# **Subnet 22 on Bittensor**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 </div>
 
+Welcome to **Desearch powered by Bittensor Subnet 22**! Desearch is a decentralized,
+AI-powered search engine that returns unbiased and verifiable results across X, Reddit,
+Arxiv, Hacker News, Wikipedia, YouTube, and the broader web. Frontend and API access are
+available at [desearch.ai](https://desearch.ai).
+
+## Table of Contents
+
+- [Introduction](#introduction)
+- [Key Features](#key-features)
+- [High-Level Architecture](#high-level-architecture)
+- [Getting Started](#getting-started)
+  - [For API Consumers](#for-api-consumers)
+  - [For Miners](#for-miners)
+  - [For Validators](#for-validators)
+- [Monitoring](#monitoring)
+- [Contact and Support](#contact-and-support)
+
 ## Introduction
 
-**Bittensor Desearch (Subnet 22):**
+Desearch delivers an unbiased, verifiable search experience built on the Bittensor
+network. Miners compete to return the best search results from multiple sources;
+validators independently verify result quality and assign on-chain rewards. Through
+the public API, developers and AI builders integrate real-time, decentralized search
+into their products.
 
-Welcome to Desearch, the AI-powered search engine built on Bittensor. Designed for the Bittensor community and general internet users, Desearch delivers an unbiased and verifiable search experience. Through our API, developers and AI builders are empowered to integrate AI search capabilities into their products, with access to metadata from platforms like X, Reddit, Arxiv and general web search.
+## Key Features
 
-### Key Features
+- **AI-powered analysis** — decentralized models produce relevant, contextual, unfiltered results.
+- **Diverse data sources** — X, Reddit, Arxiv, Hacker News, Wikipedia, YouTube, and general web.
+- **Sentiment and metadata analysis** — captures emotional tone and key metadata for social content.
+- **Verifiable rewards** — validators independently scrape and score miner outputs.
+- **Extensible** — community-driven improvements to scoring, sources, and relevance.
 
--   **AI-powered Analysis:** Utilizes decentralized AI models to deliver relevant, contextual, and unfiltered search results.
--   **Real-time Access to Diverse Data Sources:** Access metadata from platforms like X, Reddit, Arxiv, and broader web data.
--   **Sentiment and Metadata Analysis:** Determines the emotional tone of social posts while analyzing key metadata to provide a comprehensive understanding of public sentiment.
--   **Time-efficient:** Minimizes manual data sorting, saving valuable research time.
--   **User-friendly Design:** Suitable for both beginners and experts.
+## High-Level Architecture
 
-### Advantages
+- **Miners** run a single Bittensor **axon** that answers `IsAlive` and all search synapses
+  (AI / Twitter / Web). Validators call the axon directly via dendrite.
+- **Validators** generate synthetic queries every UTC hour, dispatch them to miners,
+  independently verify results against ground-truth scrapers (Apify, ScrapingDog), and
+  write weights on-chain. They also expose an organic-search FastAPI that the Desearch
+  product backend calls on behalf of API consumers.
+- **Bittensor network** — settles miner compensation on-chain in $TAO.
 
--   **Decentralized Platform:** Built on the Bittensor network, ensures unbiased and highly relevant search results through decentralization.
--   **Customizability:** Tailors data analysis to meet specific user requirements.
--   **Versatility:** Applicable for diverse research fields, from market analysis to academic studies.
--   **Community-driven Innovation:** Built and optimized by a decentralized network of Bittensor miners, validators, and users for continuous search result enhancement.
+## Getting Started
 
----
+### For API Consumers
 
-## Installation
+To integrate Desearch into your product, visit [desearch.ai](https://desearch.ai) and
+request an API key. Consumers send requests to the Desearch API with their API key; the
+Desearch backend routes those requests to validators on your behalf and returns the
+aggregated search results.
 
-**Requirements:** Python 3.10 or higher
+### For Miners
 
-1. Clone the repository:
-    ```bash
-    git clone https://github.com/Desearch-ai/subnet-22.git
-    ```
-2. Install the requirements:
-    ```bash
-    cd desearch
-    python -m pip install -r requirements.txt
-    python -m pip install -e .
-    ```
+Miners contribute search capacity and are rewarded based on result quality and volume.
+Expected setup steps:
 
----
+- Prepare a server with Python ≥ 3.10, PM2, and a registered hotkey on netuid 22.
+- Configure credentials for OpenAI, SerpAPI, and Apify.
+- Declare per-search-type concurrency in `neurons/miners/manifest.json`.
+- Run the axon with PM2.
 
-## Preparing Your Environment
+See the [Miner Setup Guide](./docs/running_a_miner.md) for full instructions.
 
-Before running a miner or validator, ensure to:
+### For Validators
 
--   [Create a wallet](https://github.com/opentensor/docs/blob/main/reference/btcli.md).
--   [Register the wallet to a netuid](https://github.com/opentensor/docs/blob/main/subnetworks/registration.md).
+Validators verify miner outputs and write weights on-chain. Expected setup steps:
 
-### Environment Variables Configuration
+- Prepare a server with Python ≥ 3.10, PM2, Redis, `jq`, and a registered validator hotkey.
+- Configure credentials for OpenAI, Apify, ScrapingDog, and W&B.
+- Generate a public API access key and run the autoupdate script.
 
-For setting up the necessary environment variables for your miner or validator, please refer to the [Environment Variables Guide](./docs/env_variables.md).
+See the [Validator Setup Guide](./docs/running_a_validator.md) for full instructions.
 
-# Running the Miner
+### Additional Guides
 
-```bash
-python -m neurons/miners/miner.py
-    --netuid 22
-    --subtensor.network finney
-    --wallet.name <your miner wallet>
-    --wallet.hotkey <your validator hotkey>
-    --axon.port 14000
-```
+- [Environment Variables](./docs/env_variables.md)
+- [Testnet Operations](./docs/running_on_testnet.md)
+- [Mainnet Operations](./docs/running_on_mainnet.md)
 
-# Running the Validator API with Automatic Updates
+## Monitoring
 
-These validators are designed to run and update themselves automatically. To run a validator, follow these steps:
+Validators stream metrics to Weights & Biases. Public dashboards are available at
+[wandb.ai/smart-scrape/smart-scrape-1.0](https://wandb.ai/smart-scrape/smart-scrape-1.0).
 
-1. Install this repository, you can do so by following the steps outlined in [the installation section](#installation).
-2. Install [Weights and Biases](https://docs.wandb.ai/quickstart) and run `wandb login` within this repository. This will initialize Weights and Biases, enabling you to view KPIs and Metrics on your validator. (Strongly recommended to help the network improve from data sharing)
-3. Install [Redis](https://redis.io/docs/latest/operate/oss_and_stack/install/install-redis/).
-4. Install [PM2](https://pm2.io/docs/runtime/guide/installation/) and the [`jq` package](https://jqlang.github.io/jq/) on your system.
-   **On Linux**:
-    ```bash
-    sudo apt update && sudo apt install jq && sudo apt install npm && sudo npm install pm2 -g && pm2 update
-    ```
-    **On Mac OS**
-    ```bash
-    brew update && brew install jq && brew install npm && sudo npm install pm2 -g && pm2 update
-    ```
-5. Run the `run.sh` script which will handle running your validator and pulling the latest updates as they are issued.
+## Contact and Support
 
-    ```bash
-    pm2 start run.sh --name desearch_autoupdate -- --wallet.name <your-wallet-name> --wallet.hotkey <your-wallet-hot-key>
-    ```
-
-    You can configure api `workers` and `port` by adding the following parameters:
-
-    ```bash
-    pm2 start run.sh --name desearch_autoupdate -- --workers 4 --port 8005  --wallet.name <your-wallet-name> --wallet.hotkey <your-wallet-hot-key>
-    ```
-
-This will run **three** PM2 processes:
-
-1. `desearch_validator_process`: Single validator service, which runs synthetic queries, updates metagraph, manages uids and sets weights.
-2. `desearch_api_process`: API service run by uvicorn workers, which serves the API endpoints.
-3. `desearch_autoupdate`: This script will check for updates every 30 minutes, if there is an update then it will pull it, install packages and restart 2 processes above and then restart itself.
-
-### Detailed Setup Instructions
-
-For step-by-step guidance on setting up and running a miner, validator, or operating on the testnet or mainnet, refer to the following guides:
-
--   [Miner Setup](./docs/running_a_miner.md)
--   [Validator Setup](./docs/running_a_validator.md)
--   [Testnet Operations](./docs/running_on_testnet.md)
--   [Mainnet Operations](./docs/running_on_mainnet.md)
--   [Setting Up and Running the Web Application with Validator Integration](./ui/README.md)
-
----
-
-## Real-time Monitoring with wandb Integration
-
-The text prompting validator sends data to wandb, allowing real-time monitoring with key metrics like:
-
--   Gating model loss
--   Hardware usage
--   Forward pass time
--   Block duration
-
-Data is publicly available at [this link](https://wandb.ai/smart-scrape/smart-scrape-1.0). Note that [data from anonymous users is deleted after 7 days](https://docs.wandb.ai/guides/app/features/anon).
-
-</div>
+- **Website** — [desearch.ai](https://desearch.ai)
+- **Subnet 22 channel** — [Bittensor Discord](https://discord.com/channels/799672011265015819/1189589759065067580)
+- **Desearch Discord** — [Join the Desearch community server](https://discord.com/invite/eb6DTZNMF5)

@@ -1,19 +1,8 @@
-import os
-import json
 import bittensor as bt
 from typing import Type
 from pydantic import BaseModel, Field
 from desearch.tools.base import BaseTool
-from starlette.types import Send
-from .serp_api_wrapper import SerpAPIWrapper
-
-
-SERPAPI_API_KEY = os.environ.get("SERPAPI_API_KEY")
-
-if not SERPAPI_API_KEY:
-    raise ValueError(
-        "Please set the SERPAPI_API_KEY environment variable. See here: https://github.com/Desearch-ai/subnet-22/blob/main/docs/env_variables.md"
-    )
+from .scrapingdog_google_search import ScrapingDogGoogleSearch
 
 
 class WebSearchSchema(BaseModel):
@@ -45,38 +34,18 @@ class WebSearchTool(BaseTool):
         query: str,
     ):
         """Search web and return the results."""
-
-        search = SerpAPIWrapper(
-            serpapi_api_key=SERPAPI_API_KEY, params={"engine": "google"}
-        )
+        search = ScrapingDogGoogleSearch()
 
         try:
-            return await search.arun(query)
+            return await search.search(query)
         except Exception as err:
-            if "Invalid API key" in str(err):
-                bt.logging.error(f"SERP API Key is invalid: {err}")
-                return "SERP API Key is invalid"
+            bt.logging.error(f"Could not perform web search: {err}")
+            return []
 
-            bt.logging.error(f"Could not perform SERP Search: {err}")
-            return "Could not search Google. Please try again later."
-
-    async def send_event(self, send: Send, response_streamer, data):
+    async def send_event(self, send, response_streamer, data):
         if not data:
             return
 
-        search_results_response_body = {
-            "type": "search",
-            "content": data,
-        }
-
-        response_streamer.more_body = False
-
-        await send(
-            {
-                "type": "http.response.body",
-                "body": json.dumps(search_results_response_body).encode("utf-8"),
-                "more_body": False,
-            }
-        )
+        await response_streamer.send_event("search", data)
 
         bt.logging.info("Web search results data sent")

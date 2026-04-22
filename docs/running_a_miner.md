@@ -1,58 +1,112 @@
-# Bittensor (Desearch) Miner Setup Guide
+# Running a Desearch Miner
 
-This guide details the process for setting up and running a Bittensor Desearch miner using the Desearch repository.
+A miner runs a single process — a Bittensor axon (`neurons/miners/miner.py`) that answers
+`IsAlive` pings and all search synapses (AI / Twitter / Web). Validators call the axon
+directly via dendrite.
 
 ## Prerequisites
-Before starting, ensure you have:
 
-- **PM2:** A process manager to maintain your miner. If not installed, see [PM2 Installation](https://pm2.io/docs/runtime/guide/installation/).
+- Python ≥ 3.10
+- [PM2](https://pm2.io/docs/runtime/guide/installation/) for process supervision
+- A registered hotkey on subnet 22 (mainnet) or 41 (testnet)
 
-- **Environment Variables:** Set the necessary variables as per the [Environment Variables Guide](./env_variables.md).
-
-## Setup Process
-
-## 1. Clone the desearch repository and install dependencies
-Clone and install the Desearch repository in editable mode:
+## Install
 
 ```sh
 git clone https://github.com/Desearch-ai/subnet-22.git
-cd desearch
+cd subnet-22
 python -m pip install -r requirements.txt
 python -m pip install -e .
 ```
 
-### 2. Configure and Run the Miner
-Configure and launch the miner using PM2:
+## Configure the miner manifest
+
+Copy the template and edit for your deployment:
+
+```sh
+cp neurons/miners/manifest.template.json neurons/miners/manifest.json
+```
+
+Example `neurons/miners/manifest.json`:
+
+```json
+{
+  "concurrency": {
+    "web_search": 20,
+    "x_search": 15,
+    "ai_search": 10
+  }
+}
+```
+
+- `concurrency` — **per search type, per validator** ceiling. With 12 active validators,
+  `web_search: 20` means up to `20 × 12 = 240` concurrent web search requests in the worst
+  case. Infrastructure sizing is your responsibility (scale the axon host, or front it
+  with a load balancer routing to multiple backends).
+
+Updates to `manifest.json` propagate via `IsAlive` and take effect at the next UTC hour
+boundary without restart.
+
+## Configure env vars
+
+The miner loads `neurons/miners/.env` automatically on startup. Copy the template and
+fill it in:
+
+```sh
+cp neurons/miners/.env.template neurons/miners/.env
+# edit neurons/miners/.env
+```
+
+See [env_variables.md](./env_variables.md) for the full list.
+
+## Run with PM2
+
+Two equivalent ways — pick whichever fits your workflow.
+
+### Option A: `.env` (recommended)
+
+All runtime config comes from `neurons/miners/.env`:
 
 ```sh
 pm2 start neurons/miners/miner.py \
---miner.name desearch \
---interpreter <path-to-python-binary> -- \
---wallet.name <wallet-name> \
---wallet.hotkey <wallet-hotkey> \
---netuid <netuid> \
---subtensor.network <network> \
---axon.port <port>
-
-# Example
-pm2 start neurons/miners/miner.py --interpreter /usr/bin/python3 --name miner_1 -- --wallet.name miner --wallet.hotkey default --subtensor.network testnet --netuid 41 --axon.port 14001
+  --interpreter /usr/bin/python3 \
+  --name desearch_miner
 ```
 
-#### Variable Explanation
-- `--wallet.name`: Your wallet's name.
-- `--wallet.hotkey`: Your wallet's hotkey.
-- `--netuid`: Network UID, `41` for testnet.
-- `--subtensor.network`: Choose network (`finney`, `test`, `local`, etc).
-- `--logging.debug`: Set logging level.
-- `--axon.port`: Desired port number.
+### Option B: CLI-flag-driven
 
-- `--miner.name`: Path for miner data (miner.root / (wallet_cold - wallet_hot) / miner.name).
-- `--miner.mock_dataset`: Set to True to use a mock dataset.
-- `--miner.blocks_per_epoch`: Number of blocks until setting weights on chain.
-- `--miner.openai_summary_model`: OpenAI model used for summarizing content. Default gpt-3.5-turbo-0125
-- `--miner.openai_query_model`: OpenAI model used for generating queries. Default gpt-3.5-turbo-0125
-- `--miner.openai_fix_query_model`: "OpenAI model used for fixing queries. Default gpt-4-1106-preview
+Pass runtime config on the command line (overrides anything in `.env`):
 
+```sh
+pm2 start neurons/miners/miner.py \
+  --interpreter /usr/bin/python3 \
+  --name desearch_miner \
+  -- \
+  --wallet.name miner \
+  --wallet.hotkey default \
+  --subtensor.network finney \
+  --netuid 22 \
+  --axon.port 14000
+```
 
-## Conclusion
-Following these steps, your desearch miner should be operational. Regularly monitor your processes and logs for any issues. For additional information or assistance, consult the official documentation or community resources.
+## Stake
+
+Incoming synapses are stake-gated at the axon: the sender must be registered, hold a
+validator permit, and meet the minimum stake thresholds (`MIN_ALPHA_STAKE` and
+`MIN_TOTAL_STAKE` in `desearch/__init__.py`).
+
+### Key flags
+
+- `--wallet.name` / `--wallet.hotkey` — registered wallet + hotkey
+- `--netuid` — `22` mainnet, `41` testnet
+- `--subtensor.network` — `finney`, `test`, or custom endpoint
+- `--axon.port` — public port for the axon
+- `--miner.config_path` — path to `manifest.json` (default `./neurons/miners/manifest.json`)
+- `--logging.debug` / `--logging.trace` — increase log verbosity
+
+## Monitor
+
+```sh
+pm2 status
+pm2 logs desearch_miner
+```

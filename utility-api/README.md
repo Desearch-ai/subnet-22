@@ -10,7 +10,7 @@ pip install -r requirements.txt
 
 # 2. Set up Postgres and configure .env
 cp .env.example .env
-# Edit .env with your DATABASE_URL
+# Edit .env with your DB_URL
 
 # 3. Run the API (tables auto-create on startup)
 uvicorn app.main:app --reload

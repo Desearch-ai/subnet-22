@@ -285,6 +285,27 @@ class TwitterBasicSearchContentRelevanceModel(BaseRewardModel):
     def compare_content(self, text1: str, text2: str) -> bool:
         return format_text_for_match(text1) == format_text_for_match(text2)
 
+    def parse_tweet_date(self, created_at: str) -> datetime:
+        return datetime.strptime(created_at, "%a %b %d %H:%M:%S %z %Y")
+
+    def check_latest_sort_order(self, miner_data_list: List[Dict[str, Any]]) -> bool:
+        previous_date = None
+
+        for tweet_dict in miner_data_list:
+            created_at = tweet_dict.get("created_at")
+
+            if not created_at:
+                return False
+
+            current_date = self.parse_tweet_date(created_at)
+
+            if previous_date and current_date > previous_date:
+                return False
+
+            previous_date = current_date
+
+        return True
+
     def check_tweet_content(
         self,
         response: (
@@ -305,6 +326,17 @@ class TwitterBasicSearchContentRelevanceModel(BaseRewardModel):
                         return 0.0
                     else:
                         miner_map[tweet_dict["id"]] = tweet_dict
+
+            if (
+                isinstance(response, TwitterSearchSynapse)
+                and response.sort == "Latest"
+                and not self.check_latest_sort_order(miner_data_list)
+            ):
+                bt.logging.debug(
+                    "Tweets are not in descending created_at order for sort=Latest."
+                )
+
+                return 0.0
 
             tweet_scores = []
 

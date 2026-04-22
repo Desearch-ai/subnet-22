@@ -1,10 +1,8 @@
 from abc import ABC
 from typing import List
-from desearch.tools.base import BaseToolkit, BaseTool
-from .hacker_news_summary import (
-    summarize_hacker_news_data,
-    prepare_hacker_news_data_for_summary,
-)
+
+from desearch.tools.base import BaseTool, BaseToolkit
+
 from .hacker_news_search_tool import HackerNewsSearchTool
 
 TOOLS = [HackerNewsSearchTool()]
@@ -18,12 +16,3 @@ class HackerNewsToolkit(BaseToolkit, ABC):
 
     def get_tools(self) -> List[BaseTool]:
         return TOOLS
-
-    async def summarize(self, prompt, model, data, system_message):
-        data = next(iter(data.values()))
-        return await summarize_hacker_news_data(
-            prompt=prompt,
-            model=model,
-            filtered_posts=data,
-            user_system_message=system_message,
-        )

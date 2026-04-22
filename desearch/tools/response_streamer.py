@@ -1,15 +1,16 @@
-import json
 import asyncio
-from starlette.types import Send
-from desearch.protocol import ScraperTextRole
+import json
+
 import bittensor as bt
+from starlette.types import Send
+
+from desearch.protocol import ScraperTextRole
 
 
 class ResponseStreamer:
     def __init__(self, send: Send) -> None:
         self.texts = {}
         self.role_order = []
-        self.more_body = True
         self.send = send
 
     async def send_text_event(self, text: str, role: ScraperTextRole):
@@ -29,8 +30,7 @@ class ResponseStreamer:
             self.role_order.append(role)
 
         if role not in self.texts:
-            await self.send_text_event(text="\n\n", role=role)
-            self.texts[role] = ["\n\n"]
+            self.texts[role] = []
 
         async for chunk in response:
             token = chunk.choices[0].delta.content or ""
@@ -43,6 +43,22 @@ class ResponseStreamer:
 
             bt.logging.trace(f"Streamed tokens: {token}")
 
+    async def send_event(self, event_type: str, content, more_body: bool = True):
+        body = {
+            "type": event_type,
+            "content": content,
+        }
+
+        await self.send(
+            {
+                "type": "http.response.body",
+                "body": json.dumps(body).encode("utf-8"),
+                "more_body": more_body,
+            }
+        )
+
+        bt.logging.trace(f"Sent event: {body}")
+
     async def send_completion_event(self):
         completion_response_body = {
             "type": "completion",
@@ -53,6 +69,7 @@ class ResponseStreamer:
             {
                 "type": "http.response.body",
                 "body": json.dumps(completion_response_body).encode("utf-8"),
+                "more_body": False,
             }
         )
 

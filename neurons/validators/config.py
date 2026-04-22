@@ -21,11 +21,9 @@ import os
 from distutils.util import strtobool
 
 import bittensor as bt
-import torch
 from loguru import logger
 
 from desearch.protocol import ScoringModel
-from neurons.validators.reward import DefaultRewardFrameworkConfig
 
 
 def str2bool(v):
@@ -99,61 +97,6 @@ def add_args(cls, parser):
         "--neuron.disable_log_rewards",
         action="store_true",
         help="Disable all reward logging, suppresses reward functions and their values from being logged to wandb.",
-        default=False,
-    )
-
-    parser.add_argument(
-        "--neuron.moving_average_alpha",
-        type=float,
-        help="Moving average alpha parameter, how much to add of the new observation.",
-        default=0.2,
-    )
-
-    parser.add_argument(
-        "--reward.summary_relevance_weight",
-        type=float,
-        help="adjusts the influence of a scoring model that evaluates the accuracy and relevance of a node's responses to given prompts.",
-        default=DefaultRewardFrameworkConfig.summary_relevance_weight,
-    )
-
-    parser.add_argument(
-        "--reward.twitter_content_weight",
-        type=float,
-        help="Specifies the weight for the reward model that evaluates the relevance and quality of summary text in conjunction with linked content data.",
-        default=DefaultRewardFrameworkConfig.twitter_content_weight,
-    )
-
-    parser.add_argument(
-        "--reward.web_search_relavance_weight",
-        type=float,
-        help="Specifies the weight for the reward model that evaluates the relevance and quality of search summary text in conjunction with linked content data.",
-        default=DefaultRewardFrameworkConfig.web_search_relavance_weight,
-    )
-
-    parser.add_argument(
-        "--reward.performance_weight",
-        type=float,
-        help="Specifies the weight for the reward model that evaluates the relevance and quality of search summary text in conjunction with linked content data.",
-        default=DefaultRewardFrameworkConfig.performance_weight,
-    )
-
-    parser.add_argument(
-        "--neuron.only_allowed_miners",
-        type=lambda x: x.split(","),
-        help="A list of miner identifiers, hotkey",
-        default=[],
-    )
-    parser.add_argument(
-        "--neuron.checkpoint_block_length",
-        type=int,
-        help="Blocks before a checkpoint is saved.",
-        default=50,
-    )
-
-    parser.add_argument(
-        "--neuron.is_disable_tokenizer_reward",
-        action="store_true",
-        help="If enabled, activates a mock reward system for testing and development purposes without affecting the live reward mechanisms.",
         default=False,
     )
 

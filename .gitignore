@@ -19,7 +19,13 @@ venv/
 state.json
 
 app.config.js
+neurons/miners/manifest.json
+neurons/miners/.env
 
 .DS_Store
 Makefile
 pyrightconfig.json
+
+.claude/
+.pytest_cache/
+.state/

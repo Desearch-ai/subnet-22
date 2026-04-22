@@ -2,7 +2,6 @@ import asyncio
 import json
 import time
 import traceback
-import typing
 from enum import Enum
 from typing import Any, Dict, List, Literal, Optional, Tuple
 
@@ -16,11 +15,18 @@ from desearch.synapse import StreamingSynapse, Synapse
 
 
 class IsAlive(Synapse):
-    answer: typing.Optional[str] = None
-    completion: str = pydantic.Field(
+    # Remove after migration
+    answer: Optional[str] = None
+    completion: Optional[str] = pydantic.Field(
         "",
         title="Completion",
         description="Completion status of the current StreamPrompting object. This attribute is mutable and can be updated.",
+    )
+
+    manifest: Optional[Dict[str, Any]] = pydantic.Field(
+        None,
+        title="Miner Manifest",
+        description="Miner manifest: per-search-type concurrency. Optional; older miners omit it.",
     )
 
     def get_required_fields(self):
@@ -498,9 +504,6 @@ class ScraperStreamingSynapse(StreamingSynapse):
         description="The result type for miners",
     )
 
-    def get_twitter_completion(self) -> Optional[str]:
-        return self.texts.get(ScraperTextRole.TWITTER_SUMMARY.value, "")
-
     def get_search_results_by_tools(self) -> Tuple[Dict[str, List], int]:
         """Gets the search results from the appropriate *_search_results lists based on tools used."""
 
@@ -586,42 +589,6 @@ class ScraperStreamingSynapse(StreamingSynapse):
         all_unique_links = list(dict.fromkeys(all_links))
 
         return all_unique_links, links_per_tool_group
-
-    def get_search_completion(self) -> Dict[str, str]:
-        """Gets the search completion text from the texts dictionary based on tools used."""
-
-        completions = {}
-
-        if any(
-            tool in self.tools
-            for tool in [
-                "Web Search",
-                "Wikipedia Search",
-                "Youtube Search",
-                "ArXiv Search",
-            ]
-        ):
-            search_summary = self.texts.get(
-                ScraperTextRole.SEARCH_SUMMARY.value, ""
-            ).strip()
-            completions[ScraperTextRole.SEARCH_SUMMARY.value] = search_summary
-
-        if "Reddit Search" in self.tools:
-            reddit_summary = self.texts.get(
-                ScraperTextRole.REDDIT_SUMMARY.value, ""
-            ).strip()
-            completions[ScraperTextRole.REDDIT_SUMMARY.value] = reddit_summary
-
-        if "Hacker News Search" in self.tools:
-            hacker_news_summary = self.texts.get(
-                ScraperTextRole.HACKER_NEWS_SUMMARY.value, ""
-            ).strip()
-            completions[ScraperTextRole.HACKER_NEWS_SUMMARY.value] = hacker_news_summary
-
-        links_per_completion = 10
-        links_expected = len(completions) * links_per_completion
-
-        return completions, links_expected
 
     async def process_streaming_response(self, response: StreamingResponse):
         if self.completion is None:

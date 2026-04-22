@@ -1,8 +1,15 @@
 import os
 
+_REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+
 PORT = os.environ.get("PORT", 8005)
 VALIDATOR_SERVICE_PORT = os.environ.get("VALIDATOR_SERVICE_PORT", 8006)
 EXPECTED_ACCESS_KEY = os.environ.get("EXPECTED_ACCESS_KEY")
+
+MINER_DB_PATH = os.environ.get(
+    "MINER_DB_PATH",
+    os.path.join(_REPO_ROOT, ".state", "miner_state.db"),
+)
 
 MIN_ACCESS_KEY_LENGTH = 16
 

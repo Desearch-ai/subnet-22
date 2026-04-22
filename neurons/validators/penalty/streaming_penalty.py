@@ -1,13 +1,15 @@
-import torch
 from typing import List
-from neurons.validators.penalty.penalty import BasePenaltyModel, PenaltyModelType
-import bittensor as bt
-from desearch.protocol import ScraperStreamingSynapse
-import tiktoken
 
+import tiktoken
+import torch
+
+from desearch.protocol import ScraperStreamingSynapse
+from neurons.validators.penalty.penalty import BasePenaltyModel, PenaltyModelType
 
 MAX_TOKENS_PER_CHUNK = 2
 PENALTY_PER_EXCEEDING_TOKEN = 0.01
+
+encoding = tiktoken.get_encoding("o200k_base")
 
 
 class StreamingPenaltyModel(BasePenaltyModel):
@@ -21,7 +23,6 @@ class StreamingPenaltyModel(BasePenaltyModel):
         additional_params=None,
     ) -> torch.FloatTensor:
         accumulated_penalties = torch.zeros(len(responses), dtype=torch.float32)
-        encoding = tiktoken.get_encoding("cl100k_base")
 
         for index, response in enumerate(responses):
             streamed_text_chunks = []

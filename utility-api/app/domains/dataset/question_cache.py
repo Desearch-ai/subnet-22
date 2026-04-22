@@ -80,6 +80,7 @@ _AI_SEARCH_DATE_FILTERS: List[str] = list(
 )
 
 _X_SEARCH_PARAM_FIELDS: List[str] = [
+    "sort",
     "is_quote",
     "is_video",
     "is_image",
@@ -108,7 +109,9 @@ def _generate_x_search_params() -> Dict[str, Any]:
     selected_field = random.choice(_X_SEARCH_PARAM_FIELDS)
     params: Dict[str, Any] = {}
 
-    if selected_field == "date_range":
+    if selected_field == "sort":
+        params["sort"] = "Latest"
+    elif selected_field == "date_range":
         now = datetime.now(timezone.utc)
         end_date = now - timedelta(days=random.randint(0, _THREE_YEARS_IN_DAYS))
         start_date = end_date - timedelta(days=random.randint(7, 14))
@@ -149,6 +152,10 @@ def _current_hour_utc() -> datetime:
     return now.replace(minute=0, second=0, microsecond=0)
 
 
+def _generate_random_seed() -> int:
+    return random.SystemRandom().randint(0, 0x7FFFFFFF)
+
+
 def _hour_key(dt: datetime) -> str:
     """ISO-format key for Redis, e.g. '2026-04-10T14:00:00+00:00'."""
     return dt.isoformat()
@@ -161,6 +168,9 @@ class TimeRangeCache:
     time_range_start: Optional[datetime] = None
     miner_uids: List[int] = field(default_factory=list)
     assignments: Dict[SearchType, Dict[int, QuestionOut]] = field(default_factory=dict)
+
+    # Shared scoring seeds for the current cache instance: search_type -> {uid: seed}
+    scoring_seeds: Dict[SearchType, Dict[int, int]] = field(default_factory=dict)
 
 
 class QuestionCache:
@@ -216,9 +226,7 @@ class QuestionCache:
             hash_key = _KEY_ASSIGN.format(hour=hour, search_type=search_type.value)
             for uid, question in uid_map.items():
                 pipe.hset(hash_key, str(uid), question.model_dump_json())
-                fp = compute_scoring_fingerprint(
-                    search_type.value, question.query
-                )
+                fp = compute_scoring_fingerprint(search_type.value, question.query)
                 fingerprints.append(fp)
             pipe.expire(hash_key, _TTL)
 
@@ -314,8 +322,9 @@ class QuestionCache:
                 f"uid_count={len(miner_uids)}"
             )
 
-            # Build deterministic assignments per search type
+            # Build deterministic assignments and per-cache scoring seeds per search type
             assignments: Dict[SearchType, Dict[int, QuestionOut]] = {}
+            scoring_seeds: Dict[SearchType, Dict[int, int]] = {}
 
             for search_type in _SCORING_SEARCH_TYPES:
                 stmt = (
@@ -334,15 +343,33 @@ class QuestionCache:
                         f"time_range={time_range_start.isoformat()}"
                     )
                     assignments[search_type] = {}
+                    scoring_seeds[search_type] = {}
                     continue
 
-                assignments[search_type] = {
-                    uid: QuestionOut(
+                # AI search params should be identical for every miner within the
+                # scoring window, while other search types keep their current
+                # per-miner generation behavior.
+                shared_params = (
+                    _generate_params_for(search_type)
+                    if search_type == SearchType.AI_SEARCH
+                    else None
+                )
+
+                uid_questions = {}
+                uid_seeds = {}
+                for i, uid in enumerate(miner_uids):
+                    uid_questions[uid] = QuestionOut(
                         query=questions[i % len(questions)].query,
-                        params=_generate_params_for(search_type),
+                        params=(
+                            dict(shared_params)
+                            if shared_params is not None
+                            else _generate_params_for(search_type)
+                        ),
                     )
-                    for i, uid in enumerate(miner_uids)
-                }
+                    uid_seeds[uid] = _generate_random_seed()
+
+                assignments[search_type] = uid_questions
+                scoring_seeds[search_type] = uid_seeds
 
                 sample_question = questions[0].query if questions else ""
                 logger.info(
@@ -351,6 +378,7 @@ class QuestionCache:
                     f"search_type={search_type.value} "
                     f"assignment_count={len(assignments[search_type])} "
                     f"sampled_questions={len(questions)} "
+                    f"shared_params={shared_params} "
                     f"sample_query={sample_question[:120]!r}"
                 )
 
@@ -358,6 +386,7 @@ class QuestionCache:
                 time_range_start=time_range_start,
                 miner_uids=miner_uids,
                 assignments=assignments,
+                scoring_seeds=scoring_seeds,
             )
 
             await self._save_to_redis()
@@ -396,13 +425,17 @@ class QuestionCache:
 
     async def get_next_question(
         self, session: AsyncSession, hotkey: str
-    ) -> Tuple[datetime, int, SearchType, QuestionOut]:
+    ) -> Tuple[datetime, int, SearchType, QuestionOut, int]:
         """
-        Return one random unserved (uid, search_type, question) for this validator.
+        Return one random unserved (uid, search_type, question, scoring_seed) for
+        this validator. Params are embedded inside the returned QuestionOut. All
+        validators get the same question, params, and scoring_seed for the same
+        (uid, search_type) pair for the current cache window.
 
-        Params are embedded inside the returned QuestionOut. All validators get the
-        same question and params for the same (uid, search_type) pair within the
-        current UTC hour.
+        The scoring_seed is generated when the hourly cache is refreshed and
+        should be used by validators to seed random selection of tweets/links
+        for validation, ensuring consistent scoring across validators while the
+        cache remains in memory.
 
         Raises HTTPException 404 when all questions have been served for the hour.
         """
@@ -437,6 +470,9 @@ class QuestionCache:
         await self._mark_served(hour, hotkey, search_type.value, uid)
 
         question = self._cache.assignments[search_type][uid]
+
+        scoring_seed = self._cache.scoring_seeds.get(search_type, {}).get(uid, 0)
+
         logger.debug(
             f"Serving question: hotkey={hotkey} "
             f"time_range={hour} "
@@ -445,6 +481,7 @@ class QuestionCache:
             f"served_count={len(served) + 1} "
             f"remaining={len(unserved) - 1} "
             f"params={question.params} "
+            f"scoring_seed={scoring_seed} "
             f"query={question.query[:120]!r}"
         )
-        return self._cache.time_range_start, uid, search_type, question
+        return self._cache.time_range_start, uid, search_type, question, scoring_seed

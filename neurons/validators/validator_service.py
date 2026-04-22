@@ -11,7 +11,6 @@ import uvicorn
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
-from desearch import QUERY_MINERS
 from neurons.validators.env import VALIDATOR_SERVICE_PORT
 from neurons.validators.validator import Neuron
 
@@ -58,6 +57,8 @@ async def get_config():
 class GetRandomUidRequest(BaseModel):
     # Specific UID to request
     uid: Optional[int] = None
+    # Search type used to weight the random selection
+    search_type: Optional[str] = None
 
 
 @app.post(
@@ -70,22 +71,9 @@ async def get_random_uid(body: GetRandomUidRequest):
             detail="Neuron is not available.",
         )
 
-    if body.uid is not None and body.uid in neuron.available_uids:
-        return {"uid": body.uid, "axon": neuron.metagraph.axons[body.uid]}
-
-    uid = await neuron.get_uids(
-        strategy=QUERY_MINERS.RANDOM,
-        is_only_allowed_miner=False,
-        specified_uids=None,
+    uid, axon = await neuron.get_random_miner(
+        uid=body.uid, search_type=body.search_type
     )
-
-    if uid is None:
-        raise HTTPException(
-            status_code=500,
-            detail="No available UID found.",
-        )
-
-    axon = neuron.metagraph.axons[uid]
 
     return {"uid": uid, "axon": axon}
 

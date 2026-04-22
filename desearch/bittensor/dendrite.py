@@ -71,7 +71,6 @@ class Dendrite(bt.Dendrite):
         if isinstance(synapse, IsAlive):
             bt.logging.info("MockDendrite--call is_alive")
             if target_axon.hotkey.startswith("hotkey"):
-                synapse.completion = "True"
                 synapse.dendrite.status_code = 200
             synapse.dendrite.process_time = str(time.time() - start_time)
             return synapse
