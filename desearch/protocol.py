@@ -18,7 +18,7 @@ class IsAlive(Synapse):
     # Remove after migration
     answer: Optional[str] = None
     completion: Optional[str] = pydantic.Field(
-        None,
+        "",
         title="Completion",
         description="Completion status of the current StreamPrompting object. This attribute is mutable and can be updated.",
     )
