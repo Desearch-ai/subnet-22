@@ -8,9 +8,9 @@ import bittensor as bt
 
 from desearch.protocol import ScraperStreamingSynapse
 from desearch.utils import clean_text
+from neurons.validators.apify.scrapingdog_scraper import scrape_links_with_retries
 from neurons.validators.base_validator import AbstractNeuron
 from neurons.validators.reward.reward_llm import RewardLLM
-from neurons.validators.apify.scrapingdog_scraper import scrape_links_with_retries
 from neurons.validators.utils.prompts import (
     SearchSummaryRelevancePrompt,
 )
@@ -112,11 +112,13 @@ class WebSearchContentRelevanceModel(BaseRewardModel):
             random_links.extend(links)
             all_links.extend(links)
 
+        attempted_counts = [len(rl) for rl in responses_random_links]
+
         unique_links = list(set(all_links))
 
         if len(unique_links) == 0:
             bt.logging.info("No unique links found to process.")
-            return default_val_score_responses
+            return default_val_score_responses, attempted_counts
 
         bt.logging.info(f"Fetching {len(unique_links)} unique web links.")
 
@@ -126,7 +128,7 @@ class WebSearchContentRelevanceModel(BaseRewardModel):
             bt.logging.info(
                 "No validator web links were fetched. Returning empty score responses."
             )
-            return default_val_score_responses
+            return default_val_score_responses, attempted_counts
 
         for response, random_links in zip(responses, responses_random_links):
             for link_with_metadata in links_with_metadata:
@@ -156,7 +158,7 @@ class WebSearchContentRelevanceModel(BaseRewardModel):
             process_function=self.llm_process_validator_links,
         )
 
-        return val_score_responses_list
+        return val_score_responses_list, attempted_counts
 
     def check_response_random_link(self, response: ScraperStreamingSynapse):
         try:
@@ -267,7 +269,9 @@ class WebSearchContentRelevanceModel(BaseRewardModel):
                 f"WebSearchContentRelevanceModel | Calculating {len(completions)} rewards (typically < 1 sec/reward)."
             )
 
-            val_score_responses_list = await self.process_links(responses=responses)
+            val_score_responses_list, attempted_counts = await self.process_links(
+                responses=responses
+            )
 
             scores = [
                 self.check_response_random_link(response) for response in responses
@@ -278,8 +282,14 @@ class WebSearchContentRelevanceModel(BaseRewardModel):
 
             grouped_val_score_responses = []
 
-            for apify_score, response, val_score_responses, uid_tensor in zip(
-                scores, responses, val_score_responses_list, uids
+            for (
+                apify_score,
+                response,
+                val_score_responses,
+                attempted_count,
+                uid_tensor,
+            ) in zip(
+                scores, responses, val_score_responses_list, attempted_counts, uids
             ):
                 uid = uid_tensor.item()
 
@@ -297,38 +307,30 @@ class WebSearchContentRelevanceModel(BaseRewardModel):
 
                 response_scores = {}
                 total_score = 0
-                num_links = len(response.validator_links)
 
                 _, links_expected = response.get_search_results_by_tools()
 
-                max_links_considered = max(num_links, links_expected)
+                for val_link in response.validator_links:
+                    val_url = val_link.get("link")
+                    if val_score_responses:
+                        score_result = val_score_responses.get(val_url, None)
+                        if score_result is not None:
+                            score = scoring_prompt.extract_score(score_result)
+                            total_score += score / 10.0
+                            response_scores[val_url] = score
 
-                if num_links > 0:
-                    for val_link in response.validator_links:
-                        val_url = val_link.get("link")
-                        if val_score_responses:
-                            score_result = val_score_responses.get(val_url, None)
-                            if score_result is not None:
-                                score = scoring_prompt.extract_score(score_result)
-                                total_score += score / 10.0
-                                response_scores[val_url] = score
+                if attempted_count > 0 and total_score > 0:
+                    average_score = total_score / attempted_count
 
-                    if total_score > 0:
-                        average_score = total_score / max_links_considered
+                    search_result_links, _ = response.get_links_from_search_results()
 
-                        # Get search result links count
-                        search_result_links, _ = (
-                            response.get_links_from_search_results()
-                        )
-
-                        reward_event.reward = self.calculate_adjusted_score(
-                            links_count=len(search_result_links),
-                            score=average_score,
-                            max_links_threshold=links_expected,
-                        )
-                else:
+                    reward_event.reward = self.calculate_adjusted_score(
+                        links_count=len(search_result_links),
+                        score=average_score,
+                        max_links_threshold=links_expected,
+                    )
+                elif attempted_count == 0:
                     bt.logging.info(f"UID '{uid}' has no validator links.")
-                    reward_event.reward = 0  # Handle case with no validator links
 
                 reward_event.reward = min(reward_event.reward * apify_score, 1)
                 reward_events.append(reward_event)
