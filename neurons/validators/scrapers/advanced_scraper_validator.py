@@ -94,6 +94,8 @@ class AdvancedScraperValidator(BaseScraperValidator):
             PerformanceRewardModel(
                 device=neuron.config.neuron.device,
                 neuron=neuron,
+                min_realistic_time=5.0,
+                target_time=10.0,
             ),
         ]
 

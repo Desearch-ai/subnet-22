@@ -58,6 +58,8 @@ class XScraperValidator(BaseScraperValidator):
             PerformanceRewardModel(
                 device=neuron.config.neuron.device,
                 neuron=neuron,
+                min_realistic_time=2.0,
+                target_time=4.0,
             ),
         ]
 
