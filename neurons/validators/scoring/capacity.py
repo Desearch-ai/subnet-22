@@ -12,12 +12,13 @@ import bittensor as bt
 from desearch.miner_config import SEARCH_TYPES
 from neurons.validators.scoring import miner_db
 
+# Ease up on threshold before resolving issues in relevance models, as it's impossible to ramp up now.
 RAMP_RATE = 0.05
-DECAY_FACTOR = 0.7
-QUALITY_THRESHOLD = 0.5
+DECAY_FACTOR = 0.8
+QUALITY_THRESHOLD = 0.2
 HARD_CAP = 100
 FREEZE_FAILURES = 4
-FREEZE_HOURS = 12
+FREEZE_HOURS = 4
 
 UNREACHABLE_FAILURE_THRESHOLD = 3
 UNREACHABLE_DECAY_FACTOR = 0.9
