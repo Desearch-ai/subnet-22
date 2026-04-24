@@ -174,7 +174,6 @@ async def save_logs(
         stmt = insert(MinerResponseLog).values(values)
 
         result = await session.execute(stmt)
-        await _upsert_organic_questions(session, body)
         await session.commit()
 
         inserted = result.rowcount or 0

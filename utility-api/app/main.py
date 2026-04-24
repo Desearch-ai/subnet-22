@@ -6,7 +6,6 @@ from starlette.requests import Request
 
 from app.config import CORS_ALLOWED_ORIGINS, NETUID, SUBTENSOR_NETWORK
 from app.domains.dataset.router import close_question_cache, init_question_cache
-from app.domains.dataset.router import router as dataset_router
 from app.domains.logs.router import router as logs_router
 from app.domains.miners.router import router as miners_router
 from app.logger import get_logger
@@ -52,7 +51,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(dataset_router)
 app.include_router(logs_router)
 app.include_router(miners_router)
 
