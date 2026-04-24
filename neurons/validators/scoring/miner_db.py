@@ -1,17 +1,20 @@
 """
 SQLite persistence for miner concurrency state and scoring window history.
 
-Module-level functions operate on a shared async connection.
-Initialize once at startup with ``await initialize(db_path)``.
+The writer process (neuron) holds a single long-lived connection; reader
+processes (public API) open a short-lived connection per call so no reader
+mark blocks SQLite's WAL file from resetting.
 """
 
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import aiosqlite
 import bittensor as bt
 
-_db: Optional[aiosqlite.Connection] = None
+_writer_db: Optional[aiosqlite.Connection] = None
+_readonly_path: Optional[str] = None
 
 STALENESS_HOURS = 24
 RETENTION_DAYS = 3
@@ -62,30 +65,54 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-async def initialize(db_path: str, readonly: bool = False) -> None:
-    """Open the shared async connection.
+@asynccontextmanager
+async def _conn():
+    """Yield a connection for the current mode. Writer yields the shared
+    long-lived connection; reader opens a short-lived per-call connection so
+    no reader mark blocks the WAL from resetting."""
+    if _writer_db is not None:
+        yield _writer_db
+        return
+    if _readonly_path is None:
+        raise RuntimeError("miner_db not initialized")
+    uri = f"file:{_readonly_path}?mode=ro"
+    conn = await aiosqlite.connect(uri, uri=True)
+    try:
+        conn.row_factory = aiosqlite.Row
+        yield conn
+    finally:
+        await conn.close()
 
-    ``readonly=True`` opens the DB via the ``file:…?mode=ro`` URI so a process
-    that only serves reads (e.g. a public-API uvicorn worker) cannot mutate
-    state owned by the neuron. The neuron process calls this with
-    ``readonly=False`` and creates the schema + runs retention cleanup."""
-    global _db
+
+async def initialize(db_path: str, readonly: bool = False) -> None:
+    """Configure the module for ``db_path``.
+
+    ``readonly=True`` just stores the path — each read opens a fresh
+    connection via ``file:…?mode=ro`` so a public-API process cannot mutate
+    state and does not hold a long-lived reader that would block WAL reset.
+
+    The writer process calls this with ``readonly=False``, opens the shared
+    long-lived connection, creates the schema, drains any accumulated WAL
+    from prior runs, and runs retention cleanup."""
+    global _writer_db, _readonly_path
     if readonly:
-        uri = f"file:{db_path}?mode=ro"
-        _db = await aiosqlite.connect(uri, uri=True)
-        _db.row_factory = aiosqlite.Row
-        bt.logging.info(f"[MinerDB] Opened read-only at {db_path}")
+        _readonly_path = db_path
+        bt.logging.info(f"[MinerDB] Configured read-only at {db_path}")
         return
 
-    _db = await aiosqlite.connect(db_path)
-    _db.row_factory = aiosqlite.Row
-    await _db.execute("PRAGMA journal_mode=WAL")
+    _writer_db = await aiosqlite.connect(db_path)
+    _writer_db.row_factory = aiosqlite.Row
+    await _writer_db.execute("PRAGMA journal_mode=WAL")
 
     for statement in _SCHEMA.strip().split(";"):
         statement = statement.strip()
         if statement:
-            await _db.execute(statement)
-    await _db.commit()
+            await _writer_db.execute(statement)
+    await _writer_db.commit()
+
+    # Drain any WAL accumulated from prior runs where long-held readers
+    # prevented auto-checkpoint from resetting the file.
+    await _writer_db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
 
     await _purge_old_history()
     await _decay_stale_verified()
@@ -94,67 +121,76 @@ async def initialize(db_path: str, readonly: bool = False) -> None:
 
 
 async def close() -> None:
-    global _db
-    if _db:
-        await _db.close()
-        _db = None
+    global _writer_db, _readonly_path
+    if _writer_db is not None:
+        await _writer_db.close()
+        _writer_db = None
+    _readonly_path = None
 
 
 async def _purge_old_history() -> None:
     cutoff = (datetime.now(timezone.utc) - timedelta(days=RETENTION_DAYS)).isoformat()
-    await _db.execute("DELETE FROM scoring_windows WHERE created_at < ?", (cutoff,))
-    await _db.commit()
+    async with _conn() as db:
+        await db.execute("DELETE FROM scoring_windows WHERE created_at < ?", (cutoff,))
+        await db.commit()
 
 
 async def _decay_stale_verified() -> None:
     cutoff = (datetime.now(timezone.utc) - timedelta(hours=STALENESS_HOURS)).isoformat()
-    result = await _db.execute(
-        "UPDATE miner_concurrency SET verified = 1 WHERE updated_at < ?", (cutoff,)
-    )
-    if result.rowcount:
-        bt.logging.info(
-            f"[MinerDB] Decayed {result.rowcount} stale miners to verified=1"
+    async with _conn() as db:
+        result = await db.execute(
+            "UPDATE miner_concurrency SET verified = 1 WHERE updated_at < ?", (cutoff,)
         )
-    await _db.commit()
+        if result.rowcount:
+            bt.logging.info(
+                f"[MinerDB] Decayed {result.rowcount} stale miners to verified=1"
+            )
+        await db.commit()
 
 
 async def get_verified(uid: int, search_type: str) -> int:
-    cursor = await _db.execute(
-        "SELECT verified FROM miner_concurrency WHERE uid = ? AND search_type = ?",
-        (uid, search_type),
-    )
-    row = await cursor.fetchone()
+    async with _conn() as db:
+        cursor = await db.execute(
+            "SELECT verified FROM miner_concurrency WHERE uid = ? AND search_type = ?",
+            (uid, search_type),
+        )
+        row = await cursor.fetchone()
     return row["verified"] if row else 1
 
 
 async def get_all_verified(search_type: str) -> dict[int, int]:
-    cursor = await _db.execute(
-        "SELECT uid, verified FROM miner_concurrency WHERE search_type = ?",
-        (search_type,),
-    )
-    return {row["uid"]: row["verified"] async for row in cursor}
+    async with _conn() as db:
+        cursor = await db.execute(
+            "SELECT uid, verified FROM miner_concurrency WHERE search_type = ?",
+            (search_type,),
+        )
+        return {row["uid"]: row["verified"] async for row in cursor}
 
 
 async def get_all_concurrency_data(
     search_type: str,
 ) -> dict[int, tuple[float, int]]:
     """Return {uid: (quality_avg, verified)} for all miners of a given search type."""
-    cursor = await _db.execute(
-        """
-        SELECT uid, quality_avg, verified
-        FROM miner_concurrency WHERE search_type = ?
-        """,
-        (search_type,),
-    )
-    return {row["uid"]: (row["quality_avg"], row["verified"]) async for row in cursor}
+    async with _conn() as db:
+        cursor = await db.execute(
+            """
+            SELECT uid, quality_avg, verified
+            FROM miner_concurrency WHERE search_type = ?
+            """,
+            (search_type,),
+        )
+        return {
+            row["uid"]: (row["quality_avg"], row["verified"]) async for row in cursor
+        }
 
 
 async def get_concurrency_row(uid: int, search_type: str) -> Optional[dict]:
-    cursor = await _db.execute(
-        "SELECT * FROM miner_concurrency WHERE uid = ? AND search_type = ?",
-        (uid, search_type),
-    )
-    row = await cursor.fetchone()
+    async with _conn() as db:
+        cursor = await db.execute(
+            "SELECT * FROM miner_concurrency WHERE uid = ? AND search_type = ?",
+            (uid, search_type),
+        )
+        row = await cursor.fetchone()
     return dict(row) if row else None
 
 
@@ -166,27 +202,28 @@ async def upsert_concurrency(
     quality_avg: float,
     frozen_until: Optional[str] = None,
 ) -> None:
-    await _db.execute(
-        """
-        UPDATE miner_concurrency
-        SET verified = ?,
-            declared = ?,
-            quality_avg = ?,
-            frozen_until = ?,
-            updated_at = ?
-        WHERE uid = ? AND search_type = ?
-        """,
-        (
-            verified,
-            declared,
-            quality_avg,
-            frozen_until,
-            _now_iso(),
-            uid,
-            search_type,
-        ),
-    )
-    await _db.commit()
+    async with _conn() as db:
+        await db.execute(
+            """
+            UPDATE miner_concurrency
+            SET verified = ?,
+                declared = ?,
+                quality_avg = ?,
+                frozen_until = ?,
+                updated_at = ?
+            WHERE uid = ? AND search_type = ?
+            """,
+            (
+                verified,
+                declared,
+                quality_avg,
+                frozen_until,
+                _now_iso(),
+                uid,
+                search_type,
+            ),
+        )
+        await db.commit()
 
 
 async def register_miner(
@@ -207,45 +244,47 @@ async def register_miner(
     next hour boundary by ``promote_pending_declared`` so mid-hour edits
     don't disturb an in-flight scoring window)."""
     now = _now_iso()
-    await _db.execute(
-        """
-        DELETE FROM miner_concurrency
-        WHERE uid = ? AND search_type = ? AND hotkey != ?
-        """,
-        (uid, search_type, hotkey),
-    )
-    await _db.execute(
-        """
-        INSERT INTO miner_concurrency
-            (uid, search_type, hotkey, coldkey, verified, declared,
-             quality_avg, updated_at)
-        VALUES (?, ?, ?, ?, 1, ?, 0.0, ?)
-        ON CONFLICT(uid, search_type) DO UPDATE SET
-            coldkey = excluded.coldkey,
-            updated_at = excluded.updated_at,
-            pending_declared = CASE
-                WHEN miner_concurrency.declared != excluded.declared
-                    THEN excluded.declared
-                ELSE NULL
-            END
-        """,
-        (uid, search_type, hotkey, coldkey, declared, now),
-    )
-    await _db.commit()
+    async with _conn() as db:
+        await db.execute(
+            """
+            DELETE FROM miner_concurrency
+            WHERE uid = ? AND search_type = ? AND hotkey != ?
+            """,
+            (uid, search_type, hotkey),
+        )
+        await db.execute(
+            """
+            INSERT INTO miner_concurrency
+                (uid, search_type, hotkey, coldkey, verified, declared,
+                 quality_avg, updated_at)
+            VALUES (?, ?, ?, ?, 1, ?, 0.0, ?)
+            ON CONFLICT(uid, search_type) DO UPDATE SET
+                coldkey = excluded.coldkey,
+                updated_at = excluded.updated_at,
+                pending_declared = CASE
+                    WHEN miner_concurrency.declared != excluded.declared
+                        THEN excluded.declared
+                    ELSE NULL
+                END
+            """,
+            (uid, search_type, hotkey, coldkey, declared, now),
+        )
+        await db.commit()
 
 
 async def promote_pending_declared() -> int:
-    cursor = await _db.execute(
-        """
-        UPDATE miner_concurrency
-        SET declared = pending_declared,
-            pending_declared = NULL,
-            updated_at = ?
-        WHERE pending_declared IS NOT NULL
-        """,
-        (_now_iso(),),
-    )
-    await _db.commit()
+    async with _conn() as db:
+        cursor = await db.execute(
+            """
+            UPDATE miner_concurrency
+            SET declared = pending_declared,
+                pending_declared = NULL,
+                updated_at = ?
+            WHERE pending_declared IS NOT NULL
+            """,
+            (_now_iso(),),
+        )
+        await db.commit()
     return cursor.rowcount or 0
 
 
@@ -259,40 +298,42 @@ async def insert_window(
     passed: bool,
     verified_concurrency: int,
 ) -> None:
-    await _db.execute(
-        """
-        INSERT OR REPLACE INTO scoring_windows
-            (uid, search_type, window_start, hotkey, coldkey,
-             quality_score, passed, verified_concurrency, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            uid,
-            search_type,
-            window_start,
-            hotkey,
-            coldkey,
-            quality_score,
-            int(passed),
-            verified_concurrency,
-            _now_iso(),
-        ),
-    )
-    await _db.commit()
+    async with _conn() as db:
+        await db.execute(
+            """
+            INSERT OR REPLACE INTO scoring_windows
+                (uid, search_type, window_start, hotkey, coldkey,
+                 quality_score, passed, verified_concurrency, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                uid,
+                search_type,
+                window_start,
+                hotkey,
+                coldkey,
+                quality_score,
+                int(passed),
+                verified_concurrency,
+                _now_iso(),
+            ),
+        )
+        await db.commit()
 
 
 async def count_failed_windows(
     uid: int, search_type: str, since_hours: int = 12
 ) -> int:
     cutoff = (datetime.now(timezone.utc) - timedelta(hours=since_hours)).isoformat()
-    cursor = await _db.execute(
-        """
-        SELECT COUNT(*) as cnt FROM scoring_windows
-        WHERE uid = ? AND search_type = ? AND passed = 0 AND created_at >= ?
-        """,
-        (uid, search_type, cutoff),
-    )
-    row = await cursor.fetchone()
+    async with _conn() as db:
+        cursor = await db.execute(
+            """
+            SELECT COUNT(*) as cnt FROM scoring_windows
+            WHERE uid = ? AND search_type = ? AND passed = 0 AND created_at >= ?
+            """,
+            (uid, search_type, cutoff),
+        )
+        row = await cursor.fetchone()
     return row["cnt"] if row else 0
 
 
@@ -301,32 +342,33 @@ async def record_call_success(uid: int, search_type: str) -> bool:
     miner. Returns ``True`` when this call ended an unreachable state so the
     caller can log the recovery. No-op (returns ``False``) if the row doesn't
     exist — registration is the exclusive job of ``register_miner``."""
-    cursor = await _db.execute(
-        """
-        SELECT consecutive_failures, unreachable_since
-        FROM miner_concurrency WHERE uid = ? AND search_type = ?
-        """,
-        (uid, search_type),
-    )
-    row = await cursor.fetchone()
-    if row is None:
-        return False
-    if row["consecutive_failures"] == 0 and row["unreachable_since"] is None:
-        return False
+    async with _conn() as db:
+        cursor = await db.execute(
+            """
+            SELECT consecutive_failures, unreachable_since
+            FROM miner_concurrency WHERE uid = ? AND search_type = ?
+            """,
+            (uid, search_type),
+        )
+        row = await cursor.fetchone()
+        if row is None:
+            return False
+        if row["consecutive_failures"] == 0 and row["unreachable_since"] is None:
+            return False
 
-    was_unreachable = bool(row["unreachable_since"])
-    await _db.execute(
-        """
-        UPDATE miner_concurrency
-        SET consecutive_failures = 0,
-            unreachable_since = NULL,
-            last_decay_at = NULL,
-            updated_at = ?
-        WHERE uid = ? AND search_type = ?
-        """,
-        (_now_iso(), uid, search_type),
-    )
-    await _db.commit()
+        was_unreachable = bool(row["unreachable_since"])
+        await db.execute(
+            """
+            UPDATE miner_concurrency
+            SET consecutive_failures = 0,
+                unreachable_since = NULL,
+                last_decay_at = NULL,
+                updated_at = ?
+            WHERE uid = ? AND search_type = ?
+            """,
+            (_now_iso(), uid, search_type),
+        )
+        await db.commit()
     return was_unreachable
 
 
@@ -334,97 +376,103 @@ async def record_call_failure(uid: int, search_type: str, threshold: int) -> boo
     """Increment ``consecutive_failures`` and mark unreachable when the counter
     crosses ``threshold`` for the first time. Returns ``True`` on that
     transition. No-op (returns ``False``) if the row doesn't exist."""
-    cursor = await _db.execute(
-        """
-        SELECT consecutive_failures, unreachable_since
-        FROM miner_concurrency WHERE uid = ? AND search_type = ?
-        """,
-        (uid, search_type),
-    )
-    row = await cursor.fetchone()
-    if row is None:
-        return False
-
-    now = _now_iso()
-    new_count = row["consecutive_failures"] + 1
-    was_unreachable = row["unreachable_since"] is not None
-    flip = new_count >= threshold and not was_unreachable
-
-    if flip:
-        await _db.execute(
+    async with _conn() as db:
+        cursor = await db.execute(
             """
-            UPDATE miner_concurrency
-            SET consecutive_failures = ?,
-                unreachable_since = ?,
-                last_decay_at = ?,
-                updated_at = ?
-            WHERE uid = ? AND search_type = ?
+            SELECT consecutive_failures, unreachable_since
+            FROM miner_concurrency WHERE uid = ? AND search_type = ?
             """,
-            (new_count, now, now, now, uid, search_type),
+            (uid, search_type),
         )
-    else:
-        await _db.execute(
-            """
-            UPDATE miner_concurrency
-            SET consecutive_failures = ?, updated_at = ?
-            WHERE uid = ? AND search_type = ?
-            """,
-            (new_count, now, uid, search_type),
-        )
-    await _db.commit()
+        row = await cursor.fetchone()
+        if row is None:
+            return False
+
+        now = _now_iso()
+        new_count = row["consecutive_failures"] + 1
+        was_unreachable = row["unreachable_since"] is not None
+        flip = new_count >= threshold and not was_unreachable
+
+        if flip:
+            await db.execute(
+                """
+                UPDATE miner_concurrency
+                SET consecutive_failures = ?,
+                    unreachable_since = ?,
+                    last_decay_at = ?,
+                    updated_at = ?
+                WHERE uid = ? AND search_type = ?
+                """,
+                (new_count, now, now, now, uid, search_type),
+            )
+        else:
+            await db.execute(
+                """
+                UPDATE miner_concurrency
+                SET consecutive_failures = ?, updated_at = ?
+                WHERE uid = ? AND search_type = ?
+                """,
+                (new_count, now, uid, search_type),
+            )
+        await db.commit()
     return flip
 
 
 async def get_unreachable_uids(search_type: str) -> set[int]:
-    cursor = await _db.execute(
-        """
-        SELECT uid FROM miner_concurrency
-        WHERE search_type = ? AND unreachable_since IS NOT NULL
-        """,
-        (search_type,),
-    )
-    return {row["uid"] async for row in cursor}
+    async with _conn() as db:
+        cursor = await db.execute(
+            """
+            SELECT uid FROM miner_concurrency
+            WHERE search_type = ? AND unreachable_since IS NOT NULL
+            """,
+            (search_type,),
+        )
+        return {row["uid"] async for row in cursor}
 
 
 async def get_unreachable_rows(search_type: str) -> list[dict]:
-    cursor = await _db.execute(
-        """
-        SELECT uid, verified, last_decay_at, unreachable_since
-        FROM miner_concurrency
-        WHERE search_type = ? AND unreachable_since IS NOT NULL
-        """,
-        (search_type,),
-    )
-    return [dict(row) async for row in cursor]
+    async with _conn() as db:
+        cursor = await db.execute(
+            """
+            SELECT uid, verified, last_decay_at, unreachable_since
+            FROM miner_concurrency
+            WHERE search_type = ? AND unreachable_since IS NOT NULL
+            """,
+            (search_type,),
+        )
+        return [dict(row) async for row in cursor]
 
 
 async def apply_decay_tick(
     uid: int, search_type: str, new_verified: int, new_last_decay_at: str
 ) -> None:
-    await _db.execute(
-        """
-        UPDATE miner_concurrency
-        SET verified = ?, last_decay_at = ?, updated_at = ?
-        WHERE uid = ? AND search_type = ?
-        """,
-        (new_verified, new_last_decay_at, _now_iso(), uid, search_type),
-    )
-    await _db.commit()
+    async with _conn() as db:
+        await db.execute(
+            """
+            UPDATE miner_concurrency
+            SET verified = ?, last_decay_at = ?, updated_at = ?
+            WHERE uid = ? AND search_type = ?
+            """,
+            (new_verified, new_last_decay_at, _now_iso(), uid, search_type),
+        )
+        await db.commit()
 
 
 async def get_all_rows() -> list[dict]:
     """All miner_concurrency rows across every search type.
     Used by the public API to build the miner list."""
-    cursor = await _db.execute("SELECT * FROM miner_concurrency")
-    return [dict(row) async for row in cursor]
+    async with _conn() as db:
+        cursor = await db.execute("SELECT * FROM miner_concurrency")
+        return [dict(row) async for row in cursor]
 
 
 async def get_rows_for_hotkey(hotkey: str) -> list[dict]:
-    cursor = await _db.execute(
-        "SELECT * FROM miner_concurrency WHERE hotkey = ?",
-        (hotkey,),
-    )
-    return [dict(row) async for row in cursor]
+    async with _conn() as db:
+        cursor = await db.execute(
+            "SELECT * FROM miner_concurrency WHERE hotkey = ?",
+            (hotkey,),
+        )
+        return [dict(row) async for row in cursor]
 
 
 async def get_windows_for_hotkey(
@@ -434,13 +482,14 @@ async def get_windows_for_hotkey(
     ``since_hours``. Filtering on ``hotkey`` (not ``uid``) ensures windows
     from a prior holder of the same UID slot are excluded."""
     cutoff = (datetime.now(timezone.utc) - timedelta(hours=since_hours)).isoformat()
-    cursor = await _db.execute(
-        """
-        SELECT window_start, quality_score, passed, verified_concurrency, created_at
-        FROM scoring_windows
-        WHERE hotkey = ? AND search_type = ? AND created_at >= ?
-        ORDER BY window_start ASC
-        """,
-        (hotkey, search_type, cutoff),
-    )
-    return [dict(row) async for row in cursor]
+    async with _conn() as db:
+        cursor = await db.execute(
+            """
+            SELECT window_start, quality_score, passed, verified_concurrency, created_at
+            FROM scoring_windows
+            WHERE hotkey = ? AND search_type = ? AND created_at >= ?
+            ORDER BY window_start ASC
+            """,
+            (hotkey, search_type, cutoff),
+        )
+        return [dict(row) async for row in cursor]
