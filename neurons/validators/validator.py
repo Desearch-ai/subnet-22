@@ -174,13 +174,20 @@ class Neuron(AbstractNeuron):
     async def check_uid(self, axon, uid):
         """Ping the miner's axon via IsAlive and register its declared
         concurrency per search type. Miners that omit a manifest fall back
-        to the default concurrency (1 per type)."""
+        to the default concurrency (1 per type). IsAlive outcomes feed the
+        same reachability counter as scoring/organic calls, so a single
+        miss flips ``unreachable_since`` — one IsAlive cycle (~10 min) is
+        enough even without any scoring attempts."""
 
         dendrite = next(self.dendrites)
-        response = await dendrite(axon, IsAlive(), deserialize=False, timeout=10)
-
-        if not response.is_success:
-            raise Exception(f"UID {uid} is not active")
+        try:
+            response = await dendrite(axon, IsAlive(), deserialize=False, timeout=10)
+            if not response.is_success:
+                raise Exception(f"UID {uid} is not active")
+        except Exception:
+            for st in SEARCH_TYPES:
+                await capacity.note_call_result(uid, st, success=False)
+            raise
 
         manifest_data = getattr(response, "manifest", None) or {}
         try:
@@ -201,6 +208,7 @@ class Neuron(AbstractNeuron):
                 hotkey=hotkey,
                 coldkey=coldkey,
             )
+            await capacity.note_call_result(uid, st, success=True)
 
         return axon
 
