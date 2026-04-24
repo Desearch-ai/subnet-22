@@ -75,6 +75,7 @@ class SyntheticQueryGenerator:
         self,
         available_uids: List[int],
         spread_seconds: float = 55 * 60,
+        delay_start: float = 0.0,
         verified_by_type: dict[str, dict[int, int]] | None = None,
     ) -> List[dict]:
         """
@@ -86,6 +87,9 @@ class SyntheticQueryGenerator:
 
         verified_by_type: {search_type: {uid: verified_concurrency}}
         Each miner gets verified_concurrency queries per search type.
+
+        ``delay_start`` lets the scheduler compress the dispatch window when
+        starting mid-hour: delays are drawn from ``[delay_start, spread_seconds]``.
 
         Returns items sorted by fire-time delay, each containing:
             uid, search_type, query (dict), delay_seconds
@@ -113,7 +117,7 @@ class SyntheticQueryGenerator:
                     item = {
                         "uid": uid,
                         "search_type": search_type,
-                        "delay_seconds": random.uniform(0, spread_seconds),
+                        "delay_seconds": random.uniform(delay_start, spread_seconds),
                         "query": None,
                     }
 

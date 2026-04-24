@@ -18,6 +18,7 @@ _readonly_path: Optional[str] = None
 
 STALENESS_HOURS = 24
 RETENTION_DAYS = 3
+PUBLIC_API_VISIBILITY_HOURS = 4
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS miner_concurrency (
@@ -399,20 +400,19 @@ async def record_call_failure(uid: int, search_type: str, threshold: int) -> boo
                 UPDATE miner_concurrency
                 SET consecutive_failures = ?,
                     unreachable_since = ?,
-                    last_decay_at = ?,
-                    updated_at = ?
+                    last_decay_at = ?
                 WHERE uid = ? AND search_type = ?
                 """,
-                (new_count, now, now, now, uid, search_type),
+                (new_count, now, now, uid, search_type),
             )
         else:
             await db.execute(
                 """
                 UPDATE miner_concurrency
-                SET consecutive_failures = ?, updated_at = ?
+                SET consecutive_failures = ?
                 WHERE uid = ? AND search_type = ?
                 """,
-                (new_count, now, uid, search_type),
+                (new_count, uid, search_type),
             )
         await db.commit()
     return flip
@@ -450,27 +450,41 @@ async def apply_decay_tick(
         await db.execute(
             """
             UPDATE miner_concurrency
-            SET verified = ?, last_decay_at = ?, updated_at = ?
+            SET verified = ?, last_decay_at = ?
             WHERE uid = ? AND search_type = ?
             """,
-            (new_verified, new_last_decay_at, _now_iso(), uid, search_type),
+            (new_verified, new_last_decay_at, uid, search_type),
         )
         await db.commit()
 
 
 async def get_all_rows() -> list[dict]:
-    """All miner_concurrency rows across every search type.
-    Used by the public API to build the miner list."""
+    """Rows for miners the public API still surfaces: last confirmed alive
+    within the last ``PUBLIC_API_VISIBILITY_HOURS`` hours. Unreachable rows
+    stay visible (with ``unreachable_since`` set) so the UI can render them
+    in an "Unreachable" bucket; only rows whose ``updated_at`` has gone
+    cold past the cutoff drop out entirely. ``updated_at`` is refreshed only
+    on positive signals (successful IsAlive, recovery, scoring) — failure
+    and decay writes leave it alone so the field tracks last-seen-alive."""
+    cutoff = (
+        datetime.now(timezone.utc) - timedelta(hours=PUBLIC_API_VISIBILITY_HOURS)
+    ).isoformat()
     async with _conn() as db:
-        cursor = await db.execute("SELECT * FROM miner_concurrency")
+        cursor = await db.execute(
+            "SELECT * FROM miner_concurrency WHERE updated_at > ?",
+            (cutoff,),
+        )
         return [dict(row) async for row in cursor]
 
 
 async def get_rows_for_hotkey(hotkey: str) -> list[dict]:
+    cutoff = (
+        datetime.now(timezone.utc) - timedelta(hours=PUBLIC_API_VISIBILITY_HOURS)
+    ).isoformat()
     async with _conn() as db:
         cursor = await db.execute(
-            "SELECT * FROM miner_concurrency WHERE hotkey = ?",
-            (hotkey,),
+            "SELECT * FROM miner_concurrency WHERE hotkey = ? AND updated_at > ?",
+            (hotkey, cutoff),
         )
         return [dict(row) async for row in cursor]
 

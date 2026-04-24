@@ -16,11 +16,12 @@ from neurons.validators.scoring import miner_db
 RAMP_RATE = 0.05
 DECAY_FACTOR = 0.8
 QUALITY_THRESHOLD = 0.2
+QUALITY_EMA_ALPHA = 0.5
 HARD_CAP = 100
 FREEZE_FAILURES = 4
 FREEZE_HOURS = 4
 
-UNREACHABLE_FAILURE_THRESHOLD = 3
+UNREACHABLE_FAILURE_THRESHOLD = 1
 UNREACHABLE_DECAY_FACTOR = 0.9
 UNREACHABLE_DECAY_INTERVAL_SEC = 5 * 60
 
@@ -90,7 +91,7 @@ async def update_after_scoring(
         verified_concurrency=new_verified,
     )
 
-    new_frozen_until = frozen_until
+    new_frozen_until = frozen_until if is_frozen else None
     if not passed:
         fail_count = await miner_db.count_failed_windows(uid, search_type, FREEZE_HOURS)
         if fail_count >= FREEZE_FAILURES and not is_frozen:
@@ -100,7 +101,7 @@ async def update_after_scoring(
                 f"{FREEZE_HOURS}h ({fail_count} failures in {FREEZE_HOURS}h)"
             )
 
-    quality_avg = 0.8 * row["quality_avg"] + 0.2 * quality
+    quality_avg = (1 - QUALITY_EMA_ALPHA) * row["quality_avg"] + QUALITY_EMA_ALPHA * quality
 
     await miner_db.upsert_concurrency(
         uid=uid,

@@ -75,6 +75,7 @@ class QueryScheduler:
     """
 
     SPREAD_SECONDS = 55 * 60  # Spread queries over 55 minutes of each hour
+    MIN_DISPATCH_WINDOW_SECONDS = 15 * 60  # Below this, skip dispatch + scoring
 
     def __init__(
         self,
@@ -87,9 +88,6 @@ class QueryScheduler:
         self.generator = generator
         self.scoring_store = scoring_store
         self.validators = validators
-
-        # Skip scoring on the first epoch boundary (incomplete responses)
-        self.is_first_epoch = True
 
     def _extract_prompt(self, response) -> str:
         if isinstance(response, dict):
@@ -316,6 +314,7 @@ class QueryScheduler:
         bt.logging.info("[QueryScheduler] Starting (local synthetic generation)")
 
         previous_time_range: Optional[datetime] = None
+        previous_epoch_dispatched = False
 
         while True:
             try:
@@ -330,7 +329,7 @@ class QueryScheduler:
                     previous_time_range is not None
                     and time_range_start != previous_time_range
                 ):
-                    if not self.is_first_epoch:
+                    if previous_epoch_dispatched:
                         promoted = await miner_db.promote_pending_declared()
 
                         if promoted:
@@ -347,12 +346,26 @@ class QueryScheduler:
                         asyncio.create_task(self.score_epoch(previous_time_range))
                     else:
                         bt.logging.info(
-                            "[QueryScheduler] First epoch boundary — "
-                            "skipping scoring (incomplete data)."
+                            "[QueryScheduler] Previous epoch had no dispatch "
+                            "window — skipping scoring."
                         )
-                    self.is_first_epoch = False
+                    previous_epoch_dispatched = False
 
                 previous_time_range = time_range_start
+
+                elapsed_at_start = (
+                    datetime.now(timezone.utc) - time_range_start
+                ).total_seconds()
+                remaining = self.SPREAD_SECONDS - elapsed_at_start
+
+                if remaining < self.MIN_DISPATCH_WINDOW_SECONDS:
+                    bt.logging.info(
+                        f"[QueryScheduler] Only {remaining:.0f}s remain in epoch "
+                        f"(< {self.MIN_DISPATCH_WINDOW_SECONDS}s minimum) — "
+                        f"skipping dispatch."
+                    )
+                    await asyncio.sleep(self._seconds_until_next_hour())
+                    continue
 
                 # Snapshot the currently available UIDs
                 available_uids = list(self.neuron.available_uids)
@@ -370,12 +383,17 @@ class QueryScheduler:
                 for st in SEARCH_TYPES:
                     verified_by_type[st] = await capacity.get_all_verified(st)
 
-                # Batch-generate all queries for this epoch
+                # Batch-generate all queries for this epoch. When starting
+                # mid-hour, compress delays into the remaining window so the
+                # spread still fits before the next boundary.
                 items = await self.generator.generate_epoch_queries(
                     available_uids,
                     self.SPREAD_SECONDS,
+                    delay_start=elapsed_at_start,
                     verified_by_type=verified_by_type,
                 )
+
+                previous_epoch_dispatched = True
 
                 bt.logging.info(
                     f"[QueryScheduler] {len(items)} queries ready for "
