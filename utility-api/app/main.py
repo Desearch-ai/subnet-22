@@ -4,10 +4,11 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.requests import Request
 
-from app.config import NETUID, SUBTENSOR_NETWORK
+from app.config import CORS_ALLOWED_ORIGINS, NETUID, SUBTENSOR_NETWORK
 from app.domains.dataset.router import close_question_cache, init_question_cache
 from app.domains.dataset.router import router as dataset_router
 from app.domains.logs.router import router as logs_router
+from app.domains.miners.router import router as miners_router
 from app.logger import get_logger
 from app.redis_client import close_redis, init_redis
 
@@ -46,13 +47,14 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://mining.desearch.ai"],
+    allow_origins=CORS_ALLOWED_ORIGINS,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 app.include_router(dataset_router)
 app.include_router(logs_router)
+app.include_router(miners_router)
 
 
 @app.middleware("http")
