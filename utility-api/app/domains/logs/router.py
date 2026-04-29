@@ -29,6 +29,19 @@ logger = get_logger(__name__)
 
 SCORING_GROUP_LIMIT = 20
 
+PAYLOAD_NETWORK_FIELDS = ("axon", "dendrite")
+
+
+def _strip_network_fields(payload):
+    """Remove validator/miner IPs and dendrite metadata from a stored payload."""
+    if not isinstance(payload, dict):
+        return payload
+    return {
+        key: value
+        for key, value in payload.items()
+        if key not in PAYLOAD_NETWORK_FIELDS
+    }
+
 
 def _normalize_question_query(query: str) -> str:
     return query.strip()
@@ -253,7 +266,7 @@ def _build_scoring_groups(
                         status_code=log.status_code,
                         process_time=log.process_time,
                         total_reward=log.total_reward,
-                        response_payload=log.response_payload,
+                        response_payload=_strip_network_fields(log.response_payload),
                         reward_payload=log.reward_payload,
                     )
                     for log in sorted_logs
