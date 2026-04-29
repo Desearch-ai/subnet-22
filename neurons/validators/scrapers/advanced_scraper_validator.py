@@ -69,8 +69,8 @@ class AdvancedScraperValidator(BaseScraperValidator):
 
         self.twitter_content_weight = 0.30
         self.web_search_weight = 0.25
-        self.summary_relevance_weight = 0.30
-        self.performance_weight = 0.15
+        self.summary_relevance_weight = 0.25
+        self.performance_weight = 0.20
 
         self.reward_llm = RewardLLM(neuron.config.neuron.scoring_model)
 

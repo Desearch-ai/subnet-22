@@ -38,8 +38,8 @@ class XScraperValidator(BaseScraperValidator):
             "self.neuron.config.neuron.device = ", str(neuron.config.neuron.device)
         )
 
-        self.twitter_content_weight = 0.80
-        self.performance_weight = 0.20
+        self.twitter_content_weight = 0.70
+        self.performance_weight = 0.30
 
         reward_weights = torch.tensor(
             [
