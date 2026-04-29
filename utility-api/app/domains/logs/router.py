@@ -29,18 +29,42 @@ logger = get_logger(__name__)
 
 SCORING_GROUP_LIMIT = 20
 
-PAYLOAD_NETWORK_FIELDS = ("axon", "dendrite")
+PAYLOAD_NETWORK_BLOCKS = ("axon", "dendrite")
+REDACTED_IP = "0.0.0.0"
+REDACTED_FIELDS = {
+    "ip": REDACTED_IP,
+    "hotkey": None,
+    "signature": None,
+    "nonce": None,
+    "uuid": None,
+    "version": None,
+}
+
+
+def _redact_network_block(block):
+    """Mask validator/miner identity fields while keeping process_time/status."""
+    if not isinstance(block, dict):
+        return block
+    redacted = dict(block)
+    for field, replacement in REDACTED_FIELDS.items():
+        if field in redacted:
+            redacted[field] = replacement
+    return redacted
 
 
 def _strip_network_fields(payload):
-    """Remove validator/miner IPs and dendrite metadata from a stored payload."""
+    """Redact axon/dendrite identity fields from a stored payload.
+
+    Keeps the block shape (so process_time, status_code, status_message remain
+    available to clients and tests) but masks IPs, hotkeys, and signatures.
+    """
     if not isinstance(payload, dict):
         return payload
-    return {
-        key: value
-        for key, value in payload.items()
-        if key not in PAYLOAD_NETWORK_FIELDS
-    }
+    redacted = dict(payload)
+    for block in PAYLOAD_NETWORK_BLOCKS:
+        if block in redacted:
+            redacted[block] = _redact_network_block(redacted[block])
+    return redacted
 
 
 def _normalize_question_query(query: str) -> str:
