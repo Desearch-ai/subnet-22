@@ -226,9 +226,7 @@ class TwitterPromptAnalyzer:
         bt.logging.trace(content)
         res = await call_openai(
             messages=messages,
-            temperature=0.2,
             model=self.openai_query_model,
-            seed=None,
             response_format={"type": "json_object"},
         )
         response_dict = json.loads(res)
@@ -258,9 +256,7 @@ class TwitterPromptAnalyzer:
             bt.logging.trace(content)
             res = await call_openai(
                 messages=messages,
-                temperature=0.5,
                 model=self.openai_fix_query_model,
-                seed=None,
                 response_format={"type": "json_object"},
             )
             response_dict = json.loads(res)

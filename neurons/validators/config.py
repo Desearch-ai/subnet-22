@@ -118,7 +118,7 @@ def add_args(cls, parser):
         "--neuron.scoring_model",
         type=ScoringModel,
         help="Name of llm model used for scoring.",
-        default=ScoringModel.OPENAI_GPT4_MINI,
+        default=ScoringModel.OPENAI_GPT5_NANO,
     )
 
     parser.add_argument(

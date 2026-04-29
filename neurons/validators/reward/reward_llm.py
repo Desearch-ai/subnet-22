@@ -6,7 +6,7 @@ from desearch.utils import call_chutes, call_openai
 
 
 class RewardLLM:
-    def __init__(self, scoring_model: ScoringModel = ScoringModel.OPENAI_GPT4_MINI):
+    def __init__(self, scoring_model: ScoringModel = ScoringModel.OPENAI_GPT5_NANO):
         self.scoring_model = scoring_model
 
     async def get_scores(self, messages):
@@ -18,11 +18,10 @@ class RewardLLM:
 
                 async def query_llm(message):
                     try:
-                        if self.scoring_model == ScoringModel.OPENAI_GPT4_MINI:
+                        if self.scoring_model == ScoringModel.OPENAI_GPT5_NANO:
                             return await call_openai(
                                 messages=message,
-                                temperature=0.0001,
-                                model="gpt-4o-mini",
+                                model="gpt-5-nano",
                             )
                         else:
                             return await call_chutes(

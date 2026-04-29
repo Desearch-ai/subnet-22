@@ -122,7 +122,7 @@ pm2 start uvicorn \
 - `--netuid` — `22` mainnet, `41` testnet
 - `--subtensor.network` — `finney`, `test`, or custom endpoint
 - `--neuron.device` — `cuda` or `cpu`
-- `--neuron.scoring_model` — LLM used for scoring. Default `openai/gpt-4-mini`. Also
+- `--neuron.scoring_model` — LLM used for scoring. Default `openai/gpt-5-nano`. Also
   accepts Qwen, Mistral, DeepSeek variants.
 - `--neuron.disable_log_rewards` — suppress per-reward wandb logs (default `False`)
 

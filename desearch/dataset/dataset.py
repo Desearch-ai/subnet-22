@@ -356,9 +356,7 @@ class QuestionsDataset:
         try:
             out = await call_openai(
                 messages=[{"role": "system", "content": prompt}],
-                temperature=1,
                 model=QUESTION_MODEL,
-                seed=None,
             )
             if not out:
                 return f"latest news about {topic}"
