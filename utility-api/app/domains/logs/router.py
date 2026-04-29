@@ -33,11 +33,8 @@ PAYLOAD_NETWORK_BLOCKS = ("axon", "dendrite")
 REDACTED_IP = "0.0.0.0"
 REDACTED_FIELDS = {
     "ip": REDACTED_IP,
-    "hotkey": None,
+    "port": None,
     "signature": None,
-    "nonce": None,
-    "uuid": None,
-    "version": None,
 }
 
 
