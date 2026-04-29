@@ -55,8 +55,8 @@ class WebScraperValidator(BaseScraperValidator):
             PerformanceRewardModel(
                 device=neuron.config.neuron.device,
                 neuron=neuron,
-                min_realistic_time=2.0,
-                target_time=4.0,
+                min_realistic_time=1.0,
+                target_time=3.0,
             ),
         ]
 
