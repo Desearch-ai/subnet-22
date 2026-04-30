@@ -5,7 +5,7 @@ from faker import Faker
 
 from desearch.utils import call_openai
 
-QUESTION_MODEL = "gpt-5-nano"
+QUESTION_MODEL = "gpt-4.1-nano"
 
 TOPICS = [
     "renewable energy",

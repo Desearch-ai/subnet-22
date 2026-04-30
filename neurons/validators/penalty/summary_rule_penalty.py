@@ -32,7 +32,7 @@ class SummaryRulePenaltyModel(BasePenaltyModel):
 
         response = await call_openai(
             messages=summary_rule_prompt.get_messages(summary_text, summary_rule),
-            model="gpt-5-nano",
+            model="gpt-4.1-nano",
         )
 
         return summary_rule_prompt.extract_score(response)

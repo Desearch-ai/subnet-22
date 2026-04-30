@@ -81,9 +81,10 @@ async def call_openai(messages, model, temperature=1, response_format=None):
         bt.logging.warning("Please set the OPENAI_API_KEY environment variable.")
         return None
 
-    for attempt in range(2):
+    for _ in range(2):
         bt.logging.trace(
-            f"Calling Openai. Temperature = {temperature}, Model = {model},  Messages = {messages}"
+            f"Calling Openai. Temperature = {temperature}, Model = {model}, "
+            f"Messages = {messages}"
         )
         try:
             response = await client.chat.completions.create(
@@ -92,9 +93,9 @@ async def call_openai(messages, model, temperature=1, response_format=None):
                 temperature=temperature,
                 response_format=response_format,
             )
-            response = response.choices[0].message.content
-            bt.logging.trace(f"validator response is {response}")
-            return response
+            content = response.choices[0].message.content
+            bt.logging.trace(f"validator response is {content}")
+            return content
 
         except Exception as e:
             bt.logging.error(f"Error when calling OpenAI: {e}")

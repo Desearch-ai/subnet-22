@@ -65,7 +65,7 @@ class ChatHistoryRelevancePrompt(BasePrompt):
                     "content": self.text(completion, chat_history, prompt),
                 },
             ],
-            model="gpt-5-nano",
+            model="gpt-4.1-nano",
         )
 
     def extract_score(self, response: str) -> float:

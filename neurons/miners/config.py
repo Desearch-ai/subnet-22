@@ -88,40 +88,6 @@ def get_config() -> "bt.Config":
         default=100,
     )
 
-    # Mocks.
-    parser.add_argument(
-        "--miner.mock_dataset",
-        type=str2bool,
-        help="If True, the miner will retrieve data from mock dataset",
-        default=False,
-    )
-
-    # Mocks.
-    parser.add_argument(
-        "--miner.intro_text",
-        type=str2bool,
-        help="If True, the miner will return intro text",
-        default=True,
-    )
-
-    parser.add_argument(
-        "--miner.openai_summary_model",
-        default="gpt-3.5-turbo-0125",
-        help="OpenAI model used for summarizing content.",
-    )
-
-    parser.add_argument(
-        "--miner.openai_query_model",
-        default="gpt-3.5-turbo-0125",
-        help="OpenAI model used for generating queries.",
-    )
-
-    parser.add_argument(
-        "--miner.openai_fix_query_model",
-        default="gpt-4-1106-preview",
-        help="OpenAI model used for fixing queries.",
-    )
-
     # Adds subtensor specific arguments i.e. --subtensor.chain_endpoint ... --subtensor.network ...
     bt.Subtensor.add_args(parser)
 
