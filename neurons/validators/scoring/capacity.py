@@ -15,7 +15,7 @@ from neurons.validators.scoring import miner_db
 # Ease up on threshold before resolving issues in relevance models, as it's impossible to ramp up now.
 RAMP_RATE = 0.05
 DECAY_FACTOR = 0.8
-QUALITY_THRESHOLD = 0.2
+QUALITY_THRESHOLD = 0.3
 QUALITY_EMA_ALPHA = 0.5
 HARD_CAP = 100
 FREEZE_FAILURES = 4
@@ -101,7 +101,9 @@ async def update_after_scoring(
                 f"{FREEZE_HOURS}h ({fail_count} failures in {FREEZE_HOURS}h)"
             )
 
-    quality_avg = (1 - QUALITY_EMA_ALPHA) * row["quality_avg"] + QUALITY_EMA_ALPHA * quality
+    quality_avg = (1 - QUALITY_EMA_ALPHA) * row[
+        "quality_avg"
+    ] + QUALITY_EMA_ALPHA * quality
 
     await miner_db.upsert_concurrency(
         uid=uid,
