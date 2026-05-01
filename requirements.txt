@@ -1,7 +1,6 @@
 bittensor==10.2.0
 bittensor-wallet==4.0.1
 async-substrate-interface==1.6.3
-torch==2.6.0
 numpy==2.2.6
 wandb==0.23.1
 aiohttp==3.10.2
