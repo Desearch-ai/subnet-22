@@ -264,8 +264,8 @@ class Neuron(AbstractNeuron):
 
             size = self.moving_averaged_scores.shape
 
-            # np.add.at is unbuffered — equivalent to torch.scatter_add_, so
-            # duplicate UIDs accumulate correctly instead of overwriting.
+            # np.add.at is unbuffered, so duplicate UIDs accumulate correctly
+            # instead of overwriting each other.
             scattered_rewards = np.zeros(size, dtype=np.float32)
             counts = np.zeros(size, dtype=np.float32)
             np.add.at(scattered_rewards, uids, rewards)
