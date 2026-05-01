@@ -56,8 +56,8 @@ class WebScraperValidator(BaseScraperValidator):
             PerformanceRewardModel(
                 device=neuron.config.neuron.device,
                 neuron=neuron,
-                min_realistic_time=1.0,
-                target_time=3.0,
+                min_realistic_time=0.7,
+                target_time=2.0,
             ),
         ]
 
@@ -73,9 +73,7 @@ class WebScraperValidator(BaseScraperValidator):
             penalty_functions=penalty_functions,
         )
 
-    def _build_synapse(
-        self, prompt: str, params: Dict[str, Any]
-    ) -> WebSearchSynapse:
+    def _build_synapse(self, prompt: str, params: Dict[str, Any]) -> WebSearchSynapse:
         return WebSearchSynapse(
             **params,
             query=prompt,
