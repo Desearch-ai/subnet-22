@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Dict, Optional
 
 import bittensor as bt
-import torch
+import numpy as np
 
 from neurons.validators.scoring import capacity, miner_db
 from neurons.validators.scoring.scoring_store import SEARCH_TYPES, ScoringStore
@@ -150,7 +150,7 @@ class QueryScheduler:
         if validator is None or not items:
             return {}
 
-        uids = torch.tensor([item["uid"] for item in items])
+        uids = np.array([item["uid"] for item in items], dtype=np.int64)
         responses = [item["response"] for item in items]
         kinds = [item.get("kind", "synthetic") for item in items]
         prompts = [self._extract_prompt(response) for response in responses]
@@ -248,17 +248,9 @@ class QueryScheduler:
         """Push the combined per-UID scores into the neuron's EMA."""
         if not combined:
             return
-        uids_tensor = torch.tensor(
-            list(combined.keys()),
-            dtype=torch.long,
-            device=self.neuron.config.neuron.device,
-        )
-        rewards_tensor = torch.tensor(
-            list(combined.values()),
-            dtype=torch.float32,
-            device=self.neuron.config.neuron.device,
-        )
-        await self.neuron.update_moving_averaged_scores(uids_tensor, rewards_tensor)
+        uids_array = np.array(list(combined.keys()), dtype=np.int64)
+        rewards_array = np.array(list(combined.values()), dtype=np.float32)
+        await self.neuron.update_moving_averaged_scores(uids_array, rewards_array)
 
     async def score_epoch(self, time_range_start: datetime) -> None:
         """Load all responses for a completed hour and run reward/penalty computation."""

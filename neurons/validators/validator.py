@@ -7,7 +7,7 @@ from traceback import print_exception
 from typing import Optional, Tuple
 
 import bittensor as bt
-import torch
+import numpy as np
 from bittensor.core.metagraph import AsyncMetagraph
 
 from desearch.miner_config import (
@@ -58,7 +58,7 @@ class Neuron(AbstractNeuron):
     x_scraper_validator: "XScraperValidator"
     web_scraper_validator: "WebScraperValidator"
 
-    moving_average_scores: torch.Tensor = None
+    moving_average_scores: np.ndarray = None
     uid: int = None
     utility_api: UtilityAPIClient
     validator_identity: dict | None = None
@@ -259,38 +259,34 @@ class Neuron(AbstractNeuron):
 
     async def update_moving_averaged_scores(self, uids, rewards):
         try:
-            if not isinstance(uids, torch.Tensor):
-                uids = torch.tensor(
-                    uids, dtype=torch.long, device=self.config.neuron.device
-                )
+            uids = np.asarray(uids, dtype=np.int64)
+            rewards = np.asarray(rewards, dtype=np.float32)
 
-            if not isinstance(rewards, torch.Tensor):
-                rewards = torch.tensor(rewards, device=self.config.neuron.device)
+            size = self.moving_averaged_scores.shape
 
-            device = self.config.neuron.device
-            size = self.moving_averaged_scores.size()
-
-            # scatter_add + count to properly average when UIDs appear multiple times
-            scattered_rewards = torch.zeros(size, device=device)
-            counts = torch.zeros(size, device=device)
-            scattered_rewards.scatter_add_(0, uids, rewards)
-            counts.scatter_add_(0, uids, torch.ones_like(rewards))
+            # np.add.at is unbuffered — equivalent to torch.scatter_add_, so
+            # duplicate UIDs accumulate correctly instead of overwriting.
+            scattered_rewards = np.zeros(size, dtype=np.float32)
+            counts = np.zeros(size, dtype=np.float32)
+            np.add.at(scattered_rewards, uids, rewards)
+            np.add.at(counts, uids, np.ones_like(rewards))
             mask = counts > 0
             scattered_rewards[mask] = scattered_rewards[mask] / counts[mask]
 
-            average_reward = torch.mean(scattered_rewards)
+            average_reward = scattered_rewards.mean()
             bt.logging.info(f"Scattered reward: {average_reward:.6f}")
 
             alpha = 0.5
 
-            self.moving_averaged_scores = alpha * scattered_rewards + (
-                1 - alpha
-            ) * self.moving_averaged_scores.to(device)
+            self.moving_averaged_scores = (
+                alpha * scattered_rewards
+                + (1 - alpha) * self.moving_averaged_scores
+            ).astype(np.float32)
 
             await save_moving_averaged_scores(self.moving_averaged_scores)
 
             bt.logging.info(
-                f"Moving averaged scores: {torch.mean(self.moving_averaged_scores):.6f}"
+                f"Moving averaged scores: {self.moving_averaged_scores.mean():.6f}"
             )
             return scattered_rewards
         except Exception as e:
