@@ -15,7 +15,7 @@ from neurons.validators.scoring import miner_db
 # Ease up on threshold before resolving issues in relevance models, as it's impossible to ramp up now.
 RAMP_RATE = 0.05
 DECAY_FACTOR = 0.8
-QUALITY_THRESHOLD = 0.3
+QUALITY_THRESHOLD = 0.35
 QUALITY_EMA_ALPHA = 0.5
 HARD_CAP = 100
 FREEZE_FAILURES = 4
