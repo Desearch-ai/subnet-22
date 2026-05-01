@@ -11,6 +11,7 @@ from neurons.validators.clients.miner_response_logger import (
     build_log_entry,
     submit_logs_best_effort,
 )
+from neurons.validators.penalty.count_penalty import CountPenaltyModel
 from neurons.validators.penalty.timeout_penalty import TimeoutPenaltyModel
 from neurons.validators.reward import RewardScoringType
 from neurons.validators.reward.performance_reward import PerformanceRewardModel
@@ -62,6 +63,7 @@ class WebScraperValidator(BaseScraperValidator):
 
         penalty_functions = [
             TimeoutPenaltyModel(max_penalty=1, neuron=neuron),
+            CountPenaltyModel(max_penalty=1, neuron=neuron),
         ]
 
         super().__init__(
