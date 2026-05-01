@@ -382,7 +382,7 @@ class Neuron(AbstractNeuron):
 
             await self.sync_available_uids()  # Initial sync
 
-            self.loop = asyncio.get_event_loop()
+            self.loop = asyncio.get_running_loop()
 
             init_wandb(self)
 
