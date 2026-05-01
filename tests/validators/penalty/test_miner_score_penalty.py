@@ -44,7 +44,6 @@ class MinerScorePenaltyTestCase(unittest.IsolatedAsyncioTestCase):
                     },
                 ),
             ],
-            [],
             [
                 [
                     {
