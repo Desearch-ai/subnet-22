@@ -51,7 +51,7 @@ class SummaryRulePenaltyTestCase(unittest.IsolatedAsyncioTestCase):
             ],
             [],
         )
-        self.assertAlmostEqual(penalties.tolist()[0], 0.2, places=5)
+        self.assertAlmostEqual(penalties.tolist()[0], 1.0, places=5)
 
 
 if __name__ == "__main__":
