@@ -1,7 +1,7 @@
 from typing import Any, Dict, List, Optional
 
 import bittensor as bt
-import torch
+import numpy as np
 
 from desearch.protocol import (
     TwitterIDSearchSynapse,
@@ -41,12 +41,12 @@ class XScraperValidator(BaseScraperValidator):
         self.twitter_content_weight = 0.70
         self.performance_weight = 0.30
 
-        reward_weights = torch.tensor(
+        reward_weights = np.array(
             [
                 self.twitter_content_weight,
                 self.performance_weight,
             ],
-            dtype=torch.float32,
+            dtype=np.float32,
         )
 
         reward_functions = [

@@ -1,7 +1,7 @@
 from typing import Any, Dict, Optional
 
 import bittensor as bt
-import torch
+import numpy as np
 
 from desearch.protocol import (
     WebSearchSynapse,
@@ -39,12 +39,12 @@ class WebScraperValidator(BaseScraperValidator):
         self.web_content_weight = 0.70
         self.performance_weight = 0.30
 
-        reward_weights = torch.tensor(
+        reward_weights = np.array(
             [
                 self.web_content_weight,
                 self.performance_weight,
             ],
-            dtype=torch.float32,
+            dtype=np.float32,
         )
 
         reward_functions = [

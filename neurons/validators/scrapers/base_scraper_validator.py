@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 from typing import List, Optional
 
 import bittensor as bt
-import torch
+import numpy as np
 import wandb
 
 from neurons.validators.base_validator import AbstractNeuron
@@ -24,13 +24,13 @@ class BaseScraperValidator:
     def __init__(
         self,
         neuron: AbstractNeuron,
-        reward_weights: torch.Tensor,
+        reward_weights: np.ndarray,
         reward_functions: list,
         penalty_functions: list,
     ):
         self.neuron = neuron
 
-        self.reward_weights = reward_weights.to(self.neuron.config.neuron.device)
+        self.reward_weights = np.asarray(reward_weights, dtype=np.float32)
 
         if self.reward_weights.sum() != 1:
             message = (
@@ -43,14 +43,16 @@ class BaseScraperValidator:
         self.reward_functions = reward_functions
         self.penalty_functions = penalty_functions
 
-    def compute_reward_weights_matrix(self, responses) -> torch.Tensor:
-        """Returns an (N, K) tensor where row i has reward-function weights for
+    def compute_reward_weights_matrix(self, responses) -> np.ndarray:
+        """Returns an (N, K) array where row i has reward-function weights for
         response i. Default broadcasts the scraper's fixed weights to all
         responses. Override in subclasses that need per-response weighting
         (e.g. tool-varying AI search).
         """
         n = len(responses)
-        return self.reward_weights.unsqueeze(0).expand(n, -1).contiguous()
+        return np.broadcast_to(
+            self.reward_weights, (n, self.reward_weights.shape[0])
+        ).copy()
 
     async def _dendrite_call(self, axon, synapse, uid: int):
         """Send a non-streaming synapse to a miner axon via dendrite. Tracks
@@ -139,17 +141,13 @@ class BaseScraperValidator:
 
             bt.logging.info("Computing rewards and penalties")
 
-            rewards = torch.zeros(len(responses), dtype=torch.float32).to(
-                self.neuron.config.neuron.device
-            )
+            rewards = np.zeros(len(responses), dtype=np.float32)
 
             all_rewards = []
             all_original_rewards = []
             val_score_responses_list = []
 
-            weights_matrix = self.compute_reward_weights_matrix(responses).to(
-                self.neuron.config.neuron.device
-            )
+            weights_matrix = self.compute_reward_weights_matrix(responses)
 
             for i, reward_fn_i in enumerate(self.reward_functions):
                 start_time = time.time()
@@ -164,9 +162,7 @@ class BaseScraperValidator:
                 all_original_rewards.append(original_rewards)
                 val_score_responses_list.append(val_score_responses)
 
-                rewards += weights_matrix[:, i] * torch.as_tensor(reward_i).to(
-                    self.neuron.config.neuron.device
-                )
+                rewards += weights_matrix[:, i] * np.asarray(reward_i, dtype=np.float32)
 
                 if not self.neuron.config.neuron.disable_log_rewards:
                     event = {**event, **reward_event}
@@ -190,9 +186,7 @@ class BaseScraperValidator:
                     responses, uids, penalty_additional_params
                 )
                 penalty_start_time = time.time()
-                rewards *= torch.as_tensor(applied_penalty_i).to(
-                    self.neuron.config.neuron.device
-                )
+                rewards *= np.asarray(applied_penalty_i, dtype=np.float32)
                 penalty_execution_time = time.time() - penalty_start_time
                 if not self.neuron.config.neuron.disable_log_rewards:
                     event[penalty_fn_i.name + "_raw"] = raw_penalty_i.tolist()
@@ -205,7 +199,7 @@ class BaseScraperValidator:
 
             self.log_event(prompts, event, start_time, uids, rewards)
 
-            scores = torch.zeros(len(self.neuron.metagraph.hotkeys))
+            scores = np.zeros(len(self.neuron.metagraph.hotkeys), dtype=np.float32)
             uid_scores_dict = {}
             wandb_data = self.build_wandb_data(uids, rewards, responses, all_rewards)
 
