@@ -38,6 +38,18 @@ from neurons.validators.reward.twitter_content_relevance import (
 from neurons.validators.scoring import capacity
 from neurons.validators.scrapers.base_scraper_validator import BaseScraperValidator
 
+TWITTER_TOOL = "Twitter Search"
+WEB_TOOLS = frozenset(
+    [
+        "Web Search",
+        "Wikipedia Search",
+        "Youtube Search",
+        "ArXiv Search",
+        "Reddit Search",
+        "Hacker News Search",
+    ]
+)
+
 
 class AdvancedScraperValidator(BaseScraperValidator):
     search_type = "ai_search"
@@ -57,8 +69,8 @@ class AdvancedScraperValidator(BaseScraperValidator):
 
         self.twitter_content_weight = 0.30
         self.web_search_weight = 0.25
-        self.summary_relevance_weight = 0.30
-        self.performance_weight = 0.15
+        self.summary_relevance_weight = 0.25
+        self.performance_weight = 0.20
 
         self.reward_llm = RewardLLM(neuron.config.neuron.scoring_model)
 
@@ -94,6 +106,8 @@ class AdvancedScraperValidator(BaseScraperValidator):
             PerformanceRewardModel(
                 device=neuron.config.neuron.device,
                 neuron=neuron,
+                min_realistic_time=5.0,
+                target_time=10.0,
             ),
         ]
 
@@ -109,6 +123,37 @@ class AdvancedScraperValidator(BaseScraperValidator):
             reward_functions=reward_functions,
             penalty_functions=penalty_functions,
         )
+
+    def compute_reward_weights_matrix(self, responses) -> torch.Tensor:
+        rows = [self._weights_for(response) for response in responses]
+        return torch.tensor(rows, dtype=torch.float32)
+
+    def _weights_for(self, response) -> List[float]:
+        """Weights for one response, ordered [twitter, web, summary, perf].
+
+        Content weight is split between twitter and web only when both tool
+        categories are used. If only one is used, it absorbs the other's share
+        — so the unused branch gets weight 0 rather than the old `reward = 1.0`
+        free pass.
+        """
+        tools = set(response.tools)
+        has_twitter = TWITTER_TOOL in tools
+        has_web = bool(tools & WEB_TOOLS)
+        content = self.twitter_content_weight + self.web_search_weight
+
+        if has_twitter and has_web:
+            w_twitter, w_web = self.twitter_content_weight, self.web_search_weight
+        elif has_twitter:
+            w_twitter, w_web = content, 0.0
+        else:
+            w_twitter, w_web = 0.0, content
+
+        return [
+            w_twitter,
+            w_web,
+            self.summary_relevance_weight,
+            self.performance_weight,
+        ]
 
     async def _dendrite_stream(
         self,

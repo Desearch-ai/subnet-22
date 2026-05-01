@@ -13,9 +13,9 @@ from neurons.validators.scoring.scoring_store import SEARCH_TYPES, ScoringStore
 from neurons.validators.scoring.synthetic_query_generator import SyntheticQueryGenerator
 
 SEARCH_TYPE_WEIGHTS = {
-    "ai_search": 0.50,
-    "x_search": 0.25,
-    "web_search": 0.25,
+    "ai_search": 0.60,
+    "x_search": 0.20,
+    "web_search": 0.20,
 }
 
 ORGANIC_DEEP_SCORE_WEIGHT = 5

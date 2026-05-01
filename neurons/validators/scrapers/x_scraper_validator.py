@@ -13,8 +13,8 @@ from neurons.validators.clients.miner_response_logger import (
     build_log_entry,
     submit_logs_best_effort,
 )
+from neurons.validators.penalty.count_penalty import CountPenaltyModel
 from neurons.validators.penalty.timeout_penalty import TimeoutPenaltyModel
-from neurons.validators.penalty.twitter_count_penalty import TwitterCountPenaltyModel
 from neurons.validators.reward import RewardScoringType
 from neurons.validators.reward.performance_reward import PerformanceRewardModel
 from neurons.validators.reward.twitter_basic_search_content_relevance import (
@@ -38,8 +38,8 @@ class XScraperValidator(BaseScraperValidator):
             "self.neuron.config.neuron.device = ", str(neuron.config.neuron.device)
         )
 
-        self.twitter_content_weight = 0.80
-        self.performance_weight = 0.20
+        self.twitter_content_weight = 0.70
+        self.performance_weight = 0.30
 
         reward_weights = torch.tensor(
             [
@@ -58,12 +58,14 @@ class XScraperValidator(BaseScraperValidator):
             PerformanceRewardModel(
                 device=neuron.config.neuron.device,
                 neuron=neuron,
+                min_realistic_time=1.0,
+                target_time=3.0,
             ),
         ]
 
         penalty_functions = [
             TimeoutPenaltyModel(max_penalty=1, neuron=neuron),
-            TwitterCountPenaltyModel(max_penalty=1, neuron=neuron),
+            CountPenaltyModel(max_penalty=1, neuron=neuron),
         ]
 
         super().__init__(

@@ -11,8 +11,8 @@ VALID_DOMAINS = ["x.com"]
 class TwitterAPIClient:
     def __init__(
         self,
-        openai_query_model="gpt-3.5-turbo-0125",
-        openai_fix_query_model="gpt-4-1106-preview",
+        openai_query_model="gpt-4.1-nano",
+        openai_fix_query_model="gpt-4.1-nano",
     ):
         self.bearer_token = BEARER_TOKEN
         self.utils = TwitterUtils()

@@ -205,8 +205,8 @@ def get_fix_query_prompt(prompt, old_query, error, is_accuracy=True):
 class TwitterPromptAnalyzer:
     def __init__(
         self,
-        openai_query_model="gpt-3.5-turbo-0125",
-        openai_fix_query_model="gpt-4-1106-preview",
+        openai_query_model="gpt-4.1-nano",
+        openai_fix_query_model="gpt-4.1-nano",
     ):
         self.openai_query_model = openai_query_model
         self.openai_fix_query_model = openai_fix_query_model
@@ -226,9 +226,7 @@ class TwitterPromptAnalyzer:
         bt.logging.trace(content)
         res = await call_openai(
             messages=messages,
-            temperature=0.2,
             model=self.openai_query_model,
-            seed=None,
             response_format={"type": "json_object"},
         )
         response_dict = json.loads(res)
@@ -258,9 +256,7 @@ class TwitterPromptAnalyzer:
             bt.logging.trace(content)
             res = await call_openai(
                 messages=messages,
-                temperature=0.5,
                 model=self.openai_fix_query_model,
-                seed=None,
                 response_format={"type": "json_object"},
             )
             response_dict = json.loads(res)

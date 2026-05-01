@@ -10,7 +10,7 @@ google-search-results==2.4.2
 wikipedia==1.4.0
 youtube-search==2.1.2
 arxiv==2.1.0
-openai==1.59.6
+openai==2.33.0
 pytz==2024.2
 faker==25.9.1
 tiktoken==0.12.0

@@ -3,7 +3,7 @@ from typing import List
 import tiktoken
 import torch
 
-from desearch.protocol import ScraperStreamingSynapse
+from desearch.protocol import ResultType, ScraperStreamingSynapse
 from neurons.validators.penalty.penalty import BasePenaltyModel, PenaltyModelType
 
 MAX_TOKENS_PER_CHUNK = 2
@@ -25,6 +25,9 @@ class StreamingPenaltyModel(BasePenaltyModel):
         accumulated_penalties = torch.zeros(len(responses), dtype=torch.float32)
 
         for index, response in enumerate(responses):
+            if response.result_type == ResultType.ONLY_LINKS:
+                continue
+
             streamed_text_chunks = []
 
             for chunks in response.text_chunks.values():
