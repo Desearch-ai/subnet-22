@@ -5,7 +5,6 @@ from desearch.protocol import (
     ScraperStreamingSynapse,
     ContextualRelevance,
 )
-import torch
 
 
 class MinerScorePenaltyTestCase(unittest.IsolatedAsyncioTestCase):
@@ -73,10 +72,7 @@ class MinerScorePenaltyTestCase(unittest.IsolatedAsyncioTestCase):
                 ],
             ],
         )
-        self.assertEqual(penalties[0], torch.tensor([0]))
-        self.assertEqual(penalties[1], torch.tensor([1]))
-        self.assertEqual(penalties[2], torch.tensor([1]))
-        self.assertEqual(penalties[3], torch.tensor([0]))
+        self.assertEqual(penalties.tolist(), [0, 1, 1, 0])
 
 
 if __name__ == "__main__":

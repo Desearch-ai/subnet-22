@@ -164,7 +164,7 @@ class BaseScraperValidator:
                 all_original_rewards.append(original_rewards)
                 val_score_responses_list.append(val_score_responses)
 
-                rewards += weights_matrix[:, i] * reward_i.to(
+                rewards += weights_matrix[:, i] * torch.as_tensor(reward_i).to(
                     self.neuron.config.neuron.device
                 )
 
@@ -190,7 +190,9 @@ class BaseScraperValidator:
                     responses, uids, penalty_additional_params
                 )
                 penalty_start_time = time.time()
-                rewards *= applied_penalty_i.to(self.neuron.config.neuron.device)
+                rewards *= torch.as_tensor(applied_penalty_i).to(
+                    self.neuron.config.neuron.device
+                )
                 penalty_execution_time = time.time() - penalty_start_time
                 if not self.neuron.config.neuron.disable_log_rewards:
                     event[penalty_fn_i.name + "_raw"] = raw_penalty_i.tolist()

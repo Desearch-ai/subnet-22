@@ -5,6 +5,7 @@ from enum import Enum
 from typing import Any, Optional
 
 import bittensor as bt
+import numpy as np
 import torch
 from pydantic import BaseModel
 
@@ -28,6 +29,10 @@ def to_jsonable(value: Any) -> Any:
         return value.isoformat()
     if isinstance(value, date):
         return value.isoformat()
+    if isinstance(value, np.ndarray):
+        if value.ndim == 0:
+            return value.item()
+        return value.tolist()
     if isinstance(value, torch.Tensor):
         if value.ndim == 0:
             return value.item()
