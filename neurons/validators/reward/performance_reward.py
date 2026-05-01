@@ -17,7 +17,6 @@
 # DEALINGS IN THE SOFTWARE.
 
 import json
-import math
 import traceback
 from typing import Dict, List, Tuple
 
@@ -33,9 +32,6 @@ from desearch.protocol import (
 )
 from neurons.validators.base_validator import AbstractNeuron
 
-STEEPNESS = 0.1
-FACTOR = 2
-
 from .config import RewardModelType
 from .reward import BaseRewardEvent, BaseRewardModel
 
@@ -45,16 +41,25 @@ class PerformanceRewardModel(BaseRewardModel):
     def name(self) -> str:
         return RewardModelType.performance_score.value
 
-    def __init__(self, device: str, neuron: AbstractNeuron):
+    def __init__(
+        self,
+        device: str,
+        neuron: AbstractNeuron,
+        min_realistic_time: float,
+        target_time: float,
+    ):
         super().__init__(neuron)
         self.device = device
+        self.min_realistic_time = min_realistic_time
+        self.target_time = target_time
 
     def get_response_times(
         self, uids: List[int], responses: List[ScraperStreamingSynapse]
     ) -> Dict[int, float]:
         """
         Returns a dictionary of axons based on their response times.
-        Adds a check for successful completion of the response.
+        Failed or unsuccessful completions are pinned to max_execution_time so the
+        piecewise curve resolves them to reward 0.
         """
         axon_times = {
             uids[idx]: (
@@ -72,39 +77,40 @@ class PerformanceRewardModel(BaseRewardModel):
     ) -> Dict[int, float]:
         """
         Returns a dictionary of axons based on their response times for global results.
-        If get_successful_result returns an invalid result (e.g., an empty list), the score is 0.
+        Empty or invalid results are pinned to max_execution_time (reward 0).
+        Previously these were pinned to 0.0, which let instant empty responses game
+        the sigmoid into near-max reward.
         """
         axon_times = {}
         for idx, response in enumerate(responses):
             uid = uids[idx]
             successful_result = self.get_successful_result(response)
 
-            if successful_result:  # If successful_result is valid and non-empty
+            if successful_result:
                 axon_times[uid] = response.dendrite.process_time or 0.0
-            else:  # Invalid result or empty list
+            else:
                 bt.logging.warning(
-                    f"Invalid or empty result for UID: {uid}, setting score to 0."
+                    f"Invalid or empty result for UID: {uid}, pinning to timeout."
                 )
-                axon_times[uid] = 0.0
+                axon_times[uid] = response.max_execution_time
 
         return axon_times
 
-    def sigmoid_scale(self, axon_time: float, query_timeout: int) -> float:
+    def reward(self, axon_time: float, timeout: float) -> float:
         """
-        Scales the axon time using a sigmoid function.
+        Piecewise performance curve:
+          - below min_realistic_time -> 0 (unrealistic, treat as gaming)
+          - up to target_time        -> 1.0 (full credit)
+          - target -> timeout        -> linear decay to 0
+          - above timeout            -> 0
         """
-        offset = -10.0 / FACTOR
-        return (
-            (1 / (1 + math.exp(STEEPNESS * axon_time + offset)))
-            if axon_time < query_timeout
-            else 0
-        )
-
-    def reward(self, axon_time: float, query_timeout: int) -> float:
-        """
-        Calculates the reward for a miner based on axon time and APY.
-        """
-        return 0.2 * self.sigmoid_scale(axon_time, query_timeout)
+        if axon_time < self.min_realistic_time:
+            return 0.0
+        if axon_time <= self.target_time:
+            return 1.0
+        if axon_time <= timeout:
+            return 1.0 - (axon_time - self.target_time) / (timeout - self.target_time)
+        return 0.0
 
     async def get_rewards(self, responses: List, uids) -> Tuple[List[BaseRewardEvent]]:
         """
@@ -112,12 +118,10 @@ class PerformanceRewardModel(BaseRewardModel):
         """
         reward_events = []
         try:
-            # Convert tensor uids to integers if necessary
             uids = [
                 uid.item() if isinstance(uid, torch.Tensor) else uid for uid in uids
             ]
 
-            # Determine response type and select the appropriate response time function
             if isinstance(responses[0], ScraperStreamingSynapse):
                 axon_times = self.get_response_times(uids, responses)
             elif isinstance(

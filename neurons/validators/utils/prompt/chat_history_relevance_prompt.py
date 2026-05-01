@@ -65,8 +65,7 @@ class ChatHistoryRelevancePrompt(BasePrompt):
                     "content": self.text(completion, chat_history, prompt),
                 },
             ],
-            temperature=0.8,
-            model="gpt-4o-mini",
+            model="gpt-4.1-nano",
         )
 
     def extract_score(self, response: str) -> float:

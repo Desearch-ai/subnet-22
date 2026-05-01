@@ -11,6 +11,7 @@ from neurons.validators.clients.miner_response_logger import (
     build_log_entry,
     submit_logs_best_effort,
 )
+from neurons.validators.penalty.count_penalty import CountPenaltyModel
 from neurons.validators.penalty.timeout_penalty import TimeoutPenaltyModel
 from neurons.validators.reward import RewardScoringType
 from neurons.validators.reward.performance_reward import PerformanceRewardModel
@@ -35,8 +36,8 @@ class WebScraperValidator(BaseScraperValidator):
             "self.neuron.config.neuron.device = ", str(neuron.config.neuron.device)
         )
 
-        self.web_content_weight = 0.80
-        self.performance_weight = 0.20
+        self.web_content_weight = 0.70
+        self.performance_weight = 0.30
 
         reward_weights = torch.tensor(
             [
@@ -55,11 +56,14 @@ class WebScraperValidator(BaseScraperValidator):
             PerformanceRewardModel(
                 device=neuron.config.neuron.device,
                 neuron=neuron,
+                min_realistic_time=0.7,
+                target_time=2.0,
             ),
         ]
 
         penalty_functions = [
             TimeoutPenaltyModel(max_penalty=1, neuron=neuron),
+            CountPenaltyModel(max_penalty=1, neuron=neuron),
         ]
 
         super().__init__(
@@ -69,9 +73,7 @@ class WebScraperValidator(BaseScraperValidator):
             penalty_functions=penalty_functions,
         )
 
-    def _build_synapse(
-        self, prompt: str, params: Dict[str, Any]
-    ) -> WebSearchSynapse:
+    def _build_synapse(self, prompt: str, params: Dict[str, Any]) -> WebSearchSynapse:
         return WebSearchSynapse(
             **params,
             query=prompt,

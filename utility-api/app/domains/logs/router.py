@@ -29,6 +29,40 @@ logger = get_logger(__name__)
 
 SCORING_GROUP_LIMIT = 20
 
+PAYLOAD_NETWORK_BLOCKS = ("axon", "dendrite")
+REDACTED_IP = "0.0.0.0"
+REDACTED_FIELDS = {
+    "ip": REDACTED_IP,
+    "port": None,
+    "signature": None,
+}
+
+
+def _redact_network_block(block):
+    """Mask validator/miner identity fields while keeping process_time/status."""
+    if not isinstance(block, dict):
+        return block
+    redacted = dict(block)
+    for field, replacement in REDACTED_FIELDS.items():
+        if field in redacted:
+            redacted[field] = replacement
+    return redacted
+
+
+def _strip_network_fields(payload):
+    """Redact axon/dendrite identity fields from a stored payload.
+
+    Keeps the block shape (so process_time, status_code, status_message remain
+    available to clients and tests) but masks IPs, hotkeys, and signatures.
+    """
+    if not isinstance(payload, dict):
+        return payload
+    redacted = dict(payload)
+    for block in PAYLOAD_NETWORK_BLOCKS:
+        if block in redacted:
+            redacted[block] = _redact_network_block(redacted[block])
+    return redacted
+
 
 def _normalize_question_query(query: str) -> str:
     return query.strip()
@@ -253,7 +287,7 @@ def _build_scoring_groups(
                         status_code=log.status_code,
                         process_time=log.process_time,
                         total_reward=log.total_reward,
-                        response_payload=log.response_payload,
+                        response_payload=_strip_network_fields(log.response_payload),
                         reward_payload=log.reward_payload,
                     )
                     for log in sorted_logs

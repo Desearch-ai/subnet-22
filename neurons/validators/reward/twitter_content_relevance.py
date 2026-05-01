@@ -343,15 +343,6 @@ class TwitterContentRelevanceModel(BaseRewardModel):
                 reward_event = BaseRewardEvent()
                 reward_event.reward = 0
 
-                if "Twitter Search" not in response.tools:
-                    if response.miner_tweets:
-                        reward_event.reward = 0
-                    else:
-                        reward_event.reward = 1
-                    reward_events.append(reward_event)
-                    grouped_val_score_responses.append({})
-                    continue
-
                 score_result = None
                 response_scores = {}
                 total_score = 0

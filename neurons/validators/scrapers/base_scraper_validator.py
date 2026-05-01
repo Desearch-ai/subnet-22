@@ -43,6 +43,15 @@ class BaseScraperValidator:
         self.reward_functions = reward_functions
         self.penalty_functions = penalty_functions
 
+    def compute_reward_weights_matrix(self, responses) -> torch.Tensor:
+        """Returns an (N, K) tensor where row i has reward-function weights for
+        response i. Default broadcasts the scraper's fixed weights to all
+        responses. Override in subclasses that need per-response weighting
+        (e.g. tool-varying AI search).
+        """
+        n = len(responses)
+        return self.reward_weights.unsqueeze(0).expand(n, -1).contiguous()
+
     async def _dendrite_call(self, axon, synapse, uid: int):
         """Send a non-streaming synapse to a miner axon via dendrite. Tracks
         per-call success so consecutive failures flag the miner unreachable."""
@@ -138,9 +147,11 @@ class BaseScraperValidator:
             all_original_rewards = []
             val_score_responses_list = []
 
-            for weight_i, reward_fn_i in zip(
-                self.reward_weights, self.reward_functions
-            ):
+            weights_matrix = self.compute_reward_weights_matrix(responses).to(
+                self.neuron.config.neuron.device
+            )
+
+            for i, reward_fn_i in enumerate(self.reward_functions):
                 start_time = time.time()
                 (
                     reward_i,
@@ -153,7 +164,9 @@ class BaseScraperValidator:
                 all_original_rewards.append(original_rewards)
                 val_score_responses_list.append(val_score_responses)
 
-                rewards += weight_i * reward_i.to(self.neuron.config.neuron.device)
+                rewards += weights_matrix[:, i] * reward_i.to(
+                    self.neuron.config.neuron.device
+                )
 
                 if not self.neuron.config.neuron.disable_log_rewards:
                     event = {**event, **reward_event}
