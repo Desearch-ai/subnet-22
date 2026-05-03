@@ -27,9 +27,8 @@ class WebBasicSearchContentRelevanceModel(BaseRewardModel):
     def name(self) -> str:
         return RewardModelType.web_basic_search_content_relevance.value
 
-    def __init__(self, device: str, scoring_type: None, neuron: AbstractNeuron):
+    def __init__(self, scoring_type: None, neuron: AbstractNeuron):
         super().__init__(neuron)
-        self.device = device
         self.scoring_type = scoring_type
 
     def normalize_html_content(self, content: str) -> str:

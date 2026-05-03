@@ -15,11 +15,8 @@ from tests_data.tweets.tweet2 import tweet2
 
 class TwitterBasicSearchContentRelevanceModelTestCase(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
-        self.device = "test_device"
         self.scoring_type = None
-        self.model = TwitterBasicSearchContentRelevanceModel(
-            self.device, self.scoring_type
-        )
+        self.model = TwitterBasicSearchContentRelevanceModel(self.scoring_type)
 
     async def test_get_rewards(self):
         rewards, grouped_score = await self.model.get_rewards(

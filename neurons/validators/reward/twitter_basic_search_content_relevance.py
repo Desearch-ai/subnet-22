@@ -106,9 +106,8 @@ class TwitterBasicSearchContentRelevanceModel(BaseRewardModel):
     def name(self) -> str:
         return RewardModelType.twitter_basic_search_content_relevance.value
 
-    def __init__(self, device: str, scoring_type: None, neuron: AbstractNeuron):
+    def __init__(self, scoring_type: None, neuron: AbstractNeuron):
         super().__init__(neuron)
-        self.device = device
         self.scoring_type = scoring_type
         self.twitter_utils = TwitterUtils()
 

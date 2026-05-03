@@ -61,12 +61,6 @@ class AdvancedScraperValidator(BaseScraperValidator):
         self.region = "us"
         self.date_filter = "qdr:w"  # Past week
 
-        # Init device.
-        bt.logging.debug("loading", "device")
-        bt.logging.debug(
-            "self.neuron.config.neuron.device = ", str(neuron.config.neuron.device)
-        )
-
         self.twitter_content_weight = 0.30
         self.web_search_weight = 0.25
         self.summary_relevance_weight = 0.25
@@ -86,25 +80,21 @@ class AdvancedScraperValidator(BaseScraperValidator):
 
         reward_functions = [
             TwitterContentRelevanceModel(
-                device=neuron.config.neuron.device,
                 scoring_type=RewardScoringType.summary_relevance_score_template,
                 llm_reward=self.reward_llm,
                 neuron=neuron,
             ),
             WebSearchContentRelevanceModel(
-                device=neuron.config.neuron.device,
                 scoring_type=RewardScoringType.search_relevance_score_template,
                 llm_reward=self.reward_llm,
                 neuron=neuron,
             ),
             SummaryRelevanceRewardModel(
-                device=neuron.config.neuron.device,
                 scoring_type=RewardScoringType.summary_relevance_score_template,
                 llm_reward=self.reward_llm,
                 neuron=neuron,
             ),
             PerformanceRewardModel(
-                device=neuron.config.neuron.device,
                 neuron=neuron,
                 min_realistic_time=5.0,
                 target_time=10.0,

@@ -121,7 +121,6 @@ pm2 start uvicorn \
 - `--wallet.name` / `--wallet.hotkey` — validator wallet + hotkey
 - `--netuid` — `22` mainnet, `41` testnet
 - `--subtensor.network` — `finney`, `test`, or custom endpoint
-- `--neuron.device` — `cuda` or `cpu`
 - `--neuron.scoring_model` — LLM used for scoring. Default `openai/gpt-4.1-nano`. Also
   accepts Qwen, Mistral, DeepSeek variants.
 - `--neuron.disable_log_rewards` — suppress per-reward wandb logs (default `False`)

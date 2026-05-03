@@ -42,13 +42,11 @@ class PerformanceRewardModel(BaseRewardModel):
 
     def __init__(
         self,
-        device: str,
         neuron: AbstractNeuron,
         min_realistic_time: float,
         target_time: float,
     ):
         super().__init__(neuron)
-        self.device = device
         self.min_realistic_time = min_realistic_time
         self.target_time = target_time
 

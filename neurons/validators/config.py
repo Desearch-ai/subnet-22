@@ -85,14 +85,6 @@ def add_args(cls, parser):
         default="core_smart_scrape_validator",
     )
 
-    # Netuid Arg
-    parser.add_argument(
-        "--neuron.device",
-        type=str,
-        help="Device to run the validator on.",
-        default="cpu",
-    )
-
     parser.add_argument(
         "--neuron.disable_log_rewards",
         action="store_true",
