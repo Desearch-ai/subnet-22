@@ -9,7 +9,6 @@ openai==2.33.0
 pytz==2024.2
 faker==40.15.0
 tiktoken==0.12.0
-loguru==0.7.3
 substrate-interface==1.7.11
 redis[hiredis]==5.2.1
 jsonpickle==4.0.2

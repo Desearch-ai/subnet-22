@@ -18,16 +18,10 @@
 
 import argparse
 import os
-from distutils.util import strtobool
 
 import bittensor as bt
-from loguru import logger
 
 from desearch.protocol import ScoringModel
-
-
-def str2bool(v):
-    return bool(strtobool(v))
 
 
 def check_config(config: "bt.Config"):
@@ -38,35 +32,15 @@ def check_config(config: "bt.Config"):
         config.neuron.mock_dataset = False
         config.wallet._mock = True
 
-    full_path = os.path.expanduser(
-        "{}/{}/{}/netuid{}/{}".format(
+    config.neuron.full_path = os.path.expanduser(
+        "{}/{}/{}/netuid{}/validator".format(
             config.logging.logging_dir,
             config.wallet.name,
             config.wallet.hotkey,
             config.netuid,
-            # config.neuron.name,
-            "validator",
         )
     )
-    config.neuron.full_path = os.path.expanduser(full_path)
-    if not os.path.exists(config.neuron.full_path):
-        os.makedirs(config.neuron.full_path, exist_ok=True)
-
-    if not config.neuron.save_events_disabled:
-        # Check if "EVENTS" level already exists before adding it
-        if "EVENTS" not in [level.name for level in logger._core.levels.values()]:
-            logger.level("EVENTS", no=38, icon="📝")
-
-        logger.add(
-            config.neuron.full_path + "/" + "completions.log",
-            rotation=config.neuron.events_retention_size,
-            serialize=True,
-            enqueue=True,
-            backtrace=False,
-            diagnose=False,
-            level="EVENTS",
-            format="{time:YYYY-MM-DD at HH:mm:ss} | {level} | {message}",
-        )
+    os.makedirs(config.neuron.full_path, exist_ok=True)
 
 
 def add_args(cls, parser):
@@ -77,13 +51,6 @@ def add_args(cls, parser):
     parser.add_argument("--wandb.off", action="store_false", dest="wandb_on")
 
     parser.set_defaults(wandb_on=True)
-
-    parser.add_argument(
-        "--neuron.name",
-        type=str,
-        help="Trials for this miner go in miner.root / (wallet_cold - wallet_hot) / miner.name. ",
-        default="core_smart_scrape_validator",
-    )
 
     parser.add_argument(
         "--neuron.disable_log_rewards",
