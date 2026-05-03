@@ -5,7 +5,6 @@ numpy==2.2.6
 wandb==0.23.1
 aiohttp==3.10.2
 apify-client==1.6.1
-wikipedia==1.4.0
 openai==2.33.0
 pytz==2024.2
 faker==25.9.1
