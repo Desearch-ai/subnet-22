@@ -2,7 +2,7 @@ import time
 from typing import List, Optional
 
 import bittensor as bt
-import torch
+import numpy as np
 
 from desearch.dataset.date_filters import (
     DateFilter,
@@ -74,14 +74,14 @@ class AdvancedScraperValidator(BaseScraperValidator):
 
         self.reward_llm = RewardLLM(neuron.config.neuron.scoring_model)
 
-        reward_weights = torch.tensor(
+        reward_weights = np.array(
             [
                 self.twitter_content_weight,
                 self.web_search_weight,
                 self.summary_relevance_weight,
                 self.performance_weight,
             ],
-            dtype=torch.float32,
+            dtype=np.float32,
         )
 
         reward_functions = [
@@ -124,9 +124,9 @@ class AdvancedScraperValidator(BaseScraperValidator):
             penalty_functions=penalty_functions,
         )
 
-    def compute_reward_weights_matrix(self, responses) -> torch.Tensor:
+    def compute_reward_weights_matrix(self, responses) -> np.ndarray:
         rows = [self._weights_for(response) for response in responses]
-        return torch.tensor(rows, dtype=torch.float32)
+        return np.array(rows, dtype=np.float32)
 
     def _weights_for(self, response) -> List[float]:
         """Weights for one response, ordered [twitter, web, summary, perf].
@@ -209,7 +209,7 @@ class AdvancedScraperValidator(BaseScraperValidator):
         uid, axon = await self.neuron.get_random_miner(
             uid=uid, search_type=self.search_type
         )
-        uids = torch.tensor([uid])
+        uids = np.array([uid])
 
         start_date = (
             date_filter.start_date.strftime("%Y-%m-%dT%H:%M:%SZ")

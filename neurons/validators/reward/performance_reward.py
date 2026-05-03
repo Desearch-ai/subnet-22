@@ -21,7 +21,6 @@ import traceback
 from typing import Dict, List, Tuple
 
 import bittensor as bt
-import torch
 
 from desearch.protocol import (
     ScraperStreamingSynapse,
@@ -119,7 +118,7 @@ class PerformanceRewardModel(BaseRewardModel):
         reward_events = []
         try:
             uids = [
-                uid.item() if isinstance(uid, torch.Tensor) else uid for uid in uids
+                uid.item() if hasattr(uid, "item") else uid for uid in uids
             ]
 
             if isinstance(responses[0], ScraperStreamingSynapse):

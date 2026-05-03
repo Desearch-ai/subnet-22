@@ -20,7 +20,7 @@ from enum import Enum
 from typing import List
 
 import bittensor as bt
-import torch
+import numpy as np
 
 from neurons.validators.base_validator import AbstractNeuron
 
@@ -43,23 +43,19 @@ class BasePenaltyModel(ABC):
     @abstractmethod
     async def calculate_penalties(
         responses: List[bt.Synapse], additional_params=None
-    ) -> torch.FloatTensor: ...
+    ) -> np.ndarray: ...
 
     async def apply_penalties(
         self,
         responses: List[bt.Synapse],
         uids,
         additional_params=None,
-    ) -> torch.FloatTensor:
+    ) -> np.ndarray:
         raw_penalties = await self.calculate_penalties(responses, additional_params)
 
-        # Clip penalties between 0 and 1
-        adjusted_penalties = torch.clip(raw_penalties, 0, 1)
+        adjusted_penalties = np.clip(raw_penalties, 0, 1)
+        adjusted_penalties = np.clip(adjusted_penalties, 0, self.max_penalty)
 
-        # Clip penalties between 0 and self.max_penalty
-        adjusted_penalties = torch.clip(adjusted_penalties, 0, self.max_penalty)
-
-        # Invert penalties to scale rewards accordingly
         applied_penalties = 1 - adjusted_penalties
 
         return raw_penalties, adjusted_penalties, applied_penalties

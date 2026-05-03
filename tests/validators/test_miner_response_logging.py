@@ -1,8 +1,8 @@
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+import numpy as np
 import pytest
-import torch
 
 from neurons.validators.clients.miner_response_logger import build_log_entry, submit_logs
 from neurons.validators.scrapers.advanced_scraper_validator import AdvancedScraperValidator
@@ -109,7 +109,7 @@ async def test_ai_organic_logs_after_stream_finishes():
     validator.call_miner = AsyncMock(
         return_value=(
             fake_stream(),
-            torch.tensor([55]),
+            np.array([55]),
             0.0,
             SimpleNamespace(hotkey="miner-hotkey", coldkey="miner-coldkey"),
         )

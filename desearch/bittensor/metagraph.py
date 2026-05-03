@@ -1,4 +1,4 @@
-import torch
+import numpy as np
 from bittensor.core.chain_data import (
     AxonInfo,
     NeuronInfoLite,
@@ -110,48 +110,48 @@ class Metagraph(AsyncMetagraph):
     async def sync(self, subtensor, block=None, lite=False):
         self.lite = lite
 
-        self.n = self._create_tensor(len(self.neurons), dtype=torch.int64)
-        self.version = self._create_tensor([1], dtype=torch.int64)
+        self.n = self._create_tensor(len(self.neurons), dtype=np.int64)
+        self.version = self._create_tensor([1], dtype=np.int64)
         self.block = self._create_tensor(
-            block if block else (await subtensor.block), dtype=torch.int64
+            block if block else (await subtensor.block), dtype=np.int64
         )
         self.uids = self._create_tensor(
-            [neuron.uid for neuron in self.neurons], dtype=torch.int64
+            [neuron.uid for neuron in self.neurons], dtype=np.int64
         )
         self.trust = self._create_tensor(
-            [neuron.trust for neuron in self.neurons], dtype=torch.float32
+            [neuron.trust for neuron in self.neurons], dtype=np.float32
         )
         self.consensus = self._create_tensor(
-            [neuron.consensus for neuron in self.neurons], dtype=torch.float32
+            [neuron.consensus for neuron in self.neurons], dtype=np.float32
         )
         self.incentive = self._create_tensor(
-            [neuron.incentive for neuron in self.neurons], dtype=torch.float32
+            [neuron.incentive for neuron in self.neurons], dtype=np.float32
         )
         self.dividends = self._create_tensor(
-            [neuron.dividends for neuron in self.neurons], dtype=torch.float32
+            [neuron.dividends for neuron in self.neurons], dtype=np.float32
         )
         self.ranks = self._create_tensor(
-            [neuron.rank for neuron in self.neurons], dtype=torch.float32
+            [neuron.rank for neuron in self.neurons], dtype=np.float32
         )
         self.emission = self._create_tensor(
-            [neuron.emission for neuron in self.neurons], dtype=torch.float32
+            [neuron.emission for neuron in self.neurons], dtype=np.float32
         )
         self.active = self._create_tensor(
-            [neuron.active for neuron in self.neurons], dtype=torch.int64
+            [neuron.active for neuron in self.neurons], dtype=np.int64
         )
         self.last_update = self._create_tensor(
-            [neuron.last_update for neuron in self.neurons], dtype=torch.int64
+            [neuron.last_update for neuron in self.neurons], dtype=np.int64
         )
         self.validator_permit = self._create_tensor(
-            [neuron.validator_permit for neuron in self.neurons], dtype=torch.bool
+            [neuron.validator_permit for neuron in self.neurons], dtype=np.bool_
         )
         self.validator_trust = self._create_tensor(
-            [neuron.validator_trust for neuron in self.neurons], dtype=torch.float32
+            [neuron.validator_trust for neuron in self.neurons], dtype=np.float32
         )
         self.total_stake = self._create_tensor(
-            [neuron.total_stake.tao for neuron in self.neurons], dtype=torch.float32
+            [neuron.total_stake.tao for neuron in self.neurons], dtype=np.float32
         )
         self.stake = self._create_tensor(
-            [neuron.stake for neuron in self.neurons], dtype=torch.float32
+            [neuron.stake for neuron in self.neurons], dtype=np.float32
         )
         self.axons = [n.axon_info for n in self.neurons]

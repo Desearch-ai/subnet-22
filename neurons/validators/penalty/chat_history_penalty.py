@@ -1,4 +1,4 @@
-import torch
+import numpy as np
 from typing import List
 from neurons.validators.penalty.penalty import BasePenaltyModel, PenaltyModelType
 import bittensor as bt
@@ -33,9 +33,9 @@ class ChatHistoryPenaltyModel(BasePenaltyModel):
         self,
         responses: List[ScraperStreamingSynapse],
         additional_params=None,
-    ) -> torch.FloatTensor:
+    ) -> np.ndarray:
 
-        penalties = torch.zeros(len(responses), dtype=torch.float32)
+        penalties = np.zeros(len(responses), dtype=np.float32)
 
         for index, response in enumerate(responses):
             if not response.chat_history:
