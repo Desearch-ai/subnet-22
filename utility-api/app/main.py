@@ -5,7 +5,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from starlette.requests import Request
 
 from app.config import CORS_ALLOWED_ORIGINS, NETUID, SUBTENSOR_NETWORK
-from app.domains.dataset.router import close_question_cache, init_question_cache
 from app.domains.logs.router import router as logs_router
 from app.domains.miners.router import router as miners_router
 from app.logger import get_logger
@@ -24,16 +23,10 @@ async def lifespan(app: FastAPI):
 
     await init_redis()
 
-    await init_question_cache(
-        netuid=NETUID,
-        subtensor_network=SUBTENSOR_NETWORK,
-    )
-
     yield
 
     # Shutdown
     logger.info("Stopping utility API lifespan")
-    await close_question_cache()
     await close_redis()
 
 

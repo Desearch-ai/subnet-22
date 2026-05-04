@@ -50,36 +50,6 @@ class UtilityAPIClient:
 
         response.raise_for_status()
 
-    async def fetch_next_question(self) -> dict:
-        """
-        Fetch one (question, search_type, uid) from the utility API.
-
-        Returns:
-            {
-                "time_range_start": str,
-                "uid": int,
-                "search_type": str,      # e.g. "ai_search", "x_search"
-                "question": {"query": str}
-            }
-
-        Raises:
-            aiohttp.ClientResponseError: on 4xx/5xx responses (including 404 when
-                                         all questions for this scoring window are served,
-                                         or 429 for rate limiting)
-        """
-
-        async with self._session.get(
-            f"{self.base_url}/dataset/next",
-            headers=self._auth_headers(),
-            timeout=aiohttp.ClientTimeout(total=30),
-        ) as response:
-            await self._raise_for_status_with_context(
-                response,
-                context="fetch_next_question",
-                skip_logging_statuses={404, 429},
-            )
-            return await response.json()
-
     async def save_logs(self, logs: list[dict]) -> dict:
         async with self._session.post(
             f"{self.base_url}/logs",
