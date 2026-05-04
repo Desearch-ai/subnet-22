@@ -1,12 +1,7 @@
 import argparse
 import os
-from distutils.util import strtobool
 
 import bittensor as bt
-
-
-def str2bool(v):
-    return bool(strtobool(v))
 
 
 def check_config(cls, config: "bt.Config"):

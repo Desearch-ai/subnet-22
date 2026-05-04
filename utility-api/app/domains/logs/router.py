@@ -1,11 +1,8 @@
 from datetime import datetime
-from uuid import uuid4
 
 from app.auth import get_hotkey
 from app.db.session import get_session
-from app.domains.dataset.enums import SearchType
-from app.domains.dataset.models.question import Question
-from app.domains.logs.enums import QueryKind
+from app.domains.logs.enums import QueryKind, SearchType
 from app.domains.logs.models.miner_response_log import MinerResponseLog
 from app.domains.logs.schemas import (
     BatchOrganicMatchResult,
@@ -20,7 +17,7 @@ from app.domains.logs.schemas import (
 )
 from app.logger import get_logger
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import and_, or_, select, update
+from sqlalchemy import and_, or_, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -64,32 +61,12 @@ def _strip_network_fields(payload):
     return redacted
 
 
-def _normalize_question_query(query: str) -> str:
-    return query.strip()
-
-
 def _normalize_optional_query(query: str | None) -> str | None:
     if query is None:
         return None
 
     normalized_query = query.strip()
     return normalized_query or None
-
-
-def _merge_search_types(existing_search_types, new_search_types) -> list[str]:
-    merged: list[str] = []
-
-    for search_type in existing_search_types or []:
-        search_type_value = getattr(search_type, "value", search_type)
-        if search_type_value not in merged:
-            merged.append(search_type_value)
-
-    for search_type in new_search_types:
-        search_type_value = getattr(search_type, "value", search_type)
-        if search_type_value not in merged:
-            merged.append(search_type_value)
-
-    return merged
 
 
 def _build_log_values(body: SaveMinerResponseLogsRequest) -> list[dict]:
@@ -111,83 +88,6 @@ def _sanitize_log_value(value):
     if isinstance(value, tuple):
         return tuple(_sanitize_log_value(item) for item in value)
     return value
-
-
-async def _upsert_organic_questions(
-    session: AsyncSession, body: SaveMinerResponseLogsRequest
-) -> None:
-    search_types_by_query: dict[str, list] = {}
-
-    for log in body.logs:
-        if log.query_kind != QueryKind.ORGANIC:
-            continue
-
-        normalized_query = _normalize_question_query(log.request_query)
-        if not normalized_query:
-            continue
-
-        query_search_types = search_types_by_query.setdefault(normalized_query, [])
-        if log.search_type not in query_search_types:
-            query_search_types.append(log.search_type)
-
-    if not search_types_by_query:
-        logger.debug("No organic questions to upsert from log batch")
-        return
-
-    result = await session.execute(
-        select(Question).where(Question.query.in_(search_types_by_query.keys()))
-    )
-    existing_questions = result.scalars().all()
-    existing_questions_by_query: dict[str, list[Question]] = {}
-
-    for question in existing_questions:
-        existing_questions_by_query.setdefault(question.query, []).append(question)
-
-    question_values = []
-    updated_question_count = 0
-
-    for query, search_types in search_types_by_query.items():
-        matching_questions = existing_questions_by_query.get(query, [])
-
-        if not matching_questions:
-            question_values.append(
-                {
-                    "id": uuid4(),
-                    "query": query,
-                    "search_types": [search_type.value for search_type in search_types],
-                    "ai_search_tools": None,
-                    "source": "desearch",
-                }
-            )
-            continue
-
-        merged_search_types = [search_type.value for search_type in search_types]
-
-        for question in matching_questions:
-            next_search_types = _merge_search_types(
-                question.search_types, merged_search_types
-            )
-
-            current_search_types = _merge_search_types(question.search_types, [])
-            if next_search_types == current_search_types:
-                continue
-
-            await session.execute(
-                update(Question)
-                .where(Question.id == question.id)
-                .values(search_types=next_search_types)
-            )
-            updated_question_count += 1
-
-    if question_values:
-        await session.execute(insert(Question).values(question_values))
-
-    logger.info(
-        f"Organic question sync complete: "
-        f"distinct_queries={len(search_types_by_query)} "
-        f"inserted={len(question_values)} "
-        f"updated={updated_question_count}"
-    )
 
 
 @router.post("", response_model=SaveMinerResponseLogsResponse)

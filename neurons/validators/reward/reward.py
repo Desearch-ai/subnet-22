@@ -24,8 +24,7 @@ from itertools import islice
 from typing import List, Union
 
 import bittensor as bt
-import numpy as np  # Ensure numpy is imported
-import torch
+import numpy as np
 
 from desearch.protocol import (
     ScraperStreamingSynapse,
@@ -71,7 +70,7 @@ class BaseRewardModel:
     @abstractmethod
     async def get_rewards(
         self, responses: List[ScraperStreamingSynapse], name: str, uids
-    ) -> Union[torch.FloatTensor, dict]: ...
+    ) -> Union[np.ndarray, dict]: ...
 
     def __init__(self, neuron: AbstractNeuron) -> None:
         self.count = 0
@@ -168,9 +167,8 @@ class BaseRewardModel:
         self,
         responses: List[ScraperStreamingSynapse],
         uids,
-    ) -> Union[torch.FloatTensor, dict]:
+    ) -> Union[np.ndarray, dict]:
         """Applies the reward model across each call. Unsuccessful responses are zeroed."""
-        # Get indices of correctly responding calls.
 
         successful_completions_indices: List[int] = [
             idx
@@ -181,13 +179,13 @@ class BaseRewardModel:
         reward_events, val_score_responses = await self.get_rewards(responses, uids)
 
         reward_events = BaseRewardEvent.parse_reward_events(reward_events)
-        successful_rewards = torch.tensor(
-            reward_events.pop("reward"), dtype=torch.float32
+        successful_rewards = np.array(
+            reward_events.pop("reward"), dtype=np.float32
         )
 
         original_rewards = successful_rewards.tolist()
 
-        filled_rewards = torch.zeros(len(responses), dtype=torch.float32)
+        filled_rewards = np.zeros(len(responses), dtype=np.float32)
         for idx in successful_completions_indices:
             filled_rewards[idx] = successful_rewards[idx]
 
@@ -200,11 +198,11 @@ class BaseRewardModel:
         reward_events = {f"{self.name}_{k}": v for k, v in reward_events.items()}
         reward_events[self.name] = filled_rewards.tolist()
 
-        if torch.isnan(filled_rewards).any():
+        if np.isnan(filled_rewards).any():
             bt.logging.warning(
-                f"The tensor from {self.name} contains NaN values: {filled_rewards}"
+                f"The array from {self.name} contains NaN values: {filled_rewards}"
             )
-            filled_rewards = filled_rewards.nan_to_num_(nan=0.0)
+            filled_rewards = np.nan_to_num(filled_rewards, nan=0.0, copy=False)
 
         return (
             filled_rewards,

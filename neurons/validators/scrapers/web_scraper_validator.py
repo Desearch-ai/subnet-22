@@ -1,7 +1,7 @@
 from typing import Any, Dict, Optional
 
 import bittensor as bt
-import torch
+import numpy as np
 
 from desearch.protocol import (
     WebSearchSynapse,
@@ -30,31 +30,23 @@ class WebScraperValidator(BaseScraperValidator):
         self.timeout = 180
         self.max_execution_time = 10
 
-        # Init device.
-        bt.logging.debug("loading", "device")
-        bt.logging.debug(
-            "self.neuron.config.neuron.device = ", str(neuron.config.neuron.device)
-        )
-
         self.web_content_weight = 0.70
         self.performance_weight = 0.30
 
-        reward_weights = torch.tensor(
+        reward_weights = np.array(
             [
                 self.web_content_weight,
                 self.performance_weight,
             ],
-            dtype=torch.float32,
+            dtype=np.float32,
         )
 
         reward_functions = [
             WebBasicSearchContentRelevanceModel(
-                device=neuron.config.neuron.device,
                 scoring_type=RewardScoringType.search_relevance_score_template,
                 neuron=neuron,
             ),
             PerformanceRewardModel(
-                device=neuron.config.neuron.device,
                 neuron=neuron,
                 min_realistic_time=0.7,
                 target_time=2.0,

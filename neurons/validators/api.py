@@ -1,7 +1,3 @@
-import os
-
-os.environ["USE_TORCH"] = "1"
-
 import asyncio
 import json
 import traceback

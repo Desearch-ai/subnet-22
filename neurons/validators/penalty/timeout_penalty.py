@@ -2,7 +2,7 @@ import math
 from typing import List, Optional
 
 import bittensor as bt
-import torch
+import numpy as np
 
 from neurons.validators.base_validator import AbstractNeuron
 from neurons.validators.penalty.penalty import BasePenaltyModel, PenaltyModelType
@@ -50,8 +50,8 @@ class TimeoutPenaltyModel(BasePenaltyModel):
         self,
         responses: List[bt.Synapse],
         additional_params=None,
-    ) -> torch.FloatTensor:
-        penalties = torch.zeros(len(responses), dtype=torch.float32)
+    ) -> np.ndarray:
+        penalties = np.zeros(len(responses), dtype=np.float32)
 
         for index, response in enumerate(responses):
             dendrite = getattr(response, "dendrite", None)

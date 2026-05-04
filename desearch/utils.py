@@ -8,7 +8,7 @@ from typing import List
 
 import aiohttp
 import bittensor as bt
-import torch
+import numpy as np
 from pydantic import ValidationError
 
 from desearch.protocol import (
@@ -129,8 +129,7 @@ async def resync_metagraph(self):
     # Check to see if the metagraph has changed size.
     # If so, we need to add new hotkeys and moving averages.
     if len(self.hotkeys) < len(self.metagraph.hotkeys):
-        # Update the size of the moving average scores.
-        new_moving_average = torch.zeros((self.metagraph.n)).to(self.device)
+        new_moving_average = np.zeros(int(self.metagraph.n), dtype=np.float32)
         min_len = min(len(self.hotkeys), len(self.moving_averaged_scores))
         new_moving_average[:min_len] = self.moving_averaged_scores[:min_len]
         self.moving_averaged_scores = new_moving_average

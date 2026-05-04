@@ -1,7 +1,7 @@
 from typing import List, Optional
 
 import bittensor as bt
-import torch
+import numpy as np
 
 from desearch.protocol import TwitterSearchSynapse, WebSearchSynapse
 from neurons.validators.base_validator import AbstractNeuron
@@ -36,8 +36,8 @@ class CountPenaltyModel(BasePenaltyModel):
         self,
         responses: List[bt.Synapse],
         additional_params=None,
-    ) -> torch.FloatTensor:
-        penalties = torch.zeros(len(responses), dtype=torch.float32)
+    ) -> np.ndarray:
+        penalties = np.zeros(len(responses), dtype=np.float32)
 
         for index, response in enumerate(responses):
             requested = self._requested_count(response)
