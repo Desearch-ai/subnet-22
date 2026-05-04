@@ -4,35 +4,24 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.requests import Request
 
-from app.config import CORS_ALLOWED_ORIGINS, NETUID, SUBTENSOR_NETWORK
+from app.config import CORS_ALLOWED_ORIGINS
 from app.domains.logs.router import router as logs_router
 from app.domains.miners.router import router as miners_router
 from app.logger import get_logger
-from app.redis_client import close_redis, init_redis
 
 logger = get_logger(__name__)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup
-    logger.info(
-        f"Starting utility API lifespan: netuid={NETUID} "
-        f"subtensor_network={SUBTENSOR_NETWORK}"
-    )
-
-    await init_redis()
-
+    logger.info("Starting utility API lifespan")
     yield
-
-    # Shutdown
     logger.info("Stopping utility API lifespan")
-    await close_redis()
 
 
 app = FastAPI(
     title="SN22 Utility API",
-    description="Subnet-22 (Desearch) dataset & logging utility API",
+    description="Subnet-22 (Desearch) metrics & logging utility API",
     version="0.1.0",
     lifespan=lifespan,
 )
