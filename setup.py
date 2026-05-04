@@ -73,7 +73,7 @@ setup(
     include_package_data=True,
     author_discord="p383_54249",
     license="MIT",
-    python_requires=">=3.10",
+    python_requires=">=3.11",
     install_requires=requirements,
     classifiers=[
         "Development Status :: 3 - Alpha",
@@ -81,9 +81,7 @@ setup(
         "License :: OSI Approved :: MIT License",
         "Programming Language :: Python :: 3",
         "Programming Language :: Python :: 3 :: Only",
-        "Programming Language :: Python :: 3.8",
-        "Programming Language :: Python :: 3.9",
-        "Programming Language :: Python :: 3.10",
+        "Programming Language :: Python :: 3.11",
         "Topic :: Software Development",
     ],
 )

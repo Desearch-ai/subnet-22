@@ -65,7 +65,7 @@ aggregated search results.
 Miners contribute search capacity and are rewarded based on result quality and volume.
 Expected setup steps:
 
-- Prepare a server with Python ≥ 3.10, PM2, and a registered hotkey on netuid 22.
+- Prepare a server with Python ≥ 3.11, PM2, and a registered hotkey on netuid 22.
 - Configure credentials for OpenAI, SerpAPI, and Apify.
 - Declare per-search-type concurrency in `neurons/miners/manifest.json`.
 - Run the axon with PM2.
@@ -76,7 +76,7 @@ See the [Miner Setup Guide](./docs/running_a_miner.md) for full instructions.
 
 Validators verify miner outputs and write weights on-chain. Expected setup steps:
 
-- Prepare a server with Python ≥ 3.10, PM2, Redis, `jq`, and a registered validator hotkey.
+- Prepare a server with Python ≥ 3.11, PM2, Redis, `jq`, and a registered validator hotkey.
 - Configure credentials for OpenAI, Apify, ScrapingDog, and W&B.
 - Generate a public API access key and run the autoupdate script.
 
