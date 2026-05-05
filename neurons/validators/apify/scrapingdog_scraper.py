@@ -23,6 +23,14 @@ def _classify_url(url: str) -> str:
     return "default"
 
 
+def rewrite_to_old_reddit(url: str) -> str:
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower()
+    if host in _REDDIT_HOSTS:
+        return url.replace(f"://{parsed.hostname}", "://old.reddit.com", 1)
+    return url
+
+
 def _extract_youtube_video_id(url: str) -> Optional[str]:
     parsed = urlparse(url)
     host = (parsed.hostname or "").lower()
@@ -357,7 +365,7 @@ class ScrapingDogScraper:
         request_url = url
 
         if kind == "reddit":
-            request_url = self._rewrite_to_old_reddit(url)
+            request_url = rewrite_to_old_reddit(url)
 
         params: Dict[str, str] = {
             "api_key": get_scrapingdog_api_key(),
@@ -378,14 +386,6 @@ class ScrapingDogScraper:
                 params["premium"] = "true"
 
         return self.api_url, params
-
-    @staticmethod
-    def _rewrite_to_old_reddit(url: str) -> str:
-        parsed = urlparse(url)
-        host = (parsed.hostname or "").lower()
-        if host in _REDDIT_HOSTS:
-            return url.replace(f"://{parsed.hostname}", "://old.reddit.com", 1)
-        return url
 
     def _build_youtube_metadata(
         self, url: str, payload: Dict
@@ -497,9 +497,21 @@ async def scrape_links_with_retries(
         )
         return [], list(dict.fromkeys(urls))
 
-    return await scrape_links_with_apify_retries(
-        urls=urls,
+    request_to_original = {rewrite_to_old_reddit(url): url for url in urls}
+    request_urls = list(request_to_original.keys())
+
+    fetched, missing = await scrape_links_with_apify_retries(
+        urls=request_urls,
         scraper_actor_class=CheerioScraperActor,
         group_size=100,
         max_attempts=max_attempts,
     )
+
+    for item in fetched:
+        link = item.get("link")
+        if link in request_to_original:
+            item["link"] = request_to_original[link]
+
+    missing = [request_to_original.get(url, url) for url in missing]
+
+    return fetched, missing
