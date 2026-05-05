@@ -1,13 +1,47 @@
 import asyncio
+import json
 import os
 import re
 import weakref
 from html.parser import HTMLParser
 from typing import Dict, List, Optional, Tuple
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 import aiohttp
 import bittensor as bt
+
+_YOUTUBE_HOSTS = {"youtube.com", "www.youtube.com", "youtu.be"}
+_REDDIT_HOSTS = {"reddit.com", "www.reddit.com"}
+
+
+def _classify_url(url: str) -> str:
+    host = (urlparse(url).hostname or "").lower()
+    if host in _YOUTUBE_HOSTS:
+        return "youtube"
+    if host in _REDDIT_HOSTS:
+        return "reddit"
+    return "default"
+
+
+def _extract_youtube_video_id(url: str) -> Optional[str]:
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower()
+
+    if host == "youtu.be":
+        video_id = parsed.path.lstrip("/").split("/", 1)[0]
+        return video_id or None
+
+    if host in _YOUTUBE_HOSTS:
+        if parsed.path == "/watch":
+            values = parse_qs(parsed.query).get("v")
+            return values[0] if values else None
+
+        for prefix in ("/shorts/", "/embed/", "/v/"):
+            if parsed.path.startswith(prefix):
+                video_id = parsed.path[len(prefix) :].split("/", 1)[0]
+                return video_id or None
+
+    return None
 
 
 def get_scrapingdog_api_key() -> str:
@@ -158,6 +192,7 @@ class _ScrapingDogHTMLParser(HTMLParser):
 
 class ScrapingDogScraper:
     api_url = "https://api.scrapingdog.com/scrape"
+    youtube_api_url = "https://api.scrapingdog.com/youtube/video"
     request_timeout_seconds = 30
     max_concurrent_requests = 30
     _shared_semaphores = weakref.WeakKeyDictionary()
@@ -173,7 +208,9 @@ class ScrapingDogScraper:
 
         return semaphore
 
-    async def scrape_metadata(self, urls: List[str]) -> List[Dict[str, Optional[str]]]:
+    async def scrape_metadata(
+        self, urls: List[str], attempt: int = 1
+    ) -> List[Dict[str, Optional[str]]]:
         if not urls:
             return []
 
@@ -186,7 +223,7 @@ class ScrapingDogScraper:
             connector=connector,
         ) as session:
             tasks = [
-                asyncio.create_task(self._scrape_url(session, semaphore, url))
+                asyncio.create_task(self._scrape_url(session, semaphore, url, attempt))
                 for url in urls
             ]
             results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -204,12 +241,14 @@ class ScrapingDogScraper:
                 scraped_results.append(result)
 
         if failed_urls:
-            bt.logging.warning(f"ScrapingDog failed to fetch links: {failed_urls}")
+            bt.logging.warning(
+                f"ScrapingDog failed to fetch links (attempt {attempt}): {failed_urls}"
+            )
 
         return scraped_results
 
     async def scrape_metadata_with_retries(
-        self, urls: List[str], max_attempts: int = 2
+        self, urls: List[str], max_attempts: int = 3
     ) -> Tuple[List[Dict[str, Optional[str]]], List[str]]:
         fetched_links_with_metadata: List[Dict[str, Optional[str]]] = []
         non_fetched_links = list(dict.fromkeys(urls))
@@ -233,7 +272,7 @@ class ScrapingDogScraper:
             )
 
             fetched_links_with_metadata.extend(
-                await self.scrape_metadata(non_fetched_links)
+                await self.scrape_metadata(non_fetched_links, attempt=attempt)
             )
 
             fetched_urls = {
@@ -253,27 +292,138 @@ class ScrapingDogScraper:
         session: aiohttp.ClientSession,
         semaphore: asyncio.Semaphore,
         url: str,
+        attempt: int,
     ) -> Dict[str, Optional[str]]:
+        kind = _classify_url(url)
+
+        if kind == "youtube" and _extract_youtube_video_id(url):
+            return await self._scrape_youtube(session, semaphore, url)
+
+        # YouTube non-video pages (playlists, channel pages, /creators) fall through
+        # to the default /scrape ladder.
+        scrape_kind = "default" if kind == "youtube" else kind
+
+        api_url, params = self._build_request_params(url, attempt, scrape_kind)
+
         async with semaphore:
-            async with session.get(
-                self.api_url,
-                params=self._build_request_params(url),
-            ) as response:
+            async with session.get(api_url, params=params) as response:
                 response_text = await response.text(errors="replace")
 
                 if response.status != 200:
                     raise RuntimeError(
-                        f"Unexpected ScrapingDog status {response.status}: "
-                        f"{response_text[:200]}"
+                        f"Unexpected ScrapingDog status {response.status} "
+                        f"(attempt {attempt}, kind={kind}): {response_text[:200]}"
                     )
 
         return self._build_metadata(url=url, html_content=response_text)
 
-    def _build_request_params(self, url: str) -> Dict[str, str]:
-        return {
+    async def _scrape_youtube(
+        self,
+        session: aiohttp.ClientSession,
+        semaphore: asyncio.Semaphore,
+        url: str,
+    ) -> Dict[str, Optional[str]]:
+        video_id = _extract_youtube_video_id(url)
+        if not video_id:
+            raise RuntimeError(f"Could not extract YouTube video id from {url}")
+
+        params = {
             "api_key": get_scrapingdog_api_key(),
-            "url": url,
-            "dynamic": "false",
+            "v": video_id,
+        }
+
+        async with semaphore:
+            async with session.get(self.youtube_api_url, params=params) as response:
+                response_text = await response.text(errors="replace")
+
+                if response.status != 200:
+                    raise RuntimeError(
+                        f"Unexpected ScrapingDog YouTube status {response.status}: "
+                        f"{response_text[:200]}"
+                    )
+
+        try:
+            payload = json.loads(response_text)
+        except json.JSONDecodeError as err:
+            raise RuntimeError(
+                f"ScrapingDog YouTube returned non-JSON for {url}: {err}"
+            )
+
+        return self._build_youtube_metadata(url=url, payload=payload)
+
+    def _build_request_params(
+        self, url: str, attempt: int, kind: str
+    ) -> Tuple[str, Dict[str, str]]:
+        request_url = url
+
+        if kind == "reddit":
+            request_url = self._rewrite_to_old_reddit(url)
+
+        params: Dict[str, str] = {
+            "api_key": get_scrapingdog_api_key(),
+            "url": request_url,
+        }
+
+        if kind == "reddit":
+            # old.reddit is server-rendered, so attempt 1 is plain (cheapest).
+            # Escalate to premium proxies, then add JS render with a wait.
+            if attempt >= 2:
+                params["premium"] = "true"
+            if attempt >= 3:
+                params["dynamic"] = "true"
+                params["wait"] = "3000"
+        else:
+            params["dynamic"] = "true" if attempt >= 2 else "false"
+            if attempt >= 3:
+                params["premium"] = "true"
+
+        return self.api_url, params
+
+    @staticmethod
+    def _rewrite_to_old_reddit(url: str) -> str:
+        parsed = urlparse(url)
+        host = (parsed.hostname or "").lower()
+        if host in _REDDIT_HOSTS:
+            return url.replace(f"://{parsed.hostname}", "://old.reddit.com", 1)
+        return url
+
+    def _build_youtube_metadata(
+        self, url: str, payload: Dict
+    ) -> Dict[str, Optional[str]]:
+        video = payload.get("video") if isinstance(payload, dict) else {}
+        channel = payload.get("channel") if isinstance(payload, dict) else {}
+        video = video if isinstance(video, dict) else {}
+        channel = channel if isinstance(channel, dict) else {}
+
+        title = (video.get("title") or "").strip()
+        description = (video.get("description") or "").strip()
+
+        text_parts = [title, description]
+
+        for key in ("keywords", "tags"):
+            value = video.get(key)
+            if isinstance(value, list):
+                text_parts.append(" ".join(str(item) for item in value if item))
+            elif isinstance(value, str):
+                text_parts.append(value)
+
+        for key in ("author", "published_time"):
+            value = video.get(key)
+            if isinstance(value, str) and value:
+                text_parts.append(value)
+
+        channel_name = channel.get("name")
+        if isinstance(channel_name, str) and channel_name:
+            text_parts.append(channel_name)
+
+        html_text = " ".join(part for part in text_parts if part).strip()
+
+        return {
+            "title": title,
+            "snippet": description,
+            "link": url,
+            "html_content": html_text,
+            "html_text": html_text,
         }
 
     def _build_metadata(self, url: str, html_content: str) -> Dict[str, Optional[str]]:
@@ -322,7 +472,7 @@ class ScrapingDogScraper:
 
 
 async def scrape_links_with_retries(
-    urls: List[str], max_attempts: int = 2
+    urls: List[str], max_attempts: int = 3
 ) -> Tuple[List[Dict[str, Optional[str]]], List[str]]:
     if has_scrapingdog_api_key():
         bt.logging.info("Using ScrapingDog for validator web scraping.")
@@ -343,8 +493,7 @@ async def scrape_links_with_retries(
         )
     except Exception as exc:
         bt.logging.warning(
-            "Apify fallback is unavailable for validator web scraping: "
-            f"{exc}"
+            f"Apify fallback is unavailable for validator web scraping: {exc}"
         )
         return [], list(dict.fromkeys(urls))
 
