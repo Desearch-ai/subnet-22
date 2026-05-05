@@ -9,6 +9,7 @@ from typing import List
 import aiohttp
 import bittensor as bt
 import numpy as np
+from openai import AsyncOpenAI
 from pydantic import ValidationError
 
 from desearch.protocol import (
@@ -20,7 +21,11 @@ from desearch.redis.utils import save_moving_averaged_scores
 from desearch.services.twitter_utils import TwitterUtils
 from neurons.validators.apify.twitter_scraper_actor import TwitterScraperActor
 
-from . import client
+
+if not os.environ.get("OPENAI_API_KEY"):
+    raise RuntimeError("OPENAI_API_KEY is not set.")
+
+client = AsyncOpenAI(timeout=90.0)
 
 
 def get_max_execution_time(model: Model, count: int):
@@ -75,12 +80,6 @@ async def call_chutes(messages, temperature, model, seed=1234, response_format=N
 
 
 async def call_openai(messages, model, temperature=1, response_format=None):
-    api_key = os.environ.get("OPENAI_API_KEY")
-
-    if not api_key:
-        bt.logging.warning("Please set the OPENAI_API_KEY environment variable.")
-        return None
-
     for _ in range(2):
         bt.logging.trace(
             f"Calling Openai. Temperature = {temperature}, Model = {model}, "

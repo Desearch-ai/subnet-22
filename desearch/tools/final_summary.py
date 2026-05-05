@@ -1,10 +1,11 @@
 import json
 from datetime import datetime, timezone
 
-import bittensor as bt
+from openai import AsyncOpenAI
 
-from desearch import client
 from desearch.dataset.date_filters import DateFilter
+
+client = AsyncOpenAI(timeout=10.0)
 
 FINAL_SUMMARY_MODEL = "gpt-4.1-nano"
 
