@@ -49,6 +49,18 @@ APIFY_LINK_SCRAPE_AMOUNT = 1
 INT_DIFF_PERCENT = 0.60  # 60% difference allowed
 
 
+def _parse_synapse_date(value: str) -> datetime:
+    for fmt in ("%Y-%m-%d_%H:%M:%S_%Z", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(value, fmt).replace(tzinfo=pytz.UTC)
+        except ValueError:
+            pass
+    dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=pytz.UTC)
+    return dt.astimezone(pytz.UTC)
+
+
 TWEET_EXACT_MATCH_FIELDS = {
     "id",
     "url",
@@ -527,14 +539,7 @@ class TwitterBasicSearchContentRelevanceModel(BaseRewardModel):
                     ).replace(tzinfo=pytz.UTC)
 
                     if synapse.get("start_date") is not None:
-                        try:
-                            start_date = datetime.strptime(
-                                synapse.get("start_date"), "%Y-%m-%d_%H:%M:%S_%Z"
-                            ).replace(tzinfo=pytz.UTC)
-                        except ValueError:
-                            start_date = datetime.strptime(
-                                synapse.get("start_date"), "%Y-%m-%d"
-                            ).replace(tzinfo=pytz.UTC)
+                        start_date = _parse_synapse_date(synapse.get("start_date"))
 
                         if tweet_date < start_date:
                             tweet_score.append(0)
@@ -542,14 +547,7 @@ class TwitterBasicSearchContentRelevanceModel(BaseRewardModel):
                             tweet_score.append(1)
 
                     if synapse.get("end_date") is not None:
-                        try:
-                            end_date = datetime.strptime(
-                                synapse.get("end_date"), "%Y-%m-%d_%H:%M:%S_%Z"
-                            ).replace(tzinfo=pytz.UTC)
-                        except ValueError:
-                            end_date = datetime.strptime(
-                                synapse.get("end_date"), "%Y-%m-%d"
-                            ).replace(tzinfo=pytz.UTC)
+                        end_date = _parse_synapse_date(synapse.get("end_date"))
 
                         if tweet_date > end_date:
                             tweet_score.append(0)
