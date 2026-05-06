@@ -142,21 +142,23 @@ async def get_verified(uid: int, search_type: str) -> int:
     return row["verified"] if row else 1
 
 
-async def get_quality_and_declared(
+async def get_allocation_state(
     search_type: str,
-) -> dict[int, tuple[float, int]]:
-    """Return ``{uid: (quality_avg, declared)}`` for one search type — one
-    query feeds the per-epoch budget allocation."""
+) -> dict[int, tuple[float, int, int]]:
+    """Return ``{uid: (quality_avg, declared, verified)}`` for one search
+    type — single query feeding the per-epoch budget allocation. ``verified``
+    is the previous epoch's allocation, used to cap upward growth."""
     async with _conn() as db:
         cursor = await db.execute(
             """
-            SELECT uid, quality_avg, declared
+            SELECT uid, quality_avg, declared, verified
             FROM miner_concurrency WHERE search_type = ?
             """,
             (search_type,),
         )
         return {
-            row["uid"]: (row["quality_avg"], row["declared"]) async for row in cursor
+            row["uid"]: (row["quality_avg"], row["declared"], row["verified"])
+            async for row in cursor
         }
 
 

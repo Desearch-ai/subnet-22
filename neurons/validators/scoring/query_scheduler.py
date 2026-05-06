@@ -390,17 +390,21 @@ class QueryScheduler:
                 allocations_by_type: dict[str, dict[int, int]] = {}
 
                 for st in SEARCH_TYPES:
-                    rows = await miner_db.get_quality_and_declared(st)
+                    rows = await miner_db.get_allocation_state(st)
+                    default = (0.0, capacity.DEFAULT_PER_UID, capacity.DEFAULT_PER_UID)
                     quality_for_active = {
-                        uid: rows.get(uid, (0.0, capacity.DEFAULT_PER_UID))[0]
-                        for uid in available_uids
+                        uid: rows.get(uid, default)[0] for uid in available_uids
                     }
                     declared_for_active = {
-                        uid: rows.get(uid, (0.0, capacity.DEFAULT_PER_UID))[1]
-                        for uid in available_uids
+                        uid: rows.get(uid, default)[1] for uid in available_uids
+                    }
+                    prev_alloc_for_active = {
+                        uid: rows.get(uid, default)[2] for uid in available_uids
                     }
                     allocations_by_type[st] = capacity.allocate_synthetic_budget(
-                        quality_for_active, declared_for_active
+                        quality_for_active,
+                        declared_for_active,
+                        prev_alloc_for_active,
                     )
                     await miner_db.bulk_update_verified(st, allocations_by_type[st])
 

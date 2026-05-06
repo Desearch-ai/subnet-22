@@ -20,7 +20,8 @@ QUALITY_SHARE_EXPONENT = 2.0
 SYNTHETIC_BUDGET_PER_TYPE = 250
 DEFAULT_PER_UID = 1
 HARD_CAP_PER_UID = 100
-QUALITY_THRESHOLD = 0.35
+QUALITY_THRESHOLD = 0.30
+RAMP_STEP_PCT = 0.10
 
 UNREACHABLE_FAILURE_THRESHOLD = 1
 
@@ -43,18 +44,15 @@ def set_router(router: _RouterKillSwitch) -> None:
 def allocate_synthetic_budget(
     quality_by_uid: dict[int, float],
     declared_by_uid: dict[int, int],
+    prev_alloc_by_uid: dict[int, int],
 ) -> dict[int, int]:
-    """Split ``SYNTHETIC_BUDGET_PER_TYPE`` across UIDs whose quality EMA is at
-    or above ``QUALITY_THRESHOLD``, weighted by ``quality^k``. Below-threshold
-    UIDs get only ``DEFAULT_PER_UID``. Bootstrap fallback (everyone eligible)
-    applies when no UID has crossed the threshold yet.
-    """
+    """Split the budget across above-threshold UIDs by quality^k, capped per
+    UID by ``prev + RAMP_STEP_PCT * declared`` so volume ramps incrementally.
+    Below-threshold UIDs get only the floor."""
     if not quality_by_uid:
         return {}
 
     eligible = {uid: q for uid, q in quality_by_uid.items() if q >= QUALITY_THRESHOLD}
-    if not eligible:
-        eligible = quality_by_uid  # Bootstrap fallback before any miner crosses.
 
     weights = {
         uid: max(0.0, q) ** QUALITY_SHARE_EXPONENT for uid, q in eligible.items()
@@ -69,7 +67,10 @@ def allocate_synthetic_budget(
     for uid, w in weights.items():
         share = round(SYNTHETIC_BUDGET_PER_TYPE * w / total)
         declared = max(declared_by_uid.get(uid, DEFAULT_PER_UID), DEFAULT_PER_UID)
-        ceiling = min(HARD_CAP_PER_UID, declared)
+        prev = max(prev_alloc_by_uid.get(uid, DEFAULT_PER_UID), DEFAULT_PER_UID)
+        ramp_step = max(1, int(declared * RAMP_STEP_PCT))
+        ramp_cap = prev + ramp_step
+        ceiling = min(HARD_CAP_PER_UID, declared, ramp_cap)
         out[uid] = min(DEFAULT_PER_UID + int(share), ceiling)
     return out
 
