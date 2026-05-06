@@ -15,7 +15,6 @@ class MinerTypeState(BaseModel):
     verified: int
     declared: int
     quality_avg: float
-    frozen_until: Optional[str] = None
     unreachable_since: Optional[str] = None
 
 

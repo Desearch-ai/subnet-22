@@ -10,7 +10,7 @@ from neurons.validators.scoring.query_scheduler import QueryScheduler
 @pytest.mark.asyncio
 async def test_score_epoch_extracts_prompts_from_responses_and_passes_epoch_start():
     scoring_store = SimpleNamespace(
-        get_all_for_range=AsyncMock(
+        get_synthetics_for_range=AsyncMock(
             return_value={
                 "web_search": [
                     {
@@ -23,18 +23,19 @@ async def test_score_epoch_extracts_prompts_from_responses_and_passes_epoch_star
                     },
                 ]
             }
-        )
+        ),
+        get_organics_for_range=AsyncMock(return_value={}),
     )
     validator = SimpleNamespace(compute_rewards_and_penalties=AsyncMock())
     scheduler = QueryScheduler(
         neuron=SimpleNamespace(),
-        utility_api=SimpleNamespace(),
+        generator=SimpleNamespace(),
         scoring_store=scoring_store,
         validators={"web_search": validator},
     )
     epoch_start = datetime(2026, 3, 14, 10, 0, tzinfo=timezone.utc)
 
-    await scheduler.score_epoch(epoch_start)
+    await scheduler.score_epoch(epoch_start, allocations_by_type={})
 
     validator.compute_rewards_and_penalties.assert_awaited_once()
     kwargs = validator.compute_rewards_and_penalties.await_args.kwargs

@@ -1,53 +1,77 @@
 """
-Concurrency ramp/decay logic for verified miner capacity.
+Quality-share allocation for synthetic queries.
 
-All miners start at verified=1. Ramp up on quality, cut on failure.
-Freeze miners that oscillate (declare high, can't deliver).
+Each search type has a fixed per-epoch budget split across miners whose
+quality EMA crosses ``QUALITY_THRESHOLD``, weighted by ``quality^k``. UIDs
+below threshold get only the floor — they have to demonstrate quality
+across multiple windows before participating in the share split.
+``declared`` is an optional miner-set ceiling.
 """
 
-from datetime import datetime, timedelta, timezone
+from typing import Optional, Protocol
 
 import bittensor as bt
 
-from desearch.miner_config import SEARCH_TYPES
 from neurons.validators.scoring import miner_db
 
-# Ease up on threshold before resolving issues in relevance models, as it's impossible to ramp up now.
-RAMP_RATE = 0.05
-DECAY_FACTOR = 0.8
+QUALITY_EMA_ALPHA = 0.3
+QUALITY_SHARE_EXPONENT = 2.0
+
+SYNTHETIC_BUDGET_PER_TYPE = 250
+DEFAULT_PER_UID = 1
+HARD_CAP_PER_UID = 100
 QUALITY_THRESHOLD = 0.35
-QUALITY_EMA_ALPHA = 0.5
-HARD_CAP = 100
-FREEZE_FAILURES = 4
-FREEZE_HOURS = 4
 
 UNREACHABLE_FAILURE_THRESHOLD = 1
-UNREACHABLE_DECAY_FACTOR = 0.9
-UNREACHABLE_DECAY_INTERVAL_SEC = 5 * 60
 
 
-async def get_verified(uid: int, search_type: str) -> int:
-    return await miner_db.get_verified(uid, search_type)
+class _RouterKillSwitch(Protocol):
+    def mark_unreachable(self, uid: int, search_type: str) -> None: ...
 
 
-async def get_all_verified(search_type: str) -> dict[int, int]:
-    return await miner_db.get_all_verified(search_type)
+_router: Optional[_RouterKillSwitch] = None
 
 
-async def register_miner(
-    uid: int,
-    search_type: str,
-    declared: int,
-    hotkey: str,
-    coldkey: str,
-) -> None:
-    await miner_db.register_miner(
-        uid=uid,
-        search_type=search_type,
-        declared=declared,
-        hotkey=hotkey,
-        coldkey=coldkey,
-    )
+def set_router(router: _RouterKillSwitch) -> None:
+    """Register the routing weight cache so we can zero a UID's weight the
+    moment it flips to unreachable, instead of waiting up to 10 minutes for
+    the next metagraph sweep to refresh the cache."""
+    global _router
+    _router = router
+
+
+def allocate_synthetic_budget(
+    quality_by_uid: dict[int, float],
+    declared_by_uid: dict[int, int],
+) -> dict[int, int]:
+    """Split ``SYNTHETIC_BUDGET_PER_TYPE`` across UIDs whose quality EMA is at
+    or above ``QUALITY_THRESHOLD``, weighted by ``quality^k``. Below-threshold
+    UIDs get only ``DEFAULT_PER_UID``. Bootstrap fallback (everyone eligible)
+    applies when no UID has crossed the threshold yet.
+    """
+    if not quality_by_uid:
+        return {}
+
+    eligible = {uid: q for uid, q in quality_by_uid.items() if q >= QUALITY_THRESHOLD}
+    if not eligible:
+        eligible = quality_by_uid  # Bootstrap fallback before any miner crosses.
+
+    weights = {
+        uid: max(0.0, q) ** QUALITY_SHARE_EXPONENT for uid, q in eligible.items()
+    }
+    total = sum(weights.values())
+
+    out: dict[int, int] = {uid: DEFAULT_PER_UID for uid in quality_by_uid}
+
+    if total <= 0:
+        return out
+
+    for uid, w in weights.items():
+        share = round(SYNTHETIC_BUDGET_PER_TYPE * w / total)
+        declared = max(declared_by_uid.get(uid, DEFAULT_PER_UID), DEFAULT_PER_UID)
+        ceiling = min(HARD_CAP_PER_UID, declared)
+        out[uid] = min(DEFAULT_PER_UID + int(share), ceiling)
+    return out
 
 
 async def update_after_scoring(
@@ -55,7 +79,12 @@ async def update_after_scoring(
     search_type: str,
     quality: float,
     window_start: str,
+    allocated: int,
 ) -> None:
+    """Update a miner's quality EMA from one scoring window. ``allocated`` is
+    the per-UID synthetic budget the scheduler used for the window being
+    scored — passed in because the DB column has already been overwritten
+    with the next epoch's allocation by the time scoring fires."""
     row = await miner_db.get_concurrency_row(uid, search_type)
     if row is None:
         bt.logging.warning(
@@ -64,21 +93,9 @@ async def update_after_scoring(
         )
         return
 
-    verified = row["verified"]
-    declared = row["declared"]
-    frozen_until = row["frozen_until"]
-
-    now = datetime.now(timezone.utc)
-    is_frozen = frozen_until and datetime.fromisoformat(frozen_until) > now
-    passed = quality >= QUALITY_THRESHOLD
-
-    if passed and not is_frozen:
-        increment = max(1, int(declared * RAMP_RATE))
-        new_verified = min(verified + increment, declared, HARD_CAP)
-    elif not passed:
-        new_verified = max(1, int(verified * DECAY_FACTOR))
-    else:
-        new_verified = verified
+    quality_avg = (1 - QUALITY_EMA_ALPHA) * row[
+        "quality_avg"
+    ] + QUALITY_EMA_ALPHA * quality
 
     await miner_db.insert_window(
         uid=uid,
@@ -87,45 +104,21 @@ async def update_after_scoring(
         hotkey=row["hotkey"],
         coldkey=row["coldkey"],
         quality_score=quality,
-        passed=passed,
-        verified_concurrency=new_verified,
+        passed=quality >= QUALITY_THRESHOLD,
+        verified_concurrency=allocated,
     )
 
-    new_frozen_until = frozen_until if is_frozen else None
-    if not passed:
-        fail_count = await miner_db.count_failed_windows(uid, search_type, FREEZE_HOURS)
-        if fail_count >= FREEZE_FAILURES and not is_frozen:
-            new_frozen_until = (now + timedelta(hours=FREEZE_HOURS)).isoformat()
-            bt.logging.warning(
-                f"[Capacity] Freezing uid={uid} {search_type} for "
-                f"{FREEZE_HOURS}h ({fail_count} failures in {FREEZE_HOURS}h)"
-            )
-
-    quality_avg = (1 - QUALITY_EMA_ALPHA) * row[
-        "quality_avg"
-    ] + QUALITY_EMA_ALPHA * quality
-
-    await miner_db.upsert_concurrency(
+    await miner_db.upsert_quality_avg(
         uid=uid,
         search_type=search_type,
-        verified=new_verified,
-        declared=declared,
         quality_avg=quality_avg,
-        frozen_until=new_frozen_until,
     )
-
-    if new_verified != verified:
-        bt.logging.info(
-            f"[Capacity] uid={uid} {search_type}: "
-            f"verified {verified}->{new_verified} (quality={quality:.3f})"
-        )
 
 
 async def note_call_result(uid: int, search_type: str, success: bool) -> None:
-    """Record the outcome of a single dendrite call to a miner axon. After
-    ``UNREACHABLE_FAILURE_THRESHOLD`` consecutive failures the miner is
-    flagged unreachable and pulled from organic routing; the next success
-    clears the flag."""
+    """Record the outcome of a single dendrite call. After
+    ``UNREACHABLE_FAILURE_THRESHOLD`` consecutive failures the miner is flagged
+    unreachable and pulled from organic routing; the next success clears it."""
 
     try:
         if success:
@@ -139,6 +132,8 @@ async def note_call_result(uid: int, search_type: str, success: bool) -> None:
                 uid, search_type, UNREACHABLE_FAILURE_THRESHOLD
             )
             if newly:
+                if _router is not None:
+                    _router.mark_unreachable(uid, search_type)
                 bt.logging.warning(
                     f"[Capacity] uid={uid} {search_type} marked unreachable "
                     f"after {UNREACHABLE_FAILURE_THRESHOLD} consecutive failures"
@@ -147,38 +142,3 @@ async def note_call_result(uid: int, search_type: str, success: bool) -> None:
         bt.logging.error(
             f"[Capacity] note_call_result failed uid={uid} {search_type}: {e}"
         )
-
-
-async def decay_unreachable_tick() -> None:
-    """Apply 10% earned-concurrency decay per ``UNREACHABLE_DECAY_INTERVAL_SEC``
-    elapsed since the last tick for every miner currently marked unreachable.
-    Catches up multiple intervals in one call so that longer outages compound
-    without requiring the loop to fire on every interval."""
-
-    now = datetime.now(timezone.utc)
-
-    for search_type in SEARCH_TYPES:
-        rows = await miner_db.get_unreachable_rows(search_type)
-        for row in rows:
-            last_tick_iso = row["last_decay_at"] or row["unreachable_since"]
-            if not last_tick_iso:
-                continue
-            last_tick = datetime.fromisoformat(last_tick_iso)
-            elapsed = (now - last_tick).total_seconds()
-            ticks = int(elapsed // UNREACHABLE_DECAY_INTERVAL_SEC)
-            if ticks <= 0:
-                continue
-            new_verified = row["verified"]
-            for _ in range(ticks):
-                new_verified = max(1, int(new_verified * UNREACHABLE_DECAY_FACTOR))
-            new_last_decay = (
-                last_tick + timedelta(seconds=ticks * UNREACHABLE_DECAY_INTERVAL_SEC)
-            ).isoformat()
-            await miner_db.apply_decay_tick(
-                row["uid"], search_type, new_verified, new_last_decay
-            )
-            if new_verified != row["verified"]:
-                bt.logging.info(
-                    f"[Capacity] unreachable uid={row['uid']} {search_type}: "
-                    f"verified {row['verified']}->{new_verified} ({ticks} ticks)"
-                )

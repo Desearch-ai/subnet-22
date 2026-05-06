@@ -9,6 +9,7 @@ from neurons.validators.scoring import miner_db
 from neurons.validators.scoring.weights import EMISSION_CONTROL_HOTKEY
 
 QUALITY_FLOOR = 0.1
+QUALITY_EXPONENT = 2.0
 RAMP_EVIDENCE_VERIFIED = 2
 MIN_MIGRATION_POOL = 2
 
@@ -83,7 +84,9 @@ class UIDManager:
                     continue
                 if any_ramped:
                     quality_avg, verified = rows.get(uid, (0.0, 1))
-                    weights[uid] = max(quality_avg, QUALITY_FLOOR) * max(verified, 1)
+                    weights[uid] = max(
+                        quality_avg, QUALITY_FLOOR
+                    ) ** QUALITY_EXPONENT * max(verified, 1)
                 else:
                     weights[uid] = 1.0 if uid in migration_pool else 0.0
             self.weights_by_type[search_type] = weights
@@ -92,6 +95,18 @@ class UIDManager:
             f"[UIDManager] Resynced {len(available_uids)} reachable "
             f"(migration pool={len(migration_pool)}): {type_modes}"
         )
+
+    def mark_unreachable(self, uid: int, search_type: str) -> None:
+        """Zero this UID's routing weight for ``search_type`` immediately.
+
+        Called when a single dendrite miss flips ``unreachable_since``.
+        Without this, the cached ``weights_by_type`` keeps routing organics
+        to the dead axon until the next 10-minute metagraph sweep — every
+        one of those organics fails fast and the API client gets an error.
+        """
+        weights = self.weights_by_type.get(search_type)
+        if weights is not None and weights.get(uid, 0.0) > 0:
+            weights[uid] = 0.0
 
     def get_miner_uid(self, search_type: Optional[str] = None) -> int:
         if not self.available_uids:
