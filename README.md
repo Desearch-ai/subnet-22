@@ -10,8 +10,8 @@
 
 Welcome to **Desearch powered by Bittensor Subnet 22**! Desearch is a decentralized,
 AI-powered search engine that returns unbiased and verifiable results across X, Reddit,
-Arxiv, Hacker News, Wikipedia, YouTube, and the broader web. Frontend and API access are
-available at [desearch.ai](https://desearch.ai).
+Arxiv, Hacker News, Wikipedia, YouTube, and the broader web. API access is available at
+[desearch.ai](https://desearch.ai).
 
 ## Table of Contents
 
@@ -55,10 +55,11 @@ into their products.
 
 ### For API Consumers
 
-To integrate Desearch into your product, visit [desearch.ai](https://desearch.ai) and
-request an API key. Consumers send requests to the Desearch API with their API key; the
-Desearch backend routes those requests to validators on your behalf and returns the
-aggregated search results.
+To integrate Desearch into your product, sign up at
+[console.desearch.ai](https://console.desearch.ai) and generate an API key. New users
+receive $5 in free credits after adding a payment method. Consumers send requests to the
+Desearch API with their API key; the Desearch backend routes those requests to
+validators on your behalf and returns the aggregated search results.
 
 ### For Miners
 
