@@ -31,7 +31,7 @@ class UIDManager:
     def _top_half_by_incentive(self, available_uids: List[int]) -> set[int]:
         available_set = set(available_uids)
         target_size = max(MIN_MIGRATION_POOL, len(available_uids) // 2)
-        ranked = self.metagraph.I.argsort(descending=True).tolist()
+        ranked = (-self.metagraph.I).argsort().tolist()
         pool: set[int] = set()
         for uid in ranked:
             uid = int(uid) if not isinstance(uid, int) else uid
