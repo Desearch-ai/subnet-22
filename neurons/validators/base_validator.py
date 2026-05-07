@@ -3,7 +3,6 @@ import itertools
 from abc import ABC, abstractmethod
 
 import bittensor as bt
-import torch
 from bittensor.core.metagraph import AsyncMetagraph
 
 

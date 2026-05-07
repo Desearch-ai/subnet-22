@@ -1,7 +1,3 @@
-import os
-
-os.environ["USE_TORCH"] = "1"
-
 import asyncio
 import json
 import traceback
@@ -611,7 +607,6 @@ class MinerTypeStateOut(BaseModel):
     verified: int
     declared: int
     quality_avg: float
-    frozen_until: Optional[str] = None
     unreachable_since: Optional[str] = None
 
 
@@ -659,7 +654,6 @@ def _empty_miner_state() -> dict:
         "verified": 1,
         "declared": 0,
         "quality_avg": 0.0,
-        "frozen_until": None,
         "unreachable_since": None,
     }
 
@@ -669,7 +663,6 @@ def _miner_state_from_row(row: dict) -> dict:
         "verified": row["verified"],
         "declared": row["declared"],
         "quality_avg": row["quality_avg"],
-        "frozen_until": row["frozen_until"],
         "unreachable_since": row["unreachable_since"],
     }
 

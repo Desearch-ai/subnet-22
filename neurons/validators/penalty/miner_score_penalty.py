@@ -1,7 +1,7 @@
 from typing import List
 
 import bittensor as bt
-import torch
+import numpy as np
 
 from desearch.protocol import (
     ContextualRelevance,
@@ -37,9 +37,9 @@ class MinerScorePenaltyModel(BasePenaltyModel):
         self,
         responses: List[ScraperStreamingSynapse],
         additional_params=None,
-    ) -> torch.FloatTensor:
+    ) -> np.ndarray:
 
-        penalties = torch.zeros(len(responses), dtype=torch.float32)
+        penalties = np.zeros(len(responses), dtype=np.float32)
 
         for index, response in enumerate(responses):
             val_scores = [scores[index] for scores in additional_params]

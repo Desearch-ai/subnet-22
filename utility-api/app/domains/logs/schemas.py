@@ -2,8 +2,7 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from app.domains.dataset.enums import SearchType
-from app.domains.logs.enums import QueryKind
+from app.domains.logs.enums import QueryKind, SearchType
 from pydantic import BaseModel, Field
 
 

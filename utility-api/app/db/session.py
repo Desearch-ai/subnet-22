@@ -1,12 +1,16 @@
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.pool import NullPool
 
-from app.config import DB_POOL_RECYCLE_SECONDS, DB_URL
+from app.config import DB_URL
 
+# Transaction-mode connection pooler handles pooling itself, so use NullPool
+# client-side and disable asyncpg prepared statements (incompatible with
+# transaction pooling).
 engine = create_async_engine(
     DB_URL,
     echo=False,
-    pool_pre_ping=True,
-    pool_recycle=DB_POOL_RECYCLE_SECONDS,
+    poolclass=NullPool,
+    connect_args={"statement_cache_size": 0, "prepared_statement_cache_size": 0},
 )
 
 async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)

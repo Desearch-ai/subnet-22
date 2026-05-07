@@ -5,7 +5,7 @@ from enum import Enum
 from typing import Any, Optional
 
 import bittensor as bt
-import torch
+import numpy as np
 from pydantic import BaseModel
 
 REWARD_COMPONENT_NAMES = {
@@ -28,10 +28,10 @@ def to_jsonable(value: Any) -> Any:
         return value.isoformat()
     if isinstance(value, date):
         return value.isoformat()
-    if isinstance(value, torch.Tensor):
+    if isinstance(value, np.ndarray):
         if value.ndim == 0:
             return value.item()
-        return value.detach().cpu().tolist()
+        return value.tolist()
     if isinstance(value, dict):
         return {str(key): to_jsonable(item) for key, item in value.items()}
     if isinstance(value, (list, tuple, set)):

@@ -1,15 +1,10 @@
-import os
-from typing import Optional
-
-from pydantic import BaseModel
-
-os.environ["USE_TORCH"] = "1"
-
 from contextlib import asynccontextmanager
+from typing import Optional
 
 import uvicorn
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 
 from neurons.validators.env import VALIDATOR_SERVICE_PORT
 from neurons.validators.validator import Neuron

@@ -28,13 +28,11 @@ class WebSearchContentRelevanceModel(BaseRewardModel):
 
     def __init__(
         self,
-        device: str,
         scoring_type: None,
         llm_reward: RewardLLM,
         neuron: AbstractNeuron,
     ):
         super().__init__(neuron)
-        self.device = device
         self.reward_llm = llm_reward
         self.scoring_type = scoring_type
 

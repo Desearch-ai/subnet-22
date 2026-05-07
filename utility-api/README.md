@@ -1,6 +1,6 @@
 # SN22 Utility API
 
-Dataset & utility API for [Subnet-22 (Desearch)](https://github.com/desearch-ai) validators.
+Metrics & logging API for [Subnet-22 (Desearch)](https://github.com/desearch-ai) validators.
 
 ## Quick Start
 
@@ -18,78 +18,42 @@ uvicorn app.main:app --reload
 
 ## API Endpoints
 
-### `GET /dataset/random`
+### `POST /logs`
 
-Returns random questions from the dataset.
+Persist a batch of miner response logs (organic + scoring traffic) submitted by validators.
 
-| Param         | Type        | Default | Description                                   |
-| ------------- | ----------- | ------- | --------------------------------------------- |
-| `count`       | int (1-256) | 10      | Number of questions                           |
-| `search_type` | enum        | —       | Filter: `ai_search`, `x_search`, `web_search` |
+### `GET /logs/scoring`
 
-```bash
-# Get 20 random AI search questions
-curl "http://localhost:8000/dataset/random?count=20&search_type=ai_search"
-```
+Fetch grouped scoring logs by epoch / search type / miner UID.
 
-## Importing from HuggingFace
+### `POST /logs/organic/search`
 
-Use the import script to load questions from any HuggingFace dataset:
+Batch lookup of organic logs by exact request query within a time range.
 
-```bash
-# Example: Import SQuAD questions for AI search with wikipedia + web tools
-python -m app.scripts.import_huggingface \
-    --dataset "squad" \
-    --split "train" \
-    --column "question" \
-    --search-types ai_search \
-    --ai-tools wikipedia web \
-    --limit 5000
+### `GET /miners` and `GET /miners/{hotkey}`
 
-# Example: Import general questions for all search types
-python -m app.scripts.import_huggingface \
-    --dataset "web_questions" \
-    --split "train" \
-    --column "question" \
-    --search-types ai_search web_search x_search
-
-# Example: Short queries for X search only
-python -m app.scripts.import_huggingface \
-    --dataset "your_dataset" \
-    --column "query" \
-    --search-types x_search \
-    --limit 10000
-```
-
-The script deduplicates questions and inserts in batches. Adapt the `--column` flag to match the dataset structure.
+Aggregate miner state across the configured `VALIDATOR_URLS`.
 
 ## Project Structure
 
 ```
 app/
-├── main.py                  # FastAPI app + lifespan
-├── config.py                # Settings from .env
-├── db/
-│   └── session.py           # Async SQLAlchemy engine & session
-├── models/
-│   ├── enums.py             # SearchType, AISearchTool enums
-│   ├── question.py          # SQLAlchemy Question model
-│   └── schemas.py           # Pydantic response schemas
-├── routes/
-│   └── dataset.py           # /dataset/random endpoint
-└── scripts/
-    └── import_huggingface.py  # HuggingFace → Postgres import
+├── main.py                          # FastAPI app + lifespan
+├── config.py                        # Settings from .env
+├── auth.py                          # Hotkey-signature auth dep
+├── db/session.py                    # Async SQLAlchemy engine & session
+└── domains/
+    ├── logs/                        # Miner response logging
+    │   ├── enums.py                 # QueryKind, SearchType
+    │   ├── router.py                # /logs/* endpoints
+    │   ├── schemas.py
+    │   └── models/miner_response_log.py
+    └── miners/                      # Cross-validator miner aggregation
+        ├── client.py
+        ├── router.py                # /miners/* endpoints
+        └── schemas.py
 ```
 
 ## Database Schema
 
-Single table `questions`:
-
-| Column          | Type                    | Notes                                                                                |
-| --------------- | ----------------------- | ------------------------------------------------------------------------------------ |
-| id              | UUID                    | Primary key                                                                          |
-| query           | text                    | Question text                                                                        |
-| search_types    | `search_type_enum[]`    | `ai_search`, `x_search`, `web_search`                                                |
-| ai_search_tools | `ai_search_tool_enum[]` | Nullable. `twitter`, `web`, `reddit`, `hacker_news`, `youtube`, `arxiv`, `wikipedia` |
-| source          | varchar                 | Origin: `huggingface:squad`, `desearch`, etc.                                        |
-| created_at      | timestamp               | Auto-set                                                                             |
+Single table `miner_response_logs` capturing every organic and scoring miner call (request query, search type, validator/miner identity, status, reward payload, response payload). See `app/domains/logs/models/miner_response_log.py` for the full schema and indexes.

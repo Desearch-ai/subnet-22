@@ -49,16 +49,10 @@ class CheerioScraperActor:
         description = $('meta[property="og:description"]').attr('content') || '';
     }
 
-    const isRedditUrl = context.request.url.includes('reddit.com');
     const isWikipediaUrl = context.request.url.includes('wikipedia.org');
     const isHackerNewsUrl = context.request.url.includes('news.ycombinator.com');
 
-    if (isRedditUrl) {
-        // Extract content from the first <p> in the first <div> with class 'text-neutral-content'
-        description = $('div.text-neutral-content').first().find('p').map(function() {
-            return $(this).text().trim();
-        }).get().join('');
-    } else if (isWikipediaUrl) {
+    if (isWikipediaUrl) {
         // Extract text from the first <p> that isn't empty and clean it
         description = $('p').filter(function() {
             return $(this).text().trim().length > 0;

@@ -1,8 +1,7 @@
 import uuid
 
 from app.db.base import Base
-from app.domains.dataset.enums import SearchType
-from app.domains.logs.enums import QueryKind
+from app.domains.logs.enums import QueryKind, SearchType
 from sqlalchemy import Column, DateTime, Enum, Float, Index, Integer, String, Text, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 

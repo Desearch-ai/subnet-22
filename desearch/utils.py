@@ -8,7 +8,8 @@ from typing import List
 
 import aiohttp
 import bittensor as bt
-import torch
+import numpy as np
+from openai import AsyncOpenAI
 from pydantic import ValidationError
 
 from desearch.protocol import (
@@ -20,7 +21,11 @@ from desearch.redis.utils import save_moving_averaged_scores
 from desearch.services.twitter_utils import TwitterUtils
 from neurons.validators.apify.twitter_scraper_actor import TwitterScraperActor
 
-from . import client
+
+if not os.environ.get("OPENAI_API_KEY"):
+    raise RuntimeError("OPENAI_API_KEY is not set.")
+
+client = AsyncOpenAI(timeout=90.0)
 
 
 def get_max_execution_time(model: Model, count: int):
@@ -75,12 +80,6 @@ async def call_chutes(messages, temperature, model, seed=1234, response_format=N
 
 
 async def call_openai(messages, model, temperature=1, response_format=None):
-    api_key = os.environ.get("OPENAI_API_KEY")
-
-    if not api_key:
-        bt.logging.warning("Please set the OPENAI_API_KEY environment variable.")
-        return None
-
     for _ in range(2):
         bt.logging.trace(
             f"Calling Openai. Temperature = {temperature}, Model = {model}, "
@@ -129,8 +128,7 @@ async def resync_metagraph(self):
     # Check to see if the metagraph has changed size.
     # If so, we need to add new hotkeys and moving averages.
     if len(self.hotkeys) < len(self.metagraph.hotkeys):
-        # Update the size of the moving average scores.
-        new_moving_average = torch.zeros((self.metagraph.n)).to(self.device)
+        new_moving_average = np.zeros(int(self.metagraph.n), dtype=np.float32)
         min_len = min(len(self.hotkeys), len(self.moving_averaged_scores))
         new_moving_average[:min_len] = self.moving_averaged_scores[:min_len]
         self.moving_averaged_scores = new_moving_average

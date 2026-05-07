@@ -1,4 +1,3 @@
-import asyncio
 import html
 import json
 import random
@@ -11,10 +10,10 @@ import bittensor as bt
 
 from desearch.protocol import WebSearchSynapse, WebSearchValidatorResult
 from desearch.utils import is_valid_web_search_result
-from neurons.validators.base_validator import AbstractNeuron
 from neurons.validators.apify.scrapingdog_scraper import (
     scrape_links_with_retries,
 )
+from neurons.validators.base_validator import AbstractNeuron
 
 from .config import RewardModelType
 from .reward import BaseRewardEvent, BaseRewardModel
@@ -27,9 +26,8 @@ class WebBasicSearchContentRelevanceModel(BaseRewardModel):
     def name(self) -> str:
         return RewardModelType.web_basic_search_content_relevance.value
 
-    def __init__(self, device: str, scoring_type: None, neuron: AbstractNeuron):
+    def __init__(self, scoring_type: None, neuron: AbstractNeuron):
         super().__init__(neuron)
-        self.device = device
         self.scoring_type = scoring_type
 
     def normalize_html_content(self, content: str) -> str:
@@ -119,13 +117,23 @@ class WebBasicSearchContentRelevanceModel(BaseRewardModel):
 
         return default_val_score_responses
 
+    @staticmethod
+    def _normalize_title_for_match(title: str) -> str:
+        if not title:
+            return ""
+        t = title.lower()
+        t = re.sub(r"\s+[-–—|]\s+[^-–—|]{1,50}\s*$", "", t)
+        t = re.sub(r"\br/", "", t)
+        return re.sub(r"\s+", " ", t).strip(" .")
+
     def check_title(self, miner_title, validator_title):
-        miner_title = miner_title.rstrip(" .")
+        miner_norm = self._normalize_title_for_match(miner_title)
+        validator_norm = self._normalize_title_for_match(validator_title)
 
-        if miner_title in validator_title or validator_title in miner_title:
-            return True
+        if not miner_norm or not validator_norm:
+            return False
 
-        return False
+        return miner_norm in validator_norm or validator_norm in miner_norm
 
     def check_response_random_link(self, response: WebSearchSynapse) -> float:
         try:

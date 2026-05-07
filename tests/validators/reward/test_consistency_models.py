@@ -19,8 +19,7 @@ import time
 from collections import Counter
 from typing import List
 
-from desearch import client
-from desearch.utils import clean_text
+from desearch.utils import client, clean_text
 from neurons.validators.utils.prompts import LinkContentPrompt
 
 RUNS = 100

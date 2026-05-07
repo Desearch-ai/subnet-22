@@ -21,7 +21,7 @@
 import asyncio
 
 import bittensor as bt
-import torch
+import numpy as np
 from bittensor.utils.weight_utils import process_weights
 
 import desearch
@@ -138,7 +138,7 @@ def burn_weights(self, weights):
         bt.logging.info(f"target hotkey {EMISSION_CONTROL_HOTKEY} is not found")
         return weights
 
-    total_score = torch.sum(weights)
+    total_score = weights.sum()
 
     new_target_score = EMISSION_CONTROL_PERC * total_score
     remaining_weight = (1 - EMISSION_CONTROL_PERC) * total_score
@@ -148,7 +148,7 @@ def burn_weights(self, weights):
         bt.logging.warning("All scores are zero except target UID, cannot scale.")
         return weights
 
-    new_scores = torch.zeros_like(weights, dtype=float)
+    new_scores = np.zeros_like(weights, dtype=float)
     uids = self.metagraph.uids
 
     for i, (uid, weight) in enumerate(zip(uids, weights)):
@@ -183,9 +183,9 @@ async def process_weights_with_retry(self, raw_weights):
                 processed_weight_uids,
                 processed_weights,
             ) = process_weights(
-                uids=self.metagraph.uids.to("cpu"),
-                weights=weights.to("cpu"),
-                num_neurons=self.metagraph.n,
+                uids=self.metagraph.uids,
+                weights=weights,
+                num_neurons=int(self.metagraph.n),
                 min_allowed_weights=min_allowed_weights,
                 max_weight_limit=max_weight_limit,
             )
@@ -206,14 +206,21 @@ async def process_weights_with_retry(self, raw_weights):
                 return {}, None, None
 
 
+def _l1_normalize(x: np.ndarray) -> np.ndarray:
+    norm = np.abs(x).sum()
+    if norm == 0:
+        return np.zeros_like(x)
+    return x / norm
+
+
 async def get_weights(self):
-    if torch.all(self.moving_averaged_scores == 0):
+    if (self.moving_averaged_scores == 0).all():
         bt.logging.info(
             "All moving averaged scores are zero. Skipping weight retrieval."
         )
         return {}
 
-    raw_weights = torch.nn.functional.normalize(self.moving_averaged_scores, p=1, dim=0)
+    raw_weights = _l1_normalize(self.moving_averaged_scores)
 
     weights_dict, _, _ = await process_weights_with_retry(self, raw_weights)
 
@@ -221,16 +228,15 @@ async def get_weights(self):
 
 
 async def set_weights(self):
-    if torch.all(self.moving_averaged_scores == 0):
+    if (self.moving_averaged_scores == 0).all():
         bt.logging.info("All moving averaged scores are zero, skipping weight setting.")
         return
 
-    # Calculate the average reward for each uid across non-zero values.
-    # Replace any NaN values with 0.
-    raw_weights = torch.nn.functional.normalize(self.moving_averaged_scores, p=1, dim=0)
+    raw_weights = _l1_normalize(self.moving_averaged_scores)
     bt.logging.trace("raw_weights", raw_weights)
-    bt.logging.trace("top10 values", raw_weights.sort()[0])
-    bt.logging.trace("top10 uids", raw_weights.sort()[1])
+    sorted_idx = np.argsort(raw_weights)
+    bt.logging.trace("top10 values", raw_weights[sorted_idx])
+    bt.logging.trace("top10 uids", sorted_idx)
 
     # Process the raw weights to final_weights via subtensor limitations.
     (

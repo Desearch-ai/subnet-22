@@ -1,7 +1,7 @@
 from typing import List
 
+import numpy as np
 import tiktoken
-import torch
 
 from desearch.protocol import ResultType, ScraperStreamingSynapse
 from neurons.validators.penalty.penalty import BasePenaltyModel, PenaltyModelType
@@ -21,8 +21,8 @@ class StreamingPenaltyModel(BasePenaltyModel):
         self,
         responses: List[ScraperStreamingSynapse],
         additional_params=None,
-    ) -> torch.FloatTensor:
-        accumulated_penalties = torch.zeros(len(responses), dtype=torch.float32)
+    ) -> np.ndarray:
+        accumulated_penalties = np.zeros(len(responses), dtype=np.float32)
 
         for index, response in enumerate(responses):
             if response.result_type == ResultType.ONLY_LINKS:

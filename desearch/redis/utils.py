@@ -1,6 +1,7 @@
-import torch
-from desearch.redis.redis_client import redis_client
 import jsonpickle
+import numpy as np
+
+from desearch.redis.redis_client import redis_client
 
 REDIS_MOVING_AVERAGED_SCORES_KEY = "moving_averaged_scores"
 
@@ -11,7 +12,7 @@ async def load_moving_averaged_scores(metagraph, config):
     if scores:
         return jsonpickle.decode(scores)
 
-    return torch.zeros((metagraph.n)).to(config.neuron.device)
+    return np.zeros(int(metagraph.n), dtype=np.float32)
 
 
 async def save_moving_averaged_scores(scores):

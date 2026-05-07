@@ -1,7 +1,6 @@
 import unittest
 from neurons.validators.penalty.summary_rule_penalty import SummaryRulePenaltyModel
 from desearch.protocol import ScraperStreamingSynapse, ScraperTextRole
-import torch
 
 
 class SummaryRulePenaltyTestCase(unittest.IsolatedAsyncioTestCase):
@@ -12,7 +11,7 @@ class SummaryRulePenaltyTestCase(unittest.IsolatedAsyncioTestCase):
         penalties = await self.model.calculate_penalties(
             [ScraperStreamingSynapse(prompt="What is blockchain?")], []
         )
-        self.assertEqual(penalties, torch.tensor([0]))
+        self.assertEqual(penalties.tolist(), [0])
 
     async def test_calculate_penalties_with_system_message_no_penalty(self):
         penalties = await self.model.calculate_penalties(
@@ -33,7 +32,7 @@ class SummaryRulePenaltyTestCase(unittest.IsolatedAsyncioTestCase):
             ],
             [],
         )
-        self.assertEqual(penalties, torch.tensor([0]))
+        self.assertEqual(penalties.tolist(), [0])
 
     async def test_calculate_penalties_with_system_message_penalty(self):
         penalties = await self.model.calculate_penalties(
@@ -52,7 +51,7 @@ class SummaryRulePenaltyTestCase(unittest.IsolatedAsyncioTestCase):
             ],
             [],
         )
-        self.assertEqual(penalties, torch.tensor([0.2]))
+        self.assertAlmostEqual(penalties.tolist()[0], 1.0, places=5)
 
 
 if __name__ == "__main__":

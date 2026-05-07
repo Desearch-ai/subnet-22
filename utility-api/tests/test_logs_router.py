@@ -5,8 +5,7 @@ from uuid import uuid4
 
 from app.auth import get_hotkey
 from app.db.session import get_session
-from app.domains.dataset.enums import SearchType
-from app.domains.logs.enums import QueryKind
+from app.domains.logs.enums import QueryKind, SearchType
 from app.domains.logs.router import router
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -88,27 +87,10 @@ def build_log_row(**overrides):
     return row
 
 
-def build_question_row(**overrides):
-    row = SimpleNamespace(
-        id=uuid4(),
-        query="what is bittensor",
-        search_types=[SearchType.X_SEARCH],
-        ai_search_tools=None,
-        source="desearch",
-    )
-    for key, value in overrides.items():
-        setattr(row, key, value)
-    return row
-
-
 def test_save_logs_inserts_batch():
     app = create_test_app()
     session = AsyncMock()
-    session.execute.side_effect = [
-        FakeResult(rowcount=2),
-        FakeSelectResult([]),
-        FakeResult(rowcount=1),
-    ]
+    session.execute.return_value = FakeResult(rowcount=2)
 
     async def override_session():
         yield session
@@ -130,7 +112,7 @@ def test_save_logs_inserts_batch():
 
     assert response.status_code == 200
     assert response.json() == {"inserted": 2}
-    assert session.execute.await_count == 3
+    assert session.execute.await_count == 1
     session.commit.assert_awaited_once()
 
 
@@ -178,88 +160,6 @@ def test_save_logs_accepts_scoring_payload():
     assert response.json() == {"inserted": 1}
 
 
-def test_save_logs_adds_questions_for_new_organic_search_types():
-    app = create_test_app()
-    session = AsyncMock()
-    session.execute.side_effect = [
-        FakeResult(rowcount=2),
-        FakeSelectResult([]),
-        FakeResult(rowcount=2),
-    ]
-
-    async def override_session():
-        yield session
-
-    async def override_hotkey():
-        return "validator-hotkey"
-
-    app.dependency_overrides[get_session] = override_session
-    app.dependency_overrides[get_hotkey] = override_hotkey
-
-    client = TestClient(app)
-
-    response = client.post(
-        "/logs",
-        json={
-            "logs": [
-                build_payload(
-                    search_type="x_post_by_id",
-                    request_query="189203918203",
-                ),
-                build_payload(
-                    search_type="x_posts_by_urls",
-                    request_query="https://x.com/test/status/1",
-                ),
-            ]
-        },
-    )
-
-    assert response.status_code == 200
-    assert response.json() == {"inserted": 2}
-    assert session.execute.await_count == 3
-
-    question_insert_stmt = session.execute.await_args_list[2].args[0]
-    assert question_insert_stmt.table.name == "questions"
-
-
-def test_save_logs_updates_existing_question_search_types():
-    app = create_test_app()
-    session = AsyncMock()
-    session.execute.side_effect = [
-        FakeResult(rowcount=1),
-        FakeSelectResult([build_question_row()]),
-        FakeResult(rowcount=1),
-    ]
-
-    async def override_session():
-        yield session
-
-    async def override_hotkey():
-        return "validator-hotkey"
-
-    app.dependency_overrides[get_session] = override_session
-    app.dependency_overrides[get_hotkey] = override_hotkey
-
-    client = TestClient(app)
-
-    response = client.post(
-        "/logs",
-        json={
-            "logs": [
-                build_payload(
-                    search_type="x_post_by_id",
-                    request_query="what is bittensor",
-                )
-            ]
-        },
-    )
-
-    assert response.status_code == 200
-    assert response.json() == {"inserted": 1}
-    assert session.execute.await_count == 3
-
-    question_update_stmt = session.execute.await_args_list[2].args[0]
-    assert question_update_stmt.table.name == "questions"
 def test_get_scoring_logs_returns_grouped_validator_runs():
     app = create_test_app()
     session = AsyncMock()

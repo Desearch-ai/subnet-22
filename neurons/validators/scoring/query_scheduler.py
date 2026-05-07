@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Dict, Optional
 
 import bittensor as bt
-import torch
+import numpy as np
 
 from neurons.validators.scoring import capacity, miner_db
 from neurons.validators.scoring.scoring_store import SEARCH_TYPES, ScoringStore
@@ -150,7 +150,7 @@ class QueryScheduler:
         if validator is None or not items:
             return {}
 
-        uids = torch.tensor([item["uid"] for item in items])
+        uids = np.array([item["uid"] for item in items], dtype=np.int64)
         responses = [item["response"] for item in items]
         kinds = [item.get("kind", "synthetic") for item in items]
         prompts = [self._extract_prompt(response) for response in responses]
@@ -203,6 +203,7 @@ class QueryScheduler:
         organics: dict,
         time_range_start: datetime,
         window_start: str,
+        allocations: dict[int, int],
     ) -> dict[int, tuple[float, int]]:
         """Merge synth + organic sample for one type, score it, and update
         capacity per UID. Returns per-UID ``(quality, volume)`` for the combine
@@ -241,6 +242,7 @@ class QueryScheduler:
                 search_type=search_type,
                 quality=quality,
                 window_start=window_start,
+                allocated=allocations.get(uid, capacity.DEFAULT_PER_UID),
             )
         return uid_results
 
@@ -248,20 +250,19 @@ class QueryScheduler:
         """Push the combined per-UID scores into the neuron's EMA."""
         if not combined:
             return
-        uids_tensor = torch.tensor(
-            list(combined.keys()),
-            dtype=torch.long,
-            device=self.neuron.config.neuron.device,
-        )
-        rewards_tensor = torch.tensor(
-            list(combined.values()),
-            dtype=torch.float32,
-            device=self.neuron.config.neuron.device,
-        )
-        await self.neuron.update_moving_averaged_scores(uids_tensor, rewards_tensor)
+        uids_array = np.array(list(combined.keys()), dtype=np.int64)
+        rewards_array = np.array(list(combined.values()), dtype=np.float32)
+        await self.neuron.update_moving_averaged_scores(uids_array, rewards_array)
 
-    async def score_epoch(self, time_range_start: datetime) -> None:
-        """Load all responses for a completed hour and run reward/penalty computation."""
+    async def score_epoch(
+        self,
+        time_range_start: datetime,
+        allocations_by_type: dict[str, dict[int, int]],
+    ) -> None:
+        """Load all responses for a completed hour and run reward/penalty
+        computation. ``allocations_by_type`` is the per-UID synthetic budget
+        that was active during this epoch — captured by the caller before
+        the next epoch's ``bulk_update_verified`` overwrites it."""
         try:
             bt.logging.info(
                 f"[QueryScheduler] Scoring epoch {time_range_start.isoformat()}"
@@ -288,6 +289,7 @@ class QueryScheduler:
                     organics,
                     time_range_start,
                     window_start,
+                    allocations_by_type.get(search_type, {}),
                 )
                 if uid_results:
                     qualities_per_type[search_type] = uid_results
@@ -315,6 +317,7 @@ class QueryScheduler:
 
         previous_time_range: Optional[datetime] = None
         previous_epoch_dispatched = False
+        previous_allocations: dict[str, dict[int, int]] = {}
 
         while True:
             try:
@@ -324,7 +327,9 @@ class QueryScheduler:
                 # changes *before* firing scoring, so the ramp for the window
                 # we just ended sees the miner's current declared capability.
                 # Scoring then runs in the background so this hour's dispatch
-                # keeps its full 55-minute spread.
+                # keeps its full 55-minute spread. Pass the previous epoch's
+                # allocations so historical window rows record the budget
+                # that was actually active, not the one we're about to write.
                 if (
                     previous_time_range is not None
                     and time_range_start != previous_time_range
@@ -343,7 +348,11 @@ class QueryScheduler:
                             f"{previous_time_range.isoformat()}"
                         )
 
-                        asyncio.create_task(self.score_epoch(previous_time_range))
+                        asyncio.create_task(
+                            self.score_epoch(
+                                previous_time_range, previous_allocations
+                            )
+                        )
                     else:
                         bt.logging.info(
                             "[QueryScheduler] Previous epoch had no dispatch "
@@ -377,11 +386,29 @@ class QueryScheduler:
                     await asyncio.sleep(self._seconds_until_next_hour())
                     continue
 
-                # Fetch verified concurrency for all UIDs
-                verified_by_type: dict[str, dict[int, int]] = {}
+                # Allocate the per-type budget across active UIDs by quality
+                allocations_by_type: dict[str, dict[int, int]] = {}
 
                 for st in SEARCH_TYPES:
-                    verified_by_type[st] = await capacity.get_all_verified(st)
+                    rows = await miner_db.get_allocation_state(st)
+                    default = (0.0, capacity.DEFAULT_PER_UID, capacity.DEFAULT_PER_UID)
+                    quality_for_active = {
+                        uid: rows.get(uid, default)[0] for uid in available_uids
+                    }
+                    declared_for_active = {
+                        uid: rows.get(uid, default)[1] for uid in available_uids
+                    }
+                    prev_alloc_for_active = {
+                        uid: rows.get(uid, default)[2] for uid in available_uids
+                    }
+                    allocations_by_type[st] = capacity.allocate_synthetic_budget(
+                        quality_for_active,
+                        declared_for_active,
+                        prev_alloc_for_active,
+                    )
+                    await miner_db.bulk_update_verified(st, allocations_by_type[st])
+
+                previous_allocations = allocations_by_type
 
                 # Batch-generate all queries for this epoch. When starting
                 # mid-hour, compress delays into the remaining window so the
@@ -390,7 +417,7 @@ class QueryScheduler:
                     available_uids,
                     self.SPREAD_SECONDS,
                     delay_start=elapsed_at_start,
-                    verified_by_type=verified_by_type,
+                    verified_by_type=allocations_by_type,
                 )
 
                 previous_epoch_dispatched = True
