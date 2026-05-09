@@ -2,100 +2,94 @@
 
 <img src="./docs/assets/desearch-logo.png" alt="Desearch" width="480" />
 
-# **Subnet 22 on Bittensor**
+# Subnet 22 (SN22) on Bittensor
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 </div>
 
-Welcome to **Desearch powered by Bittensor Subnet 22**! Desearch is a decentralized,
-AI-powered search engine that returns unbiased and verifiable results across X, Reddit,
-Arxiv, Hacker News, Wikipedia, YouTube, and the broader web. API access is available at
-[desearch.ai](https://desearch.ai).
+SN22 is the Bittensor subnet behind Desearch's decentralized real-time intelligence layer. It coordinates miners and validators that serve live web, X/Twitter, and multi-source search data for Desearch API and console products.
 
-## Table of Contents
+This repository contains the subnet runtime: miner axons, validator scoring, the validator FastAPI service, operator runbooks, and shared protocol models.
 
-- [Introduction](#introduction)
-- [Key Features](#key-features)
-- [High-Level Architecture](#high-level-architecture)
-- [Getting Started](#getting-started)
-  - [For API Consumers](#for-api-consumers)
-  - [For Miners](#for-miners)
-  - [For Validators](#for-validators)
-- [Monitoring](#monitoring)
-- [Contact and Support](#contact-and-support)
+## Architecture
 
-## Introduction
+| Component | Role | Main files |
+| --- | --- | --- |
+| Miner | Runs a Bittensor axon, declares search capacity, answers health checks, and serves AI, X/Twitter, and web search synapses. | `neurons/miners/miner.py`, `neurons/miners/config.py`, `neurons/miners/manifest.template.json` |
+| Validator | Sends synthetic and organic queries to miners, verifies results with independent providers, stores scoring windows, and writes weights on-chain. | `neurons/validators/validator_service.py`, `neurons/validators/scoring/`, `neurons/validators/reward/` |
+| Validator API | Runs FastAPI next to the validator so trusted Desearch services can request organic search and inspect public miner state. Protected routes require the `access-key` header. | `neurons/validators/api.py`, `neurons/validators/dependencies.py`, `run.sh` |
+| Shared package | Defines protocol models, synapses, tool helpers, dataset utilities, and common configuration. | `desearch/protocol.py`, `desearch/miner_config.py`, `desearch/tools/` |
 
-Desearch delivers an unbiased, verifiable search experience built on the Bittensor
-network. Miners compete to return the best search results from multiple sources;
-validators independently verify result quality and assign on-chain rewards. Through
-the public API, developers and AI builders integrate real-time, decentralized search
-into their products.
+## Setup path
 
-## Key Features
+### 1. Install the subnet package
 
-- **AI-powered analysis** — decentralized models produce relevant, contextual, unfiltered results.
-- **Diverse data sources** — X, Reddit, Arxiv, Hacker News, Wikipedia, YouTube, and general web.
-- **Sentiment and metadata analysis** — captures emotional tone and key metadata for social content.
-- **Verifiable rewards** — validators independently scrape and score miner outputs.
-- **Extensible** — community-driven improvements to scoring, sources, and relevance.
+```bash
+git clone https://github.com/Desearch-ai/subnet-22.git
+cd subnet-22
+python3 -m pip install -r requirements.txt
+python3 -m pip install -e .
+```
 
-## High-Level Architecture
+The root project is Python (`requirements.txt`, `setup.py`). `utility-api/` is a separate FastAPI service with its own `pyproject.toml`.
 
-- **Miners** run a single Bittensor **axon** that answers `IsAlive` and all search synapses
-  (AI / Twitter / Web). Validators call the axon directly via dendrite.
-- **Validators** generate synthetic queries every UTC hour, dispatch them to miners,
-  independently verify results against ground-truth scrapers (Apify, ScrapingDog), and
-  write weights on-chain. They also expose an organic-search FastAPI that the Desearch
-  product backend calls on behalf of API consumers.
-- **Bittensor network** — settles miner compensation on-chain in $TAO.
+### 2. Choose an operator role
 
-## Getting Started
+- **Miner operators** register a hotkey on netuid 22, configure `neurons/miners/.env`, create `neurons/miners/manifest.json`, and run the miner axon under PM2. See [Running a Miner](./docs/running_a_miner.md).
+- **Validator operators** register a validator hotkey on netuid 22, configure validator credentials, run `run.sh` to manage the validator service plus API, and monitor weights/scoring. See [Running a Validator](./docs/running_a_validator.md).
+- **Desearch service integrators** should use the external Desearch API/console. The validator API documented here is a subnet-facing service protected by `EXPECTED_ACCESS_KEY`, not the public billing/auth layer.
 
-### For API Consumers
+### 3. Configure environment variables
 
-To integrate Desearch into your product, sign up at
-[console.desearch.ai](https://console.desearch.ai) and generate an API key. New users
-receive $5 in free credits after adding a payment method. Consumers send requests to the
-Desearch API with their API key; the Desearch backend routes those requests to
-validators on your behalf and returns the aggregated search results.
+See [Environment Variables](./docs/env_variables.md) for shared, miner-only, and validator-only settings.
 
-### For Miners
+Common requirements:
 
-Miners contribute search capacity and are rewarded based on result quality and volume.
-Expected setup steps:
+- Shared: `OPENAI_API_KEY`, `APIFY_API_KEY`
+- Miner-only: `SERPAPI_API_KEY`, optional `TWITTER_BEARER_TOKEN`, wallet/netuid/axon settings
+- Validator-only: `EXPECTED_ACCESS_KEY`, `SCRAPINGDOG_API_KEY`, `WANDB_API_KEY`, API/service ports
 
-- Prepare a server with Python ≥ 3.10, PM2, and a registered hotkey on netuid 22.
-- Configure credentials for OpenAI, SerpAPI, and Apify.
-- Declare per-search-type concurrency in `neurons/miners/manifest.json`.
-- Run the axon with PM2.
+### 4. Validate the checkout
 
-See the [Miner Setup Guide](./docs/running_a_miner.md) for full instructions.
+```bash
+# Fast syntax/import check
+python3 -m compileall desearch neurons tests scripts
 
-### For Validators
+# Project test suite
+pytest
 
-Validators verify miner outputs and write weights on-chain. Expected setup steps:
+# Confirm the current validator link endpoints are present in source
+grep -n '"/search/links/web"\|"/search/links/twitter"\|"/search/links"' neurons/validators/api.py
 
-- Prepare a server with Python ≥ 3.10, PM2, Redis, `jq`, and a registered validator hotkey.
-- Configure credentials for OpenAI, Apify, ScrapingDog, and W&B.
-- Generate a public API access key and run the autoupdate script.
+# Runtime checks after PM2 processes are running
+pm2 status
+pm2 logs desearch_miner
+pm2 logs desearch_validator_process
+pm2 logs desearch_api_process
+```
 
-See the [Validator Setup Guide](./docs/running_a_validator.md) for full instructions.
+## Current validator API surface
 
-### Additional Guides
+The validator API is implemented in `neurons/validators/api.py` and documented in [API Reference](./docs/api.md). Key search-link routes are:
 
-- [Environment Variables](./docs/env_variables.md)
-- [Testnet Operations](./docs/running_on_testnet.md)
-- [Mainnet Operations](./docs/running_on_mainnet.md)
+- `POST /search/links/web`
+- `POST /search/links/twitter`
+- `POST /search/links`
 
-## Monitoring
+Protected routes require the `access-key` header matching `EXPECTED_ACCESS_KEY`. Public miner status routes under `/public/miners` are intentionally unauthenticated.
 
-Validators stream metrics to Weights & Biases. Public dashboards are available at
-[wandb.ai/smart-scrape/smart-scrape-1.0](https://wandb.ai/smart-scrape/smart-scrape-1.0).
+## Documentation index
 
-## Contact and Support
+- [API Reference](./docs/api.md) — validator API routes, auth, request shapes, and examples.
+- [Environment Variables](./docs/env_variables.md) — shared, miner-only, and validator-only variables.
+- [Running a Miner](./docs/running_a_miner.md) — miner install, manifest, PM2 run commands, and monitoring.
+- [Running a Validator](./docs/running_a_validator.md) — validator service/API/autoupdate processes and operational flags.
+- [Mainnet Operations](./docs/running_on_mainnet.md) — running miner or validator hotkeys on Bittensor mainnet netuid 22.
+- [Testnet Operations](./docs/running_on_testnet.md) — testnet wallet/subnet workflow.
 
-- **Website** — [desearch.ai](https://desearch.ai)
-- **Subnet 22 channel** — [Bittensor Discord](https://discord.com/channels/799672011265015819/1189589759065067580)
-- **Desearch Discord** — [Join the Desearch community server](https://discord.com/invite/eb6DTZNMF5)
+## Support
+
+- Website: [desearch.ai](https://desearch.ai)
+- Console/API product: [console.desearch.ai](https://console.desearch.ai)
+- Desearch Discord: [Join the community](https://discord.com/invite/eb6DTZNMF5)

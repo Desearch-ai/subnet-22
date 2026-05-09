@@ -5,8 +5,8 @@ A validator runs three PM2 processes (managed by `run.sh`):
 1. `desearch_validator_process` — core neuron (`neurons/validators/validator_service.py`).
    Syncs the metagraph, generates synthetic queries, dispatches to miners via dendrite,
    scores responses, and writes weights on-chain.
-2. `desearch_api_process` — public FastAPI (`neurons/validators/api.py`) that serves organic
-   search requests to paying consumers.
+2. `desearch_api_process` — protected FastAPI (`neurons/validators/api.py`) that serves organic
+   search requests to trusted Desearch services.
 3. `desearch_autoupdate` — `run.sh` itself, which pulls new releases every 20 minutes and
    restarts the other two processes.
 
@@ -35,8 +35,8 @@ conda activate val
 
 git clone https://github.com/Desearch-ai/subnet-22.git
 cd subnet-22
-python -m pip install -r requirements.txt
-python -m pip install -e .
+python3 -m pip install -r requirements.txt
+python3 -m pip install -e .
 ```
 
 System packages (Ubuntu/Debian):
@@ -62,7 +62,7 @@ export OPENAI_API_KEY="…"
 export APIFY_API_KEY="…"
 export SCRAPINGDOG_API_KEY="…"
 export WANDB_API_KEY="…"
-export EXPECTED_ACCESS_KEY="$(python scripts/generate_access_key.py)"
+export EXPECTED_ACCESS_KEY="$(python3 scripts/generate_access_key.py)"
 ```
 
 `EXPECTED_ACCESS_KEY` gates the validator's organic-search FastAPI. The Desearch
@@ -134,7 +134,6 @@ pm2 logs desearch_api_process
 pm2 logs desearch_autoupdate
 ```
 
-Metrics are streamed to W&B at
-https://wandb.ai/smart-scrape/smart-scrape-1.0 by default.
+Metrics are streamed to the W&B entity/project configured by the validator runtime.
 
 > Allocate at least 50 GB of free disk for W&B logs.

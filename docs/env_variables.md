@@ -1,53 +1,73 @@
 # Environment Variables
 
-Reference for every environment variable consumed by Desearch miners and validators.
-Each entry lists who needs it, what it's used for, and where to obtain it.
+Reference for environment variables consumed by SN22 miners and validators. Do not commit real secrets. Export validator settings in the operator environment; miners normally load `neurons/miners/.env` copied from `neurons/miners/.env.template`.
 
 ## Obtaining credentials
 
-- **OpenAI** — https://platform.openai.com/ (API keys)
-- **Apify** — https://apify.com/ (Actor-based scraping for Twitter/X verification)
-- **ScrapingDog** — https://www.scrapingdog.com/ (web content verification; Standard plan ~$90/mo recommended)
+- **OpenAI** — https://platform.openai.com/ (LLM scoring, summaries, and query handling)
+- **Apify** — https://apify.com/ (X/Twitter scraping and validator verification)
+- **ScrapingDog** — https://www.scrapingdog.com/ (validator web verification)
 - **SerpAPI** — https://serpapi.com/ (miner web search)
-- **Twitter API** — https://developer.twitter.com/en/portal/dashboard (miner direct tweet access)
-- **Weights & Biases** — https://wandb.ai/ (validator metrics dashboard)
+- **Twitter API** — https://developer.twitter.com/en/portal/dashboard (optional miner direct tweet access)
+- **Weights & Biases** — https://wandb.ai/ (validator metrics)
 
-## Validator variables
+## Shared variables
+
+These can be required by both miner and validator processes, depending on the role being run.
+
+| Variable | Required | Used by | Purpose |
+| --- | --- | --- | --- |
+| `OPENAI_API_KEY` | yes | miner, validator | Miner summaries/query handling; validator scoring and summary generation. |
+| `APIFY_API_KEY` | yes | miner, validator | X/Twitter scraping for miners and validator-side verification. |
+| `REDIS_HOST` | no | validator utilities | Redis host for helper clients; defaults to `localhost`. |
+| `REDIS_PORT` | no | validator utilities | Redis port for helper clients; defaults to `6379`. |
+| `CHUTES_API_TOKEN` | no | validator utilities | Optional Chutes LLM fallback for code paths that call `call_chutes`. |
+
+## Validator-only variables
 
 | Variable | Required | Purpose |
-|----------|----------|---------|
-| `OPENAI_API_KEY` | yes | LLM scoring + summary generation. |
-| `EXPECTED_ACCESS_KEY` | yes | Gates the public validator API (`neurons/validators/api.py`). Must be ≥16 chars with uppercase, lowercase, digit, and special character. Generate with `python scripts/generate_access_key.py`. |
-| `APIFY_API_KEY` | yes | Twitter/X verification via Apify actors. |
+| --- | --- | --- |
+| `EXPECTED_ACCESS_KEY` | yes for API | Gates protected validator API routes in `neurons/validators/api.py`. Must be at least 16 characters and include uppercase, lowercase, digit, and special character. Generate with `python3 scripts/generate_access_key.py`. |
 | `SCRAPINGDOG_API_KEY` | yes | Web content verification. |
-| `WANDB_API_KEY` | yes | Metrics dashboard. Run `wandb login` once after installing. |
-| `PORT` | no | Validator API port (default `8005`). |
-| `VALIDATOR_SERVICE_PORT` | no | IPC port between API and validator service (default `8006`). |
+| `WANDB_API_KEY` | yes | Metrics dashboard login. Run `wandb login` once after installing. |
+| `PORT` | no | Validator API port; default `8005`. |
+| `VALIDATOR_SERVICE_PORT` | no | IPC port between the API and validator service; default `8006`. |
+| `MINER_DB_PATH` | no | Validator miner scoring SQLite path; default `.state/miner_state.db` under the repo root. |
 
-### Example `.bashrc`
+### Validator export example
 
 ```bash
-echo 'export OPENAI_API_KEY="<key>"' >> ~/.bashrc
-echo 'export APIFY_API_KEY="<key>"' >> ~/.bashrc
-echo 'export SCRAPINGDOG_API_KEY="<key>"' >> ~/.bashrc
-echo 'export WANDB_API_KEY="<key>"' >> ~/.bashrc
-echo "export EXPECTED_ACCESS_KEY=\"$(python scripts/generate_access_key.py)\"" >> ~/.bashrc
-source ~/.bashrc
+export OPENAI_API_KEY="***"
+export APIFY_API_KEY="***"
+export SCRAPINGDOG_API_KEY="***"
+export WANDB_API_KEY="***"
+export EXPECTED_ACCESS_KEY="$(python3 scripts/generate_access_key.py)"
 ```
 
-## Miner variables
+## Miner-only variables
 
-Miners configure values via `neurons/miners/.env` (copy from `neurons/miners/.env.template`).
-CLI args passed to `pm2 start … -- …` take precedence over `.env` values.
+Miners load `neurons/miners/.env` automatically on startup. CLI args passed to `pm2 start ... -- ...` take precedence over `.env` values.
 
 | Variable | Required | Purpose |
-|----------|----------|---------|
-| `OPENAI_API_KEY` | yes | Summary/query generation inside `scraper_miner`. |
-| `SERPAPI_API_KEY` | yes | Web search (miners). |
-| `APIFY_API_KEY` | yes | Twitter/X scraping. |
-| `TWITTER_BEARER_TOKEN` | optional | Direct Twitter API access (`desearch/services/twitter_api_wrapper.py`). Not required if you rely on Apify alone. |
-| `WALLET_NAME` | no | Default wallet name for the axon (default `miner`). `--wallet.name` overrides. |
-| `WALLET_HOTKEY` | no | Default hotkey (default `default`). `--wallet.hotkey` overrides. |
-| `SUBTENSOR_NETWORK` | no | `finney` / `test` / `local` (default `finney`). `--subtensor.network` overrides. |
-| `NETUID` | no | Subnet UID (default `22`). `--netuid` overrides. |
-| `AXON_PORT` | no | Axon port (default `14000`). `--axon.port` overrides. |
+| --- | --- | --- |
+| `SERPAPI_API_KEY` | yes | Web search for miner responses. |
+| `TWITTER_BEARER_TOKEN` | optional | Direct Twitter API access in `desearch/services/twitter_api_wrapper.py`; not required if the miner relies on Apify. |
+| `WALLET_NAME` | no | Default wallet name for the axon; default `miner`. `--wallet.name` overrides. |
+| `WALLET_HOTKEY` | no | Default hotkey; default `default`. `--wallet.hotkey` overrides. |
+| `SUBTENSOR_NETWORK` | no | Chain/network selector such as `finney`, `test`, or a custom endpoint; default `finney`. `--subtensor.network` overrides. |
+| `NETUID` | no | Subnet UID; default `22`. `--netuid` overrides. |
+| `AXON_PORT` | no | Axon port; default `8098` in `neurons/miners/.env.template`. `--axon.port` overrides. |
+
+### Miner `.env` example
+
+```dotenv
+WALLET_NAME=miner
+WALLET_HOTKEY=default
+SUBTENSOR_NETWORK=finney
+NETUID=22
+AXON_PORT=8098
+OPENAI_API_KEY=***
+SERPAPI_API_KEY=***
+APIFY_API_KEY=***
+# TWITTER_BEARER_TOKEN=***
+```
