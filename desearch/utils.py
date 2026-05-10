@@ -22,10 +22,32 @@ from desearch.services.twitter_utils import TwitterUtils
 from neurons.validators.apify.twitter_scraper_actor import TwitterScraperActor
 
 
-if not os.environ.get("OPENAI_API_KEY"):
-    raise RuntimeError("OPENAI_API_KEY is not set.")
+def get_openai_api_key() -> str:
+    return os.environ.get("OPENAI_API_KEY", "")
 
-client = AsyncOpenAI(timeout=90.0)
+
+class LazyAsyncOpenAIClient:
+    def __init__(self, **client_kwargs):
+        self._client_kwargs = client_kwargs
+        self._client = None
+        self._api_key = None
+
+    def _get_client(self):
+        api_key = get_openai_api_key()
+        if not api_key:
+            raise RuntimeError("OPENAI_API_KEY is not set.")
+
+        if self._client is None or self._api_key != api_key:
+            self._client = AsyncOpenAI(api_key=api_key, **self._client_kwargs)
+            self._api_key = api_key
+
+        return self._client
+
+    def __getattr__(self, name):
+        return getattr(self._get_client(), name)
+
+
+client = LazyAsyncOpenAIClient(timeout=90.0)
 
 
 def get_max_execution_time(model: Model, count: int):

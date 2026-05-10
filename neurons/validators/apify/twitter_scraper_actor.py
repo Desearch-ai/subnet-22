@@ -12,12 +12,18 @@ from desearch.protocol import (
 )
 from desearch.services.twitter_utils import TwitterUtils
 
-APIFY_API_KEY = os.environ.get("APIFY_API_KEY")
+APIFY_API_KEY_MESSAGE = (
+    "Please set the APIFY_API_KEY environment variable. See here: "
+    "https://github.com/Desearch-ai/subnet-22/blob/main/docs/env_variables.md"
+)
 
-if not APIFY_API_KEY:
-    raise ValueError(
-        "Please set the APIFY_API_KEY environment variable. See here: https://github.com/Desearch-ai/subnet-22/blob/main/docs/env_variables.md"
-    )
+
+def get_apify_api_key() -> str:
+    return os.environ.get("APIFY_API_KEY", "")
+
+
+def has_apify_api_key() -> bool:
+    return bool(get_apify_api_key())
 
 
 def toTwitterScraperTweet(item, is_quote=False):
@@ -100,14 +106,15 @@ class TwitterScraperActor:
         # Actor: https://apify.com/kaitoeasyapi/twitter-x-data-tweet-scraper-pay-per-result-cheapest
         self.new_actor_id = "CJdippxWmn9uRfooo"
         self.user_scraper_actor_id = "V38PZzpEgOfeeWvZY"
-        self.client = ApifyClientAsync(token=APIFY_API_KEY)
+        api_key = get_apify_api_key()
+        self.client = ApifyClientAsync(token=api_key) if api_key else None
 
     async def get_tweets(
         self, urls: List[str], add_user_info: bool = True
     ) -> List[TwitterScraperTweet]:
-        if not APIFY_API_KEY:
+        if not has_apify_api_key() or self.client is None:
             bt.logging.warning(
-                "Please set the APIFY_API_KEY environment variable. See here: https://github.com/Desearch-ai/subnet-22/blob/main/docs/env_variables.md. This will be required in the next release."
+                f"{APIFY_API_KEY_MESSAGE}. This will be required in the next release."
             )
             return []
         try:
@@ -179,8 +186,8 @@ class TwitterScraperActor:
         twitterHandles: Optional[List[str]] = None,
         withinRadius: Optional[str] = None,
     ) -> dict:
-        if not APIFY_API_KEY:
-            error = "Please set the APIFY_API_KEY environment variable. See here: https://github.com/Desearch-ai/subnet-22/blob/main/docs/env_variables.md. This will be required in the next release."
+        if not has_apify_api_key() or self.client is None:
+            error = f"{APIFY_API_KEY_MESSAGE}. This will be required in the next release."
             bt.logging.warning(error)
             return {"error": error}
         try:
