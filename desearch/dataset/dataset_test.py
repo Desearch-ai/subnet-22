@@ -1,4 +1,4 @@
-from dataset import QuestionsDataset
+from desearch.dataset.dataset import QuestionsDataset
 import random
 
 

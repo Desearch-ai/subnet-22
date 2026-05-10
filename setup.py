@@ -1,7 +1,6 @@
 # The MIT License (MIT)
 # Copyright © 2023 Yuma Rao
-# TODO(developer): Set your name
-# Copyright © 2023 <your name>
+# Copyright © 2023 Desearch AI
 
 # Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated
 # documentation files (the “Software”), to deal in the Software without restriction, including without limitation
@@ -68,10 +67,9 @@ setup(
     long_description=long_description,
     long_description_content_type="text/markdown",
     url="https://github.com/Desearch-ai/subnet-22",
-    author="Fish",
+    author="Desearch AI",
     packages=find_packages(),
     include_package_data=True,
-    author_discord="p383_54249",
     license="MIT",
     python_requires=">=3.10",
     install_requires=requirements,
