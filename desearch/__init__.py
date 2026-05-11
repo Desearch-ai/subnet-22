@@ -40,5 +40,5 @@ BLACKLISTED_KEYS = [
     "5GsL9zNp1CdKmKSYBGjeF9kGReRpS8KdQv2yJ3mHVwKq2YCq",
 ]
 
-ENTITY = "smart-scrape"
-PROJECT_NAME = "smart-scrape-1.0"
+ENTITY = "desearch"
+PROJECT_NAME = "subnet-22"

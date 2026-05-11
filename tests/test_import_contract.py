@@ -30,3 +30,10 @@ def test_setup_package_discovery_includes_neurons_subpackages():
     assert "neurons.miners" in packages
     assert "neurons.validators" in packages
     assert "neurons.validators.apify" in packages
+
+
+def test_desearch_package_identity_uses_current_sn22_branding():
+    import desearch
+
+    assert desearch.ENTITY == "desearch"
+    assert desearch.PROJECT_NAME == "subnet-22"
