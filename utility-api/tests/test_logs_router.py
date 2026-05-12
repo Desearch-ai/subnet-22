@@ -31,6 +31,9 @@ class FakeSelectResult:
     def scalars(self):
         return FakeScalarResult(self._rows)
 
+    def all(self):
+        return self._rows
+
 
 def create_test_app():
     app = FastAPI()
@@ -263,3 +266,39 @@ def test_get_scoring_logs_without_miner_uid_returns_all_miners_for_hour():
     payload = response.json()
     assert len(payload["groups"]) == 2
     assert [group["miner_uid"] for group in payload["groups"]] == [11, 12]
+
+
+def test_get_scoring_logs_filters_by_validator_uid():
+    app = create_test_app()
+    session = AsyncMock()
+    session.execute.return_value = FakeSelectResult(
+        [
+            build_log_row(
+                validator_uid=3,
+                validator_hotkey="validator-3",
+                total_reward=0.4,
+            ),
+        ]
+    )
+
+    async def override_session():
+        yield session
+
+    app.dependency_overrides[get_session] = override_session
+
+    client = TestClient(app)
+
+    response = client.get(
+        "/logs/scoring",
+        params={"search_type": "x_search", "miner_uids": 11, "validator_uid": 3},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert len(payload["groups"]) == 1
+    group = payload["groups"][0]
+    assert [log["validator_uid"] for log in group["logs"]] == [3]
+
+    final_stmt = session.execute.await_args_list[-1].args[0]
+    compiled = str(final_stmt.compile(compile_kwargs={"literal_binds": True}))
+    assert "validator_uid = 3" in compiled
