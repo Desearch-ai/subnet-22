@@ -6,7 +6,7 @@ directly via dendrite.
 
 ## Prerequisites
 
-- Python ≥ 3.10
+- Python ≥ 3.11
 - [PM2](https://pm2.io/docs/runtime/guide/installation/) for process supervision
 - A registered hotkey on subnet 22 (mainnet) or 41 (testnet)
 
