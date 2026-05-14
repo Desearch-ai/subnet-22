@@ -18,7 +18,7 @@
 import traceback
 import bittensor as bt
 import asyncio
-from typing import Dict, Tuple
+from typing import Dict, List, Tuple
 from neurons.validators.base_validator import AbstractNeuron
 from neurons.validators.reward.config import RewardModelType
 from neurons.validators.reward.reward import BaseRewardModel, BaseRewardEvent
@@ -168,8 +168,9 @@ class SummaryRelevanceRewardModel(BaseRewardModel):
     ) -> Tuple[float, str, Dict]:
         """Default scoring for non-final summary response types."""
         if response.result_type == ResultType.ONLY_LINKS:
-            # For ONLY_LINKS type, check if links are present
-            links, _ = response.get_links_from_search_results()
+            search_links, _ = response.get_links_from_search_results()
+            tweet_links = response.get_links_from_tweets()
+            links = search_links + tweet_links
 
             if links:
                 if response.completion or response.text_chunks:
