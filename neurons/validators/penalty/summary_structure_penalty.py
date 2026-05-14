@@ -36,10 +36,14 @@ class SummaryStructurePenaltyModel(BasePenaltyModel):
         penalties = np.zeros(len(responses), dtype=np.float32)
 
         for i, response in enumerate(responses):
-            if getattr(response, "result_type", None) == ResultType.ONLY_LINKS:
+            if not isinstance(response, ScraperStreamingSynapse):
+                continue
+            if response.result_type == ResultType.ONLY_LINKS:
                 continue
 
-            summary = (response.texts or {}).get(ScraperTextRole.FINAL_SUMMARY.value, "")
+            summary = (response.texts or {}).get(
+                ScraperTextRole.FINAL_SUMMARY.value, ""
+            )
 
             ok_structure, _ = check_markdown_structure(summary)
             if not ok_structure:
