@@ -18,8 +18,8 @@ SEARCH_TYPE_WEIGHTS = {
     "web_search": 0.20,
 }
 
-ORGANIC_DEEP_SCORE_WEIGHT = 5
-ORGANIC_SCORE_CAP_PER_TYPE = 100
+ORGANIC_VALUE_MULTIPLIER = 3
+ORGANIC_DEEP_CAP_PER_TYPE = 100
 
 # Superlinear incentive formula: score = quality^alpha * volume^beta.
 # Both >1 make consolidating a UID strictly more profitable than splitting,
@@ -207,12 +207,6 @@ class QueryScheduler:
                     )
                 )
 
-    def _sample_organics(self, organics: list) -> list:
-        """Cap organics per search type using uniform random sampling."""
-        if len(organics) <= ORGANIC_SCORE_CAP_PER_TYPE:
-            return organics
-        return random.sample(organics, ORGANIC_SCORE_CAP_PER_TYPE)
-
     def _sample_deep_synth(self, synth_items: list) -> set[int]:
         """Pick DEEP_SAMPLE_RATE of each UID's synth items (floor DEEP_SAMPLE_FLOOR)."""
         by_uid: dict[int, list[int]] = defaultdict(list)
@@ -222,6 +216,37 @@ class QueryScheduler:
         for indices in by_uid.values():
             n = max(DEEP_SAMPLE_FLOOR, round(len(indices) * DEEP_SAMPLE_RATE))
             sampled.update(random.sample(indices, min(n, len(indices))))
+        return sampled
+
+    def _sample_organic_deep(self, organic_items: list) -> set[int]:
+        """Allocate ORGANIC_DEEP_CAP_PER_TYPE deep slots across UIDs proportional
+        to their organic count (largest-remainder), then pick that many at random
+        from each UID's organics."""
+        if len(organic_items) <= ORGANIC_DEEP_CAP_PER_TYPE:
+            return set(range(len(organic_items)))
+
+        by_uid: dict[int, list[int]] = defaultdict(list)
+        for idx, item in enumerate(organic_items):
+            by_uid[item["uid"]].append(idx)
+
+        total = len(organic_items)
+        cap = ORGANIC_DEEP_CAP_PER_TYPE
+        quotas_float = {uid: cap * len(idxs) / total for uid, idxs in by_uid.items()}
+        quotas = {uid: int(q) for uid, q in quotas_float.items()}
+        leftover = cap - sum(quotas.values())
+        if leftover > 0:
+            ordered = sorted(
+                by_uid,
+                key=lambda u: quotas_float[u] - quotas[u],
+                reverse=True,
+            )
+            for uid in ordered[:leftover]:
+                quotas[uid] += 1
+
+        sampled: set[int] = set()
+        for uid, n in quotas.items():
+            if n > 0:
+                sampled.update(random.sample(by_uid[uid], min(n, len(by_uid[uid]))))
         return sampled
 
     async def _run_full_scoring(
@@ -258,77 +283,91 @@ class QueryScheduler:
     ) -> dict[int, tuple[float, int]]:
         """Score synth + organic for one type and update capacity per UID.
 
-        Synthetics: code checks on all, deep scoring on a 20% per-UID sample.
-        Sampled responses carry DEEP_SAMPLE_WEIGHT in the per-UID mean;
-        cheap-only responses carry weight 1. Organics use the current path
-        (deep on the 100-cap sample, weight ORGANIC_DEEP_SCORE_WEIGHT)."""
+        Four buckets, each carrying its own weight in the per-UID mean:
+            synth-cheap   = 1
+            synth-deep    = DEEP_SAMPLE_WEIGHT
+            organic-cheap = ORGANIC_VALUE_MULTIPLIER
+            organic-deep  = ORGANIC_VALUE_MULTIPLIER * DEEP_SAMPLE_WEIGHT
+
+        Synthetics: 20% per-UID deep sample, cheap on the rest. Organics: code
+        checks on all, ORGANIC_DEEP_CAP_PER_TYPE deep slots distributed across
+        UIDs proportional to their organic count."""
         validator = self.validators.get(search_type)
         if validator is None:
             return {}
 
         synth_items = synthetics.get(search_type, [])
-        organic_pool = organics.get(search_type, [])
-        organic_sample = self._sample_organics(organic_pool)
+        organic_items = organics.get(search_type, [])
 
-        if not synth_items and not organic_sample:
+        if not synth_items and not organic_items:
             return {}
 
-        deep_idx_set = self._sample_deep_synth(synth_items)
-        deep_synth = [item for i, item in enumerate(synth_items) if i in deep_idx_set]
-        cheap_synth = [item for i, item in enumerate(synth_items) if i not in deep_idx_set]
+        deep_synth_idx = self._sample_deep_synth(synth_items)
+        deep_synth = [item for i, item in enumerate(synth_items) if i in deep_synth_idx]
+        cheap_synth = [item for i, item in enumerate(synth_items) if i not in deep_synth_idx]
+
+        deep_organic_idx = self._sample_organic_deep(organic_items)
+        deep_organic = [item for i, item in enumerate(organic_items) if i in deep_organic_idx]
+        cheap_organic = [item for i, item in enumerate(organic_items) if i not in deep_organic_idx]
 
         bt.logging.info(
-            f"[QueryScheduler] {search_type}: synth={len(synth_items)} "
-            f"(deep={len(deep_synth)}, cheap={len(cheap_synth)}), "
-            f"organic={len(organic_sample)} (pool={len(organic_pool)})"
+            f"[QueryScheduler] {search_type}: "
+            f"synth={len(synth_items)} (deep={len(deep_synth)}, cheap={len(cheap_synth)}), "
+            f"organic={len(organic_items)} (deep={len(deep_organic)}, cheap={len(cheap_organic)})"
         )
 
         uid_totals: dict[int, float] = defaultdict(float)
         uid_weights: dict[int, float] = defaultdict(float)
         uid_volumes: dict[int, int] = defaultdict(int)
 
-        if cheap_synth:
-            cheap_responses = [item["response"] for item in cheap_synth]
-            cheap_uids = np.array(
-                [item["uid"] for item in cheap_synth], dtype=np.int64
-            )
+        cheap_items = cheap_synth + cheap_organic
+        if cheap_items:
             try:
                 cheap_scores = await validator.compute_cheap_scores(
-                    cheap_responses, cheap_uids
+                    [item["response"] for item in cheap_items],
+                    np.array([item["uid"] for item in cheap_items], dtype=np.int64),
                 )
             except Exception as e:
                 bt.logging.error(
                     f"[QueryScheduler] Cheap scoring failed {search_type}: {e}"
                 )
-                cheap_scores = np.zeros(len(cheap_synth), dtype=np.float32)
-            for item, score in zip(cheap_synth, cheap_scores.tolist()):
+                cheap_scores = np.zeros(len(cheap_items), dtype=np.float32)
+            scores = cheap_scores.tolist()
+            for i, item in enumerate(cheap_synth):
                 uid = item["uid"]
-                uid_totals[uid] += score
+                uid_totals[uid] += scores[i]
                 uid_weights[uid] += 1
                 uid_volumes[uid] += 1
+            offset = len(cheap_synth)
+            for i, item in enumerate(cheap_organic):
+                uid = item["uid"]
+                uid_totals[uid] += ORGANIC_VALUE_MULTIPLIER * scores[offset + i]
+                uid_weights[uid] += ORGANIC_VALUE_MULTIPLIER
+                uid_volumes[uid] += 1
 
-        full_items = deep_synth + organic_sample
-        if full_items:
+        deep_items = deep_synth + deep_organic
+        if deep_items:
             try:
                 full_scores = await self._run_full_scoring(
-                    validator, full_items, time_range_start
+                    validator, deep_items, time_range_start
                 )
             except Exception as e:
                 bt.logging.error(
                     f"[QueryScheduler] Full scoring failed {search_type}: {e}"
                 )
-                full_scores = np.zeros(len(full_items), dtype=np.float32)
-
+                full_scores = np.zeros(len(deep_items), dtype=np.float32)
             scores = full_scores.tolist()
             for i, item in enumerate(deep_synth):
                 uid = item["uid"]
                 uid_totals[uid] += DEEP_SAMPLE_WEIGHT * scores[i]
                 uid_weights[uid] += DEEP_SAMPLE_WEIGHT
                 uid_volumes[uid] += 1
-            for i, item in enumerate(organic_sample):
+            offset = len(deep_synth)
+            organic_deep_weight = ORGANIC_VALUE_MULTIPLIER * DEEP_SAMPLE_WEIGHT
+            for i, item in enumerate(deep_organic):
                 uid = item["uid"]
-                uid_totals[uid] += ORGANIC_DEEP_SCORE_WEIGHT * scores[len(deep_synth) + i]
-                uid_weights[uid] += ORGANIC_DEEP_SCORE_WEIGHT
+                uid_totals[uid] += organic_deep_weight * scores[offset + i]
+                uid_weights[uid] += organic_deep_weight
                 uid_volumes[uid] += 1
 
         uid_results = {
