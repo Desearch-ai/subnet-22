@@ -57,6 +57,8 @@ pattern_to_check = r"<(?:Question|/Question|Answer|/Answer|Score|/Score)>|SM(?:[
 
 
 class BaseRewardModel:
+    is_deep: bool = True
+
     @property
     @abstractmethod
     def name(self) -> str: ...

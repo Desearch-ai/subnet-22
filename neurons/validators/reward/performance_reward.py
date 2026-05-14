@@ -36,6 +36,8 @@ from .reward import BaseRewardEvent, BaseRewardModel
 
 
 class PerformanceRewardModel(BaseRewardModel):
+    is_deep = False
+
     @property
     def name(self) -> str:
         return RewardModelType.performance_score.value

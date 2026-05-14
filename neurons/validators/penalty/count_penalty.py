@@ -17,6 +17,8 @@ class CountPenaltyModel(BasePenaltyModel):
     both expose ``results`` for the actual list. Other synapse types are skipped.
     """
 
+    is_deep = False
+
     def __init__(self, max_penalty: float = MAX_PENALTY, neuron: AbstractNeuron = None):
         super().__init__(max_penalty, neuron)
 

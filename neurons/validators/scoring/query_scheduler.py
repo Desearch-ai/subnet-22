@@ -31,6 +31,10 @@ BATCH_SIZE = 20
 BATCH_INTERVAL_SECONDS = 5
 GROUP_SIZE = 5
 
+DEEP_SAMPLE_RATE = 0.20
+DEEP_SAMPLE_FLOOR = 1
+DEEP_SAMPLE_WEIGHT = 5
+
 
 def combine_superlinear_scores(
     qualities_per_type: dict[str, dict[int, tuple[float, int]]],
@@ -203,67 +207,45 @@ class QueryScheduler:
                     )
                 )
 
-    async def _score_search_type(
+    def _sample_organics(self, organics: list) -> list:
+        """Cap organics per search type using uniform random sampling."""
+        if len(organics) <= ORGANIC_SCORE_CAP_PER_TYPE:
+            return organics
+        return random.sample(organics, ORGANIC_SCORE_CAP_PER_TYPE)
+
+    def _sample_deep_synth(self, synth_items: list) -> set[int]:
+        """Pick DEEP_SAMPLE_RATE of each UID's synth items (floor DEEP_SAMPLE_FLOOR)."""
+        by_uid: dict[int, list[int]] = defaultdict(list)
+        for idx, item in enumerate(synth_items):
+            by_uid[item["uid"]].append(idx)
+        sampled: set[int] = set()
+        for indices in by_uid.values():
+            n = max(DEEP_SAMPLE_FLOOR, round(len(indices) * DEEP_SAMPLE_RATE))
+            sampled.update(random.sample(indices, min(n, len(indices))))
+        return sampled
+
+    async def _run_full_scoring(
         self,
-        search_type: str,
+        validator,
         items: list,
         time_range_start: datetime,
-    ) -> dict[int, tuple[float, int]]:
-        """
-        Score one search type for a completed epoch. Returns per-UID
-        ``(quality, volume)``: quality is a 5x-organic-weighted mean of
-        per-response rewards (0-1); volume is the raw count of responses
-        scored for that UID.
-        """
-        validator = self.validators.get(search_type)
-        if validator is None or not items:
-            return {}
-
-        uids = np.array([item["uid"] for item in items], dtype=np.int64)
+    ) -> np.ndarray:
+        if not items:
+            return np.zeros(0, dtype=np.float32)
         responses = [item["response"] for item in items]
-        kinds = [item.get("kind", "synthetic") for item in items]
-        prompts = [self._extract_prompt(response) for response in responses]
-        event = {}
-
-        bt.logging.info(
-            f"[QueryScheduler] Scoring {search_type}: {len(items)} responses"
-        )
-
+        uids = np.array([item["uid"] for item in items], dtype=np.int64)
+        prompts = [self._extract_prompt(r) for r in responses]
         result = await validator.compute_rewards_and_penalties(
-            event=event,
+            event={},
             prompts=prompts,
             responses=responses,
             uids=uids,
             start_time=time.time(),
             scoring_epoch_start=time_range_start,
         )
-
         if result is None:
-            return {}
-
-        rewards = result[0]
-
-        uid_totals: dict[int, float] = defaultdict(float)
-        uid_weights: dict[int, float] = defaultdict(float)
-        uid_volumes: dict[int, int] = defaultdict(int)
-
-        for uid_tensor, reward, kind in zip(uids, rewards.tolist(), kinds):
-            uid = uid_tensor.item()
-            weight = ORGANIC_DEEP_SCORE_WEIGHT if kind == "organic" else 1
-            uid_totals[uid] += weight * reward
-            uid_weights[uid] += weight
-            uid_volumes[uid] += 1
-
-        return {
-            uid: (uid_totals[uid] / uid_weights[uid], uid_volumes[uid])
-            for uid in uid_totals
-        }
-
-    def _sample_organics(self, organics: list) -> list:
-        """Cap organics per search type using uniform random sampling."""
-        if len(organics) <= ORGANIC_SCORE_CAP_PER_TYPE:
-            return organics
-        return random.sample(organics, ORGANIC_SCORE_CAP_PER_TYPE)
+            return np.zeros(len(items), dtype=np.float32)
+        return np.asarray(result[0], dtype=np.float32)
 
     async def _score_one_type(
         self,
@@ -274,38 +256,88 @@ class QueryScheduler:
         window_start: str,
         allocations: dict[int, int],
     ) -> dict[int, tuple[float, int]]:
-        """Merge synth + organic sample for one type, score it, and update
-        capacity per UID. Returns per-UID ``(quality, volume)`` for the combine
-        step, or an empty dict if nothing scored."""
-        if self.validators.get(search_type) is None:
+        """Score synth + organic for one type and update capacity per UID.
+
+        Synthetics: code checks on all, deep scoring on a 20% per-UID sample.
+        Sampled responses carry DEEP_SAMPLE_WEIGHT in the per-UID mean;
+        cheap-only responses carry weight 1. Organics use the current path
+        (deep on the 100-cap sample, weight ORGANIC_DEEP_SCORE_WEIGHT)."""
+        validator = self.validators.get(search_type)
+        if validator is None:
             return {}
 
-        synth_items = [
-            {**item, "kind": "synthetic"} for item in synthetics.get(search_type, [])
-        ]
+        synth_items = synthetics.get(search_type, [])
         organic_pool = organics.get(search_type, [])
         organic_sample = self._sample_organics(organic_pool)
-        organic_items = [{**item, "kind": "organic"} for item in organic_sample]
 
-        merged = synth_items + organic_items
-        if not merged:
+        if not synth_items and not organic_sample:
             return {}
+
+        deep_idx_set = self._sample_deep_synth(synth_items)
+        deep_synth = [item for i, item in enumerate(synth_items) if i in deep_idx_set]
+        cheap_synth = [item for i, item in enumerate(synth_items) if i not in deep_idx_set]
 
         bt.logging.info(
-            f"[QueryScheduler] {search_type}: "
-            f"{len(synth_items)} synthetic + {len(organic_items)} organic "
-            f"(pool={len(organic_pool)}, cap={ORGANIC_SCORE_CAP_PER_TYPE})"
+            f"[QueryScheduler] {search_type}: synth={len(synth_items)} "
+            f"(deep={len(deep_synth)}, cheap={len(cheap_synth)}), "
+            f"organic={len(organic_sample)} (pool={len(organic_pool)})"
         )
 
-        try:
-            uid_results = await self._score_search_type(
-                search_type, merged, time_range_start
-            )
-        except Exception as e:
-            bt.logging.error(f"[QueryScheduler] Error scoring {search_type}: {e}")
-            return {}
+        uid_totals: dict[int, float] = defaultdict(float)
+        uid_weights: dict[int, float] = defaultdict(float)
+        uid_volumes: dict[int, int] = defaultdict(int)
 
-        for uid, (quality, _volume) in uid_results.items():
+        if cheap_synth:
+            cheap_responses = [item["response"] for item in cheap_synth]
+            cheap_uids = np.array(
+                [item["uid"] for item in cheap_synth], dtype=np.int64
+            )
+            try:
+                cheap_scores = await validator.compute_cheap_scores(
+                    cheap_responses, cheap_uids
+                )
+            except Exception as e:
+                bt.logging.error(
+                    f"[QueryScheduler] Cheap scoring failed {search_type}: {e}"
+                )
+                cheap_scores = np.zeros(len(cheap_synth), dtype=np.float32)
+            for item, score in zip(cheap_synth, cheap_scores.tolist()):
+                uid = item["uid"]
+                uid_totals[uid] += score
+                uid_weights[uid] += 1
+                uid_volumes[uid] += 1
+
+        full_items = deep_synth + organic_sample
+        if full_items:
+            try:
+                full_scores = await self._run_full_scoring(
+                    validator, full_items, time_range_start
+                )
+            except Exception as e:
+                bt.logging.error(
+                    f"[QueryScheduler] Full scoring failed {search_type}: {e}"
+                )
+                full_scores = np.zeros(len(full_items), dtype=np.float32)
+
+            scores = full_scores.tolist()
+            for i, item in enumerate(deep_synth):
+                uid = item["uid"]
+                uid_totals[uid] += DEEP_SAMPLE_WEIGHT * scores[i]
+                uid_weights[uid] += DEEP_SAMPLE_WEIGHT
+                uid_volumes[uid] += 1
+            for i, item in enumerate(organic_sample):
+                uid = item["uid"]
+                uid_totals[uid] += ORGANIC_DEEP_SCORE_WEIGHT * scores[len(deep_synth) + i]
+                uid_weights[uid] += ORGANIC_DEEP_SCORE_WEIGHT
+                uid_volumes[uid] += 1
+
+        uid_results = {
+            uid: (uid_totals[uid] / uid_weights[uid], uid_volumes[uid])
+            for uid in uid_totals
+            if uid_weights[uid] > 0
+        }
+
+        for uid, (quality, _) in uid_results.items():
             await capacity.update_after_scoring(
                 uid=uid,
                 search_type=search_type,
@@ -455,27 +487,15 @@ class QueryScheduler:
                     await asyncio.sleep(self._seconds_until_next_hour())
                     continue
 
-                # Allocate the per-type budget across active UIDs by quality
+                # Each UID's allocation is its current verified concurrency,
+                # which capacity ramps after each scoring window.
                 allocations_by_type: dict[str, dict[int, int]] = {}
-
                 for st in SEARCH_TYPES:
                     rows = await miner_db.get_allocation_state(st)
-                    default = (0.0, capacity.DEFAULT_PER_UID, capacity.DEFAULT_PER_UID)
-                    quality_for_active = {
-                        uid: rows.get(uid, default)[0] for uid in available_uids
+                    allocations_by_type[st] = {
+                        uid: rows.get(uid, (0.0, 0, capacity.DEFAULT_PER_UID))[2]
+                        for uid in available_uids
                     }
-                    declared_for_active = {
-                        uid: rows.get(uid, default)[1] for uid in available_uids
-                    }
-                    prev_alloc_for_active = {
-                        uid: rows.get(uid, default)[2] for uid in available_uids
-                    }
-                    allocations_by_type[st] = capacity.allocate_synthetic_budget(
-                        quality_for_active,
-                        declared_for_active,
-                        prev_alloc_for_active,
-                    )
-                    await miner_db.bulk_update_verified(st, allocations_by_type[st])
 
                 previous_allocations = allocations_by_type
 

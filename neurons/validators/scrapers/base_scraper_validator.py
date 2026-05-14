@@ -54,6 +54,37 @@ class BaseScraperValidator:
             self.reward_weights, (n, self.reward_weights.shape[0])
         ).copy()
 
+    async def compute_cheap_scores(self, responses, uids) -> np.ndarray:
+        """Apply only non-deep reward + penalty functions and return per-response
+        scores in [0, 1]. Cheap reward weights are renormalized per row to sum
+        to 1 so cheap scores are comparable to full scores."""
+        if not responses:
+            return np.zeros(0, dtype=np.float32)
+
+        weights_matrix = self.compute_reward_weights_matrix(responses)
+        cheap_cols = np.array(
+            [not fn.is_deep for fn in self.reward_functions], dtype=bool
+        )
+        cheap_weight_sum = weights_matrix[:, cheap_cols].sum(axis=1)
+        cheap_weight_sum = np.where(cheap_weight_sum > 0, cheap_weight_sum, 1.0)
+
+        rewards = np.zeros(len(responses), dtype=np.float32)
+
+        for i, reward_fn in enumerate(self.reward_functions):
+            if reward_fn.is_deep:
+                continue
+            reward_i, _, _, _ = await reward_fn.apply(responses, uids)
+            weight = weights_matrix[:, i] / cheap_weight_sum
+            rewards += weight * np.asarray(reward_i, dtype=np.float32)
+
+        for penalty_fn in self.penalty_functions:
+            if penalty_fn.is_deep:
+                continue
+            _, _, applied = await penalty_fn.apply_penalties(responses, uids, None)
+            rewards *= np.asarray(applied, dtype=np.float32)
+
+        return rewards
+
     async def _dendrite_call(self, axon, synapse, uid: int):
         """Send a non-streaming synapse to a miner axon via dendrite. Tracks
         per-call success so consecutive failures flag the miner unreachable."""

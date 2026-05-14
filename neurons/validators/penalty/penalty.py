@@ -26,6 +26,8 @@ from neurons.validators.base_validator import AbstractNeuron
 
 
 class BasePenaltyModel(ABC):
+    is_deep: bool = True
+
     def __init__(self, max_penalty: float, neuron: AbstractNeuron):
         self.max_penalty = max_penalty
         self.neuron = neuron

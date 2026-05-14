@@ -1,11 +1,10 @@
 """
-Quality-share allocation for synthetic queries.
+Per-UID verified-concurrency ramping.
 
-Each search type has a fixed per-epoch budget split across miners whose
-quality EMA crosses ``QUALITY_THRESHOLD``, weighted by ``quality^k``. UIDs
-below threshold get only the floor — they have to demonstrate quality
-across multiple windows before participating in the share split.
-``declared`` is an optional miner-set ceiling.
+Each miner's ``verified`` grows ``RAMP_FRACTION`` of declared per scoring
+window when quality EMA stays at or above ``QUALITY_THRESHOLD``, and decays
+the same step when it falls below. ``verified`` is the synthetic allocation
+for the next epoch — bounded by ``declared`` and ``HARD_CAP_PER_UID``.
 """
 
 from typing import Optional, Protocol
@@ -15,13 +14,11 @@ import bittensor as bt
 from neurons.validators.scoring import miner_db
 
 QUALITY_EMA_ALPHA = 0.3
-QUALITY_SHARE_EXPONENT = 2.0
 
-SYNTHETIC_BUDGET_PER_TYPE = 250
 DEFAULT_PER_UID = 1
 HARD_CAP_PER_UID = 100
 QUALITY_THRESHOLD = 0.30
-RAMP_STEP_PCT = 0.10
+RAMP_FRACTION = 0.10
 
 UNREACHABLE_FAILURE_THRESHOLD = 1
 
@@ -41,38 +38,14 @@ def set_router(router: _RouterKillSwitch) -> None:
     _router = router
 
 
-def allocate_synthetic_budget(
-    quality_by_uid: dict[int, float],
-    declared_by_uid: dict[int, int],
-    prev_alloc_by_uid: dict[int, int],
-) -> dict[int, int]:
-    """Split the budget across above-threshold UIDs by quality^k, capped per
-    UID by ``prev + RAMP_STEP_PCT * declared`` so volume ramps incrementally.
-    Below-threshold UIDs get only the floor."""
-    if not quality_by_uid:
-        return {}
-
-    eligible = {uid: q for uid, q in quality_by_uid.items() if q >= QUALITY_THRESHOLD}
-
-    weights = {
-        uid: max(0.0, q) ** QUALITY_SHARE_EXPONENT for uid, q in eligible.items()
-    }
-    total = sum(weights.values())
-
-    out: dict[int, int] = {uid: DEFAULT_PER_UID for uid in quality_by_uid}
-
-    if total <= 0:
-        return out
-
-    for uid, w in weights.items():
-        share = round(SYNTHETIC_BUDGET_PER_TYPE * w / total)
-        declared = max(declared_by_uid.get(uid, DEFAULT_PER_UID), DEFAULT_PER_UID)
-        prev = max(prev_alloc_by_uid.get(uid, DEFAULT_PER_UID), DEFAULT_PER_UID)
-        ramp_step = max(1, int(declared * RAMP_STEP_PCT))
-        ramp_cap = prev + ramp_step
-        ceiling = min(HARD_CAP_PER_UID, declared, ramp_cap)
-        out[uid] = min(DEFAULT_PER_UID + int(share), ceiling)
-    return out
+def next_verified(current: int, declared: int, quality_avg: float) -> int:
+    """Ramp ``current`` by ``RAMP_FRACTION`` of declared toward the cap if
+    quality is healthy; otherwise decay by the same step toward the floor."""
+    declared = max(declared, DEFAULT_PER_UID)
+    step = max(1, int(declared * RAMP_FRACTION))
+    if quality_avg >= QUALITY_THRESHOLD:
+        return min(current + step, declared, HARD_CAP_PER_UID)
+    return max(DEFAULT_PER_UID, current - step)
 
 
 async def update_after_scoring(
@@ -82,10 +55,7 @@ async def update_after_scoring(
     window_start: str,
     allocated: int,
 ) -> None:
-    """Update a miner's quality EMA from one scoring window. ``allocated`` is
-    the per-UID synthetic budget the scheduler used for the window being
-    scored — passed in because the DB column has already been overwritten
-    with the next epoch's allocation by the time scoring fires."""
+    """Update quality EMA and ramp ``verified`` for one scoring window."""
     row = await miner_db.get_concurrency_row(uid, search_type)
     if row is None:
         bt.logging.warning(
@@ -97,6 +67,8 @@ async def update_after_scoring(
     quality_avg = (1 - QUALITY_EMA_ALPHA) * row[
         "quality_avg"
     ] + QUALITY_EMA_ALPHA * quality
+
+    new_verified = next_verified(row["verified"], row["declared"], quality_avg)
 
     await miner_db.insert_window(
         uid=uid,
@@ -114,6 +86,7 @@ async def update_after_scoring(
         search_type=search_type,
         quality_avg=quality_avg,
     )
+    await miner_db.bulk_update_verified(search_type, {uid: new_verified})
 
 
 async def note_call_result(uid: int, search_type: str, success: bool) -> None:

@@ -12,6 +12,8 @@ DEFAULT_TIMEOUT_GRACE_SECONDS = 5.0
 
 
 class TimeoutPenaltyModel(BasePenaltyModel):
+    is_deep = False
+
     def __init__(
         self,
         max_penalty: float = MAX_PENALTY,
