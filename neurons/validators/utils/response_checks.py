@@ -40,10 +40,14 @@ def check_markdown_structure(text: str) -> Tuple[bool, List[str]]:
 
 
 def normalize_source_url(url: str) -> str:
-    url = (url or "").strip()
-    url = WebSearchUtils.remove_trailing_slash(url)
-    url = url.replace("https://twitter.com/", "https://x.com/")
-    return url.lower()
+    """Normalize for comparison: lowercase, no www., no trailing slash. Scheme
+    and query string are kept — miner is accountable for matching those."""
+    url = (url or "").strip().lower()
+    if url.startswith("https://www."):
+        url = "https://" + url[len("https://www."):]
+    elif url.startswith("http://www."):
+        url = "http://" + url[len("http://www."):]
+    return WebSearchUtils.remove_trailing_slash(url)
 
 
 def collect_summary_sources(response: ScraperStreamingSynapse) -> set:

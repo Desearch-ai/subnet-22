@@ -13,7 +13,6 @@ from neurons.validators.utils.response_checks import (
 )
 
 MAX_PENALTY = 1.0
-MIN_VERIFIED_LINK_RATIO = 0.5
 
 
 class SummaryStructurePenaltyModel(BasePenaltyModel):
@@ -53,9 +52,7 @@ class SummaryStructurePenaltyModel(BasePenaltyModel):
                 continue
 
             sources = collect_summary_sources(response)
-            verified = sum(1 for link in links if normalize_source_url(link) in sources)
-            ratio = verified / len(links)
-            if ratio < MIN_VERIFIED_LINK_RATIO:
+            if any(normalize_source_url(link) not in sources for link in links):
                 penalties[i] = self.max_penalty
 
         return penalties
