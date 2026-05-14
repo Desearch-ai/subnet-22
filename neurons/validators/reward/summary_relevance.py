@@ -18,16 +18,13 @@
 import traceback
 import bittensor as bt
 import asyncio
-import re
-from typing import List, Tuple, Dict
+from typing import Dict, Tuple
 from neurons.validators.base_validator import AbstractNeuron
 from neurons.validators.reward.config import RewardModelType
 from neurons.validators.reward.reward import BaseRewardModel, BaseRewardEvent
 from neurons.validators.utils.prompts import SummaryRelevancePrompt
 from neurons.validators.reward.reward_llm import RewardLLM
-from desearch.protocol import ScraperStreamingSynapse, ScraperTextRole
-from desearch.services.web_search_utils import WebSearchUtils
-from desearch.protocol import ResultType
+from desearch.protocol import ResultType, ScraperStreamingSynapse, ScraperTextRole
 
 
 class SummaryRelevanceRewardModel(BaseRewardModel):
@@ -47,148 +44,18 @@ class SummaryRelevanceRewardModel(BaseRewardModel):
         self.reward_llm = llm_reward
         self.scoring_type = scoring_type
 
-    def extract_links_from_markdown(self, text: str) -> List[Tuple[str, str]]:
-        """Extract markdown links with their text from the completion.
-        Returns list of (link_text, url) tuples."""
-        pattern = r"\[([^\]]+)\]\(([^)]+)\)"
-        matches = re.findall(pattern, text)
-        return matches
-
-    def check_markdown_structure(self, text: str) -> Tuple[bool, List[str]]:
-        """Check if markdown follows proper structure.
-        Returns (is_valid, list_of_issues)"""
-        issues = []
-
-        # Check for improper header usage
-        if re.search(r"^#{1,6}\s", text, re.MULTILINE):
-            issues.append("Uses # headers instead of **")
-
-        # Check if headers exist using **
-        header_pattern = r"\*\*[^*]+\*\*"
-        headers = re.findall(header_pattern, text)
-        if len(headers) < 1:
-            issues.append("No proper headers found (should use ** for headers)")
-
-        # Check for basic structure
-        if not text.strip():
-            issues.append("Empty response")
-
-        return len(issues) == 0, issues
-
-    def verify_link_sources(
-        self, response: ScraperStreamingSynapse, links: List[str]
-    ) -> Tuple[int, int, Dict[str, bool]]:
-        """Verify that links in the markdown exist in the miner's sources.
-        Returns (verified_count, total_count, link_verification_map)"""
-        verified_count = 0
-        link_verification = {}
-
-        # Normalize links for comparison
-        def normalize_url(url: str) -> str:
-            url = url.strip()
-            # Remove trailing slashes
-            url = WebSearchUtils.remove_trailing_slash(url)
-            # Handle twitter/x.com domains
-            url = url.replace("https://twitter.com/", "https://x.com/")
-            return url.lower()
-
-        # Collect all valid source links
-        valid_sources = set()
-
-        # Add Twitter sources
-        if response.miner_tweets:
-            for tweet in response.miner_tweets:
-                if isinstance(tweet, dict):
-                    username = tweet.get("user", {}).get("username", "")
-                    tweet_id = tweet.get("id", "")
-                    if username and tweet_id:
-                        twitter_url = f"https://x.com/{username}/status/{tweet_id}"
-                        valid_sources.add(normalize_url(twitter_url))
-
-        # Add search results from all search tools
-        search_results_fields = [
-            "search_results",
-            "wikipedia_search_results",
-            "youtube_search_results",
-            "arxiv_search_results",
-            "reddit_search_results",
-            "hacker_news_search_results",
-        ]
-
-        for field in search_results_fields:
-            results = getattr(response, field, [])
-            if results:
-                for result in results:
-                    if isinstance(result, dict) and "link" in result:
-                        valid_sources.add(normalize_url(result["link"]))
-                    elif hasattr(result, "link") and result.link:
-                        valid_sources.add(normalize_url(result.link))
-
-        # Verify each link
-        for link in links:
-            normalized_link = normalize_url(link)
-            is_verified = normalized_link in valid_sources
-            link_verification[link] = is_verified
-            if is_verified:
-                verified_count += 1
-
-        return verified_count, len(links), link_verification
-
     async def score_final_summary(
         self, response: ScraperStreamingSynapse
     ) -> Tuple[float, str, Dict]:
-        """Score the final summary with detailed evaluation."""
+        """LLM-score how well the final summary answers the prompt. Structure,
+        link presence, and link-source verification are handled cheaply by
+        SummaryStructurePenaltyModel before this runs."""
         try:
-            # Get the final summary
             final_summary = response.texts.get(ScraperTextRole.FINAL_SUMMARY.value, "")
-
             if not final_summary:
                 return 0.0, "No final summary found", {}
 
-            # Check markdown structure
-            is_valid_structure, structure_issues = self.check_markdown_structure(
-                final_summary
-            )
-
-            # Extract links
-            link_matches = self.extract_links_from_markdown(final_summary)
-            links = [url for _, url in link_matches]
-
-            if not links:
-                return (
-                    0.0,
-                    "No links found in summary",
-                    {
-                        "structure_valid": is_valid_structure,
-                        "structure_issues": structure_issues,
-                        "link_count": 0,
-                    },
-                )
-
-            # Verify link sources
-            verified_count, total_count, link_verification = self.verify_link_sources(
-                response, links
-            )
-
-            # If less than 50% of links are verified, heavily penalize
-            verification_ratio = verified_count / total_count if total_count > 0 else 0
-
-            if verification_ratio < 0.5:
-                return (
-                    0.0,
-                    f"Insufficient link verification: {verified_count}/{total_count} links verified",
-                    {
-                        "structure_valid": is_valid_structure,
-                        "structure_issues": structure_issues,
-                        "link_count": total_count,
-                        "verified_links": verified_count,
-                        "link_verification": link_verification,
-                    },
-                )
-
-            # Get LLM scoring using SummaryRelevancePrompt
             scoring_prompt = SummaryRelevancePrompt()
-
             scoring_messages = [
                 {
                     "0": [
@@ -207,48 +74,12 @@ class SummaryRelevanceRewardModel(BaseRewardModel):
             ]
 
             score_responses = await self.reward_llm.llm_processing(scoring_messages)
+            if not score_responses or "0" not in score_responses:
+                return 0.0, "Failed to get LLM score", {}
 
-            llm_score = 0.0
-            score_explanation = "Failed to get LLM score"
-
-            if score_responses and "0" in score_responses:
-                score_text = score_responses["0"]
-                llm_score = scoring_prompt.extract_score(score_text)
-                llm_score = llm_score / 3.0  # Normalize 0-3 to 0-1
-                score_explanation = score_text
-
-            # Apply penalties for structure issues
-            structure_penalty = 0.1 if not is_valid_structure else 0
-
-            # Apply bonus for link verification ratio
-            verification_bonus = 0.1 * verification_ratio
-
-            # Calculate final score
-            final_score = max(
-                0, min(1, llm_score - structure_penalty + verification_bonus)
-            )
-
-            # Apply hard penalty if verification is too low
-            if verification_ratio < 0.7:
-                final_score *= verification_ratio
-
-            return (
-                final_score,
-                score_explanation,
-                {
-                    "structure_valid": is_valid_structure,
-                    "structure_issues": structure_issues,
-                    "link_count": total_count,
-                    "verified_links": verified_count,
-                    "verification_ratio": verification_ratio,
-                    "link_verification": link_verification,
-                    "llm_score": llm_score,
-                    "penalties_applied": {
-                        "structure_penalty": structure_penalty,
-                        "verification_bonus": verification_bonus,
-                    },
-                },
-            )
+            score_text = score_responses["0"]
+            llm_score = scoring_prompt.extract_score(score_text) / 3.0
+            return max(0.0, min(1.0, llm_score)), score_text, {"llm_score": llm_score}
 
         except Exception as e:
             bt.logging.error(f"Error in score_final_summary: {str(e)}")

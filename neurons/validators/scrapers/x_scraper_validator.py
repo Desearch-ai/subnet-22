@@ -14,6 +14,12 @@ from neurons.validators.clients.miner_response_logger import (
     submit_logs_best_effort,
 )
 from neurons.validators.penalty.count_penalty import CountPenaltyModel
+from neurons.validators.penalty.date_range_penalty import DateRangePenaltyModel
+from neurons.validators.penalty.duplicate_results_penalty import (
+    DuplicateResultsPenaltyModel,
+)
+from neurons.validators.penalty.result_schema_penalty import ResultSchemaPenaltyModel
+from neurons.validators.penalty.sort_order_penalty import SortOrderPenaltyModel
 from neurons.validators.penalty.timeout_penalty import TimeoutPenaltyModel
 from neurons.validators.reward import RewardScoringType
 from neurons.validators.reward.performance_reward import PerformanceRewardModel
@@ -58,6 +64,10 @@ class XScraperValidator(BaseScraperValidator):
         penalty_functions = [
             TimeoutPenaltyModel(max_penalty=1, neuron=neuron),
             CountPenaltyModel(max_penalty=1, neuron=neuron),
+            DuplicateResultsPenaltyModel(max_penalty=1, neuron=neuron),
+            ResultSchemaPenaltyModel(max_penalty=1, neuron=neuron),
+            DateRangePenaltyModel(max_penalty=1, neuron=neuron),
+            SortOrderPenaltyModel(max_penalty=1, neuron=neuron),
         ]
 
         super().__init__(

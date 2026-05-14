@@ -70,3 +70,8 @@ class PenaltyModelType(Enum):
     count_penalty = "count_penalty"
     miner_score_penalty = "miner_score_penalty"
     chat_history_penalty = "chat_history_penalty"
+    summary_structure_penalty = "summary_structure_penalty"
+    date_range_penalty = "date_range_penalty"
+    duplicate_results_penalty = "duplicate_results_penalty"
+    result_schema_penalty = "result_schema_penalty"
+    sort_order_penalty = "sort_order_penalty"
