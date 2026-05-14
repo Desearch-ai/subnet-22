@@ -27,6 +27,10 @@ ORGANIC_SCORE_CAP_PER_TYPE = 100
 QUALITY_EXPONENT_ALPHA = 1.5
 VOLUME_EXPONENT_BETA = 1.5
 
+BATCH_SIZE = 20
+BATCH_INTERVAL_SECONDS = 5
+GROUP_SIZE = 5
+
 
 def combine_superlinear_scores(
     qualities_per_type: dict[str, dict[int, tuple[float, int]]],
@@ -133,6 +137,71 @@ class QueryScheduler:
             bt.logging.error(
                 f"[QueryScheduler] Scoring query failed uid={uid} type={search_type}: {e}"
             )
+
+    async def _dispatch_epoch(
+        self,
+        items: list,
+        time_range_start: datetime,
+    ) -> None:
+        """Dispatch AI, X, Web sequentially. Each phase walks sorted UIDs in
+        groups of GROUP_SIZE; UIDs within a group run concurrently."""
+        for search_type in SEARCH_TYPES:
+            if self._current_hour_start() != time_range_start:
+                return
+
+            grouped: dict[int, list] = defaultdict(list)
+            for item in items:
+                if item["search_type"] == search_type:
+                    grouped[item["uid"]].append(item)
+
+            sorted_uids = sorted(grouped)
+            bt.logging.info(
+                f"[QueryScheduler] Phase {search_type}: "
+                f"{sum(len(v) for v in grouped.values())} queries "
+                f"across {len(sorted_uids)} UIDs in groups of {GROUP_SIZE}"
+            )
+
+            for start in range(0, len(sorted_uids), GROUP_SIZE):
+                if self._current_hour_start() != time_range_start:
+                    return
+                group = sorted_uids[start : start + GROUP_SIZE]
+                await asyncio.gather(
+                    *[
+                        self._dispatch_uid(
+                            uid, search_type, grouped[uid], time_range_start
+                        )
+                        for uid in group
+                    ],
+                    return_exceptions=True,
+                )
+
+    async def _dispatch_uid(
+        self,
+        uid: int,
+        search_type: str,
+        uid_items: list,
+        time_range_start: datetime,
+    ) -> None:
+        """Fire one UID's queries in BATCH_SIZE bursts, BATCH_INTERVAL_SECONDS apart."""
+        batches = [
+            uid_items[i : i + BATCH_SIZE]
+            for i in range(0, len(uid_items), BATCH_SIZE)
+        ]
+
+        for batch_idx, batch in enumerate(batches):
+            if self._current_hour_start() != time_range_start:
+                return
+
+            if batch_idx > 0:
+                await asyncio.sleep(BATCH_INTERVAL_SECONDS)
+
+            # Fire-and-forget so the next batch fires on schedule regardless of miner latency.
+            for item in batch:
+                asyncio.create_task(
+                    self._send_and_save(
+                        search_type, uid, item["query"], time_range_start
+                    )
+                )
 
     async def _score_search_type(
         self,
@@ -410,13 +479,8 @@ class QueryScheduler:
 
                 previous_allocations = allocations_by_type
 
-                # Batch-generate all queries for this epoch. When starting
-                # mid-hour, compress delays into the remaining window so the
-                # spread still fits before the next boundary.
                 items = await self.generator.generate_epoch_queries(
                     available_uids,
-                    self.SPREAD_SECONDS,
-                    delay_start=elapsed_at_start,
                     verified_by_type=allocations_by_type,
                 )
 
@@ -428,37 +492,8 @@ class QueryScheduler:
                     f"across {len(available_uids)} UIDs"
                 )
 
-                # Dispatch each pre-generated item at its scheduled fire time
-                for item in items:
-                    # Abort if the hour has changed (new epoch)
-                    current_hour = self._current_hour_start()
-                    if current_hour != time_range_start:
-                        bt.logging.info(
-                            "[QueryScheduler] Hour changed during dispatch, "
-                            "breaking to start new epoch."
-                        )
-                        break
+                await self._dispatch_epoch(items, time_range_start)
 
-                    # Seconds elapsed since this hour started
-                    elapsed = (
-                        datetime.now(timezone.utc) - time_range_start
-                    ).total_seconds()
-
-                    wait_seconds = item["delay_seconds"] - elapsed
-                    if wait_seconds > 0:
-                        await asyncio.sleep(wait_seconds)
-
-                    # Fire-and-forget dispatch
-                    asyncio.create_task(
-                        self._send_and_save(
-                            item["search_type"],
-                            item["uid"],
-                            item["query"],
-                            time_range_start,
-                        )
-                    )
-
-                # All items dispatched (or hour changed) — wait for next hour
                 sleep_seconds = self._seconds_until_next_hour()
                 bt.logging.info(
                     f"[QueryScheduler] All queries dispatched for "
