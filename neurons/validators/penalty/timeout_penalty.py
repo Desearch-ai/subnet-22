@@ -80,6 +80,4 @@ class TimeoutPenaltyModel(BasePenaltyModel):
             penalty = min(elapsed_seconds * penalty_step, self.max_penalty)
             penalties[index] = penalty
 
-        bt.logging.info(f"Timeout Penalties: {penalties.tolist()}")
-
         return penalties

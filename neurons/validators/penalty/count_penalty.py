@@ -1,84 +1,45 @@
-from typing import List
-
-import bittensor as bt
-import numpy as np
-
 from desearch.protocol import (
     ScraperStreamingSynapse,
     TwitterSearchSynapse,
     WebSearchSynapse,
 )
-from neurons.validators.base_validator import AbstractNeuron
-from neurons.validators.penalty.penalty import BasePenaltyModel, PenaltyModelType
-
-MAX_PENALTY = 1.0
-
-AI_SEARCH_RESULT_FIELDS = (
-    "miner_tweets",
-    "search_results",
-    "wikipedia_search_results",
-    "youtube_search_results",
-    "arxiv_search_results",
-    "reddit_search_results",
-    "hacker_news_search_results",
-)
+from neurons.validators.penalty.penalty import CheapPenaltyModel, PenaltyModelType
+from neurons.validators.utils.response_checks import AI_ALL_RESULT_FIELDS
 
 
-class CountPenaltyModel(BasePenaltyModel):
+class CountPenaltyModel(CheapPenaltyModel):
     """Penalize miners that return fewer results than the validator requested.
 
-    Twitter uses ``count`` and Web uses ``num``. AI search uses ``count`` as
-    a per-source target and is checked against every populated result field —
-    if the miner returned items for a source, that source must hit the count."""
+    Twitter uses ``count`` and Web uses ``num``. AI search uses ``count`` as a
+    per-source target and is checked against every populated result field — if
+    the miner returned items for a source, that source must hit the count."""
 
-    is_deep = False
+    name = PenaltyModelType.count_penalty.value
 
-    def __init__(self, max_penalty: float = MAX_PENALTY, neuron: AbstractNeuron = None):
-        super().__init__(max_penalty, neuron)
+    def penalty_for(self, response) -> float:
+        if isinstance(response, TwitterSearchSynapse):
+            requested = response.count
+            got = len(response.results or [])
+        elif isinstance(response, WebSearchSynapse):
+            requested = response.num
+            got = len(response.results or [])
+        elif isinstance(response, ScraperStreamingSynapse):
+            return self._ai_search_shortfall(response)
+        else:
+            return 0.0
 
-    @property
-    def name(self) -> str:
-        return PenaltyModelType.count_penalty.value
+        if not requested or requested <= 0 or got >= requested:
+            return 0.0
+        return min(1 - got / requested, self.max_penalty)
 
-    @staticmethod
-    def _ai_search_shortfall(response: ScraperStreamingSynapse, requested: int) -> float:
-        """Largest shortfall across populated result fields, expressed as a
-        ratio in [0, 1]. Empty fields are skipped (the miner didn't claim that
-        source)."""
+    def _ai_search_shortfall(self, response: ScraperStreamingSynapse) -> float:
+        """Largest shortfall across populated result fields, in [0, 1]."""
+        requested = response.count
+        if not requested or requested <= 0:
+            return 0.0
         worst = 0.0
-        for field in AI_SEARCH_RESULT_FIELDS:
+        for field in AI_ALL_RESULT_FIELDS:
             items = getattr(response, field, None) or []
-            if not items:
-                continue
-            if len(items) < requested:
+            if items and len(items) < requested:
                 worst = max(worst, 1 - len(items) / requested)
-        return worst
-
-    async def calculate_penalties(
-        self,
-        responses: List[bt.Synapse],
-        additional_params=None,
-    ) -> np.ndarray:
-        penalties = np.zeros(len(responses), dtype=np.float32)
-
-        for i, response in enumerate(responses):
-            if isinstance(response, TwitterSearchSynapse):
-                requested = response.count
-                if not requested or requested <= 0:
-                    continue
-                got = len(response.results or [])
-                penalties[i] = max(0.0, 1 - got / requested) if got < requested else 0.0
-            elif isinstance(response, WebSearchSynapse):
-                requested = response.num
-                if not requested or requested <= 0:
-                    continue
-                got = len(response.results or [])
-                penalties[i] = max(0.0, 1 - got / requested) if got < requested else 0.0
-            elif isinstance(response, ScraperStreamingSynapse):
-                requested = response.count
-                if not requested or requested <= 0:
-                    continue
-                penalties[i] = self._ai_search_shortfall(response, requested)
-            bt.logging.debug(f"Response index {i} has penalty {penalties[i]}")
-
-        return penalties
+        return min(worst, self.max_penalty)

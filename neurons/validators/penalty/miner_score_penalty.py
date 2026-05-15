@@ -38,7 +38,6 @@ class MinerScorePenaltyModel(BasePenaltyModel):
         responses: List[ScraperStreamingSynapse],
         additional_params=None,
     ) -> np.ndarray:
-
         penalties = np.zeros(len(responses), dtype=np.float32)
 
         for index, response in enumerate(responses):
@@ -56,7 +55,5 @@ class MinerScorePenaltyModel(BasePenaltyModel):
 
             score = sum(scores) / len(scores) if scores else 1
             penalties[index] = 1 - score
-
-            bt.logging.debug(f"Response index {index} has penalty {penalties[index]}")
 
         return penalties

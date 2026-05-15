@@ -1,33 +1,24 @@
-from typing import List, Optional
-
-import bittensor as bt
-import numpy as np
+from typing import Optional
 
 from neurons.validators.base_validator import AbstractNeuron
-from neurons.validators.penalty.penalty import BasePenaltyModel, PenaltyModelType
-
-MAX_PENALTY = 1.0
+from neurons.validators.penalty.penalty import CheapPenaltyModel, PenaltyModelType
 
 
-class MinRealisticTimePenaltyModel(BasePenaltyModel):
+class MinRealisticTimePenaltyModel(CheapPenaltyModel):
     """Penalize responses returned faster than ``min_realistic_time``. A miner
     that returns well-formed content in under-realistic time is almost
     certainly serving cached data rather than running the requested search."""
 
-    is_deep = False
+    name = PenaltyModelType.min_realistic_time_penalty.value
 
     def __init__(
         self,
         min_realistic_time: float,
-        max_penalty: float = MAX_PENALTY,
+        max_penalty: float = 1.0,
         neuron: AbstractNeuron = None,
     ):
         super().__init__(max_penalty, neuron)
         self.min_realistic_time = min_realistic_time
-
-    @property
-    def name(self) -> str:
-        return PenaltyModelType.min_realistic_time_penalty.value
 
     @staticmethod
     def _safe_float(value) -> Optional[float]:
@@ -38,17 +29,11 @@ class MinRealisticTimePenaltyModel(BasePenaltyModel):
         except (TypeError, ValueError):
             return None
 
-    async def calculate_penalties(
-        self,
-        responses: List[bt.Synapse],
-        additional_params=None,
-    ) -> np.ndarray:
-        penalties = np.zeros(len(responses), dtype=np.float32)
-        for i, response in enumerate(responses):
-            dendrite = getattr(response, "dendrite", None)
-            process_time = self._safe_float(getattr(dendrite, "process_time", None))
-            if process_time is None:
-                continue
-            if process_time < self.min_realistic_time:
-                penalties[i] = self.max_penalty
-        return penalties
+    def penalty_for(self, response) -> float:
+        dendrite = getattr(response, "dendrite", None)
+        process_time = self._safe_float(getattr(dendrite, "process_time", None))
+        if process_time is None:
+            return 0.0
+        if process_time < self.min_realistic_time:
+            return self.max_penalty
+        return 0.0

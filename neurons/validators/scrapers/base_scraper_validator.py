@@ -216,17 +216,13 @@ class BaseScraperValidator:
                 ) = await penalty_fn_i.apply_penalties(
                     responses, uids, penalty_additional_params
                 )
-                penalty_start_time = time.time()
+
                 rewards *= np.asarray(applied_penalty_i, dtype=np.float32)
-                penalty_execution_time = time.time() - penalty_start_time
+
                 if not self.neuron.config.neuron.disable_log_rewards:
                     event[penalty_fn_i.name + "_raw"] = raw_penalty_i.tolist()
                     event[penalty_fn_i.name + "_adjusted"] = adjusted_penalty_i.tolist()
                     event[penalty_fn_i.name + "_applied"] = applied_penalty_i.tolist()
-                bt.logging.trace(str(penalty_fn_i.name), applied_penalty_i.tolist())
-                bt.logging.info(
-                    f"Applied penalty function: {penalty_fn_i.name} in {penalty_execution_time:.2f} seconds"
-                )
 
             self.log_event(prompts, event, start_time, uids, rewards)
 

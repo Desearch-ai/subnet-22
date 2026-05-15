@@ -1,4 +1,5 @@
 """Pure-code response checks shared between cheap penalties and deep reward models."""
+
 import re
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
@@ -20,6 +21,7 @@ AI_SEARCH_RESULT_FIELDS = (
     "reddit_search_results",
     "hacker_news_search_results",
 )
+AI_ALL_RESULT_FIELDS = ("miner_tweets",) + AI_SEARCH_RESULT_FIELDS
 
 
 def extract_markdown_links(text: str) -> List[Tuple[str, str]]:
@@ -44,9 +46,9 @@ def normalize_source_url(url: str) -> str:
     and query string are kept — miner is accountable for matching those."""
     url = (url or "").strip().lower()
     if url.startswith("https://www."):
-        url = "https://" + url[len("https://www."):]
+        url = "https://" + url[len("https://www.") :]
     elif url.startswith("http://www."):
-        url = "http://" + url[len("http://www."):]
+        url = "http://" + url[len("http://www.") :]
     return WebSearchUtils.remove_trailing_slash(url)
 
 
@@ -61,11 +63,17 @@ def collect_summary_sources(response: ScraperStreamingSynapse) -> set:
             username = tweet.get("user", {}).get("username", "")
             tweet_id = tweet.get("id", "")
             if username and tweet_id:
-                sources.add(normalize_source_url(f"https://x.com/{username}/status/{tweet_id}"))
+                sources.add(
+                    normalize_source_url(f"https://x.com/{username}/status/{tweet_id}")
+                )
 
     for field in AI_SEARCH_RESULT_FIELDS:
         for result in getattr(response, field, []) or []:
-            link = result.get("link") if isinstance(result, dict) else getattr(result, "link", None)
+            link = (
+                result.get("link")
+                if isinstance(result, dict)
+                else getattr(result, "link", None)
+            )
             if link:
                 sources.add(normalize_source_url(link))
 
@@ -74,7 +82,11 @@ def collect_summary_sources(response: ScraperStreamingSynapse) -> set:
 
 def verify_summary_links(response: ScraperStreamingSynapse) -> Tuple[int, int]:
     """Returns (verified_count, total_count) for markdown links in the final summary."""
-    summary = response.texts.get(ScraperTextRole.FINAL_SUMMARY.value, "") if response.texts else ""
+    summary = (
+        response.texts.get(ScraperTextRole.FINAL_SUMMARY.value, "")
+        if response.texts
+        else ""
+    )
     links = [url for _, url in extract_markdown_links(summary)]
     if not links:
         return 0, 0
@@ -87,7 +99,11 @@ def parse_tweet_date(value: str) -> Optional[datetime]:
     """Parse Twitter's '%a %b %d %H:%M:%S %z %Y' or ISO 8601."""
     if not value:
         return None
-    for fmt in ("%a %b %d %H:%M:%S %z %Y", "%Y-%m-%d_%H:%M:%S_%Z", "%Y-%m-%dT%H:%M:%SZ"):
+    for fmt in (
+        "%a %b %d %H:%M:%S %z %Y",
+        "%Y-%m-%d_%H:%M:%S_%Z",
+        "%Y-%m-%dT%H:%M:%SZ",
+    ):
         try:
             dt = datetime.strptime(value, fmt)
             return dt if dt.tzinfo else dt.replace(tzinfo=pytz.UTC)
