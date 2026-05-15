@@ -27,6 +27,9 @@ from neurons.validators.penalty.date_range_penalty import DateRangePenaltyModel
 from neurons.validators.penalty.duplicate_results_penalty import (
     DuplicateResultsPenaltyModel,
 )
+from neurons.validators.penalty.min_realistic_time_penalty import (
+    MinRealisticTimePenaltyModel,
+)
 from neurons.validators.penalty.miner_score_penalty import MinerScorePenaltyModel
 from neurons.validators.penalty.result_schema_penalty import ResultSchemaPenaltyModel
 from neurons.validators.penalty.streaming_penalty import StreamingPenaltyModel
@@ -113,6 +116,7 @@ class AdvancedScraperValidator(BaseScraperValidator):
         penalty_functions = [
             StreamingPenaltyModel(max_penalty=1, neuron=neuron),
             TimeoutPenaltyModel(max_penalty=1, neuron=neuron),
+            MinRealisticTimePenaltyModel(min_realistic_time=5.0, neuron=neuron),
             MinerScorePenaltyModel(max_penalty=1, neuron=neuron),
             CountPenaltyModel(max_penalty=1, neuron=neuron),
             SummaryStructurePenaltyModel(max_penalty=1, neuron=neuron),
@@ -186,7 +190,9 @@ class AdvancedScraperValidator(BaseScraperValidator):
             )
             success = status == 200
         except Exception as e:
-            bt.logging.error(f"[{self.search_type}] dendrite stream failed uid={uid}: {e}")
+            bt.logging.error(
+                f"[{self.search_type}] dendrite stream failed uid={uid}: {e}"
+            )
 
         await capacity.note_call_result(uid, self.search_type, success)
 
