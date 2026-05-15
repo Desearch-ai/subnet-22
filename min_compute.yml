@@ -12,9 +12,9 @@ version: "1.0.4" # update this version key as needed, ideally should match your 
 compute_spec:
     miner:
         cpu:
-            min_cores: 4 # Minimum number of CPU cores
+            min_cores: 2 # Minimum number of CPU cores
             min_speed: 2.5 # Minimum speed per core (GHz)
-            recommended_cores: 8 # Recommended number of CPU cores
+            recommended_cores: 4 # Recommended number of CPU cores
             recommended_speed: 3.5 # Recommended speed per core (GHz)
             architecture: "x86_64" # Architecture type (e.g., x86_64, arm64)
 
@@ -33,7 +33,7 @@ compute_spec:
 
         os:
             name: "Ubuntu" # Name of the preferred operating system(s)
-            version: 20.04 # Version of the preferred operating system(s)
+            version: 24.04 # Version of the preferred operating system(s)
 
     validator:
         cpu:
@@ -58,7 +58,7 @@ compute_spec:
 
         os:
             name: "Ubuntu" # Name of the preferred operating system(s)
-            version: 20.04 # Version of the preferred operating system(s)
+            version: 24.04 # Version of the preferred operating system(s)
 
 network_spec:
     bandwidth:

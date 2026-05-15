@@ -18,14 +18,22 @@ SEARCH_TYPE_WEIGHTS = {
     "web_search": 0.20,
 }
 
-ORGANIC_DEEP_SCORE_WEIGHT = 5
-ORGANIC_SCORE_CAP_PER_TYPE = 100
+ORGANIC_VALUE_MULTIPLIER = 3
+ORGANIC_DEEP_CAP_PER_TYPE = 100
 
 # Superlinear incentive formula: score = quality^alpha * volume^beta.
 # Both >1 make consolidating a UID strictly more profitable than splitting,
 # so two half-volume sybil UIDs always earn less than one full-volume UID.
 QUALITY_EXPONENT_ALPHA = 1.5
 VOLUME_EXPONENT_BETA = 1.5
+
+BATCH_SIZE = 20
+BATCH_INTERVAL_SECONDS = 5
+GROUP_SIZE = 5
+
+DEEP_SAMPLE_RATE = 0.20
+DEEP_SAMPLE_FLOOR = 1
+DEEP_SAMPLE_WEIGHT = 5
 
 
 def combine_superlinear_scores(
@@ -134,67 +142,135 @@ class QueryScheduler:
                 f"[QueryScheduler] Scoring query failed uid={uid} type={search_type}: {e}"
             )
 
-    async def _score_search_type(
+    async def _dispatch_epoch(
         self,
-        search_type: str,
         items: list,
         time_range_start: datetime,
-    ) -> dict[int, tuple[float, int]]:
-        """
-        Score one search type for a completed epoch. Returns per-UID
-        ``(quality, volume)``: quality is a 5x-organic-weighted mean of
-        per-response rewards (0-1); volume is the raw count of responses
-        scored for that UID.
-        """
-        validator = self.validators.get(search_type)
-        if validator is None or not items:
-            return {}
+    ) -> None:
+        """Dispatch AI, X, Web sequentially. Each phase walks sorted UIDs in
+        groups of GROUP_SIZE; UIDs within a group run concurrently."""
+        for search_type in SEARCH_TYPES:
+            if self._current_hour_start() != time_range_start:
+                return
 
-        uids = np.array([item["uid"] for item in items], dtype=np.int64)
+            grouped: dict[int, list] = defaultdict(list)
+            for item in items:
+                if item["search_type"] == search_type:
+                    grouped[item["uid"]].append(item)
+
+            sorted_uids = sorted(grouped)
+            bt.logging.info(
+                f"[QueryScheduler] Phase {search_type}: "
+                f"{sum(len(v) for v in grouped.values())} queries "
+                f"across {len(sorted_uids)} UIDs in groups of {GROUP_SIZE}"
+            )
+
+            for start in range(0, len(sorted_uids), GROUP_SIZE):
+                if self._current_hour_start() != time_range_start:
+                    return
+                group = sorted_uids[start : start + GROUP_SIZE]
+                await asyncio.gather(
+                    *[
+                        self._dispatch_uid(
+                            uid, search_type, grouped[uid], time_range_start
+                        )
+                        for uid in group
+                    ],
+                    return_exceptions=True,
+                )
+
+    async def _dispatch_uid(
+        self,
+        uid: int,
+        search_type: str,
+        uid_items: list,
+        time_range_start: datetime,
+    ) -> None:
+        """Fire one UID's queries in BATCH_SIZE bursts, BATCH_INTERVAL_SECONDS apart."""
+        batches = [
+            uid_items[i : i + BATCH_SIZE]
+            for i in range(0, len(uid_items), BATCH_SIZE)
+        ]
+
+        for batch_idx, batch in enumerate(batches):
+            if self._current_hour_start() != time_range_start:
+                return
+
+            if batch_idx > 0:
+                await asyncio.sleep(BATCH_INTERVAL_SECONDS)
+
+            # Fire-and-forget so the next batch fires on schedule regardless of miner latency.
+            for item in batch:
+                asyncio.create_task(
+                    self._send_and_save(
+                        search_type, uid, item["query"], time_range_start
+                    )
+                )
+
+    def _sample_deep_synth(self, synth_items: list) -> set[int]:
+        """Pick DEEP_SAMPLE_RATE of each UID's synth items (floor DEEP_SAMPLE_FLOOR)."""
+        by_uid: dict[int, list[int]] = defaultdict(list)
+        for idx, item in enumerate(synth_items):
+            by_uid[item["uid"]].append(idx)
+        sampled: set[int] = set()
+        for indices in by_uid.values():
+            n = max(DEEP_SAMPLE_FLOOR, round(len(indices) * DEEP_SAMPLE_RATE))
+            sampled.update(random.sample(indices, min(n, len(indices))))
+        return sampled
+
+    def _sample_organic_deep(self, organic_items: list) -> set[int]:
+        """Allocate ORGANIC_DEEP_CAP_PER_TYPE deep slots across UIDs proportional
+        to their organic count (largest-remainder), then pick that many at random
+        from each UID's organics."""
+        if len(organic_items) <= ORGANIC_DEEP_CAP_PER_TYPE:
+            return set(range(len(organic_items)))
+
+        by_uid: dict[int, list[int]] = defaultdict(list)
+        for idx, item in enumerate(organic_items):
+            by_uid[item["uid"]].append(idx)
+
+        total = len(organic_items)
+        cap = ORGANIC_DEEP_CAP_PER_TYPE
+        quotas_float = {uid: cap * len(idxs) / total for uid, idxs in by_uid.items()}
+        quotas = {uid: int(q) for uid, q in quotas_float.items()}
+        leftover = cap - sum(quotas.values())
+        if leftover > 0:
+            ordered = sorted(
+                by_uid,
+                key=lambda u: quotas_float[u] - quotas[u],
+                reverse=True,
+            )
+            for uid in ordered[:leftover]:
+                quotas[uid] += 1
+
+        sampled: set[int] = set()
+        for uid, n in quotas.items():
+            if n > 0:
+                sampled.update(random.sample(by_uid[uid], min(n, len(by_uid[uid]))))
+        return sampled
+
+    async def _run_full_scoring(
+        self,
+        validator,
+        items: list,
+        time_range_start: datetime,
+    ) -> np.ndarray:
+        if not items:
+            return np.zeros(0, dtype=np.float32)
         responses = [item["response"] for item in items]
-        kinds = [item.get("kind", "synthetic") for item in items]
-        prompts = [self._extract_prompt(response) for response in responses]
-        event = {}
-
-        bt.logging.info(
-            f"[QueryScheduler] Scoring {search_type}: {len(items)} responses"
-        )
-
+        uids = np.array([item["uid"] for item in items], dtype=np.int64)
+        prompts = [self._extract_prompt(r) for r in responses]
         result = await validator.compute_rewards_and_penalties(
-            event=event,
+            event={},
             prompts=prompts,
             responses=responses,
             uids=uids,
             start_time=time.time(),
             scoring_epoch_start=time_range_start,
         )
-
         if result is None:
-            return {}
-
-        rewards = result[0]
-
-        uid_totals: dict[int, float] = defaultdict(float)
-        uid_weights: dict[int, float] = defaultdict(float)
-        uid_volumes: dict[int, int] = defaultdict(int)
-
-        for uid_tensor, reward, kind in zip(uids, rewards.tolist(), kinds):
-            uid = uid_tensor.item()
-            weight = ORGANIC_DEEP_SCORE_WEIGHT if kind == "organic" else 1
-            uid_totals[uid] += weight * reward
-            uid_weights[uid] += weight
-            uid_volumes[uid] += 1
-
-        return {
-            uid: (uid_totals[uid] / uid_weights[uid], uid_volumes[uid])
-            for uid in uid_totals
-        }
-
-    def _sample_organics(self, organics: list) -> list:
-        """Cap organics per search type using uniform random sampling."""
-        if len(organics) <= ORGANIC_SCORE_CAP_PER_TYPE:
-            return organics
-        return random.sample(organics, ORGANIC_SCORE_CAP_PER_TYPE)
+            return np.zeros(len(items), dtype=np.float32)
+        return np.asarray(result[0], dtype=np.float32)
 
     async def _score_one_type(
         self,
@@ -205,38 +281,102 @@ class QueryScheduler:
         window_start: str,
         allocations: dict[int, int],
     ) -> dict[int, tuple[float, int]]:
-        """Merge synth + organic sample for one type, score it, and update
-        capacity per UID. Returns per-UID ``(quality, volume)`` for the combine
-        step, or an empty dict if nothing scored."""
-        if self.validators.get(search_type) is None:
+        """Score synth + organic for one type and update capacity per UID.
+
+        Four buckets, each carrying its own weight in the per-UID mean:
+            synth-cheap   = 1
+            synth-deep    = DEEP_SAMPLE_WEIGHT
+            organic-cheap = ORGANIC_VALUE_MULTIPLIER
+            organic-deep  = ORGANIC_VALUE_MULTIPLIER * DEEP_SAMPLE_WEIGHT
+
+        Synthetics: 20% per-UID deep sample, cheap on the rest. Organics: code
+        checks on all, ORGANIC_DEEP_CAP_PER_TYPE deep slots distributed across
+        UIDs proportional to their organic count."""
+        validator = self.validators.get(search_type)
+        if validator is None:
             return {}
 
-        synth_items = [
-            {**item, "kind": "synthetic"} for item in synthetics.get(search_type, [])
-        ]
-        organic_pool = organics.get(search_type, [])
-        organic_sample = self._sample_organics(organic_pool)
-        organic_items = [{**item, "kind": "organic"} for item in organic_sample]
+        synth_items = synthetics.get(search_type, [])
+        organic_items = organics.get(search_type, [])
 
-        merged = synth_items + organic_items
-        if not merged:
+        if not synth_items and not organic_items:
             return {}
+
+        deep_synth_idx = self._sample_deep_synth(synth_items)
+        deep_synth = [item for i, item in enumerate(synth_items) if i in deep_synth_idx]
+        cheap_synth = [item for i, item in enumerate(synth_items) if i not in deep_synth_idx]
+
+        deep_organic_idx = self._sample_organic_deep(organic_items)
+        deep_organic = [item for i, item in enumerate(organic_items) if i in deep_organic_idx]
+        cheap_organic = [item for i, item in enumerate(organic_items) if i not in deep_organic_idx]
 
         bt.logging.info(
             f"[QueryScheduler] {search_type}: "
-            f"{len(synth_items)} synthetic + {len(organic_items)} organic "
-            f"(pool={len(organic_pool)}, cap={ORGANIC_SCORE_CAP_PER_TYPE})"
+            f"synth={len(synth_items)} (deep={len(deep_synth)}, cheap={len(cheap_synth)}), "
+            f"organic={len(organic_items)} (deep={len(deep_organic)}, cheap={len(cheap_organic)})"
         )
 
-        try:
-            uid_results = await self._score_search_type(
-                search_type, merged, time_range_start
-            )
-        except Exception as e:
-            bt.logging.error(f"[QueryScheduler] Error scoring {search_type}: {e}")
-            return {}
+        uid_totals: dict[int, float] = defaultdict(float)
+        uid_weights: dict[int, float] = defaultdict(float)
+        uid_volumes: dict[int, int] = defaultdict(int)
 
-        for uid, (quality, _volume) in uid_results.items():
+        cheap_items = cheap_synth + cheap_organic
+        if cheap_items:
+            try:
+                cheap_scores = await validator.compute_cheap_scores(
+                    [item["response"] for item in cheap_items],
+                    np.array([item["uid"] for item in cheap_items], dtype=np.int64),
+                )
+            except Exception as e:
+                bt.logging.error(
+                    f"[QueryScheduler] Cheap scoring failed {search_type}: {e}"
+                )
+                cheap_scores = np.zeros(len(cheap_items), dtype=np.float32)
+            scores = cheap_scores.tolist()
+            for i, item in enumerate(cheap_synth):
+                uid = item["uid"]
+                uid_totals[uid] += scores[i]
+                uid_weights[uid] += 1
+                uid_volumes[uid] += 1
+            offset = len(cheap_synth)
+            for i, item in enumerate(cheap_organic):
+                uid = item["uid"]
+                uid_totals[uid] += ORGANIC_VALUE_MULTIPLIER * scores[offset + i]
+                uid_weights[uid] += ORGANIC_VALUE_MULTIPLIER
+                uid_volumes[uid] += 1
+
+        deep_items = deep_synth + deep_organic
+        if deep_items:
+            try:
+                full_scores = await self._run_full_scoring(
+                    validator, deep_items, time_range_start
+                )
+            except Exception as e:
+                bt.logging.error(
+                    f"[QueryScheduler] Full scoring failed {search_type}: {e}"
+                )
+                full_scores = np.zeros(len(deep_items), dtype=np.float32)
+            scores = full_scores.tolist()
+            for i, item in enumerate(deep_synth):
+                uid = item["uid"]
+                uid_totals[uid] += DEEP_SAMPLE_WEIGHT * scores[i]
+                uid_weights[uid] += DEEP_SAMPLE_WEIGHT
+                uid_volumes[uid] += 1
+            offset = len(deep_synth)
+            organic_deep_weight = ORGANIC_VALUE_MULTIPLIER * DEEP_SAMPLE_WEIGHT
+            for i, item in enumerate(deep_organic):
+                uid = item["uid"]
+                uid_totals[uid] += organic_deep_weight * scores[offset + i]
+                uid_weights[uid] += organic_deep_weight
+                uid_volumes[uid] += 1
+
+        uid_results = {
+            uid: (uid_totals[uid] / uid_weights[uid], uid_volumes[uid])
+            for uid in uid_totals
+            if uid_weights[uid] > 0
+        }
+
+        for uid, (quality, _) in uid_results.items():
             await capacity.update_after_scoring(
                 uid=uid,
                 search_type=search_type,
@@ -386,37 +526,20 @@ class QueryScheduler:
                     await asyncio.sleep(self._seconds_until_next_hour())
                     continue
 
-                # Allocate the per-type budget across active UIDs by quality
+                # Each UID's allocation is its current verified concurrency,
+                # which capacity ramps after each scoring window.
                 allocations_by_type: dict[str, dict[int, int]] = {}
-
                 for st in SEARCH_TYPES:
                     rows = await miner_db.get_allocation_state(st)
-                    default = (0.0, capacity.DEFAULT_PER_UID, capacity.DEFAULT_PER_UID)
-                    quality_for_active = {
-                        uid: rows.get(uid, default)[0] for uid in available_uids
+                    allocations_by_type[st] = {
+                        uid: rows.get(uid, (0.0, 0, capacity.DEFAULT_PER_UID))[2]
+                        for uid in available_uids
                     }
-                    declared_for_active = {
-                        uid: rows.get(uid, default)[1] for uid in available_uids
-                    }
-                    prev_alloc_for_active = {
-                        uid: rows.get(uid, default)[2] for uid in available_uids
-                    }
-                    allocations_by_type[st] = capacity.allocate_synthetic_budget(
-                        quality_for_active,
-                        declared_for_active,
-                        prev_alloc_for_active,
-                    )
-                    await miner_db.bulk_update_verified(st, allocations_by_type[st])
 
                 previous_allocations = allocations_by_type
 
-                # Batch-generate all queries for this epoch. When starting
-                # mid-hour, compress delays into the remaining window so the
-                # spread still fits before the next boundary.
                 items = await self.generator.generate_epoch_queries(
                     available_uids,
-                    self.SPREAD_SECONDS,
-                    delay_start=elapsed_at_start,
                     verified_by_type=allocations_by_type,
                 )
 
@@ -428,37 +551,8 @@ class QueryScheduler:
                     f"across {len(available_uids)} UIDs"
                 )
 
-                # Dispatch each pre-generated item at its scheduled fire time
-                for item in items:
-                    # Abort if the hour has changed (new epoch)
-                    current_hour = self._current_hour_start()
-                    if current_hour != time_range_start:
-                        bt.logging.info(
-                            "[QueryScheduler] Hour changed during dispatch, "
-                            "breaking to start new epoch."
-                        )
-                        break
+                await self._dispatch_epoch(items, time_range_start)
 
-                    # Seconds elapsed since this hour started
-                    elapsed = (
-                        datetime.now(timezone.utc) - time_range_start
-                    ).total_seconds()
-
-                    wait_seconds = item["delay_seconds"] - elapsed
-                    if wait_seconds > 0:
-                        await asyncio.sleep(wait_seconds)
-
-                    # Fire-and-forget dispatch
-                    asyncio.create_task(
-                        self._send_and_save(
-                            item["search_type"],
-                            item["uid"],
-                            item["query"],
-                            time_range_start,
-                        )
-                    )
-
-                # All items dispatched (or hour changed) — wait for next hour
                 sleep_seconds = self._seconds_until_next_hour()
                 bt.logging.info(
                     f"[QueryScheduler] All queries dispatched for "

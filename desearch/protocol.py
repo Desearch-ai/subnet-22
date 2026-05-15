@@ -554,6 +554,27 @@ class ScraperStreamingSynapse(StreamingSynapse):
 
         return search_results, links_expected
 
+    def get_links_from_tweets(self) -> List[str]:
+        """Parse ``miner_tweets`` through the TwitterScraperTweet model and
+        return canonical tweet URLs (preserves order, dedups). Items that fail
+        schema validation are skipped."""
+        if not self.miner_tweets:
+            return []
+
+        links: List[str] = []
+        for raw in self.miner_tweets:
+            if not isinstance(raw, dict):
+                continue
+            try:
+                tweet = TwitterScraperTweet(**raw)
+            except pydantic.ValidationError:
+                continue
+            if tweet.url:
+                links.append(tweet.url)
+            elif tweet.user and tweet.user.username and tweet.id:
+                links.append(f"https://x.com/{tweet.user.username}/status/{tweet.id}")
+        return list(dict.fromkeys(links))
+
     def get_links_from_search_results(self) -> Tuple[List[str], Dict[str, List[str]]]:
         """Extracts links from search results based on tools used.
 

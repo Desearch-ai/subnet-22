@@ -12,6 +12,8 @@ DEFAULT_TIMEOUT_GRACE_SECONDS = 5.0
 
 
 class TimeoutPenaltyModel(BasePenaltyModel):
+    is_deep = False
+
     def __init__(
         self,
         max_penalty: float = MAX_PENALTY,
@@ -77,7 +79,5 @@ class TimeoutPenaltyModel(BasePenaltyModel):
             penalty_step = self.max_penalty / timeout_window
             penalty = min(elapsed_seconds * penalty_step, self.max_penalty)
             penalties[index] = penalty
-
-        bt.logging.info(f"Timeout Penalties: {penalties.tolist()}")
 
         return penalties
