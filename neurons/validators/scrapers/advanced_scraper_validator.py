@@ -273,14 +273,6 @@ class AdvancedScraperValidator(BaseScraperValidator):
                 val_scores.append(val_score_responses)
         return val_scores
 
-    def build_response_extras(self, responses) -> dict:
-        return {
-            "C": [
-                len(r.completion) if r.completion is not None else 0
-                for r in responses
-            ]
-        }
-
     def populate_wandb_uid_data(self, wandb_data, uid, reward, response, reward_values):
         wandb_data["scores"][uid] = reward
         wandb_data["responses"][uid] = response.completion

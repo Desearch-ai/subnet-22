@@ -127,11 +127,6 @@ class BaseScraperValidator:
         """Override in subclasses that need to pass additional params to penalties (e.g. val_scores)."""
         return None
 
-    def build_response_extras(self, responses) -> dict:
-        """Override to add per-response columns to the reward log. Returns
-        ``label -> list[value]`` aligned with ``responses``."""
-        return {}
-
     def build_wandb_data(self, uids, rewards, responses, all_rewards):
         """Build W&B logging data. Override for custom reward key mapping."""
         wandb_data = {
@@ -236,7 +231,6 @@ class BaseScraperValidator:
                 name=f"{self.search_type} total",
                 uids=uids,
                 scores=rewards.tolist(),
-                extras=self.build_response_extras(responses),
             )
 
             # Build per-uid reward values for wandb
