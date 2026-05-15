@@ -1,6 +1,6 @@
 import time
 from datetime import datetime, timezone
-from typing import List, Optional
+from typing import List
 
 import bittensor as bt
 import numpy as np
@@ -12,6 +12,7 @@ from neurons.validators.clients.miner_response_logger import (
     build_reward_payload,
     submit_logs_best_effort,
 )
+from neurons.validators.reward.reward import log_reward_aggregates
 from neurons.validators.scoring import capacity
 
 
@@ -126,9 +127,10 @@ class BaseScraperValidator:
         """Override in subclasses that need to pass additional params to penalties (e.g. val_scores)."""
         return None
 
-    def build_uid_log_message(self, uid, reward, response):
-        """Override in subclasses that need custom per-UID log formatting."""
-        return f"UID: {uid}, R: {round(reward, 3)}"
+    def build_response_extras(self, responses) -> dict:
+        """Override to add per-response columns to the reward log. Returns
+        ``label -> list[value]`` aligned with ``responses``."""
+        return {}
 
     def build_wandb_data(self, uids, rewards, responses, all_rewards):
         """Build W&B logging data. Override for custom reward key mapping."""
@@ -230,21 +232,11 @@ class BaseScraperValidator:
             uid_scores_dict = {}
             wandb_data = self.build_wandb_data(uids, rewards, responses, all_rewards)
 
-            bt.logging.info(
-                f"======================== Reward ==========================="
-            )
-            # Initialize an empty list to accumulate log messages
-            log_messages = []
-            for uid_tensor, reward, response in zip(uids, rewards.tolist(), responses):
-                uid = uid_tensor.item()
-                log_messages.append(self.build_uid_log_message(uid, reward, response))
-
-            # Log the accumulated messages in groups of three
-            for i in range(0, len(log_messages), 3):
-                bt.logging.info(" | ".join(log_messages[i : i + 3]))
-
-            bt.logging.info(
-                f"======================== Reward ==========================="
+            log_reward_aggregates(
+                name=f"{self.search_type} total",
+                uids=uids,
+                scores=rewards.tolist(),
+                extras=self.build_response_extras(responses),
             )
 
             # Build per-uid reward values for wandb

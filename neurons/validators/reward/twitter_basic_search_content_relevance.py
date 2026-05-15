@@ -1,22 +1,3 @@
-# The MIT License (MIT)
-# Copyright © 2023 Yuma Rao
-# Copyright © 2023 Opentensor Foundation
-
-# Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated
-# documentation files (the “Software”), to deal in the Software without restriction, including without limitation
-# the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software,
-# and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
-
-# The above copyright notice and this permission notice shall be included in all copies or substantial portions of
-# the Software.
-
-# THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO
-# THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
-# THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-# OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-# DEALINGS IN THE SOFTWARE.
-
-import json
 import random
 import time
 import traceback
@@ -41,7 +22,7 @@ from desearch.utils import (
 from neurons.validators.base_validator import AbstractNeuron
 
 from .config import RewardModelType
-from .reward import BaseRewardEvent, BaseRewardModel
+from .reward import BaseRewardEvent, BaseRewardModel, log_reward_aggregates
 
 APIFY_LINK_SCRAPE_AMOUNT = 1
 
@@ -711,42 +692,24 @@ class TwitterBasicSearchContentRelevanceModel(BaseRewardModel):
             _ = await self.process_tweets(responses=responses)
 
             reward_events = []
-            zero_scores = {}
-            non_zero_scores = {}
             grouped_val_score_responses = {}
 
-            # Step 2: for each response, compute a final score
             for response, uid_tensor in zip(responses, uids):
-                # If uid_tensor is a PyTorch or NumPy scalar, .item() extracts the integer
                 uid = uid_tensor.item() if hasattr(uid_tensor, "item") else uid_tensor
 
                 final_score = self.check_tweet_content(response)
 
-                bt.logging.info(f"UID {uid}: check_tweet_content => {final_score}")
-
-                # Step 3: create a reward event
                 reward_event = BaseRewardEvent()
                 reward_event.reward = final_score
                 reward_events.append(reward_event)
 
-                # Keep track of final_score for logging
-                if final_score == 0:
-                    zero_scores[uid] = final_score
-                else:
-                    non_zero_scores[uid] = final_score
-
-                # Populate grouped_val_score_responses with final_score
                 grouped_val_score_responses[uid] = final_score
 
-            # Step 4: Log zero vs. non-zero
-            bt.logging.info(
-                f"========== Twitter Link Content Zero Scores ({len(zero_scores)} cases) =========="
+            log_reward_aggregates(
+                name=self.name,
+                uids=uids,
+                scores=[e.reward for e in reward_events],
             )
-            bt.logging.info(json.dumps(zero_scores))
-            bt.logging.info(
-                f"======== Twitter Link Content Non-Zero Scores ({len(non_zero_scores)} cases) ========"
-            )
-            bt.logging.info(json.dumps(non_zero_scores))
 
             return reward_events, grouped_val_score_responses
         except Exception as e:

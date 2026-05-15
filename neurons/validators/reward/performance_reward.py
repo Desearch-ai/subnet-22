@@ -1,22 +1,3 @@
-# The MIT License (MIT)
-# Copyright © 2023 Yuma Rao
-# Copyright © 2023 Opentensor Foundation
-
-# Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated
-# documentation files (the “Software”), to deal in the Software without restriction, including without limitation
-# the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software,
-# and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
-
-# The above copyright notice and this permission notice shall be included in all copies or substantial portions of
-# the Software.
-
-# THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO
-# THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
-# THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-# OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-# DEALINGS IN THE SOFTWARE.
-
-import json
 import traceback
 from typing import Dict, List, Tuple
 
@@ -32,7 +13,7 @@ from desearch.protocol import (
 from neurons.validators.base_validator import AbstractNeuron
 
 from .config import RewardModelType
-from .reward import BaseRewardEvent, BaseRewardModel
+from .reward import BaseRewardEvent, BaseRewardModel, log_reward_aggregates
 
 
 class PerformanceRewardModel(BaseRewardModel):
@@ -143,18 +124,10 @@ class PerformanceRewardModel(BaseRewardModel):
                 )
                 reward_events.append(reward_event)
 
-            zero_rewards = [event for event in reward_events if event.reward == 0]
-            non_zero_rewards = [event for event in reward_events if event.reward != 0]
-
-            bt.logging.info(
-                f"==================================Performance Reward Zero Rewards ({len(zero_rewards)} cases)=================================="
-            )
-            bt.logging.info(json.dumps([event.reward for event in zero_rewards]))
-            bt.logging.info(
-                f"==================================Performance Reward Non-Zero Rewards ({len(non_zero_rewards)} cases)=================================="
-            )
-            bt.logging.info(
-                json.dumps([round(event.reward, 6) for event in non_zero_rewards])
+            log_reward_aggregates(
+                name=self.name,
+                uids=uids,
+                scores=[event.reward for event in reward_events],
             )
             return reward_events, {}
         except Exception as e:

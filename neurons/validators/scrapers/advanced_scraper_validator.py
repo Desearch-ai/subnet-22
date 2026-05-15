@@ -273,12 +273,13 @@ class AdvancedScraperValidator(BaseScraperValidator):
                 val_scores.append(val_score_responses)
         return val_scores
 
-    def build_uid_log_message(self, uid, reward, response):
-        completion_length = (
-            len(response.completion) if response.completion is not None else 0
-        )
-        bt.logging.trace(f"{response.completion}")
-        return f"UID: {uid}, R: {round(reward, 3)}, C: {completion_length}"
+    def build_response_extras(self, responses) -> dict:
+        return {
+            "C": [
+                len(r.completion) if r.completion is not None else 0
+                for r in responses
+            ]
+        }
 
     def populate_wandb_uid_data(self, wandb_data, uid, reward, response, reward_values):
         wandb_data["scores"][uid] = reward

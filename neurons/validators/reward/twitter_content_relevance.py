@@ -1,55 +1,33 @@
-# The MIT License (MIT)
-# Copyright © 2023 Yuma Rao
-# Copyright © 2023 Opentensor Foundation
-
-# Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated
-# documentation files (the “Software”), to deal in the Software without restriction, including without limitation
-# the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software,
-# and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
-
-# The above copyright notice and this permission notice shall be included in all copies or substantial portions of
-# the Software.
-
-# THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO
-# THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
-# THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-# OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-# DEALINGS IN THE SOFTWARE.
-import traceback
-import time
-import bittensor as bt
 import random
-import asyncio
 import re
-import html
-import random
+import time
+import traceback
+from datetime import datetime
 from typing import List
 
-from neurons.validators.base_validator import AbstractNeuron
+import bittensor as bt
+import pytz
 
-from .config import RewardModelType
-from .reward import BaseRewardModel, BaseRewardEvent, pattern_to_check
-from neurons.validators.utils.prompts import (
-    LinkContentPrompt,
-)
-from desearch.protocol import (
-    ScraperStreamingSynapse,
-    TwitterScraperTweet,
-)
-from neurons.validators.apify.twitter_scraper_actor import TwitterScraperActor
+from desearch.protocol import ScraperStreamingSynapse
 from desearch.services.twitter_api_wrapper import TwitterAPIClient
-from neurons.validators.reward.reward_llm import RewardLLM
-from neurons.validators.utils.prompts import LinkContentPrompt
+from desearch.services.twitter_utils import TwitterUtils
 from desearch.utils import (
     clean_text,
     format_text_for_match,
     is_valid_tweet,
     scrape_tweets_with_retries,
 )
-from desearch.services.twitter_utils import TwitterUtils
-import json
-from datetime import datetime
-import pytz
+from neurons.validators.base_validator import AbstractNeuron
+from neurons.validators.reward.reward_llm import RewardLLM
+from neurons.validators.utils.prompts import LinkContentPrompt
+
+from .config import RewardModelType
+from .reward import (
+    BaseRewardEvent,
+    BaseRewardModel,
+    log_reward_aggregates,
+    pattern_to_check,
+)
 
 APIFY_LINK_SCRAPE_AMOUNT = 3
 
@@ -78,7 +56,7 @@ class TwitterContentRelevanceModel(BaseRewardModel):
 
     async def llm_process_validator_tweets(self, response: ScraperStreamingSynapse):
         if not response.validator_tweets:
-            return {}
+            return {}, 0.0
 
         start_llm_time = time.time()
         scoring_messages = []
@@ -96,12 +74,7 @@ class TwitterContentRelevanceModel(BaseRewardModel):
                 scoring_messages.append({str(val_tweet_id): scoring_text})
         score_responses = await self.reward_llm.llm_processing(scoring_messages)
 
-        end_llm_time = time.time()
-        llm_duration_minutes = (end_llm_time - start_llm_time) / 60
-        bt.logging.info(
-            f"TwitterContentRelevanceModel LLM process validator tweets took {llm_duration_minutes} minutes."
-        )
-        return score_responses
+        return score_responses, time.time() - start_llm_time
 
     async def process_tweets(self, responses: List[ScraperStreamingSynapse]):
         default_val_score_responses = [{} for _ in responses]
@@ -165,11 +138,22 @@ class TwitterContentRelevanceModel(BaseRewardModel):
                     f"Unique Twitter Links Amount: {len(unique_links)}; List: {unique_links};"
                 )
 
-            val_score_responses_list = await self.process_response_items_in_batches(
+            batch_results = await self.process_response_items_in_batches(
                 responses=responses,
                 batch_size=20,
                 process_function=self.llm_process_validator_tweets,
             )
+
+            val_score_responses_list = [r[0] for r in batch_results]
+            durations = [r[1] for r in batch_results if r[1] > 0]
+            if durations:
+                bt.logging.info(
+                    f"[Reward {self.name}] LLM validator tweets: "
+                    f"{len(durations)} batches | "
+                    f"total={sum(durations) / 60:.2f}min "
+                    f"mean={sum(durations) / len(durations):.2f}s "
+                    f"min={min(durations):.2f}s max={max(durations):.2f}s"
+                )
 
             return val_score_responses_list
         except Exception as e:
@@ -330,6 +314,7 @@ class TwitterContentRelevanceModel(BaseRewardModel):
             scoring_prompt = LinkContentPrompt()
 
             grouped_val_score_responses = []
+            missing_validator_tweets = []
 
             for apify_score, response, val_score_responses, uid_tensor in zip(
                 scores,
@@ -337,7 +322,6 @@ class TwitterContentRelevanceModel(BaseRewardModel):
                 val_score_responses_list,
                 uids,
             ):
-                uid = uid_tensor.item()
                 reward_event = BaseRewardEvent()
                 reward_event.reward = 0
 
@@ -360,6 +344,7 @@ class TwitterContentRelevanceModel(BaseRewardModel):
                 response.validator_tweets = unique_validator_tweets
 
                 if len(response.validator_tweets):
+                    missing_validator_tweets.append(0)
                     for val_tweet in response.validator_tweets:
                         val_tweet_id = val_tweet.id
                         if val_score_responses:
@@ -383,31 +368,17 @@ class TwitterContentRelevanceModel(BaseRewardModel):
                             max_links_threshold=response.count,
                         )
                 else:
-                    bt.logging.info(f"UID '{uid}' has no validator tweets.")
-                    reward_event.reward = 0  # Handle case with no validator tweets
+                    missing_validator_tweets.append(1)
+                    reward_event.reward = 0
                 reward_events.append(reward_event)
                 grouped_val_score_responses.append(response_scores)
 
-            zero_scores = {}
-            non_zero_scores = {}
-
-            for (index, response), uid_tensor, reward_e in zip(
-                enumerate(responses), uids, reward_events
-            ):
-                uid = uid_tensor.item()
-                if reward_e.reward == 0:
-                    zero_scores[uid] = reward_e.reward
-                else:
-                    non_zero_scores[uid] = reward_e.reward
-
-            bt.logging.info(
-                f"==================================Twitter Links Content scoring Zero Scores  ({len(zero_scores)} cases)=================================="
+            log_reward_aggregates(
+                name=self.name,
+                uids=uids,
+                scores=[e.reward for e in reward_events],
+                extras={"missing_val_tweets": missing_validator_tweets},
             )
-            bt.logging.info(json.dumps(zero_scores))
-            bt.logging.info(
-                f"==================================Twitter Links Content scoring Non-Zero Scores ({len(non_zero_scores)} cases)=================================="
-            )
-            bt.logging.info(json.dumps(non_zero_scores))
             return reward_events, grouped_val_score_responses
         except Exception as e:
             error_message = f"Link Content Relevance get_rewards: {str(e)}"

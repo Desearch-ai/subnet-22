@@ -1,27 +1,14 @@
-# The MIT License (MIT)
-# Copyright © 2023 Yuma Rao
-# Copyright © 2023 Opentensor Foundation
-
-# Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated
-# documentation files (the “Software”), to deal in the Software without restriction, including without limitation
-# the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software,
-# and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
-
-# The above copyright notice and this permission notice shall be included in all copies or substantial portions of
-# the Software.
-
-# THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO
-# THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
-# THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-# OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-# DEALINGS IN THE SOFTWARE.p
 import traceback
 import bittensor as bt
 import asyncio
 from typing import Dict, List, Tuple
 from neurons.validators.base_validator import AbstractNeuron
 from neurons.validators.reward.config import RewardModelType
-from neurons.validators.reward.reward import BaseRewardModel, BaseRewardEvent
+from neurons.validators.reward.reward import (
+    BaseRewardEvent,
+    BaseRewardModel,
+    log_reward_aggregates,
+)
 from neurons.validators.utils.prompts import SummaryRelevancePrompt
 from neurons.validators.reward.reward_llm import RewardLLM
 from desearch.protocol import ResultType, ScraperStreamingSynapse, ScraperTextRole
@@ -132,25 +119,11 @@ class SummaryRelevanceRewardModel(BaseRewardModel):
                         }
                     )
 
-            # Log scoring results
-            zero_scores = {
-                d["uid"]: d["score"] for d in scoring_details if d["score"] == 0
-            }
-            non_zero_scores = {
-                d["uid"]: d["score"] for d in scoring_details if d["score"] > 0
-            }
-
-            bt.logging.info(
-                f"{'='*30} Summary Relevance Zero Scores ({len(zero_scores)} cases) {'='*30}"
+            log_reward_aggregates(
+                name=self.name,
+                uids=[d["uid"] for d in scoring_details],
+                scores=[d["score"] for d in scoring_details],
             )
-            if zero_scores:
-                bt.logging.info(zero_scores)
-
-            bt.logging.info(
-                f"{'='*30} Summary Relevance Non-Zero Scores ({len(non_zero_scores)} cases) {'='*30}"
-            )
-            if non_zero_scores:
-                bt.logging.info(non_zero_scores)
 
             return reward_events, scoring_details
 

@@ -9,7 +9,9 @@ from tests_data.links.links import link1, link2, link3, link4, link5
 class WebBasicSearchContentRelevanceModelTestCase(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.scoring_type = None
-        self.model = WebBasicSearchContentRelevanceModel(self.scoring_type)
+        self.model = WebBasicSearchContentRelevanceModel(
+            self.scoring_type, neuron=None
+        )
 
     async def test_get_rewards(self):
         rewards, grouped_score = await self.model.get_rewards(
