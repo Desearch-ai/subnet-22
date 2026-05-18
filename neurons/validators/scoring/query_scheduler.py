@@ -21,11 +21,10 @@ SEARCH_TYPE_WEIGHTS = {
 ORGANIC_VALUE_MULTIPLIER = 3
 ORGANIC_DEEP_CAP_PER_TYPE = 100
 
-# Superlinear incentive formula: score = quality^alpha * volume^beta.
-# Both >1 make consolidating a UID strictly more profitable than splitting,
-# so two half-volume sybil UIDs always earn less than one full-volume UID.
-QUALITY_EXPONENT_ALPHA = 1.5
-VOLUME_EXPONENT_BETA = 1.5
+QUALITY_EXPONENT = 2.0
+VOLUME_EXPONENT = 1.2
+COVERAGE_EXPONENT = 2.0
+MIN_VOLUME_RATIO = 0.30
 
 BATCH_SIZE = 20
 BATCH_INTERVAL_SECONDS = 5
@@ -39,26 +38,43 @@ DEEP_SAMPLE_WEIGHT = 5
 def combine_superlinear_scores(
     qualities_per_type: dict[str, dict[int, tuple[float, int]]],
 ) -> dict[int, float]:
-    """
-    Fold per-type ``(quality, volume)`` into one superlinear score per UID:
-    ``score = (sum_t w_t * q_t)^alpha * (sum_t w_t * v_t)^beta`` where
-    ``w_t`` is ``SEARCH_TYPE_WEIGHTS[t]``.
-    """
+    """``score = coverage^CE * Σ w·served·q_eff^QE·v^VE`` (served = soft-floor v/max_v / MVR)"""
     all_uids: set[int] = set()
     for uid_q in qualities_per_type.values():
         all_uids.update(uid_q.keys())
 
+    threshold = capacity.QUALITY_THRESHOLD
     combined: dict[int, float] = {}
     for uid in all_uids:
-        q_combined = 0.0
-        v_combined = 0.0
-        for st, weight in SEARCH_TYPE_WEIGHTS.items():
-            q, v = qualities_per_type.get(st, {}).get(uid, (0.0, 0))
-            q_combined += weight * q
-            v_combined += weight * v
-        combined[uid] = (
-            q_combined**QUALITY_EXPONENT_ALPHA * v_combined**VOLUME_EXPONENT_BETA
-        )
+        qv = {
+            t: qualities_per_type.get(t, {}).get(uid, (0.0, 0))
+            for t in SEARCH_TYPE_WEIGHTS
+        }
+        max_v = max(v for _, v in qv.values())
+
+        served: dict[str, float] = {}
+        for t, (q, v) in qv.items():
+            if max_v == 0 or q < threshold:
+                served[t] = 0.0
+            else:
+                served[t] = min(1.0, (v / max_v) / MIN_VOLUME_RATIO)
+
+        coverage = sum(SEARCH_TYPE_WEIGHTS[t] * served[t] for t in SEARCH_TYPE_WEIGHTS)
+
+        per_type_sum = 0.0
+        for t, (q, v) in qv.items():
+            if served[t] == 0.0:
+                continue
+            q_eff = (q - threshold) / (1.0 - threshold)
+            per_type_sum += (
+                SEARCH_TYPE_WEIGHTS[t]
+                * served[t]
+                * q_eff**QUALITY_EXPONENT
+                * v**VOLUME_EXPONENT
+            )
+
+        combined[uid] = coverage**COVERAGE_EXPONENT * per_type_sum
+
     return combined
 
 
@@ -188,8 +204,7 @@ class QueryScheduler:
     ) -> None:
         """Fire one UID's queries in BATCH_SIZE bursts, BATCH_INTERVAL_SECONDS apart."""
         batches = [
-            uid_items[i : i + BATCH_SIZE]
-            for i in range(0, len(uid_items), BATCH_SIZE)
+            uid_items[i : i + BATCH_SIZE] for i in range(0, len(uid_items), BATCH_SIZE)
         ]
 
         for batch_idx, batch in enumerate(batches):
@@ -304,11 +319,17 @@ class QueryScheduler:
 
         deep_synth_idx = self._sample_deep_synth(synth_items)
         deep_synth = [item for i, item in enumerate(synth_items) if i in deep_synth_idx]
-        cheap_synth = [item for i, item in enumerate(synth_items) if i not in deep_synth_idx]
+        cheap_synth = [
+            item for i, item in enumerate(synth_items) if i not in deep_synth_idx
+        ]
 
         deep_organic_idx = self._sample_organic_deep(organic_items)
-        deep_organic = [item for i, item in enumerate(organic_items) if i in deep_organic_idx]
-        cheap_organic = [item for i, item in enumerate(organic_items) if i not in deep_organic_idx]
+        deep_organic = [
+            item for i, item in enumerate(organic_items) if i in deep_organic_idx
+        ]
+        cheap_organic = [
+            item for i, item in enumerate(organic_items) if i not in deep_organic_idx
+        ]
 
         bt.logging.info(
             f"[QueryScheduler] {search_type}: "
@@ -463,13 +484,8 @@ class QueryScheduler:
             try:
                 time_range_start = self._current_hour_start()
 
-                # On hour boundary: promote any staged declared-concurrency
-                # changes *before* firing scoring, so the ramp for the window
-                # we just ended sees the miner's current declared capability.
-                # Scoring then runs in the background so this hour's dispatch
-                # keeps its full 55-minute spread. Pass the previous epoch's
-                # allocations so historical window rows record the budget
-                # that was actually active, not the one we're about to write.
+                # Promote pending declared changes before scoring so the just-ended
+                # window ramps against current declared capacity.
                 if (
                     previous_time_range is not None
                     and time_range_start != previous_time_range
@@ -489,9 +505,7 @@ class QueryScheduler:
                         )
 
                         asyncio.create_task(
-                            self.score_epoch(
-                                previous_time_range, previous_allocations
-                            )
+                            self.score_epoch(previous_time_range, previous_allocations)
                         )
                     else:
                         bt.logging.info(
@@ -516,7 +530,6 @@ class QueryScheduler:
                     await asyncio.sleep(self._seconds_until_next_hour())
                     continue
 
-                # Snapshot the currently available UIDs
                 available_uids = list(self.neuron.available_uids)
 
                 if not available_uids:
@@ -526,8 +539,6 @@ class QueryScheduler:
                     await asyncio.sleep(self._seconds_until_next_hour())
                     continue
 
-                # Each UID's allocation is its current verified concurrency,
-                # which capacity ramps after each scoring window.
                 allocations_by_type: dict[str, dict[int, int]] = {}
                 for st in SEARCH_TYPES:
                     rows = await miner_db.get_allocation_state(st)

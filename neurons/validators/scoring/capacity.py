@@ -19,6 +19,7 @@ DEFAULT_PER_UID = 1
 HARD_CAP_PER_UID = 100
 QUALITY_THRESHOLD = 0.30
 RAMP_FRACTION = 0.10
+DECAY_FRACTION = 0.20
 
 UNREACHABLE_FAILURE_THRESHOLD = 1
 
@@ -39,12 +40,12 @@ def set_router(router: _RouterKillSwitch) -> None:
 
 
 def next_verified(current: int, declared: int, quality_avg: float) -> int:
-    """Ramp ``current`` by ``RAMP_FRACTION`` of declared toward the cap if
-    quality is healthy; otherwise decay by the same step toward the floor."""
+    """Ramp by ``RAMP_FRACTION``, decay by ``DECAY_FRACTION`` (faster exit than entry)."""
     declared = max(declared, DEFAULT_PER_UID)
-    step = max(1, int(declared * RAMP_FRACTION))
     if quality_avg >= QUALITY_THRESHOLD:
+        step = max(1, int(declared * RAMP_FRACTION))
         return min(current + step, declared, HARD_CAP_PER_UID)
+    step = max(1, int(declared * DECAY_FRACTION))
     return max(DEFAULT_PER_UID, current - step)
 
 

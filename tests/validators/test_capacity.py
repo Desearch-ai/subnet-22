@@ -1,4 +1,5 @@
 from neurons.validators.scoring.capacity import (
+    DECAY_FRACTION,
     DEFAULT_PER_UID,
     HARD_CAP_PER_UID,
     QUALITY_THRESHOLD,
@@ -14,8 +15,9 @@ def test_ramp_up_when_quality_passes():
 
 
 def test_ramp_down_when_quality_fails():
-    """Below threshold, verified decays by the same step."""
-    assert next_verified(current=50, declared=100, quality_avg=0.1) == 40
+    """Below threshold, decay step = DECAY_FRACTION * declared (faster than ramp)."""
+    assert next_verified(current=50, declared=100, quality_avg=0.1) == 30
+    assert DECAY_FRACTION > RAMP_FRACTION
 
 
 def test_decay_floors_at_default():
