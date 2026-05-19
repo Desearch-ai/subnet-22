@@ -65,10 +65,11 @@ def test_combine_split_uids_lose_to_higher_quality_solo():
 
 
 def test_combine_quality_gap_amplification_is_quadratic():
-    """A 0.10 quality gap between equally-sized miners produces a ~4x reward gap."""
+    """A 0.10 quality gap produces a (Δq_eff)² reward gap — steep near threshold."""
     a = combine_superlinear_scores(_uniform(0.5, 100, uid=1))
     b = combine_superlinear_scores(_uniform(0.4, 100, uid=2))
-    assert a[1] / b[2] == pytest.approx(4.0, rel=0.001)
+    expected = ((0.5 - QUALITY_THRESHOLD) / (0.4 - QUALITY_THRESHOLD)) ** 2
+    assert a[1] / b[2] == pytest.approx(expected, rel=0.001)
 
 
 def test_combine_ai_specialist_gets_partial_credit():
