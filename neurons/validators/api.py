@@ -57,7 +57,7 @@ async def lifespan(app):
     config_payload = await get_validator_config()
     validator_identity = config_payload["validator_identity"]
 
-    await miner_db.initialize(MINER_DB_PATH, readonly=True)
+    await miner_db.initialize(MINER_DB_PATH, owner=False)
 
     api = ValidatorAPI(
         config=config_payload["config"],

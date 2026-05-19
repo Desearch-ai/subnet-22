@@ -1,6 +1,6 @@
 import time
 from datetime import datetime, timezone
-from typing import List, Optional
+from typing import List
 
 import bittensor as bt
 import numpy as np
@@ -12,6 +12,7 @@ from neurons.validators.clients.miner_response_logger import (
     build_reward_payload,
     submit_logs_best_effort,
 )
+from neurons.validators.reward.reward import log_reward_aggregates
 from neurons.validators.scoring import capacity
 
 
@@ -54,6 +55,37 @@ class BaseScraperValidator:
             self.reward_weights, (n, self.reward_weights.shape[0])
         ).copy()
 
+    async def compute_cheap_scores(self, responses, uids) -> np.ndarray:
+        """Apply only non-deep reward + penalty functions and return per-response
+        scores in [0, 1]. Cheap reward weights are renormalized per row to sum
+        to 1 so cheap scores are comparable to full scores."""
+        if not responses:
+            return np.zeros(0, dtype=np.float32)
+
+        weights_matrix = self.compute_reward_weights_matrix(responses)
+        cheap_cols = np.array(
+            [not fn.is_deep for fn in self.reward_functions], dtype=bool
+        )
+        cheap_weight_sum = weights_matrix[:, cheap_cols].sum(axis=1)
+        cheap_weight_sum = np.where(cheap_weight_sum > 0, cheap_weight_sum, 1.0)
+
+        rewards = np.zeros(len(responses), dtype=np.float32)
+
+        for i, reward_fn in enumerate(self.reward_functions):
+            if reward_fn.is_deep:
+                continue
+            reward_i, _, _, _ = await reward_fn.apply(responses, uids)
+            weight = weights_matrix[:, i] / cheap_weight_sum
+            rewards += weight * np.asarray(reward_i, dtype=np.float32)
+
+        for penalty_fn in self.penalty_functions:
+            if penalty_fn.is_deep:
+                continue
+            _, _, applied = await penalty_fn.apply_penalties(responses, uids, None)
+            rewards *= np.asarray(applied, dtype=np.float32)
+
+        return rewards
+
     async def _dendrite_call(self, axon, synapse, uid: int):
         """Send a non-streaming synapse to a miner axon via dendrite. Tracks
         per-call success so consecutive failures flag the miner unreachable."""
@@ -94,10 +126,6 @@ class BaseScraperValidator:
     def get_penalty_additional_params(self, val_score_responses_list):
         """Override in subclasses that need to pass additional params to penalties (e.g. val_scores)."""
         return None
-
-    def build_uid_log_message(self, uid, reward, response):
-        """Override in subclasses that need custom per-UID log formatting."""
-        return f"UID: {uid}, R: {round(reward, 3)}"
 
     def build_wandb_data(self, uids, rewards, responses, all_rewards):
         """Build W&B logging data. Override for custom reward key mapping."""
@@ -185,17 +213,13 @@ class BaseScraperValidator:
                 ) = await penalty_fn_i.apply_penalties(
                     responses, uids, penalty_additional_params
                 )
-                penalty_start_time = time.time()
+
                 rewards *= np.asarray(applied_penalty_i, dtype=np.float32)
-                penalty_execution_time = time.time() - penalty_start_time
+
                 if not self.neuron.config.neuron.disable_log_rewards:
                     event[penalty_fn_i.name + "_raw"] = raw_penalty_i.tolist()
                     event[penalty_fn_i.name + "_adjusted"] = adjusted_penalty_i.tolist()
                     event[penalty_fn_i.name + "_applied"] = applied_penalty_i.tolist()
-                bt.logging.trace(str(penalty_fn_i.name), applied_penalty_i.tolist())
-                bt.logging.info(
-                    f"Applied penalty function: {penalty_fn_i.name} in {penalty_execution_time:.2f} seconds"
-                )
 
             self.log_event(prompts, event, start_time, uids, rewards)
 
@@ -203,21 +227,10 @@ class BaseScraperValidator:
             uid_scores_dict = {}
             wandb_data = self.build_wandb_data(uids, rewards, responses, all_rewards)
 
-            bt.logging.info(
-                f"======================== Reward ==========================="
-            )
-            # Initialize an empty list to accumulate log messages
-            log_messages = []
-            for uid_tensor, reward, response in zip(uids, rewards.tolist(), responses):
-                uid = uid_tensor.item()
-                log_messages.append(self.build_uid_log_message(uid, reward, response))
-
-            # Log the accumulated messages in groups of three
-            for i in range(0, len(log_messages), 3):
-                bt.logging.info(" | ".join(log_messages[i : i + 3]))
-
-            bt.logging.info(
-                f"======================== Reward ==========================="
+            log_reward_aggregates(
+                name=f"{self.search_type} total",
+                uids=uids,
+                scores=rewards.tolist(),
             )
 
             # Build per-uid reward values for wandb

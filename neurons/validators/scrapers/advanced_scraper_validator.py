@@ -22,8 +22,20 @@ from neurons.validators.clients.miner_response_logger import (
     build_log_entry,
     submit_logs_best_effort,
 )
+from neurons.validators.penalty.count_penalty import CountPenaltyModel
+from neurons.validators.penalty.date_range_penalty import DateRangePenaltyModel
+from neurons.validators.penalty.duplicate_results_penalty import (
+    DuplicateResultsPenaltyModel,
+)
+from neurons.validators.penalty.min_realistic_time_penalty import (
+    MinRealisticTimePenaltyModel,
+)
 from neurons.validators.penalty.miner_score_penalty import MinerScorePenaltyModel
+from neurons.validators.penalty.result_schema_penalty import ResultSchemaPenaltyModel
 from neurons.validators.penalty.streaming_penalty import StreamingPenaltyModel
+from neurons.validators.penalty.summary_structure_penalty import (
+    SummaryStructurePenaltyModel,
+)
 from neurons.validators.penalty.timeout_penalty import TimeoutPenaltyModel
 from neurons.validators.reward import RewardModelType, RewardScoringType
 from neurons.validators.reward.performance_reward import PerformanceRewardModel
@@ -104,7 +116,13 @@ class AdvancedScraperValidator(BaseScraperValidator):
         penalty_functions = [
             StreamingPenaltyModel(max_penalty=1, neuron=neuron),
             TimeoutPenaltyModel(max_penalty=1, neuron=neuron),
+            MinRealisticTimePenaltyModel(min_realistic_time=5.0, neuron=neuron),
             MinerScorePenaltyModel(max_penalty=1, neuron=neuron),
+            CountPenaltyModel(max_penalty=1, neuron=neuron),
+            SummaryStructurePenaltyModel(max_penalty=1, neuron=neuron),
+            DuplicateResultsPenaltyModel(max_penalty=1, neuron=neuron),
+            ResultSchemaPenaltyModel(max_penalty=1, neuron=neuron),
+            DateRangePenaltyModel(max_penalty=1, neuron=neuron),
         ]
 
         super().__init__(
@@ -172,7 +190,9 @@ class AdvancedScraperValidator(BaseScraperValidator):
             )
             success = status == 200
         except Exception as e:
-            bt.logging.error(f"[{self.search_type}] dendrite stream failed uid={uid}: {e}")
+            bt.logging.error(
+                f"[{self.search_type}] dendrite stream failed uid={uid}: {e}"
+            )
 
         await capacity.note_call_result(uid, self.search_type, success)
 
@@ -252,13 +272,6 @@ class AdvancedScraperValidator(BaseScraperValidator):
             ]:
                 val_scores.append(val_score_responses)
         return val_scores
-
-    def build_uid_log_message(self, uid, reward, response):
-        completion_length = (
-            len(response.completion) if response.completion is not None else 0
-        )
-        bt.logging.trace(f"{response.completion}")
-        return f"UID: {uid}, R: {round(reward, 3)}, C: {completion_length}"
 
     def populate_wandb_uid_data(self, wandb_data, uid, reward, response, reward_values):
         wandb_data["scores"][uid] = reward

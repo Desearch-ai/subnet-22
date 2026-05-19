@@ -1,4 +1,3 @@
-import json
 import random
 import time
 import traceback
@@ -16,7 +15,7 @@ from neurons.validators.utils.prompts import (
 )
 
 from .config import RewardModelType
-from .reward import BaseRewardEvent, BaseRewardModel
+from .reward import BaseRewardEvent, BaseRewardModel, log_reward_aggregates
 
 
 class WebSearchContentRelevanceModel(BaseRewardModel):
@@ -279,18 +278,17 @@ class WebSearchContentRelevanceModel(BaseRewardModel):
             scoring_prompt = SearchSummaryRelevancePrompt()
 
             grouped_val_score_responses = []
+            missing_validator_links = []
 
             for (
                 apify_score,
                 response,
                 val_score_responses,
                 attempted_count,
-                uid_tensor,
+                _,
             ) in zip(
                 scores, responses, val_score_responses_list, attempted_counts, uids
             ):
-                uid = uid_tensor.item()
-
                 reward_event = BaseRewardEvent()
                 reward_event.reward = 0
 
@@ -318,33 +316,18 @@ class WebSearchContentRelevanceModel(BaseRewardModel):
                         score=average_score,
                         max_links_threshold=links_expected,
                     )
-                elif attempted_count == 0:
-                    bt.logging.info(f"UID '{uid}' has no validator links.")
+                missing_validator_links.append(1 if attempted_count == 0 else 0)
 
                 reward_event.reward = min(reward_event.reward * apify_score, 1)
                 reward_events.append(reward_event)
                 grouped_val_score_responses.append(response_scores)
 
-            zero_scores = {}
-            non_zero_scores = {}
-
-            for (index, response), uid_tensor, reward_e in zip(
-                enumerate(responses), uids, reward_events
-            ):
-                uid = uid_tensor.item()
-                if reward_e.reward == 0:
-                    zero_scores[uid] = reward_e.reward
-                else:
-                    non_zero_scores[uid] = reward_e.reward
-
-            bt.logging.info(
-                f"==================================Web Search Content Relevance scoring Zero Scores  ({len(zero_scores)} cases)=================================="
+            log_reward_aggregates(
+                name=self.name,
+                uids=uids,
+                scores=[e.reward for e in reward_events],
+                extras={"missing_val_links": missing_validator_links},
             )
-            bt.logging.info(json.dumps(zero_scores))
-            bt.logging.info(
-                f"==================================Web Search Content Relevance scoring Non-Zero Scores ({len(non_zero_scores)} cases)=================================="
-            )
-            bt.logging.info(json.dumps(non_zero_scores))
             return reward_events, grouped_val_score_responses
         except Exception as e:
             error_message = f"Search Summary Relevance get_rewards: {str(e)}"

@@ -1,9 +1,9 @@
 """
 SQLite persistence for miner concurrency state and scoring window history.
 
-The writer process (neuron) holds a single long-lived connection; reader
-processes (public API) open a short-lived connection per call so no reader
-mark blocks SQLite's WAL file from resetting.
+The validator service owns schema and maintenance; API workers also hold
+writer connections so organic-call results can update unreachable state.
+WAL + busy_timeout serializes concurrent writes across processes.
 """
 
 from contextlib import asynccontextmanager
@@ -82,16 +82,10 @@ async def _conn():
         await conn.close()
 
 
-async def initialize(db_path: str, readonly: bool = False) -> None:
-    """Configure the module for ``db_path``.
-
-    ``readonly=True`` just stores the path — each read opens a fresh
-    connection via ``file:…?mode=ro`` so a public-API process cannot mutate
-    state and does not hold a long-lived reader that would block WAL reset.
-
-    The writer process calls this with ``readonly=False``, opens the shared
-    long-lived connection, creates the schema, drains any accumulated WAL
-    from prior runs, and runs retention cleanup."""
+async def initialize(db_path: str, readonly: bool = False, owner: bool = True) -> None:
+    """``owner=True`` (validator service) does one-time setup — schema,
+    WAL checkpoint, history purge. Non-owner writers set per-connection
+    pragmas only."""
     global _writer_db, _readonly_path
     if readonly:
         _readonly_path = db_path
@@ -100,6 +94,13 @@ async def initialize(db_path: str, readonly: bool = False) -> None:
 
     _writer_db = await aiosqlite.connect(db_path)
     _writer_db.row_factory = aiosqlite.Row
+    await _writer_db.execute("PRAGMA busy_timeout = 5000")
+    await _writer_db.execute("PRAGMA synchronous = NORMAL")
+
+    if not owner:
+        bt.logging.info(f"[MinerDB] Initialized writer (non-owner) at {db_path}")
+        return
+
     await _writer_db.execute("PRAGMA journal_mode=WAL")
 
     for statement in _SCHEMA.strip().split(";"):

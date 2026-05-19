@@ -254,7 +254,7 @@ class Neuron(AbstractNeuron):
 
         selected_uid = self.uid_manager.get_miner_uid(search_type=search_type)
 
-        bt.logging.info(f"Run random UID: {selected_uid} (search_type={search_type})")
+        bt.logging.trace(f"Run random UID: {selected_uid} (search_type={search_type})")
 
         return selected_uid, self.metagraph.axons[selected_uid]
 
@@ -280,8 +280,7 @@ class Neuron(AbstractNeuron):
             alpha = 0.5
 
             self.moving_averaged_scores = (
-                alpha * scattered_rewards
-                + (1 - alpha) * self.moving_averaged_scores
+                alpha * scattered_rewards + (1 - alpha) * self.moving_averaged_scores
             ).astype(np.float32)
 
             await save_moving_averaged_scores(self.moving_averaged_scores)

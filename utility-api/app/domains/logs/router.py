@@ -236,6 +236,7 @@ async def _load_scoring_logs(
     miner_uids: list[int] | None,
     query: str | None,
     miner_coldkey: str | None = None,
+    validator_uid: int | None = None,
 ) -> list[MinerResponseLog]:
     normalized_query = _normalize_optional_query(query)
     filters = [
@@ -251,6 +252,9 @@ async def _load_scoring_logs(
 
     if miner_coldkey is not None:
         filters.append(MinerResponseLog.miner_coldkey == miner_coldkey)
+
+    if validator_uid is not None:
+        filters.append(MinerResponseLog.validator_uid == validator_uid)
 
     if normalized_query is not None:
         filters.append(MinerResponseLog.request_query.ilike(f"%{normalized_query}%"))
@@ -327,6 +331,10 @@ async def get_scoring_logs(
         None,
         description="Optional miner coldkey to filter by.",
     ),
+    validator_uid: int | None = Query(
+        None,
+        description="Optional validator UID to filter by.",
+    ),
     session: AsyncSession = Depends(get_session),
 ):
     logs = await _load_scoring_logs(
@@ -336,6 +344,7 @@ async def get_scoring_logs(
         miner_uids=miner_uids,
         query=query,
         miner_coldkey=miner_coldkey,
+        validator_uid=validator_uid,
     )
 
     return GetScoringLogsResponse(groups=_build_scoring_groups(logs))

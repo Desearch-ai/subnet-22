@@ -1,5 +1,4 @@
 import html
-import json
 import random
 import re
 import time
@@ -16,7 +15,7 @@ from neurons.validators.apify.scrapingdog_scraper import (
 from neurons.validators.base_validator import AbstractNeuron
 
 from .config import RewardModelType
-from .reward import BaseRewardEvent, BaseRewardModel
+from .reward import BaseRewardEvent, BaseRewardModel, log_reward_aggregates
 
 WEB_LINK_SCRAPE_AMOUNT = 1
 
@@ -205,44 +204,24 @@ class WebBasicSearchContentRelevanceModel(BaseRewardModel):
             _ = await self.process_links(responses=responses)
 
             reward_events = []
-            zero_scores = {}
-            non_zero_scores = {}
             grouped_val_score_responses = {}
 
-            # Step 2: for each response, compute a final score
             for response, uid_tensor in zip(responses, uids):
-                # If uid_tensor is a PyTorch or NumPy scalar, .item() extracts the integer
                 uid = uid_tensor.item() if hasattr(uid_tensor, "item") else uid_tensor
 
                 final_score = self.check_response_random_link(response)
 
-                bt.logging.info(
-                    f"UID {uid}: check_response_random_link => {final_score}"
-                )
-
-                # Step 3: create a reward event
                 reward_event = BaseRewardEvent()
                 reward_event.reward = final_score
                 reward_events.append(reward_event)
 
-                # Keep track of final_score for logging
-                if final_score == 0:
-                    zero_scores[uid] = final_score
-                else:
-                    non_zero_scores[uid] = final_score
-
-                # Populate grouped_val_score_responses with final_score
                 grouped_val_score_responses[uid] = final_score
 
-            # Step 4: Log zero vs. non-zero
-            bt.logging.info(
-                f"========== Web Link Content Zero Scores ({len(zero_scores)} cases) =========="
+            log_reward_aggregates(
+                name=self.name,
+                uids=uids,
+                scores=[e.reward for e in reward_events],
             )
-            bt.logging.info(json.dumps(zero_scores))
-            bt.logging.info(
-                f"======== Web Link Content Non-Zero Scores ({len(non_zero_scores)} cases) ========"
-            )
-            bt.logging.info(json.dumps(non_zero_scores))
 
             return reward_events, grouped_val_score_responses
         except Exception as e:
