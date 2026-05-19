@@ -1,27 +1,10 @@
-# The MIT License (MIT)
-# Copyright © 2023 Yuma Rao
-# Copyright © 2023 Opentensor Foundation
-
-# Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated
-# documentation files (the “Software”), to deal in the Software without restriction, including without limitation
-# the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software,
-# and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
-
-# The above copyright notice and this permission notice shall be included in all copies or substantial portions of
-# the Software.
-
-# THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO
-# THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
-# THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-# OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-# DEALINGS IN THE SOFTWARE.
-
 import asyncio
 import re
 from abc import abstractmethod
+from collections import defaultdict
 from dataclasses import asdict, dataclass, fields
 from itertools import islice
-from typing import List, Union
+from typing import Iterable, List, Optional, Union
 
 import bittensor as bt
 import numpy as np
@@ -31,6 +14,59 @@ from desearch.protocol import (
     TwitterSearchSynapse,
 )
 from neurons.validators.base_validator import AbstractNeuron
+
+
+def log_reward_aggregates(
+    name: str,
+    uids: Iterable,
+    scores: Iterable,
+    extras: Optional[dict] = None,
+) -> None:
+    """One INFO line per UID summarizing per-response reward scores. Extras in
+    {0, 1} render as ``label=N/M``; other numerics as ``label mean=X``."""
+    norm_uids = [uid.item() if hasattr(uid, "item") else int(uid) for uid in uids]
+    norm_scores = [float(s) for s in scores]
+    extras = extras or {}
+
+    per_uid_scores: dict = defaultdict(list)
+    per_uid_extras: dict = {label: defaultdict(list) for label in extras}
+
+    for i, uid in enumerate(norm_uids):
+        per_uid_scores[uid].append(norm_scores[i])
+        for label, values in extras.items():
+            per_uid_extras[label][uid].append(float(values[i]))
+
+    total = len(norm_scores)
+    if total == 0:
+        bt.logging.info(f"[Reward {name}] no responses")
+        return
+
+    nonzero = sum(1 for s in norm_scores if s > 0)
+    overall_mean = sum(norm_scores) / total
+
+    bt.logging.info(
+        f"[Reward {name}] {total} responses across {len(per_uid_scores)} UIDs | "
+        f"mean={overall_mean:.3f} ({nonzero} nonzero / {total - nonzero} zero)"
+    )
+
+    for uid in sorted(per_uid_scores):
+        vals = per_uid_scores[uid]
+        hits = sum(1 for v in vals if v > 0)
+        parts = [
+            f"  UID {uid}: {hits}/{len(vals)} nonzero | "
+            f"mean={sum(vals) / len(vals):.3f} "
+            f"min={min(vals):.3f} max={max(vals):.3f}"
+        ]
+        for label, by_uid in per_uid_extras.items():
+            uid_vals = by_uid.get(uid)
+            if not uid_vals:
+                continue
+            if all(v in (0.0, 1.0) for v in uid_vals):
+                count = int(sum(uid_vals))
+                parts.append(f"{label}={count}/{len(uid_vals)}")
+            else:
+                parts.append(f"{label} mean={sum(uid_vals) / len(uid_vals):.0f}")
+        bt.logging.info(" | ".join(parts))
 
 
 @dataclass
@@ -57,6 +93,8 @@ pattern_to_check = r"<(?:Question|/Question|Answer|/Answer|Score|/Score)>|SM(?:[
 
 
 class BaseRewardModel:
+    is_deep: bool = True
+
     @property
     @abstractmethod
     def name(self) -> str: ...
@@ -179,9 +217,7 @@ class BaseRewardModel:
         reward_events, val_score_responses = await self.get_rewards(responses, uids)
 
         reward_events = BaseRewardEvent.parse_reward_events(reward_events)
-        successful_rewards = np.array(
-            reward_events.pop("reward"), dtype=np.float32
-        )
+        successful_rewards = np.array(reward_events.pop("reward"), dtype=np.float32)
 
         original_rewards = successful_rewards.tolist()
 

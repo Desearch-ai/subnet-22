@@ -13,6 +13,8 @@ encoding = tiktoken.get_encoding("o200k_base")
 
 
 class StreamingPenaltyModel(BasePenaltyModel):
+    is_deep = False
+
     @property
     def name(self) -> str:
         return PenaltyModelType.streaming_penalty.value

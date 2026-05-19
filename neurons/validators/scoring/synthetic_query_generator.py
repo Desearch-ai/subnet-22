@@ -74,8 +74,6 @@ class SyntheticQueryGenerator:
     async def generate_epoch_queries(
         self,
         available_uids: List[int],
-        spread_seconds: float = 55 * 60,
-        delay_start: float = 0.0,
         verified_by_type: dict[str, dict[int, int]] | None = None,
     ) -> List[dict]:
         """
@@ -88,11 +86,8 @@ class SyntheticQueryGenerator:
         verified_by_type: {search_type: {uid: verified_concurrency}}
         Each miner gets verified_concurrency queries per search type.
 
-        ``delay_start`` lets the scheduler compress the dispatch window when
-        starting mid-hour: delays are drawn from ``[delay_start, spread_seconds]``.
-
-        Returns items sorted by fire-time delay, each containing:
-            uid, search_type, query (dict), delay_seconds
+        Returns items, each containing: uid, search_type, query (dict).
+        Timing is decided by the scheduler.
         """
         if verified_by_type is None:
             verified_by_type = {}
@@ -106,7 +101,6 @@ class SyntheticQueryGenerator:
             f"date_filter={ai_date_filter.value}"
         )
 
-        # --- Build items with random fire times ---
         items: List[dict] = []
         llm_items: List[dict] = []  # Only ai_search + web_search need LLM
 
@@ -117,7 +111,6 @@ class SyntheticQueryGenerator:
                     item = {
                         "uid": uid,
                         "search_type": search_type,
-                        "delay_seconds": random.uniform(delay_start, spread_seconds),
                         "query": None,
                     }
 
@@ -165,8 +158,6 @@ class SyntheticQueryGenerator:
 
         # Drop items where generation failed (query stayed None)
         items = [i for i in items if i["query"] is not None]
-
-        items.sort(key=lambda x: x["delay_seconds"])
 
         bt.logging.info(
             f"[SyntheticGen] Generated {len(items)} queries "

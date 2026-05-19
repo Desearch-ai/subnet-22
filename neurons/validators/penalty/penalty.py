@@ -1,21 +1,5 @@
-# The MIT License (MIT)
-# Copyright © 2023 Yuma Rao
-# Copyright © 2023 Opentensor Foundation
-
-# Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated
-# documentation files (the “Software”), to deal in the Software without restriction, including without limitation
-# the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software,
-# and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
-
-# The above copyright notice and this permission notice shall be included in all copies or substantial portions of
-# the Software.
-
-# THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO
-# THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
-# THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-# OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-# DEALINGS IN THE SOFTWARE.
 from abc import ABC, abstractmethod
+from collections import defaultdict
 from enum import Enum
 from typing import List
 
@@ -26,7 +10,13 @@ from neurons.validators.base_validator import AbstractNeuron
 
 
 class BasePenaltyModel(ABC):
-    def __init__(self, max_penalty: float, neuron: AbstractNeuron):
+    is_deep: bool = True
+
+    def __init__(
+        self,
+        max_penalty: float = 1.0,
+        neuron: AbstractNeuron = None,
+    ):
         self.max_penalty = max_penalty
         self.neuron = neuron
 
@@ -45,6 +35,37 @@ class BasePenaltyModel(ABC):
         responses: List[bt.Synapse], additional_params=None
     ) -> np.ndarray: ...
 
+    def _log_triggers(self, uids, raw_penalties: np.ndarray) -> None:
+        """Emit one line per scoring batch summarizing which UIDs were hit."""
+        per_uid = defaultdict(list)
+        for uid, penalty in zip(uids, raw_penalties.tolist()):
+            uid_val = uid.item() if hasattr(uid, "item") else int(uid)
+            per_uid[uid_val].append(penalty)
+
+        triggered = {
+            uid: vals for uid, vals in per_uid.items() if any(v > 0 for v in vals)
+        }
+        total = len(raw_penalties)
+        triggered_count = sum(1 for v in raw_penalties.tolist() if v > 0)
+
+        if not triggered:
+            bt.logging.info(
+                f"[Penalty {self.name}] no triggers (0 of {total} responses)"
+            )
+            return
+
+        bt.logging.info(
+            f"[Penalty {self.name}] triggered on {triggered_count} of {total} "
+            f"responses across {len(triggered)} UIDs:"
+        )
+        for uid in sorted(triggered):
+            vals = triggered[uid]
+            hit = sum(1 for v in vals if v > 0)
+            bt.logging.info(
+                f"  UID {uid}: {hit}/{len(vals)} triggered "
+                f"(max={max(vals):.2f}, mean={sum(vals) / len(vals):.2f})"
+            )
+
     async def apply_penalties(
         self,
         responses: List[bt.Synapse],
@@ -52,6 +73,7 @@ class BasePenaltyModel(ABC):
         additional_params=None,
     ) -> np.ndarray:
         raw_penalties = await self.calculate_penalties(responses, additional_params)
+        self._log_triggers(uids, raw_penalties)
 
         adjusted_penalties = np.clip(raw_penalties, 0, 1)
         adjusted_penalties = np.clip(adjusted_penalties, 0, self.max_penalty)
@@ -61,6 +83,24 @@ class BasePenaltyModel(ABC):
         return raw_penalties, adjusted_penalties, applied_penalties
 
 
+class CheapPenaltyModel(BasePenaltyModel):
+    """Per-response, sync, no-IO penalty. Subclasses set ``name`` and override
+    ``penalty_for(response) -> float`` returning a value in ``[0, max_penalty]``."""
+
+    is_deep = False
+    name: str = ""
+
+    @abstractmethod
+    def penalty_for(self, response) -> float: ...
+
+    async def calculate_penalties(
+        self,
+        responses: List[bt.Synapse],
+        additional_params=None,
+    ) -> np.ndarray:
+        return np.array([self.penalty_for(r) for r in responses], dtype=np.float32)
+
+
 class PenaltyModelType(Enum):
     streaming_penalty = "streaming_penalty"
     timeout_penalty = "timeout_penalty"
@@ -68,3 +108,9 @@ class PenaltyModelType(Enum):
     count_penalty = "count_penalty"
     miner_score_penalty = "miner_score_penalty"
     chat_history_penalty = "chat_history_penalty"
+    summary_structure_penalty = "summary_structure_penalty"
+    date_range_penalty = "date_range_penalty"
+    duplicate_results_penalty = "duplicate_results_penalty"
+    result_schema_penalty = "result_schema_penalty"
+    sort_order_penalty = "sort_order_penalty"
+    min_realistic_time_penalty = "min_realistic_time_penalty"

@@ -42,7 +42,6 @@ class SummaryRulePenaltyModel(BasePenaltyModel):
         responses: List[ScraperStreamingSynapse],
         additional_params=None,
     ) -> np.ndarray:
-
         penalties = np.zeros(len(responses), dtype=np.float32)
 
         for index, response in enumerate(responses):

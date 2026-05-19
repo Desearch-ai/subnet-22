@@ -2,7 +2,7 @@ import numpy as np
 from typing import List
 from neurons.validators.penalty.penalty import BasePenaltyModel, PenaltyModelType
 import bittensor as bt
-from desearch.protocol import ChatHistoryItem, ScraperStreamingSynapse, ScraperTextRole
+from desearch.protocol import ChatHistoryItem, ScraperStreamingSynapse
 from neurons.validators.utils.prompt.chat_history_relevance_prompt import (
     ChatHistoryRelevancePrompt,
 )
@@ -34,7 +34,6 @@ class ChatHistoryPenaltyModel(BasePenaltyModel):
         responses: List[ScraperStreamingSynapse],
         additional_params=None,
     ) -> np.ndarray:
-
         penalties = np.zeros(len(responses), dtype=np.float32)
 
         for index, response in enumerate(responses):
