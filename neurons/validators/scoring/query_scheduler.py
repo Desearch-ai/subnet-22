@@ -27,7 +27,7 @@ COVERAGE_EXPONENT = 2.0
 MIN_VOLUME_RATIO = 0.30
 
 BATCH_SIZE = 20
-BATCH_INTERVAL_SECONDS = 5
+BATCH_INTERVAL_SECONDS = 3
 GROUP_SIZE = 5
 
 DEEP_SAMPLE_RATE = 0.20
@@ -202,7 +202,6 @@ class QueryScheduler:
         uid_items: list,
         time_range_start: datetime,
     ) -> None:
-        """Fire one UID's queries in BATCH_SIZE bursts, BATCH_INTERVAL_SECONDS apart."""
         batches = [
             uid_items[i : i + BATCH_SIZE] for i in range(0, len(uid_items), BATCH_SIZE)
         ]
@@ -214,13 +213,15 @@ class QueryScheduler:
             if batch_idx > 0:
                 await asyncio.sleep(BATCH_INTERVAL_SECONDS)
 
-            # Fire-and-forget so the next batch fires on schedule regardless of miner latency.
-            for item in batch:
-                asyncio.create_task(
+            await asyncio.gather(
+                *[
                     self._send_and_save(
                         search_type, uid, item["query"], time_range_start
                     )
-                )
+                    for item in batch
+                ],
+                return_exceptions=True,
+            )
 
     def _sample_deep_synth(self, synth_items: list) -> set[int]:
         """Pick DEEP_SAMPLE_RATE of each UID's synth items (floor DEEP_SAMPLE_FLOOR)."""
