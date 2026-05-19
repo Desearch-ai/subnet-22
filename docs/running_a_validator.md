@@ -12,7 +12,7 @@ A validator runs three PM2 processes (managed by `run.sh`):
 
 ## Prerequisites
 
-- Python ≥ 3.10 (recommended: conda env)
+- Python ≥ 3.11 (recommended: conda env)
 - [Redis](https://redis.io/docs/latest/operate/oss_and_stack/install/install-redis/)
 - [PM2](https://pm2.io/docs/runtime/guide/installation/)
 - `jq`, `npm` for the autoupdate loop
@@ -30,7 +30,7 @@ directory is under the repo root and gitignored.
 Create a conda env, clone the repo, install deps:
 
 ```sh
-conda create -n val python=3.10 -y
+conda create -n val python=3.11 -y
 conda activate val
 
 git clone https://github.com/Desearch-ai/subnet-22.git
