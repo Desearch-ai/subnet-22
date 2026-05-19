@@ -1,3 +1,4 @@
+import copy
 import unittest
 
 from desearch.protocol import (
@@ -6,7 +7,13 @@ from desearch.protocol import (
     TwitterSearchSynapse,
     WebSearchSynapse,
 )
-from neurons.validators.penalty.result_schema_penalty import ResultSchemaPenaltyModel
+from neurons.validators.penalty.result_schema_penalty import (
+    ResultSchemaPenaltyModel,
+    _is_valid_tweet,
+)
+from neurons.validators.reward.twitter_basic_search_content_relevance import (
+    TwitterBasicSearchContentRelevanceModel,
+)
 
 
 def _valid_tweet(tid: str = "1", text: str = "hello") -> dict:
@@ -125,6 +132,48 @@ class ResultSchemaPenaltyTestCase(unittest.IsolatedAsyncioTestCase):
         response = TwitterSearchSynapse(query="x", results=[])
         penalties = await self.model.calculate_penalties([response])
         self.assertEqual(penalties.tolist(), [0])
+
+
+class PreprocessTweetImmutabilityTestCase(unittest.TestCase):
+    """Regression: preprocess_tweet must not mutate its input."""
+
+    def setUp(self):
+        self.model = TwitterBasicSearchContentRelevanceModel(
+            scoring_type=None, neuron=None
+        )
+
+    def _tweet_with_media_and_quote(self) -> dict:
+        tweet = _valid_tweet("1")
+        tweet["extended_entities"] = {
+            "media": [
+                {
+                    "display_url": "pic.x.com/AAA",
+                    "expanded_url": "https://twitter.com/foo/status/1/photo/1",
+                    "type": "photo",
+                    "url": "https://t.co/AAA",
+                    "media_url_https": "https://pbs.twimg.com/media/AAA.jpg",
+                }
+            ]
+        }
+        tweet["quote"] = _valid_tweet("2", text="quoted")
+        tweet["is_quote_tweet"] = True
+        return tweet
+
+    def test_preprocess_does_not_mutate_input(self):
+        tweet = self._tweet_with_media_and_quote()
+        snapshot = copy.deepcopy(tweet)
+
+        normalized = self.model.preprocess_tweet(tweet)
+
+        self.assertEqual(tweet, snapshot, "preprocess_tweet mutated its input")
+        self.assertIsNot(normalized, tweet)
+        self.assertIsInstance(normalized["extended_entities"]["media"][0], str)
+        self.assertIsNone(normalized["quote"]["reply_count"])
+
+    def test_original_remains_schema_valid_after_preprocess(self):
+        tweet = self._tweet_with_media_and_quote()
+        self.model.preprocess_tweet(tweet)
+        self.assertTrue(_is_valid_tweet(tweet))
 
 
 if __name__ == "__main__":

@@ -1,3 +1,4 @@
+import copy
 import random
 import time
 import traceback
@@ -165,10 +166,10 @@ class TwitterBasicSearchContentRelevanceModel(BaseRewardModel):
             bt.logging.error(f"Error in process_tweets: {str(e)}")
             return default_val_score_responses
 
-    def preprocess_tweet(self, tweet: Dict[str, Any]) -> None:
-        """
-        Removes unnecessary fields and formats the tweet for comparison.
-        """
+    def preprocess_tweet(self, tweet: Dict[str, Any]) -> Dict[str, Any]:
+        """Returns a normalized deep copy; does not mutate the input."""
+        tweet = copy.deepcopy(tweet)
+
         if tweet.get("quote"):
             tweet["quote"]["display_text_range"] = None
             tweet["quote"]["entities"] = None
@@ -187,6 +188,8 @@ class TwitterBasicSearchContentRelevanceModel(BaseRewardModel):
                     medias[index] = media["expanded_url"].replace(
                         "twitter.com", "x.com"
                     )
+
+        return tweet
 
     def compare_numeric(
         self, field: str, val1: Optional[int], val2: Optional[int]
@@ -595,13 +598,14 @@ class TwitterBasicSearchContentRelevanceModel(BaseRewardModel):
                     else:
                         tweet_score.append(1)
 
-                self.preprocess_tweet(miner_tweet)
-                self.preprocess_tweet(val_tweet_dict)
+                miner_tweet_normalized = self.preprocess_tweet(miner_tweet)
+                val_tweet_normalized = self.preprocess_tweet(val_tweet_dict)
 
                 # Compare nested fields
                 for f in TWEET_NESTED_FIELDS:
                     path, val1, val2 = self.compare_nested_fields(
-                        miner_tweet.get(f), val_tweet_dict.get(f)
+                        miner_tweet_normalized.get(f),
+                        val_tweet_normalized.get(f),
                     )
                     if path:
                         tweet_score.append(0)
