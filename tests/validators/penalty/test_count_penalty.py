@@ -81,45 +81,139 @@ class CountPenaltyTestCase(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(penalties.tolist(), [0])
 
-    async def test_ai_search_miner_tweets_meets_count(self):
+    async def test_ai_search_twitter_meets_count(self):
         response = ScraperStreamingSynapse(
             prompt="x",
             count=10,
+            tools=["Twitter Search"],
             miner_tweets=[{"id": str(i)} for i in range(10)],
         )
         penalties = await self.model.calculate_penalties([response])
         self.assertEqual(penalties.tolist(), [0])
 
-    async def test_ai_search_miner_tweets_short(self):
+    async def test_ai_search_twitter_short(self):
         response = ScraperStreamingSynapse(
             prompt="x",
             count=10,
+            tools=["Twitter Search"],
             miner_tweets=[{"id": str(i)} for i in range(3)],
         )
         penalties = await self.model.calculate_penalties([response])
         self.assertAlmostEqual(penalties.tolist()[0], 0.7, places=5)
 
-    async def test_ai_search_worst_shortfall_across_fields(self):
-        """When multiple sources are populated, worst shortfall wins."""
+    async def test_ai_search_pooled_search_summary_satisfied(self):
+        """Web/Wiki/YT/ArXiv pool into one SEARCH_SUMMARY group — 7 web + 3 arxiv = 10 → no penalty."""
         response = ScraperStreamingSynapse(
             prompt="x",
             count=10,
+            tools=["Twitter Search", "Web Search", "Wikipedia Search", "ArXiv Search"],
             miner_tweets=[{"id": str(i)} for i in range(10)],
             search_results=[
-                SearchResultItem(title=f"T{i}", link=f"https://a/{i}", snippet="s")
-                for i in range(4)
+                SearchResultItem(title=f"T{i}", link=f"https://w/{i}", snippet="s")
+                for i in range(7)
+            ],
+            arxiv_search_results=[
+                SearchResultItem(title=f"A{i}", link=f"https://a/{i}", snippet="s")
+                for i in range(3)
             ],
         )
         penalties = await self.model.calculate_penalties([response])
-        self.assertAlmostEqual(penalties.tolist()[0], 0.6, places=5)
+        self.assertEqual(penalties.tolist(), [0])
 
-    async def test_ai_search_empty_field_skipped(self):
-        """An entirely-empty result field doesn't count against the miner —
-        the miner didn't claim that source."""
+    async def test_ai_search_pooled_search_summary_short(self):
+        """Pooled group below count → group-level shortfall."""
         response = ScraperStreamingSynapse(
             prompt="x",
             count=10,
+            tools=["Web Search", "ArXiv Search"],
+            search_results=[
+                SearchResultItem(title=f"T{i}", link=f"https://w/{i}", snippet="s")
+                for i in range(4)
+            ],
+            arxiv_search_results=[
+                SearchResultItem(title=f"A{i}", link=f"https://a/{i}", snippet="s")
+                for i in range(2)
+            ],
+        )
+        penalties = await self.model.calculate_penalties([response])
+        self.assertAlmostEqual(penalties.tolist()[0], 0.4, places=5)
+
+    async def test_ai_search_reddit_solo_group(self):
+        response = ScraperStreamingSynapse(
+            prompt="x",
+            count=10,
+            tools=["Reddit Search"],
+            reddit_search_results=[
+                SearchResultItem(title=f"R{i}", link=f"https://r/{i}", snippet="s")
+                for i in range(5)
+            ],
+        )
+        penalties = await self.model.calculate_penalties([response])
+        self.assertAlmostEqual(penalties.tolist()[0], 0.5, places=5)
+
+    async def test_ai_search_worst_group_wins(self):
+        """Twitter satisfied, Reddit short → reddit dominates."""
+        response = ScraperStreamingSynapse(
+            prompt="x",
+            count=10,
+            tools=["Twitter Search", "Reddit Search"],
             miner_tweets=[{"id": str(i)} for i in range(10)],
+            reddit_search_results=[
+                SearchResultItem(title=f"R{i}", link=f"https://r/{i}", snippet="s")
+                for i in range(2)
+            ],
+        )
+        penalties = await self.model.calculate_penalties([response])
+        self.assertAlmostEqual(penalties.tolist()[0], 0.8, places=5)
+
+    async def test_ai_search_ignores_data_from_unrequested_tool(self):
+        """If a tool wasn't requested, its result field isn't penalized."""
+        response = ScraperStreamingSynapse(
+            prompt="x",
+            count=10,
+            tools=["Twitter Search"],
+            miner_tweets=[{"id": str(i)} for i in range(10)],
+            arxiv_search_results=[
+                SearchResultItem(title=f"A{i}", link=f"https://a/{i}", snippet="s")
+                for i in range(2)
+            ],
+        )
+        penalties = await self.model.calculate_penalties([response])
+        self.assertEqual(penalties.tolist(), [0])
+
+    async def test_ai_search_kitchen_sink_regression(self):
+        """Regression for the reported bug: 7-tool synapse with
+        miner_tweets=10, reddit=10, hn=10, web=7, arxiv=3, wiki=0, yt=0.
+        Pre-fix: penalty=0.70 (arxiv field). After fix: all groups satisfied → 0."""
+        response = ScraperStreamingSynapse(
+            prompt="x",
+            count=10,
+            tools=[
+                "Twitter Search",
+                "Web Search",
+                "Wikipedia Search",
+                "Youtube Search",
+                "ArXiv Search",
+                "Reddit Search",
+                "Hacker News Search",
+            ],
+            miner_tweets=[{"id": str(i)} for i in range(10)],
+            search_results=[
+                SearchResultItem(title=f"T{i}", link=f"https://w/{i}", snippet="s")
+                for i in range(7)
+            ],
+            arxiv_search_results=[
+                SearchResultItem(title=f"A{i}", link=f"https://a/{i}", snippet="s")
+                for i in range(3)
+            ],
+            reddit_search_results=[
+                SearchResultItem(title=f"R{i}", link=f"https://r/{i}", snippet="s")
+                for i in range(10)
+            ],
+            hacker_news_search_results=[
+                SearchResultItem(title=f"H{i}", link=f"https://h/{i}", snippet="s")
+                for i in range(10)
+            ],
         )
         penalties = await self.model.calculate_penalties([response])
         self.assertEqual(penalties.tolist(), [0])
