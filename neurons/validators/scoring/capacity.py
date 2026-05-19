@@ -7,10 +7,12 @@ the same step when it falls below. ``verified`` is the synthetic allocation
 for the next epoch — bounded by ``declared`` and ``HARD_CAP_PER_UID``.
 """
 
+from datetime import datetime, timedelta, timezone
 from typing import Optional, Protocol
 
 import bittensor as bt
 
+from desearch.miner_config import SEARCH_TYPES
 from neurons.validators.scoring import miner_db
 
 QUALITY_EMA_ALPHA = 0.3
@@ -22,6 +24,8 @@ RAMP_FRACTION = 0.10
 DECAY_FRACTION = 0.20
 
 UNREACHABLE_FAILURE_THRESHOLD = 1
+UNREACHABLE_DECAY_FACTOR = 0.9
+UNREACHABLE_DECAY_INTERVAL_SEC = 5 * 60
 
 
 class _RouterKillSwitch(Protocol):
@@ -117,3 +121,36 @@ async def note_call_result(uid: int, search_type: str, success: bool) -> None:
         bt.logging.error(
             f"[Capacity] note_call_result failed uid={uid} {search_type}: {e}"
         )
+
+
+async def decay_unreachable_tick() -> None:
+    """Apply 10% verified decay per elapsed 5-min interval for unreachable miners."""
+    now = datetime.now(timezone.utc)
+
+    for search_type in SEARCH_TYPES:
+        rows = await miner_db.get_unreachable_rows(search_type)
+        for row in rows:
+            last_tick_iso = row["last_decay_at"] or row["unreachable_since"]
+            if not last_tick_iso:
+                continue
+            last_tick = datetime.fromisoformat(last_tick_iso)
+            elapsed = (now - last_tick).total_seconds()
+            ticks = int(elapsed // UNREACHABLE_DECAY_INTERVAL_SEC)
+            if ticks <= 0:
+                continue
+
+            new_verified = row["verified"]
+            for _ in range(ticks):
+                new_verified = max(1, int(new_verified * UNREACHABLE_DECAY_FACTOR))
+            new_last_decay = (
+                last_tick + timedelta(seconds=ticks * UNREACHABLE_DECAY_INTERVAL_SEC)
+            ).isoformat()
+
+            await miner_db.apply_decay_tick(
+                row["uid"], search_type, new_verified, new_last_decay
+            )
+            if new_verified != row["verified"]:
+                bt.logging.info(
+                    f"[Capacity] unreachable uid={row['uid']} {search_type}: "
+                    f"verified {row['verified']}->{new_verified} ({ticks} ticks)"
+                )

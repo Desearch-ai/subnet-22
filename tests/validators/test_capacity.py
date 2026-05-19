@@ -1,10 +1,19 @@
+from datetime import datetime, timedelta, timezone
+
+import pytest
+
+from neurons.validators.scoring import capacity, miner_db
 from neurons.validators.scoring.capacity import (
     DECAY_FRACTION,
     DEFAULT_PER_UID,
     HARD_CAP_PER_UID,
     QUALITY_THRESHOLD,
     RAMP_FRACTION,
+    UNREACHABLE_DECAY_INTERVAL_SEC,
+    UNREACHABLE_FAILURE_THRESHOLD,
+    decay_unreachable_tick,
     next_verified,
+    note_call_result,
 )
 
 
@@ -55,3 +64,110 @@ def test_threshold_exactly_qualifies():
 def test_declared_below_default_clamps():
     """Bogus declared=0 is treated as DEFAULT_PER_UID for step purposes."""
     assert next_verified(current=1, declared=0, quality_avg=0.9) == DEFAULT_PER_UID
+
+
+@pytest.fixture
+async def db(tmp_path):
+    await miner_db.initialize(str(tmp_path / "miner.db"), readonly=False, owner=True)
+    yield miner_db
+    await miner_db.close()
+
+
+async def _seed_unreachable(uid: int, verified: int, unreachable_since: str):
+    await miner_db.register_miner(
+        uid=uid, search_type="x_search", declared=100, hotkey=f"h{uid}", coldkey="c"
+    )
+    await miner_db.bulk_update_verified("x_search", {uid: verified})
+    async with miner_db._conn() as conn:
+        await conn.execute(
+            "UPDATE miner_concurrency SET unreachable_since=?, last_decay_at=? "
+            "WHERE uid=? AND search_type='x_search'",
+            (unreachable_since, unreachable_since, uid),
+        )
+        await conn.commit()
+
+
+async def test_decay_single_tick_after_one_interval(db):
+    """One full interval elapsed → exactly one 10% cut."""
+    past = (
+        datetime.now(timezone.utc)
+        - timedelta(seconds=UNREACHABLE_DECAY_INTERVAL_SEC + 1)
+    ).isoformat()
+    await _seed_unreachable(uid=1, verified=100, unreachable_since=past)
+
+    await decay_unreachable_tick()
+
+    row = await miner_db.get_concurrency_row(1, "x_search")
+    assert row["verified"] == 90
+
+
+async def test_decay_compounds_over_multiple_intervals(db):
+    """3 intervals elapsed → 100 -> 90 -> 81 -> 72 (int truncation)."""
+    past = (
+        datetime.now(timezone.utc)
+        - timedelta(seconds=3 * UNREACHABLE_DECAY_INTERVAL_SEC + 1)
+    ).isoformat()
+    await _seed_unreachable(uid=2, verified=100, unreachable_since=past)
+
+    await decay_unreachable_tick()
+
+    row = await miner_db.get_concurrency_row(2, "x_search")
+    assert row["verified"] == 72
+
+
+async def test_decay_noop_before_first_interval(db):
+    """Less than one interval elapsed → no change."""
+    past = (
+        datetime.now(timezone.utc)
+        - timedelta(seconds=UNREACHABLE_DECAY_INTERVAL_SEC - 30)
+    ).isoformat()
+    await _seed_unreachable(uid=3, verified=50, unreachable_since=past)
+
+    await decay_unreachable_tick()
+
+    row = await miner_db.get_concurrency_row(3, "x_search")
+    assert row["verified"] == 50
+
+
+async def test_decay_floors_at_one(db):
+    """Long enough outage drives verified to 1, not below."""
+    past = (
+        datetime.now(timezone.utc)
+        - timedelta(seconds=200 * UNREACHABLE_DECAY_INTERVAL_SEC)
+    ).isoformat()
+    await _seed_unreachable(uid=4, verified=10, unreachable_since=past)
+
+    await decay_unreachable_tick()
+
+    row = await miner_db.get_concurrency_row(4, "x_search")
+    assert row["verified"] == 1
+
+
+async def test_decay_skips_reachable_miners(db):
+    """A reachable miner (no unreachable_since) is left alone."""
+    await miner_db.register_miner(
+        uid=5, search_type="x_search", declared=100, hotkey="h5", coldkey="c"
+    )
+    await miner_db.bulk_update_verified("x_search", {5: 50})
+
+    await decay_unreachable_tick()
+
+    row = await miner_db.get_concurrency_row(5, "x_search")
+    assert row["verified"] == 50
+
+
+async def test_recovery_clears_last_decay_at(db):
+    """Recovery clears unreachable_since + last_decay_at, preserves decayed verified."""
+    past = (
+        datetime.now(timezone.utc)
+        - timedelta(seconds=UNREACHABLE_DECAY_INTERVAL_SEC + 1)
+    ).isoformat()
+    await _seed_unreachable(uid=6, verified=80, unreachable_since=past)
+    await decay_unreachable_tick()
+
+    await note_call_result(uid=6, search_type="x_search", success=True)
+
+    row = await miner_db.get_concurrency_row(6, "x_search")
+    assert row["unreachable_since"] is None
+    assert row["last_decay_at"] is None
+    assert row["verified"] == 72  # decayed value preserved across recovery

@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS miner_concurrency (
     quality_avg           REAL    NOT NULL DEFAULT 0.0,
     consecutive_failures  INTEGER NOT NULL DEFAULT 0,
     unreachable_since     TEXT,
+    last_decay_at         TEXT,
     updated_at            TEXT    NOT NULL,
     PRIMARY KEY (uid, search_type)
 );
@@ -109,6 +110,8 @@ async def initialize(db_path: str, readonly: bool = False, owner: bool = True) -
             await _writer_db.execute(statement)
     await _writer_db.commit()
 
+    await _migrate_schema()
+
     # Drain any WAL accumulated from prior runs where long-held readers
     # prevented auto-checkpoint from resetting the file.
     await _writer_db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
@@ -124,6 +127,18 @@ async def close() -> None:
         await _writer_db.close()
         _writer_db = None
     _readonly_path = None
+
+
+async def _migrate_schema() -> None:
+    """Add columns missing on DBs created before they were introduced."""
+    cursor = await _writer_db.execute("PRAGMA table_info(miner_concurrency)")
+    columns = {row["name"] async for row in cursor}
+    if "last_decay_at" not in columns:
+        await _writer_db.execute(
+            "ALTER TABLE miner_concurrency ADD COLUMN last_decay_at TEXT"
+        )
+        await _writer_db.commit()
+        bt.logging.info("[MinerDB] Migrated miner_concurrency: +last_decay_at")
 
 
 async def _purge_old_history() -> None:
@@ -344,6 +359,7 @@ async def record_call_success(uid: int, search_type: str) -> bool:
             UPDATE miner_concurrency
             SET consecutive_failures = 0,
                 unreachable_since = NULL,
+                last_decay_at = NULL,
                 updated_at = ?
             WHERE uid = ? AND search_type = ?
             """,
@@ -369,6 +385,7 @@ async def record_call_failure(uid: int, search_type: str, threshold: int) -> boo
         if row is None:
             return False
 
+        now = _now_iso()
         new_count = row["consecutive_failures"] + 1
         was_unreachable = row["unreachable_since"] is not None
         flip = new_count >= threshold and not was_unreachable
@@ -378,10 +395,11 @@ async def record_call_failure(uid: int, search_type: str, threshold: int) -> boo
                 """
                 UPDATE miner_concurrency
                 SET consecutive_failures = ?,
-                    unreachable_since = ?
+                    unreachable_since = ?,
+                    last_decay_at = ?
                 WHERE uid = ? AND search_type = ?
                 """,
-                (new_count, _now_iso(), uid, search_type),
+                (new_count, now, now, uid, search_type),
             )
         else:
             await db.execute(
@@ -406,6 +424,34 @@ async def get_unreachable_uids(search_type: str) -> set[int]:
             (search_type,),
         )
         return {row["uid"] async for row in cursor}
+
+
+async def get_unreachable_rows(search_type: str) -> list[dict]:
+    async with _conn() as db:
+        cursor = await db.execute(
+            """
+            SELECT uid, verified, last_decay_at, unreachable_since
+            FROM miner_concurrency
+            WHERE search_type = ? AND unreachable_since IS NOT NULL
+            """,
+            (search_type,),
+        )
+        return [dict(row) async for row in cursor]
+
+
+async def apply_decay_tick(
+    uid: int, search_type: str, new_verified: int, new_last_decay_at: str
+) -> None:
+    async with _conn() as db:
+        await db.execute(
+            """
+            UPDATE miner_concurrency
+            SET verified = ?, last_decay_at = ?
+            WHERE uid = ? AND search_type = ?
+            """,
+            (new_verified, new_last_decay_at, uid, search_type),
+        )
+        await db.commit()
 
 
 async def get_all_rows() -> list[dict]:
