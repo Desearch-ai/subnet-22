@@ -105,6 +105,7 @@ class Neuron(AbstractNeuron):
                 Dendrite(wallet=self.wallet),
                 Dendrite(wallet=self.wallet),
             ]
+            self.isalive_dendrite = Dendrite(wallet=self.wallet)
         else:
             self.wallet = bt.Wallet(config=self.config)
 
@@ -122,6 +123,7 @@ class Neuron(AbstractNeuron):
                 bt.Dendrite(wallet=self.wallet),
                 bt.Dendrite(wallet=self.wallet),
             ]
+            self.isalive_dendrite = bt.Dendrite(wallet=self.wallet)
 
         self.dendrites = itertools.cycle(self.dendrite_list)
 
@@ -180,9 +182,10 @@ class Neuron(AbstractNeuron):
         miss flips ``unreachable_since`` — one IsAlive cycle (~10 min) is
         enough even without any scoring attempts."""
 
-        dendrite = next(self.dendrites)
         try:
-            response = await dendrite(axon, IsAlive(), deserialize=False, timeout=10)
+            response = await self.isalive_dendrite(
+                axon, IsAlive(), deserialize=False, timeout=5
+            )
             if not response.is_success:
                 raise Exception(f"UID {uid} is not active")
         except Exception:
@@ -214,26 +217,24 @@ class Neuron(AbstractNeuron):
         return axon
 
     async def get_available_uids_is_alive(self):
-        """Get a dictionary of available UIDs and their axons asynchronously."""
-
-        tasks = {
-            uid.item(): self.check_uid(
-                self.metagraph.axons[uid.item()],
-                uid.item(),
-            )
-            for uid in self.metagraph.uids
-        }
-
-        results = await asyncio.gather(*tasks.values(), return_exceptions=True)
+        uids = [uid.item() for uid in self.metagraph.uids]
+        group_count = 5
+        group_size = max(1, (len(uids) + group_count - 1) // group_count)
 
         available_uids = []
         unavailable_uids = []
 
-        for uid, result in zip(tasks.keys(), results):
-            if not isinstance(result, Exception):
-                available_uids.append(uid)
-            else:
-                unavailable_uids.append(uid)
+        for start in range(0, len(uids), group_size):
+            group = uids[start : start + group_size]
+            tasks = [self.check_uid(self.metagraph.axons[uid], uid) for uid in group]
+
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+
+            for uid, result in zip(group, results):
+                if not isinstance(result, Exception):
+                    available_uids.append(uid)
+                else:
+                    unavailable_uids.append(uid)
 
         bt.logging.info(
             f"Available UIDs: {available_uids}, total: {len(available_uids)}"
@@ -451,3 +452,5 @@ class Neuron(AbstractNeuron):
 
         for dendrite in self.dendrite_list:
             await dendrite.aclose_session()
+
+        await self.isalive_dendrite.aclose_session()
