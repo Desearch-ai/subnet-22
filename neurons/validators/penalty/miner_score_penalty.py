@@ -14,11 +14,13 @@ MAX_PENALTY = 1.0
 
 
 def score_to_contextual_relevance(score):
-    if score == 2.0:
+    if score is None:
+        return None
+    if score <= 1:
         return ContextualRelevance.LOW
-    elif score == 5.0:
+    if score == 2:
         return ContextualRelevance.MEDIUM
-    elif score == 9.0:
+    if score >= 3:
         return ContextualRelevance.HIGH
 
 

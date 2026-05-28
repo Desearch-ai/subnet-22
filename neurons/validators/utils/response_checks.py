@@ -30,12 +30,10 @@ def extract_markdown_links(text: str) -> List[Tuple[str, str]]:
 
 
 def check_markdown_structure(text: str) -> Tuple[bool, List[str]]:
-    """Validate summary uses ** headers and is non-empty. Returns (ok, issues)."""
+    """Reject `#` headers and empty responses; bold headers no longer required."""
     issues = []
     if HEADER_HASH_PATTERN.search(text or ""):
         issues.append("Uses # headers instead of **")
-    if not HEADER_BOLD_PATTERN.findall(text or ""):
-        issues.append("No proper headers found (should use ** for headers)")
     if not (text or "").strip():
         issues.append("Empty response")
     return len(issues) == 0, issues

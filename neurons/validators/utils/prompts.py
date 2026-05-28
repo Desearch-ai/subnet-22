@@ -90,76 +90,48 @@ class ScoringPrompt(BasePrompt):
         ]
 
 
+_LABEL_TO_SCORE = {"HIGH": 3.0, "MEDIUM": 2.0, "LOW": 1.0, "OFFTOPIC": 0.0}
+_LABEL_RE = re.compile(r"(?i)\b(HIGH|MEDIUM|LOW|OFFTOPIC)\b")
+
+
+def _extract_label_score(response: str) -> float:
+    if not response:
+        return 0.0
+    if m := _LABEL_RE.search(response):
+        return _LABEL_TO_SCORE[m.group(1).upper()]
+    if m := re.search(r"(?i)score\s*[:\s]+([0-3])\b", response):
+        return float(m.group(1))
+    return 0.0
+
+
 class SummaryRelevancePrompt(ScoringPrompt):
-    """Scores a summary on a strict 4-point scale (0-3) for improved consistency."""
+    """Scores a summary on a 4-tier label scale (OFFTOPIC / LOW / MEDIUM / HIGH)."""
 
     def __init__(self):
         super().__init__()
         self.template = user_summary_relevance_template
-        self.extract_pattern = r"\b([0-3])\b"  # Updated for 0-3 range
+        self.extract_pattern = r"(?i)\b(HIGH|MEDIUM|LOW|OFFTOPIC)\b"
 
     def get_system_message(self) -> str:
         return system_summary_relevance_template
 
     def extract_score(self, response: str) -> float:
-        """Extract numeric score (range 0-3) from prompt response."""
-        # Try to extract score with "Score:" prefix first
-        score_match = re.search(r"(?i)score[:\s]*([0-3])", response)
-        if score_match:
-            try:
-                score = float(score_match.group(1))
-                if 0 <= score <= 3:
-                    return score
-            except ValueError:
-                pass
-
-        # Fallback to original extraction
-        extraction = self.extract(response)
-        if extraction is not None:
-            try:
-                score = float(extraction)
-                if 0 <= score <= 3:
-                    return score
-            except ValueError:
-                return 0
-        return 0
+        return _extract_label_score(response)
 
 
 class LinkContentPrompt(ScoringPrompt):
-    r"""Scores a summary on a scale from 0 to 10, given a context."""
+    r"""Scores a link/tweet on a 4-tier label scale (OFFTOPIC / LOW / MEDIUM / HIGH)."""
 
     def __init__(self):
         super().__init__()
         self.template = user_message_question_answer_template
+        self.extract_pattern = r"(?i)\b(HIGH|MEDIUM|LOW|OFFTOPIC)\b"
 
     def get_system_message(self):
         return system_message_question_answer_template
 
     def extract_score(self, response: str) -> float:
-        r"""Extract numeric score (range 0-10) from prompt response."""
-        # Mapping of special codes to numeric scores
-
-        # Extract score from output string with various formats
-        match = re.search(r"(?i)score[:\s]*([0-9]|10)", response)
-        if match:
-            try:
-                score = float(match.group(1))
-                if 0 <= score <= 10:
-                    return score
-            except ValueError:
-                return 0
-
-        # Extract score directly from the response if "Score:" prefix is missing
-        match = re.search(r"\b([0-9]|10)\b", response)
-        if match:
-            try:
-                score = float(match.group(1))
-                if 0 <= score <= 10:
-                    return score
-            except ValueError:
-                return 0
-
-        return 0
+        return _extract_label_score(response)
 
 
 class SummaryRulePrompt(ScoringPrompt):
@@ -209,40 +181,18 @@ class SummaryRulePrompt(ScoringPrompt):
 
 
 class SearchSummaryRelevancePrompt(ScoringPrompt):
-    r"""Scores a summary on a scale from 0 to 10, given a context."""
+    r"""Scores a search-result link on a 4-tier label scale (OFFTOPIC / LOW / MEDIUM / HIGH)."""
 
     def __init__(self):
         super().__init__()
         self.template = user_message_question_answer_template
+        self.extract_pattern = r"(?i)\b(HIGH|MEDIUM|LOW|OFFTOPIC)\b"
 
     def get_system_message(self):
         return system_message_question_answer_template
 
     def extract_score(self, response: str) -> float:
-        r"""Extract numeric score (range 0-10) from prompt response."""
-        # Mapping of special codes to numeric scores
-
-        # Extract score from output string with various formats
-        match = re.search(r"(?i)score[:\s]*([0-9]|10)", response)
-        if match:
-            try:
-                score = float(match.group(1))
-                if 0 <= score <= 10:
-                    return score
-            except ValueError:
-                return 0
-
-        # Extract score directly from the response if "Score:" prefix is missing
-        match = re.search(r"\b([0-9]|10)\b", response)
-        if match:
-            try:
-                score = float(match.group(1))
-                if 0 <= score <= 10:
-                    return score
-            except ValueError:
-                return 0
-
-        return 0
+        return _extract_label_score(response)
 
 
 def find_unique_tags(input_text: str):
@@ -264,57 +214,31 @@ def clean_template(template):
     return "\n".join(cleaned_lines)
 
 
-system_summary_relevance_template = """You are an expert content evaluator assessing AI-generated summaries with strict scoring criteria.
+system_summary_relevance_template = """You judge whether an AI-generated answer SUMMARY satisfies the user's query.
 
-STRUCTURAL REQUIREMENTS (Must ALL be met for any score above 0):
-- Headers MUST use ** formatting (e.g., **Header Name**), NOT # or ##
-- Summary MUST contain at least 3 markdown links in format [text](url)
-- Links must be naturally integrated within the text, not just listed
-- Content must directly address the user's query
+Two things matter independently — BOTH gate the verdict:
+  (A) Does the answer deliver the requested fact?
+  (B) Is the answer's evidence trail honest — every specific factual claim cited to a source that plausibly contains that claim?
 
-SCORING CRITERIA:
+Pick exactly ONE verdict:
 
-Score 0 - FAILS BASIC REQUIREMENTS:
-- Missing markdown links (fewer than 3) OR
-- Uses wrong header format (# or ##) OR
-- Completely off-topic or doesn't address the query OR
-- Only restates the question without providing substantive content OR
-- Empty or extremely brief response
+HIGH — Fully addresses every part of the question with appropriate depth AND has tight, distributed citations: each specific factual claim is backed by a source whose URL or title shows it is the answer-bearing page for that claim. Distinct claims do not all stack on a single source. Where authoritative sources disagree, the answer notes the variation and cites each. Honest "data not yet available" / "event has not happened" answers that show the right sources were checked qualify here too.
 
-Score 1 - MEETS MINIMUM STANDARDS:
-- Has required structural elements (** headers, 3+ links)
-- Addresses the query but with shallow or generic content
-- Links are present but may not strongly support the claims
-- Information is basic and lacks depth or insight
+MEDIUM — Directly answers the question, and the citation trail is plausible: claims are cited to URLs whose titles or paths suggest they contain the specific fact. Synthesis or framing sentences can go uncited; specific numbers, names, and dates should be cited to specific pages.
 
-Score 2 - GOOD QUALITY:
-- Contains 4+ well-integrated markdown links
-- Comprehensively addresses most aspects of the query
-- Well-organized with clear, logical structure
-- Most claims are properly supported by relevant citations
-- Provides useful, actionable information
+LOW — Either the user's specific question is not actually answered (it dances around the topic), OR the fact is delivered but the citation trail is broken (cited URLs are clearly the wrong page for the claim, or the same source is stacked across many unrelated claims).
 
-Score 3 - EXCELLENT QUALITY:
-- Contains 5+ highly relevant markdown links
-- Fully addresses ALL aspects of the query with depth
-- Exceptional organization and professional presentation
-- ALL claims backed by strong, relevant citations
-- Provides valuable insights and goes beyond basic information
-- Demonstrates clear expertise and thorough research
+OFFTOPIC — Empty, dodges the question, restates it without answering, or contains contradictions / clear hallucinations. Also OFFTOPIC if most factual claims have no citation at all.
 
-EVALUATION CHECKLIST:
-1. Check structural requirements (** headers, 3+ markdown links)
-2. Verify content directly addresses the user's query
-3. Count and assess quality of markdown links
-4. Evaluate depth and comprehensiveness of content
-5. Verify citations properly support claims made
-6. Assess overall value and insight provided
+Principles:
+- RIGHT-SIZED beats verbose. A short focused answer to a simple question can be HIGH. Do not reward length.
+- Ranges count as answers. "$77,300–$77,400 across exchanges" answers a price question.
+- A citation is only credible if the cited page's title or URL path suggests it contains the specific claim. Hub / calendar / index pages do not back specific facts.
+- When uncertain between two verdicts, pick the LOWER one.
 
-BE STRICT: When in doubt between two scores, choose the LOWER score. Quality standards must be consistently high.
-
-Output Format:
-Score: [0-3]
-Explanation: [Specific explanation referencing which criteria were met or failed, including link count and structural assessment]
+Output EXACTLY two lines, nothing else:
+Verdict: <HIGH|MEDIUM|LOW|OFFTOPIC>
+Reason: <one short sentence, max 25 words>
 """
 
 
@@ -329,45 +253,30 @@ user_summary_relevance_template = """
 """
 
 
-system_message_question_answer_template = """
-Relevance Scoring Guide:
+system_message_question_answer_template = """You judge whether a SOURCE (web page or tweet) is useful for answering a user query — by INTENT match, not keyword overlap. The input is metadata (title + description / snippet), NOT the full page content. Judge how likely THIS specific page contains the answer the user needs.
 
-Role: As an evaluator, your task is to determine how well a web link answers a specific question based on the presence of keywords and the depth of content.
+DIRECT-ANSWER TEST (apply first): does the title or snippet contain the specific evidence a user would need to answer THIS question? "What X says" needs quotes from X (not discussion ABOUT X). "Current X / latest X" needs the value or name. "How to X" needs steps or mechanism. "Who won / what happened" needs the outcome. If yes → HIGH. If no → LOW or lower.
 
-Scoring Criteria:
+Pick exactly ONE verdict:
 
-Score 2:
-- Criteria: Content does not mention the question’s keywords/themes.
-- Example:
-  - Question: "Effects of global warming on polar bears?"
-  - Content: "Visit the best tropical beaches!"
-  - Output: Score 2, Explanation: No mention of global warming or polar bears.
+HIGH — Answer-bearing page. The user could open this single tab and have what they need.
 
-Score 5:
-- Criteria: Content mentions keywords/themes but lacks detailed information.
-- Example:
-  - Question: "AI in healthcare?"
-  - Content: "AI is transforming industries."
-  - Output: Score 5, Explanation: Mentions AI but not healthcare.
+MEDIUM — On-topic but a hub / index / category page (calendars, year-indexes, "list of" pages, topic landings). Also MEDIUM when the entity / topic matches but the subtopic is narrower or broader than the query, or the snippet hints without confirming.
 
-Score 9:
-- Criteria: Content mentions multiple keywords/themes and provides detailed, well-explained information with examples or evidence.
-- Example:
-  - Question: "Latest trends in renewable energy?"
-  - Content: "Advancements in solar and wind energy have reduced costs and increased efficiency."
-  - Output: Score 9, Explanation: Detailed discussion on specific advancements in renewable energy.
+LOW — In the same broad domain but does not match the user's specific intent: wrong subtopic, wrong entity, or meta-discussion of the topic without the direct evidence the question asks for.
 
-Important Rules:
-1. Identify Keywords: Extract keywords/themes from the question.
-2. Check for Engagement: Determine how well the content covers these keywords/themes.
-3. Timeliness Exclusion: When the user is asking for the latest updates or news, the evaluator should focus solely on the relevance, clarity, and specificity of the content, ignoring the actual date or timeliness of the information.
-4. Scoring:
-   - 2: No relevant keywords.
-   - 5: Superficial mention.
-   - 9: Detailed, well-explained information with examples or evidence.
-   
-Output Format:
-Score: [2, 5, or 9], Explanation:
+OFFTOPIC — Different topic entirely. Neither title nor snippet has a semantic link to the query's intent.
+
+Principles:
+- Judge by INTENT against the specific question. A topic match alone is not enough.
+- TITLE and SNIPPET are BOTH strong signals. A generic-looking title is still HIGH if the snippet contains the specific answer.
+- Hub markers in the TITLE ("list of", "calendar", "index", "all X", "guide to") lean MEDIUM — UNLESS the snippet quotes the specific answer, then HIGH.
+- Do NOT penalize stale content. Date filtering happens elsewhere.
+- When uncertain between two verdicts, pick the LOWER one.
+
+Output EXACTLY two lines, nothing else:
+Verdict: <HIGH|MEDIUM|LOW|OFFTOPIC>
+Reason: <one short sentence, max 20 words>
 """
 
 system_message_summary_validation_template = """
