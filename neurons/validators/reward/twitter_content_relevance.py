@@ -353,7 +353,7 @@ class TwitterContentRelevanceModel(BaseRewardModel):
                             )
                             if score_result is not None:
                                 score = scoring_prompt.extract_score(score_result)
-                                total_score += score / 10.0
+                                total_score += score / 3.0
                                 response_scores[val_tweet_id] = score
 
                     if total_score > 0:

@@ -22,7 +22,7 @@ class RewardLLM:
                             return await call_openai(
                                 messages=message,
                                 model="gpt-4.1-nano",
-                                temperature=0.5,
+                                temperature=0.01,
                             )
                         else:
                             return await call_chutes(

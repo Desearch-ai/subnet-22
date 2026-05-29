@@ -303,7 +303,7 @@ class WebSearchContentRelevanceModel(BaseRewardModel):
                         score_result = val_score_responses.get(val_url, None)
                         if score_result is not None:
                             score = scoring_prompt.extract_score(score_result)
-                            total_score += score / 10.0
+                            total_score += score / 3.0
                             response_scores[val_url] = score
 
                 if attempted_count > 0 and total_score > 0:
