@@ -4,8 +4,9 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from neurons.validators.scoring.capacity import QUALITY_THRESHOLD
+from neurons.validators.scoring.capacity import QUALITY_THRESHOLDS
 from neurons.validators.scoring.query_scheduler import (
+    MIN_VOLUME_RATIO,
     QueryScheduler,
     combine_superlinear_scores,
 )
@@ -21,7 +22,14 @@ def _uniform(q: float, v: int, uid: int = 1) -> dict:
 
 
 def test_combine_at_quality_threshold_earns_zero():
-    out = combine_superlinear_scores(_uniform(QUALITY_THRESHOLD, 100))
+    """At each type's threshold, q_eff = 0 → all per-type contributions zero out."""
+    out = combine_superlinear_scores(
+        {
+            "ai_search": {1: (QUALITY_THRESHOLDS["ai_search"], 100)},
+            "x_search": {1: (QUALITY_THRESHOLDS["x_search"], 100)},
+            "web_search": {1: (QUALITY_THRESHOLDS["web_search"], 100)},
+        }
+    )
     assert out[1] == 0.0
 
 
@@ -52,7 +60,9 @@ def test_combine_solo_beats_same_quality_split():
 
 
 def test_combine_split_uids_lose_to_higher_quality_solo():
-    """1 UID at q=0.5 outearns 2 UIDs at q=0.4 each, even with 2x infrastructure."""
+    """1 UID at q=0.5 outearns 2 UIDs at q=0.4 each. Under per-type thresholds
+    the split's X+Web fail (q<0.50) so they collapse to AI-only coverage=0.6;
+    the solo keeps full coverage=1.0 with AI contributing."""
     solo = combine_superlinear_scores(_uniform(0.5, 100, uid=1))
     split = combine_superlinear_scores(
         {
@@ -65,10 +75,35 @@ def test_combine_split_uids_lose_to_higher_quality_solo():
 
 
 def test_combine_quality_gap_amplification_is_quadratic():
-    """A 0.10 quality gap produces a (Δq_eff)² reward gap — steep near threshold."""
-    a = combine_superlinear_scores(_uniform(0.5, 100, uid=1))
-    b = combine_superlinear_scores(_uniform(0.4, 100, uid=2))
-    expected = ((0.5 - QUALITY_THRESHOLD) / (0.4 - QUALITY_THRESHOLD)) ** 2
+    """A 0.10 quality gap produces a (Δq_eff)² reward gap — steep near each
+    type's threshold. Both AI qualities are above the 0.45 threshold so both pass."""
+    a = combine_superlinear_scores(
+        {
+            "ai_search": {1: (0.6, 100)},
+            "x_search": {1: (0.7, 100)},
+            "web_search": {1: (0.7, 100)},
+        }
+    )
+    b = combine_superlinear_scores(
+        {
+            "ai_search": {2: (0.5, 100)},
+            "x_search": {2: (0.7, 100)},
+            "web_search": {2: (0.7, 100)},
+        }
+    )
+    ai_thr = QUALITY_THRESHOLDS["ai_search"]
+    x_thr = QUALITY_THRESHOLDS["x_search"]
+    web_thr = QUALITY_THRESHOLDS["web_search"]
+    # Total = coverage² · Σ w·q_eff² (·100^1.2 cancels in ratio). Both have
+    # coverage=1 (all 3 served). Compare full per_type_sums.
+    def per_type(q_ai, q_x, q_web):
+        return (
+            0.6 * ((q_ai - ai_thr) / (1 - ai_thr)) ** 2
+            + 0.2 * ((q_x - x_thr) / (1 - x_thr)) ** 2
+            + 0.2 * ((q_web - web_thr) / (1 - web_thr)) ** 2
+        )
+
+    expected = per_type(0.6, 0.7, 0.7) / per_type(0.5, 0.7, 0.7)
     assert a[1] / b[2] == pytest.approx(expected, rel=0.001)
 
 
@@ -101,7 +136,7 @@ def test_combine_xweb_specialist_earns_some_not_zero():
 
 
 def test_combine_volume_floor_partial_credit_below_threshold():
-    """v=10 on AI (10% of max=100) gets soft credit 0.333, not zero."""
+    """AI volume below the floor (10% of max=100) gets soft partial credit, not zero."""
     out = combine_superlinear_scores(
         {
             "ai_search": {1: (1.0, 10)},
@@ -109,9 +144,7 @@ def test_combine_volume_floor_partial_credit_below_threshold():
             "web_search": {1: (1.0, 100)},
         }
     )
-    # served_ai = min(1, (10/100)/0.30) = 0.3333
-    # served_x = served_web = 1.0
-    soft_ai = (10 / 100) / 0.30
+    soft_ai = min(1.0, (10 / 100) / MIN_VOLUME_RATIO)
     coverage = 0.60 * soft_ai + 0.20 * 1.0 + 0.20 * 1.0
     per_type = (
         0.60 * soft_ai * 1.0 * 10**1.2
@@ -122,23 +155,24 @@ def test_combine_volume_floor_partial_credit_below_threshold():
 
 
 def test_combine_volume_floor_full_credit_at_minimum():
-    """v=30 on AI (exactly 30% of max=100) gets full credit."""
+    """AI volume exactly at the floor (MIN_VOLUME_RATIO of max=100) gets full credit."""
+    floor_v = round(MIN_VOLUME_RATIO * 100)
     out = combine_superlinear_scores(
         {
-            "ai_search": {1: (1.0, 30)},
+            "ai_search": {1: (1.0, floor_v)},
             "x_search": {1: (1.0, 100)},
             "web_search": {1: (1.0, 100)},
         }
     )
-    # All three served at full credit.
+    # All three served at full credit (coverage = 1.0).
     expected_per_type = (
-        0.60 * 1.0 * 30**1.2 + 0.20 * 1.0 * 100**1.2 + 0.20 * 1.0 * 100**1.2
+        0.60 * 1.0 * floor_v**1.2 + 0.20 * 1.0 * 100**1.2 + 0.20 * 1.0 * 100**1.2
     )
     assert out[1] == pytest.approx(expected_per_type)
 
 
 def test_combine_volume_floor_no_cliff():
-    """v_ai crossing the 30% boundary changes the score smoothly, not 8x."""
+    """v_ai crossing the floor boundary changes the score smoothly, not 8x."""
 
     def score_at(v_ai):
         return combine_superlinear_scores(
@@ -149,9 +183,10 @@ def test_combine_volume_floor_no_cliff():
             }
         )[1]
 
-    s29, s30, s31 = score_at(29), score_at(30), score_at(31)
-    assert s30 / s29 < 1.10  # was 8.46x under the old binary floor
-    assert s31 / s30 < 1.10
+    b = round(MIN_VOLUME_RATIO * 100)
+    below, at, above = score_at(b - 1), score_at(b), score_at(b + 1)
+    assert at / below < 1.10  # was 8.46x under the old binary floor
+    assert above / at < 1.10
 
 
 def test_combine_generalist_beats_x_only_spam_team():

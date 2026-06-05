@@ -229,6 +229,32 @@ async def get_all_concurrency_data(
         }
 
 
+async def get_quality_state_bulk(
+    uids: list[int],
+) -> dict[int, dict[str, dict]]:
+    """``{uid: {search_type: {verified, declared, quality_avg}}}`` in one query."""
+    if not uids:
+        return {}
+    placeholders = ",".join("?" * len(uids))
+    async with _conn() as db:
+        cursor = await db.execute(
+            f"""
+            SELECT uid, search_type, verified, declared, quality_avg
+            FROM miner_concurrency
+            WHERE uid IN ({placeholders})
+            """,
+            tuple(uids),
+        )
+        result: dict[int, dict[str, dict]] = {}
+        async for row in cursor:
+            result.setdefault(row["uid"], {})[row["search_type"]] = {
+                "verified": row["verified"],
+                "declared": row["declared"],
+                "quality_avg": row["quality_avg"],
+            }
+        return result
+
+
 async def get_concurrency_row(uid: int, search_type: str) -> Optional[dict]:
     async with _conn() as db:
         cursor = await db.execute(

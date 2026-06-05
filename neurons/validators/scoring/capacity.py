@@ -1,11 +1,4 @@
-"""
-Per-UID verified-concurrency ramping.
-
-Each miner's ``verified`` grows ``RAMP_FRACTION`` of declared per scoring
-window when quality EMA stays at or above ``QUALITY_THRESHOLD``, and decays
-the same step when it falls below. ``verified`` is the synthetic allocation
-for the next epoch — bounded by ``declared`` and ``HARD_CAP_PER_UID``.
-"""
+"""Per-UID verified-concurrency ramping gated on serving all 3 search types."""
 
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Protocol
@@ -15,13 +8,17 @@ import bittensor as bt
 from desearch.miner_config import SEARCH_TYPES
 from neurons.validators.scoring import miner_db
 
-QUALITY_EMA_ALPHA = 0.3
+QUALITY_EMA_ALPHA = 0.5
 
 DEFAULT_PER_UID = 1
 HARD_CAP_PER_UID = 100
-QUALITY_THRESHOLD = 0.35
+QUALITY_THRESHOLDS: dict[str, float] = {
+    "ai_search": 0.45,
+    "x_search": 0.60,
+    "web_search": 0.60,
+}
 RAMP_FRACTION = 0.10
-DECAY_FRACTION = 0.20
+DECAY_FRACTION = 0.10
 
 UNREACHABLE_FAILURE_THRESHOLD = 1
 UNREACHABLE_DECAY_FACTOR = 0.9
@@ -43,28 +40,39 @@ def set_router(router: _RouterKillSwitch) -> None:
     _router = router
 
 
-def next_verified(current: int, declared: int, quality_avg: float) -> int:
-    """Ramp by ``RAMP_FRACTION``, decay by ``DECAY_FRACTION`` (faster exit than entry)."""
+def next_verified(current: int, declared: int, all_pass: bool) -> int:
     declared = max(declared, DEFAULT_PER_UID)
-    if quality_avg >= QUALITY_THRESHOLD:
+    if all_pass:
         step = max(1, int(declared * RAMP_FRACTION))
         return min(current + step, declared, HARD_CAP_PER_UID)
     step = max(1, int(declared * DECAY_FRACTION))
     return max(DEFAULT_PER_UID, current - step)
 
 
-async def update_after_scoring(
+def passes_combined_gate(
+    ema_by_type: dict[str, float],
+    declared_by_type: dict[str, int],
+) -> bool:
+    for t, thr in QUALITY_THRESHOLDS.items():
+        if declared_by_type.get(t, 0) <= 0:
+            return False
+        if ema_by_type.get(t, 0.0) < thr:
+            return False
+    return True
+
+
+async def record_window_quality(
     uid: int,
     search_type: str,
     quality: float,
     window_start: str,
     allocated: int,
 ) -> None:
-    """Update quality EMA and ramp ``verified`` for one scoring window."""
+    """Update EMA and log the window. Ramping deferred to ``ramp_after_epoch``."""
     row = await miner_db.get_concurrency_row(uid, search_type)
     if row is None:
         bt.logging.warning(
-            f"[Capacity] update_after_scoring skipped — no row for "
+            f"[Capacity] record_window_quality skipped — no row for "
             f"uid={uid} {search_type} (miner never registered?)"
         )
         return
@@ -73,8 +81,6 @@ async def update_after_scoring(
         "quality_avg"
     ] + QUALITY_EMA_ALPHA * quality
 
-    new_verified = next_verified(row["verified"], row["declared"], quality_avg)
-
     await miner_db.insert_window(
         uid=uid,
         search_type=search_type,
@@ -82,7 +88,7 @@ async def update_after_scoring(
         hotkey=row["hotkey"],
         coldkey=row["coldkey"],
         quality_score=quality,
-        passed=quality >= QUALITY_THRESHOLD,
+        passed=quality_avg >= QUALITY_THRESHOLDS[search_type],
         verified_concurrency=allocated,
     )
 
@@ -91,7 +97,39 @@ async def update_after_scoring(
         search_type=search_type,
         quality_avg=quality_avg,
     )
-    await miner_db.bulk_update_verified(search_type, {uid: new_verified})
+
+
+async def ramp_after_epoch(uids: list[int]) -> None:
+    """Evaluate the combined gate per UID and persist verified across all 3 types."""
+    if not uids:
+        return
+
+    state = await miner_db.get_quality_state_bulk(uids)
+    if not state:
+        return
+
+    updates_by_type: dict[str, dict[int, int]] = {t: {} for t in QUALITY_THRESHOLDS}
+    pass_count = 0
+
+    for uid, by_type in state.items():
+        ema = {t: row["quality_avg"] for t, row in by_type.items()}
+        declared = {t: row["declared"] for t, row in by_type.items()}
+        all_pass = passes_combined_gate(ema, declared)
+        if all_pass:
+            pass_count += 1
+
+        for t, row in by_type.items():
+            new_v = next_verified(row["verified"], row["declared"], all_pass)
+            if new_v != row["verified"]:
+                updates_by_type[t][uid] = new_v
+
+    for t, updates in updates_by_type.items():
+        if updates:
+            await miner_db.bulk_update_verified(t, updates)
+
+    bt.logging.info(
+        f"[Capacity] ramp_after_epoch: gate passed for {pass_count}/{len(state)} UIDs"
+    )
 
 
 async def note_call_result(uid: int, search_type: str, success: bool) -> None:
