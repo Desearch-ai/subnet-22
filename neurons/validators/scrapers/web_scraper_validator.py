@@ -22,6 +22,7 @@ from neurons.validators.penalty.result_schema_penalty import ResultSchemaPenalty
 from neurons.validators.penalty.timeout_penalty import TimeoutPenaltyModel
 from neurons.validators.reward import RewardScoringType
 from neurons.validators.reward.performance_reward import PerformanceRewardModel
+from neurons.validators.reward.reward_llm import RewardLLM
 from neurons.validators.reward.web_basic_search_content_relevance import (
     WebBasicSearchContentRelevanceModel,
 )
@@ -40,6 +41,8 @@ class WebScraperValidator(BaseScraperValidator):
         self.web_content_weight = 0.70
         self.performance_weight = 0.30
 
+        self.reward_llm = RewardLLM(neuron.config.neuron.scoring_model)
+
         reward_weights = np.array(
             [
                 self.web_content_weight,
@@ -52,6 +55,7 @@ class WebScraperValidator(BaseScraperValidator):
             WebBasicSearchContentRelevanceModel(
                 scoring_type=RewardScoringType.search_relevance_score_template,
                 neuron=neuron,
+                llm_reward=self.reward_llm,
             ),
             PerformanceRewardModel(
                 neuron=neuron,
