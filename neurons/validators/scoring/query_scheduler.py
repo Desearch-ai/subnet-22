@@ -13,9 +13,9 @@ from neurons.validators.scoring.scoring_store import SEARCH_TYPES, ScoringStore
 from neurons.validators.scoring.synthetic_query_generator import SyntheticQueryGenerator
 
 SEARCH_TYPE_WEIGHTS = {
-    "ai_search": 0.60,
-    "x_search": 0.20,
-    "web_search": 0.20,
+    "ai_search": 0.80,
+    "x_search": 0.10,
+    "web_search": 0.10,
 }
 
 ORGANIC_VALUE_MULTIPLIER = 3
@@ -24,7 +24,7 @@ ORGANIC_DEEP_CAP_PER_TYPE = 100
 QUALITY_EXPONENT = 2.0
 VOLUME_EXPONENT = 1.2
 COVERAGE_EXPONENT = 2.0
-MIN_VOLUME_RATIO = 0.30
+MIN_VOLUME_RATIO = 0.50
 
 BATCH_SIZE = 20
 BATCH_INTERVAL_SECONDS = 3
@@ -38,12 +38,10 @@ DEEP_SAMPLE_WEIGHT = 5
 def combine_superlinear_scores(
     qualities_per_type: dict[str, dict[int, tuple[float, int]]],
 ) -> dict[int, float]:
-    """``score = coverage^CE * Σ w·served·q_eff^QE·v^VE`` (served = soft-floor v/max_v / MVR)"""
     all_uids: set[int] = set()
     for uid_q in qualities_per_type.values():
         all_uids.update(uid_q.keys())
 
-    threshold = capacity.QUALITY_THRESHOLD
     combined: dict[int, float] = {}
     for uid in all_uids:
         qv = {
@@ -54,7 +52,7 @@ def combine_superlinear_scores(
 
         served: dict[str, float] = {}
         for t, (q, v) in qv.items():
-            if max_v == 0 or q < threshold:
+            if max_v == 0 or q < capacity.QUALITY_THRESHOLDS[t]:
                 served[t] = 0.0
             else:
                 served[t] = min(1.0, (v / max_v) / MIN_VOLUME_RATIO)
@@ -65,11 +63,10 @@ def combine_superlinear_scores(
         for t, (q, v) in qv.items():
             if served[t] == 0.0:
                 continue
-            q_eff = (q - threshold) / (1.0 - threshold)
             per_type_sum += (
                 SEARCH_TYPE_WEIGHTS[t]
                 * served[t]
-                * q_eff**QUALITY_EXPONENT
+                * q**QUALITY_EXPONENT
                 * v**VOLUME_EXPONENT
             )
 
@@ -399,7 +396,7 @@ class QueryScheduler:
         }
 
         for uid, (quality, _) in uid_results.items():
-            await capacity.update_after_scoring(
+            await capacity.record_window_quality(
                 uid=uid,
                 search_type=search_type,
                 quality=quality,
@@ -455,6 +452,11 @@ class QueryScheduler:
                 )
                 if uid_results:
                     qualities_per_type[search_type] = uid_results
+
+            touched_uids = sorted(
+                {uid for results in qualities_per_type.values() for uid in results}
+            )
+            await capacity.ramp_after_epoch(touched_uids)
 
             combined = combine_superlinear_scores(qualities_per_type)
             await self._dispatch_combined_scores(combined)

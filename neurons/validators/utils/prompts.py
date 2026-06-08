@@ -195,6 +195,50 @@ class SearchSummaryRelevancePrompt(ScoringPrompt):
         return _extract_label_score(response)
 
 
+system_message_web_search_relevance_template = """You judge whether a web page is a relevant result for a search query — the way a normal search engine would. You see only the page's title and description (snippet), not the full page.
+
+RELEVANT — the page is genuinely about the query's topic: what someone running this search would reasonably expect to find. How-to pages, documentation, articles, news, forum threads, videos, overviews, and listing / hub pages all count as RELEVANT when they are on the query's topic.
+
+IRRELEVANT — the page is about a different topic and only matches the query through a shared common word. Example: the query is about "docker" but the result is a video titled "What hard work looks like" that matched only on the word "work". If the page's topic does not match the query's topic, it is IRRELEVANT.
+
+Be lenient: a search engine legitimately returns a wide range of on-topic results. Only answer IRRELEVANT when the topic genuinely does not match the query.
+
+Output exactly one word: RELEVANT or IRRELEVANT."""
+
+
+user_message_web_search_relevance_template = """
+<Query>
+{}
+</Query>
+
+<Result>
+{}
+</Result>
+"""
+
+
+class WebSearchRelevancePrompt(ScoringPrompt):
+    r"""Binary relevance for a plain web-search result (RELEVANT / IRRELEVANT) — topic match, not answer-bearing intent."""
+
+    def __init__(self):
+        super().__init__()
+        self.template = user_message_web_search_relevance_template
+        self.extract_pattern = r"(?i)\b(IRRELEVANT|RELEVANT)\b"
+
+    def get_system_message(self):
+        return system_message_web_search_relevance_template
+
+    def extract_score(self, response: str) -> float:
+        if not response:
+            return 0.0
+        text = response.upper()
+        if "IRRELEVANT" in text or "NOT RELEVANT" in text:
+            return 0.0
+        if "RELEVANT" in text:
+            return 1.0
+        return 0.0
+
+
 def find_unique_tags(input_text: str):
     r"""Find all substrings that match the pattern '<...>'."""
     matches = re.findall("<([^>]*)>", input_text)
