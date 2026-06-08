@@ -13,9 +13,9 @@ from neurons.validators.scoring.scoring_store import SEARCH_TYPES, ScoringStore
 from neurons.validators.scoring.synthetic_query_generator import SyntheticQueryGenerator
 
 SEARCH_TYPE_WEIGHTS = {
-    "ai_search": 0.60,
-    "x_search": 0.20,
-    "web_search": 0.20,
+    "ai_search": 0.80,
+    "x_search": 0.10,
+    "web_search": 0.10,
 }
 
 ORGANIC_VALUE_MULTIPLIER = 3
@@ -63,12 +63,10 @@ def combine_superlinear_scores(
         for t, (q, v) in qv.items():
             if served[t] == 0.0:
                 continue
-            thr = capacity.QUALITY_THRESHOLDS[t]
-            q_eff = (q - thr) / (1.0 - thr)
             per_type_sum += (
                 SEARCH_TYPE_WEIGHTS[t]
                 * served[t]
-                * q_eff**QUALITY_EXPONENT
+                * q**QUALITY_EXPONENT
                 * v**VOLUME_EXPONENT
             )
 

@@ -6,7 +6,11 @@ import pytest
 
 from neurons.validators.scoring.capacity import QUALITY_THRESHOLDS
 from neurons.validators.scoring.query_scheduler import (
+    COVERAGE_EXPONENT,
     MIN_VOLUME_RATIO,
+    QUALITY_EXPONENT,
+    SEARCH_TYPE_WEIGHTS,
+    VOLUME_EXPONENT,
     QueryScheduler,
     combine_superlinear_scores,
 )
@@ -21,8 +25,9 @@ def _uniform(q: float, v: int, uid: int = 1) -> dict:
     }
 
 
-def test_combine_at_quality_threshold_earns_zero():
-    """At each type's threshold, q_eff = 0 → all per-type contributions zero out."""
+def test_combine_at_threshold_earns_positive():
+    """Raw q (not q_eff): a type exactly at its threshold passes the gate and earns
+    q**QUALITY_EXPONENT credit — it is no longer zeroed."""
     out = combine_superlinear_scores(
         {
             "ai_search": {1: (QUALITY_THRESHOLDS["ai_search"], 100)},
@@ -30,7 +35,7 @@ def test_combine_at_quality_threshold_earns_zero():
             "web_search": {1: (QUALITY_THRESHOLDS["web_search"], 100)},
         }
     )
-    assert out[1] == 0.0
+    assert out[1] > 0.0
 
 
 def test_combine_below_floor_clamps_to_zero():
@@ -60,9 +65,8 @@ def test_combine_solo_beats_same_quality_split():
 
 
 def test_combine_split_uids_lose_to_higher_quality_solo():
-    """1 UID at q=0.5 outearns 2 UIDs at q=0.4 each. Under per-type thresholds
-    the split's X+Web fail (q<0.50) so they collapse to AI-only coverage=0.6;
-    the solo keeps full coverage=1.0 with AI contributing."""
+    """1 UID at q=0.5 outearns 2 UIDs at q=0.4 each: the split fails every gate
+    (ai<0.45, x/web<0.60) and scores 0, while the solo passes the AI gate."""
     solo = combine_superlinear_scores(_uniform(0.5, 100, uid=1))
     split = combine_superlinear_scores(
         {
@@ -71,12 +75,13 @@ def test_combine_split_uids_lose_to_higher_quality_solo():
             "web_search": {2: (0.4, 100), 3: (0.4, 100)},
         }
     )
+    # split q=0.4 fails every gate (ai<0.45, x/web<0.60) -> 0; solo passes AI.
     assert solo[1] > split[2] + split[3]
 
 
-def test_combine_quality_gap_amplification_is_quadratic():
-    """A 0.10 quality gap produces a (Δq_eff)² reward gap — steep near each
-    type's threshold. Both AI qualities are above the 0.45 threshold so both pass."""
+def test_combine_quality_gap_amplified_by_raw_q():
+    """A 0.10 AI-quality gap produces a raw q**QUALITY_EXPONENT reward gap. Both AI
+    qualities clear 0.45 and x/web clear 0.60, so coverage=1 for both (v cancels)."""
     a = combine_superlinear_scores(
         {
             "ai_search": {1: (0.6, 100)},
@@ -91,16 +96,12 @@ def test_combine_quality_gap_amplification_is_quadratic():
             "web_search": {2: (0.7, 100)},
         }
     )
-    ai_thr = QUALITY_THRESHOLDS["ai_search"]
-    x_thr = QUALITY_THRESHOLDS["x_search"]
-    web_thr = QUALITY_THRESHOLDS["web_search"]
-    # Total = coverage² · Σ w·q_eff² (·100^1.2 cancels in ratio). Both have
-    # coverage=1 (all 3 served). Compare full per_type_sums.
+
     def per_type(q_ai, q_x, q_web):
         return (
-            0.6 * ((q_ai - ai_thr) / (1 - ai_thr)) ** 2
-            + 0.2 * ((q_x - x_thr) / (1 - x_thr)) ** 2
-            + 0.2 * ((q_web - web_thr) / (1 - web_thr)) ** 2
+            SEARCH_TYPE_WEIGHTS["ai_search"] * q_ai**QUALITY_EXPONENT
+            + SEARCH_TYPE_WEIGHTS["x_search"] * q_x**QUALITY_EXPONENT
+            + SEARCH_TYPE_WEIGHTS["web_search"] * q_web**QUALITY_EXPONENT
         )
 
     expected = per_type(0.6, 0.7, 0.7) / per_type(0.5, 0.7, 0.7)
@@ -108,7 +109,7 @@ def test_combine_quality_gap_amplification_is_quadratic():
 
 
 def test_combine_ai_specialist_gets_partial_credit():
-    """AI-only at q=1.0, v=100: only AI is served (coverage = 0.60)."""
+    """AI-only at q=1.0, v=100: only AI served, coverage = w_ai."""
     out = combine_superlinear_scores(
         {
             "ai_search": {1: (1.0, 100)},
@@ -116,13 +117,13 @@ def test_combine_ai_specialist_gets_partial_credit():
             "web_search": {1: (0.0, 0)},
         }
     )
-    # served = {ai}, coverage = 0.60, per_type = 0.60 * 1.0^2 * 100^1.2
-    expected = (0.60**2) * (0.60 * 1.0 * 100**1.2)
+    w = SEARCH_TYPE_WEIGHTS["ai_search"]
+    expected = w**COVERAGE_EXPONENT * (w * 1.0**QUALITY_EXPONENT * 100**VOLUME_EXPONENT)
     assert out[1] == pytest.approx(expected)
 
 
 def test_combine_xweb_specialist_earns_some_not_zero():
-    """X+Web at q=1.0 (no AI): coverage = 0.40, earns ~6% of perfect generalist."""
+    """X+Web at q=1.0 (no AI): coverage = w_x + w_web; earns coverage^(C+1) of a generalist."""
     specialist = combine_superlinear_scores(
         {
             "ai_search": {1: (0.0, 0)},
@@ -131,8 +132,10 @@ def test_combine_xweb_specialist_earns_some_not_zero():
         }
     )
     generalist = combine_superlinear_scores(_uniform(1.0, 100, uid=2))
+    cov = SEARCH_TYPE_WEIGHTS["x_search"] + SEARCH_TYPE_WEIGHTS["web_search"]
+    expected_ratio = cov**COVERAGE_EXPONENT * cov  # generalist coverage=1, q=v terms cancel
     assert specialist[1] > 0
-    assert specialist[1] / generalist[2] == pytest.approx(0.064, abs=0.005)
+    assert specialist[1] / generalist[2] == pytest.approx(expected_ratio, rel=0.01)
 
 
 def test_combine_volume_floor_partial_credit_below_threshold():
@@ -145,13 +148,14 @@ def test_combine_volume_floor_partial_credit_below_threshold():
         }
     )
     soft_ai = min(1.0, (10 / 100) / MIN_VOLUME_RATIO)
-    coverage = 0.60 * soft_ai + 0.20 * 1.0 + 0.20 * 1.0
+    w = SEARCH_TYPE_WEIGHTS
+    coverage = w["ai_search"] * soft_ai + w["x_search"] + w["web_search"]
     per_type = (
-        0.60 * soft_ai * 1.0 * 10**1.2
-        + 0.20 * 1.0 * 1.0 * 100**1.2
-        + 0.20 * 1.0 * 1.0 * 100**1.2
+        w["ai_search"] * soft_ai * 1.0**QUALITY_EXPONENT * 10**VOLUME_EXPONENT
+        + w["x_search"] * 1.0**QUALITY_EXPONENT * 100**VOLUME_EXPONENT
+        + w["web_search"] * 1.0**QUALITY_EXPONENT * 100**VOLUME_EXPONENT
     )
-    assert out[1] == pytest.approx(coverage**2 * per_type)
+    assert out[1] == pytest.approx(coverage**COVERAGE_EXPONENT * per_type)
 
 
 def test_combine_volume_floor_full_credit_at_minimum():
@@ -165,8 +169,11 @@ def test_combine_volume_floor_full_credit_at_minimum():
         }
     )
     # All three served at full credit (coverage = 1.0).
+    w = SEARCH_TYPE_WEIGHTS
     expected_per_type = (
-        0.60 * 1.0 * floor_v**1.2 + 0.20 * 1.0 * 100**1.2 + 0.20 * 1.0 * 100**1.2
+        w["ai_search"] * floor_v**VOLUME_EXPONENT
+        + w["x_search"] * 100**VOLUME_EXPONENT
+        + w["web_search"] * 100**VOLUME_EXPONENT
     )
     assert out[1] == pytest.approx(expected_per_type)
 
@@ -190,7 +197,7 @@ def test_combine_volume_floor_no_cliff():
 
 
 def test_combine_generalist_beats_x_only_spam_team():
-    """1 perfect generalist beats 10 X-only spammers by ~12.5×."""
+    """1 perfect generalist beats 10 X-only spammers (each only serves X → coverage = w_x)."""
     generalist = combine_superlinear_scores(_uniform(1.0, 100, uid=1))
     x_spam = combine_superlinear_scores(
         {
@@ -200,11 +207,14 @@ def test_combine_generalist_beats_x_only_spam_team():
         }
     )
     spam_total = sum(x_spam.values())
-    assert generalist[1] / spam_total == pytest.approx(12.5, rel=0.05)
+    wx = SEARCH_TYPE_WEIGHTS["x_search"]
+    per_spam = wx**COVERAGE_EXPONENT * wx  # ·100^V cancels vs the generalist
+    expected = 1.0 / (10 * per_spam)
+    assert generalist[1] / spam_total == pytest.approx(expected, rel=0.02)
 
 
 def test_combine_perfect_generalist_beats_perfect_specialist():
-    """Under 60/20/20 + weighted coverage², generalist >> AI-only specialist."""
+    """Under weighted coverage^C, a perfect generalist >> an AI-only specialist."""
     generalist = combine_superlinear_scores(_uniform(1.0, 100, uid=1))
     specialist = combine_superlinear_scores(
         {
@@ -213,9 +223,11 @@ def test_combine_perfect_generalist_beats_perfect_specialist():
             "web_search": {2: (0.0, 0)},
         }
     )
+    w_ai = SEARCH_TYPE_WEIGHTS["ai_search"]
     assert generalist[1] > specialist[2]
-    # Generalist earns ~4.6× the AI-only specialist (1.0 / (0.60^2 * 0.60) = 4.63)
-    assert generalist[1] / specialist[2] == pytest.approx(1 / (0.6**3), rel=0.001)
+    assert generalist[1] / specialist[2] == pytest.approx(
+        1 / (w_ai ** (COVERAGE_EXPONENT + 1)), rel=0.001
+    )
 
 
 @pytest.mark.asyncio
