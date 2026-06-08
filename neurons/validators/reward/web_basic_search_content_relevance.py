@@ -15,11 +15,23 @@ from neurons.validators.apify.scrapingdog_scraper import (
 from neurons.validators.base_validator import AbstractNeuron
 from neurons.validators.reward.reward_llm import RewardLLM
 from neurons.validators.utils.prompts import WebSearchRelevancePrompt
+from neurons.validators.utils.web_query_operators import parse_web_query
 
 from .config import RewardModelType
 from .reward import BaseRewardEvent, BaseRewardModel, log_reward_aggregates
 
 WEB_LINK_SCRAPE_AMOUNT = 1
+
+MIN_SNIPPET_CHARS = 40
+MIN_SNIPPET_DISTINCT_TOKENS = 5
+SNIPPET_BIGRAM_THRESHOLD = 0.5
+
+_TOKEN_RE = re.compile(r"\w+")
+_STOPWORDS = frozenset(
+    "a an and are as at be but by for from has have how in is it its more most of on "
+    "or that the these this those to was were what when where which who will with you "
+    "your we our they i".split()
+)
 
 
 class WebBasicSearchContentRelevanceModel(BaseRewardModel):
@@ -42,6 +54,50 @@ class WebBasicSearchContentRelevanceModel(BaseRewardModel):
             r"\s+", " ", content.replace("\n", " ").replace("\r", " ").strip()
         )
         return html.unescape(normalized_content).lower()
+
+    @staticmethod
+    def _tokens(text: str) -> List[str]:
+        return _TOKEN_RE.findall(text.lower()) if text else []
+
+    @classmethod
+    def _is_substantive_snippet(cls, snippet: str) -> bool:
+        if not snippet or len(snippet.strip()) < MIN_SNIPPET_CHARS:
+            return False
+        distinct_content = {t for t in cls._tokens(snippet) if t not in _STOPWORDS}
+        return len(distinct_content) >= MIN_SNIPPET_DISTINCT_TOKENS
+
+    def _snippet_bigram_overlap(
+        self, snippet: str, validator_item: WebSearchValidatorResult
+    ) -> float:
+        tokens = self._tokens(self.normalize_html_content(snippet))
+        snippet_bigrams = set(zip(tokens, tokens[1:]))
+        if not snippet_bigrams:
+            return 0.0
+
+        best = 0.0
+        for target in (
+            validator_item.html_content,
+            validator_item.html_text,
+            validator_item.snippet,
+        ):
+            target_tokens = self._tokens(self.normalize_html_content(target))
+            target_bigrams = set(zip(target_tokens, target_tokens[1:]))
+            if not target_bigrams:
+                continue
+            overlap = sum(1 for b in snippet_bigrams if b in target_bigrams) / len(
+                snippet_bigrams
+            )
+            best = max(best, overlap)
+        return best
+
+    def _snippet_verified(
+        self, snippet: str, validator_item: WebSearchValidatorResult
+    ) -> bool:
+        return (
+            self._is_substantive_snippet(snippet)
+            and self._snippet_bigram_overlap(snippet, validator_item)
+            >= SNIPPET_BIGRAM_THRESHOLD
+        )
 
     async def scrape_links(self, urls):
         (
@@ -126,6 +182,7 @@ class WebBasicSearchContentRelevanceModel(BaseRewardModel):
             return {}
 
         scoring_prompt = WebSearchRelevancePrompt()
+        query_text = parse_web_query(response.query).text or response.query
         scoring_messages = []
 
         for validator_link in response.validator_links:
@@ -139,7 +196,7 @@ class WebBasicSearchContentRelevanceModel(BaseRewardModel):
                         },
                         {
                             "role": "user",
-                            "content": scoring_prompt.text(response.query, content),
+                            "content": scoring_prompt.text(query_text, content),
                         },
                     ]
                 }
@@ -171,6 +228,7 @@ class WebBasicSearchContentRelevanceModel(BaseRewardModel):
         try:
             miner_results = response.results
             validator_links = response.validator_links
+            operators = parse_web_query(response.query)
 
             miner_map = {}
 
@@ -194,6 +252,10 @@ class WebBasicSearchContentRelevanceModel(BaseRewardModel):
                     scores.append(0)
                     continue
 
+                if not operators.host_allowed(validator_item.link):
+                    scores.append(0)
+                    continue
+
                 if not self.check_title(miner_item.get("title"), validator_item.title):
                     scores.append(0)
                     continue
@@ -202,12 +264,8 @@ class WebBasicSearchContentRelevanceModel(BaseRewardModel):
                     scores.append(0)
                     continue
 
-                if not all(
-                    text.strip()
-                    in self.normalize_html_content(validator_item.html_content)
-                    or text.strip()
-                    in self.normalize_html_content(validator_item.html_text)
-                    for text in re.split(r"[.·]", miner_item.get("snippet").lower())
+                if not self._snippet_verified(
+                    miner_item.get("snippet"), validator_item
                 ):
                     scores.append(0)
                     continue
