@@ -36,7 +36,7 @@ class WebScraperValidator(BaseScraperValidator):
 
     def __init__(self, neuron: AbstractNeuron):
         self.timeout = 180
-        self.max_execution_time = 10
+        self.max_execution_time = 5
 
         self.web_content_weight = 0.70
         self.performance_weight = 0.30

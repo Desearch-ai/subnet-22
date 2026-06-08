@@ -13,7 +13,7 @@ QUALITY_EMA_ALPHA = 0.5
 DEFAULT_PER_UID = 1
 HARD_CAP_PER_UID = 100
 QUALITY_THRESHOLDS: dict[str, float] = {
-    "ai_search": 0.45,
+    "ai_search": 0.50,
     "x_search": 0.60,
     "web_search": 0.60,
 }
