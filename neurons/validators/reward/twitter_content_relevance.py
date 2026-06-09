@@ -8,7 +8,7 @@ from typing import List
 import bittensor as bt
 import pytz
 
-from desearch.protocol import ScraperStreamingSynapse
+from desearch.protocol import ScraperStreamingSynapse, TwitterScraperTweet
 from desearch.services.twitter_api_wrapper import TwitterAPIClient
 from desearch.services.twitter_utils import TwitterUtils
 from desearch.utils import (
@@ -54,6 +54,20 @@ class TwitterContentRelevanceModel(BaseRewardModel):
     def clean_text(self, text):
         return clean_text(text)
 
+    @staticmethod
+    def build_relevance_content(validator_tweet: TwitterScraperTweet) -> str:
+        """Tweet text plus any quoted tweet's text, so quote-driven relevance isn't lost."""
+        text = validator_tweet.text or ""
+
+        quote = validator_tweet.quote
+        quoted_text = (quote.text or "").strip() if quote else ""
+        if not quoted_text:
+            return text
+
+        handle = getattr(getattr(quote, "user", None), "username", None)
+        header = f"Quoted tweet (@{handle}):" if handle else "Quoted tweet:"
+        return f"{text}\n\n{header} {quoted_text}"
+
     async def llm_process_validator_tweets(self, response: ScraperStreamingSynapse):
         if not response.validator_tweets:
             return {}, 0.0
@@ -61,7 +75,7 @@ class TwitterContentRelevanceModel(BaseRewardModel):
         start_llm_time = time.time()
         scoring_messages = []
         for validator_tweet in response.validator_tweets:
-            val_text = validator_tweet.text
+            val_text = self.build_relevance_content(validator_tweet)
             val_tweet_id = validator_tweet.id
             result = self.get_scoring_text(
                 prompt=response.prompt,
