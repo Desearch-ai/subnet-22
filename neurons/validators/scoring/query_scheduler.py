@@ -10,22 +10,20 @@ import bittensor as bt
 import numpy as np
 
 from neurons.validators.scoring import capacity, miner_db
+from neurons.validators.scoring.constants import (
+    COVERAGE_EXPONENT,
+    DEFAULT_PER_UID,
+    MIN_VOLUME_RATIO,
+    QUALITY_EXPONENT,
+    QUALITY_THRESHOLDS,
+    SEARCH_TYPE_WEIGHTS,
+    VOLUME_EXPONENT,
+)
 from neurons.validators.scoring.scoring_store import SEARCH_TYPES, ScoringStore
 from neurons.validators.scoring.synthetic_query_generator import SyntheticQueryGenerator
 
-SEARCH_TYPE_WEIGHTS = {
-    "ai_search": 0.80,
-    "x_search": 0.10,
-    "web_search": 0.10,
-}
-
 ORGANIC_VALUE_MULTIPLIER = 3
 ORGANIC_DEEP_CAP_PER_TYPE = 100
-
-QUALITY_EXPONENT = 2.0
-VOLUME_EXPONENT = 1.2
-COVERAGE_EXPONENT = 2.0
-MIN_VOLUME_RATIO = 0.50
 
 BATCH_FRACTION = 0.50
 BATCH_INTERVAL_SECONDS = 3
@@ -53,7 +51,7 @@ def combine_superlinear_scores(
 
         served: dict[str, float] = {}
         for t, (q, v) in qv.items():
-            if max_v == 0 or q < capacity.QUALITY_THRESHOLDS[t]:
+            if max_v == 0 or q < QUALITY_THRESHOLDS[t]:
                 served[t] = 0.0
             else:
                 served[t] = min(1.0, (v / max_v) / MIN_VOLUME_RATIO)
@@ -409,7 +407,7 @@ class QueryScheduler:
                 search_type=search_type,
                 quality=quality,
                 window_start=window_start,
-                allocated=allocations.get(uid, capacity.DEFAULT_PER_UID),
+                allocated=allocations.get(uid, DEFAULT_PER_UID),
             )
         return uid_results
 
@@ -554,7 +552,7 @@ class QueryScheduler:
                 for st in SEARCH_TYPES:
                     rows = await miner_db.get_allocation_state(st)
                     allocations_by_type[st] = {
-                        uid: rows.get(uid, (0.0, 0, capacity.DEFAULT_PER_UID))[2]
+                        uid: rows.get(uid, (0.0, 0, DEFAULT_PER_UID))[2]
                         for uid in available_uids
                     }
 

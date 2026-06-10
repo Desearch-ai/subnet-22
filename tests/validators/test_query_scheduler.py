@@ -6,13 +6,15 @@ from unittest.mock import AsyncMock
 import pytest
 
 import neurons.validators.scoring.query_scheduler as query_scheduler
-from neurons.validators.scoring.capacity import QUALITY_THRESHOLDS
-from neurons.validators.scoring.query_scheduler import (
+from neurons.validators.scoring.constants import (
     COVERAGE_EXPONENT,
     MIN_VOLUME_RATIO,
     QUALITY_EXPONENT,
+    QUALITY_THRESHOLDS,
     SEARCH_TYPE_WEIGHTS,
     VOLUME_EXPONENT,
+)
+from neurons.validators.scoring.query_scheduler import (
     QueryScheduler,
     combine_superlinear_scores,
 )
@@ -45,11 +47,11 @@ def test_combine_below_floor_clamps_to_zero():
     assert out[1] == 0.0
 
 
-def test_combine_volume_is_mildly_superlinear():
-    """v=100 outearns v=50 by 2^1.2 ≈ 2.30× (consolidation bonus)."""
+def test_combine_volume_is_quadratic():
+    """v=100 outearns v=50 by 2^2 = 4× (strong consolidation bonus)."""
     big = combine_superlinear_scores(_uniform(0.6, 100, uid=1))
     small = combine_superlinear_scores(_uniform(0.6, 50, uid=2))
-    assert big[1] / small[2] == pytest.approx(2**1.2, rel=0.001)
+    assert big[1] / small[2] == pytest.approx(2**VOLUME_EXPONENT, rel=0.001)
 
 
 def test_combine_solo_beats_same_quality_split():
@@ -63,7 +65,9 @@ def test_combine_solo_beats_same_quality_split():
         }
     )
     assert solo[1] > split[2] + split[3]
-    assert solo[1] / (split[2] + split[3]) == pytest.approx(2**0.2, rel=0.001)
+    assert solo[1] / (split[2] + split[3]) == pytest.approx(
+        2 ** (VOLUME_EXPONENT - 1), rel=0.001
+    )
 
 
 def test_combine_split_uids_lose_to_higher_quality_solo():
