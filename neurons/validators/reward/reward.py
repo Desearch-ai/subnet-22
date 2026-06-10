@@ -247,54 +247,10 @@ class BaseRewardModel:
             original_rewards,
         )
 
-    def calculate_adjusted_score(
-        self,
-        links_count: int,
-        score: float,
-        duplicate_tweets_count: int = 0,
-        max_bonus: float = 0.2,
-        link_sensitivity: int = 9,
-        max_links_threshold: int = 10,
-        penalty_factor: float = 0.1,
-    ) -> float:
-        """
-        Calculate the combined score by first applying a bonus based on the number of links and then adjusting
-        the score based on the number of completion links with a softer penalty for having fewer than 10 links.
-        If the number of links exceeds the max_links_threshold, a penalty is applied.
-
-        Args:
-        - score (float): The original score ranging from 0.1 to 1.
-        - links_count (int): The number of links or completion links.
-        - max_bonus (float): The maximum bonus to add to the score for the link count scenario. Default is 0.2.
-        - link_sensitivity (int): Controls how quickly the bonus grows with the number of links. Higher values mean slower growth.
-        - max_links_threshold (int): The threshold for the maximum number of links before penalties apply.
-        - penalty_factor (float): The penalty applied for each link above the threshold.
-
-        Returns:
-        - float: The combined adjusted score considering the provided parameters.
-        """
-        # Calculate the bonus based on the number of links
-        bonus = max_bonus * (
-            1 - 1 / (1 + min(links_count, max_links_threshold) / link_sensitivity)
-        )
-        intermediate_score = min(1, score + bonus)
-
-        # Adjust the intermediate score based on the number of completion links
-        if links_count <= max_links_threshold:
-            # Using square root to soften the penalty for having fewer than max_links_threshold links
-            penalty_factor = (links_count / max_links_threshold) ** 0.5
-        else:
-            # Apply a penalty for each link over the threshold
-            excess_links = links_count - max_links_threshold
-            penalty_factor = max(0, 1 - excess_links * penalty_factor)
-
-        adjusted_score = intermediate_score * penalty_factor
-
-        if duplicate_tweets_count > 0:
-            penalty_score = duplicate_tweets_count * 0.05
-            adjusted_score = max(0, adjusted_score - penalty_score)
-
-        return adjusted_score
+    @staticmethod
+    def clamp_relevance_score(score: float) -> float:
+        """Keep relevance scores in reward range; penalties live elsewhere."""
+        return max(0, min(1, score))
 
     async def process_response_items_in_batches(
         self, responses, batch_size, process_function

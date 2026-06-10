@@ -1,16 +1,20 @@
+import asyncio
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
 
-from neurons.validators.scoring.capacity import QUALITY_THRESHOLDS
-from neurons.validators.scoring.query_scheduler import (
+import neurons.validators.scoring.query_scheduler as query_scheduler
+from neurons.validators.scoring.constants import (
     COVERAGE_EXPONENT,
     MIN_VOLUME_RATIO,
     QUALITY_EXPONENT,
+    QUALITY_THRESHOLDS,
     SEARCH_TYPE_WEIGHTS,
     VOLUME_EXPONENT,
+)
+from neurons.validators.scoring.query_scheduler import (
     QueryScheduler,
     combine_superlinear_scores,
 )
@@ -43,11 +47,11 @@ def test_combine_below_floor_clamps_to_zero():
     assert out[1] == 0.0
 
 
-def test_combine_volume_is_mildly_superlinear():
-    """v=100 outearns v=50 by 2^1.2 ≈ 2.30× (consolidation bonus)."""
+def test_combine_volume_is_quadratic():
+    """v=100 outearns v=50 by 2^2 = 4× (strong consolidation bonus)."""
     big = combine_superlinear_scores(_uniform(0.6, 100, uid=1))
     small = combine_superlinear_scores(_uniform(0.6, 50, uid=2))
-    assert big[1] / small[2] == pytest.approx(2**1.2, rel=0.001)
+    assert big[1] / small[2] == pytest.approx(2**VOLUME_EXPONENT, rel=0.001)
 
 
 def test_combine_solo_beats_same_quality_split():
@@ -61,7 +65,9 @@ def test_combine_solo_beats_same_quality_split():
         }
     )
     assert solo[1] > split[2] + split[3]
-    assert solo[1] / (split[2] + split[3]) == pytest.approx(2**0.2, rel=0.001)
+    assert solo[1] / (split[2] + split[3]) == pytest.approx(
+        2 ** (VOLUME_EXPONENT - 1), rel=0.001
+    )
 
 
 def test_combine_split_uids_lose_to_higher_quality_solo():
@@ -264,3 +270,78 @@ async def test_score_epoch_extracts_prompts_from_responses_and_passes_epoch_star
     kwargs = validator.compute_rewards_and_penalties.await_args.kwargs
     assert kwargs["scoring_epoch_start"] == epoch_start
     assert kwargs["prompts"] == ["what is bittensor", "what is tao"]
+
+
+@pytest.mark.asyncio
+async def test_dispatch_epoch_shuffles_uids_before_grouping(monkeypatch):
+    epoch_start = datetime(2026, 3, 14, 10, 0, tzinfo=timezone.utc)
+    scheduler = QueryScheduler(
+        neuron=SimpleNamespace(),
+        generator=SimpleNamespace(),
+        scoring_store=SimpleNamespace(),
+        validators={},
+    )
+
+    shuffled_inputs = []
+
+    def reverse_shuffle(uids):
+        shuffled_inputs.append(list(uids))
+        uids.reverse()
+
+    dispatched_uids = []
+
+    async def dispatch_uid(uid, search_type, uid_items, time_range_start):
+        dispatched_uids.append(uid)
+
+    scheduler._dispatch_uid = dispatch_uid
+    monkeypatch.setattr(
+        QueryScheduler, "_current_hour_start", staticmethod(lambda: epoch_start)
+    )
+    monkeypatch.setattr(query_scheduler.random, "shuffle", reverse_shuffle)
+    monkeypatch.setattr(query_scheduler, "GROUP_SIZE", 2)
+
+    items = [
+        {"uid": uid, "search_type": "ai_search", "query": {"query": str(uid)}}
+        for uid in [3, 1, 4, 2]
+    ]
+
+    await scheduler._dispatch_epoch(items, epoch_start)
+
+    assert [1, 2, 3, 4] in shuffled_inputs
+    assert dispatched_uids[:4] == [4, 3, 2, 1]
+
+
+@pytest.mark.asyncio
+async def test_dispatch_uid_sends_half_allocation_per_batch(monkeypatch):
+    epoch_start = datetime(2026, 3, 14, 10, 0, tzinfo=timezone.utc)
+    scheduler = QueryScheduler(
+        neuron=SimpleNamespace(),
+        generator=SimpleNamespace(),
+        scoring_store=SimpleNamespace(),
+        validators={},
+    )
+
+    active = 0
+    max_active = 0
+    total_sent = 0
+
+    async def send_and_save(search_type, uid, query, time_range_start):
+        nonlocal active, max_active, total_sent
+        active += 1
+        total_sent += 1
+        max_active = max(max_active, active)
+        await asyncio.sleep(0)
+        active -= 1
+
+    scheduler._send_and_save = send_and_save
+    monkeypatch.setattr(
+        QueryScheduler, "_current_hour_start", staticmethod(lambda: epoch_start)
+    )
+    monkeypatch.setattr(query_scheduler, "BATCH_INTERVAL_SECONDS", 0)
+
+    uid_items = [{"query": {"query": str(i)}} for i in range(100)]
+
+    await scheduler._dispatch_uid(7, "ai_search", uid_items, epoch_start)
+
+    assert total_sent == 100
+    assert max_active == 50

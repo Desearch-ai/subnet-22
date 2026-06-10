@@ -1,4 +1,5 @@
 import random
+import re
 
 import bittensor as bt
 from faker import Faker
@@ -6,6 +7,76 @@ from faker import Faker
 from desearch.utils import call_openai
 
 QUESTION_MODEL = "gpt-4.1-nano"
+QUESTION_TEMPERATURE = 1.15
+
+QUESTION_ANGLES = [
+    "accessibility",
+    "adoption barriers",
+    "adoption incentives",
+    "community response",
+    "competition dynamics",
+    "competitive advantage",
+    "consumer impact",
+    "consumer trust",
+    "cost reduction",
+    "costs and tradeoffs",
+    "customer retention",
+    "energy demand",
+    "environmental impact",
+    "expert criticism",
+    "funding trends",
+    "infrastructure readiness",
+    "interoperability",
+    "international coordination",
+    "legal disputes",
+    "legal liability",
+    "long-term maintenance",
+    "labor impact",
+    "market impact",
+    "market concentration",
+    "measurement challenges",
+    "misinformation risks",
+    "platform governance",
+    "policy response",
+    "privacy impact",
+    "procurement challenges",
+    "product reliability",
+    "public sentiment",
+    "quality control",
+    "regional inequality",
+    "regional comparison",
+    "regulatory compliance",
+    "resource constraints",
+    "rural access",
+    "safety concerns",
+    "scaling challenges",
+    "security risks",
+    "scientific evidence",
+    "small business impact",
+    "standards and certification",
+    "stakeholder response",
+    "supply shortages",
+    "supply chain effects",
+    "technical limitations",
+    "urban implementation",
+    "workforce changes",
+]
+
+WEB_FALLBACK_TEMPLATES = [
+    "How is {topic} being adopted?",
+    "What are common challenges in {topic}?",
+    "What are key risks in {topic}?",
+    "What policies shape {topic}?",
+    "Which companies are leading {topic}?",
+]
+
+RESEARCH_FALLBACK_TEMPLATES = [
+    "How are companies approaching {topic}?",
+    "How are experts responding to {topic}?",
+    "What debates are shaping {topic}?",
+    "What risks are emerging around {topic}?",
+    "Which groups are affected by {topic}?",
+]
 
 TOPICS = [
     "renewable energy",
@@ -271,7 +342,6 @@ TOPICS = [
     "wearable tech",
     "deep learning",
     "cloud computing",
-    "content creation",
     "lab-grown meat",
     "precision fermentation",
     "floating wind farms",
@@ -292,12 +362,52 @@ TOPICS = [
 ]
 
 
+def _clean_question(question: str | None) -> str:
+    if not question:
+        return ""
+
+    lines = [line.strip() for line in question.splitlines() if line.strip()]
+    if not lines:
+        return ""
+
+    value = lines[0].strip().strip('"').strip("'")
+    value = value.split("\t", 1)[0]
+    value = re.split(r"\b(?:intent|label|category)\s*:", value, maxsplit=1, flags=re.I)[
+        0
+    ]
+    value = re.sub(r"^\s*(?:[-*]\s+|\d+[.)]\s*)", "", value).strip()
+    value = re.sub(r"\s+", " ", value)
+    if value and value[-1] not in "?!.":
+        value = f"{value}?"
+    return value.strip().strip('"').strip("'")
+
+
+class _TopicSampler:
+    def __init__(self, topics: list[str]) -> None:
+        self._topics = list(topics)
+        self._topic_pool: list[str] = []
+
+    @property
+    def topics(self) -> list[str]:
+        return list(self._topics)
+
+    def next_topic(self) -> str:
+        if not self._topics:
+            return "world events"
+
+        if not self._topic_pool:
+            self._topic_pool = list(self._topics)
+            random.shuffle(self._topic_pool)
+
+        return self._topic_pool.pop()
+
+
 class MockTwitterQuestionsDataset:
     """Exposes the shared topic list. Kept for backward compat with callers
     that access `.topics` directly (e.g. research scripts)."""
 
     def __init__(self):
-        self.topics = TOPICS
+        self.topics = list(TOPICS)
 
 
 class QuestionsDataset:
@@ -310,23 +420,41 @@ class QuestionsDataset:
     """
 
     def __init__(self) -> None:
-        self._topics = TOPICS
+        self._topic_sampler = _TopicSampler(TOPICS)
+        self._topics = self._topic_sampler.topics
 
     def _random_topic(self) -> str:
-        return random.choice(self._topics)
+        return self._topic_sampler.next_topic()
 
-    def _build_prompt(self, topic: str, selected_tools: list[str]) -> str:
+    def _fallback_question(self, topic: str, selected_tools: list[str]) -> str:
+        is_web_only = selected_tools == ["Web Search"]
+        templates = (
+            WEB_FALLBACK_TEMPLATES if is_web_only else RESEARCH_FALLBACK_TEMPLATES
+        )
+        return random.choice(templates).format(topic=topic)
+
+    def _build_prompt(
+        self,
+        topic: str,
+        selected_tools: list[str],
+        angle: str,
+    ) -> str:
         is_web_only = selected_tools == ["Web Search"]
 
         if is_web_only:
             return (
                 f'Generate ONE realistic web-search question about "{topic}".\n'
+                f"Use this angle if it fits naturally: {angle}.\n"
                 "Requirements:\n"
-                "- 6 to 12 words long\n"
+                "- 8 to 12 words long\n"
                 "- A specific topical question a real person would search for\n"
                 "- Specific enough to have clear answers in web results\n"
+                "- Include a concrete entity, location, policy, product, metric, "
+                "or stakeholder when it fits\n"
                 "- Plain natural language, no hashtags, no quoted phrases\n"
                 "- Do not mention search engines or tool names\n"
+                "- Do not default to social media, platform trends, or viral "
+                "content unless the topic explicitly requires it\n"
                 "- Do NOT include time phrases like 'today', 'this week', "
                 "'latest', or a specific year — a date filter is applied "
                 "separately, so the question text stays time-agnostic\n"
@@ -337,10 +465,16 @@ class QuestionsDataset:
         return (
             f'Generate ONE research question about "{topic}" whose best answer '
             f"benefits from combining these sources: {tools_str}.\n"
+            f"Use this angle if it fits naturally: {angle}.\n"
             "Requirements:\n"
-            "- 6 to 12 words long — keep it short and punchy\n"
+            "- 8 to 12 words long — keep it short and punchy\n"
             "- A natural topical question, not static trivia\n"
             "- Specific enough that a search will return relevant results\n"
+            "- The source names are evidence channels only; do not turn the "
+            "question into a social-media or platform-trend question just "
+            "because Twitter, Reddit, or YouTube is available\n"
+            "- Include a concrete entity, location, policy, product, metric, "
+            "or stakeholder when it fits\n"
             "- Plain natural language, no hashtags\n"
             "- Do not name the source tools in the question\n"
             "- Do NOT include time phrases like 'today', 'this week', "
@@ -351,19 +485,21 @@ class QuestionsDataset:
 
     async def generate_new_question_with_openai(self, selected_tools: list[str]) -> str:
         topic = self._random_topic()
-        prompt = self._build_prompt(topic, selected_tools)
+        angle = random.choice(QUESTION_ANGLES)
+        prompt = self._build_prompt(topic, selected_tools, angle)
 
         try:
             out = await call_openai(
                 messages=[{"role": "system", "content": prompt}],
                 model=QUESTION_MODEL,
+                temperature=QUESTION_TEMPERATURE,
             )
-            if not out:
-                return f"latest news about {topic}"
-            return out.strip().strip('"').strip("'")
+            return _clean_question(out) or self._fallback_question(
+                topic, selected_tools
+            )
         except Exception as e:
             bt.logging.error(f"generate_new_question_with_openai failed: {e}")
-            return f"latest news about {topic}"
+            return self._fallback_question(topic, selected_tools)
 
 
 class BasicQuestionsDataset:
@@ -408,7 +544,8 @@ class BasicQuestionsDataset:
 
     def __init__(self):
         self.faker = Faker()
-        self._topics = TOPICS
+        self._topic_sampler = _TopicSampler(TOPICS)
+        self._topics = self._topic_sampler.topics
 
     def generate_random_x_query(self) -> str:
         """
@@ -437,4 +574,4 @@ class BasicQuestionsDataset:
             kw = random.choice(self.POPULAR_CRYPTO_KEYWORDS)
             return f"#{kw}"
 
-        return random.choice(self._topics)
+        return self._topic_sampler.next_topic()

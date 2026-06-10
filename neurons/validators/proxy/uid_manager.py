@@ -6,10 +6,13 @@ from bittensor.core.metagraph import AsyncMetagraph
 
 from desearch.miner_config import SEARCH_TYPES
 from neurons.validators.scoring import miner_db
+from neurons.validators.scoring.constants import (
+    QUALITY_EXPONENT,
+    VOLUME_EXPONENT,
+)
 from neurons.validators.scoring.weights import EMISSION_CONTROL_HOTKEY
 
 QUALITY_FLOOR = 0.1
-QUALITY_EXPONENT = 2.0
 RAMP_EVIDENCE_VERIFIED = 2
 MIN_MIGRATION_POOL = 2
 
@@ -84,9 +87,10 @@ class UIDManager:
                     continue
                 if any_ramped:
                     quality_avg, verified = rows.get(uid, (0.0, 1))
-                    weights[uid] = max(
-                        quality_avg, QUALITY_FLOOR
-                    ) ** QUALITY_EXPONENT * max(verified, 1)
+                    weights[uid] = (
+                        max(quality_avg, QUALITY_FLOOR) ** QUALITY_EXPONENT
+                        * max(verified, 1) ** VOLUME_EXPONENT
+                    )
                 else:
                     weights[uid] = 1.0 if uid in migration_pool else 0.0
             self.weights_by_type[search_type] = weights
