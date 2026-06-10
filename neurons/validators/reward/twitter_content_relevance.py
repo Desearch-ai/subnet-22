@@ -351,10 +351,6 @@ class TwitterContentRelevanceModel(BaseRewardModel):
 
                 unique_validator_tweets = list(unique_tweet_texts.values())
 
-                duplicate_tweets_count = len(response.validator_tweets) - len(
-                    unique_validator_tweets
-                )
-
                 response.validator_tweets = unique_validator_tweets
 
                 if len(response.validator_tweets):
@@ -375,12 +371,7 @@ class TwitterContentRelevanceModel(BaseRewardModel):
                             total_score / APIFY_LINK_SCRAPE_AMOUNT * apify_score
                         )
 
-                        reward_event.reward = self.calculate_adjusted_score(
-                            links_count=len(response.miner_tweets),
-                            score=average_score,
-                            duplicate_tweets_count=duplicate_tweets_count,
-                            max_links_threshold=response.count,
-                        )
+                        reward_event.reward = self.clamp_relevance_score(average_score)
                 else:
                     missing_validator_tweets.append(1)
                     reward_event.reward = 0

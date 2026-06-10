@@ -295,8 +295,6 @@ class WebSearchContentRelevanceModel(BaseRewardModel):
                 response_scores = {}
                 total_score = 0
 
-                _, links_expected = response.get_search_results_by_tools()
-
                 for val_link in response.validator_links:
                     val_url = val_link.get("link")
                     if val_score_responses:
@@ -309,13 +307,7 @@ class WebSearchContentRelevanceModel(BaseRewardModel):
                 if attempted_count > 0 and total_score > 0:
                     average_score = total_score / attempted_count
 
-                    search_result_links, _ = response.get_links_from_search_results()
-
-                    reward_event.reward = self.calculate_adjusted_score(
-                        links_count=len(search_result_links),
-                        score=average_score,
-                        max_links_threshold=links_expected,
-                    )
+                    reward_event.reward = self.clamp_relevance_score(average_score)
                 missing_validator_links.append(1 if attempted_count == 0 else 0)
 
                 reward_event.reward = min(reward_event.reward * apify_score, 1)
