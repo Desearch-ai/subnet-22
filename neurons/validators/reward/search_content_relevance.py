@@ -9,6 +9,11 @@ from desearch.protocol import ScraperStreamingSynapse
 from desearch.utils import clean_text
 from neurons.validators.apify.scrapingdog_scraper import scrape_links_with_retries
 from neurons.validators.base_validator import AbstractNeuron
+from neurons.validators.penalty.count_penalty import (
+    HACKER_NEWS_TOOL,
+    REDDIT_TOOL,
+    SEARCH_SUMMARY_TOOLS,
+)
 from neurons.validators.reward.reward_llm import RewardLLM
 from neurons.validators.utils.prompts import (
     SearchSummaryRelevancePrompt,
@@ -16,6 +21,12 @@ from neurons.validators.utils.prompts import (
 
 from .config import RewardModelType
 from .reward import BaseRewardEvent, BaseRewardModel, log_reward_aggregates
+
+WEB_TOOLS = frozenset((*SEARCH_SUMMARY_TOOLS, REDDIT_TOOL, HACKER_NEWS_TOOL))
+
+
+def response_uses_web_tools(response: ScraperStreamingSynapse) -> bool:
+    return bool(set(response.tools or []) & WEB_TOOLS)
 
 
 class WebSearchContentRelevanceModel(BaseRewardModel):
@@ -36,7 +47,7 @@ class WebSearchContentRelevanceModel(BaseRewardModel):
         self.scoring_type = scoring_type
 
     async def llm_process_validator_links(self, response: ScraperStreamingSynapse):
-        if not response.validator_links:
+        if not response_uses_web_tools(response) or not response.validator_links:
             return {}
 
         scoring_messages = []
@@ -84,6 +95,9 @@ class WebSearchContentRelevanceModel(BaseRewardModel):
         responses_random_links = [[] for _ in responses]
 
         for response, random_links in zip(responses, responses_random_links):
+            if not response_uses_web_tools(response):
+                continue
+
             # Extract random links from search results based on tools
             completion = self.get_successful_search_summary_completion(response)
 
@@ -159,6 +173,9 @@ class WebSearchContentRelevanceModel(BaseRewardModel):
 
     def check_response_random_link(self, response: ScraperStreamingSynapse):
         try:
+            if not response_uses_web_tools(response):
+                return 0
+
             completion = self.get_successful_search_summary_completion(
                 response=response
             )
@@ -291,6 +308,7 @@ class WebSearchContentRelevanceModel(BaseRewardModel):
             ):
                 reward_event = BaseRewardEvent()
                 reward_event.reward = 0
+                is_applicable = response_uses_web_tools(response)
 
                 response_scores = {}
                 total_score = 0
@@ -308,7 +326,9 @@ class WebSearchContentRelevanceModel(BaseRewardModel):
                     average_score = total_score / attempted_count
 
                     reward_event.reward = self.clamp_relevance_score(average_score)
-                missing_validator_links.append(1 if attempted_count == 0 else 0)
+                missing_validator_links.append(
+                    1 if is_applicable and attempted_count == 0 else 0
+                )
 
                 reward_event.reward = min(reward_event.reward * apify_score, 1)
                 reward_events.append(reward_event)

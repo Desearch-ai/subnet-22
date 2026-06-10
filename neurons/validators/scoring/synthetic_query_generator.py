@@ -10,6 +10,9 @@ from desearch.dataset.date_filters import random_date_filters
 # Tool combinations for AI search scoring — weighted by frequency.
 # Chosen once per epoch so every miner is evaluated on the same tools.
 AI_SEARCH_TOOL_SETS = [
+    ["Twitter Search"],
+    ["Twitter Search"],
+    ["Twitter Search"],
     ["Twitter Search", "Reddit Search"],
     ["Twitter Search", "Web Search"],
     ["Twitter Search", "Web Search"],
