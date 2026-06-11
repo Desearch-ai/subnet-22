@@ -4,7 +4,11 @@ from unittest.mock import AsyncMock, patch
 import numpy as np
 import pytest
 
-from neurons.validators.clients.miner_response_logger import build_log_entry, submit_logs
+from neurons.validators.clients.miner_response_logger import (
+    build_log_entry,
+    build_reward_payload,
+    submit_logs,
+)
 from neurons.validators.scrapers.advanced_scraper_validator import AdvancedScraperValidator
 from neurons.validators.scrapers.web_scraper_validator import WebScraperValidator
 from neurons.validators.scrapers.x_scraper_validator import XScraperValidator
@@ -48,11 +52,11 @@ async def test_x_search_logs_selected_uid():
 
     with (
         patch(
-            "neurons.validators.x_scraper_validator.build_log_entry",
+            "neurons.validators.scrapers.x_scraper_validator.build_log_entry",
             return_value={"ok": True},
         ) as build_log_entry,
         patch(
-            "neurons.validators.x_scraper_validator.submit_logs_best_effort"
+            "neurons.validators.scrapers.x_scraper_validator.submit_logs_best_effort"
         ) as submit_logs_best_effort,
     ):
         items = [item async for item in validator.x_search({"query": "bittensor"})]
@@ -78,11 +82,11 @@ async def test_web_organic_logs_selected_uid():
 
     with (
         patch(
-            "neurons.validators.web_scraper_validator.build_log_entry",
+            "neurons.validators.scrapers.web_scraper_validator.build_log_entry",
             return_value={"ok": True},
         ) as build_log_entry,
         patch(
-            "neurons.validators.web_scraper_validator.submit_logs_best_effort"
+            "neurons.validators.scrapers.web_scraper_validator.submit_logs_best_effort"
         ) as submit_logs_best_effort,
     ):
         items = [item async for item in validator.organic({"query": "tao"})]
@@ -117,18 +121,21 @@ async def test_ai_organic_logs_after_stream_finishes():
 
     with (
         patch(
-            "neurons.validators.advanced_scraper_validator.build_log_entry",
+            "neurons.validators.scrapers.advanced_scraper_validator.build_log_entry",
             return_value={"ok": True},
         ) as build_log_entry,
         patch(
-            "neurons.validators.advanced_scraper_validator.submit_logs_best_effort"
+            "neurons.validators.scrapers.advanced_scraper_validator.submit_logs_best_effort"
         ) as submit_logs_best_effort,
+        patch(
+            "neurons.validators.scrapers.advanced_scraper_validator.bt.Synapse",
+            SimpleNamespace,
+        ),
     ):
         chunks = [
             item
             async for item in validator.organic(
                 {"content": "hello", "tools": ["Web Search"]},
-                uid=55,
             )
         ]
 
@@ -179,6 +186,43 @@ def test_build_log_entry_excludes_html_fields_from_response_payload():
     assert response.validator_links[0]["html_text"] == "big payload"
 
 
+@pytest.mark.parametrize(
+    ("search_type", "component_names"),
+    [
+        ("ai_search", ["twitter", "search", "summary", "performance"]),
+        ("x_search", ["twitter", "performance"]),
+        ("web_search", ["search", "performance"]),
+    ],
+)
+def test_build_reward_payload_includes_performance_component(
+    search_type, component_names
+):
+    rewards = [
+        np.array([idx / 10], dtype=np.float32)
+        for idx, _ in enumerate(component_names, start=1)
+    ]
+
+    payload = build_reward_payload(
+        search_type=search_type,
+        response_count=1,
+        index=0,
+        uid=42,
+        total_reward=0.5,
+        all_rewards=rewards,
+        all_original_rewards=[reward.tolist() for reward in rewards],
+        validator_scores=[{} for _ in rewards],
+        event={},
+    )
+
+    assert list(payload["components"]) == component_names
+    assert payload["components"]["performance"] == pytest.approx(
+        len(component_names) / 10
+    )
+    assert payload["original_components"]["performance"] == pytest.approx(
+        len(component_names) / 10
+    )
+
+
 @pytest.mark.asyncio
 async def test_x_post_by_id_logs_organic():
     validator = object.__new__(XScraperValidator)
@@ -200,11 +244,11 @@ async def test_x_post_by_id_logs_organic():
 
     with (
         patch(
-            "neurons.validators.x_scraper_validator.build_log_entry",
+            "neurons.validators.scrapers.x_scraper_validator.build_log_entry",
             return_value={"ok": True},
         ) as build_log_entry,
         patch(
-            "neurons.validators.x_scraper_validator.submit_logs_best_effort"
+            "neurons.validators.scrapers.x_scraper_validator.submit_logs_best_effort"
         ) as submit_logs_best_effort,
     ):
         results = await validator.x_post_by_id("123")
@@ -235,11 +279,11 @@ async def test_x_posts_by_urls_logs_organic():
 
     with (
         patch(
-            "neurons.validators.x_scraper_validator.build_log_entry",
+            "neurons.validators.scrapers.x_scraper_validator.build_log_entry",
             return_value={"ok": True},
         ) as build_log_entry,
         patch(
-            "neurons.validators.x_scraper_validator.submit_logs_best_effort"
+            "neurons.validators.scrapers.x_scraper_validator.submit_logs_best_effort"
         ) as submit_logs_best_effort,
     ):
         results = await validator.x_posts_by_urls(
