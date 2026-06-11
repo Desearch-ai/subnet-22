@@ -6,17 +6,12 @@ from typing import Optional, Protocol
 import bittensor as bt
 
 from desearch.miner_config import SEARCH_TYPES
+from neurons.validators.scoring.constants import DEFAULT_PER_UID, QUALITY_THRESHOLDS
 from neurons.validators.scoring import miner_db
 
 QUALITY_EMA_ALPHA = 0.5
 
-DEFAULT_PER_UID = 1
 HARD_CAP_PER_UID = 100
-QUALITY_THRESHOLDS: dict[str, float] = {
-    "ai_search": 0.50,
-    "x_search": 0.60,
-    "web_search": 0.60,
-}
 RAMP_FRACTION = 0.10
 DECAY_FRACTION = 0.10
 

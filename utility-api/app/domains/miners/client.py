@@ -8,7 +8,7 @@ from app.logger import get_logger
 
 logger = get_logger(__name__)
 
-REQUEST_TIMEOUT = aiohttp.ClientTimeout(total=8.0)
+REQUEST_TIMEOUT = aiohttp.ClientTimeout(total=4.0)
 _NOT_FOUND = object()
 
 

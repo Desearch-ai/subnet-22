@@ -55,7 +55,10 @@ def test_declared_below_default_clamps():
 
 
 def test_gate_passes_when_all_above_thresholds():
-    ema = {"ai_search": 0.46, "x_search": 0.61, "web_search": 0.61}
+    ema = {
+        search_type: threshold + 0.01
+        for search_type, threshold in QUALITY_THRESHOLDS.items()
+    }
     declared = {"ai_search": 100, "x_search": 100, "web_search": 100}
     assert passes_combined_gate(ema, declared) is True
 

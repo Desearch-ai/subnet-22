@@ -8,7 +8,7 @@ from typing import List
 import bittensor as bt
 import pytz
 
-from desearch.protocol import ScraperStreamingSynapse
+from desearch.protocol import ScraperStreamingSynapse, TwitterScraperTweet
 from desearch.services.twitter_api_wrapper import TwitterAPIClient
 from desearch.services.twitter_utils import TwitterUtils
 from desearch.utils import (
@@ -18,6 +18,7 @@ from desearch.utils import (
     scrape_tweets_with_retries,
 )
 from neurons.validators.base_validator import AbstractNeuron
+from neurons.validators.penalty.count_penalty import TWITTER_TOOL
 from neurons.validators.reward.reward_llm import RewardLLM
 from neurons.validators.utils.prompts import LinkContentPrompt
 
@@ -30,6 +31,10 @@ from .reward import (
 )
 
 APIFY_LINK_SCRAPE_AMOUNT = 3
+
+
+def response_uses_twitter_tool(response: ScraperStreamingSynapse) -> bool:
+    return TWITTER_TOOL in set(response.tools or [])
 
 
 class TwitterContentRelevanceModel(BaseRewardModel):
@@ -54,14 +59,28 @@ class TwitterContentRelevanceModel(BaseRewardModel):
     def clean_text(self, text):
         return clean_text(text)
 
+    @staticmethod
+    def build_relevance_content(validator_tweet: TwitterScraperTweet) -> str:
+        """Tweet text plus any quoted tweet's text, so quote-driven relevance isn't lost."""
+        text = validator_tweet.text or ""
+
+        quote = validator_tweet.quote
+        quoted_text = (quote.text or "").strip() if quote else ""
+        if not quoted_text:
+            return text
+
+        handle = getattr(getattr(quote, "user", None), "username", None)
+        header = f"Quoted tweet (@{handle}):" if handle else "Quoted tweet:"
+        return f"{text}\n\n{header} {quoted_text}"
+
     async def llm_process_validator_tweets(self, response: ScraperStreamingSynapse):
-        if not response.validator_tweets:
+        if not response_uses_twitter_tool(response) or not response.validator_tweets:
             return {}, 0.0
 
         start_llm_time = time.time()
         scoring_messages = []
         for validator_tweet in response.validator_tweets:
-            val_text = validator_tweet.text
+            val_text = self.build_relevance_content(validator_tweet)
             val_tweet_id = validator_tweet.id
             result = self.get_scoring_text(
                 prompt=response.prompt,
@@ -87,6 +106,9 @@ class TwitterContentRelevanceModel(BaseRewardModel):
             all_links = []
 
             for response, random_links in zip(responses, responses_random_links):
+                if not response_uses_twitter_tool(response):
+                    continue
+
                 if response.miner_tweets:
                     sample_tweets = random.sample(
                         response.miner_tweets,
@@ -104,6 +126,7 @@ class TwitterContentRelevanceModel(BaseRewardModel):
                     random_links.extend(sample_links)
 
             unique_links = list(set(all_links))
+
             if len(unique_links) == 0:
                 bt.logging.info("No unique links found to process.")
                 return default_val_score_responses
@@ -162,6 +185,9 @@ class TwitterContentRelevanceModel(BaseRewardModel):
 
     def check_tweet_content(self, response: ScraperStreamingSynapse):
         try:
+            if not response_uses_twitter_tool(response):
+                return 0
+
             tweet_score = 0
 
             completion = self.get_successful_twitter_completion(response=response)
@@ -324,6 +350,7 @@ class TwitterContentRelevanceModel(BaseRewardModel):
             ):
                 reward_event = BaseRewardEvent()
                 reward_event.reward = 0
+                is_applicable = response_uses_twitter_tool(response)
 
                 score_result = None
                 response_scores = {}
@@ -336,10 +363,6 @@ class TwitterContentRelevanceModel(BaseRewardModel):
                         unique_tweet_texts[text] = val_tweet
 
                 unique_validator_tweets = list(unique_tweet_texts.values())
-
-                duplicate_tweets_count = len(response.validator_tweets) - len(
-                    unique_validator_tweets
-                )
 
                 response.validator_tweets = unique_validator_tweets
 
@@ -361,14 +384,9 @@ class TwitterContentRelevanceModel(BaseRewardModel):
                             total_score / APIFY_LINK_SCRAPE_AMOUNT * apify_score
                         )
 
-                        reward_event.reward = self.calculate_adjusted_score(
-                            links_count=len(response.miner_tweets),
-                            score=average_score,
-                            duplicate_tweets_count=duplicate_tweets_count,
-                            max_links_threshold=response.count,
-                        )
+                        reward_event.reward = self.clamp_relevance_score(average_score)
                 else:
-                    missing_validator_tweets.append(1)
+                    missing_validator_tweets.append(1 if is_applicable else 0)
                     reward_event.reward = 0
                 reward_events.append(reward_event)
                 grouped_val_score_responses.append(response_scores)

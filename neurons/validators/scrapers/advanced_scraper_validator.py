@@ -22,7 +22,13 @@ from neurons.validators.clients.miner_response_logger import (
     build_log_entry,
     submit_logs_best_effort,
 )
-from neurons.validators.penalty.count_penalty import CountPenaltyModel
+from neurons.validators.penalty.count_penalty import (
+    CountPenaltyModel,
+    HACKER_NEWS_TOOL,
+    REDDIT_TOOL,
+    SEARCH_SUMMARY_TOOLS,
+    TWITTER_TOOL,
+)
 from neurons.validators.penalty.date_range_penalty import DateRangePenaltyModel
 from neurons.validators.penalty.duplicate_results_penalty import (
     DuplicateResultsPenaltyModel,
@@ -50,17 +56,7 @@ from neurons.validators.reward.twitter_content_relevance import (
 from neurons.validators.scoring import capacity
 from neurons.validators.scrapers.base_scraper_validator import BaseScraperValidator
 
-TWITTER_TOOL = "Twitter Search"
-WEB_TOOLS = frozenset(
-    [
-        "Web Search",
-        "Wikipedia Search",
-        "Youtube Search",
-        "ArXiv Search",
-        "Reddit Search",
-        "Hacker News Search",
-    ]
-)
+WEB_TOOLS = frozenset((*SEARCH_SUMMARY_TOOLS, REDDIT_TOOL, HACKER_NEWS_TOOL))
 
 
 class AdvancedScraperValidator(BaseScraperValidator):
@@ -74,8 +70,8 @@ class AdvancedScraperValidator(BaseScraperValidator):
         self.date_filter = "qdr:w"  # Past week
 
         self.twitter_content_weight = 0.30
-        self.web_search_weight = 0.25
-        self.summary_relevance_weight = 0.25
+        self.web_search_weight = 0.30
+        self.summary_relevance_weight = 0.20
         self.performance_weight = 0.20
 
         self.reward_llm = RewardLLM(neuron.config.neuron.scoring_model)
@@ -144,7 +140,7 @@ class AdvancedScraperValidator(BaseScraperValidator):
         — so the unused branch gets weight 0 rather than the old `reward = 1.0`
         free pass.
         """
-        tools = set(response.tools)
+        tools = set(response.tools or [])
         has_twitter = TWITTER_TOOL in tools
         has_web = bool(tools & WEB_TOOLS)
         content = self.twitter_content_weight + self.web_search_weight

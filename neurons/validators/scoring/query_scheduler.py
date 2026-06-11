@@ -1,4 +1,5 @@
 import asyncio
+import math
 import random
 import time
 from collections import defaultdict
@@ -9,26 +10,24 @@ import bittensor as bt
 import numpy as np
 
 from neurons.validators.scoring import capacity, miner_db
+from neurons.validators.scoring.constants import (
+    COVERAGE_EXPONENT,
+    DEFAULT_PER_UID,
+    MIN_VOLUME_RATIO,
+    QUALITY_EXPONENT,
+    QUALITY_THRESHOLDS,
+    SEARCH_TYPE_WEIGHTS,
+    VOLUME_EXPONENT,
+)
 from neurons.validators.scoring.scoring_store import SEARCH_TYPES, ScoringStore
 from neurons.validators.scoring.synthetic_query_generator import SyntheticQueryGenerator
-
-SEARCH_TYPE_WEIGHTS = {
-    "ai_search": 0.80,
-    "x_search": 0.10,
-    "web_search": 0.10,
-}
 
 ORGANIC_VALUE_MULTIPLIER = 3
 ORGANIC_DEEP_CAP_PER_TYPE = 100
 
-QUALITY_EXPONENT = 2.0
-VOLUME_EXPONENT = 1.2
-COVERAGE_EXPONENT = 2.0
-MIN_VOLUME_RATIO = 0.50
-
-BATCH_SIZE = 20
+BATCH_FRACTION = 0.50
 BATCH_INTERVAL_SECONDS = 3
-GROUP_SIZE = 5
+GROUP_SIZE = 2
 
 DEEP_SAMPLE_RATE = 0.20
 DEEP_SAMPLE_FLOOR = 1
@@ -52,7 +51,7 @@ def combine_superlinear_scores(
 
         served: dict[str, float] = {}
         for t, (q, v) in qv.items():
-            if max_v == 0 or q < capacity.QUALITY_THRESHOLDS[t]:
+            if max_v == 0 or q < QUALITY_THRESHOLDS[t]:
                 served[t] = 0.0
             else:
                 served[t] = min(1.0, (v / max_v) / MIN_VOLUME_RATIO)
@@ -84,7 +83,7 @@ class QueryScheduler:
       1. Batch-generate all queries for every active UID via SyntheticQueryGenerator.
          Epoch-level params (tools, date_filter) are shared; only question text varies.
          Each miner gets N queries per search type where N = verified concurrency.
-      2. Dispatch each query at its random fire time spread over ~55 minutes.
+      2. Dispatch shuffled UID groups in 50% per-UID bursts.
       3. Save the miner's response in ScoringStore.
       4. On hour boundary -> score the previous hour's responses and update capacity.
 
@@ -160,8 +159,7 @@ class QueryScheduler:
         items: list,
         time_range_start: datetime,
     ) -> None:
-        """Dispatch AI, X, Web sequentially. Each phase walks sorted UIDs in
-        groups of GROUP_SIZE; UIDs within a group run concurrently."""
+        """Dispatch each type through shuffled UID groups."""
         for search_type in SEARCH_TYPES:
             if self._current_hour_start() != time_range_start:
                 return
@@ -171,17 +169,19 @@ class QueryScheduler:
                 if item["search_type"] == search_type:
                     grouped[item["uid"]].append(item)
 
-            sorted_uids = sorted(grouped)
+            shuffled_uids = sorted(grouped)
+            random.shuffle(shuffled_uids)
             bt.logging.info(
                 f"[QueryScheduler] Phase {search_type}: "
                 f"{sum(len(v) for v in grouped.values())} queries "
-                f"across {len(sorted_uids)} UIDs in groups of {GROUP_SIZE}"
+                f"across {len(shuffled_uids)} shuffled UIDs "
+                f"in groups of {GROUP_SIZE}"
             )
 
-            for start in range(0, len(sorted_uids), GROUP_SIZE):
+            for start in range(0, len(shuffled_uids), GROUP_SIZE):
                 if self._current_hour_start() != time_range_start:
                     return
-                group = sorted_uids[start : start + GROUP_SIZE]
+                group = shuffled_uids[start : start + GROUP_SIZE]
                 await asyncio.gather(
                     *[
                         self._dispatch_uid(
@@ -192,6 +192,10 @@ class QueryScheduler:
                     return_exceptions=True,
                 )
 
+    @staticmethod
+    def _batch_size_for_uid(uid_items: list) -> int:
+        return max(1, math.ceil(len(uid_items) * BATCH_FRACTION))
+
     async def _dispatch_uid(
         self,
         uid: int,
@@ -199,8 +203,10 @@ class QueryScheduler:
         uid_items: list,
         time_range_start: datetime,
     ) -> None:
+        batch_size = self._batch_size_for_uid(uid_items)
         batches = [
-            uid_items[i : i + BATCH_SIZE] for i in range(0, len(uid_items), BATCH_SIZE)
+            uid_items[i : i + batch_size]
+            for i in range(0, len(uid_items), batch_size)
         ]
 
         for batch_idx, batch in enumerate(batches):
@@ -401,7 +407,7 @@ class QueryScheduler:
                 search_type=search_type,
                 quality=quality,
                 window_start=window_start,
-                allocated=allocations.get(uid, capacity.DEFAULT_PER_UID),
+                allocated=allocations.get(uid, DEFAULT_PER_UID),
             )
         return uid_results
 
@@ -546,7 +552,7 @@ class QueryScheduler:
                 for st in SEARCH_TYPES:
                     rows = await miner_db.get_allocation_state(st)
                     allocations_by_type[st] = {
-                        uid: rows.get(uid, (0.0, 0, capacity.DEFAULT_PER_UID))[2]
+                        uid: rows.get(uid, (0.0, 0, DEFAULT_PER_UID))[2]
                         for uid in available_uids
                     }
 
