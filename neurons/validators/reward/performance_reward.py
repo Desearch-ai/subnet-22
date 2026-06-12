@@ -1,9 +1,10 @@
 import traceback
-from typing import Dict, List, Tuple
+from typing import List, Tuple
 
 import bittensor as bt
 
 from desearch.protocol import (
+    ResultType,
     ScraperStreamingSynapse,
     TwitterIDSearchSynapse,
     TwitterSearchSynapse,
@@ -33,48 +34,54 @@ class PerformanceRewardModel(BaseRewardModel):
         self.min_realistic_time = min_realistic_time
         self.target_time = target_time
 
+    def get_successful_streaming_response(self, response: ScraperStreamingSynapse):
+        if response.result_type == ResultType.ONLY_LINKS:
+            return self.get_successful_twitter_completion(
+                response
+            ) or self.get_successful_search_summary_completion(response)
+
+        return self.get_successful_completion(response)
+
     def get_response_times(
         self, uids: List[int], responses: List[ScraperStreamingSynapse]
-    ) -> Dict[int, float]:
+    ) -> List[float]:
         """
-        Returns a dictionary of axons based on their response times.
+        Returns response times aligned by response index.
         Failed or unsuccessful completions are pinned to max_execution_time so the
         piecewise curve resolves them to reward 0.
         """
-        axon_times = {
-            uids[idx]: (
-                response.dendrite.process_time
-                if response.dendrite.process_time is not None
-                and self.get_successful_completion(response)
-                else response.max_execution_time
-            )
-            for idx, response in enumerate(responses)
-        }
-        return axon_times
+        response_times = []
+        for response in responses:
+            successful_response = self.get_successful_streaming_response(response)
+            if response.dendrite.process_time is not None and successful_response:
+                response_times.append(response.dendrite.process_time)
+            else:
+                response_times.append(response.max_execution_time)
+        return response_times
 
     def get_global_response_times(
         self, uids: List[int], responses: List[TwitterSearchSynapse]
-    ) -> Dict[int, float]:
+    ) -> List[float]:
         """
-        Returns a dictionary of axons based on their response times for global results.
+        Returns response times aligned by response index for global results.
         Empty or invalid results are pinned to max_execution_time (reward 0).
         Previously these were pinned to 0.0, which let instant empty responses game
         the sigmoid into near-max reward.
         """
-        axon_times = {}
+        response_times = []
         for idx, response in enumerate(responses):
             uid = uids[idx]
             successful_result = self.get_successful_result(response)
 
             if successful_result:
-                axon_times[uid] = response.dendrite.process_time or 0.0
+                response_times.append(response.dendrite.process_time or 0.0)
             else:
                 bt.logging.warning(
                     f"Invalid or empty result for UID: {uid}, pinning to timeout."
                 )
-                axon_times[uid] = response.max_execution_time
+                response_times.append(response.max_execution_time)
 
-        return axon_times
+        return response_times
 
     def reward(self, axon_time: float, timeout: float) -> float:
         """
@@ -103,7 +110,7 @@ class PerformanceRewardModel(BaseRewardModel):
             ]
 
             if isinstance(responses[0], ScraperStreamingSynapse):
-                axon_times = self.get_response_times(uids, responses)
+                response_times = self.get_response_times(uids, responses)
             elif isinstance(
                 responses[0],
                 (
@@ -113,14 +120,14 @@ class PerformanceRewardModel(BaseRewardModel):
                     WebSearchSynapse,
                 ),
             ):
-                axon_times = self.get_global_response_times(uids, responses)
+                response_times = self.get_global_response_times(uids, responses)
             else:
                 raise ValueError("Unsupported response type provided to get_rewards.")
 
-            for uid, response in zip(uids, responses):
+            for response_time, response in zip(response_times, responses):
                 reward_event = BaseRewardEvent()
                 reward_event.reward = self.reward(
-                    axon_times[uid], response.max_execution_time
+                    response_time, response.max_execution_time
                 )
                 reward_events.append(reward_event)
 
