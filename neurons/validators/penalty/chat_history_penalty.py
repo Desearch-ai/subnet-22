@@ -24,7 +24,10 @@ class ChatHistoryPenaltyModel(BasePenaltyModel):
         )
 
         response = await summary_rule_prompt.get_response(
-            completion, chat_history_text, prompt
+            completion,
+            chat_history_text,
+            prompt,
+            model=self.neuron.config.neuron.scoring_model,
         )
 
         return summary_rule_prompt.extract_score(response)

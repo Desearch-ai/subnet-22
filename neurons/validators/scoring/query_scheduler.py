@@ -561,6 +561,7 @@ class QueryScheduler:
                 items = await self.generator.generate_epoch_queries(
                     available_uids,
                     verified_by_type=allocations_by_type,
+                    scoring_model=self.neuron.config.neuron.scoring_model,
                 )
 
                 previous_epoch_dispatched = True

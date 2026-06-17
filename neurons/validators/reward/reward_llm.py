@@ -2,7 +2,7 @@ import bittensor as bt
 
 from desearch.protocol import ScoringModel
 from desearch.synapse import collect_responses
-from desearch.utils import call_chutes, call_openai
+from desearch.utils import call_scoring_llm
 
 
 class RewardLLM:
@@ -18,20 +18,12 @@ class RewardLLM:
 
                 async def query_llm(message):
                     try:
-                        if self.scoring_model == ScoringModel.OPENAI_GPT4_1_NANO:
-                            return await call_openai(
-                                messages=message,
-                                model="gpt-4.1-nano",
-                                temperature=0.01,
-                            )
-                        else:
-                            return await call_chutes(
-                                messages=message,
-                                temperature=0.0001,
-                                model=self.scoring_model,
-                            )
+                        return await call_scoring_llm(
+                            messages=message,
+                            model=self.scoring_model,
+                        )
                     except Exception as e:
-                        bt.logging.error(f"Error sending message to OpenAI: {e}")
+                        bt.logging.error(f"Error scoring with LLM: {e}")
                         return ""  # Return an empty string to indicate failure
 
                 task = query_llm(message_list)

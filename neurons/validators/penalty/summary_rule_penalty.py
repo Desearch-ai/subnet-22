@@ -4,7 +4,7 @@ import bittensor as bt
 import numpy as np
 
 from desearch.protocol import ScraperStreamingSynapse, ScraperTextRole
-from desearch.utils import call_openai
+from desearch.utils import call_scoring_llm
 from neurons.validators.base_validator import AbstractNeuron
 from neurons.validators.penalty.penalty import BasePenaltyModel, PenaltyModelType
 from neurons.validators.utils.prompts import SummaryRulePrompt
@@ -30,9 +30,9 @@ class SummaryRulePenaltyModel(BasePenaltyModel):
     async def validate_summary_with_rule(self, summary_text, summary_rule):
         summary_rule_prompt = SummaryRulePrompt()
 
-        response = await call_openai(
+        response = await call_scoring_llm(
             messages=summary_rule_prompt.get_messages(summary_text, summary_rule),
-            model="gpt-4.1-nano",
+            model=self.neuron.config.neuron.scoring_model,
         )
 
         return summary_rule_prompt.extract_score(response)

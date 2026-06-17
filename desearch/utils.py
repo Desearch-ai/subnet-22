@@ -14,6 +14,7 @@ from pydantic import ValidationError
 
 from desearch.protocol import (
     Model,
+    ScoringModel,
     TwitterScraperTweet,
     WebSearchResult,
 )
@@ -63,40 +64,59 @@ def get_max_execution_time(model: Model, count: int):
         return 120
 
 
+def get_chutes_api_key() -> str:
+    return os.environ.get("CHUTES_API_TOKEN") or os.environ.get("CHUTES_API_KEY", "")
+
+
 async def call_chutes(messages, temperature, model, seed=1234, response_format=None):
-    api_key = os.environ.get("CHUTES_API_TOKEN")
+    api_key = get_chutes_api_key()
 
     if not api_key:
-        bt.logging.warning("Please set the CHUTES_API_TOKEN environment variable.")
+        bt.logging.warning("Set CHUTES_API_TOKEN (or CHUTES_API_KEY) to score with Chutes.")
         return None
 
+    model_name = getattr(model, "value", model)
     url = "https://llm.chutes.ai/v1/chat/completions"
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
     payload = {
-        "model": model,
+        "model": model_name,
         "messages": messages,
         "temperature": temperature,
-        "response_format": response_format,
         "seed": seed,
+        # Force a direct verdict: a reasoning trace leaks HIGH/MEDIUM/OFFTOPIC tokens that break score parsing.
+        "chat_template_kwargs": {"enable_thinking": False},
     }
+    if response_format is not None:
+        payload["response_format"] = response_format
 
-    for attempt in range(2):
+    for _ in range(2):
         bt.logging.trace(
-            f"Calling chutes. Temperature = {temperature}, Model = {model}, Seed = {seed},  Messages = {messages}"
+            f"Calling chutes. Temperature = {temperature}, Model = {model_name}, Seed = {seed}"
         )
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.post(url, headers=headers, json=payload) as response:
+                async with session.post(
+                    url,
+                    headers=headers,
+                    json=payload,
+                    timeout=aiohttp.ClientTimeout(total=90),
+                ) as response:
                     if response.status == 200:
                         data = await response.json()
-                        return data["choices"][0]["message"]["content"]
-
+                        content = data["choices"][0]["message"]["content"]
+                        if content:
+                            return content
+                        bt.logging.error("Chutes returned empty content.")
+                    else:
+                        body = (await response.text())[:200]
+                        bt.logging.error(f"Chutes HTTP {response.status}: {body}")
         except Exception as e:
             bt.logging.error(f"Error when calling chutes: {e}")
-            await asyncio.sleep(0.5)
+
+        await asyncio.sleep(0.5)
 
     return None
 
@@ -123,6 +143,27 @@ async def call_openai(messages, model, temperature=1, response_format=None):
             await asyncio.sleep(0.5)
 
     return None
+
+
+async def call_scoring_llm(messages, model, temperature=0.0001, response_format=None):
+    """Route a validator scoring/generation prompt to the configured model;
+    falls back to gpt-4.1-nano if Chutes is unreachable (avoids zeroing all miners on outage)."""
+    if model == ScoringModel.OPENAI_GPT4_1_NANO:
+        return await call_openai(
+            messages, model="gpt-4.1-nano", temperature=temperature, response_format=response_format
+        )
+
+    result = await call_chutes(
+        messages, temperature=temperature, model=model, response_format=response_format
+    )
+    if result is None:
+        bt.logging.warning(
+            f"Chutes scoring with {getattr(model, 'value', model)} failed; falling back to gpt-4.1-nano."
+        )
+        return await call_openai(
+            messages, model="gpt-4.1-nano", temperature=temperature, response_format=response_format
+        )
+    return result
 
 
 async def resync_metagraph(self):

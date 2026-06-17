@@ -1,5 +1,6 @@
 from neurons.validators.utils.prompts import BasePrompt
-from desearch.utils import call_openai
+from desearch.protocol import ScoringModel
+from desearch.utils import call_scoring_llm
 import re
 
 user_template = """
@@ -53,8 +54,10 @@ class ChatHistoryRelevancePrompt(BasePrompt):
     def get_system_message(self):
         return system_message
 
-    async def get_response(self, completion, chat_history, prompt):
-        return await call_openai(
+    async def get_response(
+        self, completion, chat_history, prompt, model=ScoringModel.OPENAI_GPT4_1_NANO
+    ):
+        return await call_scoring_llm(
             [
                 {
                     "role": "system",
@@ -65,7 +68,7 @@ class ChatHistoryRelevancePrompt(BasePrompt):
                     "content": self.text(completion, chat_history, prompt),
                 },
             ],
-            model="gpt-4.1-nano",
+            model=model,
         )
 
     def extract_score(self, response: str) -> float:

@@ -1,29 +1,33 @@
 """Single-item consistency + cost benchmark for the relevance scoring prompt.
 
-Runs the original LinkContentPrompt (system_message_question_answer_template
-from neurons.validators.utils.prompts) on ONE (query, content) pair RUNS times
-across multiple OpenAI models. Reports per model:
+Runs the LinkContentPrompt (system_message_question_answer_template from
+neurons.validators.utils.prompts) on ONE (query, content) pair RUNS times across
+both OpenAI and Chutes scoring models, at the PRODUCTION scoring temperature.
+Reports per model:
 
   - score distribution (counts of scores / other)
-  - run-to-run consistency (mode % over RUNS)
-  - total input / output / reasoning tokens
-  - estimated USD cost using PRICING below
+  - run-to-run consistency (mode % over RUNS) — the number that matters: the same
+    miner link must get the same verdict every time, regardless of which Chutes
+    node serves it.
+  - input / output tokens and estimated USD cost (OpenAI models only)
 
 Run:  python -m tests.validators.reward.test_consistency_models
-Requires OPENAI_API_KEY.
+Requires OPENAI_API_KEY for OpenAI models, CHUTES_API_TOKEN for Chutes models.
 """
 
 import asyncio
 import statistics
 import time
 from collections import Counter
-from typing import List
+from typing import List, Union
 
-from desearch.utils import client, clean_text
+from desearch.protocol import ScoringModel
+from desearch.utils import call_chutes, clean_text, client
 from neurons.validators.utils.prompts import LinkContentPrompt
 
 RUNS = 100
 MODE = "batch"  # "sequential" — one call at a time; "batch" — all in parallel
+TEMPERATURE = 0.0001  # matches the validator's production scoring temperature
 
 QUERY = "What are farmers saying about precision agriculture technologies?"
 
@@ -32,91 +36,64 @@ CONTENT = "Precision agriculture demonstrates how data analytics creates tangibl
 # Tested on both cleaned and raw, results are similar.
 CONTENT = clean_text(CONTENT)
 
-MODELS = [
-    "gpt-5-nano",
+# OpenAI model names (str) and Chutes models (ScoringModel) can be mixed freely.
+MODELS: List[Union[str, ScoringModel]] = [
+    ScoringModel.QWEN3_32B,  # production scoring model
     "gpt-4.1-nano",
-    "gpt-4o-mini",
-    # "gpt-5.4-nano", more expensive
 ]
 
-# Per-1M-token prices in USD. Update as OpenAI pricing changes.
+# Per-1M-token prices in USD (OpenAI only). Update as pricing changes.
 PRICING = {
     "gpt-5-nano": {"input": 0.05, "output": 0.40},
     "gpt-4.1-nano": {"input": 0.10, "output": 0.40},
-    "gpt-5.4-nano": {"input": 0.20, "output": 1.25},
     "gpt-4o-mini": {"input": 0.15, "output": 0.60},
 }
 
 
-# Lowest valid reasoning_effort per model. Models not in this map send no
-# reasoning_effort at all (gpt-4.x rejects the param outright). The lowest
-# accepted value differs across reasoning families:
-#   - gpt-5 / 5-mini / 5-nano       -> "minimal"
-#   - gpt-5.4 / 5.4-mini / 5.4-nano -> "none"
-LOWEST_REASONING_EFFORT = {
-    "gpt-5": "minimal",
-    "gpt-5-mini": "minimal",
-    "gpt-5-nano": "minimal",
-    "gpt-5.4": "none",
-    "gpt-5.4-mini": "none",
-    "gpt-5.4-nano": "none",
-}
-
-
-async def run_one(model: str, prompt: LinkContentPrompt) -> dict:
-    kwargs = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": prompt.get_system_message()},
-            {"role": "user", "content": prompt.text(QUERY, CONTENT)},
-        ],
-        "temperature": 1,
-    }
-    effort = LOWEST_REASONING_EFFORT.get(model)
-    if effort is not None:
-        kwargs["reasoning_effort"] = effort
-
+async def run_one(model: Union[str, ScoringModel], prompt: LinkContentPrompt) -> dict:
+    messages = [
+        {"role": "system", "content": prompt.get_system_message()},
+        {"role": "user", "content": prompt.text(QUERY, CONTENT)},
+    ]
     started = time.monotonic()
-    resp = await client.chat.completions.create(**kwargs)
+
+    if isinstance(model, ScoringModel) and model != ScoringModel.OPENAI_GPT4_1_NANO:
+        text = await call_chutes(messages, temperature=TEMPERATURE, model=model)
+        elapsed = time.monotonic() - started
+        score = prompt.extract_score(text) if text else None
+        return {"score": score, "input_tokens": 0, "output_tokens": 0, "elapsed": elapsed}
+
+    resp = await client.chat.completions.create(
+        model=str(getattr(model, "value", model)).replace("openai/", ""),
+        messages=messages,
+        temperature=TEMPERATURE,
+    )
     elapsed = time.monotonic() - started
-
     text = resp.choices[0].message.content or ""
-    score = prompt.extract_score(text) if text else None
-
-    usage = resp.usage
-    reasoning_tokens = 0
-    details = getattr(usage, "completion_tokens_details", None)
-
-    if details is not None:
-        reasoning_tokens = getattr(details, "reasoning_tokens", 0) or 0
-
     return {
-        "score": score,
-        "input_tokens": usage.prompt_tokens,
-        "output_tokens": usage.completion_tokens,
-        "reasoning_tokens": reasoning_tokens,
+        "score": prompt.extract_score(text) if text else None,
+        "input_tokens": resp.usage.prompt_tokens,
+        "output_tokens": resp.usage.completion_tokens,
         "elapsed": elapsed,
     }
 
 
-async def run_model(model: str, prompt: LinkContentPrompt) -> List[dict]:
+async def run_model(model: Union[str, ScoringModel], prompt: LinkContentPrompt) -> List[dict]:
     if MODE == "batch":
-        return list(
-            await asyncio.gather(*[run_one(model, prompt) for _ in range(RUNS)])
-        )
+        return list(await asyncio.gather(*[run_one(model, prompt) for _ in range(RUNS)]))
     if MODE == "sequential":
         results: List[dict] = []
         step = max(1, RUNS // 10)
         for i in range(RUNS):
             results.append(await run_one(model, prompt))
-            done = i + 1
-            if done % step == 0 or done == RUNS:
-                print(f"  [{model}] {done}/{RUNS}")
+            if (i + 1) % step == 0 or (i + 1) == RUNS:
+                print(f"  [{model}] {i + 1}/{RUNS}")
         return results
     raise ValueError(f"Unknown MODE: {MODE!r}. Use 'sequential' or 'batch'.")
 
 
-def report(model: str, runs: List[dict]) -> None:
+def report(model: Union[str, ScoringModel], runs: List[dict]) -> None:
+    name = str(getattr(model, "value", model))
     scores = [r["score"] for r in runs]
     counts = Counter(s if s is not None else "UNPARSED" for s in scores)
     most, most_n = counts.most_common(1)[0]
@@ -124,32 +101,25 @@ def report(model: str, runs: List[dict]) -> None:
 
     in_tok = sum(r["input_tokens"] for r in runs)
     out_tok = sum(r["output_tokens"] for r in runs)
-    reason_tok = sum(r["reasoning_tokens"] for r in runs)
-
-    price = PRICING.get(model, {"input": 0.0, "output": 0.0})
-    cost = (in_tok / 1_000_000) * price["input"] + (out_tok / 1_000_000) * price[
-        "output"
-    ]
 
     print("=" * 90)
-    print(f"MODEL  {model}")
+    print(f"MODEL  {name}")
     print("-" * 90)
     distribution = ", ".join(f"{s}:{n}" for s, n in counts.most_common())
     print(f"  distribution: {distribution}")
-    print(f"  mode={most}  consistency={consistency:.1f}%  ({RUNS} runs)")
-    print(
-        f"  tokens:  input={in_tok}  output={out_tok}  "
-        f"reasoning={reason_tok}  total={in_tok + out_tok}"
-    )
+    print(f"  mode={most}  consistency={consistency:.1f}%  ({RUNS} runs, temp={TEMPERATURE})")
+
     times = [r["elapsed"] for r in runs]
     print(
         f"  latency: avg={statistics.mean(times):.3f}s  "
         f"median={statistics.median(times):.3f}s  "
         f"min={min(times):.3f}s  max={max(times):.3f}s"
     )
-    if model not in PRICING:
-        print("  cost:  (no PRICING entry — add one to estimate)")
-    else:
+
+    price = PRICING.get(name)
+    if price and in_tok:
+        cost = (in_tok / 1_000_000) * price["input"] + (out_tok / 1_000_000) * price["output"]
+        print(f"  tokens:  input={in_tok}  output={out_tok}")
         print(f"  cost:  ${cost:.6f}  total  (~${cost / RUNS:.6f}/call)")
 
 
@@ -166,7 +136,7 @@ async def main() -> None:
             report(model, runs)
         except Exception as e:
             print("=" * 90)
-            print(f"MODEL  {model}")
+            print(f"MODEL  {getattr(model, 'value', model)}")
             print(f"  ERROR: {type(e).__name__}: {e}")
 
 
