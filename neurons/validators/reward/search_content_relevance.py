@@ -9,11 +9,7 @@ from desearch.protocol import ScraperStreamingSynapse
 from desearch.utils import clean_text
 from neurons.validators.apify.scrapingdog_scraper import scrape_links_with_retries
 from neurons.validators.base_validator import AbstractNeuron
-from neurons.validators.penalty.count_penalty import (
-    HACKER_NEWS_TOOL,
-    REDDIT_TOOL,
-    SEARCH_SUMMARY_TOOLS,
-)
+from neurons.validators.penalty.count_penalty import SEARCH_SUMMARY_TOOLS
 from neurons.validators.reward.reward_llm import RewardLLM
 from neurons.validators.utils.prompts import (
     SearchSummaryRelevancePrompt,
@@ -22,7 +18,7 @@ from neurons.validators.utils.prompts import (
 from .config import RewardModelType
 from .reward import BaseRewardEvent, BaseRewardModel, log_reward_aggregates
 
-WEB_TOOLS = frozenset((*SEARCH_SUMMARY_TOOLS, REDDIT_TOOL, HACKER_NEWS_TOOL))
+WEB_TOOLS = frozenset(SEARCH_SUMMARY_TOOLS)
 
 
 def response_uses_web_tools(response: ScraperStreamingSynapse) -> bool:
@@ -107,8 +103,8 @@ class WebSearchContentRelevanceModel(BaseRewardModel):
             # Get links directly from search results
             _, links_per_tool_group = response.get_links_from_search_results()
 
-            # If scoring single tool group 2 links are selected, for 2 or 3 tool groups 1 link is selected from each
-            random_links_per_tool_group = 2 if len(links_per_tool_group) == 1 else 1
+            # Scrape 2 links from the web results.
+            random_links_per_tool_group = 2
 
             links = []
 
@@ -193,16 +189,7 @@ class WebSearchContentRelevanceModel(BaseRewardModel):
                 # at least miners should provide two search links
                 return 0
 
-            # Web search results are separate because they include links with different domains from search
             web_search_results = str(response.search_results)
-
-            domain_to_search_result = {
-                "arxiv.org": response.arxiv_search_results,
-                "wikipedia.org": response.wikipedia_search_results,
-                "reddit.com": response.reddit_search_results,
-                "ycombinator.com": response.hacker_news_search_results,
-                "youtube.com": response.youtube_search_results,
-            }
 
             link_scores = []
 
@@ -213,19 +200,7 @@ class WebSearchContentRelevanceModel(BaseRewardModel):
                     link_scores.append(0)
                     continue
 
-                domain_parts = url.split("/")[2].split(".")
-                domain = ".".join(domain_parts[-2:])  # Extract the main domain
-
-                if domain in domain_to_search_result:
-                    if (
-                        url in str(domain_to_search_result[domain])
-                        or url in web_search_results
-                    ):
-                        link_scores.append(1)
-                    else:
-                        link_scores.append(0)
-                else:
-                    link_scores.append(1 if url in web_search_results else 0)
+                link_scores.append(1 if url in web_search_results else 0)
 
             if link_scores:
                 return sum(link_scores) / len(link_scores)

@@ -13,14 +13,7 @@ MARKDOWN_LINK_PATTERN = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 HEADER_HASH_PATTERN = re.compile(r"^#{1,6}\s", re.MULTILINE)
 HEADER_BOLD_PATTERN = re.compile(r"\*\*[^*]+\*\*")
 
-AI_SEARCH_RESULT_FIELDS = (
-    "search_results",
-    "wikipedia_search_results",
-    "youtube_search_results",
-    "arxiv_search_results",
-    "reddit_search_results",
-    "hacker_news_search_results",
-)
+AI_SEARCH_RESULT_FIELDS = ("search_results",)
 AI_ALL_RESULT_FIELDS = ("miner_tweets",) + AI_SEARCH_RESULT_FIELDS
 
 

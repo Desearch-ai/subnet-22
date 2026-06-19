@@ -24,8 +24,6 @@ from neurons.validators.clients.miner_response_logger import (
 )
 from neurons.validators.penalty.count_penalty import (
     CountPenaltyModel,
-    HACKER_NEWS_TOOL,
-    REDDIT_TOOL,
     SEARCH_SUMMARY_TOOLS,
     TWITTER_TOOL,
 )
@@ -56,7 +54,7 @@ from neurons.validators.reward.twitter_content_relevance import (
 from neurons.validators.scoring import capacity
 from neurons.validators.scrapers.base_scraper_validator import BaseScraperValidator
 
-WEB_TOOLS = frozenset((*SEARCH_SUMMARY_TOOLS, REDDIT_TOOL, HACKER_NEWS_TOOL))
+WEB_TOOLS = frozenset(SEARCH_SUMMARY_TOOLS)
 
 
 class AdvancedScraperValidator(BaseScraperValidator):
