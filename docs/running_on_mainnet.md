@@ -69,7 +69,7 @@ cp neurons/miners/.env.template neurons/miners/.env
 $EDITOR neurons/miners/.env
 ```
 
-Required miner secrets include `OPENAI_API_KEY`, `APIFY_API_KEY`, and `SERPAPI_API_KEY`. Set `WALLET_NAME`, `WALLET_HOTKEY`, `SUBTENSOR_NETWORK=finney`, `NETUID=22`, and `AXON_PORT` as needed.
+Required miner secrets include `OPENAI_API_KEY`, `APIFY_API_KEY`, and `SCRAPINGDOG_API_KEY`. Set `WALLET_NAME`, `WALLET_HOTKEY`, `SUBTENSOR_NETWORK=finney`, `NETUID=22`, and `AXON_PORT` as needed.
 
 Create `neurons/miners/manifest.json` from the template and declare the concurrency you can serve for each search type.
 

@@ -46,9 +46,9 @@ See [Environment Variables](./docs/env_variables.md) for shared, miner-only, and
 
 Common requirements:
 
-- Shared: `OPENAI_API_KEY`, `APIFY_API_KEY`
-- Miner-only: `SERPAPI_API_KEY`, optional `TWITTER_BEARER_TOKEN`, wallet/netuid/axon settings
-- Validator-only: `EXPECTED_ACCESS_KEY`, `SCRAPINGDOG_API_KEY`, `WANDB_API_KEY`, API/service ports
+- Shared: `OPENAI_API_KEY`, `APIFY_API_KEY`, `SCRAPINGDOG_API_KEY`
+- Miner-only: optional `TWITTER_BEARER_TOKEN`, wallet/netuid/axon settings
+- Validator-only: `EXPECTED_ACCESS_KEY`, `WANDB_API_KEY`, API/service ports
 
 ### 4. Validate the checkout
 

@@ -426,7 +426,7 @@ class ScraperStreamingSynapse(StreamingSynapse):
     search_results: Optional[List[SearchResultItem]] = pydantic.Field(
         default_factory=list,
         title="Search Results",
-        description="Optional JSON object containing search results from SERP",
+        description="Optional JSON object containing search results from web search",
     )
 
     wikipedia_search_results: Optional[List[SearchResultItem]] = pydantic.Field(
