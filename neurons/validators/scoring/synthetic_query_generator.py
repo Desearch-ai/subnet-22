@@ -6,6 +6,7 @@ import bittensor as bt
 
 from desearch.dataset import BasicQuestionsDataset, QuestionsDataset
 from desearch.dataset.date_filters import random_date_filters
+from desearch.protocol import ScoringModel
 
 AI_SEARCH_TOOL_SETS = [
     ["Twitter Search"],
@@ -32,6 +33,7 @@ class SyntheticQueryGenerator:
         self,
         available_uids: List[int],
         verified_by_type: dict[str, dict[int, int]] | None = None,
+        scoring_model: ScoringModel = ScoringModel.OPENAI_GPT4_1_NANO,
     ) -> List[dict]:
         if verified_by_type is None:
             verified_by_type = {}
@@ -73,7 +75,7 @@ class SyntheticQueryGenerator:
                 try:
                     if item["search_type"] == "ai_search":
                         question = await self.questions_dataset.generate_new_question_with_openai(
-                            ai_tools
+                            ai_tools, model=scoring_model
                         )
                         item["query"] = {
                             "query": question,
@@ -82,7 +84,7 @@ class SyntheticQueryGenerator:
                         }
                     else:  # web_search
                         question = await self.questions_dataset.generate_new_question_with_openai(
-                            ["Web Search"]
+                            ["Web Search"], model=scoring_model
                         )
                         item["query"] = {"query": question}
                 except Exception as e:

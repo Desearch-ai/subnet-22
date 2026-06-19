@@ -13,6 +13,7 @@ from desearch.protocol import (
     ChatHistoryItem,
     Model,
     ResultType,
+    ScoringModel,
     ScraperStreamingSynapse,
 )
 from desearch.stream import collect_final_synapses
@@ -241,7 +242,7 @@ class AdvancedScraperValidator(BaseScraperValidator):
             result_type=result_type,
             system_message=system_message,
             scoring_system_message=scoring_system_message,
-            scoring_model=self.neuron.config.neuron.scoring_model,
+            scoring_model=ScoringModel.OPENAI_GPT4_1_NANO,
             chat_history=chat_history,
             count=count,
         )
@@ -318,7 +319,7 @@ class AdvancedScraperValidator(BaseScraperValidator):
             region=self.region,
             google_date_filter=self.date_filter,
             max_execution_time=max_execution_time,
-            scoring_model=self.neuron.config.neuron.scoring_model,
+            scoring_model=ScoringModel.OPENAI_GPT4_1_NANO,
         )
 
         axon = self.neuron.metagraph.axons[uid]

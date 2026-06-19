@@ -4,9 +4,9 @@ import re
 import bittensor as bt
 from faker import Faker
 
-from desearch.utils import call_openai
+from desearch.protocol import ScoringModel
+from desearch.utils import call_scoring_llm
 
-QUESTION_MODEL = "gpt-4.1-nano"
 QUESTION_TEMPERATURE = 1.15
 
 QUESTION_ANGLES = [
@@ -483,15 +483,19 @@ class QuestionsDataset:
             "Output ONLY the question. No preamble, no quotes."
         )
 
-    async def generate_new_question_with_openai(self, selected_tools: list[str]) -> str:
+    async def generate_new_question_with_openai(
+        self,
+        selected_tools: list[str],
+        model: ScoringModel = ScoringModel.OPENAI_GPT4_1_NANO,
+    ) -> str:
         topic = self._random_topic()
         angle = random.choice(QUESTION_ANGLES)
         prompt = self._build_prompt(topic, selected_tools, angle)
 
         try:
-            out = await call_openai(
+            out = await call_scoring_llm(
                 messages=[{"role": "system", "content": prompt}],
-                model=QUESTION_MODEL,
+                model=model,
                 temperature=QUESTION_TEMPERATURE,
             )
             return _clean_question(out) or self._fallback_question(
