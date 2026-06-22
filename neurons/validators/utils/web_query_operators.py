@@ -32,6 +32,26 @@ def _normalize_domain(raw: str) -> str:
     return domain.rstrip(".")
 
 
+def normalize_domains(raw: List[str]) -> List[str]:
+    seen = []
+    for item in raw or []:
+        domain = _normalize_domain(item)
+        if domain and domain not in seen:
+            seen.append(domain)
+    return seen
+
+
+def host_in_domains(url: str, domains: List[str]) -> bool:
+    if not domains:
+        return False
+
+    host = (urlparse(url).hostname or "").lower().rstrip(".")
+    if not host:
+        return False
+
+    return any(host == domain or host.endswith("." + domain) for domain in domains)
+
+
 def parse_web_query(query: str) -> WebQueryOperators:
     """Extract supported operators (only ``site:`` today) and return the cleaned query text."""
     if not query:

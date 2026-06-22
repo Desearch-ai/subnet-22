@@ -362,6 +362,20 @@ class ScraperStreamingSynapse(StreamingSynapse):
         description="A list of tools specified by user to use to answer question.",
     )
 
+    include_domains: Optional[List[str]] = pydantic.Field(
+        default_factory=list,
+        title="Include Domains",
+        description="Restrict Web Search results to these domains.",
+        allow_mutation=False,
+    )
+
+    exclude_domains: Optional[List[str]] = pydantic.Field(
+        default_factory=list,
+        title="Exclude Domains",
+        description="Drop Web Search results from these domains.",
+        allow_mutation=False,
+    )
+
     start_date: Optional[str] = pydantic.Field(
         None,
         title="Start Date",

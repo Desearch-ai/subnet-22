@@ -24,11 +24,12 @@ from neurons.validators.clients.miner_response_logger import (
     submit_logs_best_effort,
 )
 from neurons.validators.penalty.count_penalty import (
-    CountPenaltyModel,
     SEARCH_SUMMARY_TOOLS,
     TWITTER_TOOL,
+    CountPenaltyModel,
 )
 from neurons.validators.penalty.date_range_penalty import DateRangePenaltyModel
+from neurons.validators.penalty.domain_filter_penalty import DomainFilterPenaltyModel
 from neurons.validators.penalty.duplicate_results_penalty import (
     DuplicateResultsPenaltyModel,
 )
@@ -118,6 +119,7 @@ class AdvancedScraperValidator(BaseScraperValidator):
             DuplicateResultsPenaltyModel(max_penalty=1, neuron=neuron),
             ResultSchemaPenaltyModel(max_penalty=1, neuron=neuron),
             DateRangePenaltyModel(max_penalty=1, neuron=neuron),
+            DomainFilterPenaltyModel(max_penalty=1, neuron=neuron),
         ]
 
         super().__init__(
@@ -206,6 +208,8 @@ class AdvancedScraperValidator(BaseScraperValidator):
         uid: Optional[int] = None,
         chat_history: Optional[List[ChatHistoryItem]] = [],
         count: Optional[int] = 10,
+        include_domains: Optional[List[str]] = None,
+        exclude_domains: Optional[List[str]] = None,
     ):
         max_execution_time = get_max_execution_time(model, count)
 
@@ -245,6 +249,8 @@ class AdvancedScraperValidator(BaseScraperValidator):
             scoring_model=ScoringModel.OPENAI_GPT4_1_NANO,
             chat_history=chat_history,
             count=count,
+            include_domains=include_domains or [],
+            exclude_domains=exclude_domains or [],
         )
 
         async_response = self._dendrite_stream(
@@ -284,6 +290,8 @@ class AdvancedScraperValidator(BaseScraperValidator):
         Consumes the stream and returns the final populated synapse."""
         prompt = query["query"]
         tools = query.get("tools", [])
+        include_domains = query.get("include_domains", [])
+        exclude_domains = query.get("exclude_domains", [])
         date_filter = get_specified_date_filter(
             DateFilterType(
                 query.get("date_filter_type", DateFilterType.PAST_WEEK.value)
@@ -320,6 +328,8 @@ class AdvancedScraperValidator(BaseScraperValidator):
             google_date_filter=self.date_filter,
             max_execution_time=max_execution_time,
             scoring_model=ScoringModel.OPENAI_GPT4_1_NANO,
+            include_domains=include_domains or [],
+            exclude_domains=exclude_domains or [],
         )
 
         axon = self.neuron.metagraph.axons[uid]
@@ -353,6 +363,8 @@ class AdvancedScraperValidator(BaseScraperValidator):
             chat_history = query.get("chat_history", [])
             start_date = query.get("start_date")
             end_date = query.get("end_date")
+            include_domains = query.get("include_domains", [])
+            exclude_domains = query.get("exclude_domains", [])
 
             if start_date or end_date:
                 date_filter = DateFilter(start_date=start_date, end_date=end_date)
@@ -373,6 +385,8 @@ class AdvancedScraperValidator(BaseScraperValidator):
                 scoring_system_message=scoring_system_message,
                 chat_history=chat_history,
                 count=count,
+                include_domains=include_domains,
+                exclude_domains=exclude_domains,
             )
 
             final_synapses = []

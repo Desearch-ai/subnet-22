@@ -110,6 +110,18 @@ class SearchRequest(BaseModel):
         ..., description="List of tools to search with", example=available_tools
     )
 
+    include_domains: Optional[List[str]] = Field(
+        default_factory=list,
+        description="Restrict Web Search results to these domains.",
+        example=["bbc.com", "reuters.com"],
+    )
+
+    exclude_domains: Optional[List[str]] = Field(
+        default_factory=list,
+        description="Drop Web Search results from these domains.",
+        example=["pinterest.com"],
+    )
+
     start_date: Optional[str] = Field(
         default=None,
         description="The start date for the search query. Format: YYYY-MM-DDTHH:MM:SSZ (UTC)",
@@ -219,6 +231,8 @@ async def response_stream_event(data: SearchRequest):
             "system_message": data.system_message,
             "scoring_system_message": data.scoring_system_message,
             "chat_history": data.chat_history,
+            "include_domains": data.include_domains,
+            "exclude_domains": data.exclude_domains,
         }
 
         merged_chunks = ""
@@ -575,7 +589,6 @@ async def web_search_endpoint(
 
 @app.get("/")
 async def health_check(_=Depends(verify_access_key)):
-
     async with ValidatorServiceClient() as client:
         try:
             await client.health_check()
