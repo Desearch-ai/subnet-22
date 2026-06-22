@@ -1,7 +1,11 @@
-import traceback
-import bittensor as bt
 import asyncio
+import re
+import traceback
 from typing import Dict, List, Tuple
+
+import bittensor as bt
+
+from desearch.protocol import ResultType, ScraperStreamingSynapse, ScraperTextRole
 from neurons.validators.base_validator import AbstractNeuron
 from neurons.validators.reward.config import RewardModelType
 from neurons.validators.reward.reward import (
@@ -9,9 +13,16 @@ from neurons.validators.reward.reward import (
     BaseRewardModel,
     log_reward_aggregates,
 )
-from neurons.validators.utils.prompts import SummaryRelevancePrompt
 from neurons.validators.reward.reward_llm import RewardLLM
-from desearch.protocol import ResultType, ScraperStreamingSynapse, ScraperTextRole
+from neurons.validators.utils.prompts import (
+    SummaryGroundednessPrompt,
+    render_cited_sources,
+)
+from neurons.validators.utils.response_checks import extract_markdown_links
+from neurons.validators.utils.source_bodies import (
+    align_citation_markers,
+    collect_cited_bodies,
+)
 
 
 class SummaryRelevanceRewardModel(BaseRewardModel):
@@ -31,18 +42,39 @@ class SummaryRelevanceRewardModel(BaseRewardModel):
         self.reward_llm = llm_reward
         self.scoring_type = scoring_type
 
+    def _cited_source_urls(self, response: ScraperStreamingSynapse) -> List[str]:
+        summary = response.texts.get(ScraperTextRole.FINAL_SUMMARY.value, "")
+        cited = list(dict.fromkeys(url for _, url in extract_markdown_links(summary)))
+        if not cited:
+            search_links, _ = response.get_links_from_search_results()
+            cited = list(dict.fromkeys(search_links))
+        return cited
+
     async def score_final_summary(
         self, response: ScraperStreamingSynapse
     ) -> Tuple[float, str, Dict]:
-        """LLM-score how well the final summary answers the prompt. Structure,
-        link presence, and link-source verification are handled cheaply by
-        SummaryStructurePenaltyModel before this runs."""
         try:
             final_summary = response.texts.get(ScraperTextRole.FINAL_SUMMARY.value, "")
             if not final_summary:
                 return 0.0, "No final summary found", {}
 
-            scoring_prompt = SummaryRelevancePrompt()
+            cited = self._cited_source_urls(response)
+            if not cited:
+                return 0.0, "No cited sources to ground against", {}
+
+            bodies = collect_cited_bodies(response, cited)
+            if not bodies:
+                return (
+                    0.0,
+                    "No cited source body available",
+                    {"cited": cited, "grounded": 0},
+                )
+
+            scoring_prompt = SummaryGroundednessPrompt()
+            grounded_summary = align_citation_markers(final_summary, bodies)
+            user_content = scoring_prompt.text(
+                response.prompt, grounded_summary, render_cited_sources(bodies)
+            )
             scoring_messages = [
                 {
                     "0": [
@@ -50,12 +82,7 @@ class SummaryRelevanceRewardModel(BaseRewardModel):
                             "role": "system",
                             "content": scoring_prompt.get_system_message(),
                         },
-                        {
-                            "role": "user",
-                            "content": scoring_prompt.text(
-                                response.prompt, final_summary
-                            ),
-                        },
+                        {"role": "user", "content": user_content},
                     ]
                 }
             ]
@@ -65,9 +92,21 @@ class SummaryRelevanceRewardModel(BaseRewardModel):
                 return 0.0, "Failed to get LLM score", {}
 
             score_text = score_responses["0"]
+            if score_text and not re.search(scoring_prompt.extract_pattern, score_text):
+                bt.logging.warning(
+                    f"Groundedness judge returned no parseable verdict: {score_text[:160]!r}"
+                )
             llm_score = scoring_prompt.extract_score(score_text) / 3.0
-            return max(0.0, min(1.0, llm_score)), score_text, {"llm_score": llm_score}
 
+            return (
+                max(0.0, min(1.0, llm_score)),
+                score_text,
+                {
+                    "llm_score": llm_score,
+                    "cited": cited,
+                    "grounded": len(bodies),
+                },
+            )
         except Exception as e:
             bt.logging.error(f"Error in score_final_summary: {str(e)}")
             return 0.0, str(e), {}

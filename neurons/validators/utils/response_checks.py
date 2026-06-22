@@ -3,6 +3,7 @@
 import re
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import pytz
 
@@ -41,6 +42,51 @@ def normalize_source_url(url: str) -> str:
     elif url.startswith("http://www."):
         url = "http://" + url[len("http://www.") :]
     return WebSearchUtils.remove_trailing_slash(url)
+
+
+_TRACKING_PARAMS = frozenset(
+    {
+        "fbclid",
+        "gclid",
+        "gclsrc",
+        "dclid",
+        "gbraid",
+        "wbraid",
+        "msclkid",
+        "yclid",
+        "twclid",
+        "igshid",
+        "igsh",
+        "mc_cid",
+        "mc_eid",
+        "_ga",
+        "_gl",
+        "mkt_tok",
+        "si",
+        "feature",
+        "spm",
+        "scm",
+    }
+)
+
+
+def _is_tracking_param(key: str) -> bool:
+    key = key.lower()
+    return key.startswith("utm_") or key in _TRACKING_PARAMS
+
+
+def source_key(url: str) -> str:
+    """Identity key for a URL: base + content query params, tracking params dropped."""
+    parts = urlsplit(url or "")
+    base = normalize_source_url(
+        urlunsplit((parts.scheme, parts.netloc, parts.path, "", ""))
+    )
+    kept = sorted(
+        (k, v)
+        for k, v in parse_qsl(parts.query, keep_blank_values=True)
+        if not _is_tracking_param(k)
+    )
+    return f"{base}?{urlencode(kept)}" if kept else base
 
 
 def collect_summary_sources(response: ScraperStreamingSynapse) -> set:
@@ -132,13 +178,17 @@ def tweet_date_in_range(
     return True
 
 
-def first_duplicate_id(items: List[Dict[str, Any]], key: str = "id") -> Optional[Any]:
+def first_duplicate_id(
+    items: List[Dict[str, Any]], key: str = "id", normalize=None
+) -> Optional[Any]:
     """Returns the first duplicated key value, or None if all unique."""
     seen: set = set()
     for item in items or []:
         value = item.get(key) if isinstance(item, dict) else getattr(item, key, None)
         if value is None:
             continue
+        if normalize is not None:
+            value = normalize(value)
         if value in seen:
             return value
         seen.add(value)

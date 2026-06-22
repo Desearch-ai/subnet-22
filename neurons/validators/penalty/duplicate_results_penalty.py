@@ -8,7 +8,10 @@ from neurons.validators.penalty.penalty import CheapPenaltyModel, PenaltyModelTy
 from neurons.validators.utils.response_checks import (
     AI_SEARCH_RESULT_FIELDS,
     first_duplicate_id,
+    source_key,
 )
+
+_URL_KEYS = frozenset({"link", "url"})
 
 
 def _result_groups(response):
@@ -46,7 +49,8 @@ class DuplicateResultsPenaltyModel(CheapPenaltyModel):
     def penalty_for(self, response) -> float:
         for items, keys, check_text in _result_groups(response):
             for key in keys:
-                if first_duplicate_id(items, key=key) is not None:
+                normalize = source_key if key in _URL_KEYS else None
+                if first_duplicate_id(items, key=key, normalize=normalize) is not None:
                     return self.max_penalty
             if check_text and _has_duplicate_text(items):
                 return self.max_penalty

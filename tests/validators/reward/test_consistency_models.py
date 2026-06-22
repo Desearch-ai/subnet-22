@@ -1,6 +1,6 @@
 """Single-item consistency + cost benchmark for the relevance scoring prompt.
 
-Runs the LinkContentPrompt (system_message_question_answer_template from
+Runs the BodyLinkRelevancePrompt (system_body_link_relevance_template from
 neurons.validators.utils.prompts) on ONE (query, content) pair RUNS times across
 both OpenAI and Chutes scoring models, at the PRODUCTION scoring temperature.
 Reports per model:
@@ -23,7 +23,7 @@ from typing import List, Union
 
 from desearch.protocol import ScoringModel
 from desearch.utils import call_chutes, clean_text, client
-from neurons.validators.utils.prompts import LinkContentPrompt
+from neurons.validators.utils.prompts import BodyLinkRelevancePrompt
 
 RUNS = 100
 MODE = "batch"  # "sequential" — one call at a time; "batch" — all in parallel
@@ -50,10 +50,10 @@ PRICING = {
 }
 
 
-async def run_one(model: Union[str, ScoringModel], prompt: LinkContentPrompt) -> dict:
+async def run_one(model: Union[str, ScoringModel], prompt: BodyLinkRelevancePrompt) -> dict:
     messages = [
         {"role": "system", "content": prompt.get_system_message()},
-        {"role": "user", "content": prompt.text(QUERY, CONTENT)},
+        {"role": "user", "content": prompt.text(QUERY, "", "", CONTENT)},
     ]
     started = time.monotonic()
 
@@ -84,7 +84,7 @@ async def run_one(model: Union[str, ScoringModel], prompt: LinkContentPrompt) ->
 
 
 async def run_model(
-    model: Union[str, ScoringModel], prompt: LinkContentPrompt
+    model: Union[str, ScoringModel], prompt: BodyLinkRelevancePrompt
 ) -> List[dict]:
     if MODE == "batch":
         return list(
@@ -137,7 +137,7 @@ def report(model: Union[str, ScoringModel], runs: List[dict]) -> None:
 
 
 async def main() -> None:
-    prompt = LinkContentPrompt()
+    prompt = BodyLinkRelevancePrompt()
     print(f"Scoring 1 item across {len(MODELS)} model(s), {RUNS} runs each ({MODE}).")
     print(f"Query:    {QUERY}")
     print(f"Content:  {CONTENT[:100]}...")
