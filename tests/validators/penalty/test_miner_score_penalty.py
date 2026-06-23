@@ -47,25 +47,25 @@ class MinerScorePenaltyTestCase(unittest.IsolatedAsyncioTestCase):
             [
                 [
                     {
-                        "1897719318743327227": 9.0,
+                        "1897719318743327227": 3.0,
                     },
                     {
-                        "1897719318743327227": 2.0,
+                        "1897719318743327227": 1.5,
                     },
                     {
-                        "1897719318743327227": 9.0,
+                        "1897719318743327227": 3.0,
                     },
                     {},
                 ],
                 [
                     {
-                        "https://www.investopedia.com/terms/b/blockchain.asp": 5.0,
+                        "https://www.investopedia.com/terms/b/blockchain.asp": 1.5,
                     },
                     {
-                        "https://www.investopedia.com/terms/b/blockchain.asp": 9.0,
+                        "https://www.investopedia.com/terms/b/blockchain.asp": 3.0,
                     },
                     {
-                        "https://www.investopedia.com/terms/b/blockchain.asp": 5.0,
+                        "https://www.investopedia.com/terms/b/blockchain.asp": 1.5,
                     },
                     {},
                 ],

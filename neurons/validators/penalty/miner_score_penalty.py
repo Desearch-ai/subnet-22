@@ -16,12 +16,11 @@ MAX_PENALTY = 1.0
 def score_to_contextual_relevance(score):
     if score is None:
         return None
-    if score <= 1:
-        return ContextualRelevance.LOW
-    if score == 2:
-        return ContextualRelevance.MEDIUM
     if score >= 3:
         return ContextualRelevance.HIGH
+    if score >= 1.5:
+        return ContextualRelevance.MEDIUM
+    return ContextualRelevance.LOW
 
 
 class MinerScorePenaltyModel(BasePenaltyModel):
