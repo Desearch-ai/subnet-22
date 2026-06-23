@@ -340,9 +340,12 @@ class TwitterContentRelevanceModel(BaseRewardModel):
                                 str(val_tweet_id), None
                             )
                             if score_result is not None:
-                                score = scoring_prompt.extract_score(score_result)
-                                total_score += score / 3.0
-                                response_scores[val_tweet_id] = score
+                                total_score += (
+                                    scoring_prompt.extract_score(score_result) / 3.0
+                                )
+                                response_scores[val_tweet_id] = (
+                                    scoring_prompt.contextual_relevance(score_result)
+                                )
 
                     if total_score > 0:
                         average_score = (

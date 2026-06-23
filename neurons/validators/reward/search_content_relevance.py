@@ -282,9 +282,12 @@ class WebSearchContentRelevanceModel(BaseRewardModel):
                     if val_score_responses:
                         score_result = val_score_responses.get(val_url, None)
                         if score_result is not None:
-                            score = scoring_prompt.extract_score(score_result)
-                            total_score += score / 3.0
-                            response_scores[val_url] = score
+                            total_score += (
+                                scoring_prompt.extract_score(score_result) / 3.0
+                            )
+                            response_scores[val_url] = (
+                                scoring_prompt.contextual_relevance(score_result)
+                            )
 
                 judged_count = len(response_scores)
                 if total_score > 0:

@@ -90,7 +90,7 @@ class ScoringPrompt(BasePrompt):
         ]
 
 
-_VERDICT_SCORE = {"HIGH": 3.0, "MEDIUM": 1.5, "FAIL": 0.0}
+_VERDICT_SCORE = {"HIGH": 3.0, "MEDIUM": 1.5, "FAIL": 0.0, "LOW": 0.0}
 _VERDICT_RE = re.compile(r"(?im)\bverdict\b\s*[:\-]?\s*([A-Z]+)")
 _LABEL_RE = re.compile(r"(?i)\b(HIGH|MEDIUM|FAIL)\b")
 
@@ -103,6 +103,14 @@ def _verdict_score(response: str) -> float:
     if m := _LABEL_RE.findall(response):
         return _VERDICT_SCORE[m[-1].upper()]
     return 0.0
+
+
+def _verdict_relevance(response: str) -> str:
+    if m := _VERDICT_RE.findall(response or ""):
+        label = m[-1].upper()
+        if label in ("HIGH", "MEDIUM"):
+            return label
+    return "LOW"
 
 
 class SummaryRulePrompt(ScoringPrompt):
@@ -266,7 +274,7 @@ HIGH — The text contains the specific answer to the question. A reader of this
 
 MEDIUM — The text is on-topic and partially relevant (covers the entity/topic) but does not state the specific answer, OR it is a listing / index source without the detail asked for.
 
-FAIL — The text does not serve the question's specific intent: wrong subtopic, wrong entity, only mentions the topic in passing, a different topic entirely, OR the source is empty / an error / only boilerplate with no real content.
+LOW — The text does not serve the question's specific intent: wrong subtopic, wrong entity, only mentions the topic in passing, a different topic entirely, OR the source is empty / an error / only boilerplate with no real content.
 
 Principles:
 - Judge the TEXT against the SPECIFIC question. A topic match alone is not enough.
@@ -276,7 +284,7 @@ Principles:
 - When uncertain between two verdicts, pick the LOWER one.
 
 Output EXACTLY two lines, nothing else:
-Verdict: <HIGH|MEDIUM|FAIL>
+Verdict: <HIGH|MEDIUM|LOW>
 Reason: <one short sentence, max 20 words>
 """
 
@@ -347,13 +355,16 @@ class BodyLinkRelevancePrompt(ScoringPrompt):
     def __init__(self):
         super().__init__()
         self.template = user_body_link_relevance_template
-        self.extract_pattern = r"(?i)\b(HIGH|MEDIUM|FAIL)\b"
+        self.extract_pattern = r"(?i)\b(HIGH|MEDIUM|LOW)\b"
 
     def get_system_message(self):
         return system_body_link_relevance_template
 
     def extract_score(self, response: str) -> float:
         return _verdict_score(response)
+
+    def contextual_relevance(self, response: str) -> str:
+        return _verdict_relevance(response)
 
 
 def build_body_relevance_messages(prompt: str, url: str, title: str, body: str):
