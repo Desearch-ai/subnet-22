@@ -494,7 +494,7 @@ class QuestionsDataset:
 
         try:
             out = await call_scoring_llm(
-                messages=[{"role": "system", "content": prompt}],
+                messages=[{"role": "user", "content": prompt}],
                 model=model,
                 temperature=QUESTION_TEMPERATURE,
             )
