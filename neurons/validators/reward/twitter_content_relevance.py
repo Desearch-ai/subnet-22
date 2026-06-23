@@ -1,4 +1,3 @@
-import random
 import re
 import time
 import traceback
@@ -8,7 +7,11 @@ from typing import List
 import bittensor as bt
 import pytz
 
-from desearch.protocol import ScraperStreamingSynapse, TwitterScraperTweet
+from desearch.protocol import (
+    ScraperStreamingSynapse,
+    ScraperTextRole,
+    TwitterScraperTweet,
+)
 from desearch.services.twitter_api_wrapper import TwitterAPIClient
 from desearch.services.twitter_utils import TwitterUtils
 from desearch.utils import (
@@ -20,7 +23,15 @@ from desearch.utils import (
 from neurons.validators.base_validator import AbstractNeuron
 from neurons.validators.penalty.count_penalty import TWITTER_TOOL
 from neurons.validators.reward.reward_llm import RewardLLM
-from neurons.validators.utils.prompts import LinkContentPrompt
+from neurons.validators.utils.prompts import (
+    BodyLinkRelevancePrompt,
+    build_body_relevance_messages,
+)
+from neurons.validators.utils.source_bodies import (
+    cited_urls_normalized,
+    sample_cited_and_uncited,
+    tweet_relevance_text,
+)
 
 from .config import RewardModelType
 from .reward import (
@@ -31,6 +42,7 @@ from .reward import (
 )
 
 APIFY_LINK_SCRAPE_AMOUNT = 3
+MAX_CITED_SAMPLE = 2
 
 
 def response_uses_twitter_tool(response: ScraperStreamingSynapse) -> bool:
@@ -61,17 +73,7 @@ class TwitterContentRelevanceModel(BaseRewardModel):
 
     @staticmethod
     def build_relevance_content(validator_tweet: TwitterScraperTweet) -> str:
-        """Tweet text plus any quoted tweet's text, so quote-driven relevance isn't lost."""
-        text = validator_tweet.text or ""
-
-        quote = validator_tweet.quote
-        quoted_text = (quote.text or "").strip() if quote else ""
-        if not quoted_text:
-            return text
-
-        handle = getattr(getattr(quote, "user", None), "username", None)
-        header = f"Quoted tweet (@{handle}):" if handle else "Quoted tweet:"
-        return f"{text}\n\n{header} {quoted_text}"
+        return tweet_relevance_text(validator_tweet)
 
     async def llm_process_validator_tweets(self, response: ScraperStreamingSynapse):
         if not response_uses_twitter_tool(response) or not response.validator_tweets:
@@ -80,20 +82,30 @@ class TwitterContentRelevanceModel(BaseRewardModel):
         start_llm_time = time.time()
         scoring_messages = []
         for validator_tweet in response.validator_tweets:
-            val_text = self.build_relevance_content(validator_tweet)
+            body = self.build_relevance_content(validator_tweet)
+            author = getattr(getattr(validator_tweet, "user", None), "username", None)
+            title = f"Tweet by @{author}" if author else "Tweet"
+            url = getattr(validator_tweet, "url", "") or ""
             val_tweet_id = validator_tweet.id
-            result = self.get_scoring_text(
-                prompt=response.prompt,
-                content=val_text,
-                system_message=response.scoring_system_message,
-                response=None,
-            )
-            if result:
-                _, scoring_text = result
-                scoring_messages.append({str(val_tweet_id): scoring_text})
+            messages = build_body_relevance_messages(response.prompt, url, title, body)
+            if messages:
+                scoring_messages.append({str(val_tweet_id): messages})
         score_responses = await self.reward_llm.llm_processing(scoring_messages)
 
         return score_responses, time.time() - start_llm_time
+
+    @staticmethod
+    def _sample_cited_and_other_tweets(response) -> List[str]:
+        summary = response.texts.get(ScraperTextRole.FINAL_SUMMARY.value, "")
+        cited_norm = cited_urls_normalized(summary)
+        urls = [
+            tweet.get("url")
+            for tweet in response.miner_tweets
+            if tweet.get("url") and TwitterUtils.is_valid_twitter_link(tweet.get("url"))
+        ]
+        return sample_cited_and_uncited(
+            urls, cited_norm, MAX_CITED_SAMPLE, APIFY_LINK_SCRAPE_AMOUNT
+        )
 
     async def process_tweets(self, responses: List[ScraperStreamingSynapse]):
         default_val_score_responses = [{} for _ in responses]
@@ -110,18 +122,7 @@ class TwitterContentRelevanceModel(BaseRewardModel):
                     continue
 
                 if response.miner_tweets:
-                    sample_tweets = random.sample(
-                        response.miner_tweets,
-                        min(APIFY_LINK_SCRAPE_AMOUNT, len(response.miner_tweets)),
-                    )
-
-                    sample_links = [
-                        tweet.get("url")
-                        for tweet in sample_tweets
-                        if tweet.get("url")
-                        and TwitterUtils.is_valid_twitter_link(tweet.get("url"))
-                    ]
-
+                    sample_links = self._sample_cited_and_other_tweets(response)
                     all_links.extend(sample_links)
                     random_links.extend(sample_links)
 
@@ -287,42 +288,6 @@ class TwitterContentRelevanceModel(BaseRewardModel):
             bt.logging.error(f"check_tweet_content: {str(e)}")
             return 0
 
-    def get_scoring_text(
-        self, prompt: str, content: str, system_message: str, response: bt.Synapse
-    ) -> BaseRewardEvent:
-        try:
-            if response:
-                completion = self.get_successful_twitter_completion(response=response)
-                if not completion:
-                    return None
-
-            scoring_prompt = None
-
-            scoring_prompt_text = None
-
-            scoring_prompt = LinkContentPrompt()
-
-            if content is None:
-                bt.logging.debug("Twitter Content is empty")
-                return None
-
-            content = self.clean_text(content)
-
-            scoring_prompt_text = scoring_prompt.text(prompt, content)
-
-            return scoring_prompt, [
-                {
-                    "role": "system",
-                    "content": system_message or scoring_prompt.get_system_message(),
-                },
-                {"role": "user", "content": scoring_prompt_text},
-            ]
-        except Exception as e:
-            error_message = f"Error in Prompt reward method: {str(e)}"
-            tb_str = traceback.format_exception(type(e), e, e.__traceback__)
-            bt.logging.warning("\n".join(tb_str) + error_message)
-            return None
-
     async def get_rewards(
         self, responses: List[ScraperStreamingSynapse], uids
     ) -> List[BaseRewardEvent]:
@@ -337,7 +302,7 @@ class TwitterContentRelevanceModel(BaseRewardModel):
             scores = [self.check_tweet_content(response) for response in responses]
 
             reward_events = []
-            scoring_prompt = LinkContentPrompt()
+            scoring_prompt = BodyLinkRelevancePrompt()
 
             grouped_val_score_responses = []
             missing_validator_tweets = []
@@ -375,9 +340,12 @@ class TwitterContentRelevanceModel(BaseRewardModel):
                                 str(val_tweet_id), None
                             )
                             if score_result is not None:
-                                score = scoring_prompt.extract_score(score_result)
-                                total_score += score / 3.0
-                                response_scores[val_tweet_id] = score
+                                total_score += (
+                                    scoring_prompt.extract_score(score_result) / 3.0
+                                )
+                                response_scores[val_tweet_id] = (
+                                    scoring_prompt.contextual_relevance(score_result)
+                                )
 
                     if total_score > 0:
                         average_score = (

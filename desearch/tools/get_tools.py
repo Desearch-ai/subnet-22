@@ -2,14 +2,10 @@ from typing import List
 from desearch.tools.base import BaseToolkit, BaseTool
 from desearch.tools.twitter.twitter_toolkit import TwitterToolkit
 from desearch.tools.search.search_toolkit import SearchToolkit
-from desearch.tools.reddit.reddit_toolkit import RedditToolkit
-from desearch.tools.hacker_news.hacker_news_toolkit import HackerNewsToolkit
 
 TOOLKITS: List[BaseToolkit] = [
     SearchToolkit(),
     TwitterToolkit(),
-    RedditToolkit(),
-    HackerNewsToolkit(),
 ]
 
 

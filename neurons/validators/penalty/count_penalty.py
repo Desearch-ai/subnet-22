@@ -6,22 +6,15 @@ from desearch.protocol import (
 from neurons.validators.penalty.penalty import CheapPenaltyModel, PenaltyModelType
 
 TWITTER_TOOL = "Twitter Search"
-SEARCH_SUMMARY_TOOLS = ("Web Search", "Wikipedia Search", "Youtube Search", "ArXiv Search")
-SEARCH_SUMMARY_FIELDS = (
-    "search_results",
-    "wikipedia_search_results",
-    "youtube_search_results",
-    "arxiv_search_results",
-)
-REDDIT_TOOL = "Reddit Search"
-HACKER_NEWS_TOOL = "Hacker News Search"
+SEARCH_SUMMARY_TOOLS = ("Web Search",)
+SEARCH_SUMMARY_FIELDS = ("search_results",)
 
 
 class CountPenaltyModel(CheapPenaltyModel):
     """Penalize miners that return fewer results than the validator requested.
 
     Twitter uses ``count`` and Web uses ``num``. AI search checks per scoring
-    group (Twitter; pooled web+wiki+yt+arxiv; Reddit; Hacker News) — mirroring
+    group (Twitter; Web) — mirroring
     ``ScraperStreamingSynapse.get_search_results_by_tools``."""
 
     name = PenaltyModelType.count_penalty.value
@@ -58,12 +51,6 @@ class CountPenaltyModel(CheapPenaltyModel):
             group_totals.append(
                 sum(len(getattr(response, f, None) or []) for f in SEARCH_SUMMARY_FIELDS)
             )
-
-        if REDDIT_TOOL in tools:
-            group_totals.append(len(response.reddit_search_results or []))
-
-        if HACKER_NEWS_TOOL in tools:
-            group_totals.append(len(response.hacker_news_search_results or []))
 
         worst = 0.0
         for got in group_totals:

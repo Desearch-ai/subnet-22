@@ -154,6 +154,43 @@ class DuplicateResultsPenaltyTestCase(unittest.IsolatedAsyncioTestCase):
         penalties = await self.model.calculate_penalties([response])
         self.assertEqual(penalties.tolist(), [0])
 
+    async def test_web_tracking_param_variant_is_duplicate(self):
+        response = WebSearchSynapse(
+            query="x",
+            num=10,
+            results=[
+                {"link": "https://a/page"},
+                {"link": "https://www.a/page/?utm_source=x&fbclid=y"},
+            ],
+        )
+        penalties = await self.model.calculate_penalties([response])
+        self.assertEqual(penalties.tolist(), [1.0])
+
+    async def test_web_content_param_variant_is_distinct(self):
+        response = WebSearchSynapse(
+            query="x",
+            num=10,
+            results=[
+                {"link": "https://www.youtube.com/watch?v=AAA"},
+                {"link": "https://www.youtube.com/watch?v=BBB"},
+            ],
+        )
+        penalties = await self.model.calculate_penalties([response])
+        self.assertEqual(penalties.tolist(), [0])
+
+    async def test_ai_search_results_tracking_param_variant_is_duplicate(self):
+        response = ScraperStreamingSynapse(
+            prompt="x",
+            search_results=[
+                SearchResultItem(title="T1", link="https://a/p", snippet="s1"),
+                SearchResultItem(
+                    title="T2", link="https://a/p?utm_campaign=z", snippet="s2"
+                ),
+            ],
+        )
+        penalties = await self.model.calculate_penalties([response])
+        self.assertEqual(penalties.tolist(), [1.0])
+
     async def test_empty(self):
         response = TwitterSearchSynapse(query="x", results=[])
         penalties = await self.model.calculate_penalties([response])

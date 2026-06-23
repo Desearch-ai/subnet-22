@@ -13,15 +13,10 @@ from neurons.validators.penalty.penalty import BasePenaltyModel, PenaltyModelTyp
 MAX_PENALTY = 1.0
 
 
-def score_to_contextual_relevance(score):
-    if score is None:
+def _relevance_value(value):
+    if value is None:
         return None
-    if score <= 1:
-        return ContextualRelevance.LOW
-    if score == 2:
-        return ContextualRelevance.MEDIUM
-    if score >= 3:
-        return ContextualRelevance.HIGH
+    return value.value if isinstance(value, ContextualRelevance) else value
 
 
 class MinerScorePenaltyModel(BasePenaltyModel):
@@ -47,13 +42,9 @@ class MinerScorePenaltyModel(BasePenaltyModel):
 
             scores = []
             for score in val_scores:
-                for link, link_score in score.items():
-                    if response.miner_link_scores.get(
-                        link
-                    ) != score_to_contextual_relevance(link_score):
-                        scores.append(0)
-                    else:
-                        scores.append(1)
+                for link, validator_label in score.items():
+                    miner_label = _relevance_value(response.miner_link_scores.get(link))
+                    scores.append(1 if miner_label == validator_label else 0)
 
             score = sum(scores) / len(scores) if scores else 1
             penalties[index] = 1 - score

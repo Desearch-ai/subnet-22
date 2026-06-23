@@ -6,51 +6,12 @@ import bittensor as bt
 
 from desearch.dataset import BasicQuestionsDataset, QuestionsDataset
 from desearch.dataset.date_filters import random_date_filters
+from desearch.protocol import ScoringModel
 
-# Tool combinations for AI search scoring — weighted by frequency.
-# Chosen once per epoch so every miner is evaluated on the same tools.
 AI_SEARCH_TOOL_SETS = [
     ["Twitter Search"],
-    ["Twitter Search"],
-    ["Twitter Search"],
-    ["Twitter Search", "Reddit Search"],
-    ["Twitter Search", "Web Search"],
-    ["Twitter Search", "Web Search"],
-    ["Twitter Search", "Web Search"],
-    ["Twitter Search", "Web Search"],
-    ["Twitter Search", "Hacker News Search"],
-    ["Twitter Search", "Hacker News Search"],
-    ["Twitter Search", "Youtube Search"],
-    ["Twitter Search", "Youtube Search"],
-    ["Twitter Search", "Youtube Search"],
-    ["Twitter Search", "Web Search"],
-    ["Twitter Search", "Reddit Search"],
-    ["Twitter Search", "Reddit Search"],
-    ["Twitter Search", "Hacker News Search"],
-    ["Twitter Search", "ArXiv Search"],
-    ["Twitter Search", "ArXiv Search"],
-    ["Twitter Search", "Wikipedia Search"],
-    ["Twitter Search", "Wikipedia Search"],
-    ["Twitter Search", "Web Search"],
-    ["Twitter Search", "Web Search"],
     ["Twitter Search", "Web Search"],
     ["Web Search"],
-    ["Reddit Search"],
-    ["Hacker News Search"],
-    ["Youtube Search"],
-    ["ArXiv Search"],
-    ["Wikipedia Search"],
-    ["Twitter Search", "Youtube Search", "ArXiv Search", "Wikipedia Search"],
-    ["Twitter Search", "Web Search", "Reddit Search", "Hacker News Search"],
-    [
-        "Twitter Search",
-        "Web Search",
-        "Reddit Search",
-        "Hacker News Search",
-        "Youtube Search",
-        "ArXiv Search",
-        "Wikipedia Search",
-    ],
 ]
 
 SEARCH_TYPES = ["ai_search", "x_search", "web_search"]
@@ -60,12 +21,6 @@ class SyntheticQueryGenerator:
     """
     Generates synthetic scoring queries locally using the existing
     desearch/dataset module + OpenAI for question enhancement.
-
-    Replaces the centralized utility API for question generation.
-    Each validator independently generates its own synthetics.
-
-    Epoch-level parameters (tools, date_filter for ai_search) are chosen
-    once and shared across all miners — only the question text differs.
     """
 
     MAX_CONCURRENT_LLM = 20  # Throttle concurrent OpenAI calls
@@ -78,24 +33,11 @@ class SyntheticQueryGenerator:
         self,
         available_uids: List[int],
         verified_by_type: dict[str, dict[int, int]] | None = None,
+        scoring_model: ScoringModel = ScoringModel.OPENAI_GPT4_1_NANO,
     ) -> List[dict]:
-        """
-        Batch-generate all synthetic queries for one scoring epoch.
-
-        Epoch-level parameters (tools, date_filter for ai_search) are chosen
-        once and shared across all miners — only the question text differs.
-        Questions are generated concurrently (throttled by semaphore).
-
-        verified_by_type: {search_type: {uid: verified_concurrency}}
-        Each miner gets verified_concurrency queries per search type.
-
-        Returns items, each containing: uid, search_type, query (dict).
-        Timing is decided by the scheduler.
-        """
         if verified_by_type is None:
             verified_by_type = {}
 
-        # --- Epoch-level params for ai_search (same for every miner) ---
         ai_tools = random.choice(AI_SEARCH_TOOL_SETS)
         ai_date_filter = random.choice(random_date_filters)
 
@@ -126,7 +68,6 @@ class SyntheticQueryGenerator:
 
                     items.append(item)
 
-        # --- Batch LLM generation with throttling ---
         semaphore = asyncio.Semaphore(self.MAX_CONCURRENT_LLM)
 
         async def _generate_one(item: dict) -> None:
@@ -134,7 +75,7 @@ class SyntheticQueryGenerator:
                 try:
                     if item["search_type"] == "ai_search":
                         question = await self.questions_dataset.generate_new_question_with_openai(
-                            ai_tools
+                            ai_tools, model=scoring_model
                         )
                         item["query"] = {
                             "query": question,
@@ -143,7 +84,7 @@ class SyntheticQueryGenerator:
                         }
                     else:  # web_search
                         question = await self.questions_dataset.generate_new_question_with_openai(
-                            ["Web Search"]
+                            ["Web Search"], model=scoring_model
                         )
                         item["query"] = {"query": question}
                 except Exception as e:

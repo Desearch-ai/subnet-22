@@ -1,28 +1,30 @@
-import random
 import time
 import traceback
 from typing import List
 
 import bittensor as bt
 
-from desearch.protocol import ScraperStreamingSynapse
-from desearch.utils import clean_text
-from neurons.validators.apify.scrapingdog_scraper import scrape_links_with_retries
+from desearch.protocol import ScraperStreamingSynapse, ScraperTextRole
+from neurons.validators.apify.body_fetch import get_body_fetcher
 from neurons.validators.base_validator import AbstractNeuron
-from neurons.validators.penalty.count_penalty import (
-    HACKER_NEWS_TOOL,
-    REDDIT_TOOL,
-    SEARCH_SUMMARY_TOOLS,
-)
+from neurons.validators.penalty.count_penalty import SEARCH_SUMMARY_TOOLS
 from neurons.validators.reward.reward_llm import RewardLLM
 from neurons.validators.utils.prompts import (
-    SearchSummaryRelevancePrompt,
+    BodyLinkRelevancePrompt,
+    build_body_relevance_messages,
+)
+from neurons.validators.utils.response_checks import normalize_source_url
+from neurons.validators.utils.source_bodies import (
+    cited_urls_normalized,
+    sample_cited_and_uncited,
 )
 
 from .config import RewardModelType
 from .reward import BaseRewardEvent, BaseRewardModel, log_reward_aggregates
 
-WEB_TOOLS = frozenset((*SEARCH_SUMMARY_TOOLS, REDDIT_TOOL, HACKER_NEWS_TOOL))
+WEB_TOOLS = frozenset(SEARCH_SUMMARY_TOOLS)
+MAX_SAMPLED_LINKS = 3
+MAX_CITED_SAMPLE = 2
 
 
 def response_uses_web_tools(response: ScraperStreamingSynapse) -> bool:
@@ -55,36 +57,41 @@ class WebSearchContentRelevanceModel(BaseRewardModel):
         for validator_link in response.validator_links:
             url = validator_link.get("link")
             title = validator_link.get("title", "")
-            description = validator_link.get("snippet", "")
+            body = validator_link.get("body", "")
 
-            result = self.get_scoring_text(
-                prompt=response.prompt,
-                content=f"Title: {title}, Description: {description}",
-                system_message=response.scoring_system_message,
-                response=None,
-            )
-            if result:
-                _, scoring_text = result
-                scoring_messages.append({url: scoring_text})
+            messages = build_body_relevance_messages(response.prompt, url, title, body)
+            if messages:
+                scoring_messages.append({url: messages})
 
         score_responses = await self.reward_llm.llm_processing(scoring_messages)
         return score_responses
 
     async def scrape_links(self, urls):
-        (
-            fetched_links_with_metadata,
-            non_fetched_links,
-        ) = await scrape_links_with_retries(
-            urls=urls,
-            max_attempts=2,
-        )
+        bodies_map = await get_body_fetcher().get_many(urls)
 
-        # Filter out any entries without a URL
         fetched_links_with_metadata = [
-            link for link in fetched_links_with_metadata if link.get("link")
+            {
+                "link": url,
+                "title": body.get("title", ""),
+                "body": body.get("text", ""),
+            }
+            for url, body in bodies_map.items()
+            if url and body.get("text")
         ]
+        fetched_urls = {link["link"] for link in fetched_links_with_metadata}
+        non_fetched_links = [u for u in urls if u not in fetched_urls]
 
         return fetched_links_with_metadata, non_fetched_links
+
+    def _sample_cited_and_other(self, response, links_per_tool_group):
+        summary = response.texts.get(ScraperTextRole.FINAL_SUMMARY.value, "")
+        cited_norm = cited_urls_normalized(summary)
+
+        flat = [link for group in links_per_tool_group.values() for link in group]
+        picks = sample_cited_and_uncited(
+            flat, cited_norm, MAX_CITED_SAMPLE, MAX_SAMPLED_LINKS
+        )
+        return picks, cited_norm
 
     async def process_links(self, responses: List[ScraperStreamingSynapse]):
         default_val_score_responses = [{} for _ in responses]
@@ -93,43 +100,38 @@ class WebSearchContentRelevanceModel(BaseRewardModel):
 
         all_links = []
         responses_random_links = [[] for _ in responses]
+        responses_uncited_links = [[] for _ in responses]
 
-        for response, random_links in zip(responses, responses_random_links):
+        for response, random_links, uncited_links in zip(
+            responses, responses_random_links, responses_uncited_links
+        ):
             if not response_uses_web_tools(response):
                 continue
 
-            # Extract random links from search results based on tools
             completion = self.get_successful_search_summary_completion(response)
 
             if not completion:
                 continue
 
-            # Get links directly from search results
             _, links_per_tool_group = response.get_links_from_search_results()
-
-            # If scoring single tool group 2 links are selected, for 2 or 3 tool groups 1 link is selected from each
-            random_links_per_tool_group = 2 if len(links_per_tool_group) == 1 else 1
-
-            links = []
-
-            for tool_group_links in links_per_tool_group.values():
-                links.extend(
-                    random.sample(
-                        tool_group_links,
-                        min(random_links_per_tool_group, len(tool_group_links)),
-                    )
-                )
+            links, cited_norm = self._sample_cited_and_other(
+                response, links_per_tool_group
+            )
+            uncited_links.extend(
+                link for link in links if normalize_source_url(link) not in cited_norm
+            )
 
             random_links.extend(links)
             all_links.extend(links)
 
         attempted_counts = [len(rl) for rl in responses_random_links]
+        zero_uncited_unfetched = [0 for _ in responses]
 
         unique_links = list(set(all_links))
 
         if len(unique_links) == 0:
             bt.logging.info("No unique links found to process.")
-            return default_val_score_responses, attempted_counts
+            return default_val_score_responses, attempted_counts, zero_uncited_unfetched
 
         bt.logging.info(f"Fetching {len(unique_links)} unique web links.")
 
@@ -139,7 +141,13 @@ class WebSearchContentRelevanceModel(BaseRewardModel):
             bt.logging.info(
                 "No validator web links were fetched. Returning empty score responses."
             )
-            return default_val_score_responses, attempted_counts
+            return default_val_score_responses, attempted_counts, zero_uncited_unfetched
+
+        fetched_urls = {link.get("link") for link in links_with_metadata}
+        uncited_unfetched_counts = [
+            sum(1 for link in uncited if link not in fetched_urls)
+            for uncited in responses_uncited_links
+        ]
 
         for response, random_links in zip(responses, responses_random_links):
             for link_with_metadata in links_with_metadata:
@@ -169,7 +177,7 @@ class WebSearchContentRelevanceModel(BaseRewardModel):
             process_function=self.llm_process_validator_links,
         )
 
-        return val_score_responses_list, attempted_counts
+        return val_score_responses_list, attempted_counts, uncited_unfetched_counts
 
     def check_response_random_link(self, response: ScraperStreamingSynapse):
         try:
@@ -193,16 +201,7 @@ class WebSearchContentRelevanceModel(BaseRewardModel):
                 # at least miners should provide two search links
                 return 0
 
-            # Web search results are separate because they include links with different domains from search
             web_search_results = str(response.search_results)
-
-            domain_to_search_result = {
-                "arxiv.org": response.arxiv_search_results,
-                "wikipedia.org": response.wikipedia_search_results,
-                "reddit.com": response.reddit_search_results,
-                "ycombinator.com": response.hacker_news_search_results,
-                "youtube.com": response.youtube_search_results,
-            }
 
             link_scores = []
 
@@ -213,19 +212,7 @@ class WebSearchContentRelevanceModel(BaseRewardModel):
                     link_scores.append(0)
                     continue
 
-                domain_parts = url.split("/")[2].split(".")
-                domain = ".".join(domain_parts[-2:])  # Extract the main domain
-
-                if domain in domain_to_search_result:
-                    if (
-                        url in str(domain_to_search_result[domain])
-                        or url in web_search_results
-                    ):
-                        link_scores.append(1)
-                    else:
-                        link_scores.append(0)
-                else:
-                    link_scores.append(1 if url in web_search_results else 0)
+                link_scores.append(1 if url in web_search_results else 0)
 
             if link_scores:
                 return sum(link_scores) / len(link_scores)
@@ -235,44 +222,13 @@ class WebSearchContentRelevanceModel(BaseRewardModel):
             bt.logging.error(f"check_response_random_link: {str(e)}")
             return 0
 
-    def get_scoring_text(
-        self,
-        prompt: str,
-        content: str,
-        system_message: str,
-        response: ScraperStreamingSynapse,
-    ) -> BaseRewardEvent:
-        try:
-            if response:
-                completion = self.get_successful_search_summary_completion(
-                    response=response
-                )
-
-                if not completion:
-                    return None
-
-            if content is None:
-                bt.logging.debug("Search Content is empty.")
-                return None
-
-            content = clean_text(content)
-
-            scoring_prompt_text = None
-            scoring_prompt = SearchSummaryRelevancePrompt()
-
-            if not scoring_prompt_text:
-                scoring_prompt_text = scoring_prompt.text(prompt, content)
-
-            return scoring_prompt, [
-                {
-                    "role": "system",
-                    "content": system_message or scoring_prompt.get_system_message(),
-                },
-                {"role": "user", "content": scoring_prompt_text},
-            ]
-        except Exception as e:
-            bt.logging.error(f"Error in Prompt reward method: {str(e)}")
-            return None
+    def _reward_from_link_scores(
+        self, total_score: float, judged_count: int, uncited_unfetched: int
+    ) -> float:
+        denom = judged_count + uncited_unfetched
+        if denom == 0:
+            return 0.0
+        return self.clamp_relevance_score(total_score / denom)
 
     async def get_rewards(
         self, responses: List[ScraperStreamingSynapse], uids
@@ -283,16 +239,18 @@ class WebSearchContentRelevanceModel(BaseRewardModel):
                 f"WebSearchContentRelevanceModel | Calculating {len(completions)} rewards (typically < 1 sec/reward)."
             )
 
-            val_score_responses_list, attempted_counts = await self.process_links(
-                responses=responses
-            )
+            (
+                val_score_responses_list,
+                attempted_counts,
+                uncited_unfetched_counts,
+            ) = await self.process_links(responses=responses)
 
             scores = [
                 self.check_response_random_link(response) for response in responses
             ]
 
             reward_events = []
-            scoring_prompt = SearchSummaryRelevancePrompt()
+            scoring_prompt = BodyLinkRelevancePrompt()
 
             grouped_val_score_responses = []
             missing_validator_links = []
@@ -302,9 +260,15 @@ class WebSearchContentRelevanceModel(BaseRewardModel):
                 response,
                 val_score_responses,
                 attempted_count,
+                uncited_unfetched,
                 _,
             ) in zip(
-                scores, responses, val_score_responses_list, attempted_counts, uids
+                scores,
+                responses,
+                val_score_responses_list,
+                attempted_counts,
+                uncited_unfetched_counts,
+                uids,
             ):
                 reward_event = BaseRewardEvent()
                 reward_event.reward = 0
@@ -318,14 +282,18 @@ class WebSearchContentRelevanceModel(BaseRewardModel):
                     if val_score_responses:
                         score_result = val_score_responses.get(val_url, None)
                         if score_result is not None:
-                            score = scoring_prompt.extract_score(score_result)
-                            total_score += score / 3.0
-                            response_scores[val_url] = score
+                            total_score += (
+                                scoring_prompt.extract_score(score_result) / 3.0
+                            )
+                            response_scores[val_url] = (
+                                scoring_prompt.contextual_relevance(score_result)
+                            )
 
-                if attempted_count > 0 and total_score > 0:
-                    average_score = total_score / attempted_count
-
-                    reward_event.reward = self.clamp_relevance_score(average_score)
+                judged_count = len(response_scores)
+                if total_score > 0:
+                    reward_event.reward = self._reward_from_link_scores(
+                        total_score, judged_count, uncited_unfetched
+                    )
                 missing_validator_links.append(
                     1 if is_applicable and attempted_count == 0 else 0
                 )

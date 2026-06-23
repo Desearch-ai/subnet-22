@@ -281,11 +281,7 @@ class ContextualRelevance(Enum):
 
 class ScoringModel(str, Enum):
     OPENAI_GPT4_1_NANO = "openai/gpt-4.1-nano"
-    QWEN_QWEN2_5_CODER_32B_INSTRUCT = "Qwen/Qwen2.5-Coder-32B-Instruct"
-    UNSLOTH_MISTRAL_SMALL_24B_INSTRUCT_2501 = "unsloth/Mistral-Small-24B-Instruct-2501"
-    DEEPSEEK_AI_DEEPSEEK_R1_DISTILL_QWEN_32B = (
-        "deepseek-ai/DeepSeek-R1-Distill-Qwen-32B"
-    )
+    QWEN3_6_27B = "Qwen/Qwen3.6-27B-TEE"
 
 
 class ReportItem(BaseModel):
@@ -426,7 +422,7 @@ class ScraperStreamingSynapse(StreamingSynapse):
     search_results: Optional[List[SearchResultItem]] = pydantic.Field(
         default_factory=list,
         title="Search Results",
-        description="Optional JSON object containing search results from SERP",
+        description="Optional JSON object containing search results from web search",
     )
 
     wikipedia_search_results: Optional[List[SearchResultItem]] = pydantic.Field(
@@ -505,49 +501,15 @@ class ScraperStreamingSynapse(StreamingSynapse):
     )
 
     def get_search_results_by_tools(self) -> Tuple[Dict[str, List], int]:
-        """Gets the search results from the appropriate *_search_results lists based on tools used."""
+        """Gets the web search results used for scoring (web tool only)."""
 
         search_results = {}
 
         links_per_toolkit = 10
 
-        # Group 1: General search tools
-        if any(
-            tool in self.tools
-            for tool in [
-                "Web Search",
-                "Wikipedia Search",
-                "Youtube Search",
-                "ArXiv Search",
-            ]
-        ):
-            results = []
-
-            if "Web Search" in self.tools and self.search_results:
-                results.extend(self.search_results)
-
-            if "Wikipedia Search" in self.tools and self.wikipedia_search_results:
-                results.extend(self.wikipedia_search_results)
-
-            if "Youtube Search" in self.tools and self.youtube_search_results:
-                results.extend(self.youtube_search_results)
-
-            if "ArXiv Search" in self.tools and self.arxiv_search_results:
-                results.extend(self.arxiv_search_results)
-
-            if results:
-                search_results[ScraperTextRole.SEARCH_SUMMARY.value] = results
-
-        # Group 2: Reddit search
-        if "Reddit Search" in self.tools and self.reddit_search_results:
-            search_results[ScraperTextRole.REDDIT_SUMMARY.value] = (
-                self.reddit_search_results
-            )
-
-        # Group 3: Hacker News search
-        if "Hacker News Search" in self.tools and self.hacker_news_search_results:
-            search_results[ScraperTextRole.HACKER_NEWS_SUMMARY.value] = (
-                self.hacker_news_search_results
+        if "Web Search" in self.tools and self.search_results:
+            search_results[ScraperTextRole.SEARCH_SUMMARY.value] = list(
+                self.search_results
             )
 
         links_expected = len(search_results) * links_per_toolkit

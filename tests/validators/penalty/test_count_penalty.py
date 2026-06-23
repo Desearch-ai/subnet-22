@@ -101,44 +101,37 @@ class CountPenaltyTestCase(unittest.IsolatedAsyncioTestCase):
         penalties = await self.model.calculate_penalties([response])
         self.assertAlmostEqual(penalties.tolist()[0], 0.7, places=5)
 
-    async def test_ai_search_pooled_search_summary_satisfied(self):
-        """Web/Wiki/YT/ArXiv pool into one SEARCH_SUMMARY group — 7 web + 3 arxiv = 10 → no penalty."""
+    async def test_ai_search_web_satisfied(self):
+        """Web group meets count → no penalty."""
         response = ScraperStreamingSynapse(
             prompt="x",
             count=10,
-            tools=["Twitter Search", "Web Search", "Wikipedia Search", "ArXiv Search"],
+            tools=["Twitter Search", "Web Search"],
             miner_tweets=[{"id": str(i)} for i in range(10)],
             search_results=[
                 SearchResultItem(title=f"T{i}", link=f"https://w/{i}", snippet="s")
-                for i in range(7)
-            ],
-            arxiv_search_results=[
-                SearchResultItem(title=f"A{i}", link=f"https://a/{i}", snippet="s")
-                for i in range(3)
+                for i in range(10)
             ],
         )
         penalties = await self.model.calculate_penalties([response])
         self.assertEqual(penalties.tolist(), [0])
 
-    async def test_ai_search_pooled_search_summary_short(self):
-        """Pooled group below count → group-level shortfall."""
+    async def test_ai_search_web_short(self):
+        """Web group below count → group-level shortfall."""
         response = ScraperStreamingSynapse(
             prompt="x",
             count=10,
-            tools=["Web Search", "ArXiv Search"],
+            tools=["Web Search"],
             search_results=[
                 SearchResultItem(title=f"T{i}", link=f"https://w/{i}", snippet="s")
-                for i in range(4)
-            ],
-            arxiv_search_results=[
-                SearchResultItem(title=f"A{i}", link=f"https://a/{i}", snippet="s")
-                for i in range(2)
+                for i in range(6)
             ],
         )
         penalties = await self.model.calculate_penalties([response])
         self.assertAlmostEqual(penalties.tolist()[0], 0.4, places=5)
 
-    async def test_ai_search_reddit_solo_group(self):
+    async def test_ai_search_legacy_tool_not_a_group(self):
+        """Legacy tools (folded to Web at the API boundary) are not scored groups."""
         response = ScraperStreamingSynapse(
             prompt="x",
             count=10,
@@ -149,17 +142,17 @@ class CountPenaltyTestCase(unittest.IsolatedAsyncioTestCase):
             ],
         )
         penalties = await self.model.calculate_penalties([response])
-        self.assertAlmostEqual(penalties.tolist()[0], 0.5, places=5)
+        self.assertEqual(penalties.tolist(), [0])
 
     async def test_ai_search_worst_group_wins(self):
-        """Twitter satisfied, Reddit short → reddit dominates."""
+        """Twitter satisfied, Web short → web dominates."""
         response = ScraperStreamingSynapse(
             prompt="x",
             count=10,
-            tools=["Twitter Search", "Reddit Search"],
+            tools=["Twitter Search", "Web Search"],
             miner_tweets=[{"id": str(i)} for i in range(10)],
-            reddit_search_results=[
-                SearchResultItem(title=f"R{i}", link=f"https://r/{i}", snippet="s")
+            search_results=[
+                SearchResultItem(title=f"W{i}", link=f"https://w/{i}", snippet="s")
                 for i in range(2)
             ],
         )
@@ -181,38 +174,24 @@ class CountPenaltyTestCase(unittest.IsolatedAsyncioTestCase):
         penalties = await self.model.calculate_penalties([response])
         self.assertEqual(penalties.tolist(), [0])
 
-    async def test_ai_search_kitchen_sink_regression(self):
-        """Regression for the reported bug: 7-tool synapse with
-        miner_tweets=10, reddit=10, hn=10, web=7, arxiv=3, wiki=0, yt=0.
-        Pre-fix: penalty=0.70 (arxiv field). After fix: all groups satisfied → 0."""
+    async def test_ai_search_legacy_fields_ignored(self):
+        """Twitter + Web satisfied; stray legacy result fields are ignored → 0."""
         response = ScraperStreamingSynapse(
             prompt="x",
             count=10,
-            tools=[
-                "Twitter Search",
-                "Web Search",
-                "Wikipedia Search",
-                "Youtube Search",
-                "ArXiv Search",
-                "Reddit Search",
-                "Hacker News Search",
-            ],
+            tools=["Twitter Search", "Web Search"],
             miner_tweets=[{"id": str(i)} for i in range(10)],
             search_results=[
                 SearchResultItem(title=f"T{i}", link=f"https://w/{i}", snippet="s")
-                for i in range(7)
-            ],
-            arxiv_search_results=[
-                SearchResultItem(title=f"A{i}", link=f"https://a/{i}", snippet="s")
-                for i in range(3)
+                for i in range(10)
             ],
             reddit_search_results=[
                 SearchResultItem(title=f"R{i}", link=f"https://r/{i}", snippet="s")
-                for i in range(10)
+                for i in range(2)
             ],
             hacker_news_search_results=[
                 SearchResultItem(title=f"H{i}", link=f"https://h/{i}", snippet="s")
-                for i in range(10)
+                for i in range(2)
             ],
         )
         penalties = await self.model.calculate_penalties([response])
