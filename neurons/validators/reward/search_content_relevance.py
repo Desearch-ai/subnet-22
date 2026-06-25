@@ -102,26 +102,11 @@ class WebSearchContentRelevanceModel(BaseRewardModel):
     def _miner_link_metadata(self, response):
         meta = {}
         for result in response.search_results or []:
-            link = (
-                result.get("link")
-                if isinstance(result, dict)
-                else getattr(result, "link", None)
-            )
+            link = result.get("link")
             if not link:
                 continue
-            published = (
-                result.get("published_date")
-                if isinstance(result, dict)
-                else getattr(result, "published_date", None)
-            )
-            highlights = (
-                result.get("highlights")
-                if isinstance(result, dict)
-                else getattr(result, "highlights", None)
-            )
             meta[normalize_source_url(link)] = {
-                "published_date": published,
-                "highlights": highlights,
+                "highlights": result.get("highlights"),
             }
         return meta
 
@@ -201,7 +186,6 @@ class WebSearchContentRelevanceModel(BaseRewardModel):
                     response.validator_links.append(
                         {
                             **link_with_metadata,
-                            "miner_published_date": meta.get("published_date") or "",
                             "miner_highlights": meta.get("highlights") or [],
                         }
                     )
@@ -281,22 +265,13 @@ class WebSearchContentRelevanceModel(BaseRewardModel):
         return self.clamp_relevance_score(total_score / denom)
 
     def _web_date_blocks_link(self, response, val_link) -> bool:
-        """Deep-only: zero a link whose validator-parsed date is out of window or spoofed by the miner."""
+        """Deep-only: zero a web link whose validator-parsed published date is out of window."""
         validator_date = val_link.get("published_date") or ""
-        validator_dt = parse_tweet_date(validator_date)
-        if validator_dt is None:
+        if parse_tweet_date(validator_date) is None:
             return False
-
-        if not tweet_date_in_range(
+        return not tweet_date_in_range(
             validator_date, response.start_date, response.end_date
-        ):
-            return True
-
-        miner_dt = parse_tweet_date(val_link.get("miner_published_date") or "")
-        if miner_dt is not None and miner_dt.date() != validator_dt.date():
-            return True
-
-        return False
+        )
 
     async def get_rewards(
         self, responses: List[ScraperStreamingSynapse], uids

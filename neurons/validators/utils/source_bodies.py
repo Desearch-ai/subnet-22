@@ -12,12 +12,12 @@ from neurons.validators.utils.response_checks import (
 
 _CITATION_MARKER = re.compile(r"\[\d+\]\((https?://[^)]+)\)")
 _TWEET_ID = re.compile(r"/status/(\d+)")
-_NON_ALNUM = re.compile(r"[^a-z0-9]+")
+_NON_WORD = re.compile(r"\W+")
 
 
 def _normalize_for_match(text: str) -> str:
-    """Lowercase, unescape entities, drop all non-alphanumerics for fuzzy containment."""
-    return _NON_ALNUM.sub("", html.unescape(text or "").lower())
+    """Casefold, unescape entities, drop non-word chars (Unicode-aware) for fuzzy containment."""
+    return _NON_WORD.sub("", html.unescape(text or "").casefold())
 
 
 def highlight_subset_of_body(highlights, body):

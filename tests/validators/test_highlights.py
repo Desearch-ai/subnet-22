@@ -28,6 +28,14 @@ class HighlightSubsetTestCase(unittest.TestCase):
     def test_empty_body_returns_nothing(self):
         self.assertEqual(highlight_subset_of_body(["anything"], ""), [])
 
+    def test_non_latin_scripts_are_matched(self):
+        body = "市長宣布造價兩億元的新大橋將於明年開放通車。"
+        self.assertEqual(
+            highlight_subset_of_body(["造價兩億元的新大橋將於明年開放"], body),
+            ["造價兩億元的新大橋將於明年開放"],
+        )
+        self.assertEqual(highlight_subset_of_body(["這座大橋已被拆除"], body), [])
+
 
 if __name__ == "__main__":
     unittest.main()

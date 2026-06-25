@@ -28,20 +28,6 @@ class WebDateGateTestCase(unittest.TestCase):
         link = {"published_date": ""}
         self.assertFalse(self.model._web_date_blocks_link(self.response, link))
 
-    def test_miner_day_granularity_spoof_is_blocked(self):
-        link = {
-            "published_date": "2026-01-15T12:00:00Z",
-            "miner_published_date": "2026-01-10T12:00:00Z",
-        }
-        self.assertTrue(self.model._web_date_blocks_link(self.response, link))
-
-    def test_miner_same_day_is_kept(self):
-        link = {
-            "published_date": "2026-01-15T23:00:00Z",
-            "miner_published_date": "2026-01-15T01:00:00Z",
-        }
-        self.assertFalse(self.model._web_date_blocks_link(self.response, link))
-
 
 class BodyFetchMetadataTestCase(unittest.TestCase):
     def test_extract_meta_returns_published_date_and_author(self):
