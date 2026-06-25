@@ -13,7 +13,11 @@ from neurons.validators.utils.prompts import (
     BodyLinkRelevancePrompt,
     build_body_relevance_messages,
 )
-from neurons.validators.utils.response_checks import normalize_source_url
+from neurons.validators.utils.response_checks import (
+    normalize_source_url,
+    parse_tweet_date,
+    tweet_date_in_range,
+)
 from neurons.validators.utils.source_bodies import (
     cited_urls_normalized,
     sample_cited_and_uncited,
@@ -74,6 +78,8 @@ class WebSearchContentRelevanceModel(BaseRewardModel):
                 "link": url,
                 "title": body.get("title", ""),
                 "body": body.get("text", ""),
+                "published_date": body.get("published_date", ""),
+                "author": body.get("author", ""),
             }
             for url, body in bodies_map.items()
             if url and body.get("text")
@@ -82,6 +88,26 @@ class WebSearchContentRelevanceModel(BaseRewardModel):
         non_fetched_links = [u for u in urls if u not in fetched_urls]
 
         return fetched_links_with_metadata, non_fetched_links
+
+    def _miner_link_metadata(self, response):
+        meta = {}
+        for result in response.search_results or []:
+            link = (
+                result.get("link")
+                if isinstance(result, dict)
+                else getattr(result, "link", None)
+            )
+            if not link:
+                continue
+            published = (
+                result.get("published_date")
+                if isinstance(result, dict)
+                else getattr(result, "published_date", None)
+            )
+            meta[normalize_source_url(link)] = {
+                "published_date": published,
+            }
+        return meta
 
     def _sample_cited_and_other(self, response, links_per_tool_group):
         summary = response.texts.get(ScraperTextRole.FINAL_SUMMARY.value, "")
@@ -150,11 +176,18 @@ class WebSearchContentRelevanceModel(BaseRewardModel):
         ]
 
         for response, random_links in zip(responses, responses_random_links):
+            miner_meta = self._miner_link_metadata(response)
             for link_with_metadata in links_with_metadata:
                 url = link_with_metadata.get("link")
 
                 if url in random_links:
-                    response.validator_links.append(link_with_metadata)
+                    meta = miner_meta.get(normalize_source_url(url), {})
+                    response.validator_links.append(
+                        {
+                            **link_with_metadata,
+                            "miner_published_date": meta.get("published_date") or "",
+                        }
+                    )
 
         end_time = time.time()
         bt.logging.info(
@@ -230,6 +263,24 @@ class WebSearchContentRelevanceModel(BaseRewardModel):
             return 0.0
         return self.clamp_relevance_score(total_score / denom)
 
+    def _web_date_blocks_link(self, response, val_link) -> bool:
+        """Deep-only: zero a link whose validator-parsed date is out of window or spoofed by the miner."""
+        validator_date = val_link.get("published_date") or ""
+        validator_dt = parse_tweet_date(validator_date)
+        if validator_dt is None:
+            return False
+
+        if not tweet_date_in_range(
+            validator_date, response.start_date, response.end_date
+        ):
+            return True
+
+        miner_dt = parse_tweet_date(val_link.get("miner_published_date") or "")
+        if miner_dt is not None and miner_dt.date() != validator_dt.date():
+            return True
+
+        return False
+
     async def get_rewards(
         self, responses: List[ScraperStreamingSynapse], uids
     ) -> List[BaseRewardEvent]:
@@ -282,12 +333,15 @@ class WebSearchContentRelevanceModel(BaseRewardModel):
                     if val_score_responses:
                         score_result = val_score_responses.get(val_url, None)
                         if score_result is not None:
-                            total_score += (
-                                scoring_prompt.extract_score(score_result) / 3.0
+                            score = scoring_prompt.extract_score(score_result)
+                            relevance = scoring_prompt.contextual_relevance(
+                                score_result
                             )
-                            response_scores[val_url] = (
-                                scoring_prompt.contextual_relevance(score_result)
-                            )
+                            if self._web_date_blocks_link(response, val_link):
+                                score = 0
+                                relevance = "LOW"
+                            total_score += score / 3.0
+                            response_scores[val_url] = relevance
 
                 judged_count = len(response_scores)
                 if total_score > 0:

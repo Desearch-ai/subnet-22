@@ -303,6 +303,7 @@ class SearchResultItem(BaseModel):
     title: str
     link: str
     snippet: str
+    published_date: Optional[str] = None
 
 
 class ChatHistoryItem(BaseModel):

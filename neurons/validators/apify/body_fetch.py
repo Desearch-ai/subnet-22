@@ -72,26 +72,32 @@ def extract_article_text(html: str, url: str, max_chars: int = _RAW_CACHE_CHARS)
     return sanitize_body_text(text)[:max_chars]
 
 
-def _extract_title(html: str, url: str) -> str:
+def _extract_meta(html: str, url: str) -> Tuple[str, str, str]:
     try:
         import trafilatura
 
         md = trafilatura.extract_metadata(html, default_url=url)
-        if md and md.title:
-            return md.title
+        if md:
+            return (md.title or "", md.date or "", md.author or "")
     except Exception:
         pass
-    return ""
+    return "", "", ""
 
 
-def _extract_pair(html: str, url: str, max_chars: int) -> Tuple[str, str]:
+def _extract_pair(html: str, url: str, max_chars: int) -> Tuple[str, str, str, str]:
     with _EXTRACT_LOCK:
-        return _extract_title(html, url), extract_article_text(html, url, max_chars)
+        title, published_date, author = _extract_meta(html, url)
+        return (
+            title,
+            extract_article_text(html, url, max_chars),
+            published_date,
+            author,
+        )
 
 
 async def extract_article_async(
     html: str, url: str, max_chars: int = _RAW_CACHE_CHARS
-) -> Tuple[str, str]:
+) -> Tuple[str, str, str, str]:
     return await asyncio.to_thread(_extract_pair, html, url, max_chars)
 
 
@@ -162,7 +168,7 @@ class BodyFetcher:
         async def extract_one(url: str) -> Tuple[str, dict]:
             item = by_url.get(url) or {}
             html = item.get("html_content") or ""
-            title, text = await extract_article_async(html, url)
+            title, text, published_date, author = await extract_article_async(html, url)
             if not is_usable_article(text):
                 text = sanitize_body_text(item.get("html_text") or "")[
                     :_RAW_CACHE_CHARS
@@ -173,6 +179,8 @@ class BodyFetcher:
                 "url": url,
                 "title": title or item.get("title", "") or "",
                 "text": text,
+                "published_date": published_date or item.get("date", "") or "",
+                "author": author or "",
                 "error": "" if text else "no article",
             }
 
