@@ -1,5 +1,6 @@
 """Build/normalize the cited source bodies the groundedness judge reads."""
 
+import html
 import random
 import re
 
@@ -11,6 +12,25 @@ from neurons.validators.utils.response_checks import (
 
 _CITATION_MARKER = re.compile(r"\[\d+\]\((https?://[^)]+)\)")
 _TWEET_ID = re.compile(r"/status/(\d+)")
+_NON_ALNUM = re.compile(r"[^a-z0-9]+")
+
+
+def _normalize_for_match(text: str) -> str:
+    """Lowercase, unescape entities, drop all non-alphanumerics for fuzzy containment."""
+    return _NON_ALNUM.sub("", html.unescape(text or "").lower())
+
+
+def highlight_subset_of_body(highlights, body):
+    """Return the subset of highlights actually present in body (normalized fuzzy containment)."""
+    normalized_body = _normalize_for_match(body)
+    if not normalized_body:
+        return []
+    verified = []
+    for highlight in highlights or []:
+        normalized = _normalize_for_match(highlight)
+        if normalized and normalized in normalized_body:
+            verified.append(highlight)
+    return verified
 
 
 def cited_urls_normalized(summary):

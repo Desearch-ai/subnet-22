@@ -20,6 +20,7 @@ from neurons.validators.utils.response_checks import (
 )
 from neurons.validators.utils.source_bodies import (
     cited_urls_normalized,
+    highlight_subset_of_body,
     sample_cited_and_uncited,
 )
 
@@ -63,7 +64,16 @@ class WebSearchContentRelevanceModel(BaseRewardModel):
             title = validator_link.get("title", "")
             body = validator_link.get("body", "")
 
-            messages = build_body_relevance_messages(response.prompt, url, title, body)
+            miner_highlights = validator_link.get("miner_highlights") or []
+            verified_highlights = highlight_subset_of_body(miner_highlights, body)
+            validator_link["verified_highlights"] = verified_highlights
+            judged_body = (
+                "\n\n".join(verified_highlights) if verified_highlights else body
+            )
+
+            messages = build_body_relevance_messages(
+                response.prompt, url, title, judged_body
+            )
             if messages:
                 scoring_messages.append({url: messages})
 
@@ -104,8 +114,14 @@ class WebSearchContentRelevanceModel(BaseRewardModel):
                 if isinstance(result, dict)
                 else getattr(result, "published_date", None)
             )
+            highlights = (
+                result.get("highlights")
+                if isinstance(result, dict)
+                else getattr(result, "highlights", None)
+            )
             meta[normalize_source_url(link)] = {
                 "published_date": published,
+                "highlights": highlights,
             }
         return meta
 
@@ -186,6 +202,7 @@ class WebSearchContentRelevanceModel(BaseRewardModel):
                         {
                             **link_with_metadata,
                             "miner_published_date": meta.get("published_date") or "",
+                            "miner_highlights": meta.get("highlights") or [],
                         }
                     )
 
