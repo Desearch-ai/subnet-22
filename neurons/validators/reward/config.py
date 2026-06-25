@@ -7,6 +7,7 @@ class RewardModelType(Enum):
     twitter_basic_search_content_relevance = "twitter_basic_search_content_relevance"
     web_basic_search_content_relevance = "web_basic_search_content_relevance"
     search_content_relevance = "search_content_relevance"
+    content_relevance = "content_relevance"
     performance_score = "performance_score"
 
 

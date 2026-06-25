@@ -9,7 +9,7 @@ import numpy as np
 from pydantic import BaseModel
 
 REWARD_COMPONENT_NAMES = {
-    "ai_search": ["twitter", "search", "summary", "performance"],
+    "ai_search": ["content", "summary", "performance"],
     "x_search": ["twitter", "performance"],
     "web_search": ["search", "performance"],
 }

@@ -23,11 +23,7 @@ from neurons.validators.clients.miner_response_logger import (
     build_log_entry,
     submit_logs_best_effort,
 )
-from neurons.validators.penalty.count_penalty import (
-    SEARCH_SUMMARY_TOOLS,
-    TWITTER_TOOL,
-    CountPenaltyModel,
-)
+from neurons.validators.penalty.count_penalty import CountPenaltyModel, TWITTER_TOOL
 from neurons.validators.penalty.date_range_penalty import DateRangePenaltyModel
 from neurons.validators.penalty.domain_filter_penalty import DomainFilterPenaltyModel
 from neurons.validators.penalty.duplicate_results_penalty import (
@@ -46,17 +42,10 @@ from neurons.validators.penalty.timeout_penalty import TimeoutPenaltyModel
 from neurons.validators.reward import RewardModelType, RewardScoringType
 from neurons.validators.reward.performance_reward import PerformanceRewardModel
 from neurons.validators.reward.reward_llm import RewardLLM
-from neurons.validators.reward.search_content_relevance import (
-    WebSearchContentRelevanceModel,
-)
+from neurons.validators.reward.content_relevance import ContentRelevanceRewardModel
 from neurons.validators.reward.summary_relevance import SummaryRelevanceRewardModel
-from neurons.validators.reward.twitter_content_relevance import (
-    TwitterContentRelevanceModel,
-)
 from neurons.validators.scoring import capacity
 from neurons.validators.scrapers.base_scraper_validator import BaseScraperValidator
-
-WEB_TOOLS = frozenset(SEARCH_SUMMARY_TOOLS)
 
 
 class AdvancedScraperValidator(BaseScraperValidator):
@@ -69,17 +58,15 @@ class AdvancedScraperValidator(BaseScraperValidator):
         self.region = "us"
         self.date_filter = "qdr:w"  # Past week
 
-        self.twitter_content_weight = 0.30
-        self.web_search_weight = 0.30
-        self.summary_relevance_weight = 0.20
+        self.content_weight = 0.50
+        self.summary_relevance_weight = 0.30
         self.performance_weight = 0.20
 
         self.reward_llm = RewardLLM(neuron.config.neuron.scoring_model)
 
         reward_weights = np.array(
             [
-                self.twitter_content_weight,
-                self.web_search_weight,
+                self.content_weight,
                 self.summary_relevance_weight,
                 self.performance_weight,
             ],
@@ -87,16 +74,7 @@ class AdvancedScraperValidator(BaseScraperValidator):
         )
 
         reward_functions = [
-            TwitterContentRelevanceModel(
-                scoring_type=RewardScoringType.summary_relevance_score_template,
-                llm_reward=self.reward_llm,
-                neuron=neuron,
-            ),
-            WebSearchContentRelevanceModel(
-                scoring_type=RewardScoringType.search_relevance_score_template,
-                llm_reward=self.reward_llm,
-                neuron=neuron,
-            ),
+            ContentRelevanceRewardModel(llm_reward=self.reward_llm, neuron=neuron),
             SummaryRelevanceRewardModel(
                 scoring_type=RewardScoringType.summary_relevance_score_template,
                 llm_reward=self.reward_llm,
@@ -128,37 +106,6 @@ class AdvancedScraperValidator(BaseScraperValidator):
             reward_functions=reward_functions,
             penalty_functions=penalty_functions,
         )
-
-    def compute_reward_weights_matrix(self, responses) -> np.ndarray:
-        rows = [self._weights_for(response) for response in responses]
-        return np.array(rows, dtype=np.float32)
-
-    def _weights_for(self, response) -> List[float]:
-        """Weights for one response, ordered [twitter, web, summary, perf].
-
-        Content weight is split between twitter and web only when both tool
-        categories are used. If only one is used, it absorbs the other's share
-        — so the unused branch gets weight 0 rather than the old `reward = 1.0`
-        free pass.
-        """
-        tools = set(response.tools or [])
-        has_twitter = TWITTER_TOOL in tools
-        has_web = bool(tools & WEB_TOOLS)
-        content = self.twitter_content_weight + self.web_search_weight
-
-        if has_twitter and has_web:
-            w_twitter, w_web = self.twitter_content_weight, self.web_search_weight
-        elif has_twitter:
-            w_twitter, w_web = content, 0.0
-        else:
-            w_twitter, w_web = 0.0, content
-
-        return [
-            w_twitter,
-            w_web,
-            self.summary_relevance_weight,
-            self.performance_weight,
-        ]
 
     async def _dendrite_stream(
         self,
@@ -267,10 +214,7 @@ class AdvancedScraperValidator(BaseScraperValidator):
         for val_score_responses, reward_function in zip(
             val_score_responses_list, self.reward_functions
         ):
-            if reward_function.name in [
-                RewardModelType.twitter_content_relevance.value,
-                RewardModelType.search_content_relevance.value,
-            ]:
+            if reward_function.name == RewardModelType.content_relevance.value:
                 val_scores.append(val_score_responses)
         return val_scores
 
@@ -278,8 +222,11 @@ class AdvancedScraperValidator(BaseScraperValidator):
         wandb_data["scores"][uid] = reward
         wandb_data["responses"][uid] = response.completion
         wandb_data["prompts"][uid] = response.prompt
-        for key, value in zip(self.wandb_reward_keys, reward_values):
-            wandb_data[key][uid] = value
+        is_twitter = TWITTER_TOOL in set(response.tools or [])
+        content = reward_values[0]
+        wandb_data["twitter_reward"][uid] = content if is_twitter else 0.0
+        wandb_data["search_reward"][uid] = 0.0 if is_twitter else content
+        wandb_data["summary_reward"][uid] = reward_values[1]
 
     async def send_scoring_query(
         self,

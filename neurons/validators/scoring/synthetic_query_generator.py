@@ -10,7 +10,6 @@ from desearch.protocol import ScoringModel
 
 AI_SEARCH_TOOL_SETS = [
     ["Twitter Search"],
-    ["Twitter Search", "Web Search"],
     ["Web Search"],
 ]
 
