@@ -24,8 +24,8 @@ from neurons.validators.base_validator import AbstractNeuron
 from neurons.validators.penalty.count_penalty import TWITTER_TOOL
 from neurons.validators.reward.reward_llm import RewardLLM
 from neurons.validators.utils.prompts import (
-    BodyLinkRelevancePrompt,
-    build_body_relevance_messages,
+    TweetRelevancePrompt,
+    build_tweet_relevance_messages,
 )
 from neurons.validators.utils.source_bodies import (
     cited_urls_normalized,
@@ -87,7 +87,7 @@ class TwitterContentRelevanceModel(BaseRewardModel):
             title = f"Tweet by @{author}" if author else "Tweet"
             url = getattr(validator_tweet, "url", "") or ""
             val_tweet_id = validator_tweet.id
-            messages = build_body_relevance_messages(response.prompt, url, title, body)
+            messages = build_tweet_relevance_messages(response.prompt, url, title, body)
             if messages:
                 scoring_messages.append({str(val_tweet_id): messages})
         score_responses = await self.reward_llm.llm_processing(scoring_messages)
@@ -302,7 +302,7 @@ class TwitterContentRelevanceModel(BaseRewardModel):
             scores = [self.check_tweet_content(response) for response in responses]
 
             reward_events = []
-            scoring_prompt = BodyLinkRelevancePrompt()
+            scoring_prompt = TweetRelevancePrompt()
 
             grouped_val_score_responses = []
             missing_validator_tweets = []
