@@ -9,7 +9,8 @@ from typing import List, Optional
 
 import bittensor as bt
 
-NEWS_REPO = "desearch/dataset"
+# One HF repo holds both subsets: questions/ (web/news) and x/ (twitter).
+DATASET_REPO = "desearch/dataset"
 CACHE_DIR = os.path.join(os.path.expanduser("~"), ".cache", "desearch-questions")
 REFRESH_SECONDS = 4 * 60 * 60
 
@@ -34,7 +35,7 @@ DATASETS = (
 class HFQuestionPool:
     def __init__(
         self,
-        repo_id: str = NEWS_REPO,
+        repo_id: str = DATASET_REPO,
         cache_dir: str = CACHE_DIR,
         local_dir: Optional[str] = None,
         refresh_seconds: int = REFRESH_SECONDS,
@@ -116,6 +117,15 @@ class HFQuestionPool:
         rows = self._parse_files(paths) + self._load_datasets()
         return self._dedup_by_id(rows)
 
+    def sample_lane(self, lane: str, n: int) -> Optional[List[dict]]:
+        rows = self._ensure_rows()
+        lane_rows = [row for row in rows if row.get("lane") == lane]
+        if not lane_rows:
+            return None
+
+        random.shuffle(lane_rows)
+        return lane_rows[:n]
+
     @staticmethod
     def _dedup_by_id(rows: List[dict]) -> List[dict]:
         seen: set[str] = set()
@@ -133,7 +143,10 @@ class HFQuestionPool:
         api = HfApi()
         files = api.list_repo_files(self.repo_id, repo_type="dataset")
         question_files = [
-            f for f in files if f.startswith("questions/") and f.endswith(".jsonl")
+            f
+            for f in files
+            if f.endswith(".jsonl")
+            and (f.startswith("questions/") or f.startswith("x/"))
         ]
 
         self.cache_dir.mkdir(parents=True, exist_ok=True)
@@ -152,6 +165,7 @@ class HFQuestionPool:
     def _parse_files(self, paths: List[Path]) -> List[dict]:
         rows: List[dict] = []
         for path in paths:
+            lane = "x" if path.parent.name == "x" else "news"
             for line in path.read_text().splitlines():
                 line = line.strip()
                 if not line:
@@ -163,7 +177,7 @@ class HFQuestionPool:
                 if all(row.get(k) for k in REQUIRED_FIELDS):
                     row.setdefault("start_date", None)
                     row.setdefault("end_date", None)
-                    row.setdefault("lane", "news")
+                    row.setdefault("lane", lane)
                     rows.append(row)
 
         return rows
