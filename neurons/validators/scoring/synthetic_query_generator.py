@@ -8,20 +8,26 @@ from desearch.dataset import BasicQuestionsDataset, QuestionsDataset
 from desearch.dataset.date_filters import random_date_filters
 from desearch.dataset.hf_dataset import HFQuestionPool
 from desearch.protocol import ScoringModel
+from desearch.utils import (
+    AI_SEARCH_MODES,
+    SearchMode,
+    get_mode_serving_budget,
+)
 from neurons.validators.env import USE_DATASET_QUESTIONS
 
 WEB_TOOL = "Web Search"
 TWITTER_TOOL = "Twitter Search"
 
-AI_SEARCH_TOOL_SETS = [
-    [TWITTER_TOOL],
-    [WEB_TOOL],
-]
-
 SEARCH_TYPES = ["ai_search", "x_search", "web_search"]
 
 X_LANE = "x"
 WEB_LANES = ("news", "squad", "nq")
+
+
+def pick_ai_mode_and_tool() -> tuple[SearchMode, list[str]]:
+    mode = random.choice(AI_SEARCH_MODES)
+    tool = random.choice([WEB_TOOL, TWITTER_TOOL])
+    return mode, [tool]
 
 
 class SyntheticQueryGenerator:
@@ -46,6 +52,8 @@ class SyntheticQueryGenerator:
         if verified_by_type is None:
             verified_by_type = {}
 
+        ai_date_filter = random.choice(random_date_filters)
+
         if self.hf_pool is not None:
             items = self._generate_dataset_queries(available_uids, verified_by_type)
             if items is not None:
@@ -54,12 +62,8 @@ class SyntheticQueryGenerator:
                 "[SyntheticGen] Dataset pool unavailable, falling back to LLM path"
             )
 
-        ai_tools = random.choice(AI_SEARCH_TOOL_SETS)
-        ai_date_filter = random.choice(random_date_filters)
-
         bt.logging.info(
-            f"[SyntheticGen] Epoch params: ai_tools={ai_tools} "
-            f"date_filter={ai_date_filter.value}"
+            f"[SyntheticGen] Epoch params: date_filter={ai_date_filter.value}"
         )
 
         items: List[dict] = []
@@ -90,12 +94,15 @@ class SyntheticQueryGenerator:
             async with semaphore:
                 try:
                     if item["search_type"] == "ai_search":
+                        mode, ai_tools = pick_ai_mode_and_tool()
                         question = await self.questions_dataset.generate_new_question_with_openai(
                             ai_tools, model=scoring_model
                         )
                         item["query"] = {
                             "query": question,
                             "tools": ai_tools,
+                            "mode": mode,
+                            "max_execution_time": get_mode_serving_budget(mode),
                             "date_filter_type": ai_date_filter.value,
                         }
                     else:  # web_search

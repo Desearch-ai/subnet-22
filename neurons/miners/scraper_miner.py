@@ -7,7 +7,6 @@ from desearch.protocol import (
 )
 from desearch.tools.tool_manager import ToolManager
 from desearch.dataset.date_filters import (
-    DateFilter,
     DateFilterType,
     get_specified_date_filter,
 )
@@ -36,20 +35,16 @@ class ScraperMiner:
 
             date_filter = get_specified_date_filter(DateFilterType.PAST_2_WEEKS)
 
-            if synapse.start_date and synapse.end_date and synapse.date_filter_type:
-                start_date = datetime.strptime(
+            if synapse.start_date:
+                date_filter.start_date = datetime.strptime(
                     synapse.start_date, "%Y-%m-%dT%H:%M:%SZ"
                 ).replace(tzinfo=pytz.utc)
-
-                end_date = datetime.strptime(
+            if synapse.end_date:
+                date_filter.end_date = datetime.strptime(
                     synapse.end_date, "%Y-%m-%dT%H:%M:%SZ"
                 ).replace(tzinfo=pytz.utc)
-
-                date_filter = DateFilter(
-                    start_date=start_date,
-                    end_date=end_date,
-                    date_filter_type=DateFilterType(synapse.date_filter_type),
-                )
+            if synapse.date_filter_type:
+                date_filter.date_filter_type = DateFilterType(synapse.date_filter_type)
 
             if synapse.max_execution_time is None:
                 synapse.max_execution_time = get_max_execution_time(

@@ -265,7 +265,8 @@ class WebSearchContentRelevanceModel(BaseRewardModel):
         return self.clamp_relevance_score(total_score / denom)
 
     def _web_date_blocks_link(self, response, val_link) -> bool:
-        """Deep-only: zero a web link whose validator-parsed published date is out of window."""
+        if not (response.start_date or response.end_date):
+            return False
         validator_date = val_link.get("published_date") or ""
         if parse_tweet_date(validator_date) is None:
             return False

@@ -34,8 +34,15 @@ DEEP_SAMPLE_FLOOR = 1
 DEEP_SAMPLE_WEIGHT = 5
 
 
+def _unpack_quality(val: tuple) -> tuple[float, float, float]:
+    if len(val) >= 3:
+        return float(val[0]), float(val[1]), float(val[2])
+    q, v = val
+    return float(q), float(q), float(v)
+
+
 def combine_superlinear_scores(
-    qualities_per_type: dict[str, dict[int, tuple[float, int]]],
+    qualities_per_type: dict[str, dict[int, tuple]],
 ) -> dict[int, float]:
     all_uids: set[int] = set()
     for uid_q in qualities_per_type.values():
@@ -44,14 +51,14 @@ def combine_superlinear_scores(
     combined: dict[int, float] = {}
     for uid in all_uids:
         qv = {
-            t: qualities_per_type.get(t, {}).get(uid, (0.0, 0))
+            t: _unpack_quality(qualities_per_type.get(t, {}).get(uid, (0.0, 0.0, 0)))
             for t in SEARCH_TYPE_WEIGHTS
         }
-        max_v = max(v for _, v in qv.values())
+        max_v = max(v for _, _, v in qv.values())
 
         served: dict[str, float] = {}
-        for t, (q, v) in qv.items():
-            if max_v == 0 or q < QUALITY_THRESHOLDS[t]:
+        for t, (q_gate, _q_weight, v) in qv.items():
+            if max_v == 0 or q_gate < QUALITY_THRESHOLDS[t]:
                 served[t] = 0.0
             else:
                 served[t] = min(1.0, (v / max_v) / MIN_VOLUME_RATIO)
@@ -59,13 +66,13 @@ def combine_superlinear_scores(
         coverage = sum(SEARCH_TYPE_WEIGHTS[t] * served[t] for t in SEARCH_TYPE_WEIGHTS)
 
         per_type_sum = 0.0
-        for t, (q, v) in qv.items():
+        for t, (_q_gate, q_weight, v) in qv.items():
             if served[t] == 0.0:
                 continue
             per_type_sum += (
                 SEARCH_TYPE_WEIGHTS[t]
                 * served[t]
-                * q**QUALITY_EXPONENT
+                * q_weight**QUALITY_EXPONENT
                 * v**VOLUME_EXPONENT
             )
 
@@ -205,8 +212,7 @@ class QueryScheduler:
     ) -> None:
         batch_size = self._batch_size_for_uid(uid_items)
         batches = [
-            uid_items[i : i + batch_size]
-            for i in range(0, len(uid_items), batch_size)
+            uid_items[i : i + batch_size] for i in range(0, len(uid_items), batch_size)
         ]
 
         for batch_idx, batch in enumerate(batches):
@@ -273,9 +279,9 @@ class QueryScheduler:
         validator,
         items: list,
         time_range_start: datetime,
-    ) -> np.ndarray:
+    ) -> tuple[np.ndarray, np.ndarray]:
         if not items:
-            return np.zeros(0, dtype=np.float32)
+            return np.zeros(0, dtype=np.float32), np.zeros(0, dtype=np.float32)
         responses = [item["response"] for item in items]
         uids = np.array([item["uid"] for item in items], dtype=np.int64)
         prompts = [self._extract_prompt(r) for r in responses]
@@ -288,8 +294,15 @@ class QueryScheduler:
             scoring_epoch_start=time_range_start,
         )
         if result is None:
-            return np.zeros(len(items), dtype=np.float32)
-        return np.asarray(result[0], dtype=np.float32)
+            zeros = np.zeros(len(items), dtype=np.float32)
+            return zeros, zeros.copy()
+        weight_scores = np.asarray(result[0], dtype=np.float32)
+        gate_scores = (
+            np.asarray(result[5], dtype=np.float32)
+            if len(result) > 5
+            else weight_scores
+        )
+        return weight_scores, gate_scores
 
     async def _score_one_type(
         self,
@@ -299,14 +312,13 @@ class QueryScheduler:
         time_range_start: datetime,
         window_start: str,
         allocations: dict[int, int],
-    ) -> dict[int, tuple[float, int]]:
+    ) -> dict[int, tuple[float, float, int]]:
         """Score synth + organic for one type and update capacity per UID.
 
-        Four buckets, each carrying its own weight in the per-UID mean:
-            synth-cheap   = 1
-            synth-deep    = DEEP_SAMPLE_WEIGHT
-            organic-cheap = ORGANIC_VALUE_MULTIPLIER
-            organic-deep  = ORGANIC_VALUE_MULTIPLIER * DEEP_SAMPLE_WEIGHT
+        Quality = deep-only weighted mean (synth-deep=DEEP_SAMPLE_WEIGHT,
+        organic-deep=ORGANIC_VALUE_MULTIPLIER*DEEP_SAMPLE_WEIGHT) multiplied by
+        the per-UID cheap penalty mean in [0, 1]. Cheap contributes no positive
+        reward; a UID with no deep items scores 0.
 
         Synthetics: 20% per-UID deep sample, cheap on the rest. Organics: code
         checks on all, ORGANIC_DEEP_CAP_PER_TYPE deep slots distributed across
@@ -341,8 +353,11 @@ class QueryScheduler:
             f"organic={len(organic_items)} (deep={len(deep_organic)}, cheap={len(cheap_organic)})"
         )
 
-        uid_totals: dict[int, float] = defaultdict(float)
-        uid_weights: dict[int, float] = defaultdict(float)
+        uid_deep_totals: dict[int, float] = defaultdict(float)
+        uid_gate_totals: dict[int, float] = defaultdict(float)
+        uid_deep_weights: dict[int, float] = defaultdict(float)
+        uid_cheap_sum: dict[int, float] = defaultdict(float)
+        uid_cheap_count: dict[int, int] = defaultdict(int)
         uid_volumes: dict[int, int] = defaultdict(int)
 
         cheap_items = cheap_synth + cheap_organic
@@ -356,24 +371,18 @@ class QueryScheduler:
                 bt.logging.error(
                     f"[QueryScheduler] Cheap scoring failed {search_type}: {e}"
                 )
-                cheap_scores = np.zeros(len(cheap_items), dtype=np.float32)
-            scores = cheap_scores.tolist()
-            for i, item in enumerate(cheap_synth):
+                cheap_scores = np.ones(len(cheap_items), dtype=np.float32)
+            penalties = cheap_scores.tolist()
+            for i, item in enumerate(cheap_items):
                 uid = item["uid"]
-                uid_totals[uid] += scores[i]
-                uid_weights[uid] += 1
-                uid_volumes[uid] += 1
-            offset = len(cheap_synth)
-            for i, item in enumerate(cheap_organic):
-                uid = item["uid"]
-                uid_totals[uid] += ORGANIC_VALUE_MULTIPLIER * scores[offset + i]
-                uid_weights[uid] += ORGANIC_VALUE_MULTIPLIER
+                uid_cheap_sum[uid] += penalties[i]
+                uid_cheap_count[uid] += 1
                 uid_volumes[uid] += 1
 
         deep_items = deep_synth + deep_organic
         if deep_items:
             try:
-                full_scores = await self._run_full_scoring(
+                full_scores, gate_scores = await self._run_full_scoring(
                     validator, deep_items, time_range_start
                 )
             except Exception as e:
@@ -381,31 +390,41 @@ class QueryScheduler:
                     f"[QueryScheduler] Full scoring failed {search_type}: {e}"
                 )
                 full_scores = np.zeros(len(deep_items), dtype=np.float32)
+                gate_scores = np.zeros(len(deep_items), dtype=np.float32)
             scores = full_scores.tolist()
+            gates = gate_scores.tolist()
             for i, item in enumerate(deep_synth):
                 uid = item["uid"]
-                uid_totals[uid] += DEEP_SAMPLE_WEIGHT * scores[i]
-                uid_weights[uid] += DEEP_SAMPLE_WEIGHT
+                uid_deep_totals[uid] += DEEP_SAMPLE_WEIGHT * scores[i]
+                uid_gate_totals[uid] += DEEP_SAMPLE_WEIGHT * gates[i]
+                uid_deep_weights[uid] += DEEP_SAMPLE_WEIGHT
                 uid_volumes[uid] += 1
             offset = len(deep_synth)
             organic_deep_weight = ORGANIC_VALUE_MULTIPLIER * DEEP_SAMPLE_WEIGHT
             for i, item in enumerate(deep_organic):
                 uid = item["uid"]
-                uid_totals[uid] += organic_deep_weight * scores[offset + i]
-                uid_weights[uid] += organic_deep_weight
+                uid_deep_totals[uid] += organic_deep_weight * scores[offset + i]
+                uid_gate_totals[uid] += organic_deep_weight * gates[offset + i]
+                uid_deep_weights[uid] += organic_deep_weight
                 uid_volumes[uid] += 1
 
-        uid_results = {
-            uid: (uid_totals[uid] / uid_weights[uid], uid_volumes[uid])
-            for uid in uid_totals
-            if uid_weights[uid] > 0
-        }
+        uid_results: dict[int, tuple[float, float, int]] = {}
+        for uid in uid_volumes:
+            c_uid = (
+                uid_cheap_sum[uid] / uid_cheap_count[uid]
+                if uid_cheap_count[uid] > 0
+                else 1.0
+            )
+            denom = uid_deep_weights[uid]
+            q_weight = uid_deep_totals[uid] / denom if denom > 0 else 0.0
+            q_gate = uid_gate_totals[uid] / denom if denom > 0 else 0.0
+            uid_results[uid] = (q_gate * c_uid, q_weight * c_uid, uid_volumes[uid])
 
-        for uid, (quality, _) in uid_results.items():
+        for uid, (q_gate, _q_weight, _) in uid_results.items():
             await capacity.record_window_quality(
                 uid=uid,
                 search_type=search_type,
-                quality=quality,
+                quality=q_gate,
                 window_start=window_start,
                 allocated=allocations.get(uid, DEFAULT_PER_UID),
             )
@@ -445,7 +464,7 @@ class QueryScheduler:
                 return
 
             window_start = time_range_start.isoformat()
-            qualities_per_type: dict[str, dict[int, tuple[float, int]]] = {}
+            qualities_per_type: dict[str, dict[int, tuple[float, float, int]]] = {}
 
             for search_type in SEARCH_TYPES:
                 uid_results = await self._score_one_type(

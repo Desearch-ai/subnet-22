@@ -284,6 +284,12 @@ class ScoringModel(str, Enum):
     QWEN3_6_27B = "Qwen/Qwen3.6-27B-TEE"
 
 
+class SearchMode(str, Enum):
+    FAST = "fast"
+    BALANCED = "balanced"
+    DEEP = "deep"
+
+
 class ReportItem(BaseModel):
     title: str
     description: Optional[str] = ""
@@ -504,6 +510,13 @@ class ScraperStreamingSynapse(StreamingSynapse):
         None,
         title="Max Execution Time (timeout)",
         description="Maximum time to execute concrete request",
+    )
+
+    mode: Optional[SearchMode] = pydantic.Field(
+        None,
+        title="mode",
+        description="AI-search speed mode (fast/balanced/deep). Sets the speed target "
+        "the response is scored against; max_execution_time is the serving cap.",
     )
 
     max_items: Optional[int] = pydantic.Field(

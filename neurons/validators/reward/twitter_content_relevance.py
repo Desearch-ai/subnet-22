@@ -261,18 +261,18 @@ class TwitterContentRelevanceModel(BaseRewardModel):
                     start_date = response.start_date
                     end_date = response.end_date
 
-                    start_date = datetime.strptime(
-                        start_date, "%Y-%m-%dT%H:%M:%SZ"
-                    ).replace(tzinfo=pytz.utc)
-                    end_date = datetime.strptime(
-                        end_date, "%Y-%m-%dT%H:%M:%SZ"
-                    ).replace(tzinfo=pytz.utc)
-
-                    if (
-                        tweet_created_at_aware < start_date
-                        or tweet_created_at_aware > end_date
-                    ):
-                        tweet_score = 0
+                    if start_date:
+                        start_date = datetime.strptime(
+                            start_date, "%Y-%m-%dT%H:%M:%SZ"
+                        ).replace(tzinfo=pytz.utc)
+                        if tweet_created_at_aware < start_date:
+                            tweet_score = 0
+                    if end_date:
+                        end_date = datetime.strptime(
+                            end_date, "%Y-%m-%dT%H:%M:%SZ"
+                        ).replace(tzinfo=pytz.utc)
+                        if tweet_created_at_aware > end_date:
+                            tweet_score = 0
 
                 tweet_scores.append(tweet_score)
 

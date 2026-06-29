@@ -13,7 +13,6 @@ from desearch.protocol import (
     ChatHistoryItem,
     Model,
     ResultType,
-    ScoringModel,
     ScraperStreamingSynapse,
 )
 from desearch.stream import collect_final_synapses
@@ -40,7 +39,10 @@ from neurons.validators.penalty.summary_structure_penalty import (
 )
 from neurons.validators.penalty.timeout_penalty import TimeoutPenaltyModel
 from neurons.validators.reward import RewardModelType, RewardScoringType
-from neurons.validators.reward.performance_reward import PerformanceRewardModel
+from neurons.validators.reward.performance_reward import (
+    AI_PERF_FLOOR,
+    PerformanceRewardModel,
+)
 from neurons.validators.reward.reward_llm import RewardLLM
 from neurons.validators.reward.content_relevance import ContentRelevanceRewardModel
 from neurons.validators.reward.summary_relevance import SummaryRelevanceRewardModel
@@ -58,9 +60,9 @@ class AdvancedScraperValidator(BaseScraperValidator):
         self.region = "us"
         self.date_filter = "qdr:w"  # Past week
 
-        self.content_weight = 0.50
-        self.summary_relevance_weight = 0.30
-        self.performance_weight = 0.20
+        self.content_weight = 0.625
+        self.summary_relevance_weight = 0.375
+        self.perf_floor = AI_PERF_FLOOR
 
         self.reward_llm = RewardLLM(neuron.config.neuron.scoring_model)
 
@@ -68,7 +70,6 @@ class AdvancedScraperValidator(BaseScraperValidator):
             [
                 self.content_weight,
                 self.summary_relevance_weight,
-                self.performance_weight,
             ],
             dtype=np.float32,
         )
@@ -80,12 +81,13 @@ class AdvancedScraperValidator(BaseScraperValidator):
                 llm_reward=self.reward_llm,
                 neuron=neuron,
             ),
-            PerformanceRewardModel(
-                neuron=neuron,
-                min_realistic_time=5.0,
-                target_time=10.0,
-            ),
         ]
+
+        performance_model = PerformanceRewardModel(
+            neuron=neuron,
+            min_realistic_time=5.0,
+            target_time=10.0,
+        )
 
         penalty_functions = [
             StreamingPenaltyModel(max_penalty=1, neuron=neuron),
@@ -105,6 +107,8 @@ class AdvancedScraperValidator(BaseScraperValidator):
             reward_weights=reward_weights,
             reward_functions=reward_functions,
             penalty_functions=penalty_functions,
+            performance_model=performance_model,
+            perf_floor=self.perf_floor,
         )
 
     async def _dendrite_stream(
@@ -193,7 +197,7 @@ class AdvancedScraperValidator(BaseScraperValidator):
             result_type=result_type,
             system_message=system_message,
             scoring_system_message=scoring_system_message,
-            scoring_model=ScoringModel.OPENAI_GPT4_1_NANO,
+            scoring_model=self.neuron.config.neuron.scoring_model,
             chat_history=chat_history,
             count=count,
             include_domains=include_domains or [],
@@ -239,24 +243,35 @@ class AdvancedScraperValidator(BaseScraperValidator):
         tools = query.get("tools", [])
         include_domains = query.get("include_domains", [])
         exclude_domains = query.get("exclude_domains", [])
-        date_filter = get_specified_date_filter(
-            DateFilterType(
-                query.get("date_filter_type", DateFilterType.PAST_WEEK.value)
+
+        mode = query.get("mode")
+        max_execution_time = query.get("max_execution_time") or get_max_execution_time(
+            Model.NOVA, 10
+        )
+
+        explicit_start = query.get("start_date")
+        explicit_end = query.get("end_date")
+        requested_filter = query.get("date_filter_type")
+
+        start_date = None
+        end_date = None
+
+        if explicit_start and explicit_end:
+            start_date = explicit_start
+            end_date = explicit_end
+        elif requested_filter:
+            date_filter = get_specified_date_filter(DateFilterType(requested_filter))
+
+            start_date = (
+                date_filter.start_date.strftime("%Y-%m-%dT%H:%M:%SZ")
+                if date_filter.start_date
+                else None
             )
-        )
-
-        max_execution_time = get_max_execution_time(Model.NOVA, 10)
-
-        start_date = (
-            date_filter.start_date.strftime("%Y-%m-%dT%H:%M:%SZ")
-            if date_filter.start_date
-            else None
-        )
-        end_date = (
-            date_filter.end_date.strftime("%Y-%m-%dT%H:%M:%SZ")
-            if date_filter.end_date
-            else None
-        )
+            end_date = (
+                date_filter.end_date.strftime("%Y-%m-%dT%H:%M:%SZ")
+                if date_filter.end_date
+                else None
+            )
 
         synapse = ScraperStreamingSynapse(
             prompt=prompt,
@@ -264,17 +279,13 @@ class AdvancedScraperValidator(BaseScraperValidator):
             result_type=ResultType.LINKS_WITH_FINAL_SUMMARY,
             start_date=start_date,
             end_date=end_date,
-            date_filter_type=(
-                date_filter.date_filter_type.value
-                if date_filter.date_filter_type
-                else None
-            ),
             tools=tools,
             language=self.language,
             region=self.region,
             google_date_filter=self.date_filter,
             max_execution_time=max_execution_time,
-            scoring_model=ScoringModel.OPENAI_GPT4_1_NANO,
+            mode=mode,
+            scoring_model=self.neuron.config.neuron.scoring_model,
             include_domains=include_domains or [],
             exclude_domains=exclude_domains or [],
         )
@@ -303,7 +314,7 @@ class AdvancedScraperValidator(BaseScraperValidator):
         try:
             prompt = query["content"]
             tools = query.get("tools", [])
-            date_filter = query.get("date_filter", DateFilterType.PAST_WEEK.value)
+            date_filter = query.get("date_filter")
             count = query.get("count")
             system_message = query.get("system_message")
             scoring_system_message = query.get("scoring_system_message")
@@ -316,8 +327,9 @@ class AdvancedScraperValidator(BaseScraperValidator):
             if start_date or end_date:
                 date_filter = DateFilter(start_date=start_date, end_date=end_date)
             elif isinstance(date_filter, str):
-                date_filter_type = DateFilterType(date_filter)
-                date_filter = get_specified_date_filter(date_filter_type)
+                date_filter = get_specified_date_filter(DateFilterType(date_filter))
+            else:
+                date_filter = DateFilter()
 
             async_response, uids, start_time, axon = await self.call_miner(
                 prompt=prompt,

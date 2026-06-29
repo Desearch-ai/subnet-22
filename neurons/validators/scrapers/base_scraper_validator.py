@@ -12,6 +12,7 @@ from neurons.validators.clients.miner_response_logger import (
     build_reward_payload,
     submit_logs_best_effort,
 )
+from neurons.validators.reward.performance_reward import perf_factor
 from neurons.validators.reward.reward import log_reward_aggregates
 from neurons.validators.scoring import capacity
 
@@ -28,12 +29,14 @@ class BaseScraperValidator:
         reward_weights: np.ndarray,
         reward_functions: list,
         penalty_functions: list,
+        performance_model=None,
+        perf_floor: float = 1.0,
     ):
         self.neuron = neuron
 
         self.reward_weights = np.asarray(reward_weights, dtype=np.float32)
 
-        if self.reward_weights.sum() != 1:
+        if abs(float(self.reward_weights.sum()) - 1.0) > 1e-4:
             message = (
                 f"Reward function weights do not sum to 1 (Current sum: {self.reward_weights.sum()}.)"
                 f"Check your reward config file at `reward/config.py` or ensure that all your cli reward flags sum to 1."
@@ -43,6 +46,8 @@ class BaseScraperValidator:
 
         self.reward_functions = reward_functions
         self.penalty_functions = penalty_functions
+        self.performance_model = performance_model
+        self.perf_floor = perf_floor
 
     def compute_reward_weights_matrix(self, responses) -> np.ndarray:
         """Returns an (N, K) array where row i has reward-function weights for
@@ -56,27 +61,11 @@ class BaseScraperValidator:
         ).copy()
 
     async def compute_cheap_scores(self, responses, uids) -> np.ndarray:
-        """Apply only non-deep reward + penalty functions and return per-response
-        scores in [0, 1]. Cheap reward weights are renormalized per row to sum
-        to 1 so cheap scores are comparable to full scores."""
+        """Return a per-response cheap PENALTY multiplier in [0, 1] (no positive reward)."""
         if not responses:
             return np.zeros(0, dtype=np.float32)
 
-        weights_matrix = self.compute_reward_weights_matrix(responses)
-        cheap_cols = np.array(
-            [not fn.is_deep for fn in self.reward_functions], dtype=bool
-        )
-        cheap_weight_sum = weights_matrix[:, cheap_cols].sum(axis=1)
-        cheap_weight_sum = np.where(cheap_weight_sum > 0, cheap_weight_sum, 1.0)
-
-        rewards = np.zeros(len(responses), dtype=np.float32)
-
-        for i, reward_fn in enumerate(self.reward_functions):
-            if reward_fn.is_deep:
-                continue
-            reward_i, _, _, _ = await reward_fn.apply(responses, uids)
-            weight = weights_matrix[:, i] / cheap_weight_sum
-            rewards += weight * np.asarray(reward_i, dtype=np.float32)
+        rewards = np.ones(len(responses), dtype=np.float32)
 
         for penalty_fn in self.penalty_functions:
             if penalty_fn.is_deep:
@@ -201,6 +190,23 @@ class BaseScraperValidator:
                     f"Applied reward function: {reward_fn_i.name} in {execution_time / 60:.2f} minutes"
                 )
 
+            quality_gate = rewards.copy()
+
+            if self.performance_model is not None:
+                perf_events, _ = await self.performance_model.get_rewards(
+                    responses, uids
+                )
+                perf_raw = np.array(
+                    [event.reward for event in perf_events], dtype=np.float32
+                )
+                perf_mult = perf_factor(perf_raw, self.perf_floor)
+                rewards = rewards * perf_mult
+                log_reward_aggregates(
+                    name=f"{self.search_type} perf_factor",
+                    uids=uids,
+                    scores=perf_mult.tolist(),
+                )
+
             penalty_additional_params = self.get_penalty_additional_params(
                 val_score_responses_list
             )
@@ -214,7 +220,9 @@ class BaseScraperValidator:
                     responses, uids, penalty_additional_params
                 )
 
-                rewards *= np.asarray(applied_penalty_i, dtype=np.float32)
+                applied_arr = np.asarray(applied_penalty_i, dtype=np.float32)
+                rewards *= applied_arr
+                quality_gate *= applied_arr
 
                 if not self.neuron.config.neuron.disable_log_rewards:
                     event[penalty_fn_i.name + "_raw"] = raw_penalty_i.tolist()
@@ -293,7 +301,14 @@ class BaseScraperValidator:
 
             submit_logs_best_effort(self.neuron, scoring_logs)
 
-            return rewards, uids, val_score_responses_list, event, all_original_rewards
+            return (
+                rewards,
+                uids,
+                val_score_responses_list,
+                event,
+                all_original_rewards,
+                quality_gate,
+            )
         except Exception as e:
             bt.logging.error(f"Error in compute_rewards_and_penalties: {e}")
             raise e
