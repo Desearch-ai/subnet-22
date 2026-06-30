@@ -13,9 +13,14 @@ from neurons.validators.utils.prompts import (
     BodyLinkRelevancePrompt,
     build_body_relevance_messages,
 )
-from neurons.validators.utils.response_checks import normalize_source_url
+from neurons.validators.utils.response_checks import (
+    normalize_source_url,
+    parse_tweet_date,
+    tweet_date_in_range,
+)
 from neurons.validators.utils.source_bodies import (
     cited_urls_normalized,
+    highlights_in_order,
     sample_cited_and_uncited,
 )
 
@@ -29,6 +34,16 @@ MAX_CITED_SAMPLE = 2
 
 def response_uses_web_tools(response: ScraperStreamingSynapse) -> bool:
     return bool(set(response.tools or []) & WEB_TOOLS)
+
+
+def link_meets_evidence(miner_highlights, miner_text, fetched_body) -> bool:
+    if not miner_highlights or not miner_text:
+        return False
+    if not highlights_in_order(miner_highlights, fetched_body):
+        return False
+    if not highlights_in_order(miner_highlights, miner_text):
+        return False
+    return True
 
 
 class WebSearchContentRelevanceModel(BaseRewardModel):
@@ -59,7 +74,16 @@ class WebSearchContentRelevanceModel(BaseRewardModel):
             title = validator_link.get("title", "")
             body = validator_link.get("body", "")
 
-            messages = build_body_relevance_messages(response.prompt, url, title, body)
+            miner_highlights = validator_link.get("miner_highlights") or []
+            miner_text = validator_link.get("miner_text") or ""
+
+            if not link_meets_evidence(miner_highlights, miner_text, body):
+                continue
+
+            judged_body = "\n\n".join(miner_highlights)
+            messages = build_body_relevance_messages(
+                response.prompt, url, title, judged_body
+            )
             if messages:
                 scoring_messages.append({url: messages})
 
@@ -74,6 +98,8 @@ class WebSearchContentRelevanceModel(BaseRewardModel):
                 "link": url,
                 "title": body.get("title", ""),
                 "body": body.get("text", ""),
+                "published_date": body.get("published_date", ""),
+                "author": body.get("author", ""),
             }
             for url, body in bodies_map.items()
             if url and body.get("text")
@@ -82,6 +108,18 @@ class WebSearchContentRelevanceModel(BaseRewardModel):
         non_fetched_links = [u for u in urls if u not in fetched_urls]
 
         return fetched_links_with_metadata, non_fetched_links
+
+    def _miner_link_metadata(self, response):
+        meta = {}
+        for result in response.search_results or []:
+            link = result.get("link")
+            if not link:
+                continue
+            meta[normalize_source_url(link)] = {
+                "highlights": result.get("highlights"),
+                "text": result.get("text"),
+            }
+        return meta
 
     def _sample_cited_and_other(self, response, links_per_tool_group):
         summary = response.texts.get(ScraperTextRole.FINAL_SUMMARY.value, "")
@@ -150,11 +188,19 @@ class WebSearchContentRelevanceModel(BaseRewardModel):
         ]
 
         for response, random_links in zip(responses, responses_random_links):
+            miner_meta = self._miner_link_metadata(response)
             for link_with_metadata in links_with_metadata:
                 url = link_with_metadata.get("link")
 
                 if url in random_links:
-                    response.validator_links.append(link_with_metadata)
+                    meta = miner_meta.get(normalize_source_url(url), {})
+                    response.validator_links.append(
+                        {
+                            **link_with_metadata,
+                            "miner_highlights": meta.get("highlights") or [],
+                            "miner_text": meta.get("text") or "",
+                        }
+                    )
 
         end_time = time.time()
         bt.logging.info(
@@ -212,7 +258,14 @@ class WebSearchContentRelevanceModel(BaseRewardModel):
                     link_scores.append(0)
                     continue
 
-                link_scores.append(1 if url in web_search_results else 0)
+                has_evidence = link_meets_evidence(
+                    val_link.get("miner_highlights") or [],
+                    val_link.get("miner_text") or "",
+                    val_link.get("body") or "",
+                )
+                link_scores.append(
+                    1 if (url in web_search_results and has_evidence) else 0
+                )
 
             if link_scores:
                 return sum(link_scores) / len(link_scores)
@@ -229,6 +282,16 @@ class WebSearchContentRelevanceModel(BaseRewardModel):
         if denom == 0:
             return 0.0
         return self.clamp_relevance_score(total_score / denom)
+
+    def _web_date_blocks_link(self, response, val_link) -> bool:
+        if not (response.start_date or response.end_date):
+            return False
+        validator_date = val_link.get("published_date") or ""
+        if parse_tweet_date(validator_date) is None:
+            return False
+        return not tweet_date_in_range(
+            validator_date, response.start_date, response.end_date
+        )
 
     async def get_rewards(
         self, responses: List[ScraperStreamingSynapse], uids
@@ -282,12 +345,15 @@ class WebSearchContentRelevanceModel(BaseRewardModel):
                     if val_score_responses:
                         score_result = val_score_responses.get(val_url, None)
                         if score_result is not None:
-                            total_score += (
-                                scoring_prompt.extract_score(score_result) / 3.0
+                            score = scoring_prompt.extract_score(score_result)
+                            relevance = scoring_prompt.contextual_relevance(
+                                score_result
                             )
-                            response_scores[val_url] = (
-                                scoring_prompt.contextual_relevance(score_result)
-                            )
+                            if self._web_date_blocks_link(response, val_link):
+                                score = 0
+                                relevance = "LOW"
+                            total_score += score / 3.0
+                            response_scores[val_url] = relevance
 
                 judged_count = len(response_scores)
                 if total_score > 0:

@@ -14,3 +14,5 @@ redis[hiredis]==5.2.1
 jsonpickle==4.0.2
 aiosqlite>=0.20.0
 trafilatura==2.1.0
+huggingface_hub>=1.21.0
+datasets>=5.0.0

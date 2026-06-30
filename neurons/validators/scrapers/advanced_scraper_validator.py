@@ -13,22 +13,19 @@ from desearch.protocol import (
     ChatHistoryItem,
     Model,
     ResultType,
-    ScoringModel,
     ScraperStreamingSynapse,
+    SearchMode,
 )
 from desearch.stream import collect_final_synapses
-from desearch.utils import get_max_execution_time
+from desearch.utils import get_max_execution_time, get_mode_serving_budget
 from neurons.validators.base_validator import AbstractNeuron
 from neurons.validators.clients.miner_response_logger import (
     build_log_entry,
     submit_logs_best_effort,
 )
-from neurons.validators.penalty.count_penalty import (
-    CountPenaltyModel,
-    SEARCH_SUMMARY_TOOLS,
-    TWITTER_TOOL,
-)
+from neurons.validators.penalty.count_penalty import CountPenaltyModel, TWITTER_TOOL
 from neurons.validators.penalty.date_range_penalty import DateRangePenaltyModel
+from neurons.validators.penalty.domain_filter_penalty import DomainFilterPenaltyModel
 from neurons.validators.penalty.duplicate_results_penalty import (
     DuplicateResultsPenaltyModel,
 )
@@ -43,19 +40,15 @@ from neurons.validators.penalty.summary_structure_penalty import (
 )
 from neurons.validators.penalty.timeout_penalty import TimeoutPenaltyModel
 from neurons.validators.reward import RewardModelType, RewardScoringType
-from neurons.validators.reward.performance_reward import PerformanceRewardModel
+from neurons.validators.reward.performance_reward import (
+    AI_PERF_FLOOR,
+    PerformanceRewardModel,
+)
 from neurons.validators.reward.reward_llm import RewardLLM
-from neurons.validators.reward.search_content_relevance import (
-    WebSearchContentRelevanceModel,
-)
+from neurons.validators.reward.content_relevance import ContentRelevanceRewardModel
 from neurons.validators.reward.summary_relevance import SummaryRelevanceRewardModel
-from neurons.validators.reward.twitter_content_relevance import (
-    TwitterContentRelevanceModel,
-)
 from neurons.validators.scoring import capacity
 from neurons.validators.scrapers.base_scraper_validator import BaseScraperValidator
-
-WEB_TOOLS = frozenset(SEARCH_SUMMARY_TOOLS)
 
 
 class AdvancedScraperValidator(BaseScraperValidator):
@@ -68,45 +61,34 @@ class AdvancedScraperValidator(BaseScraperValidator):
         self.region = "us"
         self.date_filter = "qdr:w"  # Past week
 
-        self.twitter_content_weight = 0.30
-        self.web_search_weight = 0.30
-        self.summary_relevance_weight = 0.20
-        self.performance_weight = 0.20
+        self.content_weight = 0.625
+        self.summary_relevance_weight = 0.375
+        self.perf_floor = AI_PERF_FLOOR
 
         self.reward_llm = RewardLLM(neuron.config.neuron.scoring_model)
 
         reward_weights = np.array(
             [
-                self.twitter_content_weight,
-                self.web_search_weight,
+                self.content_weight,
                 self.summary_relevance_weight,
-                self.performance_weight,
             ],
             dtype=np.float32,
         )
 
         reward_functions = [
-            TwitterContentRelevanceModel(
-                scoring_type=RewardScoringType.summary_relevance_score_template,
-                llm_reward=self.reward_llm,
-                neuron=neuron,
-            ),
-            WebSearchContentRelevanceModel(
-                scoring_type=RewardScoringType.search_relevance_score_template,
-                llm_reward=self.reward_llm,
-                neuron=neuron,
-            ),
+            ContentRelevanceRewardModel(llm_reward=self.reward_llm, neuron=neuron),
             SummaryRelevanceRewardModel(
                 scoring_type=RewardScoringType.summary_relevance_score_template,
                 llm_reward=self.reward_llm,
                 neuron=neuron,
             ),
-            PerformanceRewardModel(
-                neuron=neuron,
-                min_realistic_time=5.0,
-                target_time=10.0,
-            ),
         ]
+
+        performance_model = PerformanceRewardModel(
+            neuron=neuron,
+            min_realistic_time=5.0,
+            target_time=10.0,
+        )
 
         penalty_functions = [
             StreamingPenaltyModel(max_penalty=1, neuron=neuron),
@@ -118,6 +100,7 @@ class AdvancedScraperValidator(BaseScraperValidator):
             DuplicateResultsPenaltyModel(max_penalty=1, neuron=neuron),
             ResultSchemaPenaltyModel(max_penalty=1, neuron=neuron),
             DateRangePenaltyModel(max_penalty=1, neuron=neuron),
+            DomainFilterPenaltyModel(max_penalty=1, neuron=neuron),
         ]
 
         super().__init__(
@@ -125,38 +108,9 @@ class AdvancedScraperValidator(BaseScraperValidator):
             reward_weights=reward_weights,
             reward_functions=reward_functions,
             penalty_functions=penalty_functions,
+            performance_model=performance_model,
+            perf_floor=self.perf_floor,
         )
-
-    def compute_reward_weights_matrix(self, responses) -> np.ndarray:
-        rows = [self._weights_for(response) for response in responses]
-        return np.array(rows, dtype=np.float32)
-
-    def _weights_for(self, response) -> List[float]:
-        """Weights for one response, ordered [twitter, web, summary, perf].
-
-        Content weight is split between twitter and web only when both tool
-        categories are used. If only one is used, it absorbs the other's share
-        — so the unused branch gets weight 0 rather than the old `reward = 1.0`
-        free pass.
-        """
-        tools = set(response.tools or [])
-        has_twitter = TWITTER_TOOL in tools
-        has_web = bool(tools & WEB_TOOLS)
-        content = self.twitter_content_weight + self.web_search_weight
-
-        if has_twitter and has_web:
-            w_twitter, w_web = self.twitter_content_weight, self.web_search_weight
-        elif has_twitter:
-            w_twitter, w_web = content, 0.0
-        else:
-            w_twitter, w_web = 0.0, content
-
-        return [
-            w_twitter,
-            w_web,
-            self.summary_relevance_weight,
-            self.performance_weight,
-        ]
 
     async def _dendrite_stream(
         self,
@@ -206,8 +160,15 @@ class AdvancedScraperValidator(BaseScraperValidator):
         uid: Optional[int] = None,
         chat_history: Optional[List[ChatHistoryItem]] = [],
         count: Optional[int] = 10,
+        include_domains: Optional[List[str]] = None,
+        exclude_domains: Optional[List[str]] = None,
+        mode: Optional[SearchMode] = None,
     ):
-        max_execution_time = get_max_execution_time(model, count)
+        max_execution_time = (
+            get_mode_serving_budget(mode)
+            if mode
+            else get_max_execution_time(model, count)
+        )
 
         start_time = time.time()
 
@@ -239,12 +200,15 @@ class AdvancedScraperValidator(BaseScraperValidator):
             region=region,
             google_date_filter=google_date_filter,
             max_execution_time=max_execution_time,
+            mode=mode,
             result_type=result_type,
             system_message=system_message,
             scoring_system_message=scoring_system_message,
-            scoring_model=ScoringModel.OPENAI_GPT4_1_NANO,
+            scoring_model=self.neuron.config.neuron.scoring_model,
             chat_history=chat_history,
             count=count,
+            include_domains=include_domains or [],
+            exclude_domains=exclude_domains or [],
         )
 
         async_response = self._dendrite_stream(
@@ -261,10 +225,7 @@ class AdvancedScraperValidator(BaseScraperValidator):
         for val_score_responses, reward_function in zip(
             val_score_responses_list, self.reward_functions
         ):
-            if reward_function.name in [
-                RewardModelType.twitter_content_relevance.value,
-                RewardModelType.search_content_relevance.value,
-            ]:
+            if reward_function.name == RewardModelType.content_relevance.value:
                 val_scores.append(val_score_responses)
         return val_scores
 
@@ -272,8 +233,11 @@ class AdvancedScraperValidator(BaseScraperValidator):
         wandb_data["scores"][uid] = reward
         wandb_data["responses"][uid] = response.completion
         wandb_data["prompts"][uid] = response.prompt
-        for key, value in zip(self.wandb_reward_keys, reward_values):
-            wandb_data[key][uid] = value
+        is_twitter = TWITTER_TOOL in set(response.tools or [])
+        content = reward_values[0]
+        wandb_data["twitter_reward"][uid] = content if is_twitter else 0.0
+        wandb_data["search_reward"][uid] = 0.0 if is_twitter else content
+        wandb_data["summary_reward"][uid] = reward_values[1]
 
     async def send_scoring_query(
         self,
@@ -284,24 +248,37 @@ class AdvancedScraperValidator(BaseScraperValidator):
         Consumes the stream and returns the final populated synapse."""
         prompt = query["query"]
         tools = query.get("tools", [])
-        date_filter = get_specified_date_filter(
-            DateFilterType(
-                query.get("date_filter_type", DateFilterType.PAST_WEEK.value)
+        include_domains = query.get("include_domains", [])
+        exclude_domains = query.get("exclude_domains", [])
+
+        mode = query.get("mode")
+        max_execution_time = query.get("max_execution_time") or get_max_execution_time(
+            Model.NOVA, 10
+        )
+
+        explicit_start = query.get("start_date")
+        explicit_end = query.get("end_date")
+        requested_filter = query.get("date_filter_type")
+
+        start_date = None
+        end_date = None
+
+        if explicit_start and explicit_end:
+            start_date = explicit_start
+            end_date = explicit_end
+        elif requested_filter:
+            date_filter = get_specified_date_filter(DateFilterType(requested_filter))
+
+            start_date = (
+                date_filter.start_date.strftime("%Y-%m-%dT%H:%M:%SZ")
+                if date_filter.start_date
+                else None
             )
-        )
-
-        max_execution_time = get_max_execution_time(Model.NOVA, 10)
-
-        start_date = (
-            date_filter.start_date.strftime("%Y-%m-%dT%H:%M:%SZ")
-            if date_filter.start_date
-            else None
-        )
-        end_date = (
-            date_filter.end_date.strftime("%Y-%m-%dT%H:%M:%SZ")
-            if date_filter.end_date
-            else None
-        )
+            end_date = (
+                date_filter.end_date.strftime("%Y-%m-%dT%H:%M:%SZ")
+                if date_filter.end_date
+                else None
+            )
 
         synapse = ScraperStreamingSynapse(
             prompt=prompt,
@@ -309,17 +286,15 @@ class AdvancedScraperValidator(BaseScraperValidator):
             result_type=ResultType.LINKS_WITH_FINAL_SUMMARY,
             start_date=start_date,
             end_date=end_date,
-            date_filter_type=(
-                date_filter.date_filter_type.value
-                if date_filter.date_filter_type
-                else None
-            ),
             tools=tools,
             language=self.language,
             region=self.region,
             google_date_filter=self.date_filter,
             max_execution_time=max_execution_time,
-            scoring_model=ScoringModel.OPENAI_GPT4_1_NANO,
+            mode=mode,
+            scoring_model=self.neuron.config.neuron.scoring_model,
+            include_domains=include_domains or [],
+            exclude_domains=exclude_domains or [],
         )
 
         axon = self.neuron.metagraph.axons[uid]
@@ -346,19 +321,23 @@ class AdvancedScraperValidator(BaseScraperValidator):
         try:
             prompt = query["content"]
             tools = query.get("tools", [])
-            date_filter = query.get("date_filter", DateFilterType.PAST_WEEK.value)
+            date_filter = query.get("date_filter")
             count = query.get("count")
             system_message = query.get("system_message")
             scoring_system_message = query.get("scoring_system_message")
             chat_history = query.get("chat_history", [])
             start_date = query.get("start_date")
             end_date = query.get("end_date")
+            include_domains = query.get("include_domains", [])
+            exclude_domains = query.get("exclude_domains", [])
+            mode = query.get("mode")
 
             if start_date or end_date:
                 date_filter = DateFilter(start_date=start_date, end_date=end_date)
             elif isinstance(date_filter, str):
-                date_filter_type = DateFilterType(date_filter)
-                date_filter = get_specified_date_filter(date_filter_type)
+                date_filter = get_specified_date_filter(DateFilterType(date_filter))
+            else:
+                date_filter = DateFilter()
 
             async_response, uids, start_time, axon = await self.call_miner(
                 prompt=prompt,
@@ -373,6 +352,9 @@ class AdvancedScraperValidator(BaseScraperValidator):
                 scoring_system_message=scoring_system_message,
                 chat_history=chat_history,
                 count=count,
+                include_domains=include_domains,
+                exclude_domains=exclude_domains,
+                mode=mode,
             )
 
             final_synapses = []

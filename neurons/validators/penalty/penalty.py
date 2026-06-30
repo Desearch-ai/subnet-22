@@ -113,3 +113,4 @@ class PenaltyModelType(Enum):
     result_schema_penalty = "result_schema_penalty"
     sort_order_penalty = "sort_order_penalty"
     min_realistic_time_penalty = "min_realistic_time_penalty"
+    domain_filter_penalty = "domain_filter_penalty"

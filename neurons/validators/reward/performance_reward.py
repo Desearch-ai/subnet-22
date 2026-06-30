@@ -17,6 +17,37 @@ from .config import RewardModelType
 from .reward import BaseRewardEvent, BaseRewardModel, log_reward_aggregates
 
 
+AI_PERF_FLOOR = 0.50
+WEB_PERF_FLOOR = 0.70
+X_PERF_FLOOR = 0.70
+
+
+def perf_factor(perf_raw: float, floor: float) -> float:
+    return floor + (1.0 - floor) * perf_raw
+
+
+def resolve_scoring_budget(response) -> float:
+    from desearch.utils import get_mode_budget
+
+    mode = getattr(response, "mode", None)
+    if mode:
+        try:
+            return float(get_mode_budget(mode))
+        except (KeyError, ValueError):
+            pass
+    raw = getattr(response, "max_execution_time", None)
+    try:
+        return float(raw) if raw is not None else 0.0
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def min_realistic_for_budget(budget: float, default: float) -> float:
+    if not budget or budget <= 0:
+        return default
+    return min(2.0, 0.3 * budget)
+
+
 class PerformanceRewardModel(BaseRewardModel):
     is_deep = False
 
@@ -83,20 +114,27 @@ class PerformanceRewardModel(BaseRewardModel):
 
         return response_times
 
-    def reward(self, axon_time: float, timeout: float) -> float:
-        """
-        Piecewise performance curve:
-          - below min_realistic_time -> 0 (unrealistic, treat as gaming)
-          - up to target_time        -> 1.0 (full credit)
-          - target -> timeout        -> linear decay to 0
-          - above timeout            -> 0
-        """
-        if axon_time < self.min_realistic_time:
+    def _thresholds_for(self, budget: float) -> Tuple[float, float]:
+        if not budget or budget <= 0:
+            return self.min_realistic_time, self.target_time
+        return min_realistic_for_budget(budget, self.min_realistic_time), 0.6 * budget
+
+    def _scoring_budget(self, response) -> float:
+        return resolve_scoring_budget(response)
+
+    def reward(self, axon_time: float, budget: float) -> float:
+        min_realistic, target = self._thresholds_for(budget)
+
+        if axon_time < min_realistic:
             return 0.0
-        if axon_time <= self.target_time:
+        if axon_time <= target:
             return 1.0
-        if axon_time <= timeout:
-            return 1.0 - (axon_time - self.target_time) / (timeout - self.target_time)
+        if budget and budget > 0:
+            if axon_time <= budget:
+                return 1.0 - 0.5 * (axon_time - target) / (budget - target)
+            over = 0.5 * budget
+            if axon_time <= budget + over:
+                return 0.5 * (1.0 - (axon_time - budget) / over)
         return 0.0
 
     async def get_rewards(self, responses: List, uids) -> Tuple[List[BaseRewardEvent]]:
@@ -105,9 +143,7 @@ class PerformanceRewardModel(BaseRewardModel):
         """
         reward_events = []
         try:
-            uids = [
-                uid.item() if hasattr(uid, "item") else uid for uid in uids
-            ]
+            uids = [uid.item() if hasattr(uid, "item") else uid for uid in uids]
 
             if isinstance(responses[0], ScraperStreamingSynapse):
                 response_times = self.get_response_times(uids, responses)
@@ -127,7 +163,7 @@ class PerformanceRewardModel(BaseRewardModel):
             for response_time, response in zip(response_times, responses):
                 reward_event = BaseRewardEvent()
                 reward_event.reward = self.reward(
-                    response_time, response.max_execution_time
+                    response_time, self._scoring_budget(response)
                 )
                 reward_events.append(reward_event)
 

@@ -25,7 +25,10 @@ from neurons.validators.penalty.result_schema_penalty import ResultSchemaPenalty
 from neurons.validators.penalty.sort_order_penalty import SortOrderPenaltyModel
 from neurons.validators.penalty.timeout_penalty import TimeoutPenaltyModel
 from neurons.validators.reward import RewardScoringType
-from neurons.validators.reward.performance_reward import PerformanceRewardModel
+from neurons.validators.reward.performance_reward import (
+    X_PERF_FLOOR,
+    PerformanceRewardModel,
+)
 from neurons.validators.reward.twitter_basic_search_content_relevance import (
     TwitterBasicSearchContentRelevanceModel,
 )
@@ -41,13 +44,12 @@ class XScraperValidator(BaseScraperValidator):
         self.timeout = 180
         self.max_execution_time = 10
 
-        self.twitter_content_weight = 0.70
-        self.performance_weight = 0.30
+        self.twitter_content_weight = 1.0
+        self.perf_floor = X_PERF_FLOOR
 
         reward_weights = np.array(
             [
                 self.twitter_content_weight,
-                self.performance_weight,
             ],
             dtype=np.float32,
         )
@@ -57,12 +59,13 @@ class XScraperValidator(BaseScraperValidator):
                 scoring_type=RewardScoringType.search_relevance_score_template,
                 neuron=neuron,
             ),
-            PerformanceRewardModel(
-                neuron=neuron,
-                min_realistic_time=1.0,
-                target_time=3.0,
-            ),
         ]
+
+        performance_model = PerformanceRewardModel(
+            neuron=neuron,
+            min_realistic_time=1.0,
+            target_time=3.0,
+        )
 
         penalty_functions = [
             TimeoutPenaltyModel(max_penalty=1, neuron=neuron),
@@ -79,6 +82,8 @@ class XScraperValidator(BaseScraperValidator):
             reward_weights=reward_weights,
             reward_functions=reward_functions,
             penalty_functions=penalty_functions,
+            performance_model=performance_model,
+            perf_floor=self.perf_floor,
         )
 
     def calc_max_execution_time(self, count):
