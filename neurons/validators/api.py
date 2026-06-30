@@ -18,8 +18,9 @@ from desearch.dataset.date_filters import DateFilterType
 from desearch.miner_config import SEARCH_TYPES
 from desearch.protocol import (
     ChatHistoryItem,
-    Model,
     ResultType,
+    ScraperTextRole,
+    SearchMode,
     TwitterScraperTweet,
     WebSearchResultList,
 )
@@ -140,10 +141,10 @@ class SearchRequest(BaseModel):
         example=DateFilterType.PAST_WEEK.value,
     )
 
-    model: Optional[Model] = Field(
-        default=Model.NOVA,
-        description=f"Model to use for scraping. {format_enum_values(Model)}",
-        example=Model.NOVA.value,
+    mode: Optional[SearchMode] = Field(
+        default=None,
+        description=f"Speed/quality mode for the search. {format_enum_values(SearchMode)}",
+        example=SearchMode.BALANCED.value,
     )
 
     count: Optional[int] = Field(
@@ -158,6 +159,11 @@ class SearchRequest(BaseModel):
         default=ResultType.LINKS_WITH_FINAL_SUMMARY,
         description=f"Type of result. {format_enum_values(ResultType)}",
         example=ResultType.LINKS_WITH_FINAL_SUMMARY.value,
+    )
+
+    stream: bool = Field(
+        default=True,
+        description="Stream results over SSE. Only affects LINKS_WITH_FINAL_SUMMARY (the summary streams); otherwise a single JSON object is returned.",
     )
 
     system_message: Optional[str] = Field(
@@ -190,11 +196,7 @@ class LinksSearchRequest(BaseModel):
         ..., description="List of tools to search with", example=available_tools
     )
 
-    model: Optional[Model] = Field(
-        default=Model.NOVA,
-        description=f"Model to use for scraping. {format_enum_values(Model)}",
-        example=Model.NOVA.value,
-    )
+    model: Optional[str] = Field(default=None, description="Deprecated; ignored.")
 
     count: Optional[int] = Field(
         10,
@@ -219,27 +221,31 @@ Request Body Fields:
 """
 
 
+def _build_query(body: SearchRequest) -> dict:
+    return {
+        "content": body.prompt,
+        "tools": body.tools,
+        "count": body.count,
+        "date_filter": body.date_filter.value,
+        "start_date": body.start_date,
+        "end_date": body.end_date,
+        "system_message": body.system_message,
+        "scoring_system_message": body.scoring_system_message,
+        "chat_history": body.chat_history,
+        "include_domains": body.include_domains,
+        "exclude_domains": body.exclude_domains,
+        "mode": body.mode.value if body.mode else None,
+    }
+
+
 async def response_stream_event(data: SearchRequest):
     try:
-        query = {
-            "content": data.prompt,
-            "tools": data.tools,
-            "count": data.count,
-            "date_filter": data.date_filter.value,
-            "start_date": data.start_date,
-            "end_date": data.end_date,
-            "system_message": data.system_message,
-            "scoring_system_message": data.scoring_system_message,
-            "chat_history": data.chat_history,
-            "include_domains": data.include_domains,
-            "exclude_domains": data.exclude_domains,
-        }
+        query = _build_query(data)
 
         merged_chunks = ""
 
         async for response in api.advanced_scraper_validator.organic(
             query,
-            data.model,
             result_type=data.result_type,
         ):
             # Decode the chunk if necessary and merge
@@ -311,83 +317,91 @@ async def aggregate_search_results(responses: List[bt.Synapse], tools: List[str]
     return aggregated
 
 
-async def handle_search_links(
-    body: LinksSearchRequest,
-    tools: List[str],
-):
-    query = {"content": body.prompt, "tools": tools, "count": body.count}
+async def collect_search_response(body: SearchRequest):
     synapses = []
-
-    bt.logging.info(f"Handle search links, query: {query}")
 
     try:
         async for item in api.advanced_scraper_validator.organic(
-            query,
-            body.model,
+            _build_query(body),
+            result_type=body.result_type,
             is_collect_final_synapses=True,
-            result_type=ResultType.ONLY_LINKS,
         ):
             synapses.append(item)
-
-        # Aggregate the results
-        aggregated_results = await aggregate_search_results(synapses, tools)
-
-        return aggregated_results
-
     except Exception as e:
-        bt.logging.error(f"Error in handle_search_links: {e}")
+        bt.logging.error(f"Error in collect_search_response: {e}")
         raise HTTPException(status_code=500, detail="Internal Server Error")
+
+    aggregated = await aggregate_search_results(synapses, body.tools)
+
+    if body.result_type == ResultType.LINKS_WITH_FINAL_SUMMARY:
+        summary = ""
+        for synapse in synapses:
+            if synapse is not None:
+                summary = synapse.texts.get(ScraperTextRole.FINAL_SUMMARY.value, "")
+                if summary:
+                    break
+        aggregated["summary"] = summary
+
+    return aggregated
 
 
 @app.post(
     "/search",
     summary="Search across multiple platforms",
     description=SEARCH_DESCRIPTION,
-    response_description="A stream of search results from the specified tools.",
+    response_description="An SSE stream (stream=true) or a single JSON object (stream=false).",
 )
 async def search(body: SearchRequest, _=Depends(verify_access_key)):
-    """
-    Search endpoint that accepts a JSON body with search parameters.
-    """
-
     bt.logging.info(f"/search request: {body}")
 
-    return StreamingResponse(response_stream_event(body))
+    if body.stream and body.result_type == ResultType.LINKS_WITH_FINAL_SUMMARY:
+        return StreamingResponse(response_stream_event(body))
+
+    return await collect_search_response(body)
+
+
+async def handle_search_links(body: LinksSearchRequest, tools: List[str]):
+    query = {"content": body.prompt, "tools": tools, "count": body.count}
+    synapses = []
+
+    try:
+        async for item in api.advanced_scraper_validator.organic(
+            query,
+            is_collect_final_synapses=True,
+            result_type=ResultType.ONLY_LINKS,
+        ):
+            synapses.append(item)
+
+        return await aggregate_search_results(synapses, tools)
+    except Exception as e:
+        bt.logging.error(f"Error in handle_search_links: {e}")
+        raise HTTPException(status_code=500, detail="Internal Server Error")
 
 
 @app.post(
     "/search/links/web",
-    summary="Search links across web platforms",
-    description="Search links using all tools except Twitter Search.",
-    response_description="A JSON object mapping tool names to their search results.",
+    summary="[Deprecated] Search web links",
+    description="Deprecated; use /search with result_type=ONLY_LINKS. Kept for migration.",
 )
 async def search_links_web(body: LinksSearchRequest, _=Depends(verify_access_key)):
-    bt.logging.info(f"/search/links/web request: {body}")
-
     return await handle_search_links(body, tools=body.tools)
 
 
 @app.post(
     "/search/links/twitter",
-    summary="Search links on Twitter",
-    description="Search links using only Twitter Search.",
-    response_description="A JSON object mapping Twitter Search to its search results.",
+    summary="[Deprecated] Search Twitter links",
+    description="Deprecated; use /search with result_type=ONLY_LINKS. Kept for migration.",
 )
 async def search_links_twitter(body: LinksSearchRequest, _=Depends(verify_access_key)):
-    bt.logging.info(f"/search/links/twitter request: {body}")
-
     return await handle_search_links(body, tools=body.tools)
 
 
 @app.post(
     "/search/links",
-    summary="Search links for all tools",
-    description="Search links using all tools.",
-    response_description="A JSON object mapping all tools to their search results.",
+    summary="[Deprecated] Search links for all tools",
+    description="Deprecated; use /search with result_type=ONLY_LINKS. Kept for migration.",
 )
 async def search_links(body: LinksSearchRequest, _=Depends(verify_access_key)):
-    bt.logging.info(f"/search/links request: {body}")
-
     return await handle_search_links(body, tools=available_tools)
 
 

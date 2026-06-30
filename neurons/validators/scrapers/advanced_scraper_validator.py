@@ -14,9 +14,10 @@ from desearch.protocol import (
     Model,
     ResultType,
     ScraperStreamingSynapse,
+    SearchMode,
 )
 from desearch.stream import collect_final_synapses
-from desearch.utils import get_max_execution_time
+from desearch.utils import get_max_execution_time, get_mode_serving_budget
 from neurons.validators.base_validator import AbstractNeuron
 from neurons.validators.clients.miner_response_logger import (
     build_log_entry,
@@ -161,8 +162,13 @@ class AdvancedScraperValidator(BaseScraperValidator):
         count: Optional[int] = 10,
         include_domains: Optional[List[str]] = None,
         exclude_domains: Optional[List[str]] = None,
+        mode: Optional[SearchMode] = None,
     ):
-        max_execution_time = get_max_execution_time(model, count)
+        max_execution_time = (
+            get_mode_serving_budget(mode)
+            if mode
+            else get_max_execution_time(model, count)
+        )
 
         start_time = time.time()
 
@@ -194,6 +200,7 @@ class AdvancedScraperValidator(BaseScraperValidator):
             region=region,
             google_date_filter=google_date_filter,
             max_execution_time=max_execution_time,
+            mode=mode,
             result_type=result_type,
             system_message=system_message,
             scoring_system_message=scoring_system_message,
@@ -323,6 +330,7 @@ class AdvancedScraperValidator(BaseScraperValidator):
             end_date = query.get("end_date")
             include_domains = query.get("include_domains", [])
             exclude_domains = query.get("exclude_domains", [])
+            mode = query.get("mode")
 
             if start_date or end_date:
                 date_filter = DateFilter(start_date=start_date, end_date=end_date)
@@ -346,6 +354,7 @@ class AdvancedScraperValidator(BaseScraperValidator):
                 count=count,
                 include_domains=include_domains,
                 exclude_domains=exclude_domains,
+                mode=mode,
             )
 
             final_synapses = []
