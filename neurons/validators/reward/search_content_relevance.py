@@ -20,7 +20,7 @@ from neurons.validators.utils.response_checks import (
 )
 from neurons.validators.utils.source_bodies import (
     cited_urls_normalized,
-    highlight_subset_of_body,
+    highlights_in_order,
     sample_cited_and_uncited,
 )
 
@@ -34,6 +34,16 @@ MAX_CITED_SAMPLE = 2
 
 def response_uses_web_tools(response: ScraperStreamingSynapse) -> bool:
     return bool(set(response.tools or []) & WEB_TOOLS)
+
+
+def link_meets_evidence(miner_highlights, miner_text, fetched_body) -> bool:
+    if not miner_highlights or not miner_text:
+        return False
+    if not highlights_in_order(miner_highlights, fetched_body):
+        return False
+    if not highlights_in_order(miner_highlights, miner_text):
+        return False
+    return True
 
 
 class WebSearchContentRelevanceModel(BaseRewardModel):
@@ -65,12 +75,12 @@ class WebSearchContentRelevanceModel(BaseRewardModel):
             body = validator_link.get("body", "")
 
             miner_highlights = validator_link.get("miner_highlights") or []
-            verified_highlights = highlight_subset_of_body(miner_highlights, body)
-            validator_link["verified_highlights"] = verified_highlights
-            judged_body = (
-                "\n\n".join(verified_highlights) if verified_highlights else body
-            )
+            miner_text = validator_link.get("miner_text") or ""
 
+            if not link_meets_evidence(miner_highlights, miner_text, body):
+                continue
+
+            judged_body = "\n\n".join(miner_highlights)
             messages = build_body_relevance_messages(
                 response.prompt, url, title, judged_body
             )
@@ -107,6 +117,7 @@ class WebSearchContentRelevanceModel(BaseRewardModel):
                 continue
             meta[normalize_source_url(link)] = {
                 "highlights": result.get("highlights"),
+                "text": result.get("text"),
             }
         return meta
 
@@ -187,6 +198,7 @@ class WebSearchContentRelevanceModel(BaseRewardModel):
                         {
                             **link_with_metadata,
                             "miner_highlights": meta.get("highlights") or [],
+                            "miner_text": meta.get("text") or "",
                         }
                     )
 
@@ -246,7 +258,14 @@ class WebSearchContentRelevanceModel(BaseRewardModel):
                     link_scores.append(0)
                     continue
 
-                link_scores.append(1 if url in web_search_results else 0)
+                has_evidence = link_meets_evidence(
+                    val_link.get("miner_highlights") or [],
+                    val_link.get("miner_text") or "",
+                    val_link.get("body") or "",
+                )
+                link_scores.append(
+                    1 if (url in web_search_results and has_evidence) else 0
+                )
 
             if link_scores:
                 return sum(link_scores) / len(link_scores)

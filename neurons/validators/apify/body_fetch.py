@@ -15,9 +15,6 @@ _CACHE_TTL_S = 600
 _MAX_CACHE_ENTRIES = 2000
 _MIN_ARTICLE_CHARS = 200
 
-_TAG_BLOCK = re.compile(r"<(script|style|noscript|svg)[^>]*>.*?</\1>", re.I | re.S)
-_TAGS = re.compile(r"<[^>]+>")
-_WS = re.compile(r"\s+")
 _VERDICT_INJECTION = re.compile(r"(?i)\bverdict\b\s*:")
 _JS_GATE = re.compile(
     r"(?i)(please enable javascript|enable javascript and refresh|"
@@ -32,12 +29,6 @@ def sanitize_body_text(text: str) -> str:
 
 def is_usable_article(text: str) -> bool:
     return bool(text) and len(text) >= _MIN_ARTICLE_CHARS and not _JS_GATE.search(text)
-
-
-def _naive_strip(html: str) -> str:
-    s = _TAG_BLOCK.sub(" ", html)
-    s = _TAGS.sub(" ", s)
-    return _WS.sub(" ", s).strip()
 
 
 def extract_article_text(html: str, url: str, max_chars: int = _RAW_CACHE_CHARS) -> str:
@@ -60,14 +51,6 @@ def extract_article_text(html: str, url: str, max_chars: int = _RAW_CACHE_CHARS)
         ).strip()
     except Exception as e:
         bt.logging.trace(f"trafilatura failed for {url}: {e}")
-
-    if not text:
-        try:
-            from readability import Document
-
-            text = _naive_strip(Document(html).summary() or "")
-        except Exception:
-            text = _naive_strip(html)
 
     return sanitize_body_text(text)[:max_chars]
 

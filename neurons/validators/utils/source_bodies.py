@@ -33,6 +33,23 @@ def highlight_subset_of_body(highlights, body):
     return verified
 
 
+def highlights_in_order(highlights, body) -> bool:
+    """True only if every highlight appears in body, in order and non-overlapping."""
+    normalized_body = _normalize_for_match(body)
+    if not normalized_body or not highlights:
+        return False
+    cursor = 0
+    for highlight in highlights:
+        normalized = _normalize_for_match(highlight)
+        if not normalized:
+            return False
+        idx = normalized_body.find(normalized, cursor)
+        if idx == -1:
+            return False
+        cursor = idx + len(normalized)
+    return True
+
+
 def cited_urls_normalized(summary):
     return {normalize_source_url(u) for _, u in extract_markdown_links(summary)}
 
