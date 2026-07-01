@@ -11,6 +11,11 @@ import bittensor as bt
 
 # One HF repo holds both subsets: questions/ (web/news) and x/ (twitter).
 DATASET_REPO = "desearch/dataset"
+
+DESEARCH_SUBSETS = (
+    {"name": "web", "prefix": "questions/", "lane": "news"},
+    {"name": "x", "prefix": "x/", "lane": "x"},
+)
 CACHE_DIR = os.path.join(os.path.expanduser("~"), ".cache", "desearch-questions")
 REFRESH_SECONDS = 4 * 60 * 60
 
@@ -126,6 +131,10 @@ class HFQuestionPool:
         random.shuffle(lane_rows)
         return lane_rows[:n]
 
+    def sample_subset(self, name: str, n: int) -> Optional[List[dict]]:
+        lane = next((s["lane"] for s in DESEARCH_SUBSETS if s["name"] == name), name)
+        return self.sample_lane(lane, n)
+
     @staticmethod
     def _dedup_by_id(rows: List[dict]) -> List[dict]:
         seen: set[str] = set()
@@ -142,11 +151,9 @@ class HFQuestionPool:
 
         api = HfApi()
         files = api.list_repo_files(self.repo_id, repo_type="dataset")
+        prefixes = tuple(s["prefix"] for s in DESEARCH_SUBSETS)
         question_files = [
-            f
-            for f in files
-            if f.endswith(".jsonl")
-            and (f.startswith("questions/") or f.startswith("x/"))
+            f for f in files if f.endswith(".jsonl") and f.startswith(prefixes)
         ]
 
         self.cache_dir.mkdir(parents=True, exist_ok=True)
@@ -162,10 +169,17 @@ class HFQuestionPool:
 
         return paths
 
+    @staticmethod
+    def _lane_for_path(path: Path) -> str:
+        for subset in DESEARCH_SUBSETS:
+            if path.parent.name == subset["prefix"].rstrip("/"):
+                return subset["lane"]
+        return "news"
+
     def _parse_files(self, paths: List[Path]) -> List[dict]:
         rows: List[dict] = []
         for path in paths:
-            lane = "x" if path.parent.name == "x" else "news"
+            lane = self._lane_for_path(path)
             for line in path.read_text().splitlines():
                 line = line.strip()
                 if not line:

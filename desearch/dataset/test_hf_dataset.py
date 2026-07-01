@@ -85,6 +85,18 @@ def test_news_and_x_lanes_coexist(tmp_path):
     assert all(r["start_date"] is None for r in news_rows)
 
 
+def test_sample_subset_maps_card_names(tmp_path):
+    pool = _make_pool(tmp_path)
+
+    x = pool.sample_subset("x", 5)
+    assert x is not None and all(r["lane"] == "x" for r in x)
+
+    web = pool.sample_subset("web", 5)
+    assert web is not None and all(r["lane"] == "news" for r in web)
+
+    assert pool.sample_subset("nope", 3) is None
+
+
 if __name__ == "__main__":
     import tempfile
 
@@ -92,6 +104,7 @@ if __name__ == "__main__":
         test_x_rows_tagged_and_dates_preserved,
         test_sample_lane_returns_only_that_lane,
         test_news_and_x_lanes_coexist,
+        test_sample_subset_maps_card_names,
     ):
         with tempfile.TemporaryDirectory() as d:
             fn(Path(d))
