@@ -13,7 +13,6 @@ from desearch.utils import (
     SearchMode,
     get_mode_serving_budget,
 )
-from neurons.validators.env import USE_DATASET_QUESTIONS
 
 WEB_TOOL = "Web Search"
 TWITTER_TOOL = "Twitter Search"
@@ -41,7 +40,7 @@ class SyntheticQueryGenerator:
     def __init__(self):
         self.questions_dataset = QuestionsDataset()
         self.basic_dataset = BasicQuestionsDataset()
-        self.hf_pool = HFQuestionPool() if USE_DATASET_QUESTIONS else None
+        self.hf_pool = HFQuestionPool()
 
     async def generate_epoch_queries(
         self,
@@ -54,13 +53,14 @@ class SyntheticQueryGenerator:
 
         ai_date_filter = random.choice(random_date_filters)
 
-        if self.hf_pool is not None:
-            items = self._generate_dataset_queries(available_uids, verified_by_type)
-            if items is not None:
-                return items
-            bt.logging.warning(
-                "[SyntheticGen] Dataset pool unavailable, falling back to LLM path"
-            )
+        items = await asyncio.to_thread(
+            self._generate_dataset_queries, available_uids, verified_by_type
+        )
+        if items is not None:
+            return items
+        bt.logging.warning(
+            "[SyntheticGen] Dataset pool unavailable, falling back to LLM path"
+        )
 
         bt.logging.info(
             f"[SyntheticGen] Epoch params: date_filter={ai_date_filter.value}"
