@@ -21,7 +21,10 @@ from neurons.validators.penalty.min_realistic_time_penalty import (
 from neurons.validators.penalty.result_schema_penalty import ResultSchemaPenaltyModel
 from neurons.validators.penalty.timeout_penalty import TimeoutPenaltyModel
 from neurons.validators.reward import RewardScoringType
-from neurons.validators.reward.performance_reward import PerformanceRewardModel
+from neurons.validators.reward.performance_reward import (
+    WEB_PERF_FLOOR,
+    PerformanceRewardModel,
+)
 from neurons.validators.reward.reward_llm import RewardLLM
 from neurons.validators.reward.web_basic_search_content_relevance import (
     WebBasicSearchContentRelevanceModel,
@@ -38,15 +41,14 @@ class WebScraperValidator(BaseScraperValidator):
         self.timeout = 180
         self.max_execution_time = 5
 
-        self.web_content_weight = 0.70
-        self.performance_weight = 0.30
+        self.web_content_weight = 1.0
+        self.perf_floor = WEB_PERF_FLOOR
 
         self.reward_llm = RewardLLM(neuron.config.neuron.scoring_model)
 
         reward_weights = np.array(
             [
                 self.web_content_weight,
-                self.performance_weight,
             ],
             dtype=np.float32,
         )
@@ -57,12 +59,13 @@ class WebScraperValidator(BaseScraperValidator):
                 neuron=neuron,
                 llm_reward=self.reward_llm,
             ),
-            PerformanceRewardModel(
-                neuron=neuron,
-                min_realistic_time=0.7,
-                target_time=2.0,
-            ),
         ]
+
+        performance_model = PerformanceRewardModel(
+            neuron=neuron,
+            min_realistic_time=0.7,
+            target_time=2.0,
+        )
 
         penalty_functions = [
             TimeoutPenaltyModel(max_penalty=1, neuron=neuron),
@@ -77,6 +80,8 @@ class WebScraperValidator(BaseScraperValidator):
             reward_weights=reward_weights,
             reward_functions=reward_functions,
             penalty_functions=penalty_functions,
+            performance_model=performance_model,
+            perf_floor=self.perf_floor,
         )
 
     def _build_synapse(self, prompt: str, params: Dict[str, Any]) -> WebSearchSynapse:

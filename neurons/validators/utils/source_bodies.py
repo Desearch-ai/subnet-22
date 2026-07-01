@@ -1,5 +1,6 @@
 """Build/normalize the cited source bodies the groundedness judge reads."""
 
+import html
 import random
 import re
 
@@ -11,6 +12,42 @@ from neurons.validators.utils.response_checks import (
 
 _CITATION_MARKER = re.compile(r"\[\d+\]\((https?://[^)]+)\)")
 _TWEET_ID = re.compile(r"/status/(\d+)")
+_NON_WORD = re.compile(r"\W+")
+
+
+def _normalize_for_match(text: str) -> str:
+    """Casefold, unescape entities, drop non-word chars (Unicode-aware) for fuzzy containment."""
+    return _NON_WORD.sub("", html.unescape(text or "").casefold())
+
+
+def highlight_subset_of_body(highlights, body):
+    """Return the subset of highlights actually present in body (normalized fuzzy containment)."""
+    normalized_body = _normalize_for_match(body)
+    if not normalized_body:
+        return []
+    verified = []
+    for highlight in highlights or []:
+        normalized = _normalize_for_match(highlight)
+        if normalized and normalized in normalized_body:
+            verified.append(highlight)
+    return verified
+
+
+def highlights_in_order(highlights, body) -> bool:
+    """True only if every highlight appears in body, in order and non-overlapping."""
+    normalized_body = _normalize_for_match(body)
+    if not normalized_body or not highlights:
+        return False
+    cursor = 0
+    for highlight in highlights:
+        normalized = _normalize_for_match(highlight)
+        if not normalized:
+            return False
+        idx = normalized_body.find(normalized, cursor)
+        if idx == -1:
+            return False
+        cursor = idx + len(normalized)
+    return True
 
 
 def cited_urls_normalized(summary):

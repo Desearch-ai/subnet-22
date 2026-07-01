@@ -1,8 +1,22 @@
 import os
-from typing import Optional
+from typing import List, Optional
 
 import aiohttp
 import bittensor as bt
+
+
+def _clean_domains(raw: Optional[List[str]]) -> List[str]:
+    seen = []
+    for item in raw or []:
+        domain = (item or "").strip().strip("/").lower()
+        if domain.startswith("http://"):
+            domain = domain[len("http://") :]
+        elif domain.startswith("https://"):
+            domain = domain[len("https://") :]
+        domain = domain.split("/", 1)[0].rstrip(".")
+        if domain and domain not in seen:
+            seen.append(domain)
+    return seen
 
 
 class ScrapingDogGoogleSearch:
@@ -16,6 +30,8 @@ class ScrapingDogGoogleSearch:
         results: int = 10,
         site: Optional[str] = None,
         query_suffix: str = "",
+        include_domains: Optional[List[str]] = None,
+        exclude_domains: Optional[List[str]] = None,
     ) -> None:
         self.language = language or "en"
         self.region = region or "us"
@@ -23,10 +39,19 @@ class ScrapingDogGoogleSearch:
         self.results = max(1, min(results or 10, 100))
         self.site = site
         self.query_suffix = query_suffix.strip()
+        self.include_domains = _clean_domains(include_domains)
+        self.exclude_domains = _clean_domains(exclude_domains)
         self.api_key = os.environ.get("SCRAPINGDOG_API_KEY", "")
 
     def build_query(self, query: str) -> str:
         parts = [query.strip()]
+
+        if self.include_domains:
+            clause = " OR ".join(f"site:{d}" for d in self.include_domains)
+            parts.append(f"({clause})" if len(self.include_domains) > 1 else clause)
+
+        for domain in self.exclude_domains:
+            parts.append(f"-site:{domain}")
 
         if self.site:
             parts.append(f"site:{self.site}")

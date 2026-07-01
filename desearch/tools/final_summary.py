@@ -71,7 +71,6 @@ async def generate_summary(
     if date_filter:
         date_filter_context = (
             "Date filter applied to tweets: "
-            f"{date_filter.date_filter_type.value}, "
             f"start date: {date_filter.start_date.strftime('%Y-%m-%d')}, "
             f"end date: {date_filter.end_date.strftime('%Y-%m-%d')}."
         )

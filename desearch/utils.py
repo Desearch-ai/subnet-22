@@ -13,6 +13,7 @@ from openai import AsyncOpenAI
 from pydantic import ValidationError
 
 from desearch.protocol import (
+    SearchMode,
     Model,
     ScoringModel,
     TwitterScraperTweet,
@@ -49,6 +50,25 @@ class LazyAsyncOpenAIClient:
 
 
 client = LazyAsyncOpenAIClient(timeout=90.0)
+
+
+MODE_BUDGETS: dict[SearchMode, int] = {
+    SearchMode.FAST: 5,
+    SearchMode.BALANCED: 15,
+    SearchMode.DEEP: 30,
+}
+
+AI_SEARCH_MODES: List[SearchMode] = list(MODE_BUDGETS.keys())
+
+SERVING_FLOOR = 15
+
+
+def get_mode_budget(mode: SearchMode) -> int:
+    return MODE_BUDGETS[SearchMode(mode)]
+
+
+def get_mode_serving_budget(mode: SearchMode) -> int:
+    return max(get_mode_budget(mode), SERVING_FLOOR)
 
 
 def get_max_execution_time(model: Model, count: int):

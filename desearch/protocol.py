@@ -284,6 +284,12 @@ class ScoringModel(str, Enum):
     QWEN3_6_27B = "Qwen/Qwen3.6-27B-TEE"
 
 
+class SearchMode(str, Enum):
+    FAST = "fast"
+    BALANCED = "balanced"
+    DEEP = "deep"
+
+
 class ReportItem(BaseModel):
     title: str
     description: Optional[str] = ""
@@ -303,6 +309,10 @@ class SearchResultItem(BaseModel):
     title: str
     link: str
     snippet: str
+    highlights: Optional[List[str]] = None
+    published_date: Optional[str] = None
+    author: Optional[str] = None
+    text: Optional[str] = None
 
 
 class ChatHistoryItem(BaseModel):
@@ -360,6 +370,20 @@ class ScraperStreamingSynapse(StreamingSynapse):
         default_factory=list,
         title="Tools",
         description="A list of tools specified by user to use to answer question.",
+    )
+
+    include_domains: Optional[List[str]] = pydantic.Field(
+        default_factory=list,
+        title="Include Domains",
+        description="Restrict Web Search results to these domains.",
+        allow_mutation=False,
+    )
+
+    exclude_domains: Optional[List[str]] = pydantic.Field(
+        default_factory=list,
+        title="Exclude Domains",
+        description="Drop Web Search results from these domains.",
+        allow_mutation=False,
     )
 
     start_date: Optional[str] = pydantic.Field(
@@ -486,6 +510,13 @@ class ScraperStreamingSynapse(StreamingSynapse):
         None,
         title="Max Execution Time (timeout)",
         description="Maximum time to execute concrete request",
+    )
+
+    mode: Optional[SearchMode] = pydantic.Field(
+        None,
+        title="mode",
+        description="AI-search speed mode (fast/balanced/deep). Sets the speed target "
+        "the response is scored against; max_execution_time is the serving cap.",
     )
 
     max_items: Optional[int] = pydantic.Field(

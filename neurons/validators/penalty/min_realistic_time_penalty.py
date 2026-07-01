@@ -2,6 +2,10 @@ from typing import Optional
 
 from neurons.validators.base_validator import AbstractNeuron
 from neurons.validators.penalty.penalty import CheapPenaltyModel, PenaltyModelType
+from neurons.validators.reward.performance_reward import (
+    min_realistic_for_budget,
+    resolve_scoring_budget,
+)
 
 
 class MinRealisticTimePenaltyModel(CheapPenaltyModel):
@@ -29,11 +33,17 @@ class MinRealisticTimePenaltyModel(CheapPenaltyModel):
         except (TypeError, ValueError):
             return None
 
+    def _min_realistic_for(self, response) -> float:
+        return min_realistic_for_budget(
+            resolve_scoring_budget(response), self.min_realistic_time
+        )
+
     def penalty_for(self, response) -> float:
         dendrite = getattr(response, "dendrite", None)
         process_time = self._safe_float(getattr(dendrite, "process_time", None))
         if process_time is None:
             return 0.0
-        if process_time < self.min_realistic_time:
+
+        if process_time < self._min_realistic_for(response):
             return self.max_penalty
         return 0.0

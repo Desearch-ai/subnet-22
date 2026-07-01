@@ -9,7 +9,9 @@ from neurons.validators.clients.miner_response_logger import (
     build_reward_payload,
     submit_logs,
 )
-from neurons.validators.scrapers.advanced_scraper_validator import AdvancedScraperValidator
+from neurons.validators.scrapers.advanced_scraper_validator import (
+    AdvancedScraperValidator,
+)
 from neurons.validators.scrapers.web_scraper_validator import WebScraperValidator
 from neurons.validators.scrapers.x_scraper_validator import XScraperValidator
 
@@ -189,7 +191,7 @@ def test_build_log_entry_excludes_html_fields_from_response_payload():
 @pytest.mark.parametrize(
     ("search_type", "component_names"),
     [
-        ("ai_search", ["twitter", "search", "summary", "performance"]),
+        ("ai_search", ["content", "summary", "performance"]),
         ("x_search", ["twitter", "performance"]),
         ("web_search", ["search", "performance"]),
     ],

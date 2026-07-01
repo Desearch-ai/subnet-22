@@ -34,7 +34,11 @@ class WebSearchTool(BaseTool):
         query: str,
     ):
         """Search web and return the results."""
-        search = ScrapingDogGoogleSearch()
+        synapse = getattr(getattr(self, "tool_manager", None), "synapse", None)
+        search = ScrapingDogGoogleSearch(
+            include_domains=getattr(synapse, "include_domains", None),
+            exclude_domains=getattr(synapse, "exclude_domains", None),
+        )
 
         try:
             return await search.search(query)
