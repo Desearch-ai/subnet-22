@@ -11,12 +11,6 @@ MINER_DB_PATH = os.environ.get(
     os.path.join(_REPO_ROOT, ".state", "miner_state.db"),
 )
 
-USE_DATASET_QUESTIONS = os.environ.get("USE_DATASET_QUESTIONS", "").lower() in (
-    "1",
-    "true",
-    "yes",
-)
-
 MIN_ACCESS_KEY_LENGTH = 16
 
 
