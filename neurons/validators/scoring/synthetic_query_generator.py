@@ -53,7 +53,9 @@ class SyntheticQueryGenerator:
 
         ai_date_filter = random.choice(random_date_filters)
 
-        items = self._generate_dataset_queries(available_uids, verified_by_type)
+        items = await asyncio.to_thread(
+            self._generate_dataset_queries, available_uids, verified_by_type
+        )
         if items is not None:
             return items
         bt.logging.warning(
