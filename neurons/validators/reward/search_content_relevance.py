@@ -112,6 +112,8 @@ class WebSearchContentRelevanceModel(BaseRewardModel):
     def _miner_link_metadata(self, response):
         meta = {}
         for result in response.search_results or []:
+            if not isinstance(result, dict):
+                result = result.model_dump()
             link = result.get("link")
             if not link:
                 continue
