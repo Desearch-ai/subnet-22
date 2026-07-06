@@ -267,7 +267,10 @@ class TwitterBasicSearchContentRelevanceModel(BaseRewardModel):
 
         return ("", None, None) if val1 == val2 else (path, val1, val2)
 
-    def compare_media(self, media1: List[dict], media2: List[dict]) -> bool:
+    def compare_media(
+        self, media1: Optional[List[dict]], media2: Optional[List[dict]]
+    ) -> bool:
+        media1, media2 = media1 or [], media2 or []
         if len(media1) != len(media2):
             return False
 
@@ -639,7 +642,7 @@ class TwitterBasicSearchContentRelevanceModel(BaseRewardModel):
                 ):
                     tweet_score.append(0)
                     bt.logging.debug(
-                        f"Tweet media mismatch: {f} => {miner_user.get('media')} vs {val_user.get('media')}"
+                        f"Tweet media mismatch: {miner_tweet.get('media')} vs {val_tweet_dict.get('media')}"
                     )
                 else:
                     tweet_score.append(1)

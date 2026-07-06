@@ -1,7 +1,6 @@
 from desearch.protocol import (
     ScraperStreamingSynapse,
     TwitterSearchSynapse,
-    WebSearchSynapse,
 )
 from neurons.validators.penalty.penalty import CheapPenaltyModel, PenaltyModelType
 
@@ -13,18 +12,14 @@ SEARCH_SUMMARY_FIELDS = ("search_results",)
 class CountPenaltyModel(CheapPenaltyModel):
     """Penalize miners that return fewer results than the validator requested.
 
-    Twitter uses ``count`` and Web uses ``num``. AI search checks per scoring
-    group (Twitter; Web) — mirroring
-    ``ScraperStreamingSynapse.get_search_results_by_tools``."""
+    Twitter uses ``count``. AI search checks per scoring group (Twitter; Web)
+    — mirroring ``ScraperStreamingSynapse.get_search_results_by_tools``."""
 
     name = PenaltyModelType.count_penalty.value
 
     def penalty_for(self, response) -> float:
         if isinstance(response, TwitterSearchSynapse):
             requested = response.count
-            got = len(response.results or [])
-        elif isinstance(response, WebSearchSynapse):
-            requested = response.num
             got = len(response.results or [])
         elif isinstance(response, ScraperStreamingSynapse):
             return self._ai_search_shortfall(response)
@@ -49,7 +44,9 @@ class CountPenaltyModel(CheapPenaltyModel):
 
         if any(t in tools for t in SEARCH_SUMMARY_TOOLS):
             group_totals.append(
-                sum(len(getattr(response, f, None) or []) for f in SEARCH_SUMMARY_FIELDS)
+                sum(
+                    len(getattr(response, f, None) or []) for f in SEARCH_SUMMARY_FIELDS
+                )
             )
 
         worst = 0.0

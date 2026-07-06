@@ -242,7 +242,7 @@ class ScrapingDogScraper:
 
         for url, result in zip(urls, results):
             if isinstance(result, Exception):
-                failed_urls.append(url)
+                failed_urls.append(f"{url} -> {type(result).__name__}: {result}")
                 continue
 
             if result:

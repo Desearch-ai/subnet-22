@@ -4,7 +4,6 @@ from desearch.protocol import (
     ScraperStreamingSynapse,
     SearchResultItem,
     TwitterSearchSynapse,
-    WebSearchSynapse,
 )
 from neurons.validators.penalty.duplicate_results_penalty import (
     DuplicateResultsPenaltyModel,
@@ -53,53 +52,17 @@ class DuplicateResultsPenaltyTestCase(unittest.IsolatedAsyncioTestCase):
         penalties = await self.model.calculate_penalties([response])
         self.assertEqual(penalties.tolist(), [1.0])
 
-    async def test_web_duplicate_links(self):
-        response = WebSearchSynapse(
-            query="x",
-            num=10,
-            results=[
-                {"link": "https://a"},
-                {"link": "https://b"},
-                {"link": "https://a"},
-            ],
-        )
-        penalties = await self.model.calculate_penalties([response])
-        self.assertEqual(penalties.tolist(), [1.0])
-
     async def test_single_duplicate_zeroes_response_multiplier(self):
-        response = WebSearchSynapse(
-            query="x",
-            num=10,
-            results=[
-                {"link": "https://a"},
-                {"link": "https://b"},
-                {"link": "https://a"},
+        response = ScraperStreamingSynapse(
+            prompt="x",
+            search_results=[
+                SearchResultItem(title="T1", link="https://a", snippet="s1"),
+                SearchResultItem(title="T2", link="https://b", snippet="s2"),
+                SearchResultItem(title="T3", link="https://a", snippet="s3"),
             ],
         )
         _, _, applied = await self.model.apply_penalties([response], uids=[0])
         self.assertEqual(applied.tolist(), [0.0])
-
-    async def test_web_duplicate_urls(self):
-        response = WebSearchSynapse(
-            query="x",
-            num=10,
-            results=[
-                {"url": "https://a"},
-                {"url": "https://b"},
-                {"url": "https://a"},
-            ],
-        )
-        penalties = await self.model.calculate_penalties([response])
-        self.assertEqual(penalties.tolist(), [1.0])
-
-    async def test_web_unique_links(self):
-        response = WebSearchSynapse(
-            query="x",
-            num=10,
-            results=[{"link": "https://a"}, {"link": "https://b"}],
-        )
-        penalties = await self.model.calculate_penalties([response])
-        self.assertEqual(penalties.tolist(), [0])
 
     async def test_ai_dup_in_miner_tweets(self):
         response = ScraperStreamingSynapse(
@@ -154,25 +117,31 @@ class DuplicateResultsPenaltyTestCase(unittest.IsolatedAsyncioTestCase):
         penalties = await self.model.calculate_penalties([response])
         self.assertEqual(penalties.tolist(), [0])
 
-    async def test_web_tracking_param_variant_is_duplicate(self):
-        response = WebSearchSynapse(
-            query="x",
-            num=10,
-            results=[
-                {"link": "https://a/page"},
-                {"link": "https://www.a/page/?utm_source=x&fbclid=y"},
+    async def test_www_tracking_param_variant_is_duplicate(self):
+        response = ScraperStreamingSynapse(
+            prompt="x",
+            search_results=[
+                SearchResultItem(title="T1", link="https://a/page", snippet="s1"),
+                SearchResultItem(
+                    title="T2",
+                    link="https://www.a/page/?utm_source=x&fbclid=y",
+                    snippet="s2",
+                ),
             ],
         )
         penalties = await self.model.calculate_penalties([response])
         self.assertEqual(penalties.tolist(), [1.0])
 
-    async def test_web_content_param_variant_is_distinct(self):
-        response = WebSearchSynapse(
-            query="x",
-            num=10,
-            results=[
-                {"link": "https://www.youtube.com/watch?v=AAA"},
-                {"link": "https://www.youtube.com/watch?v=BBB"},
+    async def test_content_param_variant_is_distinct(self):
+        response = ScraperStreamingSynapse(
+            prompt="x",
+            search_results=[
+                SearchResultItem(
+                    title="T1", link="https://www.youtube.com/watch?v=AAA", snippet="s1"
+                ),
+                SearchResultItem(
+                    title="T2", link="https://www.youtube.com/watch?v=BBB", snippet="s2"
+                ),
             ],
         )
         penalties = await self.model.calculate_penalties([response])

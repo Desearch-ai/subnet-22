@@ -9,7 +9,6 @@ from desearch.protocol import (
     TwitterIDSearchSynapse,
     TwitterSearchSynapse,
     TwitterURLsSearchSynapse,
-    WebSearchSynapse,
 )
 from neurons.validators.base_validator import AbstractNeuron
 
@@ -18,7 +17,6 @@ from .reward import BaseRewardEvent, BaseRewardModel, log_reward_aggregates
 
 
 AI_PERF_FLOOR = 0.50
-WEB_PERF_FLOOR = 0.70
 X_PERF_FLOOR = 0.70
 
 
@@ -153,7 +151,6 @@ class PerformanceRewardModel(BaseRewardModel):
                     TwitterSearchSynapse,
                     TwitterIDSearchSynapse,
                     TwitterURLsSearchSynapse,
-                    WebSearchSynapse,
                 ),
             ):
                 response_times = self.get_global_response_times(uids, responses)

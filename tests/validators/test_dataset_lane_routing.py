@@ -49,7 +49,6 @@ WEB_ROWS = {
 }
 
 X_QUESTIONS = {r["question"] for r in X_ROWS}
-WEB_QUESTIONS = {r["question"] for lane in WEB_ROWS.values() for r in lane}
 X_BY_QUESTION = {r["question"]: r for r in X_ROWS}
 
 
@@ -101,17 +100,6 @@ def test_x_search_uses_basic_not_dataset():
         q = it["query"]
         assert q["query"] == "FALLBACK_X_QUERY"
         assert "start_date" not in q and "end_date" not in q
-
-
-def test_web_search_sources_web_lanes():
-    gen = _make_gen(FakePool())
-
-    items = gen._generate_dataset_queries([1, 2, 3], {})
-
-    web_items = [i for i in items if i["search_type"] == "web_search"]
-    assert web_items
-    for it in web_items:
-        assert it["query"]["query"] in WEB_QUESTIONS
 
 
 def test_ai_twitter_tool_prefers_x_lane():
@@ -166,7 +154,6 @@ def test_randomness_across_invocations():
 
 if __name__ == "__main__":
     test_x_search_uses_basic_not_dataset()
-    test_web_search_sources_web_lanes()
     test_ai_twitter_tool_prefers_x_lane()
     test_x_fallback_when_no_x_lane()
     test_returns_none_when_pool_empty()

@@ -8,7 +8,6 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 import pytz
 
 from desearch.protocol import ScraperStreamingSynapse, ScraperTextRole
-from desearch.services.web_search_utils import WebSearchUtils
 
 MARKDOWN_LINK_PATTERN = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 HEADER_HASH_PATTERN = re.compile(r"^#{1,6}\s", re.MULTILINE)
@@ -41,7 +40,7 @@ def normalize_source_url(url: str) -> str:
         url = "https://" + url[len("https://www.") :]
     elif url.startswith("http://www."):
         url = "http://" + url[len("http://www.") :]
-    return WebSearchUtils.remove_trailing_slash(url)
+    return url.removesuffix("/")
 
 
 _TRACKING_PARAMS = frozenset(

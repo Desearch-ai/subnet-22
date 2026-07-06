@@ -4,7 +4,6 @@ from desearch.protocol import (
     ScraperStreamingSynapse,
     TwitterIDSearchSynapse,
     TwitterSearchSynapse,
-    WebSearchSynapse,
 )
 from neurons.validators.penalty.date_range_penalty import DateRangePenaltyModel
 
@@ -104,7 +103,6 @@ class DateRangePenaltyTestCase(unittest.IsolatedAsyncioTestCase):
 
     async def test_other_synapse_types_skipped(self):
         for response in [
-            WebSearchSynapse(query="x", num=10),
             TwitterIDSearchSynapse(id="1"),
         ]:
             penalties = await self.model.calculate_penalties([response])

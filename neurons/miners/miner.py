@@ -25,12 +25,10 @@ from desearch.protocol import (
     TwitterIDSearchSynapse,
     TwitterSearchSynapse,
     TwitterURLsSearchSynapse,
-    WebSearchSynapse,
 )
 from neurons.miners.config import check_config, get_config
 from neurons.miners.scraper_miner import ScraperMiner
 from neurons.miners.twitter_search_miner import TwitterSearchMiner
-from neurons.miners.web_search_miner import WebSearchMiner
 
 RATE_LIMIT_WINDOW_MINUTES = 1
 RATE_LIMIT_MAX_REQUESTS = 500
@@ -127,9 +125,6 @@ class StreamMiner(ABC):
         ).attach(
             forward_fn=self._twitter_urls_search,
             blacklist_fn=self.blacklist_twitter_urls_search,
-        ).attach(
-            forward_fn=self._web_search,
-            blacklist_fn=self.blacklist_web_search,
         )
 
         bt.logging.info(f"Axon created: {self.axon}")
@@ -175,9 +170,6 @@ class StreamMiner(ABC):
         self, synapse: TwitterURLsSearchSynapse
     ) -> TwitterURLsSearchSynapse:
         return await self.twitter_urls_search(synapse)
-
-    async def _web_search(self, synapse: WebSearchSynapse) -> WebSearchSynapse:
-        return await self.web_search(synapse)
 
     async def base_blacklist(self, synapse) -> Tuple[bool, str]:
         try:
@@ -281,11 +273,6 @@ class StreamMiner(ABC):
         bt.logging.info(blacklist[1])
         return blacklist
 
-    async def blacklist_web_search(self, synapse: WebSearchSynapse) -> Tuple[bool, str]:
-        blacklist = await self.base_blacklist(synapse)
-        bt.logging.info(blacklist[1])
-        return blacklist
-
     @abstractmethod
     async def smart_scraper(
         self, synapse: ScraperStreamingSynapse
@@ -305,9 +292,6 @@ class StreamMiner(ABC):
     async def twitter_urls_search(
         self, synapse: TwitterURLsSearchSynapse
     ) -> TwitterURLsSearchSynapse: ...
-
-    @abstractmethod
-    async def web_search(self, synapse: WebSearchSynapse) -> WebSearchSynapse: ...
 
     async def sync_metagraph_loop(self):
         first_run = True
@@ -465,11 +449,6 @@ class StreamingTemplateMiner(StreamMiner):
         bt.logging.info(f"started processing for search URL synapse {synapse}")
         twitter_search_miner = TwitterSearchMiner(self)
         return await twitter_search_miner.search_by_urls(synapse)
-
-    async def web_search(self, synapse: WebSearchSynapse) -> WebSearchSynapse:
-        bt.logging.info(f"started processing for Web search  synapse {synapse}")
-        web_search_miner = WebSearchMiner(self)
-        return await web_search_miner.search(synapse)
 
 
 async def main():

@@ -5,12 +5,12 @@ import bittensor as bt
 from pydantic import BaseModel, Field
 
 MAX_CONCURRENCY_PER_TYPE = 100
-SEARCH_TYPES = ("web_search", "x_search", "ai_search")
+SEARCH_TYPES = ("x_search", "ai_search")
+
 
 class ConcurrencyConfig(BaseModel):
     """Per-search-type, per-validator concurrency ceiling."""
 
-    web_search: int = Field(default=1, ge=1, le=MAX_CONCURRENCY_PER_TYPE)
     x_search: int = Field(default=1, ge=1, le=MAX_CONCURRENCY_PER_TYPE)
     ai_search: int = Field(default=1, ge=1, le=MAX_CONCURRENCY_PER_TYPE)
 

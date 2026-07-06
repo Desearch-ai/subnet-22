@@ -3,7 +3,6 @@ from typing import Any, Callable, Iterable, Tuple
 from desearch.protocol import (
     ScraperStreamingSynapse,
     TwitterSearchSynapse,
-    WebSearchSynapse,
 )
 from desearch.utils import is_valid_tweet, is_valid_web_search_result
 from neurons.validators.penalty.penalty import CheapPenaltyModel, PenaltyModelType
@@ -34,9 +33,6 @@ def _is_valid_search_item(item: Any) -> bool:
 def _groups(response) -> Iterable[Tuple[list, Callable]]:
     if isinstance(response, TwitterSearchSynapse):
         yield response.results or [], _is_valid_tweet
-        return
-    if isinstance(response, WebSearchSynapse):
-        yield response.results or [], _is_valid_search_item
         return
     if isinstance(response, ScraperStreamingSynapse):
         yield response.miner_tweets or [], _is_valid_tweet
