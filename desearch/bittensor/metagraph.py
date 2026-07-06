@@ -31,11 +31,9 @@ def generateMockNeurons(count: int = 2):
             ),
             stake_dict={"coldkey0": Balance(0)},
             total_stake=Balance(0),
-            rank=0.0,
             emission=0.0,
             incentive=0.0,
             consensus=0.0,
-            trust=0.0,
             validator_trust=0.0,
             dividends=0.0,
             last_update=3764741,
@@ -43,7 +41,6 @@ def generateMockNeurons(count: int = 2):
             prometheus_info=PrometheusInfo(
                 block=0, version=0, ip="0.0.0.0", port=0, ip_type=0
             ),
-            pruning_score=0,
             is_null=False,
         ),
     ]
@@ -67,11 +64,9 @@ def generateMockNeurons(count: int = 2):
                 ),
                 stake_dict={f"coldkey{i}": Balance(0)},
                 total_stake=Balance(0),
-                rank=0.0,
                 emission=0.0,
                 incentive=0.0,
                 consensus=0.0,
-                trust=0.0,
                 validator_trust=0.0,
                 dividends=0.0,
                 last_update=3764741,
@@ -79,7 +74,6 @@ def generateMockNeurons(count: int = 2):
                 prometheus_info=PrometheusInfo(
                     block=0, version=0, ip="0.0.0.0", port=0, ip_type=0
                 ),
-                pruning_score=0,
                 is_null=False,
             )
             for i in range(1, count)
