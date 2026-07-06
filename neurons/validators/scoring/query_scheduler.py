@@ -109,7 +109,7 @@ class QueryScheduler:
         neuron,
         generator: SyntheticQueryGenerator,
         scoring_store: ScoringStore,
-        validators: Dict,  # {"ai_search": ..., "x_search": ..., "web_search": ...}
+        validators: Dict,  # {"ai_search": ..., "x_search": ...}
     ):
         self.neuron = neuron
         self.generator = generator

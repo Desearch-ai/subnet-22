@@ -30,7 +30,7 @@ class _DeepReward:
 
 def _validator(penalty_functions):
     v = BaseScraperValidator.__new__(BaseScraperValidator)
-    v.search_type = "web_search"
+    v.search_type = "x_search"
     v.reward_weights = np.array([1.0], dtype=np.float32)
     v.reward_functions = [_DeepReward()]
     v.penalty_functions = penalty_functions
@@ -76,7 +76,7 @@ def _scheduler(validator):
         neuron=SimpleNamespace(),
         generator=SimpleNamespace(),
         scoring_store=SimpleNamespace(),
-        validators={"web_search": validator},
+        validators={"x_search": validator},
     )
 
 
@@ -88,7 +88,7 @@ def _synth(uid, n, prefix=""):
 
 
 async def _score(scheduler, synth_items, deep_score, cheap_multiplier, monkeypatch):
-    validator = scheduler.validators["web_search"]
+    validator = scheduler.validators["x_search"]
 
     async def fake_full(self, validator_arg, items, time_range_start):
         arr = np.full(len(items), deep_score, dtype=np.float32)
@@ -103,8 +103,8 @@ async def _score(scheduler, synth_items, deep_score, cheap_multiplier, monkeypat
     monkeypatch.setattr(query_scheduler.capacity, "record_window_quality", AsyncMock())
 
     return await scheduler._score_one_type(
-        search_type="web_search",
-        synthetics={"web_search": synth_items},
+        search_type="x_search",
+        synthetics={"x_search": synth_items},
         organics={},
         time_range_start=datetime(2026, 3, 14, 10, 0, tzinfo=timezone.utc),
         window_start="2026-03-14T10:00:00+00:00",

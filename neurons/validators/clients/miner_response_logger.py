@@ -11,7 +11,6 @@ from pydantic import BaseModel
 REWARD_COMPONENT_NAMES = {
     "ai_search": ["content", "summary", "performance"],
     "x_search": ["twitter", "performance"],
-    "web_search": ["search", "performance"],
 }
 _RESPONSE_PAYLOAD_EXCLUDED_KEYS = {"html_content", "html_text"}
 

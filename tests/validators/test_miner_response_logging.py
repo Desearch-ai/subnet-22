@@ -12,7 +12,6 @@ from neurons.validators.clients.miner_response_logger import (
 from neurons.validators.scrapers.advanced_scraper_validator import (
     AdvancedScraperValidator,
 )
-from neurons.validators.scrapers.web_scraper_validator import WebScraperValidator
 from neurons.validators.scrapers.x_scraper_validator import XScraperValidator
 
 
@@ -66,36 +65,6 @@ async def test_x_search_logs_selected_uid():
     assert items == [response]
     build_log_entry.assert_called_once()
     assert build_log_entry.call_args.kwargs["miner_uid"] == 42
-    submit_logs_best_effort.assert_called_once_with(validator.neuron, [{"ok": True}])
-
-
-@pytest.mark.asyncio
-async def test_web_organic_logs_selected_uid():
-    validator = object.__new__(WebScraperValidator)
-    validator.neuron = _fake_owner()
-    response = _fake_response()
-    validator.call_miner = AsyncMock(
-        return_value=(
-            response,
-            84,
-            SimpleNamespace(hotkey="miner-hotkey", coldkey="miner-coldkey"),
-        )
-    )
-
-    with (
-        patch(
-            "neurons.validators.scrapers.web_scraper_validator.build_log_entry",
-            return_value={"ok": True},
-        ) as build_log_entry,
-        patch(
-            "neurons.validators.scrapers.web_scraper_validator.submit_logs_best_effort"
-        ) as submit_logs_best_effort,
-    ):
-        items = [item async for item in validator.organic({"query": "tao"})]
-
-    assert items == [response]
-    build_log_entry.assert_called_once()
-    assert build_log_entry.call_args.kwargs["miner_uid"] == 84
     submit_logs_best_effort.assert_called_once_with(validator.neuron, [{"ok": True}])
 
 
@@ -159,7 +128,7 @@ def test_build_log_entry_excludes_html_fields_from_response_payload():
     owner = _fake_owner()
     response = SimpleNamespace(
         prompt="what is bittensor",
-        validator_links=[
+        search_results=[
             {
                 "link": "https://example.com",
                 "title": "Example",
@@ -177,15 +146,15 @@ def test_build_log_entry_excludes_html_fields_from_response_payload():
 
     log_entry = build_log_entry(
         owner=owner,
-        search_type="web_search",
+        search_type="ai_search",
         query_kind="scoring",
         response=response,
     )
 
-    assert "html_content" not in log_entry["response_payload"]["validator_links"][0]
-    assert "html_text" not in log_entry["response_payload"]["validator_links"][0]
-    assert response.validator_links[0]["html_content"] == "<html>big payload</html>"
-    assert response.validator_links[0]["html_text"] == "big payload"
+    assert "html_content" not in log_entry["response_payload"]["search_results"][0]
+    assert "html_text" not in log_entry["response_payload"]["search_results"][0]
+    assert response.search_results[0]["html_content"] == "<html>big payload</html>"
+    assert response.search_results[0]["html_text"] == "big payload"
 
 
 @pytest.mark.parametrize(
@@ -193,7 +162,6 @@ def test_build_log_entry_excludes_html_fields_from_response_payload():
     [
         ("ai_search", ["content", "summary", "performance"]),
         ("x_search", ["twitter", "performance"]),
-        ("web_search", ["search", "performance"]),
     ],
 )
 def test_build_reward_payload_includes_performance_component(

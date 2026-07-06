@@ -5,7 +5,6 @@ from desearch.protocol import (
     ScraperStreamingSynapse,
     SearchResultItem,
     TwitterSearchSynapse,
-    WebSearchSynapse,
 )
 from neurons.validators.penalty.result_schema_penalty import (
     ResultSchemaPenaltyModel,
@@ -59,10 +58,6 @@ def _valid_tweet(tid: str = "1", text: str = "hello") -> dict:
     }
 
 
-def _valid_search() -> dict:
-    return {"title": "T", "link": "https://example.com/1", "snippet": "s"}
-
-
 class ResultSchemaPenaltyTestCase(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.model = ResultSchemaPenaltyModel()
@@ -91,26 +86,6 @@ class ResultSchemaPenaltyTestCase(unittest.IsolatedAsyncioTestCase):
         response = TwitterSearchSynapse(query="x", results=[bad])
         penalties = await self.model.calculate_penalties([response])
         self.assertEqual(penalties.tolist(), [1.0])
-
-    async def test_web_all_valid(self):
-        response = WebSearchSynapse(
-            query="x",
-            num=10,
-            results=[_valid_search(), _valid_search()],
-        )
-        penalties = await self.model.calculate_penalties([response])
-        self.assertEqual(penalties.tolist(), [0])
-
-    async def test_web_empty_title(self):
-        bad = _valid_search()
-        bad["title"] = ""
-        response = WebSearchSynapse(
-            query="x",
-            num=10,
-            results=[bad, _valid_search()],
-        )
-        penalties = await self.model.calculate_penalties([response])
-        self.assertEqual(penalties.tolist(), [0.5])
 
     async def test_ai_combined_groups(self):
         """Schema check spans miner_tweets + every *_search_results field."""

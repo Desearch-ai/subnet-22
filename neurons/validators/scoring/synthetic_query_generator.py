@@ -17,7 +17,7 @@ from desearch.utils import (
 WEB_TOOL = "Web Search"
 TWITTER_TOOL = "Twitter Search"
 
-SEARCH_TYPES = ["ai_search", "x_search", "web_search"]
+SEARCH_TYPES = ["ai_search", "x_search"]
 
 X_LANE = "x"
 WEB_LANES = ("news", "squad", "nq")
@@ -67,7 +67,7 @@ class SyntheticQueryGenerator:
         )
 
         items: List[dict] = []
-        llm_items: List[dict] = []  # Only ai_search + web_search need LLM
+        llm_items: List[dict] = []  # Only ai_search needs LLM
 
         for uid in available_uids:
             for search_type in SEARCH_TYPES:
@@ -93,23 +93,19 @@ class SyntheticQueryGenerator:
         async def _generate_one(item: dict) -> None:
             async with semaphore:
                 try:
-                    if item["search_type"] == "ai_search":
-                        mode, ai_tools = pick_ai_mode_and_tool()
-                        question = await self.questions_dataset.generate_new_question_with_openai(
+                    mode, ai_tools = pick_ai_mode_and_tool()
+                    question = (
+                        await self.questions_dataset.generate_new_question_with_openai(
                             ai_tools, model=scoring_model
                         )
-                        item["query"] = {
-                            "query": question,
-                            "tools": ai_tools,
-                            "mode": mode,
-                            "max_execution_time": get_mode_serving_budget(mode),
-                            "date_filter_type": ai_date_filter.value,
-                        }
-                    else:  # web_search
-                        question = await self.questions_dataset.generate_new_question_with_openai(
-                            ["Web Search"], model=scoring_model
-                        )
-                        item["query"] = {"query": question}
+                    )
+                    item["query"] = {
+                        "query": question,
+                        "tools": ai_tools,
+                        "mode": mode,
+                        "max_execution_time": get_mode_serving_budget(mode),
+                        "date_filter_type": ai_date_filter.value,
+                    }
                 except Exception as e:
                     bt.logging.error(
                         f"[SyntheticGen] Failed to generate "
@@ -144,12 +140,11 @@ class SyntheticQueryGenerator:
 
         # X dataset feeds AI-search's Twitter tool (advanced search), NOT basic x_search.
         x_rows = self.hf_pool.sample_lane(X_LANE, count("ai_search")) or []
-        web_rows = self._sample_web(count("web_search"))
         ai_rows = self._sample_web(count("ai_search"))
-        if not (x_rows or web_rows or ai_rows):
+        if not (x_rows or ai_rows):
             return None
 
-        web_cursor = ai_cursor = 0
+        ai_cursor = 0
         items: List[dict] = []
 
         for uid in available_uids:
@@ -158,12 +153,6 @@ class SyntheticQueryGenerator:
                 for _ in range(n):
                     if search_type == "x_search":
                         query = {"query": self.basic_dataset.generate_random_x_query()}
-                    elif search_type == "web_search":
-                        if not web_rows:
-                            continue
-                        row = web_rows[web_cursor % len(web_rows)]
-                        web_cursor += 1
-                        query = self._row_query(row)
                     else:
                         ai_tools = [random.choice([WEB_TOOL, TWITTER_TOOL])]
                         row = self._pick_ai_row(ai_tools, x_rows, ai_rows, ai_cursor)
@@ -182,7 +171,7 @@ class SyntheticQueryGenerator:
 
         bt.logging.info(
             f"[SyntheticGen] Generated {len(items)} dataset queries "
-            f"(x={len(x_rows)}, web={len(web_rows)}, ai={len(ai_rows)} pool rows)"
+            f"(x={len(x_rows)}, ai={len(ai_rows)} pool rows)"
         )
         return items
 

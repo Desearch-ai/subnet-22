@@ -835,65 +835,6 @@ class WebSearchResult(BaseModel):
     date: Optional[str] = None
 
 
-class WebSearchValidatorResult(WebSearchResult):
-    html_content: Optional[str] = None
-    html_text: Optional[str] = None
-
-
-class WebSearchResultList(BaseModel):
-    data: List[WebSearchResult]
-
-
-class WebSearchSynapse(Synapse):
-    """A class to represent web search synapse"""
-
-    query: str = pydantic.Field(
-        "",
-        title="Query",
-        description="The query string to fetch results for. Example: 'latest news on AI'. Immutable.",
-        allow_mutation=False,
-    )
-
-    num: int = pydantic.Field(
-        10,
-        title="Number of Results",
-        description="The maximum number of results to fetch. Immutable.",
-        allow_mutation=False,
-    )
-
-    start: int = pydantic.Field(
-        0,
-        title="Start Index",
-        description="The number of results to skip (used for pagination). Immutable.",
-        allow_mutation=False,
-    )
-
-    max_execution_time: Optional[int] = pydantic.Field(
-        None,
-        title="Max Execution Time (timeout)",
-        description="Maximum time to execute concrete request",
-    )
-
-    results: Optional[List[Dict[str, Any]]] = pydantic.Field(
-        default_factory=list,
-        title="Web",
-        description="Fetched Web Data.",
-    )
-
-    validator_links: Optional[List[WebSearchValidatorResult]] = pydantic.Field(
-        default_factory=list,
-        title="Validator Web",
-        description="Fetched validator Web Data.",
-    )
-
-    def deserialize(self) -> str:
-        return self
-
-    def get_required_fields(self) -> List[str]:
-        """Returns a list of required fields for the Twitter search query."""
-        return []
-
-
 class TwitterSearchSynapse(Synapse):
     """A class to represent Twitter Advanced Search Synapse"""
 

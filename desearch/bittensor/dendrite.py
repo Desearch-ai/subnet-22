@@ -13,7 +13,6 @@ from desearch.protocol import (
     TwitterIDSearchSynapse,
     TwitterSearchSynapse,
     TwitterURLsSearchSynapse,
-    WebSearchSynapse,
 )
 
 from .miner import Miner
@@ -23,7 +22,6 @@ class Dendrite(bt.Dendrite):
     def __init__(self, wallet=None):
         from neurons.miners.scraper_miner import ScraperMiner
         from neurons.miners.twitter_search_miner import TwitterSearchMiner
-        from neurons.miners.web_search_miner import WebSearchMiner
 
         try:
             super().__init__(wallet)
@@ -39,7 +37,6 @@ class Dendrite(bt.Dendrite):
         self.miner = Miner()
 
         self.twitter_search_miner = TwitterSearchMiner(self.miner)
-        self.web_search_miner = WebSearchMiner(self.miner)
         self.scraper_miner = ScraperMiner(self.miner)
 
     async def call(self, target_axon, synapse, timeout=12, deserialize=True):
@@ -59,12 +56,6 @@ class Dendrite(bt.Dendrite):
         if isinstance(synapse, TwitterSearchSynapse):
             bt.logging.info("MockDendrite--call twitter_search_miner.search")
             synapse = await self.twitter_search_miner.search(synapse)
-            synapse.dendrite.process_time = str(time.time() - start_time)
-            return synapse
-
-        if isinstance(synapse, WebSearchSynapse):
-            bt.logging.info("MockDendrite--call web_search_miner.search")
-            synapse = await self.web_search_miner.search(synapse)
             synapse.dendrite.process_time = str(time.time() - start_time)
             return synapse
 

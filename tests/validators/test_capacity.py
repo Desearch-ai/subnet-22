@@ -59,39 +59,33 @@ def test_gate_passes_when_all_above_thresholds():
         search_type: threshold + 0.01
         for search_type, threshold in QUALITY_THRESHOLDS.items()
     }
-    declared = {"ai_search": 100, "x_search": 100, "web_search": 100}
+    declared = {"ai_search": 100, "x_search": 100}
     assert passes_combined_gate(ema, declared) is True
 
 
 def test_gate_fails_when_ai_below_threshold():
-    ema = {"ai_search": 0.20, "x_search": 0.80, "web_search": 0.80}
-    declared = {"ai_search": 100, "x_search": 100, "web_search": 100}
+    ema = {"ai_search": 0.20, "x_search": 0.80}
+    declared = {"ai_search": 100, "x_search": 100}
     assert passes_combined_gate(ema, declared) is False
 
 
 def test_gate_fails_when_x_below_threshold():
-    ema = {"ai_search": 0.90, "x_search": 0.40, "web_search": 0.90}
-    declared = {"ai_search": 100, "x_search": 100, "web_search": 100}
-    assert passes_combined_gate(ema, declared) is False
-
-
-def test_gate_fails_when_web_below_threshold():
-    ema = {"ai_search": 0.90, "x_search": 0.90, "web_search": 0.49}
-    declared = {"ai_search": 100, "x_search": 100, "web_search": 100}
+    ema = {"ai_search": 0.90, "x_search": 0.40}
+    declared = {"ai_search": 100, "x_search": 100}
     assert passes_combined_gate(ema, declared) is False
 
 
 def test_gate_fails_when_any_declared_zero():
     """A miner who doesn't advertise AI can never ramp anything."""
-    ema = {"ai_search": 0.90, "x_search": 0.90, "web_search": 0.90}
-    declared = {"ai_search": 0, "x_search": 100, "web_search": 100}
+    ema = {"ai_search": 0.90, "x_search": 0.90}
+    declared = {"ai_search": 0, "x_search": 100}
     assert passes_combined_gate(ema, declared) is False
 
 
 def test_gate_fails_when_type_missing():
     """If a type is absent from the EMA/declared dicts, treat as fail."""
-    ema = {"ai_search": 0.90, "x_search": 0.90}
-    declared = {"ai_search": 100, "x_search": 100}
+    ema = {"ai_search": 0.90}
+    declared = {"ai_search": 100}
     assert passes_combined_gate(ema, declared) is False
 
 
@@ -100,9 +94,8 @@ def test_gate_threshold_exact_boundary():
     ema = {
         "ai_search": QUALITY_THRESHOLDS["ai_search"],
         "x_search": QUALITY_THRESHOLDS["x_search"],
-        "web_search": QUALITY_THRESHOLDS["web_search"],
     }
-    declared = {"ai_search": 100, "x_search": 100, "web_search": 100}
+    declared = {"ai_search": 100, "x_search": 100}
     assert passes_combined_gate(ema, declared) is True
 
 
@@ -126,13 +119,67 @@ async def _set_ema_and_verified(uid: int, by_type: dict[str, tuple[float, int]])
         await miner_db.bulk_update_verified(t, {uid: verified})
 
 
-async def test_ramp_after_epoch_ramps_all_three_when_gate_passes(db):
-    """All EMAs above threshold → all three verifieds step up together."""
-    await _register_all_types(
-        uid=1, declared={"ai_search": 100, "x_search": 100, "web_search": 100}
-    )
+async def test_ramp_after_epoch_ramps_all_types_when_gate_passes(db):
+    """All EMAs above threshold → all verifieds step up together."""
+    await _register_all_types(uid=1, declared={"ai_search": 100, "x_search": 100})
     await _set_ema_and_verified(
         uid=1,
+        by_type={
+            "ai_search": (0.7, 50),
+            "x_search": (0.7, 50),
+        },
+    )
+
+    await ramp_after_epoch([1])
+
+    for t in ("ai_search", "x_search"):
+        row = await miner_db.get_concurrency_row(1, t)
+        assert row["verified"] == 60
+
+
+async def test_ramp_after_epoch_decays_all_types_when_ai_fails(db):
+    """AI EMA below threshold → all verifieds decay together, even
+    though X is individually fine."""
+    await _register_all_types(uid=2, declared={"ai_search": 100, "x_search": 100})
+    await _set_ema_and_verified(
+        uid=2,
+        by_type={
+            "ai_search": (0.10, 100),
+            "x_search": (0.90, 100),
+        },
+    )
+
+    await ramp_after_epoch([2])
+
+    for t in ("ai_search", "x_search"):
+        row = await miner_db.get_concurrency_row(2, t)
+        assert row["verified"] == 90
+
+
+async def test_ramp_after_epoch_decays_when_undeclared_type(db):
+    """declared=0 on AI → gate fails → all decay."""
+    await _register_all_types(uid=3, declared={"ai_search": 0, "x_search": 100})
+    await _set_ema_and_verified(
+        uid=3,
+        by_type={
+            "ai_search": (0.0, 1),
+            "x_search": (0.90, 100),
+        },
+    )
+
+    await ramp_after_epoch([3])
+
+    row = await miner_db.get_concurrency_row(3, "x_search")
+    assert row["verified"] == 90
+
+
+async def test_ramp_after_epoch_ignores_stale_retired_type_rows(db):
+    """A pre-removal DB still holds web_search rows — ramp must skip them, not crash."""
+    await _register_all_types(
+        uid=5, declared={"ai_search": 100, "x_search": 100, "web_search": 100}
+    )
+    await _set_ema_and_verified(
+        uid=5,
         by_type={
             "ai_search": (0.7, 50),
             "x_search": (0.7, 50),
@@ -140,54 +187,13 @@ async def test_ramp_after_epoch_ramps_all_three_when_gate_passes(db):
         },
     )
 
-    await ramp_after_epoch([1])
+    await ramp_after_epoch([5])
 
-    for t in ("ai_search", "x_search", "web_search"):
-        row = await miner_db.get_concurrency_row(1, t)
+    for t in ("ai_search", "x_search"):
+        row = await miner_db.get_concurrency_row(5, t)
         assert row["verified"] == 60
-
-
-async def test_ramp_after_epoch_decays_all_three_when_ai_fails(db):
-    """AI EMA below threshold → all three verifieds decay together, even
-    though X+Web are individually fine."""
-    await _register_all_types(
-        uid=2, declared={"ai_search": 100, "x_search": 100, "web_search": 100}
-    )
-    await _set_ema_and_verified(
-        uid=2,
-        by_type={
-            "ai_search": (0.10, 100),
-            "x_search": (0.90, 100),
-            "web_search": (0.90, 100),
-        },
-    )
-
-    await ramp_after_epoch([2])
-
-    for t in ("ai_search", "x_search", "web_search"):
-        row = await miner_db.get_concurrency_row(2, t)
-        assert row["verified"] == 90
-
-
-async def test_ramp_after_epoch_decays_when_undeclared_type(db):
-    """declared=0 on AI → gate fails → all three decay."""
-    await _register_all_types(
-        uid=3, declared={"ai_search": 0, "x_search": 100, "web_search": 100}
-    )
-    await _set_ema_and_verified(
-        uid=3,
-        by_type={
-            "ai_search": (0.0, 1),
-            "x_search": (0.90, 100),
-            "web_search": (0.90, 100),
-        },
-    )
-
-    await ramp_after_epoch([3])
-
-    for t in ("x_search", "web_search"):
-        row = await miner_db.get_concurrency_row(3, t)
-        assert row["verified"] == 90
+    stale = await miner_db.get_concurrency_row(5, "web_search")
+    assert stale["verified"] == 50
 
 
 async def test_ramp_after_epoch_handles_empty_uid_list(db):
@@ -195,15 +201,12 @@ async def test_ramp_after_epoch_handles_empty_uid_list(db):
 
 
 async def test_record_window_quality_updates_ema_without_ramping(db):
-    await _register_all_types(
-        uid=4, declared={"ai_search": 100, "x_search": 100, "web_search": 100}
-    )
+    await _register_all_types(uid=4, declared={"ai_search": 100, "x_search": 100})
     await _set_ema_and_verified(
         uid=4,
         by_type={
             "ai_search": (0.0, 50),
             "x_search": (0.0, 50),
-            "web_search": (0.0, 50),
         },
     )
 

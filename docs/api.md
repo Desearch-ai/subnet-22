@@ -58,7 +58,6 @@ Used by the link-only endpoints.
 | `POST` | `/twitter/search` | Twitter filter JSON body | List of matching tweet objects. |
 | `POST` | `/twitter/urls` | `{ "urls": ["https://x.com/.../status/..."] }` | List of tweet objects for the requested URLs, or `404` if none are found. |
 | `GET` | `/twitter/{id}` | path parameter `id` | One tweet object for the requested tweet ID, or `404` if not found. |
-| `GET` | `/web/search` | query parameters `query`, `num`, `start` | `{ "data": [...] }` web search result list. |
 
 The exact current link endpoint strings in `neurons/validators/api.py` are `/search/links/web`, `/search/links/twitter`, and `/search/links`.
 
@@ -113,13 +112,6 @@ curl -s 'http://localhost:8005/search/links' \
 | `verified`, `blue_verified`, `is_quote`, `is_video`, `is_image` | boolean \| null | Optional tweet/account filters. |
 | `min_retweets`, `min_replies`, `min_likes` | integer \| null | Optional engagement thresholds. |
 | `count` | integer | Max `100`; default `20`. |
-
-### Web search
-
-```bash
-curl -s 'http://localhost:8005/web/search?query=latest%20AI%20news&num=10&start=0' \
-  -H 'access-key: <EXPECTED_ACCESS_KEY>'
-```
 
 ## Public miner status routes
 

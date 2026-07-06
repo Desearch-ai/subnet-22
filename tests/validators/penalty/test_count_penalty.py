@@ -5,7 +5,6 @@ from desearch.protocol import (
     SearchResultItem,
     TwitterIDSearchSynapse,
     TwitterSearchSynapse,
-    WebSearchSynapse,
 )
 from neurons.validators.penalty.count_penalty import CountPenaltyModel
 
@@ -42,37 +41,6 @@ class CountPenaltyTestCase(unittest.IsolatedAsyncioTestCase):
             [],
         )
         self.assertEqual(penalties.tolist(), [0])
-
-    async def test_web_right_count(self):
-        penalties = await self.model.calculate_penalties(
-            [
-                WebSearchSynapse(
-                    query="What is blockchain?",
-                    num=10,
-                    results=[{} for _ in range(10)],
-                )
-            ],
-            [],
-        )
-        self.assertEqual(penalties.tolist(), [0])
-
-    async def test_web_not_enough_results(self):
-        penalties = await self.model.calculate_penalties(
-            [
-                WebSearchSynapse(
-                    query="What is blockchain?", num=10, results=[{}, {}, {}]
-                )
-            ],
-            [],
-        )
-        self.assertAlmostEqual(penalties.tolist()[0], 0.7, places=5)
-
-    async def test_web_zero_results(self):
-        penalties = await self.model.calculate_penalties(
-            [WebSearchSynapse(query="What is blockchain?", num=10, results=[])],
-            [],
-        )
-        self.assertEqual(penalties.tolist(), [1.0])
 
     async def test_other_synapse_skipped(self):
         penalties = await self.model.calculate_penalties(

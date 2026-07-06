@@ -7,7 +7,7 @@ from typing import List, Optional
 import aiohttp
 import bittensor as bt
 import uvicorn
-from fastapi import Depends, FastAPI, HTTPException, Path, Query
+from fastapi import Depends, FastAPI, HTTPException, Path
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
 from fastapi.responses import StreamingResponse
@@ -22,7 +22,6 @@ from desearch.protocol import (
     ScraperTextRole,
     SearchMode,
     TwitterScraperTweet,
-    WebSearchResultList,
 )
 from neurons.validators.clients.validator_service_client import ValidatorServiceClient
 from neurons.validators.dependencies import verify_access_key
@@ -542,63 +541,6 @@ async def get_tweet_by_id(
         return results[0]
     else:
         raise HTTPException(status_code=404, detail="Tweet not found")
-
-
-@app.get(
-    "/web/search",
-    summary="Web Search",
-    description="Search the web using a query with options for result count and pagination.",
-    response_model=WebSearchResultList,
-)
-async def web_search_endpoint(
-    query: str = Query(
-        ..., description="The search query string, e.g., 'latest news on AI'."
-    ),
-    num: int = Query(10, le=100, description="The maximum number of results to fetch."),
-    start: int = Query(
-        0, description="The number of results to skip (used for pagination)."
-    ),
-    _=Depends(verify_access_key),
-):
-    """
-    Perform a web search using the given query, number of results, and start index.
-
-    Parameters:
-        query (str): The search query string.
-        num (int): The maximum number of results to fetch.
-        start (int): The number of results to skip (for pagination).
-
-    Returns:
-        List[WebSearchResult]: A list of web search results.
-    """
-
-    bt.logging.info(f"/web/search request: query={query}, num={num}, start={start}")
-
-    try:
-        bt.logging.info(
-            f"Performing web search with query: '{query}', num: {num}, start: {start}"
-        )
-
-        # Collect all yielded synapses from organic
-        final_synapses = []
-
-        async for synapse in api.web_scraper_validator.organic(
-            query={"query": query, "num": num, "start": start}
-        ):
-            final_synapses.append(synapse)
-
-        # Transform final synapses into a flattened list of links
-        results = []
-
-        for syn in final_synapses:
-            # Each synapse (if successful) should have a 'results' field of WebSearchResult
-            if hasattr(syn, "results") and isinstance(syn.results, list):
-                results.extend(syn.results)
-
-        return {"data": results}
-    except Exception as e:
-        bt.logging.error(f"Error in web search: {e}")
-        raise HTTPException(status_code=500, detail=f"An error occurred: {str(e)}")
 
 
 @app.get("/")

@@ -3,7 +3,6 @@ import unittest
 from desearch.protocol import (
     ScraperStreamingSynapse,
     TwitterSearchSynapse,
-    WebSearchSynapse,
 )
 from neurons.validators.penalty.sort_order_penalty import SortOrderPenaltyModel
 
@@ -76,7 +75,6 @@ class SortOrderPenaltyTestCase(unittest.IsolatedAsyncioTestCase):
 
     async def test_non_twitter_synapses_skipped(self):
         for response in [
-            WebSearchSynapse(query="x", num=10),
             ScraperStreamingSynapse(prompt="x"),
         ]:
             penalties = await self.model.calculate_penalties([response])

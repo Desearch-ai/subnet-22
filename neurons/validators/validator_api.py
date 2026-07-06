@@ -7,8 +7,9 @@ from desearch.redis.redis_client import close_redis, initialize_redis
 from neurons.validators.clients.utility_api_client import UtilityAPIClient
 from neurons.validators.clients.validator_service_client import ValidatorServiceClient
 from neurons.validators.scoring.scoring_store import ScoringStore
-from neurons.validators.scrapers.advanced_scraper_validator import AdvancedScraperValidator
-from neurons.validators.scrapers.web_scraper_validator import WebScraperValidator
+from neurons.validators.scrapers.advanced_scraper_validator import (
+    AdvancedScraperValidator,
+)
 from neurons.validators.scrapers.x_scraper_validator import XScraperValidator
 
 
@@ -23,7 +24,6 @@ class ValidatorAPI:
     dendrites: itertools.cycle
     advanced_scraper_validator: "AdvancedScraperValidator"
     x_scraper_validator: "XScraperValidator"
-    web_scraper_validator: "WebScraperValidator"
     utility_api: UtilityAPIClient
     validator_identity: dict | None
 
@@ -34,7 +34,6 @@ class ValidatorAPI:
 
         self.advanced_scraper_validator = AdvancedScraperValidator(neuron=self)
         self.x_scraper_validator = XScraperValidator(neuron=self)
-        self.web_scraper_validator = WebScraperValidator(neuron=self)
 
         self.validator_service_client = ValidatorServiceClient()
         self.scoring_store = ScoringStore()

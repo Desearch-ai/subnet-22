@@ -16,7 +16,7 @@ This repository contains the subnet runtime: miner axons, validator scoring, the
 
 | Component | Role | Main files |
 | --- | --- | --- |
-| Miner | Runs a Bittensor axon, declares search capacity, answers health checks, and serves AI, X/Twitter, and web search synapses. | `neurons/miners/miner.py`, `neurons/miners/config.py`, `neurons/miners/manifest.template.json` |
+| Miner | Runs a Bittensor axon, declares search capacity, answers health checks, and serves AI and X/Twitter search synapses. | `neurons/miners/miner.py`, `neurons/miners/config.py`, `neurons/miners/manifest.template.json` |
 | Validator | Sends synthetic and organic queries to miners, verifies results with independent providers, stores scoring windows, and writes weights on-chain. | `neurons/validators/validator_service.py`, `neurons/validators/scoring/`, `neurons/validators/reward/` |
 | Validator API | Runs FastAPI next to the validator so trusted Desearch services can request organic search and inspect public miner state. Protected routes require the `access-key` header. | `neurons/validators/api.py`, `neurons/validators/dependencies.py`, `run.sh` |
 | Shared package | Defines protocol models, synapses, tool helpers, dataset utilities, and common configuration. | `desearch/protocol.py`, `desearch/miner_config.py`, `desearch/tools/` |

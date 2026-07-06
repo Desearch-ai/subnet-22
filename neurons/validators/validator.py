@@ -35,7 +35,6 @@ from neurons.validators.scoring.weights import init_wandb, set_weights
 from neurons.validators.scrapers.advanced_scraper_validator import (
     AdvancedScraperValidator,
 )
-from neurons.validators.scrapers.web_scraper_validator import WebScraperValidator
 from neurons.validators.scrapers.x_scraper_validator import XScraperValidator
 
 
@@ -56,7 +55,6 @@ class Neuron(AbstractNeuron):
 
     advanced_scraper_validator: "AdvancedScraperValidator"
     x_scraper_validator: "XScraperValidator"
-    web_scraper_validator: "WebScraperValidator"
 
     moving_average_scores: np.ndarray = None
     uid: int = None
@@ -75,7 +73,6 @@ class Neuron(AbstractNeuron):
 
         self.advanced_scraper_validator = AdvancedScraperValidator(neuron=self)
         self.x_scraper_validator = XScraperValidator(neuron=self)
-        self.web_scraper_validator = WebScraperValidator(neuron=self)
 
         self.available_uids = []
         self.uid_manager = UIDManager()
@@ -404,7 +401,6 @@ class Neuron(AbstractNeuron):
             validators = {
                 "ai_search": self.advanced_scraper_validator,
                 "x_search": self.x_scraper_validator,
-                "web_search": self.web_scraper_validator,
             }
 
             query_scheduler = QueryScheduler(

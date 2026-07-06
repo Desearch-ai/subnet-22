@@ -8,7 +8,7 @@ from desearch.redis.redis_client import redis_client
 
 EXPIRY = 2 * 3600  # 2 hours
 
-SEARCH_TYPES = ["ai_search", "x_search", "web_search"]
+SEARCH_TYPES = ["ai_search", "x_search"]
 
 
 class ScoringStore:

@@ -1,7 +1,6 @@
 from desearch.protocol import (
     ScraperStreamingSynapse,
     TwitterSearchSynapse,
-    WebSearchSynapse,
 )
 from desearch.utils import format_text_for_match
 from neurons.validators.penalty.penalty import CheapPenaltyModel, PenaltyModelType
@@ -18,8 +17,6 @@ def _result_groups(response):
     """Yield ``(items, dedup_keys, check_text)`` for every result list to check."""
     if isinstance(response, TwitterSearchSynapse):
         yield response.results or [], ("id", "url"), True
-    elif isinstance(response, WebSearchSynapse):
-        yield response.results or [], ("link", "url"), False
     elif isinstance(response, ScraperStreamingSynapse):
         if response.miner_tweets:
             yield response.miner_tweets, ("id", "url"), True

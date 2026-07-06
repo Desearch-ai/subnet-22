@@ -1,4 +1,4 @@
-"""Per-UID verified-concurrency ramping gated on serving all 3 search types."""
+"""Per-UID verified-concurrency ramping gated on serving all search types."""
 
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Protocol
@@ -95,7 +95,7 @@ async def record_window_quality(
 
 
 async def ramp_after_epoch(uids: list[int]) -> None:
-    """Evaluate the combined gate per UID and persist verified across all 3 types."""
+    """Evaluate the combined gate per UID and persist verified across all types."""
     if not uids:
         return
 
@@ -114,6 +114,9 @@ async def ramp_after_epoch(uids: list[int]) -> None:
             pass_count += 1
 
         for t, row in by_type.items():
+            # DB may hold rows for retired search types (e.g. web_search)
+            if t not in updates_by_type:
+                continue
             new_v = next_verified(row["verified"], row["declared"], all_pass)
             if new_v != row["verified"]:
                 updates_by_type[t][uid] = new_v
