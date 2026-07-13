@@ -29,16 +29,16 @@ SERVING_ALLOWANCE = 15
 AI_PERF_FLOOR = 0.50
 AI_THRESHOLD = 0.50
 
-_perf = PerformanceRewardModel(neuron=None, min_realistic_time=5.0, target_time=10.0)
-_min_real = MinRealisticTimePenaltyModel(min_realistic_time=5.0, neuron=None)
+_perf = PerformanceRewardModel(neuron=None)
+_min_real = MinRealisticTimePenaltyModel(neuron=None)
 _timeout = TimeoutPenaltyModel(max_penalty=1, neuron=None)
 
 
-def _mock_response(process_time):
+def _mock_response(process_time, mode=SearchMode.FAST):
     return SimpleNamespace(
         dendrite=SimpleNamespace(process_time=process_time, status_code=200),
         max_execution_time=SERVING_ALLOWANCE,
-        mode=SearchMode.FAST,
+        mode=mode,
         timeout=SERVING_ALLOWANCE + 5,
     )
 
@@ -156,7 +156,7 @@ async def test_compute_rewards_real_composition(monkeypatch, floor):
 
     quality = [0.90, 0.90]
     perf_raws = [1.0, 0.0]
-    responses = [_mock_response(2.5), _mock_response(14.0)]
+    responses = [_mock_response(2.5, mode=None), _mock_response(14.0, mode=None)]
 
     v = BaseScraperValidator.__new__(BaseScraperValidator)
     v.search_type = "ai_search"

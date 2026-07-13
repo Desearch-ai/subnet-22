@@ -9,20 +9,13 @@ from neurons.validators.reward.performance_reward import (
 
 
 class MinRealisticTimePenaltyModel(CheapPenaltyModel):
-    """Penalize responses returned faster than ``min_realistic_time``. A miner
-    that returns well-formed content in under-realistic time is almost
-    certainly serving cached data rather than running the requested search."""
+    """Penalize responses returned faster than the realistic time for their
+    mode budget (almost certainly cached, not a real search)."""
 
     name = PenaltyModelType.min_realistic_time_penalty.value
 
-    def __init__(
-        self,
-        min_realistic_time: float,
-        max_penalty: float = 1.0,
-        neuron: AbstractNeuron = None,
-    ):
+    def __init__(self, max_penalty: float = 1.0, neuron: AbstractNeuron = None):
         super().__init__(max_penalty, neuron)
-        self.min_realistic_time = min_realistic_time
 
     @staticmethod
     def _safe_float(value) -> Optional[float]:
@@ -34,9 +27,7 @@ class MinRealisticTimePenaltyModel(CheapPenaltyModel):
             return None
 
     def _min_realistic_for(self, response) -> float:
-        return min_realistic_for_budget(
-            resolve_scoring_budget(response), self.min_realistic_time
-        )
+        return min_realistic_for_budget(resolve_scoring_budget(response))
 
     def penalty_for(self, response) -> float:
         dendrite = getattr(response, "dendrite", None)

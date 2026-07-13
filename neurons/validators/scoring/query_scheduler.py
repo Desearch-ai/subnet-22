@@ -13,6 +13,7 @@ from neurons.validators.scoring import capacity, miner_db
 from neurons.validators.scoring.constants import (
     COVERAGE_EXPONENT,
     DEFAULT_PER_UID,
+    GATE_RAMP,
     MIN_VOLUME_RATIO,
     QUALITY_EXPONENT,
     QUALITY_THRESHOLDS,
@@ -20,7 +21,10 @@ from neurons.validators.scoring.constants import (
     VOLUME_EXPONENT,
 )
 from neurons.validators.scoring.scoring_store import SEARCH_TYPES, ScoringStore
-from neurons.validators.scoring.synthetic_query_generator import SyntheticQueryGenerator
+from neurons.validators.scoring.synthetic_query_generator import (
+    SyntheticQueryGenerator,
+    _weighted_counts,
+)
 
 ORGANIC_VALUE_MULTIPLIER = 3
 ORGANIC_DEEP_CAP_PER_TYPE = 100
@@ -30,7 +34,7 @@ BATCH_INTERVAL_SECONDS = 3
 GROUP_SIZE = 2
 
 DEEP_SAMPLE_RATE = 0.20
-DEEP_SAMPLE_FLOOR = 1
+DEEP_SAMPLE_FLOOR = 3
 DEEP_SAMPLE_WEIGHT = 5
 
 
@@ -58,10 +62,12 @@ def combine_superlinear_scores(
 
         served: dict[str, float] = {}
         for t, (q_gate, _q_weight, v) in qv.items():
-            if max_v == 0 or q_gate < QUALITY_THRESHOLDS[t]:
+            if max_v == 0:
                 served[t] = 0.0
-            else:
-                served[t] = min(1.0, (v / max_v) / MIN_VOLUME_RATIO)
+                continue
+            thr = QUALITY_THRESHOLDS[t]
+            gate = min(1.0, max(0.0, (q_gate - (thr - GATE_RAMP)) / GATE_RAMP))
+            served[t] = gate * min(1.0, (v / max_v) / MIN_VOLUME_RATIO)
 
         coverage = sum(SEARCH_TYPE_WEIGHTS[t] * served[t] for t in SEARCH_TYPE_WEIGHTS)
 
@@ -233,15 +239,42 @@ class QueryScheduler:
             )
 
     def _sample_deep_synth(self, synth_items: list) -> set[int]:
-        """Pick DEEP_SAMPLE_RATE of each UID's synth items (floor DEEP_SAMPLE_FLOOR)."""
         by_uid: dict[int, list[int]] = defaultdict(list)
         for idx, item in enumerate(synth_items):
             by_uid[item["uid"]].append(idx)
         sampled: set[int] = set()
         for indices in by_uid.values():
-            n = max(DEEP_SAMPLE_FLOOR, round(len(indices) * DEEP_SAMPLE_RATE))
-            sampled.update(random.sample(indices, min(n, len(indices))))
+            n = min(
+                len(indices),
+                max(DEEP_SAMPLE_FLOOR, round(len(indices) * DEEP_SAMPLE_RATE)),
+            )
+            sampled.update(self._proportional_pick(indices, synth_items, n))
         return sampled
+
+    @staticmethod
+    def _deep_combo_key(item):
+        resp = item.get("response")
+        mode = getattr(resp, "mode", None)
+        result_type = getattr(resp, "result_type", None)
+        tools = getattr(resp, "tools", None)
+        return (
+            getattr(mode, "value", mode),
+            getattr(result_type, "value", result_type),
+            tuple(tools) if tools else (),
+        )
+
+    def _proportional_pick(self, indices: list, synth_items: list, n: int) -> list:
+        buckets: dict = defaultdict(list)
+        for idx in indices:
+            buckets[self._deep_combo_key(synth_items[idx])].append(idx)
+        members = list(buckets.values())
+        total = len(indices)
+        counts = _weighted_counts(n, [len(m) / total for m in members])
+        picked: list = []
+        for m, c in zip(members, counts):
+            random.shuffle(m)
+            picked.extend(m[: min(c, len(m))])
+        return picked
 
     def _sample_organic_deep(self, organic_items: list) -> set[int]:
         """Allocate ORGANIC_DEEP_CAP_PER_TYPE deep slots across UIDs proportional

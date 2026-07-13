@@ -61,15 +61,11 @@ class XScraperValidator(BaseScraperValidator):
             ),
         ]
 
-        performance_model = PerformanceRewardModel(
-            neuron=neuron,
-            min_realistic_time=1.0,
-            target_time=3.0,
-        )
+        performance_model = PerformanceRewardModel(neuron=neuron)
 
         penalty_functions = [
             TimeoutPenaltyModel(max_penalty=1, neuron=neuron),
-            MinRealisticTimePenaltyModel(min_realistic_time=1.0, neuron=neuron),
+            MinRealisticTimePenaltyModel(neuron=neuron),
             CountPenaltyModel(max_penalty=1, neuron=neuron),
             DuplicateResultsPenaltyModel(max_penalty=1, neuron=neuron),
             ResultSchemaPenaltyModel(max_penalty=1, neuron=neuron),

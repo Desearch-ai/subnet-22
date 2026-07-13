@@ -61,8 +61,8 @@ class AdvancedScraperValidator(BaseScraperValidator):
         self.region = "us"
         self.date_filter = "qdr:w"  # Past week
 
-        self.content_weight = 0.625
-        self.summary_relevance_weight = 0.375
+        self.content_weight = 0.60
+        self.summary_relevance_weight = 0.40
         self.perf_floor = AI_PERF_FLOOR
 
         self.reward_llm = RewardLLM(neuron.config.neuron.scoring_model)
@@ -84,17 +84,13 @@ class AdvancedScraperValidator(BaseScraperValidator):
             ),
         ]
 
-        performance_model = PerformanceRewardModel(
-            neuron=neuron,
-            min_realistic_time=5.0,
-            target_time=10.0,
-        )
+        performance_model = PerformanceRewardModel(neuron=neuron)
 
         penalty_functions = [
             StreamingPenaltyModel(max_penalty=1, neuron=neuron),
             TimeoutPenaltyModel(max_penalty=1, neuron=neuron),
-            MinRealisticTimePenaltyModel(min_realistic_time=5.0, neuron=neuron),
-            MinerScorePenaltyModel(max_penalty=1, neuron=neuron),
+            MinRealisticTimePenaltyModel(neuron=neuron),
+            MinerScorePenaltyModel(max_penalty=0.20, neuron=neuron),
             CountPenaltyModel(max_penalty=1, neuron=neuron),
             SummaryStructurePenaltyModel(max_penalty=1, neuron=neuron),
             DuplicateResultsPenaltyModel(max_penalty=1, neuron=neuron),
@@ -110,7 +106,18 @@ class AdvancedScraperValidator(BaseScraperValidator):
             penalty_functions=penalty_functions,
             performance_model=performance_model,
             perf_floor=self.perf_floor,
+            component_floors=[0.30, 0.30],
         )
+
+    def compute_reward_weights_matrix(self, responses) -> np.ndarray:
+        n = len(responses)
+        weights = np.empty((n, self.reward_weights.shape[0]), dtype=np.float32)
+        for i, r in enumerate(responses):
+            if getattr(r, "result_type", None) == ResultType.ONLY_LINKS:
+                weights[i] = (1.0, 0.0)
+            else:
+                weights[i] = (self.content_weight, self.summary_relevance_weight)
+        return weights
 
     async def _dendrite_stream(
         self,
@@ -252,6 +259,9 @@ class AdvancedScraperValidator(BaseScraperValidator):
         exclude_domains = query.get("exclude_domains", [])
 
         mode = query.get("mode")
+        result_type = ResultType(
+            query.get("result_type") or ResultType.LINKS_WITH_FINAL_SUMMARY
+        )
         max_execution_time = query.get("max_execution_time") or get_max_execution_time(
             Model.NOVA, 10
         )
@@ -283,7 +293,7 @@ class AdvancedScraperValidator(BaseScraperValidator):
         synapse = ScraperStreamingSynapse(
             prompt=prompt,
             model=Model.NOVA,
-            result_type=ResultType.LINKS_WITH_FINAL_SUMMARY,
+            result_type=result_type,
             start_date=start_date,
             end_date=end_date,
             tools=tools,
