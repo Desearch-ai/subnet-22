@@ -84,16 +84,12 @@ class AdvancedScraperValidator(BaseScraperValidator):
             ),
         ]
 
-        performance_model = PerformanceRewardModel(
-            neuron=neuron,
-            min_realistic_time=5.0,
-            target_time=10.0,
-        )
+        performance_model = PerformanceRewardModel(neuron=neuron)
 
         penalty_functions = [
             StreamingPenaltyModel(max_penalty=1, neuron=neuron),
             TimeoutPenaltyModel(max_penalty=1, neuron=neuron),
-            MinRealisticTimePenaltyModel(min_realistic_time=5.0, neuron=neuron),
+            MinRealisticTimePenaltyModel(neuron=neuron),
             MinerScorePenaltyModel(max_penalty=0.20, neuron=neuron),
             CountPenaltyModel(max_penalty=1, neuron=neuron),
             SummaryStructurePenaltyModel(max_penalty=1, neuron=neuron),

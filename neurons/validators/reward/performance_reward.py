@@ -48,9 +48,9 @@ def resolve_scoring_budget(response) -> float:
         return 0.0
 
 
-def min_realistic_for_budget(budget: float, default: float) -> float:
+def min_realistic_for_budget(budget: float) -> float:
     if not budget or budget <= 0:
-        return default
+        return 1.0
     return min(1.0, 0.3 * budget)
 
 
@@ -61,15 +61,8 @@ class PerformanceRewardModel(BaseRewardModel):
     def name(self) -> str:
         return RewardModelType.performance_score.value
 
-    def __init__(
-        self,
-        neuron: AbstractNeuron,
-        min_realistic_time: float,
-        target_time: float,
-    ):
+    def __init__(self, neuron: AbstractNeuron):
         super().__init__(neuron)
-        self.min_realistic_time = min_realistic_time
-        self.target_time = target_time
 
     def get_successful_streaming_response(self, response: ScraperStreamingSynapse):
         if response.result_type == ResultType.ONLY_LINKS:
@@ -122,21 +115,20 @@ class PerformanceRewardModel(BaseRewardModel):
 
     def _thresholds_for(self, budget: float) -> Tuple[float, float]:
         if not budget or budget <= 0:
-            return self.min_realistic_time, self.target_time
-        return min_realistic_for_budget(budget, self.min_realistic_time), 0.6 * budget
+            return 1.0, 3.0
+        return min_realistic_for_budget(budget), 0.6 * budget
 
     def _scoring_budget(self, response) -> float:
         return resolve_scoring_budget(response)
 
     def reward(self, axon_time: float, budget: float) -> float:
         if budget and budget > 0:
-            min_realistic = min_realistic_for_budget(budget, self.min_realistic_time)
+            min_realistic = min_realistic_for_budget(budget)
             target = 0.6 * budget
             zero_point = budget + min(5.0, 0.5 * budget)
         else:
-            min_realistic = self.min_realistic_time
-            target = self.target_time
-            zero_point = self.target_time + 5.0
+            min_realistic, target = 1.0, 3.0
+            zero_point = 8.0
 
         if axon_time < min_realistic or axon_time >= zero_point:
             return 0.0

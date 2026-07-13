@@ -120,7 +120,7 @@ def _make_validator(monkeypatch, content, summary):
     v.penalty_functions = [
         StreamingPenaltyModel(max_penalty=1, neuron=None),
         TimeoutPenaltyModel(max_penalty=1, neuron=None),
-        MinRealisticTimePenaltyModel(min_realistic_time=5.0, neuron=None),
+        MinRealisticTimePenaltyModel(neuron=None),
         MinerScorePenaltyModel(max_penalty=0.20, neuron=None),
         CountPenaltyModel(max_penalty=1, neuron=None),
         SummaryStructurePenaltyModel(max_penalty=1, neuron=None),
@@ -129,9 +129,7 @@ def _make_validator(monkeypatch, content, summary):
         DateRangePenaltyModel(max_penalty=1, neuron=None),
         DomainFilterPenaltyModel(max_penalty=1, neuron=None),
     ]
-    v.performance_model = PerformanceRewardModel(
-        neuron=None, min_realistic_time=5.0, target_time=10.0
-    )
+    v.performance_model = PerformanceRewardModel(neuron=None)
     v.perf_floor = AI_PERF_FLOOR
     v.log_event = lambda *a, **k: None
     v.neuron = SimpleNamespace(
@@ -259,7 +257,7 @@ async def test_no_penalty_wrongly_fires_on_only_links(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_performance_reward_handles_only_links():
-    perf = PerformanceRewardModel(neuron=None, min_realistic_time=5.0, target_time=10.0)
+    perf = PerformanceRewardModel(neuron=None)
     resp = _only_links_response(process_time=8.0)
     assert perf.get_successful_streaming_response(resp)
     events, _ = await perf.get_rewards([resp], np.array([0]))

@@ -17,7 +17,7 @@ def _response(process_time):
 
 class MinRealisticTimePenaltyTestCase(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
-        self.model = MinRealisticTimePenaltyModel(min_realistic_time=1.0)
+        self.model = MinRealisticTimePenaltyModel()
 
     async def test_below_min_full_penalty(self):
         penalties = await self.model.calculate_penalties([_response(0.5)])
@@ -40,17 +40,6 @@ class MinRealisticTimePenaltyTestCase(unittest.IsolatedAsyncioTestCase):
         """0.5 as string is still sub-realistic."""
         penalties = await self.model.calculate_penalties([_response("0.5")])
         self.assertEqual(penalties.tolist(), [1.0])
-
-    async def test_different_thresholds(self):
-        ai = MinRealisticTimePenaltyModel(min_realistic_time=5.0)
-        web = MinRealisticTimePenaltyModel(min_realistic_time=0.7)
-        # 2.0s passes for X (min=1.0) but fails for AI (min=5.0)
-        self.assertEqual(
-            (await ai.calculate_penalties([_response(2.0)])).tolist(), [1.0]
-        )
-        self.assertEqual(
-            (await web.calculate_penalties([_response(2.0)])).tolist(), [0]
-        )
 
     async def test_batch(self):
         responses = [_response(0.3), _response(2.0), _response(None), _response(0.8)]

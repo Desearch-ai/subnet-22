@@ -29,8 +29,8 @@ SERVING_ALLOWANCE = 15
 AI_PERF_FLOOR = 0.50
 AI_THRESHOLD = 0.50
 
-_perf = PerformanceRewardModel(neuron=None, min_realistic_time=5.0, target_time=10.0)
-_min_real = MinRealisticTimePenaltyModel(min_realistic_time=5.0, neuron=None)
+_perf = PerformanceRewardModel(neuron=None)
+_min_real = MinRealisticTimePenaltyModel(neuron=None)
 _timeout = TimeoutPenaltyModel(max_penalty=1, neuron=None)
 
 

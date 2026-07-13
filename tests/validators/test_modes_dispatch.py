@@ -76,10 +76,7 @@ def test_per_query_result_type_mix():
 
 
 def _make_perf_model():
-    model = PerformanceRewardModel.__new__(PerformanceRewardModel)
-    model.min_realistic_time = 5.0
-    model.target_time = 10.0
-    return model
+    return PerformanceRewardModel.__new__(PerformanceRewardModel)
 
 
 def test_perf_fast_answer_not_zeroed_in_fast_budget():
@@ -114,8 +111,9 @@ def test_perf_decay_within_budget():
 def test_perf_falls_back_to_fixed_when_budget_missing():
     model = _make_perf_model()
 
-    assert model._thresholds_for(0) == (5.0, 10.0)
-    assert model.reward(3.0, 0) == 0.0
+    assert model._thresholds_for(0) == (1.0, 3.0)
+    assert model.reward(0.5, 0) == 0.0
+    assert model.reward(3.0, 0) == 1.0
 
 
 def test_perf_floor_is_mode_dependent():
@@ -134,7 +132,7 @@ def test_perf_floor_is_mode_dependent():
 
 
 def _penalty_model():
-    return MinRealisticTimePenaltyModel(min_realistic_time=5.0)
+    return MinRealisticTimePenaltyModel()
 
 
 def _resp(process_time, budget):
@@ -159,5 +157,5 @@ def test_penalty_applied_below_mode_threshold():
 def test_penalty_falls_back_when_budget_missing():
     model = _penalty_model()
 
-    assert model.penalty_for(_resp(3.0, None)) == model.max_penalty
-    assert model.penalty_for(_resp(6.0, None)) == 0.0
+    assert model.penalty_for(_resp(0.5, None)) == model.max_penalty
+    assert model.penalty_for(_resp(3.0, None)) == 0.0
