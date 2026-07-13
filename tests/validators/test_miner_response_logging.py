@@ -194,6 +194,57 @@ def test_build_reward_payload_includes_performance_component(
 
 
 @pytest.mark.asyncio
+async def test_compute_rewards_logs_performance_component():
+    from neurons.validators.scrapers.base_scraper_validator import (
+        BaseScraperValidator,
+    )
+
+    validator = object.__new__(BaseScraperValidator)
+    validator.search_type = "ai_search"
+    validator.neuron = SimpleNamespace(
+        config=SimpleNamespace(
+            neuron=SimpleNamespace(disable_log_rewards=True),
+            wandb_on=False,
+        ),
+        metagraph=SimpleNamespace(hotkeys=["hk"] * 5),
+    )
+    validator.reward_weights = np.array([0.5, 0.5], dtype=np.float32)
+    validator.reward_functions = [
+        SimpleNamespace(
+            name=name,
+            apply=AsyncMock(return_value=(np.array([0.6]), {}, {}, np.array([0.6]))),
+        )
+        for name in ("content", "summary")
+    ]
+    validator.penalty_functions = []
+    validator.performance_model = SimpleNamespace(
+        get_rewards=AsyncMock(return_value=([SimpleNamespace(reward=0.8)], {}))
+    )
+    validator.perf_floor = 0.5
+
+    with (
+        patch(
+            "neurons.validators.scrapers.base_scraper_validator.build_log_entry",
+            return_value={"ok": True},
+        ) as build_log_entry,
+        patch(
+            "neurons.validators.scrapers.base_scraper_validator.submit_logs_best_effort"
+        ),
+    ):
+        await validator.compute_rewards_and_penalties(
+            event={},
+            prompts=["prompt"],
+            responses=[_fake_response()],
+            uids=np.array([3]),
+            start_time=0.0,
+        )
+
+    reward_payload = build_log_entry.call_args.kwargs["reward_payload"]
+    assert list(reward_payload["components"]) == ["content", "summary", "performance"]
+    assert reward_payload["components"]["performance"] == pytest.approx(0.8)
+
+
+@pytest.mark.asyncio
 async def test_x_post_by_id_logs_organic():
     validator = object.__new__(XScraperValidator)
     validator.neuron = _fake_owner()

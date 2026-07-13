@@ -12,7 +12,7 @@ from neurons.validators.clients.miner_response_logger import (
     build_reward_payload,
     submit_logs_best_effort,
 )
-from neurons.validators.reward.performance_reward import perf_factor
+from neurons.validators.reward.performance_reward import perf_floor_for
 from neurons.validators.reward.reward import log_reward_aggregates
 from neurons.validators.scoring import capacity
 
@@ -22,6 +22,7 @@ class BaseScraperValidator:
     search_type: str = ""
     wandb_modality: str = ""
     wandb_reward_keys: List[str] = []
+    component_floors = None
 
     def __init__(
         self,
@@ -31,10 +32,16 @@ class BaseScraperValidator:
         penalty_functions: list,
         performance_model=None,
         perf_floor: float = 1.0,
+        component_floors=None,
     ):
         self.neuron = neuron
 
         self.reward_weights = np.asarray(reward_weights, dtype=np.float32)
+        self.component_floors = (
+            np.asarray(component_floors, dtype=np.float32)
+            if component_floors is not None
+            else None
+        )
 
         if abs(float(self.reward_weights.sum()) - 1.0) > 1e-4:
             message = (
@@ -192,6 +199,13 @@ class BaseScraperValidator:
 
             quality_gate = rewards.copy()
 
+            if self.component_floors is not None:
+                for j, floor in enumerate(self.component_floors):
+                    if floor <= 0 or j >= len(all_rewards):
+                        continue
+                    comp = np.asarray(all_rewards[j], dtype=np.float32)
+                    quality_gate[(comp < floor) & (weights_matrix[:, j] > 0)] = 0.0
+
             if self.performance_model is not None:
                 perf_events, _ = await self.performance_model.get_rewards(
                     responses, uids
@@ -199,8 +213,15 @@ class BaseScraperValidator:
                 perf_raw = np.array(
                     [event.reward for event in perf_events], dtype=np.float32
                 )
-                perf_mult = perf_factor(perf_raw, self.perf_floor)
+                floors = np.array(
+                    [perf_floor_for(r, self.perf_floor) for r in responses],
+                    dtype=np.float32,
+                )
+                perf_mult = floors + (1.0 - floors) * perf_raw
                 rewards = rewards * perf_mult
+                all_rewards.append(perf_raw)
+                all_original_rewards.append(perf_raw)
+                val_score_responses_list.append({})
                 log_reward_aggregates(
                     name=f"{self.search_type} perf_factor",
                     uids=uids,
