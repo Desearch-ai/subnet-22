@@ -1,7 +1,10 @@
+import random
+from collections import Counter
 from types import SimpleNamespace
 
 import pytest
 
+from desearch.protocol import ResultType
 from desearch.utils import (
     SERVING_FLOOR,
     SearchMode,
@@ -17,6 +20,7 @@ from neurons.validators.scoring.synthetic_query_generator import (
     TWITTER_TOOL,
     WEB_TOOL,
     pick_ai_mode_and_tool,
+    random_result_types,
 )
 
 
@@ -62,6 +66,15 @@ def test_per_query_mix_single_tool_any_mode():
     assert fast_tools == {WEB_TOOL, TWITTER_TOOL}
 
 
+def test_per_query_result_type_mix():
+    counts = Counter(random_result_types)
+    assert counts[ResultType.LINKS_WITH_FINAL_SUMMARY] == 4
+    assert counts[ResultType.ONLY_LINKS] == 1
+
+    seen = {random.choice(random_result_types) for _ in range(2000)}
+    assert seen == {ResultType.LINKS_WITH_FINAL_SUMMARY, ResultType.ONLY_LINKS}
+
+
 def _make_perf_model():
     model = PerformanceRewardModel.__new__(PerformanceRewardModel)
     model.min_realistic_time = 5.0
@@ -79,11 +92,11 @@ def test_perf_fast_answer_in_balanced_budget_follows_curve():
     model = _make_perf_model()
 
     min_realistic, target = model._thresholds_for(15)
-    assert min_realistic == 2.0
+    assert min_realistic == 1.0
     assert target == 9.0
 
     assert model.reward(3.0, 15) == 1.0
-    assert model.reward(1.0, 15) == 0.0
+    assert model.reward(0.9, 15) == 0.0
 
 
 def test_perf_decay_within_budget():
@@ -103,6 +116,21 @@ def test_perf_falls_back_to_fixed_when_budget_missing():
 
     assert model._thresholds_for(0) == (5.0, 10.0)
     assert model.reward(3.0, 0) == 0.0
+
+
+def test_perf_floor_is_mode_dependent():
+    from types import SimpleNamespace
+
+    from desearch.protocol import SearchMode
+    from neurons.validators.reward.performance_reward import perf_floor_for
+
+    def resp(mode):
+        return SimpleNamespace(mode=mode)
+
+    assert perf_floor_for(resp(SearchMode.FAST), 0.50) == 0.40
+    assert perf_floor_for(resp(SearchMode.BALANCED), 0.50) == 0.50
+    assert perf_floor_for(resp(SearchMode.DEEP), 0.50) == 0.85
+    assert perf_floor_for(resp(None), 0.70) == 0.70
 
 
 def _penalty_model():
@@ -125,7 +153,7 @@ def test_penalty_not_applied_to_fast_index_answer():
 def test_penalty_applied_below_mode_threshold():
     model = _penalty_model()
 
-    assert model.penalty_for(_resp(1.0, 5)) == model.max_penalty
+    assert model.penalty_for(_resp(0.9, 5)) == model.max_penalty
 
 
 def test_penalty_falls_back_when_budget_missing():

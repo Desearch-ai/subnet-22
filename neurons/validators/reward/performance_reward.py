@@ -19,9 +19,17 @@ from .reward import BaseRewardEvent, BaseRewardModel, log_reward_aggregates
 AI_PERF_FLOOR = 0.50
 X_PERF_FLOOR = 0.70
 
+MODE_PERF_FLOORS = {"fast": 0.40, "balanced": 0.50, "deep": 0.85}
+
 
 def perf_factor(perf_raw: float, floor: float) -> float:
     return floor + (1.0 - floor) * perf_raw
+
+
+def perf_floor_for(response, default: float) -> float:
+    mode = getattr(response, "mode", None)
+    key = getattr(mode, "value", mode)
+    return MODE_PERF_FLOORS.get(key, default)
 
 
 def resolve_scoring_budget(response) -> float:
@@ -43,7 +51,7 @@ def resolve_scoring_budget(response) -> float:
 def min_realistic_for_budget(budget: float, default: float) -> float:
     if not budget or budget <= 0:
         return default
-    return min(2.0, 0.3 * budget)
+    return min(1.0, 0.3 * budget)
 
 
 class PerformanceRewardModel(BaseRewardModel):
@@ -121,19 +129,20 @@ class PerformanceRewardModel(BaseRewardModel):
         return resolve_scoring_budget(response)
 
     def reward(self, axon_time: float, budget: float) -> float:
-        min_realistic, target = self._thresholds_for(budget)
+        if budget and budget > 0:
+            min_realistic = min_realistic_for_budget(budget, self.min_realistic_time)
+            target = 0.6 * budget
+            zero_point = budget + min(5.0, 0.5 * budget)
+        else:
+            min_realistic = self.min_realistic_time
+            target = self.target_time
+            zero_point = self.target_time + 5.0
 
-        if axon_time < min_realistic:
+        if axon_time < min_realistic or axon_time >= zero_point:
             return 0.0
         if axon_time <= target:
             return 1.0
-        if budget and budget > 0:
-            if axon_time <= budget:
-                return 1.0 - 0.5 * (axon_time - target) / (budget - target)
-            over = 0.5 * budget
-            if axon_time <= budget + over:
-                return 0.5 * (1.0 - (axon_time - budget) / over)
-        return 0.0
+        return 1.0 - (axon_time - target) / (zero_point - target)
 
     async def get_rewards(self, responses: List, uids) -> Tuple[List[BaseRewardEvent]]:
         """

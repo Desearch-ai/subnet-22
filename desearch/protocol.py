@@ -777,6 +777,8 @@ class ScraperStreamingSynapse(StreamingSynapse):
             "text_chunks": self.text_chunks,
             "result_type": self.result_type,
             "model": self.model,
+            "mode": self.mode,
+            "scoring_model": self.scoring_model,
             "max_items": self.max_items,
             "language": self.language,
             "region": self.region,
