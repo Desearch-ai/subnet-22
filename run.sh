@@ -326,6 +326,8 @@ if [ "$?" -eq 1 ]; then
                         echo "New version published. Updating the local copy."
 
                         # Install latest changes just in case.
+                        # scalecodec shadows cyscale's codec shim and breaks weight setting on bittensor 10.3.0.
+                        pip uninstall async-substrate-interface substrate-interface scalecodec cyscale -y
                         pip install -e .
 
                         # Restart PM2 processes
