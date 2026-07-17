@@ -1,6 +1,7 @@
 bittensor==10.3.0
 bittensor-wallet==4.0.1
 async-substrate-interface==2.0.2
+cyscale==0.3.1
 numpy==2.2.6
 wandb==0.23.1
 aiohttp>=3.13.4
@@ -9,7 +10,6 @@ openai==2.33.0
 pytz==2024.2
 faker==40.15.0
 tiktoken==0.12.0
-substrate-interface==1.7.11
 redis[hiredis]==5.2.1
 jsonpickle==4.0.2
 aiosqlite>=0.20.0

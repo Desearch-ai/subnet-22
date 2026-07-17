@@ -1,5 +1,5 @@
 import bittensor as bt
-from substrateinterface import Keypair
+from bittensor_wallet import Keypair
 
 MOCK_WALLET_KEY = "5EsrMfo7UcPs6AqAotU47VmYGfLHntS9JzhEwbY2EJMcWQxQ"
 
