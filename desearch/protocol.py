@@ -282,6 +282,7 @@ class ContextualRelevance(Enum):
 class ScoringModel(str, Enum):
     OPENAI_GPT4_1_NANO = "openai/gpt-4.1-nano"
     QWEN3_6_27B = "Qwen/Qwen3.6-27B-TEE"
+    QWEN3_5_397B = "Qwen/Qwen3.5-397B-A17B-TEE"
 
 
 class SearchMode(str, Enum):

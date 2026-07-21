@@ -77,7 +77,7 @@ def add_args(cls, parser):
         "--neuron.scoring_model",
         type=ScoringModel,
         help="Name of llm model used for scoring.",
-        default=ScoringModel.QWEN3_6_27B,
+        default=ScoringModel.QWEN3_5_397B,
     )
 
     parser.add_argument(
