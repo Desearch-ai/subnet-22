@@ -4,7 +4,8 @@ from typing import List, Optional
 import bittensor as bt
 from bittensor.core.metagraph import AsyncMetagraph
 
-from desearch.miner_config import SEARCH_TYPES
+from desearch.miner_config import LANES, Lane, SearchType, lane_key
+from desearch.protocol import SearchMode
 from neurons.validators.scoring import miner_db
 from neurons.validators.scoring.constants import (
     QUALITY_EXPONENT,
@@ -20,16 +21,14 @@ MIN_MIGRATION_POOL = 2
 class UIDManager:
     """
     Routes organic requests to miners weighted by quality * verified concurrency
-    per search type. Snapshots are refreshed on metagraph resync.
+    per lane. Snapshots are refreshed on metagraph resync.
     """
 
     metagraph: AsyncMetagraph
 
     def __init__(self) -> None:
         self.available_uids: List[int] = []
-        self.weights_by_type: dict[str, dict[int, float]] = {
-            st: {} for st in SEARCH_TYPES
-        }
+        self.weights_by_lane: dict[Lane, dict[int, float]] = {}
 
     def _top_half_by_incentive(self, available_uids: List[int]) -> set[int]:
         available_set = set(available_uids)
@@ -43,6 +42,12 @@ class UIDManager:
                 if len(pool) >= target_size:
                     break
         return pool
+
+    @staticmethod
+    def lane_for(search_type: SearchType, mode: Optional[SearchMode]) -> Lane:
+        if search_type != SearchType.AI_SEARCH:
+            return (search_type, None)
+        return (search_type, SearchMode(mode))
 
     async def resync(
         self,
@@ -72,13 +77,14 @@ class UIDManager:
         self.available_uids = available_uids
         migration_pool = self._top_half_by_incentive(available_uids)
 
-        type_modes: dict[str, str] = {}
-        for search_type in SEARCH_TYPES:
-            rows = await miner_db.get_all_concurrency_data(search_type)
-            unreachable = await miner_db.get_unreachable_uids(search_type)
+        lane_modes: dict[str, str] = {}
+        for lane in LANES:
+            key = lane_key(lane)
+            rows = await miner_db.get_all_concurrency_data(key)
+            unreachable = await miner_db.get_unreachable_uids(key)
 
             any_ramped = any(v >= RAMP_EVIDENCE_VERIFIED for _q, v in rows.values())
-            type_modes[search_type] = "ramped" if any_ramped else "migration"
+            lane_modes[key] = "ramped" if any_ramped else "migration"
 
             weights: dict[int, float] = {}
             for uid in available_uids:
@@ -93,34 +99,43 @@ class UIDManager:
                     )
                 else:
                     weights[uid] = 1.0 if uid in migration_pool else 0.0
-            self.weights_by_type[search_type] = weights
+            self.weights_by_lane[lane] = weights
 
         bt.logging.info(
             f"[UIDManager] Resynced {len(available_uids)} reachable "
-            f"(migration pool={len(migration_pool)}): {type_modes}"
+            f"(migration pool={len(migration_pool)}): {lane_modes}"
         )
 
-    def mark_unreachable(self, uid: int, search_type: str) -> None:
-        """Zero this UID's routing weight for ``search_type`` immediately.
+    def mark_unreachable(self, uid: int, search_type: SearchType) -> None:
+        for lane, weights in self.weights_by_lane.items():
+            if lane[0] == search_type and weights.get(uid, 0.0) > 0:
+                weights[uid] = 0.0
 
-        Called when a single dendrite miss flips ``unreachable_since``.
-        Without this, the cached ``weights_by_type`` keeps routing organics
-        to the dead axon until the next 10-minute metagraph sweep — every
-        one of those organics fails fast and the API client gets an error.
-        """
-        weights = self.weights_by_type.get(search_type)
-        if weights is not None and weights.get(uid, 0.0) > 0:
-            weights[uid] = 0.0
+    async def drop_unreachable(self) -> None:
+        for lane in LANES:
+            for uid in await miner_db.get_unreachable_uids(lane_key(lane)):
+                self.mark_unreachable(uid, lane[0])
 
-    def get_miner_uid(self, search_type: Optional[str] = None) -> int:
+    def _pick(self, weights_map: dict[int, float]) -> Optional[int]:
+        uids = self.available_uids
+        weights = [weights_map.get(uid, 0.0) for uid in uids]
+        if sum(weights) > 0:
+            return random.choices(uids, weights=weights, k=1)[0]
+        return None
+
+    def get_miner_uid(
+        self,
+        search_type: Optional[SearchType] = None,
+        mode: Optional[SearchMode] = None,
+    ) -> int:
         if not self.available_uids:
             raise RuntimeError("UIDManager has no available UIDs")
 
-        if search_type and search_type in self.weights_by_type:
-            weights_map = self.weights_by_type[search_type]
-            uids = self.available_uids
-            weights = [weights_map.get(uid, 0.0) for uid in uids]
-            if sum(weights) > 0:
-                return random.choices(uids, weights=weights, k=1)[0]
+        if search_type:
+            weights = self.weights_by_lane.get(self.lane_for(search_type, mode))
+            if weights:
+                selected = self._pick(weights)
+                if selected is not None:
+                    return selected
 
         return random.choice(self.available_uids)

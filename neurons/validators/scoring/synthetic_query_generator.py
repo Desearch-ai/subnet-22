@@ -6,11 +6,11 @@ from typing import List
 import bittensor as bt
 
 from desearch.dataset import BasicQuestionsDataset, QuestionsDataset
+from desearch.miner_config import AI_MODES, LANES, SearchType, lane_key
 from desearch.dataset.date_filters import random_date_filters
 from desearch.dataset.hf_dataset import HFQuestionPool
 from desearch.protocol import ResultType, ScoringModel
 from desearch.utils import (
-    AI_SEARCH_MODES,
     SearchMode,
     get_mode_serving_budget,
 )
@@ -34,18 +34,22 @@ random_result_types = list(
 )
 
 
-def pick_ai_mode_and_tool() -> tuple[SearchMode, list[str]]:
-    mode = random.choice(AI_SEARCH_MODES)
-    tool = random.choice([WEB_TOOL, TWITTER_TOOL])
-    return mode, [tool]
-
-
-_AI_MODE_WEIGHTS = {
-    SearchMode.FAST: 0.60,
-    SearchMode.BALANCED: 0.20,
-    SearchMode.DEEP: 0.20,
+_MODE_TOOL_WEIGHTS = {
+    SearchMode.FAST: {WEB_TOOL: 1.0},
+    SearchMode.BALANCED: {WEB_TOOL: 0.50, TWITTER_TOOL: 0.50},
+    SearchMode.DEEP: {WEB_TOOL: 0.50, TWITTER_TOOL: 0.50},
 }
-_AI_TOOL_WEIGHTS = {WEB_TOOL: 0.50, TWITTER_TOOL: 0.50}
+
+
+def tools_for_mode(mode: SearchMode) -> list[str]:
+    return list(_MODE_TOOL_WEIGHTS[mode])
+
+
+def pick_ai_mode_and_tool() -> tuple[SearchMode, list[str]]:
+    mode = random.choice(AI_MODES)
+    return mode, [random.choice(tools_for_mode(mode))]
+
+
 _AI_RESULT_WEIGHTS = {
     ResultType.LINKS_WITH_FINAL_SUMMARY: 0.80,
     ResultType.ONLY_LINKS: 0.20,
@@ -78,13 +82,12 @@ def _weighted_list(n: int, choices: dict) -> list:
     return out
 
 
-def _ai_combos(n: int) -> list[tuple[SearchMode, list[str], str]]:
+def _ai_combos(mode: SearchMode, n: int) -> list[tuple[list[str], str]]:
     if n <= 0:
         return []
-    modes = _weighted_list(n, _AI_MODE_WEIGHTS)
-    tools = _weighted_list(n, _AI_TOOL_WEIGHTS)
+    tools = _weighted_list(n, _MODE_TOOL_WEIGHTS[mode])
     result_types = _weighted_list(n, _AI_RESULT_WEIGHTS)
-    return [(modes[i], [tools[i]], result_types[i].value) for i in range(n)]
+    return [([tools[i]], result_types[i].value) for i in range(n)]
 
 
 class SyntheticQueryGenerator:
@@ -128,9 +131,10 @@ class SyntheticQueryGenerator:
         llm_items: List[dict] = []  # Only ai_search needs LLM
 
         for uid in available_uids:
-            for search_type in SEARCH_TYPES:
-                n = verified_by_type.get(search_type, {}).get(uid, 1)
-                if search_type == "x_search":
+            for lane in LANES:
+                search_type, mode = lane
+                n = verified_by_type.get(lane_key(lane), {}).get(uid, 1)
+                if search_type == SearchType.X_SEARCH:
                     for _ in range(n):
                         items.append(
                             {
@@ -142,12 +146,12 @@ class SyntheticQueryGenerator:
                             }
                         )
                     continue
-                for combo in _ai_combos(n):
+                for ai_tools, result_type in _ai_combos(mode, n):
                     item = {
                         "uid": uid,
                         "search_type": "ai_search",
                         "query": None,
-                        "_combo": combo,
+                        "_combo": (mode, ai_tools, result_type),
                     }
                     llm_items.append(item)
                     items.append(item)
@@ -201,14 +205,19 @@ class SyntheticQueryGenerator:
         available_uids: List[int],
         verified_by_type: dict[str, dict[int, int]],
     ) -> List[dict] | None:
-        def count(st: str) -> int:
+        def ai_count() -> int:
             return sum(
-                verified_by_type.get(st, {}).get(uid, 1) for uid in available_uids
+                verified_by_type.get(lane_key((SearchType.AI_SEARCH, mode)), {}).get(
+                    uid, 1
+                )
+                for uid in available_uids
+                for mode in AI_MODES
             )
 
         # X dataset feeds AI-search's Twitter tool (advanced search), NOT basic x_search.
-        x_rows = self.hf_pool.sample_lane(X_LANE, count("ai_search")) or []
-        ai_rows = self._sample_web(count("ai_search"))
+        total_ai = ai_count()
+        x_rows = self.hf_pool.sample_lane(X_LANE, total_ai) or []
+        ai_rows = self._sample_web(total_ai)
         if not (x_rows or ai_rows):
             return None
 
@@ -216,9 +225,10 @@ class SyntheticQueryGenerator:
         items: List[dict] = []
 
         for uid in available_uids:
-            for search_type in SEARCH_TYPES:
-                n = verified_by_type.get(search_type, {}).get(uid, 1)
-                if search_type == "x_search":
+            for lane in LANES:
+                search_type, mode = lane
+                n = verified_by_type.get(lane_key(lane), {}).get(uid, 1)
+                if search_type == SearchType.X_SEARCH:
                     for _ in range(n):
                         items.append(
                             {
@@ -230,7 +240,7 @@ class SyntheticQueryGenerator:
                             }
                         )
                     continue
-                for mode, ai_tools, result_type in _ai_combos(n):
+                for ai_tools, result_type in _ai_combos(mode, n):
                     row = self._pick_ai_row(ai_tools, x_rows, ai_rows, ai_cursor)
                     if row is None:
                         continue

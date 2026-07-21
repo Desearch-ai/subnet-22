@@ -1,11 +1,11 @@
-"""Per-UID verified-concurrency ramping gated on serving all search types."""
+"""Per-UID, per-lane verified-concurrency ramping."""
 
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Protocol
 
 import bittensor as bt
 
-from desearch.miner_config import SEARCH_TYPES
+from desearch.miner_config import LANES, lane_from_key, lane_key
 from neurons.validators.scoring.constants import DEFAULT_PER_UID, QUALITY_THRESHOLDS
 from neurons.validators.scoring import miner_db
 
@@ -44,16 +44,8 @@ def next_verified(current: int, declared: int, all_pass: bool) -> int:
     return max(DEFAULT_PER_UID, current - step)
 
 
-def passes_combined_gate(
-    ema_by_type: dict[str, float],
-    declared_by_type: dict[str, int],
-) -> bool:
-    for t, thr in QUALITY_THRESHOLDS.items():
-        if declared_by_type.get(t, 0) <= 0:
-            return False
-        if ema_by_type.get(t, 0.0) < thr:
-            return False
-    return True
+def passes_lane_gate(lane_quality: float, declared: int, search_type) -> bool:
+    return declared > 0 and lane_quality >= QUALITY_THRESHOLDS[search_type]
 
 
 async def record_window_quality(
@@ -83,7 +75,7 @@ async def record_window_quality(
         hotkey=row["hotkey"],
         coldkey=row["coldkey"],
         quality_score=quality,
-        passed=quality_avg >= QUALITY_THRESHOLDS[search_type],
+        passed=quality_avg >= QUALITY_THRESHOLDS[lane_from_key(search_type)[0]],
         verified_concurrency=allocated,
     )
 
@@ -95,7 +87,7 @@ async def record_window_quality(
 
 
 async def ramp_after_epoch(uids: list[int]) -> None:
-    """Evaluate the combined gate per UID and persist verified across all types."""
+    """Ramp each lane on its own quality so a weak mode cannot drag the others."""
     if not uids:
         return
 
@@ -103,56 +95,59 @@ async def ramp_after_epoch(uids: list[int]) -> None:
     if not state:
         return
 
-    updates_by_type: dict[str, dict[int, int]] = {t: {} for t in QUALITY_THRESHOLDS}
-    pass_count = 0
+    known = {lane_key(lane) for lane in LANES}
+    updates_by_lane: dict[str, dict[int, int]] = {key: {} for key in known}
+    passed = 0
+    total = 0
 
-    for uid, by_type in state.items():
-        ema = {t: row["quality_avg"] for t, row in by_type.items()}
-        declared = {t: row["declared"] for t, row in by_type.items()}
-        all_pass = passes_combined_gate(ema, declared)
-        if all_pass:
-            pass_count += 1
-
-        for t, row in by_type.items():
-            # DB may hold rows for retired search types (e.g. web_search)
-            if t not in updates_by_type:
+    for uid, by_lane in state.items():
+        for key, row in by_lane.items():
+            if key not in known:
                 continue
-            new_v = next_verified(row["verified"], row["declared"], all_pass)
-            if new_v != row["verified"]:
-                updates_by_type[t][uid] = new_v
-
-    for t, updates in updates_by_type.items():
-        if updates:
-            await miner_db.bulk_update_verified(t, updates)
-
-    bt.logging.info(
-        f"[Capacity] ramp_after_epoch: gate passed for {pass_count}/{len(state)} UIDs"
-    )
-
-
-async def note_call_result(uid: int, search_type: str, success: bool) -> None:
-    """Record the outcome of a single dendrite call. After
-    ``UNREACHABLE_FAILURE_THRESHOLD`` consecutive failures the miner is flagged
-    unreachable and pulled from organic routing; the next success clears it."""
-
-    try:
-        if success:
-            recovered = await miner_db.record_call_success(uid, search_type)
-            if recovered:
-                bt.logging.info(
-                    f"[Capacity] uid={uid} {search_type} recovered from unreachable"
-                )
-        else:
-            newly = await miner_db.record_call_failure(
-                uid, search_type, UNREACHABLE_FAILURE_THRESHOLD
+            search_type, _mode = lane_from_key(key)
+            total += 1
+            lane_passed = passes_lane_gate(
+                row["quality_avg"], row["declared"], search_type
             )
-            if newly:
-                if _router is not None:
-                    _router.mark_unreachable(uid, search_type)
-                bt.logging.warning(
-                    f"[Capacity] uid={uid} {search_type} marked unreachable "
-                    f"after {UNREACHABLE_FAILURE_THRESHOLD} consecutive failures"
+            passed += int(lane_passed)
+            new_verified = next_verified(row["verified"], row["declared"], lane_passed)
+            if new_verified != row["verified"]:
+                updates_by_lane[key][uid] = new_verified
+
+    for key, updates in updates_by_lane.items():
+        if updates:
+            await miner_db.bulk_update_verified(key, updates)
+
+    bt.logging.info(f"[Capacity] ramp_after_epoch: {passed}/{total} lanes passed gate")
+
+
+def lanes_for(search_type, mode=None) -> list[str]:
+    if mode is not None:
+        return [lane_key((search_type, mode))]
+    return [lane_key(lane) for lane in LANES if lane[0] == search_type]
+
+
+async def note_call_result(uid: int, search_type, success: bool, mode=None) -> None:
+    """A failed query marks only its own lane; a dead axon marks every lane."""
+    try:
+        for key in lanes_for(search_type, mode):
+            if success:
+                recovered = await miner_db.record_call_success(uid, key)
+                if recovered:
+                    bt.logging.info(
+                        f"[Capacity] uid={uid} {key} recovered from unreachable"
+                    )
+            else:
+                newly = await miner_db.record_call_failure(
+                    uid, key, UNREACHABLE_FAILURE_THRESHOLD
                 )
+                if newly:
+                    if _router is not None:
+                        _router.mark_unreachable(uid, search_type)
+                    bt.logging.warning(
+                        f"[Capacity] uid={uid} {key} marked unreachable after "
+                        f"{UNREACHABLE_FAILURE_THRESHOLD} consecutive failures"
+                    )
     except Exception as e:
         bt.logging.error(
             f"[Capacity] note_call_result failed uid={uid} {search_type}: {e}"
@@ -163,7 +158,8 @@ async def decay_unreachable_tick() -> None:
     """Apply 10% verified decay per elapsed 5-min interval for unreachable miners."""
     now = datetime.now(timezone.utc)
 
-    for search_type in SEARCH_TYPES:
+    for lane in LANES:
+        search_type = lane_key(lane)
         rows = await miner_db.get_unreachable_rows(search_type)
         for row in rows:
             last_tick_iso = row["last_decay_at"] or row["unreachable_since"]

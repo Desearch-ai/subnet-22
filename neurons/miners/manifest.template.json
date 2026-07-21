@@ -1,6 +1,10 @@
 {
   "concurrency": {
     "x_search": 1,
-    "ai_search": 1
+    "ai_search": {
+      "fast": 1,
+      "balanced": 1,
+      "deep": 1
+    }
   }
 }
