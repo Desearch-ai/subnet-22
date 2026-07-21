@@ -140,8 +140,8 @@ class SearchRequest(BaseModel):
         example=DateFilterType.PAST_WEEK.value,
     )
 
-    mode: Optional[SearchMode] = Field(
-        default=None,
+    mode: SearchMode = Field(
+        default=SearchMode.BALANCED,
         description=f"Speed/quality mode for the search. {format_enum_values(SearchMode)}",
         example=SearchMode.BALANCED.value,
     )
