@@ -137,7 +137,7 @@ async def call_chutes(messages, temperature, model, seed=1234, response_format=N
         except Exception as e:
             bt.logging.error(f"Error when calling chutes: {e}")
 
-        await asyncio.sleep(0.5)
+        await asyncio.sleep(1)
 
     return None
 
@@ -161,7 +161,7 @@ async def call_openai(messages, model, temperature=1, response_format=None):
 
         except Exception as e:
             bt.logging.error(f"Error when calling OpenAI: {e}")
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(1)
 
     return None
 

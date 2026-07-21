@@ -4,6 +4,8 @@ from desearch.protocol import ScoringModel
 from desearch.synapse import collect_responses
 from desearch.utils import call_scoring_llm
 
+SCORING_CONCURRENCY = 20
+
 
 class RewardLLM:
     def __init__(self, scoring_model: ScoringModel = ScoringModel.OPENAI_GPT4_1_NANO):
@@ -29,7 +31,9 @@ class RewardLLM:
                 task = query_llm(message_list)
                 query_tasks.append(task)
 
-            query_responses = await collect_responses(query_tasks, group_size=100)
+            query_responses = await collect_responses(
+                query_tasks, group_size=SCORING_CONCURRENCY
+            )
 
             result = {}
 
