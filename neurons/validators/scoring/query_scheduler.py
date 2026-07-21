@@ -9,15 +9,16 @@ from typing import Dict, Optional
 import bittensor as bt
 import numpy as np
 
+from desearch.miner_config import LANES, SearchType, lane_key
+from desearch.protocol import SearchMode
 from neurons.validators.scoring import capacity, miner_db
 from neurons.validators.scoring.constants import (
-    COVERAGE_EXPONENT,
     DEFAULT_PER_UID,
     GATE_RAMP,
-    MIN_VOLUME_RATIO,
+    MIN_DEEP_SAMPLES_PER_POOL,
+    POOL_SHARES,
     QUALITY_EXPONENT,
     QUALITY_THRESHOLDS,
-    SEARCH_TYPE_WEIGHTS,
     VOLUME_EXPONENT,
 )
 from neurons.validators.scoring.scoring_store import SEARCH_TYPES, ScoringStore
@@ -45,46 +46,44 @@ def _unpack_quality(val: tuple) -> tuple[float, float, float]:
     return float(q), float(q), float(v)
 
 
-def combine_superlinear_scores(
-    qualities_per_type: dict[str, dict[int, tuple]],
+def gate_for(q_gate: float, search_type: SearchType) -> float:
+    thr = QUALITY_THRESHOLDS[search_type]
+    return min(1.0, max(0.0, (q_gate - (thr - GATE_RAMP)) / GATE_RAMP))
+
+
+def _pool_raw_scores(
+    search_type: SearchType, uid_results: dict[int, tuple]
 ) -> dict[int, float]:
-    all_uids: set[int] = set()
-    for uid_q in qualities_per_type.values():
-        all_uids.update(uid_q.keys())
+    raw: dict[int, float] = {}
+    for uid, (q_gate, q_weight, volume, samples) in uid_results.items():
+        if volume <= 0 or samples < MIN_DEEP_SAMPLES_PER_POOL:
+            continue
+        gate = gate_for(q_gate, search_type)
+        if gate <= 0:
+            continue
+        raw[uid] = gate * q_weight**QUALITY_EXPONENT * volume**VOLUME_EXPONENT
+    return raw
 
-    combined: dict[int, float] = {}
-    for uid in all_uids:
-        qv = {
-            t: _unpack_quality(qualities_per_type.get(t, {}).get(uid, (0.0, 0.0, 0)))
-            for t in SEARCH_TYPE_WEIGHTS
-        }
-        max_v = max(v for _, _, v in qv.values())
 
-        served: dict[str, float] = {}
-        for t, (q_gate, _q_weight, v) in qv.items():
-            if max_v == 0:
-                served[t] = 0.0
-                continue
-            thr = QUALITY_THRESHOLDS[t]
-            gate = min(1.0, max(0.0, (q_gate - (thr - GATE_RAMP)) / GATE_RAMP))
-            served[t] = gate * min(1.0, (v / max_v) / MIN_VOLUME_RATIO)
+def combine_pool_scores(
+    qualities_per_pool: dict[tuple[SearchType, Optional[SearchMode]], dict[int, tuple]],
+) -> dict[int, float]:
+    scores: dict[int, float] = defaultdict(float)
 
-        coverage = sum(SEARCH_TYPE_WEIGHTS[t] * served[t] for t in SEARCH_TYPE_WEIGHTS)
+    for pool, share in POOL_SHARES.items():
+        uid_results = qualities_per_pool.get(pool) or {}
+        if not uid_results:
+            continue
 
-        per_type_sum = 0.0
-        for t, (_q_gate, q_weight, v) in qv.items():
-            if served[t] == 0.0:
-                continue
-            per_type_sum += (
-                SEARCH_TYPE_WEIGHTS[t]
-                * served[t]
-                * q_weight**QUALITY_EXPONENT
-                * v**VOLUME_EXPONENT
-            )
+        raw = _pool_raw_scores(pool[0], uid_results)
+        total = sum(raw.values())
+        if total <= 0:
+            continue
 
-        combined[uid] = coverage**COVERAGE_EXPONENT * per_type_sum
+        for uid, uid_raw in raw.items():
+            scores[uid] += share * uid_raw / total
 
-    return combined
+    return dict(scores)
 
 
 class QueryScheduler:
@@ -344,7 +343,7 @@ class QueryScheduler:
         organics: dict,
         time_range_start: datetime,
         window_start: str,
-        allocations: dict[int, int],
+        allocations_by_lane: dict[str, dict[int, int]],
     ) -> dict[int, tuple[float, float, int]]:
         """Score synth + organic for one type and update capacity per UID.
 
@@ -386,12 +385,13 @@ class QueryScheduler:
             f"organic={len(organic_items)} (deep={len(deep_organic)}, cheap={len(cheap_organic)})"
         )
 
-        uid_deep_totals: dict[int, float] = defaultdict(float)
-        uid_gate_totals: dict[int, float] = defaultdict(float)
-        uid_deep_weights: dict[int, float] = defaultdict(float)
-        uid_cheap_sum: dict[int, float] = defaultdict(float)
-        uid_cheap_count: dict[int, int] = defaultdict(int)
-        uid_volumes: dict[int, int] = defaultdict(int)
+        deep_totals: dict[tuple, float] = defaultdict(float)
+        gate_totals: dict[tuple, float] = defaultdict(float)
+        deep_weights: dict[tuple, float] = defaultdict(float)
+        deep_counts: dict[tuple, int] = defaultdict(int)
+        cheap_sum: dict[tuple, float] = defaultdict(float)
+        cheap_count: dict[tuple, int] = defaultdict(int)
+        volumes: dict[tuple, int] = defaultdict(int)
 
         cheap_items = cheap_synth + cheap_organic
         if cheap_items:
@@ -407,10 +407,10 @@ class QueryScheduler:
                 cheap_scores = np.ones(len(cheap_items), dtype=np.float32)
             penalties = cheap_scores.tolist()
             for i, item in enumerate(cheap_items):
-                uid = item["uid"]
-                uid_cheap_sum[uid] += penalties[i]
-                uid_cheap_count[uid] += 1
-                uid_volumes[uid] += 1
+                key = (item["uid"], self._item_mode(item))
+                cheap_sum[key] += penalties[i]
+                cheap_count[key] += 1
+                volumes[key] += 1
 
         deep_items = deep_synth + deep_organic
         if deep_items:
@@ -426,42 +426,62 @@ class QueryScheduler:
                 gate_scores = np.zeros(len(deep_items), dtype=np.float32)
             scores = full_scores.tolist()
             gates = gate_scores.tolist()
-            for i, item in enumerate(deep_synth):
-                uid = item["uid"]
-                uid_deep_totals[uid] += DEEP_SAMPLE_WEIGHT * scores[i]
-                uid_gate_totals[uid] += DEEP_SAMPLE_WEIGHT * gates[i]
-                uid_deep_weights[uid] += DEEP_SAMPLE_WEIGHT
-                uid_volumes[uid] += 1
-            offset = len(deep_synth)
             organic_deep_weight = ORGANIC_VALUE_MULTIPLIER * DEEP_SAMPLE_WEIGHT
-            for i, item in enumerate(deep_organic):
-                uid = item["uid"]
-                uid_deep_totals[uid] += organic_deep_weight * scores[offset + i]
-                uid_gate_totals[uid] += organic_deep_weight * gates[offset + i]
-                uid_deep_weights[uid] += organic_deep_weight
-                uid_volumes[uid] += 1
+            for i, item in enumerate(deep_items):
+                weight = (
+                    DEEP_SAMPLE_WEIGHT if i < len(deep_synth) else organic_deep_weight
+                )
+                key = (item["uid"], self._item_mode(item))
+                deep_totals[key] += weight * scores[i]
+                gate_totals[key] += weight * gates[i]
+                deep_weights[key] += weight
+                deep_counts[key] += 1
+                volumes[key] += 1
 
-        uid_results: dict[int, tuple[float, float, int]] = {}
-        for uid in uid_volumes:
-            c_uid = (
-                uid_cheap_sum[uid] / uid_cheap_count[uid]
-                if uid_cheap_count[uid] > 0
-                else 1.0
+        results_by_mode: dict[Optional[SearchMode], dict[int, tuple]] = defaultdict(
+            dict
+        )
+        for key in volumes:
+            uid, mode = key
+            c_uid = cheap_sum[key] / cheap_count[key] if cheap_count[key] > 0 else 1.0
+            denom = deep_weights[key]
+            q_weight = deep_totals[key] / denom if denom > 0 else 0.0
+            q_gate = gate_totals[key] / denom if denom > 0 else 0.0
+            results_by_mode[mode][uid] = (
+                q_gate * c_uid,
+                q_weight * c_uid,
+                volumes[key],
+                deep_counts[key],
             )
-            denom = uid_deep_weights[uid]
-            q_weight = uid_deep_totals[uid] / denom if denom > 0 else 0.0
-            q_gate = uid_gate_totals[uid] / denom if denom > 0 else 0.0
-            uid_results[uid] = (q_gate * c_uid, q_weight * c_uid, uid_volumes[uid])
 
-        for uid, (q_gate, _q_weight, _) in uid_results.items():
-            await capacity.record_window_quality(
-                uid=uid,
-                search_type=search_type,
-                quality=q_gate,
-                window_start=window_start,
-                allocated=allocations.get(uid, DEFAULT_PER_UID),
-            )
-        return uid_results
+        await self._record_quality(
+            search_type, results_by_mode, window_start, allocations_by_lane
+        )
+        return results_by_mode
+
+    @staticmethod
+    def _item_mode(item) -> Optional[SearchMode]:
+        mode = getattr(item.get("response"), "mode", None)
+        return SearchMode(mode) if mode else None
+
+    async def _record_quality(
+        self,
+        search_type: SearchType,
+        results_by_mode: dict,
+        window_start: str,
+        allocations_by_lane: dict[str, dict[int, int]],
+    ) -> None:
+        for mode, uid_results in results_by_mode.items():
+            key = lane_key((search_type, mode))
+            allocations = allocations_by_lane.get(key, {})
+            for uid, (q_gate, _q_weight, _volume, _samples) in uid_results.items():
+                await capacity.record_window_quality(
+                    uid=uid,
+                    search_type=key,
+                    quality=q_gate,
+                    window_start=window_start,
+                    allocated=allocations.get(uid, DEFAULT_PER_UID),
+                )
 
     async def _dispatch_combined_scores(self, combined: dict[int, float]) -> None:
         """Push the combined per-UID scores into the neuron's EMA."""
@@ -497,26 +517,30 @@ class QueryScheduler:
                 return
 
             window_start = time_range_start.isoformat()
-            qualities_per_type: dict[str, dict[int, tuple[float, float, int]]] = {}
+            qualities_per_pool: dict[
+                tuple[SearchType, Optional[SearchMode]], dict[int, tuple]
+            ] = {}
 
             for search_type in SEARCH_TYPES:
-                uid_results = await self._score_one_type(
+                results_by_mode = await self._score_one_type(
                     search_type,
                     synthetics,
                     organics,
                     time_range_start,
                     window_start,
-                    allocations_by_type.get(search_type, {}),
+                    allocations_by_type,
                 )
-                if uid_results:
-                    qualities_per_type[search_type] = uid_results
+                for mode, uid_results in results_by_mode.items():
+                    pool = (search_type, mode)
+                    if uid_results and pool in POOL_SHARES:
+                        qualities_per_pool[pool] = uid_results
 
             touched_uids = sorted(
-                {uid for results in qualities_per_type.values() for uid in results}
+                {uid for results in qualities_per_pool.values() for uid in results}
             )
             await capacity.ramp_after_epoch(touched_uids)
 
-            combined = combine_superlinear_scores(qualities_per_type)
+            combined = combine_pool_scores(qualities_per_pool)
             await self._dispatch_combined_scores(combined)
 
         except Exception as e:
@@ -601,9 +625,10 @@ class QueryScheduler:
                     continue
 
                 allocations_by_type: dict[str, dict[int, int]] = {}
-                for st in SEARCH_TYPES:
-                    rows = await miner_db.get_allocation_state(st)
-                    allocations_by_type[st] = {
+                for lane in LANES:
+                    key = lane_key(lane)
+                    rows = await miner_db.get_allocation_state(key)
+                    allocations_by_type[key] = {
                         uid: rows.get(uid, (0.0, 0, DEFAULT_PER_UID))[2]
                         for uid in available_uids
                     }

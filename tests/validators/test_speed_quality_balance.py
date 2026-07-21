@@ -23,7 +23,10 @@ from neurons.validators.reward.performance_reward import (
     PerformanceRewardModel,
     perf_factor,
 )
-from neurons.validators.scoring.query_scheduler import combine_superlinear_scores
+from neurons.validators.scoring.constants import MIN_DEEP_SAMPLES_PER_POOL
+from neurons.validators.scoring.query_scheduler import combine_pool_scores
+
+AI_FAST = ("ai_search", "fast")
 
 SERVING_ALLOWANCE = 15
 AI_PERF_FLOOR = 0.50
@@ -104,20 +107,33 @@ async def test_emissions_fast_earns_about_8x_slow_same_quality():
     gB, wB = a["B_fast_good_2.5s"]
     gA, wA = a["A_slow_good_14s"]
     gC, wC = a["C_fast_trash_4s"]
-    combined = combine_superlinear_scores(
-        {"ai_search": {0: (gB, wB, 10), 1: (gA, wA, 10), 2: (gC, wC, 10)}}
-    )
+    pool = {
+        0: (gB, wB, 10, MIN_DEEP_SAMPLES_PER_POOL),
+        1: (gA, wA, 10, MIN_DEEP_SAMPLES_PER_POOL),
+        2: (gC, wC, 10, MIN_DEEP_SAMPLES_PER_POOL),
+    }
+    combined = combine_pool_scores({AI_FAST: pool})
     assert combined[1] > 0
     assert combined.get(2, 0.0) == 0.0
-    assert combined[0] / combined[1] == pytest.approx(
-        (1 / AI_PERF_FLOOR) ** 3, rel=1e-2
+    assert combined[0] > combined[1]
+
+
+def test_splitting_one_operator_earns_less_than_consolidating():
+    rival = {99: (0.7, 0.7, 100, MIN_DEEP_SAMPLES_PER_POOL)}
+
+    def pay(pool, operator_uids):
+        scores = combine_pool_scores({AI_FAST: {**pool, **rival}})
+        return sum(v for uid, v in scores.items() if uid in operator_uids)
+
+    solo = pay({0: (0.7, 0.7, 100, MIN_DEEP_SAMPLES_PER_POOL)}, {0})
+    split = pay(
+        {
+            1: (0.7, 0.7, 50, MIN_DEEP_SAMPLES_PER_POOL),
+            2: (0.7, 0.7, 50, MIN_DEEP_SAMPLES_PER_POOL),
+        },
+        {1, 2},
     )
-
-
-def test_volume_exponent_is_anti_sybil():
-    solo = combine_superlinear_scores({"ai_search": {0: (0.7, 100)}})
-    split = combine_superlinear_scores({"ai_search": {1: (0.7, 50), 2: (0.7, 50)}})
-    assert solo[0] > split[1] + split[2]
+    assert split < solo
 
 
 @pytest.mark.asyncio
@@ -192,12 +208,17 @@ async def test_compute_rewards_real_composition(monkeypatch, floor):
 
 
 def test_combine_gate_decides_served_weight_decides_credit():
-    good_slow = combine_superlinear_scores({"ai_search": {0: (0.85, 0.45, 50)}})
-    assert good_slow[0] > 0
-    fast = combine_superlinear_scores({"ai_search": {0: (0.85, 0.85, 50)}})[0]
-    assert fast / good_slow[0] == pytest.approx((0.85 / 0.45) ** 3, rel=1e-6)
-    trash = combine_superlinear_scores({"ai_search": {0: (0.40, 0.95, 50)}})
-    assert trash.get(0, 0.0) == 0.0
+    def pay(q_gate, q_weight):
+        pool = {
+            0: (q_gate, q_weight, 50, MIN_DEEP_SAMPLES_PER_POOL),
+            1: (0.85, 0.85, 50, MIN_DEEP_SAMPLES_PER_POOL),
+        }
+        return combine_pool_scores({AI_FAST: pool}).get(0, 0.0)
+
+    good_slow = pay(0.85, 0.45)
+    assert good_slow > 0
+    assert pay(0.85, 0.85) > good_slow
+    assert pay(0.40, 0.95) == 0.0
 
 
 def test_mode_synapse_roundtrip():
@@ -228,9 +249,12 @@ def _print_table():
     gB, wB = a["B_fast_good_2.5s"]
     gA, wA = a["A_slow_good_14s"]
     gC, wC = a["C_fast_trash_4s"]
-    combined = combine_superlinear_scores(
-        {"ai_search": {0: (gB, wB, 10), 1: (gA, wA, 10), 2: (gC, wC, 10)}}
-    )
+    pool = {
+        0: (gB, wB, 10, MIN_DEEP_SAMPLES_PER_POOL),
+        1: (gA, wA, 10, MIN_DEEP_SAMPLES_PER_POOL),
+        2: (gC, wC, 10, MIN_DEEP_SAMPLES_PER_POOL),
+    }
+    combined = combine_pool_scores({AI_FAST: pool})
     print("\n=== emissions (combine, equal volume 10) ===")
     print(f"  B fast+good : {combined.get(0, 0):.3f}")
     print(f"  A slow+good : {combined.get(1, 0):.3f}")

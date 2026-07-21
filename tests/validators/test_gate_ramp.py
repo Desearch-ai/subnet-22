@@ -1,13 +1,21 @@
 import pytest
 
 from neurons.validators.scoring.constants import GATE_RAMP, QUALITY_THRESHOLDS
-from neurons.validators.scoring.query_scheduler import combine_superlinear_scores
+from neurons.validators.scoring.constants import MIN_DEEP_SAMPLES_PER_POOL
+from neurons.validators.scoring.query_scheduler import combine_pool_scores
+
+AI_FAST = ("ai_search", "fast")
 
 
-def _pay(q_gate, q_weight=0.80, volume=50):
-    return combine_superlinear_scores(
-        {"ai_search": {0: (q_gate, q_weight, volume)}}
-    ).get(0, 0.0)
+REFERENCE = (0.95, 0.95, 50, MIN_DEEP_SAMPLES_PER_POOL)
+
+
+def _pay(q_gate, q_weight=0.80, volume=50, pool_key=AI_FAST):
+    pool = {
+        0: (q_gate, q_weight, volume, MIN_DEEP_SAMPLES_PER_POOL),
+        1: REFERENCE,
+    }
+    return combine_pool_scores({pool_key: pool}).get(0, 0.0)
 
 
 def test_above_threshold_pay_is_set_by_weight_not_gate():
@@ -16,11 +24,16 @@ def test_above_threshold_pay_is_set_by_weight_not_gate():
     assert _pay(thr) == pytest.approx(_pay(thr + 0.20))
 
 
-def test_exact_gate_value_via_cube():
+def test_higher_gate_wins_more_of_the_pool():
+    thr = QUALITY_THRESHOLDS["ai_search"]
+    assert _pay(thr) > _pay(thr - GATE_RAMP * 0.2) > _pay(thr - GATE_RAMP / 2)
+
+
+def test_partial_gate_costs_share_of_the_pool():
     thr = QUALITY_THRESHOLDS["ai_search"]
     full = _pay(thr)
-    assert _pay(thr - GATE_RAMP / 2) == pytest.approx(full * 0.5**3, rel=1e-6)
-    assert _pay(thr - GATE_RAMP * 0.2) == pytest.approx(full * 0.8**3, rel=1e-6)
+    assert 0 < _pay(thr - GATE_RAMP / 2) < full
+    assert 0 < _pay(thr - GATE_RAMP * 0.2) < full
 
 
 def test_ramp_gives_partial_credit_just_below_threshold():
@@ -46,7 +59,7 @@ def test_x_search_threshold_ramp():
     thr = QUALITY_THRESHOLDS["x_search"]
 
     def pay_x(q):
-        return combine_superlinear_scores({"x_search": {0: (q, 0.80, 50)}}).get(0, 0.0)
+        return _pay(q, pool_key=("x_search", None))
 
     assert pay_x(thr) > 0
     assert pay_x(thr - GATE_RAMP - 0.01) == 0.0
@@ -55,16 +68,19 @@ def test_x_search_threshold_ramp():
 
 def test_gate_and_volume_credit_compose():
     thr = QUALITY_THRESHOLDS["ai_search"]
-    result = combine_superlinear_scores(
-        {"ai_search": {0: (0.90, 0.80, 100), 1: (thr - GATE_RAMP / 2, 0.80, 50)}}
-    )
+    pool = {
+        0: (0.90, 0.80, 100, MIN_DEEP_SAMPLES_PER_POOL),
+        1: (thr - GATE_RAMP / 2, 0.80, 50, MIN_DEEP_SAMPLES_PER_POOL),
+    }
+    result = combine_pool_scores({AI_FAST: pool})
     assert result[0] > 0
     assert 0 < result.get(1, 0.0) < result[0]
 
 
 if __name__ == "__main__":
     test_above_threshold_pay_is_set_by_weight_not_gate()
-    test_exact_gate_value_via_cube()
+    test_partial_gate_costs_share_of_the_pool()
+    test_higher_gate_wins_more_of_the_pool()
     test_ramp_gives_partial_credit_just_below_threshold()
     test_exact_zero_at_band_bottom()
     test_below_ramp_band_is_zero()
