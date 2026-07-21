@@ -10,6 +10,12 @@ from neurons.validators.env import VALIDATOR_SERVICE_PORT
 VALIDATOR_SERVICE_URL = f"http://localhost:{VALIDATOR_SERVICE_PORT}"
 
 
+def _enum_value(value):
+    if value is None:
+        return None
+    return value.value if hasattr(value, "value") else value
+
+
 class ValidatorServiceClient:
     def __init__(self):
         self._session = None
@@ -43,8 +49,8 @@ class ValidatorServiceClient:
         async with session.post(
             f"{VALIDATOR_SERVICE_URL}/uid/random",
             json={
-                "search_type": search_type.value if search_type else None,
-                "mode": mode.value if mode else None,
+                "search_type": _enum_value(search_type),
+                "mode": _enum_value(mode),
             },
         ) as response:
             if response.status == 200:

@@ -47,7 +47,7 @@ class UIDManager:
     def lane_for(search_type: SearchType, mode: Optional[SearchMode]) -> Lane:
         if search_type != SearchType.AI_SEARCH:
             return (search_type, None)
-        return (search_type, SearchMode(mode))
+        return (search_type, SearchMode(mode) if mode else SearchMode.BALANCED)
 
     async def resync(
         self,
