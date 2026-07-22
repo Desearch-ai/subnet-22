@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Optional, Union
 
 from pydantic import BaseModel
 
@@ -12,10 +12,11 @@ class ValidatorInfo(BaseModel):
 
 
 class MinerTypeState(BaseModel):
-    verified: int
-    declared: int
-    quality_avg: float
+    verified: Optional[int] = None
+    declared: Optional[int] = None
+    quality_avg: Optional[float] = None
     unreachable_since: Optional[str] = None
+    modes: Optional[dict[str, "MinerTypeState"]] = None
 
 
 class ScoringWindow(BaseModel):
@@ -42,7 +43,7 @@ class MinerDetail(BaseModel):
     uid: int
     coldkey: str
     per_type: dict[str, MinerTypeState]
-    windows: dict[str, list[ScoringWindow]]
+    windows: dict[str, Union[list[ScoringWindow], dict[str, list[ScoringWindow]]]]
 
 
 class ValidatorMinerView(BaseModel):

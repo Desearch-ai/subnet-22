@@ -16,6 +16,14 @@ router = APIRouter(prefix="/miners", tags=["miners"])
 logger = get_logger(__name__)
 
 
+def _parse_windows(ws):
+    if isinstance(ws, dict):
+        return {
+            mode: [ScoringWindow(**w) for w in mode_ws] for mode, mode_ws in ws.items()
+        }
+    return [ScoringWindow(**w) for w in ws]
+
+
 @router.get("", response_model=MinerListResponse)
 async def list_miners():
     """Aggregate `/public/miners` from every configured validator.
@@ -89,8 +97,7 @@ async def get_miner_detail(
             st: MinerTypeState(**state) for st, state in miner["per_type"].items()
         }
         windows = {
-            st: [ScoringWindow(**w) for w in ws]
-            for st, ws in (miner.get("windows") or {}).items()
+            st: _parse_windows(ws) for st, ws in (miner.get("windows") or {}).items()
         }
         detail = MinerDetail(
             hotkey=miner["hotkey"],
