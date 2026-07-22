@@ -2,7 +2,7 @@ import asyncio
 import json
 import traceback
 from contextlib import asynccontextmanager
-from typing import List, Optional
+from typing import List, Optional, Union
 
 import aiohttp
 import bittensor as bt
@@ -558,9 +558,9 @@ async def health_check(_=Depends(verify_access_key)):
 
 
 class MinerTypeStateOut(BaseModel):
-    verified: int
-    declared: int
-    quality_avg: float
+    verified: Optional[int] = None
+    declared: Optional[int] = None
+    quality_avg: Optional[float] = None
     unreachable_since: Optional[str] = None
     modes: Optional[dict[str, "MinerTypeStateOut"]] = None
 
@@ -591,7 +591,7 @@ class MinerDetailOut(BaseModel):
     uid: int
     coldkey: str
     per_type: dict[str, MinerTypeStateOut]
-    windows: dict[str, List[ScoringWindowOut]]
+    windows: dict[str, Union[List[ScoringWindowOut], dict[str, List[ScoringWindowOut]]]]
 
 
 class MinerListResponse(BaseModel):
@@ -625,17 +625,6 @@ def _miner_state_from_row(row: dict) -> dict:
 AI_MODES = [lane[1] for lane in LANES if lane[0] == SearchType.AI_SEARCH]
 
 
-def _aggregate_ai_state(states: list[dict]) -> dict:
-    weight = sum(s["verified"] for s in states) or 1
-    unreachable = [s["unreachable_since"] for s in states if s["unreachable_since"]]
-    return {
-        "verified": sum(s["verified"] for s in states),
-        "declared": sum(s["declared"] for s in states),
-        "quality_avg": sum(s["quality_avg"] * s["verified"] for s in states) / weight,
-        "unreachable_since": min(unreachable) if unreachable else None,
-    }
-
-
 def _per_type_from_rows(rows: list[dict]) -> dict:
     by_key = {row["search_type"]: _miner_state_from_row(row) for row in rows}
 
@@ -645,41 +634,18 @@ def _per_type_from_rows(rows: list[dict]) -> dict:
         )
         for mode in AI_MODES
     }
-    ai_state = _aggregate_ai_state(list(modes.values()))
-    ai_state["modes"] = modes
 
     x_key = lane_key((SearchType.X_SEARCH, None))
     return {
-        SearchType.AI_SEARCH.value: ai_state,
+        SearchType.AI_SEARCH.value: {"modes": modes},
         x_key: by_key.get(x_key, _empty_miner_state()),
     }
-
-
-def _aggregate_ai_windows(windows_by_mode: list[list]) -> list:
-    merged: dict[str, dict] = {}
-    for mode_windows in windows_by_mode:
-        for w in mode_windows:
-            agg = merged.setdefault(
-                w["window_start"],
-                {"verified": 0, "weighted_quality": 0.0, "passed": True},
-            )
-            agg["verified"] += w["verified_concurrency"]
-            agg["weighted_quality"] += w["quality_score"] * w["verified_concurrency"]
-            agg["passed"] = agg["passed"] and w["passed"]
-    return [
-        {
-            "window_start": start,
-            "quality_score": agg["weighted_quality"] / (agg["verified"] or 1),
-            "passed": agg["passed"],
-            "verified_concurrency": agg["verified"],
-        }
-        for start, agg in sorted(merged.items())
-    ]
 
 
 @app.get(
     "/public/miners",
     response_model=MinerListResponse,
+    response_model_exclude_none=True,
     summary="List active miners (no auth)",
     description="Aggregated miner state this validator has observed over the "
     "last scoring windows. No authentication required.",
@@ -715,6 +681,7 @@ async def public_list_miners():
 @app.get(
     "/public/miners/{hotkey}",
     response_model=MinerDetailResponse,
+    response_model_exclude_none=True,
     summary="Per-miner state and 72h scoring history (no auth)",
     description="Current per-search-type state plus the last 72 hours of "
     "scoring windows. No authentication required.",
@@ -748,12 +715,12 @@ async def public_miner_detail(
             for w in rows_win
         ]
 
-    windows: dict[str, list] = {}
+    windows: dict = {}
     try:
-        ai_windows = [
-            await lane_windows((SearchType.AI_SEARCH, mode)) for mode in AI_MODES
-        ]
-        windows[SearchType.AI_SEARCH.value] = _aggregate_ai_windows(ai_windows)
+        windows[SearchType.AI_SEARCH.value] = {
+            mode.value: await lane_windows((SearchType.AI_SEARCH, mode))
+            for mode in AI_MODES
+        }
         windows[lane_key((SearchType.X_SEARCH, None))] = await lane_windows(
             (SearchType.X_SEARCH, None)
         )
