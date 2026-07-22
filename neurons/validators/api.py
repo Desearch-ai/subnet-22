@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field, conint
 
 from desearch import __version__
 from desearch.dataset.date_filters import DateFilterType
-from desearch.miner_config import SEARCH_TYPES
+from desearch.miner_config import LANES, SearchType, lane_key
 from desearch.protocol import (
     ChatHistoryItem,
     ResultType,
@@ -562,6 +562,7 @@ class MinerTypeStateOut(BaseModel):
     declared: int
     quality_avg: float
     unreachable_since: Optional[str] = None
+    modes: Optional[dict[str, "MinerTypeStateOut"]] = None
 
 
 class ScoringWindowOut(BaseModel):
@@ -621,6 +622,61 @@ def _miner_state_from_row(row: dict) -> dict:
     }
 
 
+AI_MODES = [lane[1] for lane in LANES if lane[0] == SearchType.AI_SEARCH]
+
+
+def _aggregate_ai_state(states: list[dict]) -> dict:
+    weight = sum(s["verified"] for s in states) or 1
+    unreachable = [s["unreachable_since"] for s in states if s["unreachable_since"]]
+    return {
+        "verified": sum(s["verified"] for s in states),
+        "declared": sum(s["declared"] for s in states),
+        "quality_avg": sum(s["quality_avg"] * s["verified"] for s in states) / weight,
+        "unreachable_since": min(unreachable) if unreachable else None,
+    }
+
+
+def _per_type_from_rows(rows: list[dict]) -> dict:
+    by_key = {row["search_type"]: _miner_state_from_row(row) for row in rows}
+
+    modes = {
+        mode.value: by_key.get(
+            lane_key((SearchType.AI_SEARCH, mode)), _empty_miner_state()
+        )
+        for mode in AI_MODES
+    }
+    ai_state = _aggregate_ai_state(list(modes.values()))
+    ai_state["modes"] = modes
+
+    x_key = lane_key((SearchType.X_SEARCH, None))
+    return {
+        SearchType.AI_SEARCH.value: ai_state,
+        x_key: by_key.get(x_key, _empty_miner_state()),
+    }
+
+
+def _aggregate_ai_windows(windows_by_mode: list[list]) -> list:
+    merged: dict[str, dict] = {}
+    for mode_windows in windows_by_mode:
+        for w in mode_windows:
+            agg = merged.setdefault(
+                w["window_start"],
+                {"verified": 0, "weighted_quality": 0.0, "passed": True},
+            )
+            agg["verified"] += w["verified_concurrency"]
+            agg["weighted_quality"] += w["quality_score"] * w["verified_concurrency"]
+            agg["passed"] = agg["passed"] and w["passed"]
+    return [
+        {
+            "window_start": start,
+            "quality_score": agg["weighted_quality"] / (agg["verified"] or 1),
+            "passed": agg["passed"],
+            "verified_concurrency": agg["verified"],
+        }
+        for start, agg in sorted(merged.items())
+    ]
+
+
 @app.get(
     "/public/miners",
     response_model=MinerListResponse,
@@ -636,23 +692,23 @@ async def public_list_miners():
         bt.logging.error(f"/public/miners read failed: {e}")
         raise HTTPException(status_code=503, detail="Miner state unavailable")
 
-    grouped: dict[str, dict] = {}
+    rows_by_hotkey: dict[str, list] = {}
     for row in rows:
-        hotkey = row["hotkey"]
-        entry = grouped.setdefault(
-            hotkey,
-            {
-                "hotkey": hotkey,
-                "uid": row["uid"],
-                "coldkey": row["coldkey"],
-                "per_type": {st: _empty_miner_state() for st in SEARCH_TYPES},
-            },
-        )
-        entry["per_type"][row["search_type"]] = _miner_state_from_row(row)
+        rows_by_hotkey.setdefault(row["hotkey"], []).append(row)
+
+    miners = [
+        {
+            "hotkey": hotkey,
+            "uid": hotkey_rows[0]["uid"],
+            "coldkey": hotkey_rows[0]["coldkey"],
+            "per_type": _per_type_from_rows(hotkey_rows),
+        }
+        for hotkey, hotkey_rows in rows_by_hotkey.items()
+    ]
 
     return {
         "validator": validator_identity or {},
-        "miners": sorted(grouped.values(), key=lambda m: m["uid"]),
+        "miners": sorted(miners, key=lambda m: m["uid"]),
     }
 
 
@@ -676,23 +732,31 @@ async def public_miner_detail(
     if not rows:
         raise HTTPException(status_code=404, detail="Miner not found")
 
-    per_type: dict[str, dict] = {st: _empty_miner_state() for st in SEARCH_TYPES}
-    for row in rows:
-        per_type[row["search_type"]] = _miner_state_from_row(row)
+    per_type = _per_type_from_rows(rows)
+
+    async def lane_windows(lane) -> list:
+        rows_win = await miner_db.get_windows_for_hotkey(
+            hotkey, lane_key(lane), since_hours=72
+        )
+        return [
+            {
+                "window_start": w["window_start"],
+                "quality_score": w["quality_score"],
+                "passed": bool(w["passed"]),
+                "verified_concurrency": w["verified_concurrency"],
+            }
+            for w in rows_win
+        ]
 
     windows: dict[str, list] = {}
     try:
-        for st in SEARCH_TYPES:
-            rows_win = await miner_db.get_windows_for_hotkey(hotkey, st, since_hours=72)
-            windows[st] = [
-                {
-                    "window_start": w["window_start"],
-                    "quality_score": w["quality_score"],
-                    "passed": bool(w["passed"]),
-                    "verified_concurrency": w["verified_concurrency"],
-                }
-                for w in rows_win
-            ]
+        ai_windows = [
+            await lane_windows((SearchType.AI_SEARCH, mode)) for mode in AI_MODES
+        ]
+        windows[SearchType.AI_SEARCH.value] = _aggregate_ai_windows(ai_windows)
+        windows[lane_key((SearchType.X_SEARCH, None))] = await lane_windows(
+            (SearchType.X_SEARCH, None)
+        )
     except Exception as e:
         bt.logging.error(f"/public/miners/{hotkey} windows read failed: {e}")
         raise HTTPException(status_code=503, detail="Miner state unavailable")
