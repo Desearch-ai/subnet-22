@@ -106,7 +106,6 @@ class PenaltyModelType(Enum):
     timeout_penalty = "timeout_penalty"
     summary_rule_penalty = "summary_rule_penalty"
     count_penalty = "count_penalty"
-    miner_score_penalty = "miner_score_penalty"
     summary_structure_penalty = "summary_structure_penalty"
     date_range_penalty = "date_range_penalty"
     duplicate_results_penalty = "duplicate_results_penalty"

@@ -250,9 +250,12 @@ def build_log_entry(
     if miner_uid is None:
         miner_uid = _find_hotkey_uid(owner, miner_hotkey)
 
+    mode = getattr(response, "mode", None)
+
     return {
         "query_kind": query_kind,
         "search_type": search_type,
+        "mode": getattr(mode, "value", mode),
         "netuid": validator_identity.get("netuid")
         or getattr(owner.config, "netuid", 0),
         "scoring_epoch_start": to_jsonable(scoring_epoch_start),

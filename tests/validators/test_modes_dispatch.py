@@ -63,7 +63,7 @@ def test_per_query_mix_single_tool_any_mode():
 
     assert seen_modes == {"fast", "balanced", "deep"}
     assert seen_tools == {WEB_TOOL, TWITTER_TOOL}
-    assert fast_tools == {WEB_TOOL, TWITTER_TOOL}
+    assert fast_tools == {WEB_TOOL}
 
 
 def test_per_query_result_type_mix():

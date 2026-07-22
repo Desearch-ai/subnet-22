@@ -103,13 +103,22 @@ class BaseScraperValidator:
             )
             response = synapse
 
-        await capacity.note_call_result(uid, self.search_type, success)
+        await capacity.note_call_result(
+            uid, self.search_type, success, mode=getattr(synapse, "mode", None)
+        )
         return response
+
+    @staticmethod
+    def dendrite_succeeded(response) -> bool:
+        status = getattr(getattr(response, "dendrite", None), "status_code", None)
+        return status == 200
 
     async def _save_organic_for_scoring(self, uid: int, response) -> None:
         """Persist an organic response in ScoringStore under the current UTC hour."""
         store = getattr(self.neuron, "scoring_store", None)
         if store is None or uid is None or response is None:
+            return
+        if not self.dendrite_succeeded(response):
             return
         hour_bucket = datetime.now(timezone.utc).replace(
             minute=0, second=0, microsecond=0

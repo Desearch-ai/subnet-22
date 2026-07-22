@@ -13,7 +13,6 @@ from neurons.validators.penalty.duplicate_results_penalty import (
 from neurons.validators.penalty.min_realistic_time_penalty import (
     MinRealisticTimePenaltyModel,
 )
-from neurons.validators.penalty.miner_score_penalty import MinerScorePenaltyModel
 from neurons.validators.penalty.result_schema_penalty import ResultSchemaPenaltyModel
 from neurons.validators.penalty.streaming_penalty import StreamingPenaltyModel
 from neurons.validators.penalty.summary_structure_penalty import (
@@ -121,7 +120,6 @@ def _make_validator(monkeypatch, content, summary):
         StreamingPenaltyModel(max_penalty=1, neuron=None),
         TimeoutPenaltyModel(max_penalty=1, neuron=None),
         MinRealisticTimePenaltyModel(neuron=None),
-        MinerScorePenaltyModel(max_penalty=0.20, neuron=None),
         CountPenaltyModel(max_penalty=1, neuron=None),
         SummaryStructurePenaltyModel(max_penalty=1, neuron=None),
         DuplicateResultsPenaltyModel(max_penalty=1, neuron=None),
@@ -248,7 +246,6 @@ async def test_no_penalty_wrongly_fires_on_only_links(monkeypatch):
         "duplicate_results_penalty_applied",
         "timeout_penalty_applied",
         "min_realistic_time_penalty_applied",
-        "miner_score_penalty_applied",
         "date_range_penalty_applied",
         "domain_filter_penalty_applied",
     ):

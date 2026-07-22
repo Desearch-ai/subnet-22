@@ -1,5 +1,7 @@
 from types import SimpleNamespace
 
+from desearch.protocol import SearchMode
+
 from desearch.protocol import ResultType, SearchMode
 from neurons.validators.scoring.query_scheduler import (
     DEEP_SAMPLE_FLOOR,
@@ -71,15 +73,20 @@ def test_deep_sample_tracks_dispatch_result_type_ratio():
     dispatched = Counter()
     deep = Counter()
     for _ in range(1500):
-        combos = _ai_combos(50)
+        combos = _ai_combos(SearchMode.BALANCED, 50)
         items = [
-            {"uid": 1, "response": SimpleNamespace(mode=m, result_type=rt, tools=t)}
-            for m, t, rt in combos
+            {
+                "uid": 1,
+                "response": SimpleNamespace(
+                    mode=SearchMode.BALANCED, result_type=rt, tools=t
+                ),
+            }
+            for t, rt in combos
         ]
-        for _, _, rt in combos:
+        for _, rt in combos:
             dispatched[rt] += 1
         for i in sched._sample_deep_synth(items):
-            deep[combos[i][2]] += 1
+            deep[combos[i][1]] += 1
 
     dispatched_links = dispatched["ONLY_LINKS"] / sum(dispatched.values())
     deep_links = deep["ONLY_LINKS"] / sum(deep.values())

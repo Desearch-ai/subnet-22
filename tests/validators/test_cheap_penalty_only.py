@@ -108,8 +108,12 @@ async def _score(scheduler, synth_items, deep_score, cheap_multiplier, monkeypat
         organics={},
         time_range_start=datetime(2026, 3, 14, 10, 0, tzinfo=timezone.utc),
         window_start="2026-03-14T10:00:00+00:00",
-        allocations={},
+        allocations_by_lane={},
     )
+
+
+def _uid(out, uid):
+    return out[None][uid]
 
 
 @pytest.mark.asyncio
@@ -119,7 +123,7 @@ async def test_clean_cheap_leaves_quality_at_deep_mean(monkeypatch):
 
     out = await _score(scheduler, _synth(1, 5), 0.8, 1.0, monkeypatch)
 
-    _q_gate, q_weight, _vol = out[1]
+    _q_gate, q_weight, _vol, _samples = _uid(out, 1)
     assert q_weight == pytest.approx(0.8)
 
 
@@ -132,8 +136,8 @@ async def test_failing_cheap_penalty_lowers_quality(monkeypatch):
         _scheduler(SimpleNamespace()), _synth(1, 5), 0.8, 0.5, monkeypatch
     )
 
-    assert penalized[1][1] < clean[1][1]
-    assert penalized[1][1] == pytest.approx(0.8 * 0.5)
+    assert _uid(penalized, 1)[1] < _uid(clean, 1)[1]
+    assert _uid(penalized, 1)[1] == pytest.approx(0.8 * 0.5)
 
 
 @pytest.mark.asyncio
@@ -145,5 +149,5 @@ async def test_more_clean_cheap_items_do_not_raise_quality(monkeypatch):
         _scheduler(SimpleNamespace()), _synth(1, 50), 0.8, 1.0, monkeypatch
     )
 
-    assert many[1][1] == pytest.approx(few[1][1])
-    assert many[1][2] >= few[1][2]
+    assert _uid(many, 1)[1] == pytest.approx(_uid(few, 1)[1])
+    assert _uid(many, 1)[2] >= _uid(few, 1)[2]

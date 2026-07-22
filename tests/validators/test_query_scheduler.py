@@ -6,219 +6,107 @@ from unittest.mock import AsyncMock
 import pytest
 
 import neurons.validators.scoring.query_scheduler as query_scheduler
+from desearch.miner_config import SearchType
+from desearch.protocol import SearchMode
 from neurons.validators.scoring.constants import (
-    COVERAGE_EXPONENT,
-    MIN_VOLUME_RATIO,
+    MIN_DEEP_SAMPLES_PER_POOL,
+    POOL_SHARES,
     QUALITY_EXPONENT,
-    QUALITY_THRESHOLDS,
-    SEARCH_TYPE_WEIGHTS,
     VOLUME_EXPONENT,
 )
 from neurons.validators.scoring.query_scheduler import (
     QueryScheduler,
-    combine_superlinear_scores,
+    combine_pool_scores,
 )
 
-
-def _uniform(q: float, v: int, uid: int = 1) -> dict:
-    """Helper: same (q, v) across all search types for one UID."""
-    return {
-        "ai_search": {uid: (q, v)},
-        "x_search": {uid: (q, v)},
-    }
+AI_FAST = (SearchType.AI_SEARCH, SearchMode.FAST)
+AI_DEEP = (SearchType.AI_SEARCH, SearchMode.DEEP)
+X_POOL = (SearchType.X_SEARCH, None)
 
 
-def test_combine_at_threshold_earns_positive():
-    """Raw q (not q_eff): a type exactly at its threshold passes the gate and earns
-    q**QUALITY_EXPONENT credit — it is no longer zeroed."""
-    out = combine_superlinear_scores(
-        {
-            "ai_search": {1: (QUALITY_THRESHOLDS["ai_search"], 100)},
-            "x_search": {1: (QUALITY_THRESHOLDS["x_search"], 100)},
-        }
+def result(quality, volume, samples=MIN_DEEP_SAMPLES_PER_POOL):
+    return (quality, quality, volume, samples)
+
+
+def test_pool_shares_cover_all_emission():
+    assert sum(POOL_SHARES.values()) == pytest.approx(1.0)
+
+
+def test_pool_pays_exactly_its_share_regardless_of_miner_count():
+    for miner_count in (2, 10, 40):
+        pool = {uid: result(0.95, 100) for uid in range(miner_count)}
+        scores = combine_pool_scores({X_POOL: pool})
+        assert sum(scores.values()) == pytest.approx(POOL_SHARES[X_POOL])
+
+
+def test_splitting_volume_across_uids_loses():
+    def pay(uid_count):
+        pool = {uid: result(0.80, 600 // uid_count) for uid in range(uid_count)}
+        pool[999] = result(0.80, 600)
+        scores = combine_pool_scores({AI_FAST: pool})
+        return sum(v for uid, v in scores.items() if uid != 999)
+
+    solo, split_2, split_10 = pay(1), pay(2), pay(10)
+    assert split_2 < solo
+    assert split_10 < split_2
+
+
+def test_quality_decides_at_equal_volume():
+    pool = {0: result(0.90, 100)}
+    pool.update({10 + i: result(0.60, 10) for i in range(10)})
+
+    scores = combine_pool_scores({AI_FAST: pool})
+
+    assert scores[0] > sum(scores[10 + i] for i in range(10))
+
+
+def test_quality_gap_follows_the_quality_exponent():
+    pool = {1: result(0.80, 100), 2: result(0.70, 100)}
+    scores = combine_pool_scores({AI_FAST: pool})
+    assert scores[1] / scores[2] == pytest.approx((0.80 / 0.70) ** QUALITY_EXPONENT)
+
+
+def test_volume_gap_follows_the_volume_exponent():
+    pool = {1: result(0.80, 200), 2: result(0.80, 100)}
+    scores = combine_pool_scores({AI_FAST: pool})
+    assert scores[1] / scores[2] == pytest.approx(2**VOLUME_EXPONENT)
+
+
+def test_dominant_miner_takes_the_pool():
+    pool = {uid: result(0.90, 100) for uid in range(4)}
+    pool[0] = result(0.99, 10_000)
+
+    scores = combine_pool_scores({AI_FAST: pool})
+
+    assert scores[0] > 0.95 * POOL_SHARES[AI_FAST]
+    assert sum(scores.values()) == pytest.approx(POOL_SHARES[AI_FAST])
+
+
+def test_sole_miner_takes_its_whole_pool():
+    scores = combine_pool_scores({AI_DEEP: {5: result(0.85, 100)}})
+    assert scores[5] == pytest.approx(POOL_SHARES[AI_DEEP])
+
+
+def test_quality_below_the_gate_earns_nothing():
+    assert combine_pool_scores({AI_FAST: {7: result(0.40, 100)}}) == {}
+
+
+def test_pool_needs_a_minimum_of_deep_samples():
+    thin = {AI_FAST: {8: result(0.90, 100, samples=MIN_DEEP_SAMPLES_PER_POOL - 1)}}
+    assert combine_pool_scores(thin) == {}
+
+
+def test_modes_are_scored_as_separate_pools():
+    scores = combine_pool_scores(
+        {AI_FAST: {1: result(0.90, 100)}, AI_DEEP: {2: result(0.90, 100)}}
     )
-    assert out[1] > 0.0
-
-
-def test_combine_below_floor_clamps_to_zero():
-    out = combine_superlinear_scores(_uniform(0.20, 100))
-    assert out[1] == 0.0
-
-
-def test_combine_volume_is_quadratic():
-    """v=100 outearns v=50 by 2^2 = 4× (strong consolidation bonus)."""
-    big = combine_superlinear_scores(_uniform(0.6, 100, uid=1))
-    small = combine_superlinear_scores(_uniform(0.6, 50, uid=2))
-    assert big[1] / small[2] == pytest.approx(2**VOLUME_EXPONENT, rel=0.001)
-
-
-def test_combine_solo_beats_same_quality_split():
-    """1×(q, 100) outearns 2×(q, 50) at same quality (consolidation bonus, N^(β-1))."""
-    solo = combine_superlinear_scores(_uniform(0.6, 100, uid=1))
-    split = combine_superlinear_scores(
-        {
-            "ai_search": {2: (0.6, 50), 3: (0.6, 50)},
-            "x_search": {2: (0.6, 50), 3: (0.6, 50)},
-        }
-    )
-    assert solo[1] > split[2] + split[3]
-    assert solo[1] / (split[2] + split[3]) == pytest.approx(
-        2 ** (VOLUME_EXPONENT - 1), rel=0.001
+    assert scores[1] / scores[2] == pytest.approx(
+        POOL_SHARES[AI_FAST] / POOL_SHARES[AI_DEEP]
     )
 
 
-def test_combine_split_uids_lose_to_higher_quality_solo():
-    """1 UID at q=0.5 outearns 2 UIDs at q=0.4 each: the split fails every gate
-    (ai<0.45, x<0.60) and scores 0, while the solo passes the AI gate."""
-    solo = combine_superlinear_scores(_uniform(0.5, 100, uid=1))
-    split = combine_superlinear_scores(
-        {
-            "ai_search": {2: (0.4, 100), 3: (0.4, 100)},
-            "x_search": {2: (0.4, 100), 3: (0.4, 100)},
-        }
-    )
-    # split q=0.4 fails every gate (ai<0.45, x<0.60) -> 0; solo passes AI.
-    assert solo[1] > split[2] + split[3]
-
-
-def test_combine_quality_gap_amplified_by_raw_q():
-    """A 0.10 AI-quality gap produces a raw q**QUALITY_EXPONENT reward gap. Both AI
-    qualities clear 0.45 and x clears 0.60, so coverage=1 for both (v cancels)."""
-    a = combine_superlinear_scores(
-        {
-            "ai_search": {1: (0.6, 100)},
-            "x_search": {1: (0.7, 100)},
-        }
-    )
-    b = combine_superlinear_scores(
-        {
-            "ai_search": {2: (0.5, 100)},
-            "x_search": {2: (0.7, 100)},
-        }
-    )
-
-    def per_type(q_ai, q_x):
-        return (
-            SEARCH_TYPE_WEIGHTS["ai_search"] * q_ai**QUALITY_EXPONENT
-            + SEARCH_TYPE_WEIGHTS["x_search"] * q_x**QUALITY_EXPONENT
-        )
-
-    expected = per_type(0.6, 0.7) / per_type(0.5, 0.7)
-    assert a[1] / b[2] == pytest.approx(expected, rel=0.001)
-
-
-def test_combine_ai_specialist_gets_partial_credit():
-    """AI-only at q=1.0, v=100: only AI served, coverage = w_ai."""
-    out = combine_superlinear_scores(
-        {
-            "ai_search": {1: (1.0, 100)},
-            "x_search": {1: (0.0, 0)},
-        }
-    )
-    w = SEARCH_TYPE_WEIGHTS["ai_search"]
-    expected = w**COVERAGE_EXPONENT * (w * 1.0**QUALITY_EXPONENT * 100**VOLUME_EXPONENT)
-    assert out[1] == pytest.approx(expected)
-
-
-def test_combine_x_specialist_earns_some_not_zero():
-    """X-only at q=1.0 (no AI): coverage = w_x; earns coverage^(C+1) of a generalist."""
-    specialist = combine_superlinear_scores(
-        {
-            "ai_search": {1: (0.0, 0)},
-            "x_search": {1: (1.0, 100)},
-        }
-    )
-    generalist = combine_superlinear_scores(_uniform(1.0, 100, uid=2))
-    cov = SEARCH_TYPE_WEIGHTS["x_search"]
-    expected_ratio = (
-        cov**COVERAGE_EXPONENT * cov
-    )  # generalist coverage=1, q=v terms cancel
-    assert specialist[1] > 0
-    assert specialist[1] / generalist[2] == pytest.approx(expected_ratio, rel=0.01)
-
-
-def test_combine_volume_floor_partial_credit_below_threshold():
-    """AI volume below the floor (10% of max=100) gets soft partial credit, not zero."""
-    out = combine_superlinear_scores(
-        {
-            "ai_search": {1: (1.0, 10)},
-            "x_search": {1: (1.0, 100)},
-        }
-    )
-    soft_ai = min(1.0, (10 / 100) / MIN_VOLUME_RATIO)
-    w = SEARCH_TYPE_WEIGHTS
-    coverage = w["ai_search"] * soft_ai + w["x_search"]
-    per_type = (
-        w["ai_search"] * soft_ai * 1.0**QUALITY_EXPONENT * 10**VOLUME_EXPONENT
-        + w["x_search"] * 1.0**QUALITY_EXPONENT * 100**VOLUME_EXPONENT
-    )
-    assert out[1] == pytest.approx(coverage**COVERAGE_EXPONENT * per_type)
-
-
-def test_combine_volume_floor_full_credit_at_minimum():
-    """AI volume exactly at the floor (MIN_VOLUME_RATIO of max=100) gets full credit."""
-    floor_v = round(MIN_VOLUME_RATIO * 100)
-    out = combine_superlinear_scores(
-        {
-            "ai_search": {1: (1.0, floor_v)},
-            "x_search": {1: (1.0, 100)},
-        }
-    )
-    # Both served at full credit (coverage = 1.0).
-    w = SEARCH_TYPE_WEIGHTS
-    expected_per_type = (
-        w["ai_search"] * floor_v**VOLUME_EXPONENT + w["x_search"] * 100**VOLUME_EXPONENT
-    )
-    assert out[1] == pytest.approx(expected_per_type)
-
-
-def test_combine_volume_floor_no_cliff():
-    """v_ai crossing the floor boundary changes the score smoothly, not 8x."""
-
-    def score_at(v_ai):
-        return combine_superlinear_scores(
-            {
-                "ai_search": {1: (1.0, v_ai)},
-                "x_search": {1: (1.0, 100)},
-            }
-        )[1]
-
-    b = round(MIN_VOLUME_RATIO * 100)
-    below, at, above = score_at(b - 1), score_at(b), score_at(b + 1)
-    assert at / below < 1.10  # was 8.46x under the old binary floor
-    assert above / at < 1.10
-
-
-def test_combine_generalist_beats_x_only_spam_team():
-    """1 perfect generalist beats 10 X-only spammers (each only serves X → coverage = w_x)."""
-    generalist = combine_superlinear_scores(_uniform(1.0, 100, uid=1))
-    x_spam = combine_superlinear_scores(
-        {
-            "ai_search": {uid: (0.0, 0) for uid in range(2, 12)},
-            "x_search": {uid: (1.0, 100) for uid in range(2, 12)},
-        }
-    )
-    spam_total = sum(x_spam.values())
-    wx = SEARCH_TYPE_WEIGHTS["x_search"]
-    per_spam = wx**COVERAGE_EXPONENT * wx  # ·100^V cancels vs the generalist
-    expected = 1.0 / (10 * per_spam)
-    assert generalist[1] / spam_total == pytest.approx(expected, rel=0.02)
-
-
-def test_combine_perfect_generalist_beats_perfect_specialist():
-    """Under weighted coverage^C, a perfect generalist >> an AI-only specialist."""
-    generalist = combine_superlinear_scores(_uniform(1.0, 100, uid=1))
-    specialist = combine_superlinear_scores(
-        {
-            "ai_search": {2: (1.0, 100)},
-            "x_search": {2: (0.0, 0)},
-        }
-    )
-    w_ai = SEARCH_TYPE_WEIGHTS["ai_search"]
-    assert generalist[1] > specialist[2]
-    assert generalist[1] / specialist[2] == pytest.approx(
-        1 / (w_ai ** (COVERAGE_EXPONENT + 1)), rel=0.001
-    )
+def test_zero_volume_is_ignored():
+    assert combine_pool_scores({AI_FAST: {9: result(0.90, 0)}}) == {}
 
 
 @pytest.mark.asyncio

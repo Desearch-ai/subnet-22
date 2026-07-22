@@ -1,3 +1,9 @@
+import pytest
+
+from desearch.miner_config import SearchType, lane_key
+from desearch.protocol import SearchMode
+
+AI_FAST_KEY = lane_key((SearchType.AI_SEARCH, SearchMode.FAST))
 from desearch.protocol import ResultType
 from neurons.validators.scoring.synthetic_query_generator import (
     SyntheticQueryGenerator,
@@ -139,17 +145,18 @@ def test_returns_none_when_pool_empty():
     assert gen._generate_dataset_queries([1, 2], {}) is None
 
 
-def test_ai_combos_balance_modes_and_tools_in_a_window_of_six():
+def test_ai_combos_balance_tools_in_a_window_of_six():
     from neurons.validators.scoring.synthetic_query_generator import (
-        _ai_combos,
-        WEB_TOOL,
         TWITTER_TOOL,
+        WEB_TOOL,
+        _ai_combos,
     )
 
     for _ in range(100):
-        combos = _ai_combos(6)
-        assert len({c[0] for c in combos}) == 3
-        assert {c[1][0] for c in combos} == {WEB_TOOL, TWITTER_TOOL}
+        for mode in (SearchMode.BALANCED, SearchMode.DEEP):
+            combos = _ai_combos(mode, 6)
+            assert {c[0][0] for c in combos} == {WEB_TOOL, TWITTER_TOOL}
+        assert {c[0][0] for c in _ai_combos(SearchMode.FAST, 6)} == {WEB_TOOL}
 
 
 def test_ai_combos_full_cycle_keep_4to1_result_type_ratio():
@@ -157,7 +164,7 @@ def test_ai_combos_full_cycle_keep_4to1_result_type_ratio():
     from neurons.validators.scoring.synthetic_query_generator import _ai_combos
 
     for _ in range(20):
-        counts = Counter(c[2] for c in _ai_combos(30))
+        counts = Counter(c[1] for c in _ai_combos(SearchMode.FAST, 30))
         assert counts[ResultType.LINKS_WITH_FINAL_SUMMARY.value] == 24
         assert counts[ResultType.ONLY_LINKS.value] == 6
 
@@ -165,7 +172,7 @@ def test_ai_combos_full_cycle_keep_4to1_result_type_ratio():
 def test_ai_combos_empty_for_non_positive():
     from neurons.validators.scoring.synthetic_query_generator import _ai_combos
 
-    assert _ai_combos(0) == []
+    assert _ai_combos(SearchMode.FAST, 0) == []
 
 
 def test_weighted_counts_always_sums_to_n():
@@ -185,17 +192,19 @@ def test_weighted_counts_always_sums_to_n():
             assert all(c >= 0 for c in counts)
 
 
-def test_ai_combos_mode_split_is_60_20_20():
-    from collections import Counter
+def test_x_tool_never_serves_fast_mode():
+    from neurons.validators.scoring.synthetic_query_generator import (
+        TWITTER_TOOL,
+        WEB_TOOL,
+        _ai_combos,
+    )
 
-    from neurons.validators.scoring.synthetic_query_generator import _ai_combos
+    fast_tools = {c[0][0] for c in _ai_combos(SearchMode.FAST, 2000)}
+    assert fast_tools == {WEB_TOOL}
 
-    for _ in range(50):
-        modes = Counter(getattr(m, "value", m) for m, _, _ in _ai_combos(5))
-        assert (modes["fast"], modes["balanced"], modes["deep"]) == (3, 1, 1)
-
-    modes = Counter(getattr(m, "value", m) for m, _, _ in _ai_combos(10))
-    assert (modes["fast"], modes["balanced"], modes["deep"]) == (6, 2, 2)
+    for mode in (SearchMode.BALANCED, SearchMode.DEEP):
+        tools = {c[0][0] for c in _ai_combos(mode, 2000)}
+        assert tools == {WEB_TOOL, TWITTER_TOOL}
 
 
 def test_ai_combos_mode_and_result_type_are_independent():
@@ -203,23 +212,25 @@ def test_ai_combos_mode_and_result_type_are_independent():
 
     deep_total = deep_and_links = 0
     for _ in range(3000):
-        for m, _, rt in _ai_combos(10):
-            if getattr(m, "value", m) == "deep":
-                deep_total += 1
-                if rt == ResultType.ONLY_LINKS.value:
-                    deep_and_links += 1
+        for _tools, rt in _ai_combos(SearchMode.DEEP, 10):
+            deep_total += 1
+            if rt == ResultType.ONLY_LINKS.value:
+                deep_and_links += 1
 
     p_links_given_deep = deep_and_links / deep_total
     assert 0.12 < p_links_given_deep < 0.28
 
 
-def test_single_uid_gets_balanced_coverage_across_its_queries():
-    gen = _make_gen(FakePool())
+def test_single_uid_gets_queries_for_every_lane():
+    from desearch.miner_config import LANES
 
-    items = gen._generate_dataset_queries([1], {"ai_search": {1: 6}})
+    gen = _make_gen(FakePool())
+    allocation = {lane_key(lane): {1: 4} for lane in LANES}
+
+    items = gen._generate_dataset_queries([1], allocation)
     ai = [i for i in items if i["search_type"] == "ai_search"]
 
-    assert len(ai) == 6
+    assert len(ai) == 12
     assert len({i["query"]["mode"] for i in ai}) == 3
     assert len({i["query"]["tools"][0] for i in ai}) == 2
 
@@ -266,8 +277,8 @@ if __name__ == "__main__":
     test_ai_combos_balance_modes_and_tools_in_a_window_of_six()
     test_ai_combos_full_cycle_keep_4to1_result_type_ratio()
     test_ai_combos_empty_for_non_positive()
-    test_ai_combos_mode_split_is_60_20_20()
+    test_x_tool_never_serves_fast_mode()
     test_ai_combos_mode_and_result_type_are_independent()
-    test_single_uid_gets_balanced_coverage_across_its_queries()
+    test_single_uid_gets_queries_for_every_lane()
     test_randomness_across_invocations()
     print("ok")

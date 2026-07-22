@@ -3,9 +3,17 @@ from typing import Optional
 import aiohttp
 import bittensor as bt
 
+from desearch.miner_config import SearchType
+from desearch.protocol import SearchMode
 from neurons.validators.env import VALIDATOR_SERVICE_PORT
 
 VALIDATOR_SERVICE_URL = f"http://localhost:{VALIDATOR_SERVICE_PORT}"
+
+
+def _enum_value(value):
+    if value is None:
+        return None
+    return value.value if hasattr(value, "value") else value
 
 
 class ValidatorServiceClient:
@@ -30,14 +38,20 @@ class ValidatorServiceClient:
         return self._session
 
     async def get_random_miner(
-        self, uid: Optional[int] = None, search_type: Optional[str] = None
+        self,
+        uid: Optional[int] = None,
+        search_type: Optional[SearchType] = None,
+        mode: Optional[SearchMode] = None,
     ):
         """Fetch a random miner UID and axon weighted by quality * verified."""
         session = await self.session
 
         async with session.post(
             f"{VALIDATOR_SERVICE_URL}/uid/random",
-            json={"uid": uid, "search_type": search_type},
+            json={
+                "search_type": _enum_value(search_type),
+                "mode": _enum_value(mode),
+            },
         ) as response:
             if response.status == 200:
                 data = await response.json()

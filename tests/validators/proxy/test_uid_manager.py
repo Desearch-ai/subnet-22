@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock
 import numpy as np
 import pytest
 
-from desearch.miner_config import SEARCH_TYPES
+from desearch.miner_config import LANES
 from neurons.validators.proxy import uid_manager
 from neurons.validators.proxy.uid_manager import UIDManager
 from neurons.validators.scoring.constants import (
@@ -20,7 +20,7 @@ def _metagraph():
     )
 
 
-async def test_ramped_organic_routing_is_superlinear_in_verified_capacity(
+async def test_ramped_organic_routing_scales_with_verified_capacity(
     monkeypatch,
 ):
     rows = {1: (0.7, 100), 2: (0.7, 50), 3: (0.7, 50)}
@@ -38,9 +38,9 @@ async def test_ramped_organic_routing_is_superlinear_in_verified_capacity(
     manager = UIDManager()
     await manager.resync([1, 2, 3], _metagraph())
 
-    for search_type in SEARCH_TYPES:
-        weights = manager.weights_by_type[search_type]
-        assert weights[1] > weights[2] + weights[3]
+    for lane in LANES:
+        weights = manager.weights_by_lane[lane]
+        assert weights[1] >= weights[2] + weights[3]
         assert weights[1] / (weights[2] + weights[3]) == pytest.approx(
             2 ** (VOLUME_EXPONENT - 1)
         )
@@ -62,8 +62,6 @@ async def test_ramped_organic_routing_uses_quality_exponent(monkeypatch):
     manager = UIDManager()
     await manager.resync([1, 2], _metagraph())
 
-    for search_type in SEARCH_TYPES:
-        weights = manager.weights_by_type[search_type]
-        assert weights[1] / weights[2] == pytest.approx(
-            (0.8 / 0.7) ** QUALITY_EXPONENT
-        )
+    for lane in LANES:
+        weights = manager.weights_by_lane[lane]
+        assert weights[1] / weights[2] == pytest.approx((0.8 / 0.7) ** QUALITY_EXPONENT)

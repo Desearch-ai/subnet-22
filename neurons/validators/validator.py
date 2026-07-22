@@ -12,10 +12,12 @@ from bittensor.core.metagraph import AsyncMetagraph
 
 from desearch.miner_config import (
     SEARCH_TYPES,
+    SearchType,
     default_miner_manifest,
+    lane_key,
     normalize_miner_manifest,
 )
-from desearch.protocol import IsAlive
+from desearch.protocol import IsAlive, SearchMode
 from desearch.redis.redis_client import close_redis, initialize_redis
 from desearch.redis.utils import (
     load_moving_averaged_scores,
@@ -200,15 +202,16 @@ class Neuron(AbstractNeuron):
         hotkey = self.metagraph.hotkeys[uid]
         coldkey = self.metagraph.neurons[uid].coldkey
 
-        for st in SEARCH_TYPES:
-            declared = getattr(manifest.concurrency, st, 1)
+        for lane, declared in manifest.concurrency.by_lane().items():
             await miner_db.register_miner(
                 uid=uid,
-                search_type=st,
+                search_type=lane_key(lane),
                 declared=declared,
                 hotkey=hotkey,
                 coldkey=coldkey,
             )
+
+        for st in SEARCH_TYPES:
             await capacity.note_call_result(uid, st, success=True)
 
         return axon
@@ -243,14 +246,20 @@ class Neuron(AbstractNeuron):
         return available_uids
 
     async def get_random_miner(
-        self, uid: Optional[int] = None, search_type: Optional[str] = None
+        self,
+        uid: Optional[int] = None,
+        search_type: Optional[SearchType] = None,
+        mode: Optional[SearchMode] = None,
     ) -> Tuple[int, bt.AxonInfo]:
         """Return (uid, axon) for the given uid, or a weighted-random miner."""
         if uid is not None:
             bt.logging.info(f"Run specific UID: {uid}")
             return uid, self.metagraph.axons[uid]
 
-        selected_uid = self.uid_manager.get_miner_uid(search_type=search_type)
+        selected_uid = self.uid_manager.get_miner_uid(
+            search_type=SearchType(search_type) if search_type else None,
+            mode=SearchMode(mode) if mode else None,
+        )
 
         bt.logging.trace(f"Run random UID: {selected_uid} (search_type={search_type})")
 
@@ -430,6 +439,7 @@ class Neuron(AbstractNeuron):
         while not self.should_exit:
             try:
                 await capacity.decay_unreachable_tick()
+                await self.uid_manager.drop_unreachable()
             except Exception as e:
                 bt.logging.error(f"[UnreachableDecay] {e}")
             await asyncio.sleep(60)

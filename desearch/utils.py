@@ -3,6 +3,7 @@ import html
 import math
 import os
 import re
+import time
 import unicodedata
 from typing import List
 
@@ -113,10 +114,12 @@ async def call_chutes(messages, temperature, model, seed=1234, response_format=N
     if response_format is not None:
         payload["response_format"] = response_format
 
-    for _ in range(2):
+    attempts = 2
+    for attempt in range(1, attempts + 1):
         bt.logging.trace(
             f"Calling chutes. Temperature = {temperature}, Model = {model_name}, Seed = {seed}"
         )
+        started = time.monotonic()
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.post(
@@ -125,19 +128,36 @@ async def call_chutes(messages, temperature, model, seed=1234, response_format=N
                     json=payload,
                     timeout=aiohttp.ClientTimeout(total=90),
                 ) as response:
+                    elapsed = time.monotonic() - started
                     if response.status == 200:
                         data = await response.json()
                         content = data["choices"][0]["message"]["content"]
                         if content:
                             return content
-                        bt.logging.error("Chutes returned empty content.")
+                        bt.logging.error(
+                            f"Chutes returned empty content for {model_name} "
+                            f"after {elapsed:.1f}s (attempt {attempt}/{attempts})."
+                        )
                     else:
                         body = (await response.text())[:200]
-                        bt.logging.error(f"Chutes HTTP {response.status}: {body}")
+                        bt.logging.error(
+                            f"Chutes HTTP {response.status} for {model_name} "
+                            f"after {elapsed:.1f}s (attempt {attempt}/{attempts}): {body}"
+                        )
+        except asyncio.TimeoutError:
+            bt.logging.error(
+                f"Chutes timeout for {model_name} after "
+                f"{time.monotonic() - started:.1f}s (attempt {attempt}/{attempts})."
+            )
         except Exception as e:
-            bt.logging.error(f"Error when calling chutes: {e}")
+            bt.logging.error(
+                f"Chutes error for {model_name} after "
+                f"{time.monotonic() - started:.1f}s (attempt {attempt}/{attempts}): "
+                f"{type(e).__name__}: {e}"
+            )
 
-        await asyncio.sleep(0.5)
+        if attempt < attempts:
+            await asyncio.sleep(1)
 
     return None
 
@@ -161,7 +181,7 @@ async def call_openai(messages, model, temperature=1, response_format=None):
 
         except Exception as e:
             bt.logging.error(f"Error when calling OpenAI: {e}")
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(1)
 
     return None
 
@@ -180,7 +200,7 @@ async def call_scoring_llm(messages, model, temperature=0.0001, response_format=
     )
 
     if result is None:
-        bt.logging.warning(
+        bt.logging.debug(
             f"Chutes scoring with {getattr(model, 'value', model)} failed; falling back to gpt-4.1-nano."
         )
         return await call_openai(

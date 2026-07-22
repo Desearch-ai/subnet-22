@@ -282,6 +282,7 @@ class ContextualRelevance(Enum):
 class ScoringModel(str, Enum):
     OPENAI_GPT4_1_NANO = "openai/gpt-4.1-nano"
     QWEN3_6_27B = "Qwen/Qwen3.6-27B-TEE"
+    QWEN3_5_397B = "Qwen/Qwen3.5-397B-A17B-TEE"
 
 
 class SearchMode(str, Enum):
@@ -685,15 +686,6 @@ class ScraperStreamingSynapse(StreamingSynapse):
                             {"type": "hacker_news_search", "content": search_json}
                         )
 
-                    elif content_type == "miner_link_scores":
-                        miner_link_scores_json = json_data.get("content", {})
-                        self.miner_link_scores = miner_link_scores_json
-                        yield json.dumps(
-                            {
-                                "type": "miner_link_scores",
-                                "content": miner_link_scores_json,
-                            }
-                        )
                     elif content_type == "flow":
                         yield json.dumps(
                             {

@@ -13,6 +13,8 @@ from typing import Optional
 import aiosqlite
 import bittensor as bt
 
+from desearch.miner_config import AI_MODES, SearchType, lane_key
+
 _writer_db: Optional[aiosqlite.Connection] = None
 _readonly_path: Optional[str] = None
 
@@ -139,6 +141,48 @@ async def _migrate_schema() -> None:
         )
         await _writer_db.commit()
         bt.logging.info("[MinerDB] Migrated miner_concurrency: +last_decay_at")
+
+    await _migrate_ai_lanes()
+
+
+async def _migrate_ai_lanes() -> None:
+    """Fan a legacy ``ai_search`` row out into one row per mode lane."""
+    legacy = SearchType.AI_SEARCH.value
+    cursor = await _writer_db.execute(
+        "SELECT * FROM miner_concurrency WHERE search_type = ?", (legacy,)
+    )
+    rows = [dict(row) async for row in cursor]
+    if not rows:
+        return
+
+    lanes = [lane_key((SearchType.AI_SEARCH, mode)) for mode in AI_MODES]
+    for row in rows:
+        for key in lanes:
+            await _writer_db.execute(
+                """
+                INSERT OR IGNORE INTO miner_concurrency
+                    (uid, search_type, hotkey, coldkey, verified, declared,
+                     quality_avg, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    row["uid"],
+                    key,
+                    row["hotkey"],
+                    row["coldkey"],
+                    row["verified"],
+                    row["declared"],
+                    row["quality_avg"],
+                    _now_iso(),
+                ),
+            )
+    await _writer_db.execute(
+        "DELETE FROM miner_concurrency WHERE search_type = ?", (legacy,)
+    )
+    await _writer_db.commit()
+    bt.logging.info(
+        f"[MinerDB] Migrated {len(rows)} ai_search rows into {len(lanes)} mode lanes each"
+    )
 
 
 async def _purge_old_history() -> None:

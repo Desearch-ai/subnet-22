@@ -3,6 +3,8 @@ from typing import Optional, Tuple
 
 import bittensor as bt
 
+from desearch.miner_config import SearchType
+from desearch.protocol import SearchMode
 from desearch.redis.redis_client import close_redis, initialize_redis
 from neurons.validators.clients.utility_api_client import UtilityAPIClient
 from neurons.validators.clients.validator_service_client import ValidatorServiceClient
@@ -69,9 +71,14 @@ class ValidatorAPI:
         await initialize_redis()
 
     async def get_random_miner(
-        self, uid: Optional[int] = None, search_type: Optional[str] = None
+        self,
+        uid: Optional[int] = None,
+        search_type: Optional[SearchType] = None,
+        mode: Optional[SearchMode] = None,
     ) -> Tuple[int, bt.AxonInfo]:
-        return await self.validator_service_client.get_random_miner(uid, search_type)
+        return await self.validator_service_client.get_random_miner(
+            uid, search_type, mode
+        )
 
     async def start(self):
         bt.logging.info("Starting ValidatorAPI")
