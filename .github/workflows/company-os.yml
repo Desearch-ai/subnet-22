@@ -1,0 +1,33 @@
+name: Company OS
+
+# Copy this file into a product repository. It is the whole integration.
+#
+# Two things happen here, and neither needs editing again — the checks, the
+# vocabulary, the release strategy and the mapping from this repository to its
+# project all live in Company OS:
+#
+#   impact   every pull request must say whether a customer can notice it.
+#            `significant: false` is one line and passes.
+#   release  conventional commits accumulate into a Release pull request;
+#            merging it tags and publishes a GitHub Release.
+#
+# Uses the organization secret COMPANY_OS_TOKEN. Nothing to configure per repo.
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened, closed]
+  push:
+    branches: [main]
+
+jobs:
+  impact:
+    if: github.event_name == 'pull_request'
+    uses: Desearch-ai/company-os/.github/workflows/pr-impact.yml@main
+    secrets: inherit
+
+  release:
+    if: github.event_name == 'push'
+    uses: Desearch-ai/company-os/.github/workflows/release.yml@main
+    with:
+      release_type: simple
+    secrets: inherit
