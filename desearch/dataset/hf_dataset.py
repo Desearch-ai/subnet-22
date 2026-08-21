@@ -1,4 +1,3 @@
-import hashlib
 import json
 import os
 import random
@@ -21,21 +20,6 @@ REFRESH_SECONDS = 4 * 60 * 60
 
 REQUIRED_FIELDS = ("id", "question")
 
-DATASET_LIMIT = 5000
-
-DATASETS = (
-    {
-        "repo": "sentence-transformers/squad",
-        "question_col": "question",
-        "lane": "squad",
-    },
-    {
-        "repo": "sentence-transformers/natural-questions",
-        "question_col": "query",
-        "lane": "nq",
-    },
-)
-
 
 class HFQuestionPool:
     def __init__(
@@ -44,15 +28,11 @@ class HFQuestionPool:
         cache_dir: str = CACHE_DIR,
         local_dir: Optional[str] = None,
         refresh_seconds: int = REFRESH_SECONDS,
-        datasets=DATASETS,
-        limit: int = DATASET_LIMIT,
     ):
         self.repo_id = repo_id
         self.cache_dir = Path(cache_dir)
         self.local_dir = Path(local_dir) if local_dir else None
         self.refresh_seconds = refresh_seconds
-        self.datasets = datasets
-        self.limit = limit
 
         self._rows: List[dict] = []
         self._loaded_at: float = 0.0
@@ -119,8 +99,7 @@ class HFQuestionPool:
         if not paths:
             paths = sorted(self.cache_dir.rglob("*.jsonl"))
 
-        rows = self._parse_files(paths) + self._load_datasets()
-        return self._dedup_by_id(rows)
+        return self._dedup_by_id(self._parse_files(paths))
 
     def sample_lane(self, lane: str, n: int) -> Optional[List[dict]]:
         rows = self._ensure_rows()
@@ -195,51 +174,3 @@ class HFQuestionPool:
                     rows.append(row)
 
         return rows
-
-    def _load_datasets(self) -> List[dict]:
-        rows: List[dict] = []
-        for cfg in self.datasets:
-            try:
-                rows += self._load_dataset(cfg)
-            except Exception as e:
-                bt.logging.error(f"[HFQuestionPool] Failed dataset {cfg['repo']}: {e}")
-        return rows
-
-    def _load_dataset(self, cfg: dict) -> List[dict]:
-        from datasets import load_dataset
-
-        ds = load_dataset(cfg["repo"], split="train")
-        questions = ds[cfg["question_col"]]
-        n = len(questions)
-        lane = cfg["lane"]
-
-        stride = max(1, n // self.limit)
-        start = int(time.time() // self.refresh_seconds) % stride
-
-        out: List[dict] = []
-        seen: set[str] = set()
-        for question in questions[start::stride]:
-            question = (question or "").strip()
-            if not question:
-                continue
-            qid = "h" + hashlib.sha1(question.encode("utf-8")).hexdigest()[:15]
-            if qid in seen:
-                continue
-            seen.add(qid)
-            out.append(
-                {
-                    "id": qid,
-                    "question": question,
-                    "start_date": None,
-                    "end_date": None,
-                    "lane": lane,
-                }
-            )
-            if len(out) >= self.limit:
-                break
-
-        bt.logging.info(
-            f"[HFQuestionPool] Loaded {len(out)} {lane} questions "
-            f"from {cfg['repo']} (n={n}, stride={stride}, start={start})"
-        )
-        return out

@@ -21,7 +21,7 @@ TWITTER_TOOL = "Twitter Search"
 SEARCH_TYPES = ["ai_search", "x_search"]
 
 X_LANE = "x"
-WEB_LANES = ("news", "squad", "nq")
+WEB_LANE = "news"
 
 
 random_result_types = list(
@@ -264,13 +264,7 @@ class SyntheticQueryGenerator:
         return items
 
     def _sample_web(self, n: int) -> List[dict]:
-        rows: List[dict] = []
-        for lane in WEB_LANES:
-            lane_rows = self.hf_pool.sample_lane(lane, n)
-            if lane_rows:
-                rows.extend(lane_rows)
-        random.shuffle(rows)
-        return rows[:n] if n else rows
+        return self.hf_pool.sample_lane(WEB_LANE, n) or []
 
     def _pick_ai_row(
         self,
