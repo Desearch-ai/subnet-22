@@ -18,6 +18,10 @@ from neurons.validators.utils.response_checks import (
     parse_tweet_date,
     tweet_date_in_range,
 )
+from neurons.validators.utils.source_provenance import (
+    miner_ip_of,
+    rejected_links,
+)
 from neurons.validators.utils.source_bodies import (
     cited_urls_normalized,
     highlights_in_order,
@@ -123,6 +127,19 @@ class WebSearchContentRelevanceModel(BaseRewardModel):
             }
         return meta
 
+    @staticmethod
+    async def _drop_rejected_sources(response, links_per_tool_group):
+        """Links the miner could have served itself never reach the sample."""
+        flat = [link for group in links_per_tool_group.values() for link in group]
+        rejected = await rejected_links(flat, miner_ip_of(response))
+        if not rejected:
+            return links_per_tool_group
+
+        return {
+            tool: [link for link in group if link not in rejected]
+            for tool, group in links_per_tool_group.items()
+        }
+
     def _sample_cited_and_other(self, response, links_per_tool_group):
         summary = response.texts.get(ScraperTextRole.FINAL_SUMMARY.value, "")
         cited_norm = cited_urls_normalized(summary)
@@ -154,6 +171,9 @@ class WebSearchContentRelevanceModel(BaseRewardModel):
                 continue
 
             _, links_per_tool_group = response.get_links_from_search_results()
+            links_per_tool_group = await self._drop_rejected_sources(
+                response, links_per_tool_group
+            )
             links, cited_norm = self._sample_cited_and_other(
                 response, links_per_tool_group
             )
