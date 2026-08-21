@@ -14,6 +14,7 @@ from desearch.utils import (
     SearchMode,
     get_mode_serving_budget,
 )
+from neurons.validators.scoring.question_rewriter import rewrite_questions
 
 WEB_TOOL = "Web Search"
 TWITTER_TOOL = "Twitter Search"
@@ -118,6 +119,7 @@ class SyntheticQueryGenerator:
             self._generate_dataset_queries, available_uids, verified_by_type
         )
         if items is not None:
+            await self._rewrite_dataset_questions(items, scoring_model)
             return items
         bt.logging.warning(
             "[SyntheticGen] Dataset pool unavailable, falling back to LLM path"
@@ -199,6 +201,21 @@ class SyntheticQueryGenerator:
             f"({instant} instant, {len(items) - instant} LLM)"
         )
         return items
+
+    @staticmethod
+    async def _rewrite_dataset_questions(
+        items: List[dict], scoring_model: ScoringModel
+    ) -> None:
+        """Reword in place, one rewrite per row so every uid gets the same text."""
+        ai_queries = [
+            item["query"] for item in items if item["search_type"] == "ai_search"
+        ]
+        rewritten = await rewrite_questions(
+            [query["query"] for query in ai_queries], scoring_model
+        )
+
+        for query in ai_queries:
+            query["query"] = rewritten.get(query["query"], query["query"])
 
     def _generate_dataset_queries(
         self,
