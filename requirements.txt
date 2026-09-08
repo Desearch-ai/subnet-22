@@ -19,3 +19,4 @@ datasets>=5.0.0
 py3langid==0.3.0
 pyarrow>=17.0.0
 asyncpg>=0.30.0
+cryptography>=42.0.0
