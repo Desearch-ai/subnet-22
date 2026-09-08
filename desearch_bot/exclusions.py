@@ -12,6 +12,9 @@ import re
 # Removed outright: unsafe, or no article-shaped content to index.
 UT1_EXCLUDE = (
     "adult",
+    # Bank portals are login screens with nothing to index, and their intrusion detection
+    # treats a robots.txt fetch followed by two sitemap probes as a scan.
+    "bank",
     "malware",
     "phishing",
     "cryptojacking",

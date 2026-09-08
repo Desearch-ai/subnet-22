@@ -19,6 +19,9 @@ import aiohttp
 from .sources import USER_AGENT
 
 ROBOTS_TOKEN = "DesearchBot"
+# One request per second to a host unless its robots.txt asks for longer. Applies to every
+# request we make to that host: robots.txt, each sitemap in the tree, and the homepage.
+MIN_HOST_INTERVAL = 1.0
 SITEMAP_GUESSES = ("/sitemap.xml", "/sitemap_index.xml")
 MIN_SITEMAP_URLS = 10
 MIN_HOMEPAGE_CHARS = 200
@@ -163,10 +166,20 @@ class Qualifier:
         self.session = session
         self.detect_language = detect_language
         self.adult = adult
+        self.crawl_delay = 0.0
+        self._next_request_at = 0.0
         self.timeout = aiohttp.ClientTimeout(total=timeout, connect=min(timeout, 6.0),
                                               sock_connect=min(timeout, 6.0))
 
+    async def _pace(self) -> None:
+        """Wait out the remainder of this host's interval before the next request."""
+        wait = self._next_request_at - time.monotonic()
+        if wait > 0:
+            await asyncio.sleep(wait)
+        self._next_request_at = time.monotonic() + max(self.crawl_delay, MIN_HOST_INTERVAL)
+
     async def _get(self, url: str, limit: int) -> tuple[int | None, bytes]:
+        await self._pace()
         async with self.session.get(
             url,
             timeout=self.timeout,
@@ -197,6 +210,8 @@ class Qualifier:
         if host in self.adult:
             result.reject_reason = "adult_list"
             return result
+        self.crawl_delay = 0.0
+        self._next_request_at = 0.0
         try:
             result.robots_status, body = await self._try_schemes(
                 host, "/robots.txt", MAX_ROBOTS_BYTES
@@ -209,6 +224,7 @@ class Qualifier:
         if result.robots_status == 200:
             text = _decode(body)
             result.robots_allows, result.crawl_delay = robots_allows(text, ROBOTS_TOKEN)
+            self.crawl_delay = result.crawl_delay or 0.0
             if result.robots_allows is False:
                 result.reject_reason = "robots_disallowed"
                 return result

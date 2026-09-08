@@ -13,7 +13,14 @@ import aiohttp
 
 from . import db, sitemaps
 from .frontier import Frontier
-from .qualify import MAX_SITEMAP_BYTES, Qualifier, Result, _gunzip, _resolver
+from .qualify import (
+    MAX_SITEMAP_BYTES,
+    MIN_HOST_INTERVAL,
+    Qualifier,
+    Result,
+    _gunzip,
+    _resolver,
+)
 from .sources import USER_AGENT
 
 MAX_SITEMAP_FILES = 40
@@ -56,8 +63,14 @@ class Walker:
         self.pool = pool
         self.frontier = frontier
         self.timeout = aiohttp.ClientTimeout(total=timeout, connect=min(timeout, 6.0))
+        self.crawl_delay = 0.0
+        self._next_request_at = 0.0
 
     async def fetch(self, url: str):
+        wait = self._next_request_at - time.monotonic()
+        if wait > 0:
+            await asyncio.sleep(wait)
+        self._next_request_at = time.monotonic() + max(self.crawl_delay, MIN_HOST_INTERVAL)
         async with self.session.get(
             url,
             timeout=self.timeout,
@@ -68,6 +81,8 @@ class Walker:
             return response.status, body, response.headers
 
     async def walk(self, result: Result) -> int:
+        self.crawl_delay = result.crawl_delay or 0.0
+        self._next_request_at = time.monotonic() + max(self.crawl_delay, MIN_HOST_INTERVAL)
         queue = [(result.sitemap_url, 0, None)]
         seen = {result.sitemap_url}
         stored = fetches = 0
