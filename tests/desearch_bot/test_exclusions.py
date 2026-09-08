@@ -1,4 +1,4 @@
-from desearch_bot.exclusions import exclusion_reason
+from desearch_bot.exclusions import blocked_operator, exclusion_reason
 from desearch_bot.suffixes import PublicSuffixList, tld_group
 
 
@@ -52,3 +52,18 @@ def test_public_suffix_handling(tmp_path):
     assert psl.registrable("a.b.example.co.uk") == "example.co.uk"
     assert psl.registrable("project.github.io") == "project.github.io"
     assert psl.registrable("com") is None
+
+
+def test_a_blocked_operator_covers_its_whole_family():
+    for host in ("shinhan.com", "shinhanbank.com", "shinhan.ca", "ezshinhancard.com",
+                 "newshinhancard.com", "shinhanfinancialgroup.com"):
+        assert reason(host) == "blocked_operator", host
+
+
+def test_unrelated_names_that_contain_the_string_are_not_blocked():
+    for host in ("kakushinhan.org", "marushinhanten.com", "tenshinhanten.com"):
+        assert blocked_operator(host) is False, host
+
+
+def test_a_block_wins_over_every_other_rule():
+    assert reason("shinhan.ca", {"press": {"shinhan.ca"}}) == "blocked_operator"

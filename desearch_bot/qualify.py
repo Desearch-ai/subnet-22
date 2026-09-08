@@ -17,7 +17,7 @@ from urllib.parse import urljoin
 
 import aiohttp
 
-from . import signing
+from . import exclusions, signing
 
 ROBOTS_TOKEN = "DesearchBot"
 # One request per second to a host unless its robots.txt asks for longer. Applies to every
@@ -243,6 +243,9 @@ class Qualifier:
             type_hint=type_hint,
             checked_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         )
+        if exclusions.blocked_operator(host):
+            result.reject_reason = "blocked_operator"
+            return result
         if host in self.adult:
             result.reject_reason = "adult_list"
             return result

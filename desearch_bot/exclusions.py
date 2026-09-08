@@ -9,6 +9,21 @@ from __future__ import annotations
 
 import re
 
+# Operators who have asked us to stop. Matched on the domain label rather than a fixed list of
+# hosts, so a new site in the same family is covered without waiting for a second complaint.
+BLOCKED_OPERATORS = ("shinhan",)
+
+# Unrelated names that merely contain one of those strings.
+NOT_BLOCKED = frozenset({"kakushinhan.org", "marushinhanten.com", "tenshinhanten.com"})
+
+
+def blocked_operator(host: str) -> bool:
+    if host in NOT_BLOCKED:
+        return False
+    label = host.partition(".")[0]
+    return any(name in label for name in BLOCKED_OPERATORS)
+
+
 # Removed outright: unsafe, or no article-shaped content to index.
 UT1_EXCLUDE = (
     "adult",
@@ -347,6 +362,8 @@ def exclusion_reason(
     tld_group: str,
     adult: set[str] = frozenset(),
 ) -> str | None:
+    if blocked_operator(host):
+        return "blocked_operator"
     if host in adult:
         return "adult_list"
     for category in UT1_EXCLUDE:
