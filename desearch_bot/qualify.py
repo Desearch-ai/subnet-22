@@ -13,15 +13,18 @@ import re
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+from urllib.parse import urljoin
 
 import aiohttp
 
-from .sources import USER_AGENT
+from . import signing
 
 ROBOTS_TOKEN = "DesearchBot"
 # One request per second to a host unless its robots.txt asks for longer. Applies to every
 # request we make to that host: robots.txt, each sitemap in the tree, and the homepage.
 MIN_HOST_INTERVAL = 1.0
+MAX_REDIRECTS = 5
+REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
 SITEMAP_GUESSES = ("/sitemap.xml", "/sitemap_index.xml")
 MIN_SITEMAP_URLS = 10
 MIN_HOMEPAGE_CHARS = 200
@@ -155,6 +158,23 @@ def _resolver():
         return None
 
 
+class Pacer:
+    """One host's request clock. Workers each hold their own, so hosts never share a limit."""
+
+    def __init__(self, delay: float | None = None):
+        self.interval = max(delay or 0.0, MIN_HOST_INTERVAL)
+        self._next = 0.0
+
+    def slow_to(self, delay: float | None) -> None:
+        self.interval = max(self.interval, delay or 0.0)
+
+    async def wait(self) -> None:
+        remaining = self._next - time.monotonic()
+        if remaining > 0:
+            await asyncio.sleep(remaining)
+        self._next = time.monotonic() + self.interval
+
+
 class Qualifier:
     def __init__(
         self,
@@ -162,44 +182,46 @@ class Qualifier:
         detect_language,
         timeout: float = 8.0,
         adult: set[str] = frozenset(),
+        signer: signing.Signer | None = None,
     ):
         self.session = session
         self.detect_language = detect_language
         self.adult = adult
-        self.crawl_delay = 0.0
-        self._next_request_at = 0.0
+        self.signer = signer
         self.timeout = aiohttp.ClientTimeout(total=timeout, connect=min(timeout, 6.0),
                                               sock_connect=min(timeout, 6.0))
 
-    async def _pace(self) -> None:
-        """Wait out the remainder of this host's interval before the next request."""
-        wait = self._next_request_at - time.monotonic()
-        if wait > 0:
-            await asyncio.sleep(wait)
-        self._next_request_at = time.monotonic() + max(self.crawl_delay, MIN_HOST_INTERVAL)
+    async def _get(self, url: str, limit: int, pacer: Pacer) -> tuple[int | None, bytes]:
+        """Follow redirects by hand: each hop is paced and signed for the host it goes to."""
+        for _ in range(MAX_REDIRECTS + 1):
+            await pacer.wait()
+            async with self.session.get(
+                url,
+                timeout=self.timeout,
+                allow_redirects=False,
+                headers=signing.request_headers(url, self.signer),
+            ) as response:
+                location = response.headers.get("Location")
+                if response.status in REDIRECT_STATUSES and location:
+                    url = urljoin(url, location)
+                    continue
+                return response.status, await response.content.read(limit)
+        raise RuntimeError("TooManyRedirects")
 
-    async def _get(self, url: str, limit: int) -> tuple[int | None, bytes]:
-        await self._pace()
-        async with self.session.get(
-            url,
-            timeout=self.timeout,
-            allow_redirects=True,
-            headers={"User-Agent": USER_AGENT},
-        ) as response:
-            return response.status, await response.content.read(limit)
-
-    async def _try_schemes(self, host: str, path: str, limit: int):
+    async def _try_schemes(self, host: str, path: str, limit: int, pacer: Pacer):
         last = "unknown"
         for scheme in ("https", "http"):
             try:
-                return await self._get(f"{scheme}://{host}{path}", limit)
+                return await self._get(f"{scheme}://{host}{path}", limit, pacer)
             except Exception as exc:
                 last = type(exc).__name__
                 if "DNS" in last:
                     break
         raise RuntimeError(last)
 
-    async def run(self, host: str, rank=None, tld_group="", type_hint=None) -> Result:
+    async def run(
+        self, host: str, rank=None, tld_group="", type_hint=None, pacer: Pacer | None = None
+    ) -> Result:
         result = Result(
             host=host,
             rank=rank,
@@ -210,11 +232,10 @@ class Qualifier:
         if host in self.adult:
             result.reject_reason = "adult_list"
             return result
-        self.crawl_delay = 0.0
-        self._next_request_at = 0.0
+        pacer = pacer or Pacer()
         try:
             result.robots_status, body = await self._try_schemes(
-                host, "/robots.txt", MAX_ROBOTS_BYTES
+                host, "/robots.txt", MAX_ROBOTS_BYTES, pacer
             )
         except Exception as exc:
             result.error, result.reject_reason = str(exc)[:60], "unreachable"
@@ -224,7 +245,7 @@ class Qualifier:
         if result.robots_status == 200:
             text = _decode(body)
             result.robots_allows, result.crawl_delay = robots_allows(text, ROBOTS_TOKEN)
-            self.crawl_delay = result.crawl_delay or 0.0
+            pacer.slow_to(result.crawl_delay)
             if result.robots_allows is False:
                 result.reject_reason = "robots_disallowed"
                 return result
@@ -240,7 +261,7 @@ class Qualifier:
 
         for url, origin in candidates:
             try:
-                status, payload = await self._get(url, MAX_SITEMAP_BYTES)
+                status, payload = await self._get(url, MAX_SITEMAP_BYTES, pacer)
             except Exception:
                 continue
             if status != 200 or not payload:
@@ -265,7 +286,7 @@ class Qualifier:
 
         try:
             result.home_status, body = await self._try_schemes(
-                host, "/", MAX_HOMEPAGE_BYTES
+                host, "/", MAX_HOMEPAGE_BYTES, pacer
             )
         except Exception as exc:
             result.error, result.reject_reason = str(exc)[:60], "homepage_unreachable"

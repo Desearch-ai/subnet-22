@@ -165,10 +165,22 @@ def cmd_load(args):
     asyncio.run(run())
 
 
+def cmd_keygen(args):
+    from . import signing
+
+    pem, jwk = signing.generate()
+    out = Path(args.out).expanduser()
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.touch(mode=0o600)
+    out.write_text(pem)
+    print(f"private key written to {out}", file=sys.stderr)
+    print(json.dumps({"keys": [jwk]}, indent=2))
+
+
 def cmd_discover(args):
     import asyncio
 
-    from . import adult, db, discover
+    from . import adult, db, discover, signing
     from .frontier import Frontier
 
     async def run():
@@ -179,10 +191,13 @@ def cmd_discover(args):
         hosts = [(r["host"], r["rank"], r["tld_group"], r["type_hint"]) for r in rows]
         adult_domains = adult.load(Path(args.data_dir), refresh=args.refresh_lists)
         print(f"{len(adult_domains):,} adult domains loaded", flush=True)
+        signer = signing.from_env()
+        print(f"signing keyid {signer.keyid}" if signer else "requests unsigned", flush=True)
         frontier = Frontier(Path(args.frontier))
         progress = discover.Progress()
         await discover.discover(pool, frontier, hosts, _language_detector(),
-                                args.concurrency, args.timeout, progress, adult_domains)
+                                args.concurrency, args.timeout, progress, adult_domains,
+                                signer)
         print("frontier:", frontier.stats())
         print(await db.counts(pool))
         await pool.close()
@@ -226,6 +241,10 @@ def main(argv=None):
     p.add_argument("--candidates", default="build/candidates.parquet")
     p.add_argument("--limit", type=int, default=0)
     p.set_defaults(func=cmd_load)
+
+    p = sub.add_parser("keygen", help="create the Ed25519 key that signs our requests")
+    p.add_argument("--out", default="~/.desearch/crawler-signing-key.pem")
+    p.set_defaults(func=cmd_keygen)
 
     p = sub.add_parser("discover", help="qualify domains and collect their sitemap URLs")
     p.add_argument("--limit", type=int, default=10000)

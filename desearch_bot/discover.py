@@ -8,20 +8,22 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import time
+from urllib.parse import urljoin
 
 import aiohttp
 
-from . import db, sitemaps
+from . import db, signing, sitemaps
 from .frontier import Frontier
 from .qualify import (
+    MAX_REDIRECTS,
     MAX_SITEMAP_BYTES,
-    MIN_HOST_INTERVAL,
+    REDIRECT_STATUSES,
+    Pacer,
     Qualifier,
     Result,
     _gunzip,
     _resolver,
 )
-from .sources import USER_AGENT
 
 MAX_SITEMAP_FILES = 40
 MAX_DEPTH = 3
@@ -57,32 +59,38 @@ class Walker:
     """Walks one domain's sitemap tree, breadth-first, storing what it finds."""
 
     def __init__(
-        self, session: aiohttp.ClientSession, pool, frontier: Frontier, timeout: float
+        self,
+        session: aiohttp.ClientSession,
+        pool,
+        frontier: Frontier,
+        timeout: float,
+        signer: signing.Signer | None = None,
     ):
         self.session = session
         self.pool = pool
         self.frontier = frontier
+        self.signer = signer
         self.timeout = aiohttp.ClientTimeout(total=timeout, connect=min(timeout, 6.0))
-        self.crawl_delay = 0.0
-        self._next_request_at = 0.0
 
-    async def fetch(self, url: str):
-        wait = self._next_request_at - time.monotonic()
-        if wait > 0:
-            await asyncio.sleep(wait)
-        self._next_request_at = time.monotonic() + max(self.crawl_delay, MIN_HOST_INTERVAL)
-        async with self.session.get(
-            url,
-            timeout=self.timeout,
-            allow_redirects=True,
-            headers={"User-Agent": USER_AGENT},
-        ) as response:
-            body = await response.content.read(MAX_SITEMAP_BYTES)
-            return response.status, body, response.headers
+    async def fetch(self, url: str, pacer: Pacer):
+        for _ in range(MAX_REDIRECTS + 1):
+            await pacer.wait()
+            async with self.session.get(
+                url,
+                timeout=self.timeout,
+                allow_redirects=False,
+                headers=signing.request_headers(url, self.signer),
+            ) as response:
+                location = response.headers.get("Location")
+                if response.status in REDIRECT_STATUSES and location:
+                    url = urljoin(url, location)
+                    continue
+                body = await response.content.read(MAX_SITEMAP_BYTES)
+                return response.status, body, response.headers
+        raise RuntimeError("TooManyRedirects")
 
-    async def walk(self, result: Result) -> int:
-        self.crawl_delay = result.crawl_delay or 0.0
-        self._next_request_at = time.monotonic() + max(self.crawl_delay, MIN_HOST_INTERVAL)
+    async def walk(self, result: Result, pacer: Pacer | None = None) -> int:
+        pacer = pacer or Pacer(result.crawl_delay)
         queue = [(result.sitemap_url, 0, None)]
         seen = {result.sitemap_url}
         stored = fetches = 0
@@ -91,7 +99,7 @@ class Walker:
             url, depth, parent_id = queue.pop(0)
             fetches += 1
             try:
-                status, body, headers = await self.fetch(url)
+                status, body, headers = await self.fetch(url, pacer)
             except Exception as exc:
                 await db.save_sitemap(
                     self.pool,
@@ -155,6 +163,7 @@ async def discover(
     timeout: float = 8.0,
     on_done=None,
     adult: set[str] = frozenset(),
+    signer: signing.Signer | None = None,
 ) -> None:
     queue: asyncio.Queue = asyncio.Queue(maxsize=concurrency * 4)
     connector = aiohttp.TCPConnector(
@@ -175,8 +184,8 @@ async def discover(
         await db.save_domains(pool, batch)
 
     async with aiohttp.ClientSession(connector=connector) as session:
-        qualifier = Qualifier(session, detect_language, timeout, adult)
-        walker = Walker(session, pool, frontier, timeout)
+        qualifier = Qualifier(session, detect_language, timeout, adult, signer)
+        walker = Walker(session, pool, frontier, timeout, signer)
 
         async def worker():
             while True:
@@ -184,9 +193,10 @@ async def discover(
                 if entry is None:
                     queue.task_done()
                     return
+                pacer = Pacer()
                 try:
-                    result = await qualifier.run(*entry)
-                    urls = await walker.walk(result) if result.qualified else 0
+                    result = await qualifier.run(*entry, pacer=pacer)
+                    urls = await walker.walk(result, pacer) if result.qualified else 0
                 except Exception as exc:
                     result = Result(
                         host=entry[0],
