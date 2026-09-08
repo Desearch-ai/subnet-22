@@ -1,0 +1,198 @@
+"""Postgres access for the control plane."""
+
+from __future__ import annotations
+
+import os
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+import asyncpg
+
+SCHEMA_FILE = Path(__file__).with_name("schema.sql")
+
+
+def dsn() -> str:
+    url = os.environ.get("DESEARCH_DB")
+    if not url:
+        raise RuntimeError("DESEARCH_DB is not set")
+    return url
+
+
+async def connect(pool_size: int = 16) -> asyncpg.Pool:
+    return await asyncpg.create_pool(
+        dsn(),
+        min_size=2,
+        max_size=pool_size,
+        command_timeout=180,
+        server_settings={"search_path": "bot,public"},
+    )
+
+
+async def create_schema(pool: asyncpg.Pool) -> None:
+    async with pool.acquire() as connection:
+        await connection.execute(SCHEMA_FILE.read_text())
+
+
+async def load_candidates(pool: asyncpg.Pool, rows) -> None:
+    """COPY candidates into a staging table, then merge, so a 6M-row load is one pass."""
+    async with pool.acquire() as connection:
+        async with connection.transaction():
+            await connection.execute(
+                """
+                CREATE TEMP TABLE candidate_stage (
+                    host text, rank integer, tld_group text, type_hint text
+                ) ON COMMIT DROP
+                """
+            )
+            await connection.copy_records_to_table(
+                "candidate_stage",
+                records=rows,
+                columns=["host", "rank", "tld_group", "type_hint"],
+            )
+            await connection.execute(
+                """
+                INSERT INTO bot.domains (host, rank, tld_group, type_hint)
+                SELECT DISTINCT ON (host) host, rank, tld_group, type_hint
+                FROM candidate_stage
+                ORDER BY host, rank NULLS LAST
+                ON CONFLICT (host) DO NOTHING
+                """
+            )
+
+
+async def take_candidates(pool: asyncpg.Pool, limit: int):
+    async with pool.acquire() as connection:
+        return await connection.fetch(
+            """
+            SELECT host, rank, tld_group, type_hint
+            FROM bot.domains
+            WHERE status = 'candidate'
+            ORDER BY rank NULLS LAST
+            LIMIT $1
+            """,
+            limit,
+        )
+
+
+async def save_domains(pool: asyncpg.Pool, results) -> None:
+    """One statement for a batch of visit outcomes."""
+    rows = [
+        (
+            r.host,
+            "qualified" if r.qualified else "rejected",
+            r.reject_reason,
+            r.robots_status,
+            r.robots_allows,
+            r.crawl_delay,
+            r.language,
+            r.declared_lang,
+            r.home_chars,
+            r.sitemap_url,
+            r.sitemap_kind,
+            url_count,
+        )
+        for r, url_count in results
+    ]
+    if not rows:
+        return
+    async with pool.acquire() as connection:
+        await connection.executemany(
+            """
+            UPDATE bot.domains SET
+                status = $2, reject_reason = $3, robots_status = $4, robots_allows = $5,
+                crawl_delay = $6, language = $7, declared_lang = $8, home_chars = $9,
+                sitemap_url = $10, sitemap_kind = $11, url_count = $12, checked_at = now()
+            WHERE host = $1
+            """,
+            rows,
+        )
+
+
+async def save_sitemap(
+    pool: asyncpg.Pool,
+    host: str,
+    url: str,
+    kind: str | None,
+    depth: int,
+    url_count: int = 0,
+    child_count: int = 0,
+    parent_id: int | None = None,
+    status: str = "ok",
+    error: str | None = None,
+    etag: str | None = None,
+    last_modified: str | None = None,
+    content_hash: str | None = None,
+    check_interval_s: int = 86400,
+) -> int | None:
+    async with pool.acquire() as connection:
+        return await connection.fetchval(
+            """
+            INSERT INTO bot.sitemaps (
+                host, url, kind, parent_id, depth, url_count, child_count, status, error,
+                etag, last_modified, content_hash, fetched_at, changed_at,
+                check_interval_s, next_check_at
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, now(), now(), $13, $14)
+            ON CONFLICT (url) DO UPDATE SET
+                kind = EXCLUDED.kind,
+                url_count = EXCLUDED.url_count,
+                child_count = EXCLUDED.child_count,
+                status = EXCLUDED.status,
+                error = EXCLUDED.error,
+                etag = EXCLUDED.etag,
+                last_modified = EXCLUDED.last_modified,
+                content_hash = EXCLUDED.content_hash,
+                fetched_at = now(),
+                changed_at = CASE
+                    WHEN bot.sitemaps.content_hash IS DISTINCT FROM EXCLUDED.content_hash
+                    THEN now() ELSE bot.sitemaps.changed_at END,
+                unchanged_checks = CASE
+                    WHEN bot.sitemaps.content_hash IS DISTINCT FROM EXCLUDED.content_hash
+                    THEN 0 ELSE bot.sitemaps.unchanged_checks + 1 END
+            RETURNING id
+            """,
+            host,
+            url,
+            kind,
+            parent_id,
+            depth,
+            url_count,
+            child_count,
+            status,
+            error,
+            etag,
+            last_modified,
+            content_hash,
+            check_interval_s,
+            datetime.now(timezone.utc) + timedelta(seconds=check_interval_s),
+        )
+
+
+async def record_frontier_files(pool: asyncpg.Pool, rows) -> None:
+    if not rows:
+        return
+    async with pool.acquire() as connection:
+        await connection.executemany(
+            """
+            INSERT INTO bot.frontier_files (path, host_bucket, url_count, bytes)
+            VALUES ($1, $2, $3, $4)
+            ON CONFLICT (path) DO NOTHING
+            """,
+            rows,
+        )
+
+
+async def counts(pool: asyncpg.Pool) -> dict:
+    async with pool.acquire() as connection:
+        row = await connection.fetchrow(
+            """
+            SELECT
+                (SELECT count(*) FROM bot.domains) AS domains,
+                (SELECT count(*) FROM bot.domains WHERE status = 'candidate') AS candidates,
+                (SELECT count(*) FROM bot.domains WHERE status = 'qualified') AS qualified,
+                (SELECT count(*) FROM bot.domains WHERE status = 'rejected') AS rejected,
+                (SELECT count(*) FROM bot.sitemaps) AS sitemaps,
+                (SELECT coalesce(sum(url_count), 0) FROM bot.domains) AS urls
+            """
+        )
+        return dict(row)
