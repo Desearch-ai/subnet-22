@@ -165,18 +165,6 @@ def cmd_load(args):
     asyncio.run(run())
 
 
-def cmd_keygen(args):
-    from . import signing
-
-    pem, jwk = signing.generate()
-    out = Path(args.out).expanduser()
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.touch(mode=0o600)
-    out.write_text(pem)
-    print(f"private key written to {out}", file=sys.stderr)
-    print(json.dumps({"keys": [jwk]}, indent=2))
-
-
 def cmd_discover(args):
     import asyncio
 
@@ -241,10 +229,6 @@ def main(argv=None):
     p.add_argument("--candidates", default="build/candidates.parquet")
     p.add_argument("--limit", type=int, default=0)
     p.set_defaults(func=cmd_load)
-
-    p = sub.add_parser("keygen", help="create the Ed25519 key that signs our requests")
-    p.add_argument("--out", default="~/.desearch/crawler-signing-key.pem")
-    p.set_defaults(func=cmd_keygen)
 
     p = sub.add_parser("discover", help="qualify domains and collect their sitemap URLs")
     p.add_argument("--limit", type=int, default=10000)

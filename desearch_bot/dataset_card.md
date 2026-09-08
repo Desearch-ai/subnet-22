@@ -71,14 +71,9 @@ Umbrella. Categories come from the UT1 blacklists. Registrable domains follow th
 List. Each source carries its own terms; this dataset is derived data with attribution, and the
 ranks are each source's own and are not comparable between sources.
 
-## Reproducing
+## Source
 
-The bot is open source in [subnet-22](https://github.com/Desearch-ai/subnet-22) under
-`desearch_bot/`:
-
-```bash
-python -m desearch_bot.cli candidates --out build
-python -m desearch_bot.cli load --candidates build/candidates.parquet
-python -m desearch_bot.cli discover --limit 100000
-python -m desearch_bot.cli publish --push
-```
+The crawler that produced this list is open source in
+[subnet-22](https://github.com/Desearch-ai/subnet-22) under `desearch_bot/`, so the rules above can
+be read rather than taken on trust. It is published to be audited, not to be run: only Desearch
+operates DesearchBot, and only Desearch's crawler is entitled to that token and User-Agent.

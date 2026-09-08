@@ -137,3 +137,19 @@ async def test_requests_are_unsigned_when_no_key_is_configured():
     qualifier = Qualifier(session, lambda _: "en", 5.0)
     await qualifier._get("https://example.com/robots.txt", 10, Pacer())
     assert "Signature" not in session.log[0][2]
+
+
+async def test_crawl_delay_applies_to_the_request_right_after_robots():
+    """robots.txt is fetched before its Crawl-delay is known; the next request must still wait."""
+    pacer = Pacer()
+    await pacer.wait()
+    pacer.slow_to(2.0)
+    start = time.monotonic()
+    await pacer.wait()
+    assert time.monotonic() - start >= 1.95
+
+
+async def test_slow_to_never_shortens_an_interval():
+    pacer = Pacer(5.0)
+    pacer.slow_to(1.0)
+    assert pacer.interval == 5.0

@@ -166,7 +166,12 @@ class Pacer:
         self._next = 0.0
 
     def slow_to(self, delay: float | None) -> None:
-        self.interval = max(self.interval, delay or 0.0)
+        """Adopt a longer interval, pushing back a slot already booked at the shorter one."""
+        if not delay or delay <= self.interval:
+            return
+        if self._next:
+            self._next += delay - self.interval
+        self.interval = delay
 
     async def wait(self) -> None:
         remaining = self._next - time.monotonic()
