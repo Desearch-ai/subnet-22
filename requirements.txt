@@ -18,3 +18,4 @@ huggingface_hub>=1.21.0
 datasets>=5.0.0
 py3langid==0.3.0
 pyarrow>=17.0.0
+asyncpg>=0.30.0

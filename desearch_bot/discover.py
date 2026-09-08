@@ -91,6 +91,8 @@ class Walker:
 
     async def walk(self, result: Result, pacer: Pacer | None = None) -> int:
         pacer = pacer or Pacer(result.crawl_delay)
+        # Qualification already fetched the root sitemap; reuse it rather than ask twice.
+        ready = {result.sitemap_url: result.sitemap_fetch} if result.sitemap_fetch else {}
         queue = [(result.sitemap_url, 0, None)]
         seen = {result.sitemap_url}
         stored = fetches = 0
@@ -98,8 +100,12 @@ class Walker:
         while queue and fetches < MAX_SITEMAP_FILES:
             url, depth, parent_id = queue.pop(0)
             fetches += 1
+            done = ready.pop(url, None)
             try:
-                status, body, headers = await self.fetch(url, pacer)
+                if done is not None:
+                    status, body, headers = 200, done.body, done.headers
+                else:
+                    status, body, headers = await self.fetch(url, pacer)
             except Exception as exc:
                 await db.save_sitemap(
                     self.pool,

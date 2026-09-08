@@ -47,6 +47,12 @@ BOT_WALL = re.compile(
 
 
 @dataclass
+class Fetched:
+    body: bytes
+    headers: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass
 class Result:
     host: str
     rank: int | None = None
@@ -68,6 +74,8 @@ class Result:
     error: str | None = None
     checked_at: str = ""
     sample_urls: list[str] = field(default_factory=list)
+    # The sitemap we accepted, kept so the walk does not fetch it a second time.
+    sitemap_fetch: Fetched | None = None
 
 
 def _decode(body: bytes) -> str:
@@ -196,7 +204,7 @@ class Qualifier:
         self.timeout = aiohttp.ClientTimeout(total=timeout, connect=min(timeout, 6.0),
                                               sock_connect=min(timeout, 6.0))
 
-    async def _get(self, url: str, limit: int, pacer: Pacer) -> tuple[int | None, bytes]:
+    async def _get(self, url: str, limit: int, pacer: Pacer):
         """Follow redirects by hand: each hop is paced and signed for the host it goes to."""
         for _ in range(MAX_REDIRECTS + 1):
             await pacer.wait()
@@ -210,7 +218,8 @@ class Qualifier:
                 if response.status in REDIRECT_STATUSES and location:
                     url = urljoin(url, location)
                     continue
-                return response.status, await response.content.read(limit)
+                body = await response.content.read(limit)
+                return response.status, body, dict(response.headers)
         raise RuntimeError("TooManyRedirects")
 
     async def _try_schemes(self, host: str, path: str, limit: int, pacer: Pacer):
@@ -239,7 +248,7 @@ class Qualifier:
             return result
         pacer = pacer or Pacer()
         try:
-            result.robots_status, body = await self._try_schemes(
+            result.robots_status, body, _ = await self._try_schemes(
                 host, "/robots.txt", MAX_ROBOTS_BYTES, pacer
             )
         except Exception as exc:
@@ -266,7 +275,7 @@ class Qualifier:
 
         for url, origin in candidates:
             try:
-                status, payload = await self._get(url, MAX_SITEMAP_BYTES, pacer)
+                status, payload, headers = await self._get(url, MAX_SITEMAP_BYTES, pacer)
             except Exception:
                 continue
             if status != 200 or not payload:
@@ -280,6 +289,7 @@ class Qualifier:
                 count,
                 sample,
             )
+            result.sitemap_fetch = Fetched(payload, headers)
             break
 
         if not result.sitemap_url:
@@ -290,7 +300,7 @@ class Qualifier:
             return result
 
         try:
-            result.home_status, body = await self._try_schemes(
+            result.home_status, body, _ = await self._try_schemes(
                 host, "/", MAX_HOMEPAGE_BYTES, pacer
             )
         except Exception as exc:
@@ -361,4 +371,6 @@ async def qualify_hosts(
 def write_jsonl(path: Path, results) -> None:
     with open(path, "a", encoding="utf-8") as handle:
         for result in results:
-            handle.write(json.dumps(asdict(result), ensure_ascii=False) + "\n")
+            row = asdict(result)
+            row.pop("sitemap_fetch", None)
+            handle.write(json.dumps(row, ensure_ascii=False) + "\n")
