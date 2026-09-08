@@ -338,33 +338,17 @@ INFRASTRUCTURE_NAME = re.compile(
 )
 
 
-# UT1 misses long-tail adult hosts, so the name is checked too. Substrings that also occur inside
-# innocent words ("anal" in analytics, "sex" in essex) must sit at a label boundary; the rest are
-# unambiguous enough to match anywhere.
-ADULT_NAME_STRONG = re.compile(
-    r"(porn|xxx|hentai|milf|camgirl|escort|shemale|xvideo|xnxx|redtube|onlyfans"
-    r"|creampie|incest|bukkake|blowjob|handjob|cumshot|deepthroat|pussy|dildo|nsfw)",
-    re.I,
-)
-ADULT_NAME_BOUNDED = re.compile(
-    r"(^|[.\-0-9])(sex|anal|nude|naked|adult|erotic|fetish|swinger|strip|lust|orgy|boobs|tits)"
-    r"($|[.\-0-9])",
-    re.I,
-)
-
-
-def looks_adult(host: str) -> bool:
-    return bool(ADULT_NAME_STRONG.search(host) or ADULT_NAME_BOUNDED.search(host))
-
-
 def exclusion_reason(
-    host: str, categories: dict[str, set[str]], tld_group: str
+    host: str,
+    categories: dict[str, set[str]],
+    tld_group: str,
+    adult: set[str] = frozenset(),
 ) -> str | None:
+    if host in adult:
+        return "adult_list"
     for category in UT1_EXCLUDE:
         if host in categories.get(category, ()):
             return f"ut1_{category}"
-    if looks_adult(host):
-        return "adult_name"
     if host in DYNAMIC_PLATFORMS:
         return "dynamic_platform"
     if host in INFRASTRUCTURE:

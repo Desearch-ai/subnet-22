@@ -2,8 +2,8 @@ from desearch_bot.exclusions import exclusion_reason
 from desearch_bot.suffixes import PublicSuffixList, tld_group
 
 
-def reason(host, categories=None):
-    return exclusion_reason(host, categories or {}, tld_group(host))
+def reason(host, categories=None, adult=frozenset()):
+    return exclusion_reason(host, categories or {}, tld_group(host), adult)
 
 
 def test_content_sites_are_kept():
@@ -15,6 +15,13 @@ def test_content_sites_are_kept():
         "autism.org.uk",
     ):
         assert reason(host) is None, host
+
+
+def test_adult_domains_come_from_the_blocklists():
+    adult = {"somethingexplicit.com"}
+    assert reason("somethingexplicit.com", adult=adult) == "adult_list"
+    assert reason("analyticsvidhya.com", adult=adult) is None
+    assert reason("sussex.ac.uk", adult=adult) is None
 
 
 def test_search_and_social_platforms_are_dropped():

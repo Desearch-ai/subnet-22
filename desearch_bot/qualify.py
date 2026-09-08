@@ -154,10 +154,15 @@ def _resolver():
 
 class Qualifier:
     def __init__(
-        self, session: aiohttp.ClientSession, detect_language, timeout: float = 8.0
+        self,
+        session: aiohttp.ClientSession,
+        detect_language,
+        timeout: float = 8.0,
+        adult: set[str] = frozenset(),
     ):
         self.session = session
         self.detect_language = detect_language
+        self.adult = adult
         self.timeout = aiohttp.ClientTimeout(total=timeout, connect=min(timeout, 6.0),
                                               sock_connect=min(timeout, 6.0))
 
@@ -189,6 +194,9 @@ class Qualifier:
             type_hint=type_hint,
             checked_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         )
+        if host in self.adult:
+            result.reject_reason = "adult_list"
+            return result
         try:
             result.robots_status, body = await self._try_schemes(
                 host, "/robots.txt", MAX_ROBOTS_BYTES

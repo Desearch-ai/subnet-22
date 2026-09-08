@@ -168,7 +168,7 @@ def cmd_load(args):
 def cmd_discover(args):
     import asyncio
 
-    from . import db, discover
+    from . import adult, db, discover
     from .frontier import Frontier
 
     async def run():
@@ -177,10 +177,12 @@ def cmd_discover(args):
         rows = await db.take_candidates(pool, args.limit)
         print(f"{len(rows):,} candidates, concurrency {args.concurrency}", flush=True)
         hosts = [(r["host"], r["rank"], r["tld_group"], r["type_hint"]) for r in rows]
+        adult_domains = adult.load(Path(args.data_dir), refresh=args.refresh_lists)
+        print(f"{len(adult_domains):,} adult domains loaded", flush=True)
         frontier = Frontier(Path(args.frontier))
         progress = discover.Progress()
         await discover.discover(pool, frontier, hosts, _language_detector(),
-                                args.concurrency, args.timeout, progress)
+                                args.concurrency, args.timeout, progress, adult_domains)
         print("frontier:", frontier.stats())
         print(await db.counts(pool))
         await pool.close()
@@ -231,6 +233,9 @@ def main(argv=None):
     p.add_argument("--timeout", type=float, default=7.0)
     p.add_argument("--pool", type=int, default=16)
     p.add_argument("--frontier", default="/var/lib/desearch-bot/frontier")
+    p.add_argument("--data-dir", default="data")
+    p.add_argument("--refresh-lists", action="store_true",
+                   help="re-download the adult blocklists before this run")
     p.set_defaults(func=cmd_discover)
 
     args = parser.parse_args(argv)

@@ -10,7 +10,7 @@ from pathlib import Path
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from . import exclusions, sources
+from . import adult, exclusions, sources
 from .suffixes import PublicSuffixList, suffix, tld_group
 
 SCHEMA = pa.schema(
@@ -54,6 +54,7 @@ def build(data_dir: Path, out_dir: Path, download: bool = True) -> dict:
         | set(exclusions.UT1_TYPE_HINT)
     )
     categories = sources.read_categories(paths["ut1"], wanted)
+    adult_domains = adult.load(data_dir, refresh=download)
 
     merged: dict[str, dict[str, int]] = {}
     for name, ranks in ranked.items():
@@ -64,7 +65,7 @@ def build(data_dir: Path, out_dir: Path, download: bool = True) -> dict:
     for host, host_ranks in merged.items():
         traffic = [host_ranks[n] for n in sources.TRAFFIC_RANKED if n in host_ranks]
         group = tld_group(host)
-        reason = exclusions.exclusion_reason(host, categories, group)
+        reason = exclusions.exclusion_reason(host, categories, group, adult_domains)
         reasons[reason or "kept"] += 1
         rows.append(
             {
