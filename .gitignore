@@ -29,3 +29,10 @@ pyrightconfig.json
 .claude/
 .pytest_cache/
 .state/
+# desearch_bot working data
+build/
+bot-data/
+build-smoke*/
+.venv-bot/
+frontier/
+crawl4ai/
