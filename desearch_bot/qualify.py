@@ -57,7 +57,6 @@ class Result:
     host: str
     rank: int | None = None
     tld_group: str = ""
-    type_hint: str | None = None
     robots_status: int | None = None
     robots_allows: bool | None = None
     crawl_delay: float | None = None
@@ -234,13 +233,12 @@ class Qualifier:
         raise RuntimeError(last)
 
     async def run(
-        self, host: str, rank=None, tld_group="", type_hint=None, pacer: Pacer | None = None
+        self, host: str, rank=None, tld_group="", pacer: Pacer | None = None
     ) -> Result:
         result = Result(
             host=host,
             rank=rank,
             tld_group=tld_group,
-            type_hint=type_hint,
             checked_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         )
         if exclusions.blocked_operator(host):
