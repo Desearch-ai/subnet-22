@@ -348,6 +348,14 @@ INFRASTRUCTURE = {
     "macromedia.com",
 }
 
+# Source lists carry filenames that parse as domains, because .sh and .app are real TLDs.
+HOSTNAME = re.compile(r"^(?!-)[a-z0-9-]{1,63}(?<!-)(\.(?!-)[a-z0-9-]{1,63}(?<!-))+$")
+
+
+def valid_host(host: str) -> bool:
+    return len(host) <= 253 and bool(HOSTNAME.match(host)) and not host.split(".")[-1].isdigit()
+
+
 INFRASTRUCTURE_NAME = re.compile(
     r"(^|[.-])(cdn|static|assets|edge|akamai|cloudfront|fastly|azureedge|googleapis|gstatic"
     r"|tagmanager|analytics|doubleclick|syndication|adsystem|adservice|adserver|pixel"
@@ -364,6 +372,8 @@ def exclusion_reason(
 ) -> str | None:
     if blocked_operator(host):
         return "blocked_operator"
+    if not valid_host(host):
+        return "invalid_host"
     if host in adult:
         return "adult_list"
     for category in UT1_EXCLUDE:
