@@ -26,7 +26,7 @@ def _language_detector():
 
 def _pending(candidates_path: Path, done_path: Path, limit: int, order: str):
     table = pq.read_table(
-        candidates_path, columns=["host", "rank", "tld_group", "type_hint", "excluded"]
+        candidates_path, columns=["host", "rank", "tld_group", "excluded"]
     )
     rows = table.to_pylist()
     rows = [r for r in rows if not r["excluded"]]
@@ -41,7 +41,7 @@ def _pending(candidates_path: Path, done_path: Path, limit: int, order: str):
                 if line.strip():
                     done.add(json.loads(line)["host"])
     pending = [
-        (r["host"], r["rank"], r["tld_group"], r["type_hint"])
+        (r["host"], r["rank"], r["tld_group"])
         for r in rows
         if r["host"] not in done
     ]
@@ -147,8 +147,8 @@ def cmd_load(args):
     from . import db
 
     table = pq.read_table(args.candidates,
-                          columns=["host", "rank", "tld_group", "type_hint", "excluded"])
-    rows = [(r["host"], r["rank"], r["tld_group"], r["type_hint"])
+                          columns=["host", "rank", "tld_group", "excluded"])
+    rows = [(r["host"], r["rank"], r["tld_group"])
             for r in table.to_pylist() if not r["excluded"]]
     if args.limit:
         rows = rows[: args.limit]
@@ -176,7 +176,7 @@ def cmd_discover(args):
         await db.create_schema(pool)
         rows = await db.take_candidates(pool, args.limit)
         print(f"{len(rows):,} candidates, concurrency {args.concurrency}", flush=True)
-        hosts = [(r["host"], r["rank"], r["tld_group"], r["type_hint"]) for r in rows]
+        hosts = [(r["host"], r["rank"], r["tld_group"]) for r in rows]
         adult_domains = adult.load(Path(args.data_dir), refresh=args.refresh_lists)
         print(f"{len(adult_domains):,} adult domains loaded", flush=True)
         signer = signing.from_env()
@@ -214,17 +214,19 @@ def cmd_categorize(args):
         doomed: list[str] = []
         removed = {"domains": 0, "sitemaps": 0}
         async for rows in db.iter_hosts(pool):
-            batch = []
+            batch, rollup = [], []
             for record in rows:
                 host = record["host"]
                 labels = catalogue.labels(host)
                 if labels:
-                    batch.append((host, labels, labels[0], "ut1"))
+                    rollup.append((host, labels, labels[0]))
+                    batch.extend((host, "ut1", label, None, None, None) for label in labels)
                 if catalogue.excluded(labels) or exclusions.exclusion_reason(
                     host, {}, record["tld_group"] or ""
                 ) or exclusions.blocked_operator(host):
                     doomed.append(host)
-            saved += await db.save_categories(pool, batch)
+            await db.save_domain_categories(pool, batch)
+            saved += await db.save_category_rollup(pool, rollup)
             seen += len(rows)
             if args.prune and len(doomed) >= 50_000:
                 for key, n in (await db.delete_hosts(pool, doomed)).items():
@@ -244,6 +246,50 @@ def cmd_categorize(args):
         else:
             print(f"{len(doomed):,} carry an excluded category; add --prune to remove them")
         print(await db.counts(pool))
+        await pool.close()
+
+    asyncio.run(run())
+
+
+def cmd_resolve(args):
+    import asyncio
+
+    from . import db, reachability
+
+    def report(counts):
+        print("  %(checked)s checked  %(resolves)s resolve  %(dead)s dead"
+              % {k: f"{v:,}" for k, v in counts.items()}, flush=True)
+
+    async def run():
+        pool = await db.connect(args.pool)
+        counts = await reachability.resolve_all(
+            pool, args.concurrency, args.rate, report
+        )
+        print("resolved %(checked)s: %(resolves)s live, %(dead)s dead"
+              % {k: f"{v:,}" for k, v in counts.items()})
+        await pool.close()
+
+    asyncio.run(run())
+
+
+def cmd_canonicalise(args):
+    import asyncio
+
+    from . import db, reachability, signing
+    from .suffixes import PublicSuffixList
+
+    def report(counts):
+        print("  %(checked)s checked  %(redirects)s redirect  %(errors)s errors"
+              % {k: f"{v:,}" for k, v in counts.items()}, flush=True)
+
+    async def run():
+        pool = await db.connect(args.pool)
+        psl = PublicSuffixList(Path(args.data_dir) / "public_suffix_list.dat")
+        counts = await reachability.canonicalise_all(
+            pool, psl, args.concurrency, signing.from_env(), report
+        )
+        print("checked %(checked)s: %(redirects)s redirect elsewhere, %(errors)s errors"
+              % {k: f"{v:,}" for k, v in counts.items()})
         await pool.close()
 
     asyncio.run(run())
@@ -285,6 +331,19 @@ def main(argv=None):
     p.add_argument("--candidates", default="build/candidates.parquet")
     p.add_argument("--limit", type=int, default=0)
     p.set_defaults(func=cmd_load)
+
+    p = sub.add_parser("resolve", help="DNS pass: flag which domains still resolve")
+    p.add_argument("--concurrency", type=int, default=200)
+    p.add_argument("--rate", type=float, default=300.0,
+                   help="lookups per second; the NIC packet budget is the limit")
+    p.add_argument("--pool", type=int, default=8)
+    p.set_defaults(func=cmd_resolve)
+
+    p = sub.add_parser("canonicalise", help="follow redirects and record the real domain")
+    p.add_argument("--concurrency", type=int, default=200)
+    p.add_argument("--pool", type=int, default=8)
+    p.add_argument("--data-dir", default="data")
+    p.set_defaults(func=cmd_canonicalise)
 
     p = sub.add_parser("categorize", help="label domains and optionally drop excluded ones")
     p.add_argument("--data-dir", default="data")

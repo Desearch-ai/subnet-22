@@ -40,19 +40,19 @@ async def load_candidates(pool: asyncpg.Pool, rows) -> None:
             await connection.execute(
                 """
                 CREATE TEMP TABLE candidate_stage (
-                    host text, rank integer, tld_group text, type_hint text
+                    host text, rank integer, tld_group text
                 ) ON COMMIT DROP
                 """
             )
             await connection.copy_records_to_table(
                 "candidate_stage",
                 records=rows,
-                columns=["host", "rank", "tld_group", "type_hint"],
+                columns=["host", "rank", "tld_group"],
             )
             await connection.execute(
                 """
-                INSERT INTO bot.domains (host, rank, tld_group, type_hint)
-                SELECT DISTINCT ON (host) host, rank, tld_group, type_hint
+                INSERT INTO bot.domains (host, rank, tld_group)
+                SELECT DISTINCT ON (host) host, rank, tld_group
                 FROM candidate_stage
                 ORDER BY host, rank NULLS LAST
                 ON CONFLICT (host) DO NOTHING
@@ -64,7 +64,7 @@ async def take_candidates(pool: asyncpg.Pool, limit: int):
     async with pool.acquire() as connection:
         return await connection.fetch(
             """
-            SELECT host, rank, tld_group, type_hint
+            SELECT host, rank, tld_group
             FROM bot.domains
             WHERE status = 'candidate'
             ORDER BY rank NULLS LAST
@@ -201,29 +201,139 @@ async def iter_hosts(pool: asyncpg.Pool, chunk: int = 200_000):
         after = rows[-1]["host"]
 
 
-async def save_categories(pool: asyncpg.Pool, rows) -> int:
+async def iter_unresolved_hosts(pool: asyncpg.Pool, chunk: int = 5_000):
+    """Only domains not yet checked, so a restart continues rather than starting over."""
+    while True:
+        async with pool.acquire() as connection:
+            rows = await connection.fetch(
+                """
+                SELECT host FROM bot.domains WHERE resolved_at IS NULL
+                ORDER BY host LIMIT $1
+                """,
+                chunk,
+            )
+        if not rows:
+            return
+        yield rows
+
+
+async def iter_resolving_hosts(pool: asyncpg.Pool, chunk: int = 100_000):
+    after = ""
+    while True:
+        async with pool.acquire() as connection:
+            rows = await connection.fetch(
+                """
+                SELECT host FROM bot.domains
+                WHERE host > $1 AND resolves IS TRUE AND canonical_host IS NULL
+                ORDER BY host LIMIT $2
+                """,
+                after,
+                chunk,
+            )
+        if not rows:
+            return
+        yield rows
+        after = rows[-1]["host"]
+
+
+async def save_resolution(pool: asyncpg.Pool, rows) -> int:
+    if not rows:
+        return 0
+    async with pool.acquire() as connection:
+        async with connection.transaction():
+            await connection.execute(
+                "CREATE TEMP TABLE resolution_stage (host text, resolves boolean) ON COMMIT DROP"
+            )
+            await connection.copy_records_to_table(
+                "resolution_stage", records=rows, columns=["host", "resolves"]
+            )
+            result = await connection.execute(
+                """
+                UPDATE bot.domains d SET resolves = s.resolves, resolved_at = now()
+                FROM resolution_stage s WHERE d.host = s.host
+                """
+            )
+    return int(result.split()[-1])
+
+
+async def save_canonical(pool: asyncpg.Pool, rows) -> int:
+    """Record the name a domain actually serves under. A domain that redirects elsewhere stops
+    being a crawl target of its own."""
+    rows = [(h, c) for h, c in rows if c]
+    if not rows:
+        return 0
+    async with pool.acquire() as connection:
+        async with connection.transaction():
+            await connection.execute(
+                "CREATE TEMP TABLE canonical_stage (host text, canonical_host text) ON COMMIT DROP"
+            )
+            await connection.copy_records_to_table(
+                "canonical_stage", records=rows, columns=["host", "canonical_host"]
+            )
+            result = await connection.execute(
+                """
+                UPDATE bot.domains d SET
+                    canonical_host = s.canonical_host,
+                    status = CASE WHEN d.status IN ('candidate', 'qualified')
+                                  THEN 'redirect' ELSE d.status END
+                FROM canonical_stage s WHERE d.host = s.host
+                """
+            )
+    return int(result.split()[-1])
+
+
+async def save_domain_categories(pool: asyncpg.Pool, rows) -> int:
+    """Append what a source said. One row per source per label, so sources never overwrite."""
     if not rows:
         return 0
     async with pool.acquire() as connection:
         async with connection.transaction():
             await connection.execute(
                 """
-                CREATE TEMP TABLE category_stage (
-                    host text, categories text[], category text, source text
+                CREATE TEMP TABLE dc_stage (
+                    host text, source text, category text, raw_category text,
+                    category_id integer, super_category text
                 ) ON COMMIT DROP
                 """
             )
             await connection.copy_records_to_table(
-                "category_stage",
+                "dc_stage",
                 records=rows,
-                columns=["host", "categories", "category", "source"],
+                columns=["host", "source", "category", "raw_category",
+                         "category_id", "super_category"],
             )
             result = await connection.execute(
                 """
-                UPDATE bot.domains d SET
-                    categories = s.categories, category = s.category,
-                    category_source = s.source, categorized_at = now()
-                FROM category_stage s WHERE d.host = s.host
+                INSERT INTO bot.domain_categories
+                    (host, source, category, raw_category, category_id, super_category)
+                SELECT s.host, s.source, s.category, s.raw_category,
+                       s.category_id, s.super_category
+                FROM dc_stage s JOIN bot.domains d ON d.host = s.host
+                ON CONFLICT DO NOTHING
+                """
+            )
+    return int(result.split()[-1])
+
+
+async def save_category_rollup(pool: asyncpg.Pool, rows) -> int:
+    """The denormalised copy the publish view and the crawl filter read."""
+    if not rows:
+        return 0
+    async with pool.acquire() as connection:
+        async with connection.transaction():
+            await connection.execute(
+                """
+                CREATE TEMP TABLE rollup_stage (host text, categories text[], category text)
+                ON COMMIT DROP
+                """
+            )
+            await connection.copy_records_to_table(
+                "rollup_stage", records=rows, columns=["host", "categories", "category"]
+            )
+            result = await connection.execute(
+                """
+                UPDATE bot.domains d SET categories = s.categories, category = s.category
+                FROM rollup_stage s WHERE d.host = s.host
                 """
             )
     return int(result.split()[-1])
