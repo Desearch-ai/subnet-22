@@ -3,77 +3,63 @@ license: other
 license_name: derived-from-public-lists
 language:
   - en
-pretty_name: Desearch crawlable domains
+pretty_name: Desearch domains
 tags:
   - web-crawl
   - domains
-  - sitemaps
   - bittensor
+size_categories:
+  - 1M<n<10M
 configs:
   - config_name: domains
     data_files: domains/domains.parquet
 ---
 
-# Desearch crawlable domains
+# Desearch domains
 
-The English-language domains Desearch miners crawl. Every host listed here was visited by the
-Desearch Bot: its robots.txt was read and obeyed, a sitemap was fetched and parsed, and its
-homepage was checked for readable English text. `sitemap_url` is where a crawl of that domain
-starts.
+The domain list for Desearch subnet-22. **{{DOMAINS}} domains**, one column, one row each.
 
-`domains/domains.parquet` is rewritten as the bot works through its candidate list, so it always
-reflects the current qualified set. `domains/stats.json` carries the counts and the rejection
-breakdown for the same moment.
+```
+domains/domains.parquet
+  host: string   registrable domain, lowercase, no scheme and no www.
+```
 
-## Columns
+That is the whole file on purpose. Sitemap locations, crawl delays, refresh schedules and
+categories are operational state that changes as the crawler works; they live in Desearch's
+database, not here. This list answers one question: which domains are in scope.
 
-| column | meaning |
-|---|---|
-| `host` | registrable domain, lowercase, no `www.` |
-| `sitemap_url` | the sitemap that parsed; where a crawl of this domain starts |
-| `sitemap_kind` | `index` when it points at more sitemaps, `urlset` when it points at pages |
-| `url_count` | URLs discovered across this domain's sitemap tree |
-| `crawl_delay` | seconds between requests this host asks for in robots.txt, when set; respect it |
+## How it was built
 
-Rank, source type, language and the visit timestamp are kept in the bot's own database rather
-than here, since they say nothing about how to crawl a domain.
+Five public domain rankings were merged on the registrable domain (eTLD+1, resolved with the
+Public Suffix List):
 
-## How a domain qualifies
+| Source | Domains |
+| --- | ---: |
+| Open PageRank | 7,015,762 |
+| Tranco | 999,031 |
+| Majestic Million | 997,296 |
+| BuiltWith Top 1M | 979,149 |
+| Cisco Umbrella | 256,847 |
+| **Union** | **8,541,592** |
 
-1. **robots.txt** is fetched and parsed. A `Disallow: /` for `DesearchBot`, or for `*` when we are
-   not named, rejects the domain. A declared `Crawl-delay` is recorded and respected.
-2. **A sitemap** is taken from robots.txt, or tried at `/sitemap.xml` and `/sitemap_index.xml`. It
-   must parse, and when it lists pages directly it must hold at least ten.
-3. **The homepage** must return 200, show at least 200 characters of visible text, not be a bot
-   wall, and be detected as English.
+The union was then filtered. Domains on a non-English country-code TLD were dropped, as were
+domains categorised as adult, gambling, malware, phishing, cryptojacking, stalkerware, warez,
+hacking, DDoS, banking portals, URL shorteners, redirectors, ad and tracking endpoints, dynamic
+DNS, DNS-over-HTTPS resolvers, residential proxies, social networks, forums, chat, webmail and
+file hosting. Categories come from the [UT1 blacklists](https://dsi.ut-capitole.fr/blacklists/)
+maintained by Université Toulouse 1 Capitole, combined with four public adult-domain blocklists.
+CDNs, certificate authorities, registrars and other infrastructure hostnames were removed by name.
 
-## What is excluded before any visit
+Being on this list means a domain passed those filters. It does not mean the domain has been
+crawled, or that it will be: robots.txt is read and obeyed at crawl time, and a domain that
+disallows the `DesearchBot` token is never fetched.
 
-Adult, malware, phishing, cryptomining, stalkerware, hacking, warez, gambling, link shorteners, ad
-networks, dynamic DNS and proxy hosts, from the UT1 category lists, matched on the exact host.
-Search engines, social networks, forums, chat, webmail, file hosting, media streaming and
-marketplaces, whose pages are generated per user rather than published as documents. CDNs,
-resolvers, certificate authorities, registrars and analytics endpoints. Country-code domains
-outside English-speaking markets.
+## Crawler
 
-## Crawling policy
+Desearch crawls as `DesearchBot`, signing requests with
+[Web Bot Auth](https://developers.cloudflare.com/bots/concepts/bot/verified-bots/web-bot-auth/)
+so operators can verify the traffic is ours. Requests to a host are paced at least one second
+apart, and longer when robots.txt asks. To have a domain removed, see
+[desearch.ai/crawler](https://www.desearch.ai/crawler).
 
-The bot identifies itself as
-`Mozilla/5.0 (compatible; DesearchBot/1.0; +https://www.desearch.ai/crawler)`, obeys robots.txt
-for that token, and requests at most one page per second per host unless a longer `Crawl-delay` is
-declared. It reads sitemaps and homepages only; page content is fetched by miners under the same
-rules.
-
-## Sources
-
-Candidate hosts come from Tranco, Majestic Million, Open PageRank, BuiltWith Top 1M and Cisco
-Umbrella. Categories come from the UT1 blacklists. Registrable domains follow the Public Suffix
-List. Each source carries its own terms; this dataset is derived data with attribution, and the
-ranks are each source's own and are not comparable between sources.
-
-## Source
-
-The crawler that produced this list is open source in
-[subnet-22](https://github.com/Desearch-ai/subnet-22) under `desearch_bot/`, so the rules above can
-be read rather than taken on trust. It is published to be audited, not to be run: only Desearch
-operates DesearchBot, and only Desearch's crawler is entitled to that token and User-Agent.
+Built {{BUILT_AT}}.

@@ -1,105 +1,67 @@
-"""Publish the qualified domains from the database to the public dataset."""
+"""Publish the domain list to the public dataset.
+
+One column, one row per domain. Everything operational — sitemaps, crawl delay, refresh
+schedule, categories — stays in the database; miners only need to know which hosts are in scope.
+The file is the database's domain table, so the two always carry the same set.
+"""
 
 from __future__ import annotations
 
-import json
 from datetime import datetime, timezone
 from pathlib import Path
 
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-SCHEMA = pa.schema(
-    [
-        ("host", pa.string()),
-        ("sitemap_url", pa.string()),
-        ("sitemap_kind", pa.string()),
-        ("url_count", pa.int64()),
-        ("crawl_delay", pa.float32()),
-    ]
-)
+from . import db
 
+SCHEMA = pa.schema([("host", pa.string())])
 CARD = Path(__file__).with_name("dataset_card.md")
+STALE = ("domains/stats.json",)
 
 
 async def export(pool, out_dir: Path) -> dict:
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+    path = out_dir / "domains.parquet"
 
-    async with pool.acquire() as connection:
-        rows = await connection.fetch(
-            """
-            SELECT host, sitemap_url, sitemap_kind, url_count, crawl_delay
-            FROM bot.domains
-            WHERE status = 'qualified'
-            ORDER BY host
-            """
-        )
-        rejected = await connection.fetch(
-            """
-            SELECT reject_reason, count(*) AS n
-            FROM bot.domains WHERE status = 'rejected'
-            GROUP BY 1 ORDER BY 2 DESC
-            """
-        )
-        by_group = await connection.fetch(
-            """
-            SELECT tld_group, count(*) AS n
-            FROM bot.domains WHERE status = 'qualified'
-            GROUP BY 1 ORDER BY 2 DESC
-            """
-        )
-        totals = await connection.fetchrow(
-            """
-            SELECT count(*) FILTER (WHERE status = 'qualified') AS qualified,
-                   count(*) FILTER (WHERE status = 'rejected') AS rejected,
-                   count(*) FILTER (WHERE status = 'candidate') AS remaining,
-                   coalesce(sum(url_count), 0) AS urls,
-                   (SELECT count(*) FROM bot.sitemaps) AS sitemaps
-            FROM bot.domains
-            """
-        )
+    total = 0
+    writer = pq.ParquetWriter(path, SCHEMA, compression="zstd")
+    try:
+        async for rows in db.iter_hosts(pool):
+            hosts = pa.array([r["host"] for r in rows], pa.string())
+            writer.write_table(pa.table({"host": hosts}, SCHEMA))
+            total += len(rows)
+    finally:
+        writer.close()
 
-    table = pa.Table.from_pylist([dict(r) for r in rows], schema=SCHEMA)
     built_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
-    table = table.replace_schema_metadata({b"built_at": built_at.encode()})
-    pq.write_table(
-        table, out_dir / "domains.parquet", compression="zstd", row_group_size=100_000
-    )
+    (out_dir / "README.md").write_text(card(total, built_at))
+    return {"built_at": built_at, "domains": total, "bytes": path.stat().st_size}
 
-    stats = {
-        "built_at": built_at,
-        "qualified": int(totals["qualified"]),
-        "rejected": int(totals["rejected"]),
-        "still_to_check": int(totals["remaining"]),
-        "urls_discovered": int(totals["urls"]),
-        "sitemaps_tracked": int(totals["sitemaps"]),
-        "qualified_by_tld_group": {r["tld_group"]: int(r["n"]) for r in by_group},
-        "rejected_by_reason": {
-            r["reject_reason"] or "unknown": int(r["n"]) for r in rejected
-        },
-    }
-    (out_dir / "stats.json").write_text(json.dumps(stats, indent=2))
-    return stats
+
+def card(total: int, built_at: str) -> str:
+    return CARD.read_text().replace("{{DOMAINS}}", f"{total:,}").replace(
+        "{{BUILT_AT}}", built_at
+    )
 
 
 def upload(out_dir: Path, repo: str, token: str, stats: dict) -> None:
-    from huggingface_hub import CommitOperationAdd, HfApi
+    """Replace the published list, dropping files an earlier layout left behind."""
+    from huggingface_hub import CommitOperationAdd, CommitOperationDelete, HfApi
 
     out_dir = Path(out_dir)
+    api = HfApi(token=token)
+    present = set(api.list_repo_files(repo, repo_type="dataset"))
     operations = [
         CommitOperationAdd("domains/domains.parquet", str(out_dir / "domains.parquet")),
-        CommitOperationAdd("domains/stats.json", str(out_dir / "stats.json")),
+        CommitOperationAdd("README.md", str(out_dir / "README.md")),
     ]
-    if CARD.exists():
-        operations.append(CommitOperationAdd("README.md", str(CARD)))
+    operations += [CommitOperationDelete(p) for p in STALE if p in present]
 
-    HfApi(token=token).create_commit(
+    api.create_commit(
         repo_id=repo,
         repo_type="dataset",
         operations=operations,
-        commit_message=(
-            f"domains: {stats['qualified']:,} crawlable domains, "
-            f"{stats['urls_discovered']:,} URLs discovered"
-        ),
+        commit_message=f"domains: {stats['domains']:,} domains",
     )
