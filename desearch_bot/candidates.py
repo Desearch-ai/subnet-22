@@ -10,7 +10,7 @@ from pathlib import Path
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from . import adult, exclusions, sources
+from . import adult, exclusions, radar, sources
 from .suffixes import PublicSuffixList, suffix, tld_group
 
 SCHEMA = pa.schema(
@@ -25,10 +25,10 @@ SCHEMA = pa.schema(
         ("opr_rank", pa.int32()),
         ("builtwith_rank", pa.int32()),
         ("umbrella_rank", pa.int32()),
+        ("radar_rank", pa.int32()),
         ("excluded", pa.bool_()),
         ("exclude_reason", pa.string()),
         ("flags", pa.list_(pa.string())),
-        ("type_hint", pa.string()),
     ]
 )
 
@@ -47,6 +47,10 @@ def build(data_dir: Path, out_dir: Path, download: bool = True) -> dict:
     ranked = {
         name: sources.read_ranked(paths[name], psl, *spec[1:])
         for name, spec in sources.RANKED.items()
+    }
+    ranked["radar"] = {
+        psl.registrable(host) or host: rank
+        for host, rank in radar.ranking(data_dir, refresh=download).items()
     }
     wanted = (
         set(exclusions.UT1_EXCLUDE)
@@ -79,19 +83,12 @@ def build(data_dir: Path, out_dir: Path, download: bool = True) -> dict:
                 "opr_rank": host_ranks.get("opr"),
                 "builtwith_rank": host_ranks.get("builtwith"),
                 "umbrella_rank": host_ranks.get("umbrella"),
+                "radar_rank": host_ranks.get("radar"),
                 "excluded": reason is not None,
                 "exclude_reason": reason,
                 "flags": [
                     c for c in exclusions.UT1_FLAG if host in categories.get(c, ())
                 ],
-                "type_hint": next(
-                    (
-                        v
-                        for c, v in exclusions.UT1_TYPE_HINT.items()
-                        if host in categories.get(c, ())
-                    ),
-                    None,
-                ),
             }
         )
     rows.sort(

@@ -28,7 +28,7 @@ RANKED = {
     ),
 }
 # Only Tranco, Majestic and Open PageRank rank by traffic or links; the other two are unordered.
-TRAFFIC_RANKED = ("tranco", "majestic", "opr")
+TRAFFIC_RANKED = ("tranco", "majestic", "opr", "radar")
 
 UT1_BLACKLISTS = "https://dsi.ut-capitole.fr/blacklists/download/blacklists.tar.gz"
 PUBLIC_SUFFIX_LIST = "https://publicsuffix.org/list/public_suffix_list.dat"
