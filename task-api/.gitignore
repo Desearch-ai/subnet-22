@@ -1,0 +1,4 @@
+*.db
+local/dump-*.json
+__pycache__/
+local/receipts.json
