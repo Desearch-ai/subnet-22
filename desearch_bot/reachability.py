@@ -13,9 +13,8 @@ from __future__ import annotations
 
 import asyncio
 import time
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit
 
-import aiodns
 import aiohttp
 
 from . import db, signing
@@ -30,7 +29,9 @@ RESOLVER_PORT = 5335
 DEAD = {"NXDOMAIN", "NODATA", "SERVFAIL"}
 
 
-def _resolver() -> aiodns.DNSResolver:
+def _resolver():
+    import aiodns
+
     return aiodns.DNSResolver(
         nameservers=[RESOLVER_HOST],
         udp_port=RESOLVER_PORT,
@@ -120,7 +121,7 @@ class Canonicaliser:
             ) as response:
                 location = response.headers.get("Location")
                 if response.status in REDIRECT_STATUSES and location:
-                    url = str(response.url.join(aiohttp.helpers.URL(location)))
+                    url = urljoin(url, location)
                     continue
                 await response.release()
                 return url
