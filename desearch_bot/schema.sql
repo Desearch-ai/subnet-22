@@ -26,6 +26,15 @@ CREATE TABLE IF NOT EXISTS domains (
         CHECK (status IN ('candidate', 'qualified', 'rejected'))
 );
 
+-- Categories are added after the table exists, so an established database picks them up too.
+ALTER TABLE domains ADD COLUMN IF NOT EXISTS categories     text[];
+ALTER TABLE domains ADD COLUMN IF NOT EXISTS category       text;
+ALTER TABLE domains ADD COLUMN IF NOT EXISTS category_source text;
+ALTER TABLE domains ADD COLUMN IF NOT EXISTS categorized_at timestamptz;
+
+CREATE INDEX IF NOT EXISTS domains_category_idx ON domains (category);
+CREATE INDEX IF NOT EXISTS domains_categories_idx ON domains USING gin (categories);
+
 CREATE INDEX IF NOT EXISTS domains_candidates_idx
     ON domains (rank NULLS LAST) WHERE status = 'candidate';
 CREATE INDEX IF NOT EXISTS domains_recheck_idx

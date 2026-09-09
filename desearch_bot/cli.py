@@ -193,6 +193,62 @@ def cmd_discover(args):
     asyncio.run(run())
 
 
+def cmd_categorize(args):
+    import asyncio
+
+    from . import categories, db, exclusions
+
+    async def run():
+        pool = await db.connect(args.pool)
+        await db.create_schema(pool)
+        catalogue = categories.Catalogue.load(
+            Path(args.data_dir), refresh=args.refresh_lists
+        )
+        print(
+            f"{len(catalogue.by_label)} categories, "
+            f"{sum(len(h) for h in catalogue.by_label.values()):,} labelled hosts",
+            flush=True,
+        )
+
+        seen = saved = 0
+        doomed: list[str] = []
+        removed = {"domains": 0, "sitemaps": 0}
+        async for rows in db.iter_hosts(pool):
+            batch = []
+            for record in rows:
+                host = record["host"]
+                labels = catalogue.labels(host)
+                if labels:
+                    batch.append((host, labels, labels[0], "ut1"))
+                if catalogue.excluded(labels) or exclusions.exclusion_reason(
+                    host, {}, record["tld_group"] or ""
+                ) or exclusions.blocked_operator(host):
+                    doomed.append(host)
+            saved += await db.save_categories(pool, batch)
+            seen += len(rows)
+            if args.prune and len(doomed) >= 50_000:
+                for key, n in (await db.delete_hosts(pool, doomed)).items():
+                    removed[key] += n
+                doomed = []
+            print(f"  {seen:,} scanned  {saved:,} labelled  "
+                  f"{len(doomed) + removed['domains']:,} excluded", flush=True)
+
+        if args.prune and doomed:
+            for key, n in (await db.delete_hosts(pool, doomed)).items():
+                removed[key] += n
+
+        print(f"{seen:,} domains scanned, {saved:,} labelled")
+        if args.prune:
+            print(f"removed {removed['domains']:,} domains "
+                  f"and {removed['sitemaps']:,} sitemap rows")
+        else:
+            print(f"{len(doomed):,} carry an excluded category; add --prune to remove them")
+        print(await db.counts(pool))
+        await pool.close()
+
+    asyncio.run(run())
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="desearch-bot")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -229,6 +285,14 @@ def main(argv=None):
     p.add_argument("--candidates", default="build/candidates.parquet")
     p.add_argument("--limit", type=int, default=0)
     p.set_defaults(func=cmd_load)
+
+    p = sub.add_parser("categorize", help="label domains and optionally drop excluded ones")
+    p.add_argument("--data-dir", default="data")
+    p.add_argument("--pool", type=int, default=8)
+    p.add_argument("--prune", action="store_true",
+                   help="delete domains carrying an excluded category")
+    p.add_argument("--refresh-lists", action="store_true")
+    p.set_defaults(func=cmd_categorize)
 
     p = sub.add_parser("discover", help="qualify domains and collect their sitemap URLs")
     p.add_argument("--limit", type=int, default=10000)

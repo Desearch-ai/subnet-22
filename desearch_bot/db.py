@@ -182,6 +182,93 @@ async def record_frontier_files(pool: asyncpg.Pool, rows) -> None:
         )
 
 
+async def iter_hosts(pool: asyncpg.Pool, chunk: int = 200_000):
+    """Walk every host by primary key, so a six-million-row pass never holds them all."""
+    after = ""
+    while True:
+        async with pool.acquire() as connection:
+            rows = await connection.fetch(
+                """
+                SELECT host, tld_group FROM bot.domains
+                WHERE host > $1 ORDER BY host LIMIT $2
+                """,
+                after,
+                chunk,
+            )
+        if not rows:
+            return
+        yield rows
+        after = rows[-1]["host"]
+
+
+async def save_categories(pool: asyncpg.Pool, rows) -> int:
+    if not rows:
+        return 0
+    async with pool.acquire() as connection:
+        async with connection.transaction():
+            await connection.execute(
+                """
+                CREATE TEMP TABLE category_stage (
+                    host text, categories text[], category text, source text
+                ) ON COMMIT DROP
+                """
+            )
+            await connection.copy_records_to_table(
+                "category_stage",
+                records=rows,
+                columns=["host", "categories", "category", "source"],
+            )
+            result = await connection.execute(
+                """
+                UPDATE bot.domains d SET
+                    categories = s.categories, category = s.category,
+                    category_source = s.source, categorized_at = now()
+                FROM category_stage s WHERE d.host = s.host
+                """
+            )
+    return int(result.split()[-1])
+
+
+async def delete_by_category(pool: asyncpg.Pool, labels) -> dict:
+    """Drop every domain carrying an excluded label, with the sitemaps that belong to it."""
+    labels = list(labels)
+    async with pool.acquire() as connection:
+        async with connection.transaction():
+            sitemaps = await connection.execute(
+                """
+                DELETE FROM bot.sitemaps WHERE host IN (
+                    SELECT host FROM bot.domains WHERE categories && $1::text[]
+                )
+                """,
+                labels,
+            )
+            domains = await connection.execute(
+                "DELETE FROM bot.domains WHERE categories && $1::text[]", labels
+            )
+    return {
+        "domains": int(domains.split()[-1]),
+        "sitemaps": int(sitemaps.split()[-1]),
+    }
+
+
+async def delete_hosts(pool: asyncpg.Pool, hosts) -> dict:
+    hosts = list(hosts)
+    if not hosts:
+        return {"domains": 0, "sitemaps": 0}
+    async with pool.acquire() as connection:
+        async with connection.transaction():
+            sitemaps = await connection.execute(
+                "DELETE FROM bot.sitemaps WHERE host = ANY($1::text[])", hosts
+            )
+            domains = await connection.execute(
+                "DELETE FROM bot.domains WHERE host = ANY($1::text[])", hosts
+            )
+    return {
+        "domains": int(domains.split()[-1]),
+        "sitemaps": int(sitemaps.split()[-1]),
+    }
+
+
 async def counts(pool: asyncpg.Pool) -> dict:
     async with pool.acquire() as connection:
         row = await connection.fetchrow(
