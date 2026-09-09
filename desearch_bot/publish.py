@@ -35,15 +35,12 @@ async def export(pool, out_dir: Path) -> dict:
     finally:
         writer.close()
 
-    built_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
-    (out_dir / "README.md").write_text(card(total, built_at))
-    return {"built_at": built_at, "domains": total, "bytes": path.stat().st_size}
-
-
-def card(total: int, built_at: str) -> str:
-    return CARD.read_text().replace("{{DOMAINS}}", f"{total:,}").replace(
-        "{{BUILT_AT}}", built_at
-    )
+    (out_dir / "README.md").write_text(CARD.read_text())
+    return {
+        "built_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+        "domains": total,
+        "bytes": path.stat().st_size,
+    }
 
 
 def upload(out_dir: Path, repo: str, token: str, stats: dict) -> None:

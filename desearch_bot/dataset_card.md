@@ -17,49 +17,55 @@ configs:
 
 # Desearch domains
 
-The domain list for Desearch subnet-22. **{{DOMAINS}} domains**, one column, one row each.
+The domains in scope for crawling by [Desearch](https://www.desearch.ai), Bittensor subnet 22.
 
-```
-domains/domains.parquet
-  host: string   registrable domain, lowercase, no scheme and no www.
-```
+## Contents
 
-That is the whole file on purpose. Sitemap locations, crawl delays, refresh schedules and
-categories are operational state that changes as the crawler works; they live in Desearch's
-database, not here. This list answers one question: which domains are in scope.
+`domains/domains.parquet`
 
-## How it was built
+| column | type | description |
+| --- | --- | --- |
+| `host` | string | Registrable domain (eTLD+1), lowercase, without scheme or `www.` |
 
-Five public domain rankings were merged on the registrable domain (eTLD+1, resolved with the
-Public Suffix List):
+## Sources
 
-| Source | Domains |
-| --- | ---: |
-| Open PageRank | 7,015,762 |
-| Tranco | 999,031 |
-| Majestic Million | 997,296 |
-| BuiltWith Top 1M | 979,149 |
-| Cisco Umbrella | 256,847 |
-| **Union** | **8,541,592** |
+The union of five public domain rankings, each entry resolved to its registrable domain using the
+Public Suffix List:
 
-The union was then filtered. Domains on a non-English country-code TLD were dropped, as were
-domains categorised as adult, gambling, malware, phishing, cryptojacking, stalkerware, warez,
-hacking, DDoS, banking portals, URL shorteners, redirectors, ad and tracking endpoints, dynamic
-DNS, DNS-over-HTTPS resolvers, residential proxies, social networks, forums, chat, webmail and
-file hosting. Categories come from the [UT1 blacklists](https://dsi.ut-capitole.fr/blacklists/)
-maintained by Université Toulouse 1 Capitole, combined with four public adult-domain blocklists.
-CDNs, certificate authorities, registrars and other infrastructure hostnames were removed by name.
+- [Tranco](https://tranco-list.eu/)
+- [Majestic Million](https://majestic.com/reports/majestic-million)
+- [Open PageRank](https://www.domcop.com/openpagerank/)
+- [BuiltWith Top 1M](https://builtwith.com/top-1m)
+- [Cisco Umbrella Popularity List](https://umbrella-static.s3-us-west-1.amazonaws.com/index.html)
 
-Being on this list means a domain passed those filters. It does not mean the domain has been
-crawled, or that it will be: robots.txt is read and obeyed at crawl time, and a domain that
-disallows the `DesearchBot` token is never fetched.
+## Filtering
+
+Removed from the union:
+
+- Country-code TLDs outside English-speaking markets
+- Adult, gambling, malware, phishing, cryptojacking, stalkerware, warez, hacking and DDoS domains
+- Banking portals, URL shorteners, redirectors, advertising and tracking endpoints, dynamic DNS,
+  DNS-over-HTTPS resolvers and residential proxies
+- Social networks, forums, chat, webmail and file hosting, where pages are generated per user
+  rather than published
+- CDNs, certificate authorities, registrars and other infrastructure hostnames
+
+Classification uses the [UT1 blacklists](https://dsi.ut-capitole.fr/blacklists/) from Université
+Toulouse 1 Capitole together with public adult-domain blocklists.
+
+Inclusion means a domain passed these filters. It does not mean the domain has been crawled.
+`robots.txt` is read and obeyed at request time, and a domain that disallows the `DesearchBot`
+token is never fetched.
 
 ## Crawler
 
-Desearch crawls as `DesearchBot`, signing requests with
-[Web Bot Auth](https://developers.cloudflare.com/bots/concepts/bot/verified-bots/web-bot-auth/)
-so operators can verify the traffic is ours. Requests to a host are paced at least one second
-apart, and longer when robots.txt asks. To have a domain removed, see
-[desearch.ai/crawler](https://www.desearch.ai/crawler).
+Desearch identifies as `DesearchBot` and signs its requests with
+[Web Bot Auth](https://developers.cloudflare.com/bots/concepts/bot/verified-bots/web-bot-auth/),
+so operators can cryptographically verify the traffic. Requests to a host are sent no more than
+one per second, and less often where `robots.txt` specifies a longer `Crawl-delay`.
 
-Built {{BUILT_AT}}.
+To request removal, see [desearch.ai/crawler](https://www.desearch.ai/crawler).
+
+## License
+
+Derived from the public sources listed above, each of which retains its own terms.
