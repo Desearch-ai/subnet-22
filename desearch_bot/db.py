@@ -236,23 +236,22 @@ async def iter_published_hosts(pool: asyncpg.Pool, chunk: int = 200_000):
         after = rows[-1]["host"]
 
 
-async def iter_resolving_hosts(pool: asyncpg.Pool, chunk: int = 100_000):
-    after = ""
+async def iter_resolving_hosts(pool: asyncpg.Pool, chunk: int = 5_000):
+    """Domains still to canonicalise. Marking every one we check, redirect or not, is what makes
+    a restart continue instead of walking the whole list again."""
     while True:
         async with pool.acquire() as connection:
             rows = await connection.fetch(
                 """
                 SELECT host FROM bot.domains
-                WHERE host > $1 AND resolves IS TRUE AND canonical_host IS NULL
-                ORDER BY host LIMIT $2
+                WHERE resolves IS TRUE AND canonicalised_at IS NULL
+                ORDER BY host LIMIT $1
                 """,
-                after,
                 chunk,
             )
         if not rows:
             return
         yield rows
-        after = rows[-1]["host"]
 
 
 async def save_resolution(pool: asyncpg.Pool, rows) -> int:
@@ -278,7 +277,7 @@ async def save_resolution(pool: asyncpg.Pool, rows) -> int:
 async def save_canonical(pool: asyncpg.Pool, rows) -> int:
     """Record the name a domain actually serves under. A domain that redirects elsewhere stops
     being a crawl target of its own."""
-    rows = [(h, c) for h, c in rows if c]
+    rows = list(rows)
     if not rows:
         return 0
     async with pool.acquire() as connection:
@@ -293,8 +292,11 @@ async def save_canonical(pool: asyncpg.Pool, rows) -> int:
                 """
                 UPDATE bot.domains d SET
                     canonical_host = s.canonical_host,
-                    status = CASE WHEN d.status IN ('candidate', 'qualified')
-                                  THEN 'redirect' ELSE d.status END
+                    canonicalised_at = now(),
+                    status = CASE
+                        WHEN s.canonical_host IS NOT NULL
+                             AND d.status IN ('candidate', 'qualified') THEN 'redirect'
+                        ELSE d.status END
                 FROM canonical_stage s WHERE d.host = s.host
                 """
             )

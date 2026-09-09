@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS domains (
     resolves       boolean,
     resolved_at    timestamptz,
     canonical_host text,
+    canonicalised_at timestamptz,
     checked_at     timestamptz,
 
     robots_status  integer,
@@ -48,6 +49,8 @@ CREATE INDEX IF NOT EXISTS domains_unresolved_idx
 -- Shrinks as the pass proceeds, so each batch stays an index scan of what is left.
 CREATE INDEX IF NOT EXISTS domains_unchecked_idx
     ON domains (host) WHERE resolved_at IS NULL;
+CREATE INDEX IF NOT EXISTS domains_uncanonicalised_idx
+    ON domains (host) WHERE canonicalised_at IS NULL;
 
 -- What each source says a domain is about. One row per source per label, so a refresh from one
 -- source never discards another's verdict.
