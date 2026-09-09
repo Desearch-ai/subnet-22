@@ -217,6 +217,25 @@ async def iter_unresolved_hosts(pool: asyncpg.Pool, chunk: int = 5_000):
         yield rows
 
 
+async def iter_published_hosts(pool: asyncpg.Pool, chunk: int = 200_000):
+    """Only what the public list should contain: reachable, canonical, not disqualified."""
+    after = ""
+    while True:
+        async with pool.acquire() as connection:
+            rows = await connection.fetch(
+                """
+                SELECT host FROM bot.published_domains
+                WHERE host > $1 ORDER BY host LIMIT $2
+                """,
+                after,
+                chunk,
+            )
+        if not rows:
+            return
+        yield rows
+        after = rows[-1]["host"]
+
+
 async def iter_resolving_hosts(pool: asyncpg.Pool, chunk: int = 100_000):
     after = ""
     while True:

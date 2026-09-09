@@ -28,7 +28,7 @@ async def export(pool, out_dir: Path) -> dict:
     total = 0
     writer = pq.ParquetWriter(path, SCHEMA, compression="zstd")
     try:
-        async for rows in db.iter_hosts(pool):
+        async for rows in db.iter_published_hosts(pool):
             hosts = pa.array([r["host"] for r in rows], pa.string())
             writer.write_table(pa.table({"host": hosts}, SCHEMA))
             total += len(rows)
