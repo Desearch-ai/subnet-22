@@ -1,47 +1,105 @@
--- Control plane: which domains we know, and the schedule for the sitemaps they publish.
--- The URLs themselves live in the frontier (parquet), not here.
+-- Control plane for the Desearch crawler: which domains exist, what they are, and when each
+-- sitemap is next due. The URLs themselves live in the parquet frontier, not here -- a URL costs
+-- 7 bytes there against roughly 280 as a row with its indexes.
+--
+-- Nothing in this schema is a work queue. Due times are recorded as facts; a scheduler reads them
+-- in batches and fills Redis, and workers pull from there.
 
 CREATE SCHEMA IF NOT EXISTS bot;
 SET search_path TO bot;
 
+-- Every domain we know about, and what visiting it found.
 CREATE TABLE IF NOT EXISTS domains (
-    host            text PRIMARY KEY,
-    rank            integer,
-    tld_group       text,
-    type_hint       text,
-    status          text NOT NULL DEFAULT 'candidate',
-    reject_reason   text,
-    robots_status   integer,
-    robots_allows   boolean,
-    crawl_delay     real,
-    language        text,
-    declared_lang   text,
-    home_chars      integer,
-    sitemap_url     text,
-    sitemap_kind    text,
-    url_count       bigint NOT NULL DEFAULT 0,
-    checked_at      timestamptz,
-    next_check_at   timestamptz,
+    host           text PRIMARY KEY,
+    rank           integer,
+    tld_group      text,
+    status         text NOT NULL DEFAULT 'candidate',
+    reject_reason  text,
+
+    resolves       boolean,
+    resolved_at    timestamptz,
+    canonical_host text,
+    checked_at     timestamptz,
+
+    robots_status  integer,
+    robots_allows  boolean,
+    crawl_delay    real,
+    language       text,
+    declared_lang  text,
+    home_chars     integer,
+    sitemap_url    text,
+    sitemap_kind   text,
+    url_count      bigint NOT NULL DEFAULT 0,
+
+    category       text,
+    categories     text[],
+
     CONSTRAINT domains_status_check
-        CHECK (status IN ('candidate', 'qualified', 'rejected'))
+        CHECK (status IN ('candidate', 'qualified', 'rejected', 'redirect'))
 );
-
--- Categories are added after the table exists, so an established database picks them up too.
-ALTER TABLE domains ADD COLUMN IF NOT EXISTS categories     text[];
-ALTER TABLE domains ADD COLUMN IF NOT EXISTS category       text;
-ALTER TABLE domains ADD COLUMN IF NOT EXISTS category_source text;
-ALTER TABLE domains ADD COLUMN IF NOT EXISTS categorized_at timestamptz;
-
-CREATE INDEX IF NOT EXISTS domains_category_idx ON domains (category);
-CREATE INDEX IF NOT EXISTS domains_categories_idx ON domains USING gin (categories);
 
 CREATE INDEX IF NOT EXISTS domains_candidates_idx
     ON domains (rank NULLS LAST) WHERE status = 'candidate';
-CREATE INDEX IF NOT EXISTS domains_recheck_idx
-    ON domains (next_check_at) WHERE status = 'qualified';
+CREATE INDEX IF NOT EXISTS domains_categories_idx ON domains USING gin (categories);
+CREATE INDEX IF NOT EXISTS domains_canonical_idx
+    ON domains (canonical_host) WHERE canonical_host IS NOT NULL;
+CREATE INDEX IF NOT EXISTS domains_unresolved_idx
+    ON domains (host) WHERE resolves IS NOT TRUE;
+-- Shrinks as the pass proceeds, so each batch stays an index scan of what is left.
+CREATE INDEX IF NOT EXISTS domains_unchecked_idx
+    ON domains (host) WHERE resolved_at IS NULL;
 
--- One row per sitemap file we schedule. Children we have not walked are not stored: they are
--- re-derived from their parent index, which costs one request.
+-- What each source says a domain is about. One row per source per label, so a refresh from one
+-- source never discards another's verdict.
+CREATE TABLE IF NOT EXISTS domain_categories (
+    host           text NOT NULL REFERENCES domains(host) ON DELETE CASCADE,
+    source         text NOT NULL,
+    category       text NOT NULL,
+    raw_category   text,
+    category_id    integer,
+    super_category text,
+    recorded_at    timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (host, source, category)
+);
+
+CREATE INDEX IF NOT EXISTS domain_categories_category_idx ON domain_categories (category);
+
+-- Categories that disqualify a domain, kept here so the rule has one home.
+CREATE TABLE IF NOT EXISTS excluded_categories (
+    category text PRIMARY KEY,
+    reason   text NOT NULL
+);
+
+INSERT INTO excluded_categories (category, reason) VALUES
+    ('adult',         'sexual content'),
+    ('gambling',      'casinos and betting'),
+    ('bank',          'login screens with nothing to index, and probing them reads as a scan'),
+    ('malware',       'unsafe'),
+    ('phishing',      'unsafe'),
+    ('cryptojacking', 'unsafe'),
+    ('stalkerware',   'unsafe'),
+    ('ddos',          'unsafe'),
+    ('hacking',       'unsafe'),
+    ('warez',         'unlicensed distribution'),
+    ('dangerous',     'instructions for causing harm'),
+    ('dialer',        'unsafe'),
+    ('cheating',      'academic fraud'),
+    ('shortener',     'no content of its own'),
+    ('redirector',    'no content of its own'),
+    ('ads',           'advertising and tracking endpoints'),
+    ('marketingware', 'advertising and tracking endpoints'),
+    ('dynamic_dns',   'infrastructure, not a publisher'),
+    ('doh',           'infrastructure, not a publisher'),
+    ('proxy',         'infrastructure, not a publisher'),
+    ('social',        'pages generated per user rather than published'),
+    ('forums',        'pages generated per user rather than published'),
+    ('chat',          'pages generated per user rather than published'),
+    ('webmail',       'pages generated per user rather than published'),
+    ('filehosting',   'pages generated per user rather than published')
+ON CONFLICT (category) DO NOTHING;
+
+-- One row per sitemap file and when it is next due. Children we have not walked are not stored:
+-- they are re-derived from their parent index, which costs one request.
 CREATE TABLE IF NOT EXISTS sitemaps (
     id                bigint GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
     host              text NOT NULL,
@@ -67,16 +125,14 @@ CREATE TABLE IF NOT EXISTS sitemaps (
         CHECK (status IN ('pending', 'ok', 'error', 'skipped'))
 );
 
-CREATE INDEX IF NOT EXISTS sitemaps_host_idx ON sitemaps (host);
-CREATE INDEX IF NOT EXISTS sitemaps_due_idx
-    ON sitemaps (next_check_at) WHERE status = 'ok';
+CREATE INDEX IF NOT EXISTS sitemaps_host_idx   ON sitemaps (host);
+CREATE INDEX IF NOT EXISTS sitemaps_due_idx    ON sitemaps (next_check_at) WHERE status = 'ok';
 CREATE INDEX IF NOT EXISTS sitemaps_parent_idx ON sitemaps (parent_id);
 
--- Where each frontier parquet file came from, so a rebuild knows what it already has.
-CREATE TABLE IF NOT EXISTS frontier_files (
-    path        text PRIMARY KEY,
-    host_bucket smallint NOT NULL,
-    url_count   integer NOT NULL,
-    bytes       bigint NOT NULL,
-    written_at  timestamptz NOT NULL DEFAULT now()
-);
+-- Exactly what is published: reachable, canonical, and carrying no disqualifying category.
+CREATE OR REPLACE VIEW published_domains AS
+    SELECT host FROM domains
+    WHERE resolves IS NOT FALSE
+      AND canonical_host IS NULL
+      AND NOT (coalesce(categories, '{}') && ARRAY(SELECT category FROM excluded_categories))
+    ORDER BY host;
