@@ -53,7 +53,15 @@ Removed from the union:
 Classification uses the [UT1 blacklists](https://dsi.ut-capitole.fr/blacklists/) from Université
 Toulouse 1 Capitole together with public adult-domain blocklists.
 
-Inclusion means a domain passed these filters. It does not mean the domain has been crawled.
+Every surviving domain is then checked twice more:
+
+- **It must resolve.** A domain with no address record is dropped. Rankings are built from
+  historical traffic, so a meaningful share of any of them has since lapsed.
+- **It must serve under its own name.** A domain that redirects to a different registrable domain
+  is dropped in favour of its destination. Listing both would send two crawlers to one server
+  under two names, and would give the same pages to two different miners.
+
+Inclusion means a domain passed all of these. It does not mean the domain has been crawled.
 `robots.txt` is read and obeyed at request time, and a domain that disallows the `DesearchBot`
 token is never fetched.
 
