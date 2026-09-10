@@ -200,6 +200,8 @@ pub struct Visitor {
     pub suffixes: Arc<PublicSuffixList>,
     pub signer: Option<Arc<Signer>>,
     pub floor: f64,
+    /// How long connecting may take before a request fails, to tell connect timeouts from read timeouts.
+    pub connect_timeout: Duration,
     /// Parsing and storing run on the blocking pool, a few files per core at a time.
     pub cpu: Arc<Semaphore>,
 }
@@ -606,7 +608,8 @@ impl Run<'_> {
                 }
             }
             let started = Instant::now();
-            let mut response = request.send().await.map_err(|e| net::failure(&e, started.elapsed()).to_string())?;
+            let connecting = Some(self.visitor.connect_timeout);
+            let mut response = request.send().await.map_err(|e| net::failure(&e, started.elapsed(), connecting).to_string())?;
             self.answered = true;
             let waited = started.elapsed().as_secs_f64();
             let status = response.status().as_u16();
@@ -621,7 +624,7 @@ impl Run<'_> {
                 }
             }
             let body = if status == 200 {
-                net::read_body(&mut response, limit).await.map_err(|e| net::failure(&e, started.elapsed()).to_string())?
+                net::read_body(&mut response, limit).await.map_err(|e| net::failure(&e, started.elapsed(), None).to_string())?
             } else {
                 Vec::new()
             };

@@ -84,12 +84,14 @@ async fn run(args: RunArgs) -> Result<()> {
     let suffixes_path = args.data_dir.join("public_suffix_list.dat");
     let suffixes = Arc::new(PublicSuffixList::load(&suffixes_path).with_context(|| format!("reading {}", suffixes_path.display()))?);
     let cores = std::thread::available_parallelism().map_or(4, |n| n.get());
+    let read_timeout = Duration::from_secs_f64(args.timeout);
     let visitor = Arc::new(Visitor {
-        client: net::client(PublicResolver::local(), Duration::from_secs_f64(args.timeout))?,
+        client: net::client(PublicResolver::local(), read_timeout)?,
         buckets: buckets.clone(),
         suffixes,
         signer: Signer::from_env()?.map(Arc::new),
         floor: MIN_HOST_INTERVAL,
+        connect_timeout: net::connect_timeout(read_timeout),
         cpu: Arc::new(Semaphore::new(cores * 2)),
     });
     let mut crawl = Loop::new(buckets, visitor, args.concurrency, registry, excluded);

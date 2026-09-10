@@ -137,7 +137,7 @@ pub fn client(resolver: PublicResolver, read_timeout: Duration) -> reqwest::Resu
         .redirect(reqwest::redirect::Policy::none())
         .no_proxy()
         .timeout(MAX_REQUEST)
-        .connect_timeout(read_timeout + Duration::from_secs(2))
+        .connect_timeout(connect_timeout(read_timeout))
         .read_timeout(read_timeout)
         .pool_idle_timeout(Duration::from_secs(15))
         .pool_max_idle_per_host(4)
@@ -145,6 +145,11 @@ pub fn client(resolver: PublicResolver, read_timeout: Duration) -> reqwest::Resu
         .tcp_nodelay(true)
         .dns_resolver(Arc::new(resolver))
         .build()
+}
+
+/// Connecting covers the DNS lookup, TCP and the TLS handshake, so it gets a little longer than a read.
+pub fn connect_timeout(read_timeout: Duration) -> Duration {
+    read_timeout + Duration::from_secs(2)
 }
 
 /// The body up to limit bytes.
@@ -160,13 +165,13 @@ pub async fn read_body(response: &mut reqwest::Response, limit: usize) -> reqwes
     Ok(body)
 }
 
-/// The name aiohttp gives the same failure, so reasons read alike from both crawlers.
-pub fn failure(error: &reqwest::Error, elapsed: Duration) -> &'static str {
+/// The name aiohttp gives the same failure; `connecting` is the connect timeout while no answer has arrived yet.
+pub fn failure(error: &reqwest::Error, elapsed: Duration, connecting: Option<Duration>) -> &'static str {
     if error.is_builder() {
         return "InvalidUrlClientError";
     }
     if error.is_timeout() {
-        return if error.is_connect() {
+        return if error.is_connect() || connecting.is_some_and(|limit| elapsed >= limit) {
             "ConnectionTimeoutError"
         } else if elapsed >= MAX_REQUEST {
             "TimeoutError"
@@ -179,10 +184,11 @@ pub fn failure(error: &reqwest::Error, elapsed: Duration) -> &'static str {
         if current.is::<ResolveError>() || current.is::<NotPublic>() {
             return "ClientConnectorDNSError";
         }
-        let tls = current
-            .downcast_ref::<rustls::Error>()
-            .or_else(|| current.downcast_ref::<std::io::Error>().and_then(|io| io.get_ref()).and_then(|e| e.downcast_ref()));
-        if let Some(tls) = tls {
+        let mut inner: &(dyn Error + 'static) = current;
+        while let Some(wrapped) = inner.downcast_ref::<std::io::Error>().and_then(|io| io.get_ref()) {
+            inner = wrapped;
+        }
+        if let Some(tls) = inner.downcast_ref::<rustls::Error>() {
             return match tls {
                 rustls::Error::InvalidCertificate(_) => "ClientConnectorCertificateError",
                 _ => "ClientConnectorSSLError",
