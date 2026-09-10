@@ -1,26 +1,31 @@
-"""Cloudflare Radar: a ranked domain list in bulk, and per-domain categories one at a time.
-
-The ranking buckets are nested, so the smallest bucket a domain appears in is its rank. Categories
-have no bulk endpoint and the Cloudflare API allows 1,200 requests per five minutes across the
-account, so they are fetched at a fixed rate by a job of their own.
-"""
+"""Cloudflare Radar: ranked domain lists in bulk, and per-domain categories."""
 
 from __future__ import annotations
 
 import asyncio
 import csv
-import json
 import os
+import re
 import time
 import urllib.request
 from pathlib import Path
 
+import aiohttp
+
 API = "https://api.cloudflare.com/client/v4"
 BUCKETS = (200, 500, 1000, 2000, 5000, 10000, 20000, 50000, 100000, 200000, 500000, 1000000)
-
-# The documented limit is 1,200 requests per five minutes; stay under it.
+# The account-wide limit is 1,200 requests per five minutes; stay under it.
 RATE = 3.5
 TIMEOUT = 60
+BATCH = 100
+
+# Exact names only for labels that remove a domain, so a loose match can never drop one.
+EXCLUDING = {
+    "adult themes": "adult",
+    "pornography": "adult",
+    "nudity": "adult",
+    "gambling": "gambling",
+}
 
 
 def token() -> str:
@@ -30,15 +35,14 @@ def token() -> str:
     return value
 
 
-def _request(path: str, accept: str = "application/json"):
+def _request(path: str, accept: str = "application/json") -> urllib.request.Request:
     return urllib.request.Request(
-        f"{API}/{path}",
-        headers={"Authorization": f"Bearer {token()}", "Accept": accept},
+        f"{API}/{path}", headers={"Authorization": f"Bearer {token()}", "Accept": accept}
     )
 
 
 def download_bucket(size: int, dest: Path) -> Path:
-    """One bucket as CSV: a single column of domains, unordered within the bucket."""
+    """Save one ranking bucket as a single-column CSV of domains."""
     dest.parent.mkdir(parents=True, exist_ok=True)
     with urllib.request.urlopen(
         _request(f"radar/datasets/ranking_top_{size}", "text/csv"), timeout=TIMEOUT
@@ -49,12 +53,9 @@ def download_bucket(size: int, dest: Path) -> Path:
 
 def read_bucket(path: Path) -> set[str]:
     with open(path, encoding="utf-8", errors="replace") as handle:
-        reader = csv.reader(handle)
-        header = next(reader, None)
-        if header and header[0].strip().lower() != "domain":
-            handle.seek(0)
-            reader = csv.reader(handle)
-        return {row[0].strip().lower() for row in reader if row and row[0].strip()}
+        hosts = {row[0].strip().lower() for row in csv.reader(handle) if row and row[0].strip()}
+    hosts.discard("domain")
+    return hosts
 
 
 def ranking(data_dir: Path, refresh: bool = True) -> dict[str, int]:
@@ -70,42 +71,95 @@ def ranking(data_dir: Path, refresh: bool = True) -> dict[str, int]:
     return ranks
 
 
-class Categories:
-    """Per-domain categories, paced to the account-wide request limit."""
+def label(name: str) -> str:
+    """Our label for a Radar category name."""
+    lower = name.strip().lower()
+    if lower in EXCLUDING:
+        return EXCLUDING[lower]
+    if "news" in lower:
+        return "news"
+    return re.sub(r"[^a-z0-9]+", "_", lower).strip("_")
 
-    def __init__(self, session, rate: float = RATE):
+
+class Categories:
+    """Looks domains up on Radar at a steady rate below the account limit."""
+
+    def __init__(self, session: aiohttp.ClientSession, rate: float = RATE):
         self.session = session
         self.interval = 1.0 / rate
         self._next = 0.0
 
-    async def _wait(self) -> None:
-        remaining = self._next - time.monotonic()
-        if remaining > 0:
-            await asyncio.sleep(remaining)
-        self._next = time.monotonic() + self.interval
+    async def _slot(self) -> None:
+        now = time.monotonic()
+        start = max(self._next, now)
+        self._next = start + self.interval
+        if start > now:
+            await asyncio.sleep(start - now)
 
-    async def fetch(self, host: str) -> tuple[str, list[dict] | None, str | None]:
-        """Returns (host, categories, error). An empty list means Radar knows the domain but
-        has no category for it; None means it could not be looked up."""
-        await self._wait()
-        url = f"{API}/radar/ranking/domain/{host}"
-        headers = {"Authorization": f"Bearer {token()}"}
+    async def fetch(self, host: str) -> tuple[list[dict] | None, str | None]:
+        """Radar's categories for a host, or None with the reason it could not be looked up."""
+        await self._slot()
         try:
-            async with self.session.get(url, headers=headers, timeout=self.session_timeout()) as r:
-                if r.status == 429:
-                    await asyncio.sleep(5)
-                    return host, None, "rate_limited"
-                if r.status == 404:
-                    return host, None, "not_ranked"
-                if r.status != 200:
-                    return host, None, f"http_{r.status}"
-                payload = await r.json()
+            async with self.session.get(
+                f"{API}/radar/ranking/domain/{host}",
+                headers={"Authorization": f"Bearer {token()}"},
+                timeout=aiohttp.ClientTimeout(total=TIMEOUT, connect=15),
+            ) as response:
+                if response.status == 429:
+                    await asyncio.sleep(float(response.headers.get("Retry-After", 30)))
+                    return None, "rate_limited"
+                if response.status != 200:
+                    return None, f"http_{response.status}"
+                payload = await response.json()
         except Exception as exc:
-            return host, None, type(exc).__name__
-        result = (payload.get("result") or {}).get("details_0") or payload.get("result") or {}
-        return host, result.get("categories") or [], None
+            return None, type(exc).__name__
+        details = (payload.get("result") or {}).get("details_0") or {}
+        return details.get("categories") or [], None
 
-    def session_timeout(self):
-        import aiohttp
 
-        return aiohttp.ClientTimeout(total=TIMEOUT, connect=15)
+def _rows(host: str, found: list[dict]) -> list[tuple]:
+    return [
+        (
+            host,
+            "radar",
+            label(item["name"]),
+            item["name"],
+            item.get("id"),
+            None if item.get("superCategoryId") is None else str(item["superCategoryId"]),
+        )
+        for item in found
+    ]
+
+
+async def categorise(pool, hosts: list[str], rate: float = RATE, concurrency: int = 4,
+                     on_batch=None) -> dict:
+    """Ask Radar about each host and record the answer, including when there is none."""
+    from . import categories, db
+
+    counts = {"checked": 0, "categorised": 0, "failed": 0}
+    semaphore = asyncio.Semaphore(concurrency)
+    async with aiohttp.ClientSession() as session:
+        radar = Categories(session, rate)
+
+        async def one(host: str):
+            async with semaphore:
+                found, error = await radar.fetch(host)
+                return host, found, error
+
+        for start in range(0, len(hosts), BATCH):
+            results = await asyncio.gather(*(one(h) for h in hosts[start : start + BATCH]))
+            rows, checked = [], []
+            for host, found, _ in results:
+                if found is None:
+                    counts["failed"] += 1
+                    continue
+                checked.append(host)
+                counts["categorised"] += bool(found)
+                rows.extend(_rows(host, found))
+            await db.save_domain_categories(pool, rows)
+            await db.save_category_checks(pool, checked, "radar")
+            await db.refresh_category_rollup(pool, checked, categories.PRIORITY)
+            counts["checked"] += len(checked)
+            if on_batch:
+                on_batch(counts)
+    return counts

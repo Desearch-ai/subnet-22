@@ -297,6 +297,37 @@ def cmd_canonicalise(args):
     asyncio.run(run())
 
 
+def cmd_radar_categories(args):
+    import asyncio
+
+    from . import db, radar
+
+    if args.top not in radar.BUCKETS:
+        sys.exit(f"--top must be one of {', '.join(map(str, radar.BUCKETS))}")
+
+    def report(counts):
+        print("  %(checked)s checked  %(categorised)s categorised  %(failed)s failed"
+              % {k: f"{v:,}" for k, v in counts.items()}, flush=True)
+
+    async def run():
+        path = Path(args.data_dir) / f"radar_top_{args.top}.csv"
+        if not path.exists():
+            radar.download_bucket(args.top, path)
+        ranked = sorted(radar.read_bucket(path))
+        pool = await db.connect(4)
+        listed = await db.existing_hosts(pool, ranked)
+        done = await db.checked_hosts(pool, "radar")
+        todo = [host for host in ranked if host in listed and host not in done]
+        print(f"{len(ranked):,} in Radar's top {args.top:,}; {len(listed):,} on our list; "
+              f"{len(todo):,} still to look up", flush=True)
+        counts = await radar.categorise(pool, todo, args.rate, on_batch=report)
+        print("looked up %(checked)s: %(categorised)s with a category, %(failed)s failed"
+              % {k: f"{v:,}" for k, v in counts.items()})
+        await pool.close()
+
+    asyncio.run(run())
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="desearch-bot")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -346,6 +377,13 @@ def main(argv=None):
     p.add_argument("--pool", type=int, default=8)
     p.add_argument("--data-dir", default="data")
     p.set_defaults(func=cmd_canonicalise)
+
+    p = sub.add_parser("radar-categories",
+                       help="record Cloudflare Radar's categories for its top domains")
+    p.add_argument("--top", type=int, default=10000)
+    p.add_argument("--rate", type=float, default=3.5)
+    p.add_argument("--data-dir", default="data")
+    p.set_defaults(func=cmd_radar_categories)
 
     p = sub.add_parser("categorize", help="label domains and optionally drop excluded ones")
     p.add_argument("--data-dir", default="data")

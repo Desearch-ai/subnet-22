@@ -312,6 +312,63 @@ async def save_canonical(pool: asyncpg.Pool, rows) -> int:
     return int(result.split()[-1])
 
 
+async def existing_hosts(pool: asyncpg.Pool, hosts) -> set[str]:
+    async with pool.acquire() as connection:
+        rows = await connection.fetch(
+            "SELECT host FROM bot.domains WHERE host = ANY($1::text[])", list(hosts)
+        )
+    return {r["host"] for r in rows}
+
+
+async def checked_hosts(pool: asyncpg.Pool, source: str) -> set[str]:
+    async with pool.acquire() as connection:
+        rows = await connection.fetch(
+            "SELECT host FROM bot.category_checks WHERE source = $1", source
+        )
+    return {r["host"] for r in rows}
+
+
+async def save_category_checks(pool: asyncpg.Pool, hosts, source: str) -> None:
+    hosts = list(hosts)
+    if not hosts:
+        return
+    async with pool.acquire() as connection:
+        await connection.execute(
+            """
+            INSERT INTO bot.category_checks (host, source)
+            SELECT host, $2 FROM unnest($1::text[]) AS host
+            ON CONFLICT (host, source) DO UPDATE SET checked_at = now()
+            """,
+            hosts,
+            source,
+        )
+
+
+async def refresh_category_rollup(pool: asyncpg.Pool, hosts, priority) -> None:
+    """Rebuild each domain's category columns from every source's labels."""
+    hosts = list(hosts)
+    if not hosts:
+        return
+    async with pool.acquire() as connection:
+        await connection.execute(
+            """
+            UPDATE bot.domains d SET categories = r.labels, category = r.labels[1]
+            FROM (
+                SELECT host, array_agg(category ORDER BY ordinal, category) AS labels
+                FROM (
+                    SELECT DISTINCT host, category,
+                           coalesce(array_position($2::text[], category), 1000) AS ordinal
+                    FROM bot.domain_categories WHERE host = ANY($1::text[])
+                ) labelled
+                GROUP BY host
+            ) r
+            WHERE d.host = r.host
+            """,
+            hosts,
+            list(priority),
+        )
+
+
 async def save_domain_categories(pool: asyncpg.Pool, rows) -> int:
     """Append what a source said. One row per source per label, so sources never overwrite."""
     if not rows:

@@ -68,6 +68,14 @@ CREATE TABLE IF NOT EXISTS domain_categories (
 
 CREATE INDEX IF NOT EXISTS domain_categories_category_idx ON domain_categories (category);
 
+-- When each source last looked at a domain, whether or not it had anything to say.
+CREATE TABLE IF NOT EXISTS category_checks (
+    host       text NOT NULL REFERENCES domains(host) ON DELETE CASCADE,
+    source     text NOT NULL,
+    checked_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (host, source)
+);
+
 -- Categories that disqualify a domain, kept here so the rule has one home.
 CREATE TABLE IF NOT EXISTS excluded_categories (
     category text PRIMARY KEY,
