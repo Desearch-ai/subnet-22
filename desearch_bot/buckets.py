@@ -39,9 +39,23 @@ def sitemap_id(url: str) -> int:
     return int.from_bytes(digest, "big") >> 1
 
 
-def owned_buckets(worker: int, workers: int) -> list[int]:
-    """The buckets one of this many crawler processes owns."""
-    return [bucket for bucket in range(BUCKETS) if bucket % workers == worker]
+def owned_buckets(
+    worker: int, workers: int, buckets: Iterable[int] = range(BUCKETS)
+) -> list[int]:
+    """The buckets one of this many crawler processes owns, out of those being crawled."""
+    return [bucket for i, bucket in enumerate(buckets) if i % workers == worker]
+
+
+def parse_buckets(spec: str) -> list[int]:
+    """Bucket numbers from ranges such as "0-13,20"."""
+    chosen: set[int] = set()
+    for part in filter(None, (piece.strip() for piece in spec.split(","))):
+        first, _, last = part.partition("-")
+        low, high = int(first), int(last or first)
+        if not 0 <= low <= high < BUCKETS:
+            raise ValueError(f"bucket range {part} is outside 0-{BUCKETS - 1}")
+        chosen.update(range(low, high + 1))
+    return sorted(chosen)
 
 
 class Resources:

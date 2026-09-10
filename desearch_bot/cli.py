@@ -251,8 +251,8 @@ async def _crawl(index: int, workers: int, args) -> None:
     import time
 
     from . import db, loop, net, signing
-    from .buckets import Buckets, Resources, owned_buckets
-    from .registry import Registry
+    from .buckets import Buckets, Resources, owned_buckets, parse_buckets
+    from .registry import OfflineRegistry, Registry
     from .suffixes import PublicSuffixList
     from .visit import Visitor
 
@@ -278,7 +278,7 @@ async def _crawl(index: int, workers: int, args) -> None:
     excluded = await db.excluded_categories(pool)
     psl = PublicSuffixList(Path(args.data_dir) / "public_suffix_list.dat")
     resources = Resources(args.cache_mb << 20, args.memtable_mb << 20)
-    owned = owned_buckets(index, workers)
+    owned = owned_buckets(index, workers, parse_buckets(args.buckets))
     with Buckets(Path(args.buckets_dir), owned, resources) as buckets:
         async with net.session(args.concurrency) as session:
             visitor = Visitor(
@@ -288,7 +288,7 @@ async def _crawl(index: int, workers: int, args) -> None:
                 psl.registrable,
                 signing.from_env(),
             )
-            registry = Registry(pool, buckets)
+            registry = OfflineRegistry() if args.no_registry else Registry(pool, buckets)
             crawl = loop.Loop(
                 buckets, visitor, args.concurrency, registry, excluded, report
             )
@@ -343,6 +343,14 @@ def main(argv=None):
     p.add_argument("--data-dir", default="data")
     p.add_argument("--cache-mb", type=int, default=512)
     p.add_argument("--memtable-mb", type=int, default=256)
+    p.add_argument(
+        "--buckets", default="0-255", help="buckets to crawl, as ranges such as 0-13,20"
+    )
+    p.add_argument(
+        "--no-registry",
+        action="store_true",
+        help="crawl without reporting to Postgres or taking changes from it",
+    )
     p.set_defaults(func=cmd_run)
 
     p = sub.add_parser(

@@ -10,6 +10,7 @@ from desearch_bot.buckets import (
     Resources,
     bucket_of,
     owned_buckets,
+    parse_buckets,
     sitemap_id,
 )
 from desearch_bot.urls import TIMED, Listing, parse
@@ -122,3 +123,12 @@ def test_every_bucket_has_exactly_one_owner_for_any_number_of_workers():
     for workers in (1, 6, 7, 64):
         owned = [b for worker in range(workers) for b in owned_buckets(worker, workers)]
         assert sorted(owned) == list(range(BUCKETS))
+
+
+def test_workers_split_a_chosen_range_of_buckets():
+    chosen = parse_buckets("0-3, 10,12-13")
+    assert chosen == [0, 1, 2, 3, 10, 12, 13]
+    assert [owned_buckets(w, 3, chosen) for w in range(3)] == [[0, 3, 13], [1, 10], [2, 12]]
+    assert owned_buckets(1, 7) == [b for b in range(BUCKETS) if b % 7 == 1]
+    with pytest.raises(ValueError):
+        parse_buckets("250-256")

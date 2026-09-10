@@ -69,3 +69,13 @@ class Registry:
             )
             for r in rows
         ]
+
+
+class OfflineRegistry:
+    """Hears nothing and says nothing, for trials on copies of the stores."""
+
+    async def report(self, visits: list[tuple[DomainWrite, int]], now: datetime) -> None:
+        return None
+
+    async def changes(self) -> list[Change]:
+        return []
