@@ -18,6 +18,8 @@ TICK = 2.0
 FLUSH_SECONDS = 5.0
 FLUSH_VISITS = 200
 CRASH_RETRY = timedelta(hours=1)
+# On shutdown, visits still running after this long are dropped; they are simply due again.
+STOP_GRACE = 30.0
 ANSWERED = frozenset(
     {
         Outcome.SITEMAP,
@@ -134,14 +136,20 @@ class Loop:
                 await self._flush()
                 flushed = time.monotonic()
         if self.inflight:
-            await asyncio.gather(*self.inflight.values(), return_exceptions=True)
+            _, late = await asyncio.wait(
+                list(self.inflight.values()), timeout=STOP_GRACE
+            )
+            for task in late:
+                task.cancel()
+            await asyncio.gather(*late, return_exceptions=True)
         await self._flush()
 
     async def _fill(self) -> None:
         free = self.concurrency - len(self.inflight)
         if free <= 0:
             return
-        now, busy = self.clock(), list(self.inflight)
+        # A finished visit is not in the database until the next flush, so it is still busy.
+        now, busy = self.clock(), [*self.inflight, *(w.host for w in self.pending)]
         batch = await db.due(self.pool, free, busy, True, now)
         busy += [known.host for known in batch]
         batch += await db.due(self.pool, free - len(batch), busy, False, now)

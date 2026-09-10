@@ -180,23 +180,26 @@ def cmd_run(args):
     import signal
     import time
 
+    from collections import Counter
+
     from . import db, loop, net, signing
     from .suffixes import PublicSuffixList
     from .urls import UrlStore
     from .visit import Visitor
 
     started = time.monotonic()
+    totals = {"requests": 0, "new": 0}
 
     def report(crawl, writes):
-        outcomes = {}
-        for write in writes:
-            outcomes[write.state.value] = outcomes.get(write.state.value, 0) + 1
-        new = sum(write.visit.new for write in writes)
-        rate = crawl.visited / max(time.monotonic() - started, 1)
-        summary = "  ".join(f"{state}={n}" for state, n in sorted(outcomes.items()))
+        totals["requests"] += sum(write.visit.requests for write in writes)
+        totals["new"] += sum(write.visit.new for write in writes)
+        elapsed = max(time.monotonic() - started, 1)
+        states = Counter(write.state.value for write in writes)
+        summary = "  ".join(f"{state}={n}" for state, n in sorted(states.items()))
         print(
-            f"  {crawl.visited:,} visited  {rate:.1f}/s  in flight {len(crawl.inflight)}  "
-            f"new urls {new:,}  {summary}",
+            f"  {crawl.visited:,} visited  {crawl.visited / elapsed:.1f}/s  "
+            f"{totals['requests'] / elapsed:.1f} req/s  in flight {len(crawl.inflight)}  "
+            f"new urls {totals['new']:,}  {summary}",
             flush=True,
         )
 
@@ -227,6 +230,8 @@ def cmd_run(args):
                 for sig in (signal.SIGTERM, signal.SIGINT):
                     asyncio.get_running_loop().add_signal_handler(sig, crawl.stop)
                 await crawl.run()
+                # A cancelled visit can leave a URL write running in a thread; let it land.
+                await asyncio.get_running_loop().shutdown_default_executor()
         await pool.close()
 
     asyncio.run(run())
