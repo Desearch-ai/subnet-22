@@ -58,8 +58,10 @@ class FakeWeb:
         self.times = []
         self.sent = []
 
-    def page(self, url, body=b"", status=200, etag=None, location=None, delay=0.0):
-        self.pages[url] = (status, body, etag, location, delay)
+    def page(
+        self, url, body=b"", status=200, etag=None, location=None, delay=0.0, etag_header="ETag"
+    ):
+        self.pages[url] = (status, body, etag, location, delay, etag_header)
 
     def get(self, url, headers=None, **_):
         self.requested.append(url)
@@ -69,12 +71,12 @@ class FakeWeb:
             raise DNSError(url)
         if url in self.refused:
             raise ConnectionRefusedError(url)
-        status, body, etag, location, delay = self.pages.get(
-            url, (404, b"", None, None, 0.0)
+        status, body, etag, location, delay, etag_header = self.pages.get(
+            url, (404, b"", None, None, 0.0, "ETag")
         )
         if etag and headers and headers.get("If-None-Match") == etag:
             return Response(304, delay=delay)
-        answer = {"ETag": etag} if etag else {}
+        answer = {etag_header: etag} if etag else {}
         if location:
             answer["Location"] = location
         return Response(status, body, answer, delay)

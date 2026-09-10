@@ -14,6 +14,7 @@ from datetime import datetime, timedelta
 from urllib.parse import urljoin, urlsplit
 
 import aiohttp
+from multidict import CIMultiDict
 
 from . import homepage, net, robots, schedule, signing, sitemaps
 from .buckets import Buckets, sitemap_id
@@ -124,7 +125,7 @@ class Visit:
 class Answer:
     status: int
     body: bytes
-    headers: dict[str, str]
+    headers: Mapping[str, str]
     url: str
 
 
@@ -553,7 +554,7 @@ class _Run:
                 body = await _read(response, limit) if response.status == 200 else b""
                 # Slow to answer means busy: rest that long before the next request.
                 self.pacer.rest(waited)
-                return Answer(response.status, body, dict(response.headers), url)
+                return Answer(response.status, body, CIMultiDict(response.headers), url)
         raise TooManyRedirects(url)
 
     def _stop(self, outcome: Outcome, reason: str | None) -> None:

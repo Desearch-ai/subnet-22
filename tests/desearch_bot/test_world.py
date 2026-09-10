@@ -219,3 +219,23 @@ async def test_an_index_bigger_than_one_visit_is_read_to_the_end(make_crawl):
     await advance(crawl, world, START + HOUR)
     assert all(stored(crawl, f"https://{host}/p{i}-0", host) for i in range(100))
     assert len(world.hits(".xml")) == len(children) + 1
+
+
+async def test_validators_count_whatever_case_the_server_writes_them_in(make_crawl):
+    world = World()
+    world.page("https://lower.com/robots.txt", b"User-agent: *\nSitemap: https://lower.com/sitemap.xml\n")
+    world.page("https://lower.com/", ENGLISH)
+    world.page(
+        "https://lower.com/sitemap.xml",
+        urlset(*PAGES, host="lower.com"),
+        etag='"v1"',
+        etag_header="etag",
+    )
+    crawl = make_crawl(world, ["lower.com"])
+    await advance(crawl, world, START + 3 * DAY, HOUR)
+    asked = [
+        sent.get("If-None-Match")
+        for url, sent in zip(world.requested, world.sent)
+        if url.endswith("/sitemap.xml")
+    ]
+    assert asked[0] is None and len(asked) > 1 and set(asked[1:]) == {'"v1"'}
