@@ -1,6 +1,4 @@
-import pytest
-
-from desearch_bot.urls import HTTPS, TIMED, WWW, Listing, Record, UrlStore, parse
+from desearch_bot.urls import HTTPS, WWW, Record, parse
 
 
 def _key(url, domain="example.com"):
@@ -74,71 +72,6 @@ def test_international_hosts_are_stored_in_their_ascii_form():
     assert _key("https://münchen.de/stadt", "münchen.de").startswith(
         b"xn--mnchen-3ya.de\x00"
     )
-
-
-@pytest.fixture
-def store(tmp_path):
-    with UrlStore(tmp_path / "urls") as opened:
-        yield opened
-
-
-def _entries(*paths, domain="example.com", lastmod=0, timed=False):
-    return [
-        (parse(f"https://{domain}{path}", domain), lastmod, timed) for path in paths
-    ]
-
-
-def test_a_first_listing_is_all_new(store):
-    assert store.record_listing(1, _entries("/a", "/b", "/c"), now=1000) == Listing(
-        3, 3, 0
-    )
-
-
-def test_listing_the_same_urls_again_adds_nothing(store):
-    store.record_listing(1, _entries("/a", "/b"), now=1000)
-    assert store.record_listing(1, _entries("/a", "/b"), now=2000) == Listing(2, 0, 0)
-
-
-def test_a_moved_lastmod_is_counted_and_kept(store):
-    store.record_listing(1, _entries("/a", lastmod=100), now=1000)
-    assert (
-        store.record_listing(1, _entries("/a", lastmod=200, timed=True), now=2000).moved
-        == 1
-    )
-    record = store.get(parse("https://example.com/a", "example.com"))
-    assert record.lastmod == 200 and record.flags & TIMED
-    assert (record.first_seen, record.last_seen) == (1000, 2000)
-
-
-def test_the_same_page_written_two_ways_is_stored_once(store):
-    entries = [
-        (parse("https://example.com/a", "example.com"), 0, False),
-        (parse("http://www.example.com/a#section", "example.com"), 0, False),
-    ]
-    assert store.record_listing(1, entries, now=1000).new == 1
-
-
-def test_a_url_belongs_to_the_sitemap_that_last_listed_it(store):
-    store.record_listing(1, _entries("/a"), now=1000)
-    store.record_listing(2, _entries("/a"), now=2000)
-    assert store.get(parse("https://example.com/a", "example.com")).sitemap_id == 2
-
-
-def test_a_domains_urls_come_back_together_and_no_others(store):
-    store.record_listing(1, _entries("/a", "/b"), now=1000)
-    store.record_listing(2, _entries("/z", domain="example.com.au"), now=1000)
-    found = [url.fetchable() for url, _ in store.domain("example.com")]
-    assert found == ["https://example.com/a", "https://example.com/b"]
-
-
-def test_urls_survive_closing_and_reopening(tmp_path):
-    with UrlStore(tmp_path / "urls") as opened:
-        opened.record_listing(1, _entries("/a"), now=1000)
-    with UrlStore(tmp_path / "urls") as reopened:
-        assert (
-            reopened.get(parse("https://example.com/a", "example.com")).first_seen
-            == 1000
-        )
 
 
 def test_a_record_packs_and_unpacks_unchanged():

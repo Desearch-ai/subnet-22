@@ -5,13 +5,10 @@ from __future__ import annotations
 import re
 import string
 import struct
-from collections.abc import Iterator
 from dataclasses import dataclass
 from functools import lru_cache
-from pathlib import Path
 from urllib.parse import quote, urlsplit
 
-from rocksdict import DBCompressionType, Options, Rdict, WriteBatch
 
 UNRESERVED = frozenset(string.ascii_letters + string.digits + "-._~")
 PERCENT = re.compile(r"%([0-9A-Fa-f]{2})")
@@ -103,80 +100,9 @@ def parse(url: str, domain: str) -> Url | None:
     return Url(f"{domain}\x00{rest}".encode(), flags)
 
 
-class UrlStore:
-    """Every URL we know, filed by domain so a domain's pages sit together on disk."""
-
-    def __init__(self, path: Path):
-        options = Options(raw_mode=True)
-        options.create_if_missing(True)
-        options.set_compression_type(DBCompressionType.zstd())
-        self.db = Rdict(str(path), options)
-
-    def __enter__(self) -> UrlStore:
-        return self
-
-    def __exit__(self, *_) -> None:
-        self.close()
-
-    def close(self) -> None:
-        self.db.close()
-
-    def record_listing(
-        self, sitemap_id: int, entries: list[tuple[Url, int, bool]], now: int
-    ) -> Listing:
-        """Store what one sitemap lists right now; each URL it names becomes its own."""
-        unique: dict[bytes, tuple[Url, int, bool]] = {}
-        for url, lastmod, timed in entries:
-            unique.setdefault(url.key, (url, lastmod, timed))
-        keys = list(unique)
-        if not keys:
-            return Listing(0, 0, 0)
-
-        batch = WriteBatch(raw_mode=True)
-        new = moved = 0
-        for key, raw in zip(keys, self.db.get(keys)):
-            url, lastmod, timed = unique[key]
-            if raw is None:
-                record = Record(
-                    sitemap_id, lastmod, now, now, flags=url.flags | _timed(timed)
-                )
-                new += 1
-            else:
-                record = Record.unpack(raw)
-                if lastmod and lastmod != record.lastmod:
-                    record.lastmod = lastmod
-                    record.flags = (record.flags & ~TIMED) | _timed(timed)
-                    moved += 1
-                record.sitemap_id = sitemap_id
-                record.last_seen = now
-            batch.put(key, record.pack())
-        self.db.write(batch)
-        return Listing(len(keys), new, moved)
-
-    def get(self, url: Url) -> Record | None:
-        raw = self.db.get(url.key)
-        return None if raw is None else Record.unpack(raw)
-
-    def domain(self, domain: str) -> Iterator[tuple[Url, Record]]:
-        """Every URL stored for a domain, in key order."""
-        prefix = f"{_ascii(domain)}\x00".encode()
-        for key, raw in self.db.items(from_key=prefix):
-            if not key.startswith(prefix):
-                return
-            record = Record.unpack(raw)
-            yield Url(key, record.flags & (HTTPS | WWW)), record
-
-    def estimate(self) -> int:
-        return self.db.property_int_value("rocksdb.estimate-num-keys") or 0
-
-
 @lru_cache(maxsize=1 << 16)
 def _ascii(host: str) -> str:
     return host.strip().rstrip(".").encode("idna").decode("ascii").lower()
-
-
-def _timed(timed: bool) -> int:
-    return TIMED if timed else 0
 
 
 def _tidy(part: str, safe: str) -> str:
