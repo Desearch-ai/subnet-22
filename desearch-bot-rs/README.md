@@ -59,7 +59,7 @@ The parity tests replay vectors that the Python code produced, and must match it
 - suffix groups and exclusion reasons
 - language verdicts (with `LANGID_FILE`)
 
-Set `PSL_FILE` to a copy of the public suffix list to check registrable domains too. Set `LANGID_FILE` to the exported model to check language verdicts against py3langid on texts in 43 languages. `tests/world.rs` crawls a small local web end to end: robots.txt, a sitemap index, a gzipped sitemap, conditional requests, a blocked site, a site with no sitemap, and a site whose DNS fails.
+Set `PSL_FILE` to a copy of the public suffix list to check registrable domains too. Set `LANGID_FILE` to the exported model to check language verdicts against py3langid on texts in 43 languages. `tests/registry.rs` runs the registry against a throwaway PostgreSQL server (it needs `initdb` and `postgres` on the PATH) with the real schema: visits reported, a standing exclusion, a redirect target adopted, changes taken back, and the sync mark surviving a restart. `tests/world.rs` crawls a small local web end to end: robots.txt, a sitemap index, a gzipped sitemap, conditional requests, a blocked site, a site with no sitemap, and a site whose DNS fails.
 
 `examples/digest.rs` times one sitemap file through decompressing, parsing, dating, normalising and storing, the CPU work of a visit:
 
