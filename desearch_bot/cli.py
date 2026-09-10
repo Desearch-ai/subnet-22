@@ -176,52 +176,74 @@ def cmd_radar_categories(args):
     asyncio.run(run())
 
 
+# A crashed worker is restarted on its own, sooner at first and less often if it keeps crashing.
+RESTART_FIRST = 10.0
+RESTART_MAX = 300.0
+HEALTHY_AFTER = 600.0
+
+
+def restart_delay(crashes: int) -> float:
+    """Seconds to wait before restarting a worker that has crashed this many times running."""
+    return min(RESTART_FIRST * 2 ** (crashes - 1), RESTART_MAX)
+
+
 def cmd_run(args):
     import multiprocessing
     import signal
+    import time
 
     workers = args.workers or max(1, (os.cpu_count() or 2) - 1)
     context = multiprocessing.get_context("spawn")
-    processes = [
-        context.Process(
-            target=_worker, args=(index, workers, vars(args)), name=f"w{index}"
+    options = vars(args)
+
+    def start(index):
+        process = context.Process(
+            target=_worker, args=(index, workers, options), name=f"w{index}"
         )
-        for index in range(workers)
-    ]
-    for process in processes:
         process.start()
+        return process
+
+    processes = {index: start(index) for index in range(workers)}
+    started = dict.fromkeys(processes, time.monotonic())
+    crashes = dict.fromkeys(processes, 0)
+    waiting: dict[int, float] = {}
+    stopping = False
 
     def stop(*_):
-        for process in processes:
+        nonlocal stopping
+        stopping = True
+        for process in processes.values():
             if process.is_alive():
                 process.terminate()
 
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
-    failed = False
-    while any(process.is_alive() for process in processes):
-        for process in processes:
-            process.join(timeout=1)
-            if process.exitcode not in (None, 0) and not failed:
-                print(
-                    f"worker {process.name} exited with {process.exitcode}; stopping",
-                    flush=True,
-                )
-                failed = True
-                stop()
-    sys.exit(1 if failed else 0)
+    while processes or (waiting and not stopping):
+        now = time.monotonic()
+        for index, when in list(waiting.items()):
+            if now >= when:
+                del waiting[index]
+                processes[index], started[index] = start(index), time.monotonic()
+        for index, process in list(processes.items()):
+            process.join(timeout=0.2)
+            if process.is_alive():
+                continue
+            del processes[index]
+            if stopping or process.exitcode == 0:
+                continue
+            ran = time.monotonic() - started[index]
+            crashes[index] = 1 if ran >= HEALTHY_AFTER else crashes[index] + 1
+            delay = restart_delay(crashes[index])
+            print(
+                f"worker w{index} exited with {process.exitcode} after {ran:.0f}s; "
+                f"restarting it in {delay:.0f}s",
+                flush=True,
+            )
+            waiting[index] = time.monotonic() + delay
 
 
 def _worker(index: int, workers: int, options: dict) -> None:
-    try:
-        import uvloop
-
-        factory = uvloop.new_event_loop
-    except ImportError:
-        factory = None
-    asyncio.run(
-        _crawl(index, workers, argparse.Namespace(**options)), loop_factory=factory
-    )
+    asyncio.run(_crawl(index, workers, argparse.Namespace(**options)))
 
 
 async def _crawl(index: int, workers: int, args) -> None:
