@@ -32,6 +32,10 @@ MAX_DEPTH = 3
 MAX_FILES = 40
 # The most unread sitemap files one visit records for the visits after it.
 MAX_DEFERRED = 10_000
+# Three failed requests in a row end a visit; more would only add to the site's trouble.
+MAX_FAILURES_IN_ROW = 3
+# A big sitemap may take a while to arrive, but no request runs longer than this.
+MAX_REQUEST_SECONDS = 60.0
 MIN_URLS = 10
 ROBOTS_EVERY = timedelta(days=1)
 MAX_ROBOTS_BYTES = 512 * 1024
@@ -114,6 +118,7 @@ class Visit:
     moved: int = 0
     requests: int = 0
     deferred: list[tuple[str, int, int | None]] = field(default_factory=list)
+    cut_short: bool = False
 
 
 @dataclass(frozen=True)
@@ -177,7 +182,7 @@ class Visitor:
         self.signer = signer
         self.floor = floor
         self.timeout = aiohttp.ClientTimeout(
-            total=timeout, connect=min(timeout, 6.0), sock_connect=min(timeout, 6.0)
+            total=MAX_REQUEST_SECONDS, sock_connect=min(timeout, 6.0), sock_read=timeout
         )
 
     async def visit(self, known: Known, now: datetime) -> Visit:
@@ -199,6 +204,7 @@ class _Run:
         self.guesses: set[str] = set()
         self.found = False
         self.fetches = 0
+        self.failed_in_row = 0
         self.kept = 0
         self.answered = False
         self.network_error: str | None = None
@@ -261,7 +267,11 @@ class _Run:
             if s.depth > 0 and _due(s, self.now)
         )
         seen: set[str] = set()
-        while queue and self.fetches < MAX_FILES:
+        while (
+            queue
+            and self.fetches < MAX_FILES
+            and self.failed_in_row < MAX_FAILURES_IN_ROW
+        ):
             url, depth, parent_id, index_date, force = queue.popleft()
             if url in seen or (url in self.guesses and self.found):
                 continue
@@ -270,6 +280,7 @@ class _Run:
             if stored and not force and not _due(stored, self.now):
                 continue
             queue.extend(await self._sitemap(url, depth, parent_id, index_date, stored))
+        self.result.cut_short = self.failed_in_row >= MAX_FAILURES_IN_ROW
         for url, depth, parent_id, _, _ in queue:
             if len(self.result.deferred) >= MAX_DEFERRED:
                 break
@@ -297,6 +308,8 @@ class _Run:
         except Exception as exc:
             answer, error = None, type(exc).__name__
             self.network_error = error
+        failing = answer is None or answer.status >= 500 or answer.status == 429
+        self.failed_in_row = self.failed_in_row + 1 if failing else 0
         if url in self.guesses and (answer is None or answer.status != 200):
             return []
 

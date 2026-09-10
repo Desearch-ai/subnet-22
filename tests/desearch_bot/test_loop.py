@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from desearch_bot import db
-from desearch_bot.loop import CRASH_RETRY, adopted, crashed, plan
+from desearch_bot.loop import CRASH_RETRY, CUT_SHORT_WAIT, adopted, crashed, plan
 from desearch_bot.schedule import Trust
 from desearch_bot.states import PUBLIC, RETRY, Outcome, State
 from desearch_bot.visit import Known, KnownSitemap, SitemapUpdate, Visit
@@ -168,3 +168,17 @@ def test_a_visit_that_left_sitemaps_unread_comes_back_at_once():
         "example.com", requests=5, deferred=[("https://example.com/s9.xml", 1, 7)]
     )
     assert plan(Known("example.com"), visit, NOW, random.Random(0)).next_due_at == NOW
+
+
+def test_a_visit_cut_short_by_failures_leaves_the_site_alone_for_a_while():
+    url = "https://example.com/a.xml"
+    known = Known(
+        "example.com",
+        State.ACTIVE,
+        last_ok_at=NOW,
+        sitemaps={url: _sitemap(url, NOW - timedelta(hours=1))},
+    )
+    write = plan(
+        known, Visit("example.com", requests=4, cut_short=True), NOW, random.Random(0)
+    )
+    assert write.next_due_at == NOW + CUT_SHORT_WAIT

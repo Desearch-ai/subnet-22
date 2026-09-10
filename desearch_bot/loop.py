@@ -20,6 +20,8 @@ FLUSH_VISITS = 200
 CRASH_RETRY = timedelta(hours=1)
 # On shutdown, visits still running after this long are dropped; they are simply due again.
 STOP_GRACE = 30.0
+# A visit cut short by failing requests leaves the site alone this long.
+CUT_SHORT_WAIT = timedelta(hours=1)
 ANSWERED = frozenset(
     {
         Outcome.SITEMAP,
@@ -56,6 +58,8 @@ def plan(
         earliest = now if visit.deferred else _earliest_sitemap(known, visit, now)
         if earliest is not None and (due is None or earliest < due):
             due = earliest
+        if visit.cut_short:
+            due = max(due, now + CUT_SHORT_WAIT)
     if visit.outcome is Outcome.REDIRECT:
         canonical = visit.canonical_host
     elif visit.outcome in ANSWERED:

@@ -450,3 +450,26 @@ async def test_sitemaps_beyond_the_file_limit_are_left_for_the_next_visit(web, v
         c for c in children if c not in read
     ]
     assert {depth for _, depth, _ in visit.deferred} == {1}
+
+
+async def test_three_failed_requests_in_a_row_end_the_visit(web, visitor):
+    maps = [known_sitemap(f"https://example.com/s{i}.xml", i) for i in range(10)]
+    site(web)
+    web.refused.update(s.url for s in maps)
+    known = active(*maps)
+    known.robots_checked_at = None
+    visit = await visitor.visit(known, NOW)
+    assert visit.cut_short and visit.outcome is Outcome.SITEMAP
+    assert len([url for url in web.requested if url.endswith(".xml")]) == 3
+
+
+async def test_an_answer_between_failures_keeps_the_visit_going(web, visitor):
+    maps = [known_sitemap(f"https://example.com/s{i}.xml", i) for i in range(6)]
+    site(web)
+    for i, stored in enumerate(maps):
+        if i % 2:
+            web.page(stored.url, urlset(*PAGES))
+        else:
+            web.refused.add(stored.url)
+    visit = await visitor.visit(active(*maps), NOW)
+    assert not visit.cut_short and len(visit.sitemaps) == 6
