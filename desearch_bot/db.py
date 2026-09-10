@@ -283,15 +283,22 @@ async def save_canonical(pool: asyncpg.Pool, rows) -> int:
     async with pool.acquire() as connection:
         async with connection.transaction():
             await connection.execute(
-                "CREATE TEMP TABLE canonical_stage (host text, canonical_host text) ON COMMIT DROP"
+                """
+                CREATE TEMP TABLE canonical_stage (
+                    host text, canonical_host text, http_ok boolean
+                ) ON COMMIT DROP
+                """
             )
             await connection.copy_records_to_table(
-                "canonical_stage", records=rows, columns=["host", "canonical_host"]
+                "canonical_stage",
+                records=rows,
+                columns=["host", "canonical_host", "http_ok"],
             )
             result = await connection.execute(
                 """
                 UPDATE bot.domains d SET
                     canonical_host = s.canonical_host,
+                    http_ok = s.http_ok,
                     canonicalised_at = now(),
                     status = CASE
                         WHEN s.canonical_host IS NOT NULL

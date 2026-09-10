@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS domains (
     resolved_at    timestamptz,
     canonical_host text,
     canonicalised_at timestamptz,
+    http_ok        boolean,
     checked_at     timestamptz,
 
     robots_status  integer,

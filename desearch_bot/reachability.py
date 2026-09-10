@@ -128,30 +128,55 @@ class Canonicaliser:
         raise RuntimeError("TooManyRedirects")
 
 
+# A session accumulates per-host state -- TLS contexts, connection-pool entries, resolver cache
+# -- and this pass visits millions of distinct hosts. Replacing it periodically releases that;
+# without it the process grew to 6 GB over twelve hours.
+BATCHES_PER_SESSION = 40
+
+
+def _session(concurrency: int) -> aiohttp.ClientSession:
+    return aiohttp.ClientSession(
+        connector=aiohttp.TCPConnector(
+            limit=concurrency,
+            limit_per_host=2,
+            ttl_dns_cache=300,
+            enable_cleanup_closed=True,
+            force_close=True,
+            resolver=aiohttp.resolver.AsyncResolver(
+                nameservers=[RESOLVER_HOST], udp_port=RESOLVER_PORT, tcp_port=RESOLVER_PORT
+            ),
+        )
+    )
+
+
 async def canonicalise_all(pool, psl: PublicSuffixList, concurrency: int = 200,
                            signer=None, on_batch=None) -> dict:
     counts = {"checked": 0, "redirects": 0, "errors": 0}
-    connector = aiohttp.TCPConnector(
-        limit=concurrency, limit_per_host=2, ttl_dns_cache=900,
-        enable_cleanup_closed=True, resolver=aiohttp.resolver.AsyncResolver(
-            nameservers=[RESOLVER_HOST], udp_port=RESOLVER_PORT, tcp_port=RESOLVER_PORT),
-    )
     semaphore = asyncio.Semaphore(concurrency)
+    session = _session(concurrency)
+    batches = 0
 
-    async with aiohttp.ClientSession(connector=connector) as session:
-        worker = Canonicaliser(session, psl, signer)
-
-        async def one(host):
-            async with semaphore:
-                return await worker.final_host(host)
-
+    try:
         async for rows in db.iter_resolving_hosts(pool):
+            worker = Canonicaliser(session, psl, signer)
+
+            async def one(host):
+                async with semaphore:
+                    return await worker.final_host(host)
+
             hosts = [r["host"] for r in rows]
             results = await asyncio.gather(*(one(h) for h in hosts))
-            await db.save_canonical(pool, [(h, c) for h, c, _ in results])
+            await db.save_canonical(pool, [(h, c, e is None) for h, c, e in results])
             counts["checked"] += len(results)
             counts["redirects"] += sum(1 for _, c, _ in results if c)
             counts["errors"] += sum(1 for _, c, e in results if e and not c)
             if on_batch:
                 on_batch(counts)
+
+            batches += 1
+            if batches % BATCHES_PER_SESSION == 0:
+                await session.close()
+                session = _session(concurrency)
+    finally:
+        await session.close()
     return counts
