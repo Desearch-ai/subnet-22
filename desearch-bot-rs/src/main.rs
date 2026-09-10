@@ -52,6 +52,9 @@ struct RunArgs {
     cache_mb: usize,
     #[arg(long, default_value_t = 2048)]
     memtable_mb: usize,
+    /// Sitemap files fetched or waiting to be parsed at once, which bounds the memory their bodies take.
+    #[arg(long, default_value_t = 64)]
+    sitemap_slots: usize,
     /// Seconds a read may stall before the request fails.
     #[arg(long, default_value_t = 10.0)]
     timeout: f64,
@@ -96,6 +99,7 @@ async fn run(args: RunArgs) -> Result<()> {
         floor: MIN_HOST_INTERVAL,
         connect_timeout: net::connect_timeout(read_timeout),
         cpu: Arc::new(Semaphore::new(cores * 2)),
+        bodies: Arc::new(Semaphore::new(args.sitemap_slots)),
     });
     let mut crawl = Loop::new(buckets, visitor, args.concurrency, registry, excluded);
     let scheduled = crawl.load()?;

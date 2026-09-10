@@ -31,6 +31,7 @@ desearch-bot run --concurrency 840 --buckets-dir /var/lib/desearch-bot/buckets -
 | `--buckets-dir` | `/var/lib/desearch-bot/buckets` | Where the bucket stores live |
 | `--data-dir` | `data` | Where `public_suffix_list.dat` and `langid.bin` live |
 | `--cache-mb`, `--memtable-mb` | 4096, 2048 | Block cache and memtable budget shared by all stores |
+| `--sitemap-slots` | 64 | Sitemap files fetched or waiting to be parsed at once, which bounds the memory their bodies take |
 | `--timeout` | 10 | Seconds a read may stall before the request fails |
 | `--no-registry` | off | Crawl without reporting to Postgres or taking changes from it |
 | `--duration` | none | Stop after this many seconds |

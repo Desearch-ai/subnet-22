@@ -9,7 +9,7 @@ use flate2::{Decompress, FlushDecompress, Status};
 use indexmap::IndexMap;
 use reqwest::header::HeaderMap;
 use sha2::{Digest, Sha256};
-use tokio::sync::Semaphore;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio::time::Instant;
 
 use crate::buckets::{sitemap_id, Buckets};
@@ -154,6 +154,8 @@ pub struct Answer {
     pub body: Vec<u8>,
     pub headers: HeaderMap,
     pub url: String,
+    /// Held until the body is parsed, when it was fetched under the sitemap budget.
+    pub permit: Option<OwnedSemaphorePermit>,
 }
 
 /// One host's request clock, so a slow host never shares a budget with a fast one.
@@ -206,6 +208,8 @@ pub struct Visitor {
     pub connect_timeout: Duration,
     /// Parsing and storing run on the blocking pool, a few files per core at a time.
     pub cpu: Arc<Semaphore>,
+    /// Sitemap files fetched or waiting to be parsed at once; bounds the memory their bodies take.
+    pub bodies: Arc<Semaphore>,
 }
 
 impl Visitor {
@@ -366,7 +370,8 @@ impl Run<'_> {
     ) -> Result<Vec<Child>, Crash> {
         self.fetches += 1;
         let validators = stored.map(|s| (s.etag.clone(), s.last_modified.clone()));
-        let (answer, error) = match self.get(&url, MAX_SITEMAP_BYTES, validators).await {
+        let budget = Some(self.visitor.bodies.clone());
+        let (answer, error) = match self.get(&url, MAX_SITEMAP_BYTES, validators, budget).await {
             Ok(answer) => (Some(answer), None),
             Err(error) => {
                 self.network_error = Some(error.clone());
@@ -404,6 +409,7 @@ impl Run<'_> {
         update.etag = header(&answer.headers, "etag");
         update.last_modified = header(&answer.headers, "last-modified");
         let job = FileJob {
+            _permit: answer.permit,
             body: answer.body,
             stored_hash: stored.and_then(|s| s.content_hash.clone()),
             now: self.now,
@@ -564,7 +570,7 @@ impl Run<'_> {
     async fn first_answer(&mut self, path: &str, limit: usize) -> Option<Answer> {
         let mut last = "unknown".to_string();
         for scheme in ["https", "http"] {
-            match self.get(&format!("{scheme}://{}{path}", self.known.host), limit, None).await {
+            match self.get(&format!("{scheme}://{}{path}", self.known.host), limit, None, None).await {
                 Ok(answer) => return Some(answer),
                 Err(error) => last = error,
             }
@@ -587,14 +593,24 @@ impl Run<'_> {
     }
 
     /// Follow redirects by hand, pacing and signing each hop for the host it goes to.
-    async fn get(&mut self, url: &str, limit: usize, validators: Option<(Option<String>, Option<String>)>) -> Result<Answer, String> {
+    async fn get(
+        &mut self,
+        url: &str,
+        limit: usize,
+        validators: Option<(Option<String>, Option<String>)>,
+        budget: Option<Arc<Semaphore>>,
+    ) -> Result<Answer, String> {
         let mut url = url.to_string();
+        let mut permit = None;
         for _ in 0..=MAX_REDIRECTS {
             let host = urls::split(&url).map_err(|_| "ValueError".to_string())?.hostname().unwrap_or_default();
             if !net::public_host(&host) {
                 return Err("OSError".into());
             }
             self.pacer.wait().await;
+            if let (None, Some(budget)) = (&permit, &budget) {
+                permit = Some(budget.clone().acquire_owned().await.map_err(|_| "CancelledError".to_string())?);
+            }
             self.result.requests += 1;
             let mut request = self.visitor.client.get(&url);
             if let Some(signer) = &self.visitor.signer {
@@ -633,7 +649,7 @@ impl Run<'_> {
             };
             // Slow to answer means busy: rest that long before the next request.
             self.pacer.rest(waited);
-            return Ok(Answer { status, body, headers: response.headers().clone(), url });
+            return Ok(Answer { status, body, headers: response.headers().clone(), url, permit });
         }
         Err("TooManyRedirects".into())
     }
@@ -645,6 +661,7 @@ impl Run<'_> {
 }
 
 struct FileJob {
+    _permit: Option<OwnedSemaphorePermit>,
     body: Vec<u8>,
     stored_hash: Option<String>,
     now: i64,
