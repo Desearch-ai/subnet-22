@@ -161,6 +161,31 @@ pub struct Answer {
     pub permit: Option<OwnedSemaphorePermit>,
 }
 
+/// A fixed number of permits, and how many are taken.
+#[derive(Clone)]
+pub struct Slots {
+    permits: Arc<Semaphore>,
+    size: usize,
+}
+
+impl Slots {
+    pub fn new(size: usize) -> Self {
+        Slots { permits: Arc::new(Semaphore::new(size)), size }
+    }
+
+    pub fn busy(&self) -> usize {
+        self.size - self.permits.available_permits()
+    }
+
+    pub fn size(&self) -> usize {
+        self.size
+    }
+
+    async fn take(&self) -> Result<OwnedSemaphorePermit, Crash> {
+        self.permits.clone().acquire_owned().await.map_err(|_| Crash::new("CancelledError"))
+    }
+}
+
 /// One host's request clock, so a slow host never shares a budget with a fast one.
 struct Pacer {
     interval: f64,
@@ -210,9 +235,9 @@ pub struct Visitor {
     /// How long connecting may take before a request fails, to tell connect timeouts from read timeouts.
     pub connect_timeout: Duration,
     /// Parsing and storing run on the blocking pool, a few files per core at a time.
-    pub cpu: Arc<Semaphore>,
+    pub cpu: Slots,
     /// Sitemap files fetched or waiting to be parsed at once; bounds the memory their bodies take.
-    pub bodies: Arc<Semaphore>,
+    pub bodies: Slots,
     /// Set while the disk is nearly full: visits read no more sitemap files and leave the rest for later.
     pub pause: Arc<AtomicBool>,
 }
@@ -239,7 +264,7 @@ impl Visitor {
     }
 
     async fn cpu<T: Send + 'static>(&self, work: impl FnOnce() -> T + Send + 'static) -> Result<T, Crash> {
-        let _permit = self.cpu.acquire().await.map_err(|_| Crash::new("CancelledError"))?;
+        let _permit = self.cpu.take().await?;
         tokio::task::spawn_blocking(work).await.map_err(|_| Crash::new("RuntimeError"))
     }
 }
@@ -603,7 +628,7 @@ impl Run<'_> {
         url: &str,
         limit: usize,
         validators: Option<(Option<String>, Option<String>)>,
-        budget: Option<Arc<Semaphore>>,
+        budget: Option<Slots>,
     ) -> Result<Answer, String> {
         let mut url = url.to_string();
         let mut permit = None;
@@ -614,7 +639,7 @@ impl Run<'_> {
             }
             self.pacer.wait().await;
             if let (None, Some(budget)) = (&permit, &budget) {
-                permit = Some(budget.clone().acquire_owned().await.map_err(|_| "CancelledError".to_string())?);
+                permit = Some(budget.take().await.map_err(|crash| crash.0)?);
             }
             self.result.requests += 1;
             let mut request = self.visitor.client.get(&url);

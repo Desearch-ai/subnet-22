@@ -13,12 +13,11 @@ use desearch_bot::registry::Registry;
 use desearch_bot::states::State;
 use desearch_bot::suffixes::PublicSuffixList;
 use desearch_bot::urls;
-use desearch_bot::visit::Visitor;
+use desearch_bot::visit::{Slots, Visitor};
 use hickory_resolver::error::ResolveError;
 use reqwest::dns::{Addrs, Name, Resolve, Resolving};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
-use tokio::sync::Semaphore;
 
 const ENGLISH: &str = "The quick brown fox jumps over the lazy dog while the committee reviews the annual budget \
     report. Readers who follow the local news will find stories about schools, transport, weather and the people \
@@ -183,8 +182,8 @@ async fn crawls_a_small_web() {
         language: Arc::new(|text: &str| Some(if text.contains("the") { "en" } else { "fr" }.to_string())),
         floor: 0.0,
         connect_timeout: Duration::from_secs(10),
-        cpu: Arc::new(Semaphore::new(4)),
-        bodies: Arc::new(Semaphore::new(2)),
+        cpu: Slots::new(4),
+        bodies: Slots::new(2),
         pause: Arc::new(std::sync::atomic::AtomicBool::new(false)),
     };
     let mut crawl = Loop::new(buckets.clone(), Arc::new(visitor), 16, Registry::offline(), HashSet::new());

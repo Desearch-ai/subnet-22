@@ -434,13 +434,17 @@ impl Loop {
         let memory = self.buckets.memory();
         let disk = self.buckets.free_disk().unwrap_or(0);
         println!(
-            "[rs] {} visited  {:.1}/s  {:.1} req/s  in flight {}  new urls {}  scheduled {}  rocksdb readers {} MB memtables {} MB cache {} MB  disk free {} GB",
+            "[rs] {} visited  {:.1}/s  {:.1} req/s  in flight {}  new urls {}  scheduled {}  sitemap slots {}/{} parsing {}/{}  rocksdb readers {} MB memtables {} MB cache {} MB  disk free {} GB",
             thousands(self.stats.visited as i64),
             self.stats.visited as f64 / elapsed,
             self.stats.requests as f64 / elapsed,
             self.visits.len(),
             thousands(self.stats.new),
             thousands(self.timetable.len() as i64),
+            self.visitor.bodies.busy(),
+            self.visitor.bodies.size(),
+            self.visitor.cpu.busy(),
+            self.visitor.cpu.size(),
             memory.table_readers >> 20,
             memory.memtables >> 20,
             memory.block_cache >> 20,

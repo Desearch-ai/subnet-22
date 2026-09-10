@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
-use tokio::sync::{watch, Semaphore};
+use tokio::sync::watch;
 
 use desearch_bot::buckets::{Buckets, Resources, BUCKETS};
 use desearch_bot::crawl::Loop;
@@ -16,7 +16,7 @@ use desearch_bot::net::{self, PublicResolver};
 use desearch_bot::registry::{self, Registry};
 use desearch_bot::signing::Signer;
 use desearch_bot::suffixes::PublicSuffixList;
-use desearch_bot::visit::{Visitor, MIN_HOST_INTERVAL};
+use desearch_bot::visit::{Slots, Visitor, MIN_HOST_INTERVAL};
 
 #[cfg(not(target_env = "msvc"))]
 #[global_allocator]
@@ -104,8 +104,8 @@ async fn run(args: RunArgs) -> Result<()> {
         language: Arc::new(move |text: &str| text.chars().nth(19).map(|_| model.classify(text).to_string())),
         floor: MIN_HOST_INTERVAL,
         connect_timeout: net::connect_timeout(read_timeout),
-        cpu: Arc::new(Semaphore::new(cores * 2)),
-        bodies: Arc::new(Semaphore::new(args.sitemap_slots)),
+        cpu: Slots::new(cores * 2),
+        bodies: Slots::new(args.sitemap_slots),
         pause: Arc::new(std::sync::atomic::AtomicBool::new(false)),
     });
     if args.compact {
