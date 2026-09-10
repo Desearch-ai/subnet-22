@@ -170,6 +170,7 @@ def cmd_discover(args):
 
     from . import adult, db, discover, signing
     from .frontier import Frontier
+    from .suffixes import PublicSuffixList
 
     async def run():
         pool = await db.connect(pool_size=args.pool)
@@ -183,9 +184,10 @@ def cmd_discover(args):
         print(f"signing keyid {signer.keyid}" if signer else "requests unsigned", flush=True)
         frontier = Frontier(Path(args.frontier))
         progress = discover.Progress()
+        psl = PublicSuffixList(Path(args.data_dir) / "public_suffix_list.dat")
         await discover.discover(pool, frontier, hosts, _language_detector(),
                                 args.concurrency, args.timeout, progress, adult_domains,
-                                signer)
+                                signer, psl)
         print("frontier:", frontier.stats())
         print(await db.counts(pool))
         await pool.close()

@@ -170,6 +170,7 @@ async def discover(
     on_done=None,
     adult: set[str] = frozenset(),
     signer: signing.Signer | None = None,
+    psl=None,
 ) -> None:
     queue: asyncio.Queue = asyncio.Queue(maxsize=concurrency * 4)
     connector = aiohttp.TCPConnector(
@@ -190,7 +191,7 @@ async def discover(
         await db.save_domains(pool, batch)
 
     async with aiohttp.ClientSession(connector=connector) as session:
-        qualifier = Qualifier(session, detect_language, timeout, adult, signer)
+        qualifier = Qualifier(session, detect_language, timeout, adult, signer, psl)
         walker = Walker(session, pool, frontier, timeout, signer)
 
         async def worker():

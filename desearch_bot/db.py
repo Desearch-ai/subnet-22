@@ -79,8 +79,9 @@ async def save_domains(pool: asyncpg.Pool, results) -> None:
     rows = [
         (
             r.host,
-            "qualified" if r.qualified else "rejected",
+            "qualified" if r.qualified else "redirect" if r.canonical_host else "rejected",
             r.reject_reason,
+            r.canonical_host,
             r.robots_status,
             r.robots_allows,
             r.crawl_delay,
@@ -99,9 +100,10 @@ async def save_domains(pool: asyncpg.Pool, results) -> None:
         await connection.executemany(
             """
             UPDATE bot.domains SET
-                status = $2, reject_reason = $3, robots_status = $4, robots_allows = $5,
-                crawl_delay = $6, language = $7, declared_lang = $8, home_chars = $9,
-                sitemap_url = $10, sitemap_kind = $11, url_count = $12, checked_at = now()
+                status = $2, reject_reason = $3, canonical_host = $4, robots_status = $5,
+                robots_allows = $6, crawl_delay = $7, language = $8, declared_lang = $9,
+                home_chars = $10, sitemap_url = $11, sitemap_kind = $12, url_count = $13,
+                checked_at = now()
             WHERE host = $1
             """,
             rows,

@@ -13,7 +13,7 @@ import re
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlsplit
 
 import aiohttp
 
@@ -75,6 +75,7 @@ class Result:
     sample_urls: list[str] = field(default_factory=list)
     # The sitemap we accepted, kept so the walk does not fetch it a second time.
     sitemap_fetch: Fetched | None = None
+    canonical_host: str | None = None
 
 
 def _decode(body: bytes) -> str:
@@ -195,11 +196,13 @@ class Qualifier:
         timeout: float = 8.0,
         adult: set[str] = frozenset(),
         signer: signing.Signer | None = None,
+        psl=None,
     ):
         self.session = session
         self.detect_language = detect_language
         self.adult = adult
         self.signer = signer
+        self.psl = psl
         self.timeout = aiohttp.ClientTimeout(total=timeout, connect=min(timeout, 6.0),
                                               sock_connect=min(timeout, 6.0))
 
@@ -218,7 +221,7 @@ class Qualifier:
                     url = urljoin(url, location)
                     continue
                 body = await response.content.read(limit)
-                return response.status, body, dict(response.headers)
+                return response.status, body, dict(response.headers), url
         raise RuntimeError("TooManyRedirects")
 
     async def _try_schemes(self, host: str, path: str, limit: int, pacer: Pacer):
@@ -231,6 +234,17 @@ class Qualifier:
                 if "DNS" in last:
                     break
         raise RuntimeError(last)
+
+    def _elsewhere(self, host: str, landed: str) -> str | None:
+        """The registrable domain a request ended on, when it is not this host's own.
+
+        Following a redirect to another domain and then crawling both would hit one server twice
+        under two names, each with its own request budget.
+        """
+        if self.psl is None:
+            return None
+        target = self.psl.registrable(urlsplit(landed).hostname or "")
+        return target if target and target != host else None
 
     async def run(
         self, host: str, rank=None, tld_group="", pacer: Pacer | None = None
@@ -249,11 +263,16 @@ class Qualifier:
             return result
         pacer = pacer or Pacer()
         try:
-            result.robots_status, body, _ = await self._try_schemes(
+            result.robots_status, body, _, landed = await self._try_schemes(
                 host, "/robots.txt", MAX_ROBOTS_BYTES, pacer
             )
         except Exception as exc:
             result.error, result.reject_reason = str(exc)[:60], "unreachable"
+            return result
+
+        result.canonical_host = self._elsewhere(host, landed)
+        if result.canonical_host:
+            result.reject_reason = "redirect"
             return result
 
         candidates: list[tuple[str, str]] = []
@@ -276,7 +295,9 @@ class Qualifier:
 
         for url, origin in candidates:
             try:
-                status, payload, headers = await self._get(url, MAX_SITEMAP_BYTES, pacer)
+                status, payload, headers, _ = await self._get(
+                    url, MAX_SITEMAP_BYTES, pacer
+                )
             except Exception:
                 continue
             if status != 200 or not payload:
@@ -301,11 +322,15 @@ class Qualifier:
             return result
 
         try:
-            result.home_status, body, _ = await self._try_schemes(
+            result.home_status, body, _, landed = await self._try_schemes(
                 host, "/", MAX_HOMEPAGE_BYTES, pacer
             )
         except Exception as exc:
             result.error, result.reject_reason = str(exc)[:60], "homepage_unreachable"
+            return result
+        result.canonical_host = self._elsewhere(host, landed)
+        if result.canonical_host:
+            result.reject_reason = "redirect"
             return result
         if result.home_status != 200:
             result.reject_reason = "homepage_error"

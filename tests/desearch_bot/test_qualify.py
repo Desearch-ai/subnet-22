@@ -1,3 +1,4 @@
+import pytest
 import asyncio
 import time
 
@@ -5,6 +6,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from desearch_bot import signing
 from desearch_bot.qualify import Pacer, Qualifier, parse_sitemap, robots_allows
+from desearch_bot.suffixes import PublicSuffixList
 from desearch_bot.suffixes import ENGLISH_MARKET, tld_group
 
 
@@ -153,3 +155,95 @@ async def test_slow_to_never_shortens_an_interval():
     pacer = Pacer(5.0)
     pacer.slow_to(1.0)
     assert pacer.interval == 5.0
+
+
+class _ScriptedResponse:
+    def __init__(self, status, body=b"", location=None):
+        self.status = status
+        self.headers = {"Location": location} if location else {}
+        self._body = body
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_):
+        return False
+
+    @property
+    def content(self):
+        body = self._body
+
+        class Reader:
+            async def read(self, _):
+                return body
+
+        return Reader()
+
+
+class _ScriptedSession:
+    """Answers each URL from a map of redirects; anything else returns 200."""
+
+    def __init__(self, redirects=None):
+        self.redirects = redirects or {}
+        self.requested = []
+
+    def get(self, url, **_):
+        self.requested.append(url)
+        location = self.redirects.get(url)
+        if location:
+            return _ScriptedResponse(301, location=location)
+        if "sitemap" in url:
+            locs = b"".join(b"<url><loc>https://x/%d</loc></url>" % i for i in range(12))
+            return _ScriptedResponse(200, b"<urlset>" + locs + b"</urlset>")
+        if url.endswith("/robots.txt"):
+            return _ScriptedResponse(200, b"User-agent: *\nAllow: /\n")
+        return _ScriptedResponse(200, b"<html lang=\"en\"><body>" + b"english words here " * 40
+                                 + b"</body></html>")
+
+
+def _qualifier(session, psl):
+    return Qualifier(session, lambda _: "en", 5.0, psl=psl)
+
+
+@pytest.fixture
+def psl(tmp_path):
+    rules = tmp_path / "psl.dat"
+    rules.write_text("com\nnet\nuk\nco.uk\n", encoding="utf-8")
+    return PublicSuffixList(rules)
+
+
+async def test_a_domain_whose_robots_redirects_away_is_marked_an_alias(psl):
+    session = _ScriptedSession({"https://old.com/robots.txt": "https://new.com/robots.txt"})
+    result = await _qualifier(session, psl).run("old.com")
+    assert result.canonical_host == "new.com"
+    assert result.reject_reason == "redirect"
+    assert result.qualified is False
+
+
+async def test_an_alias_is_abandoned_before_probing_its_sitemaps(psl):
+    """Stopping at the first hop is what keeps us off the target server twice."""
+    session = _ScriptedSession({"https://old.com/robots.txt": "https://new.com/robots.txt"})
+    await _qualifier(session, psl).run("old.com")
+    assert not any("sitemap" in url for url in session.requested)
+
+
+async def test_www_is_not_treated_as_an_alias(psl):
+    session = _ScriptedSession(
+        {"https://example.com/robots.txt": "https://www.example.com/robots.txt"}
+    )
+    result = await _qualifier(session, psl).run("example.com")
+    assert result.canonical_host is None
+    assert result.reject_reason != "redirect"
+
+
+async def test_a_homepage_redirect_is_caught_even_when_robots_stays_put(psl):
+    session = _ScriptedSession({"https://example.com/": "https://elsewhere.net/"})
+    result = await _qualifier(session, psl).run("example.com")
+    assert result.canonical_host == "elsewhere.net"
+    assert result.reject_reason == "redirect"
+
+
+async def test_without_a_suffix_list_no_alias_is_claimed(psl):
+    session = _ScriptedSession({"https://old.com/robots.txt": "https://new.com/robots.txt"})
+    result = await Qualifier(session, lambda _: "en", 5.0).run("old.com")
+    assert result.canonical_host is None
