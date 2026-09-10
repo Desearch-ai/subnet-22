@@ -13,7 +13,20 @@ from pathlib import Path
 import aiohttp
 
 API = "https://api.cloudflare.com/client/v4"
-BUCKETS = (200, 500, 1000, 2000, 5000, 10000, 20000, 50000, 100000, 200000, 500000, 1000000)
+BUCKETS = (
+    200,
+    500,
+    1000,
+    2000,
+    5000,
+    10000,
+    20000,
+    50000,
+    100000,
+    200000,
+    500000,
+    1000000,
+)
 # The account-wide limit is 1,200 requests per five minutes; stay under it.
 RATE = 3.5
 TIMEOUT = 60
@@ -37,7 +50,8 @@ def token() -> str:
 
 def _request(path: str, accept: str = "application/json") -> urllib.request.Request:
     return urllib.request.Request(
-        f"{API}/{path}", headers={"Authorization": f"Bearer {token()}", "Accept": accept}
+        f"{API}/{path}",
+        headers={"Authorization": f"Bearer {token()}", "Accept": accept},
     )
 
 
@@ -53,7 +67,11 @@ def download_bucket(size: int, dest: Path) -> Path:
 
 def read_bucket(path: Path) -> set[str]:
     with open(path, encoding="utf-8", errors="replace") as handle:
-        hosts = {row[0].strip().lower() for row in csv.reader(handle) if row and row[0].strip()}
+        hosts = {
+            row[0].strip().lower()
+            for row in csv.reader(handle)
+            if row and row[0].strip()
+        }
     hosts.discard("domain")
     return hosts
 
@@ -125,14 +143,17 @@ def _rows(host: str, found: list[dict]) -> list[tuple]:
             label(item["name"]),
             item["name"],
             item.get("id"),
-            None if item.get("superCategoryId") is None else str(item["superCategoryId"]),
+            None
+            if item.get("superCategoryId") is None
+            else str(item["superCategoryId"]),
         )
         for item in found
     ]
 
 
-async def categorise(pool, hosts: list[str], rate: float = RATE, concurrency: int = 4,
-                     on_batch=None) -> dict:
+async def categorise(
+    pool, hosts: list[str], rate: float = RATE, concurrency: int = 4, on_batch=None
+) -> dict:
     """Ask Radar about each host and record the answer, including when there is none."""
     from . import categories, db
 
@@ -147,7 +168,9 @@ async def categorise(pool, hosts: list[str], rate: float = RATE, concurrency: in
                 return host, found, error
 
         for start in range(0, len(hosts), BATCH):
-            results = await asyncio.gather(*(one(h) for h in hosts[start : start + BATCH]))
+            results = await asyncio.gather(
+                *(one(h) for h in hosts[start : start + BATCH])
+            )
             rows, checked = [], []
             for host, found, _ in results:
                 if found is None:

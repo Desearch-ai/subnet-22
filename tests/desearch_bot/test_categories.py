@@ -14,7 +14,9 @@ def test_priority_names_are_real_labels():
 
 
 def test_labels_are_ordered_by_priority():
-    catalogue = _catalogue(news=["example.com"], adult=["example.com"], blog=["example.com"])
+    catalogue = _catalogue(
+        news=["example.com"], adult=["example.com"], blog=["example.com"]
+    )
     assert catalogue.labels("example.com") == ["adult", "news", "blog"]
 
 

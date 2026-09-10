@@ -36,7 +36,10 @@ def test_signature_base_matches_rfc_9421_ed25519_vector():
 
 
 def test_thumbprint_matches_rfc_7638():
-    assert signing.thumbprint(_key().public_key()) == "poqkLGiymh_W0uP6PZFw-dvez3QJT5SolqXBCW38r0U"
+    assert (
+        signing.thumbprint(_key().public_key())
+        == "poqkLGiymh_W0uP6PZFw-dvez3QJT5SolqXBCW38r0U"
+    )
 
 
 def test_public_jwk_carries_the_raw_key():

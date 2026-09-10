@@ -31,9 +31,7 @@ def _b64url(raw: bytes) -> str:
 
 
 def _raw_public(key: Ed25519PublicKey) -> bytes:
-    return key.public_bytes(
-        serialization.Encoding.Raw, serialization.PublicFormat.Raw
-    )
+    return key.public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
 
 
 def authority(url: str) -> str:
