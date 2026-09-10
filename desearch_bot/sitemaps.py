@@ -1,9 +1,4 @@
-"""Walk a sitemap tree and collect the page URLs it lists.
-
-Index files are followed breadth-first up to a depth limit. Collection stops at a URL limit so one
-large publisher cannot consume a whole run; children that were not reached stay in the database
-with status `pending` and can be walked later.
-"""
+"""Parse sitemap files into the addresses and dates they list."""
 
 from __future__ import annotations
 
@@ -16,6 +11,8 @@ LOC = re.compile(rb"<loc>\s*([^<\s]+)\s*</loc>", re.I)
 LASTMOD = re.compile(rb"<lastmod>\s*([^<\s]+)\s*</lastmod>", re.I)
 CHANGEFREQ = re.compile(rb"<changefreq>\s*(\w+)\s*</changefreq>", re.I)
 SITEMAP_INDEX = re.compile(rb"<sitemapindex", re.I)
+PUBLISHED = re.compile(rb"<news:publication_date>\s*([^<\s]+)\s*</news:publication_date>", re.I)
+NEWS_NAMESPACE = re.compile(rb"sitemap-news/0\.9", re.I)
 DATE_IN_PATH = re.compile(r"/(\d{4})[-/](\d{2})(?:[-/](\d{2}))?/")
 YEAR_IN_NAME = re.compile(r"(?:^|\D)(19\d{2}|20\d{2})(?:\D|$)")
 
@@ -25,6 +22,7 @@ class Entry:
     url: str
     lastmod: str | None = None
     changefreq: str | None = None
+    published: str | None = None
 
 
 @dataclass
@@ -46,11 +44,13 @@ def parse_entries(body: bytes) -> tuple[str, list[Entry]]:
             continue
         lastmod = LASTMOD.search(match.group(2))
         changefreq = CHANGEFREQ.search(match.group(2))
+        published = PUBLISHED.search(match.group(2))
         entries.append(
             Entry(
                 location.group(1).decode("utf-8", "replace"),
                 lastmod.group(1).decode("utf-8", "replace") if lastmod else None,
                 changefreq.group(1).decode("ascii", "replace").lower() if changefreq else None,
+                published.group(1).decode("utf-8", "replace") if published else None,
             )
         )
     if entries:
@@ -61,6 +61,15 @@ def parse_entries(body: bytes) -> tuple[str, list[Entry]]:
         return "invalid", []
     kind = "index" if SITEMAP_INDEX.search(body[:4096]) else "urlset"
     return kind, [Entry(loc.decode("utf-8", "replace")) for loc in locations]
+
+
+def is_news(body: bytes) -> bool:
+    """Whether the file uses Google's news sitemap format, which lists only recent articles."""
+    return bool(NEWS_NAMESPACE.search(body[:4096]))
+
+
+def has_time(value: str | None) -> bool:
+    return bool(value) and "T" in value
 
 
 def parse_lastmod(value: str | None) -> datetime | None:
