@@ -10,6 +10,8 @@ ENGLISH = (
     + b"</body></html>"
 )
 PAGES = [f"/p{i}" for i in range(12)]
+# Bodies arrive in small pieces, as they do over a network.
+CHUNK = 100
 
 
 class DNSError(Exception):
@@ -34,8 +36,13 @@ class Response:
         body = self._body
 
         class Reader:
-            async def read(self, limit):
-                return body[:limit]
+            async def read(self, size=-1):
+                return body if size < 0 else body[: min(size, CHUNK)]
+
+            async def iter_chunked(self, size):
+                step = min(size, CHUNK)
+                for start in range(0, len(body), step):
+                    yield body[start : start + step]
 
         return Reader()
 

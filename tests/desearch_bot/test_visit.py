@@ -473,3 +473,9 @@ async def test_an_answer_between_failures_keeps_the_visit_going(web, visitor):
             web.refused.add(stored.url)
     visit = await visitor.visit(active(*maps), NOW)
     assert not visit.cut_short and len(visit.sitemaps) == 6
+
+
+async def test_a_body_arriving_in_many_pieces_is_read_whole(web, visitor):
+    site(web, sitemap=urlset(*[f"/p{i}" for i in range(500)]))
+    visit = await visitor.visit(Known("example.com"), NOW)
+    assert visit.new == 500

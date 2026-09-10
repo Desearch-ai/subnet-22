@@ -551,11 +551,7 @@ class _Run:
                 if response.status in REDIRECT_STATUSES and location:
                     url = urljoin(url, location)
                     continue
-                body = (
-                    await response.content.read(limit)
-                    if response.status == 200
-                    else b""
-                )
+                body = await _read(response, limit) if response.status == 200 else b""
                 # Slow to answer means busy: rest that long before the next request.
                 self.pacer.rest(waited)
                 return Answer(response.status, body, dict(response.headers), url)
@@ -590,6 +586,17 @@ def _retry_after(headers: Mapping[str, str]) -> float:
         return float(headers.get("Retry-After", 0))
     except ValueError:
         return 0.0
+
+
+async def _read(response, limit: int) -> bytes:
+    """The body up to limit bytes; aiohttp's read(n) stops at whatever is buffered."""
+    chunks, size = [], 0
+    async for chunk in response.content.iter_chunked(64 * 1024):
+        chunks.append(chunk)
+        size += len(chunk)
+        if size >= limit:
+            break
+    return b"".join(chunks)[:limit]
 
 
 def _gunzip(body: bytes) -> bytes:
