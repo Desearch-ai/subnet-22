@@ -8,16 +8,16 @@ import math
 import time
 import zlib
 from collections import Counter, deque
-from collections.abc import Awaitable, Callable, Iterable
+from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from urllib.parse import urljoin, urlsplit
 
 import aiohttp
 
-from . import homepage, robots, schedule, signing, sitemaps
+from . import homepage, net, robots, schedule, signing, sitemaps
 from .schedule import Trust
-from .states import Outcome, State
+from .states import JITTER, Outcome, State
 from .urls import UrlStore, parse
 
 MIN_HOST_INTERVAL = 1.0
@@ -26,6 +26,7 @@ MAX_CRAWL_DELAY = 60.0
 MAX_REDIRECTS = 5
 REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
 GONE_STATUSES = frozenset({404, 410})
+SLOW_DOWN_STATUSES = frozenset({429, 503})
 SITEMAP_GUESSES = ("/sitemap.xml", "/sitemap_index.xml")
 MAX_DEPTH = 3
 MAX_FILES = 40
@@ -53,6 +54,7 @@ class KnownSitemap:
     next_check_at: datetime | None
     trust: Trust
     index_lastmod: str | None
+    url_count: int = 0
 
 
 @dataclass
@@ -67,6 +69,7 @@ class Known:
     language: str | None = None
     categories: frozenset[str] = frozenset()
     sitemaps: dict[str, KnownSitemap] = field(default_factory=dict)
+    canonical_host: str | None = None
 
 
 @dataclass
@@ -118,6 +121,10 @@ class Answer:
     url: str
 
 
+class TooManyRedirects(Exception):
+    """A redirect chain longer than we are willing to follow."""
+
+
 class Pacer:
     """One host's request clock, so a slow host never shares a budget with a fast one."""
 
@@ -133,6 +140,10 @@ class Pacer:
         if self._next:
             self._next += delay - self.interval
         self.interval = delay
+
+    def rest(self, seconds: float) -> None:
+        """Hold the next request back at least this long from now."""
+        self._next = max(self._next, time.monotonic() + min(seconds, MAX_CRAWL_DELAY))
 
     async def wait(self) -> None:
         remaining = self._next - time.monotonic()
@@ -185,6 +196,9 @@ class _Run:
         self.guesses: set[str] = set()
         self.found = False
         self.fetches = 0
+        self.kept = 0
+        self.answered = False
+        self.network_error: str | None = None
 
     async def go(self) -> None:
         roots = await self._robots() if self._robots_due() else self._roots([])
@@ -200,7 +214,8 @@ class _Run:
         return (
             self.known.state is not State.ACTIVE
             or checked is None
-            or self.now - checked >= ROBOTS_EVERY
+            # The daily recheck can land up to 10% early and should still read robots.txt.
+            or self.now - checked >= ROBOTS_EVERY * (1 - JITTER)
         )
 
     def _roots(self, named: list[str]) -> list[str]:
@@ -268,6 +283,7 @@ class _Run:
             answer, error = await self._get(url, MAX_SITEMAP_BYTES, validators), None
         except Exception as exc:
             answer, error = None, type(exc).__name__
+            self.network_error = error
         if url in self.guesses and (answer is None or answer.status != 200):
             return []
 
@@ -275,7 +291,7 @@ class _Run:
         if answer is None:
             return self._failed(update, error)
         if answer.status == 304:
-            return self._unchanged(update)
+            return self._unchanged(update, stored)
         if answer.status in GONE_STATUSES:
             update.status = "gone"
             update.next_check_at = self.now + schedule.MAX_INTERVAL
@@ -288,7 +304,7 @@ class _Run:
         update.etag = answer.headers.get("ETag")
         update.last_modified = answer.headers.get("Last-Modified")
         if stored and digest == stored.content_hash:
-            return self._unchanged(update)
+            return self._unchanged(update, stored)
         kind, entries = sitemaps.parse_entries(body)
         if kind == "invalid":
             return self._failed(update, "invalid")
@@ -399,8 +415,9 @@ class _Run:
         self.result.new += listing.new
         self.result.moved += listing.moved
 
-    def _unchanged(self, update: SitemapUpdate) -> list:
+    def _unchanged(self, update: SitemapUpdate, stored: KnownSitemap | None) -> list:
         self.found = True
+        self.kept += stored.url_count if stored else 0
         update.interval = schedule.next_interval(update.interval, changed=False)
         update.next_check_at = self.now + update.interval
         return []
@@ -416,12 +433,14 @@ class _Run:
         updates = self.result.sitemaps
         if self.known.state is State.ACTIVE:
             roots = [u for u in updates if u.depth == 0]
-            if roots and not self.found and all(u.status == "gone" for u in roots):
+            if self.result.requests and not self.answered:
+                self._stop(Outcome.UNREACHABLE, self.network_error)
+            elif roots and not self.found and all(u.status == "gone" for u in roots):
                 self._stop(Outcome.NO_SITEMAP, "sitemap_gone")
             return
         if not self.found:
             self._stop(Outcome.NO_SITEMAP, "no_sitemap")
-        elif self.result.listed < MIN_URLS and not any(
+        elif self.result.listed + self.kept < MIN_URLS and not any(
             u.kind == "index" for u in updates
         ):
             self._stop(Outcome.NO_SITEMAP, "sitemap_too_small")
@@ -481,18 +500,27 @@ class _Run:
             if modified:
                 conditional["If-Modified-Since"] = modified
         for _ in range(MAX_REDIRECTS + 1):
+            if not net.public_host(urlsplit(url).hostname or ""):
+                raise OSError("refusing a non-public address")
             await self.pacer.wait()
             self.result.requests += 1
             headers = {
                 **signing.request_headers(url, self.visitor.signer),
                 **conditional,
             }
+            started = time.monotonic()
             async with self.visitor.session.get(
                 url,
                 timeout=self.visitor.timeout,
                 allow_redirects=False,
                 headers=headers,
             ) as response:
+                self.answered = True
+                waited = time.monotonic() - started
+                if response.status in SLOW_DOWN_STATUSES:
+                    self.pacer.slow_to(
+                        max(self.pacer.interval * 2, _retry_after(response.headers))
+                    )
                 location = response.headers.get("Location")
                 if response.status in REDIRECT_STATUSES and location:
                     url = urljoin(url, location)
@@ -502,8 +530,10 @@ class _Run:
                     if response.status == 200
                     else b""
                 )
+                # Slow to answer means busy: rest that long before the next request.
+                self.pacer.rest(waited)
                 return Answer(response.status, body, dict(response.headers), url)
-        raise RuntimeError("TooManyRedirects")
+        raise TooManyRedirects(url)
 
     def _stop(self, outcome: Outcome, reason: str | None) -> None:
         self.result.outcome, self.result.reason = outcome, reason
@@ -527,6 +557,13 @@ def _delay(value: float | None) -> float:
     if value is None or not math.isfinite(value) or value < 0:
         return 0.0
     return min(value, MAX_CRAWL_DELAY)
+
+
+def _retry_after(headers: Mapping[str, str]) -> float:
+    try:
+        return float(headers.get("Retry-After", 0))
+    except ValueError:
+        return 0.0
 
 
 def _gunzip(body: bytes) -> bytes:

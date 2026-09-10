@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 
 ENTRY = re.compile(rb"<(url|sitemap)\b(.*?)</\1>", re.I | re.S)
@@ -11,10 +11,10 @@ LOC = re.compile(rb"<loc>\s*([^<\s]+)\s*</loc>", re.I)
 LASTMOD = re.compile(rb"<lastmod>\s*([^<\s]+)\s*</lastmod>", re.I)
 CHANGEFREQ = re.compile(rb"<changefreq>\s*(\w+)\s*</changefreq>", re.I)
 SITEMAP_INDEX = re.compile(rb"<sitemapindex", re.I)
-PUBLISHED = re.compile(rb"<news:publication_date>\s*([^<\s]+)\s*</news:publication_date>", re.I)
+PUBLISHED = re.compile(
+    rb"<news:publication_date>\s*([^<\s]+)\s*</news:publication_date>", re.I
+)
 NEWS_NAMESPACE = re.compile(rb"sitemap-news/0\.9", re.I)
-DATE_IN_PATH = re.compile(r"/(\d{4})[-/](\d{2})(?:[-/](\d{2}))?/")
-YEAR_IN_NAME = re.compile(r"(?:^|\D)(19\d{2}|20\d{2})(?:\D|$)")
 
 
 @dataclass
@@ -23,13 +23,6 @@ class Entry:
     lastmod: str | None = None
     changefreq: str | None = None
     published: str | None = None
-
-
-@dataclass
-class Walk:
-    urls: list[tuple[str, datetime | None, str, str | None]] = field(default_factory=list)
-    children: list[Entry] = field(default_factory=list)
-    truncated: bool = False
 
 
 def parse_entries(body: bytes) -> tuple[str, list[Entry]]:
@@ -49,7 +42,9 @@ def parse_entries(body: bytes) -> tuple[str, list[Entry]]:
             Entry(
                 location.group(1).decode("utf-8", "replace"),
                 lastmod.group(1).decode("utf-8", "replace") if lastmod else None,
-                changefreq.group(1).decode("ascii", "replace").lower() if changefreq else None,
+                changefreq.group(1).decode("ascii", "replace").lower()
+                if changefreq
+                else None,
                 published.group(1).decode("utf-8", "replace") if published else None,
             )
         )
@@ -83,32 +78,3 @@ def parse_lastmod(value: str | None) -> datetime | None:
             continue
         return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
     return None
-
-
-def date_precision(url: str, lastmod: str | None) -> str:
-    if lastmod:
-        return "day"
-    match = DATE_IN_PATH.search(url)
-    if match:
-        return "day" if match.group(3) else "month"
-    return "year" if YEAR_IN_NAME.search(url.rsplit("/", 1)[-1]) else "none"
-
-
-def collect(kind: str, entries: list[Entry], remaining: int) -> Walk:
-    walk = Walk()
-    if kind == "index":
-        walk.children = entries
-        return walk
-    for entry in entries:
-        if len(walk.urls) >= remaining:
-            walk.truncated = True
-            break
-        walk.urls.append(
-            (
-                entry.url,
-                parse_lastmod(entry.lastmod),
-                date_precision(entry.url, entry.lastmod),
-                entry.changefreq,
-            )
-        )
-    return walk

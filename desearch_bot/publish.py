@@ -1,9 +1,4 @@
-"""Publish the domain list to the public dataset.
-
-One column, one row per domain. Everything operational — sitemaps, crawl delay, refresh
-schedule, categories — stays in the database; miners only need to know which hosts are in scope.
-The file is the database's domain table, so the two always carry the same set.
-"""
+"""Publish the domain list: one column, one row per domain in scope."""
 
 from __future__ import annotations
 

@@ -1,14 +1,4 @@
-"""Adult domains, from public blocklists.
-
-Four lists are merged because each misses domains the others catch, and none of them flags a
-mainstream site: measured against 98,309 qualified domains they agreed on 576 and disagreed on
-278, and none flagged any of a 35-site control set. The union is used rather than a majority vote
-because dropping a good domain costs one row out of a hundred thousand, while keeping an adult one
-costs credibility.
-
-The `blhk` list ships its own allowlist of domains it knows it over-blocks (a university, a
-mainstream magazine); that is subtracted.
-"""
+"""Adult domains, merged from four public blocklists minus the allowlist one of them ships."""
 
 from __future__ import annotations
 

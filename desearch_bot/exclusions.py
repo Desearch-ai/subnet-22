@@ -1,16 +1,10 @@
-"""Which hosts never reach a miner, and why.
-
-Categories come from the UT1 blacklists (Universite Toulouse 1). Matching is on the exact host:
-UT1 lists subdomains such as `<name>.wordpress.com`, so collapsing entries to their registrable
-domain would exclude wordpress.com itself.
-"""
+"""Which hosts never reach a miner, and why."""
 
 from __future__ import annotations
 
 import re
 
-# Operators who have asked us to stop. Matched on the domain label rather than a fixed list of
-# hosts, so a new site in the same family is covered without waiting for a second complaint.
+# Operators who asked us to stop; matching the label covers their other sites too.
 BLOCKED_OPERATORS = ("shinhan",)
 
 # Unrelated names that merely contain one of those strings.
@@ -27,8 +21,7 @@ def blocked_operator(host: str) -> bool:
 # Removed outright: unsafe, or no article-shaped content to index.
 UT1_EXCLUDE = (
     "adult",
-    # Bank portals are login screens with nothing to index, and their intrusion detection
-    # treats a robots.txt fetch followed by two sitemap probes as a scan.
+    # Bank portals are login screens, and their IDS reads our probes as a scan.
     "bank",
     "malware",
     "phishing",
@@ -74,8 +67,7 @@ UT1_TYPE_HINT = {
     "jobsearch": "company",
 }
 
-# Search engines, social platforms, media apps and user-content sites: their pages are generated
-# per session or per user and are not worth a crawl budget.
+# Search, social and user-content platforms: pages made per user, not worth a crawl.
 DYNAMIC_PLATFORMS = {
     "google.com",
     "google.co.uk",
@@ -353,7 +345,11 @@ HOSTNAME = re.compile(r"^(?!-)[a-z0-9-]{1,63}(?<!-)(\.(?!-)[a-z0-9-]{1,63}(?<!-)
 
 
 def valid_host(host: str) -> bool:
-    return len(host) <= 253 and bool(HOSTNAME.match(host)) and not host.split(".")[-1].isdigit()
+    return (
+        len(host) <= 253
+        and bool(HOSTNAME.match(host))
+        and not host.split(".")[-1].isdigit()
+    )
 
 
 INFRASTRUCTURE_NAME = re.compile(

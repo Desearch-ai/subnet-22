@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import os
-from datetime import datetime, timedelta, timezone
+from collections import defaultdict
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import asyncpg
@@ -60,130 +61,6 @@ async def load_candidates(pool: asyncpg.Pool, rows) -> None:
             )
 
 
-async def take_candidates(pool: asyncpg.Pool, limit: int):
-    async with pool.acquire() as connection:
-        return await connection.fetch(
-            """
-            SELECT host, rank, tld_group
-            FROM bot.domains
-            WHERE status = 'candidate'
-            ORDER BY rank NULLS LAST
-            LIMIT $1
-            """,
-            limit,
-        )
-
-
-async def save_domains(pool: asyncpg.Pool, results) -> None:
-    """One statement for a batch of visit outcomes."""
-    rows = [
-        (
-            r.host,
-            "qualified" if r.qualified else "redirect" if r.canonical_host else "rejected",
-            r.reject_reason,
-            r.canonical_host,
-            r.robots_status,
-            r.robots_allows,
-            r.crawl_delay,
-            r.language,
-            r.declared_lang,
-            r.home_chars,
-            r.sitemap_url,
-            r.sitemap_kind,
-            url_count,
-        )
-        for r, url_count in results
-    ]
-    if not rows:
-        return
-    async with pool.acquire() as connection:
-        await connection.executemany(
-            """
-            UPDATE bot.domains SET
-                status = $2, reject_reason = $3, canonical_host = $4, robots_status = $5,
-                robots_allows = $6, crawl_delay = $7, language = $8, declared_lang = $9,
-                home_chars = $10, sitemap_url = $11, sitemap_kind = $12, url_count = $13,
-                checked_at = now()
-            WHERE host = $1
-            """,
-            rows,
-        )
-
-
-async def save_sitemap(
-    pool: asyncpg.Pool,
-    host: str,
-    url: str,
-    kind: str | None,
-    depth: int,
-    url_count: int = 0,
-    child_count: int = 0,
-    parent_id: int | None = None,
-    status: str = "ok",
-    error: str | None = None,
-    etag: str | None = None,
-    last_modified: str | None = None,
-    content_hash: str | None = None,
-    check_interval_s: int = 86400,
-) -> int | None:
-    async with pool.acquire() as connection:
-        return await connection.fetchval(
-            """
-            INSERT INTO bot.sitemaps (
-                host, url, kind, parent_id, depth, url_count, child_count, status, error,
-                etag, last_modified, content_hash, fetched_at, changed_at,
-                check_interval_s, next_check_at
-            )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, now(), now(), $13, $14)
-            ON CONFLICT (url) DO UPDATE SET
-                kind = EXCLUDED.kind,
-                url_count = EXCLUDED.url_count,
-                child_count = EXCLUDED.child_count,
-                status = EXCLUDED.status,
-                error = EXCLUDED.error,
-                etag = EXCLUDED.etag,
-                last_modified = EXCLUDED.last_modified,
-                content_hash = EXCLUDED.content_hash,
-                fetched_at = now(),
-                changed_at = CASE
-                    WHEN bot.sitemaps.content_hash IS DISTINCT FROM EXCLUDED.content_hash
-                    THEN now() ELSE bot.sitemaps.changed_at END,
-                unchanged_checks = CASE
-                    WHEN bot.sitemaps.content_hash IS DISTINCT FROM EXCLUDED.content_hash
-                    THEN 0 ELSE bot.sitemaps.unchanged_checks + 1 END
-            RETURNING id
-            """,
-            host,
-            url,
-            kind,
-            parent_id,
-            depth,
-            url_count,
-            child_count,
-            status,
-            error,
-            etag,
-            last_modified,
-            content_hash,
-            check_interval_s,
-            datetime.now(timezone.utc) + timedelta(seconds=check_interval_s),
-        )
-
-
-async def record_frontier_files(pool: asyncpg.Pool, rows) -> None:
-    if not rows:
-        return
-    async with pool.acquire() as connection:
-        await connection.executemany(
-            """
-            INSERT INTO bot.frontier_files (path, host_bucket, url_count, bytes)
-            VALUES ($1, $2, $3, $4)
-            ON CONFLICT (path) DO NOTHING
-            """,
-            rows,
-        )
-
-
 async def iter_hosts(pool: asyncpg.Pool, chunk: int = 200_000):
     """Walk every host by primary key, so a six-million-row pass never holds them all."""
     after = ""
@@ -203,22 +80,6 @@ async def iter_hosts(pool: asyncpg.Pool, chunk: int = 200_000):
         after = rows[-1]["host"]
 
 
-async def iter_unresolved_hosts(pool: asyncpg.Pool, chunk: int = 5_000):
-    """Only domains not yet checked, so a restart continues rather than starting over."""
-    while True:
-        async with pool.acquire() as connection:
-            rows = await connection.fetch(
-                """
-                SELECT host FROM bot.domains WHERE resolved_at IS NULL
-                ORDER BY host LIMIT $1
-                """,
-                chunk,
-            )
-        if not rows:
-            return
-        yield rows
-
-
 async def iter_published_hosts(pool: asyncpg.Pool, chunk: int = 200_000):
     """Only what the public list should contain: reachable, canonical, not disqualified."""
     after = ""
@@ -236,80 +97,6 @@ async def iter_published_hosts(pool: asyncpg.Pool, chunk: int = 200_000):
             return
         yield rows
         after = rows[-1]["host"]
-
-
-async def iter_resolving_hosts(pool: asyncpg.Pool, chunk: int = 5_000):
-    """Domains still to canonicalise. Marking every one we check, redirect or not, is what makes
-    a restart continue instead of walking the whole list again."""
-    while True:
-        async with pool.acquire() as connection:
-            rows = await connection.fetch(
-                """
-                SELECT host FROM bot.domains
-                WHERE resolves IS TRUE AND canonicalised_at IS NULL
-                ORDER BY host LIMIT $1
-                """,
-                chunk,
-            )
-        if not rows:
-            return
-        yield rows
-
-
-async def save_resolution(pool: asyncpg.Pool, rows) -> int:
-    if not rows:
-        return 0
-    async with pool.acquire() as connection:
-        async with connection.transaction():
-            await connection.execute(
-                "CREATE TEMP TABLE resolution_stage (host text, resolves boolean) ON COMMIT DROP"
-            )
-            await connection.copy_records_to_table(
-                "resolution_stage", records=rows, columns=["host", "resolves"]
-            )
-            result = await connection.execute(
-                """
-                UPDATE bot.domains d SET resolves = s.resolves, resolved_at = now()
-                FROM resolution_stage s WHERE d.host = s.host
-                """
-            )
-    return int(result.split()[-1])
-
-
-async def save_canonical(pool: asyncpg.Pool, rows) -> int:
-    """Record the name a domain actually serves under. A domain that redirects elsewhere stops
-    being a crawl target of its own."""
-    rows = list(rows)
-    if not rows:
-        return 0
-    async with pool.acquire() as connection:
-        async with connection.transaction():
-            await connection.execute(
-                """
-                CREATE TEMP TABLE canonical_stage (
-                    host text, canonical_host text, http_ok boolean
-                ) ON COMMIT DROP
-                """
-            )
-            await connection.copy_records_to_table(
-                "canonical_stage",
-                records=rows,
-                columns=["host", "canonical_host", "http_ok"],
-            )
-            result = await connection.execute(
-                """
-                UPDATE bot.domains d SET
-                    canonical_host = s.canonical_host,
-                    http_ok = s.http_ok,
-                    canonicalised_at = now(),
-                    status = CASE
-                        WHEN s.canonical_host IS NOT NULL
-                             AND d.status IN ('candidate', 'qualified') THEN 'redirect'
-                        ELSE d.status END
-                FROM canonical_stage s WHERE d.host = s.host
-                """
-            )
-    return int(result.split()[-1])
 
 
 async def existing_hosts(pool: asyncpg.Pool, hosts) -> set[str]:
@@ -386,8 +173,14 @@ async def save_domain_categories(pool: asyncpg.Pool, rows) -> int:
             await connection.copy_records_to_table(
                 "dc_stage",
                 records=rows,
-                columns=["host", "source", "category", "raw_category",
-                         "category_id", "super_category"],
+                columns=[
+                    "host",
+                    "source",
+                    "category",
+                    "raw_category",
+                    "category_id",
+                    "super_category",
+                ],
             )
             result = await connection.execute(
                 """
@@ -426,57 +219,321 @@ async def save_category_rollup(pool: asyncpg.Pool, rows) -> int:
     return int(result.split()[-1])
 
 
-async def delete_by_category(pool: asyncpg.Pool, labels) -> dict:
-    """Drop every domain carrying an excluded label, with the sitemaps that belong to it."""
-    labels = list(labels)
-    async with pool.acquire() as connection:
-        async with connection.transaction():
-            sitemaps = await connection.execute(
-                """
-                DELETE FROM bot.sitemaps WHERE host IN (
-                    SELECT host FROM bot.domains WHERE categories && $1::text[]
-                )
-                """,
-                labels,
-            )
-            domains = await connection.execute(
-                "DELETE FROM bot.domains WHERE categories && $1::text[]", labels
-            )
-    return {
-        "domains": int(domains.split()[-1]),
-        "sitemaps": int(sitemaps.split()[-1]),
-    }
-
-
-async def delete_hosts(pool: asyncpg.Pool, hosts) -> dict:
-    hosts = list(hosts)
-    if not hosts:
-        return {"domains": 0, "sitemaps": 0}
-    async with pool.acquire() as connection:
-        async with connection.transaction():
-            sitemaps = await connection.execute(
-                "DELETE FROM bot.sitemaps WHERE host = ANY($1::text[])", hosts
-            )
-            domains = await connection.execute(
-                "DELETE FROM bot.domains WHERE host = ANY($1::text[])", hosts
-            )
-    return {
-        "domains": int(domains.split()[-1]),
-        "sitemaps": int(sitemaps.split()[-1]),
-    }
-
-
 async def counts(pool: asyncpg.Pool) -> dict:
     async with pool.acquire() as connection:
-        row = await connection.fetchrow(
+        states = await connection.fetch(
+            "SELECT state, count(*) AS n FROM bot.domains GROUP BY state ORDER BY state"
+        )
+        totals = await connection.fetchrow(
             """
-            SELECT
-                (SELECT count(*) FROM bot.domains) AS domains,
-                (SELECT count(*) FROM bot.domains WHERE status = 'candidate') AS candidates,
-                (SELECT count(*) FROM bot.domains WHERE status = 'qualified') AS qualified,
-                (SELECT count(*) FROM bot.domains WHERE status = 'rejected') AS rejected,
-                (SELECT count(*) FROM bot.sitemaps) AS sitemaps,
-                (SELECT coalesce(sum(url_count), 0) FROM bot.domains) AS urls
+            SELECT (SELECT count(*) FROM bot.domains) AS domains,
+                   (SELECT count(*) FROM bot.sitemaps) AS sitemaps,
+                   (SELECT coalesce(sum(url_count), 0) FROM bot.domains) AS urls
             """
         )
-        return dict(row)
+    return {**dict(totals), **{row["state"]: row["n"] for row in states}}
+
+
+REFRESH = ("active", "failing", "down")
+DISCOVERY = ("new", "unreachable", "no_sitemap", "redirects", "blocked", "ineligible")
+
+
+async def due(
+    pool: asyncpg.Pool, limit: int, busy: list[str], refresh: bool, now: datetime
+) -> list:
+    """Domains whose next visit has come, oldest first, skipping any already being visited."""
+    from .schedule import Trust
+    from .states import State
+    from .visit import Known, KnownSitemap
+
+    if limit <= 0:
+        return []
+    tier = REFRESH if refresh else DISCOVERY
+    # A literal list, so the planner can match the partial index for this tier.
+    predicate = "state IN (" + ", ".join(f"'{state}'" for state in tier) + ")"
+    order = "next_due_at" if refresh else "next_due_at, rank"
+    async with pool.acquire() as connection:
+        rows = await connection.fetch(
+            f"""
+            SELECT host, state, failures, last_ok_at, robots_checked_at, robots_allows,
+                   crawl_delay, language, categories, canonical_host
+            FROM bot.domains
+            WHERE {predicate} AND next_due_at <= $3 AND host <> ALL($1::text[])
+            ORDER BY {order}
+            LIMIT $2
+            """,
+            busy,
+            limit,
+            now,
+        )
+        if not rows:
+            return []
+        sitemap_rows = await connection.fetch(
+            """
+            SELECT id, host, url, kind, depth, parent_id, etag, last_modified, content_hash,
+                   check_interval_s, next_check_at, trust, index_lastmod, url_count
+            FROM bot.sitemaps WHERE host = ANY($1::text[])
+            """,
+            [row["host"] for row in rows],
+        )
+
+    by_host: dict[str, dict] = defaultdict(dict)
+    for s in sitemap_rows:
+        by_host[s["host"]][s["url"]] = KnownSitemap(
+            s["id"],
+            s["url"],
+            s["kind"],
+            s["depth"],
+            s["parent_id"],
+            s["etag"],
+            s["last_modified"],
+            s["content_hash"],
+            timedelta(seconds=s["check_interval_s"]),
+            s["next_check_at"],
+            Trust(s["trust"]),
+            s["index_lastmod"],
+            s["url_count"],
+        )
+    return [
+        Known(
+            host=row["host"],
+            state=State(row["state"]),
+            failures=row["failures"],
+            last_ok_at=row["last_ok_at"],
+            robots_checked_at=row["robots_checked_at"],
+            robots_allows=row["robots_allows"],
+            crawl_delay=row["crawl_delay"],
+            language=row["language"],
+            categories=frozenset(row["categories"] or ()),
+            sitemaps=by_host.get(row["host"], {}),
+            canonical_host=row["canonical_host"],
+        )
+        for row in rows
+    ]
+
+
+async def allocate_sitemap(pool: asyncpg.Pool, host: str, url: str) -> int:
+    """The id for a sitemap file, creating its row the first time we meet it."""
+    async with pool.acquire() as connection:
+        return await connection.fetchval(
+            """
+            INSERT INTO bot.sitemaps (host, url) VALUES ($1, $2)
+            ON CONFLICT (url) DO UPDATE SET host = bot.sitemaps.host
+            RETURNING id
+            """,
+            host,
+            url,
+        )
+
+
+async def excluded_categories(pool: asyncpg.Pool) -> frozenset[str]:
+    async with pool.acquire() as connection:
+        rows = await connection.fetch("SELECT category FROM bot.excluded_categories")
+    return frozenset(row["category"] for row in rows)
+
+
+async def save_visits(pool: asyncpg.Pool, writes) -> None:
+    """Write a batch of finished visits: each domain's new state, and every sitemap it read."""
+    domains = [
+        (
+            w.host,
+            w.state.value,
+            w.reason,
+            w.failures,
+            w.next_due_at,
+            w.last_ok_at,
+            w.canonical_host,
+            w.checked_at,
+            w.visit.robots_read,
+            w.visit.robots_status,
+            w.visit.robots_allows,
+            w.visit.crawl_delay,
+            w.visit.language,
+            w.visit.declared_lang,
+            w.visit.home_chars,
+        )
+        for w in writes
+    ]
+    sitemaps = [
+        (
+            u.id,
+            u.kind,
+            u.parent_id,
+            u.depth,
+            u.status,
+            u.error,
+            u.etag,
+            u.last_modified,
+            u.content_hash,
+            u.changed,
+            u.url_count,
+            u.child_count,
+            u.trust.value,
+            u.index_lastmod,
+            int(u.interval.total_seconds()),
+            u.next_check_at,
+            w.checked_at,
+        )
+        for w in writes
+        for u in w.visit.sitemaps
+    ]
+    async with pool.acquire() as connection:
+        async with connection.transaction():
+            await connection.execute(
+                """
+                CREATE TEMP TABLE visit_stage (
+                    host text, state text, state_reason text, failures smallint,
+                    next_due_at timestamptz, last_ok_at timestamptz, canonical_host text,
+                    checked_at timestamptz, robots_read boolean, robots_status integer,
+                    robots_allows boolean, crawl_delay real, language text,
+                    declared_lang text, home_chars integer
+                ) ON COMMIT DROP
+                """
+            )
+            await connection.copy_records_to_table(
+                "visit_stage",
+                records=domains,
+                columns=[
+                    "host",
+                    "state",
+                    "state_reason",
+                    "failures",
+                    "next_due_at",
+                    "last_ok_at",
+                    "canonical_host",
+                    "checked_at",
+                    "robots_read",
+                    "robots_status",
+                    "robots_allows",
+                    "crawl_delay",
+                    "language",
+                    "declared_lang",
+                    "home_chars",
+                ],
+            )
+            await connection.execute(
+                """
+                UPDATE bot.domains d SET
+                    state = s.state, state_reason = s.state_reason, failures = s.failures,
+                    next_due_at = s.next_due_at, last_ok_at = s.last_ok_at,
+                    canonical_host = s.canonical_host, checked_at = s.checked_at,
+                    robots_checked_at = CASE WHEN s.robots_read THEN s.checked_at
+                                             ELSE d.robots_checked_at END,
+                    robots_status = CASE WHEN s.robots_read THEN s.robots_status
+                                         ELSE d.robots_status END,
+                    robots_allows = CASE WHEN s.robots_read THEN s.robots_allows
+                                         ELSE d.robots_allows END,
+                    crawl_delay = CASE WHEN s.robots_read THEN s.crawl_delay ELSE d.crawl_delay END,
+                    language = coalesce(s.language, d.language),
+                    declared_lang = coalesce(s.declared_lang, d.declared_lang),
+                    home_chars = coalesce(s.home_chars, d.home_chars)
+                FROM visit_stage s WHERE d.host = s.host
+                """
+            )
+            if sitemaps:
+                await connection.execute(
+                    """
+                    CREATE TEMP TABLE sitemap_stage (
+                        id bigint, kind text, parent_id bigint, depth smallint, status text,
+                        error text, etag text, last_modified text, content_hash text,
+                        changed boolean, url_count integer, child_count integer, trust text,
+                        index_lastmod text, check_interval_s integer,
+                        next_check_at timestamptz, fetched_at timestamptz
+                    ) ON COMMIT DROP
+                    """
+                )
+                await connection.copy_records_to_table(
+                    "sitemap_stage",
+                    records=sitemaps,
+                    columns=[
+                        "id",
+                        "kind",
+                        "parent_id",
+                        "depth",
+                        "status",
+                        "error",
+                        "etag",
+                        "last_modified",
+                        "content_hash",
+                        "changed",
+                        "url_count",
+                        "child_count",
+                        "trust",
+                        "index_lastmod",
+                        "check_interval_s",
+                        "next_check_at",
+                        "fetched_at",
+                    ],
+                )
+                await connection.execute(
+                    """
+                    UPDATE bot.sitemaps m SET
+                        kind = coalesce(s.kind, m.kind), parent_id = s.parent_id,
+                        depth = s.depth, status = s.status, error = s.error, etag = s.etag,
+                        last_modified = s.last_modified, content_hash = s.content_hash,
+                        url_count = CASE WHEN s.changed THEN s.url_count ELSE m.url_count END,
+                        child_count = CASE WHEN s.changed THEN s.child_count ELSE m.child_count END,
+                        trust = s.trust, index_lastmod = s.index_lastmod,
+                        check_interval_s = s.check_interval_s, next_check_at = s.next_check_at,
+                        fetched_at = s.fetched_at,
+                        changed_at = CASE WHEN s.changed THEN s.fetched_at ELSE m.changed_at END
+                    FROM sitemap_stage s WHERE m.id = s.id
+                    """
+                )
+            await connection.execute(
+                """
+                UPDATE bot.domains d SET url_count = coalesce((
+                    SELECT sum(m.url_count) FROM bot.sitemaps m
+                    WHERE m.host = d.host AND m.status = 'ok'
+                ), 0)
+                WHERE d.host = ANY($1::text[])
+                """,
+                [w.host for w in writes],
+            )
+
+
+async def adopt(pool: asyncpg.Pool, rows, now: datetime) -> None:
+    """Add domains found through redirects, ranked like the domain that pointed at them."""
+    rows = list(rows)
+    if not rows:
+        return
+    hosts, sources, groups, states, reasons = (list(column) for column in zip(*rows))
+    async with pool.acquire() as connection:
+        await connection.execute(
+            """
+            INSERT INTO bot.domains (host, rank, tld_group, state, state_reason, next_due_at)
+            SELECT DISTINCT ON (t.host) t.host, d.rank, t.tld_group, t.state, t.reason,
+                   CASE WHEN t.state = 'excluded' THEN NULL ELSE $6::timestamptz END
+            FROM unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::text[])
+                AS t(host, source, tld_group, state, reason)
+            LEFT JOIN bot.domains d ON d.host = t.source
+            ORDER BY t.host, d.rank NULLS LAST
+            ON CONFLICT (host) DO NOTHING
+            """,
+            hosts,
+            sources,
+            groups,
+            [str(state) for state in states],
+            reasons,
+            now,
+        )
+
+
+async def exclude_hosts(pool: asyncpg.Pool, rows) -> int:
+    """Flag domains that must never be crawled or published, keeping the reason."""
+    rows = list(rows)
+    if not rows:
+        return 0
+    hosts, reasons = (list(column) for column in zip(*rows))
+    async with pool.acquire() as connection:
+        result = await connection.execute(
+            """
+            UPDATE bot.domains d
+            SET state = 'excluded', state_reason = s.reason, next_due_at = NULL
+            FROM unnest($1::text[], $2::text[]) AS s(host, reason)
+            WHERE d.host = s.host AND d.state <> 'excluded'
+            """,
+            hosts,
+            reasons,
+        )
+    return int(result.split()[-1])

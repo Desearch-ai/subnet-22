@@ -1,13 +1,4 @@
-"""What a domain is about, and whether that rules it out.
-
-Labels come from the UT1 blacklists and the adult blocklists, both of which are plain files, so
-labelling six million domains costs no requests. Cloudflare returns richer labels but its
-threat-intelligence quota is 100 calls a month below Enterprise, so it can only enrich the head
-of the list; see `radar.py`.
-
-Matching is on the exact host. UT1 lists subdomains such as `<name>.wordpress.com`, so collapsing
-its entries to their registrable domain would mislabel the parent.
-"""
+"""What a domain is about, from offline lists, and whether that rules it out."""
 
 from __future__ import annotations
 
@@ -81,8 +72,7 @@ EXCLUDE = frozenset(
     {
         "adult",
         "gambling",
-        # Bank portals are login screens with nothing to index, and their intrusion detection
-        # treats a robots.txt fetch followed by two sitemap probes as a scan.
+        # Bank portals are login screens, and their IDS reads our probes as a scan.
         "bank",
         "malware",
         "phishing",
@@ -158,8 +148,13 @@ class Catalogue:
 
     def labels(self, host: str) -> list[str]:
         found = [label for label, hosts in self.by_label.items() if host in hosts]
-        return sorted(found, key=lambda label: (PRIORITY.index(label)
-                                                if label in PRIORITY else len(PRIORITY), label))
+        return sorted(
+            found,
+            key=lambda label: (
+                PRIORITY.index(label) if label in PRIORITY else len(PRIORITY),
+                label,
+            ),
+        )
 
     def primary(self, labels: list[str]) -> str | None:
         return labels[0] if labels else None

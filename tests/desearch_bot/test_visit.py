@@ -3,97 +3,24 @@ import time
 from datetime import datetime, timedelta, timezone
 
 import pytest
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
+from desearch_bot import signing
 from desearch_bot.schedule import NEWS_INTERVAL, Trust
 from desearch_bot.states import Outcome, State
 from desearch_bot.urls import UrlStore
-from desearch_bot.visit import MAX_FILES, Known, KnownSitemap, Visitor
+from desearch_bot.visit import (
+    MAX_FILES,
+    MAX_REDIRECTS,
+    Known,
+    KnownSitemap,
+    Pacer,
+    Visitor,
+)
+
+from .fakeweb import ALLOW, ENGLISH, PAGES, FakeWeb, index, site, urlset
 
 NOW = datetime(2026, 9, 10, 12, 0, tzinfo=timezone.utc)
-ALLOW = b"User-agent: *\nAllow: /\n"
-ENGLISH = (
-    b"<html lang='en'><body>"
-    + b"plenty of readable english words here " * 20
-    + b"</body></html>"
-)
-PAGES = [f"/p{i}" for i in range(12)]
-
-
-class DNSError(Exception):
-    pass
-
-
-class _Response:
-    def __init__(self, status, body=b"", headers=None):
-        self.status, self._body, self.headers = status, body, headers or {}
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, *_):
-        return False
-
-    @property
-    def content(self):
-        body = self._body
-
-        class Reader:
-            async def read(self, limit):
-                return body[:limit]
-
-        return Reader()
-
-
-class FakeWeb:
-    """Scripted sites: each address answers with a status and body, an ETag, or a redirect."""
-
-    def __init__(self):
-        self.pages = {}
-        self.dead = set()
-        self.requested = []
-        self.times = []
-
-    def page(self, url, body=b"", status=200, etag=None, location=None):
-        self.pages[url] = (status, body, etag, location)
-
-    def get(self, url, headers=None, **_):
-        self.requested.append(url)
-        self.times.append(time.monotonic())
-        if url.split("/")[2] in self.dead:
-            raise DNSError(url)
-        status, body, etag, location = self.pages.get(url, (404, b"", None, None))
-        if etag and headers and headers.get("If-None-Match") == etag:
-            return _Response(304)
-        answer = {"ETag": etag} if etag else {}
-        if location:
-            answer["Location"] = location
-        return _Response(status, body, answer)
-
-
-def urlset(*paths, host="example.com", lastmod=None, news=False):
-    namespace = (
-        ' xmlns:news="http://www.google.com/schemas/sitemap-news/0.9"' if news else ""
-    )
-    stamp = f"<lastmod>{lastmod}</lastmod>" if lastmod else ""
-    items = "".join(
-        f"<url><loc>https://{host}{path}</loc>{stamp}</url>" for path in paths
-    )
-    return f"<?xml version='1.0'?><urlset{namespace}>{items}</urlset>".encode()
-
-
-def index(*children):
-    items = "".join(
-        f"<sitemap><loc>{url}</loc>{f'<lastmod>{date}</lastmod>' if date else ''}</sitemap>"
-        for url, date in children
-    )
-    return f"<?xml version='1.0'?><sitemapindex>{items}</sitemapindex>".encode()
-
-
-def site(web, robots_txt=ALLOW, sitemap=None, home=ENGLISH, host="example.com"):
-    web.page(f"https://{host}/robots.txt", robots_txt)
-    if sitemap is not None:
-        web.page(f"https://{host}/sitemap.xml", sitemap)
-    web.page(f"https://{host}/", home)
 
 
 def active(*sitemaps):
@@ -119,6 +46,7 @@ def known_sitemap(
     due=True,
     trust=Trust.UNKNOWN,
     index_lastmod=None,
+    url_count=0,
 ):
     next_check = NOW - timedelta(minutes=1) if due else NOW + timedelta(hours=1)
     return KnownSitemap(
@@ -134,6 +62,24 @@ def known_sitemap(
         next_check,
         trust,
         index_lastmod,
+        url_count,
+    )
+
+
+def make_visitor(web, store, signer=None):
+    ids = iter(range(1, 100_000))
+
+    async def allocate(host, url):
+        return next(ids)
+
+    return Visitor(
+        web,
+        store,
+        allocate,
+        detect_language=lambda text: "en" if "english" in text else "fr",
+        registrable=lambda host: host.removeprefix("www."),
+        signer=signer,
+        floor=0.0,
     )
 
 
@@ -150,19 +96,7 @@ def store(tmp_path):
 
 @pytest.fixture
 def visitor(web, store):
-    ids = iter(range(1, 100_000))
-
-    async def allocate(host, url):
-        return next(ids)
-
-    return Visitor(
-        web,
-        store,
-        allocate,
-        detect_language=lambda text: "en" if "english" in text else "fr",
-        registrable=lambda host: host.removeprefix("www."),
-        floor=0.0,
-    )
+    return make_visitor(web, store)
 
 
 async def test_a_new_english_domain_with_a_sitemap_becomes_active_with_its_urls(
@@ -387,3 +321,113 @@ async def test_the_crawl_delay_in_robots_spaces_every_later_request(web, visitor
     assert visit.crawl_delay == 0.3
     gaps = [later - earlier for earlier, later in zip(web.times, web.times[1:])]
     assert gaps and all(gap >= 0.28 for gap in gaps)
+
+
+async def test_a_sitemap_on_a_private_address_is_never_requested(web, visitor):
+    web.page(
+        "https://example.com/robots.txt", b"Sitemap: http://10.0.0.5/sitemap.xml\n"
+    )
+    web.page("https://example.com/", ENGLISH)
+    await visitor.visit(Known("example.com"), NOW)
+    assert "http://10.0.0.5/sitemap.xml" not in web.requested
+
+
+async def test_a_rate_limited_sitemap_is_recorded_as_an_error(web, visitor):
+    url = "https://example.com/sitemap.xml"
+    web.page(url, status=429)
+    visit = await visitor.visit(active(known_sitemap(url)), NOW)
+    [update] = visit.sitemaps
+    assert (update.status, update.error) == ("error", "http_429")
+
+
+async def test_a_relative_redirect_is_followed_on_the_same_host(web, visitor):
+    web.page("https://example.com/robots.txt", status=301, location="/robots-new.txt")
+    web.page(
+        "https://example.com/robots-new.txt", b"Sitemap: https://example.com/s.xml\n"
+    )
+    web.page("https://example.com/s.xml", urlset(*PAGES))
+    web.page("https://example.com/", ENGLISH)
+    visit = await visitor.visit(Known("example.com"), NOW)
+    assert visit.outcome is Outcome.SITEMAP and visit.new == 12
+
+
+async def test_when_https_refuses_the_visit_falls_back_to_http(web, visitor):
+    web.refused.add("https://example.com/robots.txt")
+    web.page("http://example.com/robots.txt", ALLOW)
+    web.page("https://example.com/sitemap.xml", urlset(*PAGES))
+    web.page("https://example.com/", ENGLISH)
+    visit = await visitor.visit(Known("example.com"), NOW)
+    assert visit.outcome is Outcome.SITEMAP and visit.robots_status == 200
+
+
+async def test_a_redirect_loop_ends_the_visit_as_unreachable(web, visitor):
+    for scheme in ("https", "http"):
+        url = f"{scheme}://example.com/robots.txt"
+        web.page(url, status=301, location=url)
+    visit = await visitor.visit(Known("example.com"), NOW)
+    assert (visit.outcome, visit.reason) == (Outcome.UNREACHABLE, "TooManyRedirects")
+    assert len(web.requested) == 2 * (MAX_REDIRECTS + 1)
+
+
+async def test_a_homepage_that_redirects_away_marks_the_domain_a_redirect(web, visitor):
+    site(web, sitemap=urlset(*PAGES))
+    web.page("https://example.com/", status=301, location="https://elsewhere.com/")
+    visit = await visitor.visit(Known("example.com"), NOW)
+    assert (visit.outcome, visit.canonical_host) == (Outcome.REDIRECT, "elsewhere.com")
+
+
+async def test_every_request_is_signed_when_a_key_is_configured(web, store):
+    signer = signing.Signer(Ed25519PrivateKey.generate())
+    site(web, sitemap=urlset(*PAGES))
+    await make_visitor(web, store, signer).visit(Known("example.com"), NOW)
+    assert web.sent and all(
+        f'keyid="{signer.keyid}"' in sent["Signature-Input"] for sent in web.sent
+    )
+
+
+async def test_requests_are_unsigned_without_a_key(web, visitor):
+    site(web, sitemap=urlset(*PAGES))
+    await visitor.visit(Known("example.com"), NOW)
+    assert all("Signature" not in sent and "User-Agent" in sent for sent in web.sent)
+
+
+async def test_an_active_domain_that_answers_nothing_is_unreachable(web, visitor):
+    web.dead.add("example.com")
+    visit = await visitor.visit(
+        active(known_sitemap("https://example.com/sitemap.xml")), NOW
+    )
+    assert visit.outcome is Outcome.UNREACHABLE
+
+
+async def test_a_recovering_domain_whose_sitemaps_did_not_change_is_active_again(
+    web, visitor
+):
+    url = "https://example.com/sitemap.xml"
+    site(web)
+    web.page(url, urlset(*PAGES), etag='"v1"')
+    known = active(known_sitemap(url, etag='"v1"', url_count=12))
+    known.state = State.FAILING
+    visit = await visitor.visit(known, NOW)
+    assert visit.outcome is Outcome.SITEMAP
+
+
+async def test_a_slow_answer_holds_back_the_next_request(web, visitor):
+    site(web, sitemap=urlset(*PAGES))
+    web.page("https://example.com/robots.txt", ALLOW, delay=0.3)
+    await visitor.visit(Known("example.com"), NOW)
+    assert web.times[1] - web.times[0] >= 0.55
+
+
+async def test_a_crawl_delay_learned_mid_visit_holds_back_the_request_already_due():
+    pacer = Pacer(floor=0.0)
+    await pacer.wait()
+    pacer.slow_to(0.3)
+    start = time.monotonic()
+    await pacer.wait()
+    assert time.monotonic() - start >= 0.28
+
+
+def test_slowing_down_never_shortens_the_interval():
+    pacer = Pacer(5.0)
+    pacer.slow_to(1.0)
+    assert pacer.interval == 5.0

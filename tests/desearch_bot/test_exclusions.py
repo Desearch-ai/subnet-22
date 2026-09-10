@@ -1,5 +1,5 @@
 from desearch_bot.exclusions import blocked_operator, exclusion_reason, valid_host
-from desearch_bot.suffixes import PublicSuffixList, tld_group
+from desearch_bot.suffixes import ENGLISH_MARKET, PublicSuffixList, tld_group
 
 
 def reason(host, categories=None, adult=frozenset()):
@@ -55,8 +55,14 @@ def test_public_suffix_handling(tmp_path):
 
 
 def test_a_blocked_operator_covers_its_whole_family():
-    for host in ("shinhan.com", "shinhanbank.com", "shinhan.ca", "ezshinhancard.com",
-                 "newshinhancard.com", "shinhanfinancialgroup.com"):
+    for host in (
+        "shinhan.com",
+        "shinhanbank.com",
+        "shinhan.ca",
+        "ezshinhancard.com",
+        "newshinhancard.com",
+        "shinhanfinancialgroup.com",
+    ):
         assert reason(host) == "blocked_operator", host
 
 
@@ -71,10 +77,28 @@ def test_a_block_wins_over_every_other_rule():
 
 def test_filenames_that_parse_as_domains_are_rejected():
     """.sh and .app are real TLDs, so source lists smuggle in shell scripts."""
-    for host in ("0_linux.sh", "01_nucdetective_profiler.sh", "2_beta.app", "_wildcard_.ph"):
+    for host in (
+        "0_linux.sh",
+        "01_nucdetective_profiler.sh",
+        "2_beta.app",
+        "_wildcard_.ph",
+    ):
         assert exclusion_reason(host, {}, "new_generic") == "invalid_host"
 
 
 def test_real_domains_still_pass_the_hostname_check():
-    for host in ("0-0-0checkmate.com", "news-publisher.com", "xn--80ak6aa92e.com", "a.co"):
+    for host in (
+        "0-0-0checkmate.com",
+        "news-publisher.com",
+        "xn--80ak6aa92e.com",
+        "a.co",
+    ):
         assert valid_host(host)
+
+
+def test_tld_groups():
+    assert tld_group("example.com") == "big_generic"
+    assert tld_group("example.co.uk") == "en_cctld"
+    assert tld_group("example.io") == "new_generic"
+    assert tld_group("example.de") == "other_cctld"
+    assert "co.uk" in ENGLISH_MARKET
