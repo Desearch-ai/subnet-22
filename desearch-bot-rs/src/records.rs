@@ -1,6 +1,5 @@
 //! A domain's and a sitemap's crawl state, as the bucket store keeps them.
 
-use indexmap::IndexMap;
 use serde_json::{json, Value};
 
 use crate::buckets::{sitemap_id, Json};
@@ -53,7 +52,7 @@ pub fn new_domain(
 }
 
 /// What a visit needs to know about a domain before it starts.
-pub fn known(host: &str, domain: &Json, sitemaps: &IndexMap<String, Json>) -> Option<Known> {
+pub fn known(host: &str, domain: &Json, sitemaps: &[(String, Json)]) -> Option<Known> {
     Some(Known {
         host: host.to_string(),
         state: State::parse(domain.get("state")?.as_str()?)?,
@@ -88,6 +87,7 @@ fn known_sitemap(url: &str, record: &Json) -> Option<KnownSitemap> {
         trust: record.get("trust").and_then(Value::as_str).and_then(Trust::parse).unwrap_or(Trust::Unknown),
         index_lastmod: text(record.get("index_lastmod")),
         url_count: int(record.get("urls")).unwrap_or(0),
+        ok: record.get("status").and_then(Value::as_str) == Some("ok"),
     })
 }
 

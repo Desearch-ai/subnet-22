@@ -64,6 +64,8 @@ pub struct KnownSitemap {
     pub trust: Trust,
     pub index_lastmod: Option<String>,
     pub url_count: i64,
+    /// The file answered last time, so its URLs count toward the domain's total.
+    pub ok: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]

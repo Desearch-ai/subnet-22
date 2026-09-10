@@ -5,7 +5,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
-use indexmap::IndexMap;
 use rand::Rng;
 use serde_json::Value;
 use tokio::sync::watch;
@@ -133,7 +132,7 @@ pub async fn once(known: Arc<Known>, visitor: &Visitor, excluded: &HashSet<Strin
 
 enum Finished {
     Skipped(Arc<str>),
-    Visited(Box<DomainWrite>, IndexMap<String, Json>),
+    Visited(Box<DomainWrite>, Arc<Known>),
 }
 
 #[derive(Default)]
@@ -156,7 +155,7 @@ pub struct Loop {
     visits: JoinSet<Finished>,
     tasks: HashMap<Id, Arc<str>>,
     busy: HashSet<Arc<str>>,
-    pending: Vec<(Box<DomainWrite>, IndexMap<String, Json>)>,
+    pending: Vec<(Box<DomainWrite>, Arc<Known>)>,
     unreported: Vec<Report>,
     pub stats: Stats,
     started: Instant,
@@ -304,10 +303,10 @@ impl Loop {
                 self.tasks.remove(&id);
                 self.busy.remove(&host);
             }
-            Ok((id, Finished::Visited(write, sitemaps))) => {
+            Ok((id, Finished::Visited(write, known))) => {
                 self.tasks.remove(&id);
                 self.stats.visited += 1;
-                self.pending.push((write, sitemaps));
+                self.pending.push((write, known));
             }
             Err(error) => {
                 if let Some(host) = self.tasks.remove(&error.id()) {
@@ -319,14 +318,14 @@ impl Loop {
     }
 
     fn flush(&mut self) -> Result<()> {
-        for (write, sitemaps) in std::mem::take(&mut self.pending) {
-            self.save(*write, sitemaps)?;
+        for (write, known) in std::mem::take(&mut self.pending) {
+            self.save(*write, &known)?;
         }
         Ok(())
     }
 
     /// Write a finished visit to its store and put the domain back in the timetable.
-    fn save(&mut self, write: DomainWrite, mut sitemaps: IndexMap<String, Json>) -> Result<()> {
+    fn save(&mut self, write: DomainWrite, known: &Known) -> Result<()> {
         self.busy.remove(write.host.as_str());
         self.stats.requests += write.visit.requests;
         self.stats.new += write.visit.new;
@@ -341,21 +340,24 @@ impl Loop {
             return Ok(());
         }
         let mut changes = Changes::default();
+        // Each file's URL count, and whether it answered; a file counts toward the domain only if it did.
+        let mut totals: HashMap<&str, (i64, bool)> = known.sitemaps.iter().map(|(url, s)| (url.as_str(), (s.url_count, s.ok))).collect();
         for update in &write.visit.sitemaps {
-            let record = records::written_sitemap(sitemaps.get(&update.url), update, write.checked_at);
+            let previous = store.sitemap(&write.host, &update.url)?;
+            let record = records::written_sitemap(previous.as_ref(), update, write.checked_at);
             changes.sitemap(&write.host, &update.url, &record);
-            sitemaps.insert(update.url.clone(), record);
+            let ok = record.get("status").and_then(Value::as_str) == Some("ok");
+            totals.insert(&update.url, (records::int(record.get("urls")).unwrap_or(0), ok));
         }
         if write.state == State::Active {
             for (url, depth, parent) in &write.visit.deferred {
-                if !sitemaps.contains_key(url) {
-                    let record = records::unread_sitemap(url, *depth, *parent);
-                    changes.sitemap(&write.host, url, &record);
-                    sitemaps.insert(url.clone(), record);
+                if !totals.contains_key(url.as_str()) {
+                    changes.sitemap(&write.host, url, &records::unread_sitemap(url, *depth, *parent));
+                    totals.insert(url, (0, true));
                 }
             }
         }
-        let urls = records::url_count(sitemaps.values());
+        let urls = totals.values().filter(|(_, ok)| *ok).map(|(count, _)| count).sum();
         let record = records::written_domain(&current, &write, urls);
         changes.domain(&write.host, &record);
         store.write(changes)?;
@@ -461,22 +463,22 @@ impl Loop {
 async fn visit_one(host: Arc<str>, buckets: Arc<Buckets>, visitor: Arc<Visitor>, excluded: Arc<HashSet<String>>) -> Finished {
     let reading = host.clone();
     let loaded = tokio::task::spawn_blocking(move || load_known(&buckets, &reading)).await;
-    let Ok(Some((known, sitemaps))) = loaded else {
+    let Ok(Some(known)) = loaded else {
         return Finished::Skipped(host);
     };
-    let write = once(Arc::new(known), &visitor, &excluded).await;
-    Finished::Visited(Box::new(write), sitemaps)
+    let known = Arc::new(known);
+    let write = once(known.clone(), &visitor, &excluded).await;
+    Finished::Visited(Box::new(write), known)
 }
 
 /// What a visit needs to know about a domain, from its store; None once excluded.
-fn load_known(buckets: &Buckets, host: &str) -> Option<(Known, IndexMap<String, Json>)> {
+fn load_known(buckets: &Buckets, host: &str) -> Option<Known> {
     let store = buckets.store(host);
     let record = store.domain(host).ok()??;
     if record.get("state").and_then(Value::as_str) == Some(State::Excluded.as_str()) {
         return None;
     }
-    let sitemaps: IndexMap<String, Json> = store.sitemaps(host).ok()?.into_iter().collect();
-    Some((records::known(host, &record, &sitemaps)?, sitemaps))
+    records::known(host, &record, &store.sitemaps(host).ok()?)
 }
 
 fn thousands(n: i64) -> String {

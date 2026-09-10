@@ -130,6 +130,10 @@ impl BucketStore {
         self.scan(&[DOMAIN], |key, raw| Ok((String::from_utf8_lossy(&key[1..]).into_owned(), serde_json::from_slice(raw)?)))
     }
 
+    pub fn sitemap(&self, host: &str, url: &str) -> Result<Option<Json>> {
+        self.json(&sitemap_key(host, url))
+    }
+
     pub fn sitemaps(&self, host: &str) -> Result<Vec<(String, Json)>> {
         let prefix = sitemap_key(host, "");
         self.scan(&prefix, |key, raw| {
