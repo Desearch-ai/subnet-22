@@ -144,3 +144,9 @@ def test_urls_survive_closing_and_reopening(tmp_path):
 def test_a_record_packs_and_unpacks_unchanged():
     record = Record(7, 100, 200, 300, 400, 500, HTTPS | WWW)
     assert Record.unpack(record.pack()) == record
+
+
+def test_simple_and_complicated_hosts_normalise_the_same_way():
+    assert _key("https://Example.COM/a") == _key("https://example.com/a")
+    assert _key("https://user@example.com/a") == _key("https://example.com/a")
+    assert _key("https://example.com:8443/a") != _key("https://example.com/a")

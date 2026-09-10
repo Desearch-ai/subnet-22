@@ -7,6 +7,7 @@ import string
 import struct
 from collections.abc import Iterator
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from urllib.parse import quote, urlsplit
 
@@ -18,6 +19,9 @@ SAFE_PATH = "/:@!$&'()*+,;=-._~%"
 SAFE_QUERY = SAFE_PATH + "?"
 DEFAULT_PORTS = {"http": 80, "https": 443}
 TRACKING = frozenset({"gclid", "fbclid", "msclkid"})
+# Text made only of these characters comes out of normalisation unchanged.
+PLAIN = re.compile(r"[A-Za-z0-9\-._~/:@!$&'()*+,;=]*\Z")
+SIMPLE_HOST = re.compile(r"[A-Za-z0-9.\-]+\Z")
 
 HTTPS = 1
 WWW = 2
@@ -77,10 +81,14 @@ def parse(url: str, domain: str) -> Url | None:
         domain = _ascii(domain)
         parts = urlsplit(url.strip())
         scheme = parts.scheme.lower()
-        if scheme not in DEFAULT_PORTS or not parts.hostname:
+        if scheme not in DEFAULT_PORTS:
             return None
-        host = _ascii(parts.hostname)
-        port = parts.port
+        if SIMPLE_HOST.match(parts.netloc):
+            host, port = _ascii(parts.netloc), None
+        elif parts.hostname:
+            host, port = _ascii(parts.hostname), parts.port
+        else:
+            return None
     except (ValueError, UnicodeError):
         return None
     if host != domain and not host.endswith("." + domain):
@@ -162,6 +170,7 @@ class UrlStore:
         return self.db.property_int_value("rocksdb.estimate-num-keys") or 0
 
 
+@lru_cache(maxsize=1 << 16)
 def _ascii(host: str) -> str:
     return host.strip().rstrip(".").encode("idna").decode("ascii").lower()
 
@@ -171,6 +180,8 @@ def _timed(timed: bool) -> int:
 
 
 def _tidy(part: str, safe: str) -> str:
+    if PLAIN.match(part):
+        return part
     return quote(PERCENT.sub(_unescape, part), safe=safe)
 
 
@@ -180,6 +191,8 @@ def _unescape(match: re.Match) -> str:
 
 
 def _query(query: str) -> str:
+    if not query:
+        return ""
     kept = []
     for pair in query.split("&"):
         name = pair.split("=", 1)[0].lower()

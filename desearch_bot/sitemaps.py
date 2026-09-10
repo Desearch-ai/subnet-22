@@ -8,11 +8,9 @@ from datetime import datetime, timezone
 
 ENTRY = re.compile(rb"<(url|sitemap)\b(.*?)</\1>", re.I | re.S)
 LOC = re.compile(rb"<loc>\s*([^<\s]+)\s*</loc>", re.I)
-LASTMOD = re.compile(rb"<lastmod>\s*([^<\s]+)\s*</lastmod>", re.I)
-CHANGEFREQ = re.compile(rb"<changefreq>\s*(\w+)\s*</changefreq>", re.I)
 SITEMAP_INDEX = re.compile(rb"<sitemapindex", re.I)
-PUBLISHED = re.compile(
-    rb"<news:publication_date>\s*([^<\s]+)\s*</news:publication_date>", re.I
+FIELD = re.compile(
+    rb"<(loc|lastmod|changefreq|news:publication_date)>\s*([^<\s]*)\s*</", re.I
 )
 NEWS_NAMESPACE = re.compile(rb"sitemap-news/0\.9", re.I)
 
@@ -26,26 +24,28 @@ class Entry:
 
 
 def parse_entries(body: bytes) -> tuple[str, list[Entry]]:
-    """Return the file kind and its entries, pairing each location with its own lastmod."""
+    """Return the file kind and its entries, pairing each location with its own dates."""
     entries: list[Entry] = []
     kind = None
     for match in ENTRY.finditer(body):
         if kind is None:
             kind = "index" if match.group(1).lower() == b"sitemap" else "urlset"
-        location = LOC.search(match.group(2))
+        fields: dict[bytes, bytes] = {}
+        for name, value in FIELD.findall(match.group(2)):
+            if value:
+                fields.setdefault(name.lower(), value)
+        location = fields.get(b"loc")
         if not location:
             continue
-        lastmod = LASTMOD.search(match.group(2))
-        changefreq = CHANGEFREQ.search(match.group(2))
-        published = PUBLISHED.search(match.group(2))
+        lastmod = fields.get(b"lastmod")
+        changefreq = fields.get(b"changefreq")
+        published = fields.get(b"news:publication_date")
         entries.append(
             Entry(
-                location.group(1).decode("utf-8", "replace"),
-                lastmod.group(1).decode("utf-8", "replace") if lastmod else None,
-                changefreq.group(1).decode("ascii", "replace").lower()
-                if changefreq
-                else None,
-                published.group(1).decode("utf-8", "replace") if published else None,
+                location.decode("utf-8", "replace"),
+                lastmod.decode("utf-8", "replace") if lastmod else None,
+                changefreq.decode("ascii", "replace").lower() if changefreq else None,
+                published.decode("utf-8", "replace") if published else None,
             )
         )
     if entries:
