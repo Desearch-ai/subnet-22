@@ -62,7 +62,7 @@ struct RunArgs {
     #[arg(long)]
     no_registry: bool,
     /// New visits wait while the disk has less than this many GB free.
-    #[arg(long, default_value_t = 20)]
+    #[arg(long, default_value_t = 30)]
     min_free_gb: u64,
     /// Stop after this many seconds.
     #[arg(long)]
@@ -103,6 +103,7 @@ async fn run(args: RunArgs) -> Result<()> {
         connect_timeout: net::connect_timeout(read_timeout),
         cpu: Arc::new(Semaphore::new(cores * 2)),
         bodies: Arc::new(Semaphore::new(args.sitemap_slots)),
+        pause: Arc::new(std::sync::atomic::AtomicBool::new(false)),
     });
     let mut crawl = Loop::new(buckets, visitor, args.concurrency, registry, excluded).with_min_free_disk(args.min_free_gb << 30);
     let scheduled = crawl.load()?;

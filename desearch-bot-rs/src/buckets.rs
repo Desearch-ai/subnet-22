@@ -58,6 +58,8 @@ impl Resources {
         let mut table = BlockBasedOptions::default();
         table.set_block_cache(&self.cache);
         table.set_bloom_filter(10.0, false);
+        // Bigger blocks let zstd find more of what neighbouring URLs of one domain share.
+        table.set_block_size(16 << 10);
         let mut options = Options::default();
         options.create_if_missing(true);
         options.set_block_based_table_factory(&table);

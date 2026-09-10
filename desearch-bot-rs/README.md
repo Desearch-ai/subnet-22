@@ -33,7 +33,7 @@ desearch-bot run --concurrency 840 --buckets-dir /var/lib/desearch-bot/buckets -
 | `--cache-mb`, `--memtable-mb` | 4096, 2048 | Block cache and memtable budget shared by all stores |
 | `--sitemap-slots` | 64 | Sitemap files fetched or waiting to be parsed at once, which bounds the memory their bodies take |
 | `--timeout` | 10 | Seconds a read may stall before the request fails |
-| `--min-free-gb` | 20 | New visits wait while the disk has less free space than this |
+| `--min-free-gb` | 30 | New visits wait, and running ones read no more sitemap files, while the disk has less free space than this |
 | `--no-registry` | off | Crawl without reporting to Postgres or taking changes from it |
 | `--duration` | none | Stop after this many seconds |
 

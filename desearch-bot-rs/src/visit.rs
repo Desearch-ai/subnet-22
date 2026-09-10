@@ -2,6 +2,7 @@
 
 use std::borrow::Cow;
 use std::collections::{HashSet, VecDeque};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -212,6 +213,8 @@ pub struct Visitor {
     pub cpu: Arc<Semaphore>,
     /// Sitemap files fetched or waiting to be parsed at once; bounds the memory their bodies take.
     pub bodies: Arc<Semaphore>,
+    /// Set while the disk is nearly full: visits read no more sitemap files and leave the rest for later.
+    pub pause: Arc<AtomicBool>,
 }
 
 impl Visitor {
@@ -333,7 +336,7 @@ impl Run<'_> {
             known.sitemaps.values().filter(|s| s.depth > 0 && due(s, self.now)).map(|s| (s.url.clone(), s.depth, s.parent_id, None, false)),
         );
         let mut seen: HashSet<String> = HashSet::new();
-        while self.fetches < MAX_FILES && self.failed_in_row < MAX_FAILURES_IN_ROW {
+        while self.fetches < MAX_FILES && self.failed_in_row < MAX_FAILURES_IN_ROW && !self.visitor.pause.load(Ordering::Relaxed) {
             let Some((url, depth, parent, index_date, force)) = queue.pop_front() else {
                 break;
             };

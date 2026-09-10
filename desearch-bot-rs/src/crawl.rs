@@ -278,6 +278,7 @@ impl Loop {
                     println!("[rs] {} new visits: {} GB free on disk", if low { "pausing" } else { "resuming" }, free >> 30);
                 }
                 self.disk_low = low;
+                self.visitor.pause.store(low, std::sync::atomic::Ordering::Relaxed);
             }
         }
         if self.disk_low {
