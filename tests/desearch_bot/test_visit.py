@@ -8,7 +8,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from desearch_bot import signing
 from desearch_bot.schedule import NEWS_INTERVAL, Trust
 from desearch_bot.states import Outcome, State
-from desearch_bot.urls import UrlStore
+from desearch_bot.buckets import BucketStore, Resources
 from desearch_bot.visit import (
     MAX_FILES,
     MAX_REDIRECTS,
@@ -66,16 +66,20 @@ def known_sitemap(
     )
 
 
+class Single:
+    """Every domain's bucket, for tests that visit one site at a time."""
+
+    def __init__(self, store):
+        self._store = store
+
+    def store(self, host):
+        return self._store
+
+
 def make_visitor(web, store, signer=None):
-    ids = iter(range(1, 100_000))
-
-    async def allocate(host, url):
-        return next(ids)
-
     return Visitor(
         web,
-        store,
-        allocate,
+        Single(store),
         detect_language=lambda text: "en" if "english" in text else "fr",
         registrable=lambda host: host.removeprefix("www."),
         signer=signer,
@@ -90,7 +94,7 @@ def web():
 
 @pytest.fixture
 def store(tmp_path):
-    with UrlStore(tmp_path / "urls") as opened:
+    with BucketStore(tmp_path / "b", Resources(8 << 20, 64 << 20)) as opened:
         yield opened
 
 

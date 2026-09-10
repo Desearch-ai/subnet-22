@@ -1,22 +1,26 @@
-"""The crawl loop: visit whatever is due, forever, and write down what each visit learned."""
+"""The crawl loop: visit what is due in the buckets this process owns, and keep what it learns."""
 
 from __future__ import annotations
 
 import asyncio
 import random
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
-from . import db, exclusions, states
+from . import exclusions, records, states
+from .buckets import Buckets, Changes
 from .states import Outcome, State
 from .suffixes import tld_group
+from .timetable import Timetable
 from .visit import Known, Visit, Visitor
 
-TICK = 2.0
+TICK = 1.0
 FLUSH_SECONDS = 5.0
 FLUSH_VISITS = 200
+# Postgres hears from the loop in bulk, never once per visit.
+SYNC_SECONDS = 30.0
 CRASH_RETRY = timedelta(hours=1)
 # On shutdown, visits still running after this long are dropped; they are simply due again.
 STOP_GRACE = 30.0
@@ -102,43 +106,61 @@ def adopted(target: str) -> tuple[str, State, str | None]:
 
 
 class Loop:
-    """Keeps a fixed number of visits in flight, refreshing known domains before discovering."""
+    """Keeps many visits in flight across the buckets one process owns."""
 
     def __init__(
         self,
-        pool,
+        buckets: Buckets,
         visitor: Visitor,
         concurrency: int,
+        registry,
         excluded: frozenset[str],
         report: Callable[[Loop, list[DomainWrite]], None] | None = None,
         clock: Callable[[], datetime] | None = None,
     ):
-        self.pool = pool
+        self.buckets = buckets
         self.visitor = visitor
         self.concurrency = concurrency
+        self.registry = registry
         self.excluded = excluded
         self.report = report
         self.clock = clock or _now
+        self.timetable = Timetable()
         self.inflight: dict[str, asyncio.Task] = {}
+        self.loaded: dict[str, dict[str, dict]] = {}
         self.pending: list[DomainWrite] = []
+        self.unreported: list[tuple[DomainWrite, int]] = []
         self.stopping = asyncio.Event()
         self.visited = 0
+
+    def load(self) -> int:
+        """Put every domain the stores hold into the timetable; returns how many are due ever."""
+        for store in self.buckets.stores.values():
+            for host, record in store.domains():
+                self._schedule(host, record)
+        return len(self.timetable)
 
     def stop(self) -> None:
         self.stopping.set()
 
     async def run(self) -> None:
-        flushed = time.monotonic()
+        await self.sync()
+        flushed = synced = time.monotonic()
         while not self.stopping.is_set():
-            await self._fill()
+            self._fill()
             try:
                 await asyncio.wait_for(self.stopping.wait(), TICK)
             except TimeoutError:
                 pass
-            stale = time.monotonic() - flushed >= FLUSH_SECONDS
-            if len(self.pending) >= FLUSH_VISITS or (self.pending and stale):
-                await self._flush()
-                flushed = time.monotonic()
+            now = time.monotonic()
+            if len(self.pending) >= FLUSH_VISITS or (
+                self.pending and now - flushed >= FLUSH_SECONDS
+            ):
+                self._flush()
+                flushed = now
+            if now - synced >= SYNC_SECONDS:
+                await self.sync()
+                synced = time.monotonic()
         if self.inflight:
             _, late = await asyncio.wait(
                 list(self.inflight.values()), timeout=STOP_GRACE
@@ -146,19 +168,18 @@ class Loop:
             for task in late:
                 task.cancel()
             await asyncio.gather(*late, return_exceptions=True)
-        await self._flush()
+        self._flush()
+        await self.sync()
 
-    async def _fill(self) -> None:
-        free = self.concurrency - len(self.inflight)
-        if free <= 0:
-            return
-        # A finished visit is not in the database until the next flush, so it is still busy.
-        now, busy = self.clock(), [*self.inflight, *(w.host for w in self.pending)]
-        batch = await db.due(self.pool, free, busy, True, now)
-        busy += [known.host for known in batch]
-        batch += await db.due(self.pool, free - len(batch), busy, False, now)
-        for known in batch:
-            self.inflight[known.host] = asyncio.create_task(self._one(known))
+    def known(self, host: str) -> Known | None:
+        """What a visit needs to know about a domain, from its store; None once excluded."""
+        store = self.buckets.store(host)
+        record = store.domain(host)
+        if record is None or record["state"] == State.EXCLUDED.value:
+            return None
+        sitemaps = dict(store.sitemaps(host))
+        self.loaded[host] = sitemaps
+        return records.known(host, record, sitemaps.items())
 
     async def once(self, known: Known) -> DomainWrite:
         """Visit one domain and decide what comes next; a failure on our side never escapes."""
@@ -173,15 +194,87 @@ class Loop:
         except Exception as exc:
             return crashed(known, type(exc).__name__, self.clock())
 
-    async def save(self, writes: list[DomainWrite]) -> None:
-        """Record finished visits, and add the domains they redirect to."""
-        await db.save_visits(self.pool, writes)
-        targets = [
-            (w.canonical_host, w.host, *adopted(w.canonical_host))
-            for w in writes
-            if w.visit.outcome is Outcome.REDIRECT and w.canonical_host
-        ]
-        await db.adopt(self.pool, targets, self.clock())
+    def save(self, writes: Iterable[DomainWrite]) -> None:
+        """Write finished visits to their stores and put each domain back in the timetable."""
+        for write in writes:
+            sitemaps = self.loaded.pop(write.host, {})
+            store = self.buckets.store(write.host)
+            current = store.domain(write.host)
+            if current is None or current["state"] == State.EXCLUDED.value:
+                continue
+            changes = Changes()
+            for update in write.visit.sitemaps:
+                record = records.written_sitemap(
+                    sitemaps.get(update.url), update, write.checked_at
+                )
+                sitemaps[update.url] = record
+                changes.sitemap(write.host, update.url, record)
+            if write.state is State.ACTIVE:
+                for url, depth, parent in write.visit.deferred:
+                    if url not in sitemaps:
+                        sitemaps[url] = records.unread_sitemap(url, depth, parent)
+                        changes.sitemap(write.host, url, sitemaps[url])
+            record = records.written_domain(
+                current, write, records.url_count(sitemaps.values())
+            )
+            changes.domain(write.host, record)
+            store.write(changes)
+            self._schedule(write.host, record)
+            self.unreported.append((write, record["urls"]))
+
+    async def sync(self) -> None:
+        """Send the registry what visits found, and take in what changed there."""
+        visits, self.unreported = self.unreported, []
+        await self.registry.report(visits, self.clock())
+        for change in await self.registry.changes():
+            self._apply(change)
+
+    def _apply(self, change) -> None:
+        store = self.buckets.store(change.host)
+        record = store.domain(change.host)
+        excluded = change.state == State.EXCLUDED.value
+        if record is None:
+            record = records.new_domain(
+                change.rank,
+                change.tld_group,
+                change.categories or (),
+                state=State.EXCLUDED if excluded else State.NEW,
+                reason=change.state_reason if excluded else None,
+                due=None if excluded else self.clock(),
+            )
+        else:
+            record = dict(
+                record,
+                rank=change.rank,
+                group=change.tld_group,
+                categories=sorted(change.categories or ()),
+            )
+            if excluded:
+                record.update(
+                    state=State.EXCLUDED.value, reason=change.state_reason, due=None
+                )
+        changes = Changes()
+        changes.domain(change.host, record)
+        store.write(changes)
+        if change.host not in self.inflight:
+            self._schedule(change.host, record)
+
+    def _schedule(self, host: str, record: dict) -> None:
+        self.timetable.set(
+            host,
+            State(record["state"]),
+            records.moment(record.get("due")),
+            record.get("rank"),
+        )
+
+    def _fill(self) -> None:
+        free = self.concurrency - len(self.inflight)
+        if free <= 0:
+            return
+        for host in self.timetable.take(free, self.clock()):
+            known = self.known(host)
+            if known is not None:
+                self.inflight[host] = asyncio.create_task(self._one(known))
 
     async def _one(self, known: Known) -> None:
         # Await before touching the list: a flush during the visit swaps in a new one.
@@ -190,11 +283,11 @@ class Loop:
         self.inflight.pop(known.host, None)
         self.visited += 1
 
-    async def _flush(self) -> None:
+    def _flush(self) -> None:
         if not self.pending:
             return
         writes, self.pending = self.pending, []
-        await self.save(writes)
+        self.save(writes)
         if self.report:
             self.report(self, writes)
 

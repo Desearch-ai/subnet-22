@@ -8,7 +8,7 @@ import math
 import time
 import zlib
 from collections import Counter, deque
-from collections.abc import Awaitable, Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from urllib.parse import urljoin, urlsplit
@@ -16,9 +16,10 @@ from urllib.parse import urljoin, urlsplit
 import aiohttp
 
 from . import homepage, net, robots, schedule, signing, sitemaps
+from .buckets import Buckets, sitemap_id
 from .schedule import Trust
 from .states import JITTER, Outcome, State
-from .urls import UrlStore, parse
+from .urls import parse
 
 MIN_HOST_INTERVAL = 1.0
 # Some sites ask for hours between requests; past this we slow down no further.
@@ -42,8 +43,6 @@ MAX_ROBOTS_BYTES = 512 * 1024
 MAX_HOMEPAGE_BYTES = 512 * 1024
 # The sitemap protocol caps a file at 50 MB uncompressed, and so do we.
 MAX_SITEMAP_BYTES = 50 * 1024 * 1024
-
-Allocate = Callable[[str, str], Awaitable[int]]
 
 
 @dataclass
@@ -166,8 +165,7 @@ class Visitor:
     def __init__(
         self,
         session: aiohttp.ClientSession,
-        store: UrlStore,
-        allocate: Allocate,
+        buckets: Buckets,
         detect_language: Callable[[str], str | None],
         registrable: Callable[[str], str | None],
         signer: signing.Signer | None = None,
@@ -175,8 +173,7 @@ class Visitor:
         floor: float = MIN_HOST_INTERVAL,
     ):
         self.session = session
-        self.store = store
-        self.allocate = allocate
+        self.buckets = buckets
         self.detect_language = detect_language
         self.registrable = registrable
         self.signer = signer
@@ -313,7 +310,7 @@ class _Run:
         if url in self.guesses and (answer is None or answer.status != 200):
             return []
 
-        update = await self._update(url, depth, parent_id, index_date, stored)
+        update = self._update(url, depth, parent_id, index_date, stored)
         if answer is None:
             return self._failed(update, error)
         if answer.status == 304:
@@ -363,7 +360,7 @@ class _Run:
         await self._record(update, entries, dates)
         return []
 
-    async def _update(
+    def _update(
         self,
         url: str,
         depth: int,
@@ -386,9 +383,8 @@ class _Run:
                 index_lastmod=index_date or stored.index_lastmod,
             )
         else:
-            sitemap_id = await self.visitor.allocate(self.known.host, url)
             update = SitemapUpdate(
-                sitemap_id, url, None, depth, parent_id, index_lastmod=index_date
+                sitemap_id(url), url, None, depth, parent_id, index_lastmod=index_date
             )
         self.result.sitemaps.append(update)
         return update
@@ -434,7 +430,10 @@ class _Run:
                     )
                 )
         listing = await asyncio.to_thread(
-            self.visitor.store.record_listing, update.id, rows, _epoch(self.now)
+            self.visitor.buckets.store(self.known.host).record_listing,
+            update.id,
+            rows,
+            _epoch(self.now),
         )
         update.url_count = listing.listed
         self.result.listed += listing.listed

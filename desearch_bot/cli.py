@@ -177,64 +177,106 @@ def cmd_radar_categories(args):
 
 
 def cmd_run(args):
+    import multiprocessing
+    import signal
+
+    workers = args.workers or max(1, (os.cpu_count() or 2) - 1)
+    context = multiprocessing.get_context("spawn")
+    processes = [
+        context.Process(
+            target=_worker, args=(index, workers, vars(args)), name=f"w{index}"
+        )
+        for index in range(workers)
+    ]
+    for process in processes:
+        process.start()
+
+    def stop(*_):
+        for process in processes:
+            if process.is_alive():
+                process.terminate()
+
+    signal.signal(signal.SIGTERM, stop)
+    signal.signal(signal.SIGINT, stop)
+    failed = False
+    while any(process.is_alive() for process in processes):
+        for process in processes:
+            process.join(timeout=1)
+            if process.exitcode not in (None, 0) and not failed:
+                print(
+                    f"worker {process.name} exited with {process.exitcode}; stopping",
+                    flush=True,
+                )
+                failed = True
+                stop()
+    sys.exit(1 if failed else 0)
+
+
+def _worker(index: int, workers: int, options: dict) -> None:
+    try:
+        import uvloop
+
+        factory = uvloop.new_event_loop
+    except ImportError:
+        factory = None
+    asyncio.run(
+        _crawl(index, workers, argparse.Namespace(**options)), loop_factory=factory
+    )
+
+
+async def _crawl(index: int, workers: int, args) -> None:
     import signal
     import time
 
-    from collections import Counter
-
     from . import db, loop, net, signing
+    from .buckets import Buckets, Resources, owned_buckets
+    from .registry import Registry
     from .suffixes import PublicSuffixList
-    from .urls import UrlStore
     from .visit import Visitor
 
-    started = time.monotonic()
+    tag, started, printed = f"[w{index}]", time.monotonic(), [0.0]
     totals = {"requests": 0, "new": 0}
 
     def report(crawl, writes):
         totals["requests"] += sum(write.visit.requests for write in writes)
         totals["new"] += sum(write.visit.new for write in writes)
-        elapsed = max(time.monotonic() - started, 1)
-        states = Counter(write.state.value for write in writes)
-        summary = "  ".join(f"{state}={n}" for state, n in sorted(states.items()))
+        now = time.monotonic()
+        if now - printed[0] < 30:
+            return
+        printed[0] = now
+        elapsed = max(now - started, 1)
         print(
-            f"  {crawl.visited:,} visited  {crawl.visited / elapsed:.1f}/s  "
+            f"{tag} {crawl.visited:,} visited  {crawl.visited / elapsed:.1f}/s  "
             f"{totals['requests'] / elapsed:.1f} req/s  in flight {len(crawl.inflight)}  "
-            f"new urls {totals['new']:,}  {summary}",
+            f"new urls {totals['new']:,}  scheduled {len(crawl.timetable):,}",
             flush=True,
         )
 
-    async def run():
-        pool = await db.connect(args.pool)
-        excluded = await db.excluded_categories(pool)
-        psl = PublicSuffixList(Path(args.data_dir) / "public_suffix_list.dat")
-        signer = signing.from_env()
-        print(
-            f"signing keyid {signer.keyid}" if signer else "requests unsigned",
-            flush=True,
-        )
-
-        async def allocate(host, url):
-            return await db.allocate_sitemap(pool, host, url)
-
-        with UrlStore(Path(args.store)) as store:
-            async with net.session(args.concurrency) as session:
-                visitor = Visitor(
-                    session,
-                    store,
-                    allocate,
-                    _language_detector(),
-                    psl.registrable,
-                    signer,
-                )
-                crawl = loop.Loop(pool, visitor, args.concurrency, excluded, report)
-                for sig in (signal.SIGTERM, signal.SIGINT):
-                    asyncio.get_running_loop().add_signal_handler(sig, crawl.stop)
-                await crawl.run()
-                # A cancelled visit can leave a URL write running in a thread; let it land.
-                await asyncio.get_running_loop().shutdown_default_executor()
-        await pool.close()
-
-    asyncio.run(run())
+    pool = await db.connect(args.pool)
+    excluded = await db.excluded_categories(pool)
+    psl = PublicSuffixList(Path(args.data_dir) / "public_suffix_list.dat")
+    resources = Resources(args.cache_mb << 20, args.memtable_mb << 20)
+    owned = owned_buckets(index, workers)
+    with Buckets(Path(args.buckets_dir), owned, resources) as buckets:
+        async with net.session(args.concurrency) as session:
+            visitor = Visitor(
+                session,
+                buckets,
+                _language_detector(),
+                psl.registrable,
+                signing.from_env(),
+            )
+            registry = Registry(pool, buckets)
+            crawl = loop.Loop(
+                buckets, visitor, args.concurrency, registry, excluded, report
+            )
+            print(f"{tag} {crawl.load():,} domains in {len(owned)} buckets", flush=True)
+            for sig in (signal.SIGTERM, signal.SIGINT):
+                asyncio.get_running_loop().add_signal_handler(sig, crawl.stop)
+            await crawl.run()
+            # A cancelled visit can leave a URL write running in a thread; let it land.
+            await asyncio.get_running_loop().shutdown_default_executor()
+    await pool.close()
 
 
 def main(argv=None):
@@ -265,11 +307,20 @@ def main(argv=None):
     p.add_argument("--limit", type=int, default=0)
     p.set_defaults(func=cmd_load)
 
-    p = sub.add_parser("run", help="the crawl loop: visit due domains, forever")
-    p.add_argument("--concurrency", type=int, default=200)
-    p.add_argument("--pool", type=int, default=8)
-    p.add_argument("--store", default="/var/lib/desearch-bot/urls")
+    p = sub.add_parser(
+        "run", help="the crawl loop: one process per core, each owning its buckets"
+    )
+    p.add_argument(
+        "--workers", type=int, default=0, help="crawler processes; 0 means cores - 1"
+    )
+    p.add_argument(
+        "--concurrency", type=int, default=200, help="sites read at once, per worker"
+    )
+    p.add_argument("--pool", type=int, default=2)
+    p.add_argument("--buckets-dir", default="/var/lib/desearch-bot/buckets")
     p.add_argument("--data-dir", default="data")
+    p.add_argument("--cache-mb", type=int, default=512)
+    p.add_argument("--memtable-mb", type=int, default=256)
     p.set_defaults(func=cmd_run)
 
     p = sub.add_parser(

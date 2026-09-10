@@ -1,134 +1,84 @@
 from datetime import datetime, timedelta, timezone
 
 from desearch_bot import db
-from desearch_bot.loop import DomainWrite
-from desearch_bot.schedule import Trust
+from desearch_bot.buckets import bucket_of
 from desearch_bot.states import PUBLIC, State
-from desearch_bot.visit import SitemapUpdate, Visit
 
 NOW = datetime(2026, 9, 10, 12, 0, tzinfo=timezone.utc)
-URL = "https://a.com/sitemap.xml"
 
 
-async def _domains(pool, *hosts, state="new", due=NOW):
+async def _domains(pool, *hosts):
     await db.load_candidates(
         pool, [(host, rank, "big_generic") for rank, host in enumerate(hosts, 1)]
     )
+
+
+async def _set_state(pool, host, state):
     async with pool.acquire() as connection:
         await connection.execute(
-            "UPDATE bot.domains SET state = $1, next_due_at = $2 WHERE host = ANY($3)",
-            state,
-            due,
-            list(hosts),
+            "UPDATE bot.domains SET state = $1 WHERE host = $2", state, host
         )
 
 
-async def _row(pool, table, key, value):
+async def _row(pool, host):
     async with pool.acquire() as connection:
         return await connection.fetchrow(
-            f"SELECT * FROM bot.{table} WHERE {key} = $1", value
+            "SELECT * FROM bot.domains WHERE host = $1", host
         )
 
 
-def _write(host, sitemaps=(), due=NOW + timedelta(hours=1), **visit):
-    return DomainWrite(
-        host,
-        State.ACTIVE,
-        None,
-        0,
-        due,
-        NOW,
-        None,
-        NOW,
-        Visit(host, sitemaps=list(sitemaps), **visit),
-    )
-
-
-def _update(sitemap_id, changed=True, url_count=12):
-    return SitemapUpdate(
-        sitemap_id,
-        URL,
-        "urlset",
-        0,
-        None,
-        etag='"v1"',
-        content_hash="h",
-        changed=changed,
-        url_count=url_count,
-        interval=timedelta(hours=6),
-        next_check_at=NOW + timedelta(hours=6),
-        trust=Trust.TRUSTED,
-    )
-
-
-async def test_refreshes_come_from_their_own_tier_and_busy_hosts_are_skipped(pool):
-    await _domains(pool, "a.com", "c.com", state="active")
-    await _domains(pool, "b.com")
-    assert {k.host for k in await db.due(pool, 10, [], True, NOW)} == {"a.com", "c.com"}
-    assert [k.host for k in await db.due(pool, 10, ["a.com"], True, NOW)] == ["c.com"]
-    assert [k.host for k in await db.due(pool, 10, [], False, NOW)] == ["b.com"]
-
-
-async def test_nothing_is_handed_out_before_it_is_due(pool):
-    await _domains(pool, "a.com", due=NOW + timedelta(hours=1))
-    assert await db.due(pool, 10, [], False, NOW) == []
-    assert len(await db.due(pool, 10, [], False, NOW + timedelta(hours=1))) == 1
-
-
-async def test_new_domains_are_discovered_in_rank_order(pool):
-    await _domains(pool, "first.com", "second.com", "third.com")
-    found = await db.due(pool, 10, [], False, NOW)
-    assert [k.host for k in found] == ["first.com", "second.com", "third.com"]
-
-
-async def test_a_sitemap_keeps_its_id(pool):
+async def test_new_domains_carry_their_bucket_and_a_change_time(pool):
     await _domains(pool, "a.com")
-    first = await db.allocate_sitemap(pool, "a.com", URL)
-    assert await db.allocate_sitemap(pool, "a.com", URL) == first
+    row = await _row(pool, "a.com")
+    assert row["bucket"] == bucket_of("a.com") and row["changed_at"] is not None
 
 
-async def test_what_a_visit_saved_is_what_the_next_visit_knows(pool):
-    await _domains(pool, "a.com")
-    sitemap_id = await db.allocate_sitemap(pool, "a.com", URL)
-    await db.save_visits(
+async def test_changes_come_back_for_the_asked_buckets_page_by_page(pool):
+    hosts = [f"site{i}.com" for i in range(40)]
+    await _domains(pool, *hosts)
+    mine = sorted({bucket_of(host) for host in hosts[:10]})
+    seen, since = [], None
+    while page := await db.registry_changes(pool, mine, since, 3):
+        seen += [row["host"] for row in page]
+        since = (page[-1]["changed_at"], page[-1]["host"])
+    assert sorted(seen) == sorted(h for h in hosts if bucket_of(h) in mine)
+    assert len(seen) == len(set(seen))
+
+
+async def test_reports_keep_the_latest_visit_and_never_undo_an_exclusion(pool):
+    await _domains(pool, "a.com", "b.com")
+    await db.exclude_hosts(pool, [("b.com", "adult")])
+    await db.report_visits(
         pool,
         [
-            _write(
-                "a.com",
-                [_update(sitemap_id)],
-                due=NOW,
-                robots_read=True,
-                robots_status=200,
-                robots_allows=True,
-                crawl_delay=2.0,
-                language="en",
-            )
+            ("a.com", "failing", "timeout", NOW, 0, None),
+            ("a.com", "active", None, NOW + timedelta(minutes=1), 12, None),
+            ("b.com", "active", None, NOW, 5, None),
         ],
     )
-    [known] = await db.due(pool, 10, [], True, NOW)
-    assert (known.state, known.crawl_delay, known.language) == (State.ACTIVE, 2.0, "en")
-    assert known.robots_checked_at == NOW
-    stored = known.sitemaps[URL]
-    assert (stored.id, stored.etag, stored.trust) == (sitemap_id, '"v1"', Trust.TRUSTED)
-    assert (stored.interval, stored.url_count) == (timedelta(hours=6), 12)
-    assert (await _row(pool, "domains", "host", "a.com"))["url_count"] == 12
+    a, b = await _row(pool, "a.com"), await _row(pool, "b.com")
+    assert (a["state"], a["url_count"], a["checked_at"]) == (
+        "active",
+        12,
+        NOW + timedelta(minutes=1),
+    )
+    assert b["state"] == "excluded"
 
 
-async def test_an_unchanged_read_keeps_the_count_and_the_robots_it_did_not_reread(pool):
+async def test_a_report_is_not_a_change_the_crawlers_need_to_pull(pool):
     await _domains(pool, "a.com")
-    sitemap_id = await db.allocate_sitemap(pool, "a.com", URL)
-    await db.save_visits(
-        pool,
-        [_write("a.com", [_update(sitemap_id)], robots_read=True, crawl_delay=2.0)],
-    )
-    await db.save_visits(pool, [_write("a.com", [_update(sitemap_id, False, 0)])])
-    sitemap = await _row(pool, "sitemaps", "id", sitemap_id)
-    domain = await _row(pool, "domains", "host", "a.com")
-    assert (sitemap["url_count"], domain["url_count"], domain["crawl_delay"]) == (
-        12,
-        12,
-        2.0,
-    )
+    before = (await _row(pool, "a.com"))["changed_at"]
+    await db.report_visits(pool, [("a.com", "active", None, NOW, 3, None)])
+    assert (await _row(pool, "a.com"))["changed_at"] == before
+
+
+async def test_excluding_a_domain_marks_it_changed(pool):
+    await _domains(pool, "a.com")
+    before = (await _row(pool, "a.com"))["changed_at"]
+    assert await db.exclude_hosts(pool, [("a.com", "adult")]) == 1
+    assert await db.exclude_hosts(pool, [("a.com", "adult")]) == 0
+    row = await _row(pool, "a.com")
+    assert row["state"] == "excluded" and row["changed_at"] > before
 
 
 async def test_redirect_destinations_join_ranked_like_their_source(pool):
@@ -145,38 +95,23 @@ async def test_redirect_destinations_join_ranked_like_their_source(pool):
     ]
     await db.adopt(pool, rows, NOW)
     await db.adopt(pool, rows, NOW)
-    new = await _row(pool, "domains", "host", "new.com")
-    assert (new["state"], new["rank"], new["next_due_at"]) == ("new", 1, NOW)
-    excluded = await _row(pool, "domains", "host", "cdn.new.com")
-    assert (excluded["state"], excluded["next_due_at"]) == ("excluded", None)
+    new = await _row(pool, "new.com")
+    assert (new["state"], new["rank"], new["bucket"], new["changed_at"]) == (
+        "new",
+        1,
+        bucket_of("new.com"),
+        NOW,
+    )
+    assert (await _row(pool, "cdn.new.com"))["state"] == "excluded"
 
 
 async def test_only_public_states_without_excluded_labels_are_published(pool):
     hosts = [f"{state.value}.com" for state in State]
+    await _domains(pool, *hosts, "labelled.com")
     for host, state in zip(hosts, State):
-        await _domains(pool, host, state=state.value)
-    await _domains(pool, "labelled.com")
-    assert await db.exclude_hosts(pool, [("labelled.com", "adult")]) == 1
-    assert await db.exclude_hosts(pool, [("labelled.com", "adult")]) == 0
+        await _set_state(pool, host, state.value)
+    await db.exclude_hosts(pool, [("labelled.com", "adult")])
     published = [
         r["host"] async for rows in db.iter_published_hosts(pool) for r in rows
     ]
     assert sorted(published) == sorted(f"{state.value}.com" for state in PUBLIC)
-
-
-async def test_a_visit_finishing_after_an_exclusion_does_not_undo_it(pool):
-    await _domains(pool, "a.com", state="active")
-    await db.exclude_hosts(pool, [("a.com", "adult")])
-    await db.save_visits(pool, [_write("a.com")])
-    assert (await _row(pool, "domains", "host", "a.com"))["state"] == "excluded"
-
-
-async def test_sitemaps_left_unread_are_known_and_due_on_the_next_visit(pool):
-    await _domains(pool, "a.com")
-    left = [("https://a.com/s1.xml", 1, None), ("https://a.com/s2.xml", 1, None)]
-    await db.save_visits(pool, [_write("a.com", due=NOW, deferred=left)])
-    [known] = await db.due(pool, 10, [], True, NOW)
-    assert {url: (s.depth, s.next_check_at) for url, s in known.sitemaps.items()} == {
-        "https://a.com/s1.xml": (1, None),
-        "https://a.com/s2.xml": (1, None),
-    }

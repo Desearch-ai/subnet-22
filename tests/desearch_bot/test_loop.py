@@ -141,16 +141,6 @@ def test_the_state_constraint_allows_every_state_and_nothing_else():
     assert set(re.findall(r"'(\w+)'", check)) == {s.value for s in State}
 
 
-def test_every_state_but_excluded_belongs_to_exactly_one_scheduling_tier():
-    tiers = [*db.REFRESH, *db.DISCOVERY]
-    assert sorted(tiers) == sorted(s.value for s in State if s is not State.EXCLUDED)
-
-
-def test_each_scheduling_tier_has_a_partial_index_the_planner_can_match():
-    for tier in (db.REFRESH, db.DISCOVERY):
-        assert "WHERE state IN (" + ", ".join(f"'{s}'" for s in tier) + ")" in SCHEMA
-
-
 def test_a_visit_that_made_no_requests_does_not_count_as_contact():
     known = Known("example.com", State.ACTIVE, last_ok_at=NOW - timedelta(hours=5))
     write = plan(known, Visit("example.com"), NOW, random.Random(0))

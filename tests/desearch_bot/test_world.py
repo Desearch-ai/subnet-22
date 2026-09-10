@@ -1,12 +1,14 @@
 import random
 from datetime import datetime, timedelta, timezone
 
-from desearch_bot import db
+import pytest
+
 from desearch_bot.loop import Loop
-from desearch_bot.urls import UrlStore, parse
+from desearch_bot.urls import parse
 from desearch_bot.visit import Visitor
 
 from .fakeweb import ALLOW, ENGLISH, PAGES, FakeWeb, index, urlset
+from .harness import MemoryRegistry, open_buckets, seed
 
 START = datetime(2026, 9, 7, tzinfo=timezone.utc)
 STEP = timedelta(minutes=5)
@@ -70,25 +72,34 @@ def outage(host, start, end):
     return change
 
 
-async def crawler(pool, store, world, hosts):
-    await db.load_candidates(
-        pool, [(host, rank, "big_generic") for rank, host in enumerate(hosts, 1)]
-    )
-    async with pool.acquire() as connection:
-        await connection.execute("UPDATE bot.domains SET next_due_at = $1", START)
-
-    async def allocate(host, url):
-        return await db.allocate_sitemap(pool, host, url)
-
+def crawler(root, world, hosts, later=()):
+    buckets = open_buckets(root, [*hosts, *later])
+    seed(buckets, hosts, START)
     visitor = Visitor(
         world,
-        store,
-        allocate,
+        buckets,
         detect_language=lambda text: "en" if "english" in text else "fr",
         registrable=lambda host: host.removeprefix("www."),
         floor=0.0,
     )
-    return Loop(pool, visitor, 10, frozenset(), clock=lambda: world.now)
+    crawl = Loop(
+        buckets, visitor, 10, MemoryRegistry(), frozenset(), clock=lambda: world.now
+    )
+    crawl.load()
+    return crawl
+
+
+@pytest.fixture
+def make_crawl(tmp_path):
+    made = []
+
+    def make(world, hosts, later=()):
+        made.append(crawler(tmp_path / f"crawl{len(made)}", world, hosts, later))
+        return made[-1]
+
+    yield make
+    for crawl in made:
+        crawl.buckets.close()
 
 
 async def advance(crawl, world, until, step=STEP):
@@ -96,24 +107,27 @@ async def advance(crawl, world, until, step=STEP):
     while world.now < until:
         world.update()
         for _ in range(50):
-            batch = await db.due(crawl.pool, 100, [], True, world.now)
-            batch += await db.due(crawl.pool, 100, [], False, world.now)
-            if not batch:
+            hosts = crawl.timetable.take(100, world.now)
+            if not hosts:
                 break
-            await crawl.save([await crawl.once(known) for known in batch])
+            crawl.save(
+                [await crawl.once(known) for known in map(crawl.known, hosts) if known]
+            )
+            await crawl.sync()
         else:
             raise AssertionError(f"domains kept falling due at {world.now}")
         world.now += step
 
 
-async def state(pool, host):
-    async with pool.acquire() as connection:
-        return await connection.fetchval(
-            "SELECT state FROM bot.domains WHERE host = $1", host
-        )
+def state(crawl, host):
+    return crawl.buckets.store(host).domain(host)["state"]
 
 
-async def test_a_week_of_news_quiet_sites_an_outage_and_a_redirect(pool, tmp_path):
+def stored(crawl, url, host):
+    return crawl.buckets.store(host).url(parse(url, host))
+
+
+async def test_a_week_of_news_quiet_sites_an_outage_and_a_redirect(make_crawl):
     random.seed(7)
     world = World()
     for host in ("quiet.com", "flaky.com", "landing.com"):
@@ -134,41 +148,40 @@ async def test_a_week_of_news_quiet_sites_an_outage_and_a_redirect(pool, tmp_pat
         hourly("flaky.com", "/sitemap.xml", changefreq="hourly"),
         outage("flaky.com", down, up),
     ]
-    with UrlStore(tmp_path / "urls") as store:
-        crawl = await crawler(
-            pool, store, world, ["news.com", "quiet.com", "flaky.com", "moved.com"]
-        )
-        await advance(crawl, world, down + 2 * HOUR)
-        assert await state(pool, "flaky.com") == "failing"
-        await advance(crawl, world, up + timedelta(hours=4, minutes=30))
-        assert await state(pool, "flaky.com") == "active"
-        await advance(crawl, world, START + 7 * DAY)
+    crawl = make_crawl(
+        world,
+        ["news.com", "quiet.com", "flaky.com", "moved.com"],
+        later=["landing.com"],
+    )
+    await advance(crawl, world, down + 2 * HOUR)
+    assert state(crawl, "flaky.com") == "failing"
+    await advance(crawl, world, up + timedelta(hours=4, minutes=30))
+    assert state(crawl, "flaky.com") == "active"
+    await advance(crawl, world, START + 7 * DAY)
 
-        for i in range(7 * 24):
-            record = store.get(parse(f"https://news.com/a/{i}", "news.com"))
-            published = (START + i * HOUR).timestamp()
-            assert record is not None and record.first_seen - published <= 65 * 60, i
-        assert 7 * 24 <= len(world.hits("news.com/news.xml")) <= 7 * 24 * 6
+    for i in range(7 * 24):
+        record = stored(crawl, f"https://news.com/a/{i}", "news.com")
+        published = (START + i * HOUR).timestamp()
+        assert record is not None and record.first_seen - published <= 65 * 60, i
+    assert 7 * 24 <= len(world.hits("news.com/news.xml")) <= 7 * 24 * 6
 
-        assert len(world.hits("quiet.com/sitemap.xml")) <= 5
-        assert len(world.hits("quiet.com/robots.txt")) <= 9
+    assert len(world.hits("quiet.com/sitemap.xml")) <= 5
+    assert len(world.hits("quiet.com/robots.txt")) <= 9
 
-        assert 5 <= len(world.hits("flaky.com", down, up)) <= 12
-        assert store.get(parse(f"https://flaky.com/a/{26 * 3 - 5}", "flaky.com"))
+    assert 5 <= len(world.hits("flaky.com", down, up)) <= 12
+    assert stored(crawl, f"https://flaky.com/a/{26 * 3 - 5}", "flaky.com")
 
-        assert world.hits("moved.com") == [START]
-        assert await state(pool, "moved.com") == "redirects"
-        assert await state(pool, "landing.com") == "active"
-        async with pool.acquire() as connection:
-            assert (
-                await connection.fetchval(
-                    "SELECT count(*) FROM bot.domains WHERE state = 'down'"
-                )
-                == 0
-            )
+    assert world.hits("moved.com") == [START]
+    assert state(crawl, "moved.com") == "redirects"
+    assert state(crawl, "landing.com") == "active"
+    assert all(
+        record["state"] != "down"
+        for store in crawl.buckets.stores.values()
+        for _, record in store.domains()
+    )
 
 
-async def test_a_sitemap_added_later_is_found_at_the_monthly_recheck(pool, tmp_path):
+async def test_a_sitemap_added_later_is_found_at_the_monthly_recheck(make_crawl):
     random.seed(7)
     world = World()
     world.page("https://late.com/robots.txt", ALLOW)
@@ -179,16 +192,15 @@ async def test_a_sitemap_added_later_is_found_at_the_monthly_recheck(pool, tmp_p
             world.page("https://late.com/sitemap.xml", urlset(*PAGES, host="late.com"))
 
     world.changes = [launch]
-    with UrlStore(tmp_path / "urls") as store:
-        crawl = await crawler(pool, store, world, ["late.com"])
-        await advance(crawl, world, START + 26 * DAY, HOUR)
-        assert await state(pool, "late.com") == "no_sitemap"
-        assert len(world.hits("late.com")) == 3
-        await advance(crawl, world, START + 34 * DAY, HOUR)
-        assert await state(pool, "late.com") == "active"
+    crawl = make_crawl(world, ["late.com"])
+    await advance(crawl, world, START + 26 * DAY, HOUR)
+    assert state(crawl, "late.com") == "no_sitemap"
+    assert len(world.hits("late.com")) == 3
+    await advance(crawl, world, START + 34 * DAY, HOUR)
+    assert state(crawl, "late.com") == "active"
 
 
-async def test_an_index_bigger_than_one_visit_is_read_to_the_end(pool, tmp_path):
+async def test_an_index_bigger_than_one_visit_is_read_to_the_end(make_crawl):
     random.seed(7)
     world = World()
     host = "big.com"
@@ -203,8 +215,7 @@ async def test_an_index_bigger_than_one_visit_is_read_to_the_end(pool, tmp_path)
     for i, child in enumerate(children):
         world.page(child, urlset(*[f"/p{i}-{j}" for j in range(12)], host=host))
     world.page(f"https://{host}/", ENGLISH)
-    with UrlStore(tmp_path / "urls") as store:
-        crawl = await crawler(pool, store, world, [host])
-        await advance(crawl, world, START + HOUR)
-        assert all(store.get(parse(f"https://{host}/p{i}-0", host)) for i in range(100))
-        assert len(world.hits(".xml")) == len(children) + 1
+    crawl = make_crawl(world, [host])
+    await advance(crawl, world, START + HOUR)
+    assert all(stored(crawl, f"https://{host}/p{i}-0", host) for i in range(100))
+    assert len(world.hits(".xml")) == len(children) + 1
