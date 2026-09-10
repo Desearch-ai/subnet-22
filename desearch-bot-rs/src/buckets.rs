@@ -6,8 +6,8 @@ use anyhow::{Context, Result};
 use blake2::digest::consts::{U2, U8};
 use blake2::{Blake2b, Digest};
 use rocksdb::{
-    BlockBasedOptions, Cache, DBCompressionType, Direction, IteratorMode, Options, ReadOptions, WriteBatch,
-    WriteBufferManager, DB,
+    BlockBasedOptions, Cache, ColumnFamilyDescriptor, DBCompressionType, Direction, IteratorMode, Options, ReadOptions,
+    WriteBatch, WriteBufferManager, DB,
 };
 use serde::Deserialize;
 use serde_json::{Map, Value};
@@ -107,7 +107,10 @@ pub struct BucketStore {
 
 impl BucketStore {
     pub fn open(path: &Path, resources: &Resources) -> Result<Self> {
-        let db = DB::open_cf(&resources.options(), path, ["default"]).with_context(|| format!("opening {}", path.display()))?;
+        let options = resources.options();
+        // Compression, filters, cache and memtable sizes are column family options; the default family must get them too.
+        let family = ColumnFamilyDescriptor::new("default", options.clone());
+        let db = DB::open_cf_descriptors(&options, path, [family]).with_context(|| format!("opening {}", path.display()))?;
         Ok(BucketStore { path: path.to_path_buf(), db })
     }
 
@@ -189,6 +192,17 @@ impl BucketStore {
     pub fn memory(&self) -> (u64, u64) {
         let read = |name: &str| self.db.property_int_value(name).ok().flatten().unwrap_or(0);
         (read("rocksdb.estimate-table-readers-mem"), read("rocksdb.cur-size-all-mem-tables"))
+    }
+
+    /// Rewrite every file of the store, reclaiming space held by old versions and older, looser blocks.
+    pub fn compact(&self) {
+        let mut options = rocksdb::CompactOptions::default();
+        options.set_bottommost_level_compaction(rocksdb::BottommostLevelCompaction::Force);
+        self.db.compact_range_opt(None::<&[u8]>, None::<&[u8]>, &options);
+    }
+
+    pub fn flush(&self) -> Result<()> {
+        Ok(self.db.flush()?)
     }
 
     pub fn estimate(&self) -> u64 {
@@ -298,6 +312,31 @@ fn encode(record: &Json) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stores_compress_and_share_the_cache() {
+        let dir = std::env::temp_dir().join(format!("desearch-bot-compression-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let resources = Resources::new(8 << 20, 8 << 20, 1);
+        let store = BucketStore::open(&dir, &resources).unwrap();
+        let entries: Vec<(Url, u32, bool)> = (0..50_000)
+            .map(|i| (Url { key: format!("example.com\0example.com/products/category/item-{i}").into_bytes(), flags: 1 }, 0, false))
+            .collect();
+        let raw: usize = entries.iter().map(|e| e.0.key.len() + 1 + Record::SIZE).sum();
+        store.record_listing(7, entries, 1).unwrap();
+        store.flush().unwrap();
+        let stored: u64 = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().is_some_and(|x| x == "sst"))
+            .map(|e| e.metadata().unwrap().len())
+            .sum();
+        assert!(stored > 0 && (stored as usize) < raw / 4, "{stored} bytes stored for {raw} raw");
+        assert!(store.url(&Url { key: b"example.com\0example.com/products/category/item-9".to_vec(), flags: 1 }).unwrap().is_some());
+        assert!(resources.cache.get_usage() > 0, "reads go through the shared block cache");
+        drop(store);
+        std::fs::remove_dir_all(&dir).ok();
+    }
 
     #[test]
     fn hashes_match_python() {

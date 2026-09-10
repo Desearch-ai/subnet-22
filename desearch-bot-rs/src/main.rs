@@ -64,6 +64,9 @@ struct RunArgs {
     /// New visits wait while the disk has less than this many GB free.
     #[arg(long, default_value_t = 30)]
     min_free_gb: u64,
+    /// Rewrite every store once in the background, to reclaim space in files written by older settings.
+    #[arg(long)]
+    compact: bool,
     /// Stop after this many seconds.
     #[arg(long)]
     duration: Option<u64>,
@@ -105,6 +108,18 @@ async fn run(args: RunArgs) -> Result<()> {
         bodies: Arc::new(Semaphore::new(args.sitemap_slots)),
         pause: Arc::new(std::sync::atomic::AtomicBool::new(false)),
     });
+    if args.compact {
+        let stores = buckets.clone();
+        std::thread::spawn(move || {
+            let all: Vec<_> = stores.stores().collect();
+            for (done, store) in all.iter().enumerate() {
+                store.compact();
+                if (done + 1) % 32 == 0 || done + 1 == all.len() {
+                    println!("[rs] compacted {} of {} stores", done + 1, all.len());
+                }
+            }
+        });
+    }
     let mut crawl = Loop::new(buckets, visitor, args.concurrency, registry, excluded).with_min_free_disk(args.min_free_gb << 30);
     let scheduled = crawl.load()?;
     println!("[rs] {scheduled} domains in {} buckets", owned.len());
