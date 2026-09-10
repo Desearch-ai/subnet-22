@@ -56,3 +56,34 @@ async def test_a_visit_waiting_to_be_written_is_not_handed_out_again(pool, monke
     await asyncio.wait_for(running, timeout=5)
     assert visitor.visits == Counter({"d0.com": 1, "d1.com": 1, "d2.com": 1})
     assert await db.due(pool, 10, [], False, loop._now()) == []
+
+
+class Slow:
+    """A visitor whose visits each outlast several flushes."""
+
+    def __init__(self):
+        self.visits = Counter()
+
+    async def visit(self, known, now):
+        self.visits[known.host] += 1
+        await asyncio.sleep(0.05 * (1 + int(known.host[1])))
+        return Visit(known.host, requests=1)
+
+
+async def test_a_visit_that_outlasts_a_flush_is_still_written(pool, monkeypatch):
+    monkeypatch.setattr(loop, "TICK", 0.01)
+    monkeypatch.setattr(loop, "FLUSH_SECONDS", 0.02)
+    await db.load_candidates(pool, [(f"d{i}.com", i, "big_generic") for i in range(5)])
+    visitor = Slow()
+    crawl = loop.Loop(pool, visitor, 5, frozenset())
+    running = asyncio.create_task(crawl.run())
+    await asyncio.sleep(1.0)
+    crawl.stop()
+    await asyncio.wait_for(running, timeout=5)
+    assert visitor.visits == Counter({f"d{i}.com": 1 for i in range(5)})
+    now = loop._now()
+    assert (
+        await db.due(pool, 10, [], True, now)
+        == await db.due(pool, 10, [], False, now)
+        == []
+    )

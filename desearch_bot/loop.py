@@ -184,7 +184,9 @@ class Loop:
         await db.adopt(self.pool, targets, self.clock())
 
     async def _one(self, known: Known) -> None:
-        self.pending.append(await self.once(known))
+        # Await before touching the list: a flush during the visit swaps in a new one.
+        write = await self.once(known)
+        self.pending.append(write)
         self.inflight.pop(known.host, None)
         self.visited += 1
 
