@@ -1,0 +1,43 @@
+[package]
+name = "desearch-bot"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+resolver = "3"
+publish = false
+description = "The DesearchBot crawl loop"
+
+[dependencies]
+anyhow = "1"
+base64 = "0.22"
+blake2 = "0.10"
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+clap = { version = "4", features = ["derive"] }
+ed25519-dalek = { version = "2", features = ["pkcs8", "pem"] }
+encoding_rs = "0.8"
+flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
+indexmap = "2"
+memchr = "2"
+hickory-resolver = { version = "0.24", default-features = false, features = ["tokio-runtime"] }
+rand = "0.8"
+regex = "1"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "gzip", "brotli", "deflate"] }
+rocksdb = { version = "0.23", default-features = false, features = ["zstd", "bindgen-runtime"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+sha2 = "0.10"
+stringprep = "0.1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "signal", "sync"] }
+tokio-postgres = { version = "0.7", features = ["with-chrono-0_4"] }
+tokio-postgres-rustls = "0.13"
+unicode-normalization = "0.1"
+whatlang = "0.16"
+
+[target.'cfg(not(target_env = "msvc"))'.dependencies]
+tikv-jemallocator = "0.6"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+debug = "line-tables-only"
