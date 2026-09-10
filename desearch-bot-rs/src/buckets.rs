@@ -34,7 +34,7 @@ pub fn sitemap_id(url: &str) -> i64 {
 
 /// The block cache and memtable budget every store in the process shares.
 pub struct Resources {
-    cache: Cache,
+    pub(crate) cache: Cache,
     memtables: WriteBufferManager,
     background_jobs: i32,
     open_files: i32,
@@ -45,8 +45,10 @@ impl Resources {
         let cores = std::thread::available_parallelism().map_or(4, |n| n.get()) as i32;
         Resources {
             cache: Cache::new_lru_cache(cache_bytes),
-            memtables: WriteBufferManager::new_write_buffer_manager(memtable_bytes, false),
-            background_jobs: (cores / 2).max(2),
+            // Writers wait rather than let memtables outgrow the budget while flushes catch up.
+            memtables: WriteBufferManager::new_write_buffer_manager(memtable_bytes, true),
+            // One process flushes and compacts every store it owns, so it needs the threads seven processes had.
+            background_jobs: (cores * 2).max(4),
             // Every store keeps its own table files open; together they must stay well under the fd limit.
             open_files: (40_000 / stores.max(1)).clamp(64, 512) as i32,
         }
@@ -65,6 +67,7 @@ impl Resources {
         options.set_write_buffer_manager(&self.memtables);
         options.set_level_compaction_dynamic_level_bytes(true);
         options.set_max_background_jobs(self.background_jobs);
+        options.set_max_subcompactions(2);
         options.set_max_open_files(self.open_files);
         options
     }
@@ -176,6 +179,12 @@ impl BucketStore {
         Ok(self.db.get([&[URL], &url.key[..]].concat())?.as_deref().and_then(Record::unpack))
     }
 
+    /// Memory RocksDB holds for this store outside the block cache: table readers and memtables.
+    pub fn memory(&self) -> (u64, u64) {
+        let read = |name: &str| self.db.property_int_value(name).ok().flatten().unwrap_or(0);
+        (read("rocksdb.estimate-table-readers-mem"), read("rocksdb.cur-size-all-mem-tables"))
+    }
+
     pub fn estimate(&self) -> u64 {
         self.db.property_int_value("rocksdb.estimate-num-keys").ok().flatten().unwrap_or(0)
     }
@@ -206,7 +215,16 @@ impl BucketStore {
 
 /// The stores of the buckets one process owns.
 pub struct Buckets {
+    root: PathBuf,
+    cache: Cache,
     stores: Vec<Option<BucketStore>>,
+}
+
+/// Where RocksDB's memory goes, in bytes.
+pub struct Memory {
+    pub table_readers: u64,
+    pub memtables: u64,
+    pub block_cache: u64,
 }
 
 impl Buckets {
@@ -223,7 +241,23 @@ impl Buckets {
             let (bucket, store) = store?;
             stores[bucket] = Some(store);
         }
-        Ok(Buckets { stores })
+        Ok(Buckets { root: root.to_path_buf(), cache: resources.cache.clone(), stores })
+    }
+
+    pub fn memory(&self) -> Memory {
+        let (table_readers, memtables) = self.stores().map(BucketStore::memory).fold((0, 0), |a, b| (a.0 + b.0, a.1 + b.1));
+        Memory { table_readers, memtables, block_cache: self.cache.get_usage() as u64 }
+    }
+
+    /// Free space on the disk the stores live on.
+    pub fn free_disk(&self) -> Option<u64> {
+        use std::os::unix::ffi::OsStrExt;
+        let path = std::ffi::CString::new(self.root.as_os_str().as_bytes()).ok()?;
+        let mut stat: libc::statvfs = unsafe { std::mem::zeroed() };
+        if unsafe { libc::statvfs(path.as_ptr(), &mut stat) } != 0 {
+            return None;
+        }
+        Some(stat.f_bavail as u64 * stat.f_frsize as u64)
     }
 
     pub fn owns(&self, host: &str) -> bool {

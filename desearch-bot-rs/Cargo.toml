@@ -17,6 +17,7 @@ ed25519-dalek = { version = "2", features = ["pkcs8", "pem"] }
 encoding_rs = "0.8"
 flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
 indexmap = "2"
+libc = "0.2"
 memchr = "2"
 hickory-resolver = { version = "0.24", default-features = false, features = ["tokio-runtime"] }
 rand = "0.8"

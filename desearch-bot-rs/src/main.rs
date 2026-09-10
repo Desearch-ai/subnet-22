@@ -61,6 +61,9 @@ struct RunArgs {
     /// Crawl without reporting to Postgres or taking changes from it.
     #[arg(long)]
     no_registry: bool,
+    /// New visits wait while the disk has less than this many GB free.
+    #[arg(long, default_value_t = 20)]
+    min_free_gb: u64,
     /// Stop after this many seconds.
     #[arg(long)]
     duration: Option<u64>,
@@ -101,7 +104,7 @@ async fn run(args: RunArgs) -> Result<()> {
         cpu: Arc::new(Semaphore::new(cores * 2)),
         bodies: Arc::new(Semaphore::new(args.sitemap_slots)),
     });
-    let mut crawl = Loop::new(buckets, visitor, args.concurrency, registry, excluded);
+    let mut crawl = Loop::new(buckets, visitor, args.concurrency, registry, excluded).with_min_free_disk(args.min_free_gb << 30);
     let scheduled = crawl.load()?;
     println!("[rs] {scheduled} domains in {} buckets", owned.len());
 

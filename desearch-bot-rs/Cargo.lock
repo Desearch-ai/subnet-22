@@ -524,6 +524,7 @@ dependencies = [
  "flate2",
  "hickory-resolver",
  "indexmap",
+ "libc",
  "memchr",
  "rand 0.8.8",
  "regex",

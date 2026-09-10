@@ -32,6 +32,9 @@ const CRASH_RETRY: i64 = HOUR;
 const STOP_GRACE: Duration = Duration::from_secs(30);
 /// A visit cut short by failing requests leaves the site alone this long.
 const CUT_SHORT_WAIT: i64 = HOUR;
+/// New visits wait while the disk is this close to full; they resume with 5 GB more to spare.
+const RESUME_MARGIN: u64 = 5 << 30;
+const DISK_CHECK: Duration = Duration::from_secs(10);
 
 #[derive(Clone, Debug)]
 pub struct DomainWrite {
@@ -158,6 +161,9 @@ pub struct Loop {
     pub stats: Stats,
     started: Instant,
     printed: Instant,
+    min_free_disk: u64,
+    disk_checked: Option<Instant>,
+    disk_low: bool,
 }
 
 impl Loop {
@@ -177,7 +183,16 @@ impl Loop {
             stats: Stats::default(),
             started: Instant::now(),
             printed: Instant::now(),
+            min_free_disk: 0,
+            disk_checked: None,
+            disk_low: false,
         }
+    }
+
+    /// Stop starting visits while the disk has less than this many bytes free.
+    pub fn with_min_free_disk(mut self, bytes: u64) -> Self {
+        self.min_free_disk = bytes;
+        self
     }
 
     /// Put every domain the stores hold into the timetable; returns how many are due ever.
@@ -256,6 +271,19 @@ impl Loop {
     }
 
     fn fill(&mut self) {
+        if self.disk_checked.is_none_or(|at| at.elapsed() >= DISK_CHECK) {
+            self.disk_checked = Some(Instant::now());
+            if let Some(free) = self.buckets.free_disk() {
+                let low = if self.disk_low { free < self.min_free_disk + RESUME_MARGIN } else { free < self.min_free_disk };
+                if low != self.disk_low {
+                    println!("[rs] {} new visits: {} GB free on disk", if low { "pausing" } else { "resuming" }, free >> 30);
+                }
+                self.disk_low = low;
+            }
+        }
+        if self.disk_low {
+            return;
+        }
         let free = self.concurrency.saturating_sub(self.visits.len());
         if free == 0 {
             return;
@@ -400,14 +428,20 @@ impl Loop {
     fn print(&mut self) {
         self.printed = Instant::now();
         let elapsed = self.started.elapsed().as_secs_f64().max(1.0);
+        let memory = self.buckets.memory();
+        let disk = self.buckets.free_disk().unwrap_or(0);
         println!(
-            "[rs] {} visited  {:.1}/s  {:.1} req/s  in flight {}  new urls {}  scheduled {}",
+            "[rs] {} visited  {:.1}/s  {:.1} req/s  in flight {}  new urls {}  scheduled {}  rocksdb readers {} MB memtables {} MB cache {} MB  disk free {} GB",
             thousands(self.stats.visited as i64),
             self.stats.visited as f64 / elapsed,
             self.stats.requests as f64 / elapsed,
             self.visits.len(),
             thousands(self.stats.new),
             thousands(self.timetable.len() as i64),
+            memory.table_readers >> 20,
+            memory.memtables >> 20,
+            memory.block_cache >> 20,
+            disk >> 30,
         );
     }
 
