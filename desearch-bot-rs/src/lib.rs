@@ -5,7 +5,7 @@ pub mod crawl;
 pub mod exclusions;
 pub mod homepage;
 pub mod isodate;
-pub mod language;
+pub mod langid;
 pub mod net;
 pub mod records;
 pub mod registry;

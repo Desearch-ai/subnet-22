@@ -32,7 +32,6 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "signa
 tokio-postgres = { version = "0.7", features = ["with-chrono-0_4"] }
 tokio-postgres-rustls = "0.13"
 unicode-normalization = "0.1"
-whatlang = "0.16"
 
 [target.'cfg(not(target_env = "msvc"))'.dependencies]
 tikv-jemallocator = "0.6"

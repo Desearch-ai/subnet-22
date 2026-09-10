@@ -180,6 +180,7 @@ async fn crawls_a_small_web() {
         buckets: buckets.clone(),
         suffixes: Arc::new(PublicSuffixList::parse("test\n")),
         signer: None,
+        language: Arc::new(|text: &str| Some(if text.contains("the") { "en" } else { "fr" }.to_string())),
         floor: 0.0,
         connect_timeout: Duration::from_secs(10),
         cpu: Arc::new(Semaphore::new(4)),

@@ -19,7 +19,7 @@ use crate::sitemaps::{self, Entry};
 use crate::states::{Outcome, State, JITTER};
 use crate::suffixes::PublicSuffixList;
 use crate::urls::{self, Listing, Normaliser};
-use crate::{homepage, isodate, language, net, robots};
+use crate::{homepage, isodate, net, robots};
 
 pub const MIN_HOST_INTERVAL: f64 = 1.0;
 /// Some sites ask for hours between requests; past this we slow down no further.
@@ -199,6 +199,8 @@ pub struct Visitor {
     pub buckets: Arc<Buckets>,
     pub suffixes: Arc<PublicSuffixList>,
     pub signer: Option<Arc<Signer>>,
+    /// The language of a homepage's text, or None when there is too little to tell.
+    pub language: Arc<dyn Fn(&str) -> Option<String> + Send + Sync>,
     pub floor: f64,
     /// How long connecting may take before a request fails, to tell connect timeouts from read timeouts.
     pub connect_timeout: Duration,
@@ -547,10 +549,11 @@ impl Run<'_> {
             return Ok(());
         }
         let body = answer.body;
-        let page = self.visitor.cpu(move || homepage::read(&body, language::detect)).await?;
+        let detect = self.visitor.language.clone();
+        let page = self.visitor.cpu(move || homepage::read(&body, &*detect)).await?;
         self.result.home_chars = Some(page.chars as i64);
         self.result.declared_lang = page.declared;
-        self.result.language = page.language.map(str::to_string);
+        self.result.language = page.language;
         if let Some(problem) = page.problem {
             self.stop(Outcome::Ineligible, Some(problem.into()));
         }

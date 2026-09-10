@@ -28,12 +28,12 @@ static BOT_WALL: LazyLock<Regex> = LazyLock::new(|| {
 pub struct Homepage {
     pub chars: usize,
     pub declared: Option<String>,
-    pub language: Option<&'static str>,
+    pub language: Option<String>,
     pub problem: Option<&'static str>,
 }
 
 /// Judge a homepage; the problem is None when it is readable English.
-pub fn read(body: &[u8], detect_language: fn(&str) -> Option<&'static str>) -> Homepage {
+pub fn read(body: &[u8], detect_language: &dyn Fn(&str) -> Option<String>) -> Homepage {
     let html = decode(body);
     let declared = HTML_LANG
         .captures(text::head(&html, 4000))
@@ -43,7 +43,7 @@ pub fn read(body: &[u8], detect_language: fn(&str) -> Option<&'static str>) -> H
     let page = words.join(" ");
     let chars = text::char_count(&page);
     let sample = text::head(&page, SAMPLE);
-    let judged = |language, problem| Homepage { chars, declared: declared.clone(), language, problem };
+    let judged = |language: Option<String>, problem| Homepage { chars, declared: declared.clone(), language, problem };
     if BOT_WALL.is_match(sample) {
         return judged(None, Some("bot_wall"));
     }
@@ -51,7 +51,8 @@ pub fn read(body: &[u8], detect_language: fn(&str) -> Option<&'static str>) -> H
         return judged(None, Some("no_text"));
     }
     let language = detect_language(sample);
-    judged(language, if language == Some("en") { None } else { Some("not_english") })
+    let problem = if language.as_deref() == Some("en") { None } else { Some("not_english") };
+    judged(language, problem)
 }
 
 /// The body as text in its declared charset, falling back to UTF-8.
@@ -76,16 +77,16 @@ fn python_alias(label: &[u8]) -> Option<&'static encoding_rs::Encoding> {
 mod tests {
     use super::*;
 
-    fn english(_: &str) -> Option<&'static str> {
-        Some("en")
+    fn english(_: &str) -> Option<String> {
+        Some("en".into())
     }
 
     #[test]
     fn judges_text_and_walls() {
         let body = format!("<html lang=\"en-GB\"><script>var x = '<b>';</script><p>{}</p></html>", "word ".repeat(60));
-        let page = read(body.as_bytes(), english);
+        let page = read(body.as_bytes(), &english);
         assert_eq!((page.declared.as_deref(), page.problem, page.chars), (Some("en"), None, 299));
-        assert_eq!(read(b"<p>Please enable JavaScript</p>", english).problem, Some("bot_wall"));
-        assert_eq!(read(b"<p>short</p>", english).problem, Some("no_text"));
+        assert_eq!(read(b"<p>Please enable JavaScript</p>", &english).problem, Some("bot_wall"));
+        assert_eq!(read(b"<p>short</p>", &english).problem, Some("no_text"));
     }
 }

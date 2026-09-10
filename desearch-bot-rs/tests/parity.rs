@@ -3,7 +3,7 @@
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 
-use desearch_bot::{exclusions, isodate, signing, sitemaps, suffixes, urls};
+use desearch_bot::{exclusions, isodate, langid, signing, sitemaps, suffixes, urls};
 use flate2::read::GzDecoder;
 use serde_json::Value;
 
@@ -86,4 +86,22 @@ fn signatures_match_python() {
             assert_eq!(psl.registrable(host).as_deref(), row["registrable"].as_str(), "registrable {host}");
         }
     }
+}
+
+#[test]
+fn languages_match_python() {
+    let Ok(path) = std::env::var("LANGID_FILE") else {
+        return;
+    };
+    let model = langid::LangId::load(path.as_ref()).unwrap();
+    let rows = vectors("langid-vectors.jsonl.gz");
+    let mut differ = Vec::new();
+    for row in &rows {
+        let (text, want) = (row["text"].as_str().unwrap(), row["lang"].as_str().unwrap());
+        let got = model.classify(text);
+        if got != want {
+            differ.push(format!("{:?}: rust {got} python {want} ({})", &text[..text.len().min(60)], row["score"]));
+        }
+    }
+    report(&differ, rows.len());
 }

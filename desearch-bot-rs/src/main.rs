@@ -11,6 +11,7 @@ use tokio::sync::{watch, Semaphore};
 
 use desearch_bot::buckets::{Buckets, Resources, BUCKETS};
 use desearch_bot::crawl::Loop;
+use desearch_bot::langid::LangId;
 use desearch_bot::net::{self, PublicResolver};
 use desearch_bot::registry::{self, Registry};
 use desearch_bot::signing::Signer;
@@ -44,7 +45,7 @@ struct RunArgs {
     /// Buckets to crawl, as ranges such as 0-13,20.
     #[arg(long, default_value = "0-255")]
     buckets: String,
-    /// Where public_suffix_list.dat lives.
+    /// Where public_suffix_list.dat and langid.bin live.
     #[arg(long, default_value = "data")]
     data_dir: PathBuf,
     #[arg(long, default_value_t = 4096)]
@@ -83,6 +84,7 @@ async fn run(args: RunArgs) -> Result<()> {
     };
     let suffixes_path = args.data_dir.join("public_suffix_list.dat");
     let suffixes = Arc::new(PublicSuffixList::load(&suffixes_path).with_context(|| format!("reading {}", suffixes_path.display()))?);
+    let model = LangId::load(&args.data_dir.join("langid.bin"))?;
     let cores = std::thread::available_parallelism().map_or(4, |n| n.get());
     let read_timeout = Duration::from_secs_f64(args.timeout);
     let visitor = Arc::new(Visitor {
@@ -90,6 +92,7 @@ async fn run(args: RunArgs) -> Result<()> {
         buckets: buckets.clone(),
         suffixes,
         signer: Signer::from_env()?.map(Arc::new),
+        language: Arc::new(move |text: &str| text.chars().nth(19).map(|_| model.classify(text).to_string())),
         floor: MIN_HOST_INTERVAL,
         connect_timeout: net::connect_timeout(read_timeout),
         cpu: Arc::new(Semaphore::new(cores * 2)),
