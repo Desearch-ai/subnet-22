@@ -30,6 +30,8 @@ SLOW_DOWN_STATUSES = frozenset({429, 503})
 SITEMAP_GUESSES = ("/sitemap.xml", "/sitemap_index.xml")
 MAX_DEPTH = 3
 MAX_FILES = 40
+# The most unread sitemap files one visit records for the visits after it.
+MAX_DEFERRED = 10_000
 MIN_URLS = 10
 ROBOTS_EVERY = timedelta(days=1)
 MAX_ROBOTS_BYTES = 512 * 1024
@@ -111,6 +113,7 @@ class Visit:
     new: int = 0
     moved: int = 0
     requests: int = 0
+    deferred: list[tuple[str, int, int | None]] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -267,6 +270,16 @@ class _Run:
             if stored and not force and not _due(stored, self.now):
                 continue
             queue.extend(await self._sitemap(url, depth, parent_id, index_date, stored))
+        for url, depth, parent_id, _, _ in queue:
+            if len(self.result.deferred) >= MAX_DEFERRED:
+                break
+            if (
+                url not in seen
+                and url not in self.known.sitemaps
+                and url not in self.guesses
+            ):
+                seen.add(url)
+                self.result.deferred.append((url, depth, parent_id))
 
     async def _sitemap(
         self,

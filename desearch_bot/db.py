@@ -333,7 +333,9 @@ async def excluded_categories(pool: asyncpg.Pool) -> frozenset[str]:
 
 
 async def save_visits(pool: asyncpg.Pool, writes) -> None:
-    """Write a batch of finished visits: each domain's new state, and every sitemap it read."""
+    """Write finished visits: states, the sitemaps read, and the ones left for later."""
+    from .states import State
+
     domains = [
         (
             w.host,
@@ -479,6 +481,27 @@ async def save_visits(pool: asyncpg.Pool, writes) -> None:
                         changed_at = CASE WHEN s.changed THEN s.fetched_at ELSE m.changed_at END
                     FROM sitemap_stage s WHERE m.id = s.id
                     """
+                )
+            deferred = [
+                (w.host, url, depth, parent_id)
+                for w in writes
+                if w.state is State.ACTIVE
+                for url, depth, parent_id in w.visit.deferred
+            ]
+            if deferred:
+                hosts, urls, depths, parents = (
+                    list(column) for column in zip(*deferred)
+                )
+                await connection.execute(
+                    """
+                    INSERT INTO bot.sitemaps (host, url, depth, parent_id)
+                    SELECT * FROM unnest($1::text[], $2::text[], $3::smallint[], $4::bigint[])
+                    ON CONFLICT (url) DO NOTHING
+                    """,
+                    hosts,
+                    urls,
+                    depths,
+                    parents,
                 )
             await connection.execute(
                 """

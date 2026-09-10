@@ -169,3 +169,14 @@ async def test_a_visit_finishing_after_an_exclusion_does_not_undo_it(pool):
     await db.exclude_hosts(pool, [("a.com", "adult")])
     await db.save_visits(pool, [_write("a.com")])
     assert (await _row(pool, "domains", "host", "a.com"))["state"] == "excluded"
+
+
+async def test_sitemaps_left_unread_are_known_and_due_on_the_next_visit(pool):
+    await _domains(pool, "a.com")
+    left = [("https://a.com/s1.xml", 1, None), ("https://a.com/s2.xml", 1, None)]
+    await db.save_visits(pool, [_write("a.com", due=NOW, deferred=left)])
+    [known] = await db.due(pool, 10, [], True, NOW)
+    assert {url: (s.depth, s.next_check_at) for url, s in known.sitemaps.items()} == {
+        "https://a.com/s1.xml": (1, None),
+        "https://a.com/s2.xml": (1, None),
+    }

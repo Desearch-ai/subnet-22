@@ -161,3 +161,10 @@ def test_a_redirect_destination_joins_the_list_unless_a_rule_excludes_it():
     assert adopted("landing.com") == ("big_generic", State.NEW, None)
     _, state, reason = adopted("cdn.example.com")
     assert state is State.EXCLUDED and reason
+
+
+def test_a_visit_that_left_sitemaps_unread_comes_back_at_once():
+    visit = Visit(
+        "example.com", requests=5, deferred=[("https://example.com/s9.xml", 1, 7)]
+    )
+    assert plan(Known("example.com"), visit, NOW, random.Random(0)).next_due_at == NOW

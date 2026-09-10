@@ -431,3 +431,22 @@ def test_slowing_down_never_shortens_the_interval():
     pacer = Pacer(5.0)
     pacer.slow_to(1.0)
     assert pacer.interval == 5.0
+
+
+async def test_sitemaps_beyond_the_file_limit_are_left_for_the_next_visit(web, visitor):
+    children = [f"https://example.com/s{i}.xml" for i in range(MAX_FILES + 10)]
+    web.page(
+        "https://example.com/robots.txt", b"Sitemap: https://example.com/idx.xml\n"
+    )
+    web.page(
+        "https://example.com/idx.xml", index(*[(child, None) for child in children])
+    )
+    for child in children:
+        web.page(child, urlset(*PAGES))
+    web.page("https://example.com/", ENGLISH)
+    visit = await visitor.visit(Known("example.com"), NOW)
+    read = {update.url for update in visit.sitemaps}
+    assert [url for url, _, _ in visit.deferred] == [
+        c for c in children if c not in read
+    ]
+    assert {depth for _, depth, _ in visit.deferred} == {1}

@@ -53,7 +53,7 @@ def plan(
     )
     due = decision.next_check_at
     if decision.state is State.ACTIVE:
-        earliest = _earliest_sitemap(known, visit, now)
+        earliest = now if visit.deferred else _earliest_sitemap(known, visit, now)
         if earliest is not None and (due is None or earliest < due):
             due = earliest
     if visit.outcome is Outcome.REDIRECT:

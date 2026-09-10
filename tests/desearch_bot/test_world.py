@@ -6,7 +6,7 @@ from desearch_bot.loop import Loop
 from desearch_bot.urls import UrlStore, parse
 from desearch_bot.visit import Visitor
 
-from .fakeweb import ALLOW, ENGLISH, PAGES, FakeWeb, urlset
+from .fakeweb import ALLOW, ENGLISH, PAGES, FakeWeb, index, urlset
 
 START = datetime(2026, 9, 7, tzinfo=timezone.utc)
 STEP = timedelta(minutes=5)
@@ -186,3 +186,25 @@ async def test_a_sitemap_added_later_is_found_at_the_monthly_recheck(pool, tmp_p
         assert len(world.hits("late.com")) == 3
         await advance(crawl, world, START + 34 * DAY, HOUR)
         assert await state(pool, "late.com") == "active"
+
+
+async def test_an_index_bigger_than_one_visit_is_read_to_the_end(pool, tmp_path):
+    random.seed(7)
+    world = World()
+    host = "big.com"
+    children = [f"https://{host}/s{i}.xml" for i in range(100)]
+    world.page(
+        f"https://{host}/robots.txt",
+        f"User-agent: *\nSitemap: https://{host}/index.xml\n".encode(),
+    )
+    world.page(
+        f"https://{host}/index.xml", index(*[(child, None) for child in children])
+    )
+    for i, child in enumerate(children):
+        world.page(child, urlset(*[f"/p{i}-{j}" for j in range(12)], host=host))
+    world.page(f"https://{host}/", ENGLISH)
+    with UrlStore(tmp_path / "urls") as store:
+        crawl = await crawler(pool, store, world, [host])
+        await advance(crawl, world, START + HOUR)
+        assert all(store.get(parse(f"https://{host}/p{i}-0", host)) for i in range(100))
+        assert len(world.hits(".xml")) == len(children) + 1
