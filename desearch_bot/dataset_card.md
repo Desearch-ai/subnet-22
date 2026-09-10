@@ -29,7 +29,7 @@ The domains in scope for crawling by [Desearch](https://www.desearch.ai), Bitten
 
 ## Sources
 
-The union of five public domain rankings, each entry resolved to its registrable domain using the
+The union of six public domain rankings, each entry resolved to its registrable domain using the
 Public Suffix List:
 
 - [Tranco](https://tranco-list.eu/)
@@ -37,6 +37,7 @@ Public Suffix List:
 - [Open PageRank](https://www.domcop.com/openpagerank/)
 - [BuiltWith Top 1M](https://builtwith.com/top-1m)
 - [Cisco Umbrella Popularity List](https://umbrella-static.s3-us-west-1.amazonaws.com/index.html)
+- [Cloudflare Radar Top 1M](https://radar.cloudflare.com/domains)
 
 ## Filtering
 
@@ -63,7 +64,8 @@ Every surviving domain is then checked twice more:
 
 Inclusion means a domain passed all of these. It does not mean the domain has been crawled.
 `robots.txt` is read and obeyed at request time, and a domain that disallows the `DesearchBot`
-token is never fetched.
+token is never fetched. Domains that later prove unreachable, disallow `DesearchBot`, or publish
+in a language other than English are dropped when the list is next updated.
 
 ## Crawler
 
