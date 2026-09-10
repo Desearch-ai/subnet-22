@@ -162,3 +162,10 @@ async def test_only_public_states_without_excluded_labels_are_published(pool):
         r["host"] async for rows in db.iter_published_hosts(pool) for r in rows
     ]
     assert sorted(published) == sorted(f"{state.value}.com" for state in PUBLIC)
+
+
+async def test_a_visit_finishing_after_an_exclusion_does_not_undo_it(pool):
+    await _domains(pool, "a.com", state="active")
+    await db.exclude_hosts(pool, [("a.com", "adult")])
+    await db.save_visits(pool, [_write("a.com")])
+    assert (await _row(pool, "domains", "host", "a.com"))["state"] == "excluded"

@@ -427,7 +427,7 @@ async def save_visits(pool: asyncpg.Pool, writes) -> None:
                     language = coalesce(s.language, d.language),
                     declared_lang = coalesce(s.declared_lang, d.declared_lang),
                     home_chars = coalesce(s.home_chars, d.home_chars)
-                FROM visit_stage s WHERE d.host = s.host
+                FROM visit_stage s WHERE d.host = s.host AND d.state <> 'excluded'
                 """
             )
             if sitemaps:
