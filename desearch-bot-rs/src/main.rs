@@ -77,7 +77,8 @@ struct RunArgs {
 
 fn main() -> Result<()> {
     let Command::Run(args) = Cli::parse().command;
-    tokio::runtime::Builder::new_multi_thread().enable_all().build()?.block_on(run(args))
+    // Parsing is capped by its own slots; more blocking threads would only hold more allocator caches.
+    tokio::runtime::Builder::new_multi_thread().enable_all().max_blocking_threads(128).build()?.block_on(run(args))
 }
 
 async fn run(args: RunArgs) -> Result<()> {

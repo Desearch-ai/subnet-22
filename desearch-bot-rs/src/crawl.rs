@@ -448,8 +448,9 @@ impl Loop {
         let elapsed = self.started.elapsed().as_secs_f64().max(1.0);
         let memory = self.buckets.memory();
         let disk = self.buckets.free_disk().unwrap_or(0);
+        let heap = heap();
         println!(
-            "[rs] {} visited  {:.1}/s  {:.1} req/s  in flight {}  new urls {}  scheduled {}  sitemap slots {}/{} parsing {}/{} heavy {}/{}  rocksdb readers {} MB memtables {} MB cache {} MB  disk free {} GB",
+            "[rs] {} visited  {:.1}/s  {:.1} req/s  in flight {}  new urls {}  scheduled {}  sitemap slots {}/{} parsing {}/{} heavy {}/{}  rocksdb readers {} MB memtables {} MB cache {} MB  heap {} MB in use {} MB resident  disk free {} GB",
             thousands(self.stats.visited as i64),
             self.stats.visited as f64 / elapsed,
             self.stats.requests as f64 / elapsed,
@@ -465,6 +466,8 @@ impl Loop {
             memory.table_readers >> 20,
             memory.memtables >> 20,
             memory.block_cache >> 20,
+            heap.0 >> 20,
+            heap.1 >> 20,
             disk >> 30,
         );
     }
@@ -511,6 +514,18 @@ fn load_known(buckets: &Buckets, host: &str) -> Option<Known> {
         return None;
     }
     records::known(host, &record, &store.sitemaps(host).ok()?)
+}
+
+/// Bytes the allocator has handed out, and bytes it keeps resident, so fragmentation shows.
+fn heap() -> (usize, usize) {
+    #[cfg(not(target_env = "msvc"))]
+    {
+        use tikv_jemalloc_ctl::{epoch, stats};
+        if epoch::advance().is_ok() {
+            return (stats::allocated::read().unwrap_or(0), stats::resident::read().unwrap_or(0));
+        }
+    }
+    (0, 0)
 }
 
 fn thousands(n: i64) -> String {

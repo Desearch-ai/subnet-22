@@ -35,7 +35,8 @@ tokio-postgres-rustls = "0.13"
 unicode-normalization = "0.1"
 
 [target.'cfg(not(target_env = "msvc"))'.dependencies]
-tikv-jemallocator = "0.6"
+tikv-jemalloc-ctl = { version = "0.6", features = ["stats"] }
+tikv-jemallocator = { version = "0.6", features = ["stats"] }
 
 [profile.release]
 lto = "thin"
