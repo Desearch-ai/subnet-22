@@ -33,6 +33,8 @@ const STOP_GRACE: Duration = Duration::from_secs(30);
 const CUT_SHORT_WAIT: i64 = HOUR;
 /// A domain with more sitemap records than this needs a heavy slot to be visited.
 const HEAVY_RECORDS: usize = 2_000;
+/// A heavy domain that finds every heavy slot taken comes back this much later.
+const HEAVY_RETRY: i64 = 300;
 /// New visits wait while the disk is this close to full; they resume with 5 GB more to spare.
 const RESUME_MARGIN: u64 = 5 << 30;
 const DISK_CHECK: Duration = Duration::from_secs(10);
@@ -134,6 +136,8 @@ pub async fn once(known: Arc<Known>, visitor: &Visitor, excluded: &HashSet<Strin
 
 enum Finished {
     Skipped(Arc<str>),
+    /// A heavy domain with no heavy slot free; it waits in the timetable, not in a visit slot.
+    Busy(Arc<str>),
     Visited(Box<DomainWrite>, Arc<Known>),
 }
 
@@ -306,6 +310,15 @@ impl Loop {
                 self.tasks.remove(&id);
                 self.busy.remove(&host);
             }
+            Ok((id, Finished::Busy(host))) => {
+                self.tasks.remove(&id);
+                self.busy.remove(&host);
+                if let Ok(Some(record)) = self.buckets.store(&host).domain(&host) {
+                    if let Some(state) = record.get("state").and_then(Value::as_str).and_then(State::parse) {
+                        self.timetable.set(&host, state, Some(now_micros() / SECOND + HEAVY_RETRY), records::int(record.get("rank")));
+                    }
+                }
+            }
             Ok((id, Finished::Visited(write, known))) => {
                 self.tasks.remove(&id);
                 self.stats.visited += 1;
@@ -473,9 +486,9 @@ async fn visit_one(host: Arc<str>, buckets: Arc<Buckets>, visitor: Arc<Visitor>,
     let (counting, counted) = (buckets.clone(), host.clone());
     let records = tokio::task::spawn_blocking(move || counting.store(&counted).sitemap_count(&counted).unwrap_or(0)).await.unwrap_or(0);
     let _heavy = if records > HEAVY_RECORDS {
-        match visitor.heavy.take().await {
-            Ok(permit) => Some(permit),
-            Err(_) => return Finished::Skipped(host),
+        match visitor.heavy.try_take() {
+            Some(permit) => Some(permit),
+            None => return Finished::Busy(host),
         }
     } else {
         None

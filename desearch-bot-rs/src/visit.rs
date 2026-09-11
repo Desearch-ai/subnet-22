@@ -181,6 +181,11 @@ impl Slots {
         self.size
     }
 
+    /// A permit if one is free right now.
+    pub fn try_take(&self) -> Option<OwnedSemaphorePermit> {
+        self.permits.clone().try_acquire_owned().ok()
+    }
+
     pub async fn take(&self) -> Result<OwnedSemaphorePermit, Crash> {
         self.permits.clone().acquire_owned().await.map_err(|_| Crash::new("CancelledError"))
     }

@@ -6,7 +6,7 @@ use anyhow::{Context, Result};
 use blake2::digest::consts::{U2, U8};
 use blake2::{Blake2b, Digest};
 use rocksdb::{
-    BlockBasedOptions, Cache, ColumnFamilyDescriptor, DBCompressionType, Direction, IteratorMode, Options, ReadOptions,
+    BlockBasedIndexType, BlockBasedOptions, Cache, ColumnFamilyDescriptor, DBCompressionType, Direction, IteratorMode, Options, ReadOptions,
     WriteBatch, WriteBufferManager, DB,
 };
 use serde::Deserialize;
@@ -60,6 +60,13 @@ impl Resources {
         table.set_bloom_filter(10.0, false);
         // Bigger blocks let zstd find more of what neighbouring URLs of one domain share.
         table.set_block_size(16 << 10);
+        // Filters and indexes grow with every key; kept in small partitions inside the cache, they stay within its budget.
+        table.set_cache_index_and_filter_blocks(true);
+        table.set_pin_l0_filter_and_index_blocks_in_cache(true);
+        table.set_partition_filters(true);
+        table.set_index_type(BlockBasedIndexType::TwoLevelIndexSearch);
+        table.set_pin_top_level_index_and_filter(true);
+        table.set_metadata_block_size(4096);
         let mut options = Options::default();
         options.create_if_missing(true);
         options.set_block_based_table_factory(&table);
