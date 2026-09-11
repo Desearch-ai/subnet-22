@@ -36,9 +36,12 @@ desearch-bot run --concurrency 840 --buckets-dir /var/lib/desearch-bot/buckets -
 | `--timeout` | 10 | Seconds a read may stall before the request fails |
 | `--min-free-gb` | 30 | New visits wait, and running ones read no more sitemap files, while the disk has less free space than this |
 | `--no-registry` | off | Crawl without reporting to Postgres or taking changes from it |
+| `--compact` | off | Rewrite every store once in the background, to reclaim space held by files written with older settings |
 | `--duration` | none | Stop after this many seconds |
 
 Environment:
+
+- `MALLOC_ARENA_MAX=2`: RocksDB allocates through the C library's `malloc`, and glibc's per-thread arenas otherwise keep freed memory, growing the process by several times its real use. The progress line reports Rust's heap and RocksDB's cache and memtables separately, so any gap shows.
 
 - `DESEARCH_DB`: the registry DSN.
 - `DESEARCH_SIGNING_KEY_FILE`, or `DESEARCH_SIGNING_KEY` inline: the Ed25519 key that signs requests.
