@@ -55,6 +55,9 @@ struct RunArgs {
     /// Sitemap files fetched or waiting to be parsed at once, which bounds the memory their bodies take.
     #[arg(long, default_value_t = 64)]
     sitemap_slots: usize,
+    /// Visits at once to domains with thousands of sitemap records, which bounds the memory those records take.
+    #[arg(long, default_value_t = 16)]
+    heavy_slots: usize,
     /// Seconds a read may stall before the request fails.
     #[arg(long, default_value_t = 10.0)]
     timeout: f64,
@@ -107,6 +110,7 @@ async fn run(args: RunArgs) -> Result<()> {
         cpu: Slots::new(cores * 2),
         bodies: Slots::new(args.sitemap_slots),
         pause: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        heavy: Slots::new(args.heavy_slots),
     });
     if args.compact {
         let stores = buckets.clone();

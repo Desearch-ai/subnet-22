@@ -181,7 +181,7 @@ impl Slots {
         self.size
     }
 
-    async fn take(&self) -> Result<OwnedSemaphorePermit, Crash> {
+    pub async fn take(&self) -> Result<OwnedSemaphorePermit, Crash> {
         self.permits.clone().acquire_owned().await.map_err(|_| Crash::new("CancelledError"))
     }
 }
@@ -240,6 +240,8 @@ pub struct Visitor {
     pub bodies: Slots,
     /// Set while the disk is nearly full: visits read no more sitemap files and leave the rest for later.
     pub pause: Arc<AtomicBool>,
+    /// Visits at once to domains with thousands of sitemap records, which each hold those records in memory.
+    pub heavy: Slots,
 }
 
 impl Visitor {

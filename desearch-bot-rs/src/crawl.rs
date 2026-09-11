@@ -31,6 +31,8 @@ const CRASH_RETRY: i64 = HOUR;
 const STOP_GRACE: Duration = Duration::from_secs(30);
 /// A visit cut short by failing requests leaves the site alone this long.
 const CUT_SHORT_WAIT: i64 = HOUR;
+/// A domain with more sitemap records than this needs a heavy slot to be visited.
+const HEAVY_RECORDS: usize = 2_000;
 /// New visits wait while the disk is this close to full; they resume with 5 GB more to spare.
 const RESUME_MARGIN: u64 = 5 << 30;
 const DISK_CHECK: Duration = Duration::from_secs(10);
@@ -434,7 +436,7 @@ impl Loop {
         let memory = self.buckets.memory();
         let disk = self.buckets.free_disk().unwrap_or(0);
         println!(
-            "[rs] {} visited  {:.1}/s  {:.1} req/s  in flight {}  new urls {}  scheduled {}  sitemap slots {}/{} parsing {}/{}  rocksdb readers {} MB memtables {} MB cache {} MB  disk free {} GB",
+            "[rs] {} visited  {:.1}/s  {:.1} req/s  in flight {}  new urls {}  scheduled {}  sitemap slots {}/{} parsing {}/{} heavy {}/{}  rocksdb readers {} MB memtables {} MB cache {} MB  disk free {} GB",
             thousands(self.stats.visited as i64),
             self.stats.visited as f64 / elapsed,
             self.stats.requests as f64 / elapsed,
@@ -445,6 +447,8 @@ impl Loop {
             self.visitor.bodies.size(),
             self.visitor.cpu.busy(),
             self.visitor.cpu.size(),
+            self.visitor.heavy.busy(),
+            self.visitor.heavy.size(),
             memory.table_readers >> 20,
             memory.memtables >> 20,
             memory.block_cache >> 20,
@@ -466,6 +470,16 @@ impl Loop {
 }
 
 async fn visit_one(host: Arc<str>, buckets: Arc<Buckets>, visitor: Arc<Visitor>, excluded: Arc<HashSet<String>>) -> Finished {
+    let (counting, counted) = (buckets.clone(), host.clone());
+    let records = tokio::task::spawn_blocking(move || counting.store(&counted).sitemap_count(&counted).unwrap_or(0)).await.unwrap_or(0);
+    let _heavy = if records > HEAVY_RECORDS {
+        match visitor.heavy.take().await {
+            Ok(permit) => Some(permit),
+            Err(_) => return Finished::Skipped(host),
+        }
+    } else {
+        None
+    };
     let reading = host.clone();
     let loaded = tokio::task::spawn_blocking(move || load_known(&buckets, &reading)).await;
     let Ok(Some(known)) = loaded else {

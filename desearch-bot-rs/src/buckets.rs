@@ -139,6 +139,24 @@ impl BucketStore {
         self.json(&sitemap_key(host, url))
     }
 
+    /// How many sitemap records a domain has, counted without decoding them.
+    pub fn sitemap_count(&self, host: &str) -> Result<usize> {
+        let prefix = sitemap_key(host, "");
+        let mut upper = prefix.clone();
+        *upper.last_mut().unwrap() += 1;
+        let mut bounds = ReadOptions::default();
+        bounds.set_iterate_upper_bound(upper);
+        let mut records = self.db.raw_iterator_opt(bounds);
+        records.seek(&prefix);
+        let mut count = 0;
+        while records.valid() {
+            count += 1;
+            records.next();
+        }
+        records.status()?;
+        Ok(count)
+    }
+
     pub fn sitemaps(&self, host: &str) -> Result<Vec<(String, Json)>> {
         let prefix = sitemap_key(host, "");
         self.scan(&prefix, |key, raw| {

@@ -185,6 +185,7 @@ async fn crawls_a_small_web() {
         cpu: Slots::new(4),
         bodies: Slots::new(2),
         pause: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        heavy: Slots::new(1),
     };
     let mut crawl = Loop::new(buckets.clone(), Arc::new(visitor), 16, Registry::offline(), HashSet::new());
     assert_eq!(crawl.load().unwrap(), 4);
