@@ -24,11 +24,17 @@ Persist a batch of miner response logs (organic + scoring traffic) submitted by 
 
 ### `GET /logs/scoring`
 
-Fetch grouped scoring logs by epoch / search type / miner UID.
+Fetch grouped scoring logs by epoch / search type / miner UID from the last 3 days. Payloads are not included.
+
+### `GET /logs/{id}`
+
+Fetch one scoring log with its response and reward payloads, plus the other validator logs of the same group.
 
 ### `POST /logs/organic/search`
 
-Batch lookup of organic logs by exact request query within a time range.
+Batch lookup of organic logs by exact request query within a time range from the last 3 days.
+
+Public read endpoints are rate limited to 30 requests per minute per IP.
 
 ### `GET /miners` and `GET /miners/{hotkey}`
 
