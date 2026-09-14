@@ -1,4 +1,5 @@
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
+from uuid import UUID
 
 from app.auth import get_hotkey
 from app.db.session import get_session
@@ -12,11 +13,15 @@ from app.domains.logs.schemas import (
     OrganicLogResponse,
     SaveMinerResponseLogsRequest,
     SaveMinerResponseLogsResponse,
+    ScoringLogDetailResponse,
     ScoringLogGroupResponse,
+    ScoringLogSiblingResponse,
+    ScoringValidatorLogDetailResponse,
     ScoringValidatorLogResponse,
 )
 from app.logger import get_logger
-from fastapi import APIRouter, Depends, Query
+from app.rate_limit import rate_limit
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy import and_, or_, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -25,6 +30,27 @@ router = APIRouter(prefix="/logs", tags=["logs"])
 logger = get_logger(__name__)
 
 SCORING_GROUP_LIMIT = 20
+LOG_WINDOW = timedelta(days=3)
+
+SUMMARY_COLUMNS = [
+    column
+    for column in MinerResponseLog.__table__.c
+    if column.name not in ("response_payload", "reward_payload")
+]
+
+
+def _window_start() -> datetime:
+    return datetime.now(timezone.utc) - LOG_WINDOW
+
+
+def _ensure_within_window(value: datetime, field: str):
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    if value < _window_start():
+        raise HTTPException(
+            status_code=422, detail=f"{field} must be within the last 3 days"
+        )
+
 
 PAYLOAD_NETWORK_BLOCKS = ("axon", "dendrite")
 REDACTED_IP = "0.0.0.0"
@@ -187,8 +213,7 @@ def _build_scoring_groups(
                         status_code=log.status_code,
                         process_time=log.process_time,
                         total_reward=log.total_reward,
-                        response_payload=_strip_network_fields(log.response_payload),
-                        reward_payload=log.reward_payload,
+                        tools=log.tools,
                     )
                     for log in sorted_logs
                 ],
@@ -237,11 +262,12 @@ async def _load_scoring_logs(
     query: str | None,
     miner_coldkey: str | None = None,
     validator_uid: int | None = None,
-) -> list[MinerResponseLog]:
+) -> list:
     normalized_query = _normalize_optional_query(query)
     filters = [
         MinerResponseLog.query_kind == QueryKind.SCORING,
         MinerResponseLog.search_type == search_type,
+        MinerResponseLog.scoring_epoch_start >= _window_start(),
     ]
 
     if scoring_epoch_start is not None:
@@ -297,7 +323,9 @@ async def _load_scoring_logs(
         )
 
     stmt = (
-        select(MinerResponseLog)
+        select(
+            *SUMMARY_COLUMNS, MinerResponseLog.response_payload["tools"].label("tools")
+        )
         .where(*filters)
         .order_by(
             MinerResponseLog.scoring_epoch_start.desc().nullslast(),
@@ -310,10 +338,14 @@ async def _load_scoring_logs(
     )
 
     result = await session.execute(stmt)
-    return result.scalars().all()
+    return result.all()
 
 
-@router.get("/scoring", response_model=GetScoringLogsResponse)
+@router.get(
+    "/scoring",
+    response_model=GetScoringLogsResponse,
+    dependencies=[Depends(rate_limit)],
+)
 async def get_scoring_logs(
     scoring_epoch_start: datetime | None = Query(
         None, description="Optional UTC scoring epoch start timestamp."
@@ -337,6 +369,9 @@ async def get_scoring_logs(
     ),
     session: AsyncSession = Depends(get_session),
 ):
+    if scoring_epoch_start is not None:
+        _ensure_within_window(scoring_epoch_start, "scoring_epoch_start")
+
     logs = await _load_scoring_logs(
         session=session,
         scoring_epoch_start=scoring_epoch_start,
@@ -370,12 +405,18 @@ def _build_organic_log_response(log: MinerResponseLog) -> OrganicLogResponse:
     )
 
 
-@router.post("/organic/search", response_model=BatchOrganicSearchResponse)
+@router.post(
+    "/organic/search",
+    response_model=BatchOrganicSearchResponse,
+    dependencies=[Depends(rate_limit)],
+)
 async def batch_search_organic_logs(
     body: BatchOrganicSearchRequest,
     session: AsyncSession = Depends(get_session),
 ):
     """Search organic logs for multiple exact queries in a single request."""
+    _ensure_within_window(body.created_at_start, "created_at_start")
+
     if not body.queries:
         return BatchOrganicSearchResponse(
             matches=[], total_matched_queries=0, total_logs=0
@@ -399,14 +440,14 @@ async def batch_search_organic_logs(
         filters.append(MinerResponseLog.miner_hotkey == body.miner_hotkey)
 
     stmt = (
-        select(MinerResponseLog)
+        select(*SUMMARY_COLUMNS)
         .where(*filters)
         .order_by(MinerResponseLog.created_at.asc())
         .limit(ORGANIC_LOG_LIMIT)
     )
 
     result = await session.execute(stmt)
-    logs = result.scalars().all()
+    logs = result.all()
 
     # Group results by request_query
     logs_by_query: dict[str, list[OrganicLogResponse]] = {}
@@ -424,4 +465,75 @@ async def batch_search_organic_logs(
         matches=matches,
         total_matched_queries=len(matches),
         total_logs=len(logs),
+    )
+
+
+@router.get(
+    "/{log_id}",
+    response_model=ScoringLogDetailResponse,
+    dependencies=[Depends(rate_limit)],
+)
+async def get_scoring_log(
+    log_id: UUID,
+    response: Response,
+    session: AsyncSession = Depends(get_session),
+):
+    log = await session.get(MinerResponseLog, log_id)
+    if (
+        log is None
+        or log.query_kind != QueryKind.SCORING
+        or log.created_at < _window_start()
+    ):
+        raise HTTPException(status_code=404, detail="Log not found")
+
+    siblings_stmt = (
+        select(
+            MinerResponseLog.id,
+            MinerResponseLog.validator_uid,
+            MinerResponseLog.status_code,
+            MinerResponseLog.total_reward,
+        )
+        .where(
+            MinerResponseLog.query_kind == QueryKind.SCORING,
+            _build_scoring_group_filter(
+                scoring_epoch_start=log.scoring_epoch_start,
+                miner_uid=log.miner_uid,
+                request_query=log.request_query,
+                search_type=log.search_type,
+            ),
+        )
+        .order_by(MinerResponseLog.validator_uid, MinerResponseLog.id)
+    )
+    siblings = (await session.execute(siblings_stmt)).all()
+
+    response.headers["Cache-Control"] = "public, max-age=3600"
+
+    return ScoringLogDetailResponse(
+        scoring_epoch_start=log.scoring_epoch_start,
+        miner_uid=log.miner_uid,
+        miner_hotkey=log.miner_hotkey,
+        miner_coldkey=log.miner_coldkey,
+        search_type=log.search_type,
+        request_query=log.request_query,
+        log=ScoringValidatorLogDetailResponse(
+            id=log.id,
+            created_at=log.created_at,
+            validator_uid=log.validator_uid,
+            validator_hotkey=log.validator_hotkey,
+            validator_coldkey=log.validator_coldkey,
+            status_code=log.status_code,
+            process_time=log.process_time,
+            total_reward=log.total_reward,
+            response_payload=_strip_network_fields(log.response_payload),
+            reward_payload=log.reward_payload,
+        ),
+        siblings=[
+            ScoringLogSiblingResponse(
+                id=row.id,
+                validator_uid=row.validator_uid,
+                status_code=row.status_code,
+                total_reward=row.total_reward,
+            )
+            for row in siblings
+        ],
     )
