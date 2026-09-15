@@ -4,12 +4,29 @@ import json
 import sqlite3
 import time
 
-from . import ordering
+from . import proofs
+
+RECEIPT_FIELDS = (
+    "round_id",
+    "hotkey",
+    "requested_at",
+    "outcome",
+    "seq",
+    "task_id",
+    "refusal",
+    "cause",
+)
+
+
+def receipt_body(**fields) -> dict:
+    return {
+        name: fields[name] for name in RECEIPT_FIELDS if fields.get(name) is not None
+    }
 
 
 class RoundLog:
-    def __init__(self, path: str = "roundlog.db"):
-        self.db = sqlite3.connect(path, check_same_thread=False)
+    def __init__(self, db: sqlite3.Connection):
+        self.db = db
         self.db.executescript(
             """
             CREATE TABLE IF NOT EXISTS entries (
@@ -22,7 +39,8 @@ class RoundLog:
                 task_id      TEXT,
                 refusal      TEXT,
                 receipt_sig  TEXT NOT NULL,
-                seq          INTEGER NOT NULL DEFAULT 0
+                seq          INTEGER NOT NULL DEFAULT 0,
+                cause        TEXT
             );
             CREATE INDEX IF NOT EXISTS entries_round ON entries (round_id, id);
             CREATE TABLE IF NOT EXISTS anchors (
@@ -32,6 +50,9 @@ class RoundLog:
             );
             """
         )
+        columns = {row[1] for row in self.db.execute("PRAGMA table_info(entries)")}
+        if "cause" not in columns:
+            self.db.execute("ALTER TABLE entries ADD COLUMN cause TEXT")
         self.db.commit()
 
     def record(
@@ -44,11 +65,12 @@ class RoundLog:
         task_id: str | None = None,
         refusal: dict | None = None,
         seq: int = 0,
+        cause: str | None = None,
     ) -> dict:
         served_at = time.time()
         self.db.execute(
             "INSERT INTO entries (round_id, hotkey, requested_at, served_at, outcome, task_id,"
-            " refusal, receipt_sig, seq) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " refusal, receipt_sig, seq, cause) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 round_id,
                 hotkey,
@@ -59,6 +81,7 @@ class RoundLog:
                 json.dumps(refusal) if refusal else None,
                 receipt_sig,
                 seq,
+                cause,
             ),
         )
         self.db.commit()
@@ -66,12 +89,22 @@ class RoundLog:
 
     def entries(self, round_id: str) -> list[dict]:
         rows = self.db.execute(
-            "SELECT hotkey, requested_at, served_at, outcome, task_id, refusal, receipt_sig, seq"
-            " FROM entries WHERE round_id = ? ORDER BY seq, id",
+            "SELECT hotkey, requested_at, served_at, outcome, task_id, refusal, receipt_sig,"
+            " seq, cause FROM entries WHERE round_id = ? ORDER BY seq, id",
             (round_id,),
         ).fetchall()
         out = []
-        for hotkey, requested_at, served_at, outcome, task_id, refusal, sig, seq in rows:
+        for (
+            hotkey,
+            requested_at,
+            served_at,
+            outcome,
+            task_id,
+            refusal,
+            sig,
+            seq,
+            cause,
+        ) in rows:
             entry = {
                 "hotkey": hotkey,
                 "requested_at": requested_at,
@@ -84,13 +117,13 @@ class RoundLog:
                 entry["task_id"] = task_id
             if refusal:
                 entry["refusal"] = json.loads(refusal)
+            if cause:
+                entry["cause"] = cause
             out.append(entry)
         return out
 
     def anchor(self, round_id: str) -> str:
-        root = ordering.merkle_root(
-            [ordering.log_leaf(e) for e in self.entries(round_id)]
-        )
+        root = proofs.merkle_root([proofs.log_leaf(e) for e in self.entries(round_id)])
         self.db.execute(
             "INSERT OR REPLACE INTO anchors (round_id, root, at) VALUES (?, ?, ?)",
             (round_id, root, time.time()),
