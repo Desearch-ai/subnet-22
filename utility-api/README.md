@@ -12,7 +12,10 @@ pip install -r requirements.txt
 cp .env.example .env
 # Edit .env with your DB_URL
 
-# 3. Run the API (tables auto-create on startup)
+# 3. Create tables (also enables the pg_trgm extension)
+python -m app.scripts.create_tables
+
+# 4. Run the API
 uvicorn app.main:app --reload
 ```
 
@@ -63,3 +66,5 @@ app/
 ## Database Schema
 
 Single table `miner_response_logs` capturing every organic and scoring miner call (request query, search type, validator/miner identity, status, reward payload, response payload). See `app/domains/logs/models/miner_response_log.py` for the full schema and indexes.
+
+Logs older than 7 days are deleted hourly by a background task started with the app.

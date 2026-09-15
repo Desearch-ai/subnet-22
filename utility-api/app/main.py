@@ -1,3 +1,4 @@
+import asyncio
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -5,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from starlette.requests import Request
 
 from app.config import CORS_ALLOWED_ORIGINS
+from app.domains.logs.cleanup import run_log_cleanup
 from app.domains.logs.router import router as logs_router
 from app.domains.miners.router import router as miners_router
 from app.logger import get_logger
@@ -15,7 +17,9 @@ logger = get_logger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Starting utility API lifespan")
+    cleanup_task = asyncio.create_task(run_log_cleanup())
     yield
+    cleanup_task.cancel()
     logger.info("Stopping utility API lifespan")
 
 
