@@ -11,8 +11,6 @@ LOG_RETENTION = timedelta(days=7)
 CLEANUP_INTERVAL_SECONDS = 3600
 CLEANUP_BATCH_SIZE = 10_000
 
-logger = get_logger(__name__)
-
 
 async def delete_expired_logs(session: AsyncSession) -> int:
     cutoff = datetime.now(timezone.utc) - LOG_RETENTION
@@ -34,6 +32,8 @@ async def delete_expired_logs(session: AsyncSession) -> int:
 
 
 async def run_log_cleanup():
+    # bittensor mutes loggers created before it is imported
+    logger = get_logger(__name__)
     while True:
         try:
             async with async_session() as session:
