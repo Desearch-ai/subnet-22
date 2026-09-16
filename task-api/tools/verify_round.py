@@ -1,10 +1,5 @@
 #!/usr/bin/env python3
-"""Check that a round was distributed honestly.
-
-    python verify_round.py --api https://tasks.desearch.ai --round <round_id>
-
-Needs no credentials and imports nothing from the server. The rule is reimplemented below.
-"""
+"""Checks that a round was distributed honestly; needs no credentials."""
 
 from __future__ import annotations
 
@@ -13,12 +8,23 @@ import hashlib
 import json
 import sys
 import urllib.request
+from collections import defaultdict
 from pathlib import Path
 
-ALGORITHM = "desearch-serve-order-1"
+ALGORITHM = "desearch-serve-order-2"
+RECEIPT_FIELDS = (
+    "round_id",
+    "hotkey",
+    "requested_at",
+    "outcome",
+    "seq",
+    "task_id",
+    "refusal",
+    "cause",
+)
 
 
-def canonical(value) -> bytes:
+def canonical_json(value) -> bytes:
     return json.dumps(
         value, sort_keys=True, separators=(",", ":"), ensure_ascii=False
     ).encode()
@@ -28,9 +34,13 @@ def sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def manifest_hash(entries: list[dict]) -> str:
+def manifest_hash(entries: list[dict], seed_block: int) -> str:
     ordered = sorted(entries, key=lambda entry: entry["batch_id"])
-    return sha256(canonical({"algorithm": ALGORITHM, "batches": ordered}))
+    return sha256(
+        canonical_json(
+            {"algorithm": ALGORITHM, "seed_block": seed_block, "batches": ordered}
+        )
+    )
 
 
 def serve_order(seed: str, batch_ids: list[str]) -> list[str]:
@@ -51,6 +61,26 @@ def merkle_root(leaves: list[bytes]) -> str:
     return level[0].hex()
 
 
+def receipt_body(round_id: str, entry: dict) -> dict:
+    fields = {"round_id": round_id, **entry}
+    return {
+        name: fields[name] for name in RECEIPT_FIELDS if fields.get(name) is not None
+    }
+
+
+def signed_by(signer: str, body: dict, signature: str) -> bool | None:
+    try:
+        from bittensor_wallet import Keypair
+    except ImportError:
+        return None
+    try:
+        return Keypair(ss58_address=signer).verify(
+            canonical_json(body), bytes.fromhex(signature)
+        )
+    except Exception:
+        return False
+
+
 GREEN, RED, GREY, RESET = "\033[32m", "\033[31m", "\033[90m", "\033[0m"
 
 
@@ -67,7 +97,13 @@ def check(label: str, passed: bool, detail: str = "") -> bool:
     return passed
 
 
-def verify(api: str, round_id: str, receipts: list[dict] | None = None) -> bool:
+def verify(
+    api: str,
+    round_id: str,
+    receipts: list[dict] | None = None,
+    received: dict[str, list[str]] | None = None,
+    signer: str | None = None,
+) -> bool:
     round_ = get(api, f"/v1/rounds/{round_id}")
     log = get(api, f"/v1/rounds/{round_id}/log")
 
@@ -92,9 +128,9 @@ def verify(api: str, round_id: str, receipts: list[dict] | None = None) -> bool:
         f"published {round_.get('algorithm')!r}, expected {ALGORITHM!r}",
     )
 
-    recomputed = manifest_hash(manifest)
+    recomputed = manifest_hash(manifest, round_["seed_block"])
     ok &= check(
-        "manifest matches the hash committed before the seed existed",
+        "manifest AND seed block match the hash committed before that block existed",
         recomputed == round_["manifest_hash"],
         f"committed {round_['manifest_hash'][:32]}…\n         recomputed {recomputed[:32]}…",
     )
@@ -107,15 +143,31 @@ def verify(api: str, round_id: str, receipts: list[dict] | None = None) -> bool:
     )
 
     ok &= check(
-        "every issue was the earliest batch whose hosts were all free",
+        "batches were handed out in exactly the published order",
         *_replay(manifest, expected, log["entries"]),
     )
 
-    root = merkle_root([canonical(line) for line in log["entries"]])
+    root = merkle_root([canonical_json(line) for line in log["entries"]])
     ok &= check(
         "anchored root matches the published log",
         root == log["anchor_root"],
         f"anchored {log['anchor_root'][:32]}…\n         recomputed {root[:32]}…",
+    )
+
+    published_signer = round_.get("signer", "")
+    if signer:
+        ok &= check(
+            "the API signs with the key you expected",
+            published_signer == signer,
+            f"published {published_signer}, expected {signer}",
+        )
+    else:
+        print(
+            f"  {GREY}[ .. ] no --signer given: signatures prove only that one key signed the log{RESET}"
+        )
+    ok &= check(
+        "every log entry carries the API's signature",
+        *_signatures(round_id, log["entries"], signer or published_signer),
     )
 
     refusals = [line for line in log["entries"] if line["outcome"] == "refused"]
@@ -129,10 +181,21 @@ def verify(api: str, round_id: str, receipts: list[dict] | None = None) -> bool:
         ),
     )
 
+    if received:
+        ok &= check(
+            "the URLs you were given match the commitment",
+            *_batches(manifest, received),
+        )
+
     if receipts:
-        ok &= check("every receipt you hold appears in the published log", *_receipts(receipts, log["entries"]))
+        ok &= check(
+            "every receipt you hold is signed and appears in the published log",
+            *_receipts(round_id, receipts, log["entries"], signer or published_signer),
+        )
     else:
-        print(f"  {GREY}[ .. ] no receipts supplied -- the above only proves internal consistency{RESET}")
+        print(
+            f"  {GREY}[ .. ] no receipts supplied -- the above only proves internal consistency{RESET}"
+        )
 
     print()
     print(
@@ -141,80 +204,93 @@ def verify(api: str, round_id: str, receipts: list[dict] | None = None) -> bool:
     return bool(ok)
 
 
-def _receipts(receipts: list[dict], entries: list[dict]) -> tuple[bool, str]:
-    issued = {(e["hotkey"], e.get("task_id")) for e in entries if e["outcome"] == "issued"}
-    refused = {}
-    for e in entries:
-        if e["outcome"] == "refused":
-            refused.setdefault(e["hotkey"], []).append(e.get("refusal", {}).get("code"))
+def _signatures(round_id: str, entries: list[dict], signer: str) -> tuple[bool, str]:
+    for line in entries:
+        verdict = signed_by(
+            signer, receipt_body(round_id, line), line.get("receipt_sig", "")
+        )
+        if verdict is None:
+            return False, "install bittensor-wallet to check signatures"
+        if not verdict:
+            return (
+                False,
+                f"entry seq {line.get('seq')} ({line['outcome']}) is not signed by {signer}",
+            )
+    return True, f"{len(entries)} entries signed by {signer}"
 
-    missing = []
+
+def _receipts(
+    round_id: str, receipts: list[dict], entries: list[dict], signer: str
+) -> tuple[bool, str]:
+    logged = {canonical_json(receipt_body(round_id, line)) for line in entries}
+    problems = []
     for receipt in receipts:
         body = receipt["body"]
-        if body["outcome"] == "issued":
-            if (body["hotkey"], body["task_id"]) not in issued:
-                missing.append(f"issue of {body['task_id'][:12]}")
-        elif body["outcome"] == "refused":
-            if body["refusal"]["code"] not in refused.get(body["hotkey"], []):
-                missing.append(f"refusal {body['refusal']['code']}")
-    if missing:
-        return False, f"{len(missing)} of your {len(receipts)} receipts are absent: {missing[:3]}"
-    return True, f"all {len(receipts)} receipts present in the log"
+        if signed_by(signer, body, receipt["signature"]) is False:
+            problems.append(f"bad signature on {body['outcome']} seq {body.get('seq')}")
+        elif canonical_json(body) not in logged:
+            problems.append(
+                f"{body['outcome']} seq {body.get('seq')} is missing from the log"
+            )
+    if problems:
+        return (
+            False,
+            f"{len(problems)} of your {len(receipts)} receipts fail: {problems[:3]}",
+        )
+    return True, f"all {len(receipts)} receipts signed and present in the log"
 
 
-def _replay(manifest: list[dict], order: list[str], entries: list[dict]) -> tuple[bool, str]:
-    """Rebuild the queue and its host locks from the log alone.
-
-    A batch may only be passed over when one of its hosts was already held by a batch still in
-    flight. That is the single deviation from serve order the server is allowed, and replaying the
-    log makes it checkable instead of merely claimed.
-
-    Completion and reclamation have to be distinguishable in the log: a completed batch is gone,
-    a reclaimed one returns to the queue at the position it started from.
-    """
+def _replay(
+    manifest: list[dict], order: list[str], entries: list[dict]
+) -> tuple[bool, str]:
     entries = sorted(entries, key=lambda e: e.get("seq", 0))
-    hosts = {entry["batch_id"]: set(entry["hosts"]) for entry in manifest}
     rank = {batch_id: i for i, batch_id in enumerate(order)}
-    queued = set(order)
-    locked: dict[str, str] = {}
+    queued = list(order)
+    holders: dict[str, set[str]] = defaultdict(set)
     issues = reclaims = 0
-
-    def by_rank(ids):
-        return sorted(ids, key=lambda b: rank[b])
 
     for line in entries:
         task_id = line.get("task_id")
-        outcome = line["outcome"]
-        if outcome == "issued":
-            if task_id not in queued:
-                return False, f"issued {task_id}, which was not in the queue"
-            for earlier in by_rank(b for b in queued if rank[b] < rank[task_id]):
-                if not (hosts[earlier] & set(locked)):
-                    return False, (
-                        f"{task_id} (position {rank[task_id]}) issued while {earlier} "
-                        f"(position {rank[earlier]}) waited with every host free"
-                    )
-            queued.discard(task_id)
-            for host in hosts[task_id]:
-                locked[host] = task_id
+        if line["outcome"] == "issued":
+            hotkey = line.get("hotkey", "")
+            due = next((b for b in queued if hotkey not in holders[b]), None)
+            if due is None:
+                return (
+                    False,
+                    f"issued {task_id} when no queued batch was new to {hotkey}",
+                )
+            if due != task_id:
+                return False, (
+                    f"issued {task_id} (position {rank.get(task_id, '?')}) while "
+                    f"{due} (position {rank[due]}) was next in line for {hotkey}"
+                )
+            queued.remove(task_id)
+            holders[task_id].add(hotkey)
             issues += 1
-        elif outcome in ("completed", "reclaimed") and task_id:
-            for host in [h for h, owner in locked.items() if owner == task_id]:
-                del locked[host]
-            if outcome == "reclaimed":
-                queued.add(task_id)
-                reclaims += 1
-    return True, (
-        f"{issues} issues replayed against the published order, "
-        f"{reclaims} reclaimed after expiry, every skip forced by a held host"
+        elif line["outcome"] == "reclaimed" and task_id:
+            place = next(
+                (i for i, b in enumerate(queued) if rank[b] > rank[task_id]),
+                len(queued),
+            )
+            queued.insert(place, task_id)
+            reclaims += 1
+    return (
+        True,
+        f"{issues} issues in exact serve order, {reclaims} returned to the queue",
     )
 
 
-def _diff(a: list, b: list) -> int:
-    for i, (x, y) in enumerate(zip(a, b)):
-        if x != y:
-            return i
-    return min(len(a), len(b))
+def _batches(manifest: list[dict], received: dict[str, list[str]]) -> tuple[bool, str]:
+    committed = {e["batch_id"]: e["urls_hash"] for e in manifest}
+    for task_id, urls in received.items():
+        if task_id not in committed:
+            return False, f"{task_id} was never in the manifest"
+        if sha256(canonical_json(urls)) != committed[task_id]:
+            return (
+                False,
+                f"the URLs you were given for {task_id} are not the ones committed",
+            )
+    return True, f"{len(received)} batches match the URLs committed at round open"
 
 
 def main() -> int:
@@ -222,13 +298,28 @@ def main() -> int:
     parser.add_argument("--api", default="http://localhost:8080")
     parser.add_argument("--round", required=True)
     parser.add_argument(
+        "--signer", help="the ss58 key the API publishes for its receipts"
+    )
+    parser.add_argument(
+        "--batches",
+        help="file of {task_id: [urls]} you were given, to check they match the commitment",
+    )
+    parser.add_argument(
         "--receipts",
-        help="file of receipts you kept. Without these the checks above only prove the "
-        "published round agrees with itself.",
+        help="file of receipts you kept, one JSON object per line as the miner writes them",
     )
     args = parser.parse_args()
-    receipts = json.loads(Path(args.receipts).read_text()) if args.receipts else None
-    return 0 if verify(args.api, args.round, receipts) else 1
+    receipts = (
+        [
+            json.loads(line)
+            for line in Path(args.receipts).read_text().splitlines()
+            if line.strip()
+        ]
+        if args.receipts
+        else None
+    )
+    batches = json.loads(Path(args.batches).read_text()) if args.batches else None
+    return 0 if verify(args.api, args.round, receipts, batches, args.signer) else 1
 
 
 if __name__ == "__main__":
