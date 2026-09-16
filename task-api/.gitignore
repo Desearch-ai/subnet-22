@@ -2,3 +2,9 @@
 local/dump-*.json
 __pycache__/
 local/receipts.json
+.env
+local/news_urls.json
+local/feeder.db
+local/news_small.json
+local/eval/
+local/eval_urls.json
