@@ -16,17 +16,17 @@
 # OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 # DEALINGS IN THE SOFTWARE.
 
+import builtins
 import codecs
 import os
 import re
-from io import open
 from os import path
 
 from setuptools import find_packages, setup
 
 
 def read_requirements(path):
-    with open(path, "r") as f:
+    with open(path) as f:
         requirements = f.read().splitlines()
         processed_requirements = []
 
@@ -48,7 +48,7 @@ def read_requirements(path):
 requirements = read_requirements("requirements.txt")
 here = path.abspath(path.dirname(__file__))
 
-with open(path.join(here, "README.md"), encoding="utf-8") as f:
+with builtins.open(path.join(here, "README.md"), encoding="utf-8") as f:
     long_description = f.read()
 
 # loading version from setup.py
@@ -63,7 +63,7 @@ with codecs.open(
 setup(
     name="desearch",
     version=version_string,
-    description="Decentralized AI Search",
+    description="Decentralized web crawling",
     long_description=long_description,
     long_description_content_type="text/markdown",
     url="https://github.com/Desearch-ai/subnet-22",
