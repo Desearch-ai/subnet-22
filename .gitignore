@@ -30,3 +30,10 @@ pyrightconfig.json
 .pytest_cache/
 .state/
 devnet/runs/
+# desearch_bot working data
+build/
+bot-data/
+build-smoke*/
+.venv-bot/
+frontier/
+crawl4ai/
