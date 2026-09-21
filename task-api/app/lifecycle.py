@@ -1,14 +1,20 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
+import uuid
 
 from app.canonical import canonicalize
 
-from . import rounds
-from .budget import COVERAGE_GATE, HOUR, STRIKE_REASONS, STRIKE_WINDOW_H
-from .validations import Decision, build_report, decide
+from . import queues, rounds
+from .budget import COVERAGE_GATE, CRAWL, EMBED, HOUR, STRIKE_REASONS, STRIKE_WINDOW_H
+from .embeddings import DONE, DROPPED
+from .validations import Decision, build_report, decide, utc_day
+
+EMBED_FIELDS = ("model", "texts", "chars", "input_key", "input_sha256", "pages")
+EMBED_ROUND_INPUTS = 200
 
 log = logging.getLogger("task_api")
 
@@ -36,6 +42,44 @@ async def open_round(
     return round_
 
 
+async def open_embed_rounds(core) -> rounds.Round | None:
+    """Turns the publisher's waiting inputs into one embed round, one batch per input."""
+    waiting = await core.redis.lrange(queues.EMBED_INPUTS, 0, EMBED_ROUND_INPUTS - 1)
+    if not waiting:
+        return None
+    batches = []
+    for entry in map(json.loads, waiting):
+        if not await core.db(core.embeddings.missing, entry["pages"], core.embed_model):
+            continue
+        pages = [
+            {name: page[name] for name in ("page_key", "content_sha1", "url")}
+            for page in entry["pages"]
+        ]
+        extra = {name: entry[name] for name in EMBED_FIELDS if name in entry}
+        batches.append(
+            rounds.Batch(
+                uuid.uuid4().hex[:16],
+                [rounds.Url(page["host"], page["url"]) for page in entry["pages"]],
+                {**extra, "model": core.embed_model, "pages": pages},
+            )
+        )
+    round_ = None
+    if batches:
+        target = await core.seeds.target_block()
+        round_ = rounds.open_batches(batches, target, kind=EMBED)
+        await core.db(core.rounds.save, round_)
+        for batch in batches:
+            await core.db(
+                core.embeddings.queue,
+                batch.extra["pages"],
+                core.embed_model,
+                batch.batch_id,
+            )
+    # Trimmed only once the round is saved, so a crash re-reads the inputs.
+    await core.redis.ltrim(queues.EMBED_INPUTS, len(waiting), -1)
+    return round_
+
+
 async def reveal_pending(core) -> int:
     pending = await core.db(core.rounds.unrevealed)
     if not pending:
@@ -54,14 +98,16 @@ async def reveal_pending(core) -> int:
         if order:
             payloads = {
                 batch_id: {
+                    **batch.extra,
                     "url_count": len(batch.urls),
                     "urls": [u.url for u in batch.urls],
                 }
                 for batch_id, batch in round_.batches.items()
             }
             await core.redis.sadd(open_round_key(round_.round_id), *order)
-            filled += await core.queue.fill(round_.round_id, order, payloads)
-        core.current = round_.round_id
+            tasks = core.tasks[round_.kind]
+            filled += await tasks.fill(round_.round_id, order, payloads)
+        core.current[round_.kind] = round_.round_id
     return filled
 
 
@@ -82,22 +128,24 @@ async def finish_task(core, round_id: str, task_id: str) -> None:
 
 async def reclaim_expired(core) -> list[tuple[str, str]]:
     reclaimed = []
-    for task_id in await core.queue.expired():
-        payload = await core.queue.payload(task_id) or {}
-        found = await core.queue.reclaim(task_id)
+    for task_id in await core.tasks[CRAWL].expired():
+        payload = await core.payload(task_id) or {}
+        kind = payload.get("kind", CRAWL)
+        found = await core.tasks[kind].reclaim(task_id)
         if found is None:
             continue
         holder, seq = found
         if holder:
-            await core.db(
-                core.budgets.record_coverage,
-                holder,
-                len(set(payload.get("urls", []))),
-                0,
-            )
-            await core.db(core.budgets.penalise, holder, task_id, "lease_expired")
+            if kind == CRAWL:
+                await core.db(
+                    core.budgets.record_coverage,
+                    holder,
+                    len(set(payload.get("urls", []))),
+                    0,
+                )
+            await core.db(core.budgets.penalise, holder, task_id, "lease_expired", kind)
             await core.record(
-                payload.get("round_id") or core.current or "",
+                payload.get("round_id") or core.current.get(kind, ""),
                 holder,
                 0.0,
                 "reclaimed",
@@ -110,9 +158,12 @@ async def reclaim_expired(core) -> list[tuple[str, str]]:
 
 
 async def requeue(core, task_id: str, job: dict, cause: str) -> None:
+    kind = job.get("kind", CRAWL)
     attempts = job.get("attempts", 0) + 1
     if attempts >= core.max_attempts:
-        seq = await core.queue.next_seq()
+        seq = await core.next_seq()
+        if kind == EMBED:
+            await core.db(core.embeddings.settle, task_id, job["model"], DROPPED)
         await core.record(
             job["round_id"],
             job["miner"],
@@ -125,6 +176,8 @@ async def requeue(core, task_id: str, job: dict, cause: str) -> None:
         await finish_task(core, job["round_id"], task_id)
         return
     payload = {
+        **{name: job[name] for name in EMBED_FIELDS if name in job},
+        "kind": kind,
         "url_count": len(job["urls"]),
         "urls": job["urls"],
         "round_id": job["round_id"],
@@ -132,7 +185,7 @@ async def requeue(core, task_id: str, job: dict, cause: str) -> None:
         "rank": job.get("rank", job.get("position", 0)),
         "attempts": attempts,
     }
-    seq = await core.queue.restore(task_id, payload)
+    seq = await core.tasks[kind].restore(task_id, payload)
     await core.record(
         job["round_id"],
         job["miner"],
@@ -174,6 +227,7 @@ async def conclude_validation(
         log.exception("storage failed while scoring %s", task_id)
         raise StorageDown(task_id) from None
 
+    kind = job.get("kind", CRAWL)
     publish = None
     if verdict == "pass" and result.get("matched"):
         publish = {
@@ -181,29 +235,42 @@ async def conclude_validation(
                 name: job.get(name, "")
                 for name in ("task_id", "round_id", "miner", "key", "etag")
             },
+            "kind": kind,
             "urls": job["urls"],
             "completed_at": job["completed_at"],
             "lease_ttl": core.lease_ttl,
         }
+        if kind == EMBED:
+            publish |= {
+                name: job[name] for name in ("model", "input_key", "pages", "texts")
+            }
+            publish["vectors_key"] = vectors_key(job["model"], task_id)
     if await core.validation.finalize(task_id, holder, publish) is None:
         await delete_quietly(core.pages, report["report_key"])
         raise LeaseLost(task_id)
 
     miner, assigned = job["miner"], len(set(job["urls"]))
     credited = vote["credited"] if verdict == "pass" else 0
-    if verdict != "void":
+    if kind == CRAWL and verdict != "void":
         await core.db(core.budgets.record_coverage, miner, assigned, result["returned"])
     if verdict == "fail":
         budget = (
-            await core.db(core.budgets.penalise, miner, task_id, "verification_failed")
+            await core.db(
+                core.budgets.penalise, miner, task_id, "verification_failed", kind
+            )
         ).budget
     elif credited:
-        ramp = credited >= COVERAGE_GATE * assigned
+        # An embed pass is all or nothing, so every one grows the budget.
+        ramp = kind == EMBED or credited >= COVERAGE_GATE * assigned
         budget = (
-            await core.db(core.budgets.reward, miner, task_id, credited, ramp)
+            await core.db(core.budgets.reward, miner, task_id, credited, ramp, kind)
         ).budget
     else:
-        budget = (await core.db(core.budgets.get, miner)).budget
+        budget = (await core.db(core.budgets.get, miner, kind)).budget
+    if publish and kind == EMBED:
+        await core.db(
+            core.embeddings.settle, task_id, job["model"], DONE, publish["vectors_key"]
+        )
     if decision.agreed or decision.disagreed:
         await core.db(
             core.validations.record_audit, decision.agreed, decision.disagreed
@@ -211,8 +278,10 @@ async def conclude_validation(
     await core.db(core.validations.record, report, result.get("urls"))
     if verdict == "fail" and result.get("reason") in STRIKE_REASONS:
         since = time.time() - STRIKE_WINDOW_H * HOUR
-        judged = await core.db(core.validations.judged_since, miner, since)
-        await core.db(core.budgets.strike, miner, result["reason"], task_id, judged)
+        judged = await core.db(core.validations.judged_since, miner, since, kind)
+        await core.db(
+            core.budgets.strike, miner, result["reason"], task_id, judged, kind
+        )
 
     if verdict == "pass":
         await finish_task(core, job["round_id"], task_id)
@@ -224,6 +293,10 @@ async def conclude_validation(
         "credited": credited,
         "miner_budget": budget,
     }
+
+
+def vectors_key(model: str, task_id: str) -> str:
+    return f"vectors/model={model}/dt={utc_day()}/task={task_id}.parquet"
 
 
 async def return_expired_validations(core) -> list[str]:
