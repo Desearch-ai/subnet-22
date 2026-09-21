@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import sqlite3
 import time
@@ -10,6 +11,7 @@ from pathlib import Path
 
 from . import proofs, queues, rounds
 from .budget import Budgets, hour_of
+from .embeddings import Embeddings
 from .registry import admins_from_env, receipt_key_from_env, registry_from_env
 from .roundlog import RoundLog, receipt_body
 from .roundstore import RoundStore
@@ -22,6 +24,7 @@ MAX_BACKLOG_S = 43_200
 PAGES_BUCKET = "desearch-pages"
 READS_PER_MINUTE = 120
 DB_FILE = "task_api.db"
+DEFAULT_EMBED_MODEL = "qwen3-embedding-8b"
 
 
 def connect(path: str) -> sqlite3.Connection:
@@ -64,7 +67,10 @@ class State:
         self.audit_rate = float(os.environ.get("TASK_API_AUDIT_RATE", "0.05"))
         self.audit_wait = float(os.environ.get("TASK_API_AUDIT_WAIT_S", "3600"))
         self.releases_per_hour = int(os.environ.get("TASK_API_RELEASES_PER_HOUR", "60"))
-        self.queue = queues.TaskQueue(redis, self.lease_ttl)
+        self.tasks = {
+            kind: queues.TaskQueue(redis, self.lease_ttl, kind) for kind in queues.KINDS
+        }
+        self.embed_model = os.environ.get("TASK_API_EMBED_MODEL", DEFAULT_EMBED_MODEL)
         self.validation = queues.ValidationQueue(
             redis,
             self.validation_ttl,
@@ -84,6 +90,7 @@ class State:
         self.log = RoundLog(db)
         self.rounds = RoundStore(db)
         self.validations = Validations(db)
+        self.embeddings = Embeddings(db)
         self.storage = Storage()
         self.pages = Storage(
             bucket=os.environ.get("CF_R2_PAGES_BUCKET", PAGES_BUCKET),
@@ -92,8 +99,18 @@ class State:
         self.registry = registry_from_env()
         self.admins = admins_from_env()
         self.seeds = seeds_from_env()
-        self.current: str | None = self.rounds.latest_revealed()
+        self.current: dict[str, str] = self.rounds.latest_revealed()
         self.key = receipt_key_from_env()
+
+    async def payload(self, task_id: str) -> dict | None:
+        found = await self.redis.get(f"task:{task_id}")
+        return json.loads(found) if found else None
+
+    async def lease_holder(self, task_id: str) -> str | None:
+        return await self.redis.get(f"lease:{task_id}")
+
+    async def next_seq(self) -> int:
+        return int(await self.redis.incr("log:seq"))
 
     async def db(self, fn, *args, **kwargs):
         loop = asyncio.get_running_loop()
