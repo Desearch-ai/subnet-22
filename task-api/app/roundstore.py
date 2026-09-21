@@ -13,6 +13,7 @@ class RoundStore:
             """
             CREATE TABLE IF NOT EXISTS rounds (
                 round_id      TEXT PRIMARY KEY,
+                kind          TEXT NOT NULL,
                 manifest_hash TEXT NOT NULL,
                 seed_block    INTEGER NOT NULL,
                 opened_at     REAL NOT NULL,
@@ -29,13 +30,17 @@ class RoundStore:
 
     def save(self, round_: Round) -> None:
         batches = {
-            batch_id: [[u.host, u.url] for u in batch.urls]
+            batch_id: {
+                "urls": [[u.host, u.url] for u in batch.urls],
+                "extra": batch.extra,
+            }
             for batch_id, batch in round_.batches.items()
         }
         self.db.execute(
-            "INSERT OR REPLACE INTO rounds VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT OR REPLACE INTO rounds VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 round_.round_id,
+                round_.kind,
                 round_.manifest_hash,
                 round_.seed_block,
                 round_.opened_at,
@@ -65,12 +70,12 @@ class RoundStore:
         ).fetchall()
         return [row[0] for row in rows]
 
-    def latest_revealed(self) -> str | None:
-        row = self.db.execute(
-            "SELECT round_id FROM rounds WHERE seed IS NOT NULL"
-            " ORDER BY opened_at DESC LIMIT 1"
-        ).fetchone()
-        return row[0] if row else None
+    def latest_revealed(self) -> dict[str, str]:
+        """The newest revealed round of each kind."""
+        rows = self.db.execute(
+            "SELECT kind, round_id FROM rounds WHERE seed IS NOT NULL ORDER BY opened_at"
+        ).fetchall()
+        return dict(rows)
 
     def close(self, round_id: str, at: float) -> None:
         self.db.execute(
@@ -80,36 +85,58 @@ class RoundStore:
 
     def recent(self, limit: int = 100) -> list[dict]:
         rows = self.db.execute(
-            "SELECT round_id, manifest_hash, seed_block, opened_at, seed IS NOT NULL,"
-            " closed_at FROM rounds ORDER BY opened_at DESC LIMIT ?",
+            "SELECT round_id, kind, manifest_hash, seed_block, opened_at,"
+            " seed IS NOT NULL, closed_at FROM rounds ORDER BY opened_at DESC LIMIT ?",
             (limit,),
         ).fetchall()
         return [
             {
                 "round_id": round_id,
+                "kind": kind,
                 "manifest_hash": manifest_hash,
                 "seed_block": seed_block,
                 "opened_at": opened_at,
                 "revealed": bool(revealed),
                 "closed_at": closed_at,
             }
-            for round_id, manifest_hash, seed_block, opened_at, revealed, closed_at in rows
+            for (
+                round_id,
+                kind,
+                manifest_hash,
+                seed_block,
+                opened_at,
+                revealed,
+                closed_at,
+            ) in rows
         ]
 
 
 def _round(row: tuple) -> Round:
-    round_id, manifest_hash, seed_block, opened_at, seed, order, closed_at, batches = (
-        row
-    )
+    (
+        round_id,
+        kind,
+        manifest_hash,
+        seed_block,
+        opened_at,
+        seed,
+        order,
+        closed_at,
+        batches,
+    ) = row
     return Round(
         round_id=round_id,
         batches={
-            batch_id: Batch(batch_id, [Url(host, url) for host, url in urls])
-            for batch_id, urls in json.loads(batches).items()
+            batch_id: Batch(
+                batch_id,
+                [Url(host, url) for host, url in stored["urls"]],
+                stored["extra"],
+            )
+            for batch_id, stored in json.loads(batches).items()
         },
         manifest_hash=manifest_hash,
         seed_block=seed_block,
         opened_at=opened_at,
+        kind=kind,
         seed=seed,
         order=json.loads(order),
         closed_at=closed_at,

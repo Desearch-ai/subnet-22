@@ -95,6 +95,51 @@ class Score(BaseModel):
         return self
 
 
+class LeaseBody(BaseModel):
+    kind: Literal["crawl", "embed"] = "crawl"
+
+
+class ValidationLeaseBody(BaseModel):
+    kinds: list[Literal["crawl", "embed"]] = Field(
+        ["crawl"], min_length=1, max_length=2
+    )
+
+
+class EmbedSample(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    text_id: str = Field(max_length=300)
+    outcome: Literal["matched", "mismatched", "unverifiable"]
+    similarity: float | None = None
+
+
+class EmbedScore(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    returned: int = Field(0, ge=0)
+    missing: int = Field(0, ge=0)
+    duplicates: int = Field(0, ge=0)
+    malformed: int = Field(0, ge=0)
+    sampled: int = Field(0, ge=0)
+    matched: int = Field(0, ge=0)
+    mismatched: int = Field(0, ge=0)
+    unverifiable: int = Field(0, ge=0)
+    min_similarity: float | None = None
+    verdict: Literal["pass", "fail", "void"]
+    reason: str = Field("", max_length=64)
+    samples: list[EmbedSample] = Field([], max_length=MAX_URL_DETAILS)
+
+    @model_validator(mode="after")
+    def counts_match_samples(self) -> EmbedScore:
+        counts = Counter(sample.outcome for sample in self.samples)
+        if self.sampled != len(self.samples) or any(
+            getattr(self, outcome) != counts[outcome]
+            for outcome in ("matched", "mismatched", "unverifiable")
+        ):
+            raise ValueError("the counts do not match the samples")
+        return self
+
+
 class Release(BaseModel):
     reason: Literal["provider", "missing", "download"] = "provider"
 
