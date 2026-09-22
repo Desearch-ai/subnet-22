@@ -1,6 +1,8 @@
-# The build context is the repository root: only the shared package and the task API go in.
+# The build context is the repository root: only the shared package, the engine's chunking and the task API go in.
 *
 !desearch/
+!engine/__init__.py
+!engine/chunking.py
 !task-api/
 **/__pycache__
 **/*.pyc

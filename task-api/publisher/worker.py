@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import io
 import logging
 import random
@@ -14,7 +15,14 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from botocore.exceptions import ClientError
 
+from desearch.embedding import (
+    INPUT_SCHEMA,
+    OUTPUT_SCHEMA,
+    read_parquet,
+    write_parquet,
+)
 from desearch.extraction import looks_blocked
+from engine.chunking import doc_full, doc_head, para_chunks
 from publisher.records import (
     ROW_COLUMNS,
     build_record,
@@ -32,6 +40,12 @@ RETRY_DELAY_S = 5.0
 PUT_ATTEMPTS = 12
 RACED = {"PreconditionFailed", "412"}
 MISSING = {"NoSuchKey", "404", "NotFound"}
+PARQUET = "application/vnd.apache.parquet"
+EMBED_INPUT_PAGES = 500
+# One file per embed task: every text with its page and model, so the engine needs nothing else.
+VECTORS_SCHEMA = pa.schema(
+    [*INPUT_SCHEMA, ("model", pa.string()), *OUTPUT_SCHEMA.remove(0)]
+)
 
 # Full records ride along so a rebuild reads a few big files.
 CHANGE_SCHEMA = pa.schema(
@@ -135,20 +149,24 @@ class Publisher:
             await asyncio.to_thread(
                 self.write_changes, changes, await self.queue.next_seq()
             )
+            for entry in await asyncio.to_thread(self.write_embed_inputs, changes):
+                await self.queue.push_embed_input(entry)
         for job in settled:
             await self.queue.ack(job["task_id"])
-            with contextlib.suppress(Exception):
-                await self.temp.delete(job["key"])
+            for key in (job["key"], job.get("input_key")):
+                if key:
+                    with contextlib.suppress(Exception):
+                        await self.temp.delete(key)
         log.info(
             "published %d tasks, %d pages new or changed", len(settled), len(changes)
         )
         return len(settled)
 
-    def publish(self, job: dict) -> tuple[list[dict], str | None]:
-        extra = {"IfMatch": job["etag"]} if job.get("etag") else {}
+    def read_temp(self, key: str, etag: str | None = None) -> bytes:
+        extra = {"IfMatch": etag} if etag else {}
         try:
-            body = self.temp.client.get_object(
-                Bucket=self.temp.bucket, Key=self.temp.path(job["key"]), **extra
+            return self.temp.client.get_object(
+                Bucket=self.temp.bucket, Key=self.temp.path(key), **extra
             )["Body"].read()
         except ClientError as exc:
             code = exc.response.get("Error", {}).get("Code")
@@ -158,6 +176,10 @@ class Publisher:
                 raise UploadGone("changed") from None
             raise
 
+    def publish(self, job: dict) -> tuple[list[dict], str | None]:
+        if job.get("kind") == "embed":
+            return self.publish_vectors(job)
+        body = self.read_temp(job["key"], job.get("etag"))
         window = publish_window(job)
         captured = datetime.now(UTC)
         assigned = set(job["urls"])
@@ -232,6 +254,58 @@ class Publisher:
             **condition,
         )
 
+    def publish_vectors(self, job: dict) -> tuple[list[dict], str | None]:
+        given = read_parquet(self.read_temp(job["input_key"]), INPUT_SCHEMA)
+        upload = self.read_temp(job["key"], job.get("etag"))
+        vectors = {
+            row["text_id"]: row["vector"] for row in read_parquet(upload, OUTPUT_SCHEMA)
+        }
+        rows = [
+            {**row, "model": job["model"], "vector": vectors[row["text_id"]]}
+            for row in given
+        ]
+        self.pages.client.put_object(
+            Bucket=self.pages.bucket,
+            Key=self.pages.path(job["vectors_key"]),
+            Body=write_parquet(rows, VECTORS_SCHEMA),
+            ContentType=PARQUET,
+        )
+        return [], None
+
+    def write_embed_inputs(self, changes: list[dict]) -> list[dict]:
+        """Texts of the new or changed pages, one file per future embed task."""
+        pages = [change for change in changes if change["text"]]
+        entries = []
+        for start in range(0, len(pages), EMBED_INPUT_PAGES):
+            batch = pages[start : start + EMBED_INPUT_PAGES]
+            rows = [row for change in batch for row in embed_texts(change)]
+            body = write_parquet(rows, INPUT_SCHEMA)
+            key = f"embed-inputs/dt={datetime.now(UTC):%Y-%m-%d}/{uuid.uuid4().hex}.parquet"
+            self.temp.client.put_object(
+                Bucket=self.temp.bucket,
+                Key=self.temp.path(key),
+                Body=body,
+                ContentType=PARQUET,
+            )
+            entries.append(
+                {
+                    "input_key": key,
+                    "input_sha256": hashlib.sha256(body).hexdigest(),
+                    "texts": len(rows),
+                    "chars": sum(len(row["text"]) for row in rows),
+                    "pages": [
+                        {
+                            "url": change["url"],
+                            "host": change["domain"],
+                            "page_key": change["key"],
+                            "content_sha1": change["content_sha1"],
+                        }
+                        for change in batch
+                    ],
+                }
+            )
+        return entries
+
     def write_changes(self, changes: list[dict], seq: int) -> str:
         now = datetime.now(UTC)
         key = f"changes/dt={now:%Y-%m-%d}/{seq:012d}-{uuid.uuid4().hex[:8]}.parquet"
@@ -257,6 +331,29 @@ def publishable(row: dict, assigned: set[str]) -> bool:
     if row["error"] is not None or not row["text"] or row["url"] not in assigned:
         return False
     return not looks_blocked(row["status"], "", row["text"], row["title"] or "")
+
+
+def embed_texts(change: dict) -> list[dict]:
+    """The page as the index holds it: its head, its full text, then every passage."""
+    title, text = change["title"] or "", change["text"]
+    units = [("head", doc_head(title, text)), ("full", doc_full(title, text))]
+    units += [("chunk", chunk) for chunk in para_chunks(text)]
+    seen: dict[str, int] = {}
+    rows = []
+    for kind, unit in units:
+        index = seen[kind] = seen.get(kind, -1) + 1
+        rows.append(
+            {
+                "text_id": f"{change['key']}#{kind}{index}",
+                "page_key": change["key"],
+                "url": change["url"],
+                "content_sha1": change["content_sha1"],
+                "kind": kind,
+                "index": index,
+                "text": unit,
+            }
+        )
+    return rows
 
 
 def _rank(record: dict) -> tuple:

@@ -72,7 +72,7 @@ def _newer(lastmod: float | None, sent: float | None) -> bool:
 
 async def queue_depth(client: TaskApiClient) -> int:
     health = await client.get("/v1/health")
-    return int(health.get("queue_depth", 0))
+    return int(health.get("queue_depth", {}).get("crawl", 0))
 
 
 async def enqueue(
