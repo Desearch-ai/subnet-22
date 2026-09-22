@@ -175,3 +175,11 @@ def test_a_request_carries_whole_batches_even_when_they_are_large(tmp_path):
 
     assert asyncio.run(loop.enqueue(api, many, 1000, sent_urls)) == 25_000
     assert [len(batch) for batch in api.sent] == [10_000, 10_000, 5_000]
+
+
+def test_the_feeder_watches_only_the_crawl_queue():
+    class Health:
+        async def get(self, path):
+            return {"queue_depth": {"crawl": 7, "embed": 900}}
+
+    assert asyncio.run(loop.queue_depth(Health())) == 7

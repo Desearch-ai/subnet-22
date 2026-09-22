@@ -450,3 +450,60 @@ def test_a_lapsed_lease_frees_the_validators_slot():
         return (await validation.lease("v"))[0]["task_id"]
 
     assert run(scenario) == "b"
+
+
+async def filled_kind(redis, kind, count=2, round_id="r1"):
+    queue = TaskQueue(redis, 60, kind)
+    order = [f"{kind}-{round_id}-t{n}" for n in range(count)]
+    payloads = {t: {"urls": [f"https://x.example/{t}"]} for t in order}
+    await queue.fill(round_id, order, payloads)
+    return queue, order
+
+
+def test_each_kind_serves_only_its_own_tasks_and_counts_its_own_budget():
+    async def scenario(redis):
+        crawl, crawl_tasks = await filled_kind(redis, "crawl")
+        embed, embed_tasks = await filled_kind(redis, "embed")
+        got_crawl = await crawl.lease("m", 1)
+        got_embed = await embed.lease("m", 1)
+        blocked = await refused(crawl.lease("m", 1))
+        return got_crawl, got_embed, blocked, crawl_tasks, embed_tasks
+
+    got_crawl, got_embed, blocked, crawl_tasks, embed_tasks = run(scenario)
+    assert got_crawl.task_id == crawl_tasks[0] and got_crawl.payload["kind"] == "crawl"
+    assert got_embed.task_id == embed_tasks[0] and got_embed.payload["kind"] == "embed"
+    assert blocked == "NO_CAPACITY", "an embed task does not use up the crawl budget"
+
+
+def test_an_expired_embed_task_goes_back_to_the_embed_queue():
+    async def scenario(redis):
+        crawl, _ = await filled_kind(redis, "crawl", 1)
+        embed, order = await filled_kind(redis, "embed", 1)
+        got = await embed.lease("m", 5)
+        holder, _ = await embed.reclaim(got.task_id, now=10**12)
+        return (
+            holder,
+            await redis.scard("inflight:embed:m"),
+            await embed.depth(),
+            await crawl.depth(),
+        )
+
+    assert run(scenario) == ("m", 0, 1, 1)
+
+
+def test_a_validator_only_gets_the_kinds_it_asked_for():
+    async def scenario(redis):
+        validation = ValidationQueue(redis, 60)
+        embed, _ = await filled_kind(redis, "embed", 1)
+        got = await leased(embed)
+        job = {"task_id": got.task_id, "miner": "m", "kind": "embed"}
+        await embed.complete(got.task_id, "m", job, f"k-{got.seq}")
+        crawl_only = await validation.lease("v", ("crawl",))
+        both = await validation.lease("v", ("crawl", "embed"))
+        settled = await validation.finalize(got.task_id, "v")
+        return crawl_only, both, settled, await redis.scard("inflight:embed:m")
+
+    crawl_only, both, settled, inflight = run(scenario)
+    assert crawl_only is None
+    assert both[0]["kind"] == "embed"
+    assert settled.job["task_id"] == both[0]["task_id"] and inflight == 0

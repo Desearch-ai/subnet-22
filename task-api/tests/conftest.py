@@ -9,6 +9,8 @@ from tests.memory_r2 import DOTENV, R2_KEYS, Backend
 @pytest.fixture(params=["memory", "r2"])
 def backend(request, monkeypatch):
     if request.param == "r2":
+        if os.environ.get("TASK_API_TEST_R2") != "1":
+            pytest.skip("real R2 runs only with TASK_API_TEST_R2=1")
         for name, value in env.read_dotenv(DOTENV).items():
             if name.startswith("CF_R2_") and not os.environ.get(name):
                 monkeypatch.setenv(name, value)
