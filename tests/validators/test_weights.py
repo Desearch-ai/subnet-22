@@ -53,8 +53,21 @@ def test_the_burn_hotkey_earns_no_share():
 
 def test_a_pool_nobody_earned_goes_to_the_burn_hotkey():
     assert list(weights_from_shares(["m1", BURN], {})) == pytest.approx([0.0, 1.0])
-    unknown_pool = weights_from_shares(["m1", BURN], {"embed": {"m1": 1.0}})
+    unknown_pool = weights_from_shares(["m1", BURN], {"translate": {"m1": 1.0}})
     assert list(unknown_pool) == pytest.approx([0.0, 1.0])
+
+
+def test_crawl_and_embed_each_pay_a_quarter_and_half_is_burned():
+    weights = weights_from_shares(
+        ["crawler", "embedder", BURN],
+        {"crawl": {"crawler": 1.0}, "embed": {"embedder": 1.0}},
+    )
+
+    assert list(weights) == pytest.approx([0.25, 0.25, 0.5])
+    only_crawl = weights_from_shares(["crawler", BURN], {"crawl": {"crawler": 1.0}})
+    assert list(only_crawl) == pytest.approx([0.25, 0.75]), (
+        "an empty pool is burned, never given to the other"
+    )
 
 
 def test_every_pool_pays_its_part(monkeypatch):
@@ -137,5 +150,5 @@ def test_set_weights_submits_the_processed_weights(monkeypatch):
     submitted = dict(
         zip(sent[-1]["uids"].tolist(), sent[-1]["weights"].tolist(), strict=True)
     )
-    assert submitted[1] == pytest.approx(2 * submitted[0])
+    assert submitted[1] == pytest.approx((1 - CRAWL) / (CRAWL / 2) * submitted[0])
     assert submitted[0] == pytest.approx(submitted[2])
