@@ -7,6 +7,7 @@ from pathlib import Path
 
 from bittensor_wallet import Keypair, Wallet
 
+from desearch.embedding import OPENROUTER_EMBEDDINGS
 from desearch.fetch import FetchSettings
 
 ENV_FILE = Path(__file__).resolve().parent / ".env"
@@ -26,6 +27,10 @@ class Settings(FetchSettings):
     scrapingdog_api_key: str = ""
     scrapingdog_concurrency: int = 8
     extraction_threads: int = 4
+    embed_model: str = "qwen3-embedding-8b"
+    embed_api_url: str = OPENROUTER_EMBEDDINGS
+    embed_api_key: str = ""
+    embed_providers: tuple[str, ...] = ()
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] = os.environ) -> Settings:
@@ -34,6 +39,7 @@ class Settings(FetchSettings):
             return type(default)(value) if value else default
 
         proxies = env.get("PROXY_URLS", "")
+        providers = env.get("EMBED_PROVIDERS", "")
         return cls(
             task_api_url=get("TASK_API_URL", cls.task_api_url),
             wallet_name=get("WALLET_NAME", cls.wallet_name),
@@ -51,6 +57,10 @@ class Settings(FetchSettings):
                 "SCRAPINGDOG_CONCURRENCY", cls.scrapingdog_concurrency
             ),
             extraction_threads=get("EXTRACTION_THREADS", cls.extraction_threads),
+            embed_model=get("EMBED_MODEL", cls.embed_model),
+            embed_api_url=get("EMBED_API_URL", cls.embed_api_url),
+            embed_api_key=get("EMBED_API_KEY", cls.embed_api_key),
+            embed_providers=tuple(p.strip() for p in providers.split(",") if p.strip()),
         )
 
     def keypair(self) -> Keypair:
