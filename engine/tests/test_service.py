@@ -2,6 +2,7 @@ from datetime import date
 
 import numpy as np
 import pytest
+
 from engine import service
 from engine.tests.asgi import Client
 
