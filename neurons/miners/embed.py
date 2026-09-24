@@ -13,7 +13,7 @@ from desearch import env
 from desearch.embedding import (
     INPUT_SCHEMA,
     OUTPUT_SCHEMA,
-    HostedEmbedder,
+    EmbeddingClient,
     encode_vector,
     model_named,
     read_parquet,
@@ -33,11 +33,10 @@ class EmbedMiner(TaskWorker):
 
     def __init__(self, settings: Settings, api=None, embedder=None):
         super().__init__(settings, api)
-        self.embedder = embedder or HostedEmbedder(
-            settings.embed_api_url,
-            settings.embed_api_key,
-            model_named(settings.embed_model),
-            settings.embed_providers,
+        model = model_named(settings.embed_model)
+        # vLLM serves a model under its Hugging Face name unless told otherwise.
+        self.embedder = embedder or EmbeddingClient(
+            settings.embed_api_url, settings.embed_api_key, model, served_as=model.repo
         )
         self.download_http: aiohttp.ClientSession | None = None
 

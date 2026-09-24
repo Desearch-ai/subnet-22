@@ -870,6 +870,10 @@ def test_an_unexpected_poll_error_backs_off_and_keeps_leasing(monkeypatch, caplo
     [
         ({"code": "NO_CAPACITY", "inputs": {"retry_after": 5.0}}, 5.0),
         ({"code": "LOCKED_OUT", "inputs": {"retry_after": 43_000.0}}, 3600.0),
+        (
+            {"code": "KIND_CLOSED", "inputs": {"kind": "embed", "retry_after": 3600.0}},
+            3600.0,
+        ),
         ({"code": "RATE_LIMITED", "inputs": {"retry_after": "soon"}}, 2.0),
         ({"code": "QUEUE_EMPTY", "inputs": {}}, 2.0),
     ],
