@@ -26,6 +26,9 @@ from neurons.validators.clients.miner_response_logger import (
 from neurons.validators.penalty.count_penalty import CountPenaltyModel, TWITTER_TOOL
 from neurons.validators.penalty.date_range_penalty import DateRangePenaltyModel
 from neurons.validators.penalty.domain_filter_penalty import DomainFilterPenaltyModel
+from neurons.validators.penalty.source_provenance_penalty import (
+    SourceProvenancePenaltyModel,
+)
 from neurons.validators.penalty.duplicate_results_penalty import (
     DuplicateResultsPenaltyModel,
 )
@@ -95,6 +98,7 @@ class AdvancedScraperValidator(BaseScraperValidator):
             ResultSchemaPenaltyModel(max_penalty=1, neuron=neuron),
             DateRangePenaltyModel(max_penalty=1, neuron=neuron),
             DomainFilterPenaltyModel(max_penalty=1, neuron=neuron),
+            SourceProvenancePenaltyModel(max_penalty=1, neuron=neuron),
         ]
 
         super().__init__(

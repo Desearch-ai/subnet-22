@@ -5,6 +5,7 @@ import numpy as np
 import pytest
 
 from neurons.validators.clients.miner_response_logger import (
+    CHUNK_SIZE,
     build_log_entry,
     build_reward_payload,
     submit_logs,
@@ -314,3 +315,26 @@ async def test_x_posts_by_urls_logs_organic():
     assert results == [{"id": "abc"}]
     assert build_log_entry.call_args.kwargs["miner_uid"] == 99
     submit_logs_best_effort.assert_called_once_with(validator.neuron, [{"ok": True}])
+
+
+@pytest.mark.asyncio
+async def test_submit_logs_sends_one_request_per_chunk():
+    owner = _fake_owner()
+    logs = [{"i": index} for index in range(CHUNK_SIZE + 1)]
+
+    await submit_logs(owner, logs)
+
+    assert [
+        len(call.args[0]) for call in owner.utility_api.save_logs.await_args_list
+    ] == [CHUNK_SIZE, 1]
+
+
+@pytest.mark.asyncio
+async def test_submit_logs_continues_after_a_failed_chunk():
+    owner = _fake_owner()
+    logs = [{"i": index} for index in range(CHUNK_SIZE + 1)]
+    owner.utility_api.save_logs.side_effect = [RuntimeError("boom"), {"inserted": 1}]
+
+    await submit_logs(owner, logs)
+
+    assert owner.utility_api.save_logs.await_count == 2
