@@ -44,6 +44,8 @@ async def open_round(
 
 async def open_embed_rounds(core) -> rounds.Round | None:
     """Turns the publisher's waiting inputs into one embed round, one batch per input."""
+    if not core.embed_tasks:
+        return None
     waiting = await core.redis.lrange(queues.EMBED_INPUTS, 0, EMBED_ROUND_INPUTS - 1)
     if not waiting:
         return None
