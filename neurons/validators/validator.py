@@ -13,7 +13,7 @@ import wandb
 import desearch
 from desearch import env
 from desearch.client import TaskApiClient
-from desearch.embedding import MODELS, OPENROUTER_EMBEDDINGS, HostedEmbedder
+from desearch.embedding import MODELS, OPENROUTER_EMBEDDINGS, EmbeddingClient
 from desearch.fetch import Fetcher, ScrapingDog
 from neurons.validators.config import ENV_FILE, add_args, check_config, config
 from neurons.validators.crawl import CrawlValidator
@@ -118,7 +118,7 @@ class Validator:
     async def check_embed_tasks(self) -> None:
         key = os.environ.get("EMBED_API_KEY", "")
         if not key:
-            bt.logging.warning(
+            bt.logging.info(
                 f"Not checking embed tasks: EMBED_API_KEY is not set in {ENV_FILE}"
             )
             await self.stopping.wait()
@@ -131,7 +131,7 @@ class Validator:
             if p.strip()
         )
         references = {
-            name: HostedEmbedder(url, key, model, providers)
+            name: EmbeddingClient(url, key, model, providers)
             for name, model in MODELS.items()
         }
         async with TaskApiClient(

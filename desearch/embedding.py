@@ -32,6 +32,7 @@ MODELS = {
 }
 TEXT_KINDS = ("head", "full", "chunk")
 OPENROUTER_EMBEDDINGS = "https://openrouter.ai/api/v1/embeddings"
+LOCAL_EMBEDDINGS = "http://127.0.0.1:8000/v1/embeddings"
 
 # Texts are sized by the publisher to fit the model, so nobody truncates them.
 INPUT_SCHEMA = pa.schema(
@@ -67,8 +68,8 @@ def decode_vector(raw: bytes | None, dims: int) -> np.ndarray | None:
     return np.frombuffer(raw, dtype=VECTOR_DTYPE).astype(np.float32)
 
 
-class HostedEmbedder:
-    """An OpenAI-compatible /embeddings endpoint, optionally pinned to named providers."""
+class EmbeddingClient:
+    """An OpenAI-compatible /embeddings endpoint: a miner's own GPU server, or a validator's hosted one."""
 
     def __init__(
         self,
@@ -76,6 +77,7 @@ class HostedEmbedder:
         api_key: str,
         model: EmbeddingModel,
         providers: tuple[str, ...] = (),
+        served_as: str = "",
         batch: int = 32,
         timeout: float = 120.0,
     ):
@@ -83,6 +85,7 @@ class HostedEmbedder:
         self.api_key = api_key
         self.model = model
         self.providers = providers
+        self.served_as = served_as or model.hosted
         self.batch = batch
         self.timeout = aiohttp.ClientTimeout(total=timeout)
         self.session: aiohttp.ClientSession | None = None
@@ -96,7 +99,7 @@ class HostedEmbedder:
         return np.array(vectors, dtype=np.float32).reshape(len(texts), self.model.dims)
 
     async def _embed(self, texts: list[str]) -> list[np.ndarray]:
-        body = {"model": self.model.hosted, "input": texts, "encoding_format": "base64"}
+        body = {"model": self.served_as, "input": texts, "encoding_format": "base64"}
         if self.providers:
             body["provider"] = {"order": list(self.providers), "allow_fallbacks": False}
         async with self.session.post(
