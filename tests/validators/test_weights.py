@@ -57,17 +57,13 @@ def test_a_pool_nobody_earned_goes_to_the_burn_hotkey():
     assert list(unknown_pool) == pytest.approx([0.0, 1.0])
 
 
-def test_crawl_and_embed_each_pay_a_quarter_and_half_is_burned():
+def test_crawl_pays_half_and_embedding_nothing_until_it_opens():
     weights = weights_from_shares(
         ["crawler", "embedder", BURN],
         {"crawl": {"crawler": 1.0}, "embed": {"embedder": 1.0}},
     )
 
-    assert list(weights) == pytest.approx([0.25, 0.25, 0.5])
-    only_crawl = weights_from_shares(["crawler", BURN], {"crawl": {"crawler": 1.0}})
-    assert list(only_crawl) == pytest.approx([0.25, 0.75]), (
-        "an empty pool is burned, never given to the other"
-    )
+    assert list(weights) == pytest.approx([0.5, 0.0, 0.5])
 
 
 def test_every_pool_pays_its_part(monkeypatch):
