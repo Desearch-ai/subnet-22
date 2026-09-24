@@ -1,123 +1,60 @@
-import argparse
+from __future__ import annotations
+
 import os
+from collections.abc import Mapping
+from dataclasses import dataclass
+from pathlib import Path
 
-import bittensor as bt
+from bittensor_wallet import Keypair, Wallet
+
+from desearch.fetch import FetchSettings
+
+ENV_FILE = Path(__file__).resolve().parent / ".env"
+TASK_API = "https://task-api.desearch.ai"
 
 
-def check_config(cls, config: "bt.Config"):
-    bt.Axon.check_config(config)
-    bt.logging.check_config(config)
-    full_path = os.path.expanduser(
-        "{}/{}/{}/{}".format(
-            config.logging.logging_dir,
-            config.wallet.get("name", bt.DEFAULTS["wallet"]["name"]),
-            config.wallet.get("hotkey", bt.DEFAULTS["wallet"]["hotkey"]),
-            config.miner.name,
+@dataclass(frozen=True)
+class Settings(FetchSettings):
+    task_api_url: str = TASK_API
+    wallet_name: str = "default"
+    wallet_hotkey: str = "default"
+    wallet_path: str = "~/.bittensor/wallets"
+    max_tasks: int = 4
+    idle_exit: int = 0
+    receipts_file: str = ""
+    shutdown_grace: float = 45.0
+    scrapingdog_api_key: str = ""
+    scrapingdog_concurrency: int = 8
+    extraction_threads: int = 4
+
+    @classmethod
+    def from_env(cls, env: Mapping[str, str] = os.environ) -> Settings:
+        def get(name: str, default):
+            value = env.get(name, "").strip()
+            return type(default)(value) if value else default
+
+        proxies = env.get("PROXY_URLS", "")
+        return cls(
+            task_api_url=get("TASK_API_URL", cls.task_api_url),
+            wallet_name=get("WALLET_NAME", cls.wallet_name),
+            wallet_hotkey=get("WALLET_HOTKEY", cls.wallet_hotkey),
+            wallet_path=get("WALLET_PATH", cls.wallet_path),
+            proxy_urls=tuple(p.strip() for p in proxies.split(",") if p.strip()),
+            concurrency=get("CRAWL_CONCURRENCY", cls.concurrency),
+            per_domain=get("CRAWL_CONCURRENCY_PER_DOMAIN", cls.per_domain),
+            timeout=get("CRAWL_TIMEOUT", cls.timeout),
+            user_agent=get("CRAWL_USER_AGENT", cls.user_agent),
+            max_tasks=get("MAX_TASKS", cls.max_tasks),
+            receipts_file=get("RECEIPTS_FILE", cls.receipts_file),
+            scrapingdog_api_key=get("SCRAPINGDOG_API_KEY", cls.scrapingdog_api_key),
+            scrapingdog_concurrency=get(
+                "SCRAPINGDOG_CONCURRENCY", cls.scrapingdog_concurrency
+            ),
+            extraction_threads=get("EXTRACTION_THREADS", cls.extraction_threads),
         )
-    )
-    config.miner.full_path = os.path.expanduser(full_path)
-    if not os.path.exists(config.miner.full_path):
-        os.makedirs(config.miner.full_path)
 
-
-def get_config() -> "bt.Config":
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--axon.port",
-        type=int,
-        default=int(os.environ.get("AXON_PORT", 8098)),
-        help="Port to run the axon on.",
-    )
-    # External IP
-    parser.add_argument(
-        "--axon.external_ip",
-        type=str,
-        default=bt.utils.networking.get_external_ip(),
-        help="IP for the metagraph",
-    )
-    # Subtensor network to connect to
-    parser.add_argument(
-        "--subtensor.network",
-        default=os.environ.get("SUBTENSOR_NETWORK", "finney"),
-        help="Bittensor network to connect to.",
-    )
-    # Chain endpoint to connect to
-    parser.add_argument(
-        "--subtensor.chain_endpoint",
-        default="wss://entrypoint-finney.opentensor.ai:443",
-        help="Chain endpoint to connect to.",
-    )
-    # Adds override arguments for network and netuid.
-    parser.add_argument(
-        "--netuid",
-        type=int,
-        default=int(os.environ.get("NETUID", 22)),
-        help="The chain subnet uid.",
-    )
-
-    parser.add_argument(
-        "--miner.root",
-        type=str,
-        help="Trials for this miner go in miner.root / (wallet_cold - wallet_hot) / miner.name ",
-        default="~/.bittensor/miners/",
-    )
-    parser.add_argument(
-        "--miner.name",
-        type=str,
-        help="Trials for this miner go in miner.root / (wallet_cold - wallet_hot) / miner.name ",
-        default="Bittensor Miner",
-    )
-
-    parser.add_argument(
-        "--miner.config_path",
-        type=str,
-        help="Path to miner manifest JSON (per-search-type concurrency).",
-        default="./neurons/miners/manifest.json",
-    )
-
-    # Run config.
-    parser.add_argument(
-        "--miner.blocks_per_epoch",
-        type=str,
-        help="Blocks until the miner sets weights on chain",
-        default=100,
-    )
-
-    # Adds subtensor specific arguments i.e. --subtensor.chain_endpoint ... --subtensor.network ...
-    bt.Subtensor.add_args(parser)
-
-    # Adds logging specific arguments i.e. --logging.debug ..., --logging.trace .. or --logging.logging_dir ...
-    bt.logging.add_args(parser)
-
-    # Adds wallet specific arguments i.e. --wallet.name ..., --wallet.hotkey ./. or --wallet.path ...
-    bt.Wallet.add_args(parser)
-
-    # Adds axon specific arguments i.e. --axon.port ...
-    bt.Axon.add_args(parser)
-
-    # Override wallet defaults from .env (CLI flags still win).
-    parser.set_defaults(
-        **{
-            "wallet.name": os.environ.get("WALLET_NAME", "miner"),
-            "wallet.hotkey": os.environ.get("WALLET_HOTKEY", "default"),
-        }
-    )
-
-    # Activating the parser to read any command-line inputs.
-    # To print help message, run python3 desearch/miner.py --help
-    config = bt.Config(parser)
-
-    # Logging captures events for diagnosis or understanding miner's behavior.
-    config.full_path = os.path.expanduser(
-        "{}/{}/{}/netuid{}/{}".format(
-            config.logging.logging_dir,
-            config.wallet.name,
-            config.wallet.hotkey,
-            config.netuid,
-            "miner",
+    def keypair(self) -> Keypair:
+        wallet = Wallet(
+            name=self.wallet_name, hotkey=self.wallet_hotkey, path=self.wallet_path
         )
-    )
-    # Ensure the directory for logging exists, else create one.
-    if not os.path.exists(config.full_path):
-        os.makedirs(config.full_path, exist_ok=True)
-    return config
+        return wallet.hotkey

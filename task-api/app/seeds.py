@@ -1,30 +1,31 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import os
 import secrets
 import time
 
-BLOCK_SECONDS = 12
-REVEAL_AFTER_BLOCKS = 2
+BLOCK_SECONDS = 12.0
+# Far enough ahead to anchor the commitment before the seed block.
+REVEAL_AFTER_BLOCKS = 10
 
 
 class LocalSeeds:
-    def __init__(self, delay: float = 2.0):
-        self.delay = delay
-        self._pending: dict[int, tuple[float, str]] = {}
+    def __init__(self, block_seconds: float = BLOCK_SECONDS):
+        self.block_seconds = block_seconds
+        self._seeds: dict[int, str] = {}
 
-    def target_block(self, opened_at: float) -> int:
-        block = int(opened_at // BLOCK_SECONDS) + REVEAL_AFTER_BLOCKS
-        self._pending.setdefault(block, (opened_at + self.delay, secrets.token_hex(32)))
-        return block
+    async def current_block(self) -> int:
+        return int(time.time() // self.block_seconds)
+
+    async def target_block(self) -> int:
+        return await self.current_block() + REVEAL_AFTER_BLOCKS
 
     async def seed_for(self, block: int) -> str | None:
-        entry = self._pending.get(block)
-        if entry is None:
+        if await self.current_block() < block:
             return None
-        available_at, value = entry
-        return value if time.time() >= available_at else None
+        return self._seeds.setdefault(block, secrets.token_hex(32))
 
 
 class ChainSeeds:
@@ -39,17 +40,20 @@ class ChainSeeds:
             self._subtensor = bt.subtensor(network=self.network)
         return self._subtensor
 
-    def target_block(self, opened_at: float) -> int:
-        return self._chain().get_current_block() + REVEAL_AFTER_BLOCKS
+    async def current_block(self) -> int:
+        return await asyncio.to_thread(lambda: self._chain().get_current_block())
+
+    async def target_block(self) -> int:
+        return await self.current_block() + REVEAL_AFTER_BLOCKS
 
     async def seed_for(self, block: int) -> str | None:
-        chain = self._chain()
-        if chain.get_current_block() < block:
+        if await self.current_block() < block:
             return None
-        return hashlib.sha256(str(chain.get_block_hash(block)).encode()).hexdigest()
+        found = await asyncio.to_thread(lambda: self._chain().get_block_hash(block))
+        return hashlib.sha256(str(found).encode()).hexdigest()
 
 
 def seeds_from_env():
     if os.environ.get("TASK_API_SEEDS", "local") == "chain":
         return ChainSeeds(os.environ.get("TASK_API_NETWORK", "finney"))
-    return LocalSeeds(delay=float(os.environ.get("TASK_API_SEED_DELAY", "2")))
+    return LocalSeeds(float(os.environ.get("TASK_API_BLOCK_SECONDS", BLOCK_SECONDS)))

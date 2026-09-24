@@ -1,14 +1,12 @@
-"""The rule that decides serve order. Reimplemented in tools/verify_round.py."""
-
 from __future__ import annotations
 
 import hashlib
 import json
 
-ALGORITHM = "desearch-serve-order-1"
+ALGORITHM = "desearch-serve-order-2"
 
 
-def canonical(value) -> bytes:
+def canonical_json(value) -> bytes:
     return json.dumps(
         value, sort_keys=True, separators=(",", ":"), ensure_ascii=False
     ).encode()
@@ -18,9 +16,13 @@ def sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def manifest_hash(entries: list[dict]) -> str:
+def manifest_hash(entries: list[dict], seed_block: int) -> str:
     ordered = sorted(entries, key=lambda entry: entry["batch_id"])
-    return sha256(canonical({"algorithm": ALGORITHM, "batches": ordered}))
+    return sha256(
+        canonical_json(
+            {"algorithm": ALGORITHM, "seed_block": seed_block, "batches": ordered}
+        )
+    )
 
 
 def position_key(seed: str, batch_id: str) -> str:
@@ -41,10 +43,11 @@ def merkle_root(leaves: list[bytes]) -> str:
         if len(level) % 2:
             level.append(level[-1])
         level = [
-            hashlib.sha256(level[i] + level[i + 1]).digest() for i in range(0, len(level), 2)
+            hashlib.sha256(level[i] + level[i + 1]).digest()
+            for i in range(0, len(level), 2)
         ]
     return level[0].hex()
 
 
 def log_leaf(entry: dict) -> bytes:
-    return canonical(entry)
+    return canonical_json(entry)

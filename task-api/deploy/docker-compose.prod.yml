@@ -1,0 +1,62 @@
+# docker compose --env-file .env -f deploy/docker-compose.prod.yml up -d --build
+
+x-app: &app
+  build:
+    context: ../..
+    dockerfile: task-api/Dockerfile
+  restart: unless-stopped
+  logging:
+    driver: json-file
+    options: { max-size: "50m", max-file: "5" }
+
+x-r2-env: &r2-env
+  CF_R2_ENDPOINT: ${CF_R2_ENDPOINT:?set CF_R2_ENDPOINT}
+  CF_R2_BUCKET: ${CF_R2_BUCKET:-subnet-22}
+  CF_R2_PAGES_BUCKET: ${CF_R2_PAGES_BUCKET:-desearch-pages}
+  CF_R2_ACCESS_KEY_ID: ${CF_R2_ACCESS_KEY_ID:?set CF_R2_ACCESS_KEY_ID}
+  CF_R2_SECRET_ACCESS_KEY: ${CF_R2_SECRET_ACCESS_KEY:?set CF_R2_SECRET_ACCESS_KEY}
+  TASK_API_REDIS: redis://redis:6379/0
+
+services:
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory-policy", "noeviction"]
+    volumes: ["redis-data:/data"]
+    restart: unless-stopped
+
+  api:
+    <<: *app
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080", "--workers", "1", "--proxy-headers", "--forwarded-allow-ips", "*"]
+    environment:
+      <<: *r2-env
+      TASK_API_REGISTRY: chain
+      TASK_API_SEEDS: chain
+      TASK_API_NETUID: ${TASK_API_NETUID:-22}
+      TASK_API_NETWORK: ${TASK_API_NETWORK:-finney}
+      TASK_API_ADMIN_HOTKEYS: ${TASK_API_ADMIN_HOTKEYS:?set the ss58 hotkeys allowed to enqueue}
+      TASK_API_KEY_URI: ${TASK_API_KEY_URI:?set the secret receipts are signed with}
+      TASK_API_DATA: /data
+      TASK_API_CORS_ORIGINS: ${TASK_API_CORS_ORIGINS:-}
+    volumes: ["api-data:/data"]
+    ports: ["127.0.0.1:8080:8080"]
+    depends_on: [redis]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/v1/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+
+  publisher:
+    <<: *app
+    command: ["python", "-m", "publisher"]
+    environment:
+      <<: *r2-env
+    stop_grace_period: 60s
+    depends_on:
+      api:
+        condition: service_healthy
+
+volumes:
+  redis-data:
+  api-data:

@@ -2,23 +2,18 @@ from __future__ import annotations
 
 import time
 import uuid
-from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import Protocol
 
-from . import ordering
+from . import proofs
 
-ROUND_SECONDS = 300
 BATCH_TARGET = 250
 LEASE_TTL_S = 900
-MIN_CRAWL_DELAY = 1.0
 
 
 @dataclass
 class Url:
     host: str
     url: str
-    crawl_delay: float = MIN_CRAWL_DELAY
 
 
 @dataclass
@@ -26,53 +21,37 @@ class Batch:
     batch_id: str
     urls: list[Url]
 
-    @property
-    def hosts(self) -> list[str]:
-        return sorted({url.host for url in self.urls})
+    def urls_hash(self) -> str:
+        return proofs.sha256(proofs.canonical_json([u.url for u in self.urls]))
 
     def manifest_entry(self) -> dict:
-        delays = {url.host: url.crawl_delay for url in self.urls}
         return {
             "batch_id": self.batch_id,
-            "hosts": self.hosts,
             "url_count": len(self.urls),
-            "crawl_delay": {host: delays[host] for host in self.hosts},
+            "urls_hash": self.urls_hash(),
         }
 
 
-def host_share(crawl_delay: float, batch_target: int = BATCH_TARGET) -> int:
-    delay = max(crawl_delay, MIN_CRAWL_DELAY)
-    return max(1, min(batch_target, int(ROUND_SECONDS / delay)))
+def spread(urls: list[Url]) -> list[Url]:
+    """Round-robin hosts so a refusing site costs a row, not a task."""
+    by_host: dict[str, list[Url]] = {}
+    for url in urls:
+        by_host.setdefault(url.host, []).append(url)
+    queues = list(by_host.values())
+    mixed = []
+    while queues:
+        queues = [queue for queue in queues if queue]
+        for queue in queues:
+            mixed.append(queue.pop(0))
+    return mixed
 
 
 def pack(urls: list[Url], batch_target: int = BATCH_TARGET) -> list[Batch]:
-    by_host: dict[str, list[Url]] = defaultdict(list)
-    for url in urls:
-        by_host[url.host].append(url)
-
-    queues: list[list[Url]] = []
-    for host, host_urls in by_host.items():
-        share = host_share(host_urls[0].crawl_delay, batch_target)
-        for start in range(0, len(host_urls), share):
-            queues.append(host_urls[start : start + share])
-    queues.sort(key=len, reverse=True)
-
-    batches: list[Batch] = []
-    current: list[Url] = []
-    for chunk in queues:
-        if current and len(current) + len(chunk) > batch_target:
-            batches.append(Batch(uuid.uuid4().hex[:16], current))
-            current = []
-        current.extend(chunk)
-    if current:
-        batches.append(Batch(uuid.uuid4().hex[:16], current))
-    return batches
-
-
-class SeedSource(Protocol):
-    def target_block(self, opened_at: float) -> int: ...
-
-    async def seed_for(self, block: int) -> str | None: ...
+    mixed = spread(urls)
+    return [
+        Batch(uuid.uuid4().hex[:16], mixed[i : i + batch_target])
+        for i in range(0, len(mixed), batch_target)
+    ]
 
 
 @dataclass
@@ -96,7 +75,7 @@ class Round:
     def public_view(self) -> dict:
         view = {
             "round_id": self.round_id,
-            "algorithm": ordering.ALGORITHM,
+            "algorithm": proofs.ALGORITHM,
             "manifest_hash": self.manifest_hash,
             "seed_block": self.seed_block,
             "opened_at": self.opened_at,
@@ -110,22 +89,22 @@ class Round:
 
 
 def open_round(
-    urls: list[Url], seeds: SeedSource, batch_target: int = BATCH_TARGET
+    urls: list[Url], seed_block: int, batch_target: int = BATCH_TARGET
 ) -> Round:
     batches = {batch.batch_id: batch for batch in pack(urls, batch_target)}
     opened_at = time.time()
     return Round(
         round_id=uuid.uuid4().hex[:16],
         batches=batches,
-        manifest_hash=ordering.manifest_hash(
-            [b.manifest_entry() for b in batches.values()]
+        manifest_hash=proofs.manifest_hash(
+            [b.manifest_entry() for b in batches.values()], seed_block
         ),
-        seed_block=seeds.target_block(opened_at),
+        seed_block=seed_block,
         opened_at=opened_at,
     )
 
 
 def reveal(round_: Round, seed: str) -> list[str]:
     round_.seed = seed
-    round_.order = ordering.serve_order(seed, list(round_.batches))
+    round_.order = proofs.serve_order(seed, list(round_.batches))
     return round_.order

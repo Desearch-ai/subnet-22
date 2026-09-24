@@ -19,8 +19,8 @@ venv/
 state.json
 
 app.config.js
-neurons/miners/manifest.json
 neurons/miners/.env
+neurons/validators/.env
 
 .DS_Store
 Makefile
@@ -29,3 +29,4 @@ pyrightconfig.json
 .claude/
 .pytest_cache/
 .state/
+devnet/runs/

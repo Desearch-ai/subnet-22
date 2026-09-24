@@ -1,0 +1,11 @@
+fastapi==0.135.3
+uvicorn==0.44.0
+redis==7.4.0
+aiohttp==3.13.5
+pyarrow==24.0.0
+boto3==1.43.56
+bittensor-wallet==4.1.0
+trafilatura==2.1.0
+lxml==6.1.1
+lxml_html_clean==0.4.5
+zstandard==0.25.0
