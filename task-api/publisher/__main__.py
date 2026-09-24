@@ -52,6 +52,7 @@ async def serve() -> None:
         pages,
         workers=int(os.environ.get("PUBLISHER_WORKERS", "32")),
         batch=int(os.environ.get("PUBLISHER_BATCH", "20")),
+        embed_inputs=os.environ.get("TASK_API_EMBED_TASKS", "0") == "1",
     )
     log.info("publishing %s -> %s", temp.bucket, pages.bucket)
     try:
