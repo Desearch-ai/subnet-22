@@ -57,6 +57,7 @@ async def embed_task(h: Harness, miner) -> dict:
 
 
 def test_a_published_page_is_embedded_credited_and_recorded(api_env, memory):
+    api_env.setenv("TASK_API_EMBED_TASKS", "1")
     asyncio.run(_embedded(memory))
 
 
@@ -116,6 +117,7 @@ async def _embedded(backend) -> None:
 
 
 def test_the_same_page_version_is_not_embedded_twice(api_env, memory):
+    api_env.setenv("TASK_API_EMBED_TASKS", "1")
     asyncio.run(_not_twice(memory))
 
 
@@ -133,6 +135,7 @@ async def _not_twice(backend) -> None:
 
 
 def test_a_failed_embed_task_strikes_only_the_embed_pool(api_env, memory):
+    api_env.setenv("TASK_API_EMBED_TASKS", "1")
     asyncio.run(_embed_strikes(memory))
 
 
@@ -155,3 +158,26 @@ async def _embed_strikes(backend) -> None:
         assert again["refusal"]["code"] == "ALREADY_HELD"
         rival = await h.rival.post("/v1/tasks/lease", {"kind": "embed"})
         assert rival["task"]["task_id"] == task["task_id"]
+
+
+def test_embed_tasks_stay_closed_until_switched_on(api_env, memory):
+    asyncio.run(_closed(memory))
+
+
+async def _closed(backend) -> None:
+    async with Harness(backend) as h:
+        await h.redis.rpush(queues.EMBED_INPUTS, json.dumps(INPUT))
+        assert await lifecycle.open_embed_rounds(h.core) is None
+        assert await h.redis.llen(queues.EMBED_INPUTS) == 1, "nothing is thrown away"
+
+        answer = await h.miner.post("/v1/tasks/lease", {"kind": "embed"})
+        assert answer["refusal"] == {
+            "code": "KIND_CLOSED",
+            "inputs": {"kind": "embed", "retry_after": 3600.0},
+        }
+        assert answer["receipt"]
+        health = (await h.public.get("/v1/health")).json()
+        assert (health["embed_tasks"], health["embed_model"]) == (
+            False,
+            "qwen3-embedding-8b",
+        )
