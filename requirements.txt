@@ -10,3 +10,8 @@ trafilatura==2.1.0
 lxml==6.1.1
 lxml_html_clean==0.4.5
 charset-normalizer==3.4.4
+py3langid==0.3.0
+asyncpg>=0.30.0
+cryptography>=42.0.0
+rocksdict>=0.3.29
+huggingface_hub>=1.21.0

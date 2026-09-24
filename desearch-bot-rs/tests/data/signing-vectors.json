@@ -1,0 +1,177 @@
+{
+ "key": "RFC 8032 test key 1",
+ "pem": "-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEIJ1hsZ3v/VpguoRK9JLsLMREScVpezJpGXA7rAMcrn9g\n-----END PRIVATE KEY-----\n",
+ "keyid": "kPrK_qmxVWaYVA9wwBF6Iuo3vVzz7TxHCTwXBygrS4k",
+ "signatures": [
+  {
+   "url": "https://example.com/robots.txt",
+   "created": 1757500000,
+   "headers": {
+    "Signature-Agent": "\"https://www.desearch.ai/crawler\"",
+    "Signature-Input": "sig1=(\"@authority\" \"signature-agent\");created=1757500000;keyid=\"kPrK_qmxVWaYVA9wwBF6Iuo3vVzz7TxHCTwXBygrS4k\";alg=\"ed25519\";expires=1757500300;tag=\"web-bot-auth\"",
+    "Signature": "sig1=:ikXXXzbMkI2daqLRiE1mjQCxQrVyIX0YJWvZdqEFWkx9LH/KuJAN5zEanrkY2P9d+kVlOwyo4LdwqtZ4mqizCA==:"
+   }
+  },
+  {
+   "url": "http://Sub.Example.com:80/x",
+   "created": 1757500001,
+   "headers": {
+    "Signature-Agent": "\"https://www.desearch.ai/crawler\"",
+    "Signature-Input": "sig1=(\"@authority\" \"signature-agent\");created=1757500001;keyid=\"kPrK_qmxVWaYVA9wwBF6Iuo3vVzz7TxHCTwXBygrS4k\";alg=\"ed25519\";expires=1757500301;tag=\"web-bot-auth\"",
+    "Signature": "sig1=:L1MJPW8AijnBR/xcbsCNv+jwM7ZHGLQYXBDeM7yJxOxxqMTarTJ7CBJnCgcbp5rTjaVlaNeFldPmbjc49QlZAA==:"
+   }
+  },
+  {
+   "url": "https://user@EXAMPLE.com:8443/a?b#c",
+   "created": 1757500002,
+   "headers": {
+    "Signature-Agent": "\"https://www.desearch.ai/crawler\"",
+    "Signature-Input": "sig1=(\"@authority\" \"signature-agent\");created=1757500002;keyid=\"kPrK_qmxVWaYVA9wwBF6Iuo3vVzz7TxHCTwXBygrS4k\";alg=\"ed25519\";expires=1757500302;tag=\"web-bot-auth\"",
+    "Signature": "sig1=:Ov7TAcSDVqDmUBBOagSfvIm70gnMP9eZLc+zB9pWQ70WFcX5nhMbJP5v0MhpEcM5SPKRxfSNX1TMlGDS5krRBw==:"
+   }
+  },
+  {
+   "url": "https://m\u00fcnchen.de/",
+   "created": 1757500003,
+   "headers": {
+    "Signature-Agent": "\"https://www.desearch.ai/crawler\"",
+    "Signature-Input": "sig1=(\"@authority\" \"signature-agent\");created=1757500003;keyid=\"kPrK_qmxVWaYVA9wwBF6Iuo3vVzz7TxHCTwXBygrS4k\";alg=\"ed25519\";expires=1757500303;tag=\"web-bot-auth\"",
+    "Signature": "sig1=:M3exihtJv7lykIjn49+ukcDdOwEe6LIsSOoumXSSJ8NlAlVrmTSKGX1u27CJAb+tON+laJJNlSeUjxg5/5CWAw==:"
+   }
+  }
+ ],
+ "hosts": [
+  {
+   "host": "www.example.co.uk",
+   "registrable": "example.co.uk",
+   "group": "other_cctld",
+   "reason": "non_english_tld"
+  },
+  {
+   "host": "a.b.c.blogspot.com",
+   "registrable": "c.blogspot.com",
+   "group": "other_cctld",
+   "reason": "non_english_tld"
+  },
+  {
+   "host": "example.com",
+   "registrable": "example.com",
+   "group": "big_generic",
+   "reason": "infrastructure"
+  },
+  {
+   "host": "co.uk",
+   "registrable": null,
+   "group": "en_cctld",
+   "reason": null
+  },
+  {
+   "host": "sub.city.kawasaki.jp",
+   "registrable": "city.kawasaki.jp",
+   "group": "other_cctld",
+   "reason": "non_english_tld"
+  },
+  {
+   "host": "www.ck",
+   "registrable": "www.ck",
+   "group": "other_cctld",
+   "reason": "non_english_tld"
+  },
+  {
+   "host": "x.y.ck",
+   "registrable": "x.y.ck",
+   "group": "other_cctld",
+   "reason": "non_english_tld"
+  },
+  {
+   "host": "UPPER.Example.COM.",
+   "registrable": "example.com",
+   "group": "other_cctld",
+   "reason": "invalid_host"
+  },
+  {
+   "host": "bad host.com",
+   "registrable": null,
+   "group": "big_generic",
+   "reason": "invalid_host"
+  },
+  {
+   "host": "localhost",
+   "registrable": null,
+   "group": "other_cctld",
+   "reason": "invalid_host"
+  },
+  {
+   "host": "a..b.com",
+   "registrable": null,
+   "group": "other_cctld",
+   "reason": "invalid_host"
+  },
+  {
+   "host": "xn--mnchen-3ya.de",
+   "registrable": "xn--mnchen-3ya.de",
+   "group": "other_cctld",
+   "reason": "non_english_tld"
+  },
+  {
+   "host": "m\u00fcnchen.de",
+   "registrable": "m\u00fcnchen.de",
+   "group": "other_cctld",
+   "reason": "invalid_host"
+  },
+  {
+   "host": "foo.github.io",
+   "registrable": "foo.github.io",
+   "group": "other_cctld",
+   "reason": "non_english_tld"
+  },
+  {
+   "host": "s3.amazonaws.com",
+   "registrable": null,
+   "group": "other_cctld",
+   "reason": "non_english_tld"
+  },
+  {
+   "host": "a.s3.amazonaws.com",
+   "registrable": "a.s3.amazonaws.com",
+   "group": "other_cctld",
+   "reason": "non_english_tld"
+  },
+  {
+   "host": "shinhan.com",
+   "registrable": "shinhan.com",
+   "group": "big_generic",
+   "reason": "blocked_operator"
+  },
+  {
+   "host": "cdn-static.example.com",
+   "registrable": "example.com",
+   "group": "other_cctld",
+   "reason": "infrastructure_name"
+  },
+  {
+   "host": "example.de",
+   "registrable": "example.de",
+   "group": "other_cctld",
+   "reason": "non_english_tld"
+  },
+  {
+   "host": "example.io",
+   "registrable": "example.io",
+   "group": "new_generic",
+   "reason": null
+  },
+  {
+   "host": "ns1.example.com",
+   "registrable": "example.com",
+   "group": "other_cctld",
+   "reason": "infrastructure_name"
+  },
+  {
+   "host": "example.123",
+   "registrable": "example.123",
+   "group": "other_cctld",
+   "reason": "invalid_host"
+  }
+ ]
+}
