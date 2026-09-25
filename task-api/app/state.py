@@ -70,6 +70,8 @@ class State:
         self.tasks = {
             kind: queues.TaskQueue(redis, self.lease_ttl, kind) for kind in queues.KINDS
         }
+        # Off until Desearch's own model ships; on, it runs the stand-in for testing.
+        self.embed_tasks = os.environ.get("TASK_API_EMBED_TASKS", "0") == "1"
         self.embed_model = os.environ.get("TASK_API_EMBED_MODEL", DEFAULT_EMBED_MODEL)
         self.validation = queues.ValidationQueue(
             redis,

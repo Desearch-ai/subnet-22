@@ -43,6 +43,7 @@ RETRY_AFTER_S = {
     "NO_CAPACITY": 5.0,
     "ALREADY_HELD": 10.0,
     "VALIDATION_BACKLOG": 30.0,
+    "KIND_CLOSED": 3600.0,
 }
 DEFAULT_ORIGINS = "http://localhost:5173,http://localhost:8081,http://127.0.0.1:5173,http://127.0.0.1:8081"
 
@@ -142,6 +143,10 @@ def create_app(redis=None) -> FastAPI:
                 "inputs": {"per_sec": core.poll_rate, "retry_after": retry_after},
             }
             return {"task": None, "refusal": refusal, "receipt": None}
+
+        if kind == EMBED and not core.embed_tasks:
+            refusal = {"code": "KIND_CLOSED", "inputs": {"kind": kind}}
+            return await _refused(core, round_id, who, refusal)
 
         locked_until = await core.db(core.budgets.locked_until, who.hotkey, kind)
         if locked_until is not None:
@@ -579,6 +584,8 @@ def create_app(redis=None) -> FastAPI:
             "verdicts": await core.db(core.validations.verdicts),
             "validators": await core.db(core.validations.audit_standing),
             "current_round": core.current,
+            "embed_tasks": core.embed_tasks,
+            "embed_model": core.embed_model,
             "pools": await core.db(core.budgets.shares),
             "coverage": await core.db(core.budgets.coverage_report),
         }

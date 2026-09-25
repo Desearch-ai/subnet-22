@@ -50,7 +50,28 @@ def test_a_page_becomes_a_head_a_full_text_and_its_passages():
 
 
 def test_published_pages_are_embedded_and_their_vectors_published(api_env, memory):
+    api_env.setenv("TASK_API_EMBED_TASKS", "1")
     asyncio.run(_crawl_to_vectors(memory))
+
+
+def test_with_embedding_off_the_publisher_prepares_nothing_to_embed(api_env, memory):
+    asyncio.run(_publish_without_embedding(memory))
+
+
+async def _publish_without_embedding(backend) -> None:
+    async with Harness(backend) as h:
+        await h.enqueue()
+        task = await h.mine()
+        await h.validator.post("/v1/validation/lease")
+        await h.validator.post(
+            f"/v1/validation/{task['task_id']}/score", _score("pass", 3)
+        )
+        publisher = Publisher(h.core.publish, h.core.storage, h.core.pages, workers=2)
+        try:
+            assert await publisher.run_once() == 1
+        finally:
+            publisher.close()
+        assert await h.redis.llen(queues.EMBED_INPUTS) == 0
 
 
 def _read(storage, key: str) -> bytes:
@@ -67,7 +88,9 @@ async def _crawl_to_vectors(backend) -> None:
         await h.validator.post(
             f"/v1/validation/{task['task_id']}/score", _score("pass", 3)
         )
-        publisher = Publisher(h.core.publish, h.core.storage, h.core.pages, workers=2)
+        publisher = Publisher(
+            h.core.publish, h.core.storage, h.core.pages, workers=2, embed_inputs=True
+        )
         try:
             assert await publisher.run_once() == 1
             (entry,) = map(json.loads, await h.redis.lrange(queues.EMBED_INPUTS, 0, -1))

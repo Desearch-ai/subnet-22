@@ -91,11 +91,20 @@ class UploadGone(Exception):
 
 
 class Publisher:
-    def __init__(self, queue, temp, pages, workers: int = 32, batch: int = 20):
+    def __init__(
+        self,
+        queue,
+        temp,
+        pages,
+        workers: int = 32,
+        batch: int = 20,
+        embed_inputs: bool = False,
+    ):
         self.queue = queue
         self.temp = temp
         self.pages = pages
         self.batch = batch
+        self.embed_inputs = embed_inputs
         self.pool = ThreadPoolExecutor(workers)
 
     async def run(self, stop: asyncio.Event, idle_exit: int = 0) -> None:
@@ -149,8 +158,9 @@ class Publisher:
             await asyncio.to_thread(
                 self.write_changes, changes, await self.queue.next_seq()
             )
-            for entry in await asyncio.to_thread(self.write_embed_inputs, changes):
-                await self.queue.push_embed_input(entry)
+            if self.embed_inputs:
+                for entry in await asyncio.to_thread(self.write_embed_inputs, changes):
+                    await self.queue.push_embed_input(entry)
         for job in settled:
             await self.queue.ack(job["task_id"])
             for key in (job["key"], job.get("input_key")):

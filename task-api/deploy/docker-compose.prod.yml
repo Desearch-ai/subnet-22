@@ -37,6 +37,8 @@ services:
       TASK_API_KEY_URI: ${TASK_API_KEY_URI:?set the secret receipts are signed with}
       TASK_API_DATA: /data
       TASK_API_CORS_ORIGINS: ${TASK_API_CORS_ORIGINS:-}
+      TASK_API_EMBED_TASKS: ${TASK_API_EMBED_TASKS:-0}
+      TASK_API_EMBED_MODEL: ${TASK_API_EMBED_MODEL:-qwen3-embedding-8b}
     volumes: ["api-data:/data"]
     ports: ["127.0.0.1:8080:8080"]
     depends_on: [redis]
@@ -52,6 +54,7 @@ services:
     command: ["python", "-m", "publisher"]
     environment:
       <<: *r2-env
+      TASK_API_EMBED_TASKS: ${TASK_API_EMBED_TASKS:-0}
     stop_grace_period: 60s
     depends_on:
       api:
