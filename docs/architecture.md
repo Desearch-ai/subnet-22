@@ -5,15 +5,16 @@ check the work, and the verified pages are published to the collection the searc
 from. This page explains how those parts fit together.
 
 ```
- Desearch Bot ──new URLs──▶ Task API ◀──tasks out──▶ Miners      Validators ──results──▶ Task API
-                               │                                      ▲
-                               │ one-time upload links                │ reads the open list
-                               ▼                                      │ and the uploads
- Miners ──upload──▶ Object storage (public) ──────────────────────────┘──sample re-fetch──▶ the web
-                        │
-                        │ verified work, through the publisher
-                        ▼
-                     Engine ──▶ search API
+ Desearch Bot ──new URLs──▶ Task API ──tasks and upload links──▶ Miners
+                               │  ▲                                │
+              list of uploads  │  │ pass or fail                   │ upload
+              waiting to be    │  │                                ▼
+              checked          │  └──────── Validators ◀──read─── Storage (public bucket)
+                               └───────────────▶│                       │
+                                                │ re-fetch a sample      │ verified pages,
+                                                ▼                        │ through the publisher
+                                             the web                     ▼
+                                                                    Engine ──▶ search API
 ```
 
 ## Components
@@ -22,17 +23,17 @@ from. This page explains how those parts fit together.
 | --- | --- | --- |
 | Desearch Bot | Reads the robots.txt and sitemaps of every domain on its list on a schedule, and keeps every URL they list. | [`desearch-bot/`](../desearch-bot/) |
 | Feeder | Sends the bot's newest URLs to the task API. | [`task-api/feeder/`](../task-api/feeder/) |
-| Task API | Packs URLs into tasks, hands them to miners, hands finished uploads to validators, works out what each miner is owed from the validators' results, and publishes every miner's share. | [`task-api/app/`](../task-api/app/) |
+| Task API | Packs URLs into tasks, hands them to miners, lists the finished uploads for validators, works out what each miner is owed from the validators' results, and publishes every miner's share. | [`task-api/app/`](../task-api/app/) |
 | Miners | Fetch the pages of a task and extract their text; once embedding opens, turn text into vectors on a GPU. | [`neurons/miners/`](../neurons/miners/) |
-| Validators | Check a sample of every upload against the live page and set weights from what they found. | [`neurons/validators/`](../neurons/validators/) |
+| Validators | Read every upload from storage, check a sample of its pages against the live page, report pass or fail, and set weights from what they found. | [`neurons/validators/`](../neurons/validators/) |
 | Publisher | Writes verified pages and vectors to permanent storage. | [`task-api/publisher/`](../task-api/publisher/) |
 | Engine | Builds the search index from the published pages and vectors, and serves search. | [`engine/`](../engine/) |
 | Shared package | Fetching, text extraction and embedding formats, so miners and validators run the same code. | [`desearch/`](../desearch/) |
 
 The task API keeps its live queues in Redis and its records (rounds, the signed log, the validators'
 results, budgets and what each miner is owed) in SQLite. Files live in two Cloudflare R2 buckets:
-uploads in `subnet-22`, which is temporary, and published pages in `desearch-pages`, which is
-permanent.
+uploads in `subnet-22`, which is temporary and readable by anyone at `https://r2.desearch.ai`, and
+published pages in `desearch-pages`, which is permanent.
 
 ## A crawl task, start to finish
 
@@ -49,11 +50,12 @@ permanent.
    what gets checked: it is exactly what the miner uploaded, and neither side can change it afterwards.
 4. **Check.** Every validator checks every upload, and finds them in storage rather than by asking
    the API. When the API freezes an upload it writes a signed note next to it, saying which URLs
-   the miner was given and at which block the upload was frozen, and it keeps a list of the open
-   uploads at a fixed key in the same public bucket. Each validator reads that list, checks the
-   API's signature on every note, and reads the frozen copy straight from the bucket. The rows to
-   check are picked with a seed nobody knew when the upload was frozen: the hash of the chain block
-   ten blocks after the freeze, which the validator takes from the chain itself. It then:
+   the miner was given and at which block the upload was frozen, and it keeps the list of uploads
+   waiting to be checked at `validation/open.json` in the same public bucket. Each validator reads
+   that list, checks the API's signature on every note, and reads the frozen copy straight from
+   the bucket. The rows to check are picked with a seed nobody knew when the upload was frozen:
+   the hash of the chain block ten blocks after the freeze, which the validator takes from the
+   chain itself. It then:
    - re-extracts the picked rows from the uploaded HTML, to prove the text came from the page;
    - fetches the same pages itself and compares the text with the miner's;
    - checks a sample of the rows the miner reported as failed, to see whether the page really
