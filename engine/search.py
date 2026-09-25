@@ -94,16 +94,17 @@ class Unified:
         self.root = root
         self.built = built_at(root)
         self.cand_doc, self.cand_chunk = cand_doc, cand_chunk
-        self.meta, self.offsets = [], []
-        with open(root / "docs.jsonl", "rb") as fh:
-            pos = 0
-            for line in fh:
-                d = json.loads(line)
-                d.pop("text")
-                self.meta.append(d)
-                self.offsets.append(pos)
-                pos += len(line)
-        self.docs_path = root / "docs.jsonl"
+        self.meta, self.offsets, self.lengths = [], [], []
+        # Kept open: a rebuilt directory must not swap the text under this metadata.
+        self.docs = open(root / "docs.jsonl", "rb")
+        pos = 0
+        for line in self.docs:
+            d = json.loads(line)
+            d.pop("text")
+            self.meta.append(d)
+            self.offsets.append(pos)
+            self.lengths.append(len(line))
+            pos += len(line)
         self.key_ix = {d["key"]: i for i, d in enumerate(self.meta)}
         self.pub = np.array(
             [
@@ -136,9 +137,8 @@ class Unified:
         return built_at(self.root) == self.built
 
     def text(self, i: int) -> str:
-        with open(self.docs_path, "rb") as fh:
-            fh.seek(self.offsets[i])
-            return json.loads(fh.readline())["text"]
+        line = os.pread(self.docs.fileno(), self.lengths[i], self.offsets[i])
+        return json.loads(line)["text"]
 
     def _dense_doc(self, q, qc, coarse, exact):
         cand = top(coarse @ qc, self.cand_doc)

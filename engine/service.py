@@ -215,7 +215,8 @@ def within_dates(
 async def require_access_key(request: Request, call_next):
     if request.client and request.client.host in LOOPBACK:
         return await call_next(request)
-    if not hmac.compare_digest(request.headers.get("Access-Key", ""), access_key()):
+    key = access_key()
+    if not key or not hmac.compare_digest(request.headers.get("Access-Key", ""), key):
         return JSONResponse({"detail": "Unauthorized"}, status_code=401)
     return await call_next(request)
 

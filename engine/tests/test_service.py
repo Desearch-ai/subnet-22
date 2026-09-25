@@ -175,3 +175,16 @@ def test_document_outside_the_index_is_a_404(client):
         ).status_code
         == 404
     )
+
+
+def test_without_a_configured_key_only_loopback_callers_get_in(client, monkeypatch):
+    monkeypatch.setattr(service, "access_key", lambda: "")
+    remote = Client(service.app, client=("203.0.113.5", 4000))
+    query = {"query": "q"}
+
+    assert client.post("/v1/search", json=query).status_code == 200
+    assert remote.post("/v1/search", json=query).status_code == 401
+    assert (
+        remote.post("/v1/search", json=query, headers={"Access-Key": ""}).status_code
+        == 401
+    )

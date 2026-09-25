@@ -1,6 +1,7 @@
 import hashlib
 import io
 import json
+import os
 import re
 from datetime import UTC, datetime
 
@@ -271,3 +272,30 @@ def test_the_running_service_picks_up_a_new_segment(world, monkeypatch):
     after = service.engine()
     assert after.segments[0] is before.segments[0], "the main index is not reloaded"
     assert search(after, "volcano story")[0] == "https://new.example/c"
+
+
+def test_segments_built_within_one_second_still_sort_in_build_order(world, monkeypatch):
+    _, bucket, synced, places = world
+    monkeypatch.setattr(sync.time, "time", lambda: 1800000000.0)
+    bucket.publish([page("https://new.example/c", "volcano")], "t1")
+    first = sync.sync_once(bucket, synced, **places)
+    bucket.publish([page("https://new.example/c", "volcano", "Volcano Two")], "t2")
+    second = sync.sync_once(bucket, synced, **places)
+
+    assert [first, second] == ["1800000000-000001", "1800000000-000002"]
+    index = service.load_index()
+    assert index.meta[index.key_ix["new.example/c"]]["title"] == "Volcano Two"
+
+
+def test_page_text_comes_from_the_file_the_index_was_loaded_with(world):
+    tmp_path, _, _, places = world
+    main = Unified(places["main"])
+    before = main.text(0)
+    docs = places["main"] / "docs.jsonl"
+    first = json.loads(docs.read_text().splitlines()[0])
+    rebuilt = tmp_path / "docs.rebuilt"
+    rebuilt.write_text(json.dumps({**first, "text": "rebuilt"}) + "\n")
+    os.replace(rebuilt, docs)
+
+    assert main.text(0) == before != "rebuilt"
+    assert not main.is_current()

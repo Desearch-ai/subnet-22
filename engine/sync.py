@@ -9,7 +9,6 @@ import os
 import shutil
 import sqlite3
 import time
-import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -90,6 +89,12 @@ class Synced:
         )
         self.db.commit()
 
+    def segments(self) -> int:
+        (count,) = self.db.execute(
+            "SELECT COUNT(DISTINCT segment) FROM synced WHERE segment != ''"
+        ).fetchone()
+        return count
+
 
 def vector_keys(bucket, model: str, days: int = LOOKBACK_DAYS) -> list[str]:
     today = datetime.now(UTC).date()
@@ -135,9 +140,14 @@ def indexable(page: dict, current: dict | None) -> np.ndarray | None:
 
 
 def build_segment(
-    pages: list[tuple[dict, np.ndarray]], live: Path, store: Path, main: Path
+    pages: list[tuple[dict, np.ndarray]],
+    live: Path,
+    store: Path,
+    main: Path,
+    seq: int = 0,
 ) -> str:
-    name = f"{int(time.time()):010d}-{uuid.uuid4().hex[:6]}"
+    """Named so that a later segment sorts later even within one second."""
+    name = f"{int(time.time()):010d}-{seq:06d}"
     store.mkdir(parents=True, exist_ok=True)
     shard = store / f"{name}.npy"
     staging = shard.with_suffix(".tmp.npy")
@@ -188,7 +198,9 @@ def sync_once(
         vectors = indexable(page, currents[key])
         if vectors is not None:
             ready.append((currents[key], vectors))
-    name = build_segment(ready, live, store, main) if ready else ""
+    name = (
+        build_segment(ready, live, store, main, synced.segments() + 1) if ready else ""
+    )
     synced.mark(taken, name)
     log.info(
         "synced %d vector files: %d of %d pages indexed%s",
