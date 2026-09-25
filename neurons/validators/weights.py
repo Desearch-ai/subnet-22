@@ -6,7 +6,7 @@ from bittensor.utils.weight_utils import process_weights
 
 EMISSION_CONTROL_HOTKEY = "5CUu1QhvrfyMDBELUPJLt4c7uJFbi7TKqDHkS1Zz41oD4dyP"
 # Each task family's part of the emission; the rest goes to the burn hotkey.
-POOLS = {"crawl": 0.5}
+POOLS = {"crawl": 0.25, "embed": 0.25}
 SET_WEIGHTS_ATTEMPTS = 9
 SET_WEIGHTS_RETRY_S = 45
 VERSION_KEY = 2**64 - 9

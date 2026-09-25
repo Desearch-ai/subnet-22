@@ -13,7 +13,7 @@ from desearch.extraction import extract
 from desearch.extraction.schema import sha256_hex
 from desearch.fetch import ScrapingDog
 from neurons.miners.rows import write_parquet
-from neurons.validators import crawl
+from neurons.validators import crawl, tasks
 from neurons.validators.crawl import CrawlValidator, DownloadFailed
 from neurons.validators.fetchers import to_page
 from neurons.validators.scoring import (
@@ -467,7 +467,7 @@ def test_an_oversized_upload_is_unreadable_without_reading_it_all():
 
 
 def test_validator_skips_a_job_when_storage_is_down(monkeypatch):
-    monkeypatch.setattr(crawl, "RETRY_DELAY_S", 0)
+    monkeypatch.setattr(tasks, "RETRY_DELAY_S", 0)
     attempts = []
 
     async def down(request) -> web.Response:
@@ -482,7 +482,9 @@ def test_validator_skips_a_job_when_storage_is_down(monkeypatch):
                 "urls": [],
                 "download_url": base + "x",
             }
-            await CrawlValidator(SimpleNamespace(hotkey="v"), None, http).download(job)
+            await CrawlValidator(SimpleNamespace(hotkey="v"), None, http).download(
+                job["download_url"], job["task_id"]
+            )
 
     with pytest.raises(DownloadFailed):
         asyncio.run(download())
@@ -504,7 +506,9 @@ def test_a_presigned_download_url_is_sent_exactly_as_signed():
                 "urls": [],
                 "download_url": base + "b/k%2Fx.parquet?X-Amz-Credential=a%2Fb&s=%3D",
             }
-            await CrawlValidator(SimpleNamespace(hotkey="v"), None, http).download(job)
+            await CrawlValidator(SimpleNamespace(hotkey="v"), None, http).download(
+                job["download_url"], job["task_id"]
+            )
 
     with pytest.raises(crawl.UploadMissing):
         asyncio.run(download())

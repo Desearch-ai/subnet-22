@@ -13,9 +13,11 @@ import wandb
 import desearch
 from desearch import env
 from desearch.client import TaskApiClient
+from desearch.embedding import MODELS, OPENROUTER_EMBEDDINGS, HostedEmbedder
 from desearch.fetch import Fetcher, ScrapingDog
 from neurons.validators.config import ENV_FILE, add_args, check_config, config
 from neurons.validators.crawl import CrawlValidator
+from neurons.validators.embed import EmbedValidator
 from neurons.validators.fetchers import OWN_IP_SETTINGS, SampleFetcher
 from neurons.validators.weights import set_weights, weights_from_shares
 
@@ -25,6 +27,9 @@ POLL_S = 60
 AFTER_WEIGHTS_S = 300
 SHARES_TIMEOUT = aiohttp.ClientTimeout(total=30.0)
 VALIDATION_JOBS = 4
+EMBED_JOBS = 2
+# The engine pins the same hosts for its queries; SiliconFlow is left out as it runs fp8.
+EMBED_PROVIDERS = "DeepInfra,Nebius"
 SCRAPINGDOG_CONCURRENCY = 8
 DOWNLOAD_TIMEOUT = aiohttp.ClientTimeout(total=120.0)
 WANDB_PROJECT = "smart-scrape-1.0"
@@ -74,7 +79,7 @@ class Validator:
             asyncio.create_task(self.sync_weights()),
         ]
         try:
-            await self.check_crawl_tasks()
+            await asyncio.gather(self.check_crawl_tasks(), self.check_embed_tasks())
         finally:
             for task in background:
                 task.cancel()
@@ -109,6 +114,38 @@ class Validator:
             f" our own IP, {fetcher.scrapingdog_fetches} through ScrapingDog"
             f" ({requests['plain']} plain and {requests['rendered']} rendered requests)"
         )
+
+    async def check_embed_tasks(self) -> None:
+        key = os.environ.get("EMBED_API_KEY", "")
+        if not key:
+            bt.logging.warning(
+                f"Not checking embed tasks: EMBED_API_KEY is not set in {ENV_FILE}"
+            )
+            await self.stopping.wait()
+            return
+
+        url = os.environ.get("EMBED_API_URL", OPENROUTER_EMBEDDINGS)
+        providers = tuple(
+            p.strip()
+            for p in os.environ.get("EMBED_PROVIDERS", EMBED_PROVIDERS).split(",")
+            if p.strip()
+        )
+        references = {
+            name: HostedEmbedder(url, key, model, providers)
+            for name, model in MODELS.items()
+        }
+        async with TaskApiClient(
+            self.config.neuron.task_api_url, self.wallet.hotkey
+        ) as api:
+            checker = EmbedValidator(api, self.http, references)
+            bt.logging.info(f"Validating embed tasks through {url}")
+            try:
+                await asyncio.gather(
+                    *(checker.run(self.stopping) for _ in range(EMBED_JOBS))
+                )
+            finally:
+                for reference in references.values():
+                    await reference.aclose()
 
     def init_wandb(self) -> None:
         if not self.config.wandb_on:

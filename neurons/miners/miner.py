@@ -34,33 +34,15 @@ class UploadError(Exception):
         self.status = status
 
 
-class Miner:
-    def __init__(
-        self,
-        settings: Settings,
-        api: TaskApiClient | None = None,
-        fetcher: Fetcher | None = None,
-    ):
+class TaskWorker:
+    """Leases one kind of task and runs up to max_tasks of them at once."""
+
+    kind = ""
+
+    def __init__(self, settings: Settings, api: TaskApiClient | None = None):
         self.settings = settings
         self.api = api or TaskApiClient(settings.task_api_url, settings.keypair())
-        self.fetcher = fetcher or Fetcher(settings)
-        self.scrapingdog = (
-            ScrapingDog(
-                settings.scrapingdog_api_key,
-                settings.scrapingdog_concurrency,
-                max_bytes=settings.max_bytes,
-            )
-            if settings.scrapingdog_api_key
-            else None
-        )
         self.upload_http: aiohttp.ClientSession | None = None
-        # Extraction is CPU-bound and each parse holds a whole page tree in memory.
-        self.extraction = ThreadPoolExecutor(
-            settings.extraction_threads, thread_name_prefix="extract"
-        )
-        # A page holds its slot until it is in the upload, so pages never pile up.
-        self.in_progress = asyncio.Semaphore(settings.concurrency)
-        self.falling_back = asyncio.Semaphore(settings.scrapingdog_concurrency)
         self.stopping = asyncio.Event()
         self.in_flight: set[asyncio.Task] = set()
         self.idle_polls = 0
@@ -101,7 +83,7 @@ class Miner:
 
     async def poll(self) -> float:
         try:
-            answer = await self.api.post("/v1/tasks/lease")
+            answer = await self.api.post("/v1/tasks/lease", {"kind": self.kind})
         except TaskApiError as exc:
             log.warning("lease failed: %s", exc)
             return ERROR_BACKOFF
@@ -126,6 +108,83 @@ class Miner:
             return min(MAX_BACKOFF, max(0.05, float(refusal["inputs"]["retry_after"])))
         except (KeyError, TypeError, ValueError):
             return BACKOFF.get(code, ERROR_BACKOFF)
+
+    async def process_task(self, task: dict) -> None:
+        raise NotImplementedError
+
+    async def upload(self, upload: dict, body: bytes) -> None:
+        if self.upload_http is None:
+            self.upload_http = aiohttp.ClientSession(timeout=UPLOAD_TIMEOUT)
+        try:
+            # Presigned URLs are sent byte for byte; re-quoting breaks the signature.
+            async with self.upload_http.put(
+                URL(upload["url"], encoded=True),
+                data=body,
+                headers={"Content-Type": upload["content_type"]},
+            ) as response:
+                status = response.status
+        except (aiohttp.ClientError, asyncio.TimeoutError):
+            raise UploadError(0) from None
+        if status >= 400:
+            raise UploadError(status)
+
+    async def abandon(self, task_id: str, reason: str) -> None:
+        log.warning("abandoning task %s: %s", task_id, reason)
+        try:
+            await self.api.post(f"/v1/tasks/{task_id}/abandon")
+        except TaskApiError as exc:
+            log.warning("could not abandon task %s: %s", task_id, exc)
+
+    async def drain(self) -> None:
+        if not self.in_flight:
+            return
+        grace = self.settings.shutdown_grace if self.stopping.is_set() else None
+        log.info("waiting for %d in-flight tasks", len(self.in_flight))
+        await asyncio.wait(self.in_flight, timeout=grace)
+        for task in self.in_flight:
+            task.cancel()
+        await asyncio.gather(*self.in_flight, return_exceptions=True)
+
+    def keep_receipt(self, receipt: dict) -> None:
+        try:
+            with open(self.settings.receipts_file, "a") as handle:
+                handle.write(json.dumps(receipt, sort_keys=True) + "\n")
+        except (OSError, ValueError) as exc:
+            log.warning("could not keep receipt: %s", exc)
+
+    async def aclose(self) -> None:
+        if self.upload_http is not None:
+            await self.upload_http.close()
+        await self.api.aclose()
+
+
+class Miner(TaskWorker):
+    kind = "crawl"
+
+    def __init__(
+        self,
+        settings: Settings,
+        api: TaskApiClient | None = None,
+        fetcher: Fetcher | None = None,
+    ):
+        super().__init__(settings, api)
+        self.fetcher = fetcher or Fetcher(settings)
+        self.scrapingdog = (
+            ScrapingDog(
+                settings.scrapingdog_api_key,
+                settings.scrapingdog_concurrency,
+                max_bytes=settings.max_bytes,
+            )
+            if settings.scrapingdog_api_key
+            else None
+        )
+        # Extraction is CPU-bound and each parse holds a whole page tree in memory.
+        self.extraction = ThreadPoolExecutor(
+            settings.extraction_threads, thread_name_prefix="extract"
+        )
+        # A page holds its slot until it is in the upload, so pages never pile up.
+        self.in_progress = asyncio.Semaphore(settings.concurrency)
+        self.falling_back = asyncio.Semaphore(settings.scrapingdog_concurrency)
 
     async def process_task(self, task: dict) -> None:
         task_id, upload = task["task_id"], task["upload"]
@@ -203,54 +262,12 @@ class Miner:
             )
             return error_row(fetched, "other")
 
-    async def upload(self, upload: dict, body: bytes) -> None:
-        if self.upload_http is None:
-            self.upload_http = aiohttp.ClientSession(timeout=UPLOAD_TIMEOUT)
-        try:
-            # Presigned URLs are sent byte for byte; re-quoting breaks the signature.
-            async with self.upload_http.put(
-                URL(upload["url"], encoded=True),
-                data=body,
-                headers={"Content-Type": upload["content_type"]},
-            ) as response:
-                status = response.status
-        except (aiohttp.ClientError, asyncio.TimeoutError):
-            raise UploadError(0) from None
-        if status >= 400:
-            raise UploadError(status)
-
-    async def abandon(self, task_id: str, reason: str) -> None:
-        log.warning("abandoning task %s: %s", task_id, reason)
-        try:
-            await self.api.post(f"/v1/tasks/{task_id}/abandon")
-        except TaskApiError as exc:
-            log.warning("could not abandon task %s: %s", task_id, exc)
-
-    async def drain(self) -> None:
-        if not self.in_flight:
-            return
-        grace = self.settings.shutdown_grace if self.stopping.is_set() else None
-        log.info("waiting for %d in-flight tasks", len(self.in_flight))
-        await asyncio.wait(self.in_flight, timeout=grace)
-        for task in self.in_flight:
-            task.cancel()
-        await asyncio.gather(*self.in_flight, return_exceptions=True)
-
-    def keep_receipt(self, receipt: dict) -> None:
-        try:
-            with open(self.settings.receipts_file, "a") as handle:
-                handle.write(json.dumps(receipt, sort_keys=True) + "\n")
-        except (OSError, ValueError) as exc:
-            log.warning("could not keep receipt: %s", exc)
-
     async def aclose(self) -> None:
         await self.fetcher.aclose()
         self.extraction.shutdown(wait=False, cancel_futures=True)
         if self.scrapingdog is not None:
             await self.scrapingdog.aclose()
-        if self.upload_http is not None:
-            await self.upload_http.close()
-        await self.api.aclose()
+        await super().aclose()
 
 
 async def with_retries(call, attempts: int = ATTEMPTS):
