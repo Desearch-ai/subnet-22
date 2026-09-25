@@ -81,6 +81,7 @@ Protected routes require the `access-key` header matching `EXPECTED_ACCESS_KEY`.
 
 ## Documentation index
 
+- [Desearch 2.0 proposal](./docs/desearch-2.0/README.md) — proposed direction, first-phase tasks, incentives and participation; not a launch or change to current operations.
 - [API Reference](./docs/api.md) — validator API routes, auth, request shapes, and examples.
 - [Environment Variables](./docs/env_variables.md) — shared, miner-only, and validator-only variables.
 - [Running a Miner](./docs/running_a_miner.md) — miner install, manifest, PM2 run commands, and monitoring.
