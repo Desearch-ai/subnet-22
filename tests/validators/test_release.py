@@ -2,6 +2,7 @@ import asyncio
 
 from desearch.client import TaskApiError
 from neurons.validators.crawl import CrawlValidator
+from tests.validators.test_worklist import Listed, manifest
 
 
 class Api:
@@ -23,28 +24,25 @@ class Refusing:
 
     def __init__(self, status: int, detail: str):
         self.error = TaskApiError(status, detail)
-        self.jobs = [{"task_id": "t", "kind": "crawl", "urls": ["https://a/1"]}]
 
     async def post(self, path: str, body: dict | None = None) -> dict:
-        if path.endswith("/open"):
-            jobs, self.jobs = self.jobs, []
-            return {"jobs": jobs}
         raise self.error
 
 
-class Crashing(CrawlValidator):
+class Crashing(Listed):
     async def check(self, job: dict) -> dict | None:
         raise RuntimeError("boom")
 
 
-def test_a_verdict_for_an_upload_finalized_meanwhile_is_dropped_without_fault():
+def test_a_verdict_for_an_upload_finalized_meanwhile_is_no_fault_and_stays_ours():
     checker = CrawlValidator(Refusing(409, "no such open upload"), None, None)
-    kept = asyncio.run(checker.submit_verdict("t", {"verdict": "pass"}))
-    assert kept is False and checker.trouble is None
+    counted = asyncio.run(checker.submit_verdict("t", {"verdict": "pass"}))
+    assert counted is False and checker.trouble is None
+    assert "t" in checker.reported, "not offered to us again"
 
 
 def test_a_task_the_checker_crashes_on_is_put_off_and_counted_against_it():
-    checker = Crashing(Refusing(409, ""), None, None)
+    checker = Crashing([manifest("t")], Refusing(409, ""))
     asyncio.run(checker.run(asyncio.Event(), idle_exit=1))
     assert "t" in checker.deferred and checker.failures == 1
 

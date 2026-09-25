@@ -10,8 +10,11 @@ from yarl import URL
 
 from desearch.client import TaskApiError
 from desearch.credit import crawl_credit, embed_credit
+from desearch.manifest import OPEN_LIST_KEY
+from desearch.manifest import verify as verify_manifest
 
-OPEN_PATH = "/v1/validation/open"
+LIST_TIMEOUT = aiohttp.ClientTimeout(total=30.0)
+REPORTED_KEEP_S = 3600.0
 DOWNLOAD_ATTEMPTS = 2
 SUBMIT_ATTEMPTS = 3
 RETRY_DELAY_S = 2.0
@@ -46,11 +49,17 @@ class TaskChecker:
         http: aiohttp.ClientSession,
         max_download: int = MAX_DOWNLOAD_BYTES,
         ledger=None,
+        storage_url: str = "",
+        seeds=None,
+        signer: str = "",
     ):
         self.api = api
         self.http = http
         self.max_download = max_download
         self.ledger = ledger
+        self.storage_url = storage_url.rstrip("/")
+        self.seeds = seeds
+        self.signer = signer
         self.paused_until = 0.0
         self.pause = PAUSE_S
         self.provider_failures = 0
@@ -58,6 +67,7 @@ class TaskChecker:
         self.refused: str | None = None
         self.in_flight: set[str] = set()
         self.deferred: dict[str, float] = {}
+        self.reported: dict[str, float] = {}
 
     @property
     def trouble(self) -> str | None:
@@ -88,15 +98,7 @@ class TaskChecker:
             if waiting > 0:
                 await sleep_unless_stopped(stop, waiting)
                 continue
-            try:
-                job = await self.next_job()
-            except TaskApiError as exc:
-                self.note_refusal(exc)
-                log.warning("api unavailable: %s", exc)
-                await sleep_unless_stopped(stop, RETRY_DELAY_S)
-                continue
-            self.refused = None
-
+            job = await self.next_job()
             if job is None:
                 idle += 1
                 if idle_exit and idle >= idle_exit:
@@ -118,18 +120,67 @@ class TaskChecker:
             finally:
                 self.in_flight.discard(job["task_id"])
 
+    async def open_list(self) -> list[dict]:
+        """The open uploads as the task API last listed them in storage."""
+        url = f"{self.storage_url}/{OPEN_LIST_KEY}"
+        async with self.http.get(URL(url, encoded=True), timeout=LIST_TIMEOUT) as r:
+            if r.status != 200:
+                raise DownloadFailed(f"open list: HTTP {r.status}")
+            listing = await r.json(content_type=None)
+        return list(listing.get("uploads", []))
+
     async def next_job(self) -> dict | None:
-        """The oldest open upload nobody in this process is on, or None."""
+        """The oldest listed upload of our kinds whose seed exists and nobody here is on."""
         now = time.monotonic()
         self.deferred = {t: until for t, until in self.deferred.items() if until > now}
-        skip = [*self.in_flight, *self.deferred][:64]
-        answer = await self.api.post(
-            OPEN_PATH, {"kinds": list(self.kinds), "skip": skip}
-        )
-        for job in answer.get("jobs", []):
-            if job["task_id"] not in self.in_flight:
-                return job
+        keep = time.time() - REPORTED_KEEP_S
+        self.reported = {t: at for t, at in self.reported.items() if at > keep}
+        try:
+            uploads = await self.open_list()
+        except (
+            aiohttp.ClientError,
+            asyncio.TimeoutError,
+            DownloadFailed,
+            ValueError,
+        ) as exc:
+            log.warning("open list unavailable: %r", exc)
+            return None
+        for manifest in uploads:
+            task_id = manifest.get("task_id", "")
+            if manifest.get("kind", "crawl") not in self.kinds or not task_id:
+                continue
+            if (
+                task_id in self.in_flight
+                or task_id in self.deferred
+                or task_id in self.reported
+            ):
+                continue
+            if not verify_manifest(manifest, self.signer):
+                log.warning(
+                    "task=%s is not signed by %s, skipped", task_id, self.signer
+                )
+                continue
+            try:
+                seed = await self.seeds(manifest["seed_block"])
+            except Exception as exc:
+                log.warning("task=%s seed block unavailable: %r", task_id, exc)
+                return None
+            if seed is not None:
+                return self.job_of(manifest, seed)
         return None
+
+    def job_of(self, manifest: dict, seed: str) -> dict:
+        job = {
+            **manifest,
+            "seed": seed,
+            "download_url": f"{self.storage_url}/{manifest['key']}",
+        }
+        if manifest.get("input_key"):
+            job["input"] = {
+                "url": f"{self.storage_url}/{manifest['input_key']}",
+                "sha256": manifest.get("input_sha256", ""),
+            }
+        return job
 
     def defer(self, task_id: str, seconds: float = DEFER_S) -> None:
         self.deferred[task_id] = time.monotonic() + seconds
@@ -213,16 +264,19 @@ class TaskChecker:
             log.warning("could not report the missing upload task=%s: %s", task_id, exc)
 
     async def submit_verdict(self, task_id: str, result: dict) -> bool:
-        """False when the upload finalized without this verdict, which is not a fault."""
+        """False when the upload finalized without this verdict; it is still ours to keep."""
         for attempt in range(SUBMIT_ATTEMPTS):
             try:
                 await self.api.post(f"/v1/validation/{task_id}/score", result)
+                self.refused = None
+                self.reported[task_id] = time.time()
                 return True
             except TaskApiError as exc:
                 if exc.status == 409:
                     log.info(
                         "task=%s finalized before our verdict: %s", task_id, exc.detail
                     )
+                    self.reported[task_id] = time.time()
                     return False
                 if 0 < exc.status < 500 or attempt == SUBMIT_ATTEMPTS - 1:
                     raise

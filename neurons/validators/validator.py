@@ -16,6 +16,7 @@ from desearch import env
 from desearch.client import TaskApiClient
 from desearch.embedding import MODELS, OPENROUTER_EMBEDDINGS, EmbeddingClient
 from desearch.fetch import Fetcher, ScrapingDog
+from desearch.manifest import seed_from_hash
 from neurons.validators.config import ENV_FILE, add_args, check_config, config
 from neurons.validators.crawl import CrawlValidator
 from neurons.validators.embed import EmbedValidator
@@ -28,6 +29,7 @@ METAGRAPH_SYNC_S = 600
 POLL_S = 60
 AFTER_WEIGHTS_S = 300
 SHARES_TIMEOUT = aiohttp.ClientTimeout(total=30.0)
+SIGNER_RETRY_S = 30
 VALIDATION_JOBS = 4
 EMBED_JOBS = 2
 # The engine pins the same hosts for its queries; SiliconFlow is left out as it runs fp8.
@@ -96,16 +98,24 @@ class Validator:
             await self.stopping.wait()
             return
 
+        signer = await self.api_signer()
         async with (
             TaskApiClient(self.config.neuron.task_api_url, self.wallet.hotkey) as api,
             ScrapingDog(self.scrapingdog_key, SCRAPINGDOG_CONCURRENCY) as scrapingdog,
         ):
             fetcher = SampleFetcher(Fetcher(OWN_IP_SETTINGS), scrapingdog)
             validator = self.crawl_checker = CrawlValidator(
-                api, fetcher, self.http, ledger=self.ledger
+                api,
+                fetcher,
+                self.http,
+                ledger=self.ledger,
+                storage_url=self.config.neuron.storage_url,
+                seeds=self.seed_for,
+                signer=signer,
             )
             bt.logging.info(
-                f"Validating crawl tasks from {self.config.neuron.task_api_url}"
+                f"Checking crawl uploads listed at {self.config.neuron.storage_url},"
+                f" reporting to {self.config.neuron.task_api_url}"
             )
             try:
                 await asyncio.gather(
@@ -139,10 +149,19 @@ class Validator:
             name: EmbeddingClient(url, key, model, providers)
             for name, model in MODELS.items()
         }
+        signer = await self.api_signer()
         async with TaskApiClient(
             self.config.neuron.task_api_url, self.wallet.hotkey
         ) as api:
-            checker = EmbedValidator(api, self.http, references, ledger=self.ledger)
+            checker = EmbedValidator(
+                api,
+                self.http,
+                references,
+                ledger=self.ledger,
+                storage_url=self.config.neuron.storage_url,
+                seeds=self.seed_for,
+                signer=signer,
+            )
             bt.logging.info(f"Validating embed tasks through {url}")
             try:
                 await asyncio.gather(
@@ -177,7 +196,31 @@ class Validator:
     def crawl_disabled_reason(self) -> str | None:
         if not self.scrapingdog_key:
             return f"SCRAPINGDOG_API_KEY is not set, add it to {ENV_FILE}"
+        if not self.config.neuron.storage_url:
+            return (
+                "--neuron.storage_url is not set: the public URL of the uploads bucket"
+            )
         return None
+
+    async def seed_for(self, block: int) -> str | None:
+        """The sample seed for an upload, from the chain itself; None until its block exists."""
+        if block > await self.subtensor.get_current_block():
+            return None
+        return seed_from_hash(await self.subtensor.get_block_hash(block))
+
+    async def api_signer(self) -> str:
+        """The key the task API signs manifests with, fetched once."""
+        url = f"{self.config.neuron.task_api_url.rstrip('/')}/v1/key"
+        while not self.stopping.is_set():
+            try:
+                async with self.http.get(
+                    url, timeout=SHARES_TIMEOUT, raise_for_status=True
+                ) as response:
+                    return (await response.json())["signer"]
+            except Exception as error:
+                bt.logging.warning(f"Task API signer unavailable, retrying: {error!r}")
+                await asyncio.sleep(SIGNER_RETRY_S)
+        return ""
 
     async def shares(self) -> dict[str, dict[str, float]]:
         url = f"{self.config.neuron.task_api_url.rstrip('/')}/v1/shares"

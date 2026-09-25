@@ -33,8 +33,15 @@ def add_args(cls, parser):
     parser.add_argument(
         "--neuron.task_api_url",
         type=str,
-        help="The crawl task API: validation jobs are claimed from it and weights set from its shares.",
+        help="The task API: verdicts are reported to it and the coverage gate read from it.",
         default="https://task-api.desearch.ai",
+    )
+
+    parser.add_argument(
+        "--neuron.storage_url",
+        type=str,
+        help="Public URL of the bucket uploads land in; the open list and the uploads are read from it.",
+        default="",
     )
 
 

@@ -43,8 +43,11 @@ class CrawlValidator(TaskChecker):
         score_timeout: float = SCORE_TIMEOUT_S,
         memory_mb: int = MEMORY_MB,
         ledger=None,
+        storage_url: str = "",
+        seeds=None,
+        signer: str = "",
     ):
-        super().__init__(api, http, max_download, ledger)
+        super().__init__(api, http, max_download, ledger, storage_url, seeds, signer)
         self.fetcher = fetcher
         self.min_samples = min_samples
         self.match_ratio = match_ratio
@@ -79,8 +82,8 @@ class CrawlValidator(TaskChecker):
         else:
             self.scoring_worked()
 
-        if await self.submit_verdict(job["task_id"], result):
-            self.note_verdict(job, result)
+        await self.submit_verdict(job["task_id"], result)
+        self.note_verdict(job, result)
         comparable = result["matched"] + result["mismatched"]
         log.info(
             "task=%s miner=%s returned=%d/%d matched=%d/%d verdict=%s reason=%s",

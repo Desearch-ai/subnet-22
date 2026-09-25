@@ -103,8 +103,24 @@ class EmbedValidator(TaskChecker):
 
     kinds = ("embed",)
 
-    def __init__(self, api, http, references: dict[str, EmbeddingClient], ledger=None):
-        super().__init__(api, http, ledger=ledger)
+    def __init__(
+        self,
+        api,
+        http,
+        references: dict[str, EmbeddingClient],
+        ledger=None,
+        storage_url: str = "",
+        seeds=None,
+        signer: str = "",
+    ):
+        super().__init__(
+            api,
+            http,
+            ledger=ledger,
+            storage_url=storage_url,
+            seeds=seeds,
+            signer=signer,
+        )
         self.references = references
 
     async def check(self, job: dict) -> dict | None:
@@ -144,8 +160,8 @@ class EmbedValidator(TaskChecker):
             self.provider_worked()
             result |= compare(picked, vectors, expected)
 
-        if await self.submit_verdict(task_id, result):
-            self.note_verdict(job, result)
+        await self.submit_verdict(task_id, result)
+        self.note_verdict(job, result)
         log.info(
             "task=%s miner=%s embed %d texts, matched %d/%d (min %s) verdict=%s reason=%s",
             task_id,

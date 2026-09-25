@@ -161,11 +161,16 @@ def test_non_finite_shares_keep_the_last_weights():
 
 def test_a_validator_that_cannot_check_tasks_sets_no_weights():
     made = Validator.__new__(Validator)
-    made.config = SimpleNamespace(neuron=SimpleNamespace(disable_set_weights=False))
+    made.config = SimpleNamespace(
+        neuron=SimpleNamespace(disable_set_weights=False, storage_url="")
+    )
     made.scrapingdog_key = ""
     assert not made.should_set_weights()
 
     made.scrapingdog_key = "key"
+    assert not made.should_set_weights(), "nowhere to read uploads from"
+
+    made.config.neuron.storage_url = "https://files.example"
     made.crawl_checker = SimpleNamespace(
         trouble="the provider failed on 3 tasks in a row"
     )
