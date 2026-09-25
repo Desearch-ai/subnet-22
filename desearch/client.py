@@ -49,7 +49,10 @@ class TaskApiClient:
 
     async def _send(self, method: str, path: str, body: bytes) -> dict:
         if self.session is None:
-            self.session = aiohttp.ClientSession(timeout=self.timeout)
+            # An idle pooled connection races the server's keep-alive timeout and dies mid-request.
+            self.session = aiohttp.ClientSession(
+                timeout=self.timeout, connector=aiohttp.TCPConnector(force_close=True)
+            )
         url = URL(self.api + path, encoded=True)
         headers = self._auth(method, url.path, body)
         if body:

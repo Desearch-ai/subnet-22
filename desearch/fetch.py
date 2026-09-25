@@ -27,11 +27,14 @@ DEFAULT_USER_AGENT = (
 PROXY_SCHEMES = ("http", "https")
 HTML_TYPES = ("text/html", "application/xhtml+xml")
 SNIFFED_TYPES = ("", "application/octet-stream", "binary/octet-stream")
-RETRYABLE = frozenset({"connect", "timeout", "http_5xx", "blocked"})
+RETRYABLE = frozenset({"connect", "timeout", "http_5xx", "blocked", "truncated"})
 # Refusals are per address, so retry through another route.
 RETRY_STATUSES = frozenset({403, 408, 429})
 FALLBACK_STATUSES = frozenset({401, 403, 407, 408, 429})
-FALLBACK_ERRORS = frozenset({"timeout", "dns", "connect", "tls", "blocked", "other"})
+FALLBACK_ERRORS = frozenset(
+    {"timeout", "dns", "connect", "tls", "blocked", "other", "truncated"}
+)
+GZIP_MAGIC = b"\x1f\x8b"
 SCRAPINGDOG_URL = "https://api.scrapingdog.com/scrape"
 SCRAPINGDOG_ATTEMPTS = 2
 # ScrapingDog returns 400 when its own fetch failed; a retry usually works.
@@ -182,7 +185,10 @@ class Fetcher:
             )
             route.session = aiohttp.ClientSession(
                 connector=aiohttp.TCPConnector(
-                    limit=self.concurrency, resolver=resolver
+                    limit=self.concurrency,
+                    resolver=resolver,
+                    # A rotating proxy keeps one exit address per connection.
+                    force_close=route.proxy is not None,
                 ),
                 headers=self.headers,
                 cookie_jar=aiohttp.DummyCookieJar(),
@@ -264,8 +270,9 @@ class Fetcher:
             if not decompressor.feed(chunk, body, self.max_bytes):
                 fetched.error = failed or "too_large"
                 return
-            if decompressor.finished:
-                break
+        if not decompressor.complete:
+            fetched.error = failed or "truncated"
+            return
 
         if declared_html is None and not sniffs_html(body):
             fetched.error = failed or "not_html"
@@ -363,22 +370,30 @@ class ScrapingDog:
 
 class Decompressor:
     def __init__(self, wbits: int | None):
+        self.wbits = wbits
         self.stream = zlib.decompressobj(wbits) if wbits else None
         self.retry_raw = wbits == zlib.MAX_WBITS
 
     @property
-    def finished(self) -> bool:
-        return self.stream is not None and self.stream.eof
+    def complete(self) -> bool:
+        """False when the response ended before the compressed stream did."""
+        return self.stream is None or self.stream.eof
 
     def feed(self, data: bytes, body: bytearray, max_bytes: int) -> bool:
         if self.stream is None:
             body += data
             return len(body) <= max_bytes
-        while data and not self.stream.eof:
+        while data:
             body += self._inflate(data, max_bytes + 1 - len(body))
             if len(body) > max_bytes:
                 return False
             data = self.stream.unconsumed_tail
+            if self.stream.eof:
+                # A concatenated gzip carries further members; anything else is trailing junk.
+                data = self.stream.unused_data
+                if self.wbits != GZIP_WBITS or not data.startswith(GZIP_MAGIC):
+                    break
+                self.stream = zlib.decompressobj(self.wbits)
         return True
 
     def _inflate(self, data: bytes, limit: int) -> bytes:
@@ -388,7 +403,8 @@ class Decompressor:
         except zlib.error:
             if not retry_raw:
                 raise
-        self.stream = zlib.decompressobj(-zlib.MAX_WBITS)
+        self.wbits = -zlib.MAX_WBITS
+        self.stream = zlib.decompressobj(self.wbits)
         return self.stream.decompress(data, limit)
 
 
