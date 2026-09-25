@@ -21,7 +21,7 @@ from. This page explains how those parts fit together.
 
 | Component | What it does | Code |
 | --- | --- | --- |
-| Desearch Bot | Finds websites, reads their robots.txt and sitemaps on a schedule, and keeps every URL they list. | [`desearch_bot/`](../desearch_bot/), [`desearch-bot-rs/`](../desearch-bot-rs/) |
+| Desearch Bot | Reads the robots.txt and sitemaps of every domain on its list on a schedule, and keeps every URL they list. | [`desearch-bot/`](../desearch-bot/) |
 | Feeder | Sends the bot's newest URLs to the task API. | [`task-api/feeder/`](../task-api/feeder/) |
 | Task API | Packs URLs into tasks, leases them to miners, hands finished work to validators, turns verdicts into credit, and publishes each miner's share. | [`task-api/app/`](../task-api/app/) |
 | Miners | Fetch the pages of a task and extract their text; once embedding opens, turn text into vectors on a GPU. | [`neurons/miners/`](../neurons/miners/) |

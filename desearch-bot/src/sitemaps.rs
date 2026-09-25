@@ -1,4 +1,4 @@
-//! Parse sitemap files into the addresses and dates they list, exactly as the Python crawler's patterns read them.
+//! Parse sitemap files into the addresses and dates they list.
 
 use std::sync::LazyLock;
 
@@ -167,7 +167,7 @@ mod tests {
     use rand::rngs::StdRng;
     use rand::{Rng, SeedableRng};
 
-    /// The Python crawler's regular expressions, kept as the definition the scanner must match.
+    /// Regular expressions kept as the definition the scanner must match.
     fn oracle(body: &[u8]) -> (&'static str, Vec<Entry>) {
         let entry = Regex::new(r"(?is-u)<url\b(.*?)</url>|<sitemap\b(.*?)</sitemap>").unwrap();
         let field = Regex::new(r"(?i-u)<(loc|lastmod|changefreq|news:publication_date)>\s*([^<\s]*)\s*</").unwrap();

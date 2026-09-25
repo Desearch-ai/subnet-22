@@ -326,7 +326,7 @@ fn check_netloc(netloc: Option<&str>) -> Result<(), Invalid> {
     Ok(())
 }
 
-/// A host as the Python crawler keys it: stripped, IDNA-encoded (IDNA 2003) and lowercased.
+/// A host as the stores key it: stripped, IDNA-encoded (IDNA 2003) and lowercased.
 pub fn ascii(host: &str) -> Result<String, Invalid> {
     let host = text::strip(host).trim_end_matches('.');
     Ok(idna(host)?.to_ascii_lowercase())
@@ -524,7 +524,7 @@ impl Normaliser {
     }
 }
 
-/// Python's `urls.parse(url, domain)`.
+/// A listed URL, normalised and checked against its domain.
 pub fn parse(url: &str, domain: &str) -> Option<Url> {
     Normaliser::new(domain).ok()?.parse(url)
 }

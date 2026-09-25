@@ -4,7 +4,7 @@ use chrono::{NaiveDate, Weekday};
 
 use crate::text;
 
-/// A time as UTC epoch microseconds; text without an offset counts as UTC, as the Python crawler reads it.
+/// A time as UTC epoch microseconds; text without an offset counts as UTC.
 pub fn fromisoformat(s: &str) -> Option<i64> {
     let b = s.as_bytes();
     let separator = find_separator(b)?;
@@ -52,7 +52,7 @@ pub fn fromisoformat(s: &str) -> Option<i64> {
     Some(local - offset_us)
 }
 
-/// Python's `sitemaps.parse_lastmod`: the whole value, else its first 19 or 10 characters.
+/// A lastmod: the whole value, else its first 19 or 10 characters.
 pub fn parse_lastmod(value: Option<&str>) -> Option<i64> {
     let value = value.filter(|v| !v.is_empty())?;
     let text = text::strip(value).replace('Z', "+00:00");

@@ -215,7 +215,7 @@ async fn connect(dsn: &str) -> Result<Client> {
     Ok(client)
 }
 
-/// Encrypted like the Python crawler's connection, which does not verify the server either.
+/// Encrypted, without verifying the server.
 fn tls_config() -> Result<rustls::ClientConfig> {
     let provider = Arc::new(rustls::crypto::ring::default_provider());
     Ok(rustls::ClientConfig::builder_with_provider(provider.clone())

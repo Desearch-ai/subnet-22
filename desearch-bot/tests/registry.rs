@@ -87,7 +87,7 @@ async fn reports_visits_and_takes_back_changes() {
         return;
     };
     let db = connect(&server.dsn).await;
-    let schema = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("../desearch_bot/schema.sql")).unwrap();
+    let schema = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("schema.sql")).unwrap();
     db.batch_execute(&schema).await.unwrap();
     let hosts = ["alpha.com", "beta.com", "gamma.com"];
     for (rank, host) in hosts.iter().enumerate() {

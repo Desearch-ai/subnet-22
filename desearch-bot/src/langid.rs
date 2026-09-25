@@ -1,4 +1,4 @@
-//! The Python crawler's language identifier: py3langid's naive Bayes model, read from `tools/export_langid.py` output.
+//! py3langid's naive Bayes language identifier, read from `tools/export_langid.py` output.
 
 use std::collections::HashMap;
 use std::path::Path;

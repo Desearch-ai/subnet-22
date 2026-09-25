@@ -1,4 +1,4 @@
-//! The DesearchBot crawl loop: the Python crawler's rules and stores, on every core of one process.
+//! The DesearchBot crawl loop, on every core of one process.
 
 pub mod buckets;
 pub mod crawl;

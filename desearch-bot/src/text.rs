@@ -1,4 +1,4 @@
-//! Python's notion of whitespace, lines and slices, so text splits the way the Python crawler split it.
+//! Python's notion of whitespace, lines and slices, so stored text keeps one definition.
 
 /// Python's `str.isspace`: Unicode whitespace plus the four ASCII information separators.
 pub fn is_space(c: char) -> bool {

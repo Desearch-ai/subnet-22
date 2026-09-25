@@ -1,4 +1,4 @@
-//! Domains split into fixed buckets, each bucket in its own RocksDB store, laid out as the Python crawler lays them out.
+//! Domains split into fixed buckets, each bucket in its own RocksDB store.
 
 use std::path::{Path, PathBuf};
 

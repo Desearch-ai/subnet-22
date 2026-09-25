@@ -1,17 +1,19 @@
-# desearch-bot-rs
+# desearch-bot
 
-The DesearchBot crawl loop in Rust. For every domain it owns, it reads robots.txt and the sitemaps on
-a schedule, keeps every URL they list, and reports each visit to the registry. It does the same work
-as `python -m desearch_bot.cli run`, in one process that uses every core.
+The DesearchBot crawl loop. For every domain it owns, it reads robots.txt and the sitemaps on a
+schedule, keeps every URL they list, and reports each visit to the registry. One process uses every
+core.
 
-It shares its data and rules with the Python package, so either can run on the other's data:
-
-- **Stores**: 256 RocksDB bucket stores holding domains, sitemaps and URLs.
-- **Registry**: the `bot.domains` table in Postgres, which records each domain's state.
+- **Stores**: 256 RocksDB bucket stores holding domains, sitemaps and URLs. The task API's feeder
+  reads new URLs from them.
+- **Registry**: the `bot.domains` table in Postgres, which records each domain's state. The schema is
+  [`schema.sql`](./schema.sql).
 - **Rules**: robots.txt and Crawl-delay, one request a second per host, sitemap schedules, exclusions,
   and Web Bot Auth request signatures.
 
-Finding new domains, categories and the Hugging Face export stay in the Python package.
+The domain list is published as the Hugging Face dataset
+[`desearch/subnet-22`](https://huggingface.co/datasets/desearch/subnet-22); its card is
+[`dataset_card.md`](./dataset_card.md).
 
 ## Build
 
@@ -54,6 +56,6 @@ due again.
 cargo test --release
 ```
 
-The parity tests check the Rust code against output from the Python package, byte for byte.
-`tests/registry.rs` needs `initdb` and `postgres` on the PATH, and `tests/world.rs` crawls a small
-local web end to end.
+The parity tests replay fixed vectors for URL keys, joins, dates, signatures and language, byte for
+byte. `tests/registry.rs` needs `initdb` and `postgres` on the PATH, and `tests/world.rs` crawls a
+small local web end to end.
