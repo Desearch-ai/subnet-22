@@ -93,6 +93,7 @@ Run them from the repository root: see [Miner Setup](../docs/miner-setup.md) and
 | `TASK_API_BLOCK_SECONDS` | 12 | block time of the `local` seeds; tests shorten it |
 | `TASK_API_READS_PER_MINUTE` | 120 | public GET requests one client IP may make per minute; more get 429 |
 | `TASK_API_POLL_RATE` | 2 | lease requests one hotkey may make per second; more are refused `RATE_LIMITED` |
+| `TASK_API_EMBED_TASKS` | 0 | 1 opens embed tasks; closed, the publisher prepares no inputs and a lease for one is refused `KIND_CLOSED` |
 | `TASK_API_EMBED_MODEL` | `qwen3-embedding-8b` | the model new embed rounds ask for; see `desearch/embedding.py` |
 
 In `chain` mode a validator needs a validator permit and 1000 stake. Validators cannot lease crawl
@@ -182,6 +183,10 @@ assigned to them over the same 24 hours. How much of the emission each pool gets
 validator (`POOLS` in `neurons/validators/weights.py`).
 
 ## Embed tasks
+
+Embed tasks are closed (`TASK_API_EMBED_TASKS=0`) until Desearch's own model ships, and their pool
+pays 0% until then; open, they run on the stand-in model for testing. The miner-facing description
+is [docs/embedding-tasks.md](../docs/embedding-tasks.md).
 
 A task is either `crawl` or `embed`. `POST /v1/tasks/lease` takes `{"kind": "embed"}` (crawl when
 there is no body) and `POST /v1/validation/lease` takes `{"kinds": ["crawl", "embed"]}`; each kind

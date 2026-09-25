@@ -1,6 +1,6 @@
 # Desearch 2.0
 
-This describes the next stage of Desearch and SN22. Its first task family, crawling, is running on SN22 ([how it works](../how-it-works.md)); embedding and the later programs are planned, and each will be announced before it opens.
+This describes the next stage of Desearch and SN22. Its first task family, crawling, is running on SN22 ([how it works](../architecture.md)); embedding and the later programs are planned, and each will be announced before it opens.
 
 ## Start here
 

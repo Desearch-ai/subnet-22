@@ -5,9 +5,8 @@ started by `run.sh`. It does two jobs:
 
 1. **Checks crawl tasks.** It leases completed tasks from the task API, downloads each upload,
    re-fetches a sample of the pages itself and returns a verdict with what it found for each URL.
-2. **Sets weights.** Each epoch it reads each pool's shares from the task API and sets weights: each
-   pool paid out by share, the rest to the subnet's burn hotkey. Crawl is the only pool today, with
-   half the emission.
+2. **Sets weights.** Each epoch it reads every miner's share from the task API and sets weights by
+   those shares; see [Emission](./emission.md).
 
 `run.sh` checks for a new release every 20 minutes, installs it and restarts the validator.
 
@@ -48,9 +47,9 @@ cp neurons/validators/.env.template neurons/validators/.env
 | --- | --- |
 | `SCRAPINGDOG_API_KEY` | required to check crawl tasks; without it the validator only sets weights |
 | `WANDB_API_KEY` | Weights & Biases login, unless `--wandb.off`; `wandb login` also stores it |
-| `EMBED_API_KEY` | required to check embed tasks: a key for `EMBED_API_URL` |
-| `EMBED_API_URL` | where the reference vectors come from, OpenRouter's `/embeddings` by default |
-| `EMBED_PROVIDERS` | OpenRouter providers to pin, `DeepInfra,Nebius` by default |
+| `EMBED_API_KEY` | for checking [embed tasks](./embedding-tasks.md) once they open: a key for the hosted model service |
+| `EMBED_API_URL` | the hosted model service, OpenRouter's `/embeddings` by default |
+| `EMBED_PROVIDERS` | which OpenRouter providers run the reference model, `DeepInfra,Nebius` by default |
 
 Nothing else is configurable. How many pages are sampled, how many must match and how many tasks are
 checked at once are fixed in code, so every validator checks the same way. Uploads are decoded and

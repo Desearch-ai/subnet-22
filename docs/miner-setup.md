@@ -67,40 +67,17 @@ From the repository root:
 pm2 start python3 --name desearch_miner -- -m neurons.miners.miner
 ```
 
-## Embedding
+## Embedding (not open yet)
 
-Embed tasks need no crawling setup. Each one is a file of texts to turn into vectors with the model
-the task names (today `qwen3-embedding-8b`, 4096 numbers per text); the vectors must match what a
-validator gets from the same model. The embed miner calls any OpenAI-compatible `/embeddings`
-endpoint that serves the model:
-
-| Variable | Default | |
-| --- | --- | --- |
-| `EMBED_MODEL` | `qwen3-embedding-8b` | the model this miner runs; tasks for another are handed back |
-| `EMBED_API_URL` | OpenRouter's `/embeddings` | any OpenAI-compatible endpoint |
-| `EMBED_API_KEY` | none | required |
-| `EMBED_PROVIDERS` | none | comma-separated OpenRouter providers to pin, e.g. `DeepInfra` |
-
-```bash
-pm2 start python3 --name desearch_embed_miner -- -m neurons.miners.embed
-```
-
-It runs next to the crawl miner under the same hotkey, with its own budget, lockout and pool.
+Embed tasks open when Desearch's own embedding model ships, and run on your own GPU.
+[Embedding tasks](./embedding-tasks.md) describes what you will receive, the model to run and what
+to return.
 
 ## How you earn
 
-- The API grants your hotkey a budget of tasks it may hold, from lease until verdict. It starts at 1,
-  grows by one for every task credited for at least 85% of its URLs, and halves when a task fails,
-  a lease expires or a task is abandoned.
-- Two failed tasks within 24 hours, if they are at least 5% of your verdicts, lock your hotkey out of
-  new tasks for 12 hours. You are never given
-  a task you held before, and a refused lease says how long to wait; the miner waits that long.
-- A validator re-fetches a sample of each upload. A passing task is credited for its pages at the
-  rate its sample matched.
-- Your share is your credited pages over the last 24 hours, if you returned at least 85% of the URLs
-  assigned to you in that time. Half of the subnet's emission is split by these shares.
-
-The full rules are in [How Subnet 22 works](./how-it-works.md).
+Your share is your verified pages over the last 24 hours, compared with every other miner's. A
+validator re-fetches a sample of each task you upload, and a passing task is credited at the rate its
+sample matched. [Emission](./emission.md) explains the rules and what raises your share.
 
 ## Monitor
 

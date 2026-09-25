@@ -37,7 +37,7 @@ into a tested index and the search API.
 <p align="center">
   <a href="./docs/miner-setup.md">⛏️ Mine</a> ·
   <a href="./docs/validator-setup.md">🛡️ Validate</a> ·
-  <a href="./docs/how-it-works.md">⚙️ How it works</a> ·
+  <a href="./docs/architecture.md">⚙️ How it works</a> ·
   <a href="./docs/desearch-2.0/README.md">🧭 Desearch 2.0</a> ·
   <a href="https://console.desearch.ai">🔑 Search API</a>
 </p>
@@ -74,15 +74,15 @@ starts with selected sources and grows as results prove useful.
 ## Mining and validating
 
 **Miners** crawl: they lease tasks, fetch the assigned pages through their own proxies and upload the
-extracted text. Half of the subnet's emission goes to miners by their share of verified pages.
-[Miner setup →](./docs/miner-setup.md)
+extracted text. They are paid by their share of verified pages. [Miner setup →](./docs/miner-setup.md)
+· [Emission →](./docs/emission.md)
 
 **Validators** check: they re-fetch a sample of every upload, return a verdict and set weights from
 the crawl shares. [Validator setup →](./docs/validator-setup.md)
 
 Crawl rounds are committed to a future block before tasks go out, every step is logged and signed,
 verdicts are audited, and every verdict is [public](https://task-api.desearch.ai/v1/tasks).
-[How it works →](./docs/how-it-works.md)
+[Architecture →](./docs/architecture.md)
 
 ## Use Desearch
 
@@ -100,9 +100,12 @@ the [console](https://console.desearch.ai) and start with the
 
 | Guide | What's inside |
 | --- | --- |
-| [How it works](./docs/how-it-works.md) | The life of a crawl task, how miners are paid, why the results can be trusted |
 | [Miner setup](./docs/miner-setup.md) | Install, register, configure, run, how you earn, monitoring |
 | [Validator setup](./docs/validator-setup.md) | Install, register, configure, run, automatic upgrades, monitoring |
+| [Emission](./docs/emission.md) | How miners' shares are worked out and what raises them |
+| [Architecture](./docs/architecture.md) | How the bot, task API, miners, validators, storage and engine work together |
+| [Embedding tasks](./docs/embedding-tasks.md) | What embed tasks will contain and how they are checked, before they open |
+| [Engine](./engine/README.md) | The search index and API, and how new pages reach it |
 | [Task API](./task-api/README.md) | Endpoints, rounds, scoring rules, audits, public logs and the storage layout |
 | [Desearch 2.0](./docs/desearch-2.0/README.md) | The direction: why an index, the first phase, incentives and participation |
 

@@ -1,6 +1,6 @@
 # Desearch 2.0: first-phase technical overview
 
-This chapter explains the first-phase design for miners, validators and technical readers. Crawling runs today as described in [how it works](../../how-it-works.md) and the [miner](../../miner-setup.md) and [validator](../../validator-setup.md) setup guides; embedding and the index build described here are planned. [Direction and first phase](02-direction-and-first-phase.md) explains the scope and what comes later.
+This chapter explains the first-phase design for miners, validators and technical readers. Crawling runs today as described in [how it works](../../architecture.md) and the [miner](../../miner-setup.md) and [validator](../../validator-setup.md) setup guides; embedding and the index build described here are planned. [Direction and first phase](02-direction-and-first-phase.md) explains the scope and what comes later.
 
 ## Two paths: building the collection and answering queries
 

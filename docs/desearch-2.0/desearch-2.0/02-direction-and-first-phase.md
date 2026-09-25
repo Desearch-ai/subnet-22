@@ -20,7 +20,7 @@ The underlying collection should retain useful source information independently 
 
 ## Where we are now
 
-Crawling, the first task family, is running on SN22: miners crawl assigned pages, validators check a sample of every upload, and verified pages are published to the collection ([how it works](../../how-it-works.md)). Embedding, the index build and the later programs below are planned work, not a deployed system. The history describes 1.0; this chapter describes what comes next.
+Crawling, the first task family, is running on SN22: miners crawl assigned pages, validators check a sample of every upload, and verified pages are published to the collection ([how it works](../../architecture.md)). Embedding, the index build and the later programs below are planned work, not a deployed system. The history describes 1.0; this chapter describes what comes next.
 
 No program beyond crawling is open yet. Implementation and test results will be reported as they become available.
 
