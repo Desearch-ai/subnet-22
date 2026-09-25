@@ -48,6 +48,9 @@ cp neurons/validators/.env.template neurons/validators/.env
 | --- | --- |
 | `SCRAPINGDOG_API_KEY` | required to check crawl tasks; without it the validator only sets weights |
 | `WANDB_API_KEY` | Weights & Biases login, unless `--wandb.off`; `wandb login` also stores it |
+| `EMBED_API_KEY` | required to check embed tasks: a key for `EMBED_API_URL` |
+| `EMBED_API_URL` | where the reference vectors come from, OpenRouter's `/embeddings` by default |
+| `EMBED_PROVIDERS` | OpenRouter providers to pin, `DeepInfra,Nebius` by default |
 
 Nothing else is configurable. How many pages are sampled, how many must match and how many tasks are
 checked at once are fixed in code, so every validator checks the same way. Uploads are decoded and

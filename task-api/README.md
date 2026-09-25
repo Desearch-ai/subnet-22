@@ -93,6 +93,7 @@ Run them from the repository root: see [Miner Setup](../docs/miner-setup.md) and
 | `TASK_API_BLOCK_SECONDS` | 12 | block time of the `local` seeds; tests shorten it |
 | `TASK_API_READS_PER_MINUTE` | 120 | public GET requests one client IP may make per minute; more get 429 |
 | `TASK_API_POLL_RATE` | 2 | lease requests one hotkey may make per second; more are refused `RATE_LIMITED` |
+| `TASK_API_EMBED_MODEL` | `qwen3-embedding-8b` | the model new embed rounds ask for; see `desearch/embedding.py` |
 
 In `chain` mode a validator needs a validator permit and 1000 stake. Validators cannot lease crawl
 tasks. The metagraph is refreshed in the background every ten minutes; if a refresh fails, the last
@@ -180,6 +181,32 @@ the pages credited in the last 24 hours, among miners that returned at least 85%
 assigned to them over the same 24 hours. How much of the emission each pool gets is set in the
 validator (`POOLS` in `neurons/validators/weights.py`).
 
+## Embed tasks
+
+A task is either `crawl` or `embed`. `POST /v1/tasks/lease` takes `{"kind": "embed"}` (crawl when
+there is no body) and `POST /v1/validation/lease` takes `{"kinds": ["crawl", "embed"]}`; each kind
+has its own queue, its own validation queue, and its own budget, lockout and pool per miner.
+
+The publisher turns every batch of new or changed pages into an input file of the texts the index
+embeds: `head` (title and the first 1,500 characters), `full` (title and the first 8,000) and every
+passage, cut by `engine/chunking.py`, 500 pages per file. The janitor opens one embed round from the
+waiting files, one batch per file, committing to the pages and to the file's `input_sha256`. An
+embed task carries the model name, the text count and a presigned link to its input; the miner
+uploads one float16 unit vector per `text_id`. Texts are sized to fit the model, so nobody
+truncates them.
+
+A validator checks that every text has exactly one vector of the model's size, finite and of unit
+length (`vectors_missing`, `vectors_malformed`, `unreadable`), then recomputes 20 texts chosen after
+the upload and fails the task if any has a cosine under 0.99 (`vectors_mismatch`). Two hosts of the
+same weights agree above 0.9998 and another model lands near 0, so the line sits far from both. A
+pass credits the characters of every text, paid out of the embed pool; the API takes the count from
+its own round, not from the validator.
+
+The catalog (`embeddings` in `task_api.db`) records, for each page and model, the content hash that
+was embedded, the batch and where its vectors are. A page version the current model has already
+embedded or queued is not queued again, so an unchanged recrawl costs nothing; a failed batch goes
+back out, and a dropped one is marked `dropped` so its pages are queued the next time they change.
+
 ## Audits
 
 Each verdict is checked by a second validator with probability `TASK_API_AUDIT_RATE`. The job goes
@@ -195,29 +222,24 @@ the votes so far, and two votes that disagree void the task.
 subnet-22/                                                  temp, emptied after a day
   uploads/dt=YYYY-MM-DD/task=<id>/<hotkey>-<lease>.parquet      miner PUT target, removed at /complete
   submitted/dt=YYYY-MM-DD/task=<id>/<hotkey>-<lease>-<n>.parquet  frozen copy that is scored, then published
+  embed-inputs/dt=YYYY-MM-DD/<id>.parquet                      texts of one embed batch, removed once published
 desearch-pages/                                             permanent
   pages/<domain>/<sha1>                                       latest verified version of one URL, zstd JSON
   changes/dt=YYYY-MM-DD/<time>-<id>.parquet                   every new or changed URL, for indexing and sync
   reports/dt=YYYY-MM-DD/task=<id>.json                        every final verdict, with its samples and votes
+  vectors/model=<name>/dt=YYYY-MM-DD/task=<id>.parquet        one embed task: every text with its page, model and vector
 ```
 
-A page is found from its URL alone, with the same functions desearch-engine uses
-(`app/canonical.py` is a byte-identical copy of `crawler/canonical.py`, pinned in
-`tests/fixtures/engine.json`):
+A page is found from its URL alone:
 
 ```python
 c = canonicalize(url)
 key = page_key(c)                                 # pages/<domain>/<sha1>
-doc_id = str(uuid.uuid5(uuid.NAMESPACE_URL, c))   # the Qdrant id for the page
+doc_id = str(uuid.uuid5(uuid.NAMESPACE_URL, c))   # a stable id for the page
 ```
 
-The hash and layout are the engine's `article_key`, under a prefix that fits any page: a home page,
-a product page or a landing page is not an article. A consumer that uses the engine's helpers needs
-the prefix pointed here.
-
-Each object has the engine's `ArticleRecord` fields (`url`, `domain`, `title`, `published`,
-`author`, `lang`, `text`, `fetched_at`, `content_sha1`, `source="subnet22"`, with `html` left empty)
-plus what the subnet verified: `doc_id`, `assigned_url`, `final_url`, `canonical`, `status`,
+Each object holds `url`, `domain`, `title`, `published`, `author`, `lang`, `text`, `fetched_at`,
+`content_sha1` and `source="subnet22"`, with `html` left empty, plus what the subnet verified: `doc_id`, `assigned_url`, `final_url`, `canonical`, `status`,
 `page_type`, `description`, `json_ld_types`, `headings`, `text_sha256`, `task_id` and `miner`. The
 publisher writes only rows for URLs the task was given, skips text that reads as a challenge page,
 writes an object only when its content changed, uses conditional writes so concurrent publishers
@@ -226,9 +248,6 @@ newer is decided by server time: a row's reported `fetched_at` is clamped to its
 write is appended to `changes/` with the full record, so a store can be rebuilt from a few large
 files. Change files are named by a sequence number; consumers should re-list a day with a lag and
 skip files already read. HTML is not kept past the temp bucket.
-
-The engine's indexer reads these objects as they are: `ArticleRecord.from_zstd` keeps only the
-dataclass's own fields.
 
 A publish job that fails five times is set aside (`publish_set_aside` in `/v1/health`) so it stops
 holding back leasing; an upload that expired or changed before publishing is counted in
@@ -250,6 +269,6 @@ cd task-api && python3 -m pytest -q
 `pytest.ini` puts the repository root on the path for the shared package. The miner, validator and
 shared-package tests run from the root with `pytest`.
 
-The tests use Redis db 14 and an in-memory R2. When `task-api/.env` holds R2 credentials, the storage
-tests run a second time against the real buckets under `_test/`, and clean up after themselves. Run
-the suite once at a time: parallel runs share db 14.
+The tests use Redis db 14 and an in-memory R2. With `TASK_API_TEST_R2=1` and R2 credentials in
+`task-api/.env`, the storage tests run a second time against the real buckets under `_test/`, and
+clean up after themselves. Run the suite once at a time: parallel runs share db 14.

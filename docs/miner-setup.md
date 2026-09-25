@@ -67,6 +67,26 @@ From the repository root:
 pm2 start python3 --name desearch_miner -- -m neurons.miners.miner
 ```
 
+## Embedding
+
+Embed tasks need no crawling setup. Each one is a file of texts to turn into vectors with the model
+the task names (today `qwen3-embedding-8b`, 4096 numbers per text); the vectors must match what a
+validator gets from the same model. The embed miner calls any OpenAI-compatible `/embeddings`
+endpoint that serves the model:
+
+| Variable | Default | |
+| --- | --- | --- |
+| `EMBED_MODEL` | `qwen3-embedding-8b` | the model this miner runs; tasks for another are handed back |
+| `EMBED_API_URL` | OpenRouter's `/embeddings` | any OpenAI-compatible endpoint |
+| `EMBED_API_KEY` | none | required |
+| `EMBED_PROVIDERS` | none | comma-separated OpenRouter providers to pin, e.g. `DeepInfra` |
+
+```bash
+pm2 start python3 --name desearch_embed_miner -- -m neurons.miners.embed
+```
+
+It runs next to the crawl miner under the same hotkey, with its own budget, lockout and pool.
+
 ## How you earn
 
 - The API grants your hotkey a budget of tasks it may hold, from lease until verdict. It starts at 1,
