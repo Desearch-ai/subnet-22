@@ -67,9 +67,9 @@ starts with selected sources and grows as results prove useful.
 | Work | Who does it | Status |
 | --- | --- | --- |
 | **Crawl** and refresh pages, extract their text | Miners fetch assigned pages through their own proxies; validators re-fetch a sample of every upload | Running on SN22 |
-| **Embed** accepted text with a selected model | Miners run the model on GPUs; validators reproduce the outputs | Next; tested hardware requirements come first, so do not buy GPUs yet |
-| Train retrieval models, improve ranking, extraction and coverage | Model builders and data operators | Later programs, with their own terms announced before they open |
-| Build, test and serve the index | The Desearch team | Team-operated at first; queries search a tested index version and never wait on miner work |
+| **Embed** accepted text with a selected model | Miners run the model on their GPUs; validators recompute a sample | Built; opens with Desearch's embedding model |
+| Train retrieval models, improve ranking, extraction and coverage | Model builders and data operators | Later programs, announced before they open |
+| Build, test and serve the index | The Desearch team | Team-operated; queries never wait on miner work |
 
 ## Mining and validating
 
