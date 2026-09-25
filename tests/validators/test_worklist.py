@@ -51,8 +51,10 @@ class Listed(CrawlValidator):
         )
         self.uploads = uploads
         self.current_block = current_block
+        self.fetches = 0
 
-    async def open_list(self) -> list[dict]:
+    async def fetch_open_list(self) -> list[dict]:
+        self.fetches += 1
         if isinstance(self.uploads, Exception):
             raise self.uploads
         return list(self.uploads)
@@ -73,6 +75,19 @@ def test_the_oldest_listed_upload_whose_seed_block_has_passed_is_taken():
     assert "input" not in job and job["urls"] == ["https://a/1", "https://a/2"]
 
 
+def test_the_checker_loops_share_one_read_of_the_list_every_couple_of_seconds():
+    checker = Listed([manifest("a"), manifest("b")])
+    first = asyncio.run(checker.next_job())
+    checker.in_flight.add(first["task_id"])
+    second = asyncio.run(checker.next_job())
+    assert {first["task_id"], second["task_id"]} == {"a", "b"}
+    assert checker.fetches == 1, "the second loop reads the cached list"
+
+    checker.listed_at = float("-inf")
+    asyncio.run(checker.next_job())
+    assert checker.fetches == 2
+
+
 def test_uploads_of_other_kinds_or_already_on_this_validators_plate_are_skipped():
     checker = Listed(
         [
@@ -88,6 +103,7 @@ def test_uploads_of_other_kinds_or_already_on_this_validators_plate_are_skipped(
     assert asyncio.run(checker.next_job()) is None
 
     checker.uploads.append(manifest("fresh"))
+    checker.listed_at = float("-inf")
     assert asyncio.run(checker.next_job())["task_id"] == "fresh"
 
 
