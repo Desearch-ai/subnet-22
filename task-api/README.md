@@ -130,8 +130,8 @@ Validators read `subnet-22` directly, so it is served publicly: in the Cloudflar
 the bucket → Settings → Public access → Custom Domains, connect a hostname on a zone of the same
 account (or `wrangler r2 bucket domain add subnet-22 --domain <hostname>`). Objects are then
 readable at `https://<hostname>/<key>`; listing is not, which is why the API keeps
-`validation/open.json`. Validators are started with that URL as `--neuron.storage_url`. The
-`r2.dev` development URL is rate limited and not meant for this.
+`validation/open.json`. The bucket is served at `https://r2.desearch.ai`, which is the validator's default
+`--neuron.storage_url`. The `r2.dev` development URL is rate limited and not meant for this.
 
 The feeder runs next to the bot, where its stores are:
 
