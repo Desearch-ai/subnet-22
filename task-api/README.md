@@ -1,14 +1,14 @@
 # Task API
 
-Hands tasks to miners, has validators check the results, and publishes verified work to object
-storage.
+Hands tasks to miners, lists their uploads for validators to check, and publishes verified work to
+object storage.
 
 ```
-feeder ──URLs──▶ task API ──claim──▶ miner ──upload──▶ subnet-22 bucket
+feeder ──URLs──▶ task API ──claim──▶ miner ──upload──▶ subnet-22 bucket (public)
                    │  ▲                                    │
-          check job│  │result                              │
-                   ▼  │                                    │
-                 validator ◀───────────────────────────────┘
+    list of open   │  │ pass or fail                       │ open list, notes
+    uploads        ▼  │                                    ▼ and uploads
+                   ───┴──────────────────── validator ◀────┘
                    │
          pass ──▶ publisher ──▶ desearch-pages bucket
 ```
@@ -166,7 +166,7 @@ In `chain` mode a validator needs a validator permit and 1000 stake.
 | `GET /v1/miners/{hotkey}/verdicts` | signed by that miner: its own finalized uploads, without the ledger delay |
 | `GET /v1/rounds`, `GET /v1/rounds/{id}` | round commitments |
 | `GET /v1/rounds/{id}/log` | a round's signed log |
-| `GET /v1/key` | the log's signer |
+| `GET /v1/key` | the key that signs the log and the notes next to uploads |
 
 ## Storage
 

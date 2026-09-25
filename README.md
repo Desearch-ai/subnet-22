@@ -107,7 +107,7 @@ the [console](https://console.desearch.ai) and start with the
 | [Architecture](./docs/architecture.md) | How the bot, task API, miners, validators, storage and engine work together |
 | [Embedding tasks](./docs/embedding-tasks.md) | What embed tasks will contain and how they are checked, before they open |
 | [Engine](./engine/README.md) | The search index and API, and how new pages reach it |
-| [Task API](./task-api/README.md) | Endpoints, rounds, scoring rules, audits, public logs and the storage layout |
+| [Task API](./task-api/README.md) | Endpoints, rounds, scoring rules, public logs and the storage layout |
 | [Desearch 2.0](./docs/desearch-2.0/README.md) | The direction: why an index, the first phase, incentives and participation |
 
 ## Contributors
