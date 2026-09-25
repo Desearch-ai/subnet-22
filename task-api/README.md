@@ -50,9 +50,10 @@ findings how many rows the miner is paid for, and ignores any number a validator
 stay sealed until the upload is finalized.
 
 **Final verdict.** An upload is finalized when every active validator has reported, or at its
-deadline with more than half of them; active means having asked for work or reported within the
-last hour. A validator that is still checking an upload therefore holds it until it reports or the
-deadline passes. The majority decides pass or fail. A passing upload pays the miner for its rows at
+deadline with more than half of them; active means having reported within the last hour, and a
+report that arrives after an upload was finalized still counts as one. A validator that is still
+checking an upload therefore holds it until it reports or the deadline passes. The majority
+decides pass or fail. A passing upload pays the miner for its rows at
 the rate the checked pages matched; when the validators in the majority arrived at different counts,
 the lower middle value is paid. Validators that disagreed with the majority are marked, and two
 validators that both pass an upload but differ by more than 15% on the rows to pay count as

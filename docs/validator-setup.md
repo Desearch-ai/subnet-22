@@ -58,9 +58,9 @@ checked at once are fixed in code, so every validator checks the same way. Uploa
 scored only in a memory-capped child process, so an upload built to exhaust memory or time kills
 that child, not the validator.
 
-Weights are set only while the checker is healthy. When ScrapingDog refuses three tasks in a row, or
-three tasks in a row cannot be scored, the validator logs why and sets no weights until a task is
-checked again.
+Weights are set only while the checker is healthy. When ScrapingDog refuses three tasks in a row,
+three tasks in a row cannot be scored, or the task API refuses the validator's reports, the
+validator logs why and sets no weights until a task is checked again.
 
 ## 4. Run
 

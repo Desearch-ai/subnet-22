@@ -78,8 +78,8 @@ to return.
 
 ## How you earn
 
-Your share is your verified pages over the last 24 hours, compared with every other miner's. A
-validators re-fetch a sample of each task you upload, and a passing task pays you at the rate that
+Your share is your verified pages over the last 24 hours, compared with every other miner's.
+Validators re-fetch a sample of each task you upload, and a passing task pays you at the rate that
 sample matched. [Emission](./emission.md) explains the rules and what raises your share.
 
 ## Monitor
