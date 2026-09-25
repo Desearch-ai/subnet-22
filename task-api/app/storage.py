@@ -98,13 +98,14 @@ class Storage:
             raise
         return done["CopyObjectResult"]["ETag"]
 
-    async def put_json(self, key: str, obj) -> None:
+    async def put_json(self, key: str, obj, cache_control: str = "") -> None:
         await asyncio.to_thread(
             self.client.put_object,
             Bucket=self.bucket,
             Key=self.path(key),
             Body=json.dumps(obj, sort_keys=True).encode(),
             ContentType="application/json",
+            **({"CacheControl": cache_control} if cache_control else {}),
         )
 
     async def delete(self, key: str) -> None:

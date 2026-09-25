@@ -88,6 +88,7 @@ class State:
         )
         self.max_attempts = int(os.environ.get("TASK_API_MAX_ATTEMPTS", "3"))
         self.ledger_delay = float(os.environ.get("TASK_API_LEDGER_DELAY_S", "0"))
+        self.open_listed: tuple[str, ...] | None = None
         self.tasks = {
             kind: queues.TaskQueue(redis, self.claim_ttl, kind) for kind in queues.KINDS
         }

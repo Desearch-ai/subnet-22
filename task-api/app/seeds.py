@@ -1,23 +1,23 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import os
-import secrets
 import time
 
+from desearch.manifest import REVEAL_AFTER_BLOCKS, local_block_hash, seed_from_hash
+
 BLOCK_SECONDS = 12.0
-# Far enough ahead to anchor the commitment before the seed block.
-REVEAL_AFTER_BLOCKS = 10
+
+__all__ = ["REVEAL_AFTER_BLOCKS", "LocalSeeds", "ChainSeeds", "seeds_from_env"]
 
 
 class LocalSeeds:
-    def __init__(self, block_seconds: float = BLOCK_SECONDS):
+    def __init__(self, block_seconds: float = BLOCK_SECONDS, genesis: float = 0.0):
         self.block_seconds = block_seconds
-        self._seeds: dict[int, str] = {}
+        self.genesis = genesis
 
     async def current_block(self) -> int:
-        return int(time.time() // self.block_seconds)
+        return int((time.time() - self.genesis) // self.block_seconds)
 
     async def target_block(self) -> int:
         return await self.current_block() + REVEAL_AFTER_BLOCKS
@@ -28,7 +28,7 @@ class LocalSeeds:
     async def seed_for(self, block: int) -> str | None:
         if await self.current_block() < block:
             return None
-        return self._seeds.setdefault(block, secrets.token_hex(32))
+        return seed_from_hash(local_block_hash(block))
 
 
 class ChainSeeds:
@@ -56,10 +56,13 @@ class ChainSeeds:
         if await self.current_block() < block:
             return None
         found = await asyncio.to_thread(lambda: self._chain().get_block_hash(block))
-        return hashlib.sha256(str(found).encode()).hexdigest()
+        return seed_from_hash(found)
 
 
 def seeds_from_env():
     if os.environ.get("TASK_API_SEEDS", "local") == "chain":
         return ChainSeeds(os.environ.get("TASK_API_NETWORK", "finney"))
-    return LocalSeeds(float(os.environ.get("TASK_API_BLOCK_SECONDS", BLOCK_SECONDS)))
+    return LocalSeeds(
+        float(os.environ.get("TASK_API_BLOCK_SECONDS", BLOCK_SECONDS)),
+        float(os.environ.get("TASK_API_GENESIS", "0")),
+    )

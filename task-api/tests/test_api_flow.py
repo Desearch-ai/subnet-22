@@ -19,6 +19,7 @@ import uvicorn
 from app import lifecycle
 from app.storage import PARQUET, Changed
 
+from desearch.manifest import OPEN_LIST_KEY, verify
 from desearch.client import TaskApiClient, TaskApiError
 from tests.http_client import HttpClient
 
@@ -146,18 +147,42 @@ class Harness:
         return task
 
 
+async def open_list(h: Harness) -> dict:
+    """The open list as the task API last published it to storage."""
+    await lifecycle.publish_open(h.core)
+    response = await h.r2.get(h.core.storage.presign_get(OPEN_LIST_KEY, 60))
+    assert response.status == 200, response.text
+    return response.json()
+
+
 async def opened(
-    h: Harness, validator, kinds=("crawl",), timeout: float = 5.0, want: str = ""
+    h: Harness, validator=None, kinds=("crawl",), timeout: float = 5.0, want: str = ""
 ) -> dict:
-    """An upload open to this validator, once its seed block has passed."""
+    """The oldest listed upload whose seed block has passed, as a validator would take it up."""
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        jobs = (await validator.post("/v1/validation/open", {"kinds": list(kinds)}))[
-            "jobs"
-        ]
-        for job in jobs:
-            if not want or job["task_id"] == want:
-                return job
+        for manifest in (await open_list(h))["uploads"]:
+            task_id = manifest["task_id"]
+            if manifest["kind"] not in kinds or (want and task_id != want):
+                continue
+            if validator is not None and await h.core.validation.has_voted(
+                task_id, validator.hotkey
+            ):
+                continue
+            seed = await h.core.seeds.seed_for(manifest["seed_block"])
+            if seed is None:
+                continue
+            job = {
+                **manifest,
+                "seed": seed,
+                "download_url": h.core.storage.presign_get(manifest["key"], 60),
+            }
+            if manifest.get("input_key"):
+                job["input"] = {
+                    "url": h.core.storage.presign_get(manifest["input_key"], 60),
+                    "sha256": manifest["input_sha256"],
+                }
+            return job
         await asyncio.sleep(0.05)
     raise AssertionError("no upload opened for validation")
 
@@ -264,7 +289,6 @@ async def _scenario(h: Harness) -> None:
     await _upload(h, upload, swapped)
 
     score = f"/v1/validation/{task_id}/score"
-    await _expect(403, h.miner.post("/v1/validation/open"))
     await _expect(403, h.miner.post(score, _score("pass", 3)))
 
     job = await opened(h, h.validator)
@@ -280,8 +304,16 @@ async def _scenario(h: Harness) -> None:
     assert downloaded.body == parquet
     assert pq.read_table(io.BytesIO(downloaded.body)).num_rows == 3
     assert await h.status(task_id) == "open"
-    skipped = await h.validator.post("/v1/validation/open", {"skip": [task_id]})
-    assert skipped["jobs"] == [], "an upload a validator is on is not offered again"
+    listing = await open_list(h)
+    assert [m["task_id"] for m in listing["uploads"]] == [task_id]
+    signer = (await h.public.get("/v1/key")).json()["signer"]
+    assert listing["signer"] == signer and verify(listing["uploads"][0], signer)
+    beside = await h.r2.get(
+        h.core.storage.presign_get(lifecycle.manifest_key(job["key"]), 60)
+    )
+    assert beside.json() == listing["uploads"][0], (
+        "the same note sits next to the upload"
+    )
     await _expect(422, h.validator.post(score, {**_score("pass", 3), "matched": 0}))
 
     too_long = [{"url": URLS[0]["url"], "miner_snippet": "x" * 501}]

@@ -176,27 +176,30 @@ def vote(validator: str, verdict: str = "pass") -> dict:
     return {"validator": validator, "verdict": verdict}
 
 
-def test_every_validator_sees_every_open_upload_until_it_votes():
+def test_one_vote_per_validator_per_open_upload():
     async def scenario(redis):
         validation = ValidationQueue(redis)
         await validation_job(redis, "a", at=1)
         await validation_job(redis, "b", at=2)
-        before = [j["task_id"] for j in await validation.open("v")]
+        listed = await validation.open_ids()
         first = await validation.vote("a", "v", vote("v"))
         twice = await validation.vote("a", "v", vote("v"))
-        after = [j["task_id"] for j in await validation.open("v")]
-        other = [j["task_id"] for j in await validation.open("w")]
-        skipped = [j["task_id"] for j in await validation.open("w", skip=("a",))]
-        return before, first, twice, after, other, skipped, await validation.voters("a")
+        return (
+            listed,
+            first,
+            twice,
+            await validation.has_voted("a", "v"),
+            await validation.has_voted("b", "v"),
+            await validation.voters("a"),
+        )
 
-    before, first, twice, after, other, skipped, voters = run(scenario)
-    assert before == ["a", "b"] and after == ["b"]
+    listed, first, twice, seen_a, seen_b, voters = run(scenario)
+    assert listed == ["a", "b"]
     assert first == 1 and twice == 0, "one vote per validator per upload"
-    assert other == ["a", "b"] and skipped == ["b"]
-    assert voters == {"v"}
+    assert seen_a and not seen_b and voters == {"v"}
 
 
-def test_asking_for_work_or_voting_marks_the_validator_active_for_the_window():
+def test_reporting_marks_the_validator_active_for_the_window():
     async def scenario(redis):
         validation = ValidationQueue(redis, active_s=100)
         await validation_job(redis, "t")
@@ -390,24 +393,6 @@ def test_an_expired_embed_task_goes_back_to_the_embed_queue():
         )
 
     assert run(scenario) == ("m", 0, 1, 1)
-
-
-def test_a_validator_only_gets_the_kinds_it_asked_for():
-    async def scenario(redis):
-        validation = ValidationQueue(redis)
-        embed, _ = await filled_kind(redis, "embed", 1)
-        got = await claimed(embed)
-        job = {"task_id": got.task_id, "miner": "m", "kind": "embed"}
-        await embed.complete(got.task_id, "m", job, f"k-{got.seq}")
-        crawl_only = await validation.open("v", ("crawl",))
-        both = await validation.open("v", ("crawl", "embed"))
-        finalized = await validation.finalize(got.task_id)
-        return crawl_only, both, finalized, await redis.scard("inflight:embed:m")
-
-    crawl_only, both, finalized, inflight = run(scenario)
-    assert crawl_only == []
-    assert both[0]["kind"] == "embed"
-    assert finalized.job["task_id"] == both[0]["task_id"] and inflight == 0
 
 
 def test_a_miner_that_held_the_whole_front_of_the_queue_is_served_from_behind():

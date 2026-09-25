@@ -57,6 +57,7 @@ class MemoryR2:
         Metadata=None,
         IfMatch=None,
         IfNoneMatch=None,
+        CacheControl=None,
     ):
         current = self.objects.get((Bucket, Key))
         if (IfNoneMatch == "*" and current) or (
@@ -164,7 +165,7 @@ def _presigned(r2: MemoryR2) -> type[BaseHTTPRequestHandler]:
 
         def do_GET(self):
             bucket, key, query = self._target()
-            if query.get("op") != "get_object":
+            if query.get("op", "get_object") != "get_object":
                 return self._reply(403)
             found = r2.objects.get((bucket, key))
             if found is None:

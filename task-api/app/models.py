@@ -101,13 +101,6 @@ class ClaimBody(BaseModel):
     kind: Literal["crawl", "embed"] = "crawl"
 
 
-class OpenBody(BaseModel):
-    kinds: list[Literal["crawl", "embed"]] = Field(
-        ["crawl"], min_length=1, max_length=2
-    )
-    skip: list[str] = Field([], max_length=64)
-
-
 class EmbedSample(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

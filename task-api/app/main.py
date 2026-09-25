@@ -21,7 +21,6 @@ from .models import (
     EmbedScore,
     Enqueue,
     ClaimBody,
-    OpenBody,
     Release,
     Score,
 )
@@ -300,11 +299,19 @@ def create_app(redis=None) -> FastAPI:
                 if name in payload
             },
         }
+        job["manifest"] = lifecycle.signed_manifest(core, job)
+        try:
+            await core.storage.put_json(lifecycle.manifest_key(frozen), job["manifest"])
+        except Exception:
+            log.exception("could not write the manifest for %s", frozen)
+            await lifecycle.delete_quietly(core.storage, frozen)
+            raise HTTPException(502, "object storage is unavailable, retry") from None
         seq = await core.tasks[kind].complete(task_id, who.hotkey, job, report.key)
         if seq is None:
             await lifecycle.delete_quietly(core.storage, frozen)
             raise HTTPException(409, "you do not hold a live claim on this task")
         await lifecycle.delete_quietly(core.storage, report.key)
+        await lifecycle.publish_open(core)
         await core.record(
             round_id,
             who.hotkey,
@@ -344,46 +351,6 @@ def create_app(redis=None) -> FastAPI:
             core.budgets.penalise, who.hotkey, task_id, "abandoned", kind
         )
         return {"task_id": task_id, "budget": miner.budget}
-
-    @app.post("/v1/validation/open")
-    async def validation_open(
-        body: OpenBody | None = None, who: Caller = Depends(validator)
-    ):
-        """The open uploads this validator has not voted on, once their seed exists."""
-        if await core.db(core.validations.is_excluded, who.hotkey):
-            raise HTTPException(403, "this validator disagreed with too many audits")
-        await core.validation.present(who.hotkey)
-        wanted = body or OpenBody()
-        jobs = []
-        for job in await core.validation.open(
-            who.hotkey, tuple(wanted.kinds), tuple(wanted.skip)
-        ):
-            seed = await core.seeds.seed_for(job["seed_block"])
-            if seed is not None:
-                jobs.append(open_job(job, seed))
-        return {"jobs": jobs}
-
-    def open_job(job: dict, seed: str) -> dict:
-        kind = job.get("kind", CRAWL)
-        remaining = max(60, int(job["deadline"] - time.time()))
-        return {
-            "task_id": job["task_id"],
-            "kind": kind,
-            "round_id": job["round_id"],
-            "miner": job["miner"],
-            "key": job["key"],
-            "urls": job["urls"],
-            "download_url": core.storage.presign_get(job["key"], remaining),
-            "seed": seed,
-            "seed_block": job["seed_block"],
-            "deadline": job["deadline"],
-            "completed_at": job["completed_at"],
-            **(
-                {**embed_inputs(job), "chars": job.get("chars", 0)}
-                if kind == EMBED
-                else {}
-            ),
-        }
 
     @app.post("/v1/validation/{task_id}/release")
     async def release(task_id: str, body: Release, who: Caller = Depends(validator)):
@@ -426,6 +393,7 @@ def create_app(redis=None) -> FastAPI:
     async def record_verdict(task_id: str, result: dict, who: Caller) -> dict:
         if await core.db(core.validations.is_excluded, who.hotkey):
             raise HTTPException(403, "this validator disagreed with too many audits")
+        await core.validation.present(who.hotkey)
         job = await core.validation.job(task_id)
         if job is None:
             raise HTTPException(409, "no such open upload")
@@ -623,6 +591,7 @@ async def _janitor(core: State) -> None:
         try:
             await lifecycle.reclaim_expired(core)
             await lifecycle.finalize_due(core)
+            await lifecycle.publish_open(core)
             await lifecycle.return_expired_publishes(core)
             if time.monotonic() - rounds_at >= ROUNDS_INTERVAL_S:
                 await lifecycle.open_embed_rounds(core)

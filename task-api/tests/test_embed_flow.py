@@ -3,7 +3,7 @@ import json
 
 from app import lifecycle, queues
 
-from tests.test_api_flow import Harness, _upload, opened, revealed, verifier
+from tests.test_api_flow import Harness, _upload, open_list, opened, revealed, verifier
 
 PAGES = [
     {
@@ -75,8 +75,7 @@ async def _embedded(backend) -> None:
         assert task["input"]["sha256"] == INPUT["input_sha256"]
         assert task["urls"] == [page["url"] for page in PAGES]
 
-        crawl_only = await h.validator.post("/v1/validation/open")
-        assert crawl_only["jobs"] == []
+        assert [m["kind"] for m in (await open_list(h))["uploads"]] == ["embed"]
         job = await opened(h, h.validator, ("embed",))
         assert (job["kind"], job["model"]) == ("embed", h.core.embed_model)
         assert job["input"]["url"]

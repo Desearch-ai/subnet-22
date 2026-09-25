@@ -12,6 +12,7 @@ from tests.test_api_flow import (
     Harness,
     _expect,
     _score,
+    open_list,
     opened,
     revealed,
     verifier,
@@ -78,20 +79,35 @@ def test_a_second_active_validator_must_vote_before_a_task_finalizes(api_env, me
     )
 
 
-def test_a_validator_that_asked_for_work_holds_final_verdict_until_it_votes(
+def test_a_report_on_a_finalized_upload_still_makes_the_validator_present(
     api_env, memory
 ):
     async def scenario(h):
-        task = await h.mine()
-        await opened(h, h.other_validator)
-        _, pending = await judged(h, h.validator)
-        waiting = await h.status(task["task_id"])
-        _, finalized = await judged(h, h.other_validator, task_id=task["task_id"])
-        return pending, waiting, finalized
+        first = await h.mine()
+        await judged(h, h.validator)
+        await _expect(
+            409,
+            h.other_validator.post(
+                f"/v1/validation/{first['task_id']}/score", _score("pass", 3)
+            ),
+        )
+        second = await h.mine(h.rival)
+        _, pending = await judged(h, h.validator, task_id=second["task_id"])
+        _, final = await judged(h, h.other_validator, task_id=second["task_id"])
+        return pending["verdict"], final["verdict"]
 
-    pending, waiting, finalized = run(memory, scenario)
-    assert pending["verdict"] == "pending" and waiting == "voting"
-    assert (finalized["verdict"], finalized["credited"]) == ("pass", 3)
+    assert run(memory, scenario) == ("pending", "pass")
+
+
+def test_the_open_list_drops_an_upload_once_it_is_finalized(api_env, memory):
+    async def scenario(h):
+        await h.mine()
+        listed = [m["task_id"] for m in (await open_list(h))["uploads"]]
+        await judged(h, h.validator)
+        return listed, (await open_list(h))["uploads"]
+
+    listed, after = run(memory, scenario)
+    assert len(listed) == 1 and after == []
 
 
 async def three_active(h):
@@ -129,7 +145,7 @@ def test_a_disputed_task_is_decided_by_the_majority_and_the_minority_is_marked(
 
 def test_two_validators_that_disagree_void_the_task(api_env, memory):
     async def scenario(h):
-        await h.mine()
+        task = await h.mine()
         await judged(h, h.validator)
         task = await h.mine(h.rival)
         await judged(h, h.other_validator, "fail", task_id=task["task_id"])
@@ -142,7 +158,7 @@ def test_two_validators_that_disagree_void_the_task(api_env, memory):
 
 def test_a_task_below_quorum_at_its_deadline_is_void_and_goes_back_out(api_env, memory):
     async def scenario(h):
-        await h.mine()
+        task = await h.mine()
         await judged(h, h.validator)
         task = await h.mine(h.rival)
         _, pending = await judged(h, h.other_validator, task_id=task["task_id"])
@@ -194,12 +210,11 @@ def test_a_report_the_task_could_not_have_produced_is_refused(api_env, memory):
     assert run(memory, scenario) == "open", "the refused report changed nothing"
 
 
-def test_an_excluded_validator_can_neither_see_nor_score(api_env, memory):
+def test_an_excluded_validator_cannot_score(api_env, memory):
     async def scenario(h):
         task = await h.mine()
         for _ in range(10):
             h.core.validations.record_audit([], [h.validator.hotkey])
-        await _expect(403, h.validator.post("/v1/validation/open"))
         job = await opened(h, h.other_validator)
         score = f"/v1/validation/{task['task_id']}/score"
         await _expect(

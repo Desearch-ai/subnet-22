@@ -8,6 +8,10 @@ import uuid
 
 from app.canonical import canonicalize
 
+from desearch.manifest import FIELDS as MANIFEST_FIELDS
+from desearch.manifest import OPEN_LIST_KEY
+from desearch.manifest import payload as manifest_payload
+
 from . import queues, rounds
 from .budget import COVERAGE_GATE, CRAWL, EMBED, HOUR, STRIKE_REASONS, STRIKE_WINDOW_H
 from .embeddings import DONE, DROPPED
@@ -34,6 +38,44 @@ class AlreadySettled(Exception):
 
 def open_round_key(round_id: str) -> str:
     return f"round:{round_id}:open"
+
+
+def manifest_key(frozen_key: str) -> str:
+    return frozen_key.removesuffix(".parquet") + ".manifest.json"
+
+
+def signed_manifest(core, job: dict) -> dict:
+    """What the miner was given and when it was frozen, signed by the task API."""
+    manifest = {
+        name: job[name] for name in MANIFEST_FIELDS if job.get(name) is not None
+    }
+    manifest["signer"] = core.key.ss58_address
+    manifest["signature"] = core.key.sign(manifest_payload(manifest)).hex()
+    return manifest
+
+
+async def publish_open(core, now: float | None = None) -> bool:
+    """Writes the open uploads, with their signed manifests, where validators read them."""
+    uploads = []
+    for task_id in await core.validation.open_ids():
+        job = await core.validation.job(task_id)
+        if job is not None and job.get("manifest"):
+            uploads.append(job["manifest"])
+    listed = tuple(m["key"] for m in uploads)
+    if listed == core.open_listed:
+        return False
+    listing = {
+        "generated_at": now or time.time(),
+        "signer": core.key.ss58_address,
+        "uploads": uploads,
+    }
+    try:
+        await core.storage.put_json(OPEN_LIST_KEY, listing, cache_control="no-store")
+    except Exception as exc:
+        log.warning("could not publish the open list: %r", exc)
+        return False
+    core.open_listed = listed
+    return True
 
 
 async def open_round(

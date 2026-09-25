@@ -20,7 +20,6 @@ EMBED_INPUTS = "embed:inputs"
 ROUND_SPAN = 10_000_000
 CLAIM_SCAN = 50
 OPEN_SCAN = 500
-OPEN_BATCH = 8
 ACTIVE_S = 3600
 # A miner that held the whole front of the queue is still served from further back.
 CLAIM_SCAN_MAX = 1000
@@ -381,28 +380,6 @@ class ValidationQueue:
     async def open_ids(self, limit: int = OPEN_SCAN) -> list[str]:
         return [_text(t) for t in await self.redis.zrange(VOPEN, 0, limit - 1)]
 
-    async def open(
-        self,
-        validator: str,
-        kinds: tuple[str, ...] = ("crawl",),
-        skip: tuple[str, ...] = (),
-        limit: int = OPEN_BATCH,
-    ) -> list[dict]:
-        """The oldest open uploads of these kinds this validator has not voted on."""
-        found = []
-        for task_id in await self.open_ids():
-            if task_id in skip:
-                continue
-            job = await self.job(task_id)
-            if job is None or job.get("kind", "crawl") not in kinds:
-                continue
-            if await self.redis.sismember(f"vseen:{task_id}", validator):
-                continue
-            found.append(job)
-            if len(found) >= limit:
-                break
-        return found
-
     async def vote(
         self, task_id: str, validator: str, vote: dict, now: float | None = None
     ) -> int:
@@ -413,6 +390,9 @@ class ValidationQueue:
                 args=[task_id, validator, now or time.time(), json.dumps(vote)],
             )
         )
+
+    async def has_voted(self, task_id: str, validator: str) -> bool:
+        return bool(await self.redis.sismember(f"vseen:{task_id}", validator))
 
     async def present(self, validator: str, now: float | None = None) -> None:
         """A validator asking for work is in the electorate, however slow its verdicts."""
