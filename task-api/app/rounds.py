@@ -20,16 +20,21 @@ class Url:
 class Batch:
     batch_id: str
     urls: list[Url]
+    # What a task of this kind carries beyond its URLs, e.g. an embed batch's input file.
+    extra: dict = field(default_factory=dict)
 
     def urls_hash(self) -> str:
         return proofs.sha256(proofs.canonical_json([u.url for u in self.urls]))
 
     def manifest_entry(self) -> dict:
-        return {
+        entry = {
             "batch_id": self.batch_id,
             "url_count": len(self.urls),
             "urls_hash": self.urls_hash(),
         }
+        if "input_sha256" in self.extra:
+            entry["input_sha256"] = self.extra["input_sha256"]
+        return entry
 
 
 def spread(urls: list[Url]) -> list[Url]:
@@ -61,6 +66,7 @@ class Round:
     manifest_hash: str
     seed_block: int
     opened_at: float
+    kind: str = "crawl"
     seed: str | None = None
     order: list[str] = field(default_factory=list)
     closed_at: float | None = None
@@ -75,6 +81,7 @@ class Round:
     def public_view(self) -> dict:
         view = {
             "round_id": self.round_id,
+            "kind": self.kind,
             "algorithm": proofs.ALGORITHM,
             "manifest_hash": self.manifest_hash,
             "seed_block": self.seed_block,
@@ -91,16 +98,19 @@ class Round:
 def open_round(
     urls: list[Url], seed_block: int, batch_target: int = BATCH_TARGET
 ) -> Round:
-    batches = {batch.batch_id: batch for batch in pack(urls, batch_target)}
-    opened_at = time.time()
+    return open_batches(pack(urls, batch_target), seed_block)
+
+
+def open_batches(batches: list[Batch], seed_block: int, kind: str = "crawl") -> Round:
     return Round(
         round_id=uuid.uuid4().hex[:16],
-        batches=batches,
+        batches={batch.batch_id: batch for batch in batches},
         manifest_hash=proofs.manifest_hash(
-            [b.manifest_entry() for b in batches.values()], seed_block
+            [b.manifest_entry() for b in batches], seed_block
         ),
         seed_block=seed_block,
-        opened_at=opened_at,
+        opened_at=time.time(),
+        kind=kind,
     )
 
 

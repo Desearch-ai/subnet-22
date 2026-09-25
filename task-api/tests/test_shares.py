@@ -34,7 +34,7 @@ def test_work_older_than_the_window_no_longer_pays(tmp_path):
     earned(budgets, "new", 10)
 
     assert crawl_shares(budgets) == {"new": 1.0}
-    assert budgets.get_or_create("old").urls_verified == 1000
+    assert budgets.get_or_create("old").verified == 1000
 
 
 def test_a_miner_under_the_coverage_gate_earns_no_share(tmp_path):

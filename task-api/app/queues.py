@@ -15,16 +15,40 @@ PLEASES = "publish:leases"
 PPENDING = "publish:pending"
 PDEAD = "publish:dead"
 ROUNDS = "rounds:seq"
+# Published pages waiting to become embed batches, pushed by the publisher.
+EMBED_INPUTS = "embed:inputs"
 ROUND_SPAN = 10_000_000
 CLAIM_SCAN = 50
 HOLDERS_TTL_S = 7 * 86400
+KINDS = ("crawl", "embed")
+
+
+def ready_key(kind: str) -> str:
+    return QUEUE if kind == "crawl" else f"{QUEUE}:{kind}"
+
+
+def validate_key(kind: str) -> str:
+    return VALIDATE if kind == "crawl" else f"{VALIDATE}:{kind}"
+
+
+def inflight_key(kind: str, hotkey: str) -> str:
+    return f"inflight:{hotkey}" if kind == "crawl" else f"inflight:{kind}:{hotkey}"
+
+
+# Mirrors inflight_key for scripts that only learn the kind from the task they touch.
+INFLIGHT = """
+local function inflight(kind, hotkey)
+  if not kind or kind == 'crawl' then return 'inflight:' .. hotkey end
+  return 'inflight:' .. kind .. ':' .. hotkey
+end
+"""
 
 # A miner never gets a task it held before, so no one miner can fail a task until it drops.
 CLAIM = """
-local queue, leases = KEYS[1], KEYS[2]
+local queue, leases, mine = KEYS[1], KEYS[2], KEYS[3]
 local hotkey, ttl, now = ARGV[1], tonumber(ARGV[2]), tonumber(ARGV[3])
 
-local held = redis.call('SCARD', 'inflight:' .. hotkey)
+local held = redis.call('SCARD', mine)
 if held >= tonumber(ARGV[4]) then return {'full', tostring(held)} end
 local seen = 0
 for _, task_id in ipairs(redis.call('ZRANGE', queue, 0, tonumber(ARGV[5]) - 1)) do
@@ -37,7 +61,7 @@ for _, task_id in ipairs(redis.call('ZRANGE', queue, 0, tonumber(ARGV[5]) - 1)) 
     redis.call('ZREM', queue, task_id)
     redis.call('ZADD', leases, now + ttl, task_id)
     redis.call('SET', 'lease:' .. task_id, hotkey)
-    redis.call('SADD', 'inflight:' .. hotkey, task_id)
+    redis.call('SADD', mine, task_id)
     redis.call('SADD', 'holders:' .. task_id, hotkey)
     redis.call('EXPIRE', 'holders:' .. task_id, tonumber(ARGV[6]))
     return {'task', task_id, payload, redis.call('INCR', 'log:seq')}
@@ -50,17 +74,18 @@ return {'empty'}
 REQUEUE = """
 redis.call('ZREM', KEYS[2], task_id)
 redis.call('DEL', 'lease:' .. task_id, 'issued:' .. task_id)
-if holder ~= '' then redis.call('SREM', 'inflight:' .. holder, task_id) end
 local payload = redis.call('GET', 'task:' .. task_id)
+local task = payload and cjson.decode(payload) or {}
+if holder ~= '' then redis.call('SREM', inflight(task['kind'], holder), task_id) end
 if payload then
-  local task = cjson.decode(payload)
   redis.call('ZADD', KEYS[1], task['rank'] or task['position'] or 0, task_id)
 end
 local seq = redis.call('INCR', 'log:seq')
 """
 
 RECLAIM = (
-    """
+    INFLIGHT
+    + """
 local task_id, now = ARGV[1], tonumber(ARGV[2])
 local expiry = redis.call('ZSCORE', KEYS[2], task_id)
 if not expiry or tonumber(expiry) > now then return nil end
@@ -71,7 +96,8 @@ local holder = redis.call('GET', 'lease:' .. task_id) or ''
 )
 
 ABANDON = (
-    """
+    INFLIGHT
+    + """
 local task_id, holder = ARGV[1], ARGV[2]
 if redis.call('GET', 'lease:' .. task_id) ~= holder then return nil end
 """
@@ -161,12 +187,15 @@ redis.call('ZREM', KEYS[1], task_id)
 redis.call('ZREM', KEYS[2], task_id)
 redis.call('ZREM', KEYS[3], task_id)
 redis.call('LREM', KEYS[4], 0, task_id)
-local miner = cjson.decode(job)['miner']
-if miner then redis.call('SREM', 'inflight:' .. miner, task_id) end
+local decoded = cjson.decode(job)
+if decoded['miner'] then
+  redis.call('SREM', inflight(decoded['kind'], decoded['miner']), task_id)
+end
 """
 
 VFINAL = (
-    """
+    INFLIGHT
+    + """
 local task_id, validator, publish, completed = ARGV[1], ARGV[2], ARGV[3], ARGV[4]
 local holder = redis.call('GET', 'vlease:' .. task_id)
 if validator == '' then
@@ -188,7 +217,8 @@ return {job, votes}
 )
 
 VRELEASE = (
-    """
+    INFLIGHT
+    + """
 local task_id, validator, counted, limit = ARGV[1], ARGV[2], ARGV[3] == '1', tonumber(ARGV[4])
 if redis.call('GET', 'vlease:' .. task_id) ~= validator then return nil end
 redis.call('SREM', 'vheld:' .. validator, task_id)
@@ -282,9 +312,11 @@ class Refusal(Exception):
 
 
 class TaskQueue:
-    def __init__(self, redis, lease_ttl: int):
+    def __init__(self, redis, lease_ttl: int, kind: str = "crawl"):
         self.redis = redis
         self.lease_ttl = lease_ttl
+        self.kind = kind
+        self.ready = ready_key(kind)
         self._claim = redis.register_script(CLAIM)
         self._reclaim = redis.register_script(RECLAIM)
         self._abandon = redis.register_script(ABANDON)
@@ -299,18 +331,22 @@ class TaskQueue:
         for position, task_id in enumerate(order):
             rank = base + position
             payload = dict(
-                payloads[task_id], round_id=round_id, position=position, rank=rank
+                payloads[task_id],
+                kind=self.kind,
+                round_id=round_id,
+                position=position,
+                rank=rank,
             )
             pipe.set(f"task:{task_id}", json.dumps(payload))
-            pipe.zadd(QUEUE, {task_id: rank})
+            pipe.zadd(self.ready, {task_id: rank})
         await pipe.execute()
         return len(order)
 
     async def depth(self) -> int:
-        return int(await self.redis.zcard(QUEUE))
+        return int(await self.redis.zcard(self.ready))
 
     async def in_flight(self, hotkey: str) -> int:
-        return int(await self.redis.scard(f"inflight:{hotkey}"))
+        return int(await self.redis.scard(inflight_key(self.kind, hotkey)))
 
     async def payload(self, task_id: str) -> dict | None:
         found = await self.redis.get(f"task:{task_id}")
@@ -319,7 +355,7 @@ class TaskQueue:
     async def lease(self, hotkey: str, budget: int) -> Lease:
         now = time.time()
         status, *found = await self._claim(
-            keys=[QUEUE, LEASES],
+            keys=[self.ready, LEASES, inflight_key(self.kind, hotkey)],
             args=[hotkey, self.lease_ttl, now, budget, CLAIM_SCAN, HOLDERS_TTL_S],
         )
         status = _text(status)
@@ -344,20 +380,20 @@ class TaskQueue:
         self, task_id: str, hotkey: str, job: dict, upload_key: str
     ) -> int | None:
         seq = await self._complete(
-            keys=[LEASES, VALIDATE, COMPLETED],
+            keys=[LEASES, validate_key(self.kind), COMPLETED],
             args=[task_id, hotkey, json.dumps(job), time.time(), upload_key],
         )
         return None if seq is None else int(seq)
 
     async def abandon(self, task_id: str, hotkey: str) -> int | None:
-        seq = await self._abandon(keys=[QUEUE, LEASES], args=[task_id, hotkey])
+        seq = await self._abandon(keys=[self.ready, LEASES], args=[task_id, hotkey])
         return None if seq is None else int(seq)
 
     async def reclaim(
         self, task_id: str, now: float | None = None
     ) -> tuple[str, int] | None:
         found = await self._reclaim(
-            keys=[QUEUE, LEASES], args=[task_id, now or time.time()]
+            keys=[self.ready, LEASES], args=[task_id, now or time.time()]
         )
         if not found:
             return None
@@ -367,7 +403,9 @@ class TaskQueue:
     async def restore(self, task_id: str, payload: dict) -> int:
         rank = payload.get("rank", payload.get("position", 0))
         return int(
-            await self._restore(keys=[QUEUE], args=[task_id, json.dumps(payload), rank])
+            await self._restore(
+                keys=[self.ready], args=[task_id, json.dumps(payload), rank]
+            )
         )
 
     async def next_seq(self) -> int:
@@ -402,10 +440,14 @@ class ValidationQueue:
         self._expire = redis.register_script(VEXPIRE)
 
     async def depth(self) -> int:
-        return int(await self.redis.llen(VALIDATE))
+        return sum([int(await self.redis.llen(validate_key(k))) for k in KINDS])
 
     async def active(self) -> int:
         return int(await self.redis.zcard(VLEASES))
+
+    async def _waiting_list(self, task_id: str) -> str:
+        """The list a job waits in, which depends on the kind of task it judges."""
+        return validate_key((await self.job(task_id) or {}).get("kind", "crawl"))
 
     async def job(self, task_id: str) -> dict | None:
         found = await self.redis.get(f"vjob:{task_id}")
@@ -423,15 +465,20 @@ class ValidationQueue:
     async def lease_holder(self, task_id: str) -> str | None:
         return _text(await self.redis.get(f"vlease:{task_id}"))
 
-    async def lease(self, validator: str) -> tuple[dict, float] | None:
+    async def lease(
+        self, validator: str, kinds: tuple[str, ...] = ("crawl",)
+    ) -> tuple[dict, float] | None:
         expires_at = time.time() + self.lease_ttl
-        status, *found = await self._claim(
-            keys=[VALIDATE, VLEASES],
-            args=[validator, expires_at, self.max_leases, CLAIM_SCAN],
-        )
-        if _text(status) == "full":
-            raise Refusal("LEASE_LIMIT", held=self.max_leases)
-        return (json.loads(found[0]), expires_at) if found else None
+        for kind in kinds:
+            status, *found = await self._claim(
+                keys=[validate_key(kind), VLEASES],
+                args=[validator, expires_at, self.max_leases, CLAIM_SCAN],
+            )
+            if _text(status) == "full":
+                raise Refusal("LEASE_LIMIT", held=self.max_leases)
+            if found:
+                return json.loads(found[0]), expires_at
+        return None
 
     async def begin(self, task_id: str, validator: str, grace: float) -> dict | None:
         now = time.time()
@@ -445,7 +492,7 @@ class ValidationQueue:
     ) -> bool:
         return bool(
             await self._vote(
-                keys=[VLEASES, VALIDATE, AUDITS],
+                keys=[VLEASES, await self._waiting_list(task_id), AUDITS],
                 args=[task_id, validator, json.dumps(vote), deadline],
             )
         )
@@ -455,7 +502,14 @@ class ValidationQueue:
     ) -> Settled | None:
         """An empty validator settles a job nobody holds."""
         found = await self._finalize(
-            keys=[VLEASES, COMPLETED, AUDITS, VALIDATE, PUBLISH, PPENDING],
+            keys=[
+                VLEASES,
+                COMPLETED,
+                AUDITS,
+                await self._waiting_list(task_id),
+                PUBLISH,
+                PPENDING,
+            ],
             args=[
                 task_id,
                 validator,
@@ -475,7 +529,7 @@ class ValidationQueue:
         self, task_id: str, validator: str, counted: bool = True
     ) -> tuple[str, Settled | None] | None:
         found = await self._release(
-            keys=[VLEASES, COMPLETED, AUDITS, VALIDATE],
+            keys=[VLEASES, COMPLETED, AUDITS, await self._waiting_list(task_id)],
             args=[task_id, validator, "1" if counted else "0", self.max_releases],
         )
         if not found:
@@ -498,7 +552,10 @@ class ValidationQueue:
 
     async def give_back(self, task_id: str) -> int:
         return int(
-            await self._expire(keys=[VLEASES, VALIDATE], args=[task_id, self.max_tries])
+            await self._expire(
+                keys=[VLEASES, await self._waiting_list(task_id)],
+                args=[task_id, self.max_tries],
+            )
         )
 
 
@@ -529,6 +586,9 @@ class PublishQueue:
 
     async def next_seq(self) -> int:
         return int(await self.redis.incr("changes:seq"))
+
+    async def push_embed_input(self, entry: dict) -> None:
+        await self.redis.rpush(EMBED_INPUTS, json.dumps(entry))
 
     async def dead_count(self) -> int:
         return int(await self.redis.scard(PDEAD))

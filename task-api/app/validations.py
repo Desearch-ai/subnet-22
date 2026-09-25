@@ -21,6 +21,7 @@ COUNTS = (
 )
 FIELDS = (
     "task_id",
+    "kind",
     "round_id",
     "miner",
     "validator",
@@ -85,6 +86,25 @@ def build_vote(job: dict, validator: str, result: dict) -> dict:
     }
 
 
+def build_embed_vote(job: dict, validator: str, result: dict) -> dict:
+    """Credit is the characters the API assigned, paid in full on a pass."""
+    verdict, reason = result["verdict"], result.get("reason", "")
+    if verdict == "pass" and not result.get("matched"):
+        verdict, reason = "void", "inconclusive"
+    credited = job.get("chars", 0) if verdict == "pass" else 0
+    return {
+        "validator": validator,
+        "verdict": verdict,
+        "credited": credited,
+        "result": {
+            **result,
+            "verdict": verdict,
+            "reason": reason,
+            "credited": credited,
+        },
+    }
+
+
 def decide(votes: list[dict], audit: bool = False, overdue: bool = False) -> Decision:
     """Audited votes need two to agree; a third breaks a tie."""
     if len(votes) == 1:
@@ -125,6 +145,7 @@ class Validations:
             CREATE TABLE IF NOT EXISTS validations (
                 id         INTEGER PRIMARY KEY AUTOINCREMENT,
                 task_id    TEXT NOT NULL,
+                kind       TEXT NOT NULL,
                 round_id   TEXT NOT NULL,
                 miner      TEXT NOT NULL,
                 validator  TEXT NOT NULL,
@@ -237,11 +258,11 @@ class Validations:
             )
         return {"pass": 0, "fail": 0, **dict(rows.fetchall())}
 
-    def judged_since(self, miner: str, since: float) -> int:
+    def judged_since(self, miner: str, since: float, kind: str = "crawl") -> int:
         (count,) = self.db.execute(
-            "SELECT COUNT(*) FROM validations WHERE miner = ? AND scored_at >= ?"
-            " AND verdict IN ('pass', 'fail')",
-            (miner, since),
+            "SELECT COUNT(*) FROM validations WHERE miner = ? AND kind = ?"
+            " AND scored_at >= ? AND verdict IN ('pass', 'fail')",
+            (miner, kind, since),
         ).fetchone()
         return count
 
@@ -289,6 +310,7 @@ def build_report(
         **dict.fromkeys(COUNTS, 0),
         **{name: value for name, value in result.items() if name != "urls"},
         "task_id": task_id,
+        "kind": job.get("kind", "crawl"),
         "round_id": job["round_id"],
         "miner": job["miner"],
         "validator": validator,

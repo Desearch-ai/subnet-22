@@ -77,7 +77,7 @@ def test_a_low_credit_pass_does_not_ramp_the_budget(budgets):
     budgets.reward("a", "t2", 13, ramp=False)
     assert (
         budgets.get_or_create("a").budget,
-        budgets.get_or_create("a").urls_verified,
+        budgets.get_or_create("a").verified,
     ) == (2, 38)
 
 

@@ -128,7 +128,8 @@ def test_a_job_handed_back_too_often_is_voided_and_goes_back_out(api_env, memory
     assert (first["status"], second["status"]) == ("queued_for_validation", "void")
     assert backlog is None, "a task nobody can judge no longer holds back leasing"
     assert (view["status"], view["score"]["reason"]) == ("queued", "unjudged")
-    assert (miner["budget"], miner["in_flight"]) == (1, 0)
+    crawl = miner["pools"]["crawl"]
+    assert (crawl["budget"], crawl["in_flight"]) == (1, 0)
 
 
 def test_hand_backs_are_rate_limited_per_validator(api_env, memory):
@@ -174,7 +175,7 @@ def test_a_task_that_keeps_failing_is_dropped_after_its_last_attempt(api_env, me
         return (
             task,
             retry,
-            await h.core.queue.payload(task["task_id"]),
+            await h.core.payload(task["task_id"]),
             outcomes,
             still_open,
         )

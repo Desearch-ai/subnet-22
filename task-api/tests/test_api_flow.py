@@ -150,7 +150,7 @@ async def revealed(core, timeout: float = 5.0) -> int:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if not core.rounds.unrevealed():
-            return await core.queue.depth()
+            return await core.tasks["crawl"].depth()
         await lifecycle.reveal_pending(core)
         await asyncio.sleep(0.02)
     raise AssertionError("no round was revealed")
@@ -181,7 +181,8 @@ async def _locked_out(backend) -> None:
         assert refusal["inputs"]["until"] == round(until, 3)
         assert 11 * 3600 < refusal["inputs"]["retry_after"] <= 12 * 3600
         view = (await h.public.get(f"/v1/miners/{hotkey}")).json()
-        assert view["locked_until"] == until
+        assert view["pools"]["crawl"]["locked_until"] == until
+        assert view["pools"]["embed"]["locked_until"] is None
         rival = await h.rival.post("/v1/tasks/lease")
         assert rival["refusal"]["code"] == "QUEUE_EMPTY"
 
@@ -385,13 +386,14 @@ async def _scenario(h: Harness) -> None:
     health = (await h.public.get("/v1/health")).json()
     assert health["verdicts"] == {"pass": 2, "fail": 1}
     assert (
-        health["queue_depth"],
+        health["queue_depth"]["crawl"],
         health["validation_depth"],
         health["validating"],
     ) == (0, 0, 0)
     miner = (await h.public.get(f"/v1/miners/{h.miner.hotkey}")).json()
     assert miner["verdicts"] == {"pass": 1, "fail": 1}
-    assert (miner["budget"], miner["in_flight"]) == (1, 0)
+    crawl = miner["pools"]["crawl"]
+    assert (crawl["budget"], crawl["in_flight"]) == (1, 0)
     assert miner["coverage"]["returned"] == 6
 
     assert await lifecycle.close_finished(h.core) == [round_id]
@@ -662,7 +664,8 @@ async def _fault_scenario(h: Harness) -> None:
     again = (await h.rival.post("/v1/tasks/lease"))["task"]
     assert again["task_id"] == task_id
     assert again["urls"] == task["urls"]
-    assert (await h.public.get(f"/v1/miners/{h.miner.hotkey}")).json()["budget"] == 1
+    view = (await h.public.get(f"/v1/miners/{h.miner.hotkey}")).json()
+    assert view["pools"]["crawl"]["budget"] == 1
 
 
 def test_public_reads_are_limited_per_ip_and_listed_a_page_at_a_time(api_env, memory):
