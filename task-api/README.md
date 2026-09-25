@@ -5,12 +5,12 @@ object storage.
 
 ```
 feeder ──URLs──▶ task API ──claim──▶ miner ──upload──▶ subnet-22 bucket (public)
-                   │  ▲                                    │
-    list of open   │  │ pass or fail                       │ open list, notes
-    uploads        ▼  │                                    ▼ and uploads
-                   ───┴──────────────────── validator ◀────┘
-                   │
-         pass ──▶ publisher ──▶ desearch-pages bucket
+                    ▲  │                                        │
+       pass or fail │  └── writes the open list and the notes ─▶│
+                    │                                           ▼ reads them and the uploads
+                    └──────────────────────────────────────── validator ──re-fetch──▶ the web
+                    │
+          pass ──▶ publisher ──▶ desearch-pages bucket
 ```
 
 | Path | |
