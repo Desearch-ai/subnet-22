@@ -73,15 +73,16 @@ starts with selected sources and grows as results prove useful.
 
 ## Mining and validating
 
-**Miners** crawl: they lease tasks, fetch the assigned pages through their own proxies and upload the
+**Miners** crawl: they claim tasks, fetch the assigned pages through their own proxies and upload the
 extracted text. They are paid by their share of verified pages. [Miner setup →](./docs/miner-setup.md)
 · [Emission →](./docs/emission.md)
 
-**Validators** check: they re-fetch a sample of every upload, return a verdict and set weights from
-the crawl shares. [Validator setup →](./docs/validator-setup.md)
+**Validators** check: every validator re-fetches a sample of every upload, reports pass or fail, and
+sets weights from what its own checks found. [Validator setup →](./docs/validator-setup.md)
 
 Crawl rounds are committed to a future block before tasks go out, every step is logged and signed,
-verdicts are audited, and every verdict is [public](https://task-api.desearch.ai/v1/tasks).
+an upload is paid and published only when a majority of validators agree, and every result is
+[public](https://task-api.desearch.ai/v1/tasks).
 [Architecture →](./docs/architecture.md)
 
 ## Use Desearch

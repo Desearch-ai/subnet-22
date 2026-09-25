@@ -11,7 +11,7 @@ checks yours match.
 
 ## What you receive
 
-Lease a task with `POST /v1/tasks/lease` and the body `{"kind": "embed"}`:
+Claim a task with `POST /v1/tasks/claim` and the body `{"kind": "embed"}`:
 
 ```json
 {
@@ -80,7 +80,7 @@ Upload it to `upload.url` with the given content type, then call `POST /v1/tasks
    above 0.999; a different model scores near 0.
 
 A task that fails either check earns nothing and counts against your embed budget. Embedding keeps its
-budget and lockouts separate from crawling. A passing task is credited with the characters of its
+budget and lockouts separate from crawling. A passing task is paid by the characters of its
 texts; see [Emission](./emission.md).
 
 ## Running a miner

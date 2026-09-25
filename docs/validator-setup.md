@@ -3,10 +3,12 @@
 The validator is one process, [`neurons/validators/validator.py`](../neurons/validators/validator.py),
 started by `run.sh`. It does two jobs:
 
-1. **Checks crawl tasks.** It leases completed tasks from the task API, downloads each upload,
-   re-fetches a sample of the pages itself and returns a verdict with what it found for each URL.
-2. **Sets weights.** Each epoch it reads every miner's share from the task API and sets weights by
-   those shares; see [Emission](./emission.md).
+1. **Checks crawl tasks.** It walks every open upload the task API lists, downloads each one,
+   re-fetches the picked pages itself, the same pages a chain block's hash picks for every
+   validator, and reports pass or fail with what it found for each URL. Every validator checks
+   every upload.
+2. **Sets weights.** Each epoch it computes every miner's share from the results of its own checks
+   over the last 24 hours and sets weights by those; see [Emission](./emission.md).
 
 `run.sh` checks for a new release every 20 minutes, installs it and restarts the validator.
 
@@ -14,7 +16,7 @@ started by `run.sh`. It does two jobs:
 
 - Python 3.10 or newer, [PM2](https://pm2.io/docs/runtime/guide/installation/) and `jq`
 - A hotkey on netuid 22 (netuid 41 on testnet) with a validator permit and at least 1000 stake; the
-  task API only accepts verdicts from such hotkeys
+  task API only accepts check results from such hotkeys
 - A [ScrapingDog](https://www.scrapingdog.com/) API key: the validator fetches each sample itself
   first and uses ScrapingDog only for pages its own address cannot load
 - A [Weights & Biases](https://wandb.ai/) login, unless you pass `--wandb.off`
@@ -45,7 +47,7 @@ cp neurons/validators/.env.template neurons/validators/.env
 
 | Variable | |
 | --- | --- |
-| `SCRAPINGDOG_API_KEY` | required to check crawl tasks; without it the validator only sets weights |
+| `SCRAPINGDOG_API_KEY` | required: a validator that cannot check crawl tasks sets no weights |
 | `WANDB_API_KEY` | Weights & Biases login, unless `--wandb.off`; `wandb login` also stores it |
 | `EMBED_API_KEY` | for checking [embed tasks](./embedding-tasks.md) once they open: a key for the hosted model service |
 | `EMBED_API_URL` | the hosted model service, OpenRouter's `/embeddings` by default |
@@ -55,6 +57,10 @@ Nothing else is configurable. How many pages are sampled, how many must match an
 checked at once are fixed in code, so every validator checks the same way. Uploads are decoded and
 scored only in a memory-capped child process, so an upload built to exhaust memory or time kills
 that child, not the validator.
+
+Weights are set only while the checker is healthy. When ScrapingDog refuses three tasks in a row, or
+three tasks in a row cannot be scored, the validator logs why and sets no weights until a task is
+checked again.
 
 ## 4. Run
 
@@ -70,7 +76,7 @@ pm2 start run.sh --name desearch_autoupdate -- \
 
 | Flag | |
 | --- | --- |
-| `--wallet.name`, `--wallet.hotkey` | the validator's wallet; it also signs verdicts |
+| `--wallet.name`, `--wallet.hotkey` | the validator's wallet; it also signs the check results |
 | `--netuid` | `22` on mainnet, `41` on testnet |
 | `--subtensor.network` | `finney`, `test`, or a custom endpoint |
 | `--neuron.task_api_url` | the task API, `https://task-api.desearch.ai` by default |
@@ -82,8 +88,8 @@ pm2 start run.sh --name desearch_autoupdate -- \
 
 Nothing to do by hand: a validator started with `run.sh` pulls this release, installs it, removes the
 old API process and restarts as the single validator process with the same flags. It keeps the
-`SCRAPINGDOG_API_KEY` it was started with. Without one it keeps setting weights and logs that it is
-not checking crawl tasks until the key is in `neurons/validators/.env` and the validator restarts.
+`SCRAPINGDOG_API_KEY` it was started with. Without one it checks nothing and sets no weights, and
+logs so, until the key is in `neurons/validators/.env` and the validator restarts.
 
 ## Monitor
 
@@ -93,5 +99,6 @@ curl -s https://task-api.desearch.ai/v1/health
 curl -s "https://task-api.desearch.ai/v1/tasks?validator=<hotkey>"
 ```
 
-`/v1/health` lists every validator's audit record: a share of verdicts is checked by a second
-validator, and a validator that loses too many of those checks can no longer lease tasks.
+`/v1/health` lists the active validators and every validator's standing: how many finalized uploads
+it took part in and how many times it disagreed with the majority. A validator that disagrees too
+often stops receiving uploads.

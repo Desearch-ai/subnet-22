@@ -1,6 +1,6 @@
 # Miner Setup
 
-A miner crawls for the network. It leases tasks from the task API, fetches every page in them
+A miner crawls for the network. It claims tasks from the task API, fetches every page in them
 through its own proxies, extracts the text and uploads it. Validators check the uploads, so a miner
 needs no open port.
 
@@ -57,7 +57,10 @@ The miner reads `neurons/miners/.env` on start; variables already set in the she
 | `RECEIPTS_FILE` | none | file each signed receipt is appended to, as proof of what you were served |
 
 A page refused for the address it came from (403, 408, 429) or served a challenge is fetched again
-through the next proxy; 404 and 410 are taken at face value.
+through the next proxy; 404 and 410 are taken at face value. Every request through a proxy opens a
+fresh connection, so a rotating gateway hands out a new exit address each time. The miner refuses
+private addresses only on direct connections: a proxy resolves the hostname itself, so use one that
+reaches the public internet only.
 
 ## 4. Run
 
@@ -76,7 +79,7 @@ to return.
 ## How you earn
 
 Your share is your verified pages over the last 24 hours, compared with every other miner's. A
-validator re-fetches a sample of each task you upload, and a passing task is credited at the rate its
+validators re-fetch a sample of each task you upload, and a passing task pays you at the rate that
 sample matched. [Emission](./emission.md) explains the rules and what raises your share.
 
 ## Monitor
@@ -87,5 +90,5 @@ curl -s https://task-api.desearch.ai/v1/miners/<hotkey>
 curl -s "https://task-api.desearch.ai/v1/tasks?miner=<hotkey>"
 ```
 
-The first shows your budget, tasks in flight, coverage and verdicts; the second your scored tasks,
-and `/v1/tasks/<task_id>` what the validator found for each URL.
+The first shows your budget, tasks in flight, coverage and pass/fail counts; the second your checked
+tasks, and `/v1/tasks/<task_id>` what the validators found for each URL.
