@@ -10,7 +10,7 @@ import numpy as np
 from desearch.embedding import (
     INPUT_SCHEMA,
     OUTPUT_SCHEMA,
-    HostedEmbedder,
+    EmbeddingClient,
     decode_vector,
     read_parquet,
 )
@@ -104,7 +104,7 @@ class EmbedValidator(TaskChecker):
 
     kinds = ("embed",)
 
-    def __init__(self, api, http, references: dict[str, HostedEmbedder]):
+    def __init__(self, api, http, references: dict[str, EmbeddingClient]):
         super().__init__(api, http)
         self.references = references
 
