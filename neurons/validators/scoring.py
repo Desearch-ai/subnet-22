@@ -72,6 +72,10 @@ STRUCTURED = (
     "json_ld_types",
     "headings",
 )
+# A forged one of these would pass on the text alone; the live page must agree.
+CHECKED_FIELDS = ("title", "published", "canonical", "author")
+# These never change between two fetches of the same page, so a difference is a forgery.
+HARD_FIELDS = frozenset({"published", "canonical"})
 
 
 @dataclass
@@ -229,9 +233,10 @@ def integrity_urls(
     return [url for url in sample_order(kept, seed) if kept[url]["error"] is None][:cap]
 
 
-def check_integrity(kept: dict[str, dict], seed: str) -> tuple[int, int]:
+def check_integrity(kept: dict[str, dict], seed: str) -> tuple[int, list[str]]:
+    """How many rows were re-extracted, and those whose text was not from their HTML."""
     checked = integrity_urls(kept, seed)
-    return len(checked), sum(not derived_from_html(kept[url]) for url in checked)
+    return len(checked), [url for url in checked if not derived_from_html(kept[url])]
 
 
 def sample_count(rows: int, minimum: int = MIN_SAMPLES) -> int:
@@ -359,6 +364,9 @@ def judge_sample(row: dict, fetched: FetchedPage | None) -> dict:
     else:
         outcome = ERRORS_UNCONFIRMED
 
+    differs = fields_differ(row, page) if outcome == MATCHED else []
+    if HARD_FIELDS & set(differs):
+        outcome = MISMATCHED
     return {
         "url": row["url"],
         "outcome": outcome,
@@ -374,8 +382,19 @@ def judge_sample(row: dict, fetched: FetchedPage | None) -> dict:
         "miner_error": row["error"] or "",
         "validator_error": problem,
         "via": fetched.via,
-        "why": mismatch_reason(outcome, row, problem, sim, page_type, len(page.text)),
+        "fields_differ": differs,
+        "why": mismatch_reason(
+            outcome, row, problem, sim, page_type, len(page.text), differs
+        ),
     }
+
+
+def fields_differ(row: dict, page: Page) -> list[str]:
+    return [
+        name
+        for name in CHECKED_FIELDS
+        if normalize(row.get(name) or "") != normalize(getattr(page, name))
+    ]
 
 
 def format_score(value: float) -> str:
@@ -390,6 +409,7 @@ def mismatch_reason(
     sim: Similarity | None,
     page_type: str,
     their_chars: int,
+    differs: list[str] = (),
 ) -> str:
     claimed = row["error"]
     if outcome == NOT_FETCHED:
@@ -402,6 +422,11 @@ def mismatch_reason(
         return f"the miner reported {claimed} but the validator read {their_chars} characters"
     if sim is None:
         return ""
+    if differs:
+        fields = ", ".join(differs)
+        if outcome == MATCHED:
+            return f"the text matches but the live page's {fields} differs, so the row is not published"
+        return f"the text matches but the live page's {fields} differs, which does not happen between two fetches"
     if outcome == MATCHED:
         if sim.score >= MATCH_THRESHOLD and sim.precision >= MIN_PRECISION:
             return f"the text matches (score {format_score(sim.score)})"
@@ -441,12 +466,15 @@ def decide_verdict(
         return "fail", "text_not_from_html"
     if counts["sampled"] and counts[NOT_FETCHED] * 2 >= counts["sampled"]:
         return "retry", "provider"
+    if not compared and not judged_errors:
+        return "void", "inconclusive"
+    # Too little the validator could read either way to pay or to fail on.
+    if counts["sampled"] and counts[UNVERIFIABLE] * 2 >= counts["sampled"]:
+        return "void", "unverifiable"
     if compared and counts[MATCHED] / compared < match_ratio:
         return "fail", "content_mismatch"
     if unconfirmed_share > UNCONFIRMED_SHARE:
         return "fail", "errors_not_reproducible"
-    if not compared and not judged_errors:
-        return "void", "inconclusive"
     return "pass", "ok"
 
 
@@ -470,6 +498,7 @@ def empty_result(wanted: set[str], reason: str) -> dict:
         "verdict": "fail",
         "reason": reason,
         "samples": [],
+        "rejected": [],
     }
 
 
@@ -486,7 +515,7 @@ def score(
         return empty_result(wanted, "unreadable")
 
     kept, duplicates = rows_by_url(rows, assigned)
-    checked, reextract_mismatch = check_integrity(kept, seed)
+    checked, not_from_html = check_integrity(kept, seed)
     samples = [
         judge_sample(kept[url], fetched.get(url))
         for url in pick_samples(kept, seed, sample_count(len(kept), min_samples))
@@ -499,7 +528,7 @@ def score(
         "unassigned": sum(1 for row in rows if row["url"] not in wanted),
         "sampled": len(samples),
         **{outcome: outcomes[outcome] for outcome in OUTCOMES},
-        "reextract_mismatch": reextract_mismatch,
+        "reextract_mismatch": len(not_from_html),
     }
     error_rows = sum(1 for row in kept.values() if row["error"] is not None)
     judged_errors = outcomes[ERRORS_CONFIRMED] + outcomes[ERRORS_UNCONFIRMED]
@@ -511,6 +540,11 @@ def score(
     verdict, reason = decide_verdict(
         counts, len(wanted), checked, match_ratio, unconfirmed_share
     )
+    doubted = {
+        sample["url"]
+        for sample in samples
+        if sample["outcome"] == MISMATCHED or sample["fields_differ"]
+    }
     return {
         **counts,
         "error_rows": error_rows,
@@ -518,6 +552,7 @@ def score(
         "verdict": verdict,
         "reason": reason,
         "samples": samples,
+        "rejected": sorted(doubted | set(not_from_html)),
     }
 
 
@@ -538,9 +573,13 @@ def text_window(text: str, at: int | None) -> str:
 
 
 def url_log(
-    rows: list[dict] | None, samples: list[dict], texts: dict[str, str]
+    rows: list[dict] | None,
+    samples: list[dict],
+    texts: dict[str, str],
+    rejected: list[str] = (),
 ) -> list[dict]:
     by_url = {sample["url"]: sample for sample in samples}
+    kept_out = set(rejected)
     details = []
     for row in rows or []:
         miner_text = row["text"] or ""
@@ -550,6 +589,7 @@ def url_log(
             "error": row["error"],
             "text_chars": len(miner_text),
             "sampled": row["url"] in by_url,
+            "rejected": row["url"] in kept_out,
         }
         sample = by_url.get(row["url"])
         if sample:

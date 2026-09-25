@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import secrets
 import time
 from collections.abc import Awaitable, Callable
 
@@ -14,7 +13,6 @@ from neurons.validators.scoring import (
     NOT_FETCHED,
     FetchedPage,
     empty_result,
-    sample_seed,
 )
 from neurons.validators.scoring_process import MEMORY_MB, ScoringProcess, Unscorable
 from neurons.validators.tasks import (
@@ -30,9 +28,6 @@ SCORE_TIMEOUT_S = 300.0
 
 log = logging.getLogger("validator")
 
-# Keeps the sample unpredictable to miners.
-SAMPLE_SALT = secrets.token_hex(32)
-
 
 class CrawlValidator(TaskChecker):
     kinds = ("crawl",)
@@ -47,43 +42,45 @@ class CrawlValidator(TaskChecker):
         max_download: int = MAX_DOWNLOAD_BYTES,
         score_timeout: float = SCORE_TIMEOUT_S,
         memory_mb: int = MEMORY_MB,
+        ledger=None,
     ):
-        super().__init__(api, http, max_download)
+        super().__init__(api, http, max_download, ledger)
         self.fetcher = fetcher
         self.min_samples = min_samples
         self.match_ratio = match_ratio
         self.score_timeout = score_timeout
         self.memory_mb = memory_mb
 
-    async def check_next_task(self) -> dict | None:
-        job = await self.lease()
-        if job is None:
-            return None
-
+    async def check(self, job: dict) -> dict | None:
         try:
             result = await self.score_task(job)
         except UploadMissing:
-            log.warning("task=%s upload is gone, handing it back", job["task_id"])
+            log.warning("task=%s upload is gone", job["task_id"])
             await self.hand_back(job["task_id"], "missing")
             return {}
         except DownloadFailed as exc:
-            log.warning("%s, handing it back", exc)
-            await self.hand_back(job["task_id"], "download")
+            log.warning("%s, trying again later", exc)
+            self.defer(job["task_id"])
             return {}
 
         if result["verdict"] == "retry":
             log.warning(
-                "task=%s ScrapingDog failed %d of %d samples, handing it back",
+                "task=%s ScrapingDog failed %d of %d samples, trying again later",
                 job["task_id"],
                 result[NOT_FETCHED],
                 result["sampled"],
             )
             self.provider_failed()
-            await self.hand_back(job["task_id"], "provider")
+            self.defer(job["task_id"])
             return {}
         self.provider_worked()
+        if result["reason"] == "unscorable":
+            self.scoring_failed()
+        else:
+            self.scoring_worked()
 
-        await self.submit_verdict(job["task_id"], result)
+        if await self.submit_verdict(job["task_id"], result):
+            self.note_verdict(job, result)
         comparable = result["matched"] + result["mismatched"]
         log.info(
             "task=%s miner=%s returned=%d/%d matched=%d/%d verdict=%s reason=%s",
@@ -104,7 +101,7 @@ class CrawlValidator(TaskChecker):
         session = ScoringProcess(
             data or b"",
             job["urls"],
-            sample_seed(job["task_id"], self.api.hotkey, SAMPLE_SALT),
+            job["seed"],
             self.min_samples,
             self.match_ratio,
             self.score_timeout,

@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import math
 import os
 import signal
 import sys
@@ -19,6 +20,7 @@ from neurons.validators.config import ENV_FILE, add_args, check_config, config
 from neurons.validators.crawl import CrawlValidator
 from neurons.validators.embed import EmbedValidator
 from neurons.validators.fetchers import OWN_IP_SETTINGS, SampleFetcher
+from neurons.validators.ledger import Ledger
 from neurons.validators.weights import set_weights, weights_from_shares
 
 WEIGHTS_WINDOW_BLOCKS = 20
@@ -51,6 +53,7 @@ class Validator:
         logging.getLogger("trafilatura").setLevel(logging.ERROR)
         bt.logging.info(str(self.config))
         self.scrapingdog_key = os.environ.get("SCRAPINGDOG_API_KEY", "")
+        self.ledger = Ledger(os.path.join(self.config.neuron.full_path, "verdicts.db"))
         self.stopping = asyncio.Event()
 
     async def initialize(self) -> None:
@@ -88,7 +91,7 @@ class Validator:
     async def check_crawl_tasks(self) -> None:
         if reason := self.crawl_disabled_reason():
             bt.logging.error(
-                f"Not checking crawl tasks, only setting weights: {reason}"
+                f"Not checking crawl tasks, so not setting weights either: {reason}"
             )
             await self.stopping.wait()
             return
@@ -98,7 +101,9 @@ class Validator:
             ScrapingDog(self.scrapingdog_key, SCRAPINGDOG_CONCURRENCY) as scrapingdog,
         ):
             fetcher = SampleFetcher(Fetcher(OWN_IP_SETTINGS), scrapingdog)
-            validator = CrawlValidator(api, fetcher, self.http)
+            validator = self.crawl_checker = CrawlValidator(
+                api, fetcher, self.http, ledger=self.ledger
+            )
             bt.logging.info(
                 f"Validating crawl tasks from {self.config.neuron.task_api_url}"
             )
@@ -137,7 +142,7 @@ class Validator:
         async with TaskApiClient(
             self.config.neuron.task_api_url, self.wallet.hotkey
         ) as api:
-            checker = EmbedValidator(api, self.http, references)
+            checker = EmbedValidator(api, self.http, references, ledger=self.ledger)
             bt.logging.info(f"Validating embed tasks through {url}")
             try:
                 await asyncio.gather(
@@ -180,22 +185,53 @@ class Validator:
             url, timeout=SHARES_TIMEOUT, raise_for_status=True
         ) as response:
             pools = (await response.json()).get("pools", {})
-        return {
+        parsed = {
             pool: {hotkey: float(share) for hotkey, share in shares.items()}
             for pool, shares in pools.items()
         }
+        for pool, shares in parsed.items():
+            for hotkey, share in shares.items():
+                if not math.isfinite(share) or share < 0:
+                    raise ValueError(f"{pool} share for {hotkey} is {share}")
+        return parsed
 
     async def weights(self) -> np.ndarray | None:
-        """None keeps the last weights when the task API is unreachable."""
-        try:
-            shares = await self.shares()
-        except Exception as error:
-            bt.logging.error(
-                f"Crawl shares unavailable, keeping the last weights: {error!r}"
+        """From this validator's own verdicts; None keeps the last weights."""
+        if self.ledger.count():
+            shares = self.ledger.shares()
+            ineligible = await self.ineligible()
+            shares = {
+                pool: {hk: s for hk, s in miners.items() if hk not in ineligible}
+                for pool, miners in shares.items()
+            }
+        else:
+            try:
+                shares = await self.shares()
+            except Exception as error:
+                bt.logging.error(
+                    f"No verdicts of our own yet and the task API's shares are"
+                    f" unavailable, keeping the last weights: {error!r}"
+                )
+                return None
+            bt.logging.warning(
+                "No verdicts of our own in the window; weights follow the task API's"
+                " shares until there are"
             )
-            return None
         weights = weights_from_shares(list(self.metagraph.hotkeys), shares)
         return weights if weights.any() else None
+
+    async def ineligible(self) -> set[str]:
+        """Miners under the coverage gate: claims that lapsed are seen only by the task API."""
+        url = f"{self.config.neuron.task_api_url.rstrip('/')}/v1/health"
+        try:
+            async with self.http.get(
+                url, timeout=SHARES_TIMEOUT, raise_for_status=True
+            ) as response:
+                coverage = (await response.json()).get("coverage", {})
+        except Exception as error:
+            bt.logging.warning(f"Coverage unavailable, applying no gate: {error!r}")
+            return set()
+        return {hk for hk, c in coverage.items() if not c.get("eligible", True)}
 
     async def sync_weights(self) -> None:
         while True:
@@ -204,6 +240,8 @@ class Validator:
                 bt.logging.info(f"Blocks left until next epoch: {blocks_left}")
                 if blocks_left <= WEIGHTS_WINDOW_BLOCKS and self.should_set_weights():
                     started = time.time()
+                    # Fresh, so a UID that changed hands since the last sync is not paid.
+                    self.metagraph = await self.subtensor.metagraph(self.config.netuid)
                     weights = await self.weights()
                     if weights is not None:
                         await set_weights(self, weights)
@@ -243,7 +281,17 @@ class Validator:
         if self.config.neuron.disable_set_weights:
             bt.logging.info("Weight setting is disabled by configuration.")
             return False
+        if reason := self.checker_trouble():
+            bt.logging.error(f"Not setting weights: {reason}")
+            return False
         return True
+
+    def checker_trouble(self) -> str | None:
+        """A validator that cannot check tasks has no standing to weight them."""
+        if reason := self.crawl_disabled_reason():
+            return reason
+        checker = getattr(self, "crawl_checker", None)
+        return checker.trouble if checker is not None else None
 
     async def stop(self) -> None:
         bt.logging.info("Stopping validator")

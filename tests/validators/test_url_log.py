@@ -26,6 +26,7 @@ def test_every_row_is_listed_and_only_samples_carry_text():
         "error": "http_4xx",
         "text_chars": 0,
         "sampled": False,
+        "rejected": False,
     }
 
 

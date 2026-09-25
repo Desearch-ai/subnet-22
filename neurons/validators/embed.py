@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import logging
 import random
-import secrets
 
 import numpy as np
 
@@ -14,7 +13,6 @@ from desearch.embedding import (
     decode_vector,
     read_parquet,
 )
-from neurons.validators.scoring import sample_seed
 from neurons.validators.tasks import DownloadFailed, TaskChecker, UploadMissing
 
 log = logging.getLogger("validator")
@@ -23,7 +21,6 @@ EMBED_SAMPLES = 20
 # Two independent hosts of the same weights agree above 0.9998; another model lands near 0.
 MATCH_SIMILARITY = 0.99
 NORM_TOLERANCE = 0.01
-SAMPLE_SALT = secrets.token_hex(32)
 
 
 def check_rows(
@@ -78,7 +75,9 @@ def compare(
     samples = []
     for row, expected in zip(picked, reference, strict=True):
         expected = expected / max(float(np.linalg.norm(expected)), 1e-12)
-        similarity = float(np.dot(vectors[row["text_id"]], expected))
+        mine = vectors[row["text_id"]]
+        mine = mine / max(float(np.linalg.norm(mine)), 1e-12)
+        similarity = float(np.dot(mine, expected))
         outcome = "matched" if similarity >= MATCH_SIMILARITY else "mismatched"
         samples.append(
             {
@@ -104,19 +103,16 @@ class EmbedValidator(TaskChecker):
 
     kinds = ("embed",)
 
-    def __init__(self, api, http, references: dict[str, EmbeddingClient]):
-        super().__init__(api, http)
+    def __init__(self, api, http, references: dict[str, EmbeddingClient], ledger=None):
+        super().__init__(api, http, ledger=ledger)
         self.references = references
 
-    async def check_next_task(self) -> dict | None:
-        job = await self.lease()
-        if job is None:
-            return None
+    async def check(self, job: dict) -> dict | None:
         task_id = job["task_id"]
         reference = self.references.get(job["model"])
         if reference is None:
             log.warning("task=%s needs %s, which we cannot run", task_id, job["model"])
-            await self.hand_back(task_id, "provider")
+            self.defer(task_id, 3600)
             return {}
 
         try:
@@ -126,33 +122,30 @@ class EmbedValidator(TaskChecker):
             await self.hand_back(task_id, "missing")
             return {}
         except DownloadFailed as exc:
-            log.warning("%s, handing it back", exc)
-            await self.hand_back(task_id, "download")
+            log.warning("%s, trying again later", exc)
+            self.defer(task_id)
             return {}
         if given is None or hashlib.sha256(given).hexdigest() != job["input"]["sha256"]:
-            log.warning(
-                "task=%s input does not match its hash, handing it back", task_id
-            )
-            await self.hand_back(task_id, "download")
+            log.warning("task=%s input does not match its hash", task_id)
+            self.defer(task_id)
             return {}
 
         inputs = read_parquet(given, INPUT_SCHEMA)
         result, vectors = check_rows(inputs, upload, reference.model.dims)
         if "verdict" not in result:
-            picked = pick_samples(
-                inputs, sample_seed(task_id, self.api.hotkey, SAMPLE_SALT)
-            )
+            picked = pick_samples(inputs, job["seed"])
             try:
                 expected = await reference.embed([row["text"] for row in picked])
             except Exception as exc:
                 log.warning("task=%s reference failed: %s", task_id, exc)
                 self.provider_failed()
-                await self.hand_back(task_id, "provider")
+                self.defer(task_id)
                 return {}
             self.provider_worked()
             result |= compare(picked, vectors, expected)
 
-        await self.submit_verdict(task_id, result)
+        if await self.submit_verdict(task_id, result):
+            self.note_verdict(job, result)
         log.info(
             "task=%s miner=%s embed %d texts, matched %d/%d (min %s) verdict=%s reason=%s",
             task_id,

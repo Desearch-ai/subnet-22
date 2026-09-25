@@ -27,11 +27,13 @@ from neurons.validators.scoring import (
     rows_by_url,
     sample_count,
     sample_seed,
+    url_log,
 )
 from tests.local_http import serving
 from tests.synthetic import (
     CHALLENGE,
     SEED,
+    VOCAB,
     error_row,
     page_row,
     run,
@@ -75,7 +77,8 @@ def test_integrity_flags_an_html_hash_mismatch():
     rows[0]["html_sha256"] = sha256_hex(b"something else")
 
     assert not derived_from_html(rows[0])
-    assert check_integrity(rows_by_url(rows, assigned)[0], SEED) == (5, 1)
+    checked, failed = check_integrity(rows_by_url(rows, assigned)[0], SEED)
+    assert (checked, failed) == (5, [rows[0]["url"]])
 
 
 def test_integrity_flags_text_not_derived_from_html():
@@ -84,7 +87,8 @@ def test_integrity_flags_text_not_derived_from_html():
     rows[0]["text_sha256"] = rows[1]["text_sha256"]
 
     assert not derived_from_html(rows[0])
-    assert check_integrity(rows_by_url(rows, assigned)[0], SEED) == (5, 1)
+    checked, failed = check_integrity(rows_by_url(rows, assigned)[0], SEED)
+    assert (checked, failed) == (5, [rows[0]["url"]])
 
 
 @pytest.mark.parametrize(
@@ -115,7 +119,8 @@ def test_integrity_counts_an_ok_row_without_html():
     rows, assigned, _ = synthetic(5)
     rows[0] = dict(rows[0], html=None, html_sha256="")
 
-    assert check_integrity(rows_by_url(rows, assigned)[0], SEED) == (5, 1)
+    checked, failed = check_integrity(rows_by_url(rows, assigned)[0], SEED)
+    assert (checked, failed) == (5, [rows[0]["url"]])
 
 
 def test_integrity_ignores_a_final_url_on_another_site():
@@ -130,7 +135,7 @@ def test_integrity_ignores_a_final_url_on_another_site():
 def test_integrity_skips_error_rows_and_caps_at_fifty():
     rows, assigned, _ = synthetic(60, errors=4)
 
-    assert check_integrity(rows_by_url(rows, assigned)[0], SEED) == (50, 0)
+    assert check_integrity(rows_by_url(rows, assigned)[0], SEED) == (50, [])
 
 
 def test_errors_unconfirmed_when_the_validator_gets_real_text():
@@ -439,6 +444,7 @@ def _validate_download(status: int, content: bytes, **options) -> dict:
                 "miner": "m",
                 "urls": ["https://a.example/"],
                 "download_url": base + "x",
+                "seed": SEED,
             }
             return await CrawlValidator(
                 SimpleNamespace(hotkey="v"), None, http, **options
@@ -576,3 +582,58 @@ def test_our_own_fetch_of_a_tagless_page_is_compared_not_refused():
 
     assert judge_sample(row, ours)["outcome"] == "matched"
     assert judge_sample(row, theirs)["outcome"] == "unverifiable"
+
+
+def test_a_sample_the_validator_mostly_could_not_read_is_void():
+    rows, assigned, fetched = synthetic(10)
+    for url in pick_samples(rows_by_url(rows, assigned)[0], SEED, 5)[:3]:
+        fetched[url] = FetchedPage(200, CHALLENGE, via="own_ip")
+    result = run(rows, assigned, fetched)
+
+    assert (result["matched"], result["unverifiable"]) == (2, 3)
+    assert (result["verdict"], result["reason"]) == ("void", "unverifiable")
+
+
+def test_rows_a_check_failed_are_kept_out_of_publication():
+    rows, assigned, fetched = synthetic(10)
+    forged = rows[0]
+    forged["html_sha256"] = sha256_hex(b"forged")
+    sampled = pick_samples(rows_by_url(rows, assigned)[0], SEED, 5)
+    wrong = next(url for url in sampled if url != forged["url"])
+    fetched[wrong] = FetchedPage(200, synthetic_html(200))
+    result = run(rows, assigned, fetched)
+
+    assert (result["verdict"], result["reason"]) == ("pass", "ok")
+    assert result["rejected"] == sorted([forged["url"], wrong])
+    details = url_log(rows, result["samples"], {}, result["rejected"])
+    assert {d["url"] for d in details if d["rejected"]} == {forged["url"], wrong}
+
+
+def test_a_forged_date_is_a_mismatch_and_a_changed_title_only_holds_back_the_row():
+    body = " ".join(VOCAB[(i * i + i) % len(VOCAB)] for i in range(160))
+
+    def article(published: str, title: str = "Harbor report") -> str:
+        return (
+            f"<html><head><title>{title}</title>"
+            f'<meta property="article:published_time" content="{published}">'
+            f"</head><body><article><h1>Harbor report</h1><p>{body}</p>"
+            "</article></body></html>"
+        )
+
+    url = synthetic_url(1)
+    row = page_row(url, article("1999-01-01T10:00:00Z"))
+    live = FetchedPage(200, article("2026-09-01T10:00:00Z"))
+    dated = judge_sample(row, live)
+
+    assert derived_from_html(row), "the forgery agrees with its own HTML"
+    assert (dated["outcome"], dated["fields_differ"]) == ("mismatched", ["published"])
+    assert "does not happen between two fetches" in dated["why"]
+    result = run([row], [url], {url: live})
+    assert (result["verdict"], result["reason"]) == ("fail", "content_mismatch")
+    assert result["rejected"] == [url]
+
+    retitled = judge_sample(
+        page_row(url, article("2026-09-01T10:00:00Z", "Harbor report, updated")), live
+    )
+    assert (retitled["outcome"], retitled["fields_differ"]) == ("matched", ["title"])
+    assert retitled["why"].endswith("title differs, so the row is not published")

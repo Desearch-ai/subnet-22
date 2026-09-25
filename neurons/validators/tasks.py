@@ -9,7 +9,9 @@ import aiohttp
 from yarl import URL
 
 from desearch.client import TaskApiError
+from desearch.credit import crawl_credit, embed_credit
 
+OPEN_PATH = "/v1/validation/open"
 DOWNLOAD_ATTEMPTS = 2
 SUBMIT_ATTEMPTS = 3
 RETRY_DELAY_S = 2.0
@@ -19,6 +21,8 @@ READ_CHUNK = 1 << 20
 PAUSE_S = 30.0
 MAX_PAUSE_S = 600.0
 PROVIDER_STREAK = 3
+FAILURE_STREAK = 3
+DEFER_S = 60.0
 
 log = logging.getLogger("validator")
 
@@ -32,19 +36,50 @@ class UploadMissing(Exception):
 
 
 class TaskChecker:
-    """Leases validation jobs of its kinds, judges each one and reports the verdict."""
+    """Walks the open uploads of its kinds, judges each one and reports the verdict."""
 
     kinds: tuple[str, ...] = ()
 
     def __init__(
-        self, api, http: aiohttp.ClientSession, max_download: int = MAX_DOWNLOAD_BYTES
+        self,
+        api,
+        http: aiohttp.ClientSession,
+        max_download: int = MAX_DOWNLOAD_BYTES,
+        ledger=None,
     ):
         self.api = api
         self.http = http
         self.max_download = max_download
+        self.ledger = ledger
         self.paused_until = 0.0
         self.pause = PAUSE_S
         self.provider_failures = 0
+        self.failures = 0
+        self.refused: str | None = None
+        self.in_flight: set[str] = set()
+        self.deferred: dict[str, float] = {}
+
+    @property
+    def trouble(self) -> str | None:
+        """Why this checker cannot vouch for its verdicts right now, if it cannot."""
+        if self.refused:
+            return f"the task API refuses this validator: {self.refused}"
+        if self.provider_failures >= PROVIDER_STREAK:
+            return f"the provider failed on {self.provider_failures} tasks in a row"
+        if self.failures >= FAILURE_STREAK:
+            return f"{self.failures} tasks in a row could not be scored"
+        return None
+
+    def note_refusal(self, exc: TaskApiError) -> None:
+        """A 403 means the API no longer takes this validator's word, not that it is down."""
+        if exc.status == 403:
+            self.refused = exc.detail
+
+    def scoring_failed(self) -> None:
+        self.failures += 1
+
+    def scoring_worked(self) -> None:
+        self.failures = 0
 
     async def run(self, stop: asyncio.Event, idle_exit: int = 0) -> None:
         idle = 0
@@ -54,28 +89,72 @@ class TaskChecker:
                 await sleep_unless_stopped(stop, waiting)
                 continue
             try:
-                result = await self.check_next_task()
+                job = await self.next_job()
             except TaskApiError as exc:
+                self.note_refusal(exc)
                 log.warning("api unavailable: %s", exc)
                 await sleep_unless_stopped(stop, RETRY_DELAY_S)
                 continue
+            self.refused = None
 
-            if result is not None:
-                idle = 0
+            if job is None:
+                idle += 1
+                if idle_exit and idle >= idle_exit:
+                    return
+                await sleep_unless_stopped(stop, IDLE_DELAY_S)
                 continue
-            idle += 1
-            if idle_exit and idle >= idle_exit:
-                return
-            await sleep_unless_stopped(stop, IDLE_DELAY_S)
+            idle = 0
+            self.in_flight.add(job["task_id"])
+            try:
+                await self.check(job)
+            except TaskApiError as exc:
+                self.note_refusal(exc)
+                self.defer(job["task_id"])
+                log.warning("task=%s not recorded: %s", job["task_id"], exc)
+            except Exception:
+                self.scoring_failed()
+                self.defer(job["task_id"])
+                log.exception("task=%s could not be checked", job["task_id"])
+            finally:
+                self.in_flight.discard(job["task_id"])
 
-    async def lease(self) -> dict | None:
+    async def next_job(self) -> dict | None:
+        """The oldest open upload nobody in this process is on, or None."""
+        now = time.monotonic()
+        self.deferred = {t: until for t, until in self.deferred.items() if until > now}
+        skip = [*self.in_flight, *self.deferred][:64]
         answer = await self.api.post(
-            "/v1/validation/lease", {"kinds": list(self.kinds)}
+            OPEN_PATH, {"kinds": list(self.kinds), "skip": skip}
         )
-        return answer["job"]
+        for job in answer.get("jobs", []):
+            if job["task_id"] not in self.in_flight:
+                return job
+        return None
 
-    async def check_next_task(self) -> dict | None:
+    def defer(self, task_id: str, seconds: float = DEFER_S) -> None:
+        self.deferred[task_id] = time.monotonic() + seconds
+
+    async def check(self, job: dict) -> dict | None:
         raise NotImplementedError
+
+    def note_verdict(self, job: dict, result: dict) -> None:
+        """What this validator itself decided, kept for its own weights."""
+        if self.ledger is None:
+            return
+        kind = job.get("kind", "crawl")
+        if kind == "embed":
+            credited, assigned = embed_credit(job, result), job.get("texts", 0)
+        else:
+            credited, assigned = crawl_credit(result), len(set(job["urls"]))
+        self.ledger.record(
+            job["task_id"],
+            kind,
+            job["miner"],
+            result["verdict"],
+            credited,
+            assigned,
+            result.get("returned", 0),
+        )
 
     def provider_failed(self) -> None:
         """Several failures in a row mean our side is down, so back off before trying again."""
@@ -124,22 +203,31 @@ class TaskChecker:
         return bytes(body)
 
     async def hand_back(self, task_id: str, reason: str) -> None:
+        """Only a lost upload is the API's business; anything else is tried again later."""
+        self.defer(task_id)
+        if reason != "missing":
+            return
         try:
             await self.api.post(f"/v1/validation/{task_id}/release", {"reason": reason})
         except TaskApiError as exc:
-            if reason == "missing" and exc.status >= 500:
-                return await self.hand_back(task_id, "download")
-            log.warning("could not hand back task=%s: %s", task_id, exc)
+            log.warning("could not report the missing upload task=%s: %s", task_id, exc)
 
-    async def submit_verdict(self, task_id: str, result: dict) -> None:
+    async def submit_verdict(self, task_id: str, result: dict) -> bool:
+        """False when the upload finalized without this verdict, which is not a fault."""
         for attempt in range(SUBMIT_ATTEMPTS):
             try:
                 await self.api.post(f"/v1/validation/{task_id}/score", result)
-                return
+                return True
             except TaskApiError as exc:
+                if exc.status == 409:
+                    log.info(
+                        "task=%s finalized before our verdict: %s", task_id, exc.detail
+                    )
+                    return False
                 if 0 < exc.status < 500 or attempt == SUBMIT_ATTEMPTS - 1:
                     raise
             await asyncio.sleep(RETRY_DELAY_S)
+        return False
 
 
 async def sleep_unless_stopped(stop: asyncio.Event, seconds: float) -> None:

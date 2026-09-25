@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 from aiohttp import web
 
+from neurons.validators.ledger import Ledger
 from neurons.validators.validator import Validator
 from neurons.validators.weights import (
     EMISSION_CONTROL_HOTKEY,
@@ -89,11 +90,13 @@ def test_without_the_burn_hotkey_the_pools_keep_their_proportions():
     assert not weights_from_shares(["m1"], {}).any()
 
 
-def weights_from_api(hotkeys, shares=None, fail=False):
+def weights_from_api(hotkeys, shares=None, fail=False, ledger=None):
     async def respond(request: web.Request) -> web.Response:
-        assert request.path == "/v1/shares"
         if fail:
             return web.Response(status=503)
+        if request.path == "/v1/health":
+            return web.json_response({"coverage": {"lazy": {"eligible": False}}})
+        assert request.path == "/v1/shares"
         return web.json_response({"window_hours": 24, "pools": {"crawl": shares or {}}})
 
     async def run():
@@ -102,6 +105,7 @@ def weights_from_api(hotkeys, shares=None, fail=False):
             made.config = SimpleNamespace(neuron=SimpleNamespace(task_api_url=api))
             made.metagraph = SimpleNamespace(hotkeys=hotkeys)
             made.http = http
+            made.ledger = ledger or Ledger(":memory:")
             return await made.weights()
 
     return asyncio.run(run())
@@ -148,3 +152,51 @@ def test_set_weights_submits_the_processed_weights(monkeypatch):
     )
     assert submitted[1] == pytest.approx((1 - CRAWL) / (CRAWL / 2) * submitted[0])
     assert submitted[0] == pytest.approx(submitted[2])
+
+
+def test_non_finite_shares_keep_the_last_weights():
+    assert weights_from_api(["m1", BURN], {"m1": float("inf")}) is None
+    assert weights_from_api(["m1", BURN], {"m1": float("nan")}) is None
+
+
+def test_a_validator_that_cannot_check_tasks_sets_no_weights():
+    made = Validator.__new__(Validator)
+    made.config = SimpleNamespace(neuron=SimpleNamespace(disable_set_weights=False))
+    made.scrapingdog_key = ""
+    assert not made.should_set_weights()
+
+    made.scrapingdog_key = "key"
+    made.crawl_checker = SimpleNamespace(
+        trouble="the provider failed on 3 tasks in a row"
+    )
+    assert not made.should_set_weights()
+
+    made.crawl_checker.trouble = None
+    assert made.should_set_weights()
+
+
+def test_weights_come_from_the_validators_own_verdicts_once_it_has_any():
+    ledger = Ledger(":memory:")
+    ledger.record("t1", "crawl", "m1", "pass", 90, 100, 100)
+    ledger.record("t2", "crawl", "m2", "pass", 10, 100, 100)
+    ledger.record("t3", "crawl", "lazy", "pass", 50, 100, 100)
+    ledger.record("t4", "crawl", "short", "pass", 40, 100, 80)
+
+    weights = weights_from_api(
+        ["m1", "m2", "lazy", "short", BURN], {"m1": 1.0}, ledger=ledger
+    )
+
+    assert list(weights) == pytest.approx(
+        [CRAWL * 0.9, CRAWL * 0.1, 0.0, 0.0, 1 - CRAWL]
+    )
+
+
+def test_a_verdict_ledger_windows_and_gates_its_shares():
+    ledger = Ledger(":memory:")
+    ledger.record("old", "crawl", "m1", "pass", 100, 100, 100, at=1.0)
+    ledger.record("new", "crawl", "m2", "pass", 60, 100, 100)
+    ledger.record("gated", "crawl", "m3", "pass", 60, 100, 84)
+    ledger.record("failed", "crawl", "m4", "fail", 0, 100, 100)
+
+    assert ledger.shares() == {"crawl": {"m2": 1.0}}
+    assert ledger.count() == 3

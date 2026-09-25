@@ -60,7 +60,7 @@ def _score_in_child(
         fetched |= cleared_by_render(kept, conn.recv())
         result = score(rows, assigned, fetched, seed, min_samples, match_ratio)
         texts = live_texts(kept, fetched)
-        result["urls"] = url_log(rows, result["samples"], texts)
+        result["urls"] = url_log(rows, result["samples"], texts, result["rejected"])
         conn.send(("scored", result))
     except MemoryError:
         conn.send(("too_large", None))

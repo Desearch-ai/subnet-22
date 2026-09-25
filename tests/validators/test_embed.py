@@ -103,15 +103,11 @@ class Reference:
 class Api:
     hotkey = "5Validator"
 
-    def __init__(self, job):
-        self.job = job
+    def __init__(self):
         self.posts: list[tuple[str, dict]] = []
 
     async def post(self, path, body=None):
         self.posts.append((path, body))
-        if path == "/v1/validation/lease":
-            job, self.job = self.job, None
-            return {"job": job}
         return {}
 
 
@@ -124,8 +120,12 @@ async def judged(body: bytes, reference: Reference, given: bytes | None = None):
     async with serving(handler) as base, aiohttp.ClientSession() as http:
         job = {
             "task_id": "t1",
+            "kind": "embed",
             "miner": "5Miner",
             "model": "tiny",
+            "seed": "seed",
+            "texts": len(INPUTS),
+            "chars": 100,
             "download_url": base + "upload",
             "input": {
                 "url": base + "input",
@@ -134,16 +134,16 @@ async def judged(body: bytes, reference: Reference, given: bytes | None = None):
                 ).hexdigest(),
             },
         }
-        api = Api(job)
+        api = Api()
         checker = EmbedValidator(api, http, {"tiny": reference})
-        await checker.check_next_task()
-        return api.posts[1:]
+        await checker.check(job)
+        return api.posts, checker
 
 
 def test_honest_vectors_pass_on_a_recomputed_sample():
     reference = Reference()
 
-    ((path, result),) = asyncio.run(judged(upload(), reference))
+    ((path, result),), _ = asyncio.run(judged(upload(), reference))
 
     assert path == "/v1/validation/t1/score"
     assert (result["verdict"], result["matched"]) == ("pass", EMBED_SAMPLES)
@@ -154,24 +154,25 @@ def test_honest_vectors_pass_on_a_recomputed_sample():
 def test_vectors_from_another_model_fail_as_a_mismatch():
     other = upload(vector=lambda row: encode_vector(truth(row["text"] + " other")))
 
-    ((_, result),) = asyncio.run(judged(other, Reference()))
+    ((_, result),), _ = asyncio.run(judged(other, Reference()))
 
     assert (result["verdict"], result["reason"]) == ("fail", "vectors_mismatch")
     assert result["mismatched"] == EMBED_SAMPLES
 
 
-def test_a_reference_outage_hands_the_job_back_instead_of_judging():
-    ((path, body),) = asyncio.run(judged(upload(), Reference(fail=True)))
+def test_a_reference_outage_leaves_the_upload_for_later_instead_of_judging():
+    posts, checker = asyncio.run(judged(upload(), Reference(fail=True)))
 
-    assert (path, body) == ("/v1/validation/t1/release", {"reason": "provider"})
+    assert posts == [] and "t1" in checker.deferred
+    assert checker.provider_failures == 1
 
 
 def test_an_input_that_does_not_match_its_hash_is_our_problem_not_the_miners():
     swapped = write_parquet(INPUTS[:1], INPUT_SCHEMA)
 
-    ((path, body),) = asyncio.run(judged(upload(), Reference(), given=swapped))
+    posts, checker = asyncio.run(judged(upload(), Reference(), given=swapped))
 
-    assert (path, body) == ("/v1/validation/t1/release", {"reason": "download"})
+    assert posts == [] and "t1" in checker.deferred
 
 
 @pytest.mark.parametrize(
@@ -197,3 +198,18 @@ def test_the_task_api_accepts_every_result_the_checker_sends(body, monkeypatch):
         result |= compare(picked, vectors, np.array([truth(r["text"]) for r in picked]))
 
     assert EmbedScore.model_validate(result).model_dump(exclude_unset=True) == result
+
+
+def test_a_vector_inflated_within_the_norm_tolerance_is_judged_on_its_cosine():
+    def slanted(row) -> bytes:
+        exact = truth(row["text"])
+        other = truth(row["text"] + " other")
+        other -= (other @ exact) * exact
+        other /= np.linalg.norm(other)
+        unit = 0.982 * exact + np.sqrt(1 - 0.982**2) * other
+        return (unit * 1.0089).astype("<f2").tobytes()
+
+    ((_, result),), _ = asyncio.run(judged(upload(vector=slanted), Reference()))
+
+    assert (result["verdict"], result["reason"]) == ("fail", "vectors_mismatch")
+    assert result["min_similarity"] < 0.99

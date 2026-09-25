@@ -13,17 +13,15 @@ import pytest
 from aiohttp import web
 
 from desearch.extraction.schema import PAGE_SCHEMA
-from neurons.validators import crawl
 from neurons.validators.crawl import CrawlValidator
 from neurons.validators.scoring import (
     FetchedPage,
     load_upload,
-    sample_seed,
     score,
 )
 from neurons.validators.scoring_process import cap_memory
 from tests.local_http import serving
-from tests.synthetic import synthetic, to_parquet
+from tests.synthetic import SEED, synthetic, to_parquet
 
 
 def score_task(rows, assigned, fetched, **options):
@@ -42,6 +40,7 @@ def score_task(rows, assigned, fetched, **options):
                 "miner": "m",
                 "urls": assigned,
                 "download_url": base + "x",
+                "seed": SEED,
             }
             validator = CrawlValidator(
                 SimpleNamespace(hotkey="v"), fetch, http, min_samples=5, **options
@@ -53,13 +52,12 @@ def score_task(rows, assigned, fetched, **options):
 
 def test_scoring_in_a_child_gives_the_same_result():
     rows, assigned, fetched = synthetic(8)
-    seed = sample_seed("t1", "v", crawl.SAMPLE_SALT)
 
     result = score_task(rows, assigned, fetched)
     urls = result.pop("urls")
     result.pop("took_ms")
 
-    assert result == score(rows, assigned, fetched, seed, 5, 0.8)
+    assert result == score(rows, assigned, fetched, SEED, 5, 0.8)
     assert [detail["url"] for detail in urls] == [row["url"] for row in rows]
     assert {d["url"] for d in urls if d["sampled"]} == {
         s["url"] for s in result["samples"]
