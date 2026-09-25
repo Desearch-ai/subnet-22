@@ -1,6 +1,6 @@
 # Desearch 2.0: incentives and rewards
 
-Miners contribute useful data and retrieval capabilities, with assessed work counting toward subnet rewards. For crawling the rules are set: half of the emission is split among miners by their share of verified pages ([how it works](../../how-it-works.md#how-miners-are-paid)). For embedding and later programs, detailed rules will follow implementation and testing, before participation is requested.
+Miners contribute useful data and retrieval capabilities, with assessed work counting toward subnet rewards. For crawling the rules are set: miners are paid by their share of verified pages ([emission](../../emission.md)). For embedding and later programs, detailed rules will follow implementation and testing, before participation is requested.
 
 ## What the first phase would recognize
 

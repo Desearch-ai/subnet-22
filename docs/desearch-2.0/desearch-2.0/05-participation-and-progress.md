@@ -2,7 +2,7 @@
 
 ## What changes now?
 
-Crawling is now SN22's work, replacing AI and X search. Validators set weights from crawl shares: half of the emission is burned and half is split among miners by their share of verified pages. A validator started with `run.sh` moves over automatically; miners switch to the crawl miner ([miner setup](../../miner-setup.md)).
+Crawling is now SN22's work, replacing AI and X search. Validators set weights from crawl shares: miners are paid by their share of verified pages ([emission](../../emission.md)). A validator started with `run.sh` moves over automatically; miners switch to the crawl miner ([miner setup](../../miner-setup.md)).
 
 Embedding and the later programs are planned work and future compute needs, not open programs. No equipment purchase or new submission for them is requested now.
 
