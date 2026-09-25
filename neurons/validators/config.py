@@ -41,7 +41,7 @@ def add_args(cls, parser):
         "--neuron.storage_url",
         type=str,
         help="Public URL of the bucket uploads land in; the open list and the uploads are read from it.",
-        default="",
+        default="https://r2.desearch.ai",
     )
 
 
