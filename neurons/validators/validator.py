@@ -1,369 +1,322 @@
 import asyncio
-import itertools
+import logging
+import math
 import os
+import signal
 import sys
 import time
-from traceback import print_exception
-from typing import Optional, Tuple
 
+import aiohttp
 import bittensor as bt
 import numpy as np
-from bittensor.core.metagraph import AsyncMetagraph
+import wandb
 
-from desearch.miner_config import (
-    SEARCH_TYPES,
-    SearchType,
-    default_miner_manifest,
-    lane_key,
-    normalize_miner_manifest,
-)
-from desearch.protocol import IsAlive, SearchMode
-from desearch.redis.redis_client import close_redis, initialize_redis
-from desearch.redis.utils import (
-    load_moving_averaged_scores,
-    save_moving_averaged_scores,
-)
-from desearch.utils import resync_metagraph
-from neurons.validators import env
-from neurons.validators.base_validator import AbstractNeuron
-from neurons.validators.clients.utility_api_client import UtilityAPIClient
-from neurons.validators.config import add_args, check_config, config
-from neurons.validators.proxy.uid_manager import UIDManager
-from neurons.validators.scoring import capacity, miner_db
-from neurons.validators.scoring.query_scheduler import QueryScheduler
-from neurons.validators.scoring.scoring_store import ScoringStore
-from neurons.validators.scoring.synthetic_query_generator import SyntheticQueryGenerator
-from neurons.validators.scoring.weights import init_wandb, set_weights
-from neurons.validators.scrapers.advanced_scraper_validator import (
-    AdvancedScraperValidator,
-)
-from neurons.validators.scrapers.x_scraper_validator import XScraperValidator
+import desearch
+from desearch import env
+from desearch.client import TaskApiClient
+from desearch.embedding import MODELS, OPENROUTER_EMBEDDINGS, EmbeddingClient
+from desearch.fetch import Fetcher, ScrapingDog
+from desearch.manifest import seed_from_hash
+from neurons.validators.config import ENV_FILE, add_args, check_config, config
+from neurons.validators.crawl import CrawlValidator
+from neurons.validators.embed import EmbedValidator
+from neurons.validators.fetchers import OWN_IP_SETTINGS, SampleFetcher
+from neurons.validators.ledger import Ledger
+from neurons.validators.weights import set_weights, weights_from_shares
+
+WEIGHTS_WINDOW_BLOCKS = 20
+METAGRAPH_SYNC_S = 600
+POLL_S = 60
+AFTER_WEIGHTS_S = 300
+SHARES_TIMEOUT = aiohttp.ClientTimeout(total=30.0)
+SIGNER_RETRY_S = 30
+VALIDATION_JOBS = 4
+EMBED_JOBS = 2
+# The engine pins the same hosts for its queries; SiliconFlow is left out as it runs fp8.
+EMBED_PROVIDERS = "DeepInfra,Nebius"
+SCRAPINGDOG_CONCURRENCY = 8
+DOWNLOAD_TIMEOUT = aiohttp.ClientTimeout(total=120.0)
+WANDB_PROJECT = "smart-scrape-1.0"
+WANDB_ENTITY = "smart-scrape"
 
 
-class Neuron(AbstractNeuron):
+class Validator:
     @classmethod
     def add_args(cls, parser):
         add_args(cls, parser)
 
-    @classmethod
-    def config(cls):
-        return config(cls)
-
-    subtensor: "bt.AsyncSubtensor"
-    wallet: "bt.Wallet"
-    metagraph: "AsyncMetagraph"
-
-    loop: asyncio.AbstractEventLoop
-
-    advanced_scraper_validator: "AdvancedScraperValidator"
-    x_scraper_validator: "XScraperValidator"
-
-    moving_average_scores: np.ndarray = None
-    uid: int = None
-    utility_api: UtilityAPIClient
-    validator_identity: dict | None = None
-
-    uid_manager: UIDManager
-
     def __init__(self):
-        self.config = Neuron.config()
+        env.load(ENV_FILE)
+        self.config = config(Validator)
         check_config(self.config)
         bt.logging(config=self.config, logging_dir=self.config.neuron.full_path)
         bt.logging.set_config(self.config)
-        print(self.config)
-        bt.logging.info("neuron.__init__()")
+        bt.logging.register_primary_logger("validator")
+        logging.getLogger("trafilatura").setLevel(logging.ERROR)
+        bt.logging.info(str(self.config))
+        self.scrapingdog_key = os.environ.get("SCRAPINGDOG_API_KEY", "")
+        self.ledger = Ledger(os.path.join(self.config.neuron.full_path, "verdicts.db"))
+        self.stopping = asyncio.Event()
 
-        self.advanced_scraper_validator = AdvancedScraperValidator(neuron=self)
-        self.x_scraper_validator = XScraperValidator(neuron=self)
-
-        self.available_uids = []
-        self.uid_manager = UIDManager()
-        capacity.set_router(self.uid_manager)
-        self.validator_identity = None
-        self.scoring_store: Optional[ScoringStore] = None
-        self.should_exit = False
-
-    async def initialize(self):
+    async def initialize(self) -> None:
         bt.logging.info(
-            f"Running validator for subnet: {self.config.netuid} on network: {self.config.subtensor.chain_endpoint}"
+            f"Running validator for subnet {self.config.netuid} on {self.config.subtensor.chain_endpoint}"
         )
+        self.wallet = bt.Wallet(config=self.config)
+        self.subtensor = bt.AsyncSubtensor(
+            config=self.config, websocket_shutdown_timer=None
+        )
+        await self.subtensor.initialize()
 
-        if self.config.neuron.offline:
-            from desearch.bittensor.dendrite import Dendrite
-            from desearch.bittensor.subtensor import Subtensor
-            from desearch.bittensor.wallet import Wallet
-
-            self.wallet = Wallet(config=self.config)
-            self.subtensor = Subtensor(config=self.config)
-            await self.subtensor.initialize()
-            self.metagraph = await self.subtensor.metagraph(self.config.netuid)
-            self.hotkeys = list(self.metagraph.hotkeys)
-
-            self.dendrite_list = [
-                Dendrite(wallet=self.wallet),
-                Dendrite(wallet=self.wallet),
-                Dendrite(wallet=self.wallet),
-            ]
-            self.isalive_dendrite = Dendrite(wallet=self.wallet)
-        else:
-            self.wallet = bt.Wallet(config=self.config)
-
-            self.subtensor = bt.AsyncSubtensor(
-                config=self.config, websocket_shutdown_timer=None
-            )
-            await self.subtensor.initialize()
-
-            self.metagraph = await self.subtensor.metagraph(self.config.netuid)
-
-            self.hotkeys = list(self.metagraph.hotkeys)
-
-            self.dendrite_list = [
-                bt.Dendrite(wallet=self.wallet),
-                bt.Dendrite(wallet=self.wallet),
-                bt.Dendrite(wallet=self.wallet),
-            ]
-            self.isalive_dendrite = bt.Dendrite(wallet=self.wallet)
-
-        self.dendrites = itertools.cycle(self.dendrite_list)
-
+        self.metagraph = await self.subtensor.metagraph(self.config.netuid)
         self.uid = self.metagraph.hotkeys.index(self.wallet.hotkey.ss58_address)
-        self.validator_identity = self._build_validator_identity()
+        self.http = aiohttp.ClientSession(timeout=DOWNLOAD_TIMEOUT)
 
-        await initialize_redis()
+    async def run(self) -> None:
+        await self.initialize()
+        self.init_wandb()
+        loop = asyncio.get_running_loop()
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            loop.add_signal_handler(sig, self.stopping.set)
 
-    def _build_validator_identity(self) -> dict:
-        hotkey = self.wallet.hotkey.ss58_address
-        coldkey = next(
-            (nr.coldkey for nr in self.metagraph.neurons if nr.hotkey == hotkey),
-            None,
-        )
-
-        identity = {
-            "uid": self.uid,
-            "hotkey": hotkey,
-            "coldkey": coldkey,
-            "netuid": self.config.netuid,
-        }
-
-        external_ip = getattr(self.config.axon, "external_ip", None)
-        port = getattr(self.config.axon, "port", None)
-
-        if external_ip:
-            identity["ip"] = external_ip
-        if port:
-            identity["port"] = port
-
-        return identity
-
-    async def sync_available_uids(self):
-        start_time = time.time()
-
+        background = [
+            asyncio.create_task(self.sync_metagraph()),
+            asyncio.create_task(self.sync_weights()),
+        ]
         try:
-            self.available_uids = await self.get_available_uids_is_alive()
+            await asyncio.gather(self.check_crawl_tasks(), self.check_embed_tasks())
+        finally:
+            for task in background:
+                task.cancel()
+            await asyncio.gather(*background, return_exceptions=True)
 
-            await self.uid_manager.resync(
-                available_uids=self.available_uids, metagraph=self.metagraph
-            )
-        except Exception as e:
+    async def check_crawl_tasks(self) -> None:
+        if reason := self.crawl_disabled_reason():
             bt.logging.error(
-                f"sync_available_uids Failed to update available UIDs: {e}"
+                f"Not checking crawl tasks, so not setting weights either: {reason}"
             )
+            await self.stopping.wait()
+            return
 
-        end_time = time.time()
-        execution_time = end_time - start_time
-        bt.logging.info(f"sync_available_uids finished in: {execution_time}s")
-
-    async def check_uid(self, axon, uid):
-        """Ping the miner's axon via IsAlive and register its declared
-        concurrency per search type. Miners that omit a manifest fall back
-        to the default concurrency (1 per type). IsAlive outcomes feed the
-        same reachability counter as scoring/organic calls, so a single
-        miss flips ``unreachable_since`` — one IsAlive cycle (~10 min) is
-        enough even without any scoring attempts."""
-
-        try:
-            response = await self.isalive_dendrite(
-                axon, IsAlive(), deserialize=False, timeout=5
+        signer = await self.api_signer()
+        async with (
+            TaskApiClient(self.config.neuron.task_api_url, self.wallet.hotkey) as api,
+            ScrapingDog(self.scrapingdog_key, SCRAPINGDOG_CONCURRENCY) as scrapingdog,
+        ):
+            fetcher = SampleFetcher(Fetcher(OWN_IP_SETTINGS), scrapingdog)
+            validator = self.crawl_checker = CrawlValidator(
+                api,
+                fetcher,
+                self.http,
+                ledger=self.ledger,
+                storage_url=self.config.neuron.storage_url,
+                seeds=self.seed_for,
+                signer=signer,
             )
-            if not response.is_success:
-                raise Exception(f"UID {uid} is not active")
-        except Exception:
-            for st in SEARCH_TYPES:
-                await capacity.note_call_result(uid, st, success=False)
-            raise
-
-        manifest_data = getattr(response, "manifest", None) or {}
-        try:
-            manifest = normalize_miner_manifest(manifest_data)
-        except Exception as e:
-            bt.logging.warning(f"UID {uid} bad manifest, using defaults: {e}")
-            manifest = default_miner_manifest()
-
-        hotkey = self.metagraph.hotkeys[uid]
-        coldkey = self.metagraph.neurons[uid].coldkey
-
-        for lane, declared in manifest.concurrency.by_lane().items():
-            await miner_db.register_miner(
-                uid=uid,
-                search_type=lane_key(lane),
-                declared=declared,
-                hotkey=hotkey,
-                coldkey=coldkey,
-            )
-
-        for st in SEARCH_TYPES:
-            await capacity.note_call_result(uid, st, success=True)
-
-        return axon
-
-    async def get_available_uids_is_alive(self):
-        uids = [uid.item() for uid in self.metagraph.uids]
-        group_count = 5
-        group_size = max(1, (len(uids) + group_count - 1) // group_count)
-
-        available_uids = []
-        unavailable_uids = []
-
-        for start in range(0, len(uids), group_size):
-            group = uids[start : start + group_size]
-            tasks = [self.check_uid(self.metagraph.axons[uid], uid) for uid in group]
-
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-
-            for uid, result in zip(group, results):
-                if not isinstance(result, Exception):
-                    available_uids.append(uid)
-                else:
-                    unavailable_uids.append(uid)
-
-        bt.logging.info(
-            f"Available UIDs: {available_uids}, total: {len(available_uids)}"
-        )
-        bt.logging.info(
-            f"Unavailable UIDs: {unavailable_uids}, total: {len(unavailable_uids)}"
-        )
-
-        return available_uids
-
-    async def get_random_miner(
-        self,
-        uid: Optional[int] = None,
-        search_type: Optional[SearchType] = None,
-        mode: Optional[SearchMode] = None,
-    ) -> Tuple[int, bt.AxonInfo]:
-        """Return (uid, axon) for the given uid, or a weighted-random miner."""
-        if uid is not None:
-            bt.logging.info(f"Run specific UID: {uid}")
-            return uid, self.metagraph.axons[uid]
-
-        selected_uid = self.uid_manager.get_miner_uid(
-            search_type=SearchType(search_type) if search_type else None,
-            mode=SearchMode(mode) if mode else None,
-        )
-
-        bt.logging.trace(f"Run random UID: {selected_uid} (search_type={search_type})")
-
-        return selected_uid, self.metagraph.axons[selected_uid]
-
-    async def update_moving_averaged_scores(self, uids, rewards):
-        try:
-            uids = np.asarray(uids, dtype=np.int64)
-            rewards = np.asarray(rewards, dtype=np.float32)
-
-            size = self.moving_averaged_scores.shape
-
-            # np.add.at is unbuffered, so duplicate UIDs accumulate correctly
-            # instead of overwriting each other.
-            scattered_rewards = np.zeros(size, dtype=np.float32)
-            counts = np.zeros(size, dtype=np.float32)
-            np.add.at(scattered_rewards, uids, rewards)
-            np.add.at(counts, uids, np.ones_like(rewards))
-            mask = counts > 0
-            scattered_rewards[mask] = scattered_rewards[mask] / counts[mask]
-
-            average_reward = scattered_rewards.mean()
-            bt.logging.info(f"Scattered reward: {average_reward:.6f}")
-
-            alpha = 0.5
-
-            self.moving_averaged_scores = (
-                alpha * scattered_rewards + (1 - alpha) * self.moving_averaged_scores
-            ).astype(np.float32)
-
-            await save_moving_averaged_scores(self.moving_averaged_scores)
-
             bt.logging.info(
-                f"Moving averaged scores: {self.moving_averaged_scores.mean():.6f}"
+                f"Checking crawl uploads listed at {self.config.neuron.storage_url},"
+                f" reporting to {self.config.neuron.task_api_url}"
             )
-            return scattered_rewards
-        except Exception as e:
-            bt.logging.error(f"Error in update_moving_averaged_scores: {e}")
-            raise e
+            try:
+                await asyncio.gather(
+                    *(validator.run(self.stopping) for _ in range(VALIDATION_JOBS))
+                )
+            finally:
+                await fetcher.aclose()
+        requests = scrapingdog.requests
+        bt.logging.info(
+            f"Crawl validation stopped: {fetcher.own_ip_fetches} samples fetched from"
+            f" our own IP, {fetcher.scrapingdog_fetches} through ScrapingDog"
+            f" ({requests['plain']} plain and {requests['rendered']} rendered requests)"
+        )
 
-    async def blocks_until_next_epoch(self):
-        bt.logging.info("Calculating block until next epoch")
+    async def check_embed_tasks(self) -> None:
+        key = os.environ.get("EMBED_API_KEY", "")
+        if not key:
+            bt.logging.info(
+                f"Not checking embed tasks: EMBED_API_KEY is not set in {ENV_FILE}"
+            )
+            await self.stopping.wait()
+            return
 
+        url = os.environ.get("EMBED_API_URL", OPENROUTER_EMBEDDINGS)
+        providers = tuple(
+            p.strip()
+            for p in os.environ.get("EMBED_PROVIDERS", EMBED_PROVIDERS).split(",")
+            if p.strip()
+        )
+        references = {
+            name: EmbeddingClient(url, key, model, providers)
+            for name, model in MODELS.items()
+        }
+        signer = await self.api_signer()
+        async with TaskApiClient(
+            self.config.neuron.task_api_url, self.wallet.hotkey
+        ) as api:
+            checker = EmbedValidator(
+                api,
+                self.http,
+                references,
+                ledger=self.ledger,
+                storage_url=self.config.neuron.storage_url,
+                seeds=self.seed_for,
+                signer=signer,
+            )
+            bt.logging.info(f"Validating embed tasks through {url}")
+            try:
+                await asyncio.gather(
+                    *(checker.run(self.stopping) for _ in range(EMBED_JOBS))
+                )
+            finally:
+                for reference in references.values():
+                    await reference.aclose()
+
+    def init_wandb(self) -> None:
+        if not self.config.wandb_on:
+            return
+        run_name = f"validator-{self.uid}-{desearch.__version__}"
+        self.config.uid = self.uid
+        self.config.hotkey = self.wallet.hotkey.ss58_address
+        self.config.run_name = run_name
+        self.config.version = desearch.__version__
+        self.config.type = "validator"
+
+        run = wandb.init(
+            name=run_name,
+            project=WANDB_PROJECT,
+            entity=WANDB_ENTITY,
+            config=self.config,
+            dir=self.config.neuron.full_path,
+            reinit="finish_previous",
+        )
+        self.config.signature = self.wallet.hotkey.sign(run.id.encode()).hex()
+        wandb.config.update(self.config, allow_val_change=True)
+        bt.logging.success(f"Started wandb run for project '{WANDB_PROJECT}'")
+
+    def crawl_disabled_reason(self) -> str | None:
+        if not self.scrapingdog_key:
+            return f"SCRAPINGDOG_API_KEY is not set, add it to {ENV_FILE}"
+        if not self.config.neuron.storage_url:
+            return (
+                "--neuron.storage_url is not set: the public URL of the uploads bucket"
+            )
+        return None
+
+    async def seed_for(self, block: int) -> str | None:
+        """The sample seed for an upload, from the chain itself; None until its block exists."""
+        if block > await self.subtensor.get_current_block():
+            return None
+        return seed_from_hash(await self.subtensor.get_block_hash(block))
+
+    async def api_signer(self) -> str:
+        """The key the task API signs manifests with, fetched once."""
+        url = f"{self.config.neuron.task_api_url.rstrip('/')}/v1/key"
+        while not self.stopping.is_set():
+            try:
+                async with self.http.get(
+                    url, timeout=SHARES_TIMEOUT, raise_for_status=True
+                ) as response:
+                    return (await response.json())["signer"]
+            except Exception as error:
+                bt.logging.warning(f"Task API signer unavailable, retrying: {error!r}")
+                await asyncio.sleep(SIGNER_RETRY_S)
+        return ""
+
+    async def shares(self) -> dict[str, dict[str, float]]:
+        url = f"{self.config.neuron.task_api_url.rstrip('/')}/v1/shares"
+        async with self.http.get(
+            url, timeout=SHARES_TIMEOUT, raise_for_status=True
+        ) as response:
+            pools = (await response.json()).get("pools", {})
+        parsed = {
+            pool: {hotkey: float(share) for hotkey, share in shares.items()}
+            for pool, shares in pools.items()
+        }
+        for pool, shares in parsed.items():
+            for hotkey, share in shares.items():
+                if not math.isfinite(share) or share < 0:
+                    raise ValueError(f"{pool} share for {hotkey} is {share}")
+        return parsed
+
+    async def weights(self) -> np.ndarray | None:
+        """From this validator's own verdicts; None keeps the last weights."""
+        if self.ledger.count():
+            shares = self.ledger.shares()
+            ineligible = await self.ineligible()
+            shares = {
+                pool: {hk: s for hk, s in miners.items() if hk not in ineligible}
+                for pool, miners in shares.items()
+            }
+        else:
+            try:
+                shares = await self.shares()
+            except Exception as error:
+                bt.logging.error(
+                    f"No verdicts of our own yet and the task API's shares are"
+                    f" unavailable, keeping the last weights: {error!r}"
+                )
+                return None
+            bt.logging.warning(
+                "No verdicts of our own in the window; weights follow the task API's"
+                " shares until there are"
+            )
+        weights = weights_from_shares(list(self.metagraph.hotkeys), shares)
+        return weights if weights.any() else None
+
+    async def ineligible(self) -> set[str]:
+        """Miners under the coverage gate: claims that lapsed are seen only by the task API."""
+        url = f"{self.config.neuron.task_api_url.rstrip('/')}/v1/health"
+        try:
+            async with self.http.get(
+                url, timeout=SHARES_TIMEOUT, raise_for_status=True
+            ) as response:
+                coverage = (await response.json()).get("coverage", {})
+        except Exception as error:
+            bt.logging.warning(f"Coverage unavailable, applying no gate: {error!r}")
+            return set()
+        return {hk for hk, c in coverage.items() if not c.get("eligible", True)}
+
+    async def sync_weights(self) -> None:
+        while True:
+            try:
+                blocks_left = await self.blocks_until_next_epoch()
+                bt.logging.info(f"Blocks left until next epoch: {blocks_left}")
+                if blocks_left <= WEIGHTS_WINDOW_BLOCKS and self.should_set_weights():
+                    started = time.time()
+                    # Fresh, so a UID that changed hands since the last sync is not paid.
+                    self.metagraph = await self.subtensor.metagraph(self.config.netuid)
+                    weights = await self.weights()
+                    if weights is not None:
+                        await set_weights(self, weights)
+                    bt.logging.info(f"Weight setting took {time.time() - started:.2f}s")
+                    await asyncio.sleep(AFTER_WEIGHTS_S)
+            except Exception as error:
+                bt.logging.error(f"Error while setting weights: {error}")
+            await asyncio.sleep(POLL_S)
+
+    async def sync_metagraph(self) -> None:
+        while True:
+            await asyncio.sleep(METAGRAPH_SYNC_S)
+            try:
+                await self.check_registered()
+                self.metagraph = await self.subtensor.metagraph(self.config.netuid)
+                bt.logging.info(f"Metagraph synced: {int(self.metagraph.n)} uids")
+            except Exception as error:
+                bt.logging.error(f"Error while syncing the metagraph: {error}")
+
+    async def blocks_until_next_epoch(self) -> int:
         current_block = await self.subtensor.get_current_block()
         tempo = await self.subtensor.tempo(self.config.netuid, current_block)
         return tempo - (current_block + self.config.netuid + 1) % (tempo + 1)
 
-    async def sync_metagraph(self):
-        while True:
-            try:
-                await asyncio.sleep(10 * 60)  # 10 minutes
-
-                bt.logging.info("Syncing metagraph and available UIDs")
-
-                sync_start_time = time.time()
-
-                # Ensure validator hotkey is still registered on the network.
-                await self.check_registered()
-
-                await resync_metagraph(self)
-                await self.sync_available_uids()
-
-                bt.logging.info(
-                    f"Completed syncing metagraph and available UIDs: {time.time() - sync_start_time:.2f} seconds"
-                )
-
-            except Exception as e:
-                bt.logging.error(f"Error in sync_metagraph: {e}")
-
-    async def sync(self):
-        """
-        Weight-setting loop. Runs set_weights when within the last 20 blocks
-        of an epoch.
-        """
-
-        while True:
-            try:
-                blocks_left = await self.blocks_until_next_epoch()
-
-                bt.logging.info(f"Blocks left until next epoch: {blocks_left}")
-
-                if blocks_left <= 20 and self.should_set_weights():
-                    weight_set_start_time = time.time()
-                    bt.logging.info("Setting weights as per condition.")
-                    await set_weights(self)
-                    weight_set_end_time = time.time()
-                    bt.logging.info(
-                        f"Weight setting execution time: {weight_set_end_time - weight_set_start_time:.2f} seconds"
-                    )
-                    await asyncio.sleep(300)
-
-            except Exception as e:
-                bt.logging.error(f"Error in validator sync: {e}")
-
-            await asyncio.sleep(60)
-
-    async def check_registered(self):
+    async def check_registered(self) -> None:
         if not await self.subtensor.is_hotkey_registered(
             netuid=self.config.netuid,
             hotkey_ss58=self.wallet.hotkey.ss58_address,
         ):
             bt.logging.error(
                 f"Wallet: {self.wallet} is not registered on netuid {self.config.netuid}."
-                f" Please register the hotkey using `btcli subnets register` before trying again"
+                " Please register the hotkey using `btcli subnets register` before trying again"
             )
             sys.exit()
 
@@ -371,92 +324,33 @@ class Neuron(AbstractNeuron):
         if self.config.neuron.disable_set_weights:
             bt.logging.info("Weight setting is disabled by configuration.")
             return False
-
+        if reason := self.checker_trouble():
+            bt.logging.error(f"Not setting weights: {reason}")
+            return False
         return True
 
-    async def start(self):
-        try:
-            bt.logging.info("Starting Neuron")
+    def checker_trouble(self) -> str | None:
+        """A validator that cannot check tasks has no standing to weight them."""
+        if reason := self.crawl_disabled_reason():
+            return reason
+        checker = getattr(self, "crawl_checker", None)
+        return checker.trouble if checker is not None else None
 
-            await self.initialize()
+    async def stop(self) -> None:
+        bt.logging.info("Stopping validator")
+        if hasattr(self, "http"):
+            await self.http.close()
+        if hasattr(self, "subtensor"):
+            await self.subtensor.close()
 
-            os.makedirs(os.path.dirname(env.MINER_DB_PATH), exist_ok=True)
-            await miner_db.initialize(env.MINER_DB_PATH)
 
-            await self.sync_available_uids()  # Initial sync
+async def main() -> None:
+    validator = Validator()
+    try:
+        await validator.run()
+    finally:
+        await validator.stop()
 
-            self.loop = asyncio.get_event_loop()
 
-            init_wandb(self)
-
-            # Init Weights.
-            bt.logging.debug("loading", "moving_averaged_scores")
-            self.moving_averaged_scores = await load_moving_averaged_scores(
-                self.metagraph, self.config
-            )
-            bt.logging.debug(str(self.moving_averaged_scores))
-
-            scoring_store = ScoringStore()
-            self.scoring_store = scoring_store
-
-            utility_api = UtilityAPIClient(
-                base_url=self.config.neuron.utility_api_url,
-                wallet=self.wallet,
-            )
-            self.utility_api = utility_api
-
-            generator = SyntheticQueryGenerator()
-
-            validators = {
-                "ai_search": self.advanced_scraper_validator,
-                "x_search": self.x_scraper_validator,
-            }
-
-            query_scheduler = QueryScheduler(
-                neuron=self,
-                generator=generator,
-                scoring_store=scoring_store,
-                validators=validators,
-            )
-
-            self.loop.create_task(self.sync_metagraph())
-            self.loop.create_task(self.sync())
-            self.loop.create_task(query_scheduler.run())
-            self.loop.create_task(self.run_unreachable_decay_loop())
-
-        except KeyboardInterrupt:
-            self.axon.stop()
-            bt.logging.success("Validator killed by keyboard interrupt.")
-            sys.exit()
-        except Exception as err:
-            # In case of unforeseen errors, the validator will log the error and quit
-            bt.logging.error("Error during validation", str(err))
-            bt.logging.debug(print_exception(type(err), err, err.__traceback__))
-            self.should_exit = True
-
-    async def run_unreachable_decay_loop(self) -> None:
-        """Tick verified-decay for unreachable miners every minute."""
-        while not self.should_exit:
-            try:
-                await capacity.decay_unreachable_tick()
-                await self.uid_manager.drop_unreachable()
-            except Exception as e:
-                bt.logging.error(f"[UnreachableDecay] {e}")
-            await asyncio.sleep(60)
-
-    async def stop(self):
-        bt.logging.info("Stopping Neuron")
-
-        await close_redis()
-
-        await miner_db.close()
-
-        if hasattr(self, "utility_api"):
-            await self.utility_api.close()
-
-        await self.subtensor.close()
-
-        for dendrite in self.dendrite_list:
-            await dendrite.aclose_session()
-
-        await self.isalive_dendrite.aclose_session()
+if __name__ == "__main__":
+    asyncio.run(main())

@@ -1,466 +1,313 @@
-import argparse
+from __future__ import annotations
+
 import asyncio
-import copy
-import sys
+import json
+import logging
+import signal
 import time
-import traceback
-from abc import ABC, abstractmethod
-from collections import deque
-from functools import partial
-from pathlib import Path
-from typing import Dict, Tuple
+from concurrent.futures import ThreadPoolExecutor
 
-from dotenv import load_dotenv
+import aiohttp
+from yarl import URL
 
-load_dotenv(Path(__file__).parent / ".env")
+from desearch import env
+from desearch.client import TaskApiClient, TaskApiError
+from desearch.fetch import Fetched, Fetcher, ScrapingDog, needs_fallback
+from neurons.miners.config import ENV_FILE, Settings
+from neurons.miners.rows import UploadWriter, build_row, error_row
 
-import bittensor as bt
-from bittensor.core.metagraph import AsyncMetagraph
+log = logging.getLogger("miner")
 
-import desearch
-from desearch.miner_config import load_miner_manifest
-from desearch.protocol import (
-    IsAlive,
-    ScraperStreamingSynapse,
-    TwitterIDSearchSynapse,
-    TwitterSearchSynapse,
-    TwitterURLsSearchSynapse,
-)
-from neurons.miners.config import check_config, get_config
-from neurons.miners.scraper_miner import ScraperMiner
-from neurons.miners.twitter_search_miner import TwitterSearchMiner
-
-RATE_LIMIT_WINDOW_MINUTES = 1
-RATE_LIMIT_MAX_REQUESTS = 500
+BACKOFF = {"QUEUE_EMPTY": 2.0, "NO_CAPACITY": 1.0}
+ERROR_BACKOFF = 2.0
+MAX_BACKOFF = 3600.0
+CLAIM_MARGIN_S = 30.0
+ATTEMPTS = 3
+UPLOAD_TIMEOUT = aiohttp.ClientTimeout(total=120.0, sock_connect=15.0)
 
 
-class StreamMiner(ABC):
-    subtensor: "bt.AsyncSubtensor"
-    metagraph: "AsyncMetagraph"
-    wallet: "bt.Wallet"
-    axon: "bt.Axon"
-
-    def __init__(self, config=None, wallet=None):
-        bt.logging.info("starting stream miner")
-
-        base_config = copy.deepcopy(config or get_config())
-        self.config = self.config()
-        self.config.merge(base_config)
-        check_config(StreamMiner, self.config)
-        bt.logging.info(self.config)
-
-        self.request_timestamps: Dict = {}
-        self.manifest = load_miner_manifest(self.config.miner.config_path)
-
-        bt.logging(config=self.config, logging_dir=self.config.full_path)
-        bt.logging.on()
-        bt.logging.set_info(True)
-
-        if self.config.logging.debug:
-            bt.logging.set_debug(True)
-        if self.config.logging.trace:
-            bt.logging.set_trace(True)
-
-        bt.logging.info("Setting up bittensor objects.")
-
-        self.wallet = wallet or bt.Wallet(config=self.config)
-        bt.logging.info(f"Wallet {self.wallet}")
-
-        self.should_exit: bool = False
-        self.my_subnet_uid: int | None = None
-        self.last_epoch_block: int | None = None
-        self.lock = asyncio.Lock()
-
-    async def initialize(self):
-        self.subtensor = bt.AsyncSubtensor(
-            config=self.config, websocket_shutdown_timer=None
+class UploadError(Exception):
+    def __init__(self, status: int):
+        super().__init__(
+            f"upload returned HTTP {status}" if status else "upload failed"
         )
-        await self.subtensor.initialize()
-        bt.logging.info(f"Subtensor: {self.subtensor}")
-        bt.logging.info(
-            f"Running miner for subnet: {self.config.netuid} on network: {self.subtensor.chain_endpoint}"
-        )
+        self.status = status
 
-        self.metagraph = await self.subtensor.metagraph(self.config.netuid)
-        bt.logging.info(f"Metagraph: {self.metagraph}")
 
-        if self.wallet.hotkey.ss58_address not in self.metagraph.hotkeys:
-            bt.logging.error(
-                f"\nYour miner: {self.wallet} is not registered to chain connection: {self.subtensor} \nRun btcli register and try again. "
-            )
-            sys.exit()
+class TaskWorker:
+    """Claims one kind of task and runs up to max_tasks of them at once."""
 
-        self.my_subnet_uid = self.metagraph.hotkeys.index(
-            self.wallet.hotkey.ss58_address
-        )
-        bt.logging.info(f"Running miner on uid: {self.my_subnet_uid}")
+    kind = ""
 
-        if self.config.axon.external_ip is not None:
-            bt.logging.debug(
-                f"Starting axon on port {self.config.axon.port} and external ip {self.config.axon.external_ip}"
-            )
-            self.axon = bt.Axon(
-                wallet=self.wallet,
-                port=self.config.axon.port,
-                external_ip=self.config.axon.external_ip,
-            )
-        else:
-            bt.logging.debug(f"Starting axon on port {self.config.axon.port}")
-            self.axon = bt.Axon(wallet=self.wallet, port=self.config.axon.port)
+    def __init__(self, settings: Settings, api: TaskApiClient | None = None):
+        self.settings = settings
+        self.api = api or TaskApiClient(settings.task_api_url, settings.keypair())
+        self.upload_http: aiohttp.ClientSession | None = None
+        self.stopping = asyncio.Event()
+        self.in_flight: set[asyncio.Task] = set()
+        self.idle_polls = 0
 
-        bt.logging.info("Attaching forward function to axon.")
+    def stop(self) -> None:
+        if self.stopping.is_set():
+            for task in self.in_flight:
+                task.cancel()
+        self.stopping.set()
 
-        self.axon.attach(
-            forward_fn=self._is_alive,
-            blacklist_fn=self.blacklist_is_alive,
-        ).attach(
-            forward_fn=self._smart_scraper,
-            blacklist_fn=self.blacklist_smart_scraper,
-        ).attach(
-            forward_fn=self._twitter_search,
-            blacklist_fn=self.blacklist_twitter_search,
-        ).attach(
-            forward_fn=self._twitter_id_search,
-            blacklist_fn=self.blacklist_twitter_id_search,
-        ).attach(
-            forward_fn=self._twitter_urls_search,
-            blacklist_fn=self.blacklist_twitter_urls_search,
-        )
-
-        bt.logging.info(f"Axon created: {self.axon}")
-
-    @abstractmethod
-    def config(self) -> "bt.Config": ...
-
-    @classmethod
-    @abstractmethod
-    def add_args(cls, parser: argparse.ArgumentParser): ...
-
-    async def _is_alive(self, synapse: IsAlive) -> IsAlive:
-        bt.logging.info("answered to be active")
-
+    async def run(self) -> None:
+        stopped = asyncio.create_task(self.stopping.wait())
         try:
-            self.manifest = await asyncio.to_thread(
-                load_miner_manifest, self.config.miner.config_path
-            )
-        except Exception as e:
-            bt.logging.warning(
-                f"Failed to reload miner manifest, using cached value: {e}"
-            )
-
-        synapse.manifest = self.manifest.model_dump()
-        return synapse
-
-    async def _smart_scraper(
-        self, synapse: ScraperStreamingSynapse
-    ) -> ScraperStreamingSynapse:
-        return await self.smart_scraper(synapse)
-
-    async def _twitter_search(
-        self, synapse: TwitterSearchSynapse
-    ) -> TwitterSearchSynapse:
-        return await self.twitter_search(synapse)
-
-    async def _twitter_id_search(
-        self, synapse: TwitterIDSearchSynapse
-    ) -> TwitterIDSearchSynapse:
-        return await self.twitter_id_search(synapse)
-
-    async def _twitter_urls_search(
-        self, synapse: TwitterURLsSearchSynapse
-    ) -> TwitterURLsSearchSynapse:
-        return await self.twitter_urls_search(synapse)
-
-    async def base_blacklist(self, synapse) -> Tuple[bool, str]:
-        try:
-            hotkey = synapse.dendrite.hotkey
-            synapse_type = type(synapse).__name__
-
-            if hotkey in desearch.BLACKLISTED_KEYS:
-                return True, f"Blacklisted a {synapse_type} request from {hotkey}"
-
-            uid = None
-            for _uid, _axon in enumerate(self.metagraph.axons):
-                if _axon.hotkey == hotkey:
-                    uid = _uid
-                    break
-
-            if uid is None:
-                return (
-                    True,
-                    f"Blacklisted a non registered hotkey's {synapse_type} request from {hotkey}",
-                )
-
-            if self.config.subtensor.network == "finney":
-                alpha_stake = float(self.metagraph.alpha_stake[uid].item())
-                total_stake = float(self.metagraph.total_stake[uid].item())
-
-                if (
-                    alpha_stake < desearch.MIN_ALPHA_STAKE
-                    or total_stake < desearch.MIN_TOTAL_STAKE
-                ):
-                    return (
-                        True,
-                        (
-                            f"Blacklisted a low stake {synapse_type} request: "
-                            f"alpha_stake={alpha_stake} < {desearch.MIN_ALPHA_STAKE} "
-                            f"or total_stake={total_stake} < {desearch.MIN_TOTAL_STAKE} "
-                            f"from {hotkey}"
-                        ),
+            while not stopped.done():
+                if len(self.in_flight) >= self.settings.max_tasks:
+                    await asyncio.wait(
+                        {stopped, *self.in_flight}, return_when=asyncio.FIRST_COMPLETED
                     )
-
-            rate_limited, reason = await self._check_rate_limit(hotkey)
-
-            if rate_limited:
-                return True, reason
-
-            return False, f"accepting {synapse_type} request from {hotkey}"
-
-        except Exception:
-            bt.logging.error(f"error in blacklist {traceback.format_exc()}")
-            return True, "error in blacklist"
-
-    async def _check_rate_limit(self, hotkey: str) -> Tuple[bool, str]:
-        time_window = RATE_LIMIT_WINDOW_MINUTES * 60
-        current_time = time.time()
-
-        async with self.lock:
-            timestamps = self.request_timestamps.setdefault(hotkey, deque())
-
-            while timestamps and current_time - timestamps[0] > time_window:
-                timestamps.popleft()
-
-            if len(timestamps) >= RATE_LIMIT_MAX_REQUESTS:
-                return (
-                    True,
-                    f"Request frequency for {hotkey} exceeded: {len(timestamps)} requests in {RATE_LIMIT_WINDOW_MINUTES} minute(s). Limit is {RATE_LIMIT_MAX_REQUESTS} requests.",
-                )
-
-            timestamps.append(current_time)
-
-        return False, ""
-
-    async def blacklist_is_alive(self, synapse: IsAlive) -> Tuple[bool, str]:
-        blacklist = await self.base_blacklist(synapse)
-        bt.logging.debug(blacklist[1])
-        return blacklist
-
-    async def blacklist_smart_scraper(
-        self, synapse: ScraperStreamingSynapse
-    ) -> Tuple[bool, str]:
-        blacklist = await self.base_blacklist(synapse)
-        bt.logging.info(blacklist[1])
-        return blacklist
-
-    async def blacklist_twitter_search(
-        self, synapse: TwitterSearchSynapse
-    ) -> Tuple[bool, str]:
-        blacklist = await self.base_blacklist(synapse)
-        bt.logging.info(blacklist[1])
-        return blacklist
-
-    async def blacklist_twitter_id_search(
-        self, synapse: TwitterIDSearchSynapse
-    ) -> Tuple[bool, str]:
-        blacklist = await self.base_blacklist(synapse)
-        bt.logging.info(blacklist[1])
-        return blacklist
-
-    async def blacklist_twitter_urls_search(
-        self, synapse: TwitterURLsSearchSynapse
-    ) -> Tuple[bool, str]:
-        blacklist = await self.base_blacklist(synapse)
-        bt.logging.info(blacklist[1])
-        return blacklist
-
-    @abstractmethod
-    async def smart_scraper(
-        self, synapse: ScraperStreamingSynapse
-    ) -> ScraperStreamingSynapse: ...
-
-    @abstractmethod
-    async def twitter_search(
-        self, synapse: TwitterSearchSynapse
-    ) -> TwitterSearchSynapse: ...
-
-    @abstractmethod
-    async def twitter_id_search(
-        self, synapse: TwitterIDSearchSynapse
-    ) -> TwitterIDSearchSynapse: ...
-
-    @abstractmethod
-    async def twitter_urls_search(
-        self, synapse: TwitterURLsSearchSynapse
-    ) -> TwitterURLsSearchSynapse: ...
-
-    async def sync_metagraph_loop(self):
-        first_run = True
-
-        while not self.should_exit:
-            try:
-                if first_run:
-                    bt.logging.debug("Skipping first metagraph sync")
-                    first_run = False
-                else:
-                    await self.metagraph.sync(subtensor=self.subtensor)
-                    bt.logging.info("Resynced metagraph in background")
-
-                await asyncio.sleep(900)
-            except Exception as e:
-                bt.logging.error(f"Error during metagraph sync: {e}")
+                    continue
 
                 try:
-                    self.subtensor = bt.AsyncSubtensor(
-                        config=self.config, websocket_shutdown_timer=None
-                    )
-                    await self.subtensor.initialize()
-                    self.metagraph = await self.subtensor.metagraph(self.config.netuid)
-                except Exception as e:
-                    bt.logging.error(
-                        f"Error during metagraph sync - reconnection to subtensor also failed: {e}"
-                    )
-
-                bt.logging.info("Retrying in 2 minutes")
-                await asyncio.sleep(120)
-
-    async def run(self):
-        if not await self.subtensor.is_hotkey_registered(
-            netuid=self.config.netuid,
-            hotkey_ss58=self.wallet.hotkey.ss58_address,
-        ):
-            bt.logging.error(
-                f"Wallet: {self.wallet} is not registered on netuid {self.config.netuid}"
-                f"Please register the hotkey using `btcli s register --netuid 18` before trying again"
-            )
-            sys.exit()
-
-        bt.logging.info(
-            f"Serving axon {ScraperStreamingSynapse} on network: {self.config.subtensor.chain_endpoint} with netuid: {self.config.netuid}"
-        )
-        await self.subtensor.serve_axon(axon=self.axon, netuid=self.config.netuid)
-
-        bt.logging.info(f"Starting axon server on port: {self.config.axon.port}")
-        self.axon.start()
-
-        self.last_epoch_block = await self.subtensor.get_current_block()
-        bt.logging.info(f"Miner starting at block: {self.last_epoch_block}")
-        bt.logging.info("Starting main loop")
-
-        sync_task = asyncio.create_task(self.sync_metagraph_loop())
-
-        step = 0
-        try:
-            while not self.should_exit:
-                current_block = await self.subtensor.get_current_block()
-
-                while (
-                    current_block - self.last_epoch_block
-                    < self.config.miner.blocks_per_epoch
+                    delay = await self.poll()
+                except Exception:
+                    log.exception("claim poll failed")
+                    delay = ERROR_BACKOFF
+                if (
+                    self.settings.idle_exit
+                    and self.idle_polls >= self.settings.idle_exit
                 ):
-                    await asyncio.sleep(60)
-                    current_block = await self.subtensor.get_current_block()
-
-                    if self.should_exit:
-                        break
-
-                self.last_epoch_block = await self.subtensor.get_current_block()
-
-                metagraph = await self.subtensor.metagraph(
-                    netuid=self.config.netuid,
-                    lite=True,
-                    block=self.last_epoch_block,
-                )
-
-                log = (
-                    f"Step:{step} | "
-                    f"Block:{metagraph.block.item()} | "
-                    f"Stake:{metagraph.S[self.my_subnet_uid]} | "
-                    f"Consensus:{metagraph.C[self.my_subnet_uid]} | "
-                    f"Incentive:{metagraph.I[self.my_subnet_uid]} | "
-                    f"Emission:{metagraph.E[self.my_subnet_uid]}"
-                )
-                bt.logging.info(log)
-
-                step += 1
-
-        except asyncio.CancelledError:
-            bt.logging.info("Miner run loop cancelled.")
-            raise
-        except Exception:
-            bt.logging.error(traceback.format_exc())
+                    log.info("queue empty for %d polls, exiting", self.idle_polls)
+                    break
+                if delay:
+                    await asyncio.wait({stopped}, timeout=delay)
+            await self.drain()
         finally:
-            self.should_exit = True
-            sync_task.cancel()
+            stopped.cancel()
+            await self.aclose()
 
-            try:
-                await sync_task
-            except (asyncio.CancelledError, Exception):
-                pass
+    async def poll(self) -> float:
+        try:
+            answer = await self.api.post("/v1/tasks/claim", {"kind": self.kind})
+        except TaskApiError as exc:
+            log.warning("claim failed: %s", exc)
+            return ERROR_BACKOFF
+        if answer.get("receipt") and self.settings.receipts_file:
+            await asyncio.to_thread(self.keep_receipt, answer["receipt"])
 
-    async def start(self):
-        await self.initialize()
-        await self.run()
+        task = answer.get("task")
+        if task:
+            self.idle_polls = 0
+            job = asyncio.create_task(self.process_task(task))
+            self.in_flight.add(job)
+            job.add_done_callback(self.in_flight.discard)
+            return 0.0
 
-    async def stop(self):
-        bt.logging.info("Stopping miner.")
-        self.should_exit = True
+        refusal = answer.get("refusal") or {}
+        code = refusal.get("code", "")
+        if code == "QUEUE_EMPTY" and not self.in_flight:
+            self.idle_polls += 1
+        if code == "LOCKED_OUT":
+            log.warning("locked out after failed verifications: %s", refusal["inputs"])
+        try:
+            return min(MAX_BACKOFF, max(0.05, float(refusal["inputs"]["retry_after"])))
+        except (KeyError, TypeError, ValueError):
+            return BACKOFF.get(code, ERROR_BACKOFF)
 
-        if hasattr(self, "axon") and self.axon is not None:
-            self.axon.stop()
+    async def process_task(self, task: dict) -> None:
+        raise NotImplementedError
 
-        if hasattr(self, "subtensor"):
-            await self.subtensor.close()
+    async def upload(self, upload: dict, body: bytes) -> None:
+        if self.upload_http is None:
+            self.upload_http = aiohttp.ClientSession(timeout=UPLOAD_TIMEOUT)
+        try:
+            # Presigned URLs are sent byte for byte; re-quoting breaks the signature.
+            async with self.upload_http.put(
+                URL(upload["url"], encoded=True),
+                data=body,
+                headers={"Content-Type": upload["content_type"]},
+            ) as response:
+                status = response.status
+        except (aiohttp.ClientError, asyncio.TimeoutError):
+            raise UploadError(0) from None
+        if status >= 400:
+            raise UploadError(status)
+
+    async def abandon(self, task_id: str, reason: str) -> None:
+        log.warning("abandoning task %s: %s", task_id, reason)
+        try:
+            await self.api.post(f"/v1/tasks/{task_id}/abandon")
+        except TaskApiError as exc:
+            log.warning("could not abandon task %s: %s", task_id, exc)
+
+    async def drain(self) -> None:
+        if not self.in_flight:
+            return
+        grace = self.settings.shutdown_grace if self.stopping.is_set() else None
+        log.info("waiting for %d in-flight tasks", len(self.in_flight))
+        await asyncio.wait(self.in_flight, timeout=grace)
+        for task in self.in_flight:
+            task.cancel()
+        await asyncio.gather(*self.in_flight, return_exceptions=True)
+
+    def keep_receipt(self, receipt: dict) -> None:
+        try:
+            with open(self.settings.receipts_file, "a") as handle:
+                handle.write(json.dumps(receipt, sort_keys=True) + "\n")
+        except (OSError, ValueError) as exc:
+            log.warning("could not keep receipt: %s", exc)
+
+    async def aclose(self) -> None:
+        if self.upload_http is not None:
+            await self.upload_http.close()
+        await self.api.aclose()
 
 
-class StreamingTemplateMiner(StreamMiner):
-    def config(self) -> "bt.Config":
-        parser = argparse.ArgumentParser(description="Streaming Miner Configs")
-        self.add_args(parser)
-        return bt.Config(parser)
+class Miner(TaskWorker):
+    kind = "crawl"
 
-    def add_args(cls, parser: argparse.ArgumentParser):
-        pass
+    def __init__(
+        self,
+        settings: Settings,
+        api: TaskApiClient | None = None,
+        fetcher: Fetcher | None = None,
+    ):
+        super().__init__(settings, api)
+        self.fetcher = fetcher or Fetcher(settings)
+        self.scrapingdog = (
+            ScrapingDog(
+                settings.scrapingdog_api_key,
+                settings.scrapingdog_concurrency,
+                max_bytes=settings.max_bytes,
+            )
+            if settings.scrapingdog_api_key
+            else None
+        )
+        # Extraction is CPU-bound and each parse holds a whole page tree in memory.
+        self.extraction = ThreadPoolExecutor(
+            settings.extraction_threads, thread_name_prefix="extract"
+        )
+        # A page holds its slot until it is in the upload, so pages never pile up.
+        self.in_progress = asyncio.Semaphore(settings.concurrency)
+        self.falling_back = asyncio.Semaphore(settings.scrapingdog_concurrency)
 
-    async def smart_scraper(
-        self, synapse: ScraperStreamingSynapse
-    ) -> ScraperStreamingSynapse:
-        bt.logging.info(f"started processing for synapse {synapse}")
-        tw_miner = ScraperMiner(self)
-        token_streamer = partial(tw_miner.smart_scraper, synapse)
-        return synapse.create_streaming_response(token_streamer)
+    async def process_task(self, task: dict) -> None:
+        task_id, upload = task["task_id"], task["upload"]
+        started = time.monotonic()
+        pages = UploadWriter(task_id, self.api.hotkey)
+        try:
+            await self.crawl(task["urls"], task.get("expires_at"), pages)
+            body = await pages.finish()
+            await with_retries(lambda: self.upload(upload, body))
+            report = {
+                "key": upload["key"],
+                "rows": pages.rows,
+                "ok": pages.ok,
+                "errors": pages.rows - pages.ok,
+                "bytes": len(body),
+            }
+            await with_retries(
+                lambda: self.api.post(f"/v1/tasks/{task_id}/complete", report)
+            )
+        except asyncio.CancelledError:
+            await self.abandon(task_id, "shutting down")
+            raise
+        except Exception as exc:
+            await self.abandon(task_id, f"{type(exc).__name__}: {exc}")
+            return
 
-    async def twitter_search(
-        self, synapse: TwitterSearchSynapse
-    ) -> TwitterSearchSynapse:
-        bt.logging.info(f"started processing for twitter search synapse {synapse}")
-        twitter_search_miner = TwitterSearchMiner(self)
-        return await twitter_search_miner.search(synapse)
+        breakdown = " ".join(f"{name}={n}" for name, n in pages.errors.most_common())
+        log.info(
+            "task %s: %d urls, %d ok, %d errors%s, %.1fs, %d bytes uploaded",
+            task_id,
+            len(task["urls"]),
+            pages.ok,
+            pages.rows - pages.ok,
+            f" ({breakdown})" if breakdown else "",
+            time.monotonic() - started,
+            len(body),
+        )
 
-    async def twitter_id_search(
-        self, synapse: TwitterIDSearchSynapse
-    ) -> TwitterIDSearchSynapse:
-        bt.logging.info(f"started processing for search ID synapse {synapse}")
-        twitter_search_miner = TwitterSearchMiner(self)
-        return await twitter_search_miner.search_by_id(synapse)
+    async def crawl(
+        self, urls: list[str], expires_at: float | None, pages: UploadWriter
+    ) -> None:
+        deadline = None
+        if expires_at:
+            remaining = expires_at - time.time()
+            deadline = expires_at - min(CLAIM_MARGIN_S, remaining / 4)
 
-    async def twitter_urls_search(
-        self, synapse: TwitterURLsSearchSynapse
-    ) -> TwitterURLsSearchSynapse:
-        bt.logging.info(f"started processing for search URL synapse {synapse}")
-        twitter_search_miner = TwitterSearchMiner(self)
-        return await twitter_search_miner.search_by_urls(synapse)
+        async def one(url: str) -> None:
+            async with self.in_progress:
+                row = await self.to_row(await self.fetcher.fetch(url, deadline))
+                if not self.scrapingdog or not needs_fallback(
+                    row["error"], row["status"]
+                ):
+                    await pages.add(row)
+                    return
+            # Off the crawl slot: ScrapingDog's latency would otherwise cap our own-IP rate.
+            async with self.falling_back:
+                await pages.add(await self.fallback_row(url, row, deadline))
+
+        await asyncio.gather(*map(one, urls))
+
+    async def fallback_row(self, url: str, row: dict, deadline: float | None) -> dict:
+        fallback = await self.to_row(
+            await self.scrapingdog.fetch(url, deadline=deadline)
+        )
+        return fallback if fallback["error"] is None else row
+
+    async def to_row(self, fetched: Fetched) -> dict:
+        try:
+            return await asyncio.get_running_loop().run_in_executor(
+                self.extraction, build_row, fetched, self.settings.max_bytes
+            )
+        except Exception as exc:
+            log.warning(
+                "row for %s failed: %s: %s", fetched.url, type(exc).__name__, exc
+            )
+            return error_row(fetched, "other")
+
+    async def aclose(self) -> None:
+        await self.fetcher.aclose()
+        self.extraction.shutdown(wait=False, cancel_futures=True)
+        if self.scrapingdog is not None:
+            await self.scrapingdog.aclose()
+        await super().aclose()
 
 
-async def main():
-    miner = StreamingTemplateMiner()
+async def with_retries(call, attempts: int = ATTEMPTS):
+    for attempt in range(1, attempts + 1):
+        try:
+            return await call()
+        except (TaskApiError, UploadError) as exc:
+            status = getattr(exc, "status", 0)
+            if attempt == attempts or 0 < status < 500:
+                raise
+        await asyncio.sleep(attempt)
 
-    try:
-        await miner.start()
-    except KeyboardInterrupt:
-        bt.logging.success("Miner killed by keyboard interrupt.")
-    finally:
-        await miner.stop()
+
+async def serve(miner: Miner | None = None) -> None:
+    miner = miner or Miner(Settings.from_env())
+    settings = miner.settings
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(sig, miner.stop)
+
+    log.info(
+        "miner %s -> %s, %s, concurrency %d (%d per domain), up to %d tasks",
+        miner.api.hotkey,
+        settings.task_api_url,
+        f"{len(settings.proxy_urls)} proxies" if settings.proxy_urls else "direct",
+        settings.concurrency,
+        settings.per_domain,
+        settings.max_tasks,
+    )
+    await miner.run()
+
+
+def main() -> None:
+    env.load(ENV_FILE)
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s"
+    )
+    logging.getLogger("trafilatura").setLevel(logging.ERROR)
+    asyncio.run(serve())
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()

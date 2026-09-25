@@ -1,95 +1,129 @@
+<h3 align="center">
+  <a name="readme-top"></a>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="./docs/assets/desearch-logo.png">
+    <img src="./docs/assets/desearch-logo-black.png" alt="Desearch" width="360">
+  </picture>
+</h3>
+
 <div align="center">
-
-<img src="./docs/assets/desearch-logo.png" alt="Desearch" width="480" />
-
-# Subnet 22 (SN22) on Bittensor
-
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-
+  <a href="./LICENSE"><img src="https://img.shields.io/github/license/Desearch-ai/subnet-22" alt="License"></a>
+  <a href="https://github.com/Desearch-ai/subnet-22/graphs/contributors"><img src="https://img.shields.io/github/contributors/Desearch-ai/subnet-22.svg" alt="Contributors"></a>
+  <a href="https://www.desearch.ai/network"><img src="https://img.shields.io/badge/Bittensor-Subnet%2022-blue" alt="Bittensor Subnet 22"></a>
+  <a href="https://desearch.ai"><img src="https://img.shields.io/badge/Visit-desearch.ai-orange" alt="Visit desearch.ai"></a>
 </div>
 
-SN22 is the Bittensor subnet behind Desearch's decentralized real-time intelligence layer. It coordinates miners and validators that serve live web, X/Twitter, and multi-source search data for Desearch API and console products.
+<p align="center">
+  <a href="https://x.com/desearch_ai"><img src="https://img.shields.io/badge/Follow%20on%20X-000000?style=for-the-badge&logo=x&logoColor=white" alt="Follow on X"></a>
+  <a href="https://www.linkedin.com/company/desearch-ai/"><img src="https://img.shields.io/badge/Follow%20on%20LinkedIn-0077B5?style=for-the-badge&logo=linkedin&logoColor=white" alt="Follow on LinkedIn"></a>
+  <a href="https://discord.com/invite/eb6DTZNMF5"><img src="https://img.shields.io/badge/Join%20our%20Discord-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Join our Discord"></a>
+</p>
 
-This repository contains the subnet runtime: miner axons, validator scoring, the validator FastAPI service, operator runbooks, and shared protocol models.
+---
 
-## Architecture
+# Desearch
 
-| Component | Role | Main files |
+**A web index for AI, built through open competition on Bittensor.**
+
+AI applications need relevant, current sources and text they can use, soon enough to finish their
+task. Desearch collects and refreshes useful pages from the public web, prepares them for retrieval
+and develops the models that help AI find the right sources. Search is the first application: fast
+search for AI agents, and deeper research for questions that take longer.
+
+The work happens in the open on Bittensor Subnet 22. Miners build and refresh the collection,
+validators check their work under published rules, and the Desearch team integrates accepted work
+into a tested index and the search API.
+
+<p align="center">
+  <a href="./docs/miner-setup.md">⛏️ Mine</a> ·
+  <a href="./docs/validator-setup.md">🛡️ Validate</a> ·
+  <a href="./docs/architecture.md">⚙️ How it works</a> ·
+  <a href="./docs/desearch-2.0/README.md">🧭 Desearch 2.0</a> ·
+  <a href="https://console.desearch.ai">🔑 Search API</a>
+</p>
+
+---
+
+## Why an index
+
+In Desearch 1.0, miners answered search requests and validators judged the answers. It worked, but
+good answers could arrive too late, some depended on outside search providers, and little of the
+work left anything that could be kept and improved.
+
+Desearch 2.0 prepares information before a query arrives. Pages are collected, cleaned,
+deduplicated, organized and prepared for retrieval in the background, so a query searches a
+maintained collection instead of starting from scratch. That gives:
+
+- **Faster retrieval**: expensive preparation moves out of the query path
+- **More control over quality**: coverage, freshness and supporting text can be inspected, and models
+  improved against the same collection
+- **Work that lasts**: every accepted page serves many later searches, not one answer
+
+The collection covers the public web: company websites, news, articles, blogs and documentation. It
+starts with selected sources and grows as results prove useful.
+
+## What the network builds
+
+| Work | Who does it | Status |
 | --- | --- | --- |
-| Miner | Runs a Bittensor axon, declares search capacity, answers health checks, and serves AI and X/Twitter search synapses. | `neurons/miners/miner.py`, `neurons/miners/config.py`, `neurons/miners/manifest.template.json` |
-| Validator | Sends synthetic and organic queries to miners, verifies results with independent providers, stores scoring windows, and writes weights on-chain. | `neurons/validators/validator_service.py`, `neurons/validators/scoring/`, `neurons/validators/reward/` |
-| Validator API | Runs FastAPI next to the validator so trusted Desearch services can request organic search and inspect public miner state. Protected routes require the `access-key` header. | `neurons/validators/api.py`, `neurons/validators/dependencies.py`, `run.sh` |
-| Shared package | Defines protocol models, synapses, tool helpers, dataset utilities, and common configuration. | `desearch/protocol.py`, `desearch/miner_config.py`, `desearch/tools/` |
+| **Crawl** and refresh pages, extract their text | Miners fetch assigned pages through their own proxies; validators re-fetch a sample of every upload | Running on SN22 |
+| **Embed** accepted text with a selected model | Miners run the model on their GPUs; validators recompute a sample | Built; opens with Desearch's embedding model |
+| Train retrieval models, improve ranking, extraction and coverage | Model builders and data operators | Later programs, announced before they open |
+| Build, test and serve the index | The Desearch team | Team-operated; queries never wait on miner work |
 
-## Setup path
+## Mining and validating
 
-### 1. Install the subnet package
+**Miners** crawl: they claim tasks, fetch the assigned pages through their own proxies and upload the
+extracted text. They are paid by their share of verified pages. [Miner setup →](./docs/miner-setup.md)
+· [Emission →](./docs/emission.md)
 
-```bash
-git clone https://github.com/Desearch-ai/subnet-22.git
-cd subnet-22
-python3 -m pip install -r requirements.txt
-python3 -m pip install -e .
-```
+**Validators** check: every validator re-fetches a sample of every upload, reports pass or fail, and
+sets weights from what its own checks found. [Validator setup →](./docs/validator-setup.md)
 
-The root project is Python (`requirements.txt`, `setup.py`). `utility-api/` is a separate FastAPI service with its own `pyproject.toml`.
+Crawl rounds are committed to a future block before tasks go out, every step is logged and signed,
+an upload is paid and published only when a majority of validators agree, and every result is
+[public](https://task-api.desearch.ai/v1/tasks).
+[Architecture →](./docs/architecture.md)
 
-### 2. Choose an operator role
+## Use Desearch
 
-- **Miner operators** register a hotkey on netuid 22, configure `neurons/miners/.env`, create `neurons/miners/manifest.json`, and run the miner axon under PM2. See [Running a Miner](./docs/running_a_miner.md).
-- **Validator operators** register a validator hotkey on netuid 22, configure validator credentials, run `run.sh` to manage the validator service plus API, and monitor weights/scoring. See [Running a Validator](./docs/running_a_validator.md).
-- **Desearch service integrators** should use the external Desearch API/console. The validator API documented here is a subnet-facing service protected by `EXPECTED_ACCESS_KEY`, not the public billing/auth layer.
+The search API is available today for developers building AI agents and research tools. Get a key in
+the [console](https://console.desearch.ai) and start with the
+[documentation](https://www.desearch.ai/docs/guide/introduction/desearch-ai).
 
-### 3. Configure environment variables
+| SDK | Install |
+| --- | --- |
+| [Python](https://github.com/Desearch-ai/desearch.py) | `pip install desearch-py` |
+| [JavaScript / TypeScript](https://github.com/Desearch-ai/desearch.js) | `npm install desearch-js` |
+| [MCP server](https://github.com/Desearch-ai/mcp-desearch) | `npm install -g desearch-mcp-server` |
 
-See [Environment Variables](./docs/env_variables.md) for shared, miner-only, and validator-only settings.
+## Documentation
 
-Common requirements:
+| Guide | What's inside |
+| --- | --- |
+| [Miner setup](./docs/miner-setup.md) | Install, register, configure, run, how you earn, monitoring |
+| [Validator setup](./docs/validator-setup.md) | Install, register, configure, run, automatic upgrades, monitoring |
+| [Emission](./docs/emission.md) | How miners' shares are worked out and what raises them |
+| [Architecture](./docs/architecture.md) | How the bot, task API, miners, validators, storage and engine work together |
+| [Embedding tasks](./docs/embedding-tasks.md) | What embed tasks will contain and how they are checked, before they open |
+| [Engine](./engine/README.md) | The search index and API, and how new pages reach it |
+| [Task API](./task-api/README.md) | Endpoints, rounds, scoring rules, public logs and the storage layout |
+| [Desearch 2.0](./docs/desearch-2.0/README.md) | The direction: why an index, the first phase, incentives and participation |
 
-- Shared: `OPENAI_API_KEY`, `APIFY_API_KEY`, `SCRAPINGDOG_API_KEY`
-- Miner-only: optional `TWITTER_BEARER_TOKEN`, wallet/netuid/axon settings
-- Validator-only: `EXPECTED_ACCESS_KEY`, `WANDB_API_KEY`, API/service ports
+## Contributors
 
-### 4. Validate the checkout
+<a href="https://github.com/Desearch-ai/subnet-22/graphs/contributors">
+  <img alt="Contributors" src="https://contrib.rocks/image?repo=Desearch-ai/subnet-22">
+</a>
 
-```bash
-# Fast syntax/import check
-python3 -m compileall desearch neurons tests scripts
+## Community
 
-# Project test suite
-pytest
+- [Discord](https://discord.com/invite/eb6DTZNMF5): questions, mining and validating support
+- [X](https://x.com/desearch_ai) and [Telegram](https://t.me/desearchAI): announcements
+- [Blog](https://www.desearch.ai/blog): guides and engineering write-ups
 
-# Confirm the current validator link endpoints are present in source
-grep -n '"/search/links/web"\|"/search/links/twitter"\|"/search/links"' neurons/validators/api.py
+## License
 
-# Runtime checks after PM2 processes are running
-pm2 status
-pm2 logs desearch_miner
-pm2 logs desearch_validator_process
-pm2 logs desearch_api_process
-```
+Released under the [MIT License](./LICENSE).
 
-## Current validator API surface
-
-The validator API is implemented in `neurons/validators/api.py` and documented in [API Reference](./docs/api.md). Key search-link routes are:
-
-- `POST /search/links/web`
-- `POST /search/links/twitter`
-- `POST /search/links`
-
-Protected routes require the `access-key` header matching `EXPECTED_ACCESS_KEY`. Public miner status routes under `/public/miners` are intentionally unauthenticated.
-
-## Documentation index
-
-- [API Reference](./docs/api.md) — validator API routes, auth, request shapes, and examples.
-- [Environment Variables](./docs/env_variables.md) — shared, miner-only, and validator-only variables.
-- [Running a Miner](./docs/running_a_miner.md) — miner install, manifest, PM2 run commands, and monitoring.
-- [Running a Validator](./docs/running_a_validator.md) — validator service/API/autoupdate processes and operational flags.
-- [Mainnet Operations](./docs/running_on_mainnet.md) — running miner or validator hotkeys on Bittensor mainnet netuid 22.
-- [Testnet Operations](./docs/running_on_testnet.md) — testnet wallet/subnet workflow.
-
-## Support
-
-- Website: [desearch.ai](https://desearch.ai)
-- Console/API product: [console.desearch.ai](https://console.desearch.ai)
-- Desearch Discord: [Join the community](https://discord.com/invite/eb6DTZNMF5)
+<p align="right"><a href="#readme-top">↑ Back to top</a></p>
