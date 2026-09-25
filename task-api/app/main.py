@@ -5,7 +5,6 @@ import contextlib
 import json
 import logging
 import os
-import random
 import secrets
 import time
 
@@ -21,19 +20,24 @@ from .models import (
     CompleteBody,
     EmbedScore,
     Enqueue,
-    LeaseBody,
+    ClaimBody,
+    OpenBody,
     Release,
     Score,
-    ValidationLeaseBody,
 )
+from .seeds import REVEAL_AFTER_BLOCKS
 from .state import Nonces, State
 from .storage import PARQUET, Changed
-from .validations import build_embed_vote, build_vote, decide, utc_day
+from .validations import (
+    Infeasible,
+    build_embed_vote,
+    build_vote,
+    utc_day,
+)
 
 DEFAULT_REDIS = "redis://localhost:6379/15"
 JANITOR_INTERVAL_S = 1.0
 ROUNDS_INTERVAL_S = 5.0
-SCORE_GRACE_S = 300
 COMPLETE_LOCK_S = 300
 TASKS_PAGE = 50
 MAX_TASKS_PAGE = 100
@@ -122,16 +126,16 @@ def create_app(redis=None) -> FastAPI:
             "model": payload["model"],
             "texts": payload["texts"],
             "input": {
-                "url": core.storage.presign_get(payload["input_key"], core.lease_ttl),
+                "url": core.storage.presign_get(payload["input_key"], core.claim_ttl),
                 "sha256": payload["input_sha256"],
             },
         }
 
-    @app.post("/v1/tasks/lease")
-    async def lease(body: LeaseBody | None = None, who: Caller = Depends(caller)):
+    @app.post("/v1/tasks/claim")
+    async def claim(body: ClaimBody | None = None, who: Caller = Depends(caller)):
         if who.is_validator or who.is_admin:
-            raise HTTPException(403, "validators may not lease tasks")
-        kind = (body or LeaseBody()).kind
+            raise HTTPException(403, "validators may not claim tasks")
+        kind = (body or ClaimBody()).kind
         tasks = core.tasks[kind]
         round_id = core.current.get(kind, "")
 
@@ -175,7 +179,7 @@ def create_app(redis=None) -> FastAPI:
 
         budget = (await core.db(core.budgets.get_or_create, who.hotkey, kind)).budget
         try:
-            got = await tasks.lease(who.hotkey, budget)
+            got = await tasks.claim(who.hotkey, budget)
         except queues.Refusal as refusal:
             return await _refused(core, round_id, who, refusal.as_dict())
 
@@ -183,7 +187,7 @@ def create_app(redis=None) -> FastAPI:
         name = f"task={task_id}/{who.hotkey}-{got.seq}.parquet"
         upload_key = f"uploads/dt={utc_day()}/{name}"
         try:
-            upload_url = core.storage.presign_put(upload_key, PARQUET, core.lease_ttl)
+            upload_url = core.storage.presign_put(upload_key, PARQUET, core.claim_ttl)
             inputs = embed_inputs(got.payload) if kind == EMBED else {}
         except Exception:
             log.exception("could not presign the upload for %s", task_id)
@@ -235,11 +239,11 @@ def create_app(redis=None) -> FastAPI:
     async def verify_completion(
         task_id: str, report: CompleteBody, who: Caller
     ) -> dict:
-        if await core.lease_holder(task_id) != who.hotkey:
-            raise HTTPException(409, "you do not hold this lease")
+        if await core.claim_holder(task_id) != who.hotkey:
+            raise HTTPException(409, "you do not hold this claim")
         issued = json.loads(await core.redis.get(f"issued:{task_id}") or "{}")
         if report.key != issued.get("key"):
-            raise HTTPException(400, "key is not the one issued with this lease")
+            raise HTTPException(400, "key is not the one issued with this claim")
         try:
             found = await core.storage.stat(report.key)
         except Exception:
@@ -270,6 +274,9 @@ def create_app(redis=None) -> FastAPI:
         payload = await core.payload(task_id) or {}
         kind = payload.get("kind", CRAWL)
         round_id = payload.get("round_id") or core.current.get(kind, "")
+        # The sample seed is a block hash nobody knew when the upload was frozen.
+        frozen_block = await core.seeds.current_block()
+        completed_at = time.time()
         job = {
             "task_id": task_id,
             "kind": kind,
@@ -283,7 +290,10 @@ def create_app(redis=None) -> FastAPI:
             "attempts": payload.get("attempts", 0),
             "size": size,
             "reported": report.model_dump(exclude={"key"}),
-            "completed_at": time.time(),
+            "completed_at": completed_at,
+            "frozen_block": frozen_block,
+            "seed_block": frozen_block + REVEAL_AFTER_BLOCKS,
+            "deadline": completed_at + core.seeds.wait_s() + core.validation_ttl,
             **{
                 name: payload[name]
                 for name in lifecycle.EMBED_FIELDS
@@ -293,12 +303,18 @@ def create_app(redis=None) -> FastAPI:
         seq = await core.tasks[kind].complete(task_id, who.hotkey, job, report.key)
         if seq is None:
             await lifecycle.delete_quietly(core.storage, frozen)
-            raise HTTPException(409, "you do not hold a live lease on this task")
+            raise HTTPException(409, "you do not hold a live claim on this task")
         await lifecycle.delete_quietly(core.storage, report.key)
         await core.record(
-            round_id, who.hotkey, who.requested_at, "completed", seq, task_id=task_id
+            round_id,
+            who.hotkey,
+            who.requested_at,
+            "completed",
+            seq,
+            task_id=task_id,
+            block=frozen_block,
         )
-        return {"task_id": task_id, "status": "queued_for_validation"}
+        return {"task_id": task_id, "status": "open_for_validation"}
 
     @app.post("/v1/tasks/{task_id}/abandon")
     async def abandon(task_id: str, who: Caller = Depends(caller)):
@@ -306,7 +322,7 @@ def create_app(redis=None) -> FastAPI:
         kind = payload.get("kind", CRAWL)
         seq = await core.tasks[kind].abandon(task_id, who.hotkey)
         if seq is None:
-            raise HTTPException(409, "you do not hold this lease")
+            raise HTTPException(409, "you do not hold this claim")
         round_id = payload.get("round_id") or core.current.get(kind, "")
         if kind == CRAWL:
             await core.db(
@@ -329,84 +345,90 @@ def create_app(redis=None) -> FastAPI:
         )
         return {"task_id": task_id, "budget": miner.budget}
 
-    @app.post("/v1/validation/lease")
-    async def validation_lease(
-        body: ValidationLeaseBody | None = None, who: Caller = Depends(validator)
+    @app.post("/v1/validation/open")
+    async def validation_open(
+        body: OpenBody | None = None, who: Caller = Depends(validator)
     ):
+        """The open uploads this validator has not voted on, once their seed exists."""
         if await core.db(core.validations.is_excluded, who.hotkey):
             raise HTTPException(403, "this validator disagreed with too many audits")
-        if await core.releases(who.hotkey) >= core.releases_per_hour:
-            raise HTTPException(429, "too many jobs handed back this hour")
-        try:
-            got = await core.validation.lease(
-                who.hotkey, tuple((body or ValidationLeaseBody()).kinds)
-            )
-        except queues.Refusal as refusal:
-            raise HTTPException(
-                429, f"a validator may hold {refusal.inputs['held']} jobs at once"
-            ) from None
-        if got is None:
-            return {"job": None}
+        await core.validation.present(who.hotkey)
+        wanted = body or OpenBody()
+        jobs = []
+        for job in await core.validation.open(
+            who.hotkey, tuple(wanted.kinds), tuple(wanted.skip)
+        ):
+            seed = await core.seeds.seed_for(job["seed_block"])
+            if seed is not None:
+                jobs.append(open_job(job, seed))
+        return {"jobs": jobs}
 
-        job, expires_at = got
+    def open_job(job: dict, seed: str) -> dict:
         kind = job.get("kind", CRAWL)
+        remaining = max(60, int(job["deadline"] - time.time()))
         return {
-            "job": {
-                "task_id": job["task_id"],
-                "kind": kind,
-                "round_id": job["round_id"],
-                "miner": job["miner"],
-                "key": job["key"],
-                "urls": job["urls"],
-                "download_url": core.storage.presign_get(
-                    job["key"], core.validation_ttl
-                ),
-                "expires_at": expires_at,
-                "completed_at": job["completed_at"],
-                **(embed_inputs(job) if kind == EMBED else {}),
-            }
+            "task_id": job["task_id"],
+            "kind": kind,
+            "round_id": job["round_id"],
+            "miner": job["miner"],
+            "key": job["key"],
+            "urls": job["urls"],
+            "download_url": core.storage.presign_get(job["key"], remaining),
+            "seed": seed,
+            "seed_block": job["seed_block"],
+            "deadline": job["deadline"],
+            "completed_at": job["completed_at"],
+            **(
+                {**embed_inputs(job), "chars": job.get("chars", 0)}
+                if kind == EMBED
+                else {}
+            ),
         }
 
     @app.post("/v1/validation/{task_id}/release")
     async def release(task_id: str, body: Release, who: Caller = Depends(validator)):
+        """An upload storage lost is void; nothing else is anyone's to hand back."""
         job = await core.validation.job(task_id)
-        if job is None or await core.validation.lease_holder(task_id) != who.hotkey:
-            raise HTTPException(409, "you do not hold this validation lease")
-        if body.reason == "missing":
-            try:
-                gone = await core.storage.stat(job["key"]) is None
-            except Exception:
-                raise HTTPException(
-                    502, "object storage is unavailable, retry"
-                ) from None
-            if gone:
-                settled = await core.validation.finalize(task_id, who.hotkey)
-                if settled is None:
-                    raise HTTPException(409, "the validation lease expired")
-                await lifecycle.void_task(
-                    core, task_id, settled.job, who.hotkey, "upload_missing"
-                )
-                return {"task_id": task_id, "status": "void"}
-
-        await core.releases(who.hotkey, add=True)
-        released = await core.validation.release(task_id, who.hotkey)
-        if released is None:
-            raise HTTPException(409, "the validation lease expired")
-        status, settled = released
-        if status == "exhausted":
-            await lifecycle.void_task(
-                core, task_id, settled.job, who.hotkey, "unjudged"
-            )
-            return {"task_id": task_id, "status": "void"}
-        return {"task_id": task_id, "status": "queued_for_validation"}
+        if job is None:
+            raise HTTPException(409, "no such open upload")
+        try:
+            gone = await core.storage.stat(job["key"]) is None
+        except Exception:
+            raise HTTPException(502, "object storage is unavailable, retry") from None
+        if not gone:
+            return {"task_id": task_id, "status": "open"}
+        lapsed = await core.validation.finalize(task_id)
+        if lapsed is None:
+            raise HTTPException(409, "the upload was finalized")
+        await lifecycle.void_task(
+            core, task_id, lapsed.job, who.hotkey, "upload_missing"
+        )
+        return {"task_id": task_id, "status": "void"}
 
     @app.post("/v1/validation/{task_id}/score")
     async def score(
         task_id: str, result: dict = Body(...), who: Caller = Depends(validator)
     ):
-        job = await core.validation.begin(task_id, who.hotkey, SCORE_GRACE_S)
+        lock = lifecycle.lock_key(task_id)
+        if not await core.redis.set(
+            lock, who.hotkey, nx=True, ex=lifecycle.FINALIZE_LOCK_S
+        ):
+            raise HTTPException(
+                503,
+                "a verdict for this upload is already being recorded",
+                {"Retry-After": "2"},
+            )
+        try:
+            return await record_verdict(task_id, result, who)
+        finally:
+            await core.redis.delete(lock)
+
+    async def record_verdict(task_id: str, result: dict, who: Caller) -> dict:
+        if await core.db(core.validations.is_excluded, who.hotkey):
+            raise HTTPException(403, "this validator disagreed with too many audits")
+        job = await core.validation.job(task_id)
         if job is None:
-            raise HTTPException(409, "you do not hold this validation lease")
+            raise HTTPException(409, "no such open upload")
 
         kind = job.get("kind", CRAWL)
         try:
@@ -414,42 +436,33 @@ def create_app(redis=None) -> FastAPI:
         except ValidationError as exc:
             raise HTTPException(422, json.loads(exc.json(include_url=False))) from None
         builder = build_embed_vote if kind == EMBED else build_vote
-        vote = builder(job, who.hotkey, checked.model_dump())
-        votes = [*await core.validation.votes(task_id), vote]
-        decision = decide(votes, audit=random.random() < core.audit_rate)
-        if decision.outcome == "audit":
-            deadline = time.time() + core.audit_wait
-            if not await core.validation.vote(task_id, who.hotkey, vote, deadline):
-                raise HTTPException(409, "the validation lease expired while scoring")
-            return {
-                "task_id": task_id,
-                "verdict": "audit",
-                "credited": 0,
-                "miner_budget": (
-                    await core.db(core.budgets.get, job["miner"], kind)
-                ).budget,
-            }
-
         try:
-            return await lifecycle.conclude_validation(
-                core, task_id, job, decision, who.hotkey
-            )
-        except lifecycle.StorageDown:
-            # Our fault: hand back without spending one of its tries.
-            await core.validation.release(task_id, who.hotkey, counted=False)
-            raise HTTPException(
-                502, "object storage is unavailable, the task was handed back"
-            ) from None
-        except lifecycle.LeaseLost:
-            raise HTTPException(
-                409, "the validation lease expired while scoring"
-            ) from None
+            vote = builder(job, who.hotkey, checked.model_dump())
+        except Infeasible as why:
+            raise HTTPException(422, str(why)) from None
+        if not await core.validation.vote(task_id, who.hotkey, vote):
+            raise HTTPException(409, "this validator already voted on this upload")
+
+        finalized = await lifecycle.finalize_task(core, task_id, job, time.time())
+        if finalized is not None:
+            return finalized
+        return {
+            "task_id": task_id,
+            "verdict": "pending",
+            "credited": 0,
+            "miner_budget": (
+                await core.db(core.budgets.get, job["miner"], kind)
+            ).budget,
+        }
 
     @app.get("/v1/shares")
     async def shares():
         return {
             "window_hours": SHARE_WINDOW_H,
-            "pools": await core.db(core.budgets.shares),
+            "as_of": time.time() - core.ledger_delay,
+            "pools": await core.db(
+                core.budgets.shares, SHARE_WINDOW_H, time.time() - core.ledger_delay
+            ),
         }
 
     @app.post("/v1/admin/enqueue")
@@ -494,6 +507,8 @@ def create_app(redis=None) -> FastAPI:
         limit: int = Query(TASKS_PAGE, ge=1, le=MAX_TASKS_PAGE),
     ):
         """Scored tasks, newest first; pass `next` back as `before` for the next page."""
+        visible = time.time() - core.ledger_delay
+        before = visible if before is None else min(before, visible)
         tasks = await core.db(
             core.validations.recent, miner, validator, since, before, limit
         )
@@ -507,14 +522,11 @@ def create_app(redis=None) -> FastAPI:
 
     async def task_state(task_id: str) -> dict:
         scored = await core.db(core.validations.latest, task_id)
+        if scored and scored["scored_at"] > time.time() - core.ledger_delay:
+            scored = None
         job = await core.validation.job(task_id)
         if job:
-            if await core.validation.lease_holder(task_id) is not None:
-                status = "validating"
-            elif await core.validation.votes(task_id):
-                status = "awaiting_audit"
-            else:
-                status = "queued_for_validation"
+            status = "voting" if await core.validation.voters(task_id) else "open"
             return {
                 "task_id": task_id,
                 "status": status,
@@ -525,10 +537,10 @@ def create_app(redis=None) -> FastAPI:
 
         payload = await core.payload(task_id)
         if payload is not None:
-            holder = await core.lease_holder(task_id)
+            holder = await core.claim_holder(task_id)
             return {
                 "task_id": task_id,
-                "status": "leased" if holder else "queued",
+                "status": "claimed" if holder else "queued",
                 "round_id": payload.get("round_id"),
                 "miner": holder,
                 "score": scored,
@@ -563,6 +575,19 @@ def create_app(redis=None) -> FastAPI:
             "transitions": await core.db(core.budgets.history, hotkey),
         }
 
+    @app.get("/v1/miners/{hotkey}/verdicts")
+    async def own_verdicts(
+        hotkey: str,
+        since: float = 0.0,
+        limit: int = Query(TASKS_PAGE, ge=1, le=MAX_TASKS_PAGE),
+        who: Caller = Depends(caller),
+    ):
+        """A miner's own finalized verdicts, without the public ledger's delay."""
+        if who.hotkey != hotkey:
+            raise HTTPException(403, "only the miner itself may read this")
+        tasks = await core.db(core.validations.recent, hotkey, None, since, None, limit)
+        return {"tasks": tasks}
+
     @app.get("/v1/ping")
     async def ping():
         return {"ok": True}
@@ -574,8 +599,7 @@ def create_app(redis=None) -> FastAPI:
                 kind: await tasks.depth() for kind, tasks in core.tasks.items()
             },
             "validation_depth": await core.validation.depth(),
-            "validating": await core.validation.active(),
-            "audits_pending": await core.redis.zcard(queues.AUDITS),
+            "active_validators": sorted(await core.validation.active()),
             "oldest_validation_s": await core.validation.oldest_age(),
             "publishing": await core.publish.depth(),
             "oldest_publish_s": await core.publish.oldest_age(),
@@ -598,11 +622,11 @@ async def _janitor(core: State) -> None:
     while True:
         try:
             await lifecycle.reclaim_expired(core)
-            await lifecycle.return_expired_validations(core)
+            await lifecycle.finalize_due(core)
             await lifecycle.return_expired_publishes(core)
-            await lifecycle.conclude_overdue_audits(core)
             if time.monotonic() - rounds_at >= ROUNDS_INTERVAL_S:
                 await lifecycle.open_embed_rounds(core)
+                await lifecycle.fill_missing(core)
                 await lifecycle.reveal_pending(core)
                 await lifecycle.close_finished(core)
                 rounds_at = time.monotonic()

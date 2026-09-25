@@ -13,7 +13,7 @@ from desearch.embedding import (
     read_parquet,
     write_parquet,
 )
-from tests.test_api_flow import Harness, _score, _upload, revealed
+from tests.test_api_flow import Harness, _score, _upload, opened, revealed
 from tests.test_embed_flow import embed_score
 
 
@@ -62,9 +62,10 @@ async def _publish_without_embedding(backend) -> None:
     async with Harness(backend) as h:
         await h.enqueue()
         task = await h.mine()
-        await h.validator.post("/v1/validation/lease")
+        await opened(h, h.validator)
         await h.validator.post(
-            f"/v1/validation/{task['task_id']}/score", _score("pass", 3)
+            f"/v1/validation/{task['task_id']}/score",
+            _score("pass", 3, url=task["urls"][0]),
         )
         publisher = Publisher(h.core.publish, h.core.storage, h.core.pages, workers=2)
         try:
@@ -84,9 +85,10 @@ async def _crawl_to_vectors(backend) -> None:
     async with Harness(backend) as h:
         await h.enqueue()
         task = await h.mine()
-        await h.validator.post("/v1/validation/lease")
+        await opened(h, h.validator)
         await h.validator.post(
-            f"/v1/validation/{task['task_id']}/score", _score("pass", 3)
+            f"/v1/validation/{task['task_id']}/score",
+            _score("pass", 3, url=task["urls"][0]),
         )
         publisher = Publisher(
             h.core.publish, h.core.storage, h.core.pages, workers=2, embed_inputs=True
@@ -107,7 +109,7 @@ async def _crawl_to_vectors(backend) -> None:
 
             await lifecycle.open_embed_rounds(h.core)
             await revealed(h.core)
-            embed = (await h.miner.post("/v1/tasks/lease", {"kind": "embed"}))["task"]
+            embed = (await h.miner.post("/v1/tasks/claim", {"kind": "embed"}))["task"]
             downloaded = await h.r2.get(embed["input"]["url"])
             assert downloaded.body == given
             rng = np.random.default_rng(7)
@@ -122,10 +124,10 @@ async def _crawl_to_vectors(backend) -> None:
                 f"/v1/tasks/{embed['task_id']}/complete",
                 {"key": embed["upload"]["key"], "bytes": len(body)},
             )
-            await h.validator.post("/v1/validation/lease", {"kinds": ["embed"]})
+            await opened(h, h.validator, ("embed",))
             await h.validator.post(
                 f"/v1/validation/{embed['task_id']}/score",
-                embed_score("pass", "matched"),
+                embed_score("pass", "matched", returned=embed["texts"]),
             )
 
             assert await publisher.run_once() == 1

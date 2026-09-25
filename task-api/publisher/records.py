@@ -11,7 +11,7 @@ from app.canonical import canonicalize, domain_of, url_sha1
 PREFIX = "pages"
 SOURCE = "subnet22"
 CLOCK_SKEW = timedelta(minutes=5)
-DEFAULT_LEASE_S = 900
+DEFAULT_CLAIM_S = 900
 ROW_COLUMNS = [
     "url",
     "final_url",
@@ -47,15 +47,15 @@ VERSIONED = (
 
 
 def publish_window(job: dict) -> tuple[datetime, datetime]:
-    """A row's fetch time must fall between lease and completion."""
+    """A row's fetch time must fall between claim and completion."""
     completed = job.get("completed_at")
     latest = (
         datetime.fromtimestamp(float(completed), UTC)
         if completed
         else datetime.now(UTC)
     )
-    lease = timedelta(seconds=float(job.get("lease_ttl") or DEFAULT_LEASE_S))
-    return latest - lease - CLOCK_SKEW, latest
+    claim = timedelta(seconds=float(job.get("claim_ttl") or DEFAULT_CLAIM_S))
+    return latest - claim - CLOCK_SKEW, latest
 
 
 def build_record(
@@ -64,6 +64,8 @@ def build_record(
     miner: str,
     window: tuple[datetime, datetime],
     captured_at: datetime | None = None,
+    validator: str = "",
+    validators: list[str] = (),
 ) -> dict:
     url = canonicalize(row["url"])
     text = row["text"] or ""
@@ -97,6 +99,8 @@ def build_record(
         "text_sha256": row["text_sha256"],
         "task_id": task_id,
         "miner": miner,
+        "validator": validator,
+        "validators": list(validators) or ([validator] if validator else []),
     }
 
 

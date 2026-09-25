@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import sqlite3
@@ -10,7 +11,7 @@ from functools import partial
 from pathlib import Path
 
 from . import proofs, queues, rounds
-from .budget import Budgets, hour_of
+from .budget import Budgets
 from .embeddings import Embeddings
 from .registry import admins_from_env, receipt_key_from_env, registry_from_env
 from .roundlog import RoundLog, receipt_body
@@ -27,8 +28,30 @@ DB_FILE = "task_api.db"
 DEFAULT_EMBED_MODEL = "qwen3-embedding-8b"
 
 
-def connect(path: str) -> sqlite3.Connection:
-    db = sqlite3.connect(path, check_same_thread=False)
+class Connection(sqlite3.Connection):
+    """Commits inside a batch wait for the batch, so a final_verdict lands whole or not at all."""
+
+    batching = False
+
+    def commit(self) -> None:
+        if not self.batching:
+            super().commit()
+
+    @contextlib.contextmanager
+    def batch(self):
+        self.batching = True
+        try:
+            yield
+        except BaseException:
+            self.rollback()
+            raise
+        finally:
+            self.batching = False
+        super().commit()
+
+
+def connect(path: str) -> Connection:
+    db = sqlite3.connect(path, check_same_thread=False, factory=Connection)
     db.execute("PRAGMA journal_mode=WAL")
     # Receipts are promises to miners, so every commit is synced in full.
     db.execute("PRAGMA synchronous=FULL")
@@ -51,7 +74,7 @@ class State:
         data.mkdir(parents=True, exist_ok=True)
 
         self.redis = redis
-        self.lease_ttl = int(os.environ.get("TASK_API_LEASE_TTL", rounds.LEASE_TTL_S))
+        self.claim_ttl = int(os.environ.get("TASK_API_CLAIM_TTL", rounds.CLAIM_TTL_S))
         self.validation_ttl = int(os.environ.get("TASK_API_VALIDATION_TTL", "900"))
         self.poll_rate = float(os.environ.get("TASK_API_POLL_RATE", "2"))
         self.reads_per_minute = int(
@@ -64,21 +87,15 @@ class State:
             os.environ.get("TASK_API_MAX_BACKLOG_S", MAX_BACKLOG_S)
         )
         self.max_attempts = int(os.environ.get("TASK_API_MAX_ATTEMPTS", "3"))
-        self.audit_rate = float(os.environ.get("TASK_API_AUDIT_RATE", "0.05"))
-        self.audit_wait = float(os.environ.get("TASK_API_AUDIT_WAIT_S", "3600"))
-        self.releases_per_hour = int(os.environ.get("TASK_API_RELEASES_PER_HOUR", "60"))
+        self.ledger_delay = float(os.environ.get("TASK_API_LEDGER_DELAY_S", "0"))
         self.tasks = {
-            kind: queues.TaskQueue(redis, self.lease_ttl, kind) for kind in queues.KINDS
+            kind: queues.TaskQueue(redis, self.claim_ttl, kind) for kind in queues.KINDS
         }
         # Off until Desearch's own model ships; on, it runs the stand-in for testing.
         self.embed_tasks = os.environ.get("TASK_API_EMBED_TASKS", "0") == "1"
         self.embed_model = os.environ.get("TASK_API_EMBED_MODEL", DEFAULT_EMBED_MODEL)
         self.validation = queues.ValidationQueue(
-            redis,
-            self.validation_ttl,
-            int(os.environ.get("TASK_API_VALIDATION_TRIES", "3")),
-            int(os.environ.get("TASK_API_VALIDATOR_LEASES", "8")),
-            int(os.environ.get("TASK_API_MAX_RELEASES", "3")),
+            redis, int(os.environ.get("TASK_API_ACTIVE_S", queues.ACTIVE_S))
         )
         self.publish = queues.PublishQueue(
             redis,
@@ -87,7 +104,7 @@ class State:
         )
         # Every SQLite call runs on this one thread: off the event loop, and in order.
         self.db_thread = ThreadPoolExecutor(1, thread_name_prefix="sqlite")
-        db = connect(str(data / DB_FILE))
+        db = self.sqlite = connect(str(data / DB_FILE))
         self.budgets = Budgets(db)
         self.log = RoundLog(db)
         self.rounds = RoundStore(db)
@@ -108,8 +125,8 @@ class State:
         found = await self.redis.get(f"task:{task_id}")
         return json.loads(found) if found else None
 
-    async def lease_holder(self, task_id: str) -> str | None:
-        return await self.redis.get(f"lease:{task_id}")
+    async def claim_holder(self, task_id: str) -> str | None:
+        return await self.redis.get(f"claim:{task_id}")
 
     async def next_seq(self) -> int:
         return int(await self.redis.incr("log:seq"))
@@ -128,6 +145,7 @@ class State:
         task_id: str | None = None,
         refusal: dict | None = None,
         cause: str | None = None,
+        block: int | None = None,
     ) -> dict:
         body = receipt_body(
             round_id=round_id,
@@ -138,6 +156,7 @@ class State:
             task_id=task_id,
             refusal=refusal,
             cause=cause,
+            block=block,
         )
         signature = self.key.sign(proofs.canonical_json(body)).hex()
         await self.db(
@@ -151,6 +170,7 @@ class State:
             refusal=refusal,
             seq=seq,
             cause=cause,
+            block=block,
         )
         return {"body": body, "signature": signature}
 
@@ -173,12 +193,3 @@ class State:
         if count <= self.reads_per_minute:
             return None
         return 60 - int(now % 60)
-
-    async def releases(self, hotkey: str, add: bool = False) -> int:
-        key = f"rl:vrelease:{hotkey}:{hour_of()}"
-        if not add:
-            return int(await self.redis.get(key) or 0)
-        count = int(await self.redis.incr(key))
-        if count == 1:
-            await self.redis.expire(key, 7200)
-        return count

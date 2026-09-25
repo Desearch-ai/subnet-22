@@ -1,11 +1,11 @@
 import asyncio
 import json
+import time
 
 import redis.asyncio as aioredis
 from app.queues import (
     QUEUE,
-    VALIDATE,
-    VLEASES,
+    VOPEN,
     PublishQueue,
     Refusal,
     TaskQueue,
@@ -36,8 +36,8 @@ async def filled(redis, count=3, round_id="r1"):
     return queue, order
 
 
-async def leased(queue, hotkey="m", budget=5):
-    got = await queue.lease(hotkey, budget)
+async def claimed(queue, hotkey="m", budget=5):
+    got = await queue.claim(hotkey, budget)
     await queue.redis.set(f"issued:{got.task_id}", json.dumps({"key": f"k-{got.seq}"}))
     return got
 
@@ -50,10 +50,10 @@ async def refused(call):
     return None
 
 
-def test_concurrent_leases_cannot_exceed_the_budget():
+def test_concurrent_claims_cannot_exceed_the_budget():
     async def scenario(redis):
         queue, _ = await filled(redis, 10)
-        codes = await asyncio.gather(*(refused(queue.lease("m", 1)) for _ in range(10)))
+        codes = await asyncio.gather(*(refused(queue.claim("m", 1)) for _ in range(10)))
         return codes.count(None), codes.count("NO_CAPACITY")
 
     assert run(scenario) == (1, 9)
@@ -62,7 +62,7 @@ def test_concurrent_leases_cannot_exceed_the_budget():
 def test_a_completed_task_can_never_return_to_the_queue():
     async def scenario(redis):
         queue, _ = await filled(redis)
-        got = await leased(queue)
+        got = await claimed(queue)
         seq = await queue.complete(
             got.task_id, "m", {"task_id": got.task_id}, f"k-{got.seq}"
         )
@@ -76,10 +76,10 @@ def test_a_completed_task_can_never_return_to_the_queue():
     assert payload is None and not queued
 
 
-def test_only_an_expired_lease_is_reclaimed():
+def test_only_an_expired_claim_is_reclaimed():
     async def scenario(redis):
         queue, order = await filled(redis)
-        got = await leased(queue)
+        got = await claimed(queue)
         early = await queue.reclaim(got.task_id)
         late = await queue.reclaim(got.task_id, now=10**12)
         head = await redis.zrange(QUEUE, 0, 0)
@@ -95,7 +95,7 @@ def test_only_an_expired_lease_is_reclaimed():
 def test_only_the_holder_can_abandon():
     async def scenario(redis):
         queue, _ = await filled(redis)
-        got = await leased(queue)
+        got = await claimed(queue)
         return await queue.abandon(got.task_id, "rival"), await queue.abandon(
             got.task_id, "m"
         )
@@ -104,12 +104,12 @@ def test_only_the_holder_can_abandon():
     assert rival is None and holder
 
 
-def test_completion_needs_the_issued_key_and_a_live_lease():
+def test_completion_needs_the_issued_key_and_a_live_claim():
     async def scenario(redis):
         queue, _ = await filled(redis)
-        got = await leased(queue)
+        got = await claimed(queue)
         wrong_key = await queue.complete(got.task_id, "m", {}, "someone-else")
-        await redis.zadd("leases:expiry", {got.task_id: 1})
+        await redis.zadd("claims:expiry", {got.task_id: 1})
         expired = await queue.complete(got.task_id, "m", {}, f"k-{got.seq}")
         return wrong_key, expired
 
@@ -120,7 +120,7 @@ def test_older_rounds_are_served_first():
     async def scenario(redis):
         queue, first = await filled(redis, 3, "r1")
         _, second = await filled(redis, 3, "r2")
-        served = [(await queue.lease("m", 10)).task_id for _ in range(6)]
+        served = [(await queue.claim("m", 10)).task_id for _ in range(6)]
         return served, first + second
 
     served, expected = run(scenario)
@@ -130,10 +130,10 @@ def test_older_rounds_are_served_first():
 def test_a_reclaimed_task_goes_back_ahead_of_newer_rounds():
     async def scenario(redis):
         queue, first = await filled(redis, 2, "r1")
-        got = await leased(queue)
+        got = await claimed(queue)
         await filled(redis, 2, "r2")
         await queue.reclaim(got.task_id, now=10**12)
-        return (await queue.lease("n", 10)).task_id, got.task_id
+        return (await queue.claim("n", 10)).task_id, got.task_id
 
     served, reclaimed = run(scenario)
     assert served == reclaimed
@@ -142,10 +142,10 @@ def test_a_reclaimed_task_goes_back_ahead_of_newer_rounds():
 def test_a_miner_is_never_given_back_a_task_it_held():
     async def scenario(redis):
         queue, order = await filled(redis, 2)
-        got = await leased(queue)
+        got = await claimed(queue)
         await queue.reclaim(got.task_id, now=10**12)
-        again = (await queue.lease("m", 5)).task_id
-        other = (await queue.lease("n", 5)).task_id
+        again = (await queue.claim("m", 5)).task_id
+        other = (await queue.claim("n", 5)).task_id
         return got.task_id, again, other, order
 
     first, again, other, order = run(scenario)
@@ -155,158 +155,136 @@ def test_a_miner_is_never_given_back_a_task_it_held():
 def test_a_miner_that_held_every_waiting_task_is_told_so():
     async def scenario(redis):
         queue, _ = await filled(redis, 1)
-        got = await leased(queue)
+        got = await claimed(queue)
         await queue.abandon(got.task_id, "m")
         try:
-            await queue.lease("m", 5)
+            await queue.claim("m", 5)
         except Refusal as refusal:
             return refusal.code, refusal.inputs
 
     assert run(scenario) == ("ALREADY_HELD", {"depth": 1, "held": 1})
 
 
-async def validation_job(redis, task_id, miner="m"):
-    await redis.set(f"vjob:{task_id}", json.dumps({"task_id": task_id, "miner": miner}))
-    await redis.rpush(VALIDATE, task_id)
+async def validation_job(redis, task_id, miner="m", kind="crawl", at=None):
+    job = {"task_id": task_id, "miner": miner, "kind": kind}
+    await redis.set(f"vjob:{task_id}", json.dumps(job))
+    await redis.zadd(VOPEN, {task_id: at or time.time()})
     await redis.sadd(f"inflight:{miner}", task_id)
 
 
-def test_a_job_whose_validators_keep_dying_is_settled_not_requeued():
+def vote(validator: str, verdict: str = "pass") -> dict:
+    return {"validator": validator, "verdict": verdict}
+
+
+def test_every_validator_sees_every_open_upload_until_it_votes():
     async def scenario(redis):
-        validation = ValidationQueue(redis, 60, max_tries=2)
+        validation = ValidationQueue(redis)
+        await validation_job(redis, "a", at=1)
+        await validation_job(redis, "b", at=2)
+        before = [j["task_id"] for j in await validation.open("v")]
+        first = await validation.vote("a", "v", vote("v"))
+        twice = await validation.vote("a", "v", vote("v"))
+        after = [j["task_id"] for j in await validation.open("v")]
+        other = [j["task_id"] for j in await validation.open("w")]
+        skipped = [j["task_id"] for j in await validation.open("w", skip=("a",))]
+        return before, first, twice, after, other, skipped, await validation.voters("a")
+
+    before, first, twice, after, other, skipped, voters = run(scenario)
+    assert before == ["a", "b"] and after == ["b"]
+    assert first == 1 and twice == 0, "one vote per validator per upload"
+    assert other == ["a", "b"] and skipped == ["b"]
+    assert voters == {"v"}
+
+
+def test_asking_for_work_or_voting_marks_the_validator_active_for_the_window():
+    async def scenario(redis):
+        validation = ValidationQueue(redis, active_s=100)
         await validation_job(redis, "t")
-        tries = []
-        for _ in range(2):
-            await validation.lease("v")
-            await redis.zadd(VLEASES, {"t": 0})
-            tries.append(await validation.give_back("t"))
+        await validation.present("u", now=990)
+        await validation.vote("t", "v", vote("v"), now=1000)
+        await validation.vote("t", "w", vote("w"), now=1050)
         return (
-            tries,
-            await validation.depth(),
-            await validation.settle("t"),
-            await validation.job("t"),
+            await validation.active(now=1080),
+            await validation.active(now=1120),
+            await validation.active(now=1200),
         )
 
-    tries, depth, settled, left = run(scenario)
-    assert tries == [1, 2]
-    assert depth == 0
-    assert settled.job == {"task_id": "t", "miner": "m"} and left is None
+    assert run(scenario) == ({"u", "v", "w"}, {"w"}, set())
 
 
-def test_a_released_job_goes_to_the_back():
+def test_finalizing_closes_the_upload_and_hands_back_the_votes():
     async def scenario(redis):
-        validation = ValidationQueue(redis, 60)
-        await validation_job(redis, "a")
-        await validation_job(redis, "b")
-        first, _ = await validation.lease("v")
-        released = await validation.release("a", "v")
-        second, _ = await validation.lease("v")
-        return first["task_id"], released, second["task_id"]
-
-    assert run(scenario) == ("a", ("requeued", None), "b")
-
-
-def test_scoring_extends_the_lease_and_rejects_strangers():
-    async def scenario(redis):
-        validation = ValidationQueue(redis, 60)
+        validation = ValidationQueue(redis)
         await validation_job(redis, "t")
-        await validation.lease("v")
-        stranger = await validation.begin("t", "other", 120)
-        began = await validation.begin("t", "v", 120)
-        await redis.zadd(VLEASES, {"t": 1})
-        expired = await validation.begin("t", "v", 120)
-        return stranger, began, expired
+        await validation.vote("t", "v", vote("v"))
+        late = await validation.vote("t", "w", vote("w", "fail"))
+        finalized = await validation.finalize("t")
+        again = await validation.finalize("t")
+        return (
+            late,
+            finalized,
+            again,
+            await validation.job("t"),
+            await validation.depth(),
+        )
 
-    stranger, began, expired = run(scenario)
-    assert stranger is None
-    assert began == {"task_id": "t", "miner": "m"}
-    assert expired is None
+    late, finalized, again, job, depth = run(scenario)
+    assert late == 2
+    assert finalized.job["task_id"] == "t"
+    assert [v["validator"] for v in finalized.votes] == ["v", "w"]
+    assert again is None and job is None and depth == 0
 
 
-def test_the_oldest_waiting_job_is_measured_across_hand_backs():
+def test_the_oldest_open_upload_sets_the_backlog_age():
     async def scenario(redis):
         queue, _ = await filled(redis, 2)
-        validation = ValidationQueue(redis, 60)
-        first = await leased(queue)
-        second = await leased(queue)
+        validation = ValidationQueue(redis)
+        first = await claimed(queue)
+        second = await claimed(queue)
         await queue.complete(
             first.task_id,
             "m",
             {"task_id": first.task_id, "miner": "m"},
             f"k-{first.seq}",
         )
-        await redis.zadd("vjobs:completed", {first.task_id: 1})
+        await redis.zadd(VOPEN, {first.task_id: 1})
         await queue.complete(
             second.task_id,
             "m",
             {"task_id": second.task_id, "miner": "m"},
             f"k-{second.seq}",
         )
-        claimed, _ = await validation.lease("v")
-        await validation.release(claimed["task_id"], "v")
-        while_waiting = await validation.oldest_age()
-        claimed, _ = await validation.lease("v")
-        await validation.finalize(claimed["task_id"], "v")
-        return (
-            first.task_id,
-            claimed["task_id"],
-            while_waiting,
-            await validation.oldest_age(),
-        )
+        while_open = await validation.oldest_age()
+        await validation.finalize(first.task_id)
+        return while_open, await validation.oldest_age()
 
-    first, finished, while_waiting, after = run(scenario)
-    assert while_waiting > 10**9
-    assert finished != first
-    assert after > 10**9
-
-
-def test_a_restored_task_returns_at_its_rank():
-    async def scenario(redis):
-        queue, order = await filled(redis, 3)
-        got = await leased(queue)
-        await queue.complete(got.task_id, "m", {}, f"k-{got.seq}")
-        seq = await queue.restore(
-            got.task_id, {"urls": ["u"], "rank": got.payload["rank"]}
-        )
-        head = (await queue.lease("n", 5)).task_id
-        return seq, head, got.task_id
-
-    seq, head, restored = run(scenario)
-    assert seq > 0 and head == restored
+    while_open, after = run(scenario)
+    assert while_open > 10**9 and after < 10
 
 
 def test_a_pass_ends_validation_and_queues_publishing_in_one_step():
     async def scenario(redis):
-        validation, publish = ValidationQueue(redis, 60), PublishQueue(redis, 60)
+        validation, publish = ValidationQueue(redis), PublishQueue(redis, 60)
         await validation_job(redis, "t")
-        await validation.lease("v")
-        stranger = await validation.finalize("t", "other", {"task_id": "t"})
-        passed = await validation.finalize("t", "v", {"task_id": "t", "key": "k"})
+        passed = await validation.finalize("t", {"task_id": "t", "key": "k"})
         in_flight = await redis.sismember("inflight:m", "t")
-        return (
-            stranger,
-            passed,
-            await validation.job("t"),
-            await publish.claim(5),
-            in_flight,
-        )
+        return passed, await validation.job("t"), await publish.claim(5), in_flight
 
-    stranger, passed, job, claimed, in_flight = run(scenario)
-    assert stranger is None and passed.job["task_id"] == "t" and job is None
+    passed, job, claimed, in_flight = run(scenario)
+    assert passed.job["task_id"] == "t" and job is None
     assert claimed == [{"task_id": "t", "key": "k"}]
     assert not in_flight, "a decided task no longer counts against the miner's budget"
 
 
 def test_an_unacked_publish_comes_back_and_an_acked_one_does_not():
     async def scenario(redis):
-        validation, publish = ValidationQueue(redis, 60), PublishQueue(redis, 60)
+        validation, publish = ValidationQueue(redis), PublishQueue(redis, 60)
         for task_id in ("a", "b"):
             await validation_job(redis, task_id)
-            await validation.lease("v")
-            await validation.finalize(task_id, "v", {"task_id": task_id})
+            await validation.finalize(task_id, {"task_id": task_id})
         first = await publish.claim(5)
         await publish.ack("a")
-        await redis.zadd("publish:leases", {"b": 0})
+        await redis.zadd("publish:claims", {"b": 0})
         returned = [t for t in await publish.expired() if await publish.give_back(t)]
         pending = [await redis.zscore("publish:pending", t) for t in ("a", "b")]
         return len(first), returned, await publish.claim(5), pending
@@ -320,17 +298,16 @@ def test_an_unacked_publish_comes_back_and_an_acked_one_does_not():
 def test_a_publish_that_keeps_failing_is_set_aside_and_stops_counting_as_backlog():
     async def scenario(redis):
         validation, publish = (
-            ValidationQueue(redis, 60),
+            ValidationQueue(redis),
             PublishQueue(redis, 60, max_tries=2),
         )
         await validation_job(redis, "t")
-        await validation.lease("v")
-        await validation.finalize("t", "v", {"task_id": "t", "completed_at": 1000.0})
+        await validation.finalize("t", {"task_id": "t", "completed_at": 1000.0})
         waited = await publish.oldest_age()
         outcomes = []
         for _ in range(2):
             await publish.claim(1)
-            await redis.zadd("publish:leases", {"t": 0})
+            await redis.zadd("publish:claims", {"t": 0})
             outcomes.append(await publish.give_back("t"))
         return (
             waited,
@@ -346,16 +323,15 @@ def test_a_publish_that_keeps_failing_is_set_aside_and_stops_counting_as_backlog
     assert (dead, after, again) == (1, 0.0, [])
 
 
-def test_touching_a_publish_lease_extends_it():
+def test_touching_a_publish_claim_extends_it():
     async def scenario(redis):
-        validation, publish = ValidationQueue(redis, 60), PublishQueue(redis, 600)
+        validation, publish = ValidationQueue(redis), PublishQueue(redis, 600)
         await validation_job(redis, "t")
-        await validation.lease("v")
-        await validation.finalize("t", "v", {"task_id": "t"})
+        await validation.finalize("t", {"task_id": "t"})
         await publish.claim(1)
-        await redis.zadd("publish:leases", {"t": 5})
-        await publish.extend_lease("t")
-        return await redis.zscore("publish:leases", "t"), await publish.expired()
+        await redis.zadd("publish:claims", {"t": 5})
+        await publish.extend_claim("t")
+        return await redis.zscore("publish:claims", "t"), await publish.expired()
 
     score, expired = run(scenario)
     assert score > 10**9 and expired == []
@@ -364,92 +340,17 @@ def test_touching_a_publish_lease_extends_it():
 def test_a_completed_task_counts_against_the_budget_until_its_verdict():
     async def scenario(redis):
         queue, _ = await filled(redis, 3)
-        validation = ValidationQueue(redis, 60)
-        got = await leased(queue, budget=1)
+        validation = ValidationQueue(redis)
+        got = await claimed(queue, budget=1)
         await queue.complete(
             got.task_id, "m", {"task_id": got.task_id, "miner": "m"}, f"k-{got.seq}"
         )
-        blocked = await refused(queue.lease("m", 1))
-        await validation.lease("v")
-        await validation.finalize(got.task_id, "v")
-        freed = await refused(queue.lease("m", 1))
+        blocked = await refused(queue.claim("m", 1))
+        await validation.finalize(got.task_id)
+        freed = await refused(queue.claim("m", 1))
         return blocked, freed
 
     assert run(scenario) == ("NO_CAPACITY", None)
-
-
-def test_a_validator_may_hold_only_so_many_jobs():
-    async def scenario(redis):
-        validation = ValidationQueue(redis, 60, max_leases=2)
-        for task_id in "abc":
-            await validation_job(redis, task_id)
-        held = [(await validation.lease("v"))[0]["task_id"] for _ in range(2)]
-        full = await refused(validation.lease("v"))
-        other = (await validation.lease("w"))[0]["task_id"]
-        await validation.finalize(held[0], "v")
-        again = (await validation.lease("w")) is None and await validation.lease("v")
-        return held, full, other, again
-
-    held, full, other, again = run(scenario)
-    assert held == ["a", "b"] and full == "LEASE_LIMIT" and other == "c"
-    assert again is None
-
-
-def test_a_job_handed_back_too_often_leaves_validation():
-    async def scenario(redis):
-        validation = ValidationQueue(redis, 60, max_releases=2)
-        await validation_job(redis, "t")
-        await redis.zadd("vjobs:completed", {"t": 1})
-        await validation.lease("v")
-        uncounted = await validation.release("t", "v", counted=False)
-        await validation.lease("v")
-        first = await validation.release("t", "v")
-        await validation.lease("v")
-        second = await validation.release("t", "v")
-        backlog = await redis.zscore("vjobs:completed", "t")
-        return uncounted, first, second, backlog, await validation.depth()
-
-    uncounted, first, second, backlog, depth = run(scenario)
-    assert uncounted == ("requeued", None) and first == ("requeued", None)
-    assert second[0] == "exhausted" and second[1].job["task_id"] == "t"
-    assert backlog is None and depth == 0
-
-
-def test_an_audit_goes_to_another_validator_and_keeps_the_first_vote():
-    async def scenario(redis):
-        validation = ValidationQueue(redis, 60)
-        await validation_job(redis, "t")
-        await validation.lease("v")
-        voted = await validation.vote(
-            "t", "v", {"validator": "v", "verdict": "pass"}, 10**10
-        )
-        again = await validation.lease("v")
-        audit, _ = await validation.lease("w")
-        settled = await validation.finalize("t", "w")
-        return (
-            voted,
-            again,
-            audit["task_id"],
-            settled.votes,
-            await redis.zcard("vjobs:audits"),
-        )
-
-    voted, again, audit, votes, audits = run(scenario)
-    assert voted and again is None and audit == "t"
-    assert votes == [{"validator": "v", "verdict": "pass"}] and audits == 0
-
-
-def test_a_lapsed_lease_frees_the_validators_slot():
-    async def scenario(redis):
-        validation = ValidationQueue(redis, 60, max_leases=1)
-        await validation_job(redis, "a")
-        await validation_job(redis, "b")
-        await validation.lease("v")
-        await redis.zadd(VLEASES, {"a": 0})
-        await validation.give_back("a")
-        return (await validation.lease("v"))[0]["task_id"]
-
-    assert run(scenario) == "b"
 
 
 async def filled_kind(redis, kind, count=2, round_id="r1"):
@@ -464,9 +365,9 @@ def test_each_kind_serves_only_its_own_tasks_and_counts_its_own_budget():
     async def scenario(redis):
         crawl, crawl_tasks = await filled_kind(redis, "crawl")
         embed, embed_tasks = await filled_kind(redis, "embed")
-        got_crawl = await crawl.lease("m", 1)
-        got_embed = await embed.lease("m", 1)
-        blocked = await refused(crawl.lease("m", 1))
+        got_crawl = await crawl.claim("m", 1)
+        got_embed = await embed.claim("m", 1)
+        blocked = await refused(crawl.claim("m", 1))
         return got_crawl, got_embed, blocked, crawl_tasks, embed_tasks
 
     got_crawl, got_embed, blocked, crawl_tasks, embed_tasks = run(scenario)
@@ -479,7 +380,7 @@ def test_an_expired_embed_task_goes_back_to_the_embed_queue():
     async def scenario(redis):
         crawl, _ = await filled_kind(redis, "crawl", 1)
         embed, order = await filled_kind(redis, "embed", 1)
-        got = await embed.lease("m", 5)
+        got = await embed.claim("m", 5)
         holder, _ = await embed.reclaim(got.task_id, now=10**12)
         return (
             holder,
@@ -493,17 +394,28 @@ def test_an_expired_embed_task_goes_back_to_the_embed_queue():
 
 def test_a_validator_only_gets_the_kinds_it_asked_for():
     async def scenario(redis):
-        validation = ValidationQueue(redis, 60)
+        validation = ValidationQueue(redis)
         embed, _ = await filled_kind(redis, "embed", 1)
-        got = await leased(embed)
+        got = await claimed(embed)
         job = {"task_id": got.task_id, "miner": "m", "kind": "embed"}
         await embed.complete(got.task_id, "m", job, f"k-{got.seq}")
-        crawl_only = await validation.lease("v", ("crawl",))
-        both = await validation.lease("v", ("crawl", "embed"))
-        settled = await validation.finalize(got.task_id, "v")
-        return crawl_only, both, settled, await redis.scard("inflight:embed:m")
+        crawl_only = await validation.open("v", ("crawl",))
+        both = await validation.open("v", ("crawl", "embed"))
+        finalized = await validation.finalize(got.task_id)
+        return crawl_only, both, finalized, await redis.scard("inflight:embed:m")
 
-    crawl_only, both, settled, inflight = run(scenario)
-    assert crawl_only is None
+    crawl_only, both, finalized, inflight = run(scenario)
+    assert crawl_only == []
     assert both[0]["kind"] == "embed"
-    assert settled.job["task_id"] == both[0]["task_id"] and inflight == 0
+    assert finalized.job["task_id"] == both[0]["task_id"] and inflight == 0
+
+
+def test_a_miner_that_held_the_whole_front_of_the_queue_is_served_from_behind():
+    async def scenario(redis):
+        queue, order = await filled(redis, 60)
+        for task_id in order[:55]:
+            await redis.sadd(f"holders:{task_id}", "m")
+        return (await queue.claim("m", 5)).task_id, order
+
+    got, order = run(scenario)
+    assert got == order[55]

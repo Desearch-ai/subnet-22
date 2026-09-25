@@ -61,6 +61,7 @@ class UrlDetail(BaseModel):
     diff_at: int | None = None
     miner_window: str | None = Field(None, max_length=500)
     validator_window: str | None = Field(None, max_length=500)
+    rejected: bool = False
 
 
 class Score(BaseModel):
@@ -82,6 +83,7 @@ class Score(BaseModel):
     reason: str = ""
     samples: list[Sample] = []
     urls: list[UrlDetail] = Field([], max_length=MAX_URL_DETAILS)
+    rejected: list[str] = Field([], max_length=MAX_URL_DETAILS)
 
     @model_validator(mode="after")
     def counts_match_samples(self) -> Score:
@@ -95,14 +97,15 @@ class Score(BaseModel):
         return self
 
 
-class LeaseBody(BaseModel):
+class ClaimBody(BaseModel):
     kind: Literal["crawl", "embed"] = "crawl"
 
 
-class ValidationLeaseBody(BaseModel):
+class OpenBody(BaseModel):
     kinds: list[Literal["crawl", "embed"]] = Field(
         ["crawl"], min_length=1, max_length=2
     )
+    skip: list[str] = Field([], max_length=64)
 
 
 class EmbedSample(BaseModel):
@@ -141,7 +144,7 @@ class EmbedScore(BaseModel):
 
 
 class Release(BaseModel):
-    reason: Literal["provider", "missing", "download"] = "provider"
+    reason: Literal["missing"] = "missing"
 
 
 class Enqueue(BaseModel):

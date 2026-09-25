@@ -15,6 +15,7 @@ from .validations import Decision, build_report, decide, utc_day
 
 EMBED_FIELDS = ("model", "texts", "chars", "input_key", "input_sha256", "pages")
 EMBED_ROUND_INPUTS = 200
+FINALIZE_LOCK_S = 300
 
 log = logging.getLogger("task_api")
 
@@ -23,7 +24,11 @@ class StorageDown(Exception):
     pass
 
 
-class LeaseLost(Exception):
+class ClaimLost(Exception):
+    pass
+
+
+class AlreadySettled(Exception):
     pass
 
 
@@ -94,22 +99,40 @@ async def reveal_pending(core) -> int:
         seed = await core.seeds.seed_for(round_.seed_block)
         if seed is None:
             continue
-        order = rounds.reveal(round_, seed)
+        rounds.reveal(round_, seed)
         # Saved first, so a crash cannot queue the round twice.
         await core.db(core.rounds.save, round_)
-        if order:
-            payloads = {
-                batch_id: {
-                    **batch.extra,
-                    "url_count": len(batch.urls),
-                    "urls": [u.url for u in batch.urls],
-                }
-                for batch_id, batch in round_.batches.items()
+        filled += await fill_round(core, round_)
+    return filled
+
+
+async def fill_round(core, round_: rounds.Round) -> int:
+    """Queues a revealed round's tasks; it counts as filled only once Redis holds them."""
+    if round_.order:
+        payloads = {
+            batch_id: {
+                **batch.extra,
+                "url_count": len(batch.urls),
+                "urls": [u.url for u in batch.urls],
             }
-            await core.redis.sadd(open_round_key(round_.round_id), *order)
-            tasks = core.tasks[round_.kind]
-            filled += await tasks.fill(round_.round_id, order, payloads)
-        core.current[round_.kind] = round_.round_id
+            for batch_id, batch in round_.batches.items()
+        }
+        await core.redis.sadd(open_round_key(round_.round_id), *round_.order)
+        await core.tasks[round_.kind].fill(round_.round_id, round_.order, payloads)
+    await core.db(core.rounds.mark_filled, round_.round_id, time.time())
+    core.current[round_.kind] = round_.round_id
+    return len(round_.order)
+
+
+async def fill_missing(core) -> list[str]:
+    """Rounds revealed before Redis took their tasks get them now, not closed unserved."""
+    filled = []
+    for round_ in await core.db(core.rounds.unfilled):
+        if await core.redis.scard(open_round_key(round_.round_id)):
+            await core.db(core.rounds.mark_filled, round_.round_id, time.time())
+            continue
+        await fill_round(core, round_)
+        filled.append(round_.round_id)
     return filled
 
 
@@ -120,6 +143,10 @@ async def close_finished(core) -> list[str]:
             continue
         await core.db(core.log.anchor, round_id)
         await core.db(core.rounds.close, round_id, time.time())
+        # Later refusals must not land in a log whose root is anchored.
+        for kind, current in list(core.current.items()):
+            if current == round_id:
+                core.current[kind] = ""
         closed.append(round_id)
     return closed
 
@@ -145,7 +172,7 @@ async def reclaim_expired(core) -> list[tuple[str, str]]:
                     len(set(payload.get("urls", []))),
                     0,
                 )
-            await core.db(core.budgets.penalise, holder, task_id, "lease_expired", kind)
+            await core.db(core.budgets.penalise, holder, task_id, "claim_expired", kind)
             await core.record(
                 payload.get("round_id") or core.current.get(kind, ""),
                 holder,
@@ -165,7 +192,7 @@ async def requeue(core, task_id: str, job: dict, cause: str) -> None:
     if attempts >= core.max_attempts:
         seq = await core.next_seq()
         if kind == EMBED:
-            await core.db(core.embeddings.settle, task_id, job["model"], DROPPED)
+            await core.db(core.embeddings.finalize, task_id, job["model"], DROPPED)
         await core.record(
             job["round_id"],
             job["miner"],
@@ -217,9 +244,66 @@ async def void_task(core, task_id: str, job: dict, validator: str, reason: str) 
     return report
 
 
+def quorum(electorate: int) -> int:
+    """More than half of the validators in play; one alone finalizes."""
+    return max(1, electorate // 2 + 1)
+
+
+def lock_key(task_id: str) -> str:
+    return f"scoring:{task_id}"
+
+
+async def finalize_due(core, now: float | None = None) -> list[str]:
+    """Finalizes every open upload that is ready, oldest first."""
+    now = now or time.time()
+    finalized = []
+    for task_id in await core.validation.open_ids():
+        job = await core.validation.job(task_id)
+        if job is None:
+            continue
+        lock = lock_key(task_id)
+        if not await core.redis.set(lock, "janitor", nx=True, ex=FINALIZE_LOCK_S):
+            continue
+        try:
+            outcome = await finalize_task(core, task_id, job, now)
+        finally:
+            await core.redis.delete(lock)
+        if outcome is not None:
+            finalized.append(task_id)
+    return finalized
+
+
+async def finalize_task(core, task_id: str, job: dict, now: float) -> dict | None:
+    """Finalizes once every active validator voted, or at the deadline with a quorum."""
+    voters = await core.validation.voters(task_id)
+    active = await core.validation.active(now) | voters
+    due = now >= job.get("deadline", 0)
+    if not voters or (not due and not active <= voters):
+        return None
+    if len(voters) < quorum(len(active)):
+        if not due:
+            return None
+        lapsed = await core.validation.finalize(task_id)
+        if lapsed is not None:
+            await void_task(core, task_id, lapsed.job, "", "no_quorum")
+        return {"task_id": task_id, "verdict": "void", "credited": 0}
+    votes = await core.validation.votes(task_id)
+    try:
+        return await conclude_validation(
+            core, task_id, job, decide(votes, overdue=True)
+        )
+    except (StorageDown, ClaimLost):
+        return None
+
+
 async def conclude_validation(
-    core, task_id: str, job: dict, decision: Decision, holder: str
+    core, task_id: str, job: dict, decision: Decision
 ) -> dict:
+    """Accounts are finalized once per upload, in one transaction, before Redis lets go."""
+    finalized = await core.db(core.validations.final_verdict, task_id, job["key"])
+    if finalized is not None:
+        return await finish_finalized(core, task_id, job, finalized)
+
     vote, result = decision.vote, decision.vote["result"]
     verdict = vote["verdict"]
     report = build_report(task_id, job, vote["validator"], result, decision.votes)
@@ -229,107 +313,132 @@ async def conclude_validation(
         log.exception("storage failed while scoring %s", task_id)
         raise StorageDown(task_id) from None
 
-    kind = job.get("kind", CRAWL)
     publish = None
     if verdict == "pass" and result.get("matched"):
-        publish = {
-            **{
-                name: job.get(name, "")
-                for name in ("task_id", "round_id", "miner", "key", "etag")
-            },
-            "kind": kind,
-            "urls": job["urls"],
-            "completed_at": job["completed_at"],
-            "lease_ttl": core.lease_ttl,
-        }
-        if kind == EMBED:
-            publish |= {
-                name: job[name] for name in ("model", "input_key", "pages", "texts")
-            }
-            publish["vectors_key"] = vectors_key(job["model"], task_id)
-    if await core.validation.finalize(task_id, holder, publish) is None:
-        await delete_quietly(core.pages, report["report_key"])
-        raise LeaseLost(task_id)
+        publish = publish_job(core, task_id, job, vote, decision.agreed)
+    try:
+        budget = await core.db(
+            finalize_accounts, core, task_id, job, decision, report, publish
+        )
+    except AlreadySettled:
+        finalized = await core.db(core.validations.final_verdict, task_id, job["key"])
+        return await finish_finalized(core, task_id, job, finalized)
 
+    await close_upload(core, task_id, job, verdict, publish)
+    return {
+        "task_id": task_id,
+        "verdict": verdict,
+        "credited": vote["credited"] if verdict == "pass" else 0,
+        "miner_budget": budget,
+    }
+
+
+def finalize_accounts(
+    core,
+    task_id: str,
+    job: dict,
+    decision: Decision,
+    report: dict,
+    publish: dict | None,
+) -> int:
+    """Every SQLite effect of one verdict, committed together; returns the miner's budget."""
+    vote, result = decision.vote, decision.vote["result"]
+    verdict, kind = vote["verdict"], job.get("kind", CRAWL)
     miner, assigned = job["miner"], len(set(job["urls"]))
     credited = vote["credited"] if verdict == "pass" else 0
-    if kind == CRAWL and verdict != "void":
-        await core.db(core.budgets.record_coverage, miner, assigned, result["returned"])
-    if verdict == "fail":
-        budget = (
-            await core.db(
-                core.budgets.penalise, miner, task_id, "verification_failed", kind
+    with core.sqlite.batch():
+        if not core.validations.finalize(
+            task_id, job["key"], verdict, credited, publish
+        ):
+            raise AlreadySettled(task_id)
+        if kind == CRAWL and verdict != "void":
+            core.budgets.record_coverage(miner, assigned, result["returned"])
+        if verdict == "fail":
+            budget = core.budgets.penalise(
+                miner, task_id, "verification_failed", kind
+            ).budget
+        elif credited:
+            # An embed pass is all or nothing, so every one grows the budget.
+            ramp = kind == EMBED or credited >= COVERAGE_GATE * assigned
+            budget = core.budgets.reward(miner, task_id, credited, ramp, kind).budget
+        else:
+            budget = core.budgets.get(miner, kind).budget
+        if publish and kind == EMBED:
+            core.embeddings.finalize(
+                task_id, job["model"], DONE, publish["vectors_key"]
             )
-        ).budget
-    elif credited:
-        # An embed pass is all or nothing, so every one grows the budget.
-        ramp = kind == EMBED or credited >= COVERAGE_GATE * assigned
-        budget = (
-            await core.db(core.budgets.reward, miner, task_id, credited, ramp, kind)
-        ).budget
-    else:
-        budget = (await core.db(core.budgets.get, miner, kind)).budget
-    if publish and kind == EMBED:
-        await core.db(
-            core.embeddings.settle, task_id, job["model"], DONE, publish["vectors_key"]
-        )
-    if decision.agreed or decision.disagreed:
-        await core.db(
-            core.validations.record_audit, decision.agreed, decision.disagreed
-        )
-    await core.db(core.validations.record, report, result.get("urls"))
-    if verdict == "fail" and result.get("reason") in STRIKE_REASONS:
-        since = time.time() - STRIKE_WINDOW_H * HOUR
-        judged = await core.db(core.validations.judged_since, miner, since, kind)
-        await core.db(
-            core.budgets.strike, miner, result["reason"], task_id, judged, kind
-        )
+        if decision.agreed or decision.disagreed:
+            core.validations.record_audit(decision.agreed, decision.disagreed)
+        core.validations.record(report, result.get("urls"))
+        if verdict == "fail" and result.get("reason") in STRIKE_REASONS:
+            since = time.time() - STRIKE_WINDOW_H * HOUR
+            judged = core.validations.judged_since(miner, since, kind)
+            core.budgets.strike(miner, result["reason"], task_id, judged, kind)
+    return budget
 
+
+def publish_job(
+    core, task_id: str, job: dict, vote: dict, agreed: list[str] = ()
+) -> dict:
+    kind, result = job.get("kind", CRAWL), vote["result"]
+    publish = {
+        **{
+            name: job.get(name, "")
+            for name in ("task_id", "round_id", "miner", "key", "etag")
+        },
+        "kind": kind,
+        "validator": vote["validator"],
+        "validators": sorted(set(agreed) | {vote["validator"]}),
+        "urls": job["urls"],
+        "completed_at": job["completed_at"],
+        "claim_ttl": core.claim_ttl,
+    }
+    if kind == EMBED:
+        publish |= {
+            name: job[name] for name in ("model", "input_key", "pages", "texts")
+        }
+        publish["vectors_key"] = vectors_key(job["model"], task_id)
+    else:
+        publish["skip"] = rejected_urls(result)
+    return publish
+
+
+def rejected_urls(result: dict) -> list[str]:
+    """Rows a check failed stay out of the corpus even though the task passed."""
+    mismatched = {
+        sample["url"]
+        for sample in result.get("samples", [])
+        if sample["outcome"] == "mismatched"
+    }
+    return sorted(mismatched | set(result.get("rejected", [])))
+
+
+async def close_upload(
+    core, task_id: str, job: dict, verdict: str, publish: dict | None
+) -> None:
+    """Closes a finalized upload in Redis and moves the task on."""
+    if await core.validation.finalize(task_id, publish) is None:
+        log.warning("task=%s was closed before its final_verdict was recorded", task_id)
+        raise ClaimLost(task_id)
     if verdict == "pass":
         await finish_task(core, job["round_id"], task_id)
     else:
         await requeue(core, task_id, job, verdict)
+
+
+async def finish_finalized(core, task_id: str, job: dict, finalized: dict) -> dict:
+    await close_upload(core, task_id, job, finalized["verdict"], finalized["publish"])
+    kind = job.get("kind", CRAWL)
     return {
         "task_id": task_id,
-        "verdict": verdict,
-        "credited": credited,
-        "miner_budget": budget,
+        "verdict": finalized["verdict"],
+        "credited": finalized["credited"],
+        "miner_budget": (await core.db(core.budgets.get, job["miner"], kind)).budget,
     }
 
 
 def vectors_key(model: str, task_id: str) -> str:
     return f"vectors/model={model}/dt={utc_day()}/task={task_id}.parquet"
-
-
-async def return_expired_validations(core) -> list[str]:
-    returned = []
-    for task_id in await core.validation.expired():
-        tries = await core.validation.give_back(task_id)
-        if not tries:
-            continue
-        returned.append(task_id)
-        if tries >= core.validation.max_tries:
-            settled = await core.validation.settle(task_id)
-            if settled is not None:
-                await void_task(core, task_id, settled.job, "", "validators_lapsed")
-    return returned
-
-
-async def conclude_overdue_audits(core) -> list[str]:
-    concluded = []
-    for task_id in await core.validation.overdue_audits():
-        job = await core.validation.job(task_id)
-        votes = await core.validation.votes(task_id)
-        if job is None or not votes:
-            continue
-        try:
-            await conclude_validation(
-                core, task_id, job, decide(votes, overdue=True), ""
-            )
-        except (StorageDown, LeaseLost):
-            continue
-        concluded.append(task_id)
-    return concluded
 
 
 async def return_expired_publishes(core) -> list[str]:

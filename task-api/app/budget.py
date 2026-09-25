@@ -15,7 +15,7 @@ HOUR = 3600
 
 # Fetch failures are left out on purpose: the miner still tried.
 REWARD = "verified"
-PENALTIES = ("lease_expired", "abandoned", "verification_failed")
+PENALTIES = ("claim_expired", "abandoned", "verification_failed")
 
 # Only fails the miner caused count; "unscorable" is the validator's own timeout or crash.
 STRIKE_REASONS = frozenset(
@@ -257,9 +257,9 @@ class Budgets:
         covered = self.coverage_report(window_hours, now)
         earned: dict[str, dict[str, int]] = {}
         for pool, hotkey, amount in self.db.execute(
-            "SELECT pool, hotkey, SUM(amount) FROM credits WHERE hour >= ?"
-            " GROUP BY pool, hotkey",
-            (since,),
+            "SELECT pool, hotkey, SUM(amount) FROM credits"
+            " WHERE hour >= ? AND hour <= ? GROUP BY pool, hotkey",
+            (since, hour_of(now)),
         ):
             if amount <= 0:
                 continue
@@ -280,8 +280,8 @@ class Budgets:
         since = hour_of(now) - window_hours + 1
         rows = self.db.execute(
             "SELECT hotkey, SUM(assigned), SUM(returned) FROM coverage"
-            " WHERE hour >= ? GROUP BY hotkey HAVING SUM(assigned) > 0",
-            (since,),
+            " WHERE hour >= ? AND hour <= ? GROUP BY hotkey HAVING SUM(assigned) > 0",
+            (since, hour_of(now)),
         ).fetchall()
         return {
             hotkey: {

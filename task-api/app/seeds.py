@@ -22,6 +22,9 @@ class LocalSeeds:
     async def target_block(self) -> int:
         return await self.current_block() + REVEAL_AFTER_BLOCKS
 
+    def wait_s(self) -> float:
+        return REVEAL_AFTER_BLOCKS * self.block_seconds
+
     async def seed_for(self, block: int) -> str | None:
         if await self.current_block() < block:
             return None
@@ -45,6 +48,9 @@ class ChainSeeds:
 
     async def target_block(self) -> int:
         return await self.current_block() + REVEAL_AFTER_BLOCKS
+
+    def wait_s(self) -> float:
+        return REVEAL_AFTER_BLOCKS * BLOCK_SECONDS
 
     async def seed_for(self, block: int) -> str | None:
         if await self.current_block() < block:

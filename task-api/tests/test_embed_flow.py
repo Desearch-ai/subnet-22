@@ -3,7 +3,7 @@ import json
 
 from app import lifecycle, queues
 
-from tests.test_api_flow import Harness, _upload, revealed, verifier
+from tests.test_api_flow import Harness, _upload, opened, revealed, verifier
 
 PAGES = [
     {
@@ -23,9 +23,11 @@ INPUT = {
 }
 
 
-def embed_score(verdict: str, outcome: str, reason: str = "ok") -> dict:
+def embed_score(
+    verdict: str, outcome: str, reason: str = "ok", returned: int = 6
+) -> dict:
     return {
-        "returned": 6,
+        "returned": returned,
         "sampled": 2,
         "matched": 2 * (outcome == "matched"),
         "mismatched": 2 * (outcome == "mismatched"),
@@ -47,7 +49,7 @@ async def embed_round(h: Harness, entry: dict = INPUT) -> str:
 
 
 async def embed_task(h: Harness, miner) -> dict:
-    task = (await miner.post("/v1/tasks/lease", {"kind": "embed"}))["task"]
+    task = (await miner.post("/v1/tasks/claim", {"kind": "embed"}))["task"]
     await _upload(h, task["upload"], b"vectors")
     await miner.post(
         f"/v1/tasks/{task['task_id']}/complete",
@@ -64,7 +66,7 @@ def test_a_published_page_is_embedded_credited_and_recorded(api_env, memory):
 async def _embedded(backend) -> None:
     async with Harness(backend) as h:
         round_id = await embed_round(h)
-        refused = await h.miner.post("/v1/tasks/lease")
+        refused = await h.miner.post("/v1/tasks/claim")
         assert refused["refusal"]["code"] == "QUEUE_EMPTY", "crawl sees no embed work"
 
         task = await embed_task(h, h.miner)
@@ -73,11 +75,9 @@ async def _embedded(backend) -> None:
         assert task["input"]["sha256"] == INPUT["input_sha256"]
         assert task["urls"] == [page["url"] for page in PAGES]
 
-        crawl_only = await h.validator.post("/v1/validation/lease")
-        assert crawl_only["job"] is None
-        job = (await h.validator.post("/v1/validation/lease", {"kinds": ["embed"]}))[
-            "job"
-        ]
+        crawl_only = await h.validator.post("/v1/validation/open")
+        assert crawl_only["jobs"] == []
+        job = await opened(h, h.validator, ("embed",))
         assert (job["kind"], job["model"]) == ("embed", h.core.embed_model)
         assert job["input"]["url"]
 
@@ -143,7 +143,7 @@ async def _embed_strikes(backend) -> None:
     async with Harness(backend) as h:
         await embed_round(h)
         task = await embed_task(h, h.miner)
-        await h.validator.post("/v1/validation/lease", {"kinds": ["embed"]})
+        await opened(h, h.validator, ("embed",))
         scored = await h.validator.post(
             f"/v1/validation/{task['task_id']}/score",
             embed_score("fail", "mismatched", "vectors_mismatch"),
@@ -154,9 +154,9 @@ async def _embed_strikes(backend) -> None:
             "SELECT pool, reason FROM strikes WHERE hotkey = ?", (h.miner.hotkey,)
         ).fetchall()
         assert strikes == [("embed", "vectors_mismatch")]
-        again = await h.miner.post("/v1/tasks/lease", {"kind": "embed"})
+        again = await h.miner.post("/v1/tasks/claim", {"kind": "embed"})
         assert again["refusal"]["code"] == "ALREADY_HELD"
-        rival = await h.rival.post("/v1/tasks/lease", {"kind": "embed"})
+        rival = await h.rival.post("/v1/tasks/claim", {"kind": "embed"})
         assert rival["task"]["task_id"] == task["task_id"]
 
 
@@ -170,7 +170,7 @@ async def _closed(backend) -> None:
         assert await lifecycle.open_embed_rounds(h.core) is None
         assert await h.redis.llen(queues.EMBED_INPUTS) == 1, "nothing is thrown away"
 
-        answer = await h.miner.post("/v1/tasks/lease", {"kind": "embed"})
+        answer = await h.miner.post("/v1/tasks/claim", {"kind": "embed"})
         assert answer["refusal"] == {
             "code": "KIND_CLOSED",
             "inputs": {"kind": "embed", "retry_after": 3600.0},

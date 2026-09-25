@@ -21,6 +21,7 @@ RECEIPT_FIELDS = (
     "task_id",
     "refusal",
     "cause",
+    "block",
 )
 
 

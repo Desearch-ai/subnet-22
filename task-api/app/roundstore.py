@@ -5,6 +5,11 @@ import sqlite3
 
 from .rounds import Batch, Round, Url
 
+COLUMNS = (
+    "round_id, kind, manifest_hash, seed_block, opened_at, seed, serve_order,"
+    " closed_at, batches"
+)
+
 
 class RoundStore:
     def __init__(self, db: sqlite3.Connection):
@@ -20,7 +25,8 @@ class RoundStore:
                 seed          TEXT,
                 serve_order   TEXT NOT NULL DEFAULT '[]',
                 closed_at     REAL,
-                batches       TEXT NOT NULL
+                batches       TEXT NOT NULL,
+                filled_at     REAL
             );
             CREATE INDEX IF NOT EXISTS rounds_opened ON rounds (opened_at);
             CREATE INDEX IF NOT EXISTS rounds_pending ON rounds (seed, closed_at);
@@ -37,7 +43,9 @@ class RoundStore:
             for batch_id, batch in round_.batches.items()
         }
         self.db.execute(
-            "INSERT OR REPLACE INTO rounds VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            f"INSERT INTO rounds ({COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            " ON CONFLICT (round_id) DO UPDATE SET seed = excluded.seed,"
+            " serve_order = excluded.serve_order, closed_at = excluded.closed_at",
             (
                 round_.round_id,
                 round_.kind,
@@ -54,26 +62,42 @@ class RoundStore:
 
     def get(self, round_id: str) -> Round | None:
         row = self.db.execute(
-            "SELECT * FROM rounds WHERE round_id = ?", (round_id,)
+            f"SELECT {COLUMNS} FROM rounds WHERE round_id = ?", (round_id,)
         ).fetchone()
         return _round(row) if row else None
 
     def unrevealed(self) -> list[Round]:
         rows = self.db.execute(
-            "SELECT * FROM rounds WHERE seed IS NULL ORDER BY opened_at"
+            f"SELECT {COLUMNS} FROM rounds WHERE seed IS NULL ORDER BY opened_at"
         ).fetchall()
         return [_round(row) for row in rows]
 
+    def unfilled(self) -> list[Round]:
+        """Revealed rounds whose tasks never reached the queue."""
+        rows = self.db.execute(
+            f"SELECT {COLUMNS} FROM rounds WHERE seed IS NOT NULL"
+            " AND filled_at IS NULL AND closed_at IS NULL ORDER BY opened_at"
+        ).fetchall()
+        return [_round(row) for row in rows]
+
+    def mark_filled(self, round_id: str, at: float) -> None:
+        self.db.execute(
+            "UPDATE rounds SET filled_at = ? WHERE round_id = ?", (at, round_id)
+        )
+        self.db.commit()
+
     def open_revealed(self) -> list[str]:
         rows = self.db.execute(
-            "SELECT round_id FROM rounds WHERE seed IS NOT NULL AND closed_at IS NULL"
+            "SELECT round_id FROM rounds WHERE seed IS NOT NULL"
+            " AND filled_at IS NOT NULL AND closed_at IS NULL"
         ).fetchall()
         return [row[0] for row in rows]
 
     def latest_revealed(self) -> dict[str, str]:
-        """The newest revealed round of each kind."""
+        """The newest revealed round of each kind that is still open."""
         rows = self.db.execute(
-            "SELECT kind, round_id FROM rounds WHERE seed IS NOT NULL ORDER BY opened_at"
+            "SELECT kind, round_id FROM rounds WHERE seed IS NOT NULL"
+            " AND closed_at IS NULL ORDER BY opened_at"
         ).fetchall()
         return dict(rows)
 

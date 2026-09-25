@@ -66,7 +66,7 @@ class Embeddings:
         )
         self.db.commit()
 
-    def settle(
+    def finalize(
         self, batch_id: str, model: str, state: str, vectors_key: str | None = None
     ) -> int:
         """Only rows still queued by this batch change; a newer version keeps its own state."""

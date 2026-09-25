@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from . import proofs
 
 BATCH_TARGET = 250
-LEASE_TTL_S = 900
+CLAIM_TTL_S = 900
 
 
 @dataclass

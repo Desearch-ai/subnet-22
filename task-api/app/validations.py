@@ -7,6 +7,12 @@ from collections import Counter
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
+from desearch.credit import EVIDENCE, credited_urls
+
+from .budget import COVERAGE_GATE
+
+__all__ = ["credited_urls"]
+
 COUNTS = (
     "returned",
     "missing",
@@ -18,6 +24,7 @@ COUNTS = (
     "errors_confirmed",
     "errors_unconfirmed",
     "reextract_mismatch",
+    "credited",
 )
 FIELDS = (
     "task_id",
@@ -36,6 +43,15 @@ FIELDS = (
 MIN_AUDITS = 10
 URL_DETAIL_DAYS = 7
 MAX_DISAGREEMENT = 0.3
+MAX_CREDIT_DIVERGENCE = 0.15
+# The validator's own timeout or crash, never held against the miner.
+VALIDATOR_FAULT_REASONS = frozenset({"unscorable"})
+CONTENT_OUTCOMES = ("matched", "mismatched", "unverifiable", "not_fetched")
+ERROR_OUTCOMES = ("errors_confirmed", "errors_unconfirmed")
+
+
+class Infeasible(ValueError):
+    pass
 
 
 @dataclass
@@ -47,25 +63,46 @@ class Decision:
     disagreed: list[str] = field(default_factory=list)
 
 
-def credited_urls(ok_rows: int, error_rows: int, outcomes: Counter) -> int:
-    """Paid at the sample's rate, so an unsampled forgery still costs."""
-    compared = outcomes["matched"] + outcomes["mismatched"]
-    judged = outcomes["errors_confirmed"] + outcomes["errors_unconfirmed"]
-    pages = round(ok_rows * outcomes["matched"] / compared) if compared else 0
-    errors = round(error_rows * outcomes["errors_confirmed"] / judged) if judged else 0
-    return pages + errors
+def check_feasible(job: dict, result: dict) -> None:
+    """A report must describe rows the task can hold; counts are not taken on trust."""
+    urls = set(job["urls"])
+    samples = result.get("samples", [])
+    sampled = [sample["url"] for sample in samples]
+    outcomes = Counter(sample["outcome"] for sample in samples)
+    returned, error_rows = result["returned"], result.get("error_rows", 0)
+    content = sum(outcomes[outcome] for outcome in CONTENT_OUTCOMES)
+    errors = sum(outcomes[outcome] for outcome in ERROR_OUTCOMES)
+    problems = (
+        (len(set(sampled)) < len(sampled), "a URL was sampled twice"),
+        (not set(sampled) <= urls, "a sampled URL is not in the task"),
+        (returned > len(urls), "more rows returned than URLs assigned"),
+        (len(sampled) > returned, "more samples than rows returned"),
+        (content > returned - error_rows, "more content samples than content rows"),
+        (errors > error_rows, "more error samples than error rows"),
+        (
+            result["verdict"] == "pass" and returned < COVERAGE_GATE * len(urls),
+            f"a pass needs {COVERAGE_GATE:.0%} of the URLs returned",
+        ),
+    )
+    for wrong, why in problems:
+        if wrong:
+            raise Infeasible(why)
 
 
 def build_vote(job: dict, validator: str, result: dict) -> dict:
     """Credit comes from the samples, never from the validator's own number."""
-    assigned = len(set(job["urls"]))
-    returned = min(result["returned"], assigned)
-    error_rows = min(result.get("error_rows", 0), returned)
-    outcomes = Counter(sample["outcome"] for sample in result.get("samples", []))
+    check_feasible(job, result)
+    returned = result["returned"]
+    error_rows = result.get("error_rows", 0)
+    samples = result.get("samples", [])
+    outcomes = Counter(sample["outcome"] for sample in samples)
     verdict, reason = result["verdict"], result.get("reason", "")
-    evidence = ("matched", "mismatched", "errors_confirmed", "errors_unconfirmed")
-    if verdict == "pass" and not any(outcomes[outcome] for outcome in evidence):
+    if verdict == "fail" and reason in VALIDATOR_FAULT_REASONS:
+        verdict = "void"
+    elif verdict == "pass" and not any(outcomes[outcome] for outcome in EVIDENCE):
         verdict, reason = "void", "inconclusive"
+    elif verdict == "pass" and outcomes["unverifiable"] * 2 >= len(samples):
+        verdict, reason = "void", "unverifiable"
     credited = (
         credited_urls(returned - error_rows, error_rows, outcomes)
         if verdict == "pass"
@@ -82,12 +119,41 @@ def build_vote(job: dict, validator: str, result: dict) -> dict:
             "returned": returned,
             "error_rows": error_rows,
             "credited": credited,
+            "rejected": sorted(set(result.get("rejected", [])) & set(job["urls"])),
         },
     }
 
 
+def check_embed_feasible(job: dict, result: dict) -> None:
+    """A pass must account for every text; a validator's counts are not taken on trust."""
+    samples = result.get("samples", [])
+    ids = [sample["text_id"] for sample in samples]
+    outcomes = Counter(sample["outcome"] for sample in samples)
+    texts = job.get("texts", 0)
+    problems = (
+        (len(set(ids)) < len(ids), "a text was sampled twice"),
+        (result["returned"] > texts, "more vectors returned than texts assigned"),
+        (len(ids) > result["returned"], "more samples than vectors returned"),
+        (
+            result["verdict"] == "pass"
+            and (
+                result["returned"] < texts
+                or result.get("missing")
+                or result.get("duplicates")
+                or result.get("malformed")
+                or outcomes["mismatched"]
+            ),
+            "a pass needs every text embedded and every sample matched",
+        ),
+    )
+    for wrong, why in problems:
+        if wrong:
+            raise Infeasible(why)
+
+
 def build_embed_vote(job: dict, validator: str, result: dict) -> dict:
     """Credit is the characters the API assigned, paid in full on a pass."""
+    check_embed_feasible(job, result)
     verdict, reason = result["verdict"], result.get("reason", "")
     if verdict == "pass" and not result.get("matched"):
         verdict, reason = "void", "inconclusive"
@@ -127,13 +193,37 @@ def decide(votes: list[dict], audit: bool = False, overdue: bool = False) -> Dec
         return Decision("final", standing, votes)
 
     winners = [v for v in votes if v["verdict"] == verdict]
+    losers = [v for v in votes if v["verdict"] != verdict]
+    if credits_diverge(winners):
+        if len(votes) < 3:
+            if not overdue:
+                return Decision("audit")
+            return Decision("final", min(winners, key=credited), votes)
+        # The lower median, so two passes that differ finalize on the cheaper one.
+        middle = sorted(v["credited"] for v in winners)[(len(winners) - 1) // 2]
+        near = [v for v in winners if credits_agree(v["credited"], middle)]
+        losers += [v for v in winners if v not in near]
+        winners = near
     return Decision(
         "final",
-        min(winners, key=lambda v: v["credited"]),
+        min(winners, key=credited),
         votes,
         agreed=[v["validator"] for v in winners],
-        disagreed=[v["validator"] for v in votes if v["verdict"] != verdict],
+        disagreed=[v["validator"] for v in losers],
     )
+
+
+def credited(vote: dict) -> int:
+    return vote["credited"]
+
+
+def credits_agree(one: int, other: int) -> bool:
+    return abs(one - other) <= MAX_CREDIT_DIVERGENCE * max(one, other)
+
+
+def credits_diverge(votes: list[dict]) -> bool:
+    paid = [v["credited"] for v in votes]
+    return len(paid) > 1 and not credits_agree(min(paid), max(paid))
 
 
 class Validations:
@@ -175,6 +265,15 @@ class Validations:
                 audits        INTEGER NOT NULL DEFAULT 0,
                 disagreements INTEGER NOT NULL DEFAULT 0
             );
+            CREATE TABLE IF NOT EXISTS final_verdicts (
+                task_id    TEXT NOT NULL,
+                upload_key TEXT NOT NULL,
+                verdict    TEXT NOT NULL,
+                credited   INTEGER NOT NULL,
+                publish    TEXT,
+                finalized_at REAL NOT NULL,
+                PRIMARY KEY (task_id, upload_key)
+            );
             """
         )
         if not self.db.execute("SELECT 1 FROM verdict_counts LIMIT 1").fetchone():
@@ -183,6 +282,47 @@ class Validations:
                 " SELECT miner, verdict, COUNT(*) FROM validations GROUP BY miner, verdict"
             )
         self.db.commit()
+
+    def finalize(
+        self,
+        task_id: str,
+        upload_key: str,
+        verdict: str,
+        credited: int,
+        publish: dict | None,
+    ) -> bool:
+        """False when this upload was finalized before, so nothing is paid twice."""
+        try:
+            self.db.execute(
+                "INSERT INTO final_verdicts VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    task_id,
+                    upload_key,
+                    verdict,
+                    credited,
+                    json.dumps(publish) if publish else None,
+                    time.time(),
+                ),
+            )
+        except sqlite3.IntegrityError:
+            return False
+        self.db.commit()
+        return True
+
+    def final_verdict(self, task_id: str, upload_key: str) -> dict | None:
+        row = self.db.execute(
+            "SELECT verdict, credited, publish FROM final_verdicts"
+            " WHERE task_id = ? AND upload_key = ?",
+            (task_id, upload_key),
+        ).fetchone()
+        if row is None:
+            return None
+        verdict, credited, publish = row
+        return {
+            "verdict": verdict,
+            "credited": credited,
+            "publish": json.loads(publish) if publish else None,
+        }
 
     def record(self, report: dict, urls: list[dict] | None = None) -> None:
         columns = (*FIELDS, "report", "urls")
@@ -293,6 +433,12 @@ class Validations:
 
     def is_excluded(self, hotkey: str) -> bool:
         return self.audit_standing().get(hotkey, {}).get("excluded", False)
+
+    def audits_of(self, hotkey: str) -> int:
+        row = self.db.execute(
+            "SELECT audits FROM validator_audits WHERE hotkey = ?", (hotkey,)
+        ).fetchone()
+        return row[0] if row else 0
 
 
 def utc_day(at: float | None = None) -> str:

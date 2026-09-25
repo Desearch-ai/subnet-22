@@ -136,7 +136,7 @@ class Harness:
 
     async def mine(self, miner: TaskApiClient | None = None) -> dict:
         miner = miner or self.miner
-        task = (await miner.post("/v1/tasks/lease"))["task"]
+        task = (await miner.post("/v1/tasks/claim"))["task"]
         body = _parquet(task, miner.hotkey)
         await _upload(self, task["upload"], body)
         await miner.post(
@@ -144,6 +144,22 @@ class Harness:
             {"key": task["upload"]["key"], "bytes": len(body)},
         )
         return task
+
+
+async def opened(
+    h: Harness, validator, kinds=("crawl",), timeout: float = 5.0, want: str = ""
+) -> dict:
+    """An upload open to this validator, once its seed block has passed."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        jobs = (await validator.post("/v1/validation/open", {"kinds": list(kinds)}))[
+            "jobs"
+        ]
+        for job in jobs:
+            if not want or job["task_id"] == want:
+                return job
+        await asyncio.sleep(0.05)
+    raise AssertionError("no upload opened for validation")
 
 
 async def revealed(core, timeout: float = 5.0) -> int:
@@ -175,7 +191,7 @@ async def _locked_out(backend) -> None:
         await h.core.db(h.core.budgets.strike, hotkey, "content_mismatch", "t1", 1)
         until = await h.core.db(h.core.budgets.strike, hotkey, "coverage", "t2", 2)
 
-        answer = await h.miner.post("/v1/tasks/lease")
+        answer = await h.miner.post("/v1/tasks/claim")
         refusal = answer["refusal"]
         assert refusal["code"] == "LOCKED_OUT" and answer["receipt"]
         assert refusal["inputs"]["until"] == round(until, 3)
@@ -183,7 +199,7 @@ async def _locked_out(backend) -> None:
         view = (await h.public.get(f"/v1/miners/{hotkey}")).json()
         assert view["pools"]["crawl"]["locked_until"] == until
         assert view["pools"]["embed"]["locked_until"] is None
-        rival = await h.rival.post("/v1/tasks/lease")
+        rival = await h.rival.post("/v1/tasks/claim")
         assert rival["refusal"]["code"] == "QUEUE_EMPTY"
 
 
@@ -203,11 +219,11 @@ async def _scenario(h: Harness) -> None:
     assert [(r["round_id"], r["manifest_hash"], r["revealed"]) for r in listed] == [
         (round_id, enqueued["manifest_hash"], False)
     ]
-    assert (await h.miner.post("/v1/tasks/lease"))["refusal"]["code"] == "QUEUE_EMPTY"
+    assert (await h.miner.post("/v1/tasks/claim"))["refusal"]["code"] == "QUEUE_EMPTY"
     assert await revealed(h.core) == 2
 
-    await _expect(403, h.validator.post("/v1/tasks/lease"))
-    task = (await h.miner.post("/v1/tasks/lease"))["task"]
+    await _expect(403, h.validator.post("/v1/tasks/claim"))
+    task = (await h.miner.post("/v1/tasks/claim"))["task"]
     task_id, upload = task["task_id"], task["upload"]
     assert task["round_id"] == round_id
     assert len(task["urls"]) == 3
@@ -217,7 +233,7 @@ async def _scenario(h: Harness) -> None:
     )
     assert upload["content_type"] == PARQUET
     assert upload["expires_at"] == task["expires_at"]
-    assert await h.status(task_id) == "leased"
+    assert await h.status(task_id) == "claimed"
 
     complete = f"/v1/tasks/{task_id}/complete"
     report = {"key": upload["key"], "rows": 3, "ok": 3, "errors": 0, "bytes": 0}
@@ -235,11 +251,11 @@ async def _scenario(h: Harness) -> None:
     assert mislabelled.status == 403
     await _upload(h, upload, parquet)
     done = await h.miner.post(complete, {**report, "bytes": len(parquet)})
-    assert done == {"task_id": task_id, "status": "queued_for_validation"}
-    assert await h.status(task_id) == "queued_for_validation"
+    assert done == {"task_id": task_id, "status": "open_for_validation"}
+    assert await h.status(task_id) == "open"
     assert await h.size(upload["key"]) is None
 
-    unscored = await h.miner.post("/v1/tasks/lease")
+    unscored = await h.miner.post("/v1/tasks/claim")
     assert unscored["refusal"]["code"] == "NO_CAPACITY", (
         "unscored work counts against the budget"
     )
@@ -248,12 +264,13 @@ async def _scenario(h: Harness) -> None:
     await _upload(h, upload, swapped)
 
     score = f"/v1/validation/{task_id}/score"
-    await _expect(403, h.miner.post("/v1/validation/lease"))
+    await _expect(403, h.miner.post("/v1/validation/open"))
     await _expect(403, h.miner.post(score, _score("pass", 3)))
 
-    job = (await h.validator.post("/v1/validation/lease"))["job"]
+    job = await opened(h, h.validator)
     assert job["task_id"] == task_id
     assert job["miner"] == h.miner.hotkey
+    assert len(job["seed"]) == 64 and job["deadline"] > job["completed_at"]
     assert re.fullmatch(
         rf"submitted/dt=[\d-]+/task={task_id}/{h.miner.hotkey}-\d+-[0-9a-f]{{8}}\.parquet",
         job["key"],
@@ -262,9 +279,9 @@ async def _scenario(h: Harness) -> None:
     downloaded = await h.r2.get(job["download_url"])
     assert downloaded.body == parquet
     assert pq.read_table(io.BytesIO(downloaded.body)).num_rows == 3
-    assert await h.status(task_id) == "validating"
-    assert (await h.validator.post("/v1/validation/lease"))["job"] is None
-    await _expect(409, h.other_validator.post(score, _score("pass", 3)))
+    assert await h.status(task_id) == "open"
+    skipped = await h.validator.post("/v1/validation/open", {"skip": [task_id]})
+    assert skipped["jobs"] == [], "an upload a validator is on is not offered again"
     await _expect(422, h.validator.post(score, {**_score("pass", 3), "matched": 0}))
 
     too_long = [{"url": URLS[0]["url"], "miner_snippet": "x" * 501}]
@@ -279,7 +296,8 @@ async def _scenario(h: Harness) -> None:
         {"url": URLS[1]["url"], "status": 404, "error": "http_4xx"},
     ]
     scored = await h.validator.post(
-        score, {**_score("pass", 3), "credited": 999, "urls": details}
+        score,
+        {**_score("pass", 3, url=task["urls"][0]), "credited": 999, "urls": details},
     )
     assert scored == {
         "task_id": task_id,
@@ -287,6 +305,7 @@ async def _scenario(h: Harness) -> None:
         "credited": 3,
         "miner_budget": 2,
     }
+    await _expect(409, h.validator.post(score, _score("pass", 3, url=task["urls"][0])))
     view = await h.view(task_id)
     summary = view["score"]
     assert view["status"] == "pass"
@@ -302,7 +321,7 @@ async def _scenario(h: Harness) -> None:
     ).fetchone()[0]
     assert "urls" not in json.loads(stored)
     assert "urls" not in await h.report(summary["report_key"])
-    assert summary["returned"] == 3
+    assert summary["returned"] == 3 and summary["credited"] == 3
     assert summary["validator"] == h.validator.hotkey
     assert await h.size(summary["report_key"]) is None
     assert await h.size(job["key"]) == len(parquet)
@@ -324,10 +343,12 @@ async def _scenario(h: Harness) -> None:
         body = h.core.pages.client.get_object(Bucket=h.core.pages.bucket, Key=key)[
             "Body"
         ].read()
-        assert from_zstd(body)["assigned_url"] == url
+        record = from_zstd(body)
+        assert record["assigned_url"] == url
+        assert record["validator"] == h.validator.hotkey
     assert (await h.report(summary["report_key"]))["verdict"] == "pass"
 
-    second = (await h.miner.post("/v1/tasks/lease"))["task"]
+    second = (await h.miner.post("/v1/tasks/claim"))["task"]
     second_id = second["task_id"]
     second_parquet = _parquet(second, h.miner.hotkey)
     await _upload(h, second["upload"], second_parquet)
@@ -346,18 +367,12 @@ async def _scenario(h: Harness) -> None:
     await h.miner.post(f"/v1/tasks/{second_id}/complete", second_report)
 
     second_score = f"/v1/validation/{second_id}/score"
-    assert (await h.validator.post("/v1/validation/lease"))["job"][
-        "task_id"
-    ] == second_id
-    await h.redis.zadd("vleases:expiry", {second_id: 0})
-    assert await lifecycle.return_expired_validations(h.core) == [second_id]
-    assert await h.status(second_id) == "queued_for_validation"
-    await _expect(409, h.validator.post(second_score, _score("fail", 3)))
-    job = (await h.other_validator.post("/v1/validation/lease"))["job"]
+    job = await opened(h, h.validator)
     assert job["task_id"] == second_id
+    assert await h.status(second_id) == "open"
 
-    scored = await h.other_validator.post(
-        second_score, _score("fail", 3, "content_mismatch")
+    scored = await h.validator.post(
+        second_score, _score("fail", 3, "content_mismatch", url=second["urls"][0])
     )
     assert scored == {
         "task_id": second_id,
@@ -376,20 +391,17 @@ async def _scenario(h: Harness) -> None:
 
     again = await h.mine(h.rival)
     assert (again["task_id"], again["urls"]) == (second_id, second["urls"])
-    await h.validator.post("/v1/validation/lease")
-    await h.validator.post(second_score, _score("pass", 3))
+    await opened(h, h.validator)
+    await h.validator.post(second_score, _score("pass", 3, url=second["urls"][0]))
 
-    drained = await h.miner.post("/v1/tasks/lease")
+    drained = await h.miner.post("/v1/tasks/claim")
     assert drained["task"] is None
     assert drained["refusal"]["code"] == "QUEUE_EMPTY"
 
     health = (await h.public.get("/v1/health")).json()
     assert health["verdicts"] == {"pass": 2, "fail": 1}
-    assert (
-        health["queue_depth"]["crawl"],
-        health["validation_depth"],
-        health["validating"],
-    ) == (0, 0, 0)
+    assert (health["queue_depth"]["crawl"], health["validation_depth"]) == (0, 0)
+    assert health["active_validators"] == [h.validator.hotkey]
     miner = (await h.public.get(f"/v1/miners/{h.miner.hotkey}")).json()
     assert miner["verdicts"] == {"pass": 1, "fail": 1}
     crawl = miner["pools"]["crawl"]
@@ -429,7 +441,7 @@ async def _rate_limited(backend) -> None:
     async with Harness(backend) as h:
         refusals, receipts = [], []
         while len(refusals) < 5:
-            answer = await h.miner.post("/v1/tasks/lease")
+            answer = await h.miner.post("/v1/tasks/claim")
             refusals.append(answer["refusal"])
             receipts.append(answer["receipt"])
             if refusals[-1]["code"] == "RATE_LIMITED":
@@ -469,7 +481,11 @@ async def _upload(h: Harness, upload: dict, body: bytes) -> None:
 
 
 def _score(
-    verdict: str, returned: int, reason: str = "ok", outcome: str | None = None
+    verdict: str,
+    returned: int,
+    reason: str = "ok",
+    outcome: str | None = None,
+    url: str = URLS[0]["url"],
 ) -> dict:
     outcome = outcome or ("matched" if verdict == "pass" else "mismatched")
     return {
@@ -488,7 +504,7 @@ def _score(
         "reason": reason,
         "samples": [
             {
-                "url": URLS[0]["url"],
+                "url": url,
                 "outcome": outcome,
                 "similarity": 0.93 if outcome == "matched" else 0.12,
                 "miner_status": 200,
@@ -610,7 +626,7 @@ async def _faults(backend) -> None:
 
 async def _fault_scenario(h: Harness) -> None:
     await h.enqueue()
-    task = (await h.miner.post("/v1/tasks/lease"))["task"]
+    task = (await h.miner.post("/v1/tasks/claim"))["task"]
     task_id = task["task_id"]
     parquet = _parquet(task, h.miner.hotkey)
     await _upload(h, task["upload"], parquet)
@@ -628,44 +644,50 @@ async def _fault_scenario(h: Harness) -> None:
 
     h.core.max_backlog = 0.001
     await asyncio.sleep(0.2)
-    held = await h.miner.post("/v1/tasks/lease")
+    held = await h.miner.post("/v1/tasks/claim")
     assert held["refusal"]["code"] == "VALIDATION_BACKLOG"
     h.core.max_backlog = 43_200
 
     score = f"/v1/validation/{task_id}/score"
-    assert (await h.validator.post("/v1/validation/lease"))["job"]["task_id"] == task_id
+    assert (await opened(h, h.validator))["task_id"] == task_id
 
     async def broken(*_):
         raise RuntimeError("pages bucket is down")
 
     h.core.pages.put_json = broken
-    await _expect(502, h.validator.post(score, _score("pass", 3)))
+    pending = await h.validator.post(score, _score("pass", 3, url=task["urls"][0]))
+    assert pending["verdict"] == "pending", "the vote is kept, the final_verdict waits"
+    assert await h.status(task_id) == "voting"
     del h.core.pages.put_json
-    assert await h.core.validation.lease_holder(task_id) is None
-    assert await h.redis.get(f"vtries:{task_id}") is None
-    assert await h.redis.get(f"vreleases:{task_id}") is None, (
-        "our outage is not the task's"
-    )
-    assert await h.core.validation.depth() == 1
+    assert await lifecycle.finalize_due(h.core) == [task_id]
+    assert await h.status(task_id) == "pass"
+    assert (await h.public.get("/v1/health")).json()["verdicts"]["pass"] == 1
 
-    assert (await h.validator.post("/v1/validation/lease"))["job"]["task_id"] == task_id
+    lost = (await h.miner.post("/v1/tasks/claim"))["task"]
+    lost_id = lost["task_id"]
+    await _upload(h, lost["upload"], _parquet(lost, h.miner.hotkey))
+    await h.miner.post(
+        f"/v1/tasks/{lost_id}/complete", {"key": lost["upload"]["key"], "bytes": 1}
+    )
+    job = await h.core.validation.job(lost_id)
     await h.core.storage.delete(job["key"])
     released = await h.validator.post(
-        f"/v1/validation/{task_id}/release", {"reason": "missing"}
+        f"/v1/validation/{lost_id}/release", {"reason": "missing"}
     )
     assert released["status"] == "void"
-    view = await h.view(task_id)
+    view = await h.view(lost_id)
     assert (view["status"], view["score"]["reason"]) == ("queued", "upload_missing")
     assert (await h.report(view["score"]["report_key"]))["verdict"] == "void"
     assert (await h.public.get("/v1/health")).json()["verdicts"]["void"] == 1
 
-    skipped = (await h.miner.post("/v1/tasks/lease"))["task"]
-    assert skipped["task_id"] != task_id, "a miner never gets a task twice"
-    again = (await h.rival.post("/v1/tasks/lease"))["task"]
-    assert again["task_id"] == task_id
-    assert again["urls"] == task["urls"]
+    assert (await h.miner.post("/v1/tasks/claim"))["task"] is None, (
+        "a miner never gets a task twice"
+    )
+    again = (await h.rival.post("/v1/tasks/claim"))["task"]
+    assert again["task_id"] == lost_id
+    assert again["urls"] == lost["urls"]
     view = (await h.public.get(f"/v1/miners/{h.miner.hotkey}")).json()
-    assert view["pools"]["crawl"]["budget"] == 1
+    assert view["pools"]["crawl"]["budget"] == 2, "one pass grew it, the void did not"
 
 
 def test_public_reads_are_limited_per_ip_and_listed_a_page_at_a_time(api_env, memory):

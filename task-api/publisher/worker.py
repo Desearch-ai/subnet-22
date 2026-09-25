@@ -77,6 +77,8 @@ CHANGE_SCHEMA = pa.schema(
         ("text_sha256", pa.string()),
         ("task_id", pa.string()),
         ("miner", pa.string()),
+        ("validator", pa.string()),
+        ("validators", pa.list_(pa.string())),
     ]
 )
 RECORD_COLUMNS = [
@@ -128,15 +130,15 @@ class Publisher:
         jobs = await self.queue.claim(self.batch)
         if not jobs:
             return None
-        settled, changes = [], []
+        finalized, changes = [], []
         for job in jobs:
-            await self.queue.extend_lease(job["task_id"])
+            await self.queue.extend_claim(job["task_id"])
             try:
                 done, failure = await asyncio.to_thread(self.publish, job)
             except UploadGone as gone:
                 log.error("task=%s upload %s before publishing", job["task_id"], gone)
                 await self.queue.mark_lost(job["task_id"])
-                settled.append(job)
+                finalized.append(job)
                 continue
             except Exception:
                 log.exception(
@@ -152,7 +154,7 @@ class Publisher:
                     failure,
                 )
                 continue
-            settled.append(job)
+            finalized.append(job)
         # Written before any ack, including partly failed jobs.
         if changes:
             await asyncio.to_thread(
@@ -161,16 +163,16 @@ class Publisher:
             if self.embed_inputs:
                 for entry in await asyncio.to_thread(self.write_embed_inputs, changes):
                     await self.queue.push_embed_input(entry)
-        for job in settled:
+        for job in finalized:
             await self.queue.ack(job["task_id"])
             for key in (job["key"], job.get("input_key")):
                 if key:
                     with contextlib.suppress(Exception):
                         await self.temp.delete(key)
         log.info(
-            "published %d tasks, %d pages new or changed", len(settled), len(changes)
+            "published %d tasks, %d pages new or changed", len(finalized), len(changes)
         )
-        return len(settled)
+        return len(finalized)
 
     def read_temp(self, key: str, etag: str | None = None) -> bytes:
         extra = {"IfMatch": etag} if etag else {}
@@ -192,12 +194,20 @@ class Publisher:
         body = self.read_temp(job["key"], job.get("etag"))
         window = publish_window(job)
         captured = datetime.now(UTC)
-        assigned = set(job["urls"])
+        assigned = set(job["urls"]) - set(job.get("skip", ()))
         chosen: dict[str, dict] = {}
         for row in pq.read_table(io.BytesIO(body), columns=ROW_COLUMNS).to_pylist():
             if not publishable(row, assigned):
                 continue
-            record = build_record(row, job["task_id"], job["miner"], window, captured)
+            record = build_record(
+                row,
+                job["task_id"],
+                job["miner"],
+                window,
+                captured,
+                job.get("validator", ""),
+                job.get("validators", ()),
+            )
             key = record_key(record)
             if key not in chosen or _rank(record) > _rank(chosen[key]):
                 chosen[key] = record
@@ -219,13 +229,12 @@ class Publisher:
         for _ in range(PUT_ATTEMPTS):
             current = self.head(key)
             meta = current[1] if current else {}
-            if current and meta.get("version") == version:
-                # Same task and content: an earlier attempt wrote it before a crash.
-                if meta.get("task-id") == record["task_id"]:
-                    return _change(record, key, "replayed", meta)
-                return None
+            unchanged = bool(current) and meta.get("version") == version
+            # Same task and content: an earlier attempt wrote it before a crash.
+            if unchanged and meta.get("task-id") == record["task_id"]:
+                return _change(record, key, "replayed", meta)
             stored = (meta.get("fetched-at", ""), meta.get("version", ""))
-            if current and stored > (record["fetched_at"], version):
+            if current and stored >= (record["fetched_at"], version):
                 return None
             try:
                 self.put(key, record, version, current[0] if current else None)
@@ -234,6 +243,9 @@ class Publisher:
                     time.sleep(random.uniform(0.01, 0.1))
                     continue
                 raise
+            # Unchanged but seen later: the newer fetch time keeps an older fetch out.
+            if unchanged:
+                return None
             return _change(record, key, "changed" if current else "new", meta)
         raise RuntimeError(f"{key} kept changing underneath the publisher")
 

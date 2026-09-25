@@ -15,6 +15,7 @@ RECEIPT_FIELDS = (
     "task_id",
     "refusal",
     "cause",
+    "block",
 )
 
 
@@ -40,7 +41,8 @@ class RoundLog:
                 refusal      TEXT,
                 receipt_sig  TEXT NOT NULL,
                 seq          INTEGER NOT NULL DEFAULT 0,
-                cause        TEXT
+                cause        TEXT,
+                block        INTEGER
             );
             CREATE INDEX IF NOT EXISTS entries_round ON entries (round_id, id);
             CREATE TABLE IF NOT EXISTS anchors (
@@ -50,9 +52,6 @@ class RoundLog:
             );
             """
         )
-        columns = {row[1] for row in self.db.execute("PRAGMA table_info(entries)")}
-        if "cause" not in columns:
-            self.db.execute("ALTER TABLE entries ADD COLUMN cause TEXT")
         self.db.commit()
 
     def record(
@@ -66,11 +65,13 @@ class RoundLog:
         refusal: dict | None = None,
         seq: int = 0,
         cause: str | None = None,
+        block: int | None = None,
     ) -> dict:
         served_at = time.time()
         self.db.execute(
             "INSERT INTO entries (round_id, hotkey, requested_at, served_at, outcome, task_id,"
-            " refusal, receipt_sig, seq, cause) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " refusal, receipt_sig, seq, cause, block)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 round_id,
                 hotkey,
@@ -82,6 +83,7 @@ class RoundLog:
                 receipt_sig,
                 seq,
                 cause,
+                block,
             ),
         )
         self.db.commit()
@@ -90,7 +92,7 @@ class RoundLog:
     def entries(self, round_id: str) -> list[dict]:
         rows = self.db.execute(
             "SELECT hotkey, requested_at, served_at, outcome, task_id, refusal, receipt_sig,"
-            " seq, cause FROM entries WHERE round_id = ? ORDER BY seq, id",
+            " seq, cause, block FROM entries WHERE round_id = ? ORDER BY seq, id",
             (round_id,),
         ).fetchall()
         out = []
@@ -104,6 +106,7 @@ class RoundLog:
             sig,
             seq,
             cause,
+            block,
         ) in rows:
             entry = {
                 "hotkey": hotkey,
@@ -119,6 +122,8 @@ class RoundLog:
                 entry["refusal"] = json.loads(refusal)
             if cause:
                 entry["cause"] = cause
+            if block is not None:
+                entry["block"] = block
             out.append(entry)
         return out
 
