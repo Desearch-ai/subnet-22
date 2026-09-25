@@ -3,10 +3,10 @@
 The validator is one process, [`neurons/validators/validator.py`](../neurons/validators/validator.py),
 started by `run.sh`. It does two jobs:
 
-1. **Checks crawl tasks.** It walks every open upload the task API lists, downloads each one,
-   re-fetches the picked pages itself, the same pages a chain block's hash picks for every
-   validator, and reports pass or fail with what it found for each URL. Every validator checks
-   every upload.
+1. **Checks crawl tasks.** It reads the list of open uploads from the public uploads bucket,
+   downloads each upload from there, re-fetches the picked pages itself, the same pages a chain
+   block's hash picks for every validator, and reports pass or fail to the task API with what it
+   found for each URL. Every validator checks every upload.
 2. **Sets weights.** Each epoch it computes every miner's share from the results of its own checks
    over the last 24 hours and sets weights by those; see [Emission](./emission.md).
 
@@ -71,6 +71,7 @@ pm2 start run.sh --name desearch_autoupdate -- \
   --wallet.hotkey default \
   --netuid 22 \
   --subtensor.network finney \
+  --neuron.storage_url <public URL of the uploads bucket> \
   --logging.info
 ```
 
@@ -80,6 +81,7 @@ pm2 start run.sh --name desearch_autoupdate -- \
 | `--netuid` | `22` on mainnet, `41` on testnet |
 | `--subtensor.network` | `finney`, `test`, or a custom endpoint |
 | `--neuron.task_api_url` | the task API, `https://task-api.desearch.ai` by default |
+| `--neuron.storage_url` | the public URL of the uploads bucket; required, the validator checks nothing without it |
 | `--neuron.disable_set_weights` | check tasks without setting weights |
 | `--wandb.off` | do not log to Weights & Biases |
 | `--logging.info`, `--logging.debug` | without one, only warnings are printed |

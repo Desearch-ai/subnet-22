@@ -33,10 +33,12 @@ served in.
 hold storage credentials. On completion the API copies the upload to a key only it can write, so
 nothing the miner changes afterwards is scored. A miner is never given a batch it held before.
 
-**Checks.** On completion the API records the chain block it froze the upload at. The rows to
-check are picked with the hash of the block ten blocks later, so no miner can know them while
-uploading, and every validator checks the same rows. Once that block exists the upload is open to
-every validator. Each one:
+**Checks.** On completion the API records the chain block it froze the upload at, writes a signed
+note next to the frozen copy with the task's URLs and that block, and lists the upload in
+`validation/open.json` in the same bucket. The bucket is public, so validators read the list and
+the uploads without asking the API. The rows to check are picked with the hash of the block ten
+blocks after the freeze, which validators take from the chain, so no miner can know them while
+uploading and every validator checks the same rows. Each validator:
 
 - re-extracts the picked rows from the uploaded HTML;
 - fetches the picked pages itself and compares their text with the miner's, using ScrapingDog only
@@ -124,6 +126,13 @@ It needs two R2 buckets in the same jurisdiction, with a token that can read and
 - `subnet-22`, the temporary bucket for uploads, with a lifecycle rule that deletes objects after one day;
 - `desearch-pages`, the permanent bucket for published work.
 
+Validators read `subnet-22` directly, so it is served publicly: in the Cloudflare dashboard, R2 →
+the bucket → Settings → Public access → Custom Domains, connect a hostname on a zone of the same
+account (or `wrangler r2 bucket domain add subnet-22 --domain <hostname>`). Objects are then
+readable at `https://<hostname>/<key>`; listing is not, which is why the API keeps
+`validation/open.json`. Validators are started with that URL as `--neuron.storage_url`. The
+`r2.dev` development URL is rate limited and not meant for this.
+
 The feeder runs next to the bot, where its stores are:
 
 ```bash
@@ -137,7 +146,7 @@ PYTHONPATH=.. python -m feeder --buckets /mnt/desearch-bot/buckets --domains fee
 | `TASK_API_KEY_URI` | — | the key the log is signed with; required in `chain` mode |
 | `TASK_API_CLAIM_TTL` | 900 | seconds a miner's claim lasts |
 | `TASK_API_VALIDATION_TTL` | 900 | seconds validators have to report once the upload is open |
-| `TASK_API_ACTIVE_S` | 3600 | seconds since it last asked for work or reported a validator counts as active |
+| `TASK_API_ACTIVE_S` | 3600 | seconds since its last report a validator counts as active |
 | `TASK_API_LEDGER_DELAY_S` | 0 | seconds finalized uploads and shares stay out of public view |
 | `TASK_API_MAX_ATTEMPTS` | 3 | times a task is retried before it is dropped |
 | `TASK_API_EMBED_TASKS` | 0 | 1 opens embed tasks |
@@ -162,10 +171,11 @@ In `chain` mode a validator needs a validator permit and 1000 stake.
 ## Storage
 
 ```
-subnet-22 bucket, temporary, emptied after a day
-  uploads/        miner uploads
-  submitted/      the frozen copies validators score
-  embed-inputs/   texts waiting to be embedded
+subnet-22 bucket, temporary, emptied after a day, public
+  uploads/              miner uploads
+  submitted/            the frozen copies validators check, each with a signed .manifest.json beside it
+  validation/open.json  the uploads waiting for validators, with their manifests, rewritten as they change
+  embed-inputs/         texts waiting to be embedded
 desearch-pages bucket, permanent
   pages/<domain>/<sha1>   the latest verified version of each URL, zstd JSON, naming the miner
                           that crawled it and the validator that checked it

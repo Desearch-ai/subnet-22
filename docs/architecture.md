@@ -5,11 +5,11 @@ check the work, and the verified pages are published to the collection the searc
 from. This page explains how those parts fit together.
 
 ```
- Desearch Bot ──new URLs──▶ Task API ◀──tasks out, results back──▶ Miners, Validators
-                               │
-                               │ one-time links
-                               ▼
- Miners ──upload──▶ Object storage ──download──▶ Validators ──sample re-fetch──▶ the web
+ Desearch Bot ──new URLs──▶ Task API ◀──tasks out──▶ Miners      Validators ──results──▶ Task API
+                               │                                      ▲
+                               │ one-time upload links                │ reads the open list
+                               ▼                                      │ and the uploads
+ Miners ──upload──▶ Object storage (public) ──────────────────────────┘──sample re-fetch──▶ the web
                         │
                         │ verified work, through the publisher
                         ▼
@@ -47,20 +47,26 @@ permanent.
    through that link. When the miner reports the task complete, the task API checks the file's
    size, copies it to a key only the API can write, and removes the original. That frozen copy is
    what gets checked: it is exactly what the miner uploaded, and neither side can change it afterwards.
-4. **Check.** Every validator checks every upload. The rows to check are picked with a seed nobody
-   knew when the upload was frozen: the hash of a chain block ten blocks after the freeze. Once that
-   block exists, each validator receives a read link to the frozen copy, downloads it from storage
-   directly, and:
+4. **Check.** Every validator checks every upload, and finds them in storage rather than by asking
+   the API. When the API freezes an upload it writes a signed note next to it, saying which URLs
+   the miner was given and at which block the upload was frozen, and it keeps a list of the open
+   uploads at a fixed key in the same public bucket. Each validator reads that list, checks the
+   API's signature on every note, and reads the frozen copy straight from the bucket. The rows to
+   check are picked with a seed nobody knew when the upload was frozen: the hash of the chain block
+   ten blocks after the freeze, which the validator takes from the chain itself. It then:
    - re-extracts the picked rows from the uploaded HTML, to prove the text came from the page;
    - fetches the same pages itself and compares the text with the miner's;
    - checks a sample of the rows the miner reported as failed, to see whether the page really
      cannot be loaded.
-   Each validator then reports pass or fail, with what it saw for every page it checked. A
-   validator whose own fetches failed reports that instead, and it costs the miner nothing. Reports
-   stay sealed until the upload is finalized.
+   Each validator then reports pass or fail to the API, with what it saw for every page it
+   checked. A validator whose own fetches failed reports that instead, and it costs the miner
+   nothing. Reports stay sealed until the upload is finalized. Reporting is the only thing a
+   validator needs the API for while checking; it also reads the API's coverage figures once per
+   epoch before setting weights.
 5. **Finalize.** An upload is finalized once every active validator has reported, or at its deadline
-   with more than half of them. A validator is active while it keeps asking the API for work, so a
-   quick report never finalizes an upload that a slower validator is still checking. The majority
+   with more than half of them. A validator is active for an hour after any report it sends, even
+   one that arrives too late to count, so a quick report never finalizes an upload that a slower
+   validator is still checking. The majority
    decides pass or fail. A passing upload pays the miner for its rows at the rate the checked pages
    matched: 35 of 40 rows when 7 of 8 checked pages matched. When the validators in the majority
    arrived at different counts, the lower middle value is paid. A validator that disagreed with the
@@ -93,9 +99,11 @@ Embedding is built and switched off until Desearch's own embedding model ships; 
   task API cannot swap or reorder them.
 - **Signed logs.** Every claim, refusal and completion is signed by the task API. Anyone can check a
   closed round with [`task-api/tools/verify_round.py`](../task-api/tools/verify_round.py).
-- **Direct to storage.** Uploads travel from the miner into object storage and from object storage
-  to the validator through links the task API issues for one key and one claim. The API checks what
-  landed and freezes it; it never carries the files, so there is nothing for it to alter.
+- **Direct to storage.** Uploads travel from the miner into object storage through a link the task
+  API issues for one key and one claim, and validators read them from the public bucket without
+  asking anyone. The API checks what landed and freezes it; it never carries the files, so there
+  is nothing for it to alter, and the signed note next to each upload lets anyone check later what
+  the miner was given.
 - **No single validator publishes.** An upload reaches the corpus only after it is finalized, which
   takes more than half of the active validators. Every published page names the validators that
   agreed on it.
@@ -112,10 +120,11 @@ Embedding is built and switched off until Desearch's own embedding model ships; 
 ## Storage
 
 ```
-subnet-22 bucket (temporary, objects expire after a day)
-  uploads/        where miners' upload links point, removed once the task is complete
-  submitted/      the frozen copies validators check
-  embed-inputs/   texts waiting to be embedded
+subnet-22 bucket (temporary, objects expire after a day, readable by anyone)
+  uploads/          where miners' upload links point, removed once the task is complete
+  submitted/        the frozen copies validators check, each with its signed note beside it
+  validation/       open.json, the list of uploads waiting for validators
+  embed-inputs/     texts waiting to be embedded
 desearch-pages bucket (permanent)
   pages/          the latest verified version of every page
   changes/        every new or changed page, for the index to follow
