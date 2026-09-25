@@ -18,12 +18,11 @@ import numpy as np
 import pyarrow.parquet as pq
 import zstandard
 
-from .build import LIVE, OUT, STORE, CorpusStats, write_index
+from .build import LIVE, MODEL, OUT, STORE, CorpusStats, write_index
 from .chunking import para_chunks
 
 log = logging.getLogger("engine.sync")
 
-MODEL = os.environ.get("ENGINE_EMBED_MODEL", "qwen3-embedding-8b")
 INTERVAL_S = 60.0
 LOOKBACK_DAYS = 3
 SEGMENT_TEXTS = 50_000

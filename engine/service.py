@@ -23,12 +23,14 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from .build import LIVE, OUT, canon, ready_segments
+from desearch.embedding import model_named
+
+from .build import LIVE, MODEL, OUT, canon, ready_segments
 from .chunking import para_chunks
 from .search import Index, Unified, date_window, unit
 
 INSTRUCT = "Instruct: Given a web search query, retrieve relevant passages that answer the query\nQuery:"
-EMBED_MODEL = os.environ.get("UNIFIED_EMBED_MODEL", "qwen/qwen3-embedding-8b")
+EMBED_MODEL = model_named(MODEL).hosted
 EMBED_URL = "https://openrouter.ai/api/v1/embeddings"
 EMBED_TIMEOUT = aiohttp.ClientTimeout(total=30)
 # DeepInfra answers in ~0.5s where Nebius takes 10-20s; SiliconFlow serves fp8, which

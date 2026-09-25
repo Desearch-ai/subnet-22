@@ -27,6 +27,8 @@ OUT = Path(os.environ.get("UNIFIED_DIR", "/opt/unified"))
 # Synced segments and the vectors they point at live beside the index, so a rebuild can swap it.
 LIVE = Path(os.environ.get("UNIFIED_LIVE", f"{OUT}_live"))
 STORE = Path(os.environ.get("UNIFIED_STORE", f"{OUT}_store"))
+# Pages and queries must be embedded by the same model; see desearch/embedding.py.
+MODEL = os.environ.get("ENGINE_EMBED_MODEL", "qwen3-embedding-8b")
 DIM, SHARD, K1, B = 256, 8192, 1.2, 0.75
 TOK = re.compile(r"[a-z0-9]+")
 STOP = set(STOPWORDS_EN)
