@@ -21,7 +21,7 @@ log = logging.getLogger("miner")
 BACKOFF = {"QUEUE_EMPTY": 2.0, "NO_CAPACITY": 1.0}
 ERROR_BACKOFF = 2.0
 MAX_BACKOFF = 3600.0
-LEASE_MARGIN_S = 30.0
+CLAIM_MARGIN_S = 30.0
 ATTEMPTS = 3
 UPLOAD_TIMEOUT = aiohttp.ClientTimeout(total=120.0, sock_connect=15.0)
 
@@ -35,7 +35,7 @@ class UploadError(Exception):
 
 
 class TaskWorker:
-    """Leases one kind of task and runs up to max_tasks of them at once."""
+    """Claims one kind of task and runs up to max_tasks of them at once."""
 
     kind = ""
 
@@ -66,7 +66,7 @@ class TaskWorker:
                 try:
                     delay = await self.poll()
                 except Exception:
-                    log.exception("lease poll failed")
+                    log.exception("claim poll failed")
                     delay = ERROR_BACKOFF
                 if (
                     self.settings.idle_exit
@@ -83,9 +83,9 @@ class TaskWorker:
 
     async def poll(self) -> float:
         try:
-            answer = await self.api.post("/v1/tasks/lease", {"kind": self.kind})
+            answer = await self.api.post("/v1/tasks/claim", {"kind": self.kind})
         except TaskApiError as exc:
-            log.warning("lease failed: %s", exc)
+            log.warning("claim failed: %s", exc)
             return ERROR_BACKOFF
         if answer.get("receipt") and self.settings.receipts_file:
             await asyncio.to_thread(self.keep_receipt, answer["receipt"])
@@ -229,7 +229,7 @@ class Miner(TaskWorker):
         deadline = None
         if expires_at:
             remaining = expires_at - time.time()
-            deadline = expires_at - min(LEASE_MARGIN_S, remaining / 4)
+            deadline = expires_at - min(CLAIM_MARGIN_S, remaining / 4)
 
         async def one(url: str) -> None:
             async with self.in_progress:

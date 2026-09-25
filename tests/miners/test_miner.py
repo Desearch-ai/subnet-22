@@ -57,7 +57,7 @@ DNS = {
     "sixtofour.example": ["2002:5db8:d822::1"],
 }
 SECRET = "s3cr3tpw"
-LEASE = "/v1/tasks/lease"
+CLAIM = "/v1/tasks/claim"
 
 
 def compress(data: bytes, wbits: int) -> bytes:
@@ -103,7 +103,7 @@ class Scripted:
         self.server.close()
         await self.server.wait_closed()
 
-    async def settled(self) -> None:
+    async def finalized(self) -> None:
         deadline = time.monotonic() + 5
         while self.open and time.monotonic() < deadline:
             await asyncio.sleep(0.01)
@@ -180,7 +180,7 @@ def headers_only(*headers: tuple[str, str]):
     return lambda _: pieces()
 
 
-def read(reply, max_bytes: int = CAP, settle: bool = True) -> tuple[Fetched, int]:
+def read(reply, max_bytes: int = CAP, finalize: bool = True) -> tuple[Fetched, int]:
     async def go() -> tuple[Fetched, int]:
         async with Scripted(reply) as server:
             fetcher = Fetcher(
@@ -193,8 +193,8 @@ def read(reply, max_bytes: int = CAP, settle: bool = True) -> tuple[Fetched, int
             finally:
                 tracemalloc.stop()
                 await fetcher.aclose()
-            if settle:
-                await server.settled()
+            if finalize:
+                await server.finalized()
             return fetched, peak
 
     return asyncio.run(go())
@@ -253,7 +253,7 @@ class StaticFetcher:
         pass
 
 
-class LeaseApi:
+class ClaimApi:
     hotkey = "5HardeningTestHotkey"
 
     def __init__(self):
@@ -281,7 +281,7 @@ def test_a_row_that_fails_to_build_becomes_an_error_row(monkeypatch):
         return real(fetched, max_bytes)
 
     monkeypatch.setattr(miner_script, "build_row", build)
-    miner = Miner(Settings(), api=LeaseApi(), fetcher=StaticFetcher(pages))
+    miner = Miner(Settings(), api=ClaimApi(), fetcher=StaticFetcher(pages))
 
     async def go() -> list[dict]:
         try:
@@ -298,9 +298,9 @@ def test_a_row_that_fails_to_build_becomes_an_error_row(monkeypatch):
     assert table.schema.equals(PAGE_SCHEMA) and table.num_rows == 2
 
 
-def test_a_receipt_that_cannot_be_written_does_not_drop_the_lease(tmp_path, caplog):
+def test_a_receipt_that_cannot_be_written_does_not_drop_the_claim(tmp_path, caplog):
     miner = Miner(
-        Settings(receipts_file=str(tmp_path)), api=LeaseApi(), fetcher=StaticFetcher({})
+        Settings(receipts_file=str(tmp_path)), api=ClaimApi(), fetcher=StaticFetcher({})
     )
     worked: list[str] = []
 
@@ -424,8 +424,8 @@ def test_prechecks_still_run_before_any_decoding():
         ("content-encoding", "br"),
         ("content-length", "10"),
     )
-    assert read(too_long, settle=False)[0].error == "too_large"
-    assert read(pdf, settle=False)[0].error == "not_html"
+    assert read(too_long, finalize=False)[0].error == "too_large"
+    assert read(pdf, finalize=False)[0].error == "not_html"
 
 
 class Network:
@@ -825,7 +825,7 @@ class ScriptedApi:
 
     async def post(self, path: str, body: dict | None = None) -> dict:
         self.calls.append(path)
-        if path != LEASE:
+        if path != CLAIM:
             return {}
         answer = self.answers.pop(0) if self.answers else self.then
         if isinstance(answer, Exception):
@@ -838,31 +838,31 @@ class ScriptedApi:
 
 def _recording_miner(api: ScriptedApi, settings: Settings, pause: float = 0.0):
     miner = Miner(settings, api=api, fetcher=StaticFetcher({}))
-    settled: list[str] = []
+    finalized: list[str] = []
 
     async def work(task: dict) -> None:
         await asyncio.sleep(pause)
-        settled.append(task["task_id"])
+        finalized.append(task["task_id"])
 
     miner.process_task = work
-    return miner, settled
+    return miner, finalized
 
 
 def test_an_unexpected_poll_error_backs_off_and_keeps_leasing(monkeypatch, caplog):
     monkeypatch.setattr(miner_script, "ERROR_BACKOFF", 0.01)
     monkeypatch.setitem(miner_script.BACKOFF, "QUEUE_EMPTY", 0.01)
     api = ScriptedApi(
-        RuntimeError("lease socket went away"),
+        RuntimeError("claim socket went away"),
         ["not", "an", "answer"],
         {"task": {"task_id": "t-late", "urls": [], "upload": {}}},
     )
-    miner, settled = _recording_miner(api, Settings(idle_exit=1))
+    miner, finalized = _recording_miner(api, Settings(idle_exit=1))
 
     with caplog.at_level(logging.ERROR, logger="miner"):
         asyncio.run(asyncio.wait_for(miner.run(), 5))
 
-    assert settled == ["t-late"] and api.answers == []
-    assert caplog.text.count("lease poll failed") == 2
+    assert finalized == ["t-late"] and api.answers == []
+    assert caplog.text.count("claim poll failed") == 2
 
 
 @pytest.mark.parametrize(
@@ -886,25 +886,25 @@ def test_a_refused_miner_waits_as_long_as_the_api_asks(refusal, wait):
     assert asyncio.run(miner.poll()) == wait
 
 
-def test_in_flight_work_is_settled_when_every_later_poll_breaks(monkeypatch):
+def test_in_flight_work_is_finalized_when_every_later_poll_breaks(monkeypatch):
     monkeypatch.setattr(miner_script, "ERROR_BACKOFF", 0.01)
     api = ScriptedApi(
         {"task": {"task_id": "t-held", "urls": [], "upload": {}}},
-        then=RuntimeError("lease endpoint is down"),
+        then=RuntimeError("claim endpoint is down"),
     )
-    miner, settled = _recording_miner(api, Settings(shutdown_grace=5), pause=0.2)
+    miner, finalized = _recording_miner(api, Settings(shutdown_grace=5), pause=0.2)
 
     async def scenario() -> None:
         running = asyncio.create_task(miner.run())
-        while api.calls.count(LEASE) < 5 and not running.done():
+        while api.calls.count(CLAIM) < 5 and not running.done():
             await asyncio.sleep(0.01)
-        assert not settled
+        assert not finalized
         miner.stop()
         await asyncio.wait_for(running, 5)
 
     asyncio.run(scenario())
 
-    assert settled == ["t-held"]
+    assert finalized == ["t-held"]
 
 
 @pytest.mark.parametrize(
@@ -999,7 +999,7 @@ def test_scrapingdog_is_tried_only_for_what_another_address_could_fix():
         ),
         "https://a.example/fine": page(HTML, url="https://a.example/fine"),
     }
-    miner = Miner(Settings(), api=LeaseApi(), fetcher=StaticFetcher(pages))
+    miner = Miner(Settings(), api=ClaimApi(), fetcher=StaticFetcher(pages))
     miner.scrapingdog = dog = FakeScrapingDog()
 
     async def go() -> list[dict]:
@@ -1035,7 +1035,7 @@ def test_a_slow_scrapingdog_call_does_not_hold_up_our_own_fetches():
             await fetched_ourselves.wait()
             return await super().fetch(url, rendered, deadline)
 
-    miner = Miner(Settings(concurrency=1), api=LeaseApi(), fetcher=OwnIp(pages))
+    miner = Miner(Settings(concurrency=1), api=ClaimApi(), fetcher=OwnIp(pages))
     miner.scrapingdog = SlowDog()
 
     async def go() -> list[dict]:
@@ -1049,10 +1049,10 @@ def test_a_slow_scrapingdog_call_does_not_hold_up_our_own_fetches():
 
 def test_without_a_key_the_miner_never_calls_scrapingdog():
     assert (
-        Miner(Settings(), api=LeaseApi(), fetcher=StaticFetcher({})).scrapingdog is None
+        Miner(Settings(), api=ClaimApi(), fetcher=StaticFetcher({})).scrapingdog is None
     )
     keyed = Miner(
-        Settings(scrapingdog_api_key="k"), api=LeaseApi(), fetcher=StaticFetcher({})
+        Settings(scrapingdog_api_key="k"), api=ClaimApi(), fetcher=StaticFetcher({})
     )
     assert keyed.scrapingdog is not None
     asyncio.run(keyed.aclose())
@@ -1111,3 +1111,36 @@ def test_a_cookie_gate_that_redirects_to_itself_loads_within_one_chain():
 
     assert story.error is None and story.body == HTML
     assert hop.error is None and seen["elsewhere"] == [{}]
+
+
+def test_a_gzip_cut_short_is_truncated_not_a_page():
+    fetched, _ = read(response(gzip.compress(HTML)[:-40], "gzip"))
+    assert fetched.error == "truncated" and fetched.body is None
+
+
+def test_a_concatenated_gzip_decodes_every_member():
+    half = len(HTML) // 2
+    payload = gzip.compress(HTML[:half]) + gzip.compress(HTML[half:])
+    fetched, _ = read(response(payload, "gzip", chunk=7))
+    assert fetched.error is None and fetched.body == HTML
+
+
+def test_trailing_junk_after_a_complete_gzip_is_ignored():
+    fetched, _ = read(response(gzip.compress(HTML) + b"\r\n", "gzip"))
+    assert fetched.error is None and fetched.body == HTML
+
+
+def test_a_proxy_route_opens_a_fresh_connection_per_request():
+    async def go():
+        proxied = Fetcher(Settings(proxy_urls=("http://user:pw@proxy.example:3128",)))
+        direct = Fetcher(Settings())
+        try:
+            return (
+                proxied._session(proxied.routes[0]).connector.force_close,
+                direct._session(direct.routes[0]).connector.force_close,
+            )
+        finally:
+            await proxied.aclose()
+            await direct.aclose()
+
+    assert asyncio.run(go()) == (True, False)
