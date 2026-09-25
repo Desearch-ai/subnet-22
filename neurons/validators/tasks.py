@@ -14,6 +14,7 @@ from desearch.manifest import OPEN_LIST_KEY
 from desearch.manifest import verify as verify_manifest
 
 LIST_TIMEOUT = aiohttp.ClientTimeout(total=30.0)
+LIST_CACHE_S = 2.0
 REPORTED_KEEP_S = 3600.0
 DOWNLOAD_ATTEMPTS = 2
 SUBMIT_ATTEMPTS = 3
@@ -68,6 +69,8 @@ class TaskChecker:
         self.in_flight: set[str] = set()
         self.deferred: dict[str, float] = {}
         self.reported: dict[str, float] = {}
+        self.listed: list[dict] = []
+        self.listed_at = float("-inf")
 
     @property
     def trouble(self) -> str | None:
@@ -121,7 +124,13 @@ class TaskChecker:
                 self.in_flight.discard(job["task_id"])
 
     async def open_list(self) -> list[dict]:
-        """The open uploads as the task API last listed them in storage."""
+        """The open uploads as the task API last listed them, one read shared by every loop."""
+        if time.monotonic() - self.listed_at >= LIST_CACHE_S:
+            self.listed = await self.fetch_open_list()
+            self.listed_at = time.monotonic()
+        return list(self.listed)
+
+    async def fetch_open_list(self) -> list[dict]:
         url = f"{self.storage_url}/{OPEN_LIST_KEY}"
         async with self.http.get(URL(url, encoded=True), timeout=LIST_TIMEOUT) as r:
             if r.status != 200:
