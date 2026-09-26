@@ -7,9 +7,7 @@ from bittensor.utils.weight_utils import process_weights
 
 import desearch
 
-ENABLE_EMISSION_CONTROL = True
 EMISSION_CONTROL_HOTKEY = "5CUu1QhvrfyMDBELUPJLt4c7uJFbi7TKqDHkS1Zz41oD4dyP"
-EMISSION_CONTROL_PERC = 0.5
 
 
 def init_wandb(self):
@@ -111,44 +109,23 @@ def find_target_uid(self, hotkey):
             return emission_control_uid
 
 
-def burn_weights(self, weights):
+def burn_weights(self) -> np.ndarray | None:
     target_uid = find_target_uid(self, EMISSION_CONTROL_HOTKEY)
 
-    if not target_uid:
-        bt.logging.info(f"target hotkey {EMISSION_CONTROL_HOTKEY} is not found")
-        return weights
+    if target_uid is None:
+        return None
 
-    total_score = weights.sum()
+    weights = np.zeros(len(self.metagraph.uids), dtype=np.float32)
+    weights[target_uid] = 1.0
 
-    new_target_score = EMISSION_CONTROL_PERC * total_score
-    remaining_weight = (1 - EMISSION_CONTROL_PERC) * total_score
-    total_other_scores = total_score - weights[target_uid]
-
-    if total_other_scores == 0:
-        bt.logging.warning("All scores are zero except target UID, cannot scale.")
-        return weights
-
-    new_scores = np.zeros_like(weights, dtype=float)
-    uids = self.metagraph.uids
-
-    for i, (uid, weight) in enumerate(zip(uids, weights)):
-        if uid == target_uid:
-            new_scores[i] = new_target_score
-        else:
-            new_scores[i] = (weight / total_other_scores) * remaining_weight
-
-    return new_scores
+    return weights
 
 
-async def process_weights_with_retry(self, raw_weights):
+async def process_weights_with_retry(self, weights):
     max_retries = 5  # Define the maximum number of retries
     retry_delay = 30  # Define the delay between retries in seconds
 
     netuid = self.config.netuid
-    weights = raw_weights
-
-    if ENABLE_EMISSION_CONTROL:
-        weights = burn_weights(self, weights)
 
     for attempt in range(max_retries):
         try:
@@ -186,37 +163,14 @@ async def process_weights_with_retry(self, raw_weights):
                 return {}, None, None
 
 
-def _l1_normalize(x: np.ndarray) -> np.ndarray:
-    norm = np.abs(x).sum()
-    if norm == 0:
-        return np.zeros_like(x)
-    return x / norm
-
-
-async def get_weights(self):
-    if (self.moving_averaged_scores == 0).all():
-        bt.logging.info(
-            "All moving averaged scores are zero. Skipping weight retrieval."
-        )
-        return {}
-
-    raw_weights = _l1_normalize(self.moving_averaged_scores)
-
-    weights_dict, _, _ = await process_weights_with_retry(self, raw_weights)
-
-    return weights_dict
-
-
 async def set_weights(self):
-    if (self.moving_averaged_scores == 0).all():
-        bt.logging.info("All moving averaged scores are zero, skipping weight setting.")
-        return
-
-    raw_weights = _l1_normalize(self.moving_averaged_scores)
-    bt.logging.trace("raw_weights", raw_weights)
-    sorted_idx = np.argsort(raw_weights)
-    bt.logging.trace("top10 values", raw_weights[sorted_idx])
-    bt.logging.trace("top10 uids", sorted_idx)
+    raw_weights = burn_weights(self)
+    # Never fall back to zeros: process_weights would spread them evenly over every UID.
+    if raw_weights is None:
+        bt.logging.error(
+            f"Burn hotkey {EMISSION_CONTROL_HOTKEY} is not in the metagraph, skipping weight setting."
+        )
+        return False
 
     # Process the raw weights to final_weights via subtensor limitations.
     (

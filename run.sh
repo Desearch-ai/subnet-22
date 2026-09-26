@@ -22,10 +22,6 @@ args=()
 version_location="./desearch/__init__.py"
 version="__version__"
 
-# Default values for API configuration
-api_port="8005"
-api_workers="4"
-
 old_args=$@
 
 # Check if pm2 is installed
@@ -171,11 +167,8 @@ while [[ $# -gt 0 ]]; do
   # Check if the argument starts with a hyphen (flag)
   if [[ "$arg" == -* ]]; then
     # Check for standard param format 
-    if [[ "$arg" == "--port" && $# -gt 1 ]]; then
-      api_port="$2"
-      shift 2
-    elif [[ "$arg" == "--workers" && $# -gt 1 ]]; then
-      api_workers="$2"
+    # API flags from older launch commands; the API process no longer runs.
+    if [[ ("$arg" == "--port" || "$arg" == "--workers") && $# -gt 1 ]]; then
       shift 2
     # Check if the argument has a value
     elif [[ $# -gt 1 && "$2" != -* ]]; then
@@ -225,7 +218,7 @@ current_version=$(read_version_value)
 
 # Check if scripts are already running with pm2
 if pm2 status | grep -q $api_proc_name; then
-    echo "The API process is already running with pm2. Stopping and restarting..."
+    echo "The API process is no longer used. Stopping it..."
     pm2 delete $api_proc_name
 fi
 
@@ -240,24 +233,9 @@ joined_args=$(printf "%s," "${args[@]}")
 # Remove the trailing comma
 joined_args=${joined_args%,}
 
-# Create the pm2 config file with configurable port and workers
+# Create the pm2 config file
 echo "module.exports = {
     apps: [
-        {
-            name: '$api_proc_name',
-            script: 'uvicorn',
-            interpreter: 'python3',
-            args: [
-                'neurons.validators.api:app',
-                '--host',
-                '0.0.0.0',
-                '--port',
-                '$api_port',
-                '--workers',
-                '$api_workers',
-            ],
-            exec_mode: 'fork',
-        },
         {
             name: '$validator_proc_name',
             script: '$validator_script',
@@ -272,7 +250,6 @@ echo "module.exports = {
 # Print configuration to be used
 echo "Running with the following pm2 config:"
 cat app.config.js
-echo "API Configuration: Port=$api_port, Workers=$api_workers"
 
 pm2 start app.config.js
 
@@ -332,7 +309,6 @@ if [ "$?" -eq 1 ]; then
 
                         # Restart PM2 processes
                         echo "Restarting PM2 processes"
-                        pm2 restart $api_proc_name
                         pm2 restart $validator_proc_name
 
                         # Update current version:
