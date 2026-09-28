@@ -10,6 +10,7 @@ from neurons.validators.ledger import Ledger
 from neurons.validators.validator import Validator
 from neurons.validators.weights import (
     EMISSION_CONTROL_HOTKEY,
+    process_weights,
     POOLS,
     set_weights,
     weights_from_shares,
@@ -127,31 +128,50 @@ def test_set_weights_submits_the_processed_weights(monkeypatch):
     sent = []
 
     class FakeSubtensor:
-        async def min_allowed_weights(self, netuid):
-            return 1
+        hyperparameters = SimpleNamespace(
+            min_allowed_weights=_returning(1), max_weight_limit=_returning(1.0)
+        )
 
-        async def max_weight_limit(self, netuid):
-            return 1.0
-
-        async def set_weights(self, **call):
-            sent.append(call)
-            return len(sent) > 1, "ok" if len(sent) > 1 else "busy"
+        async def execute(self, intent, wallet):
+            sent.append((intent, wallet))
+            ok = len(sent) > 1
+            return SimpleNamespace(
+                success=ok,
+                message="ok" if ok else "",
+                error=None if ok else SimpleNamespace(code="Busy", remediation="retry"),
+            )
 
     weights = weights_from_shares(["m1", BURN, "m2"], {"crawl": {"m1": 0.5, "m2": 0.5}})
     neuron = SimpleNamespace(
-        config=SimpleNamespace(netuid=22),
-        metagraph=SimpleNamespace(uids=np.array([0, 1, 2]), n=3),
-        subtensor=FakeSubtensor(),
-        wallet="wallet",
+        config=SimpleNamespace(netuid=22), subtensor=FakeSubtensor(), wallet="wallet"
     )
 
     assert asyncio.run(set_weights(neuron, weights))
     assert len(sent) == 2, "a failed attempt is retried"
-    submitted = dict(
-        zip(sent[-1]["uids"].tolist(), sent[-1]["weights"].tolist(), strict=True)
-    )
+    intent, wallet = sent[-1]
+    assert wallet == "wallet" and intent.netuid == 22 and intent.version_key
+    submitted = dict(zip(intent.uids, intent.weights, strict=True))
     assert submitted[1] == pytest.approx((1 - CRAWL) / (CRAWL / 2) * submitted[0])
     assert submitted[0] == pytest.approx(submitted[2])
+    assert sum(submitted.values()) == pytest.approx(1.0)
+
+
+def _returning(value):
+    async def read(**_):
+        return value
+
+    return read
+
+
+def test_processed_weights_drop_zeros_and_respect_the_subnet_limits():
+    uids, values = process_weights(np.array([0.0, 0.7, 0.3, 0.0]), 1, 1.0)
+    assert uids == [1, 2] and values == pytest.approx([0.7, 0.3])
+
+    uids, capped = process_weights(np.array([0.9, 0.1]), 1, 0.5)
+    assert capped == pytest.approx([0.5 / 0.6, 0.1 / 0.6])
+
+    with pytest.raises(ValueError, match="at least 3"):
+        process_weights(np.array([0.5, 0.5]), 3, 1.0)
 
 
 def test_non_finite_shares_keep_the_last_weights():

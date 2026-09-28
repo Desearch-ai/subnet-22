@@ -72,9 +72,11 @@ def create_app(redis=None) -> FastAPI:
                 raise RuntimeError(
                     f"R2 bucket {storage.bucket} is not reachable: {type(exc).__name__}"
                 ) from None
+        await core.registry.start()
         janitor = asyncio.create_task(_janitor(core))
         yield
         janitor.cancel()
+        await core.registry.stop()
 
     app = FastAPI(title="Desearch Task API", version="0.3.0", lifespan=lifespan)
     app.state.core = core

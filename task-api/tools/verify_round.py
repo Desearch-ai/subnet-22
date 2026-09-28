@@ -71,7 +71,7 @@ def receipt_body(round_id: str, entry: dict) -> dict:
 
 def signed_by(signer: str, body: dict, signature: str) -> bool | None:
     try:
-        from bittensor_wallet import Keypair
+        from bittensor.wallets import Keypair
     except ImportError:
         return None
     try:

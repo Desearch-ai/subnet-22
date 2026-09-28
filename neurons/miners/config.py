@@ -5,7 +5,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-from bittensor_wallet import Keypair, Wallet
+from bittensor.wallets import Keypair, Wallet
 
 from desearch.embedding import LOCAL_EMBEDDINGS
 from desearch.fetch import FetchSettings

@@ -1,8 +1,8 @@
 import asyncio
+import logging
 
 import bittensor as bt
 import numpy as np
-from bittensor.utils.weight_utils import process_weights
 
 EMISSION_CONTROL_HOTKEY = "5CUu1QhvrfyMDBELUPJLt4c7uJFbi7TKqDHkS1Zz41oD4dyP"
 # Each task family's part of the emission; the rest goes to the burn hotkey.
@@ -11,6 +11,8 @@ POOLS = {"crawl": 0.5, "embed": 0.0}
 SET_WEIGHTS_ATTEMPTS = 9
 SET_WEIGHTS_RETRY_S = 45
 VERSION_KEY = 2**64 - 9
+
+log = logging.getLogger("validator")
 
 
 def weights_from_shares(
@@ -37,40 +39,63 @@ def weights_from_shares(
     return weights
 
 
+def process_weights(
+    weights: np.ndarray, min_allowed: int, max_limit: float
+) -> tuple[list[int], list[float]]:
+    """The nonzero weights, capped at the subnet's limit and normalised to sum to one."""
+    uids = [int(uid) for uid in np.flatnonzero(weights > 0)]
+    if len(uids) < min_allowed:
+        raise ValueError(
+            f"{len(uids)} weights, the subnet needs at least {min_allowed}"
+        )
+    values = np.array([float(weights[uid]) for uid in uids], dtype=np.float64)
+    values /= values.sum()
+    if max_limit < 1.0:
+        values = np.minimum(values, max_limit)
+        values /= values.sum()
+    return uids, values.tolist()
+
+
 async def set_weights(neuron, weights: np.ndarray) -> bool:
     netuid = neuron.config.netuid
-    uids, processed = process_weights(
-        uids=neuron.metagraph.uids,
-        weights=weights,
-        num_neurons=int(neuron.metagraph.n),
-        min_allowed_weights=await neuron.subtensor.min_allowed_weights(netuid=netuid),
-        max_weight_limit=await neuron.subtensor.max_weight_limit(netuid=netuid),
-    )
-    bt.logging.info(
+    chain = neuron.subtensor
+    try:
+        uids, processed = process_weights(
+            weights,
+            await chain.hyperparameters.min_allowed_weights(netuid=netuid),
+            await chain.hyperparameters.max_weight_limit(netuid=netuid),
+        )
+    except ValueError as why:
+        log.error(f"Not setting weights: {why}")
+        return False
+    log.info(
         "Setting weights: "
         + " | ".join(
             f"{uid}={weight:.4f}" for uid, weight in zip(uids, processed, strict=True)
         )
     )
+    intent = bt.SetWeights(
+        netuid=netuid, uids=uids, weights=processed, version_key=VERSION_KEY
+    )
 
     for attempt in range(1, SET_WEIGHTS_ATTEMPTS + 1):
         try:
-            success, message = await neuron.subtensor.set_weights(
-                wallet=neuron.wallet,
-                netuid=netuid,
-                uids=uids,
-                weights=processed,
-                wait_for_inclusion=False,
-                wait_for_finalization=False,
-                version_key=VERSION_KEY,
-            )
+            result = await chain.execute(intent, neuron.wallet)
+            success, message = result.success, describe(result)
         except Exception as exc:
             success, message = False, f"{type(exc).__name__}: {exc}"
         if success:
-            bt.logging.success(f"Set weights on attempt {attempt}: {message}")
+            log.info(f"Set weights on attempt {attempt}: {message}")
             return True
-        bt.logging.warning(f"Setting weights failed on attempt {attempt}: {message}")
+        log.warning(f"Setting weights failed on attempt {attempt}: {message}")
         await asyncio.sleep(SET_WEIGHTS_RETRY_S)
 
-    bt.logging.error(f"Could not set weights after {SET_WEIGHTS_ATTEMPTS} attempts")
+    log.error(f"Could not set weights after {SET_WEIGHTS_ATTEMPTS} attempts")
     return False
+
+
+def describe(result) -> str:
+    error = getattr(result, "error", None)
+    if error is not None:
+        return f"{getattr(error, 'code', error)}: {getattr(error, 'remediation', '')}"
+    return getattr(result, "message", "") or "ok"

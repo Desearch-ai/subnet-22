@@ -1,5 +1,6 @@
 import asyncio
 import json
+import time
 
 import pytest
 from app import lifecycle, registry
@@ -456,6 +457,35 @@ def test_receipts_on_chain_need_a_real_key(monkeypatch):
     monkeypatch.setenv("TASK_API_KEY_URI", "//receipts-test")
     expected = Keypair.create_from_uri("//receipts-test").ss58_address
     assert registry.receipt_key_from_env().ss58_address == expected
+
+
+def test_the_registry_refreshes_on_its_own_clock_and_never_makes_a_request_wait(
+    monkeypatch,
+):
+    chain = registry.ChainRegistry(22, "finney", ttl=0.05)
+    loads = []
+
+    def load():
+        loads.append(time.monotonic())
+        time.sleep(0.02)
+        return {"hk": registry.Entry("hk", len(loads), True)}
+
+    monkeypatch.setattr(chain, "_load", load)
+
+    async def scenario():
+        first = await chain.lookup("hk")
+        started = time.monotonic()
+        answers = [await chain.lookup("hk") for _ in range(50)]
+        quick = time.monotonic() - started
+        await asyncio.sleep(0.2)
+        later = await chain.lookup("hk")
+        await chain.stop()
+        return first, answers, quick, later
+
+    first, answers, quick, later = asyncio.run(scenario())
+    assert first.uid == 1 and all(a is not None for a in answers)
+    assert quick < 0.02, "lookups read the current copy without loading"
+    assert later.uid > 1 and len(loads) >= 3, "the copy was refreshed on the timer"
 
 
 def test_the_registry_keeps_its_last_good_copy_when_the_chain_is_down(monkeypatch):

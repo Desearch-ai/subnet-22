@@ -1,6 +1,6 @@
 import asyncio
 
-from bittensor_wallet import Keypair
+from bittensor.wallets import Keypair
 
 from desearch.manifest import payload
 from neurons.validators.crawl import CrawlValidator

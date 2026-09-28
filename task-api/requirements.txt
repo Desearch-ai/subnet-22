@@ -5,7 +5,7 @@ aiohttp==3.13.5
 pyarrow==24.0.0
 numpy==2.2.6
 boto3==1.43.56
-bittensor-wallet==4.1.0
+bittensor==11.1.0
 trafilatura==2.1.0
 lxml==6.1.1
 lxml_html_clean==0.4.5

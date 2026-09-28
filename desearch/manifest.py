@@ -5,10 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 
-try:
-    from bittensor_wallet import Keypair
-except ImportError:
-    from bittensor import Keypair
+from bittensor.wallets import Keypair
 
 OPEN_LIST_KEY = "validation/open.json"
 # Far enough ahead to anchor the commitment before the seed block.

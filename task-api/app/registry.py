@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import time
 from dataclasses import dataclass
 
 from .auth import Keypair
@@ -25,6 +24,12 @@ class LocalRegistry:
     def __init__(self, validators: set[str] | None = None):
         self.validators = validators or set()
 
+    async def start(self) -> None:
+        pass
+
+    async def stop(self) -> None:
+        pass
+
     @classmethod
     def from_uris(cls, uris: str) -> LocalRegistry:
         return cls(
@@ -40,6 +45,8 @@ class LocalRegistry:
 
 
 class ChainRegistry:
+    """The subnet's hotkeys, refreshed on a timer so no request waits on the chain."""
+
     def __init__(
         self, netuid: int, network: str, ttl: int = 600, stake_threshold: float = 1000.0
     ):
@@ -48,43 +55,53 @@ class ChainRegistry:
         self.ttl = ttl
         self.stake_threshold = stake_threshold
         self._entries: dict[str, Entry] = {}
-        self._refreshed = 0.0
+        self._loaded = asyncio.Event()
         self._refreshing: asyncio.Task | None = None
 
+    async def start(self) -> None:
+        if self._refreshing is None:
+            self._refreshing = asyncio.create_task(self._refresh_forever())
+
+    async def stop(self) -> None:
+        if self._refreshing is not None:
+            self._refreshing.cancel()
+            self._refreshing = None
+
     async def lookup(self, hotkey: str) -> Entry | None:
-        if time.time() - self._refreshed > self.ttl and self._refreshing is None:
-            self._refreshing = asyncio.create_task(self._refresh())
-        if not self._entries and self._refreshing is not None:
-            await asyncio.shield(self._refreshing)
+        if not self._loaded.is_set():
+            await self.start()
+            await self._loaded.wait()
         return self._entries.get(hotkey)
 
-    async def _refresh(self) -> None:
-        try:
-            self._entries = await asyncio.to_thread(self._load)
-            self._refreshed = time.time()
-        except Exception:
-            log.exception(
-                "metagraph refresh failed; keeping %d entries", len(self._entries)
-            )
-            self._refreshed = time.time() - self.ttl + RETRY_S
-        finally:
-            self._refreshing = None
+    async def _refresh_forever(self) -> None:
+        while True:
+            try:
+                self._entries = await asyncio.to_thread(self._load)
+                self._loaded.set()
+                wait = self.ttl
+            except Exception:
+                log.exception(
+                    "metagraph refresh failed; keeping %d entries", len(self._entries)
+                )
+                wait = RETRY_S
+            await asyncio.sleep(wait)
 
     def _load(self) -> dict[str, Entry]:
         import bittensor as bt
 
-        metagraph = bt.subtensor(network=self.network).metagraph(netuid=self.netuid)
+        chain = bt.Subtensor(self.network)
+        try:
+            metagraph = chain.subnets.metagraph(self.netuid)
+        finally:
+            chain.close()
         return {
-            hotkey: Entry(
-                hotkey, int(uid), bool(permit) and float(stake) >= self.stake_threshold
+            neuron.hotkey: Entry(
+                neuron.hotkey,
+                int(neuron.uid),
+                bool(neuron.validator_permit)
+                and float(neuron.total_stake.alpha) >= self.stake_threshold,
             )
-            for uid, hotkey, stake, permit in zip(
-                metagraph.uids,
-                metagraph.hotkeys,
-                metagraph.S,
-                metagraph.validator_permit,
-                strict=True,
-            )
+            for neuron in metagraph.neurons
         }
 
 

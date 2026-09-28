@@ -40,11 +40,11 @@ class ChainSeeds:
         if self._subtensor is None:
             import bittensor as bt
 
-            self._subtensor = bt.subtensor(network=self.network)
+            self._subtensor = bt.Subtensor(self.network)
         return self._subtensor
 
     async def current_block(self) -> int:
-        return await asyncio.to_thread(lambda: self._chain().get_current_block())
+        return await asyncio.to_thread(lambda: self._chain().block)
 
     async def target_block(self) -> int:
         return await self.current_block() + REVEAL_AFTER_BLOCKS
@@ -55,7 +55,7 @@ class ChainSeeds:
     async def seed_for(self, block: int) -> str | None:
         if await self.current_block() < block:
             return None
-        found = await asyncio.to_thread(lambda: self._chain().get_block_hash(block))
+        found = await asyncio.to_thread(lambda: self._chain().block_info(block).hash)
         return seed_from_hash(found)
 
 

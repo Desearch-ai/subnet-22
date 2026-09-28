@@ -7,10 +7,7 @@ from dataclasses import dataclass
 
 from fastapi import HTTPException, Request
 
-try:
-    from bittensor_wallet import Keypair
-except ImportError:
-    from bittensor import Keypair
+from bittensor.wallets import Keypair
 
 TOLERANCE_S = 60
 NONCE_TTL_S = 120

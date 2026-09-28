@@ -9,10 +9,7 @@ import time
 import aiohttp
 from yarl import URL
 
-try:
-    from bittensor_wallet import Keypair
-except ImportError:
-    from bittensor import Keypair
+from bittensor.wallets import Keypair
 
 
 class TaskApiError(Exception):

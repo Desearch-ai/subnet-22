@@ -17,7 +17,9 @@ from desearch.client import TaskApiClient
 from desearch.embedding import MODELS, OPENROUTER_EMBEDDINGS, EmbeddingClient
 from desearch.fetch import Fetcher, ScrapingDog
 from desearch.manifest import seed_from_hash
-from neurons.validators.config import ENV_FILE, add_args, check_config, config
+from bittensor.wallets import Wallet
+
+from neurons.validators.config import ENV_FILE, config, flat, setup_logging
 from neurons.validators.crawl import CrawlValidator
 from neurons.validators.embed import EmbedValidator
 from neurons.validators.fetchers import OWN_IP_SETTINGS, SampleFetcher
@@ -39,36 +41,29 @@ DOWNLOAD_TIMEOUT = aiohttp.ClientTimeout(total=120.0)
 WANDB_PROJECT = "smart-scrape-1.0"
 WANDB_ENTITY = "smart-scrape"
 
+log = logging.getLogger("validator")
+
 
 class Validator:
-    @classmethod
-    def add_args(cls, parser):
-        add_args(cls, parser)
-
     def __init__(self):
         env.load(ENV_FILE)
-        self.config = config(Validator)
-        check_config(self.config)
-        bt.logging(config=self.config, logging_dir=self.config.neuron.full_path)
-        bt.logging.set_config(self.config)
-        bt.logging.register_primary_logger("validator")
-        logging.getLogger("trafilatura").setLevel(logging.ERROR)
-        bt.logging.info(str(self.config))
+        self.config = config()
+        setup_logging(self.config)
+        log.info(str(flat(self.config)))
         self.scrapingdog_key = os.environ.get("SCRAPINGDOG_API_KEY", "")
         self.ledger = Ledger(os.path.join(self.config.neuron.full_path, "verdicts.db"))
         self.stopping = asyncio.Event()
 
     async def initialize(self) -> None:
-        bt.logging.info(
-            f"Running validator for subnet {self.config.netuid} on {self.config.subtensor.chain_endpoint}"
+        network = self.config.subtensor.chain_endpoint or self.config.subtensor.network
+        log.info(f"Running validator for subnet {self.config.netuid} on {network}")
+        self.wallet = Wallet(
+            name=self.config.wallet.name,
+            hotkey=self.config.wallet.hotkey,
+            path=self.config.wallet.path,
         )
-        self.wallet = bt.Wallet(config=self.config)
-        self.subtensor = bt.AsyncSubtensor(
-            config=self.config, websocket_shutdown_timer=None
-        )
-        await self.subtensor.initialize()
-
-        self.metagraph = await self.subtensor.metagraph(self.config.netuid)
+        self.subtensor = await bt.Subtensor(network)
+        self.metagraph = await self.subtensor.subnets.metagraph(self.config.netuid)
         self.uid = self.metagraph.hotkeys.index(self.wallet.hotkey.ss58_address)
         self.http = aiohttp.ClientSession(timeout=DOWNLOAD_TIMEOUT)
 
@@ -92,7 +87,7 @@ class Validator:
 
     async def check_crawl_tasks(self) -> None:
         if reason := self.crawl_disabled_reason():
-            bt.logging.error(
+            log.error(
                 f"Not checking crawl tasks, so not setting weights either: {reason}"
             )
             await self.stopping.wait()
@@ -113,7 +108,7 @@ class Validator:
                 seeds=self.seed_for,
                 signer=signer,
             )
-            bt.logging.info(
+            log.info(
                 f"Checking crawl uploads listed at {self.config.neuron.storage_url},"
                 f" reporting to {self.config.neuron.task_api_url}"
             )
@@ -124,7 +119,7 @@ class Validator:
             finally:
                 await fetcher.aclose()
         requests = scrapingdog.requests
-        bt.logging.info(
+        log.info(
             f"Crawl validation stopped: {fetcher.own_ip_fetches} samples fetched from"
             f" our own IP, {fetcher.scrapingdog_fetches} through ScrapingDog"
             f" ({requests['plain']} plain and {requests['rendered']} rendered requests)"
@@ -133,7 +128,7 @@ class Validator:
     async def check_embed_tasks(self) -> None:
         key = os.environ.get("EMBED_API_KEY", "")
         if not key:
-            bt.logging.info(
+            log.info(
                 f"Not checking embed tasks: EMBED_API_KEY is not set in {ENV_FILE}"
             )
             await self.stopping.wait()
@@ -162,7 +157,7 @@ class Validator:
                 seeds=self.seed_for,
                 signer=signer,
             )
-            bt.logging.info(f"Validating embed tasks through {url}")
+            log.info(f"Validating embed tasks through {url}")
             try:
                 await asyncio.gather(
                     *(checker.run(self.stopping) for _ in range(EMBED_JOBS))
@@ -185,13 +180,13 @@ class Validator:
             name=run_name,
             project=WANDB_PROJECT,
             entity=WANDB_ENTITY,
-            config=self.config,
+            config=flat(self.config),
             dir=self.config.neuron.full_path,
             reinit="finish_previous",
         )
         self.config.signature = self.wallet.hotkey.sign(run.id.encode()).hex()
-        wandb.config.update(self.config, allow_val_change=True)
-        bt.logging.success(f"Started wandb run for project '{WANDB_PROJECT}'")
+        wandb.config.update(flat(self.config), allow_val_change=True)
+        log.info(f"Started wandb run for project '{WANDB_PROJECT}'")
 
     def crawl_disabled_reason(self) -> str | None:
         if not self.scrapingdog_key:
@@ -204,9 +199,9 @@ class Validator:
 
     async def seed_for(self, block: int) -> str | None:
         """The sample seed for an upload, from the chain itself; None until its block exists."""
-        if block > await self.subtensor.get_current_block():
+        if block > await self.subtensor.block():
             return None
-        return seed_from_hash(await self.subtensor.get_block_hash(block))
+        return seed_from_hash((await self.subtensor.block_info(block)).hash)
 
     async def api_signer(self) -> str:
         """The key the task API signs manifests with, fetched once."""
@@ -218,7 +213,7 @@ class Validator:
                 ) as response:
                     return (await response.json())["signer"]
             except Exception as error:
-                bt.logging.warning(f"Task API signer unavailable, retrying: {error!r}")
+                log.warning(f"Task API signer unavailable, retrying: {error!r}")
                 await asyncio.sleep(SIGNER_RETRY_S)
         return ""
 
@@ -251,12 +246,12 @@ class Validator:
             try:
                 shares = await self.shares()
             except Exception as error:
-                bt.logging.error(
+                log.error(
                     f"No verdicts of our own yet and the task API's shares are"
                     f" unavailable, keeping the last weights: {error!r}"
                 )
                 return None
-            bt.logging.warning(
+            log.warning(
                 "No verdicts of our own in the window; weights follow the task API's"
                 " shares until there are"
             )
@@ -272,7 +267,7 @@ class Validator:
             ) as response:
                 coverage = (await response.json()).get("coverage", {})
         except Exception as error:
-            bt.logging.warning(f"Coverage unavailable, applying no gate: {error!r}")
+            log.warning(f"Coverage unavailable, applying no gate: {error!r}")
             return set()
         return {hk for hk, c in coverage.items() if not c.get("eligible", True)}
 
@@ -280,18 +275,20 @@ class Validator:
         while True:
             try:
                 blocks_left = await self.blocks_until_next_epoch()
-                bt.logging.info(f"Blocks left until next epoch: {blocks_left}")
+                log.info(f"Blocks left until next epoch: {blocks_left}")
                 if blocks_left <= WEIGHTS_WINDOW_BLOCKS and self.should_set_weights():
                     started = time.time()
                     # Fresh, so a UID that changed hands since the last sync is not paid.
-                    self.metagraph = await self.subtensor.metagraph(self.config.netuid)
+                    self.metagraph = await self.subtensor.subnets.metagraph(
+                        self.config.netuid
+                    )
                     weights = await self.weights()
                     if weights is not None:
                         await set_weights(self, weights)
-                    bt.logging.info(f"Weight setting took {time.time() - started:.2f}s")
+                    log.info(f"Weight setting took {time.time() - started:.2f}s")
                     await asyncio.sleep(AFTER_WEIGHTS_S)
             except Exception as error:
-                bt.logging.error(f"Error while setting weights: {error}")
+                log.error(f"Error while setting weights: {error}")
             await asyncio.sleep(POLL_S)
 
     async def sync_metagraph(self) -> None:
@@ -299,33 +296,35 @@ class Validator:
             await asyncio.sleep(METAGRAPH_SYNC_S)
             try:
                 await self.check_registered()
-                self.metagraph = await self.subtensor.metagraph(self.config.netuid)
-                bt.logging.info(f"Metagraph synced: {int(self.metagraph.n)} uids")
+                self.metagraph = await self.subtensor.subnets.metagraph(
+                    self.config.netuid
+                )
+                log.info(f"Metagraph synced: {self.metagraph.num_uids} uids")
             except Exception as error:
-                bt.logging.error(f"Error while syncing the metagraph: {error}")
+                log.error(f"Error while syncing the metagraph: {error}")
 
     async def blocks_until_next_epoch(self) -> int:
-        current_block = await self.subtensor.get_current_block()
-        tempo = await self.subtensor.tempo(self.config.netuid, current_block)
-        return tempo - (current_block + self.config.netuid + 1) % (tempo + 1)
+        return await self.subtensor.epochs.blocks_until_next_epoch(
+            netuid=self.config.netuid
+        )
 
     async def check_registered(self) -> None:
-        if not await self.subtensor.is_hotkey_registered(
-            netuid=self.config.netuid,
-            hotkey_ss58=self.wallet.hotkey.ss58_address,
-        ):
-            bt.logging.error(
-                f"Wallet: {self.wallet} is not registered on netuid {self.config.netuid}."
+        uid = await self.subtensor.neurons.uid(
+            hotkey_ss58=self.wallet.hotkey.ss58_address, netuid=self.config.netuid
+        )
+        if uid is None:
+            log.error(
+                f"Hotkey {self.wallet.hotkey.ss58_address} is not registered on netuid {self.config.netuid}."
                 " Please register the hotkey using `btcli subnets register` before trying again"
             )
             sys.exit()
 
     def should_set_weights(self) -> bool:
         if self.config.neuron.disable_set_weights:
-            bt.logging.info("Weight setting is disabled by configuration.")
+            log.info("Weight setting is disabled by configuration.")
             return False
         if reason := self.checker_trouble():
-            bt.logging.error(f"Not setting weights: {reason}")
+            log.error(f"Not setting weights: {reason}")
             return False
         return True
 
@@ -337,7 +336,7 @@ class Validator:
         return checker.trouble if checker is not None else None
 
     async def stop(self) -> None:
-        bt.logging.info("Stopping validator")
+        log.info("Stopping validator")
         if hasattr(self, "http"):
             await self.http.close()
         if hasattr(self, "subtensor"):
