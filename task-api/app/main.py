@@ -437,7 +437,7 @@ def create_app(redis=None) -> FastAPI:
 
     @app.post("/v1/admin/enqueue")
     async def admin_enqueue(body: Enqueue, who: Caller = Depends(admin)):
-        round_ = await lifecycle.open_round(core, body.urls, body.batch_target)
+        round_ = await lifecycle.open_round(core, body.urls)
         return {
             "round_id": round_.round_id,
             "batches": len(round_.batches),

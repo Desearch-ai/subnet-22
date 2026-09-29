@@ -104,15 +104,18 @@ def test_changing_the_seed_block_changes_the_commitment():
     assert proofs.manifest_hash(entries, 100) != proofs.manifest_hash(entries, 101)
 
 
-def test_a_batch_mixes_hosts_so_one_blocked_site_costs_one_row():
+def test_a_batch_mixes_hosts_so_one_blocked_site_costs_one_row(monkeypatch):
+    from app import rounds
     from app.rounds import Url, pack
+
+    monkeypatch.setattr(rounds, "TASK_URLS", 10)
 
     urls = [
         Url(host=f"site{h}.example", url=f"https://site{h}.example/{n}")
         for h in range(5)
         for n in range(10)
     ]
-    batches = pack(urls, batch_target=10)
+    batches = pack(urls)
 
     assert len(batches) == 5
     assert all(len({u.host for u in batch.urls}) == 5 for batch in batches)
@@ -121,12 +124,27 @@ def test_a_batch_mixes_hosts_so_one_blocked_site_costs_one_row():
     )
 
 
-def test_packing_keeps_every_url_when_hosts_are_lopsided():
+def test_a_crawl_task_is_a_thousand_urls_and_the_last_one_keeps_the_rest():
+    from app import rounds
     from app.rounds import Url, pack
+
+    assert rounds.TASK_URLS == 1000
+    urls = [
+        Url(host=f"s{n % 40}.example", url=f"https://s{n % 40}.example/{n}")
+        for n in range(2530)
+    ]
+    assert [len(batch.urls) for batch in pack(urls)] == [1000, 1000, 530]
+
+
+def test_packing_keeps_every_url_when_hosts_are_lopsided(monkeypatch):
+    from app import rounds
+    from app.rounds import Url, pack
+
+    monkeypatch.setattr(rounds, "TASK_URLS", 10)
 
     urls = [Url(host="big.example", url=f"https://big.example/{n}") for n in range(25)]
     urls += [Url(host="small.example", url="https://small.example/1")]
-    batches = pack(urls, batch_target=10)
+    batches = pack(urls)
 
     assert sum(len(b.urls) for b in batches) == 26
     assert batches[0].urls[1].host == "small.example"

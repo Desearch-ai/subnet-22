@@ -78,13 +78,11 @@ async def publish_open(core, now: float | None = None) -> bool:
     return True
 
 
-async def open_round(
-    core, urls: list[rounds.Url], batch_target: int = rounds.BATCH_TARGET
-):
+async def open_round(core, urls: list[rounds.Url]):
     # Two spellings of one page would race for the same key.
     unique = list({canonicalize(u.url): u for u in urls}.values())
     target = await core.seeds.target_block()
-    round_ = await asyncio.to_thread(rounds.open_round, unique, target, batch_target)
+    round_ = await asyncio.to_thread(rounds.open_round, unique, target)
     await core.db(core.rounds.save, round_)
     return round_
 

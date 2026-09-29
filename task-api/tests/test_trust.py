@@ -23,10 +23,10 @@ VALIDATOR = Keypair.create_from_uri("//validator-api-test").ss58_address
 OTHER = Keypair.create_from_uri("//validator-api-test-2").ss58_address
 
 
-def run(memory, scenario, batch_target: int = 3):
+def run(memory, scenario, task_urls: int = 3):
     async def main():
         async with Harness(memory) as h:
-            await h.enqueue(batch_target=batch_target)
+            await h.enqueue(task_urls=task_urls)
             return await scenario(h)
 
     return asyncio.run(main())
@@ -137,7 +137,7 @@ def test_a_disputed_task_is_decided_by_the_majority_and_the_minority_is_marked(
             h.core.validations.audit_standing(),
         )
 
-    still, final, status, standing = run(memory, scenario, batch_target=2)
+    still, final, status, standing = run(memory, scenario, task_urls=2)
     assert still == "pending", "three validators are active, so three votes"
     assert (final["verdict"], final["credited"], status) == ("pass", 2, "pass")
     assert standing[VALIDATOR]["disagreements"] == 1
@@ -197,7 +197,7 @@ def test_a_lowballed_pass_among_three_is_the_odd_one_out(api_env, memory):
         )
         return final, h.core.validations.audit_standing()
 
-    final, standing = run(memory, scenario, batch_target=2)
+    final, standing = run(memory, scenario, task_urls=2)
     assert (final["verdict"], final["credited"]) == ("pass", 2)
     assert standing[OTHER]["disagreements"] == 1
 
@@ -373,9 +373,7 @@ def test_a_completion_receipt_names_the_block_the_upload_was_frozen_at(api_env, 
 def test_a_round_revealed_while_redis_was_down_is_filled_afterwards(api_env, memory):
     async def scenario():
         async with Harness(memory) as h:
-            enqueued = await h.admin.post(
-                "/v1/admin/enqueue", {"urls": URLS, "batch_target": 3}
-            )
+            enqueued = await h.admin.post("/v1/admin/enqueue", {"urls": URLS})
             real = h.core.redis.sadd
 
             async def down(*_, **__):
@@ -402,9 +400,7 @@ def test_polling_after_a_round_closes_leaves_its_proof_intact(api_env, memory):
     async def scenario():
         async with Harness(memory) as h:
             one = [{"host": "a.example", "url": "https://a.example/1"}]
-            enqueued = await h.admin.post(
-                "/v1/admin/enqueue", {"urls": one, "batch_target": 3}
-            )
+            enqueued = await h.admin.post("/v1/admin/enqueue", {"urls": one})
             round_id = enqueued["round_id"]
             await revealed(h.core)
             await h.mine()
@@ -429,9 +425,7 @@ def test_rounds_survive_a_restart_and_close_once_every_task_is_decided(api_env, 
 
         async with Harness(memory) as h:
             one = [{"host": "a.example", "url": "https://a.example/1"}]
-            enqueued = await h.admin.post(
-                "/v1/admin/enqueue", {"urls": one, "batch_target": 3}
-            )
+            enqueued = await h.admin.post("/v1/admin/enqueue", {"urls": one})
             restarted = create_app(h.redis).state.core
             pending = [r.round_id for r in restarted.rounds.unrevealed()]
             assert await revealed(restarted) == 1

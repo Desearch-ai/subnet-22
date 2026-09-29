@@ -20,7 +20,6 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--domains-limit", type=int, default=10000)
     parser.add_argument("--per-domain", type=int, default=25)
     parser.add_argument("--interval", type=float, default=3600)
-    parser.add_argument("--batch-target", type=int, default=25)
     parser.add_argument("--queue-cap", type=int, default=loop.QUEUE_CAP)
     parser.add_argument("--low-water", type=int, default=loop.LOW_WATER)
     parser.add_argument("--refresh", type=float, default=loop.REFRESH_S)

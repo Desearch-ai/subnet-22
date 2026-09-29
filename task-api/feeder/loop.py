@@ -10,10 +10,10 @@ from app.canonical import url_sha1
 
 from desearch.client import TaskApiClient, TaskApiError
 
-BATCH = 500
-BATCHES_PER_REQUEST = 10
-QUEUE_CAP = 20000
-LOW_WATER = 1000
+ENQUEUE_URLS = 10_000
+# Counted in tasks, as the API reports its queue depth.
+QUEUE_CAP = 500
+LOW_WATER = 25
 REFRESH_S = 86400.0
 WAIT_S = 15.0
 LOOKUP_CHUNK = 500
@@ -75,19 +75,14 @@ async def queue_depth(client: TaskApiClient) -> int:
     return int(health.get("queue_depth", {}).get("crawl", 0))
 
 
-async def enqueue(
-    client: TaskApiClient, rows: list[dict], batch_target: int, sent_urls: SentUrls
-) -> int:
+async def enqueue(client: TaskApiClient, rows: list[dict], sent_urls: SentUrls) -> int:
     """A URL counts as sent only once the API took its batch."""
     sent = 0
-    size = max(BATCH, batch_target * BATCHES_PER_REQUEST)
-    for start in range(0, len(rows), size):
-        chunk = rows[start : start + size]
+    for start in range(0, len(rows), ENQUEUE_URLS):
+        chunk = rows[start : start + ENQUEUE_URLS]
         urls = [{"host": row["host"], "url": row["url"]} for row in chunk]
         try:
-            await client.post(
-                "/v1/admin/enqueue", {"urls": urls, "batch_target": batch_target}
-            )
+            await client.post("/v1/admin/enqueue", {"urls": urls})
         except TaskApiError as exc:
             print(f"enqueue refused: {exc}", file=sys.stderr)
             break
@@ -103,7 +98,7 @@ async def feed_once(args, source, sent_urls: SentUrls, client: TaskApiClient) ->
         return 0
     rows = await source()
     fresh = await asyncio.to_thread(sent_urls.due, rows, args.refresh)
-    sent = await enqueue(client, fresh, args.batch_target, sent_urls) if fresh else 0
+    sent = await enqueue(client, fresh, sent_urls) if fresh else 0
     print(
         f"{len(rows)} urls read, {len(fresh)} due, {sent} enqueued, queue was {depth}",
         flush=True,

@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 
 from . import proofs
 
-BATCH_TARGET = 250
+TASK_URLS = 1000
 CLAIM_TTL_S = 900
 
 
@@ -51,11 +51,11 @@ def spread(urls: list[Url]) -> list[Url]:
     return mixed
 
 
-def pack(urls: list[Url], batch_target: int = BATCH_TARGET) -> list[Batch]:
+def pack(urls: list[Url]) -> list[Batch]:
     mixed = spread(urls)
     return [
-        Batch(uuid.uuid4().hex[:16], mixed[i : i + batch_target])
-        for i in range(0, len(mixed), batch_target)
+        Batch(uuid.uuid4().hex[:16], mixed[i : i + TASK_URLS])
+        for i in range(0, len(mixed), TASK_URLS)
     ]
 
 
@@ -95,10 +95,8 @@ class Round:
         return view
 
 
-def open_round(
-    urls: list[Url], seed_block: int, batch_target: int = BATCH_TARGET
-) -> Round:
-    return open_batches(pack(urls, batch_target), seed_block)
+def open_round(urls: list[Url], seed_block: int) -> Round:
+    return open_batches(pack(urls), seed_block)
 
 
 def open_batches(batches: list[Batch], seed_block: int, kind: str = "crawl") -> Round:

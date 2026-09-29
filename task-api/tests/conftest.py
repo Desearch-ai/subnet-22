@@ -2,6 +2,8 @@ import os
 
 import pytest
 
+from app import rounds
+
 from desearch import env
 from tests.memory_r2 import DOTENV, R2_KEYS, Backend
 
@@ -43,4 +45,5 @@ def api_env(monkeypatch, tmp_path):
         "TASK_API_VALIDATOR_URIS", f"{VALIDATOR},{OTHER_VALIDATOR},{THIRD_VALIDATOR}"
     )
     monkeypatch.setenv("TASK_API_ADMIN_URIS", ADMIN)
+    monkeypatch.setattr(rounds, "TASK_URLS", 3)
     return monkeypatch

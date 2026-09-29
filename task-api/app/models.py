@@ -142,4 +142,3 @@ class Release(BaseModel):
 
 class Enqueue(BaseModel):
     urls: list[rounds.Url]
-    batch_target: int = Field(rounds.BATCH_TARGET, gt=0)

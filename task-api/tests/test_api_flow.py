@@ -8,7 +8,7 @@ import json
 import re
 import time
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pyarrow as pa
@@ -128,10 +128,9 @@ class Harness:
         found = await self.core.storage.stat(key)
         return found[0] if found else None
 
-    async def enqueue(self, urls=URLS, batch_target: int = 3) -> dict:
-        enqueued = await self.admin.post(
-            "/v1/admin/enqueue", {"urls": urls, "batch_target": batch_target}
-        )
+    async def enqueue(self, urls=URLS, task_urls: int = 3) -> dict:
+        lifecycle.rounds.TASK_URLS = task_urls
+        enqueued = await self.admin.post("/v1/admin/enqueue", {"urls": urls})
         await revealed(self.core)
         return enqueued
 
@@ -234,7 +233,7 @@ async def _round_trip(backend) -> None:
 
 
 async def _scenario(h: Harness) -> None:
-    enqueue = {"urls": URLS, "batch_target": 3}
+    enqueue = {"urls": URLS}
     assert (await h.public.post("/v1/admin/enqueue", json=enqueue)).status == 401
     await _expect(403, h.miner.post("/v1/admin/enqueue", enqueue))
     enqueued = await h.admin.post("/v1/admin/enqueue", enqueue)
@@ -551,7 +550,7 @@ def _score(
 def _parquet(task: dict, hotkey: str) -> bytes:
     from desearch.extraction.schema import PAGE_SCHEMA
 
-    fetched_at = datetime.now(UTC)
+    fetched_at = datetime.now(timezone.utc)
     rows = []
     for url in task["urls"]:
         text = f"Hello from {url}"
