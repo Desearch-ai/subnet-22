@@ -3,7 +3,7 @@ import io
 import json
 import os
 import re
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 
 import numpy as np
 import pyarrow as pa
@@ -102,7 +102,7 @@ class Bucket:
                 )
         sink = io.BytesIO()
         pq.write_table(pa.Table.from_pylist(rows), sink)
-        day = datetime.now(UTC).date().isoformat()
+        day = datetime.now(timezone.utc).date().isoformat()
         self.objects[f"vectors/model=m/dt={day}/task={task}.parquet"] = sink.getvalue()
 
 

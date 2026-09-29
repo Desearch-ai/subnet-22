@@ -9,7 +9,7 @@ import random
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -193,7 +193,7 @@ class Publisher:
             return self.publish_vectors(job)
         body = self.read_temp(job["key"], job.get("etag"))
         window = publish_window(job)
-        captured = datetime.now(UTC)
+        captured = datetime.now(timezone.utc)
         assigned = set(job["urls"]) - set(job.get("skip", ()))
         chosen: dict[str, dict] = {}
         for row in pq.read_table(io.BytesIO(body), columns=ROW_COLUMNS).to_pylist():
@@ -302,7 +302,7 @@ class Publisher:
             batch = pages[start : start + EMBED_INPUT_PAGES]
             rows = [row for change in batch for row in embed_texts(change)]
             body = write_parquet(rows, INPUT_SCHEMA)
-            key = f"embed-inputs/dt={datetime.now(UTC):%Y-%m-%d}/{uuid.uuid4().hex}.parquet"
+            key = f"embed-inputs/dt={datetime.now(timezone.utc):%Y-%m-%d}/{uuid.uuid4().hex}.parquet"
             self.temp.client.put_object(
                 Bucket=self.temp.bucket,
                 Key=self.temp.path(key),
@@ -329,7 +329,7 @@ class Publisher:
         return entries
 
     def write_changes(self, changes: list[dict], seq: int) -> str:
-        now = datetime.now(UTC)
+        now = datetime.now(timezone.utc)
         key = f"changes/dt={now:%Y-%m-%d}/{seq:012d}-{uuid.uuid4().hex[:8]}.parquet"
         sink = io.BytesIO()
         pq.write_table(
@@ -391,7 +391,7 @@ def _change(record: dict, key: str, kind: str, previous: dict) -> dict:
         "key": key,
         "kind": kind,
         "previous_content_sha1": previous.get("content-sha1", ""),
-        "published_at": datetime.now(UTC).isoformat(timespec="seconds"),
+        "published_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         **{name: record[name] for name in RECORD_COLUMNS},
     }
 

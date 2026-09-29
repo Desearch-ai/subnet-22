@@ -5,7 +5,7 @@ import sqlite3
 import time
 from collections import Counter
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 
 from desearch.credit import EVIDENCE, credited_urls
 
@@ -442,7 +442,7 @@ class Validations:
 
 
 def utc_day(at: float | None = None) -> str:
-    return datetime.fromtimestamp(at or time.time(), UTC).strftime("%Y-%m-%d")
+    return datetime.fromtimestamp(at or time.time(), timezone.utc).strftime("%Y-%m-%d")
 
 
 def build_report(

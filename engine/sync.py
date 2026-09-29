@@ -10,7 +10,7 @@ import shutil
 import sqlite3
 import time
 from concurrent.futures import ThreadPoolExecutor
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import numpy as np
@@ -97,7 +97,7 @@ class Synced:
 
 
 def vector_keys(bucket, model: str, days: int = LOOKBACK_DAYS) -> list[str]:
-    today = datetime.now(UTC).date()
+    today = datetime.now(timezone.utc).date()
     keys = []
     for back in range(days, -1, -1):
         day = today - timedelta(days=back)

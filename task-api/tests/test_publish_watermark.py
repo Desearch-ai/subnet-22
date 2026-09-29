@@ -1,5 +1,5 @@
 import asyncio
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from app.canonical import canonicalize
 from publisher.records import build_record, from_zstd, page_key
@@ -7,7 +7,7 @@ from publisher.worker import Publisher
 
 from tests.synthetic import page_row, synthetic_html, to_parquet
 
-T0 = datetime.now(UTC).replace(microsecond=0) - timedelta(days=2)
+T0 = datetime.now(timezone.utc).replace(microsecond=0) - timedelta(days=2)
 WIDE = (T0 - timedelta(days=30), T0 + timedelta(days=30))
 URL = "https://www.site.example/story"
 

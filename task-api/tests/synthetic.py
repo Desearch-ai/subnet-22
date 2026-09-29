@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import io
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -42,7 +42,7 @@ def page_row(url: str, html: str, final_url: str = "", text: str | None = None) 
         "final_url": final_url,
         "status": 200,
         "error": None,
-        "fetched_at": datetime.now(UTC),
+        "fetched_at": datetime.now(timezone.utc),
         "elapsed_ms": 120,
         "content_type": "text/html; charset=utf-8",
         "html_bytes": len(raw),

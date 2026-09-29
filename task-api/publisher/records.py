@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import zstandard
 from app.canonical import canonicalize, domain_of, url_sha1
@@ -50,9 +50,9 @@ def publish_window(job: dict) -> tuple[datetime, datetime]:
     """A row's fetch time must fall between claim and completion."""
     completed = job.get("completed_at")
     latest = (
-        datetime.fromtimestamp(float(completed), UTC)
+        datetime.fromtimestamp(float(completed), timezone.utc)
         if completed
-        else datetime.now(UTC)
+        else datetime.now(timezone.utc)
     )
     claim = timedelta(seconds=float(job.get("claim_ttl") or DEFAULT_CLAIM_S))
     return latest - claim - CLOCK_SKEW, latest
@@ -86,7 +86,7 @@ def build_record(
         "etag": "",
         "content_sha1": hashlib.sha1(text.encode()).hexdigest(),
         "source": SOURCE,
-        "captured_at": _iso(captured_at or datetime.now(UTC)),
+        "captured_at": _iso(captured_at or datetime.now(timezone.utc)),
         "doc_id": str(uuid.uuid5(uuid.NAMESPACE_URL, url)),
         "assigned_url": row["url"],
         "final_url": row["final_url"],
@@ -131,12 +131,12 @@ def from_zstd(blob: bytes) -> dict:
 def _utc(value, fallback: datetime) -> datetime:
     if not isinstance(value, datetime):
         return fallback
-    return value if value.tzinfo else value.replace(tzinfo=UTC)
+    return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
 
 
 def _iso(value) -> str:
     if isinstance(value, datetime):
         if value.tzinfo is None:
-            value = value.replace(tzinfo=UTC)
-        return value.astimezone(UTC).isoformat(timespec="seconds")
+            value = value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc).isoformat(timespec="seconds")
     return str(value or "")
