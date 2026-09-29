@@ -1144,3 +1144,20 @@ def test_a_proxy_route_opens_a_fresh_connection_per_request():
             await direct.aclose()
 
     assert asyncio.run(go()) == (True, False)
+
+
+def test_the_throughput_summary_counts_the_last_minute_and_the_whole_run():
+    from neurons.miners.miner import Throughput
+
+    counts = Throughput(now=0.0)
+    counts.add(pages=100, ok=90)
+    counts.add(pages=100, ok=80)
+    assert counts.line(now=10.0) == (
+        "last 10s: 2 tasks, 200 pages (170 ok), 20.0 pages/s;"
+        " since start: 2 tasks, 200 pages (170 ok), 20.0 pages/s"
+    )
+    counts.add(pages=100, ok=100)
+    assert counts.line(now=30.0) == (
+        "last 20s: 1 tasks, 100 pages (100 ok), 5.0 pages/s;"
+        " since start: 3 tasks, 300 pages (270 ok), 10.0 pages/s"
+    )

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import signal
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -23,6 +24,7 @@ ERROR_BACKOFF = 2.0
 MAX_BACKOFF = 3600.0
 CLAIM_MARGIN_S = 30.0
 ATTEMPTS = 3
+SUMMARY_EVERY_S = 60.0
 UPLOAD_TIMEOUT = aiohttp.ClientTimeout(total=120.0, sock_connect=15.0)
 
 
@@ -158,6 +160,35 @@ class TaskWorker:
         await self.api.aclose()
 
 
+class Throughput:
+    """Tasks and pages uploaded, since start and since the last summary."""
+
+    def __init__(self, now: float):
+        self.started = self.since = now
+        self.tasks = self.pages = self.ok = 0
+        self.recent_tasks = self.recent_pages = self.recent_ok = 0
+
+    def add(self, pages: int, ok: int) -> None:
+        self.tasks += 1
+        self.pages += pages
+        self.ok += ok
+        self.recent_tasks += 1
+        self.recent_pages += pages
+        self.recent_ok += ok
+
+    def line(self, now: float) -> str:
+        window = max(now - self.since, 1e-9)
+        text = (
+            f"last {window:.0f}s: {self.recent_tasks} tasks, {self.recent_pages} pages"
+            f" ({self.recent_ok} ok), {self.recent_pages / window:.1f} pages/s;"
+            f" since start: {self.tasks} tasks, {self.pages} pages ({self.ok} ok),"
+            f" {self.pages / max(now - self.started, 1e-9):.1f} pages/s"
+        )
+        self.since = now
+        self.recent_tasks = self.recent_pages = self.recent_ok = 0
+        return text
+
+
 class Miner(TaskWorker):
     kind = "crawl"
 
@@ -185,6 +216,19 @@ class Miner(TaskWorker):
         # A page holds its slot until it is in the upload, so pages never pile up.
         self.in_progress = asyncio.Semaphore(settings.concurrency)
         self.falling_back = asyncio.Semaphore(settings.scrapingdog_concurrency)
+        self.throughput = Throughput(time.monotonic())
+
+    async def run(self) -> None:
+        summaries = asyncio.create_task(self.summarize())
+        try:
+            await super().run()
+        finally:
+            summaries.cancel()
+
+    async def summarize(self) -> None:
+        while True:
+            await asyncio.sleep(SUMMARY_EVERY_S)
+            log.info(self.throughput.line(time.monotonic()))
 
     async def process_task(self, task: dict) -> None:
         task_id, upload = task["task_id"], task["upload"]
@@ -211,6 +255,7 @@ class Miner(TaskWorker):
             await self.abandon(task_id, f"{type(exc).__name__}: {exc}")
             return
 
+        self.throughput.add(pages.rows, pages.ok)
         breakdown = " ".join(f"{name}={n}" for name, n in pages.errors.most_common())
         log.info(
             "task %s: %d urls, %d ok, %d errors%s, %.1fs, %d bytes uploaded",
@@ -237,11 +282,14 @@ class Miner(TaskWorker):
                 if not self.scrapingdog or not needs_fallback(
                     row["error"], row["status"]
                 ):
+                    log_page(row)
                     await pages.add(row)
                     return
             # Off the crawl slot: ScrapingDog's latency would otherwise cap our own-IP rate.
             async with self.falling_back:
-                await pages.add(await self.fallback_row(url, row, deadline))
+                row = await self.fallback_row(url, row, deadline)
+                log_page(row)
+                await pages.add(row)
 
         await asyncio.gather(*map(one, urls))
 
@@ -268,6 +316,12 @@ class Miner(TaskWorker):
         if self.scrapingdog is not None:
             await self.scrapingdog.aclose()
         await super().aclose()
+
+
+def log_page(row: dict) -> None:
+    if log.isEnabledFor(logging.DEBUG):
+        outcome = row["error"] or f"{len(row.get('text') or '')} chars of text"
+        log.debug("page %s %s: %s", row.get("status"), row["url"], outcome)
 
 
 async def with_retries(call, attempts: int = ATTEMPTS):
@@ -303,7 +357,8 @@ async def serve(miner: Miner | None = None) -> None:
 def main() -> None:
     env.load(ENV_FILE)
     logging.basicConfig(
-        level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s"
+        level=os.environ.get("LOG_LEVEL", "INFO").upper(),
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
     logging.getLogger("trafilatura").setLevel(logging.ERROR)
     asyncio.run(serve())
