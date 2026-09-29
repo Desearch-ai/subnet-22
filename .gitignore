@@ -37,3 +37,5 @@ build-smoke*/
 .venv-bot/
 frontier/
 crawl4ai/
+sandbox/runs/
+sandbox/cache/
