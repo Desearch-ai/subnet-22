@@ -15,6 +15,7 @@ import desearch
 from desearch import env
 from desearch.client import TaskApiClient
 from desearch.embedding import MODELS, OPENROUTER_EMBEDDINGS, EmbeddingClient
+from desearch.credit import SHARE_WINDOW_H
 from desearch.fetch import Fetcher, ScrapingDog
 from desearch.manifest import seed_from_hash
 from bittensor.wallets import Wallet
@@ -238,6 +239,7 @@ class Validator:
         if self.ledger.count():
             shares = self.ledger.shares()
             ineligible = await self.ineligible()
+            self.report_window(shares, ineligible)
             shares = {
                 pool: {hk: s for hk, s in miners.items() if hk not in ineligible}
                 for pool, miners in shares.items()
@@ -257,6 +259,18 @@ class Validator:
             )
         weights = weights_from_shares(list(self.metagraph.hotkeys), shares)
         return weights if weights.any() else None
+
+    def report_window(self, shares: dict, ineligible: set[str]) -> None:
+        """What each miner did in the scoring window, as these weights count it."""
+        log.info(f"Scoring window, last {SHARE_WINDOW_H} h:")
+        for row in self.ledger.window():
+            share = shares.get(row["kind"], {}).get(row["miner"], 0.0)
+            gate = ", under the coverage gate" if row["miner"] in ineligible else ""
+            log.info(
+                f"  {row['kind']} {row['miner'][:10]}: {row['tasks']} tasks"
+                f" ({row['passed']} passed), {row['returned']} of {row['assigned']}"
+                f" URLs returned, {row['credited']} paid, share {share:.3f}{gate}"
+            )
 
     async def ineligible(self) -> set[str]:
         """Miners under the coverage gate: claims that lapsed are seen only by the task API."""

@@ -62,6 +62,28 @@ class Ledger:
         ).fetchone()
         return count
 
+    def window(self, now: float | None = None) -> list[dict]:
+        """Per miner and kind, what this validator checked inside the scoring window."""
+        since = (now or time.time()) - SHARE_WINDOW_H * 3600
+        rows = self.db.execute(
+            "SELECT kind, miner, COUNT(*), SUM(verdict = 'pass'), SUM(assigned),"
+            " SUM(returned), SUM(credited) FROM verdicts WHERE scored_at >= ?"
+            " GROUP BY kind, miner ORDER BY SUM(credited) DESC",
+            (since,),
+        )
+        return [
+            {
+                "kind": kind,
+                "miner": miner,
+                "tasks": tasks,
+                "passed": passed,
+                "assigned": assigned,
+                "returned": returned,
+                "credited": credited,
+            }
+            for kind, miner, tasks, passed, assigned, returned, credited in rows
+        ]
+
     def shares(self, now: float | None = None) -> dict[str, dict[str, float]]:
         """Each miner's part of the work this validator verified in the window."""
         since = (now or time.time()) - SHARE_WINDOW_H * 3600

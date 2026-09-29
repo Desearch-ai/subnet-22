@@ -225,3 +225,33 @@ def test_a_verdict_ledger_windows_and_gates_its_shares():
 
     assert ledger.shares() == {"crawl": {"m2": 1.0}}
     assert ledger.count() == 3
+
+
+def test_the_window_report_lists_what_each_miner_did_inside_the_scoring_window():
+    ledger = Ledger(":memory:")
+    now = 1_000_000.0
+    ledger.record("t1", "crawl", "m1", "pass", 90, 100, 100, at=now - 60)
+    ledger.record("t2", "crawl", "m1", "fail", 0, 100, 80, at=now - 60)
+    ledger.record("t3", "crawl", "m2", "pass", 40, 100, 100, at=now - 60)
+    ledger.record("old", "crawl", "m2", "pass", 99, 100, 100, at=now - 25 * 3600)
+
+    assert ledger.window(now) == [
+        {
+            "kind": "crawl",
+            "miner": "m1",
+            "tasks": 2,
+            "passed": 1,
+            "assigned": 200,
+            "returned": 180,
+            "credited": 90,
+        },
+        {
+            "kind": "crawl",
+            "miner": "m2",
+            "tasks": 1,
+            "passed": 1,
+            "assigned": 100,
+            "returned": 100,
+            "credited": 40,
+        },
+    ]
