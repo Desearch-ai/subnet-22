@@ -17,7 +17,7 @@ feeder ──URLs──▶ task API ──claim──▶ miner ──upload─�
 | --- | --- |
 | `app/` | the API: auth, queues, rounds, upload links, check results, budgets and shares |
 | `publisher/` | writes verified pages and vectors to the pages bucket |
-| `feeder/` | sends the bot's newest URLs to the API |
+| `feeder/` | sends the bot's newest URLs to the API, and `feeder.sample` exports the URL dataset the miner sandbox serves |
 | `tools/verify_round.py` | checks a closed round against its commitment and signed log |
 
 The miner and validator are in [`neurons/`](../neurons/), and the code they share with the API
@@ -25,9 +25,9 @@ The miner and validator are in [`neurons/`](../neurons/), and the code they shar
 
 ## How it works
 
-**Rounds.** URLs are enqueued in rounds. The API packs them into batches, publishes a hash of the
-batches, and commits to a block ten blocks ahead; that block's hash sets the order the batches are
-served in.
+**Rounds.** URLs are enqueued in rounds. The API packs them into tasks of 1,000 URLs, the last one
+of a round taking whatever is left, publishes a hash of the batches, and commits to a block ten
+blocks ahead; that block's hash sets the order the batches are served in.
 
 **Claims.** A miner claims a task and receives its URLs and an upload link for one key. Miners never
 hold storage credentials. On completion the API copies the upload to a key only it can write, so

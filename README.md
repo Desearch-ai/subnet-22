@@ -74,7 +74,9 @@ starts with selected sources and grows as results prove useful.
 ## Mining and validating
 
 **Miners** crawl: they claim tasks, fetch the assigned pages through their own proxies and upload the
-extracted text. They are paid by their share of verified pages. [Miner setup →](./docs/miner-setup.md)
+extracted text. They are paid by their share of verified pages, and can test their miner locally
+against a real validator before registering.
+[Miner setup →](./docs/miner-setup.md) · [Test locally →](./docs/test-your-miner.md)
 · [Emission →](./docs/emission.md)
 
 **Validators** check: every validator re-fetches a sample of every upload, reports pass or fail, and
@@ -102,6 +104,7 @@ the [console](https://console.desearch.ai) and start with the
 | Guide | What's inside |
 | --- | --- |
 | [Miner setup](./docs/miner-setup.md) | Install, register, configure, run, how you earn, monitoring |
+| [Test your miner locally](./docs/test-your-miner.md) | Run your miner against a local task API and validator before registering |
 | [Validator setup](./docs/validator-setup.md) | Install, register, configure, run, automatic upgrades, monitoring |
 | [Emission](./docs/emission.md) | How miners' shares are worked out and what raises them |
 | [Architecture](./docs/architecture.md) | How the bot, task API, miners, validators, storage and engine work together |

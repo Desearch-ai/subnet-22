@@ -37,9 +37,9 @@ published pages in `desearch-pages`, which is permanent.
 
 ## A crawl task, start to finish
 
-1. **Round.** The task API packs new URLs into batches, spreading each site across them. It publishes
-   a hash of the batches before serving any, and a future block's hash decides the order they go out
-   in.
+1. **Round.** The task API packs new URLs into tasks of 1,000, spreading each site across them. It
+   publishes a hash of the batches before serving any, and a future block's hash decides the order
+   they go out in.
 2. **Claim.** A miner asks for a task and receives its URLs and an upload link. The link points into
    object storage, accepts one file under one key, and expires with the claim after 15 minutes.
    Miners never hold storage credentials, and a miner is never given a task it held before.

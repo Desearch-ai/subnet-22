@@ -20,10 +20,6 @@ fades out over the following day.
 A validator sets weights only while it is checking tasks itself. One without a working ScrapingDog
 key, or whose checks keep failing, sets none until it recovers.
 
-Validators fetch pages independently, so two honest validators can pay the same upload a few rows
-differently when a page changed between their fetches. Their weights then differ by that upload's
-share of the day's work, and validator trust on the chain reflects exactly that difference.
-
 ## What counts as paid work
 
 **Crawling.** A task you complete is checked by every validator. If it passes, you are paid for

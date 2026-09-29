@@ -70,6 +70,12 @@ From the repository root:
 pm2 start python3 --name desearch_miner -- -m neurons.miners.miner
 ```
 
+## Test your miner locally
+
+Before registering, run your miner against a local task API and validator that use the same code as
+mainnet, and see exactly how your uploads are scored:
+[Test your miner locally](./test-your-miner.md).
+
 ## Embedding (not open yet)
 
 Embed tasks open when Desearch's own embedding model ships, and run on your own GPU.
