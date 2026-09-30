@@ -151,6 +151,8 @@ PYTHONPATH=.. python -m feeder --buckets /mnt/desearch-bot/buckets --domains fee
 | `TASK_API_ACTIVE_S` | 3600 | seconds since its last report a validator counts as active |
 | `TASK_API_LEDGER_DELAY_S` | 0 | seconds finalized uploads and shares stay out of public view |
 | `TASK_API_MAX_ATTEMPTS` | 3 | times a task is retried before it is dropped |
+| `TASK_API_READS_PER_MINUTE` | 120 | `GET` requests one IP may make in a minute |
+| `TASK_API_CORS_ORIGINS` | local dev servers | comma-separated origins whose pages may read the API from a browser |
 | `TASK_API_EMBED_TASKS` | 0 | 1 opens embed tasks |
 | `TASK_API_EMBED_MODEL` | `qwen3-embedding-8b` | the model embed tasks name, from [`desearch/embedding.py`](../desearch/embedding.py) |
 
@@ -158,17 +160,34 @@ In `chain` mode a validator needs a validator permit and 1000 stake.
 
 ## Public endpoints
 
+Anyone can read these; the [UI](../ui/README.md) is built on them.
+
 | Endpoint | |
 | --- | --- |
+| `GET /v1/overview` | the queue, the work in progress and the totals of the window |
+| `GET /v1/live` | the tasks miners hold now and the uploads being checked, with who has voted |
+| `GET /v1/stats/series` | tasks, verdicts and rows per 5, 15 or 60 minutes; for everyone, one `miner` or one `validator` |
+| `GET /v1/tasks` | checked tasks with the rows each paid, newest first; filter with `miner`, `validator`, `verdict`, `kind`, `since` |
+| `GET /v1/tasks/{task_id}` | one task's state and result, every validator's vote, and per-URL detail for a week |
+| `GET /v1/votes` | every validator's vote on every checked upload; filter with `validator`, `miner`, `task_id`, `verdict`, `agreed` |
+| `GET /v1/miners` | every miner's budget, coverage, share and results in the window |
+| `GET /v1/miners/{hotkey}` | a miner's budget and its history, coverage, share, pass and fail counts and lockout |
+| `GET /v1/miners/{hotkey}/verdicts` | signed by that miner: its own finalized uploads, without the ledger delay |
+| `GET /v1/validators` | every validator's votes, how often it agreed with the final result, and its standing |
+| `GET /v1/validators/{hotkey}` | the same for one validator |
+| `GET /v1/events` | the signed log as a feed: tasks issued, completed, refused and returned; filter with `miner`, `task_id`, `outcome` |
 | `GET /v1/health` | queue depths, backlog, the active validators and every validator's standing |
 | `GET /v1/shares` | every miner's share, per pool |
-| `GET /v1/tasks` | checked tasks with the rows each paid, newest first; filter with `miner`, `validator`, `since` |
-| `GET /v1/tasks/{task_id}` | one task's state and result, with per-URL detail for a week |
-| `GET /v1/miners/{hotkey}` | a miner's budget, coverage, pass and fail counts and lockout |
-| `GET /v1/miners/{hotkey}/verdicts` | signed by that miner: its own finalized uploads, without the ledger delay |
 | `GET /v1/rounds`, `GET /v1/rounds/{id}` | round commitments |
 | `GET /v1/rounds/{id}/log` | a round's signed log |
 | `GET /v1/key` | the key that signs the log and the notes next to uploads |
+
+Lists return a page at a time (`limit`, at most 100) with a `next` value to pass back as `before`.
+
+Reads are limited per IP; over the limit the API answers `429` with `Retry-After`. Log reads use a
+database connection and a thread of their own, so they never delay a claim or a verdict, and when
+too many are waiting the API answers `503` with `Retry-After` instead of queueing more. Behind a
+proxy, run uvicorn with `--proxy-headers` so the limit sees the caller's address.
 
 ## Storage
 

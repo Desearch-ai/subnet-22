@@ -31,7 +31,6 @@ STRIKE_REASONS = frozenset(
         "vectors_mismatch",
     }
 )
-# Both must hold: a busy honest miner meets two bad batches a day, a cheater fails most tasks.
 STRIKES_TO_LOCK = 2
 STRIKE_SHARE = 0.05
 STRIKE_WINDOW_H = 24
@@ -223,6 +222,20 @@ class Budgets:
             "SELECT until FROM lockouts WHERE hotkey = ? AND pool = ?", (hotkey, pool)
         ).fetchone()
         return row[0] if row and row[0] > (now or time.time()) else None
+
+    def all(self, pool: str = CRAWL) -> list[MinerBudget]:
+        rows = self.db.execute(
+            "SELECT hotkey, pool, budget, verified FROM miners WHERE pool = ?", (pool,)
+        ).fetchall()
+        return [MinerBudget(*row) for row in rows]
+
+    def lockouts(self, pool: str = CRAWL, now: float | None = None) -> dict[str, float]:
+        return dict(
+            self.db.execute(
+                "SELECT hotkey, until FROM lockouts WHERE pool = ? AND until > ?",
+                (pool, now or time.time()),
+            ).fetchall()
+        )
 
     def pools_of(self, hotkey: str) -> list[MinerBudget]:
         rows = self.db.execute(

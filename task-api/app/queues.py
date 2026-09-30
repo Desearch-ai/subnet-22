@@ -404,6 +404,12 @@ class ValidationQueue:
         await self.redis.zremrangebyscore(VACTIVE, "-inf", now - self.active_s)
         return {_text(v) for v in await self.redis.zrange(VACTIVE, 0, -1)}
 
+    async def last_seen(self, now: float | None = None) -> dict[str, float]:
+        """When each active validator last asked for work or voted."""
+        await self.active(now)
+        seen = await self.redis.zrange(VACTIVE, 0, -1, withscores=True)
+        return {_text(validator): at for validator, at in seen}
+
     async def finalize(
         self, task_id: str, publish: dict | None = None
     ) -> Finalized | None:

@@ -45,6 +45,8 @@ class RoundLog:
                 block        INTEGER
             );
             CREATE INDEX IF NOT EXISTS entries_round ON entries (round_id, id);
+            CREATE INDEX IF NOT EXISTS entries_hotkey ON entries (hotkey, id);
+            CREATE INDEX IF NOT EXISTS entries_task ON entries (task_id, id);
             CREATE TABLE IF NOT EXISTS anchors (
                 round_id TEXT PRIMARY KEY,
                 root     TEXT NOT NULL,
@@ -126,6 +128,47 @@ class RoundLog:
                 entry["block"] = block
             out.append(entry)
         return out
+
+    def events(
+        self,
+        miner: str | None = None,
+        task_id: str | None = None,
+        outcome: str | None = None,
+        before: int | None = None,
+        limit: int = 50,
+    ) -> tuple[list[dict], int | None]:
+        """Entries newest first, and the cursor of the next page when there is one."""
+        where, args = ["1"], []
+        for column, value in (
+            ("hotkey", miner),
+            ("task_id", task_id),
+            ("outcome", outcome),
+        ):
+            if value:
+                where.append(f"{column} = ?")
+                args.append(value)
+        if before is not None:
+            where.append("id < ?")
+            args.append(before)
+        rows = self.db.execute(
+            "SELECT id, round_id, hotkey, served_at, outcome, task_id, refusal, cause"
+            f" FROM entries WHERE {' AND '.join(where)} ORDER BY id DESC LIMIT ?",
+            (*args, limit),
+        ).fetchall()
+        events = [
+            {
+                "id": id_,
+                "round_id": round_id,
+                "hotkey": hotkey,
+                "at": served_at,
+                "outcome": outcome,
+                "task_id": task_id,
+                "refusal": json.loads(refusal) if refusal else None,
+                "cause": cause,
+            }
+            for id_, round_id, hotkey, served_at, outcome, task_id, refusal, cause in rows
+        ]
+        return events, rows[-1][0] if len(rows) == limit else None
 
     def anchor(self, round_id: str) -> str:
         root = proofs.merkle_root([proofs.log_leaf(e) for e in self.entries(round_id)])

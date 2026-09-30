@@ -13,6 +13,7 @@ from pathlib import Path
 from . import proofs, queues, rounds
 from .budget import Budgets
 from .embeddings import Embeddings
+from .logs import Logs
 from .registry import admins_from_env, receipt_key_from_env, registry_from_env
 from .roundlog import RoundLog, receipt_body
 from .roundstore import RoundStore
@@ -111,6 +112,7 @@ class State:
         self.rounds = RoundStore(db)
         self.validations = Validations(db)
         self.embeddings = Embeddings(db)
+        self.logs = Logs(connect(str(data / DB_FILE)))
         self.storage = Storage()
         self.pages = Storage(
             bucket=os.environ.get("CF_R2_PAGES_BUCKET", PAGES_BUCKET),

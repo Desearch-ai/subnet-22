@@ -15,7 +15,7 @@ from desearch.manifest import payload as manifest_payload
 from . import queues, rounds
 from .budget import COVERAGE_GATE, CRAWL, EMBED, HOUR, STRIKE_REASONS, STRIKE_WINDOW_H
 from .embeddings import DONE, DROPPED
-from .validations import Decision, build_report, decide, utc_day
+from .validations import NO_MAJORITY, Decision, build_report, decide, utc_day
 
 EMBED_FIELDS = ("model", "texts", "chars", "input_key", "input_sha256", "pages")
 EMBED_ROUND_INPUTS = 200
@@ -274,13 +274,16 @@ async def write_report(core, report: dict) -> None:
         report["report_key"] = ""
 
 
-async def void_task(core, task_id: str, job: dict, validator: str, reason: str) -> dict:
-    await requeue(core, task_id, job, "void")
+async def void_task(
+    core, task_id: str, lapsed: queues.Finalized, validator: str, reason: str
+) -> dict:
+    await requeue(core, task_id, lapsed.job, "void")
     report = build_report(
-        task_id, job, validator, {"verdict": "void", "reason": reason}
+        task_id, lapsed.job, validator, {"verdict": "void", "reason": reason}
     )
     await write_report(core, report)
     await core.db(core.validations.record, report)
+    await core.db(core.validations.record_votes, report, lapsed.votes, decided=False)
     return report
 
 
@@ -325,7 +328,7 @@ async def finalize_task(core, task_id: str, job: dict, now: float) -> dict | Non
             return None
         lapsed = await core.validation.finalize(task_id)
         if lapsed is not None:
-            await void_task(core, task_id, lapsed.job, "", "no_quorum")
+            await void_task(core, task_id, lapsed, "", "no_quorum")
         return {"task_id": task_id, "verdict": "void", "credited": 0}
     votes = await core.validation.votes(task_id)
     try:
@@ -410,6 +413,12 @@ def finalize_accounts(
         if decision.agreed or decision.disagreed:
             core.validations.record_audit(decision.agreed, decision.disagreed)
         core.validations.record(report, result.get("urls"))
+        core.validations.record_votes(
+            report,
+            decision.votes,
+            decision.disagreed,
+            decided=result.get("reason") != NO_MAJORITY,
+        )
         if verdict == "fail" and result.get("reason") in STRIKE_REASONS:
             since = time.time() - STRIKE_WINDOW_H * HOUR
             judged = core.validations.judged_since(miner, since, kind)

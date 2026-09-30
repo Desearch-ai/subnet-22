@@ -13,7 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
-from . import lifecycle, queues
+from . import lifecycle, logs, queues
 from .auth import Authenticator, Caller
 from .budget import CRAWL, EMBED, SHARE_WINDOW_H, hour_of
 from .models import (
@@ -93,6 +93,14 @@ def create_app(redis=None) -> FastAPI:
                 )
         return await call_next(request)
 
+    @app.exception_handler(logs.Busy)
+    async def busy(_: Request, __: logs.Busy):
+        return JSONResponse(
+            {"detail": "the log reader is busy, retry"},
+            status_code=503,
+            headers={"Retry-After": "1"},
+        )
+
     # Browsers may only read: every write is signed by a hotkey.
     app.add_middleware(
         CORSMiddleware,
@@ -105,6 +113,7 @@ def create_app(redis=None) -> FastAPI:
         ],
         allow_methods=["GET"],
         allow_headers=["*"],
+        expose_headers=["Retry-After"],
     )
 
     async def caller(request: Request) -> Caller:
@@ -196,7 +205,14 @@ def create_app(redis=None) -> FastAPI:
             raise HTTPException(503, "upload signing is unavailable") from None
         await core.redis.set(
             f"issued:{task_id}",
-            json.dumps({"hotkey": who.hotkey, "key": upload_key, "name": name}),
+            json.dumps(
+                {
+                    "hotkey": who.hotkey,
+                    "key": upload_key,
+                    "name": name,
+                    "at": time.time(),
+                }
+            ),
         )
 
         round_id = got.payload.get("round_id", round_id)
@@ -291,6 +307,7 @@ def create_app(redis=None) -> FastAPI:
             "attempts": payload.get("attempts", 0),
             "size": size,
             "reported": report.model_dump(exclude={"key"}),
+            "claimed_at": issued.get("at"),
             "completed_at": completed_at,
             "frozen_block": frozen_block,
             "seed_block": frozen_block + REVEAL_AFTER_BLOCKS,
@@ -369,9 +386,7 @@ def create_app(redis=None) -> FastAPI:
         lapsed = await core.validation.finalize(task_id)
         if lapsed is None:
             raise HTTPException(409, "the upload was finalized")
-        await lifecycle.void_task(
-            core, task_id, lapsed.job, who.hotkey, "upload_missing"
-        )
+        await lifecycle.void_task(core, task_id, lapsed, who.hotkey, "upload_missing")
         return {"task_id": task_id, "status": "void"}
 
     @app.post("/v1/validation/{task_id}/score")
@@ -410,6 +425,7 @@ def create_app(redis=None) -> FastAPI:
             vote = builder(job, who.hotkey, checked.model_dump())
         except Infeasible as why:
             raise HTTPException(422, str(why)) from None
+        vote["at"] = time.time()
         if not await core.validation.vote(task_id, who.hotkey, vote):
             raise HTTPException(409, "this validator already voted on this upload")
 
@@ -468,83 +484,6 @@ def create_app(redis=None) -> FastAPI:
             "anchor_root": await core.db(core.log.anchored_root, round_id),
         }
 
-    @app.get("/v1/tasks")
-    async def tasks_view(
-        miner: str | None = None,
-        validator: str | None = None,
-        since: float = 0.0,
-        before: float | None = None,
-        limit: int = Query(TASKS_PAGE, ge=1, le=MAX_TASKS_PAGE),
-    ):
-        """Scored tasks, newest first; pass `next` back as `before` for the next page."""
-        visible = time.time() - core.ledger_delay
-        before = visible if before is None else min(before, visible)
-        tasks = await core.db(
-            core.validations.recent, miner, validator, since, before, limit
-        )
-        full = len(tasks) == limit
-        return {"tasks": tasks, "next": tasks[-1]["scored_at"] if full else None}
-
-    @app.get("/v1/tasks/{task_id}")
-    async def task_view(task_id: str):
-        view = await task_state(task_id)
-        return {**view, "urls": await core.db(core.validations.urls, task_id)}
-
-    async def task_state(task_id: str) -> dict:
-        scored = await core.db(core.validations.latest, task_id)
-        if scored and scored["scored_at"] > time.time() - core.ledger_delay:
-            scored = None
-        job = await core.validation.job(task_id)
-        if job:
-            status = "voting" if await core.validation.voters(task_id) else "open"
-            return {
-                "task_id": task_id,
-                "status": status,
-                "round_id": job["round_id"],
-                "miner": job["miner"],
-                "score": scored,
-            }
-
-        payload = await core.payload(task_id)
-        if payload is not None:
-            holder = await core.claim_holder(task_id)
-            return {
-                "task_id": task_id,
-                "status": "claimed" if holder else "queued",
-                "round_id": payload.get("round_id"),
-                "miner": holder,
-                "score": scored,
-            }
-
-        if scored is None:
-            raise HTTPException(404, "no such task")
-        return {
-            "task_id": task_id,
-            "status": scored["verdict"],
-            "round_id": scored["round_id"],
-            "miner": scored["miner"],
-            "score": scored,
-        }
-
-    @app.get("/v1/miners/{hotkey}")
-    async def miner_view(hotkey: str):
-        pools = {}
-        for kind, tasks in core.tasks.items():
-            miner = await core.db(core.budgets.get, hotkey, kind)
-            pools[kind] = {
-                "budget": miner.budget,
-                "verified": miner.verified,
-                "in_flight": await tasks.in_flight(hotkey),
-                "locked_until": await core.db(core.budgets.locked_until, hotkey, kind),
-            }
-        return {
-            "hotkey": hotkey,
-            "pools": pools,
-            "coverage": (await core.db(core.budgets.coverage_report)).get(hotkey, {}),
-            "verdicts": await core.db(core.validations.verdicts, hotkey),
-            "transitions": await core.db(core.budgets.history, hotkey),
-        }
-
     @app.get("/v1/miners/{hotkey}/verdicts")
     async def own_verdicts(
         hotkey: str,
@@ -557,6 +496,8 @@ def create_app(redis=None) -> FastAPI:
             raise HTTPException(403, "only the miner itself may read this")
         tasks = await core.db(core.validations.recent, hotkey, None, since, None, limit)
         return {"tasks": tasks}
+
+    app.include_router(logs.router(core))
 
     @app.get("/v1/ping")
     async def ping():

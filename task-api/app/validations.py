@@ -38,8 +38,38 @@ FIELDS = (
     "upload_key",
     "page_key",
     "report_key",
+    "claimed_at",
+    "completed_at",
     "scored_at",
 )
+VOTE_COUNTS = (
+    "returned",
+    "sampled",
+    "matched",
+    "mismatched",
+    "unverifiable",
+    "errors_confirmed",
+    "errors_unconfirmed",
+    "credited",
+)
+VOTE_FIELDS = (
+    "task_id",
+    "kind",
+    "miner",
+    "validator",
+    "verdict",
+    "reason",
+    *VOTE_COUNTS,
+    "final_verdict",
+    "final_credited",
+    "agreed",
+    "decided",
+    "voted_at",
+    "finalized_at",
+)
+VOTE_COLUMNS = (*VOTE_FIELDS[:4], "upload_key", *VOTE_FIELDS[4:])
+VERDICTS = ("pass", "fail", "void")
+NO_MAJORITY = "validators_disagree"
 MIN_AUDITS = 10
 URL_DETAIL_DAYS = 7
 MAX_DISAGREEMENT = 0.3
@@ -188,7 +218,7 @@ def decide(votes: list[dict], audit: bool = False, overdue: bool = False) -> Dec
         standing["result"] = {
             **standing["result"],
             "verdict": "void",
-            "reason": "validators_disagree",
+            "reason": NO_MAJORITY,
         }
         return Decision("final", standing, votes)
 
@@ -230,6 +260,9 @@ class Validations:
     def __init__(self, db: sqlite3.Connection):
         self.db = db
         counts = "".join(f"{name} INTEGER NOT NULL DEFAULT 0, " for name in COUNTS)
+        vote_counts = "".join(
+            f"{name} INTEGER NOT NULL DEFAULT 0, " for name in VOTE_COUNTS
+        )
         self.db.executescript(
             f"""
             CREATE TABLE IF NOT EXISTS validations (
@@ -245,6 +278,8 @@ class Validations:
                 upload_key TEXT NOT NULL,
                 page_key   TEXT,
                 report_key TEXT NOT NULL,
+                claimed_at REAL,
+                completed_at REAL,
                 scored_at  REAL NOT NULL,
                 report     TEXT NOT NULL,
                 urls       TEXT
@@ -274,6 +309,27 @@ class Validations:
                 finalized_at REAL NOT NULL,
                 PRIMARY KEY (task_id, upload_key)
             );
+            CREATE TABLE IF NOT EXISTS votes (
+                id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id        TEXT NOT NULL,
+                kind           TEXT NOT NULL,
+                miner          TEXT NOT NULL,
+                validator      TEXT NOT NULL,
+                upload_key     TEXT NOT NULL,
+                verdict        TEXT NOT NULL,
+                reason         TEXT NOT NULL,
+                {vote_counts}
+                final_verdict  TEXT NOT NULL,
+                final_credited INTEGER NOT NULL,
+                agreed         INTEGER,
+                decided        INTEGER NOT NULL,
+                voted_at       REAL NOT NULL,
+                finalized_at   REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS votes_task ON votes (task_id, id);
+            CREATE INDEX IF NOT EXISTS votes_validator ON votes (validator, id);
+            CREATE INDEX IF NOT EXISTS votes_miner ON votes (miner, id);
+            CREATE INDEX IF NOT EXISTS votes_finalized ON votes (finalized_at);
             """
         )
         if not self.db.execute("SELECT 1 FROM verdict_counts LIMIT 1").fetchone():
@@ -342,6 +398,153 @@ class Validations:
         )
         self.db.commit()
 
+    def record_votes(
+        self,
+        report: dict,
+        votes: list[dict],
+        disagreed: tuple[str, ...] | list[str] = (),
+        decided: bool = True,
+    ) -> None:
+        """Every validator's vote on one upload; `decided` is false when no vote carried it."""
+        for vote in votes:
+            result, validator = vote["result"], vote["validator"]
+            self.db.execute(
+                f"INSERT INTO votes ({', '.join(VOTE_COLUMNS)})"
+                f" VALUES ({', '.join('?' * len(VOTE_COLUMNS))})",
+                (
+                    report["task_id"],
+                    report["kind"],
+                    report["miner"],
+                    validator,
+                    report["upload_key"],
+                    vote["verdict"],
+                    result.get("reason", ""),
+                    *(result.get(name, 0) for name in VOTE_COUNTS),
+                    report["verdict"],
+                    report["credited"],
+                    validator not in disagreed if decided else None,
+                    decided and validator == report["validator"],
+                    vote.get("at", report["scored_at"]),
+                    report["scored_at"],
+                ),
+            )
+        self.db.commit()
+
+    def votes(
+        self,
+        validator: str | None = None,
+        miner: str | None = None,
+        task_id: str | None = None,
+        verdict: str | None = None,
+        agreed: bool | None = None,
+        until: float | None = None,
+        before: int | None = None,
+        limit: int = 50,
+    ) -> tuple[list[dict], int | None]:
+        """Votes newest first, and the cursor of the next page when there is one."""
+        where, args = ["1"], []
+        for column, value in (
+            ("validator", validator),
+            ("miner", miner),
+            ("task_id", task_id),
+            ("verdict", verdict),
+            ("agreed", agreed),
+        ):
+            if value is not None:
+                where.append(f"{column} = ?")
+                args.append(value)
+        if until is not None:
+            where.append("finalized_at <= ?")
+            args.append(until)
+        if before is not None:
+            where.append("id < ?")
+            args.append(before)
+        rows = self.db.execute(
+            f"SELECT id, {', '.join(VOTE_FIELDS)} FROM votes"
+            f" WHERE {' AND '.join(where)} ORDER BY id DESC LIMIT ?",
+            (*args, limit),
+        ).fetchall()
+        return (
+            [as_vote(row[1:]) for row in rows],
+            rows[-1][0] if len(rows) == limit else None,
+        )
+
+    def votes_on(self, task_id: str, upload_key: str) -> list[dict]:
+        rows = self.db.execute(
+            f"SELECT {', '.join(VOTE_FIELDS)} FROM votes"
+            " WHERE task_id = ? AND upload_key = ? ORDER BY id",
+            (task_id, upload_key),
+        ).fetchall()
+        return [as_vote(row) for row in rows]
+
+    def validator_totals(self, since: float, until: float) -> dict[str, dict]:
+        rows = self.db.execute(
+            f"SELECT validator, COUNT(*), {VERDICT_SUMS}, SUM(agreed = 1), SUM(agreed = 0),"
+            " SUM(decided), MAX(voted_at) FROM votes"
+            " WHERE finalized_at >= ? AND finalized_at <= ? GROUP BY validator",
+            (since, until),
+        ).fetchall()
+        return {
+            validator: {
+                "votes": votes,
+                "pass": passed,
+                "fail": failed,
+                "void": void,
+                "agreed": agreed or 0,
+                "disagreed": disagreed or 0,
+                "decided": decided,
+                "last_vote_at": last,
+            }
+            for validator, votes, passed, failed, void, agreed, disagreed, decided, last in rows
+        }
+
+    def miner_totals(self, since: float, until: float) -> dict[str, dict]:
+        rows = self.db.execute(
+            f"SELECT miner, COUNT(*), {VERDICT_SUMS}, SUM(returned), SUM(missing),"
+            " SUM(credited), MAX(scored_at) FROM validations"
+            " WHERE scored_at >= ? AND scored_at <= ? GROUP BY miner",
+            (since, until),
+        ).fetchall()
+        return {
+            miner: {
+                "tasks": tasks,
+                "pass": passed,
+                "fail": failed,
+                "void": void,
+                "returned": returned,
+                "missing": missing,
+                "credited": credited,
+                "last_scored_at": last,
+            }
+            for miner, tasks, passed, failed, void, returned, missing, credited, last in rows
+        }
+
+    def task_series(
+        self, bucket_s: int, since: float, until: float, miner: str | None = None
+    ) -> dict[int, dict]:
+        rows = self.db.execute(
+            f"SELECT CAST(scored_at / ? AS INTEGER), COUNT(*), {VERDICT_SUMS},"
+            " SUM(returned), SUM(credited) FROM validations"
+            " WHERE scored_at >= ? AND scored_at <= ?"
+            + (" AND miner = ?" if miner else "")
+            + " GROUP BY 1",
+            (bucket_s, since, until, *([miner] if miner else [])),
+        ).fetchall()
+        names = ("tasks", *VERDICTS, "returned", "credited")
+        return {row[0]: dict(zip(names, row[1:], strict=True)) for row in rows}
+
+    def vote_series(
+        self, bucket_s: int, since: float, until: float, validator: str
+    ) -> dict[int, dict]:
+        rows = self.db.execute(
+            f"SELECT CAST(finalized_at / ? AS INTEGER), COUNT(*), {VERDICT_SUMS},"
+            " COALESCE(SUM(agreed = 1), 0), COALESCE(SUM(agreed = 0), 0) FROM votes"
+            " WHERE finalized_at >= ? AND finalized_at <= ? AND validator = ? GROUP BY 1",
+            (bucket_s, since, until, validator),
+        ).fetchall()
+        names = ("votes", *VERDICTS, "agreed", "disagreed")
+        return {row[0]: dict(zip(names, row[1:], strict=True)) for row in rows}
+
     def latest(self, task_id: str) -> dict | None:
         row = self.db.execute(
             f"SELECT {', '.join(FIELDS)} FROM validations"
@@ -349,6 +552,15 @@ class Validations:
             (task_id,),
         ).fetchone()
         return dict(zip(FIELDS, row, strict=True)) if row else None
+
+    def uploads(self, task_id: str) -> list[dict]:
+        """Every finalized upload of a task, newest first."""
+        rows = self.db.execute(
+            f"SELECT {', '.join(FIELDS)} FROM validations"
+            " WHERE task_id = ? ORDER BY id DESC",
+            (task_id,),
+        ).fetchall()
+        return [dict(zip(FIELDS, row, strict=True)) for row in rows]
 
     def urls(self, task_id: str) -> list[dict]:
         row = self.db.execute(
@@ -371,12 +583,19 @@ class Validations:
         since: float = 0.0,
         before: float | None = None,
         limit: int = 50,
+        verdict: str | None = None,
+        kind: str | None = None,
     ) -> list[dict]:
         where, args = ["scored_at >= ?"], [since]
         if before is not None:
             where.append("scored_at < ?")
             args.append(before)
-        for column, value in (("miner", miner), ("validator", validator)):
+        for column, value in (
+            ("miner", miner),
+            ("validator", validator),
+            ("verdict", verdict),
+            ("kind", kind),
+        ):
             if value:
                 where.append(f"{column} = ?")
                 args.append(value)
@@ -441,6 +660,16 @@ class Validations:
         return row[0] if row else 0
 
 
+VERDICT_SUMS = ", ".join(f"SUM(verdict = '{verdict}')" for verdict in VERDICTS)
+
+
+def as_vote(row: tuple) -> dict:
+    vote = dict(zip(VOTE_FIELDS, row, strict=True))
+    vote["agreed"] = None if vote["agreed"] is None else bool(vote["agreed"])
+    vote["decided"] = bool(vote["decided"])
+    return vote
+
+
 def utc_day(at: float | None = None) -> str:
     return datetime.fromtimestamp(at or time.time(), timezone.utc).strftime("%Y-%m-%d")
 
@@ -464,6 +693,8 @@ def build_report(
         "upload_etag": job.get("etag", ""),
         "upload_bytes": job.get("size", 0),
         "page_key": None,
+        "claimed_at": job.get("claimed_at"),
+        "completed_at": job.get("completed_at"),
         "report_key": f"reports/dt={utc_day()}/task={task_id}.json",
         "scored_at": time.time(),
     }
