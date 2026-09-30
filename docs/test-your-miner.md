@@ -83,6 +83,25 @@ summary: 2 tasks waiting, 1 uploads being checked
 
 How the paid rows follow from the checked pages is explained in [Emission](./emission.md).
 
+## 4. See it in the browser
+
+The same results are available as a web page. It needs [Node.js](https://nodejs.org/) 22 or newer.
+In a third terminal:
+
+```bash
+cd ui
+npm install
+npm run dev
+```
+
+Open <http://localhost:5173>. It reads the sandbox's task API and shows the tasks waiting and in
+progress, every finalized task with how long your miner took to crawl it, the validator's vote, and
+for each checked page what your miner uploaded next to what the validator fetched. Your miner's
+page shows its budget, coverage and the rows that counted.
+
+If you started the sandbox with another `--port`, set `VITE_TASK_API_URL` to that address in
+`ui/.env.local`.
+
 ## Options
 
 | Option | Default | |
