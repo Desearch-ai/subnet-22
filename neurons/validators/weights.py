@@ -1,42 +1,55 @@
 import asyncio
 import logging
+import math
 
 import bittensor as bt
 import numpy as np
 
+from desearch.kinds import CRAWL, EMBED
+
 EMISSION_CONTROL_HOTKEY = "5CUu1QhvrfyMDBELUPJLt4c7uJFbi7TKqDHkS1Zz41oD4dyP"
-# Each task family's part of the emission; the rest goes to the burn hotkey.
-# Embedding pays nothing until Desearch's own model ships and embed tasks open.
-POOLS = {"crawl": 0.5, "embed": 0.0}
+EMISSION_CONTROL_PERC = 0.8
+CRAWL_PERC = 1.0
+EMBED_PERC = 0.0
+assert math.isclose(CRAWL_PERC + EMBED_PERC, 1.0)
 SET_WEIGHTS_ATTEMPTS = 9
 SET_WEIGHTS_RETRY_S = 45
 VERSION_KEY = 2**64 - 9
+U16_MAX = 65535
 
 log = logging.getLogger("validator")
 
 
 def weights_from_shares(
-    hotkeys: list[str], pools: dict[str, dict[str, float]]
+    hotkeys: list[str], shares: dict[str, dict[str, float]]
 ) -> np.ndarray:
+    """Each pool's part split by its miners' shares; a pool nobody earned is burned too."""
     weights = np.zeros(len(hotkeys), dtype=np.float32)
     uid_of = {hotkey: uid for uid, hotkey in enumerate(hotkeys)}
-    unpaid = 1.0
-    for pool, part in POOLS.items():
-        paid = {
-            uid_of[hotkey]: share
-            for hotkey, share in pools.get(pool, {}).items()
-            if hotkey in uid_of and hotkey != EMISSION_CONTROL_HOTKEY and share > 0
-        }
-        total = sum(paid.values())
-        if not total:
-            continue
-        for uid, share in paid.items():
-            weights[uid] += part * share / total
-        unpaid -= part
+    for_miners = 1.0 - EMISSION_CONTROL_PERC
+    paid = pay_pool(weights, uid_of, shares.get(CRAWL, {}), for_miners * CRAWL_PERC)
+    paid += pay_pool(weights, uid_of, shares.get(EMBED, {}), for_miners * EMBED_PERC)
     burn = uid_of.get(EMISSION_CONTROL_HOTKEY)
     if burn is not None:
-        weights[burn] += unpaid
+        weights[burn] += 1.0 - paid
     return weights
+
+
+def pay_pool(
+    weights: np.ndarray, uid_of: dict[str, int], shares: dict[str, float], perc: float
+) -> float:
+    """Adds one pool's part of the emission to its miners' weights and returns what it paid."""
+    earned = {
+        uid_of[hotkey]: share
+        for hotkey, share in shares.items()
+        if hotkey in uid_of and hotkey != EMISSION_CONTROL_HOTKEY and share > 0
+    }
+    total = sum(earned.values())
+    if not total or not perc:
+        return 0.0
+    for uid, share in earned.items():
+        weights[uid] += perc * share / total
+    return perc
 
 
 def process_weights(
@@ -50,8 +63,9 @@ def process_weights(
         )
     values = np.array([float(weights[uid]) for uid in uids], dtype=np.float64)
     values /= values.sum()
-    if max_limit < 1.0:
-        values = np.minimum(values, max_limit)
+    limit = max_limit / U16_MAX if max_limit > 1.0 else max_limit
+    if limit < 1.0:
+        values = np.minimum(values, limit)
         values /= values.sum()
     return uids, values.tolist()
 

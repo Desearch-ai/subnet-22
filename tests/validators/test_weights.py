@@ -8,17 +8,21 @@ from aiohttp import web
 
 from neurons.validators.ledger import Ledger
 from neurons.validators.validator import Validator
+from desearch.kinds import CRAWL as CRAWL_KIND
+from desearch.kinds import EMBED as EMBED_KIND
 from neurons.validators.weights import (
     EMISSION_CONTROL_HOTKEY,
     process_weights,
-    POOLS,
+    CRAWL_PERC,
+    EMBED_PERC,
+    EMISSION_CONTROL_PERC,
     set_weights,
     weights_from_shares,
 )
 from tests.local_http import serving
 
 BURN = EMISSION_CONTROL_HOTKEY
-CRAWL = POOLS["crawl"]
+CRAWL = (1 - EMISSION_CONTROL_PERC) * CRAWL_PERC
 
 
 def test_the_crawl_pool_is_split_by_share_and_the_rest_is_burned():
@@ -59,19 +63,29 @@ def test_a_pool_nobody_earned_goes_to_the_burn_hotkey():
     assert list(unknown_pool) == pytest.approx([0.0, 1.0])
 
 
-def test_crawl_pays_half_and_embedding_nothing_until_it_opens():
+def test_the_burn_takes_its_part_and_crawling_all_of_the_rest():
+    assert (EMISSION_CONTROL_PERC, CRAWL_PERC, EMBED_PERC) == (0.8, 1.0, 0.0)
+
     weights = weights_from_shares(
         ["crawler", "embedder", BURN],
-        {"crawl": {"crawler": 1.0}, "embed": {"embedder": 1.0}},
+        {CRAWL_KIND: {"crawler": 1.0}, EMBED_KIND: {"embedder": 1.0}},
     )
 
-    assert list(weights) == pytest.approx([0.5, 0.0, 0.5])
+    assert list(weights) == pytest.approx([0.2, 0.0, 0.8])
+
+
+def test_changing_the_burn_alone_moves_the_miners_part(monkeypatch):
+    monkeypatch.setattr("neurons.validators.weights.EMISSION_CONTROL_PERC", 0.5)
+
+    weights = weights_from_shares(["crawler", BURN], {CRAWL_KIND: {"crawler": 1.0}})
+
+    assert list(weights) == pytest.approx([0.5, 0.5])
 
 
 def test_every_pool_pays_its_part(monkeypatch):
-    monkeypatch.setattr(
-        "neurons.validators.weights.POOLS", {"crawl": 0.3, "embed": 0.2}
-    )
+    monkeypatch.setattr("neurons.validators.weights.EMISSION_CONTROL_PERC", 0.5)
+    monkeypatch.setattr("neurons.validators.weights.CRAWL_PERC", 0.6)
+    monkeypatch.setattr("neurons.validators.weights.EMBED_PERC", 0.4)
 
     weights = weights_from_shares(
         ["crawler", "embedder", "both", BURN],
@@ -255,3 +269,30 @@ def test_the_window_report_lists_what_each_miner_did_inside_the_scoring_window()
             "credited": 40,
         },
     ]
+
+
+def test_the_chains_u16_weight_limit_is_read_as_a_fraction():
+    weights = np.array([0.8, 0.2])
+    assert process_weights(weights, 1, 65535)[1] == pytest.approx([0.8, 0.2])
+    assert process_weights(weights, 1, 32768)[1] == pytest.approx(
+        [0.5 / 0.7, 0.2 / 0.7], abs=1e-4
+    )
+
+
+def test_flags_from_older_launch_commands_are_ignored(tmp_path, capsys):
+    from neurons.validators.config import config
+
+    made = config(
+        [
+            "--wallet.name",
+            "validator",
+            "--netuid",
+            "22",
+            "--axon.port",
+            "8091",
+            "--logging.logging_dir",
+            str(tmp_path),
+        ]
+    )
+    assert (made.wallet.name, made.netuid) == ("validator", 22)
+    assert "--axon.port 8091" in capsys.readouterr().err

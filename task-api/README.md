@@ -97,7 +97,8 @@ abandoned task. Two failures within 24 hours, if they are at least 5% of the min
 lock it out for 12 hours. Problems on the validator's side never count against a miner.
 
 `GET /v1/shares` returns each miner's share of the paid work over the last 24 hours, per pool.
-How much of the emission each pool gets is set in the validator (`POOLS` in
+How much of the emission is burned and how the rest is split between the pools is set in the
+validator (`EMISSION_CONTROL_PERC`, `CRAWL_PERC` and `EMBED_PERC` in
 [`neurons/validators/weights.py`](../neurons/validators/weights.py)). See
 [Emission](../docs/emission.md).
 

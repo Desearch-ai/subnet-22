@@ -1,6 +1,7 @@
 import argparse
 import logging
 import os
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -88,7 +89,10 @@ def flat(config: SimpleNamespace, prefix: str = "") -> dict:
 
 
 def config(argv: list[str] | None = None) -> SimpleNamespace:
-    made = nested(vars(build_parser().parse_args(argv)))
+    known, unknown = build_parser().parse_known_args(argv)
+    if unknown:
+        print(f"Ignoring unknown arguments: {' '.join(unknown)}", file=sys.stderr)
+    made = nested(vars(known))
     made.neuron.full_path = os.path.expanduser(
         f"{made.logging.logging_dir}/{made.wallet.name}/{made.wallet.hotkey}"
         f"/netuid{made.netuid}/validator"
