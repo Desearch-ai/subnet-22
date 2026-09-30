@@ -7,6 +7,7 @@ from collections.abc import Awaitable, Callable
 
 import aiohttp
 
+from desearch.kinds import CRAWL
 from neurons.validators.scoring import (
     MATCH_RATIO,
     MIN_SAMPLES,
@@ -30,7 +31,7 @@ log = logging.getLogger("validator")
 
 
 class CrawlValidator(TaskChecker):
-    kinds = ("crawl",)
+    kinds = (CRAWL,)
 
     def __init__(
         self,

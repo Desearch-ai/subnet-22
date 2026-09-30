@@ -13,6 +13,7 @@ from desearch.embedding import (
     decode_vector,
     read_parquet,
 )
+from desearch.kinds import EMBED
 from neurons.validators.tasks import DownloadFailed, TaskChecker, UploadMissing
 
 log = logging.getLogger("validator")
@@ -101,7 +102,7 @@ def compare(
 class EmbedValidator(TaskChecker):
     """Recomputes a sample of each embed task's vectors with a reference model."""
 
-    kinds = ("embed",)
+    kinds = (EMBED,)
 
     def __init__(
         self,

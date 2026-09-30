@@ -10,6 +10,7 @@ from yarl import URL
 
 from desearch.client import TaskApiError
 from desearch.credit import crawl_credit, embed_credit
+from desearch.kinds import CRAWL, EMBED
 from desearch.manifest import OPEN_LIST_KEY
 from desearch.manifest import verify as verify_manifest
 
@@ -156,7 +157,7 @@ class TaskChecker:
             return None
         for manifest in uploads:
             task_id = manifest.get("task_id", "")
-            if manifest.get("kind", "crawl") not in self.kinds or not task_id:
+            if manifest.get("kind", CRAWL) not in self.kinds or not task_id:
                 continue
             if (
                 task_id in self.in_flight
@@ -201,8 +202,8 @@ class TaskChecker:
         """What this validator itself decided, kept for its own weights."""
         if self.ledger is None:
             return
-        kind = job.get("kind", "crawl")
-        if kind == "embed":
+        kind = job.get("kind", CRAWL)
+        if kind == EMBED:
             credited, assigned = embed_credit(job, result), job.get("texts", 0)
         else:
             credited, assigned = crawl_credit(result), len(set(job["urls"]))

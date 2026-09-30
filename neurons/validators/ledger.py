@@ -7,6 +7,7 @@ import time
 from pathlib import Path
 
 from desearch.credit import COVERAGE_GATE, SHARE_WINDOW_H
+from desearch.kinds import CRAWL
 
 
 class Ledger:
@@ -95,7 +96,7 @@ class Ledger:
         ):
             if credited <= 0:
                 continue
-            if kind == "crawl" and assigned and returned / assigned < COVERAGE_GATE:
+            if kind == CRAWL and assigned and returned / assigned < COVERAGE_GATE:
                 continue
             earned.setdefault(kind, {})[miner] = credited
         return {

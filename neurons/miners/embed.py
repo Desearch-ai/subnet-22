@@ -19,6 +19,7 @@ from desearch.embedding import (
     read_parquet,
     write_parquet,
 )
+from desearch.kinds import EMBED
 from neurons.miners.config import ENV_FILE, Settings
 from neurons.miners.miner import TaskWorker, with_retries
 
@@ -29,7 +30,7 @@ DOWNLOAD_ATTEMPTS = 3
 
 
 class EmbedMiner(TaskWorker):
-    kind = "embed"
+    kind = EMBED
 
     def __init__(self, settings: Settings, api=None, embedder=None):
         super().__init__(settings, api)

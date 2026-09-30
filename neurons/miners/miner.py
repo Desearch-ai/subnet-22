@@ -14,6 +14,7 @@ from yarl import URL
 from desearch import env
 from desearch.client import TaskApiClient, TaskApiError
 from desearch.fetch import Fetched, Fetcher, ScrapingDog, needs_fallback
+from desearch.kinds import CRAWL
 from neurons.miners.config import ENV_FILE, Settings
 from neurons.miners.rows import UploadWriter, build_row, error_row
 
@@ -190,7 +191,7 @@ class Throughput:
 
 
 class Miner(TaskWorker):
-    kind = "crawl"
+    kind = CRAWL
 
     def __init__(
         self,
