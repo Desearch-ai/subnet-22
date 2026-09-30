@@ -1,4 +1,5 @@
 from app import logs
+from app.registry import ChainRegistry, Entry
 
 from tests.test_trust import VALIDATOR, judged, run, three_active
 
@@ -143,3 +144,33 @@ def test_a_finalized_task_says_when_it_was_claimed_and_uploaded(api_env, memory)
     task = run(memory, scenario)
 
     assert task["claimed_at"] <= task["completed_at"] <= task["scored_at"]
+
+
+def test_hotkeys_come_with_their_uids(api_env, memory):
+    async def scenario(h):
+        task = await h.mine()
+        await judged(h, h.validator)
+        local = (await read(h, "/v1/tasks"))["tasks"][0]
+        h.core.registry = ChainRegistry(22, "finney")
+        h.core.registry._entries = {
+            h.miner.hotkey: Entry(h.miner.hotkey, 7, False, "ck"),
+            VALIDATOR: Entry(VALIDATOR, 2, True, "cv"),
+        }
+        return (
+            local,
+            (await read(h, "/v1/tasks"))["tasks"][0],
+            await h.view(task["task_id"]),
+            await read(h, f"/v1/miners/{h.miner.hotkey}"),
+            await read(h, f"/v1/validators/{VALIDATOR}"),
+            (await read(h, "/v1/votes"))["votes"][0],
+        )
+
+    local, listed, view, miner, validator, vote = run(memory, scenario)
+
+    assert (local["miner_uid"], local["validator_uid"]) == (None, None)
+    assert (listed["miner_uid"], listed["validator_uid"]) == (7, 2)
+    assert (view["miner_uid"], view["score"]["validator_uid"]) == (7, 2)
+    assert view["votes"][0]["validator_uid"] == 2
+    assert (miner["uid"], miner["coldkey"]) == (7, "ck")
+    assert (validator["uid"], validator["coldkey"]) == (2, "cv")
+    assert (vote["miner_uid"], vote["validator_uid"]) == (7, 2)

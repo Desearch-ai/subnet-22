@@ -182,6 +182,9 @@ Anyone can read these; the [UI](../ui/README.md) is built on them.
 | `GET /v1/rounds/{id}/log` | a round's signed log |
 | `GET /v1/key` | the key that signs the log and the notes next to uploads |
 
+Every miner and validator is named by hotkey, with its uid beside it (`miner_uid`, `validator_uid`,
+`uid`); the uid is null for a hotkey that is not on the metagraph.
+
 Lists return a page at a time (`limit`, at most 100) with a `next` value to pass back as `before`.
 
 Reads are limited per IP; over the limit the API answers `429` with `Retry-After`. Log reads use a

@@ -18,6 +18,7 @@ class Entry:
     hotkey: str
     uid: int | None
     is_validator: bool
+    coldkey: str | None = None
 
 
 class LocalRegistry:
@@ -42,6 +43,9 @@ class LocalRegistry:
 
     async def lookup(self, hotkey: str) -> Entry | None:
         return Entry(hotkey, None, hotkey in self.validators)
+
+    def registered(self, hotkey: str | None) -> Entry | None:
+        return None
 
 
 class ChainRegistry:
@@ -73,6 +77,10 @@ class ChainRegistry:
             await self._loaded.wait()
         return self._entries.get(hotkey)
 
+    def registered(self, hotkey: str | None) -> Entry | None:
+        """The hotkey's metagraph entry as last loaded, without waiting on the chain."""
+        return self._entries.get(hotkey)
+
     async def _refresh_forever(self) -> None:
         while True:
             try:
@@ -100,6 +108,7 @@ class ChainRegistry:
                 int(neuron.uid),
                 bool(neuron.validator_permit)
                 and float(neuron.total_stake.alpha) >= self.stake_threshold,
+                neuron.coldkey,
             )
             for neuron in metagraph.neurons
         }

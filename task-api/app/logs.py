@@ -158,6 +158,28 @@ def validator_row(
     }
 
 
+def uid_of(registry, hotkey: str | None) -> int | None:
+    entry = registry.registered(hotkey)
+    return entry.uid if entry else None
+
+
+def with_uids(registry, row: dict) -> dict:
+    """The row with a uid beside each hotkey it names; null for one off the metagraph."""
+    return row | {
+        f"{name}_uid": uid_of(registry, row[name])
+        for name in ("miner", "validator")
+        if name in row
+    }
+
+
+def with_keys(registry, row: dict, hotkey: str) -> dict:
+    entry = registry.registered(hotkey)
+    return row | {
+        "uid": entry.uid if entry else None,
+        "coldkey": entry.coldkey if entry else None,
+    }
+
+
 async def in_progress(core) -> dict:
     claimed = await core.redis.zrange(queues.CLAIMS, 0, LIVE_ROWS - 1, withscores=True)
     claims = []
@@ -187,11 +209,17 @@ async def in_progress(core) -> dict:
                 "urls": len(job["urls"]),
                 "completed_at": job["completed_at"],
                 "deadline": job.get("deadline"),
-                "voters": sorted(voters),
+                "voters": [
+                    {"hotkey": voter, "uid": uid_of(core.registry, voter)}
+                    for voter in sorted(voters)
+                ],
                 "electorate": len(active | voters),
             }
         )
-    return {"claims": claims, "uploads": uploads}
+    return {
+        "claims": [with_uids(core.registry, claim) for claim in claims],
+        "uploads": [with_uids(core.registry, upload) for upload in uploads],
+    }
 
 
 def router(core) -> APIRouter:
@@ -205,15 +233,19 @@ def router(core) -> APIRouter:
         until = visible()
         rows = await logs.read(logs.miner_rows, until - hours * HOUR, until)
         for row in rows:
+            row["uid"] = uid_of(core.registry, row["hotkey"])
             row["in_flight"] = await core.tasks[CRAWL].in_flight(row["hotkey"])
         return rows
 
     async def validator_rows(hours: int) -> list[dict]:
         until = visible()
         last_seen = await core.validation.last_seen()
-        return await logs.read(
+        rows = await logs.read(
             logs.validator_rows, until - hours * HOUR, until, last_seen
         )
+        for row in rows:
+            row["uid"] = uid_of(core.registry, row["hotkey"])
+        return rows
 
     @api.get("/v1/overview")
     async def overview(hours: Hours = SHARE_WINDOW_H):
@@ -308,7 +340,7 @@ def router(core) -> APIRouter:
         shares = await logs.read(logs.budgets.shares, SHARE_WINDOW_H, until)
         verdicts = await logs.read(logs.validations.verdicts, hotkey)
         return {
-            "hotkey": hotkey,
+            **with_keys(core.registry, {"hotkey": hotkey}, hotkey),
             "known": bool(
                 sum(verdicts.values()) or await logs.read(logs.budgets.pools_of, hotkey)
             ),
@@ -333,8 +365,9 @@ def router(core) -> APIRouter:
         rows = await logs.cached(("validators", hours), lambda: validator_rows(hours))
         for row in rows:
             if row["hotkey"] == hotkey:
-                return {**row, "known": True}
-        return {**validator_row(hotkey, {}, {}, {}), "known": False}
+                return {**with_keys(core.registry, row, hotkey), "known": True}
+        unknown = validator_row(hotkey, {}, {}, {})
+        return {**with_keys(core.registry, unknown, hotkey), "known": False}
 
     @api.get("/v1/votes")
     async def votes(
@@ -357,7 +390,10 @@ def router(core) -> APIRouter:
             before,
             limit,
         )
-        return {"votes": found, "next": following}
+        return {
+            "votes": [with_uids(core.registry, vote) for vote in found],
+            "next": following,
+        }
 
     @api.get("/v1/events")
     async def events(
@@ -395,25 +431,29 @@ def router(core) -> APIRouter:
             kind,
         )
         full = len(found) == limit
-        return {"tasks": found, "next": found[-1]["scored_at"] if full else None}
+        return {
+            "tasks": [with_uids(core.registry, task) for task in found],
+            "next": found[-1]["scored_at"] if full else None,
+        }
 
     @api.get("/v1/tasks/{task_id}")
     async def task(task_id: PathId):
         uploads = [
-            upload
+            with_uids(core.registry, upload)
             for upload in await logs.read(logs.validations.uploads, task_id)
             if upload["scored_at"] <= visible()
         ]
         scored = uploads[0] if uploads else None
-        state = await task_state(core, task_id, scored)
+        state = with_uids(core.registry, await task_state(core, task_id, scored))
         if scored is None:
             return {**state, "uploads": [], "votes": [], "urls": []}
+        votes = await logs.read(
+            logs.validations.votes_on, task_id, scored["upload_key"]
+        )
         return {
             **state,
             "uploads": uploads,
-            "votes": await logs.read(
-                logs.validations.votes_on, task_id, scored["upload_key"]
-            ),
+            "votes": [with_uids(core.registry, vote) for vote in votes],
             "urls": await logs.read(logs.validations.urls, task_id),
         }
 
