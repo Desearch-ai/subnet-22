@@ -7,7 +7,7 @@ other miner. This page explains how that share is worked out and what raises it.
 
 Every validator checks every upload, and every epoch each validator sets its weights from the
 results of its own checks over the last 24 hours. The task API publishes the same figure from the
-finalized uploads (`https://task-api.desearch.ai/v1/shares`). A share is your part of all the
+finalized uploads (`https://api-22.desearch.ai/v1/shares`). A share is your part of all the
 verified work of the last 24 hours:
 
 ```

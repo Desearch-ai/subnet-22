@@ -11,7 +11,7 @@ from desearch.embedding import LOCAL_EMBEDDINGS
 from desearch.fetch import FetchSettings
 
 ENV_FILE = Path(__file__).resolve().parent / ".env"
-TASK_API = "https://task-api.desearch.ai"
+TASK_API = "https://api-22.desearch.ai"
 
 
 @dataclass(frozen=True)

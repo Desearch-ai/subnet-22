@@ -117,7 +117,7 @@ Embedding is built and switched off until Desearch's own embedding model ships; 
 - **Consequences.** Failed tasks shrink a miner's budget, and repeated failures lock it out of new
   tasks for 12 hours.
 - **Public results.** Every validator's report, with the rows it paid and what it found for each
-  URL, is public at `https://task-api.desearch.ai/v1/tasks`, so anyone can recompute the shares.
+  URL, is public at `https://api-22.desearch.ai/v1/tasks`, so anyone can recompute the shares.
 
 ## Storage
 

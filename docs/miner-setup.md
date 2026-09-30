@@ -44,7 +44,7 @@ The miner reads `neurons/miners/.env` on start; variables already set in the she
 | `WALLET_NAME` | `default` | wallet holding the registered hotkey |
 | `WALLET_HOTKEY` | `default` | hotkey the miner signs its requests with |
 | `WALLET_PATH` | `~/.bittensor/wallets` | |
-| `TASK_API_URL` | `https://task-api.desearch.ai` | the task API |
+| `TASK_API_URL` | `https://api-22.desearch.ai` | the task API |
 | `PROXY_URLS` | none | comma-separated `http://user:pass@host:port`, rotated per request |
 | `CRAWL_CONCURRENCY` | 32 | pages fetched at once |
 | `CRAWL_CONCURRENCY_PER_DOMAIN` | 8 | pages fetched at once from one domain, so a site does not block you |
@@ -92,8 +92,8 @@ sample matched. [Emission](./emission.md) explains the rules and what raises you
 
 ```bash
 pm2 logs desearch_miner
-curl -s https://task-api.desearch.ai/v1/miners/<hotkey>
-curl -s "https://task-api.desearch.ai/v1/tasks?miner=<hotkey>"
+curl -s https://api-22.desearch.ai/v1/miners/<hotkey>
+curl -s "https://api-22.desearch.ai/v1/tasks?miner=<hotkey>"
 ```
 
 The first shows your budget, tasks in flight, coverage and pass/fail counts; the second your checked

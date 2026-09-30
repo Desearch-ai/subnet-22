@@ -79,7 +79,7 @@ pm2 start run.sh --name desearch_autoupdate -- \
 | `--wallet.name`, `--wallet.hotkey` | the validator's wallet; it also signs the check results |
 | `--netuid` | `22` on mainnet, `41` on testnet |
 | `--subtensor.network` | `finney`, `test`, or a custom endpoint |
-| `--neuron.task_api_url` | the task API, `https://task-api.desearch.ai` by default |
+| `--neuron.task_api_url` | the task API, `https://api-22.desearch.ai` by default |
 | `--neuron.storage_url` | the public URL of the uploads bucket, `https://r2.desearch.ai` by default |
 | `--neuron.disable_set_weights` | check tasks without setting weights |
 | `--wandb.off` | do not log to Weights & Biases |
@@ -96,8 +96,8 @@ logs so, until the key is in `neurons/validators/.env` and the validator restart
 
 ```bash
 pm2 logs desearch_validator_process
-curl -s https://task-api.desearch.ai/v1/health
-curl -s "https://task-api.desearch.ai/v1/tasks?validator=<hotkey>"
+curl -s https://api-22.desearch.ai/v1/health
+curl -s "https://api-22.desearch.ai/v1/tasks?validator=<hotkey>"
 ```
 
 `/v1/health` lists the active validators and every validator's standing: how many finalized uploads

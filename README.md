@@ -84,7 +84,7 @@ sets weights from what its own checks found. [Validator setup →](./docs/valida
 
 Crawl rounds are committed to a future block before tasks go out, every step is logged and signed,
 an upload is paid and published only when a majority of validators agree, and every result is
-[public](https://task-api.desearch.ai/v1/tasks).
+[public](https://api-22.desearch.ai/v1/tasks).
 [Architecture →](./docs/architecture.md)
 
 ## Use Desearch

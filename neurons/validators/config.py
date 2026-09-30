@@ -40,7 +40,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--neuron.task_api_url",
         type=str,
         help="The task API: verdicts are reported to it and the coverage gate read from it.",
-        default="https://task-api.desearch.ai",
+        default="https://api-22.desearch.ai",
     )
     parser.add_argument(
         "--neuron.storage_url",
