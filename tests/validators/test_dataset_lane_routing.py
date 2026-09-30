@@ -33,26 +33,6 @@ WEB_ROWS = {
         }
         for i in range(5)
     ],
-    "squad": [
-        {
-            "id": f"s{i}",
-            "question": f"squad lane question {i}",
-            "start_date": None,
-            "end_date": None,
-            "lane": "squad",
-        }
-        for i in range(5)
-    ],
-    "nq": [
-        {
-            "id": f"q{i}",
-            "question": f"nq lane question {i}",
-            "start_date": None,
-            "end_date": None,
-            "lane": "nq",
-        }
-        for i in range(5)
-    ],
 }
 
 X_QUESTIONS = {r["question"] for r in X_ROWS}
@@ -139,7 +119,7 @@ def test_x_fallback_when_no_x_lane():
 
 
 def test_returns_none_when_pool_empty():
-    pool = FakePool(x_rows=[], web_rows={"news": [], "squad": [], "nq": []})
+    pool = FakePool(x_rows=[], web_rows={"news": []})
     gen = _make_gen(pool)
 
     assert gen._generate_dataset_queries([1, 2], {}) is None

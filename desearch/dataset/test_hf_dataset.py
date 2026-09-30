@@ -41,7 +41,6 @@ def _make_pool(tmp_path):
 
     pool = HFQuestionPool(cache_dir=str(cache))
     pool._sync_from_hf = lambda: [x_file, news_file]
-    pool._load_datasets = lambda: []
     return pool
 
 

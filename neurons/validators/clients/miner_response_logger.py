@@ -13,6 +13,9 @@ REWARD_COMPONENT_NAMES = {
     "x_search": ["twitter", "performance"],
 }
 _RESPONSE_PAYLOAD_EXCLUDED_KEYS = {"html_content", "html_text"}
+CHUNK_SIZE = 50
+
+_pending_log_tasks: set[asyncio.Task] = set()
 
 
 def to_jsonable(value: Any) -> Any:
@@ -287,16 +290,23 @@ async def submit_logs(owner, logs: list[dict[str, Any]]) -> None:
         bt.logging.warning("Utility API client is not configured; skipping logs save.")
         return
 
-    try:
-        bt.logging.debug(f"Saving miner response logs count={len(logs)}")
-        await utility_api.save_logs(logs)
-        bt.logging.debug(f"Saved miner response logs count={len(logs)}")
-    except Exception as exc:
-        bt.logging.error(f"Failed to save miner response logs count={len(logs)}: {exc}")
+    for start in range(0, len(logs), CHUNK_SIZE):
+        chunk = logs[start : start + CHUNK_SIZE]
+
+        try:
+            bt.logging.debug(f"Saving miner response logs count={len(chunk)}")
+            await utility_api.save_logs(chunk)
+            bt.logging.debug(f"Saved miner response logs count={len(chunk)}")
+        except Exception as exc:
+            bt.logging.error(
+                f"Failed to save miner response logs count={len(chunk)}: {exc}"
+            )
 
 
 def submit_logs_best_effort(owner, logs: list[dict[str, Any]]) -> None:
     if not logs:
         return
 
-    asyncio.create_task(submit_logs(owner, logs))
+    task = asyncio.create_task(submit_logs(owner, logs))
+    _pending_log_tasks.add(task)
+    task.add_done_callback(_pending_log_tasks.discard)

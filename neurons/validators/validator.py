@@ -30,9 +30,7 @@ from neurons.validators.clients.utility_api_client import UtilityAPIClient
 from neurons.validators.config import add_args, check_config, config
 from neurons.validators.proxy.uid_manager import UIDManager
 from neurons.validators.scoring import capacity, miner_db
-from neurons.validators.scoring.query_scheduler import QueryScheduler
 from neurons.validators.scoring.scoring_store import ScoringStore
-from neurons.validators.scoring.synthetic_query_generator import SyntheticQueryGenerator
 from neurons.validators.scoring.weights import init_wandb, set_weights
 from neurons.validators.scrapers.advanced_scraper_validator import (
     AdvancedScraperValidator,
@@ -312,7 +310,7 @@ class Neuron(AbstractNeuron):
             try:
                 await asyncio.sleep(10 * 60)  # 10 minutes
 
-                bt.logging.info("Syncing metagraph and available UIDs")
+                bt.logging.info("Syncing metagraph")
 
                 sync_start_time = time.time()
 
@@ -320,10 +318,9 @@ class Neuron(AbstractNeuron):
                 await self.check_registered()
 
                 await resync_metagraph(self)
-                await self.sync_available_uids()
 
                 bt.logging.info(
-                    f"Completed syncing metagraph and available UIDs: {time.time() - sync_start_time:.2f} seconds"
+                    f"Completed syncing metagraph: {time.time() - sync_start_time:.2f} seconds"
                 )
 
             except Exception as e:
@@ -383,8 +380,6 @@ class Neuron(AbstractNeuron):
             os.makedirs(os.path.dirname(env.MINER_DB_PATH), exist_ok=True)
             await miner_db.initialize(env.MINER_DB_PATH)
 
-            await self.sync_available_uids()  # Initial sync
-
             self.loop = asyncio.get_event_loop()
 
             init_wandb(self)
@@ -396,33 +391,8 @@ class Neuron(AbstractNeuron):
             )
             bt.logging.debug(str(self.moving_averaged_scores))
 
-            scoring_store = ScoringStore()
-            self.scoring_store = scoring_store
-
-            utility_api = UtilityAPIClient(
-                base_url=self.config.neuron.utility_api_url,
-                wallet=self.wallet,
-            )
-            self.utility_api = utility_api
-
-            generator = SyntheticQueryGenerator()
-
-            validators = {
-                "ai_search": self.advanced_scraper_validator,
-                "x_search": self.x_scraper_validator,
-            }
-
-            query_scheduler = QueryScheduler(
-                neuron=self,
-                generator=generator,
-                scoring_store=scoring_store,
-                validators=validators,
-            )
-
             self.loop.create_task(self.sync_metagraph())
             self.loop.create_task(self.sync())
-            self.loop.create_task(query_scheduler.run())
-            self.loop.create_task(self.run_unreachable_decay_loop())
 
         except KeyboardInterrupt:
             self.axon.stop()
