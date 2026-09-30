@@ -40,7 +40,7 @@ services:
       TASK_API_EMBED_TASKS: ${TASK_API_EMBED_TASKS:-0}
       TASK_API_EMBED_MODEL: ${TASK_API_EMBED_MODEL:-qwen3-embedding-8b}
     volumes: ["api-data:/data"]
-    ports: ["127.0.0.1:8080:8080"]
+    ports: ["${TASK_API_BIND:-127.0.0.1:8080}:8080"]
     depends_on: [redis]
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/v1/health')"]
