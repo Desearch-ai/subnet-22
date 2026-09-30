@@ -160,3 +160,12 @@ def test_the_memory_cap_turns_an_oversized_allocation_into_a_memory_error():
     assert receiver.poll(60)
     assert receiver.recv() == "refused"
     child.join(10)
+
+
+@linux_only
+def test_reading_the_upload_does_not_spend_the_memory_cap_on_threads():
+    rows, assigned, fetched = synthetic(8)
+
+    result = score_task(rows, assigned, fetched, memory_mb=1000)
+
+    assert result["reason"] != "unscorable"

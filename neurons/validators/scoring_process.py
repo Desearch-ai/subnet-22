@@ -4,6 +4,8 @@ import asyncio
 import multiprocessing
 import time
 
+import pyarrow
+
 from desearch.extraction import extract
 from neurons.validators.scoring import (
     FetchedPage,
@@ -36,6 +38,12 @@ def cap_memory(megabytes: int) -> None:
         pass
 
 
+def read_on_one_thread() -> None:
+    """pyarrow starts a thread per core, and each one reserves address space the cap counts."""
+    pyarrow.set_cpu_count(1)
+    pyarrow.set_io_thread_count(1)
+
+
 def live_texts(
     kept: dict[str, dict], fetched: dict[str, FetchedPage]
 ) -> dict[str, str]:
@@ -50,6 +58,7 @@ def _score_in_child(
     conn, data, assigned, seed, min_samples, match_ratio, memory_mb
 ) -> None:
     try:
+        read_on_one_thread()
         cap_memory(memory_mb)
         rows, kept = load_upload(data, assigned, seed)
         del data
