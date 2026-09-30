@@ -226,6 +226,22 @@ def test_an_excluded_validator_cannot_score(api_env, memory):
     assert run(memory, scenario) == "open"
 
 
+def test_an_excluded_validator_no_longer_holds_up_the_others(api_env, memory):
+    async def scenario(h):
+        await h.mine()
+        await judged(h, h.validator)
+        for _ in range(10):
+            h.core.validations.record_audit([], [h.validator.hotkey])
+        task = await h.mine(h.rival)
+        score = f"/v1/validation/{task['task_id']}/score"
+        await _expect(403, h.validator.post(score, _score("pass", 3)))
+        _, final = await judged(h, h.other_validator, task_id=task["task_id"])
+        return final["verdict"], await h.core.validation.active()
+
+    verdict, active = run(memory, scenario)
+    assert verdict == "pass" and active == {OTHER}
+
+
 def test_a_task_that_keeps_failing_is_dropped_after_its_last_attempt(api_env, memory):
     api_env.setenv("TASK_API_MAX_ATTEMPTS", "2")
 

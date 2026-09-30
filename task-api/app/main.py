@@ -409,6 +409,7 @@ def create_app(redis=None) -> FastAPI:
 
     async def record_verdict(task_id: str, result: dict, who: Caller) -> dict:
         if await core.db(core.validations.is_excluded, who.hotkey):
+            await core.validation.leave(who.hotkey)
             raise HTTPException(403, "this validator disagreed with too many audits")
         await core.validation.present(who.hotkey)
         job = await core.validation.job(task_id)

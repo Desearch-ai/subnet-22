@@ -398,6 +398,9 @@ class ValidationQueue:
         """A validator asking for work is in the electorate, however slow its verdicts."""
         await self.redis.zadd(VACTIVE, {validator: now or time.time()})
 
+    async def leave(self, validator: str) -> None:
+        await self.redis.zrem(VACTIVE, validator)
+
     async def active(self, now: float | None = None) -> set[str]:
         """Validators that asked for work or voted within the activity window."""
         now = now or time.time()

@@ -367,6 +367,9 @@ async def conclude_validation(
         finalized = await core.db(core.validations.final_verdict, task_id, job["key"])
         return await finish_finalized(core, task_id, job, finalized)
 
+    for validator in decision.disagreed:
+        if await core.db(core.validations.is_excluded, validator):
+            await core.validation.leave(validator)
     await close_upload(core, task_id, job, verdict, publish)
     return {
         "task_id": task_id,
