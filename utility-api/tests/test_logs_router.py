@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from uuid import uuid4
@@ -9,6 +9,10 @@ from app.domains.logs.enums import QueryKind, SearchType
 from app.domains.logs.router import router
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+
+EPOCH_START = datetime.now(timezone.utc).replace(
+    minute=0, second=0, microsecond=0
+) - timedelta(hours=1)
 
 
 class FakeResult:
@@ -67,11 +71,11 @@ def build_payload(**overrides):
 def build_log_row(**overrides):
     row = SimpleNamespace(
         id=uuid4(),
-        created_at=datetime(2026, 3, 14, 10, 5, tzinfo=timezone.utc),
+        created_at=EPOCH_START + timedelta(minutes=5),
         query_kind=QueryKind.SCORING,
         search_type=SearchType.X_SEARCH,
         netuid=22,
-        scoring_epoch_start=datetime(2026, 3, 14, 10, 0, tzinfo=timezone.utc),
+        scoring_epoch_start=EPOCH_START,
         miner_uid=11,
         miner_hotkey="miner-hotkey",
         miner_coldkey="miner-coldkey",
@@ -84,6 +88,7 @@ def build_log_row(**overrides):
         total_reward=0.4,
         response_payload={"query": "Latest AI news", "results": []},
         reward_payload={"total_reward": 0.4},
+        tools=["Twitter Search"],
     )
     for key, value in overrides.items():
         setattr(row, key, value)
@@ -166,7 +171,6 @@ def test_save_logs_accepts_scoring_payload():
 def test_get_scoring_logs_returns_grouped_validator_runs():
     app = create_test_app()
     session = AsyncMock()
-    epoch_start = datetime(2026, 3, 14, 10, 0, tzinfo=timezone.utc)
     session.execute.return_value = FakeSelectResult(
         [
             build_log_row(
@@ -203,8 +207,9 @@ def test_get_scoring_logs_returns_grouped_validator_runs():
     response = client.get(
         "/logs/scoring",
         params={
-            "scoring_epoch_start": epoch_start.isoformat(),
-            "miner_uid": 11,
+            "scoring_epoch_start": EPOCH_START.isoformat(),
+            "search_type": "x_search",
+            "miner_uids": 11,
         },
     )
 
@@ -222,6 +227,9 @@ def test_get_scoring_logs_returns_grouped_validator_runs():
     assert x_group["reward_max"] == 0.9
     assert x_group["reward_avg"] == 0.6
     assert [log["validator_uid"] for log in x_group["logs"]] == [3, 9]
+    assert x_group["logs"][0]["tools"] == ["Twitter Search"]
+    assert "response_payload" not in x_group["logs"][0]
+    assert "reward_payload" not in x_group["logs"][0]
 
     web_group = payload["groups"][0]
     assert web_group["search_type"] == "web_search"
@@ -232,23 +240,30 @@ def test_get_scoring_logs_returns_grouped_validator_runs():
 def test_get_scoring_logs_without_miner_uid_returns_all_miners_for_hour():
     app = create_test_app()
     session = AsyncMock()
-    epoch_start = datetime(2026, 3, 14, 10, 0, tzinfo=timezone.utc)
-    session.execute.return_value = FakeSelectResult(
-        [
-            build_log_row(
-                miner_uid=11,
-                miner_hotkey="miner-11",
-                request_query="Latest AI news",
-                search_type=SearchType.X_SEARCH,
-            ),
-            build_log_row(
-                miner_uid=12,
-                miner_hotkey="miner-12",
-                request_query="Best web results",
-                search_type=SearchType.WEB_SEARCH,
-            ),
-        ]
-    )
+    session.execute.side_effect = [
+        FakeSelectResult(
+            [
+                (EPOCH_START, 11, "Latest AI news", SearchType.X_SEARCH),
+                (EPOCH_START, 12, "Best web results", SearchType.WEB_SEARCH),
+            ]
+        ),
+        FakeSelectResult(
+            [
+                build_log_row(
+                    miner_uid=11,
+                    miner_hotkey="miner-11",
+                    request_query="Latest AI news",
+                    search_type=SearchType.X_SEARCH,
+                ),
+                build_log_row(
+                    miner_uid=12,
+                    miner_hotkey="miner-12",
+                    request_query="Best web results",
+                    search_type=SearchType.WEB_SEARCH,
+                ),
+            ]
+        ),
+    ]
 
     async def override_session():
         yield session
@@ -259,7 +274,10 @@ def test_get_scoring_logs_without_miner_uid_returns_all_miners_for_hour():
 
     response = client.get(
         "/logs/scoring",
-        params={"scoring_epoch_start": epoch_start.isoformat()},
+        params={
+            "scoring_epoch_start": EPOCH_START.isoformat(),
+            "search_type": "x_search",
+        },
     )
 
     assert response.status_code == 200
@@ -302,3 +320,111 @@ def test_get_scoring_logs_filters_by_validator_uid():
     final_stmt = session.execute.await_args_list[-1].args[0]
     compiled = str(final_stmt.compile(compile_kwargs={"literal_binds": True}))
     assert "validator_uid = 3" in compiled
+
+
+def test_get_scoring_logs_rejects_epoch_older_than_three_days():
+    app = create_test_app()
+    session = AsyncMock()
+
+    async def override_session():
+        yield session
+
+    app.dependency_overrides[get_session] = override_session
+
+    client = TestClient(app)
+
+    response = client.get(
+        "/logs/scoring",
+        params={
+            "search_type": "ai_search",
+            "scoring_epoch_start": (EPOCH_START - timedelta(days=4)).isoformat(),
+        },
+    )
+
+    assert response.status_code == 422
+    session.execute.assert_not_awaited()
+
+
+def test_get_scoring_log_returns_payloads_and_siblings():
+    app = create_test_app()
+    session = AsyncMock()
+    row = build_log_row(
+        response_payload={
+            "results": [],
+            "axon": {"ip": "1.2.3.4", "port": 8091, "process_time": 1.5},
+        }
+    )
+    sibling_id = uuid4()
+    session.get.return_value = row
+    session.execute.return_value = FakeSelectResult(
+        [
+            SimpleNamespace(
+                id=row.id, validator_uid=2, status_code=200, total_reward=0.4
+            ),
+            SimpleNamespace(
+                id=sibling_id, validator_uid=5, status_code=200, total_reward=0.6
+            ),
+        ]
+    )
+
+    async def override_session():
+        yield session
+
+    app.dependency_overrides[get_session] = override_session
+
+    client = TestClient(app)
+
+    response = client.get(f"/logs/{row.id}")
+
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "public, max-age=3600"
+
+    payload = response.json()
+    assert payload["request_query"] == "Latest AI news"
+    assert payload["log"]["response_payload"]["axon"]["ip"] == "0.0.0.0"
+    assert payload["log"]["reward_payload"] == {"total_reward": 0.4}
+    assert [sibling["id"] for sibling in payload["siblings"]] == [
+        str(row.id),
+        str(sibling_id),
+    ]
+
+
+def test_get_scoring_log_hides_organic_and_expired_logs():
+    app = create_test_app()
+    session = AsyncMock()
+
+    async def override_session():
+        yield session
+
+    app.dependency_overrides[get_session] = override_session
+
+    client = TestClient(app)
+
+    for row in (
+        build_log_row(query_kind=QueryKind.ORGANIC),
+        build_log_row(created_at=EPOCH_START - timedelta(days=4)),
+    ):
+        session.get.return_value = row
+        assert client.get(f"/logs/{row.id}").status_code == 404
+
+
+def test_public_log_endpoints_are_rate_limited():
+    app = create_test_app()
+    session = AsyncMock()
+    session.get.return_value = None
+
+    async def override_session():
+        yield session
+
+    app.dependency_overrides[get_session] = override_session
+
+    client = TestClient(app)
+    headers = {"CF-Connecting-IP": "203.0.113.7"}
+
+    for _ in range(30):
+        assert client.get(f"/logs/{uuid4()}", headers=headers).status_code == 404
+
+    response = client.get(f"/logs/{uuid4()}", headers=headers)
+
+    assert response.status_code == 429
+    assert "retry-after" in response.headers

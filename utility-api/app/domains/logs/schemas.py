@@ -51,8 +51,30 @@ class ScoringValidatorLogResponse(BaseModel):
     status_code: int | None = None
     process_time: float | None = None
     total_reward: float | None = None
+    tools: Any = None
+
+
+class ScoringValidatorLogDetailResponse(ScoringValidatorLogResponse):
     response_payload: dict[str, Any] = Field(default_factory=dict)
     reward_payload: dict[str, Any] | None = None
+
+
+class ScoringLogSiblingResponse(BaseModel):
+    id: UUID
+    validator_uid: int | None = None
+    status_code: int | None = None
+    total_reward: float | None = None
+
+
+class ScoringLogDetailResponse(BaseModel):
+    scoring_epoch_start: datetime | None = None
+    miner_uid: int | None = None
+    miner_hotkey: str
+    miner_coldkey: str | None = None
+    search_type: SearchType
+    request_query: str
+    log: ScoringValidatorLogDetailResponse
+    siblings: list[ScoringLogSiblingResponse]
 
 
 class ScoringLogGroupResponse(BaseModel):

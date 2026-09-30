@@ -43,6 +43,7 @@ class MinerResponseLog(Base):
     reward_payload = Column(JSONB, nullable=True)
 
     __table_args__ = (
+        Index("ix_miner_response_logs_created_at", "created_at"),
         Index(
             "ix_miner_response_logs_miner_hotkey_created_at",
             "miner_hotkey",
