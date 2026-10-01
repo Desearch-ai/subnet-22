@@ -177,7 +177,7 @@ class TaskChecker:
             and manifest["task_id"] not in self.deferred
             and manifest.get("key") not in self.reported
         ]
-        for manifest in self.in_turn(waiting):
+        for manifest in self.oldest_first(waiting):
             task_id = manifest["task_id"]
             if not verify_manifest(manifest, self.signer):
                 log.warning(
@@ -193,21 +193,8 @@ class TaskChecker:
                 return self.job_of(manifest, seed)
         return None
 
-    def in_turn(self, waiting: list[dict]) -> list[dict]:
-        """New or recently failing miners first, then the oldest upload, so credit follows work and not hotkeys."""
-        miners = {manifest.get("miner", "") for manifest in waiting}
-        trusted = {
-            miner
-            for miner in miners
-            if self.ledger is not None and self.ledger.trusted(miner)
-        }
-        return sorted(
-            waiting,
-            key=lambda manifest: (
-                manifest.get("miner", "") in trusted,
-                manifest.get("completed_at", 0.0),
-            ),
-        )
+    def oldest_first(self, waiting: list[dict]) -> list[dict]:
+        return sorted(waiting, key=lambda manifest: manifest.get("completed_at", 0.0))
 
     def job_of(self, manifest: dict, seed: str) -> dict:
         job = {

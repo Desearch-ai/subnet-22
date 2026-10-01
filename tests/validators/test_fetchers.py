@@ -104,6 +104,38 @@ def test_scrapingdog_is_not_called_when_the_validator_can_fetch_the_page():
     assert page.html == PAGE
 
 
+def test_a_page_that_does_not_answer_in_time_is_tried_once_then_goes_to_scrapingdog():
+    hits = []
+
+    async def slow(request: web.Request) -> web.Response:
+        hits.append(1)
+        await asyncio.sleep(2)
+        return web.Response(text=PAGE, content_type="text/html")
+
+    class ScrapingDog:
+        async def fetch(self, url, rendered=False, deadline=None):
+            return Fetched(
+                url=url,
+                final_url=url,
+                fetched_at=datetime.now(timezone.utc),
+                status=200,
+                body=PAGE.encode(),
+            )
+
+    async def run():
+        async with serving(slow) as base:
+            settings = FetchSettings(timeout=0.3, allow_private=True)
+            chain = SampleFetcher(Fetcher(settings), ScrapingDog())
+            try:
+                return await chain.fetch(base + "story")
+            finally:
+                await chain.aclose()
+
+    page, route = asyncio.run(run())
+
+    assert hits == [1] and route == "scrapingdog" and page.html == PAGE
+
+
 @pytest.mark.parametrize(
     "handler", [answer(403, "<html>no</html>"), answer(200, CHALLENGE)]
 )

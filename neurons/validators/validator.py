@@ -32,11 +32,12 @@ POLL_S = 60
 AFTER_WEIGHTS_S = 300
 SHARES_TIMEOUT = aiohttp.ClientTimeout(total=30.0)
 SIGNER_RETRY_S = 30
-VALIDATION_JOBS = 4
+VALIDATION_JOBS = 12
 EMBED_JOBS = 2
 # The engine pins the same hosts for its queries; SiliconFlow is left out as it runs fp8.
 EMBED_PROVIDERS = "DeepInfra,Nebius"
-SCRAPINGDOG_CONCURRENCY = 8
+SCRAPINGDOG_CONCURRENCY = 50
+SCRAPINGDOG_TIMEOUT_S = 30.0
 DOWNLOAD_TIMEOUT = aiohttp.ClientTimeout(total=120.0)
 WANDB_PROJECT = "smart-scrape-1.0"
 WANDB_ENTITY = "smart-scrape"
@@ -96,7 +97,9 @@ class Validator:
         signer = await self.api_signer()
         async with (
             TaskApiClient(self.config.neuron.task_api_url, self.wallet.hotkey) as api,
-            ScrapingDog(self.scrapingdog_key, SCRAPINGDOG_CONCURRENCY) as scrapingdog,
+            ScrapingDog(
+                self.scrapingdog_key, SCRAPINGDOG_CONCURRENCY, timeout=SCRAPINGDOG_TIMEOUT_S
+            ) as scrapingdog,
         ):
             fetcher = SampleFetcher(Fetcher(OWN_IP_SETTINGS), scrapingdog)
             validator = self.crawl_checker = CrawlValidator(

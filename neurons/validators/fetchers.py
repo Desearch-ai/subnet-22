@@ -20,7 +20,8 @@ from neurons.validators.scoring import (
     looks_like_html,
 )
 
-OWN_IP_SETTINGS = FetchSettings(timeout=20.0, max_bytes=5_000_000)
+# One try from our own address; a page that does not answer in time goes to ScrapingDog.
+OWN_IP_SETTINGS = FetchSettings(concurrency=256, timeout=8.0, max_bytes=5_000_000)
 EXTRACTION_THREADS = 4
 
 
@@ -60,7 +61,7 @@ class SampleFetcher:
         """ScrapingDog can add evidence but never erase what our own IP saw."""
         own = None
         if not rendered:
-            own = await to_page(await self.own_ip.fetch(url), OWN_IP)
+            own = await to_page(await self.own_ip.attempt(url), OWN_IP)
             problem = await asyncio.get_running_loop().run_in_executor(
                 self.extraction, page_problem, own, url
             )
