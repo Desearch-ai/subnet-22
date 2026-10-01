@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import math
 import time
 from collections.abc import Awaitable, Callable
 
@@ -17,7 +16,6 @@ from neurons.validators.scoring import (
     empty_result,
 )
 from neurons.validators.scoring_process import (
-    FIRST_SHARE,
     MEMORY_MB,
     ScoringProcess,
     Unscorable,
@@ -32,6 +30,7 @@ from neurons.validators.tasks import (
 PageFetcher = Callable[..., Awaitable[FetchedPage]]
 
 SCORE_TIMEOUT_S = 300.0
+PAGE_TIMEOUT_S = 60.0
 CHECK_ATTEMPTS = 2
 
 log = logging.getLogger("validator")
@@ -127,7 +126,7 @@ class CrawlValidator(TaskChecker):
         return {**result, "took_ms": int((time.monotonic() - started) * 1000)}
 
     async def run_check(self, job: dict, data: bytes) -> dict:
-        """Checks part of the sample first, and the rest only if the task could still pass."""
+        """Fetches every sample page at once, then a rendered copy of those that need one."""
         session = ScoringProcess(
             data,
             job["urls"],
@@ -142,24 +141,12 @@ class CrawlValidator(TaskChecker):
             planned = await session.wait_for("samples")
             self.note_confinement(planned["unconfined"])
             urls = planned["urls"]
-            first = math.ceil(len(urls) * FIRST_SHARE)
-            for batch in (urls[:first], urls[first:]):
-                if not batch:
-                    continue
-                pages = await asyncio.gather(
-                    *(self._fetch_sample(url) for url in batch)
-                )
-                doubtful = await session.ask(
-                    "doubtful", dict(zip(batch, pages, strict=True))
-                )
-                rendered = await asyncio.gather(
-                    *(self._fetch_sample(url, rendered=True) for url in doubtful)
-                )
-                if await session.ask(
-                    "settled", dict(zip(doubtful, rendered, strict=True))
-                ):
-                    break
-            return await session.ask("scored", {})
+            pages = await asyncio.gather(*(self._fetch_sample(url) for url in urls))
+            doubtful = await session.ask("doubtful", dict(zip(urls, pages, strict=True)))
+            rendered = await asyncio.gather(
+                *(self._fetch_sample(url, rendered=True) for url in doubtful)
+            )
+            return await session.ask("scored", dict(zip(doubtful, rendered, strict=True)))
         finally:
             await session.aclose()
 
@@ -173,9 +160,11 @@ class CrawlValidator(TaskChecker):
             )
 
     async def _fetch_sample(self, url: str, rendered: bool = False) -> FetchedPage:
+        """A page the validator cannot load in time counts as unverifiable, never against the miner."""
         try:
-            if rendered:
-                return await self.fetcher(url, rendered=True)
-            return await self.fetcher(url)
+            fetch = self.fetcher(url, rendered=True) if rendered else self.fetcher(url)
+            return await asyncio.wait_for(fetch, PAGE_TIMEOUT_S)
+        except asyncio.TimeoutError:
+            return FetchedPage(0, error="timeout")
         except Exception as exc:
             return FetchedPage(0, error=f"fetcher_{type(exc).__name__}")

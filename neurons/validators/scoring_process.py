@@ -11,10 +11,8 @@ from desearch.extraction import extract
 from neurons.validators.confinement import confine
 from neurons.validators.scoring import (
     FetchedPage,
-    MISMATCHED,
     cleared_by_render,
     extraction_url,
-    judge_sample,
     load_upload,
     needs_rendered_check,
     pick_samples,
@@ -25,7 +23,6 @@ from neurons.validators.scoring import (
 
 MEMORY_MB = 4096
 MAX_ANSWER_BYTES = 64_000_000
-FIRST_SHARE = 0.4
 
 
 class Unscorable(Exception):
@@ -60,21 +57,6 @@ def live_texts(
     }
 
 
-def certainly_fails(
-    kept: dict[str, dict],
-    fetched: dict[str, FetchedPage],
-    planned: int,
-    match_ratio: float,
-) -> bool:
-    """Too many mismatches for the task to pass even if every page not checked yet matched."""
-    mismatched = sum(
-        1
-        for url, page in fetched.items()
-        if judge_sample(kept[url], page)["outcome"] == MISMATCHED
-    )
-    return mismatched > (1 - match_ratio) * planned
-
-
 def answer(conn, kind: str, payload) -> None:
     """Plain data only: a child that reads a miner's file never hands the parent an object."""
     conn.send_bytes(json.dumps([kind, payload]).encode())
@@ -91,21 +73,10 @@ def _score_in_child(
         del data
         planned = pick_samples(kept, seed, sample_count(len(kept), min_samples))
         answer(conn, "samples", {"urls": planned, "unconfined": unconfined})
-        fetched: dict[str, FetchedPage] = {}
-        while batch := conn.recv():
-            answer(conn, "doubtful", needs_rendered_check(kept, batch))
-            fetched |= batch | cleared_by_render(kept, conn.recv())
-            settled = certainly_fails(kept, fetched, len(planned), match_ratio)
-            answer(conn, "settled", settled)
-        result = score(
-            rows,
-            assigned,
-            fetched,
-            seed,
-            min_samples,
-            match_ratio,
-            only=set(fetched) if len(fetched) < len(planned) else None,
-        )
+        fetched: dict[str, FetchedPage] = conn.recv()
+        answer(conn, "doubtful", needs_rendered_check(kept, fetched))
+        fetched |= cleared_by_render(kept, conn.recv())
+        result = score(rows, assigned, fetched, seed, min_samples, match_ratio)
         texts = live_texts(kept, fetched)
         result["urls"] = url_log(rows, result["samples"], texts, result["rejected"])
         answer(conn, "scored", result)

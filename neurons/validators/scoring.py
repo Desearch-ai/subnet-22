@@ -41,7 +41,7 @@ OUTCOMES = (
 )
 COVERAGE = 0.85
 MIN_SAMPLES = 10
-SAMPLE_RATE = 0.10
+SAMPLE_RATE = 0.05
 # Share of compared samples that must match; set from calibration runs.
 MATCH_RATIO = 0.8
 REEXTRACT_TOLERANCE = 0.2
@@ -509,9 +509,7 @@ def score(
     seed: str,
     min_samples: int,
     match_ratio: float,
-    only: set[str] | None = None,
 ) -> dict:
-    """`only` narrows the sample to the pages checked before the check stopped early."""
     wanted = set(assigned)
     if rows is None:
         return empty_result(wanted, "unreadable")
@@ -521,7 +519,6 @@ def score(
     samples = [
         judge_sample(kept[url], fetched.get(url))
         for url in pick_samples(kept, seed, sample_count(len(kept), min_samples))
-        if only is None or url in only
     ]
     outcomes = Counter(sample["outcome"] for sample in samples)
     counts = {

@@ -10,7 +10,6 @@ from desearch.credit import SHARE_WINDOW_H
 from desearch.kinds import CRAWL
 
 
-TRUSTED_PASSES = 3
 # A failed crawl task takes its assigned URLs back, so failing costs more than not trying.
 NET = f"SUM(CASE WHEN kind = '{CRAWL}' AND verdict = 'fail' THEN -assigned ELSE credited END)"
 
@@ -109,17 +108,6 @@ class Ledger:
             }
             for kind, miners in earned.items()
         }
-
-    def trusted(self, miner: str, now: float | None = None) -> bool:
-        """A few passes behind it and no fail in the last day."""
-        now = now or time.time()
-        passed, failed = self.db.execute(
-            "SELECT COALESCE(SUM(verdict = 'pass'), 0),"
-            " COALESCE(SUM(verdict = 'fail' AND scored_at >= ?), 0)"
-            " FROM verdicts WHERE miner = ?",
-            (now - SHARE_WINDOW_H * 3600, miner),
-        ).fetchone()
-        return passed >= TRUSTED_PASSES and not failed
 
     def prune(self, keep_days: int = 7) -> None:
         self.db.execute(

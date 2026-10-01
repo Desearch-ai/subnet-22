@@ -46,7 +46,7 @@ def check(rows, assigned, fetched, **options) -> tuple[dict, list[str]]:
     return asyncio.run(run()), asked
 
 
-def test_a_check_stops_early_once_a_task_can_no_longer_pass():
+def test_a_fabricated_task_fails_on_the_full_sample():
     rows, assigned, _ = synthetic(100)
     elsewhere = {
         url: FetchedPage(200, synthetic_html(n + 500)) for n, url in enumerate(assigned)
@@ -55,8 +55,25 @@ def test_a_check_stops_early_once_a_task_can_no_longer_pass():
     result, asked = check(rows, assigned, elsewhere)
 
     assert (result["verdict"], result["reason"]) == ("fail", "content_mismatch")
-    assert result["sampled"] == len(asked) < 10
-    assert result["mismatched"] > 2
+    assert result["sampled"] == len(asked) == 10
+
+
+def test_a_page_the_validator_cannot_load_in_time_is_not_held_against_the_miner(
+    monkeypatch,
+):
+    rows, assigned, fetched = synthetic(100)
+    slow = assigned[0]
+    monkeypatch.setattr("neurons.validators.crawl.PAGE_TIMEOUT_S", 0.2)
+
+    async def fetch(url: str, rendered: bool = False) -> FetchedPage:
+        if url == slow:
+            await asyncio.sleep(5)
+        return fetched[url]
+
+    validator = CrawlValidator(SimpleNamespace(hotkey="v"), fetch, None)
+    page = asyncio.run(validator._fetch_sample(slow))
+
+    assert (page.status, page.error) == (0, "timeout")
 
 
 def test_an_honest_task_gets_the_full_sample():
@@ -104,9 +121,8 @@ def test_an_upload_that_crashes_a_healthy_checker_twice_is_marked(
     assert result.get("crashed") is blamed
 
 
-def test_new_or_failing_miners_go_first_then_the_oldest_upload_of_anyone():
+def test_the_oldest_upload_is_checked_first_whoever_uploaded_it():
     validator = CrawlValidator.__new__(CrawlValidator)
-    validator.ledger = SimpleNamespace(trusted=lambda miner: miner != "new")
     waiting = [
         {"task_id": "a", "miner": "big", "completed_at": 30.0},
         {"task_id": "b", "miner": "big", "completed_at": 10.0},
@@ -114,7 +130,7 @@ def test_new_or_failing_miners_go_first_then_the_oldest_upload_of_anyone():
         {"task_id": "d", "miner": "new", "completed_at": 40.0},
     ]
 
-    assert [m["task_id"] for m in validator.in_turn(waiting)] == ["d", "b", "c", "a"]
+    assert [m["task_id"] for m in validator.oldest_first(waiting)] == ["b", "c", "a", "d"]
 
 
 def test_the_parent_reads_plain_data_only_from_the_check():
