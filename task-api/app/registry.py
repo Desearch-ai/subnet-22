@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from .auth import Keypair
 
 RETRY_S = 60
+MIN_TOTAL_STAKE = 10_000.0
+MIN_ALPHA_STAKE = 20.0
 DEV_RECEIPT_KEY = "//TaskApi"
 
 log = logging.getLogger("task_api")
@@ -51,13 +53,10 @@ class LocalRegistry:
 class ChainRegistry:
     """The subnet's hotkeys, refreshed on a timer so no request waits on the chain."""
 
-    def __init__(
-        self, netuid: int, network: str, ttl: int = 600, stake_threshold: float = 1000.0
-    ):
+    def __init__(self, netuid: int, network: str, ttl: int = 600):
         self.netuid = netuid
         self.network = network
         self.ttl = ttl
-        self.stake_threshold = stake_threshold
         self._entries: dict[str, Entry] = {}
         self._loaded = asyncio.Event()
         self._refreshing: asyncio.Task | None = None
@@ -106,12 +105,20 @@ class ChainRegistry:
             neuron.hotkey: Entry(
                 neuron.hotkey,
                 int(neuron.uid),
-                bool(neuron.validator_permit)
-                and float(neuron.total_stake.alpha) >= self.stake_threshold,
+                is_validator(neuron),
                 neuron.coldkey,
             )
             for neuron in metagraph.neurons
         }
+
+
+def is_validator(neuron) -> bool:
+    """A permit alone is not enough: votes decide results, so a vote costs stake."""
+    return (
+        bool(neuron.validator_permit)
+        and float(neuron.total_stake.alpha) >= MIN_TOTAL_STAKE
+        and float(neuron.alpha_stake.alpha) >= MIN_ALPHA_STAKE
+    )
 
 
 def registry_from_env():

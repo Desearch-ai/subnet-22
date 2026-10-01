@@ -534,3 +534,24 @@ def test_local_seeds_wait_as_many_blocks_as_the_chain_does():
     early, seed, again = asyncio.run(scenario())
     assert early is None
     assert seed is not None and seed == again
+
+
+@pytest.mark.parametrize(
+    ("permit", "total", "alpha", "counts"),
+    [
+        (True, 15_564.0, 4_036.0, True),
+        (True, 10_000.0, 20.0, True),
+        (True, 9_999.0, 5_000.0, False),
+        (True, 50_000.0, 19.0, False),
+        (False, 1_900_000.0, 1_300_000.0, False),
+    ],
+)
+def test_a_validator_needs_a_permit_and_stake_of_its_own(permit, total, alpha, counts):
+    from types import SimpleNamespace
+
+    neuron = SimpleNamespace(
+        validator_permit=permit,
+        total_stake=SimpleNamespace(alpha=total),
+        alpha_stake=SimpleNamespace(alpha=alpha),
+    )
+    assert registry.is_validator(neuron) is counts
