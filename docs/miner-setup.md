@@ -48,19 +48,26 @@ The miner reads `neurons/miners/.env` on start; variables already set in the she
 | `PROXY_URLS` | none | comma-separated `http://user:pass@host:port`, rotated per request |
 | `CRAWL_CONCURRENCY` | 32 | pages fetched at once |
 | `CRAWL_CONCURRENCY_PER_DOMAIN` | 8 | pages fetched at once from one domain, so a site does not block you |
-| `CRAWL_TIMEOUT` | 30 | seconds per page |
+| `CRAWL_FIRST_TIMEOUT` | 10 | seconds for a page's first try |
+| `CRAWL_TIMEOUT` | 30 | seconds for each later try |
+| `CRAWL_ATTEMPTS` | 3 | tries per page from your own addresses before ScrapingDog or an error row |
 | `CRAWL_USER_AGENT` | a desktop Chrome string | |
-| `MAX_TASKS` | 4 | tasks held at once, capped by the budget the API grants |
+| `MAX_TASKS` | 4 | most tasks held at once; the miner also claims only what its measured pace can finish, within its budget |
 | `EXTRACTION_THREADS` | 4 | pages turned into text at once; each holds a whole page in memory |
 | `SCRAPINGDOG_API_KEY` | none | optional: a page your address cannot load (refused, blocked, timed out) is retried through ScrapingDog |
 | `SCRAPINGDOG_CONCURRENCY` | 8 | ScrapingDog requests at once; they wait outside the crawl slots, so your own fetches keep going |
 | `RECEIPTS_FILE` | none | file each signed receipt is appended to, as proof of what you were served |
 
-A page refused for the address it came from (403, 408, 429) or served a challenge is fetched again
-through the next proxy; 404 and 410 are taken at face value. Every request through a proxy opens a
-fresh connection, so a rotating gateway hands out a new exit address each time. The miner refuses
-private addresses only on direct connections: a proxy resolves the hostname itself, so use one that
-reaches the public internet only.
+A task must be uploaded within 3 minutes of claiming it. The miner tries every page once with a
+short timeout, then retries slow and failed pages behind the untried ones. It stops 30 seconds before
+the end (longer if your uploads have been slow) to write and upload the file; unfinished pages go in
+as timed out, and the log says how many, so you know to raise `CRAWL_CONCURRENCY` or lower
+`MAX_TASKS`.
+
+A page refused for its address (403, 408, 429) or served a challenge is retried through the next
+proxy, or without proxies straight through ScrapingDog; 404 and 410 are final. Each proxied request
+opens a fresh connection, so a rotating gateway gives a new exit address each time. Private addresses
+are refused only on direct connections, so use proxies that reach the public internet only.
 
 ## 4. Run
 
@@ -96,5 +103,5 @@ curl -s https://api-22.desearch.ai/v1/miners/<hotkey>
 curl -s "https://api-22.desearch.ai/v1/tasks?miner=<hotkey>"
 ```
 
-The first shows your budget, tasks in flight, coverage and pass/fail counts; the second your checked
-tasks, and `/v1/tasks/<task_id>` what the validators found for each URL.
+The first shows your budget, tasks in progress, uploads waiting for a verdict, coverage and
+pass/fail counts; the second your checked tasks; `/v1/tasks/<task_id>` what validators found per URL.

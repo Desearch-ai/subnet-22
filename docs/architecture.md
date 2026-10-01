@@ -40,43 +40,32 @@ published pages in `desearch-pages`, which is permanent.
 1. **Round.** The task API packs new URLs into tasks of 1,000, spreading each site across them. It
    publishes a hash of the batches before serving any, and a future block's hash decides the order
    they go out in.
-2. **Claim.** A miner asks for a task and receives its URLs and an upload link. The link points into
-   object storage, accepts one file under one key, and expires with the claim after 15 minutes.
-   Miners never hold storage credentials, and a miner is never given a task it held before.
+2. **Claim.** A miner asks for as many tasks as it can finish and receives, for each, its URLs and an
+   upload link. The link accepts one file under one key and lasts as long as the claim: 3 minutes,
+   plus 10 seconds of grace for the upload. Miners never hold storage credentials, and a miner is
+   never given a task it held before.
 3. **Crawl.** The miner fetches every URL, extracts the title, dates, headings and main text, and
-   writes one Parquet file with a row per URL, including the page's HTML, straight to storage
-   through that link. When the miner reports the task complete, the task API checks the file's
-   size, copies it to a key only the API can write, and removes the original. That frozen copy is
-   what gets checked: it is exactly what the miner uploaded, and neither side can change it afterwards.
-4. **Check.** Every validator checks every upload, and finds them in storage rather than by asking
-   the API. When the API freezes an upload it writes a signed note next to it, saying which URLs
-   the miner was given and at which block the upload was frozen, and it keeps the list of uploads
-   waiting to be checked at `validation/open.json` in the same public bucket. Each validator reads
-   that list, checks the API's signature on every note, and reads the frozen copy straight from
-   the bucket. The rows to check are picked with a seed nobody knew when the upload was frozen:
-   the hash of the chain block ten blocks after the freeze, which the validator takes from the
-   chain itself. It then:
+   uploads one Parquet file with a row per URL, including the page's HTML. When it reports the task
+   complete, the task API checks the file is Parquet and within the size limit, copies it to a key
+   only the API can write, and removes the original. Validators check that frozen copy.
+4. **Check.** The API writes a signed note next to the frozen copy (the task's URLs and the block it
+   was frozen at) and lists it in `validation/open.json` in the same public bucket. Every validator
+   reads that list and the upload from the bucket, and picks the rows to check with the hash of the
+   block ten blocks after the freeze, which nobody knew while uploading. It then:
    - re-extracts the picked rows from the uploaded HTML, to prove the text came from the page;
    - fetches the same pages itself and compares the text with the miner's;
-   - checks a sample of the rows the miner reported as failed, to see whether the page really
-     cannot be loaded.
-   Each validator then reports pass or fail to the API, with what it saw for every page it
-   checked. A validator whose own fetches failed reports that instead, and it costs the miner
-   nothing. Reports stay sealed until the upload is finalized. Reporting is the only thing a
-   validator needs the API for while checking; it also reads the API's coverage figures once per
-   epoch before setting weights.
+   - checks a sample of the rows the miner reported as failed.
+
+   It reports pass or fail to the API, with what it saw for each checked page; reports stay sealed
+   until the upload is finalized. A validator whose own fetches failed says so, at no cost to the
+   miner. Reporting is the only thing a validator needs the API for.
 5. **Finalize.** An upload is finalized once every active validator has reported, or at its deadline
-   with more than half of them. A validator is active for an hour after any report it sends, even
-   one that arrives too late to count, so a quick report never finalizes an upload that a slower
-   validator is still checking. The majority
-   decides pass or fail. A passing upload pays the miner for its rows at the rate the checked pages
-   matched: 35 of 40 rows when 7 of 8 checked pages matched. When the validators in the majority
-   arrived at different counts, the lower middle value is paid. A validator that disagreed with the
-   majority is marked. With one active validator, its report alone finalizes the upload; below the
-   quorum at the deadline, nothing is decided and the task goes back out at no cost to the miner.
+   with more than half of them; a validator is active for an hour after its last report. The
+   majority decides pass or fail, and a pass pays the miner's rows at the rate the checked pages
+   matched (35 of 40 rows when 7 of 8 matched). One active validator finalizes alone. Short of a
+   quorum, an upload waits up to an hour past its deadline, by when a stopped validator no longer
+   counts as active; if still short, it is void and its task goes back out at no cost to the miner.
    The exact rules are in [the task API's scoring section](../task-api/README.md#scoring).
-   Everything an upload changes, from what the miner is owed to its coverage to the validators'
-   standing, is written in one transaction.
 6. **Publish.** The publisher writes each verified page to the pages bucket, only when its text
    changed and never over a newer fetch, leaving out the rows the checks turned down, and the
    engine indexes it.
@@ -101,21 +90,16 @@ Embedding is built and switched off until Desearch's own embedding model ships; 
   task API cannot swap or reorder them.
 - **Signed logs.** Every claim, refusal and completion is signed by the task API. Anyone can check a
   closed round with [`task-api/tools/verify_round.py`](../task-api/tools/verify_round.py).
-- **Direct to storage.** Uploads travel from the miner into object storage through a link the task
-  API issues for one key and one claim, and validators read them from the public bucket without
-  asking anyone. The API checks what landed and freezes it; it never carries the files, so there
-  is nothing for it to alter, and the signed note next to each upload lets anyone check later what
-  the miner was given.
-- **No single validator publishes.** An upload reaches the corpus only after it is finalized, which
-  takes more than half of the active validators. Every published page names the validators that
-  agreed on it.
-- **Validators are judged by their own work.** Each validator sets weights from the results it
-  reached itself, so a validator whose results stray from the others' stands out in consensus and
-  earns less. One that cannot check uploads sets no weights, and one that keeps disagreeing with
-  the majority stops receiving uploads. Two validators that both pass an upload but differ by more
-  than 15% on how many rows to pay count as disagreeing.
-- **Consequences.** Failed tasks shrink a miner's budget, and repeated failures lock it out of new
-  tasks for 12 hours.
+- **Direct to storage.** Uploads go from the miner straight into storage through a link for one
+  key, and validators read them from the public bucket. The API never carries the files, so it has
+  nothing to alter, and the signed note beside each upload records what the miner was given.
+- **No single validator publishes.** An upload reaches the corpus only once finalized, which takes
+  more than half of the active validators. Every published page names the validators that agreed.
+- **Validators are judged by their own work.** Each validator sets weights from its own results, so
+  one that strays from the others earns less in consensus. One that keeps disagreeing with the
+  majority stops receiving uploads.
+- **Consequences.** Failures and lapsed claims halve a miner's budget, and repeated strikes lock it
+  out of new tasks for an hour, then 12 hours, then 48.
 - **Public results.** Every validator's report, with the rows it paid and what it found for each
   URL, is public at `https://api-22.desearch.ai/v1/tasks`, so anyone can recompute the shares.
 

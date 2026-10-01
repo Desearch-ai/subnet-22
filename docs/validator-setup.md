@@ -3,10 +3,9 @@
 The validator is one process, [`neurons/validators/validator.py`](../neurons/validators/validator.py),
 started by `run.sh`. It does two jobs:
 
-1. **Checks crawl tasks.** It reads the list of open uploads from the public uploads bucket,
-   downloads each upload from there, re-fetches the picked pages itself, the same pages a chain
-   block's hash picks for every validator, and reports pass or fail to the task API with what it
-   found for each URL. Every validator checks every upload.
+1. **Checks crawl tasks.** It reads each open upload from the public uploads bucket, re-fetches the
+   pages a chain block's hash picks (the same for every validator), and reports pass or fail to the
+   task API with what it found per URL. Every validator checks every upload.
 2. **Sets weights.** Each epoch it computes every miner's share from the results of its own checks
    over the last 24 hours and sets weights by those; see [Emission](./emission.md).
 
@@ -15,8 +14,8 @@ started by `run.sh`. It does two jobs:
 ## Requirements
 
 - Python 3.10 or newer, [PM2](https://pm2.io/docs/runtime/guide/installation/) and `jq`
-- A hotkey on netuid 22 (netuid 41 on testnet) with a validator permit and at least 1000 stake; the
-  task API only accepts check results from such hotkeys
+- A hotkey on netuid 22 (netuid 41 on testnet) with a validator permit, at least 10,000 total stake
+  and at least 20 alpha; the task API only accepts check results from such hotkeys
 - A [ScrapingDog](https://www.scrapingdog.com/) API key: the validator fetches each sample itself
   first and uses ScrapingDog only for pages its own address cannot load
 - A [Weights & Biases](https://wandb.ai/) login, unless you pass `--wandb.off`
@@ -53,10 +52,14 @@ cp neurons/validators/.env.template neurons/validators/.env
 | `EMBED_API_URL` | the hosted model service, OpenRouter's `/embeddings` by default |
 | `EMBED_PROVIDERS` | which OpenRouter providers run the reference model, `DeepInfra,Nebius` by default |
 
-Nothing else is configurable. How many pages are sampled, how many must match and how many tasks are
-checked at once are fixed in code, so every validator checks the same way. Uploads are decoded and
-scored only in a memory-capped child process, so an upload built to exhaust memory or time kills
-that child, not the validator.
+Nothing else is configurable: sampling and match rules are fixed in code, so every validator checks
+the same way.
+
+Uploads are checked in a separate, memory-capped process. On Linux it also has no environment, no
+network and read-only access to Python's files only, so it cannot reach your wallet, keys or the
+internet. This needs unprivileged user namespaces or Landlock, which most distributions provide;
+Docker's default seccomp profile blocks both, and the validator logs a warning when running without
+them.
 
 Weights are set only while the checker is healthy. When ScrapingDog refuses three tasks in a row,
 three tasks in a row cannot be scored, or the task API refuses the validator's reports, the

@@ -106,7 +106,7 @@ If you started the sandbox with another `--port`, set `VITE_TASK_API_URL` to tha
 
 | Option | Default | |
 | --- | --- | --- |
-| `--task-size` | `100` | URLs per task. Use `1000` for mainnet-sized tasks, to check that your miner finishes one well within the 15-minute claim. |
+| `--task-size` | `100` | URLs per task. Use `1000` for mainnet-sized tasks, to check that your miner finishes one within the 3-minute claim. |
 | `--urls FILE` | the public dataset | Serve your own URLs: a parquet file with a `url` column, or a text file with one URL per line. |
 | `--port` | `18080` | Port of the local task API; storage uses the next two ports. |
 

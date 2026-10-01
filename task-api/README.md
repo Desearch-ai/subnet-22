@@ -29,37 +29,35 @@ The miner and validator are in [`neurons/`](../neurons/), and the code they shar
 of a round taking whatever is left, publishes a hash of the batches, and commits to a block ten
 blocks ahead; that block's hash sets the order the batches are served in.
 
-**Claims.** A miner claims a task and receives its URLs and an upload link for one key. Miners never
-hold storage credentials. On completion the API copies the upload to a key only it can write, so
-nothing the miner changes afterwards is scored. A miner is never given a batch it held before.
+**Claims.** A miner asks for as many tasks as it can take and receives, for each, its URLs and an
+upload link for one key; it never holds storage credentials. On completion the API copies the upload
+to a key only it can write, so nothing changed afterwards is scored. A miner is never given a batch
+it held before.
 
-**Checks.** On completion the API records the chain block it froze the upload at, writes a signed
-note next to the frozen copy with the task's URLs and that block, and lists the upload in
-`validation/open.json` in the same bucket. The bucket is public, so validators read the list and
-the uploads without asking the API. The rows to check are picked with the hash of the block ten
-blocks after the freeze, which validators take from the chain, so no miner can know them while
-uploading and every validator checks the same rows. Each validator:
+**Checks.** On completion the API freezes the upload, writes a signed note beside it (the task's
+URLs and the freeze block) and lists it in `validation/open.json` in the same public bucket, so
+validators read everything without asking the API. The rows to check are picked with the hash of
+the block ten blocks after the freeze, so no miner can know them while uploading and every validator
+checks the same rows. Each validator:
 
 - re-extracts the picked rows from the uploaded HTML;
 - fetches the picked pages itself and compares their text with the miner's, using ScrapingDog only
   for pages its own address cannot load;
 - checks the picked rows among those the miner reported as failed.
 
-It reports what it found for each checked URL, once per upload. The API works out from those
-findings how many rows the miner is paid for, and ignores any number a validator states. Reports
-stay sealed until the upload is finalized.
+It reports what it found for each checked URL, once per upload; the API works out the paid rows from
+those findings and ignores any number a validator states. Reports stay sealed until finalized.
 
 **Final verdict.** An upload is finalized when every active validator has reported, or at its
-deadline with more than half of them; active means having reported within the last hour, and a
-report that arrives after an upload was finalized still counts as one. A validator that is still
-checking an upload therefore holds it until it reports or the deadline passes. The majority
-decides pass or fail. A passing upload pays the miner for its rows at
-the rate the checked pages matched; when the validators in the majority arrived at different counts,
-the lower middle value is paid. Validators that disagreed with the majority are marked, and two
-validators that both pass an upload but differ by more than 15% on the rows to pay count as
-disagreeing. One active validator finalizes alone. Below the quorum at the deadline nothing is
-decided and the task goes back out. A validator that keeps disagreeing with the majority stops
-receiving uploads.
+deadline with more than half of them; a validator is active for an hour after its last report. One
+active validator finalizes alone. Short of a quorum, an upload waits up to an hour past its deadline
+for missing validators to report or drop out of the active set, then is void and its task goes back
+out.
+
+The majority decides pass or fail, and a pass pays the miner's rows at the rate the checked pages
+matched (the lower middle count when the majority differs). A validator that disagrees with the
+majority is marked, as are two passes more than 15% apart on the rows to pay; one that keeps
+disagreeing stops receiving uploads.
 
 **Publishing.** A passing task's pages are written to the pages bucket, one object per URL, only when
 the content changed and never over a newer fetch.
@@ -91,10 +89,20 @@ The API takes a validator's findings per page, not its counts, on trust: a repor
 task could not have produced, such as more checked rows than rows returned or a checked URL outside
 the task, is refused.
 
-Each miner has a budget, the number of tasks it may hold from claim to final verdict. It grows by
-one for each task paid for at least 85% of its URLs and halves on a failure, an expired claim or an
-abandoned task. Two failures within 24 hours, if they are at least 5% of the miner's checked tasks,
-lock it out for 12 hours. Problems on the validator's side never count against a miner.
+**Budgets and lockouts.**
+
+- A miner may crawl as many tasks at once as its budget, with up to twice that waiting for a verdict.
+- The budget starts at 1, grows by half for each task paid for at least 85% of its URLs, up to 100,
+  and halves on a failure, an expired claim or an abandoned task.
+- Each of those is also a strike and takes the task's URLs back from the miner's paid rows; lapses
+  within 5 minutes of each other are one strike.
+- Two strikes within 24 hours, if at least 5% of its checked tasks, lock the miner out for an hour,
+  then 12 hours, then 48 within a week. An upload that crashes most validators' checks locks it out
+  for a week. Validator-side problems never count.
+
+A completed upload must be Parquet: the API checks its first and last bytes and never parses it.
+Failed and void uploads are deleted. A miner may claim every 2 seconds; a refusal repeated within a
+minute is not signed into the log again.
 
 `GET /v1/shares` returns each miner's share of the paid work over the last 24 hours, per pool.
 How much of the emission is burned and how the rest is split between the pools is set in the
@@ -128,12 +136,11 @@ It needs two R2 buckets in the same jurisdiction, with a token that can read and
 - `subnet-22`, the temporary bucket for uploads, with a lifecycle rule that deletes objects after one day;
 - `desearch-pages`, the permanent bucket for published work.
 
-Validators read `subnet-22` directly, so it is served publicly: in the Cloudflare dashboard, R2 →
-the bucket → Settings → Public access → Custom Domains, connect a hostname on a zone of the same
-account (or `wrangler r2 bucket domain add subnet-22 --domain <hostname>`). Objects are then
-readable at `https://<hostname>/<key>`; listing is not, which is why the API keeps
-`validation/open.json`. The bucket is served at `https://r2.desearch.ai`, which is the validator's default
-`--neuron.storage_url`. The `r2.dev` development URL is rate limited and not meant for this.
+Validators read `subnet-22` directly, so serve it publicly on a custom domain: R2 → the bucket →
+Settings → Public access → Custom Domains (or `wrangler r2 bucket domain add subnet-22 --domain
+<hostname>`), not the rate-limited `r2.dev` URL. Objects are readable but not listable, which is why
+the API keeps `validation/open.json`. Mainnet serves it at `https://r2.desearch.ai`, the validator's
+default `--neuron.storage_url`.
 
 The feeder runs next to the bot, where its stores are:
 
@@ -146,17 +153,21 @@ PYTHONPATH=.. python -m feeder --buckets /mnt/desearch-bot/buckets --domains fee
 | `TASK_API_REGISTRY` | — | `chain` or `local` |
 | `TASK_API_ADMIN_HOTKEYS` | — | hotkeys allowed to enqueue |
 | `TASK_API_KEY_URI` | — | the key the log is signed with; required in `chain` mode |
-| `TASK_API_CLAIM_TTL` | 900 | seconds a miner's claim lasts |
+| `TASK_API_CLAIM_TTL` | 180 | seconds a miner is given to upload a task after claiming it; the claim and its upload link last 10 seconds longer |
+| `TASK_API_POLL_RATE` | 0.5 | claim requests per second one hotkey may make |
 | `TASK_API_VALIDATION_TTL` | 900 | seconds validators have to report once the upload is open |
 | `TASK_API_ACTIVE_S` | 3600 | seconds since its last report a validator counts as active |
 | `TASK_API_LEDGER_DELAY_S` | 0 | seconds finalized uploads and shares stay out of public view |
 | `TASK_API_MAX_ATTEMPTS` | 3 | times a task is retried before it is dropped |
-| `TASK_API_READS_PER_MINUTE` | 120 | `GET` requests one IP may make in a minute |
+| `TASK_API_READS_PER_MINUTE` | 120 | `GET` requests one IP may make in a minute, outside the log endpoints |
+| `TASK_API_LOG_READS_PER_MINUTE` | 60 | log requests (tasks, votes, miners, validators, overview) one IP may make in a minute |
+| `TASK_API_FAILED_WRITES_PER_MINUTE` | 30 | failed sign-ins after which one IP's writes are refused for the rest of the minute |
 | `TASK_API_CORS_ORIGINS` | local dev servers | comma-separated origins whose pages may read the API from a browser |
 | `TASK_API_EMBED_TASKS` | 0 | 1 opens embed tasks |
 | `TASK_API_EMBED_MODEL` | `qwen3-embedding-8b` | the model embed tasks name, from [`desearch/embedding.py`](../desearch/embedding.py) |
 
-In `chain` mode a validator needs a validator permit and 1000 stake.
+In `chain` mode a validator needs a validator permit, at least 10,000 total stake and at least 20
+alpha of its own.
 
 ## Public endpoints
 
@@ -187,10 +198,16 @@ Every miner and validator is named by hotkey, with its uid beside it (`miner_uid
 
 Lists return a page at a time (`limit`, at most 100) with a `next` value to pass back as `before`.
 
-Reads are limited per IP; over the limit the API answers `429` with `Retry-After`. Log reads use a
-database connection and a thread of their own, so they never delay a claim or a verdict, and when
-too many are waiting the API answers `503` with `Retry-After` instead of queueing more. Behind a
-proxy, run uvicorn with `--proxy-headers` so the limit sees the caller's address.
+**Limits.**
+
+- Reads are limited per IP, with a separate budget for the log endpoints; over it, `429` with
+  `Retry-After`.
+- An IP that keeps failing to sign in has its writes refused for the rest of the minute.
+- A body over 64 kB (16 MB for a verdict or an enqueue) is refused with `413` before it is read.
+- Log reads have their own database connection and thread, so they never delay claims or verdicts;
+  when too many wait, the API answers `503` with `Retry-After`.
+- The caller's address is taken from Cloudflare's `CF-Connecting-IP` header, so serve the API only
+  through Cloudflare.
 
 ## Storage
 

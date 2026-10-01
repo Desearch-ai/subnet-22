@@ -11,7 +11,8 @@ checks yours match.
 
 ## What you receive
 
-Claim a task with `POST /v1/tasks/claim` and the body `{"kind": "embed"}`:
+Claim with `POST /v1/tasks/claim` and the body `{"kind": "embed"}`. Each task in the answer's
+`tasks` list looks like this:
 
 ```json
 {

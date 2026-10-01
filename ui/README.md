@@ -50,7 +50,7 @@ Copy `.env.example` to `.env.local` to change it. The value is read at build tim
 | `/`                   | Tasks waiting and in progress, recent tasks, miners by share           |
 | `/tasks`              | Finalized tasks, filtered by miner, validator or result                |
 | `/tasks/:taskId`      | One task: result, crawl time, every validator's vote, the checked URLs |
-| `/miners`             | Every miner: share, budget, coverage, results, rows returned, counted  |
+| `/miners`             | Every miner: share, budget, tasks crawling and waiting, results, rows  |
 | `/miners/:hotkey`     | One miner: stats, rows over time, budget history, its tasks            |
 | `/validators`         | Every validator: activity, votes, agreement with the final result      |
 | `/validators/:hotkey` | One validator: stats and its votes                                     |
