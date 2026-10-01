@@ -24,6 +24,13 @@ export function useTasks(filters: TaskFilters, limit = PAGE_SIZE) {
     initialPageParam: FIRST_PAGE,
     getNextPageParam: nextPageParam,
     refetchInterval: (query) => pollFirstPageOnly(query.state.data),
+    // Another result filter on the same miner or validator keeps the old list up while it loads.
+    placeholderData: (previous, previousQuery) => {
+      const before = previousQuery?.queryKey[1] as TaskFilters | undefined
+      return before?.miner === filters.miner && before?.validator === filters.validator
+        ? previous
+        : undefined
+    },
   })
 }
 

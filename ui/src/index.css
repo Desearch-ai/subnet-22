@@ -56,6 +56,17 @@
 
   --color-series-counted: hsl(223 83% 65%);
   --color-series-returned: hsl(322 47% 60%);
+
+  --animate-appear: appear 180ms ease-out 250ms both;
+
+  @keyframes appear {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
 }
 
 @layer base {

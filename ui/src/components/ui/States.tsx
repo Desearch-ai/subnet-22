@@ -1,13 +1,45 @@
 import type { ReactNode } from 'react'
 import { ApiError, UnreachableError } from '@/api/client'
 import { API_BASE_URL } from '@/api/config'
+import { cn } from '@/lib/cn'
 import { Button } from './Button'
 
-export function LoadingState({ label = 'Loading' }: { label?: string }) {
+export function Spinner({ className }: { className?: string }) {
   return (
-    <div role="status" className="text-ink-muted flex items-center gap-2 px-4 py-8 text-sm">
-      <span aria-hidden className="bg-ink-faint size-1.5 animate-pulse rounded-full" />
-      {label}…
+    <svg
+      aria-hidden
+      viewBox="0 0 24 24"
+      fill="none"
+      className={cn('text-accent size-6 motion-safe:animate-spin', className)}
+    >
+      <circle cx="12" cy="12" r="9" stroke="currentColor" strokeOpacity="0.2" strokeWidth="2.5" />
+      <path
+        d="M21 12a9 9 0 0 0-9-9"
+        stroke="currentColor"
+        strokeWidth="2.5"
+        strokeLinecap="round"
+      />
+    </svg>
+  )
+}
+
+interface LoadingStateProps {
+  label?: string
+  page?: boolean
+}
+
+/** Fades in only if loading lasts, so a quick answer never flashes a spinner. */
+export function LoadingState({ label = 'Loading', page = false }: LoadingStateProps) {
+  return (
+    <div
+      role="status"
+      className={cn(
+        'text-ink-muted animate-appear flex flex-col items-center justify-center gap-3 text-sm',
+        page ? 'min-h-[60vh]' : 'min-h-48',
+      )}
+    >
+      <Spinner />
+      <span>{label}…</span>
     </div>
   )
 }

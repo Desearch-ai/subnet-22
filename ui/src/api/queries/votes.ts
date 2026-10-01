@@ -21,5 +21,9 @@ export function useVotes(filters: VoteFilters) {
     initialPageParam: FIRST_PAGE,
     getNextPageParam: nextPageParam,
     refetchInterval: (query) => pollFirstPageOnly(query.state.data),
+    placeholderData: (previous, previousQuery) =>
+      (previousQuery?.queryKey[1] as VoteFilters | undefined)?.validator === filters.validator
+        ? previous
+        : undefined,
   })
 }

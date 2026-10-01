@@ -1,8 +1,15 @@
 import { NavLink, Outlet } from 'react-router'
 import desearchLogo from '@/assets/desearch-logo.png'
+import { Badge } from '@/components/ui/Badge'
 import { cn } from '@/lib/cn'
 import { MINERS_PATH, OVERVIEW_PATH, TASKS_PATH, VALIDATORS_PATH } from '@/lib/paths'
 import { BackoffNotice } from './BackoffNotice'
+
+// Shown until launch, while only Desearch's own miners and validators use the API.
+const TEST_DATA_NOTICE = {
+  label: 'Pre-launch test data',
+  detail: "Until launch, everything here comes from Desearch's own test miners and validators.",
+}
 
 const NAV_ITEMS = [
   { to: OVERVIEW_PATH, label: 'Overview' },
@@ -40,6 +47,11 @@ export function AppShell() {
               </NavLink>
             ))}
           </nav>
+          <div className="ml-auto shrink-0">
+            <Badge tone="warn" title={TEST_DATA_NOTICE.detail}>
+              {TEST_DATA_NOTICE.label}
+            </Badge>
+          </div>
         </div>
         <BackoffNotice />
       </header>

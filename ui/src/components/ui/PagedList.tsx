@@ -1,7 +1,8 @@
 import type { InfiniteData, UseInfiniteQueryResult } from '@tanstack/react-query'
 import type { ReactNode } from 'react'
+import { cn } from '@/lib/cn'
 import { Button } from './Button'
-import { EmptyState, ErrorState, LoadingState, StaleNotice } from './States'
+import { EmptyState, ErrorState, LoadingState, Spinner, StaleNotice } from './States'
 
 interface PagedListProps<Page, Item> {
   query: UseInfiniteQueryResult<InfiniteData<Page>>
@@ -36,7 +37,12 @@ export function PagedList<Page, Item>({
   return (
     <>
       {query.isError ? <StaleNotice /> : null}
-      {children(items)}
+      <div
+        aria-busy={query.isPlaceholderData}
+        className={cn('transition-opacity', query.isPlaceholderData ? 'opacity-50' : null)}
+      >
+        {children(items)}
+      </div>
       {query.hasNextPage ? (
         <div className="border-line flex items-center gap-3 border-t px-4 py-3">
           <Button
@@ -45,6 +51,7 @@ export function PagedList<Page, Item>({
               void query.fetchNextPage()
             }}
           >
+            {query.isFetchingNextPage ? <Spinner className="size-3.5" /> : null}
             {query.isFetchingNextPage ? 'Loading…' : 'Load more'}
           </Button>
           <span className="text-ink-faint text-xs">{items.length} shown</span>
