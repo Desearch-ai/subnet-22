@@ -1,0 +1,19 @@
+# The build context is the repository root: only the shared package, the engine's chunking and the task API go in.
+*
+!desearch/
+!engine/__init__.py
+!engine/chunking.py
+!task-api/
+**/__pycache__
+**/*.pyc
+.pytest_cache
+.ruff_cache
+task-api/.env
+task-api/.env.*
+task-api/**/*.db
+task-api/**/*.db-journal
+task-api/**/*.db-wal
+task-api/**/*.db-shm
+task-api/tests/
+task-api/local/
+task-api/docker-compose.yml

@@ -1,0 +1,18 @@
+# Runs on the bot box from a checkout at /opt/subnet-22; install into /etc/systemd/system/.
+[Unit]
+Description=Desearch task api feeder (crawler stores -> task queue)
+After=network-online.target desearch-bot.service
+Wants=network-online.target
+RequiresMountsFor=/mnt/desearch-bot
+
+[Service]
+WorkingDirectory=/opt/subnet-22/task-api
+EnvironmentFile=/opt/subnet-22/task-api/.env
+Environment=PYTHONPATH=/opt/subnet-22
+ExecStart=/opt/subnet-22/task-api/.venv/bin/python -u -m feeder --api ${TASK_API_URL} --key-uri ${FEEDER_KEY_URI} --domains feeder/news_domains.json --state /var/lib/task-api-feeder/sent.db
+Restart=always
+RestartSec=30
+Nice=10
+
+[Install]
+WantedBy=multi-user.target

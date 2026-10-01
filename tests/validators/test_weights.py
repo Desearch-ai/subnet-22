@@ -1,52 +1,273 @@
-import unittest
-from unittest.mock import AsyncMock, Mock, patch
+import asyncio
+from types import SimpleNamespace
 
 import numpy as np
+import pytest
 
-from desearch.bittensor.metagraph import generateMockNeurons
-from desearch.bittensor.wallet import MOCK_WALLET_KEY
-from neurons.validators.scoring.weights import burn_weights, set_weights
+from neurons.validators.ledger import Ledger
+from neurons.validators.validator import Validator
+from desearch.kinds import CRAWL as CRAWL_KIND
+from desearch.kinds import EMBED as EMBED_KIND
+from neurons.validators.weights import (
+    EMISSION_CONTROL_HOTKEY,
+    process_weights,
+    CRAWL_PERC,
+    EMBED_PERC,
+    EMISSION_CONTROL_PERC,
+    set_weights,
+    weights_from_shares,
+)
 
-WEIGHTS = "neurons.validators.scoring.weights"
-
-
-class TestWeights(unittest.IsolatedAsyncioTestCase):
-    def setUp(self):
-        self.neuron = Mock()
-        self.neuron.config.netuid = 22
-        self.neuron.metagraph.neurons = generateMockNeurons(4)
-        self.neuron.metagraph.uids = np.array([0, 1, 2, 3], dtype=np.int64)
-        self.neuron.metagraph.n = 4
-        self.neuron.moving_averaged_scores = np.zeros(4, dtype=np.float32)
-        self.neuron.subtensor.min_allowed_weights = AsyncMock(return_value=1)
-        self.neuron.subtensor.max_weight_limit = AsyncMock(return_value=1.0)
-        self.neuron.subtensor.set_weights = AsyncMock(return_value=(True, "ok"))
-
-    @patch(f"{WEIGHTS}.EMISSION_CONTROL_HOTKEY", "hotkey2")
-    def test_burn_weights_puts_everything_on_burn_uid(self):
-        np.testing.assert_array_equal(burn_weights(self.neuron), [0, 0, 1, 0])
-
-    @patch(f"{WEIGHTS}.EMISSION_CONTROL_HOTKEY", MOCK_WALLET_KEY)
-    def test_burn_weights_on_uid_zero(self):
-        np.testing.assert_array_equal(burn_weights(self.neuron), [1, 0, 0, 0])
-
-    @patch(f"{WEIGHTS}.EMISSION_CONTROL_HOTKEY", "missing")
-    def test_burn_weights_without_burn_hotkey(self):
-        self.assertIsNone(burn_weights(self.neuron))
-
-    @patch(f"{WEIGHTS}.EMISSION_CONTROL_HOTKEY", "hotkey2")
-    async def test_set_weights_sends_only_burn_uid_with_zero_scores(self):
-        self.assertTrue(await set_weights(self.neuron))
-
-        kwargs = self.neuron.subtensor.set_weights.await_args.kwargs
-        np.testing.assert_array_equal(kwargs["uids"], [2])
-        np.testing.assert_array_equal(kwargs["weights"], [1.0])
-
-    @patch(f"{WEIGHTS}.EMISSION_CONTROL_HOTKEY", "missing")
-    async def test_set_weights_skips_without_burn_hotkey(self):
-        self.assertFalse(await set_weights(self.neuron))
-        self.neuron.subtensor.set_weights.assert_not_awaited()
+BURN = EMISSION_CONTROL_HOTKEY
+CRAWL = (1 - EMISSION_CONTROL_PERC) * CRAWL_PERC
 
 
-if __name__ == "__main__":
-    unittest.main()
+def test_the_crawl_pool_is_split_by_share_and_the_rest_is_burned():
+    weights = weights_from_shares(
+        ["m1", BURN, "m2", "m3"], {"crawl": {"m1": 0.75, "m2": 0.25}}
+    )
+
+    assert weights[1] == pytest.approx(1 - CRAWL)
+    assert weights[0] == pytest.approx(CRAWL * 0.75)
+    assert weights[2] == pytest.approx(CRAWL * 0.25)
+    assert weights[3] == 0
+    assert weights.sum() == pytest.approx(1.0)
+
+
+def test_a_burn_hotkey_at_uid_zero_still_burns():
+    weights = weights_from_shares([BURN, "m1"], {"crawl": {"m1": 1.0}})
+
+    assert list(weights) == pytest.approx([1 - CRAWL, CRAWL])
+
+
+def test_hotkeys_off_the_metagraph_and_empty_shares_are_dropped():
+    weights = weights_from_shares(
+        [BURN, "m1", "m2"], {"crawl": {"m1": 0.5, "gone": 0.5, "m2": 0.0}}
+    )
+
+    assert list(weights) == pytest.approx([1 - CRAWL, CRAWL, 0.0])
+
+
+def test_the_burn_hotkey_earns_no_share():
+    weights = weights_from_shares([BURN, "m1"], {"crawl": {BURN: 0.5, "m1": 0.5}})
+
+    assert list(weights) == pytest.approx([1 - CRAWL, CRAWL])
+
+
+def test_a_pool_nobody_earned_goes_to_the_burn_hotkey():
+    assert list(weights_from_shares(["m1", BURN], {})) == pytest.approx([0.0, 1.0])
+    unknown_pool = weights_from_shares(["m1", BURN], {"translate": {"m1": 1.0}})
+    assert list(unknown_pool) == pytest.approx([0.0, 1.0])
+
+
+def test_the_burn_takes_its_part_and_crawling_all_of_the_rest():
+    assert (EMISSION_CONTROL_PERC, CRAWL_PERC, EMBED_PERC) == (0.8, 1.0, 0.0)
+
+    weights = weights_from_shares(
+        ["crawler", "embedder", BURN],
+        {CRAWL_KIND: {"crawler": 1.0}, EMBED_KIND: {"embedder": 1.0}},
+    )
+
+    assert list(weights) == pytest.approx([0.2, 0.0, 0.8])
+
+
+def test_changing_the_burn_alone_moves_the_miners_part(monkeypatch):
+    monkeypatch.setattr("neurons.validators.weights.EMISSION_CONTROL_PERC", 0.5)
+
+    weights = weights_from_shares(["crawler", BURN], {CRAWL_KIND: {"crawler": 1.0}})
+
+    assert list(weights) == pytest.approx([0.5, 0.5])
+
+
+def test_every_pool_pays_its_part(monkeypatch):
+    monkeypatch.setattr("neurons.validators.weights.EMISSION_CONTROL_PERC", 0.5)
+    monkeypatch.setattr("neurons.validators.weights.CRAWL_PERC", 0.6)
+    monkeypatch.setattr("neurons.validators.weights.EMBED_PERC", 0.4)
+
+    weights = weights_from_shares(
+        ["crawler", "embedder", "both", BURN],
+        {
+            "crawl": {"crawler": 0.5, "both": 0.5},
+            "embed": {"embedder": 0.5, "both": 0.5},
+        },
+    )
+
+    assert list(weights) == pytest.approx([0.15, 0.1, 0.25, 0.5])
+
+
+def test_without_the_burn_hotkey_the_pools_keep_their_proportions():
+    weights = weights_from_shares(["m1", "m2"], {"crawl": {"m1": 0.2, "m2": 0.6}})
+
+    assert list(weights / weights.sum()) == pytest.approx([0.25, 0.75])
+    assert not weights_from_shares(["m1"], {}).any()
+
+
+def weights_of(hotkeys, ledger=None):
+    made = Validator.__new__(Validator)
+    made.metagraph = SimpleNamespace(hotkeys=hotkeys)
+    made.ledger = ledger or Ledger(":memory:")
+    return asyncio.run(made.weights())
+
+
+def test_a_validator_with_no_results_of_its_own_puts_everything_on_burn():
+    assert list(weights_of(["m1", BURN])) == pytest.approx([0.0, 1.0])
+
+
+def test_set_weights_submits_the_processed_weights(monkeypatch):
+    monkeypatch.setattr("neurons.validators.weights.SET_WEIGHTS_RETRY_S", 0)
+    sent = []
+
+    class FakeSubtensor:
+        hyperparameters = SimpleNamespace(
+            min_allowed_weights=_returning(1), max_weight_limit=_returning(1.0)
+        )
+
+        async def execute(self, intent, wallet):
+            sent.append((intent, wallet))
+            ok = len(sent) > 1
+            return SimpleNamespace(
+                success=ok,
+                message="ok" if ok else "",
+                error=None if ok else SimpleNamespace(code="Busy", remediation="retry"),
+            )
+
+    weights = weights_from_shares(["m1", BURN, "m2"], {"crawl": {"m1": 0.5, "m2": 0.5}})
+    neuron = SimpleNamespace(
+        config=SimpleNamespace(netuid=22), subtensor=FakeSubtensor(), wallet="wallet"
+    )
+
+    assert asyncio.run(set_weights(neuron, weights))
+    assert len(sent) == 2, "a failed attempt is retried"
+    intent, wallet = sent[-1]
+    assert wallet == "wallet" and intent.netuid == 22 and intent.version_key
+    submitted = dict(zip(intent.uids, intent.weights, strict=True))
+    assert submitted[1] == pytest.approx((1 - CRAWL) / (CRAWL / 2) * submitted[0])
+    assert submitted[0] == pytest.approx(submitted[2])
+    assert sum(submitted.values()) == pytest.approx(1.0)
+
+
+def _returning(value):
+    async def read(**_):
+        return value
+
+    return read
+
+
+def test_processed_weights_drop_zeros_and_respect_the_subnet_limits():
+    uids, values = process_weights(np.array([0.0, 0.7, 0.3, 0.0]), 1, 1.0)
+    assert uids == [1, 2] and values == pytest.approx([0.7, 0.3])
+
+    uids, capped = process_weights(np.array([0.9, 0.1]), 1, 0.5)
+    assert capped == pytest.approx([0.5 / 0.6, 0.1 / 0.6])
+
+    with pytest.raises(ValueError, match="at least 3"):
+        process_weights(np.array([0.5, 0.5]), 3, 1.0)
+
+
+def test_a_validator_that_cannot_check_tasks_sets_no_weights():
+    made = Validator.__new__(Validator)
+    made.config = SimpleNamespace(
+        neuron=SimpleNamespace(disable_set_weights=False, storage_url="")
+    )
+    made.scrapingdog_key = ""
+    assert not made.should_set_weights()
+
+    made.scrapingdog_key = "key"
+    assert not made.should_set_weights(), "nowhere to read uploads from"
+
+    made.config.neuron.storage_url = "https://files.example"
+    made.crawl_checker = SimpleNamespace(
+        trouble="the provider failed on 3 tasks in a row"
+    )
+    assert not made.should_set_weights()
+
+    made.crawl_checker.trouble = None
+    assert made.should_set_weights()
+
+
+def test_weights_come_from_the_validators_own_verdicts_once_it_has_any():
+    ledger = Ledger(":memory:")
+    ledger.record("t1", "crawl", "m1", "pass", 90, 100, 100)
+    ledger.record("t2", "crawl", "m2", "pass", 10, 100, 100)
+    ledger.record("t3", "crawl", "short", "pass", 40, 100, 80)
+    ledger.record("t4", "crawl", "cheat", "pass", 50, 100, 100)
+    ledger.record("t5", "crawl", "cheat", "fail", 0, 100, 100)
+
+    weights = weights_of(["m1", "m2", "short", "cheat", BURN], ledger)
+
+    assert list(weights) == pytest.approx(
+        [CRAWL * 0.64, CRAWL * 0.07, CRAWL * 0.29, 0.0, 1 - CRAWL], abs=0.01
+    )
+
+
+def test_a_failed_task_takes_its_urls_back_but_never_below_nothing():
+    ledger = Ledger(":memory:")
+    ledger.record("old", "crawl", "m1", "pass", 100, 100, 100, at=1.0)
+    ledger.record("a", "crawl", "m1", "pass", 900, 1000, 1000)
+    ledger.record("b", "crawl", "m1", "fail", 0, 1000, 1000)
+    ledger.record("c", "crawl", "m2", "pass", 100, 100, 100)
+    ledger.record("d", "crawl", "m3", "fail", 0, 100, 100)
+
+    assert ledger.shares() == {"crawl": {"m2": 1.0}}
+    assert ledger.count() == 4
+
+
+def test_the_window_report_lists_what_each_miner_did_inside_the_scoring_window():
+    ledger = Ledger(":memory:")
+    now = 1_000_000.0
+    ledger.record("t1", "crawl", "m1", "pass", 90, 100, 100, at=now - 60)
+    ledger.record("t2", "crawl", "m1", "fail", 0, 100, 80, at=now - 60)
+    ledger.record("t3", "crawl", "m2", "pass", 40, 100, 100, at=now - 60)
+    ledger.record("old", "crawl", "m2", "pass", 99, 100, 100, at=now - 25 * 3600)
+
+    assert ledger.window(now) == [
+        {
+            "kind": "crawl",
+            "miner": "m1",
+            "tasks": 2,
+            "passed": 1,
+            "failed": 1,
+            "assigned": 200,
+            "returned": 180,
+            "credited": 90,
+            "net": -10,
+        },
+        {
+            "kind": "crawl",
+            "miner": "m2",
+            "tasks": 1,
+            "passed": 1,
+            "failed": 0,
+            "assigned": 100,
+            "returned": 100,
+            "credited": 40,
+            "net": 40,
+        },
+    ]
+
+
+def test_the_chains_u16_weight_limit_is_read_as_a_fraction():
+    weights = np.array([0.8, 0.2])
+    assert process_weights(weights, 1, 65535)[1] == pytest.approx([0.8, 0.2])
+    assert process_weights(weights, 1, 32768)[1] == pytest.approx(
+        [0.5 / 0.7, 0.2 / 0.7], abs=1e-4
+    )
+
+
+def test_flags_from_older_launch_commands_are_ignored(tmp_path, capsys):
+    from neurons.validators.config import config
+
+    made = config(
+        [
+            "--wallet.name",
+            "validator",
+            "--netuid",
+            "22",
+            "--axon.port",
+            "8091",
+            "--logging.logging_dir",
+            str(tmp_path),
+        ]
+    )
+    assert (made.wallet.name, made.netuid) == ("validator", 22)
+    assert "--axon.port 8091" in capsys.readouterr().err
