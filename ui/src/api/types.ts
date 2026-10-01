@@ -77,13 +77,13 @@ export interface MinerSummary extends VerdictCounts {
   uid: number | null
   budget: number
   in_flight: number
+  waiting: number
   locked_until: number | null
   verified: number
   tasks: number
   returned: number
   credited: number
   coverage: number | null
-  eligible: boolean
   share: number
   last_scored_at: number | null
 }
@@ -97,6 +97,7 @@ export interface MinerPool {
   budget: number
   verified: number
   in_flight: number
+  waiting: number
   locked_until: number | null
 }
 
@@ -104,7 +105,6 @@ export interface MinerCoverage {
   assigned: number
   returned: number
   coverage: number | null
-  eligible: boolean
 }
 
 export type BudgetCause = 'verified' | 'claim_expired' | 'abandoned' | 'verification_failed'

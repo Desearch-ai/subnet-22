@@ -2,13 +2,12 @@ import { useState } from 'react'
 import type { MinerSummary } from '@/api/types'
 import { Identifier } from '@/components/ui/Identifier'
 import { SortTh } from '@/components/ui/SortTh'
-import { Table, Td, Th, Tr } from '@/components/ui/Table'
+import { Table, Td, Tr } from '@/components/ui/Table'
 import { TimeAgo } from '@/components/ui/TimeAgo'
 import { VerdictCounts } from '@/components/ui/VerdictBadge'
 import { formatInt, formatPercent } from '@/lib/format'
 import { minerPath } from '@/lib/paths'
 import { nextSort, sortRows, type SortState, type SortValue } from '@/lib/sort'
-import { Eligibility, ELIGIBILITY_HINT } from './Eligibility'
 import { Lockout } from './Lockout'
 
 type MinerSortKey =
@@ -16,6 +15,7 @@ type MinerSortKey =
   | 'share'
   | 'budget'
   | 'in_flight'
+  | 'waiting'
   | 'coverage'
   | 'pass'
   | 'returned'
@@ -57,8 +57,14 @@ export function MinersTable({ miners }: { miners: readonly MinerSummary[] }) {
           <SortTh
             {...column}
             sortKey="in_flight"
-            label="In flight"
-            hint="Tasks the miner holds right now"
+            label="Crawling"
+            hint="Tasks the miner holds and has not uploaded yet"
+          />
+          <SortTh
+            {...column}
+            sortKey="waiting"
+            label="Waiting"
+            hint="Uploads waiting for validators' verdict"
           />
           <SortTh
             {...column}
@@ -66,7 +72,6 @@ export function MinersTable({ miners }: { miners: readonly MinerSummary[] }) {
             label="Coverage"
             hint="Rows returned out of URLs assigned"
           />
-          <Th hint={ELIGIBILITY_HINT}>Eligible</Th>
           <SortTh {...column} sortKey="pass" label="Pass / fail / void" align="left" />
           <SortTh {...column} sortKey="returned" label="Returned" hint="Rows the miner uploaded" />
           <SortTh
@@ -105,10 +110,8 @@ export function MinersTable({ miners }: { miners: readonly MinerSummary[] }) {
             <Td numeric>{formatPercent(miner.share)}</Td>
             <Td numeric>{miner.budget}</Td>
             <Td numeric>{miner.in_flight}</Td>
+            <Td numeric>{miner.waiting}</Td>
             <Td numeric>{formatPercent(miner.coverage)}</Td>
-            <Td>
-              <Eligibility coverage={miner.coverage} eligible={miner.eligible} />
-            </Td>
             <Td>
               <VerdictCounts pass={miner.pass} fail={miner.fail} void={miner.void} />
             </Td>

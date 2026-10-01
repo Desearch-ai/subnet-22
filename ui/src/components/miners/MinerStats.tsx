@@ -2,7 +2,6 @@ import type { MinerDetail } from '@/api/types'
 import { Stat, StatGrid } from '@/components/ui/Stat'
 import { VerdictCounts } from '@/components/ui/VerdictBadge'
 import { formatInt, formatPercent, ratio } from '@/lib/format'
-import { Eligibility } from './Eligibility'
 import { Lockout } from './Lockout'
 
 export function MinerStats({ miner }: { miner: MinerDetail }) {
@@ -14,7 +13,7 @@ export function MinerStats({ miner }: { miner: MinerDetail }) {
       <Stat
         label="Budget"
         value={formatInt(crawl.budget)}
-        detail={`tasks at once · ${formatInt(crawl.in_flight)} held now`}
+        detail={`tasks crawled at once · ${formatInt(crawl.in_flight)} crawling, ${formatInt(crawl.waiting)} waiting for a verdict`}
       />
       <Stat
         label="Coverage"
@@ -24,11 +23,6 @@ export function MinerStats({ miner }: { miner: MinerDetail }) {
             ? 'nothing finalized yet'
             : `${formatInt(coverage.returned)} rows for ${formatInt(coverage.assigned)} URLs`
         }
-      />
-      <Stat
-        label="Eligible"
-        value={<Eligibility coverage={coverage.coverage} eligible={coverage.eligible} />}
-        detail="needs at least 85% coverage"
       />
       <Stat
         label={`Tasks · ${miner.window_hours} h`}
