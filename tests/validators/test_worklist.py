@@ -67,6 +67,29 @@ class ListedEmbed(Listed):
     kinds = ("crawl", "embed")
 
 
+def test_loops_picking_at_once_never_take_the_same_upload():
+    class SlowSeeds(Listed):
+        async def seed_for(self, block: int) -> str | None:
+            await asyncio.sleep(0.05)
+            return f"seed-{block}"
+
+    checker = SlowSeeds([manifest(f"t{n}", completed_at=float(n)) for n in range(12)])
+
+    async def twelve_loops():
+        return await asyncio.gather(*(checker.next_job() for _ in range(12)))
+
+    jobs = asyncio.run(twelve_loops())
+
+    assert sorted(job["task_id"] for job in jobs) == sorted(f"t{n}" for n in range(12))
+
+
+def test_an_upload_whose_seed_is_not_out_yet_is_left_for_later():
+    checker = Listed([manifest("late", seed_block=20)])
+
+    assert asyncio.run(checker.next_job()) is None
+    assert "late" not in checker.in_flight
+
+
 def test_the_oldest_listed_upload_whose_seed_block_has_passed_is_taken():
     checker = Listed([manifest("late", seed_block=20), manifest("ready", seed_block=5)])
     job = asyncio.run(checker.next_job())

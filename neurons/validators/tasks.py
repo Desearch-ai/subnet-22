@@ -123,7 +123,6 @@ class TaskChecker:
                 await sleep_unless_stopped(stop, IDLE_DELAY_S)
                 continue
             idle = 0
-            self.in_flight.add(job["task_id"])
             try:
                 await self.check(job)
             except TaskApiError as exc:
@@ -153,7 +152,7 @@ class TaskChecker:
         return list(listing.get("uploads", []))
 
     async def next_job(self) -> dict | None:
-        """The oldest listed upload of our kinds whose seed exists and nobody here is on."""
+        """The oldest listed upload of our kinds whose seed exists and nobody here is on; it is ours until released."""
         now = time.monotonic()
         self.deferred = {t: until for t, until in self.deferred.items() if until > now}
         keep = time.time() - REPORTED_KEEP_S
@@ -179,18 +178,24 @@ class TaskChecker:
         ]
         for manifest in self.oldest_first(waiting):
             task_id = manifest["task_id"]
+            if task_id in self.in_flight:
+                continue
             if not verify_manifest(manifest, self.signer):
                 log.warning(
                     "task=%s is not signed by %s, skipped", task_id, self.signer
                 )
                 continue
+            # Taken before the seed lookup, so loops waiting on it never pick the same upload.
+            self.in_flight.add(task_id)
             try:
                 seed = await self.seeds(manifest["seed_block"])
             except Exception as exc:
+                self.in_flight.discard(task_id)
                 log.warning("task=%s seed block unavailable: %r", task_id, exc)
                 return None
             if seed is not None:
                 return self.job_of(manifest, seed)
+            self.in_flight.discard(task_id)
         return None
 
     def oldest_first(self, waiting: list[dict]) -> list[dict]:
