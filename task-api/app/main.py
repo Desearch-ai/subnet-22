@@ -14,7 +14,7 @@ from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
 from . import lifecycle, logs, queues
-from .auth import Authenticator, Caller
+from .auth import Authenticator, Caller, client_address
 from .budget import CRAWL, EMBED, SHARE_WINDOW_H, hour_of
 from .models import (
     CompleteBody,
@@ -84,7 +84,7 @@ def create_app(redis=None) -> FastAPI:
     @app.middleware("http")
     async def limit_reads(request: Request, call_next):
         if request.method == "GET":
-            wait = await core.read_wait(request.client.host if request.client else "")
+            wait = await core.read_wait(client_address(request))
             if wait is not None:
                 return JSONResponse(
                     {"detail": "too many requests"},

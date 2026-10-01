@@ -13,6 +13,7 @@ TOLERANCE_S = 60
 NONCE_TTL_S = 120
 NONCE = re.compile(r"[0-9a-f]{32}")
 MAX_HOTKEY_CHARS = 64
+CLIENT_ADDRESS_HEADER = "CF-Connecting-IP"
 
 
 @dataclass
@@ -29,6 +30,12 @@ def signing_payload(
 ) -> bytes:
     digest = hashlib.sha256(body).hexdigest()
     return f"{method}\n{path}\n{digest}\n{timestamp}\n{nonce}".encode()
+
+
+def client_address(request: Request) -> str:
+    return request.headers.get(CLIENT_ADDRESS_HEADER) or (
+        request.client.host if request.client else ""
+    )
 
 
 def verify_signature(hotkey: str, payload: bytes, signature: str) -> bool:
@@ -63,17 +70,17 @@ class Authenticator:
         if abs(time.time() - sent_at) > TOLERANCE_S:
             raise HTTPException(401, "timestamp outside tolerance")
 
+        admin = hotkey in self.admins
+        entry = None if admin else await self.registry.lookup(hotkey)
+        if entry is None and not admin:
+            raise HTTPException(403, "hotkey is not registered on this subnet")
+
         body = await request.body()
         payload = signing_payload(
             request.method, request.url.path, body, timestamp, nonce
         )
         if not verify_signature(hotkey, payload, signature):
             raise HTTPException(401, "bad signature")
-
-        admin = hotkey in self.admins
-        entry = None if admin else await self.registry.lookup(hotkey)
-        if entry is None and not admin:
-            raise HTTPException(403, "hotkey is not registered on this subnet")
 
         # Claimed last so unauthenticated requests cannot fill the nonce cache.
         if not await self.nonces.claim(hotkey, nonce, NONCE_TTL_S):
