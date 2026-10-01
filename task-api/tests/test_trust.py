@@ -4,6 +4,7 @@ import time
 
 import pytest
 from app import lifecycle, registry
+from app.queues import VACTIVE
 from app.auth import Keypair
 from app.seeds import REVEAL_AFTER_BLOCKS, LocalSeeds
 
@@ -157,7 +158,32 @@ def test_two_validators_that_disagree_void_the_task(api_env, memory):
     assert run(memory, scenario) == ("void", "queued", "validators_disagree")
 
 
-def test_a_task_below_quorum_at_its_deadline_is_void_and_goes_back_out(api_env, memory):
+def test_a_task_below_quorum_waits_until_the_missing_validator_drops_out(
+    api_env, memory
+):
+    async def scenario(h):
+        task = await h.mine()
+        await judged(h, h.validator)
+        task = await h.mine(h.rival)
+        await judged(h, h.other_validator, task_id=task["task_id"])
+        job = await h.core.validation.job(task["task_id"])
+        past = {**job, "deadline": time.time() - 1}
+        await h.redis.set(f"vjob:{task['task_id']}", json.dumps(past))
+        held = await lifecycle.finalize_due(h.core)
+        await h.redis.zadd(VACTIVE, {h.validator.hotkey: 0})
+        decided = await lifecycle.finalize_due(h.core)
+        return held, decided, await h.status(task["task_id"])
+
+    held, decided, status = run(memory, scenario)
+    assert held == [], (
+        "a missing vote is waited for, so the work is not handed out again"
+    )
+    assert len(decided) == 1 and status == "pass"
+
+
+def test_a_task_still_below_quorum_after_the_window_is_void_and_goes_back_out(
+    api_env, memory
+):
     async def scenario(h):
         task = await h.mine()
         await judged(h, h.validator)

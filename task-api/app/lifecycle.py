@@ -344,14 +344,15 @@ async def finalize_due(core, now: float | None = None) -> list[str]:
 
 
 async def finalize_task(core, task_id: str, job: dict, now: float) -> dict | None:
-    """Finalizes once every active validator voted, or at the deadline with a quorum."""
+    """Finalizes once every active validator voted, or at the deadline with a quorum; short of one it waits."""
     voters = await core.validation.voters(task_id)
     active = await core.validation.active(now) | voters
     due = now >= job.get("deadline", 0)
     if not voters or (not due and not active <= voters):
         return None
     if len(voters) < quorum(len(active)):
-        if not due:
+        # A stopped validator leaves the active set within this window.
+        if now < job.get("deadline", 0) + core.validation.active_s:
             return None
         lapsed = await core.validation.finalize(task_id)
         if lapsed is not None:
