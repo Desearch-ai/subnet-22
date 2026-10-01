@@ -1,6 +1,5 @@
 import asyncio
 import logging
-import math
 import os
 import signal
 import sys
@@ -218,72 +217,36 @@ class Validator:
                 await asyncio.sleep(SIGNER_RETRY_S)
         return ""
 
-    async def shares(self) -> dict[str, dict[str, float]]:
-        url = f"{self.config.neuron.task_api_url.rstrip('/')}/v1/shares"
-        async with self.http.get(
-            url, timeout=SHARES_TIMEOUT, raise_for_status=True
-        ) as response:
-            pools = (await response.json()).get("pools", {})
-        parsed = {
-            pool: {hotkey: float(share) for hotkey, share in shares.items()}
-            for pool, shares in pools.items()
-        }
-        for pool, shares in parsed.items():
-            for hotkey, share in shares.items():
-                if not math.isfinite(share) or share < 0:
-                    raise ValueError(f"{pool} share for {hotkey} is {share}")
-        return parsed
-
     async def weights(self) -> np.ndarray | None:
-        """From this validator's own verdicts; None keeps the last weights."""
+        """From this validator's own results; with none yet, everything goes to burn."""
         if self.ledger.count():
             shares = self.ledger.shares()
-            ineligible = await self.ineligible()
-            self.report_window(shares, ineligible)
-            shares = {
-                pool: {hk: s for hk, s in miners.items() if hk not in ineligible}
-                for pool, miners in shares.items()
-            }
+            self.report_window(shares)
         else:
-            try:
-                shares = await self.shares()
-            except Exception as error:
-                log.error(
-                    f"No verdicts of our own yet and the task API's shares are"
-                    f" unavailable, keeping the last weights: {error!r}"
-                )
-                return None
             log.warning(
-                "No verdicts of our own in the window; weights follow the task API's"
-                " shares until there are"
+                "No results of our own in the scoring window yet; all weight goes to"
+                " burn until there are"
             )
+            shares = {}
         weights = weights_from_shares(list(self.metagraph.hotkeys), shares)
         return weights if weights.any() else None
 
-    def report_window(self, shares: dict, ineligible: set[str]) -> None:
+    def report_window(self, shares: dict) -> None:
         """What each miner did in the scoring window, as these weights count it."""
         log.info(f"Scoring window, last {SHARE_WINDOW_H} h:")
         for row in self.ledger.window():
             share = shares.get(row["kind"], {}).get(row["miner"], 0.0)
-            gate = ", under the coverage gate" if row["miner"] in ineligible else ""
+            failed = (
+                f", {row['failed']} failed ({row['net'] - row['credited']} rows)"
+                if row["failed"]
+                else ""
+            )
             log.info(
                 f"  {row['kind']} {row['miner'][:10]}: {row['tasks']} tasks"
-                f" ({row['passed']} passed), {row['returned']} of {row['assigned']}"
-                f" URLs returned, {row['credited']} paid, share {share:.3f}{gate}"
+                f" ({row['passed']} passed{failed}), {row['returned']} of"
+                f" {row['assigned']} URLs returned, {row['credited']} paid,"
+                f" share {share:.3f}"
             )
-
-    async def ineligible(self) -> set[str]:
-        """Miners under the coverage gate: claims that lapsed are seen only by the task API."""
-        url = f"{self.config.neuron.task_api_url.rstrip('/')}/v1/health"
-        try:
-            async with self.http.get(
-                url, timeout=SHARES_TIMEOUT, raise_for_status=True
-            ) as response:
-                coverage = (await response.json()).get("coverage", {})
-        except Exception as error:
-            log.warning(f"Coverage unavailable, applying no gate: {error!r}")
-            return set()
-        return {hk for hk, c in coverage.items() if not c.get("eligible", True)}
 
     async def sync_weights(self) -> None:
         while True:

@@ -161,7 +161,7 @@ class EmbedValidator(TaskChecker):
             self.provider_worked()
             result |= compare(picked, vectors, expected)
 
-        await self.submit_verdict(task_id, result)
+        await self.submit_verdict(job, result)
         self.note_verdict(job, result)
         log.info(
             "task=%s miner=%s embed %d texts, matched %d/%d (min %s) verdict=%s reason=%s",

@@ -99,12 +99,24 @@ def test_uploads_of_other_kinds_or_already_on_this_validators_plate_are_skipped(
     )
     checker.in_flight.add("flying")
     checker.defer("later")
-    checker.reported["done"] = 1e12
+    checker.reported[manifest("done")["key"]] = 1e12
     assert asyncio.run(checker.next_job()) is None
 
     checker.uploads.append(manifest("fresh"))
     checker.listed_at = float("-inf")
     assert asyncio.run(checker.next_job())["task_id"] == "fresh"
+
+
+def test_a_task_back_from_the_queue_is_checked_again_under_its_new_upload():
+    first = manifest("t")
+    checker = Listed([first])
+    checker.reported[first["key"]] = 1e12
+    assert asyncio.run(checker.next_job()) is None
+
+    again = manifest("t", key="submitted/dt=2026-09-25/task=t/n-2-ef567890.parquet")
+    checker.uploads[:] = [again]
+    checker.listed_at = float("-inf")
+    assert asyncio.run(checker.next_job())["key"] == again["key"]
 
 
 def test_a_manifest_the_task_api_did_not_sign_is_not_worked_on():

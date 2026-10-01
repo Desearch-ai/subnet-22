@@ -120,6 +120,7 @@ async def judged(body: bytes, reference: Reference, given: bytes | None = None):
     async with serving(handler) as base, aiohttp.ClientSession() as http:
         job = {
             "task_id": "t1",
+            "key": "submitted/dt=2026-09-25/task=t1/5Miner-1-abcd1234.parquet",
             "kind": "embed",
             "miner": "5Miner",
             "model": "tiny",

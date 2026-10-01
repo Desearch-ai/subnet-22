@@ -1,16 +1,20 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import multiprocessing
 import time
 
 import pyarrow
 
 from desearch.extraction import extract
+from neurons.validators.confinement import confine
 from neurons.validators.scoring import (
     FetchedPage,
+    MISMATCHED,
     cleared_by_render,
     extraction_url,
+    judge_sample,
     load_upload,
     needs_rendered_check,
     pick_samples,
@@ -20,6 +24,8 @@ from neurons.validators.scoring import (
 )
 
 MEMORY_MB = 4096
+MAX_ANSWER_BYTES = 64_000_000
+FIRST_SHARE = 0.4
 
 
 class Unscorable(Exception):
@@ -54,25 +60,57 @@ def live_texts(
     }
 
 
+def certainly_fails(
+    kept: dict[str, dict],
+    fetched: dict[str, FetchedPage],
+    planned: int,
+    match_ratio: float,
+) -> bool:
+    """Too many mismatches for the task to pass even if every page not checked yet matched."""
+    mismatched = sum(
+        1
+        for url, page in fetched.items()
+        if judge_sample(kept[url], page)["outcome"] == MISMATCHED
+    )
+    return mismatched > (1 - match_ratio) * planned
+
+
+def answer(conn, kind: str, payload) -> None:
+    """Plain data only: a child that reads a miner's file never hands the parent an object."""
+    conn.send_bytes(json.dumps([kind, payload]).encode())
+
+
 def _score_in_child(
     conn, data, assigned, seed, min_samples, match_ratio, memory_mb
 ) -> None:
     try:
+        unconfined = confine()
         read_on_one_thread()
         cap_memory(memory_mb)
         rows, kept = load_upload(data, assigned, seed)
         del data
-        size = sample_count(len(kept), min_samples)
-        conn.send(("samples", pick_samples(kept, seed, size)))
-        fetched = conn.recv()
-        conn.send(("doubtful", needs_rendered_check(kept, fetched)))
-        fetched |= cleared_by_render(kept, conn.recv())
-        result = score(rows, assigned, fetched, seed, min_samples, match_ratio)
+        planned = pick_samples(kept, seed, sample_count(len(kept), min_samples))
+        answer(conn, "samples", {"urls": planned, "unconfined": unconfined})
+        fetched: dict[str, FetchedPage] = {}
+        while batch := conn.recv():
+            answer(conn, "doubtful", needs_rendered_check(kept, batch))
+            fetched |= batch | cleared_by_render(kept, conn.recv())
+            settled = certainly_fails(kept, fetched, len(planned), match_ratio)
+            answer(conn, "settled", settled)
+        result = score(
+            rows,
+            assigned,
+            fetched,
+            seed,
+            min_samples,
+            match_ratio,
+            only=set(fetched) if len(fetched) < len(planned) else None,
+        )
         texts = live_texts(kept, fetched)
         result["urls"] = url_log(rows, result["samples"], texts, result["rejected"])
-        conn.send(("scored", result))
+        answer(conn, "scored", result)
     except MemoryError:
-        conn.send(("too_large", None))
+        answer(conn, "too_large", None)
     finally:
         conn.close()
 
@@ -124,14 +162,16 @@ class ScoringProcess:
         return self
 
     async def ask(self, expected: str, message=None):
-        if message is not None:
-            await asyncio.to_thread(self.conn.send, message)
+        await asyncio.to_thread(self.conn.send, message)
+        return await self.wait_for(expected)
+
+    async def wait_for(self, expected: str):
         started = time.monotonic()
-        answer = await asyncio.to_thread(self._receive, max(0.0, self.budget))
+        found = await asyncio.to_thread(self._receive, max(0.0, self.budget))
         self.budget -= time.monotonic() - started
-        if answer is None:
+        if found is None:
             raise Unscorable("timeout")
-        kind, payload = answer
+        kind, payload = found
         if kind != expected:
             raise Unscorable(kind)
         return payload
@@ -140,9 +180,14 @@ class ScoringProcess:
         if not self.conn.poll(timeout):
             return None
         try:
-            return self.conn.recv()
+            raw = self.conn.recv_bytes(MAX_ANSWER_BYTES)
         except (EOFError, OSError):
             raise Unscorable("died") from None
+        try:
+            kind, payload = json.loads(raw)
+        except ValueError:
+            raise Unscorable("garbled") from None
+        return kind, payload
 
     async def aclose(self) -> None:
         if self.process.is_alive():

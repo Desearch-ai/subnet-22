@@ -36,9 +36,10 @@ class Crashing(Listed):
 
 def test_a_verdict_for_an_upload_finalized_meanwhile_is_no_fault_and_stays_ours():
     checker = CrawlValidator(Refusing(409, "no such open upload"), None, None)
-    counted = asyncio.run(checker.submit_verdict("t", {"verdict": "pass"}))
+    job = manifest("t")
+    counted = asyncio.run(checker.submit_verdict(job, {"verdict": "pass"}))
     assert counted is False and checker.trouble is None
-    assert "t" in checker.reported, "not offered to us again"
+    assert job["key"] in checker.reported, "not offered to us again"
 
 
 def test_a_task_the_checker_crashes_on_is_put_off_and_counted_against_it():

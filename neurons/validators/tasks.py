@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import logging
 import time
+from collections import deque
 
 import aiohttp
 from yarl import URL
@@ -21,12 +22,15 @@ DOWNLOAD_ATTEMPTS = 2
 SUBMIT_ATTEMPTS = 3
 RETRY_DELAY_S = 2.0
 IDLE_DELAY_S = 2.0
-MAX_DOWNLOAD_BYTES = 64_000_000
+MAX_DOWNLOAD_BYTES = 100_000_000
 READ_CHUNK = 1 << 20
 PAUSE_S = 30.0
 MAX_PAUSE_S = 600.0
 PROVIDER_STREAK = 3
 FAILURE_STREAK = 3
+RECENT_CHECKS = 20
+HEALTHY_AFTER = 5
+HEALTHY_SHARE = 0.8
 DEFER_S = 60.0
 
 log = logging.getLogger("validator")
@@ -68,6 +72,7 @@ class TaskChecker:
         self.failures = 0
         self.refused: str | None = None
         self.in_flight: set[str] = set()
+        self.recent: deque[bool] = deque(maxlen=RECENT_CHECKS)
         self.deferred: dict[str, float] = {}
         self.reported: dict[str, float] = {}
         self.listed: list[dict] = []
@@ -91,9 +96,17 @@ class TaskChecker:
 
     def scoring_failed(self) -> None:
         self.failures += 1
+        self.recent.append(False)
 
     def scoring_worked(self) -> None:
         self.failures = 0
+        self.recent.append(True)
+
+    def healthy(self) -> bool:
+        """This checker scores most uploads, so one it cannot score says something about the upload."""
+        return len(self.recent) >= HEALTHY_AFTER and sum(
+            self.recent
+        ) >= HEALTHY_SHARE * len(self.recent)
 
     async def run(self, stop: asyncio.Event, idle_exit: int = 0) -> None:
         idle = 0
@@ -155,16 +168,17 @@ class TaskChecker:
         ) as exc:
             log.warning("open list unavailable: %r", exc)
             return None
-        for manifest in uploads:
-            task_id = manifest.get("task_id", "")
-            if manifest.get("kind", CRAWL) not in self.kinds or not task_id:
-                continue
-            if (
-                task_id in self.in_flight
-                or task_id in self.deferred
-                or task_id in self.reported
-            ):
-                continue
+        waiting = [
+            manifest
+            for manifest in uploads
+            if manifest.get("kind", CRAWL) in self.kinds
+            and manifest.get("task_id")
+            and manifest["task_id"] not in self.in_flight
+            and manifest["task_id"] not in self.deferred
+            and manifest.get("key") not in self.reported
+        ]
+        for manifest in self.in_turn(waiting):
+            task_id = manifest["task_id"]
             if not verify_manifest(manifest, self.signer):
                 log.warning(
                     "task=%s is not signed by %s, skipped", task_id, self.signer
@@ -178,6 +192,22 @@ class TaskChecker:
             if seed is not None:
                 return self.job_of(manifest, seed)
         return None
+
+    def in_turn(self, waiting: list[dict]) -> list[dict]:
+        """New or recently failing miners first, then the oldest upload, so credit follows work and not hotkeys."""
+        miners = {manifest.get("miner", "") for manifest in waiting}
+        trusted = {
+            miner
+            for miner in miners
+            if self.ledger is not None and self.ledger.trusted(miner)
+        }
+        return sorted(
+            waiting,
+            key=lambda manifest: (
+                manifest.get("miner", "") in trusted,
+                manifest.get("completed_at", 0.0),
+            ),
+        )
 
     def job_of(self, manifest: dict, seed: str) -> dict:
         job = {
@@ -273,20 +303,21 @@ class TaskChecker:
         except TaskApiError as exc:
             log.warning("could not report the missing upload task=%s: %s", task_id, exc)
 
-    async def submit_verdict(self, task_id: str, result: dict) -> bool:
+    async def submit_verdict(self, job: dict, result: dict) -> bool:
         """False when the upload finalized without this verdict; it is still ours to keep."""
+        task_id = job["task_id"]
         for attempt in range(SUBMIT_ATTEMPTS):
             try:
                 await self.api.post(f"/v1/validation/{task_id}/score", result)
                 self.refused = None
-                self.reported[task_id] = time.time()
+                self.reported[job["key"]] = time.time()
                 return True
             except TaskApiError as exc:
                 if exc.status == 409:
                     log.info(
                         "task=%s finalized before our verdict: %s", task_id, exc.detail
                     )
-                    self.reported[task_id] = time.time()
+                    self.reported[job["key"]] = time.time()
                     return False
                 if 0 < exc.status < 500 or attempt == SUBMIT_ATTEMPTS - 1:
                     raise

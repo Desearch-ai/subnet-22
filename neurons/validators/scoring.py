@@ -509,7 +509,9 @@ def score(
     seed: str,
     min_samples: int,
     match_ratio: float,
+    only: set[str] | None = None,
 ) -> dict:
+    """`only` narrows the sample to the pages checked before the check stopped early."""
     wanted = set(assigned)
     if rows is None:
         return empty_result(wanted, "unreadable")
@@ -519,6 +521,7 @@ def score(
     samples = [
         judge_sample(kept[url], fetched.get(url))
         for url in pick_samples(kept, seed, sample_count(len(kept), min_samples))
+        if only is None or url in only
     ]
     outcomes = Counter(sample["outcome"] for sample in samples)
     counts = {
