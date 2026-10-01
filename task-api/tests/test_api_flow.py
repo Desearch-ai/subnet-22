@@ -17,6 +17,8 @@ import pytest
 import redis.asyncio as aioredis
 import uvicorn
 from app import lifecycle
+from app.budget import LOCKOUT_STEPS_H
+from app.state import MAX_UPLOAD_BYTES, POLL_WINDOW_S
 from app.storage import PARQUET, Changed
 
 from desearch.manifest import OPEN_LIST_KEY, verify
@@ -136,7 +138,7 @@ class Harness:
 
     async def mine(self, miner: TaskApiClient | None = None) -> dict:
         miner = miner or self.miner
-        task = (await miner.post("/v1/tasks/claim"))["task"]
+        task = (await miner.post("/v1/tasks/claim"))["tasks"][0]
         body = _parquet(task, miner.hotkey)
         await _upload(self, task["upload"], body)
         await miner.post(
@@ -201,7 +203,7 @@ def test_crawl_task_round_trip(api_env, backend):
 
 
 def test_rate_limited_refusal_carries_retry_after_and_seq(api_env, memory):
-    api_env.setenv("TASK_API_POLL_RATE", "1")
+    api_env.setenv("TASK_API_POLL_RATE", "0.1")
     asyncio.run(_rate_limited(memory))
 
 
@@ -219,7 +221,8 @@ async def _locked_out(backend) -> None:
         refusal = answer["refusal"]
         assert refusal["code"] == "LOCKED_OUT" and answer["receipt"]
         assert refusal["inputs"]["until"] == round(until, 3)
-        assert 11 * 3600 < refusal["inputs"]["retry_after"] <= 12 * 3600
+        first = LOCKOUT_STEPS_H[0] * 3600
+        assert first - 60 < refusal["inputs"]["retry_after"] <= first
         view = (await h.public.get(f"/v1/miners/{hotkey}")).json()
         assert view["pools"]["crawl"]["locked_until"] == until
         assert view["pools"]["embed"]["locked_until"] is None
@@ -247,7 +250,7 @@ async def _scenario(h: Harness) -> None:
     assert await revealed(h.core) == 2
 
     await _expect(403, h.validator.post("/v1/tasks/claim"))
-    task = (await h.miner.post("/v1/tasks/claim"))["task"]
+    task = (await h.miner.post("/v1/tasks/claim"))["tasks"][0]
     task_id, upload = task["task_id"], task["upload"]
     assert task["round_id"] == round_id
     assert len(task["urls"]) == 3
@@ -279,10 +282,9 @@ async def _scenario(h: Harness) -> None:
     assert await h.status(task_id) == "open"
     assert await h.size(upload["key"]) is None
 
-    unscored = await h.miner.post("/v1/tasks/claim")
-    assert unscored["refusal"]["code"] == "NO_CAPACITY", (
-        "unscored work counts against the budget"
-    )
+    crawl = h.core.tasks["crawl"]
+    assert await crawl.in_flight(h.miner.hotkey) == 0, "uploaded, so not crawling"
+    assert await crawl.waiting(h.miner.hotkey) == 1, "but waiting for its verdict"
 
     swapped = _parquet({**task, "urls": ["https://evil.example/"] * 3}, h.miner.hotkey)
     await _upload(h, upload, swapped)
@@ -379,7 +381,7 @@ async def _scenario(h: Harness) -> None:
         assert record["validator"] == h.validator.hotkey
     assert (await h.report(summary["report_key"]))["verdict"] == "pass"
 
-    second = (await h.miner.post("/v1/tasks/claim"))["task"]
+    second = (await h.miner.post("/v1/tasks/claim"))["tasks"][0]
     second_id = second["task_id"]
     second_parquet = _parquet(second, h.miner.hotkey)
     await _upload(h, second["upload"], second_parquet)
@@ -393,7 +395,7 @@ async def _scenario(h: Harness) -> None:
     assert await h.size(second["upload"]["key"]) is None, (
         "an oversized upload is removed"
     )
-    h.core.max_upload = 64_000_000
+    h.core.max_upload = MAX_UPLOAD_BYTES
     await _upload(h, second["upload"], second_parquet)
     await h.miner.post(f"/v1/tasks/{second_id}/complete", second_report)
 
@@ -417,7 +419,9 @@ async def _scenario(h: Harness) -> None:
         "fail",
         "content_mismatch",
     )
-    assert await h.size(view["score"]["upload_key"]) == len(second_parquet)
+    assert await h.size(view["score"]["upload_key"]) is None, (
+        "a failed upload is deleted, so the next miner cannot resubmit it"
+    )
     assert (await h.report(view["score"]["report_key"]))["verdict"] == "fail"
 
     again = await h.mine(h.rival)
@@ -426,7 +430,7 @@ async def _scenario(h: Harness) -> None:
     await h.validator.post(second_score, _score("pass", 3, url=second["urls"][0]))
 
     drained = await h.miner.post("/v1/tasks/claim")
-    assert drained["task"] is None
+    assert drained["tasks"] == []
     assert drained["refusal"]["code"] == "QUEUE_EMPTY"
 
     health = (await h.public.get("/v1/health")).json()
@@ -455,14 +459,12 @@ async def _scenario(h: Harness) -> None:
     assert [line["outcome"] for line in entries["entries"]] == [
         "issued",
         "completed",
-        "refused",
         "issued",
         "completed",
         "reclaimed",
         "issued",
         "completed",
-        "refused",
-    ]
+    ], "a second QUEUE_EMPTY in the same minute is answered but not logged"
     reclaimed = [line for line in entries["entries"] if line["outcome"] == "reclaimed"]
     assert [line["cause"] for line in reclaimed] == ["fail"]
     assert all(line["seq"] > 0 for line in entries["entries"])
@@ -480,7 +482,7 @@ async def _rate_limited(backend) -> None:
 
         limited = refusals[-1]
         assert limited["code"] == "RATE_LIMITED"
-        assert 0 < limited["inputs"]["retry_after"] <= 1
+        assert 0 < limited["inputs"]["retry_after"] <= POLL_WINDOW_S
         assert receipts.pop() is None, "an excess poll is not signed into the log"
         assert all(r["inputs"]["retry_after"] == 10.0 for r in refusals[:-1])
 
@@ -657,7 +659,7 @@ async def _faults(backend) -> None:
 
 async def _fault_scenario(h: Harness) -> None:
     await h.enqueue()
-    task = (await h.miner.post("/v1/tasks/claim"))["task"]
+    task = (await h.miner.post("/v1/tasks/claim"))["tasks"][0]
     task_id = task["task_id"]
     parquet = _parquet(task, h.miner.hotkey)
     await _upload(h, task["upload"], parquet)
@@ -694,7 +696,7 @@ async def _fault_scenario(h: Harness) -> None:
     assert await h.status(task_id) == "pass"
     assert (await h.public.get("/v1/health")).json()["verdicts"]["pass"] == 1
 
-    lost = (await h.miner.post("/v1/tasks/claim"))["task"]
+    lost = (await h.miner.post("/v1/tasks/claim"))["tasks"][0]
     lost_id = lost["task_id"]
     await _upload(h, lost["upload"], _parquet(lost, h.miner.hotkey))
     await h.miner.post(
@@ -711,10 +713,10 @@ async def _fault_scenario(h: Harness) -> None:
     assert (await h.report(view["score"]["report_key"]))["verdict"] == "void"
     assert (await h.public.get("/v1/health")).json()["verdicts"]["void"] == 1
 
-    assert (await h.miner.post("/v1/tasks/claim"))["task"] is None, (
+    assert (await h.miner.post("/v1/tasks/claim"))["tasks"] == [], (
         "a miner never gets a task twice"
     )
-    again = (await h.rival.post("/v1/tasks/claim"))["task"]
+    again = (await h.rival.post("/v1/tasks/claim"))["tasks"][0]
     assert again["task_id"] == lost_id
     assert again["urls"] == lost["urls"]
     view = (await h.public.get(f"/v1/miners/{h.miner.hotkey}")).json()
@@ -722,7 +724,8 @@ async def _fault_scenario(h: Harness) -> None:
 
 
 def test_public_reads_are_limited_per_ip_and_listed_a_page_at_a_time(api_env, memory):
-    api_env.setenv("TASK_API_READS_PER_MINUTE", "4")
+    api_env.setenv("TASK_API_LOG_READS_PER_MINUTE", "4")
+    api_env.setenv("TASK_API_READS_PER_MINUTE", "1")
     asyncio.run(_reads(memory))
 
 
@@ -756,7 +759,10 @@ async def _reads(backend) -> None:
             assert mine["next"] is None
             assert (await one.get("/v1/tasks", params={"limit": 101})).status == 422
 
-            refused = await one.get("/v1/shares")
+            refused = await one.get("/v1/tasks")
             assert refused.status == 429
             assert 0 < int(refused.headers["Retry-After"]) <= 60
-            assert (await two.get("/v1/shares")).status == 200
+            assert (await two.get("/v1/tasks")).status == 200
+
+            assert (await one.get("/v1/shares")).status == 200, "its own budget"
+            assert (await one.get("/v1/shares")).status == 429

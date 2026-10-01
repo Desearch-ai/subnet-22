@@ -4,6 +4,7 @@ import time
 
 import redis.asyncio as aioredis
 from app.queues import (
+    waiting_key,
     QUEUE,
     VOPEN,
     PublishQueue,
@@ -36,8 +37,12 @@ async def filled(redis, count=3, round_id="r1"):
     return queue, order
 
 
+async def one(queue, hotkey="m", budget=5):
+    return (await queue.claim(hotkey, budget, 2 * budget))[0]
+
+
 async def claimed(queue, hotkey="m", budget=5):
-    got = await queue.claim(hotkey, budget)
+    got = await one(queue, hotkey, budget)
     await queue.redis.set(f"issued:{got.task_id}", json.dumps({"key": f"k-{got.seq}"}))
     return got
 
@@ -53,7 +58,7 @@ async def refused(call):
 def test_concurrent_claims_cannot_exceed_the_budget():
     async def scenario(redis):
         queue, _ = await filled(redis, 10)
-        codes = await asyncio.gather(*(refused(queue.claim("m", 1)) for _ in range(10)))
+        codes = await asyncio.gather(*(refused(one(queue, "m", 1)) for _ in range(10)))
         return codes.count(None), codes.count("NO_CAPACITY")
 
     assert run(scenario) == (1, 9)
@@ -120,7 +125,7 @@ def test_older_rounds_are_served_first():
     async def scenario(redis):
         queue, first = await filled(redis, 3, "r1")
         _, second = await filled(redis, 3, "r2")
-        served = [(await queue.claim("m", 10)).task_id for _ in range(6)]
+        served = [(await one(queue, "m", 10)).task_id for _ in range(6)]
         return served, first + second
 
     served, expected = run(scenario)
@@ -133,7 +138,7 @@ def test_a_reclaimed_task_goes_back_ahead_of_newer_rounds():
         got = await claimed(queue)
         await filled(redis, 2, "r2")
         await queue.reclaim(got.task_id, now=10**12)
-        return (await queue.claim("n", 10)).task_id, got.task_id
+        return (await one(queue, "n", 10)).task_id, got.task_id
 
     served, reclaimed = run(scenario)
     assert served == reclaimed
@@ -144,8 +149,8 @@ def test_a_miner_is_never_given_back_a_task_it_held():
         queue, order = await filled(redis, 2)
         got = await claimed(queue)
         await queue.reclaim(got.task_id, now=10**12)
-        again = (await queue.claim("m", 5)).task_id
-        other = (await queue.claim("n", 5)).task_id
+        again = (await one(queue, "m", 5)).task_id
+        other = (await one(queue, "n", 5)).task_id
         return got.task_id, again, other, order
 
     first, again, other, order = run(scenario)
@@ -158,7 +163,7 @@ def test_a_miner_that_held_every_waiting_task_is_told_so():
         got = await claimed(queue)
         await queue.abandon(got.task_id, "m")
         try:
-            await queue.claim("m", 5)
+            await one(queue, "m", 5)
         except Refusal as refusal:
             return refusal.code, refusal.inputs
 
@@ -169,7 +174,7 @@ async def validation_job(redis, task_id, miner="m", kind="crawl", at=None):
     job = {"task_id": task_id, "miner": miner, "kind": kind}
     await redis.set(f"vjob:{task_id}", json.dumps(job))
     await redis.zadd(VOPEN, {task_id: at or time.time()})
-    await redis.sadd(f"inflight:{miner}", task_id)
+    await redis.sadd(waiting_key(kind, miner), task_id)
 
 
 def vote(validator: str, verdict: str = "pass") -> dict:
@@ -270,13 +275,13 @@ def test_a_pass_ends_validation_and_queues_publishing_in_one_step():
         validation, publish = ValidationQueue(redis), PublishQueue(redis, 60)
         await validation_job(redis, "t")
         passed = await validation.finalize("t", {"task_id": "t", "key": "k"})
-        in_flight = await redis.sismember("inflight:m", "t")
-        return passed, await validation.job("t"), await publish.claim(5), in_flight
+        waiting = await redis.sismember("waiting:m", "t")
+        return passed, await validation.job("t"), await publish.claim(5), waiting
 
-    passed, job, claimed, in_flight = run(scenario)
+    passed, job, claimed, waiting = run(scenario)
     assert passed.job["task_id"] == "t" and job is None
     assert claimed == [{"task_id": "t", "key": "k"}]
-    assert not in_flight, "a decided task no longer counts against the miner's budget"
+    assert not waiting, "a decided upload no longer counts as waiting"
 
 
 def test_an_unacked_publish_comes_back_and_an_acked_one_does_not():
@@ -340,20 +345,43 @@ def test_touching_a_publish_claim_extends_it():
     assert score > 10**9 and expired == []
 
 
-def test_a_completed_task_counts_against_the_budget_until_its_verdict():
+def test_an_upload_waiting_for_its_verdict_leaves_room_to_crawl_but_counts_as_waiting():
     async def scenario(redis):
-        queue, _ = await filled(redis, 3)
+        queue, _ = await filled(redis, 4)
         validation = ValidationQueue(redis)
         got = await claimed(queue, budget=1)
         await queue.complete(
             got.task_id, "m", {"task_id": got.task_id, "miner": "m"}, f"k-{got.seq}"
         )
-        blocked = await refused(queue.claim("m", 1))
+        crawling = await queue.claim("m", 1, 2)
+        await queue.redis.set(
+            f"issued:{crawling[0].task_id}", json.dumps({"key": "k-x"})
+        )
+        await queue.complete(
+            crawling[0].task_id,
+            "m",
+            {"task_id": crawling[0].task_id, "miner": "m"},
+            "k-x",
+        )
+        blocked = await refused(queue.claim("m", 1, 2))
         await validation.finalize(got.task_id)
-        freed = await refused(queue.claim("m", 1))
-        return blocked, freed
+        freed = await refused(queue.claim("m", 1, 2))
+        return blocked, freed, await queue.waiting("m")
 
-    assert run(scenario) == ("NO_CAPACITY", None)
+    assert run(scenario) == ("WAITING_FOR_VERDICTS", None, 1)
+
+
+def test_one_claim_takes_as_many_tasks_as_asked_and_the_budget_allows():
+    async def scenario(redis):
+        queue, order = await filled(redis, 10)
+        three = await queue.claim("m", 5, 10, 3)
+        rest = await queue.claim("m", 5, 10, 50)
+        full = await refused(queue.claim("m", 5, 10, 1))
+        return [c.task_id for c in three], [c.task_id for c in rest], full, order
+
+    three, rest, full, order = run(scenario)
+    assert three == order[:3] and rest == order[3:5]
+    assert full == "NO_CAPACITY"
 
 
 async def filled_kind(redis, kind, count=2, round_id="r1"):
@@ -368,9 +396,9 @@ def test_each_kind_serves_only_its_own_tasks_and_counts_its_own_budget():
     async def scenario(redis):
         crawl, crawl_tasks = await filled_kind(redis, "crawl")
         embed, embed_tasks = await filled_kind(redis, "embed")
-        got_crawl = await crawl.claim("m", 1)
-        got_embed = await embed.claim("m", 1)
-        blocked = await refused(crawl.claim("m", 1))
+        got_crawl = await one(crawl, "m", 1)
+        got_embed = await one(embed, "m", 1)
+        blocked = await refused(one(crawl, "m", 1))
         return got_crawl, got_embed, blocked, crawl_tasks, embed_tasks
 
     got_crawl, got_embed, blocked, crawl_tasks, embed_tasks = run(scenario)
@@ -383,7 +411,7 @@ def test_an_expired_embed_task_goes_back_to_the_embed_queue():
     async def scenario(redis):
         crawl, _ = await filled_kind(redis, "crawl", 1)
         embed, order = await filled_kind(redis, "embed", 1)
-        got = await embed.claim("m", 5)
+        got = await one(embed, "m", 5)
         holder, _ = await embed.reclaim(got.task_id, now=10**12)
         return (
             holder,
@@ -400,7 +428,7 @@ def test_a_miner_that_held_the_whole_front_of_the_queue_is_served_from_behind():
         queue, order = await filled(redis, 60)
         for task_id in order[:55]:
             await redis.sadd(f"holders:{task_id}", "m")
-        return (await queue.claim("m", 5)).task_id, order
+        return (await one(queue, "m", 5)).task_id, order
 
     got, order = run(scenario)
     assert got == order[55]

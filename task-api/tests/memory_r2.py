@@ -66,12 +66,16 @@ class MemoryR2:
             raise _error("PreconditionFailed", 412, "PutObject")
         return {"ETag": self._store(Bucket, Key, bytes(Body), ContentType, Metadata)}
 
-    def get_object(self, Bucket, Key, IfMatch=None):
+    def get_object(self, Bucket, Key, IfMatch=None, Range=None):
         found = self._found(Bucket, Key, "GetObject")
         if IfMatch and found["etag"] != IfMatch:
             raise _error("PreconditionFailed", 412, "GetObject")
+        body = found["body"]
+        if Range:
+            start, _, end = Range.removeprefix("bytes=").partition("-")
+            body = body[-int(end) :] if not start else body[int(start) : int(end) + 1]
         return {
-            "Body": io.BytesIO(found["body"]),
+            "Body": io.BytesIO(body),
             "ETag": found["etag"],
             "Metadata": found["metadata"],
         }

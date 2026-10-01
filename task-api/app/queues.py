@@ -32,30 +32,46 @@ def ready_key(kind: str) -> str:
 
 
 def inflight_key(kind: str, hotkey: str) -> str:
+    """Tasks a miner holds and has not uploaded yet."""
     return f"inflight:{hotkey}" if kind == "crawl" else f"inflight:{kind}:{hotkey}"
 
 
-# Mirrors inflight_key for scripts that only learn the kind from the task they touch.
+def waiting_key(kind: str, hotkey: str) -> str:
+    """A miner's uploads that no verdict has closed yet."""
+    return f"waiting:{hotkey}" if kind == "crawl" else f"waiting:{kind}:{hotkey}"
+
+
+# Mirrors the two keys above for scripts that only learn the kind from the task they touch.
 INFLIGHT = """
 local function inflight(kind, hotkey)
   if not kind or kind == 'crawl' then return 'inflight:' .. hotkey end
   return 'inflight:' .. kind .. ':' .. hotkey
 end
+local function waiting(kind, hotkey)
+  if not kind or kind == 'crawl' then return 'waiting:' .. hotkey end
+  return 'waiting:' .. kind .. ':' .. hotkey
+end
 """
 
 # A miner never gets a task it held before, so no one miner can fail a task until it drops.
 CLAIM = """
-local queue, claims, mine = KEYS[1], KEYS[2], KEYS[3]
+local queue, claims, mine, unscored = KEYS[1], KEYS[2], KEYS[3], KEYS[4]
 local hotkey, ttl, now = ARGV[1], tonumber(ARGV[2]), tonumber(ARGV[3])
+local budget, page, most = tonumber(ARGV[4]), tonumber(ARGV[5]), tonumber(ARGV[7])
 
 local held = redis.call('SCARD', mine)
-if held >= tonumber(ARGV[4]) then return {'full', tostring(held)} end
-local seen, start, page, most = 0, 0, tonumber(ARGV[5]), tonumber(ARGV[7])
-while start < most do
+if held >= budget then return {'full', tostring(held)} end
+local waiting = redis.call('SCARD', unscored)
+if waiting >= tonumber(ARGV[8]) then return {'waiting', tostring(waiting)} end
+local wanted = math.min(tonumber(ARGV[9]), budget - held)
+local taken = {'tasks'}
+local seen, start = 0, 0
+while start < most and (#taken - 1) / 3 < wanted do
   local batch = redis.call('ZRANGE', queue, start, start + page - 1)
   if #batch == 0 then break end
   local removed = 0
   for _, task_id in ipairs(batch) do
+    if (#taken - 1) / 3 >= wanted then break end
     local payload = redis.call('GET', 'task:' .. task_id)
     if not payload then
       redis.call('ZREM', queue, task_id)
@@ -64,16 +80,20 @@ while start < most do
       seen = seen + 1
     else
       redis.call('ZREM', queue, task_id)
+      removed = removed + 1
       redis.call('ZADD', claims, now + ttl, task_id)
       redis.call('SET', 'claim:' .. task_id, hotkey)
       redis.call('SADD', mine, task_id)
       redis.call('SADD', 'holders:' .. task_id, hotkey)
       redis.call('EXPIRE', 'holders:' .. task_id, tonumber(ARGV[6]))
-      return {'task', task_id, payload, redis.call('INCR', 'log:seq')}
+      table.insert(taken, task_id)
+      table.insert(taken, payload)
+      table.insert(taken, redis.call('INCR', 'log:seq'))
     end
   end
   start = start + #batch - removed
 end
+if #taken > 1 then return taken end
 if seen > 0 then return {'held', tostring(seen)} end
 return {'empty'}
 """
@@ -112,8 +132,10 @@ if redis.call('GET', 'claim:' .. task_id) ~= holder then return nil end
     + "return seq"
 )
 
-# Kept inflight until its verdict, so budgets bound unscored work.
-COMPLETE = """
+# An upload moves from the crawling set to the waiting one until its verdict.
+COMPLETE = (
+    INFLIGHT
+    + """
 local task_id, hotkey, job, now = ARGV[1], ARGV[2], ARGV[3], tonumber(ARGV[4])
 if redis.call('GET', 'claim:' .. task_id) ~= hotkey then return nil end
 local issued = redis.call('GET', 'issued:' .. task_id)
@@ -125,8 +147,11 @@ redis.call('ZREM', KEYS[1], task_id)
 redis.call('DEL', 'claim:' .. task_id, 'issued:' .. task_id, 'task:' .. task_id)
 redis.call('SET', 'vjob:' .. task_id, job)
 redis.call('ZADD', KEYS[2], now, task_id)
+local kind = cjson.decode(job)['kind']
+redis.call('SMOVE', inflight(kind, hotkey), waiting(kind, hotkey), task_id)
 return redis.call('INCR', 'log:seq')
 """
+)
 
 RESTORE = """
 redis.call('SET', 'task:' .. ARGV[1], ARGV[2])
@@ -156,7 +181,7 @@ local votes = cjson.encode(redis.call('LRANGE', 'votes:' .. task_id, 0, -1))
 redis.call('DEL', 'vjob:' .. task_id, 'vseen:' .. task_id, 'votes:' .. task_id)
 local decoded = cjson.decode(job)
 if decoded['miner'] then
-  redis.call('SREM', inflight(decoded['kind'], decoded['miner']), task_id)
+  redis.call('SREM', waiting(decoded['kind'], decoded['miner']), task_id)
 end
 if publish ~= '' then
   redis.call('SET', 'pjob:' .. task_id, publish)
@@ -218,6 +243,18 @@ class Claim:
     seq: int
 
 
+def claims_from(found: list, expires_at: float) -> list[Claim]:
+    return [
+        Claim(
+            task_id=_text(found[i]),
+            payload=json.loads(found[i + 1]),
+            expires_at=expires_at,
+            seq=int(found[i + 2]),
+        )
+        for i in range(0, len(found), 3)
+    ]
+
+
 @dataclass
 class Finalized:
     job: dict
@@ -271,14 +308,25 @@ class TaskQueue:
     async def in_flight(self, hotkey: str) -> int:
         return int(await self.redis.scard(inflight_key(self.kind, hotkey)))
 
+    async def waiting(self, hotkey: str) -> int:
+        return int(await self.redis.scard(waiting_key(self.kind, hotkey)))
+
     async def payload(self, task_id: str) -> dict | None:
         found = await self.redis.get(f"task:{task_id}")
         return json.loads(found) if found else None
 
-    async def claim(self, hotkey: str, budget: int) -> Claim:
+    async def claim(
+        self, hotkey: str, budget: int, waiting_limit: int, count: int = 1
+    ) -> list[Claim]:
+        """Up to `count` tasks, as far as the miner's crawling and waiting limits allow."""
         now = time.time()
         status, *found = await self._claim(
-            keys=[self.ready, CLAIMS, inflight_key(self.kind, hotkey)],
+            keys=[
+                self.ready,
+                CLAIMS,
+                inflight_key(self.kind, hotkey),
+                waiting_key(self.kind, hotkey),
+            ],
             args=[
                 hotkey,
                 self.claim_ttl,
@@ -287,22 +335,22 @@ class TaskQueue:
                 CLAIM_SCAN,
                 HOLDERS_TTL_S,
                 CLAIM_SCAN_MAX,
+                waiting_limit,
+                count,
             ],
         )
         status = _text(status)
         if status == "full":
             raise Refusal("NO_CAPACITY", budget=budget, in_flight=int(found[0]))
+        if status == "waiting":
+            raise Refusal(
+                "WAITING_FOR_VERDICTS", waiting=int(found[0]), limit=waiting_limit
+            )
         if status == "held":
             raise Refusal("ALREADY_HELD", depth=await self.depth(), held=int(found[0]))
         if status == "empty":
             raise Refusal("QUEUE_EMPTY", depth=await self.depth())
-        task_id, payload, seq = found
-        return Claim(
-            task_id=_text(task_id),
-            payload=json.loads(payload),
-            expires_at=now + self.claim_ttl,
-            seq=int(seq),
-        )
+        return claims_from(found, now + self.claim_ttl)
 
     async def claim_holder(self, task_id: str) -> str | None:
         return _text(await self.redis.get(f"claim:{task_id}"))

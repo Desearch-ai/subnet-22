@@ -97,8 +97,12 @@ class Score(BaseModel):
         return self
 
 
+MAX_CLAIM = 50
+
+
 class ClaimBody(BaseModel):
     kind: Literal["crawl", "embed"] = "crawl"
+    count: int = Field(1, ge=1, le=MAX_CLAIM)
 
 
 class EmbedSample(BaseModel):

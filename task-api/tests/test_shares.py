@@ -37,13 +37,13 @@ def test_work_older_than_the_window_no_longer_pays(tmp_path):
     assert budgets.get_or_create("old").verified == 1000
 
 
-def test_a_miner_under_the_coverage_gate_earns_no_share(tmp_path):
+def test_a_miner_with_thin_coverage_is_paid_for_what_it_returned(tmp_path):
     budgets = Budgets(connect(str(tmp_path / "b.db")))
-    earned(budgets, "full", 100)
+    earned(budgets, "full", 90)
     budgets.record_coverage("thin", 100, 10)
     budgets.reward("thin", "t", 10, ramp=False)
 
-    assert crawl_shares(budgets) == {"full": 1.0}
+    assert crawl_shares(budgets) == {"full": 0.9, "thin": 0.1}
 
 
 def test_pruning_keeps_a_week_of_credit(tmp_path):
@@ -61,19 +61,20 @@ def test_nothing_verified_means_no_shares(tmp_path):
     assert Budgets(connect(str(tmp_path / "b.db"))).shares() == {}
 
 
-def test_coverage_is_judged_over_the_same_window_as_credit(tmp_path):
+def test_a_lapse_costs_its_urls_for_as_long_as_the_window_holds_it(tmp_path):
     budgets = Budgets(connect(str(tmp_path / "b.db")))
-    budgets.record_coverage("recovered", 750, 0)
-    budgets.db.execute("UPDATE coverage SET hour = hour - ?", (SHARE_WINDOW_H + 1,))
+    budgets.credit("recovered", -750)
+    budgets.db.execute("UPDATE credits SET hour = hour - ?", (SHARE_WINDOW_H + 1,))
     budgets.db.commit()
-    earned(budgets, "recovered", 100)
+    earned(budgets, "recovered", 1000)
 
-    assert crawl_shares(budgets) == {"recovered": 1.0}, (
-        "an outage a day ago no longer shuts it out"
-    )
+    assert crawl_shares(budgets) == {"recovered": 1.0}
+    budgets.credit("recovered", -750)
+    earned(budgets, "steady", 250)
+    assert crawl_shares(budgets) == {"recovered": 0.5, "steady": 0.5}
 
-    budgets.record_coverage("recovered", 750, 0)
-    assert crawl_shares(budgets) == {}, "the same outage inside the window does"
+    budgets.credit("recovered", -1000)
+    assert crawl_shares(budgets) == {"steady": 1.0}, "never below nothing"
 
 
 def test_each_pool_is_shared_out_on_its_own(tmp_path):

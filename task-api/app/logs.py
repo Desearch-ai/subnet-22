@@ -24,6 +24,16 @@ LIVE_ROWS = 50
 BUCKET_MINUTES = (5, 15, 60)
 MAX_BUCKETS = 168
 ID_CHARS = 64
+PATHS = (
+    "/v1/overview",
+    "/v1/live",
+    "/v1/stats",
+    "/v1/tasks",
+    "/v1/votes",
+    "/v1/events",
+    "/v1/miners",
+    "/v1/validators",
+)
 
 TASK_POINT = ("tasks", *VERDICTS, "returned", "credited")
 VOTE_POINT = ("votes", *VERDICTS, "agreed", "disagreed")
@@ -96,7 +106,6 @@ class Logs:
                     "last_scored_at": None,
                     **totals.get(hotkey, {}),
                     "coverage": covered.get("coverage"),
-                    "eligible": covered.get("eligible", True),
                     "share": shares.get(hotkey, 0.0),
                 }
             )
@@ -235,6 +244,7 @@ def router(core) -> APIRouter:
         for row in rows:
             row["uid"] = uid_of(core.registry, row["hotkey"])
             row["in_flight"] = await core.tasks[CRAWL].in_flight(row["hotkey"])
+            row["waiting"] = await core.tasks[CRAWL].waiting(row["hotkey"])
         return rows
 
     async def validator_rows(hours: int) -> list[dict]:
@@ -328,6 +338,7 @@ def router(core) -> APIRouter:
                 "budget": budget.budget,
                 "verified": budget.verified,
                 "in_flight": await tasks.in_flight(hotkey),
+                "waiting": await tasks.waiting(hotkey),
                 "locked_until": await logs.read(
                     logs.budgets.locked_until, hotkey, kind
                 ),

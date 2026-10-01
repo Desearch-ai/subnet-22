@@ -403,7 +403,7 @@ def test_a_round_revealed_while_redis_was_down_is_filled_afterwards(api_env, mem
             closed = await lifecycle.close_finished(h.core)
             filled = await lifecycle.fill_missing(h.core)
             depth = await h.core.tasks["crawl"].depth()
-            task = (await h.miner.post("/v1/tasks/claim"))["task"]
+            task = (await h.miner.post("/v1/tasks/claim"))["tasks"][0]
             return enqueued["round_id"], unfilled, closed, filled, depth, task
 
     round_id, unfilled, closed, filled, depth, task = asyncio.run(scenario())

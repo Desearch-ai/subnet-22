@@ -5,7 +5,9 @@ import time
 from dataclasses import dataclass
 
 START = 1
-CEILING = 30
+CEILING = 100
+GROWTH = 0.5
+WAITING_PER_BUDGET = 2
 COVERAGE_GATE = 0.85
 CRAWL = "crawl"
 EMBED = "embed"
@@ -17,8 +19,11 @@ HOUR = 3600
 REWARD = "verified"
 PENALTIES = ("claim_expired", "abandoned", "verification_failed")
 
+# A crash or a short outage lets several claims lapse at once; together they are one strike.
+EXPIRY_REASONS = frozenset({"claim_expired", "abandoned"})
+STRIKE_BURST_S = 300
 # Only fails the miner caused count; "unscorable" is the validator's own timeout or crash.
-STRIKE_REASONS = frozenset(
+STRIKE_REASONS = EXPIRY_REASONS | frozenset(
     {
         "extra_rows",
         "coverage",
@@ -34,7 +39,9 @@ STRIKE_REASONS = frozenset(
 STRIKES_TO_LOCK = 2
 STRIKE_SHARE = 0.05
 STRIKE_WINDOW_H = 24
-LOCKOUT_H = 12
+LOCKOUT_STEPS_H = (1, 12, 48)
+LOCKOUT_MEMORY_H = 7 * 24
+HOSTILE_LOCKOUT_H = 7 * 24
 
 
 @dataclass
@@ -104,6 +111,12 @@ class Budgets:
                 reason TEXT NOT NULL,
                 PRIMARY KEY (hotkey, pool)
             );
+            CREATE TABLE IF NOT EXISTS lockout_history (
+                hotkey TEXT NOT NULL,
+                pool   TEXT NOT NULL,
+                at     REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS lockout_history_hotkey ON lockout_history (hotkey, pool, at);
             """
         )
         self.db.commit()
@@ -166,15 +179,21 @@ class Budgets:
             "UPDATE miners SET verified = verified + ? WHERE hotkey = ? AND pool = ?",
             (amount, hotkey, pool),
         )
+        self.credit(hotkey, amount, pool)
+        if not ramp:
+            self.db.commit()
+            return self.get_or_create(hotkey, pool)
+        grown = miner.budget + max(1, int(miner.budget * GROWTH))
+        return self._set_budget(hotkey, pool, grown, REWARD, task_id)
+
+    def credit(self, hotkey: str, amount: int, pool: str = CRAWL) -> None:
+        """Rows toward the miner's share this hour; a bad task takes its URLs back."""
         self.db.execute(
             "INSERT INTO credits (pool, hotkey, hour, amount) VALUES (?, ?, ?, ?)"
             " ON CONFLICT (pool, hotkey, hour) DO UPDATE SET amount = amount + excluded.amount",
             (pool, hotkey, hour_of(), amount),
         )
-        if not ramp:
-            self.db.commit()
-            return self.get_or_create(hotkey, pool)
-        return self._set_budget(hotkey, pool, miner.budget + 1, REWARD, task_id)
+        self.db.commit()
 
     def penalise(
         self, hotkey: str, task_id: str, cause: str, pool: str = CRAWL
@@ -194,6 +213,8 @@ class Budgets:
     ) -> float | None:
         """The lockout's end if this strike, among `judged` recent verdicts, starts one."""
         now = now or time.time()
+        if reason in EXPIRY_REASONS and self._lapsed_recently(hotkey, pool, now):
+            return self.locked_until(hotkey, pool, now)
         self.db.execute(
             "INSERT INTO strikes (hotkey, pool, reason, task_id, at)"
             " VALUES (?, ?, ?, ?, ?)",
@@ -205,15 +226,48 @@ class Budgets:
         ).fetchone()
         until = None
         if recent >= STRIKES_TO_LOCK and recent >= STRIKE_SHARE * judged:
-            until = now + LOCKOUT_H * HOUR
-            self.db.execute(
-                "INSERT INTO lockouts (hotkey, pool, until, reason) VALUES (?, ?, ?, ?)"
-                " ON CONFLICT (hotkey, pool) DO UPDATE SET until = excluded.until,"
-                " reason = excluded.reason",
-                (hotkey, pool, until, reason),
-            )
+            (before,) = self.db.execute(
+                "SELECT COUNT(*) FROM lockout_history WHERE hotkey = ? AND pool = ?"
+                " AND at > ?",
+                (hotkey, pool, now - LOCKOUT_MEMORY_H * HOUR),
+            ).fetchone()
+            hours = LOCKOUT_STEPS_H[min(before, len(LOCKOUT_STEPS_H) - 1)]
+            until = self.lock_out(hotkey, pool, hours, reason, now)
         self.db.commit()
         return until
+
+    def _lapsed_recently(self, hotkey: str, pool: str, now: float) -> bool:
+        placeholders = ", ".join("?" * len(EXPIRY_REASONS))
+        return bool(
+            self.db.execute(
+                "SELECT 1 FROM strikes WHERE hotkey = ? AND pool = ? AND at > ?"
+                f" AND reason IN ({placeholders}) LIMIT 1",
+                (hotkey, pool, now - STRIKE_BURST_S, *EXPIRY_REASONS),
+            ).fetchone()
+        )
+
+    def lock_out(
+        self,
+        hotkey: str,
+        pool: str,
+        hours: float,
+        reason: str,
+        now: float | None = None,
+    ) -> float:
+        now = now or time.time()
+        until = now + hours * HOUR
+        self.db.execute(
+            "INSERT INTO lockouts (hotkey, pool, until, reason) VALUES (?, ?, ?, ?)"
+            " ON CONFLICT (hotkey, pool) DO UPDATE SET until = MAX(until, excluded.until),"
+            " reason = excluded.reason",
+            (hotkey, pool, until, reason),
+        )
+        self.db.execute(
+            "INSERT INTO lockout_history (hotkey, pool, at) VALUES (?, ?, ?)",
+            (hotkey, pool, now),
+        )
+        self.db.commit()
+        return self.locked_until(hotkey, pool, now) or until
 
     def locked_until(
         self, hotkey: str, pool: str = CRAWL, now: float | None = None
@@ -267,7 +321,6 @@ class Budgets:
         self, window_hours: int = SHARE_WINDOW_H, now: float | None = None
     ) -> dict[str, dict[str, float]]:
         since = hour_of(now) - window_hours + 1
-        covered = self.coverage_report(window_hours, now)
         earned: dict[str, dict[str, int]] = {}
         for pool, hotkey, amount in self.db.execute(
             "SELECT pool, hotkey, SUM(amount) FROM credits"
@@ -275,8 +328,6 @@ class Budgets:
             (since, hour_of(now)),
         ):
             if amount <= 0:
-                continue
-            if pool == CRAWL and not covered.get(hotkey, {}).get("eligible", True):
                 continue
             earned.setdefault(pool, {})[hotkey] = amount
         return {
@@ -301,7 +352,6 @@ class Budgets:
                 "assigned": assigned,
                 "returned": returned,
                 "coverage": round(returned / assigned, 4),
-                "eligible": returned / assigned >= COVERAGE_GATE,
             }
             for hotkey, assigned, returned in rows
         }
@@ -311,4 +361,8 @@ class Budgets:
         self.db.execute("DELETE FROM credits WHERE hour < ?", (oldest,))
         self.db.execute("DELETE FROM coverage WHERE hour < ?", (oldest,))
         self.db.execute("DELETE FROM strikes WHERE at < ?", (oldest * HOUR,))
+        self.db.execute(
+            "DELETE FROM lockout_history WHERE at < ?",
+            (time.time() - LOCKOUT_MEMORY_H * HOUR,),
+        )
         self.db.commit()

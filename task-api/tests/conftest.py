@@ -40,6 +40,7 @@ def api_env(monkeypatch, tmp_path):
     monkeypatch.setenv("TASK_API_BLOCK_SECONDS", "0.02")
     monkeypatch.setenv("TASK_API_AUDIT_RATE", "0")
     monkeypatch.setenv("TASK_API_READS_PER_MINUTE", "100000")
+    monkeypatch.setenv("TASK_API_LOG_READS_PER_MINUTE", "100000")
     monkeypatch.setenv("TASK_API_POLL_RATE", "100")
     monkeypatch.setenv(
         "TASK_API_VALIDATOR_URIS", f"{VALIDATOR},{OTHER_VALIDATOR},{THIRD_VALIDATOR}"

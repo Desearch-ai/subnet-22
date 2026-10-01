@@ -109,7 +109,9 @@ async def _crawl_to_vectors(backend) -> None:
 
             await lifecycle.open_embed_rounds(h.core)
             await revealed(h.core)
-            embed = (await h.miner.post("/v1/tasks/claim", {"kind": "embed"}))["task"]
+            embed = (await h.miner.post("/v1/tasks/claim", {"kind": "embed"}))["tasks"][
+                0
+            ]
             downloaded = await h.r2.get(embed["input"]["url"])
             assert downloaded.body == given
             rng = np.random.default_rng(7)

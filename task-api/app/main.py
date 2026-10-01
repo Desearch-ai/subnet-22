@@ -13,9 +13,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
-from . import lifecycle, logs, queues
+from . import lifecycle, logs, queues, rounds
 from .auth import Authenticator, Caller, client_address
-from .budget import CRAWL, EMBED, SHARE_WINDOW_H, hour_of
+from .limits import BodyLimit
+from .budget import CRAWL, EMBED, SHARE_WINDOW_H, WAITING_PER_BUDGET, hour_of
 from .models import (
     CompleteBody,
     EmbedScore,
@@ -46,6 +47,7 @@ RETRY_AFTER_S = {
     "NO_CAPACITY": 5.0,
     "ALREADY_HELD": 10.0,
     "VALIDATION_BACKLOG": 30.0,
+    "WAITING_FOR_VERDICTS": 10.0,
     "KIND_CLOSED": 3600.0,
 }
 DEFAULT_ORIGINS = "http://localhost:5173,http://localhost:8081,http://127.0.0.1:5173,http://127.0.0.1:8081"
@@ -82,15 +84,20 @@ def create_app(redis=None) -> FastAPI:
     app.state.core = core
 
     @app.middleware("http")
-    async def limit_reads(request: Request, call_next):
+    async def limit_requests(request: Request, call_next):
         if request.method == "GET":
-            wait = await core.read_wait(client_address(request))
-            if wait is not None:
-                return JSONResponse(
-                    {"detail": "too many requests"},
-                    status_code=429,
-                    headers={"Retry-After": str(wait)},
-                )
+            is_log = request.url.path.startswith(logs.PATHS)
+            wait = await core.read_wait(client_address(request), is_log)
+        elif request.method == "POST":
+            wait = await core.write_wait(client_address(request))
+        else:
+            wait = None
+        if wait is not None:
+            return JSONResponse(
+                {"detail": "too many requests"},
+                status_code=429,
+                headers={"Retry-After": str(wait)},
+            )
         return await call_next(request)
 
     @app.exception_handler(logs.Busy)
@@ -115,11 +122,15 @@ def create_app(redis=None) -> FastAPI:
         allow_headers=["*"],
         expose_headers=["Retry-After"],
     )
+    app.add_middleware(BodyLimit)
 
     async def caller(request: Request) -> Caller:
-        return await Authenticator(core.registry, Nonces(core.redis), core.admins)(
-            request
-        )
+        authenticate = Authenticator(core.registry, Nonces(core.redis), core.admins)
+        try:
+            return await authenticate(request)
+        except HTTPException:
+            await core.write_denied(client_address(request))
+            raise
 
     async def validator(who: Caller = Depends(caller)) -> Caller:
         if not who.is_validator:
@@ -145,8 +156,8 @@ def create_app(redis=None) -> FastAPI:
     async def claim(body: ClaimBody | None = None, who: Caller = Depends(caller)):
         if who.is_validator or who.is_admin:
             raise HTTPException(403, "validators may not claim tasks")
-        kind = (body or ClaimBody()).kind
-        tasks = core.tasks[kind]
+        body = body or ClaimBody()
+        kind = body.kind
         round_id = core.current.get(kind, "")
 
         retry_after = await core.retry_after(who.hotkey)
@@ -156,7 +167,7 @@ def create_app(redis=None) -> FastAPI:
                 "code": "RATE_LIMITED",
                 "inputs": {"per_sec": core.poll_rate, "retry_after": retry_after},
             }
-            return {"task": None, "refusal": refusal, "receipt": None}
+            return {"tasks": [], "refusal": refusal, "receipt": None}
 
         if kind == EMBED and not core.embed_tasks:
             refusal = {"code": "KIND_CLOSED", "inputs": {"kind": kind}}
@@ -189,20 +200,45 @@ def create_app(redis=None) -> FastAPI:
 
         budget = (await core.db(core.budgets.get_or_create, who.hotkey, kind)).budget
         try:
-            got = await tasks.claim(who.hotkey, budget)
+            claims = await core.tasks[kind].claim(
+                who.hotkey, budget, WAITING_PER_BUDGET * budget, body.count
+            )
         except queues.Refusal as refusal:
             return await _refused(core, round_id, who, refusal.as_dict())
 
+        tasks, receipts = [], []
+        for got in claims:
+            issued = await issue(got, kind, who)
+            if issued is not None:
+                tasks.append(issued)
+                receipts.append(
+                    await core.record(
+                        issued["round_id"],
+                        who.hotkey,
+                        who.requested_at,
+                        "issued",
+                        got.seq,
+                        task_id=got.task_id,
+                    )
+                )
+        if not tasks:
+            raise HTTPException(503, "upload signing is unavailable")
+        return {"tasks": tasks, "receipts": receipts}
+
+    async def issue(got: queues.Claim, kind: str, who: Caller) -> dict | None:
+        """The task as the miner receives it, with an upload link only it can use."""
         task_id = got.task_id
         name = f"task={task_id}/{who.hotkey}-{got.seq}.parquet"
         upload_key = f"uploads/dt={utc_day()}/{name}"
         try:
-            upload_url = core.storage.presign_put(upload_key, PARQUET, core.claim_ttl)
+            upload_url = core.storage.presign_put(
+                upload_key, PARQUET, core.claim_ttl + rounds.UPLOAD_GRACE_S
+            )
             inputs = embed_inputs(got.payload) if kind == EMBED else {}
         except Exception:
             log.exception("could not presign the upload for %s", task_id)
-            await tasks.abandon(task_id, who.hotkey)
-            raise HTTPException(503, "upload signing is unavailable") from None
+            await core.tasks[kind].abandon(task_id, who.hotkey)
+            return None
         await core.redis.set(
             f"issued:{task_id}",
             json.dumps(
@@ -214,27 +250,20 @@ def create_app(redis=None) -> FastAPI:
                 }
             ),
         )
-
-        round_id = got.payload.get("round_id", round_id)
-        receipt = await core.record(
-            round_id, who.hotkey, who.requested_at, "issued", got.seq, task_id=task_id
-        )
+        expires_at = got.expires_at - rounds.UPLOAD_GRACE_S
         return {
-            "task": {
-                "task_id": task_id,
-                "kind": kind,
-                "round_id": round_id,
-                "expires_at": got.expires_at,
-                "urls": got.payload.get("urls", []),
-                **inputs,
-                "upload": {
-                    "url": upload_url,
-                    "key": upload_key,
-                    "content_type": PARQUET,
-                    "expires_at": got.expires_at,
-                },
+            "task_id": task_id,
+            "kind": kind,
+            "round_id": got.payload.get("round_id", core.current.get(kind, "")),
+            "expires_at": expires_at,
+            "urls": got.payload.get("urls", []),
+            **inputs,
+            "upload": {
+                "url": upload_url,
+                "key": upload_key,
+                "content_type": PARQUET,
+                "expires_at": expires_at,
             },
-            "receipt": receipt,
         }
 
     @app.post("/v1/tasks/{task_id}/complete")
@@ -274,6 +303,13 @@ def create_app(redis=None) -> FastAPI:
             raise HTTPException(
                 413, f"upload is {size} bytes, the limit is {core.max_upload}"
             )
+        try:
+            framed = await core.storage.is_parquet(report.key, size)
+        except Exception:
+            log.exception("could not read the ends of %s", report.key)
+            raise HTTPException(502, "object storage is unavailable, retry") from None
+        if not framed:
+            raise HTTPException(422, "the upload is not a Parquet file")
 
         # The PUT URL outlives this call, so work on a copy the miner can't touch.
         attempt = secrets.token_hex(4)
@@ -350,13 +386,6 @@ def create_app(redis=None) -> FastAPI:
         if seq is None:
             raise HTTPException(409, "you do not hold this claim")
         round_id = payload.get("round_id") or core.current.get(kind, "")
-        if kind == CRAWL:
-            await core.db(
-                core.budgets.record_coverage,
-                who.hotkey,
-                len(set(payload.get("urls", []))),
-                0,
-            )
         await core.record(
             round_id,
             who.hotkey,
@@ -366,10 +395,10 @@ def create_app(redis=None) -> FastAPI:
             task_id=task_id,
             cause="abandoned",
         )
-        miner = await core.db(
-            core.budgets.penalise, who.hotkey, task_id, "abandoned", kind
+        budget = await core.db(
+            lifecycle.lapse, core, who.hotkey, task_id, payload, "abandoned"
         )
-        return {"task_id": task_id, "budget": miner.budget}
+        return {"task_id": task_id, "budget": budget}
 
     @app.post("/v1/validation/{task_id}/release")
     async def release(task_id: str, body: Release, who: Caller = Depends(validator)):
@@ -554,11 +583,13 @@ async def _janitor(core: State) -> None:
 
 async def _refused(core: State, round_id: str, who: Caller, refusal: dict) -> dict:
     refusal["inputs"].setdefault("retry_after", RETRY_AFTER_S.get(refusal["code"], 5.0))
+    if not await core.first_refusal(who.hotkey, refusal["code"]):
+        return {"tasks": [], "refusal": refusal, "receipt": None}
     seq = await core.next_seq()
     receipt = await core.record(
         round_id, who.hotkey, who.requested_at, "refused", seq, refusal=refusal
     )
-    return {"task": None, "refusal": refusal, "receipt": receipt}
+    return {"tasks": [], "refusal": refusal, "receipt": receipt}
 
 
 app = create_app()

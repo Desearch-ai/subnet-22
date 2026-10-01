@@ -10,6 +10,7 @@ from botocore.config import Config
 from botocore.exceptions import ClientError
 
 PARQUET = "application/vnd.apache.parquet"
+PARQUET_MAGIC = b"PAR1"
 MISSING = {"404", "NoSuchKey", "NotFound"}
 CHANGED = {"412", "PreconditionFailed"}
 
@@ -97,6 +98,23 @@ class Storage:
                 raise Changed(src) from None
             raise
         return done["CopyObjectResult"]["ETag"]
+
+    async def is_parquet(self, key: str, size: int) -> bool:
+        """Only the magic bytes at both ends are read; nothing of the miner's is parsed here."""
+        if size < 2 * len(PARQUET_MAGIC):
+            return False
+        head = await self.read_range(key, f"bytes=0-{len(PARQUET_MAGIC) - 1}")
+        tail = await self.read_range(key, f"bytes=-{len(PARQUET_MAGIC)}")
+        return head == PARQUET_MAGIC and tail == PARQUET_MAGIC
+
+    async def read_range(self, key: str, byte_range: str) -> bytes:
+        def read() -> bytes:
+            found = self.client.get_object(
+                Bucket=self.bucket, Key=self.path(key), Range=byte_range
+            )
+            return found["Body"].read()
+
+        return await asyncio.to_thread(read)
 
     async def put_json(self, key: str, obj, cache_control: str = "") -> None:
         await asyncio.to_thread(

@@ -13,7 +13,15 @@ from desearch.manifest import OPEN_LIST_KEY
 from desearch.manifest import payload as manifest_payload
 
 from . import queues, rounds
-from .budget import COVERAGE_GATE, CRAWL, EMBED, HOUR, STRIKE_REASONS, STRIKE_WINDOW_H
+from .budget import (
+    COVERAGE_GATE,
+    CRAWL,
+    EMBED,
+    HOSTILE_LOCKOUT_H,
+    HOUR,
+    STRIKE_REASONS,
+    STRIKE_WINDOW_H,
+)
 from .embeddings import DONE, DROPPED
 from .validations import NO_MAJORITY, Decision, build_report, decide, utc_day
 
@@ -205,14 +213,7 @@ async def reclaim_expired(core) -> list[tuple[str, str]]:
             continue
         holder, seq = found
         if holder:
-            if kind == CRAWL:
-                await core.db(
-                    core.budgets.record_coverage,
-                    holder,
-                    len(set(payload.get("urls", []))),
-                    0,
-                )
-            await core.db(core.budgets.penalise, holder, task_id, "claim_expired", kind)
+            await core.db(lapse, core, holder, task_id, payload, "claim_expired")
             await core.record(
                 payload.get("round_id") or core.current.get(kind, ""),
                 holder,
@@ -224,6 +225,31 @@ async def reclaim_expired(core) -> list[tuple[str, str]]:
             )
         reclaimed.append((task_id, holder))
     return reclaimed
+
+
+def lapse(core, hotkey: str, task_id: str, payload: dict, cause: str) -> int:
+    """A claim that ended without an upload: its URLs, the budget and a strike; returns the budget."""
+    kind = payload.get("kind", CRAWL)
+    assigned = len(set(payload.get("urls", [])))
+    with core.sqlite.batch():
+        if kind == CRAWL:
+            core.budgets.record_coverage(hotkey, assigned, 0)
+            core.budgets.credit(hotkey, -assigned, kind)
+        budget = core.budgets.penalise(hotkey, task_id, cause, kind).budget
+        strike(core, hotkey, cause, task_id, kind)
+    return budget
+
+
+def strike(core, miner: str, reason: str, task_id: str, kind: str) -> None:
+    since = time.time() - STRIKE_WINDOW_H * HOUR
+    judged = core.validations.judged_since(miner, since, kind)
+    core.budgets.strike(miner, reason, task_id, judged, kind)
+
+
+def crashed_on_most(votes: list[dict]) -> bool:
+    """Checks that crashed twice on this upload alone, on most validators, point at the file."""
+    crashed = sum(1 for vote in votes if vote["result"].get("crashed"))
+    return crashed * 2 > len(votes)
 
 
 async def requeue(core, task_id: str, job: dict, cause: str) -> None:
@@ -277,6 +303,7 @@ async def write_report(core, report: dict) -> None:
 async def void_task(
     core, task_id: str, lapsed: queues.Finalized, validator: str, reason: str
 ) -> dict:
+    await discard_upload(core, lapsed.job)
     await requeue(core, task_id, lapsed.job, "void")
     report = build_report(
         task_id, lapsed.job, validator, {"verdict": "void", "reason": reason}
@@ -403,6 +430,8 @@ def finalize_accounts(
             budget = core.budgets.penalise(
                 miner, task_id, "verification_failed", kind
             ).budget
+            if kind == CRAWL and result.get("reason") in STRIKE_REASONS:
+                core.budgets.credit(miner, -assigned, kind)
         elif credited:
             # An embed pass is all or nothing, so every one grows the budget.
             ramp = kind == EMBED or credited >= COVERAGE_GATE * assigned
@@ -423,9 +452,9 @@ def finalize_accounts(
             decided=result.get("reason") != NO_MAJORITY,
         )
         if verdict == "fail" and result.get("reason") in STRIKE_REASONS:
-            since = time.time() - STRIKE_WINDOW_H * HOUR
-            judged = core.validations.judged_since(miner, since, kind)
-            core.budgets.strike(miner, result["reason"], task_id, judged, kind)
+            strike(core, miner, result["reason"], task_id, kind)
+        if crashed_on_most(decision.votes):
+            core.budgets.lock_out(miner, kind, HOSTILE_LOCKOUT_H, "hostile_upload")
     return budget
 
 
@@ -475,7 +504,14 @@ async def close_upload(
     if verdict == "pass":
         await finish_task(core, job["round_id"], task_id)
     else:
+        await discard_upload(core, job)
         await requeue(core, task_id, job, verdict)
+
+
+async def discard_upload(core, job: dict) -> None:
+    """Only a passed upload is published, and a kept file could be resubmitted by the next miner."""
+    await delete_quietly(core.storage, job["key"])
+    await delete_quietly(core.storage, manifest_key(job["key"]))
 
 
 async def finish_finalized(core, task_id: str, job: dict, finalized: dict) -> dict:

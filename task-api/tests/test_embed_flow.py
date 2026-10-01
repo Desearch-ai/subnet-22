@@ -49,8 +49,8 @@ async def embed_round(h: Harness, entry: dict = INPUT) -> str:
 
 
 async def embed_task(h: Harness, miner) -> dict:
-    task = (await miner.post("/v1/tasks/claim", {"kind": "embed"}))["task"]
-    await _upload(h, task["upload"], b"vectors")
+    task = (await miner.post("/v1/tasks/claim", {"kind": "embed"}))["tasks"][0]
+    await _upload(h, task["upload"], b"PAR1vectorsPAR1")
     await miner.post(
         f"/v1/tasks/{task['task_id']}/complete",
         {"key": task["upload"]["key"], "bytes": 7},
@@ -156,7 +156,7 @@ async def _embed_strikes(backend) -> None:
         again = await h.miner.post("/v1/tasks/claim", {"kind": "embed"})
         assert again["refusal"]["code"] == "ALREADY_HELD"
         rival = await h.rival.post("/v1/tasks/claim", {"kind": "embed"})
-        assert rival["task"]["task_id"] == task["task_id"]
+        assert rival["tasks"][0]["task_id"] == task["task_id"]
 
 
 def test_embed_tasks_stay_closed_until_switched_on(api_env, memory):

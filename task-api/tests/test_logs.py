@@ -58,7 +58,7 @@ def test_the_overview_and_the_miner_list_follow_the_work(api_env, memory):
     async def scenario(h):
         task = await h.mine()
         await judged(h, h.validator)
-        held = (await h.rival.post("/v1/tasks/claim"))["task"]
+        held = (await h.rival.post("/v1/tasks/claim"))["tasks"][0]
         waiting = await h.mine()
         return (
             {h.miner.hotkey, h.rival.hotkey},
@@ -98,8 +98,8 @@ def test_the_overview_and_the_miner_list_follow_the_work(api_env, memory):
 
     first = miners[0]
     assert (first["share"], first["credited"], first["budget"]) == (1.0, 2, 2)
-    assert (first["coverage"], first["eligible"]) == (1.0, True)
-    assert (first["in_flight"], first["locked_until"]) == (1, None)
+    assert first["coverage"] == 1.0
+    assert (first["in_flight"], first["waiting"], first["locked_until"]) == (0, 1, None)
     assert {m["hotkey"] for m in miners} == hotkeys
     assert (miner["share"], miner["window"]["tasks"]) == (1.0, 1)
 

@@ -2,7 +2,7 @@ import tempfile
 from pathlib import Path
 
 import pytest
-from app.budget import COVERAGE_GATE, CRAWL, Budgets
+from app.budget import CEILING, CRAWL, Budgets
 from app.state import connect
 
 
@@ -27,12 +27,10 @@ def test_full_coverage_earns_a_share(budgets):
     assert crawl_shares(budgets) == {"a": 1.0}
 
 
-def test_below_the_gate_earns_nothing(budgets):
+def test_short_tasks_are_paid_for_what_came_back(budgets):
     work(budgets, "a", 100, 100, 100)
     work(budgets, "omitter", 100, 80, 80)
-    shares = crawl_shares(budgets)
-    assert "omitter" not in shares
-    assert shares == {"a": 1.0}
+    assert crawl_shares(budgets) == pytest.approx({"a": 100 / 180, "omitter": 80 / 180})
 
 
 def test_just_above_the_gate_still_earns(budgets):
@@ -55,11 +53,19 @@ def test_a_miner_that_returns_nothing_is_excluded(budgets):
     assert budgets.coverage_report()["hoarder"]["coverage"] == 0.0
 
 
-def test_gate_is_on_completeness_not_correctness(budgets):
-    """Fabricated bodies are the re-fetch's job, not coverage's."""
-    work(budgets, "fabricator", 100, 100, 100)
-    assert budgets.coverage_report()["fabricator"]["eligible"]
-    assert COVERAGE_GATE == 0.85
+def test_a_bad_task_takes_its_urls_back_from_the_day(budgets):
+    work(budgets, "a", 3000, 3000, 3000)
+    work(budgets, "b", 1000, 1000, 1000)
+    budgets.credit("a", -1000)
+    assert crawl_shares(budgets) == {"a": 2 / 3, "b": 1 / 3}
+
+
+def test_the_budget_grows_by_half_with_each_pass_up_to_the_ceiling(budgets):
+    grown = []
+    for n in range(14):
+        grown.append(budgets.reward("a", f"t{n}", 1).budget)
+    assert grown == [2, 3, 4, 6, 9, 13, 19, 28, 42, 63, 94, CEILING, CEILING, CEILING]
+    assert budgets.penalise("a", "t99", "verification_failed").budget == CEILING // 2
 
 
 def test_work_not_yet_decided_does_not_count_against_coverage(budgets):

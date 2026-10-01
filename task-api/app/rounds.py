@@ -7,7 +7,9 @@ from dataclasses import dataclass, field
 from . import proofs
 
 TASK_URLS = 1000
-CLAIM_TTL_S = 900
+CLAIM_TTL_S = 180
+# Past the expiry miners are told, so an upload that ends a few seconds late still counts.
+UPLOAD_GRACE_S = 10
 
 
 @dataclass

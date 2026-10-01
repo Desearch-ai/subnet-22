@@ -21,10 +21,15 @@ from .seeds import seeds_from_env
 from .storage import Storage
 from .validations import Validations
 
-MAX_UPLOAD_BYTES = 64_000_000
+MAX_UPLOAD_BYTES = 100_000_000
 MAX_BACKLOG_S = 43_200
 PAGES_BUCKET = "desearch-pages"
 READS_PER_MINUTE = 120
+LOG_READS_PER_MINUTE = 60
+POLL_RATE = 0.5
+POLL_WINDOW_S = 10
+FAILED_WRITES_PER_MINUTE = 30
+MINUTE = 60
 DB_FILE = "task_api.db"
 DEFAULT_EMBED_MODEL = "qwen3-embedding-8b"
 
@@ -77,9 +82,17 @@ class State:
         self.redis = redis
         self.claim_ttl = int(os.environ.get("TASK_API_CLAIM_TTL", rounds.CLAIM_TTL_S))
         self.validation_ttl = int(os.environ.get("TASK_API_VALIDATION_TTL", "900"))
-        self.poll_rate = float(os.environ.get("TASK_API_POLL_RATE", "2"))
+        self.poll_rate = float(os.environ.get("TASK_API_POLL_RATE", POLL_RATE))
         self.reads_per_minute = int(
             os.environ.get("TASK_API_READS_PER_MINUTE", READS_PER_MINUTE)
+        )
+        self.log_reads_per_minute = int(
+            os.environ.get("TASK_API_LOG_READS_PER_MINUTE", LOG_READS_PER_MINUTE)
+        )
+        self.failed_writes_per_minute = int(
+            os.environ.get(
+                "TASK_API_FAILED_WRITES_PER_MINUTE", FAILED_WRITES_PER_MINUTE
+            )
         )
         self.max_upload = int(
             os.environ.get("TASK_API_MAX_UPLOAD_BYTES", MAX_UPLOAD_BYTES)
@@ -91,7 +104,8 @@ class State:
         self.ledger_delay = float(os.environ.get("TASK_API_LEDGER_DELAY_S", "0"))
         self.open_listed: tuple[str, ...] | None = None
         self.tasks = {
-            kind: queues.TaskQueue(redis, self.claim_ttl, kind) for kind in queues.KINDS
+            kind: queues.TaskQueue(redis, self.claim_ttl + rounds.UPLOAD_GRACE_S, kind)
+            for kind in queues.KINDS
         }
         # Off until Desearch's own model ships; on, it runs the stand-in for testing.
         self.embed_tasks = os.environ.get("TASK_API_EMBED_TASKS", "0") == "1"
@@ -179,20 +193,45 @@ class State:
 
     async def retry_after(self, hotkey: str) -> float | None:
         now = time.time()
-        key = f"rl:hotkey:{hotkey}:{int(now)}"
+        window = int(now // POLL_WINDOW_S)
+        key = f"rl:hotkey:{hotkey}:{window}"
         count = await self.redis.incr(key)
         if count == 1:
-            await self.redis.expire(key, 2)
-        if count <= self.poll_rate:
+            await self.redis.expire(key, 2 * POLL_WINDOW_S)
+        if count <= max(1, round(self.poll_rate * POLL_WINDOW_S)):
             return None
-        return max(0.01, round(1 - now % 1, 3))
+        return max(0.01, round((window + 1) * POLL_WINDOW_S - now, 3))
 
-    async def read_wait(self, ip: str) -> int | None:
+    async def first_refusal(self, hotkey: str, code: str) -> bool:
+        """Only the first of a run of identical refusals is signed into the log."""
+        key = f"refused:{hotkey}:{code}:{int(time.time() // MINUTE)}"
+        return bool(await self.redis.set(key, "1", nx=True, ex=2 * MINUTE))
+
+    async def read_wait(self, ip: str, logs: bool) -> int | None:
+        """Log reads have a budget of their own, so a dashboard cannot use up the rest."""
         now = time.time()
-        key = f"rl:read:{ip}:{int(now // 60)}"
+        kind, limit = (
+            ("logs", self.log_reads_per_minute)
+            if logs
+            else ("read", self.reads_per_minute)
+        )
+        key = f"rl:{kind}:{ip}:{int(now // MINUTE)}"
         count = await self.redis.incr(key)
         if count == 1:
-            await self.redis.expire(key, 120)
-        if count <= self.reads_per_minute:
+            await self.redis.expire(key, 2 * MINUTE)
+        if count <= limit:
             return None
-        return 60 - int(now % 60)
+        return MINUTE - int(now % MINUTE)
+
+    async def write_wait(self, ip: str) -> int | None:
+        """Seconds an address that kept failing authentication waits before it may write again."""
+        now = time.time()
+        failed = await self.redis.get(f"rl:denied:{ip}:{int(now // MINUTE)}")
+        if int(failed or 0) < self.failed_writes_per_minute:
+            return None
+        return MINUTE - int(now % MINUTE)
+
+    async def write_denied(self, ip: str) -> None:
+        key = f"rl:denied:{ip}:{int(time.time() // MINUTE)}"
+        if await self.redis.incr(key) == 1:
+            await self.redis.expire(key, 2 * MINUTE)
