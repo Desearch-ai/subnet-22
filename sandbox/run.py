@@ -23,6 +23,7 @@ from sandbox.urls import host_of
 
 REFILL_TASKS = 10
 LOW_WATER_TASKS = 3
+HELD_RECENTLY_S = 30
 REVEAL_WAIT_S = 20.0
 POLL_S = 3.0
 SUMMARY_EVERY_S = 60.0
@@ -175,7 +176,8 @@ class Sandbox:
         if self.exhausted or time.time() - self.fed_at < REVEAL_WAIT_S:
             return
         health = await get_json(http, f"{self.ports.api_url}/v1/health")
-        if (health.get("queue_depth") or {}).get("crawl", 0) >= LOW_WATER_TASKS:
+        waiting = (health.get("queue_depth") or {}).get("crawl", 0)
+        if waiting >= LOW_WATER_TASKS and not await self.only_held_tasks_left(http):
             return
         urls = await self.source.take(self.task_size * REFILL_TASKS)
         if not urls:
@@ -189,6 +191,16 @@ class Sandbox:
             )
         self.fed_at = time.time()
         print(f"queued {len(urls)} URLs as {enqueued['batches']} tasks", flush=True)
+
+    async def only_held_tasks_left(self, http: aiohttp.ClientSession) -> bool:
+        """A miner is never given a task it held before, so after a restart those can block it."""
+        events = await get_json(
+            http, f"{self.ports.api_url}/v1/events?outcome=refused&limit=1"
+        )
+        last = (events.get("events") or [{}])[0]
+        return (last.get("refusal") or {}).get("code") == "ALREADY_HELD" and (
+            time.time() - last.get("at", 0) < HELD_RECENTLY_S
+        )
 
     def banner(self) -> None:
         print(

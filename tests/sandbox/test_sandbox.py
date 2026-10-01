@@ -210,3 +210,34 @@ def test_the_sandbox_will_not_start_without_a_scrapingdog_key(tmp_path, monkeypa
     (tmp_path / "miner.env").write_text("SCRAPINGDOG_API_KEY=from-the-miner-env\n")
     assert entry.load_scrapingdog_key()
     assert entry.os.environ["SCRAPINGDOG_API_KEY"] == "from-the-miner-env"
+
+
+def test_more_tasks_are_queued_when_the_miner_is_only_offered_tasks_it_held(tmp_path):
+    import time
+
+    import aiohttp
+
+    refusals = []
+
+    async def handler(request: web.Request) -> web.Response:
+        return web.json_response({"events": refusals})
+
+    async def held(base: str) -> bool:
+        sandbox = run.Sandbox(
+            Ports(int(base.rsplit(":", 1)[1].strip("/"))), tmp_path, None, 100
+        )
+        async with aiohttp.ClientSession() as http:
+            return await sandbox.only_held_tasks_left(http)
+
+    async def scenario() -> list[bool]:
+        async with serving(handler) as base:
+            answers = [await held(base)]
+            refusals[:] = [{"at": time.time(), "refusal": {"code": "ALREADY_HELD"}}]
+            answers.append(await held(base))
+            refusals[0]["at"] = time.time() - run.HELD_RECENTLY_S - 1
+            answers.append(await held(base))
+            refusals[:] = [{"at": time.time(), "refusal": {"code": "NO_CAPACITY"}}]
+            answers.append(await held(base))
+        return answers
+
+    assert asyncio.run(scenario()) == [False, True, False, False]
