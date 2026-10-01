@@ -243,10 +243,14 @@ async def crawled(miner: Miner, urls: list[str]) -> list[dict]:
 
 
 class StaticFetcher:
+    rerouting = False
+
     def __init__(self, pages: dict[str, Fetched]):
         self.pages = pages
 
-    async def fetch(self, url: str, deadline: float | None = None) -> Fetched:
+    async def attempt(
+        self, url: str, deadline: float | None = None, timeout: float | None = None
+    ) -> Fetched:
         return self.pages[url]
 
     async def aclose(self) -> None:
@@ -262,8 +266,8 @@ class ClaimApi:
     async def post(self, path: str, body: dict | None = None) -> dict:
         self.calls.append(path)
         return {
-            "task": {"task_id": "t-r", "urls": [], "upload": {}},
-            "receipt": {"body": {"task_id": "t-r", "outcome": "issued"}},
+            "tasks": [{"task_id": "t-r", "urls": [], "upload": {}}],
+            "receipts": [{"body": {"task_id": "t-r", "outcome": "issued"}}],
         }
 
     async def aclose(self) -> None:
@@ -854,7 +858,7 @@ def test_an_unexpected_poll_error_backs_off_and_keeps_leasing(monkeypatch, caplo
     api = ScriptedApi(
         RuntimeError("claim socket went away"),
         ["not", "an", "answer"],
-        {"task": {"task_id": "t-late", "urls": [], "upload": {}}},
+        {"tasks": [{"task_id": "t-late", "urls": [], "upload": {}}]},
     )
     miner, finalized = _recording_miner(api, Settings(idle_exit=1))
 
@@ -889,7 +893,7 @@ def test_a_refused_miner_waits_as_long_as_the_api_asks(refusal, wait):
 def test_in_flight_work_is_finalized_when_every_later_poll_breaks(monkeypatch):
     monkeypatch.setattr(miner_script, "ERROR_BACKOFF", 0.01)
     api = ScriptedApi(
-        {"task": {"task_id": "t-held", "urls": [], "upload": {}}},
+        {"tasks": [{"task_id": "t-held", "urls": [], "upload": {}}]},
         then=RuntimeError("claim endpoint is down"),
     )
     miner, finalized = _recording_miner(api, Settings(shutdown_grace=5), pause=0.2)
@@ -1025,10 +1029,10 @@ def test_a_slow_scrapingdog_call_does_not_hold_up_our_own_fetches():
     fetched_ourselves = asyncio.Event()
 
     class OwnIp(StaticFetcher):
-        async def fetch(self, url: str, deadline: float | None = None) -> Fetched:
+        async def attempt(self, url: str, deadline=None, timeout=None) -> Fetched:
             if url == fine:
                 fetched_ourselves.set()
-            return await super().fetch(url, deadline)
+            return await super().attempt(url, deadline, timeout)
 
     class SlowDog(FakeScrapingDog):
         async def fetch(self, url: str, rendered: bool = False, deadline=None):
@@ -1045,6 +1049,47 @@ def test_a_slow_scrapingdog_call_does_not_hold_up_our_own_fetches():
             await miner.aclose()
 
     assert all(row["error"] is None for row in asyncio.run(go()))
+
+
+def test_a_page_queued_for_scrapingdog_past_the_deadline_keeps_our_own_row():
+    refused_url = "https://a.example/refused"
+    pages = {refused_url: refused(refused_url, 403)}
+    miner = Miner(Settings(), api=ClaimApi(), fetcher=StaticFetcher(pages))
+    miner.scrapingdog = FakeScrapingDog()
+    miner.crawl_deadline = lambda expires_at: time.time() + 0.5
+
+    async def go() -> tuple[list[dict], float, int]:
+        for _ in range(miner.settings.scrapingdog_concurrency):
+            await miner.falling_back.acquire()
+        started = time.monotonic()
+        try:
+            writer = UploadWriter("t", "hk")
+            await miner.crawl([refused_url], time.time() + 180, writer)
+            rows = pq.read_table(io.BytesIO(await writer.finish())).to_pylist()
+            return rows, time.monotonic() - started, miner.awaiting_fallback
+        finally:
+            await miner.aclose()
+
+    rows, took, waiting = asyncio.run(go())
+    assert took < 2, "the crawl ends at its deadline, not when a fallback slot frees"
+    assert rows[0]["error"] == "http_4xx" and waiting == 0
+    assert miner.scrapingdog.calls == []
+
+
+def test_no_more_tasks_are_claimed_while_pages_queue_for_scrapingdog():
+    miner = Miner(Settings(), api=ClaimApi(), fetcher=StaticFetcher({}))
+    miner.claimed(
+        {"task_id": "t1", "urls": ["u"] * 100, "expires_at": time.time() + 180}
+    )
+    now = time.monotonic()
+    for ago in range(200, 0, -1):
+        miner.pace.add(now - ago / 10, 0.1)
+    miner.crawls["t1"].left = 10
+    assert miner.has_room()
+
+    miner.awaiting_fallback = miner.settings.scrapingdog_concurrency + 1
+    assert not miner.has_room()
+    asyncio.run(miner.aclose())
 
 
 def test_without_a_key_the_miner_never_calls_scrapingdog():
@@ -1161,3 +1206,166 @@ def test_the_throughput_summary_counts_the_last_minute_and_the_whole_run():
         "last 20s: 1 tasks, 100 pages (100 ok), 5.0 pages/s;"
         " since start: 3 tasks, 300 pages (270 ok), 10.0 pages/s"
     )
+
+
+class ScriptedFetcher:
+    """Answers each URL with its next scripted result and records the timeout it was given."""
+
+    def __init__(self, script: dict[str, list[Fetched]], rerouting: bool = False):
+        self.script = {url: list(answers) for url, answers in script.items()}
+        self.rerouting = rerouting
+        self.calls: list[tuple[str, float | None]] = []
+
+    async def attempt(self, url: str, deadline=None, timeout=None) -> Fetched:
+        self.calls.append((url, timeout))
+        answers = self.script[url]
+        return answers.pop(0) if len(answers) > 1 else answers[0]
+
+    async def aclose(self) -> None:
+        pass
+
+
+def failed(url: str, error: str, status: int = 0) -> Fetched:
+    return Fetched(
+        url=url,
+        final_url=url,
+        fetched_at=datetime.now(timezone.utc),
+        status=status,
+        error=error,
+    )
+
+
+def crawl_with(fetcher, urls: list[str], **settings) -> list[dict]:
+    miner = Miner(Settings(**settings), api=ClaimApi(), fetcher=fetcher)
+
+    async def go() -> list[dict]:
+        try:
+            return await crawled(miner, urls)
+        finally:
+            await miner.aclose()
+
+    return asyncio.run(go())
+
+
+def test_a_slow_page_is_tried_again_after_the_pages_not_tried_yet():
+    slow, easy = "https://a.example/slow", "https://b.example/easy"
+    fetcher = ScriptedFetcher(
+        {
+            slow: [failed(slow, "timeout"), page(HTML, url=slow)],
+            easy: [page(HTML, url=easy)],
+        }
+    )
+
+    rows = crawl_with(fetcher, [slow, easy], concurrency=1)
+
+    assert fetcher.calls == [(slow, 10.0), (easy, 10.0), (slow, 30.0)]
+    assert [row["error"] for row in rows] == [None, None]
+
+
+def test_a_page_that_keeps_failing_is_given_up_after_the_last_try():
+    dead = "https://a.example/dead"
+    fetcher = ScriptedFetcher({dead: [failed(dead, "connect")]})
+
+    rows = crawl_with(fetcher, [dead], attempts=4)
+
+    assert len(fetcher.calls) == 4
+    assert [row["error"] for row in rows] == ["connect"]
+
+
+@pytest.mark.parametrize(("rerouting", "tries"), [(False, 1), (True, 3)])
+def test_a_refusal_is_repeated_only_from_another_address(rerouting, tries):
+    refused_url = "https://a.example/refused"
+    fetcher = ScriptedFetcher({refused_url: [refused(refused_url, 403)]}, rerouting)
+
+    rows = crawl_with(fetcher, [refused_url])
+
+    assert len(fetcher.calls) == tries
+    assert rows[0]["error"] == "http_4xx"
+
+
+def test_nothing_is_tried_again_once_the_deadline_has_passed():
+    slow = "https://a.example/slow"
+    fetcher = ScriptedFetcher({slow: [failed(slow, "timeout")]})
+    miner = Miner(Settings(), api=ClaimApi(), fetcher=fetcher)
+
+    async def go() -> None:
+        try:
+            await miner.crawl([slow], time.time() - 1, UploadWriter("t", "hk"))
+        finally:
+            await miner.aclose()
+
+    asyncio.run(go())
+
+    assert len(fetcher.calls) == 1
+
+
+def test_pace_is_unknown_until_there_is_enough_to_go_on():
+    pace = miner_script.Pace(slots=4)
+    for second in range(10):
+        pace.add(float(second), 4.0)
+    assert pace.per_second(10.0) is None
+
+    for second in range(10, 20):
+        pace.add(float(second), 4.0)
+    assert pace.per_second(20.0) == pytest.approx(1.0), "4 slots, 4 s a page"
+    assert pace.per_second(100.0) is None, "old pages say nothing about now"
+
+
+def test_a_miner_with_idle_slots_is_not_mistaken_for_a_slow_one():
+    pace = miner_script.Pace(slots=48)
+    for second in range(20):
+        pace.add(float(second), 2.0)
+    assert pace.per_second(20.0) == pytest.approx(24.0), (
+        "one page a second done, 24 possible"
+    )
+
+
+def test_another_task_is_claimed_only_when_all_of_them_would_finish_in_time():
+    miner = Miner(Settings(), api=ClaimApi(), fetcher=StaticFetcher({}))
+    assert miner.has_room(), "nothing in flight"
+
+    miner.claimed(
+        {"task_id": "t1", "urls": ["u"] * 1000, "expires_at": time.time() + 180}
+    )
+    miner.crawls["t1"].left = 600
+    assert miner.crawl_window == pytest.approx(150, abs=1)
+    assert not miner.has_room(), "the pace is not known yet"
+
+    now = time.monotonic()
+    for ago in range(200, 0, -1):
+        miner.pace.add(now - ago / 10, miner.settings.concurrency / 10)
+    assert not miner.has_room(), "1600 pages at 10 a second take longer than the window"
+
+    miner.crawls["t1"].left = 40
+    assert miner.has_room(), "1040 pages at 10 a second fit"
+    asyncio.run(miner.aclose())
+
+
+def test_a_slow_upload_leaves_more_of_the_claim_for_uploading():
+    miner = Miner(Settings(), api=ClaimApi(), fetcher=StaticFetcher({}))
+    expires_at = time.time() + 180
+
+    assert miner.crawl_deadline(expires_at) == pytest.approx(expires_at - 30, abs=1)
+    miner.upload_s = 40.0
+    assert miner.crawl_deadline(expires_at) == pytest.approx(expires_at - 80, abs=1)
+    miner.upload_s = 500.0
+    assert miner.crawl_deadline(expires_at) == pytest.approx(expires_at - 90, abs=1)
+    asyncio.run(miner.aclose())
+
+
+def test_a_claim_asks_for_as_many_tasks_as_the_pace_says_will_finish():
+    miner = Miner(Settings(max_tasks=20), api=ClaimApi(), fetcher=StaticFetcher({}))
+    assert miner.wanted() == 1, "the pace is not known yet"
+
+    miner.claimed(
+        {"task_id": "t1", "urls": ["u"] * 100, "expires_at": time.time() + 180}
+    )
+    now = time.monotonic()
+    for ago in range(200, 0, -1):
+        miner.pace.add(now - ago / 10, miner.settings.concurrency / 10)
+    miner.crawls["t1"].left = 40
+    assert miner.wanted() == 10, "10 pages a second for 105 s, 40 pages already ahead"
+
+    miner.settings = Settings(max_tasks=3)
+    assert miner.wanted() == 3, "never more than MAX_TASKS"
+    asyncio.run(miner.aclose())

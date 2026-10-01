@@ -47,6 +47,8 @@ class Settings(FetchSettings):
             concurrency=get("CRAWL_CONCURRENCY", cls.concurrency),
             per_domain=get("CRAWL_CONCURRENCY_PER_DOMAIN", cls.per_domain),
             timeout=get("CRAWL_TIMEOUT", cls.timeout),
+            first_timeout=get("CRAWL_FIRST_TIMEOUT", cls.first_timeout),
+            attempts=get("CRAWL_ATTEMPTS", cls.attempts),
             user_agent=get("CRAWL_USER_AGENT", cls.user_agent),
             max_tasks=get("MAX_TASKS", cls.max_tasks),
             receipts_file=get("RECEIPTS_FILE", cls.receipts_file),

@@ -89,6 +89,8 @@ class FetchSettings:
     proxy_urls: tuple[str, ...] = ()
     user_agent: str = DEFAULT_USER_AGENT
     timeout: float = 30.0
+    first_timeout: float = 10.0
+    attempts: int = 3
     max_bytes: int = 5_000_000
     allow_private: bool = False
 
@@ -143,6 +145,11 @@ class Fetcher:
         self.routes = [Route(proxy) for proxy in settings.proxy_urls or (None,)]
         self.rotation = itertools.cycle(self.routes)
 
+    @property
+    def rerouting(self) -> bool:
+        """Whether another try leaves from another address."""
+        return any(route.proxy for route in self.routes)
+
     def next_route(self) -> Route:
         return next(self.rotation)
 
@@ -153,6 +160,13 @@ class Fetcher:
                 fetched = await self._attempt(self.next_route(), url, deadline)
                 fetched.attempts = 2
         return fetched
+
+    async def attempt(
+        self, url: str, deadline: float | None = None, timeout: float | None = None
+    ) -> Fetched:
+        """One try through the next route; the caller decides whether to try again."""
+        async with self._domain_slot(_domain(url)), self.slots:
+            return await self._attempt(self.next_route(), url, deadline, timeout)
 
     async def aclose(self) -> None:
         for route in self.routes:
@@ -200,9 +214,15 @@ class Fetcher:
             )
         return route.session
 
-    async def _attempt(self, route: Route, url: str, deadline: float | None) -> Fetched:
+    async def _attempt(
+        self,
+        route: Route,
+        url: str,
+        deadline: float | None,
+        timeout: float | None = None,
+    ) -> Fetched:
         fetched = Fetched(url=url, final_url=url, fetched_at=datetime.now(timezone.utc))
-        allowed = self.timeout
+        allowed = timeout or self.timeout
         if deadline is not None:
             allowed = min(allowed, deadline - time.time())
         if allowed <= 0:
@@ -490,6 +510,13 @@ async def _read_capped(response: aiohttp.ClientResponse, cap: int) -> bytes | No
         if len(body) > cap:
             return None
     return bytes(body)
+
+
+def worth_another_try(error: str | None, status: int, rerouting: bool) -> bool:
+    """A refusal is only worth repeating from another address; a slow or broken answer always is."""
+    if error == "blocked" or (error == "http_4xx" and status in RETRY_STATUSES):
+        return rerouting
+    return error in RETRYABLE
 
 
 def retryable(fetched: Fetched) -> bool:

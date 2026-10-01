@@ -3,17 +3,26 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import os
 import signal
 import time
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 
 import aiohttp
 from yarl import URL
 
 from desearch import env
 from desearch.client import TaskApiClient, TaskApiError
-from desearch.fetch import Fetched, Fetcher, ScrapingDog, needs_fallback
+from desearch.fetch import (
+    Fetched,
+    Fetcher,
+    ScrapingDog,
+    needs_fallback,
+    worth_another_try,
+)
 from desearch.kinds import CRAWL
 from neurons.miners.config import ENV_FILE, Settings
 from neurons.miners.rows import UploadWriter, build_row, error_row
@@ -24,6 +33,11 @@ BACKOFF = {"QUEUE_EMPTY": 2.0, "NO_CAPACITY": 1.0}
 ERROR_BACKOFF = 2.0
 MAX_BACKOFF = 3600.0
 CLAIM_MARGIN_S = 30.0
+UPLOAD_SLACK = 2.0
+PACE_WINDOW_S = 30.0
+PACE_MIN_S = 15.0
+HEADROOM = 0.7
+ROOM_CHECK_S = 1.0
 ATTEMPTS = 3
 SUMMARY_EVERY_S = 60.0
 UPLOAD_TIMEOUT = aiohttp.ClientTimeout(total=120.0, sock_connect=15.0)
@@ -65,6 +79,13 @@ class TaskWorker:
                         {stopped, *self.in_flight}, return_when=asyncio.FIRST_COMPLETED
                     )
                     continue
+                if not self.has_room():
+                    await asyncio.wait(
+                        {stopped, *self.in_flight},
+                        timeout=ROOM_CHECK_S,
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    continue
 
                 try:
                     delay = await self.poll()
@@ -85,20 +106,25 @@ class TaskWorker:
             await self.aclose()
 
     async def poll(self) -> float:
+        body = {"kind": self.kind, "count": self.wanted()}
         try:
-            answer = await self.api.post("/v1/tasks/claim", {"kind": self.kind})
+            answer = await self.api.post("/v1/tasks/claim", body)
         except TaskApiError as exc:
             log.warning("claim failed: %s", exc)
             return ERROR_BACKOFF
-        if answer.get("receipt") and self.settings.receipts_file:
-            await asyncio.to_thread(self.keep_receipt, answer["receipt"])
+        receipts = answer.get("receipts") or [answer.get("receipt")]
+        if self.settings.receipts_file:
+            for receipt in filter(None, receipts):
+                await asyncio.to_thread(self.keep_receipt, receipt)
 
-        task = answer.get("task")
-        if task:
-            self.idle_polls = 0
+        tasks = answer.get("tasks") or []
+        for task in tasks:
+            self.claimed(task)
             job = asyncio.create_task(self.process_task(task))
             self.in_flight.add(job)
             job.add_done_callback(self.in_flight.discard)
+        if tasks:
+            self.idle_polls = 0
             return 0.0
 
         refusal = answer.get("refusal") or {}
@@ -111,6 +137,15 @@ class TaskWorker:
             return min(MAX_BACKOFF, max(0.05, float(refusal["inputs"]["retry_after"])))
         except (KeyError, TypeError, ValueError):
             return BACKOFF.get(code, ERROR_BACKOFF)
+
+    def has_room(self) -> bool:
+        return True
+
+    def wanted(self) -> int:
+        return 1
+
+    def claimed(self, task: dict) -> None:
+        pass
 
     async def process_task(self, task: dict) -> None:
         raise NotImplementedError
@@ -190,6 +225,31 @@ class Throughput:
         return text
 
 
+class Pace:
+    """Pages a second all crawl slots can take, from how long pages held one in the last half minute."""
+
+    def __init__(self, slots: int):
+        self.slots = slots
+        self.finished: deque[tuple[float, float]] = deque()
+
+    def add(self, now: float, held_s: float) -> None:
+        self.finished.append((now, held_s))
+
+    def per_second(self, now: float) -> float | None:
+        while self.finished and self.finished[0][0] < now - PACE_WINDOW_S:
+            self.finished.popleft()
+        if not self.finished or now - self.finished[0][0] < PACE_MIN_S:
+            return None
+        held = sum(seconds for _, seconds in self.finished)
+        return self.slots * len(self.finished) / max(held, 1e-3)
+
+
+@dataclass
+class Progress:
+    left: int
+    late: int = 0
+
+
 class Miner(TaskWorker):
     kind = CRAWL
 
@@ -217,7 +277,50 @@ class Miner(TaskWorker):
         # A page holds its slot until it is in the upload, so pages never pile up.
         self.in_progress = asyncio.Semaphore(settings.concurrency)
         self.falling_back = asyncio.Semaphore(settings.scrapingdog_concurrency)
+        self.awaiting_fallback = 0
         self.throughput = Throughput(time.monotonic())
+        self.pace = Pace(settings.concurrency)
+        self.crawls: dict[str, Progress] = {}
+        self.task_urls = 0
+        self.crawl_window = math.inf
+        self.upload_s = 0.0
+
+    def claimed(self, task: dict) -> None:
+        self.crawls[task["task_id"]] = Progress(len(task["urls"]))
+        self.task_urls = len(task["urls"])
+        if task.get("expires_at"):
+            deadline = self.crawl_deadline(task["expires_at"])
+            self.crawl_window = deadline - time.time()
+
+    def has_room(self) -> bool:
+        """Another task is claimed only if, at the current pace, all of them still finish in time."""
+        ahead = sum(crawl.left for crawl in self.crawls.values())
+        if not ahead:
+            return True
+        # The pace counts our own slots only; a queue for ScrapingDog means it is the limit.
+        if self.awaiting_fallback > self.settings.scrapingdog_concurrency:
+            return False
+        pace = self.pace.per_second(time.monotonic())
+        if not pace:
+            return False
+        return (ahead + self.task_urls) / pace <= HEADROOM * self.crawl_window
+
+    def wanted(self) -> int:
+        """As many tasks as the measured pace says will still finish in time."""
+        free = max(1, self.settings.max_tasks - len(self.in_flight))
+        pace = self.pace.per_second(time.monotonic())
+        if not pace or not self.task_urls:
+            return 1
+        if math.isinf(self.crawl_window):
+            return free
+        ahead = sum(crawl.left for crawl in self.crawls.values())
+        fits = int((HEADROOM * self.crawl_window * pace - ahead) // self.task_urls)
+        return max(1, min(free, fits))
+
+    def crawl_deadline(self, expires_at: float) -> float:
+        """The end of the claim is kept for writing and uploading the file."""
+        margin = max(CLAIM_MARGIN_S, UPLOAD_SLACK * self.upload_s)
+        return expires_at - min(margin, (expires_at - time.time()) / 2)
 
     async def run(self) -> None:
         summaries = asyncio.create_task(self.summarize())
@@ -235,8 +338,10 @@ class Miner(TaskWorker):
         task_id, upload = task["task_id"], task["upload"]
         started = time.monotonic()
         pages = UploadWriter(task_id, self.api.hotkey)
+        progress = self.crawls.get(task_id)
         try:
-            await self.crawl(task["urls"], task.get("expires_at"), pages)
+            await self.crawl(task["urls"], task.get("expires_at"), pages, progress)
+            crawled = time.monotonic()
             body = await pages.finish()
             await with_retries(lambda: self.upload(upload, body))
             report = {
@@ -249,12 +354,15 @@ class Miner(TaskWorker):
             await with_retries(
                 lambda: self.api.post(f"/v1/tasks/{task_id}/complete", report)
             )
+            self.upload_s = max(time.monotonic() - crawled, 0.8 * self.upload_s)
         except asyncio.CancelledError:
             await self.abandon(task_id, "shutting down")
             raise
         except Exception as exc:
             await self.abandon(task_id, f"{type(exc).__name__}: {exc}")
             return
+        finally:
+            self.crawls.pop(task_id, None)
 
         self.throughput.add(pages.rows, pages.ok)
         breakdown = " ".join(f"{name}={n}" for name, n in pages.errors.most_common())
@@ -270,29 +378,98 @@ class Miner(TaskWorker):
         )
 
     async def crawl(
-        self, urls: list[str], expires_at: float | None, pages: UploadWriter
+        self,
+        urls: list[str],
+        expires_at: float | None,
+        pages: UploadWriter,
+        progress: Progress | None = None,
     ) -> None:
-        deadline = None
-        if expires_at:
-            remaining = expires_at - time.time()
-            deadline = expires_at - min(CLAIM_MARGIN_S, remaining / 4)
+        deadline = self.crawl_deadline(expires_at) if expires_at else None
+        progress = progress or Progress(len(urls))
 
         async def one(url: str) -> None:
-            async with self.in_progress:
-                row = await self.to_row(await self.fetcher.fetch(url, deadline))
-                if not self.scrapingdog or not needs_fallback(
-                    row["error"], row["status"]
-                ):
-                    log_page(row)
-                    await pages.add(row)
+            try:
+                row = await self.own_row(url, deadline, pages, progress)
+                if row is None:
                     return
-            # Off the crawl slot: ScrapingDog's latency would otherwise cap our own-IP rate.
-            async with self.falling_back:
-                row = await self.fallback_row(url, row, deadline)
+                # Off the crawl slot: ScrapingDog's latency would otherwise cap our own-IP rate.
+                row = await self.with_fallback(url, row, deadline)
                 log_page(row)
                 await pages.add(row)
+            finally:
+                progress.left -= 1
 
         await asyncio.gather(*map(one, urls))
+        if progress.late:
+            log.warning(
+                "%d of %d URLs were not fetched before the deadline;"
+                " raise CRAWL_CONCURRENCY or lower MAX_TASKS",
+                progress.late,
+                len(urls),
+            )
+
+    async def own_row(
+        self,
+        url: str,
+        deadline: float | None,
+        pages: UploadWriter,
+        progress: Progress,
+    ) -> dict | None:
+        """Fetches from our own addresses and writes the row, or returns it for the fallback."""
+        settings = self.settings
+        timeouts = [settings.first_timeout] + [settings.timeout] * (
+            settings.attempts - 1
+        )
+        held = 0.0
+        for tries_left, timeout in zip(reversed(range(len(timeouts))), timeouts):
+            # A retry takes a new slot, so it waits behind the pages not tried yet.
+            async with self.in_progress:
+                late = out_of_time(deadline)
+                started = time.monotonic()
+                row = await self.to_row(
+                    await self.fetcher.attempt(url, deadline, timeout)
+                )
+                held += time.monotonic() - started
+                again = (
+                    tries_left
+                    and not out_of_time(deadline)
+                    and worth_another_try(
+                        row["error"], row["status"], self.fetcher.rerouting
+                    )
+                )
+                if again:
+                    continue
+                progress.late += late
+                # A page cut off by the deadline ends at once and would overstate the pace.
+                if not late:
+                    self.pace.add(time.monotonic(), held)
+                if self.scrapingdog and needs_fallback(row["error"], row["status"]):
+                    return row
+                log_page(row)
+                await pages.add(row)
+                return None
+
+    async def with_fallback(self, url: str, row: dict, deadline: float | None) -> dict:
+        """ScrapingDog's page if a fallback slot frees before the deadline, else our own row."""
+        wait = None if deadline is None else max(0.0, deadline - time.time())
+        acquiring = asyncio.ensure_future(self.falling_back.acquire())
+        self.awaiting_fallback += 1
+        try:
+            await asyncio.wait({acquiring}, timeout=wait)
+        except BaseException:
+            if acquiring.done() and not acquiring.cancelled():
+                self.falling_back.release()
+            acquiring.cancel()
+            raise
+        finally:
+            self.awaiting_fallback -= 1
+        if not acquiring.done():
+            acquiring.cancel()
+            return row
+        try:
+            return await self.fallback_row(url, row, deadline)
+        finally:
+            self.falling_back.release()
 
     async def fallback_row(self, url: str, row: dict, deadline: float | None) -> dict:
         fallback = await self.to_row(
@@ -317,6 +494,10 @@ class Miner(TaskWorker):
         if self.scrapingdog is not None:
             await self.scrapingdog.aclose()
         await super().aclose()
+
+
+def out_of_time(deadline: float | None) -> bool:
+    return deadline is not None and time.time() >= deadline
 
 
 def log_page(row: dict) -> None:
