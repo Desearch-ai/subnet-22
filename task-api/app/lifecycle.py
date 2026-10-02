@@ -12,7 +12,7 @@ from desearch.manifest import FIELDS as MANIFEST_FIELDS
 from desearch.manifest import OPEN_LIST_KEY
 from desearch.manifest import payload as manifest_payload
 
-from . import queues, rounds
+from . import outcomes, queues, rounds
 from .budget import (
     COVERAGE_GATE,
     CRAWL,
@@ -269,6 +269,8 @@ async def requeue(core, task_id: str, job: dict, cause: str) -> None:
             cause=cause,
         )
         await finish_task(core, job["round_id"], task_id)
+        if kind == CRAWL:
+            await report_outcomes(core, job["urls"], outcomes.DROPPED, task_id)
         return
     payload = {
         **{name: job[name] for name in EMBED_FIELDS if name in job},
@@ -405,6 +407,15 @@ async def conclude_validation(
         "credited": vote["credited"] if verdict == "pass" else 0,
         "miner_budget": budget,
     }
+
+
+async def report_outcomes(core, urls: list[str], outcome: str, task_id: str) -> None:
+    try:
+        await outcomes.write(
+            core.storage, core.redis, outcomes.rows_for(urls, outcome, task_id)
+        )
+    except Exception:
+        log.exception("could not write %d outcomes for %s", len(urls), task_id)
 
 
 def finalize_accounts(

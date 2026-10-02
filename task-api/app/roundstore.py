@@ -72,6 +72,12 @@ class RoundStore:
         ).fetchall()
         return [_round(row) for row in rows]
 
+    def unrevealed_tasks(self) -> int:
+        rows = self.db.execute(
+            "SELECT batches FROM rounds WHERE seed IS NULL"
+        ).fetchall()
+        return sum(len(json.loads(batches)) for (batches,) in rows)
+
     def unfilled(self) -> list[Round]:
         """Revealed rounds whose tasks never reached the queue."""
         rows = self.db.execute(

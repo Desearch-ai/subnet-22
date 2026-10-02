@@ -13,7 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
-from . import lifecycle, logs, queues, rounds
+from . import lifecycle, logs, outcomes, queues, rounds
 from .auth import Authenticator, Caller, client_address
 from .limits import BodyLimit
 from .budget import CRAWL, EMBED, SHARE_WINDOW_H, WAITING_PER_BUDGET, hour_of
@@ -40,6 +40,7 @@ JANITOR_INTERVAL_S = 1.0
 ROUNDS_INTERVAL_S = 5.0
 COMPLETE_LOCK_S = 300
 TASKS_PAGE = 50
+ENQUEUED_TTL_S = 86_400
 MAX_TASKS_PAGE = 100
 # What a refused miner should wait, so idle polling does not fill the signed log.
 RETRY_AFTER_S = {
@@ -481,15 +482,40 @@ def create_app(redis=None) -> FastAPI:
             ),
         }
 
+    @app.get("/v1/room")
+    async def room():
+        """How many tasks the queue can take now, for the bot that fills it."""
+        depth = await core.tasks[CRAWL].depth()
+        unrevealed = await core.db(core.rounds.unrevealed_tasks)
+        refusing = core.max_backlog and (
+            max(await core.validation.oldest_age(), await core.publish.oldest_age())
+            > core.max_backlog
+        )
+        return {
+            "room_tasks": 0
+            if refusing
+            else max(0, core.queue_target - depth - unrevealed),
+            "queue": depth,
+            "unrevealed": unrevealed,
+            "refusing": bool(refusing),
+        }
+
     @app.post("/v1/admin/enqueue")
     async def admin_enqueue(body: Enqueue, who: Caller = Depends(admin)):
+        """A batch sent twice, after a timeout, is queued once."""
+        seen = f"enqueued:{body.batch_id}" if body.batch_id else ""
+        if seen and (earlier := await core.redis.get(seen)):
+            return json.loads(earlier)
         round_ = await lifecycle.open_round(core, body.urls)
-        return {
+        found = {
             "round_id": round_.round_id,
             "batches": len(round_.batches),
             "seed_block": round_.seed_block,
             "manifest_hash": round_.manifest_hash,
         }
+        if seen:
+            await core.redis.set(seen, json.dumps(found), ex=ENQUEUED_TTL_S)
+        return found
 
     @app.get("/v1/key")
     async def key():
@@ -540,6 +566,7 @@ def create_app(redis=None) -> FastAPI:
                 kind: await tasks.depth() for kind, tasks in core.tasks.items()
             },
             "validation_depth": await core.validation.depth(),
+            "outcomes": int(await core.redis.get(outcomes.SEQ) or 0),
             "active_validators": sorted(await core.validation.active()),
             "oldest_validation_s": await core.validation.oldest_age(),
             "publishing": await core.publish.depth(),
@@ -571,6 +598,7 @@ async def _janitor(core: State) -> None:
                 await lifecycle.fill_missing(core)
                 await lifecycle.reveal_pending(core)
                 await lifecycle.close_finished(core)
+                await outcomes.fill_holes(core.storage, core.redis)
                 rounds_at = time.monotonic()
             if pruned_hour != hour_of():
                 await core.db(core.budgets.prune)

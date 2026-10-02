@@ -126,6 +126,15 @@ class Storage:
             **({"CacheControl": cache_control} if cache_control else {}),
         )
 
+    async def put_bytes(self, key: str, body: bytes, content_type: str) -> None:
+        await asyncio.to_thread(
+            self.client.put_object,
+            Bucket=self.bucket,
+            Key=self.path(key),
+            Body=body,
+            ContentType=content_type,
+        )
+
     async def delete(self, key: str) -> None:
         await asyncio.to_thread(
             self.client.delete_object, Bucket=self.bucket, Key=self.path(key)
