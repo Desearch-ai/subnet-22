@@ -93,6 +93,8 @@ pub struct Listing {
     pub listed: usize,
     pub new: usize,
     pub moved: usize,
+    /// Pages put on their domain's ready list.
+    pub ready: usize,
 }
 
 /// The five parts of Python's `_urlsplit`, with None wherever Python has None.

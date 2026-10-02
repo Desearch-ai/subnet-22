@@ -16,7 +16,7 @@ use crate::registry::{Change, Registry, Report};
 use crate::schedule::{HOUR, SECOND};
 use crate::states::{self, Outcome, State};
 use crate::suffixes::tld_group;
-use crate::timetable::Timetable;
+use crate::timetable::{Lane, Timetable};
 use crate::visit::{Crash, Known, Visit, Visitor};
 use crate::{exclusions, records};
 
@@ -38,6 +38,8 @@ const HEAVY_RETRY: i64 = 300;
 /// New visits wait while the disk is this close to full; they resume with 5 GB more to spare.
 const RESUME_MARGIN: u64 = 5 << 30;
 const DISK_CHECK: Duration = Duration::from_secs(10);
+/// Percent of the visit slots each lane can count on: refresh, backlog, discovery.
+const SHARES: [usize; 3] = [50, 20, 30];
 
 #[derive(Clone, Debug)]
 pub struct DomainWrite {
@@ -49,6 +51,8 @@ pub struct DomainWrite {
     pub last_ok_at: Option<i64>,
     pub canonical_host: Option<String>,
     pub checked_at: i64,
+    /// Due again at once, to keep reading sitemaps found but not read yet.
+    pub backlog: bool,
     pub visit: Visit,
 }
 
@@ -80,6 +84,7 @@ pub fn plan(known: &Known, visit: Visit, now: i64, rng: &mut impl Rng) -> Domain
         last_ok_at,
         canonical_host,
         checked_at: now,
+        backlog: decision.state == State::Active && due.is_some_and(|d| d <= now),
         visit,
     }
 }
@@ -95,6 +100,7 @@ pub fn crashed(known: &Known, error: &str, now: i64) -> DomainWrite {
         last_ok_at: known.last_ok_at,
         canonical_host: known.canonical_host.clone(),
         checked_at: now,
+        backlog: false,
         visit: Visit::new(&known.host),
     }
 }
@@ -135,9 +141,9 @@ pub async fn once(known: Arc<Known>, visitor: &Visitor, excluded: &HashSet<Strin
 }
 
 enum Finished {
-    Skipped(Arc<str>),
+    Skipped,
     /// A heavy domain with no heavy slot free; it waits in the timetable, not in a visit slot.
-    Busy(Arc<str>),
+    Busy,
     Visited(Box<DomainWrite>, Arc<Known>),
 }
 
@@ -148,6 +154,8 @@ pub struct Stats {
     pub new: i64,
     pub listed: i64,
     pub outcomes: BTreeMap<String, u64>,
+    /// Visits finished in each lane.
+    pub lanes: [u64; 3],
 }
 
 /// Keeps many visits in flight across the buckets one process owns.
@@ -158,8 +166,10 @@ pub struct Loop {
     registry: Registry,
     excluded: Arc<HashSet<String>>,
     timetable: Timetable,
+    shares: [usize; 3],
+    running: [usize; 3],
     visits: JoinSet<Finished>,
-    tasks: HashMap<Id, Arc<str>>,
+    tasks: HashMap<Id, (Arc<str>, Lane)>,
     busy: HashSet<Arc<str>>,
     pending: Vec<(Box<DomainWrite>, Arc<Known>)>,
     unreported: Vec<Report>,
@@ -180,6 +190,8 @@ impl Loop {
             registry,
             excluded: Arc::new(excluded),
             timetable: Timetable::default(),
+            shares: SHARES,
+            running: [0; 3],
             visits: JoinSet::new(),
             tasks: HashMap::new(),
             busy: HashSet::new(),
@@ -200,6 +212,12 @@ impl Loop {
         self
     }
 
+    /// Keep these percents of the visit slots for domains never checked and for sitemap backlogs; refresh gets the rest.
+    pub fn with_shares(mut self, discovery: usize, backlog: usize) -> Self {
+        self.shares = [100usize.saturating_sub(discovery + backlog), backlog, discovery];
+        self
+    }
+
     /// Put every domain the stores hold into the timetable; returns how many are due ever.
     pub fn load(&mut self) -> Result<usize> {
         let stores: Vec<_> = self.buckets.stores().collect();
@@ -214,7 +232,7 @@ impl Loop {
         for schedule in schedules {
             for (host, due) in schedule? {
                 if let Some(state) = State::parse(&due.state) {
-                    self.timetable.set(&host, state, due.due, due.rank);
+                    self.timetable.set(&host, Lane::of(state, false), due.due, due.rank);
                 }
             }
         }
@@ -290,45 +308,66 @@ impl Loop {
         if self.disk_low {
             return;
         }
-        let free = self.concurrency.saturating_sub(self.visits.len());
-        if free == 0 {
-            return;
-        }
-        for host in self.timetable.take(free, now_micros() / SECOND) {
-            if !self.busy.insert(host.clone()) {
-                continue;
-            }
-            let job = visit_one(host.clone(), self.buckets.clone(), self.visitor.clone(), self.excluded.clone());
-            let handle = self.visits.spawn(job);
-            self.tasks.insert(handle.id(), host);
-        }
-    }
-
-    fn finish(&mut self, done: Result<(Id, Finished), JoinError>) {
-        match done {
-            Ok((id, Finished::Skipped(host))) => {
-                self.tasks.remove(&id);
-                self.busy.remove(&host);
-            }
-            Ok((id, Finished::Busy(host))) => {
-                self.tasks.remove(&id);
-                self.busy.remove(&host);
-                if let Ok(Some(record)) = self.buckets.store(&host).domain(&host) {
-                    if let Some(state) = record.get("state").and_then(Value::as_str).and_then(State::parse) {
-                        self.timetable.set(&host, state, Some(now_micros() / SECOND + HEAVY_RETRY), records::int(record.get("rank")));
+        let mut free = self.concurrency.saturating_sub(self.visits.len());
+        let now = now_micros() / SECOND;
+        // Each lane first fills its own share; slots a lane cannot use go to the lanes that can.
+        for share_only in [true, false] {
+            for lane in Lane::ALL {
+                let room = if share_only { self.share(lane).saturating_sub(self.running[lane.index()]).min(free) } else { free };
+                if room == 0 {
+                    continue;
+                }
+                for host in self.timetable.take(lane, room, now) {
+                    if self.start(host, lane) {
+                        free -= 1;
                     }
                 }
             }
-            Ok((id, Finished::Visited(write, known))) => {
-                self.tasks.remove(&id);
+        }
+    }
+
+    fn share(&self, lane: Lane) -> usize {
+        self.concurrency * self.shares[lane.index()] / 100
+    }
+
+    fn start(&mut self, host: Arc<str>, lane: Lane) -> bool {
+        if !self.busy.insert(host.clone()) {
+            return false;
+        }
+        let job = visit_one(host.clone(), self.buckets.clone(), self.visitor.clone(), self.excluded.clone());
+        let handle = self.visits.spawn(job);
+        self.tasks.insert(handle.id(), (host, lane));
+        self.running[lane.index()] += 1;
+        true
+    }
+
+    fn finish(&mut self, done: Result<(Id, Finished), JoinError>) {
+        let id = match &done {
+            Ok((id, _)) => *id,
+            Err(error) => error.id(),
+        };
+        let Some((host, lane)) = self.tasks.remove(&id) else {
+            return;
+        };
+        self.running[lane.index()] -= 1;
+        match done {
+            Ok((_, Finished::Skipped)) => {
+                self.busy.remove(&host);
+            }
+            Ok((_, Finished::Busy)) => {
+                self.busy.remove(&host);
+                if let Ok(Some(record)) = self.buckets.store(&host).domain(&host) {
+                    self.timetable.set(&host, lane, Some(now_micros() / SECOND + HEAVY_RETRY), records::int(record.get("rank")));
+                }
+            }
+            Ok((_, Finished::Visited(write, known))) => {
                 self.stats.visited += 1;
+                self.stats.lanes[lane.index()] += 1;
                 self.pending.push((write, known));
             }
             Err(error) => {
-                if let Some(host) = self.tasks.remove(&error.id()) {
-                    eprintln!("[rs] visit to {host} failed: {error}");
-                    self.busy.remove(&host);
-                }
+                eprintln!("[rs] visit to {host} failed: {error}");
+                self.busy.remove(&host);
             }
         }
     }
@@ -377,7 +416,7 @@ impl Loop {
         let record = records::written_domain(&current, &write, urls);
         changes.domain(&write.host, &record);
         store.write(changes)?;
-        self.schedule(&write.host, &record);
+        self.schedule(&write.host, &record, write.backlog);
         self.unreported.push(Report::of(&write, urls));
         Ok(())
     }
@@ -432,14 +471,14 @@ impl Loop {
         changes.domain(&change.host, &record);
         store.write(changes)?;
         if !self.busy.contains(change.host.as_str()) {
-            self.schedule(&change.host, &record);
+            self.schedule(&change.host, &record, false);
         }
         Ok(())
     }
 
-    fn schedule(&mut self, host: &str, record: &Json) {
+    fn schedule(&mut self, host: &str, record: &Json, backlog: bool) {
         if let Some(state) = record.get("state").and_then(Value::as_str).and_then(State::parse) {
-            self.timetable.set(host, state, records::int(record.get("due")), records::int(record.get("rank")));
+            self.timetable.set(host, Lane::of(state, backlog), records::int(record.get("due")), records::int(record.get("rank")));
         }
     }
 
@@ -449,12 +488,17 @@ impl Loop {
         let memory = self.buckets.memory();
         let disk = self.buckets.free_disk().unwrap_or(0);
         let heap = heap();
+        let lanes: Vec<String> = Lane::ALL
+            .iter()
+            .map(|&lane| format!("{} {}/{} ({} due)", lane.as_str(), self.running[lane.index()], self.share(lane), thousands(self.timetable.queued(lane) as i64)))
+            .collect();
         println!(
-            "[rs] {} visited  {:.1}/s  {:.1} req/s  in flight {}  new urls {}  scheduled {}  sitemap slots {}/{} parsing {}/{} heavy {}/{}  rocksdb readers {} MB memtables {} MB cache {} MB  heap {} MB in use {} MB resident  disk free {} GB",
+            "[rs] {} visited  {:.1}/s  {:.1} req/s  in flight {}  lanes {}  new urls {}  scheduled {}  sitemap slots {}/{} parsing {}/{} heavy {}/{}  rocksdb readers {} MB memtables {} MB cache {} MB  heap {} MB in use {} MB resident  disk free {} GB",
             thousands(self.stats.visited as i64),
             self.stats.visited as f64 / elapsed,
             self.stats.requests as f64 / elapsed,
             self.visits.len(),
+            lanes.join(" "),
             thousands(self.stats.new),
             thousands(self.timetable.len() as i64),
             self.visitor.bodies.busy(),
@@ -481,6 +525,7 @@ impl Loop {
             "new_urls": self.stats.new,
             "listed_urls": self.stats.listed,
             "outcomes": self.stats.outcomes,
+            "lanes": Lane::ALL.iter().map(|&lane| (lane.as_str(), self.stats.lanes[lane.index()])).collect::<BTreeMap<_, _>>(),
         })
     }
 }
@@ -491,7 +536,7 @@ async fn visit_one(host: Arc<str>, buckets: Arc<Buckets>, visitor: Arc<Visitor>,
     let _heavy = if records > HEAVY_RECORDS {
         match visitor.heavy.try_take() {
             Some(permit) => Some(permit),
-            None => return Finished::Busy(host),
+            None => return Finished::Busy,
         }
     } else {
         None
@@ -499,7 +544,7 @@ async fn visit_one(host: Arc<str>, buckets: Arc<Buckets>, visitor: Arc<Visitor>,
     let reading = host.clone();
     let loaded = tokio::task::spawn_blocking(move || load_known(&buckets, &reading)).await;
     let Ok(Some(known)) = loaded else {
-        return Finished::Skipped(host);
+        return Finished::Skipped;
     };
     let known = Arc::new(known);
     let write = once(known.clone(), &visitor, &excluded).await;
