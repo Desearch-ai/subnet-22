@@ -56,6 +56,8 @@ services:
     environment:
       <<: *r2-env
       TASK_API_EMBED_TASKS: ${TASK_API_EMBED_TASKS:-0}
+      PUBLISHER_INDEX: /data/publisher-index.sqlite
+    volumes: ["publisher-data:/data"]
     stop_grace_period: 60s
     depends_on:
       api:
@@ -64,3 +66,4 @@ services:
 volumes:
   redis-data:
   api-data:
+  publisher-data:

@@ -8,3 +8,4 @@ local/feeder.db
 local/news_small.json
 local/eval/
 local/eval_urls.json
+*.sqlite*

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import time
+import uuid
 from dataclasses import dataclass
 
 QUEUE = "queue:ready"
@@ -505,6 +506,20 @@ class PublishQueue:
 
     async def next_seq(self) -> int:
         return int(await self.redis.incr("changes:seq"))
+
+    async def withdraw(self, task_ids: list[str], reason: str) -> str:
+        """A job for the publisher to take these tasks' pages back out of the published set."""
+        job_id = f"withdraw:{uuid.uuid4().hex[:16]}"
+        job = {
+            "task_id": job_id,
+            "kind": "withdraw",
+            "task_ids": task_ids,
+            "reason": reason,
+        }
+        await self.redis.set(f"pjob:{job_id}", json.dumps(job))
+        await self.redis.rpush(PUBLISH, job_id)
+        await self.redis.zadd(PPENDING, {job_id: time.time()})
+        return job_id
 
     async def push_embed_input(self, entry: dict) -> None:
         await self.redis.rpush(EMBED_INPUTS, json.dumps(entry))
