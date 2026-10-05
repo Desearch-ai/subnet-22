@@ -47,6 +47,7 @@ MALLOC_ARENA_MAX=2 desearch-bot run --buckets-dir /var/lib/desearch-bot/buckets 
 | `--retry-share` | 10 | percent kept for retries and scheduled re-crawls; changed pages get the rest |
 | `--recrawl-days` | 7 | days after a crawl that a page without a lastmod goes out again |
 | `--backfill-ready` | off | walk every store once to queue pages found before the queue existed |
+| `--domains` | none | a JSON list of the domains whose pages are queued, as names or `{host, rank}`, read again when it changes; others are crawled but not queued |
 | `--backfill-sent` | none | pages the Python feeder sent, as tab-separated host, path, lastmod and time, marked sent first |
 | `--duration` | none | stop after this many seconds |
 

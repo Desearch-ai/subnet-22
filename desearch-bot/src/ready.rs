@@ -596,13 +596,22 @@ impl BucketStore {
             key
         });
         let mut entries = Vec::new();
-        let mut read = 0;
+        let (mut read, mut skipped) = (0, false);
         for item in self.db.iterator_opt(IteratorMode::From(&start, Direction::Forward), options).take(limit) {
             let (key, raw) = item?;
             read += 1;
             let Some((domain, rest)) = split_key(&key[1..]) else {
                 continue;
             };
+            if !self.allows(&String::from_utf8_lossy(domain)) {
+                if let Some(done) = state.domain.take() {
+                    entries.extend(changed_entries(done));
+                }
+                // No page path holds 0xFF, so the walk goes on from the next domain.
+                state.after = Some([&[URL], domain, b"\0\xff"].concat());
+                skipped = true;
+                break;
+            }
             if state.domain.as_ref().is_none_or(|d| d.domain != domain) {
                 if let Some(done) = state.domain.take() {
                     entries.extend(changed_entries(done));
@@ -629,7 +638,7 @@ impl BucketStore {
             }
         }
         state.scanned += read as u64;
-        if read < limit {
+        if read < limit && !skipped {
             state.done = true;
             if let Some(done) = state.domain.take() {
                 entries.extend(changed_entries(done));
@@ -702,6 +711,7 @@ impl BucketStore {
 
     /// Entries not on their lists yet go on; the caller holds the ready lock and writes the batch.
     fn add_ready(&self, batch: &mut WriteBatch, mut entries: Vec<Entry>, counts: &mut HashMap<String, i64>) -> Result<usize> {
+        entries.retain(|entry| self.allows(&entry.domain));
         let mut keys: Vec<(Vec<u8>, String)> = entries.drain(..).map(|e| (e.key(), e.domain)).collect();
         keys.sort_unstable();
         keys.dedup_by(|a, b| a.0 == b.0);

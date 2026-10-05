@@ -9,6 +9,7 @@ use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use tokio::sync::watch;
 
+use desearch_bot::allowed::Allowed;
 use desearch_bot::buckets::{Buckets, Resources, BUCKETS};
 use desearch_bot::crawl::Loop;
 use desearch_bot::dispatch::{self, Dispatcher, Progress};
@@ -111,6 +112,9 @@ struct RunArgs {
     /// Pages the Python feeder sent, as tab-separated host, path, lastmod and Unix time, marked sent before the backfill.
     #[arg(long)]
     backfill_sent: Option<PathBuf>,
+    /// Only these domains' pages are queued for the task API: a JSON list of names or of {host, rank}, read again when it changes.
+    #[arg(long)]
+    domains: Option<PathBuf>,
 }
 
 fn main() -> Result<()> {
@@ -135,6 +139,19 @@ async fn run(args: RunArgs) -> Result<()> {
     };
     let resources = Resources::new(args.cache_mb << 20, args.memtable_mb << 20, owned.len());
     let buckets = Arc::new(Buckets::open(&args.buckets_dir, &owned, &resources)?);
+    if let Some(path) = &args.domains {
+        let allowed = Allowed::from_file(path)?;
+        buckets.allow(&allowed);
+        println!("[rs] queueing pages of {} listed domains only", allowed.count().unwrap_or(0));
+        std::thread::spawn(move || loop {
+            std::thread::sleep(Duration::from_secs(60));
+            match allowed.reload() {
+                Ok(true) => println!("[rs] domain list changed: {} domains", allowed.count().unwrap_or(0)),
+                Ok(false) => {}
+                Err(error) => eprintln!("[rs] reading the domain list failed, keeping the last one: {error:#}"),
+            }
+        });
+    }
     let registry = match dsn {
         Some(dsn) if !args.no_registry => Registry::new(dsn, &buckets)?,
         _ => Registry::offline(),
