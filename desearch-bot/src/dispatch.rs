@@ -186,6 +186,8 @@ pub struct Progress {
     pub backfill_stores: AtomicU64,
     pub backfill_of: AtomicU64,
     pub backfill_scanned: AtomicU64,
+    /// The last pass's milliseconds in each step: absorbing, picking, sending.
+    pub pass_ms: [AtomicU64; 3],
     pub backfill_added: AtomicU64,
 }
 
@@ -217,6 +219,11 @@ impl Progress {
             self.backfill_of.load(Ordering::Relaxed),
             thousands(self.backfill_scanned.load(Ordering::Relaxed)),
             thousands(self.backfill_added.load(Ordering::Relaxed)),
+        ) + &format!(
+            "  last pass absorb {:.1}s pick {:.1}s send {:.1}s",
+            self.pass_ms[0].load(Ordering::Relaxed) as f64 / 1000.0,
+            self.pass_ms[1].load(Ordering::Relaxed) as f64 / 1000.0,
+            self.pass_ms[2].load(Ordering::Relaxed) as f64 / 1000.0,
         )
     }
 }
@@ -388,8 +395,21 @@ impl Dispatcher {
 
     /// One look at the room and as many batches as fit.
     pub async fn pass(&mut self, now: u32) -> Result<u64> {
+        let mut spent = [Duration::ZERO; 3];
+        let sent = self.timed_pass(now, &mut spent).await;
+        for (slot, took) in self.progress.pass_ms.iter().zip(spent) {
+            slot.store(took.as_millis() as u64, Ordering::Relaxed);
+        }
+        sent
+    }
+
+    async fn timed_pass(&mut self, now: u32, spent: &mut [Duration; 3]) -> Result<u64> {
+        let started = Instant::now();
         self.absorb(now).await?;
+        spent[0] = started.elapsed();
+        let started = Instant::now();
         let (mut sent, cleared) = self.send_pending().await?;
+        spent[2] += started.elapsed();
         if !cleared {
             return Ok(sent);
         }
@@ -407,13 +427,17 @@ impl Dispatcher {
         }
         let mut budget = room.room_tasks as u64 * TASK_URLS;
         for _ in 0..ALLOT_TRIES {
+            let started = Instant::now();
             let picks = self.pick(budget, now).await?;
+            spent[1] += started.elapsed();
             if picks.is_empty() {
                 break;
             }
             for wave in picks.chunks(BATCH_URLS * SENDS_AT_ONCE) {
                 self.pending = wave.chunks(BATCH_URLS).map(|batch| Pending::of(batch, now)).collect();
+                let started = Instant::now();
                 let (taken, cleared) = self.send_pending().await?;
+                spent[2] += started.elapsed();
                 sent += taken;
                 budget = budget.saturating_sub(taken);
                 if !cleared {
