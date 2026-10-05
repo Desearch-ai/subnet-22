@@ -166,6 +166,8 @@ def api_env(ports: Ports, run_dir: Path, genesis: float) -> dict[str, str]:
         "TASK_API_REDIS": f"redis://127.0.0.1:{ports.redis}/0",
         "TASK_API_READS_PER_MINUTE": "6000",
         "TASK_API_LOG_READS_PER_MINUTE": "6000",
+        # Every upload is checked, so a miner sees each verdict.
+        "TASK_API_CHECK_SHARE": "1",
         "PYTHONPATH": str(ROOT),
         "PYTHONUNBUFFERED": "1",
     }

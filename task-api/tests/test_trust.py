@@ -4,7 +4,6 @@ import time
 
 import pytest
 from app import lifecycle, registry
-from app.queues import VACTIVE
 from app.auth import Keypair
 from app.seeds import REVEAL_AFTER_BLOCKS, LocalSeeds
 
@@ -104,6 +103,7 @@ def test_a_report_on_a_finalized_upload_still_makes_the_validator_present(
 def test_the_open_list_drops_an_upload_once_it_is_finalized(api_env, memory):
     async def scenario(h):
         await h.mine()
+        await opened(h)
         listed = [m["task_id"] for m in (await open_list(h))["uploads"]]
         await judged(h, h.validator)
         return listed, (await open_list(h))["uploads"]
@@ -158,32 +158,7 @@ def test_two_validators_that_disagree_void_the_task(api_env, memory):
     assert run(memory, scenario) == ("void", "queued", "validators_disagree")
 
 
-def test_a_task_below_quorum_waits_until_the_missing_validator_drops_out(
-    api_env, memory
-):
-    async def scenario(h):
-        task = await h.mine()
-        await judged(h, h.validator)
-        task = await h.mine(h.rival)
-        await judged(h, h.other_validator, task_id=task["task_id"])
-        job = await h.core.validation.job(task["task_id"])
-        past = {**job, "deadline": time.time() - 1}
-        await h.redis.set(f"vjob:{task['task_id']}", json.dumps(past))
-        held = await lifecycle.finalize_due(h.core)
-        await h.redis.zadd(VACTIVE, {h.validator.hotkey: 0})
-        decided = await lifecycle.finalize_due(h.core)
-        return held, decided, await h.status(task["task_id"])
-
-    held, decided, status = run(memory, scenario)
-    assert held == [], (
-        "a missing vote is waited for, so the work is not handed out again"
-    )
-    assert len(decided) == 1 and status == "pass"
-
-
-def test_a_task_still_below_quorum_after_the_window_is_void_and_goes_back_out(
-    api_env, memory
-):
+def test_a_task_past_its_deadline_is_decided_on_the_votes_it_has(api_env, memory):
     async def scenario(h):
         task = await h.mine()
         await judged(h, h.validator)
@@ -191,17 +166,32 @@ def test_a_task_still_below_quorum_after_the_window_is_void_and_goes_back_out(
         _, pending = await judged(h, h.other_validator, task_id=task["task_id"])
         early = await lifecycle.finalize_due(h.core)
         job = await h.core.validation.job(task["task_id"])
+        past = {**job, "deadline": time.time() - 1}
+        await h.redis.set(f"vjob:{task['task_id']}", json.dumps(past))
+        late = await lifecycle.finalize_due(h.core)
+        return pending["verdict"], early, late, await h.status(task["task_id"])
+
+    pending, early, late, status = run(memory, scenario)
+    assert pending == "pending" and early == [], "a missing vote is waited for"
+    assert len(late) == 1 and status == "pass", "never voided for a slow validator"
+
+
+def test_an_upload_no_validator_voted_on_by_its_deadline_passes_on_its_report(
+    api_env, memory
+):
+    async def scenario(h):
+        task = await h.mine()
+        await opened(h, want=task["task_id"])
+        job = await h.core.validation.job(task["task_id"])
         await h.redis.set(f"vjob:{task['task_id']}", json.dumps({**job, "deadline": 0}))
         late = await lifecycle.finalize_due(h.core)
         view = await h.view(task["task_id"])
-        miner = (await h.public.get(f"/v1/miners/{h.rival.hotkey}")).json()
-        return pending["verdict"], early, late, view, miner
+        return late, view, await h.core.publish.depth()
 
-    pending, early, late, view, miner = run(memory, scenario)
-    assert pending == "pending" and early == []
+    late, view, publishing = run(memory, scenario)
     assert late == [view["task_id"]]
-    assert (view["status"], view["score"]["reason"]) == ("queued", "no_quorum")
-    assert miner["coverage"] == {} and miner["transitions"] == []
+    assert (view["status"], view["score"]["reason"]) == ("pass", "unchecked")
+    assert view["score"]["credited"] == 3 and publishing == 1
 
 
 def test_a_lowballed_pass_among_three_is_the_odd_one_out(api_env, memory):
@@ -301,7 +291,7 @@ def test_nothing_compared_is_void_and_confirmed_errors_are_paid_but_not_publishe
         _, void = await judged(
             h, h.validator, **_score("pass", 3, outcome="unverifiable")
         )
-        await h.mine(h.rival)
+        await h.mine(h.rival, errors=3)
         _, errors = await judged(
             h, h.validator, **_score("pass", 3, outcome="errors_confirmed")
         )

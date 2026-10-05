@@ -364,7 +364,7 @@ def test_an_upload_waiting_for_its_verdict_leaves_room_to_crawl_but_counts_as_wa
             "k-x",
         )
         blocked = await refused(queue.claim("m", 1, 2))
-        await validation.finalize(got.task_id)
+        await validation.finalize(got.task_id, seeding=True)
         freed = await refused(queue.claim("m", 1, 2))
         return blocked, freed, await queue.waiting("m")
 

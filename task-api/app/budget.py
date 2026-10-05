@@ -30,6 +30,7 @@ STRIKE_REASONS = EXPIRY_REASONS | frozenset(
         "text_not_from_html",
         "content_mismatch",
         "errors_not_reproducible",
+        "reported_rows",
         "unreadable",
         "vectors_missing",
         "vectors_malformed",
@@ -42,6 +43,7 @@ STRIKE_WINDOW_H = 24
 LOCKOUT_STEPS_H = (1, 12, 48)
 LOCKOUT_MEMORY_H = 7 * 24
 HOSTILE_LOCKOUT_H = 7 * 24
+FULL_PENALTY_LOCKOUT_H = 48
 
 
 @dataclass
@@ -192,6 +194,13 @@ class Budgets:
             "INSERT INTO credits (pool, hotkey, hour, amount) VALUES (?, ?, ?, ?)"
             " ON CONFLICT (pool, hotkey, hour) DO UPDATE SET amount = amount + excluded.amount",
             (pool, hotkey, hour_of(), amount),
+        )
+        self.db.commit()
+
+    def wipe_credits(self, hotkey: str, since: float, pool: str = CRAWL) -> None:
+        self.db.execute(
+            "DELETE FROM credits WHERE hotkey = ? AND pool = ? AND hour >= ?",
+            (hotkey, pool, hour_of(since)),
         )
         self.db.commit()
 

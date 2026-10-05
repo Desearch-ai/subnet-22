@@ -205,7 +205,9 @@ async def in_progress(core) -> dict:
         )
     uploads = []
     active = await core.validation.active()
-    for task_id in await core.validation.open_ids(LIVE_ROWS):
+    waiting = await core.validation.open_ids(LIVE_ROWS)
+    waiting += await core.validation.seeding_ids(LIVE_ROWS - len(waiting))
+    for task_id in waiting:
         job = await core.validation.job(task_id)
         if job is None:
             continue
@@ -272,7 +274,8 @@ def router(core) -> APIRouter:
                     kind: await tasks.depth() for kind, tasks in core.tasks.items()
                 },
                 "claimed": int(await core.redis.zcard(queues.CLAIMS)),
-                "validating": await core.validation.depth(),
+                "validating": await core.validation.depth()
+                + await core.validation.seeding(),
                 "oldest_validation_s": await core.validation.oldest_age(),
                 "publishing": await core.publish.depth(),
                 "miners": len(worked),
