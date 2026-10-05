@@ -2,7 +2,7 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -27,6 +27,8 @@ pub const TASK_URLS: u64 = 1000;
 pub const BATCH_URLS: usize = 10_000;
 /// Batches in flight to the API at once; each waits there for seconds, so one at a time leaves its queue short.
 pub const SENDS_AT_ONCE: usize = 4;
+/// Threads reading the stores at once: a network disk answers many reads together far faster than one after another.
+const READERS: usize = 16;
 const HOUR: u32 = 3600;
 const RANKS_SECONDS: Duration = Duration::from_secs(600);
 /// Retries and re-crawls moved back onto ready lists per store per pass.
@@ -464,10 +466,13 @@ impl Dispatcher {
         let (grown, ranks, requeued, overdue) = tokio::task::spawn_blocking(move || -> Result<_> {
             let (mut requeued, mut overdue) = (0, 0);
             let mut grown: HashMap<String, u64> = HashMap::new();
-            for store in buckets.stores() {
-                overdue += store.expire_unanswered(now, REQUEUE_PER_PASS)?;
-                requeued += store.requeue_due(now, REQUEUE_PER_PASS)?;
-                for (domain, added) in store.take_noticed() {
+            let swept = on_readers(buckets.stores().collect(), |store| {
+                Ok((store.expire_unanswered(now, REQUEUE_PER_PASS)?, store.requeue_due(now, REQUEUE_PER_PASS)?, store.take_noticed()))
+            })?;
+            for (expired, due, noticed) in swept {
+                overdue += expired;
+                requeued += due;
+                for (domain, added) in noticed {
                     *grown.entry(domain).or_default() += added;
                 }
             }
@@ -519,16 +524,14 @@ impl Dispatcher {
         }
         let buckets = self.buckets.clone();
         let taken = tokio::task::spawn_blocking(move || -> Result<Vec<Taken>> {
-            asks.into_iter()
-                .map(|(domain, quotas)| {
-                    let Some(store) = buckets.store_for(&domain) else {
-                        return Ok(Taken { domain, quotas, picks: Vec::new(), left: 0 });
-                    };
-                    let picks = store.take_ready(&domain, quotas)?;
-                    let left = store.ready_count(&domain)?;
-                    Ok(Taken { domain, quotas, picks, left })
-                })
-                .collect()
+            on_readers(asks, |(domain, quotas)| {
+                let Some(store) = buckets.store_for(&domain) else {
+                    return Ok(Taken { domain, quotas, picks: Vec::new(), left: 0 });
+                };
+                let picks = store.take_ready(&domain, quotas)?;
+                let left = store.ready_count(&domain)?;
+                Ok(Taken { domain, quotas, picks, left })
+            })
         })
         .await??;
         let mut lists = Vec::with_capacity(taken.len());
@@ -594,20 +597,21 @@ impl Dispatcher {
             for pick in picks {
                 by_bucket.entry(bucket_of(&pick.entry.domain)).or_default().push(pick);
             }
-            let mut left = Vec::new();
-            for picks in by_bucket.values() {
+            let per_store = on_readers(by_bucket.into_values().collect(), |picks| {
+                let mut left = Vec::new();
                 let Some(store) = buckets.store_for(&picks[0].entry.domain) else {
-                    continue;
+                    return Ok(left);
                 };
-                store.mark_sent(picks, at)?;
+                store.mark_sent(&picks, at)?;
                 let mut domains: Vec<&str> = picks.iter().map(|p| p.entry.domain.as_str()).collect();
                 domains.sort_unstable();
                 domains.dedup();
                 for domain in domains {
                     left.push((domain.to_string(), store.ready_count(domain)?, rank_of(&buckets, domain)));
                 }
-            }
-            Ok(left)
+                Ok(left)
+            })?;
+            Ok(per_store.into_iter().flatten().collect())
         })
         .await??;
         for (domain, ready, rank) in left {
@@ -801,6 +805,25 @@ pub fn backfill(buckets: &Buckets, per_second: u64, progress: &Progress, stop: &
         progress.backfill_stores.fetch_add(1, Ordering::Relaxed);
     }
     Ok(())
+}
+
+/// Each item's work on one of the reader threads, results in the items' order.
+fn on_readers<T: Send, R: Send>(items: Vec<T>, work: impl Fn(T) -> Result<R> + Sync) -> Result<Vec<R>> {
+    let items: Vec<Mutex<Option<T>>> = items.into_iter().map(|item| Mutex::new(Some(item))).collect();
+    let done: Vec<Mutex<Option<Result<R>>>> = items.iter().map(|_| Mutex::new(None)).collect();
+    let next = AtomicUsize::new(0);
+    std::thread::scope(|scope| {
+        for _ in 0..READERS.min(items.len()) {
+            scope.spawn(|| loop {
+                let i = next.fetch_add(1, Ordering::Relaxed);
+                let Some(item) = items.get(i).and_then(|slot| slot.lock().unwrap_or_else(|e| e.into_inner()).take()) else {
+                    break;
+                };
+                *done[i].lock().unwrap_or_else(|e| e.into_inner()) = Some(work(item));
+            });
+        }
+    });
+    done.into_iter().map(|slot| slot.into_inner().unwrap_or_else(|e| e.into_inner()).expect("every item ran")).collect()
 }
 
 fn rank_of(buckets: &Buckets, domain: &str) -> i64 {
