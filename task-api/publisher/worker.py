@@ -146,38 +146,44 @@ class Publisher:
         if withdrawn:
             await asyncio.to_thread(self.index.withdraw, withdrawn)
         removals = await asyncio.to_thread(self.index.of_tasks, withdrawn)
+        reading = []
         for job in jobs:
             await self.queue.extend_claim(job["task_id"])
-            kind = job.get("kind")
-            if kind == "withdraw":
+            if job.get("kind") == "withdraw":
                 finalized.append(job)
-                continue
-            if await asyncio.to_thread(self.index.is_withdrawn, job["task_id"]):
+            elif await asyncio.to_thread(self.index.is_withdrawn, job["task_id"]):
                 failed += _failed(job, job["urls"])
                 finalized.append(job)
-                continue
-            try:
-                if kind == "embed":
-                    await asyncio.to_thread(self.publish_vectors, job)
-                else:
-                    records, missed = await asyncio.to_thread(self.collect, job)
-                    for record in records:
-                        key = record_key(record)
-                        if key not in chosen or _rank(record) > _rank(chosen[key]):
-                            chosen[key] = record
-                    failed += missed
-            except UploadGone as gone:
-                log.error("task=%s upload %s before publishing", job["task_id"], gone)
+            else:
+                reading.append(job)
+        # Each upload is read on its own thread, so a batch costs about one upload's reads.
+        read = await asyncio.gather(
+            *(asyncio.to_thread(self.read_job, job) for job in reading),
+            return_exceptions=True,
+        )
+        for job, outcome in zip(reading, read):
+            if isinstance(outcome, UploadGone):
+                log.error(
+                    "task=%s upload %s before publishing", job["task_id"], outcome
+                )
                 await self.queue.mark_lost(job["task_id"])
-                if kind != "embed":
+                if job.get("kind") != "embed":
                     failed += _failed(job, job["urls"])
                 finalized.append(job)
                 continue
-            except Exception:
-                log.exception(
-                    "task=%s publish failed; it will be retried", job["task_id"]
+            if isinstance(outcome, BaseException):
+                log.error(
+                    "task=%s publish failed; it will be retried: %r",
+                    job["task_id"],
+                    outcome,
                 )
                 continue
+            records, missed = outcome
+            for record in records:
+                key = record_key(record)
+                if key not in chosen or _rank(record) > _rank(chosen[key]):
+                    chosen[key] = record
+            failed += missed
             finalized.append(job)
 
         changes, unchanged = await asyncio.to_thread(self.decide, chosen)
@@ -223,6 +229,12 @@ class Publisher:
             len(removed),
         )
         return len(finalized)
+
+    def read_job(self, job: dict) -> tuple[list[dict], list[dict]]:
+        if job.get("kind") == "embed":
+            self.publish_vectors(job)
+            return [], []
+        return self.collect(job)
 
     def read_rows(self, job: dict) -> list[dict]:
         """Every published column, read in byte ranges; the HTML is never fetched."""

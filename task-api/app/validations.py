@@ -626,13 +626,15 @@ class Validations:
         ).fetchone()
         return count
 
-    def withdraw(self, miner: str, since: float) -> list[tuple[str, int]]:
-        """Passed uploads of a miner completed after `since`, taken back: (task_id, credited) of each."""
+    def withdraw(
+        self, miner: str, since: float, checked_too: bool = False
+    ) -> list[tuple[str, int]]:
+        """Passed uploads of a miner completed after `since`, taken back: (task_id, credited) of each; only those no validator checked unless `checked_too`."""
         rows = self.db.execute(
             "SELECT id, task_id, credited FROM validations"
             " WHERE miner = ? AND kind = 'crawl' AND verdict = 'pass' AND scored_at > ?"
-            " AND COALESCE(completed_at, scored_at) > ?",
-            (miner, since, since),
+            " AND COALESCE(completed_at, scored_at) > ? AND (? OR validator = '')",
+            (miner, since, since, checked_too),
         ).fetchall()
         for row_id, _, _ in rows:
             self.db.execute(
