@@ -5,11 +5,12 @@ import contextlib
 import hashlib
 import io
 import logging
+import multiprocessing
 import os
 import tempfile
 import time
 import uuid
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from datetime import datetime, timezone
 
 import pyarrow as pa
@@ -24,6 +25,7 @@ from desearch.embedding import (
 )
 from app import outcomes
 from app.feeds import Feed
+from app.storage import Storage
 from app.canonical import domain_of
 from desearch.extraction import looks_blocked
 from engine.chunking import doc_full, doc_head, para_chunks
@@ -108,6 +110,7 @@ class Publisher:
         batch: int = 20,
         embed_inputs: bool = False,
         index: VersionIndex | None = None,
+        readers: int = 0,
     ):
         self.queue = queue
         self.temp = temp
@@ -116,6 +119,18 @@ class Publisher:
         self.embed_inputs = embed_inputs
         self.index = index or VersionIndex(":memory:")
         self.pool = ThreadPoolExecutor(workers)
+        self.reader_count = readers
+        # Building records is Python work on every page, so uploads are read in other processes too.
+        self.readers = (
+            ProcessPoolExecutor(
+                readers,
+                mp_context=multiprocessing.get_context("spawn"),
+                initializer=_start_reader,
+                initargs=(temp.bucket, temp.prefix, pa.io_thread_count()),
+            )
+            if readers
+            else None
+        )
         self.snapshot_day = ""
 
     async def run(self, stop: asyncio.Event, idle_exit: int = 0) -> None:
@@ -162,11 +177,7 @@ class Publisher:
                 finalized.append(job)
             else:
                 reading.append(job)
-        # Each upload is read on its own thread, so a batch costs about one upload's reads.
-        read = await asyncio.gather(
-            *(self.on_pool(self.read_job, job) for job in reading),
-            return_exceptions=True,
-        )
+        read = await self.read_all(reading)
         read_s = time.monotonic() - started
         for job, outcome in zip(reading, read):
             if isinstance(outcome, UploadGone):
@@ -241,6 +252,39 @@ class Publisher:
             if key:
                 with contextlib.suppress(Exception):
                     await self.temp.delete(key)
+
+    async def read_all(self, jobs: list[dict]) -> list:
+        """Each job's records and missed URLs, or the exception that stopped it, in the jobs' order."""
+        if self.readers is None:
+            # Each upload is read on its own thread, so a batch costs about one upload's reads.
+            return await asyncio.gather(
+                *(self.on_pool(self.read_job, job) for job in jobs),
+                return_exceptions=True,
+            )
+        crawls = [i for i, job in enumerate(jobs) if job.get("kind") != "embed"]
+        others = [i for i, job in enumerate(jobs) if job.get("kind") == "embed"]
+        shares = [crawls[n :: self.reader_count] for n in range(self.reader_count)]
+        shares = [share for share in shares if share]
+        loop = asyncio.get_running_loop()
+        done = await asyncio.gather(
+            *(
+                loop.run_in_executor(
+                    self.readers, _collect_many, [jobs[i] for i in share]
+                )
+                for share in shares
+            ),
+            *(self.on_pool(self.read_job, jobs[i]) for i in others),
+            return_exceptions=True,
+        )
+        found: list = [None] * len(jobs)
+        for share, outcome in zip(shares, done):
+            for i, one in zip(
+                share, outcome if isinstance(outcome, list) else [outcome] * len(share)
+            ):
+                found[i] = one
+        for i, outcome in zip(others, done[len(shares) :]):
+            found[i] = outcome
+        return found
 
     async def on_pool(self, call, *args):
         return await asyncio.get_running_loop().run_in_executor(self.pool, call, *args)
@@ -460,6 +504,8 @@ class Publisher:
 
     def close(self) -> None:
         self.pool.shutdown(wait=True)
+        if self.readers is not None:
+            self.readers.shutdown(wait=True)
 
 
 def publishable(row: dict, assigned: set[str]) -> bool:
@@ -527,6 +573,30 @@ def _removal(key: str, url: str, previous_sha1: str) -> dict:
         "headings": [],
         "validators": [],
     }
+
+
+_reader: Publisher | None = None
+
+
+def _start_reader(bucket: str, prefix: str, io_threads: int) -> None:
+    global _reader
+    pa.set_io_thread_count(io_threads)
+    _reader = Publisher(None, Storage(bucket=bucket, prefix=prefix), None, workers=1)
+
+
+def _collect_many(jobs: list[dict]) -> list:
+    """Runs in a reader process: each job's records, or what stopped it, as something picklable."""
+
+    def one(job: dict):
+        try:
+            return _reader.collect(job)
+        except UploadGone as gone:
+            return gone
+        except Exception as exc:
+            return RuntimeError(repr(exc))
+
+    with ThreadPoolExecutor(len(jobs)) as pool:
+        return list(pool.map(one, jobs))
 
 
 def _indexed(change: dict, seq: int | None = None, row: int | None = None) -> dict:

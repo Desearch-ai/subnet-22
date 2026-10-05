@@ -95,3 +95,50 @@ def test_a_withdrawal_removes_only_a_version_that_is_still_current():
 
     assert withdrawn == [], "t2 replaced t1's version, so t1 holds nothing now"
     assert index.current("k").task_id == "t2"
+
+
+def test_uploads_read_by_reader_processes_come_back_in_order_with_what_stopped_them(
+    memory,
+):
+    import asyncio
+    from concurrent.futures import ThreadPoolExecutor
+
+    from publisher import worker
+
+    temp, pages = buckets(memory)
+    jobs = []
+    for n in range(5):
+        url = f"https://www.site.example/story-{n}"
+        key = f"submitted/t{n}.parquet"
+        temp.client.put_object(
+            Bucket=temp.bucket,
+            Key=temp.path(key),
+            Body=to_parquet(
+                [{**page_row(url, synthetic_html(n)), "fetched_at": T0}],
+                task_id=f"t{n}",
+                hotkey="miner-a",
+            ),
+        )
+        jobs.append(
+            {
+                "task_id": f"t{n}",
+                "miner": "miner-a",
+                "key": key if n != 3 else "submitted/gone.parquet",
+                "etag": None,
+                "urls": [url],
+                "completed_at": (T0 + timedelta(seconds=30)).timestamp(),
+            }
+        )
+    publisher = Publisher(None, temp, pages, workers=2)
+    publisher.readers, publisher.reader_count = ThreadPoolExecutor(2), 2
+    worker._reader = publisher
+    try:
+        found = asyncio.run(publisher.read_all(jobs))
+    finally:
+        worker._reader = None
+        publisher.close()
+
+    assert isinstance(found[3], worker.UploadGone)
+    for n in (0, 1, 2, 4):
+        records, missed = found[n]
+        assert [r["task_id"] for r in records] == [f"t{n}"] and missed == []

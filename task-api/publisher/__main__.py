@@ -53,9 +53,10 @@ async def serve() -> None:
         temp,
         pages,
         workers=int(os.environ.get("PUBLISHER_WORKERS", "32")),
-        batch=int(os.environ.get("PUBLISHER_BATCH", "20")),
+        batch=int(os.environ.get("PUBLISHER_BATCH", "40")),
         embed_inputs=os.environ.get("TASK_API_EMBED_TASKS", "0") == "1",
         index=VersionIndex(os.environ.get("PUBLISHER_INDEX", "publisher-index.sqlite")),
+        readers=int(os.environ.get("PUBLISHER_READERS", "4")),
     )
     log.info("publishing %s -> %s", temp.bucket, pages.bucket)
     try:
