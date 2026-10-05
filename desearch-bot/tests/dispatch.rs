@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 
 use desearch_bot::allowed::{self, Allowed};
 use desearch_bot::buckets::{bucket_of, BucketStore, Buckets, Changes, Resources};
-use desearch_bot::dispatch::{allot, batch_id, interleave, settle, shares, slots, split, Dispatcher, HourlyCap, Progress, Want};
+use desearch_bot::dispatch::{allot, batch_id, interleave, settle, shares, slots, split, Dispatcher, HourlyCap, Pace, Progress, Want};
 use desearch_bot::hotkey::{self, Hotkey};
 use desearch_bot::outcomes::{self, Next, OutcomeFeed, OutcomeRow};
 use desearch_bot::ready::{Order, Outcome, PageOutcome, Pick, Reason, SentPage, BACKOFF, CHANGED, FRESH, LANES, NO_OUTCOME, REQUEUED};
@@ -642,4 +642,14 @@ async fn several_batches_go_out_together_and_only_a_failed_one_is_sent_again() {
     assert_eq!(api.enqueued[3].1, failed, "after a restart the failed batch went again unchanged, first");
     assert_eq!(first + second, 25_000);
     assert_eq!(buckets.store(host).ready_count(host).unwrap(), 0);
+}
+
+#[test]
+fn the_pace_grows_steadily_and_saves_up_only_five_minutes() {
+    let mut pace = Pace::new(3_600_000, 1000);
+    assert_eq!(pace.allowance(1000), 300_000, "five minutes' worth to start");
+    pace.spend(300_000);
+    assert_eq!(pace.allowance(1060), 60_000, "a minute later, a minute's worth");
+    assert_eq!(pace.allowance(1000 + 7200), 300_000, "an idle hour saves no more than five minutes");
+    assert_eq!(Pace::new(0, 1000).allowance(2000), u64::MAX, "no pace set sends whatever there is room for");
 }

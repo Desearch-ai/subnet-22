@@ -88,6 +88,9 @@ struct RunArgs {
     /// The task API whose queue the ready lists fill, such as https://api-22.desearch.ai; requests are signed with the key in FEEDER_KEY_URI.
     #[arg(long)]
     task_api: Option<String>,
+    /// URLs sent in an hour at most, at a steady pace; 0 sends whatever the task API has room for.
+    #[arg(long, default_value_t = 0)]
+    urls_per_hour: u64,
     /// URLs one domain may send in an hour.
     #[arg(long, default_value_t = 2000)]
     per_domain_hourly: u64,
@@ -220,7 +223,8 @@ async fn run(args: RunArgs) -> Result<()> {
             args.per_domain_hourly,
             dispatch::shares(args.new_share, args.retry_share),
             progress.clone(),
-        ).await?;
+        ).await?
+        .paced(args.urls_per_hour);
         tokio::spawn(dispatcher.run(stopped.clone()));
     }
     if let Some(base) = &args.outcomes_url {

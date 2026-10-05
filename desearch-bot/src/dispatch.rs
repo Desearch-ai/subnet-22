@@ -134,6 +134,41 @@ pub fn interleave<T>(lists: Vec<Vec<T>>) -> Vec<T> {
 
 /// URLs each domain sent within the last hour.
 #[derive(Default)]
+/// A steady sending pace: allowance grows by the hourly rate and saves up at most a few minutes of it, so sends never come as an hour's burst.
+pub struct Pace {
+    per_hour: u64,
+    saved: f64,
+    at: u32,
+}
+
+impl Pace {
+    const SAVED_SECONDS: f64 = 300.0;
+
+    pub fn new(per_hour: u64, now: u32) -> Self {
+        let mut pace = Pace { per_hour, saved: 0.0, at: now };
+        pace.saved = pace.most();
+        pace
+    }
+
+    fn most(&self) -> f64 {
+        self.per_hour as f64 * Self::SAVED_SECONDS / 3600.0
+    }
+
+    pub fn allowance(&mut self, now: u32) -> u64 {
+        if self.per_hour == 0 {
+            return u64::MAX;
+        }
+        let grown = self.per_hour as f64 * now.saturating_sub(self.at) as f64 / 3600.0;
+        self.saved = (self.saved + grown).min(self.most());
+        self.at = self.at.max(now);
+        self.saved as u64
+    }
+
+    pub fn spend(&mut self, count: u64) {
+        self.saved -= count as f64;
+    }
+}
+
 pub struct HourlyCap {
     limit: u64,
     sent: HashMap<String, VecDeque<(u32, u64)>>,
@@ -322,6 +357,7 @@ pub struct Dispatcher {
     buckets: Arc<Buckets>,
     api: Arc<TaskApi>,
     cap: HourlyCap,
+    pace: Pace,
     domains: HashMap<String, Domain>,
     /// The domain whose turn comes first next pass, as (rank, domain).
     resume: Option<(i64, String)>,
@@ -368,6 +404,7 @@ impl Dispatcher {
             buckets,
             api: Arc::new(api),
             cap: HourlyCap::new(per_domain_hourly),
+            pace: Pace::new(0, 0),
             domains,
             resume: None,
             pending,
@@ -378,6 +415,12 @@ impl Dispatcher {
         };
         dispatcher.report();
         Ok(dispatcher)
+    }
+
+    /// Send at most this many URLs an hour, at a steady pace; 0 sends as fast as the API has room.
+    pub fn paced(mut self, per_hour: u64) -> Self {
+        self.pace = Pace::new(per_hour, now());
+        self
     }
 
     pub async fn run(mut self, mut stop: watch::Receiver<bool>) {
@@ -427,7 +470,7 @@ impl Dispatcher {
             self.report();
             return Ok(sent);
         }
-        let mut budget = room.room_tasks as u64 * TASK_URLS;
+        let mut budget = (room.room_tasks as u64 * TASK_URLS).min(self.pace.allowance(now));
         for _ in 0..ALLOT_TRIES {
             let started = Instant::now();
             let picks = self.pick(budget, now).await?;
@@ -633,6 +676,7 @@ impl Dispatcher {
             counter.fetch_add(1, Ordering::Relaxed);
         }
         let count = pending.picks.len() as u64;
+        self.pace.spend(count);
         self.progress.dispatched.fetch_add(count, Ordering::Relaxed);
         self.progress.batches.fetch_add(1, Ordering::Relaxed);
         Ok(count)
