@@ -32,6 +32,15 @@ class RoundStore:
             CREATE INDEX IF NOT EXISTS rounds_pending ON rounds (seed, closed_at);
             """
         )
+        # Rounds carry their URLs inline, so these lookups must never walk the table.
+        self.db.executescript(
+            """
+            CREATE INDEX IF NOT EXISTS rounds_unfilled ON rounds (opened_at)
+                WHERE seed IS NOT NULL AND filled_at IS NULL AND closed_at IS NULL;
+            CREATE INDEX IF NOT EXISTS rounds_open_filled ON rounds (round_id)
+                WHERE seed IS NOT NULL AND filled_at IS NOT NULL AND closed_at IS NULL;
+            """
+        )
         self.db.commit()
 
     def save(self, round_: Round) -> None:
@@ -81,8 +90,9 @@ class RoundStore:
     def unfilled(self) -> list[Round]:
         """Revealed rounds whose tasks never reached the queue."""
         rows = self.db.execute(
-            f"SELECT {COLUMNS} FROM rounds WHERE seed IS NOT NULL"
-            " AND filled_at IS NULL AND closed_at IS NULL ORDER BY opened_at"
+            f"SELECT {COLUMNS} FROM rounds INDEXED BY rounds_unfilled"
+            " WHERE seed IS NOT NULL AND filled_at IS NULL AND closed_at IS NULL"
+            " ORDER BY opened_at"
         ).fetchall()
         return [_round(row) for row in rows]
 
@@ -94,8 +104,8 @@ class RoundStore:
 
     def open_revealed(self) -> list[str]:
         rows = self.db.execute(
-            "SELECT round_id FROM rounds WHERE seed IS NOT NULL"
-            " AND filled_at IS NOT NULL AND closed_at IS NULL"
+            "SELECT round_id FROM rounds INDEXED BY rounds_open_filled"
+            " WHERE seed IS NOT NULL AND filled_at IS NOT NULL AND closed_at IS NULL"
         ).fetchall()
         return [row[0] for row in rows]
 
