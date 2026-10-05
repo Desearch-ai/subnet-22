@@ -63,14 +63,14 @@ def test_a_pool_nobody_earned_goes_to_the_burn_hotkey():
 
 
 def test_the_burn_takes_its_part_and_crawling_all_of_the_rest():
-    assert (EMISSION_CONTROL_PERC, CRAWL_PERC, EMBED_PERC) == (0.8, 1.0, 0.0)
+    assert (EMISSION_CONTROL_PERC, CRAWL_PERC, EMBED_PERC) == (0.7, 1.0, 0.0)
 
     weights = weights_from_shares(
         ["crawler", "embedder", BURN],
         {CRAWL_KIND: {"crawler": 1.0}, EMBED_KIND: {"embedder": 1.0}},
     )
 
-    assert list(weights) == pytest.approx([0.2, 0.0, 0.8])
+    assert list(weights) == pytest.approx([0.3, 0.0, 0.7])
 
 
 def test_changing_the_burn_alone_moves_the_miners_part(monkeypatch):
