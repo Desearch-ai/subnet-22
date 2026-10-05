@@ -25,6 +25,8 @@ const MISSING_GRACE: Duration = Duration::from_secs(120);
 /// URLs in one task, as the API counts its room.
 pub const TASK_URLS: u64 = 1000;
 pub const BATCH_URLS: usize = 10_000;
+/// Batches in flight to the API at once; each waits there for seconds, so one at a time leaves its queue short.
+pub const SENDS_AT_ONCE: usize = 4;
 const HOUR: u32 = 3600;
 const RANKS_SECONDS: Duration = Duration::from_secs(600);
 /// Retries and re-crawls moved back onto ready lists per store per pass.
@@ -309,12 +311,13 @@ struct Domain {
 
 pub struct Dispatcher {
     buckets: Arc<Buckets>,
-    api: TaskApi,
+    api: Arc<TaskApi>,
     cap: HourlyCap,
     domains: HashMap<String, Domain>,
     /// The domain whose turn comes first next pass, as (rank, domain).
     resume: Option<(i64, String)>,
-    pending: Option<Pending>,
+    /// The batches in flight, kept so a restart sends them again unchanged.
+    pending: Vec<Pending>,
     progress: Arc<Progress>,
     ranks_read: Instant,
     shares: [f64; LANES],
@@ -344,16 +347,17 @@ impl Dispatcher {
                     domains.insert(domain, Domain { rank, ready });
                 }
             }
-            let pending = match reading.stores().next() {
-                Some(store) => store.meta(PENDING)?.filter(|v| !v.is_null()).map(serde_json::from_value).transpose()?,
-                None => None,
+            let pending: Vec<Pending> = match reading.stores().next().map(|store| store.meta(PENDING)).transpose()?.flatten() {
+                Some(Value::Array(saved)) => saved.into_iter().map(serde_json::from_value).collect::<Result<_, _>>()?,
+                Some(Value::Null) | None => Vec::new(),
+                Some(one) => vec![serde_json::from_value(one)?],
             };
             Ok((domains, pending))
         })
         .await??;
         let dispatcher = Dispatcher {
             buckets,
-            api,
+            api: Arc::new(api),
             cap: HourlyCap::new(per_domain_hourly),
             domains,
             resume: None,
@@ -385,9 +389,10 @@ impl Dispatcher {
     /// One look at the room and as many batches as fit.
     pub async fn pass(&mut self, now: u32) -> Result<u64> {
         self.absorb(now).await?;
-        let Some(mut sent) = self.send_pending().await? else {
-            return Ok(0);
-        };
+        let (mut sent, cleared) = self.send_pending().await?;
+        if !cleared {
+            return Ok(sent);
+        }
         let room = match self.api.room().await {
             Ok(room) => room,
             Err(error) => {
@@ -406,14 +411,15 @@ impl Dispatcher {
             if picks.is_empty() {
                 break;
             }
-            for batch in picks.chunks(BATCH_URLS) {
-                self.pending = Some(Pending::of(batch, now));
-                let Some(taken) = self.send_pending().await? else {
+            for wave in picks.chunks(BATCH_URLS * SENDS_AT_ONCE) {
+                self.pending = wave.chunks(BATCH_URLS).map(|batch| Pending::of(batch, now)).collect();
+                let (taken, cleared) = self.send_pending().await?;
+                sent += taken;
+                budget = budget.saturating_sub(taken);
+                if !cleared {
                     self.report();
                     return Ok(sent);
-                };
-                sent += taken;
-                budget -= taken;
+                }
             }
             if budget == 0 {
                 break;
@@ -517,19 +523,45 @@ impl Dispatcher {
         Ok(interleave(lists))
     }
 
-    /// Send the batch in flight, if any, and return how many URLs the API took; None when it did not take them, so they go again next pass.
-    async fn send_pending(&mut self) -> Result<Option<u64>> {
-        let Some(pending) = self.pending.clone() else {
-            return Ok(Some(0));
-        };
-        let saved = serde_json::to_value(&pending)?;
+    /// Send the batches in flight together; how many URLs the API took, and whether all went (the rest go again first next pass).
+    async fn send_pending(&mut self) -> Result<(u64, bool)> {
+        if self.pending.is_empty() {
+            return Ok((0, true));
+        }
+        self.save_pending().await?;
+        let mut sending = tokio::task::JoinSet::new();
+        for pending in self.pending.clone() {
+            let api = self.api.clone();
+            sending.spawn(async move {
+                let sent = api.enqueue(&pending.urls(), &pending.batch_id).await;
+                (pending, sent)
+            });
+        }
+        let (mut taken, mut failed) = (0, Vec::new());
+        while let Some(joined) = sending.join_next().await {
+            match joined? {
+                (pending, Ok(_)) => taken += self.landed(pending).await?,
+                (pending, Err(error)) => {
+                    eprintln!("[rs] enqueueing batch {} of {} URLs failed, will send it again: {error}", &pending.batch_id[..12], pending.picks.len());
+                    failed.push(pending);
+                }
+            }
+        }
+        let cleared = failed.is_empty();
+        self.pending = failed;
+        self.save_pending().await?;
+        Ok((taken, cleared))
+    }
+
+    async fn save_pending(&self) -> Result<()> {
+        let saved = if self.pending.is_empty() { Value::Null } else { serde_json::to_value(&self.pending)? };
         let buckets = self.buckets.clone();
         tokio::task::spawn_blocking(move || buckets.stores().next().map(|s| s.set_meta(PENDING, &saved)).transpose()).await??;
-        let urls = pending.urls();
-        if let Err(error) = self.api.enqueue(&urls, &pending.batch_id).await {
-            eprintln!("[rs] enqueueing batch {} of {} URLs failed, will send it again: {error}", &pending.batch_id[..12], urls.len());
-            return Ok(None);
-        }
+        Ok(())
+    }
+
+    /// A batch the API took: its pages leave the ready lists and count as sent.
+    async fn landed(&mut self, pending: Pending) -> Result<u64> {
         let buckets = self.buckets.clone();
         let picks: Vec<Pick> = pending.picks.iter().map(Sending::pick).collect();
         let at = pending.at;
@@ -550,9 +582,6 @@ impl Dispatcher {
                 for domain in domains {
                     left.push((domain.to_string(), store.ready_count(domain)?, rank_of(&buckets, domain)));
                 }
-            }
-            if let Some(store) = buckets.stores().next() {
-                store.set_meta(PENDING, &Value::Null)?;
             }
             Ok(left)
         })
@@ -575,10 +604,10 @@ impl Dispatcher {
             };
             counter.fetch_add(1, Ordering::Relaxed);
         }
-        self.pending = None;
-        self.progress.dispatched.fetch_add(urls.len() as u64, Ordering::Relaxed);
+        let count = pending.picks.len() as u64;
+        self.progress.dispatched.fetch_add(count, Ordering::Relaxed);
         self.progress.batches.fetch_add(1, Ordering::Relaxed);
-        Ok(Some(urls.len() as u64))
+        Ok(count)
     }
 
     fn set_ready(&mut self, domain: &str, ready: u64, rank: i64) {

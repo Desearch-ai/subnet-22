@@ -612,3 +612,34 @@ async fn the_dispatcher_sends_only_listed_domains_even_with_pages_queued_before_
     assert!(body["urls"].as_array().unwrap().iter().all(|u| u["host"] == "example.org"));
     assert_eq!(buckets.store("example.com").ready_count("example.com").unwrap(), 10, "kept, not sent");
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn several_batches_go_out_together_and_only_a_failed_one_is_sent_again() {
+    let dir = Dir::new("dispatcher-waves");
+    let host = "example.net";
+    let buckets = Arc::new(Buckets::open(&dir.0, &[bucket_of(host)], &resources()).unwrap());
+    let store = buckets.store(host);
+    let mut changes = Changes::default();
+    changes.domain(host, &records::new_domain(Some(5), Some("net"), &[], State::Active, None, None));
+    store.write(changes).unwrap();
+    let pages = (0..25_000).map(|i| (urls::parse(&format!("https://{host}/p{i:05}"), host).unwrap(), 100 + i, false)).collect();
+    store.record_listing(host, 1, pages, 100).unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let fake = Arc::new(Mutex::new(FakeApi { room: 30, fail_next: 1, ..FakeApi::default() }));
+    tokio::spawn(serve_api(listener, fake.clone()));
+    let dispatcher = |progress: Arc<Progress>| Dispatcher::load(buckets.clone(), TaskApi::new(&base, Hotkey::from_uri("//test").unwrap()).unwrap(), 1_000_000, shares(50, 10), progress);
+
+    let now = 1_759_400_000;
+    let progress = Arc::new(Progress::default());
+    let first = dispatcher(progress.clone()).await.unwrap().pass(now).await.unwrap();
+    let failed = fake.lock().unwrap().enqueued[0].1.clone();
+    assert_eq!(fake.lock().unwrap().enqueued.len(), 3, "three batches in one wave");
+    assert!(first == 15_000 || first == 20_000, "all but the failed batch went: {first}");
+
+    let second = dispatcher(progress.clone()).await.unwrap().pass(now + 15).await.unwrap();
+    let api = fake.lock().unwrap();
+    assert_eq!(api.enqueued[3].1, failed, "after a restart the failed batch went again unchanged, first");
+    assert_eq!(first + second, 25_000);
+    assert_eq!(buckets.store(host).ready_count(host).unwrap(), 0);
+}
