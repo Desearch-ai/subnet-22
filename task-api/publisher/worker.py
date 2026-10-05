@@ -7,6 +7,7 @@ import io
 import logging
 import os
 import tempfile
+import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
@@ -140,6 +141,7 @@ class Publisher:
         jobs = await self.queue.claim(self.batch)
         if not jobs:
             return None
+        started = time.monotonic()
         finalized, chosen, failed = [], {}, []
         withdrawn = [
             task_id
@@ -165,6 +167,7 @@ class Publisher:
             *(self.on_pool(self.read_job, job) for job in reading),
             return_exceptions=True,
         )
+        read_s = time.monotonic() - started
         for job, outcome in zip(reading, read):
             if isinstance(outcome, UploadGone):
                 log.error(
@@ -225,10 +228,12 @@ class Publisher:
                     with contextlib.suppress(Exception):
                         await self.temp.delete(key)
         log.info(
-            "published %d tasks, %d pages new or changed, %d withdrawn",
+            "published %d tasks, %d pages new or changed, %d withdrawn in %.1fs (%.1fs reading)",
             len(finalized),
             len(changes),
             len(removed),
+            time.monotonic() - started,
+            read_s,
         )
         return len(finalized)
 

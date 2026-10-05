@@ -5,6 +5,7 @@ import logging
 import os
 import signal
 
+import pyarrow as pa
 import redis.asyncio as aioredis
 from app.queues import PublishQueue
 from app.storage import Storage
@@ -69,6 +70,8 @@ def main() -> None:
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s"
     )
+    # Every upload's ranged reads go through pyarrow's I/O threads, 8 by default.
+    pa.set_io_thread_count(int(os.environ.get("PUBLISHER_IO_THREADS", "64")))
     asyncio.run(serve())
 
 
