@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use anyhow::{Context, Result};
 use blake2::digest::consts::{U2, U8};
@@ -14,6 +14,7 @@ use rocksdb::{
 use serde::Deserialize;
 use serde_json::{Map, Value};
 
+use crate::allowed::Allowed;
 use crate::listed::{self, ListedSet};
 use crate::urls::{Listing, Record, Url, TIMED};
 
@@ -121,6 +122,8 @@ pub struct BucketStore {
     ready_lock: Mutex<()>,
     /// Domains whose ready lists grew since the dispatcher last looked, and by how much; None until a dispatcher looks.
     pub(crate) noticed: Mutex<Option<HashMap<String, u64>>>,
+    /// The domains whose pages may go on ready lists; every domain until set.
+    allowed: OnceLock<Arc<Allowed>>,
 }
 
 impl BucketStore {
@@ -129,7 +132,22 @@ impl BucketStore {
         // Compression, filters, cache and memtable sizes are column family options; the default family must get them too.
         let family = ColumnFamilyDescriptor::new("default", options.clone());
         let db = DB::open_cf_descriptors(&options, path, [family]).with_context(|| format!("opening {}", path.display()))?;
-        Ok(BucketStore { path: path.to_path_buf(), db, ready_lock: Mutex::new(()), noticed: Mutex::new(None) })
+        Ok(BucketStore {
+            path: path.to_path_buf(),
+            db,
+            ready_lock: Mutex::new(()),
+            noticed: Mutex::new(None),
+            allowed: OnceLock::new(),
+        })
+    }
+
+    /// Only these domains' pages go on this store's ready lists from now on.
+    pub fn allow(&self, allowed: Arc<Allowed>) {
+        let _ = self.allowed.set(allowed);
+    }
+
+    pub(crate) fn allows(&self, domain: &str) -> bool {
+        self.allowed.get().is_none_or(|allowed| allowed.allows(domain))
     }
 
     pub fn write(&self, changes: Changes) -> Result<()> {
@@ -353,6 +371,17 @@ impl Buckets {
 
     pub fn store(&self, host: &str) -> &BucketStore {
         self.stores[bucket_of(host)].as_ref().expect("a host outside this process's buckets")
+    }
+
+    /// Only these domains' pages go on ready lists from now on.
+    pub fn allow(&self, allowed: &Arc<Allowed>) {
+        for store in self.stores() {
+            store.allow(allowed.clone());
+        }
+    }
+
+    pub fn allows(&self, domain: &str) -> bool {
+        self.store_for(domain).is_some_and(|store| store.allows(domain))
     }
 
     /// The store of a host named by data from outside, if this process owns it.

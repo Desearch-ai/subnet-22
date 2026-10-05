@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
+use desearch_bot::allowed::{self, Allowed};
 use desearch_bot::buckets::{bucket_of, BucketStore, Buckets, Changes, Resources};
 use desearch_bot::dispatch::{allot, batch_id, interleave, settle, shares, slots, split, Dispatcher, HourlyCap, Progress, Want};
 use desearch_bot::hotkey::{self, Hotkey};
@@ -528,4 +529,86 @@ async fn the_outcome_feed_tells_a_number_not_written_yet_from_one_that_is_gone()
     assert_eq!(feed.latest().await.unwrap(), Some(7), "where a bot reading the feed for the first time starts");
     assert!(matches!(feed.fetch(5).await.unwrap(), Next::Missing), "later numbers exist, so 5 is gone or late");
     assert!(matches!(feed.fetch(8).await.unwrap(), Next::Wait), "8 is simply not written yet");
+}
+
+
+#[test]
+fn the_domain_list_takes_names_or_hosts_and_is_read_again_when_its_file_changes() {
+    let names = allowed::parse(br#"["a.com", {"host": "b.org", "rank": 2}, 7]"#).unwrap();
+    assert_eq!(names, ["a.com".to_string(), "b.org".to_string()].into_iter().collect());
+    assert!(allowed::parse(b"{}").is_err());
+    assert!(Allowed::all().allows("anything.net"));
+
+    let dir = Dir::new("allowed");
+    std::fs::create_dir_all(&dir.0).unwrap();
+    let path = dir.0.join("domains.json");
+    std::fs::write(&path, r#"["a.com"]"#).unwrap();
+    let list = Allowed::from_file(&path).unwrap();
+    assert!(list.allows("a.com") && !list.allows("b.org"));
+    assert!(!list.reload().unwrap(), "an unchanged file is not read again");
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    std::fs::write(&path, r#"["b.org"]"#).unwrap();
+    assert!(list.reload().unwrap());
+    assert!(list.allows("b.org") && !list.allows("a.com"));
+}
+
+#[test]
+fn with_a_domain_list_only_listed_domains_get_ready_pages_and_the_backfill_jumps_the_rest() {
+    let dir = Dir::new("ready-allowed");
+    {
+        let db = rocksdb::DB::open_default(&dir.0).unwrap();
+        for domain in ["aaa.com", "example.com", "example.com.au", "zzz.org"] {
+            for i in 0..50 {
+                let record = Record { sitemap_id: 1, lastmod: 10, first_seen: 50, last_seen: 50, flags: HTTPS, ..Record::default() };
+                db.put([b"U", format!("{domain}\0{domain}/p{i:02}").as_bytes()].concat(), record.pack()).unwrap();
+            }
+        }
+    }
+    let store = open(&dir);
+    store.allow(Allowed::of(["example.com"]));
+
+    let mut state = store.backfill_state(1000).unwrap();
+    let mut steps = 0;
+    while !state.done {
+        store.backfill_step(&mut state, 20).unwrap();
+        steps += 1;
+    }
+    assert_eq!(store.ready_count("example.com").unwrap(), 50);
+    for other in ["aaa.com", "example.com.au", "zzz.org"] {
+        assert_eq!(store.ready_count(other).unwrap(), 0, "{other} is not listed");
+    }
+    assert!(steps <= 7, "unlisted domains are jumped, not read: {steps} steps");
+
+    let pages = (0..5).map(|i| (urls::parse(&format!("https://zzz.org/new{i}"), "zzz.org").unwrap(), 200, false)).collect();
+    store.record_listing("zzz.org", 2, pages, 300).unwrap();
+    assert_eq!(store.ready_count("zzz.org").unwrap(), 0, "a sitemap read of an unlisted domain queues nothing");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_dispatcher_sends_only_listed_domains_even_with_pages_queued_before_the_list() {
+    let dir = Dir::new("dispatcher-allowed");
+    let mut owned = vec![bucket_of("example.com"), bucket_of("example.org")];
+    owned.sort_unstable();
+    owned.dedup();
+    let buckets = Arc::new(Buckets::open(&dir.0, &owned, &resources()).unwrap());
+    for host in ["example.com", "example.org"] {
+        let store = buckets.store(host);
+        let mut changes = Changes::default();
+        changes.domain(host, &records::new_domain(Some(5), Some("com"), &[], State::Active, None, None));
+        store.write(changes).unwrap();
+        let pages = (0..10).map(|i| (urls::parse(&format!("https://{host}/p{i}"), host).unwrap(), 100 + i, false)).collect();
+        store.record_listing(host, 1, pages, 100).unwrap();
+    }
+    buckets.allow(&Allowed::of(["example.org"]));
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let fake = Arc::new(Mutex::new(FakeApi { room: 1, ..FakeApi::default() }));
+    tokio::spawn(serve_api(listener, fake.clone()));
+    let api = TaskApi::new(&base, Hotkey::from_uri("//test").unwrap()).unwrap();
+    let mut dispatcher = Dispatcher::load(buckets.clone(), api, 100, shares(50, 10), Arc::new(Progress::default())).await.unwrap();
+
+    assert_eq!(dispatcher.pass(1_759_400_000).await.unwrap(), 10);
+    let body: Value = serde_json::from_slice(&fake.lock().unwrap().enqueued[0].1).unwrap();
+    assert!(body["urls"].as_array().unwrap().iter().all(|u| u["host"] == "example.org"));
+    assert_eq!(buckets.store("example.com").ready_count("example.com").unwrap(), 10, "kept, not sent");
 }

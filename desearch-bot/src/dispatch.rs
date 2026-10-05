@@ -337,6 +337,9 @@ impl Dispatcher {
                 // The counts already hold what grew before now.
                 store.take_noticed();
                 for (domain, ready) in store.ready_domains()? {
+                    if !reading.allows(&domain) {
+                        continue;
+                    }
                     let rank = rank_of(&reading, &domain);
                     domains.insert(domain, Domain { rank, ready });
                 }
@@ -460,7 +463,13 @@ impl Dispatcher {
 
     /// Pages for one pass, interleaved across domains best first.
     async fn pick(&mut self, budget: u64, now: u32) -> Result<Vec<Pick>> {
-        let mut order: Vec<(i64, String)> = self.domains.iter().filter(|(_, d)| d.ready > 0).map(|(name, d)| (d.rank, name.clone())).collect();
+        let buckets = self.buckets.clone();
+        let mut order: Vec<(i64, String)> = self
+            .domains
+            .iter()
+            .filter(|(name, d)| d.ready > 0 && buckets.allows(name))
+            .map(|(name, d)| (d.rank, name.clone()))
+            .collect();
         order.sort_unstable();
         let wants: Vec<Want> = order
             .iter()
