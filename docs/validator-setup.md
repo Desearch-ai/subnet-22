@@ -3,11 +3,14 @@
 The validator is one process, [`neurons/validators/validator.py`](../neurons/validators/validator.py),
 started by `run.sh`. It does two jobs:
 
-1. **Checks crawl tasks.** It reads each open upload from the public uploads bucket, re-fetches the
-   pages a chain block's hash picks (the same for every validator), and reports pass or fail to the
-   task API with what it found per URL. Every validator checks every upload.
-2. **Sets weights.** Each epoch it computes every miner's share from the results of its own checks
-   over the last 24 hours and sets weights by those; see [Emission](./emission.md).
+1. **Checks crawl tasks.** A chain block's hash draws a share of every miner's uploads for a check,
+   and the task API lists those in the public uploads bucket. The validator reads each listed
+   upload, re-fetches the pages the same hash picks (the same for every validator), and reports
+   pass or fail to the task API with what it found per URL. Every validator checks every listed
+   upload.
+2. **Sets weights.** It reads the log of every miner's completed uploads from the same bucket, and
+   each epoch it pays them at the rate its own checks of each miner paid, less what its failed
+   checks take back; see [Emission](./emission.md).
 
 `run.sh` checks for a new release every 20 minutes, installs it and restarts the validator.
 

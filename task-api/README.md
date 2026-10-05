@@ -1,29 +1,35 @@
 # Task API
 
-Hands tasks to miners, lists their uploads for validators to check, and publishes verified work to
-object storage.
+Hands tasks to miners, lists a drawn share of their uploads for validators to check, and publishes
+the work to object storage.
 
 ```
-feeder ──URLs──▶ task API ──claim──▶ miner ──upload──▶ subnet-22 bucket (public)
-                    ▲  │                                        │
-       pass or fail │  └── writes the open list and the notes ─▶│
-                    │                                           ▼ reads them and the uploads
-                    └──────────────────────────────────────── validator ──re-fetch──▶ the web
-                    │
-          pass ──▶ publisher ──▶ desearch-pages bucket
+bot ──URLs──▶ task API ──claim──▶ miner ──upload──▶ subnet-22 bucket (public)
+ ▲               ▲  │                                        │
+ │  pass or fail │  └── writes the open list and the notes ─▶│
+ │               │                                           ▼ reads the drawn uploads
+ │               └──────────────────────────────────────── validator ──re-fetch──▶ the web
+ │               │
+ │     pass ──▶ publisher ──▶ desearch-pages bucket
+ │                  │
+ └── outcome feed ◀─┘
 ```
 
 | Path | |
 | --- | --- |
 | `app/` | the API: auth, queues, rounds, upload links, check results, budgets and shares |
-| `publisher/` | writes verified pages and vectors to the pages bucket |
-| `feeder/` | sends the bot's newest URLs to the API, and `feeder.sample` exports the URL dataset the miner sandbox serves |
+| `publisher/` | writes passed pages and vectors to the pages bucket and takes withdrawn ones down |
+| `feeder/` | `feeder.sample` exports the URL dataset the miner sandbox serves |
 | `tools/verify_round.py` | checks a closed round against its commitment and signed log |
 
 The miner and validator are in [`neurons/`](../neurons/), and the code they share with the API
 (text extraction, the signed client, the payment rules) is in [`desearch/`](../desearch/).
 
 ## How it works
+
+**Queue.** The [bot](../desearch-bot/README.md) fills the queue: it asks `GET /v1/room` how many
+tasks the queue can take and enqueues that many, each batch with an id so a batch sent twice is
+queued once. It reads back what became of every URL from the outcome feed.
 
 **Rounds.** URLs are enqueued in rounds. The API packs them into tasks of 1,000 URLs, the last one
 of a round taking whatever is left, publishes a hash of the batches, and commits to a block ten
@@ -34,11 +40,24 @@ upload link for one key; it never holds storage credentials. On completion the A
 to a key only it can write, so nothing changed afterwards is scored. A miner is never given a batch
 it held before.
 
-**Checks.** On completion the API freezes the upload, writes a signed note beside it (the task's
-URLs and the freeze block) and lists it in `validation/open.json` in the same public bucket, so
-validators read everything without asking the API. The rows to check are picked with the hash of
-the block ten blocks after the freeze, so no miner can know them while uploading and every validator
-checks the same rows. Each validator:
+**Which uploads are checked.** On completion the API freezes the upload and writes a signed note
+beside it (the task's URLs and the freeze block). Once the block ten blocks after the freeze exists,
+its hash decides whether validators check the upload, so no miner can know while uploading. Checked
+are:
+
+- every upload of a hotkey until it has passed 10 checks;
+- the next 10 uploads of a hotkey after a failed check;
+- every upload of a hotkey that is locked out, or whose completion report gives no row counts;
+- otherwise a share of each hotkey's uploads, and about one an hour at least.
+
+**Upload log.** Every completed crawl upload, with the counts its miner reported, is written every
+30 seconds to a numbered file signed by the API, `log/uploads/seq/<n>.json` in the uploads bucket,
+with the newest number in `log/uploads/latest.json`. Validators count each miner's work from it and
+set their weights themselves.
+
+**Checks.** A drawn upload is listed in `validation/open.json` in the same public bucket, so
+validators read everything without asking the API. The rows to check are picked with the same block
+hash, so every validator checks the same rows. Each validator:
 
 - re-extracts the picked rows from the uploaded HTML;
 - fetches the picked pages itself and compares their text with the miner's, using ScrapingDog only
@@ -48,19 +67,36 @@ checks the same rows. Each validator:
 It reports what it found for each checked URL, once per upload; the API works out the paid rows from
 those findings and ignores any number a validator states. Reports stay sealed until finalized.
 
-**Final verdict.** An upload is finalized when every active validator has reported, or at its
-deadline with more than half of them; a validator is active for an hour after its last report. One
-active validator finalizes alone. Short of a quorum, an upload waits up to an hour past its deadline
-for missing validators to report or drop out of the active set, then is void and its task goes back
-out.
+**Final verdict.** A checked upload is finalized when every active validator has reported, or at
+its deadline on the reports it has; a validator is active for an hour after its last report. One
+active validator finalizes alone. An upload no validator reported on by its deadline is finalized
+like an unchecked one.
 
 The majority decides pass or fail, and a pass pays the miner's rows at the rate the checked pages
 matched (the lower middle count when the majority differs). A validator that disagrees with the
 majority is marked, as are two passes more than 15% apart on the rows to pay; one that keeps
 disagreeing stops receiving uploads.
 
-**Publishing.** A passing task's pages are written to the pages bucket, one object per URL, only when
-the content changed and never over a newer fetch.
+**Unchecked uploads.** An upload no check drew is finalized as soon as its block hash exists, on the
+counts the miner reported at completion: its content rows, and its error rows at the share of the
+hotkey's reported errors that checks of the last 3 days could reproduce. A report under 85% of the
+task's URLs fails.
+
+**Take-back.** A failed check takes back everything the hotkey passed since its last passed check:
+the pay and the published pages. Two failed checks among a hotkey's last 10 also cost it its pay of
+the last 24 hours, its pages of the last 24 hours and a 48-hour lockout. A checked upload whose
+report claims more content rows than its file holds fails.
+
+**Publishing.** The publisher reads a passed upload's text columns in byte ranges, never its HTML,
+and refuses a file whose footer promises more than its task could hold. It keeps its own index of
+every page's latest version, so a page is written to the pages bucket, one object per URL, only
+when the content changed and never over a newer fetch. A withdrawn upload's pages are deleted while
+they are still its version, and recorded as removed in `changes/`.
+
+**Outcome feed.** Every URL ends as published, unchanged, failed or dropped. The API and the
+publisher write these in numbered files, `outcomes/seq/<n>.json` in the uploads bucket each naming a
+Parquet file, with the newest number in `outcomes/latest.json`. A task dropped after its last
+attempt and a withdrawn page are reported dropped, so the bot sends them again.
 
 **Signed log.** Every claim, refusal and completion is signed by the API. `GET /v1/key` publishes the
 signer, and `tools/verify_round.py` checks a closed round end to end.
@@ -75,7 +111,7 @@ A crawl task fails when it:
 - has sampled pages whose text does not match the validator's own fetch;
 - is over half error rows for pages the validator could load.
 
-A task where nothing could be judged decides nothing: nothing is paid or charged, and it goes back
+A checked task where nothing could be judged decides nothing: nothing is paid or charged, and it goes back
 in the queue. The same goes for a task whose checked rows the validator could mostly not read, and
 for a check the validator could not finish because of its own timeout or crash. A passing task pays
 the miner row by row at the rate its checked pages matched.
@@ -142,11 +178,7 @@ Settings → Public access → Custom Domains (or `wrangler r2 bucket domain add
 the API keeps `validation/open.json`. Mainnet serves it at `https://r2.desearch.ai`, the validator's
 default `--neuron.storage_url`.
 
-The feeder runs next to the bot, where its stores are:
-
-```bash
-PYTHONPATH=.. python -m feeder --buckets /mnt/desearch-bot/buckets --domains feeder/news_domains.json
-```
+The [bot](../desearch-bot/README.md) fills the queue with the admin hotkey (`--task-api`).
 
 | Variable | Default | |
 | --- | --- | --- |
@@ -159,6 +191,9 @@ PYTHONPATH=.. python -m feeder --buckets /mnt/desearch-bot/buckets --domains fee
 | `TASK_API_ACTIVE_S` | 3600 | seconds since its last report a validator counts as active |
 | `TASK_API_LEDGER_DELAY_S` | 0 | seconds finalized uploads and shares stay out of public view |
 | `TASK_API_MAX_ATTEMPTS` | 3 | times a task is retried before it is dropped |
+| `TASK_API_CHECK_SHARE` | `SHARE` in [`app/sampling.py`](app/sampling.py) | share of an established hotkey's uploads drawn for a check; 1 checks every upload |
+| `TASK_API_QUEUE_TARGET` | 1200 | tasks the bot keeps queued and waiting for their round's reveal |
+| `PUBLISHER_INDEX` | `publisher-index.sqlite` | the publisher's version index; keep it on a volume |
 | `TASK_API_READS_PER_MINUTE` | 120 | `GET` requests one IP may make in a minute, outside the log endpoints |
 | `TASK_API_LOG_READS_PER_MINUTE` | 60 | log requests (tasks, votes, miners, validators, overview) one IP may make in a minute |
 | `TASK_API_FAILED_WRITES_PER_MINUTE` | 30 | failed sign-ins after which one IP's writes are refused for the rest of the minute |
@@ -188,7 +223,8 @@ Anyone can read these; the [UI](../ui/README.md) is built on them.
 | `GET /v1/validators/{hotkey}` | the same for one validator |
 | `GET /v1/events` | the signed log as a feed: tasks issued, completed, refused and returned; filter with `miner`, `task_id`, `outcome` |
 | `GET /v1/health` | queue depths, backlog, the active validators and every validator's standing |
-| `GET /v1/shares` | every miner's share, per pool |
+| `GET /v1/room` | how many tasks the queue can take now, for the bot |
+| `GET /v1/shares` | every miner's share of the paid work as the API counts it, per pool |
 | `GET /v1/rounds`, `GET /v1/rounds/{id}` | round commitments |
 | `GET /v1/rounds/{id}/log` | a round's signed log |
 | `GET /v1/key` | the key that signs the log and the notes next to uploads |
@@ -216,11 +252,14 @@ subnet-22 bucket, temporary, emptied after a day, public
   uploads/              miner uploads
   submitted/            the frozen copies validators check, each with a signed .manifest.json beside it
   validation/open.json  the uploads waiting for validators, with their manifests, rewritten as they change
+  log/uploads/          every completed upload with its reported counts, numbered and signed
+  outcomes/             what became of every URL, numbered under seq/, newest in latest.json
   embed-inputs/         texts waiting to be embedded
 desearch-pages bucket, permanent
   pages/<domain>/<sha1>   the latest verified version of each URL, zstd JSON, naming the miner
                           that crawled it and the validator that checked it
-  changes/                every new or changed page, for the index to follow
+  changes/                every new, changed or removed page, for the index to follow
+  index/snapshots/        a daily copy of the publisher's version index
   reports/                every final result, with the checked pages and each validator's report
   vectors/model=<name>/   verified vectors
 ```

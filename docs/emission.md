@@ -5,32 +5,38 @@ other miner. This page explains how that share is worked out and what raises it.
 
 ## How weights are set
 
-Every validator checks every upload, and every epoch each validator sets its weights from the
-results of its own checks over the last 24 hours. A share is your part of all the verified work of
-the last 24 hours:
+Every validator works out the weights itself, from the public uploads bucket. It reads the log of
+every completed upload there, with the counts each miner reported, and checks a random sample of
+them. It assumes the sample is representative of the miner's other uploads: work it did not check
+is paid at the rate its checks of that miner paid.
 
 ```
-your rows = rows you were paid for - URLs of your failed tasks        (never below zero)
+your rows  = rows your checked uploads paid
+           + your other uploads' reported rows × the rate your checks paid over the last 3 days
+           - URLs of your failed checks
+           - what a failed check takes back                                   (never below zero)
 your share = your rows / everyone's rows
 ```
 
-Work counts for 24 hours after its upload is finalized. Steady work keeps a steady share; if you stop, your share
-fades out over the following day.
+Uploads count for 24 hours after they are completed. Steady work keeps a steady share; if you stop,
+your share fades out over the following day.
 
 A validator sets weights only while it is checking tasks itself. One without a working ScrapingDog
-key, or whose checks keep failing, sets none until it recovers; one with no results of its own yet,
-such as right after it starts, puts all its weight on the burn hotkey.
+key, or whose checks keep failing, sets none until it recovers.
 
 ## What counts as paid work
 
-**Crawling.** A task you complete is checked by every validator. If it passes, you are paid for
-every row at the rate the checked pages matched:
+**Crawling.** Every validator checks a random sample of your uploads, and every upload of a new
+hotkey until it has passed 10 checks. A checked task that passes pays every row at the rate its
+checked pages matched: pages at the share whose text matched the validator's own fetch, and pages
+you reported as failed at the share of those the validator could not load either. Your other
+uploads are paid on the counts you reported, at the rate your checks paid. A report under 85% of
+the task's URLs fails.
 
-- **pages** you returned count at the share of sampled pages whose text matched the validator's own fetch;
-- **pages you reported as failed** count at the share of those the validator could not load either.
-
-A failed task earns nothing, and its URLs are taken back from the rows you are paid for in the same
-24 hours.
+A failed check earns nothing and costs the task's URLs. It also takes back everything you uploaded
+since your last passed check, and those pages leave the published set; your next 10 uploads are
+all checked. Two failed checks among your last 10 take back your last 24 hours and lock you out for
+48 hours. A checked task whose report claims more pages than its file holds fails.
 
 **Embedding** opens later; see [Embedding tasks](./embedding-tasks.md). There, a passing task is
 paid by the characters of the texts it embedded.
@@ -40,7 +46,10 @@ paid by the characters of the texts it embedded.
 - **Crawl more pages.** Throughput is what you compete on: fetch concurrency and good proxies. One
   fast miner can hold as much work as several slow ones.
 - **Return the real page.** Text that does not match what a validator fetches lowers what you are paid;
-  made-up text fails the task.
+  made-up text fails the task, and a failed check takes back your unchecked work since your last
+  passed one.
+- **Report your counts truthfully.** Unchecked uploads are paid on them, and checked ones are held
+  to them.
 - **Load the hard pages.** A page you report as blocked or timed out is paid only if the validator
   cannot load it either. Rotating proxies, or a fallback service such as ScrapingDog, turn those
   pages into paid ones.
