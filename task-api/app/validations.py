@@ -70,6 +70,7 @@ VOTE_FIELDS = (
 VOTE_COLUMNS = (*VOTE_FIELDS[:4], "upload_key", *VOTE_FIELDS[4:])
 VERDICTS = ("pass", "fail", "void")
 NO_MAJORITY = "validators_disagree"
+WITHDRAWN = "withdrawn"
 MIN_AUDITS = 10
 URL_DETAIL_DAYS = 7
 MAX_DISAGREEMENT = 0.3
@@ -624,6 +625,31 @@ class Validations:
             (miner, kind, since),
         ).fetchone()
         return count
+
+    def withdraw(self, miner: str, since: float) -> list[tuple[str, int]]:
+        """Passed uploads of a miner completed after `since`, taken back: (task_id, credited) of each."""
+        rows = self.db.execute(
+            "SELECT id, task_id, credited FROM validations"
+            " WHERE miner = ? AND kind = 'crawl' AND verdict = 'pass' AND scored_at > ?"
+            " AND COALESCE(completed_at, scored_at) > ?",
+            (miner, since, since),
+        ).fetchall()
+        for row_id, _, _ in rows:
+            self.db.execute(
+                "UPDATE validations SET verdict = ? WHERE id = ?", (WITHDRAWN, row_id)
+            )
+        if rows:
+            self.db.execute(
+                "UPDATE verdict_counts SET n = n - ? WHERE miner = ? AND verdict = 'pass'",
+                (len(rows), miner),
+            )
+            self.db.execute(
+                "INSERT INTO verdict_counts VALUES (?, ?, ?)"
+                " ON CONFLICT (miner, verdict) DO UPDATE SET n = n + excluded.n",
+                (miner, WITHDRAWN, len(rows)),
+            )
+        self.db.commit()
+        return [(task_id, credited) for _, task_id, credited in rows]
 
     def record_audit(self, agreed: list[str], disagreed: list[str]) -> None:
         for hotkey, disagreement in [(h, 0) for h in agreed] + [

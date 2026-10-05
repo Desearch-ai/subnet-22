@@ -6,7 +6,7 @@ In 1.0, miners and validators delivered useful search. But answers could take to
 
 Why Bittensor? To bring more contributors into building useful data and improving retrieval technology through open competition.
 
-The first task family, crawling, is now running on SN22: miners fetch assigned pages and upload the extracted text, and validators check a sample of every upload. Content preparation and embeddings (search representations) from a selected model come next. The team operates the index and API at first. Valid work qualifies for rewards before customer deployment.
+The first task family, crawling, is now running on SN22: miners fetch assigned pages and upload the extracted text, and validators check a drawn share of the uploads. Content preparation and embeddings (search representations) from a selected model come next. The team operates the index and API at first. Valid work qualifies for rewards before customer deployment.
 
 We plan to expand beyond these tasks. Possible later programs include model training, fine-tuning and reranking; their sequence and terms are not set.
 

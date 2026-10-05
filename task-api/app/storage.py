@@ -126,6 +126,21 @@ class Storage:
             **({"CacheControl": cache_control} if cache_control else {}),
         )
 
+    async def put_bytes(self, key: str, body: bytes, content_type: str) -> None:
+        await asyncio.to_thread(
+            self.client.put_object,
+            Bucket=self.bucket,
+            Key=self.path(key),
+            Body=body,
+            ContentType=content_type,
+        )
+
+    def read_range_now(self, key: str, start: int, end: int) -> bytes:
+        found = self.client.get_object(
+            Bucket=self.bucket, Key=self.path(key), Range=f"bytes={start}-{end}"
+        )
+        return found["Body"].read()
+
     async def delete(self, key: str) -> None:
         await asyncio.to_thread(
             self.client.delete_object, Bucket=self.bucket, Key=self.path(key)

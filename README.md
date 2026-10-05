@@ -66,26 +66,24 @@ starts with selected sources and grows as results prove useful.
 
 | Work | Who does it | Status |
 | --- | --- | --- |
-| **Crawl** and refresh pages, extract their text | Miners fetch assigned pages through their own proxies; validators re-fetch a sample of every upload | Running on SN22 |
+| **Crawl** and refresh pages, extract their text | Miners fetch assigned pages; validators re-check a sample of their tasks | Running on SN22 |
 | **Embed** accepted text with a selected model | Miners run the model on their GPUs; validators recompute a sample | Built; opens with Desearch's embedding model |
 | Train retrieval models, improve ranking, extraction and coverage | Model builders and data operators | Later programs, announced before they open |
 | Build, test and serve the index | The Desearch team | Team-operated; queries never wait on miner work |
 
 ## Mining and validating
 
-**Miners** crawl: they claim tasks, fetch the assigned pages through their own proxies and upload the
-extracted text. They are paid by their share of verified pages, and can test their miner locally
-against a real validator before registering.
+**Miners** crawl: they take tasks, fetch the assigned pages and upload the extracted text. They are
+paid by their share of accepted pages, and can test their miner locally before registering.
 [Miner setup →](./docs/miner-setup.md) · [Test locally →](./docs/test-your-miner.md)
 · [Emission →](./docs/emission.md)
 
-**Validators** check: every validator re-fetches a sample of every upload, reports pass or fail, and
-sets weights from what its own checks found. [Validator setup →](./docs/validator-setup.md)
+**Validators** check: they re-fetch a random sample of miners' tasks, compare it with what the miner
+returned, and set weights from the accepted work. A miner caught returning bad pages loses what it
+earned since its last good check. [Validator setup →](./docs/validator-setup.md)
 
-Crawl rounds are committed to a future block before tasks go out, every step is logged and signed,
-an upload is paid and published only when a majority of validators agree, and every result is
-[public](https://api-22.desearch.ai/v1/tasks).
-[Architecture →](./docs/architecture.md)
+The rules are published and every result is [public](https://api-22.desearch.ai/v1/tasks).
+[How it works →](./docs/architecture.md)
 
 ## Use Desearch
 

@@ -8,7 +8,7 @@ import numpy as np
 from desearch.kinds import CRAWL, EMBED
 
 EMISSION_CONTROL_HOTKEY = "5CUu1QhvrfyMDBELUPJLt4c7uJFbi7TKqDHkS1Zz41oD4dyP"
-EMISSION_CONTROL_PERC = 0.8
+EMISSION_CONTROL_PERC = 0.7
 CRAWL_PERC = 1.0
 EMBED_PERC = 0.0
 assert math.isclose(CRAWL_PERC + EMBED_PERC, 1.0)

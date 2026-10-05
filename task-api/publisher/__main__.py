@@ -9,6 +9,7 @@ import redis.asyncio as aioredis
 from app.queues import PublishQueue
 from app.storage import Storage
 
+from publisher.index import VersionIndex
 from publisher.worker import Publisher
 
 log = logging.getLogger("publisher")
@@ -53,6 +54,7 @@ async def serve() -> None:
         workers=int(os.environ.get("PUBLISHER_WORKERS", "32")),
         batch=int(os.environ.get("PUBLISHER_BATCH", "20")),
         embed_inputs=os.environ.get("TASK_API_EMBED_TASKS", "0") == "1",
+        index=VersionIndex(os.environ.get("PUBLISHER_INDEX", "publisher-index.sqlite")),
     )
     log.info("publishing %s -> %s", temp.bucket, pages.bucket)
     try:

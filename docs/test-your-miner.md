@@ -71,12 +71,13 @@ task 249008e8de444962 miner 5FkPgJN9: PASS (ok), paid 88 of 100 rows, 7 matched 
   details: sandbox/runs/20260929-185547/tasks/249008e8de444962.json
 ```
 
-Each time the validator sets weights, it lists what each miner did in the 24-hour scoring window,
-and every minute the sandbox prints a summary of your throughput and budget:
+The sandbox checks every upload, so you see a verdict for each. Each time the validator sets
+weights, it lists each miner's uploads in the 24-hour scoring window, what its own checks found and
+the share that follows, and every minute the sandbox prints a summary of your throughput and budget:
 
 ```
 Scoring window, last 24 h:
-  crawl 5FkPgJN98Q: 5 tasks (5 passed), 500 of 500 URLs returned, 486 paid, share 1.000
+  crawl 5FkPgJN98Q: 5 uploads, checked 5 (0 failed), paid at 0.97, 486 rows, share 1.000
 summary: 2 tasks waiting, 1 uploads being checked
   5FkPgJN9: 5 tasks checked, 5 passed, 500 pages returned (104/min), 486 rows paid (97%), budget 6
 ```

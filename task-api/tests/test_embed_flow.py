@@ -75,8 +75,8 @@ async def _embedded(backend) -> None:
         assert task["input"]["sha256"] == INPUT["input_sha256"]
         assert task["urls"] == [page["url"] for page in PAGES]
 
-        assert [m["kind"] for m in (await open_list(h))["uploads"]] == ["embed"]
         job = await opened(h, h.validator, ("embed",))
+        assert [m["kind"] for m in (await open_list(h))["uploads"]] == ["embed"]
         assert (job["kind"], job["model"]) == ("embed", h.core.embed_model)
         assert job["input"]["url"]
 

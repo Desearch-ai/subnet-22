@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 import logging
 import time
@@ -8,26 +9,39 @@ import uuid
 
 from app.canonical import canonicalize
 
+from desearch import credit
 from desearch.manifest import FIELDS as MANIFEST_FIELDS
 from desearch.manifest import OPEN_LIST_KEY
 from desearch.manifest import payload as manifest_payload
 
-from . import queues, rounds
+from . import outcomes, queues, rounds, sampling
 from .budget import (
     COVERAGE_GATE,
     CRAWL,
     EMBED,
+    FULL_PENALTY_LOCKOUT_H,
     HOSTILE_LOCKOUT_H,
     HOUR,
     STRIKE_REASONS,
     STRIKE_WINDOW_H,
 )
 from .embeddings import DONE, DROPPED
-from .validations import NO_MAJORITY, Decision, build_report, decide, utc_day
+from .validations import (
+    ERROR_OUTCOMES,
+    NO_MAJORITY,
+    Decision,
+    build_report,
+    decide,
+    utc_day,
+)
 
 EMBED_FIELDS = ("model", "texts", "chars", "input_key", "input_sha256", "pages")
 EMBED_ROUND_INPUTS = 200
 FINALIZE_LOCK_S = 300
+UNCHECKED = "unchecked"
+REPORTED_ROWS = "reported_rows"
+# Uploads with no counts in their report, or from a locked-out hotkey, are all checked.
+UNREPORTED, LOCKED = "unreported", "locked"
 
 log = logging.getLogger("task_api")
 
@@ -269,6 +283,8 @@ async def requeue(core, task_id: str, job: dict, cause: str) -> None:
             cause=cause,
         )
         await finish_task(core, job["round_id"], task_id)
+        if kind == CRAWL:
+            await report_outcomes(core, job["urls"], outcomes.DROPPED, task_id)
         return
     payload = {
         **{name: job[name] for name in EMBED_FIELDS if name in job},
@@ -314,13 +330,103 @@ async def void_task(
     return report
 
 
-def quorum(electorate: int) -> int:
-    """More than half of the validators in play; one alone finalizes."""
-    return max(1, electorate // 2 + 1)
-
-
 def lock_key(task_id: str) -> str:
     return f"scoring:{task_id}"
+
+
+async def settle_seeded(core) -> int:
+    """Uploads whose seed block exists: a drawn share opens for validators, the rest finalize on the miner's own counts."""
+    try:
+        block = await core.seeds.current_block()
+    except Exception as exc:
+        log.warning("chain unavailable: %r", exc)
+        return 0
+    settled = 0
+    for task_id in await core.validation.seeded(block):
+        job = await core.validation.job(task_id)
+        if job is None:
+            continue
+        seed = await core.seeds.seed_for(job["seed_block"])
+        if seed is None:
+            continue
+        lock = lock_key(task_id)
+        if not await core.redis.set(lock, "seeded", nx=True, ex=FINALIZE_LOCK_S):
+            continue
+        try:
+            await settle_one(core, task_id, job, seed)
+        finally:
+            await core.redis.delete(lock)
+        settled += 1
+    if settled:
+        await publish_open(core)
+    return settled
+
+
+async def settle_one(core, task_id: str, job: dict, seed: str) -> None:
+    reason = await pick_reason(core, task_id, job, seed)
+    if reason is None:
+        await finalize_unchecked(core, task_id, job, seeding=True)
+        return
+    if reason == sampling.RECHECK:
+        await core.db(core.checks.took_recheck, job["miner"])
+    await core.validation.open(task_id, {**job, "picked": reason})
+
+
+async def pick_reason(core, task_id: str, job: dict, seed: str) -> str | None:
+    kind, miner = job.get("kind", CRAWL), job["miner"]
+    if kind == EMBED:
+        return sampling.NEW
+    if not (job.get("reported") or {}).get("rows"):
+        return UNREPORTED
+    if await core.db(core.budgets.locked_until, miner, kind) is not None:
+        return LOCKED
+    return sampling.pick_reason(
+        sampling.draw(seed, task_id, job.get("etag", "")),
+        await sampling.uploads_last_hour(core.redis, miner),
+        await core.db(core.checks.passes, miner),
+        await core.db(core.checks.recheck_left, miner),
+        core.check_share,
+    )
+
+
+def unchecked_vote(job: dict, error_share: float) -> dict:
+    """No validator checked it: the miner's own counts, within what it was assigned, errors at its confirmed share."""
+    assigned = len(set(job["urls"]))
+    reported = job.get("reported") or {}
+    content = min(int(reported.get("ok", 0)), assigned)
+    errors = min(int(reported.get("errors", 0)), assigned - content)
+    returned = content + errors
+    if returned < COVERAGE_GATE * assigned:
+        verdict, reason, credited = "fail", "coverage", 0
+    else:
+        verdict, reason = "pass", UNCHECKED
+        credited = content + round(errors * error_share)
+    return {
+        "validator": "",
+        "verdict": verdict,
+        "credited": credited,
+        "result": {
+            "verdict": verdict,
+            "reason": reason,
+            "returned": returned,
+            "missing": assigned - returned,
+            "error_rows": errors,
+            "credited": credited,
+            "samples": [],
+            "rejected": [],
+        },
+    }
+
+
+async def finalize_unchecked(
+    core, task_id: str, job: dict, seeding: bool = False
+) -> dict | None:
+    share = await core.db(core.checks.error_share, job["miner"])
+    decision = Decision("final", unchecked_vote(job, share), [])
+    try:
+        return await conclude_validation(core, task_id, job, decision, seeding)
+    except (StorageDown, ClaimLost):
+        return None
 
 
 async def finalize_due(core, now: float | None = None) -> list[str]:
@@ -344,36 +450,59 @@ async def finalize_due(core, now: float | None = None) -> list[str]:
 
 
 async def finalize_task(core, task_id: str, job: dict, now: float) -> dict | None:
-    """Finalizes once every active validator voted, or at the deadline with a quorum; short of one it waits."""
+    """Finalizes once every active validator voted, or at the deadline on the votes it has; with none, on the miner's own counts."""
     voters = await core.validation.voters(task_id)
     active = await core.validation.active(now) | voters
     due = now >= job.get("deadline", 0)
-    if not voters or (not due and not active <= voters):
+    if not due and not (voters and active <= voters):
         return None
-    if len(voters) < quorum(len(active)):
-        # A stopped validator leaves the active set within this window.
-        if now < job.get("deadline", 0) + core.validation.active_s:
+    if not voters:
+        if job.get("kind", CRAWL) != CRAWL:
             return None
-        lapsed = await core.validation.finalize(task_id)
-        if lapsed is not None:
-            await void_task(core, task_id, lapsed, "", "no_quorum")
-        return {"task_id": task_id, "verdict": "void", "credited": 0}
+        return await finalize_unchecked(core, task_id, job)
     votes = await core.validation.votes(task_id)
+    decision = held_to_report(job, decide(votes, overdue=True))
     try:
-        return await conclude_validation(
-            core, task_id, job, decide(votes, overdue=True)
-        )
+        return await conclude_validation(core, task_id, job, decision)
     except (StorageDown, ClaimLost):
         return None
 
 
+def overstated(job: dict, result: dict) -> bool:
+    reported = job.get("reported") or {}
+    if not reported.get("rows"):
+        return False
+    counted = result.get("returned", 0) - result.get("error_rows", 0)
+    return credit.overstated(reported.get("ok", 0), counted, len(set(job["urls"])))
+
+
+def held_to_report(job: dict, decision: Decision) -> Decision:
+    """Unchecked uploads are paid on the miner's report, so a checked one that overstates it fails."""
+    vote = decision.vote
+    if (
+        job.get("kind", CRAWL) != CRAWL
+        or vote["verdict"] != "pass"
+        or not overstated(job, vote["result"])
+    ):
+        return decision
+    result = {
+        **vote["result"],
+        "verdict": "fail",
+        "reason": REPORTED_ROWS,
+        "credited": 0,
+    }
+    return dataclasses.replace(
+        decision, vote={**vote, "verdict": "fail", "credited": 0, "result": result}
+    )
+
+
 async def conclude_validation(
-    core, task_id: str, job: dict, decision: Decision
+    core, task_id: str, job: dict, decision: Decision, seeding: bool = False
 ) -> dict:
     """Accounts are finalized once per upload, in one transaction, before Redis lets go."""
     finalized = await core.db(core.validations.final_verdict, task_id, job["key"])
     if finalized is not None:
-        return await finish_finalized(core, task_id, job, finalized)
+        return await finish_finalized(core, task_id, job, finalized, seeding)
 
     vote, result = decision.vote, decision.vote["result"]
     verdict = vote["verdict"]
@@ -385,7 +514,9 @@ async def conclude_validation(
         raise StorageDown(task_id) from None
 
     publish = None
-    if verdict == "pass" and result.get("matched"):
+    if verdict == "pass" and (
+        result.get("matched") or result.get("reason") == UNCHECKED
+    ):
         publish = publish_job(core, task_id, job, vote, decision.agreed)
     try:
         budget = await core.db(
@@ -393,18 +524,87 @@ async def conclude_validation(
         )
     except AlreadySettled:
         finalized = await core.db(core.validations.final_verdict, task_id, job["key"])
-        return await finish_finalized(core, task_id, job, finalized)
+        return await finish_finalized(core, task_id, job, finalized, seeding)
 
     for validator in decision.disagreed:
         if await core.db(core.validations.is_excluded, validator):
             await core.validation.leave(validator)
-    await close_upload(core, task_id, job, verdict, publish)
+    await close_upload(core, task_id, job, verdict, publish, seeding)
+    if job.get("picked") and job.get("kind", CRAWL) == CRAWL:
+        await account_check(core, job, decision)
     return {
         "task_id": task_id,
         "verdict": verdict,
         "credited": vote["credited"] if verdict == "pass" else 0,
         "miner_budget": budget,
     }
+
+
+async def account_check(core, job: dict, decision: Decision) -> None:
+    """A pass marks where the hotkey last stood; a fail takes back what passed since then and checks its next uploads."""
+    verdict, miner = decision.vote["verdict"], job["miner"]
+    if verdict not in ("pass", "fail"):
+        return
+    samples = decision.vote["result"].get("samples", [])
+    judged = sum(1 for sample in samples if sample["outcome"] in ERROR_OUTCOMES)
+    unconfirmed = sum(
+        1 for sample in samples if sample["outcome"] == "errors_unconfirmed"
+    )
+    since = await core.db(core.checks.last_pass_at, miner)
+    await core.db(
+        core.checks.record,
+        miner,
+        job["task_id"],
+        verdict == "pass",
+        job.get("completed_at") or time.time(),
+        judged,
+        unconfirmed,
+    )
+    if verdict == "pass":
+        return
+    await take_back(core, miner, since, "check_failed")
+    await core.db(core.checks.start_recheck, miner)
+    if await core.db(core.checks.fails_in_recent, miner) >= credit.FAILS_FOR_PENALTY:
+        await full_penalty(core, miner, "repeated_fails")
+
+
+async def take_back(core, miner: str, since: float, reason: str) -> list[str]:
+    """Un-credits and unpublishes a hotkey's passed crawl uploads completed after `since`."""
+
+    def withdraw() -> list[tuple[str, int]]:
+        with core.sqlite.batch():
+            taken = core.validations.withdraw(miner, since)
+            core.budgets.credit(miner, -sum(credited for _, credited in taken), CRAWL)
+        return taken
+
+    taken = await core.db(withdraw)
+    task_ids = [task_id for task_id, _ in taken]
+    if task_ids:
+        await core.publish.withdraw(task_ids, reason)
+        log.warning(
+            "miner=%s %d uploads taken back: %s", miner[:10], len(task_ids), reason
+        )
+    return task_ids
+
+
+async def full_penalty(core, miner: str, reason: str) -> None:
+    """The hotkey's last day of credit and pages, and a lockout."""
+    now = time.time()
+    await core.db(
+        core.budgets.lock_out, miner, CRAWL, FULL_PENALTY_LOCKOUT_H, reason, now
+    )
+    await take_back(core, miner, now - credit.PENALTY_WINDOW_S, reason)
+    await core.db(core.budgets.wipe_credits, miner, now - credit.PENALTY_WINDOW_S)
+    log.warning("miner=%s full penalty: %s", miner[:10], reason)
+
+
+async def report_outcomes(core, urls: list[str], outcome: str, task_id: str) -> None:
+    try:
+        await outcomes.write(
+            core.storage, core.redis, outcomes.rows_for(urls, outcome, task_id)
+        )
+    except Exception:
+        log.exception("could not write %d outcomes for %s", len(urls), task_id)
 
 
 def finalize_accounts(
@@ -470,7 +670,7 @@ def publish_job(
         },
         "kind": kind,
         "validator": vote["validator"],
-        "validators": sorted(set(agreed) | {vote["validator"]}),
+        "validators": sorted(set(agreed) | ({vote["validator"]} - {""})),
         "urls": job["urls"],
         "completed_at": job["completed_at"],
         "claim_ttl": core.claim_ttl,
@@ -496,10 +696,15 @@ def rejected_urls(result: dict) -> list[str]:
 
 
 async def close_upload(
-    core, task_id: str, job: dict, verdict: str, publish: dict | None
+    core,
+    task_id: str,
+    job: dict,
+    verdict: str,
+    publish: dict | None,
+    seeding: bool = False,
 ) -> None:
     """Closes a finalized upload in Redis and moves the task on."""
-    if await core.validation.finalize(task_id, publish) is None:
+    if await core.validation.finalize(task_id, publish, seeding) is None:
         log.warning("task=%s was closed before its final_verdict was recorded", task_id)
         raise ClaimLost(task_id)
     if verdict == "pass":
@@ -515,8 +720,12 @@ async def discard_upload(core, job: dict) -> None:
     await delete_quietly(core.storage, manifest_key(job["key"]))
 
 
-async def finish_finalized(core, task_id: str, job: dict, finalized: dict) -> dict:
-    await close_upload(core, task_id, job, finalized["verdict"], finalized["publish"])
+async def finish_finalized(
+    core, task_id: str, job: dict, finalized: dict, seeding: bool = False
+) -> dict:
+    await close_upload(
+        core, task_id, job, finalized["verdict"], finalized["publish"], seeding
+    )
     kind = job.get("kind", CRAWL)
     return {
         "task_id": task_id,

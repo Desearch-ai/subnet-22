@@ -1,9 +1,9 @@
-import asyncio
 from datetime import datetime, timedelta, timezone
 
 from app.canonical import canonicalize
-from publisher.records import build_record, from_zstd, page_key
-from publisher.worker import Publisher
+from publisher.index import VersionIndex
+from publisher.records import build_record, page_key, record_key
+from publisher.worker import Publisher, _indexed
 
 from tests.synthetic import page_row, synthetic_html, to_parquet
 
@@ -12,16 +12,9 @@ WIDE = (T0 - timedelta(days=30), T0 + timedelta(days=30))
 URL = "https://www.site.example/story"
 
 
-def observed(n: int, at: datetime, task_id: str) -> dict:
-    row = {**page_row(URL, synthetic_html(n)), "fetched_at": at}
+def observed(n: int, at: datetime, task_id: str, url: str = URL) -> dict:
+    row = {**page_row(url, synthetic_html(n)), "fetched_at": at}
     return build_record(row, task_id, "miner-a", WIDE)
-
-
-def stored(pages, url: str = URL) -> dict:
-    found = pages.client.get_object(
-        Bucket=pages.bucket, Key=pages.path(page_key(canonicalize(url)))
-    )
-    return from_zstd(found["Body"].read())
 
 
 def buckets(memory):
@@ -29,21 +22,30 @@ def buckets(memory):
     return temp, memory.storage(bucket=temp.bucket, prefix="pages-bucket/")
 
 
+def publish(publisher: Publisher, record: dict) -> tuple[list[dict], list[dict]]:
+    changes, unchanged = publisher.decide({record_key(record): record})
+    publisher.index.store([_indexed(change) for change in changes])
+    publisher.index.touch([(record_key(r), r["fetched_at"]) for r in unchanged])
+    return changes, unchanged
+
+
 def test_an_unchanged_page_seen_again_moves_its_fetch_time_forward(memory):
     temp, pages = buckets(memory)
-    publisher = Publisher(None, temp, pages, workers=2)
+    publisher = Publisher(None, temp, pages, workers=2, index=VersionIndex(":memory:"))
     try:
-        first = publisher.put_latest(observed(1, T0, "t1"))
-        unchanged = publisher.put_latest(observed(1, T0 + timedelta(seconds=300), "t2"))
-        older = publisher.put_latest(observed(2, T0 + timedelta(seconds=200), "t3"))
+        first, _ = publish(publisher, observed(1, T0, "t1"))
+        same, seen = publish(publisher, observed(1, T0 + timedelta(seconds=300), "t2"))
+        older, kept_out = publish(
+            publisher, observed(2, T0 + timedelta(seconds=200), "t3")
+        )
     finally:
         publisher.close()
 
-    assert first["kind"] == "new"
-    assert unchanged is None and older is None
-    assert stored(pages)["task_id"] == "t2", (
-        "an older fetch cannot overwrite the latest"
-    )
+    assert [c["kind"] for c in first] == ["new"]
+    assert same == [] and len(seen) == 1
+    assert older == [] and len(kept_out) == 1, "an older fetch cannot replace it"
+    current = publisher.index.current(page_key(canonicalize(URL)))
+    assert current.task_id == "t1" and current.fetched_at > first[0]["fetched_at"]
 
 
 def test_rows_the_verdict_rejected_are_not_published(memory):
@@ -73,11 +75,23 @@ def test_rows_the_verdict_rejected_are_not_published(memory):
     }
     publisher = Publisher(None, temp, pages, workers=2)
     try:
-        changes, failure = publisher.publish(job)
+        records, failed = publisher.collect(job)
     finally:
         publisher.close()
 
-    assert failure is None
-    assert [change["assigned_url"] for change in changes] == [good]
-    assert asyncio.run(pages.stat(page_key(canonicalize(bad)))) is None
-    assert stored(pages, good)["validator"] == "5Validator"
+    assert [record["assigned_url"] for record in records] == [good]
+    assert records[0]["validator"] == "5Validator"
+    assert failed == [{"url": bad, "task_id": "t1"}]
+
+
+def test_a_withdrawal_removes_only_a_version_that_is_still_current():
+    index = VersionIndex(":memory:")
+    first = {**observed(1, T0, "t1"), "key": "k", "version": "v1"}
+    index.store([_indexed(first)])
+    index.store([_indexed({**first, "version": "v2", "task_id": "t2"})])
+
+    withdrawn = index.of_tasks(["t1"])
+    index.remove([(key, version) for key, _, version, _ in withdrawn])
+
+    assert withdrawn == [], "t2 replaced t1's version, so t1 holds nothing now"
+    assert index.current("k").task_id == "t2"

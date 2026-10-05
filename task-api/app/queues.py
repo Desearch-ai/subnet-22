@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import json
 import time
+import uuid
 from dataclasses import dataclass
 
 QUEUE = "queue:ready"
 CLAIMS = "claims:expiry"
 # Uploads open for every validator to score, by completion time.
 VOPEN = "vjobs:open"
+# Uploads waiting for their seed block, which decides whether validators check them.
+SEEDING = "vjobs:seeding"
 # Validators by the time they last asked for work or voted.
 VACTIVE = "validators:active"
 PUBLISH = "publish:ready"
@@ -132,7 +135,7 @@ if redis.call('GET', 'claim:' .. task_id) ~= holder then return nil end
     + "return seq"
 )
 
-# An upload moves from the crawling set to the waiting one until its verdict.
+# An upload moves from the crawling set to the waiting one, and waits for its seed block.
 COMPLETE = (
     INFLIGHT
     + """
@@ -146,7 +149,7 @@ if redis.call('EXISTS', 'vjob:' .. task_id) == 1 then return nil end
 redis.call('ZREM', KEYS[1], task_id)
 redis.call('DEL', 'claim:' .. task_id, 'issued:' .. task_id, 'task:' .. task_id)
 redis.call('SET', 'vjob:' .. task_id, job)
-redis.call('ZADD', KEYS[2], now, task_id)
+redis.call('ZADD', KEYS[2], tonumber(ARGV[6]), task_id)
 local kind = cjson.decode(job)['kind']
 redis.call('SMOVE', inflight(kind, hotkey), waiting(kind, hotkey), task_id)
 return redis.call('INCR', 'log:seq')
@@ -157,6 +160,13 @@ RESTORE = """
 redis.call('SET', 'task:' .. ARGV[1], ARGV[2])
 redis.call('ZADD', KEYS[1], ARGV[3], ARGV[1])
 return redis.call('INCR', 'log:seq')
+"""
+
+VOPEN_PICKED = """
+if redis.call('ZREM', KEYS[1], ARGV[1]) == 0 then return 0 end
+redis.call('SET', 'vjob:' .. ARGV[1], ARGV[2])
+redis.call('ZADD', KEYS[2], tonumber(ARGV[3]), ARGV[1])
+return 1
 """
 
 # One vote per validator per open upload; a vote also marks the validator active.
@@ -359,8 +369,15 @@ class TaskQueue:
         self, task_id: str, hotkey: str, job: dict, upload_key: str
     ) -> int | None:
         seq = await self._complete(
-            keys=[CLAIMS, VOPEN],
-            args=[task_id, hotkey, json.dumps(job), time.time(), upload_key],
+            keys=[CLAIMS, SEEDING],
+            args=[
+                task_id,
+                hotkey,
+                json.dumps(job),
+                time.time(),
+                upload_key,
+                job.get("seed_block", 0),
+            ],
         )
         return None if seq is None else int(seq)
 
@@ -405,9 +422,33 @@ class ValidationQueue:
         self.active_s = active_s
         self._vote = redis.register_script(VVOTE)
         self._finalize = redis.register_script(VSETTLE)
+        self._open = redis.register_script(VOPEN_PICKED)
 
     async def depth(self) -> int:
         return int(await self.redis.zcard(VOPEN))
+
+    async def seeding(self) -> int:
+        return int(await self.redis.zcard(SEEDING))
+
+    async def oldest_seeding_age(self) -> float:
+        """How long the upload with the earliest seed block has waited since it was completed."""
+        oldest = await self.redis.zrange(SEEDING, 0, 0)
+        job = await self.job(_text(oldest[0])) if oldest else None
+        return round(time.time() - job["completed_at"], 1) if job else 0.0
+
+    async def seeded(self, block: int, limit: int = OPEN_SCAN) -> list[str]:
+        """Uploads whose seed block exists, oldest seed first."""
+        found = await self.redis.zrangebyscore(SEEDING, "-inf", block, 0, limit)
+        return [_text(task_id) for task_id in found]
+
+    async def open(self, task_id: str, job: dict) -> bool:
+        """A picked upload goes on the open list for validators."""
+        return bool(
+            await self._open(
+                keys=[SEEDING, VOPEN],
+                args=[task_id, json.dumps(job), job.get("completed_at") or time.time()],
+            )
+        )
 
     async def job(self, task_id: str) -> dict | None:
         found = await self.redis.get(f"vjob:{task_id}")
@@ -427,6 +468,9 @@ class ValidationQueue:
 
     async def open_ids(self, limit: int = OPEN_SCAN) -> list[str]:
         return [_text(t) for t in await self.redis.zrange(VOPEN, 0, limit - 1)]
+
+    async def seeding_ids(self, limit: int = OPEN_SCAN) -> list[str]:
+        return [_text(t) for t in await self.redis.zrange(SEEDING, 0, limit - 1)]
 
     async def vote(
         self, task_id: str, validator: str, vote: dict, now: float | None = None
@@ -462,10 +506,10 @@ class ValidationQueue:
         return {_text(validator): at for validator, at in seen}
 
     async def finalize(
-        self, task_id: str, publish: dict | None = None
+        self, task_id: str, publish: dict | None = None, seeding: bool = False
     ) -> Finalized | None:
         found = await self._finalize(
-            keys=[VOPEN, PUBLISH, PPENDING],
+            keys=[SEEDING if seeding else VOPEN, PUBLISH, PPENDING],
             args=[
                 task_id,
                 json.dumps(publish) if publish else "",
@@ -505,6 +549,20 @@ class PublishQueue:
 
     async def next_seq(self) -> int:
         return int(await self.redis.incr("changes:seq"))
+
+    async def withdraw(self, task_ids: list[str], reason: str) -> str:
+        """A job for the publisher to take these tasks' pages back out of the published set."""
+        job_id = f"withdraw:{uuid.uuid4().hex[:16]}"
+        job = {
+            "task_id": job_id,
+            "kind": "withdraw",
+            "task_ids": task_ids,
+            "reason": reason,
+        }
+        await self.redis.set(f"pjob:{job_id}", json.dumps(job))
+        await self.redis.rpush(PUBLISH, job_id)
+        await self.redis.zadd(PPENDING, {job_id: time.time()})
+        return job_id
 
     async def push_embed_input(self, entry: dict) -> None:
         await self.redis.rpush(EMBED_INPUTS, json.dumps(entry))

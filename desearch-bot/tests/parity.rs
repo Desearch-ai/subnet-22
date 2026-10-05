@@ -3,7 +3,7 @@
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 
-use desearch_bot::{exclusions, isodate, langid, signing, sitemaps, suffixes, urls};
+use desearch_bot::{exclusions, hotkey, isodate, langid, signing, sitemaps, suffixes, urls};
 use flate2::read::GzDecoder;
 use serde_json::Value;
 
@@ -85,6 +85,28 @@ fn signatures_match_python() {
         if let Some(psl) = &psl {
             assert_eq!(psl.registrable(host).as_deref(), row["registrable"].as_str(), "registrable {host}");
         }
+    }
+}
+
+#[test]
+fn hotkeys_and_task_api_signatures_match_python() {
+    let file = File::open(format!("{}/tests/data/hotkey-vectors.json", env!("CARGO_MANIFEST_DIR"))).unwrap();
+    let vectors: Value = serde_json::from_reader(file).unwrap();
+    for row in vectors["keys"].as_array().unwrap() {
+        let uri = row["uri"].as_str().unwrap();
+        let key = hotkey::Hotkey::from_uri(uri).unwrap();
+        assert_eq!(hex(&key.public()), row["public"].as_str().unwrap(), "public key of {uri}");
+        assert_eq!(key.ss58(), row["ss58"].as_str().unwrap(), "address of {uri}");
+    }
+    let signer = hotkey::Hotkey::from_uri(vectors["signer"].as_str().unwrap()).unwrap();
+    for row in vectors["requests"].as_array().unwrap() {
+        let text = |name: &str| row[name].as_str().unwrap();
+        let payload = hotkey::signing_payload(text("method"), text("path"), text("body").as_bytes(), text("timestamp"), text("nonce"));
+        assert_eq!(payload, text("payload").as_bytes());
+        let python: Vec<u8> = (0..128).step_by(2).map(|i| u8::from_str_radix(&text("signature")[i..i + 2], 16).unwrap()).collect();
+        assert!(hotkey::verify(&signer.public(), &payload, &python), "Python's signature of {} verifies", text("path"));
+        assert!(hotkey::verify(&signer.public(), &payload, &signer.sign(&payload)));
+        assert!(!hotkey::verify(&signer.public(), b"another payload", &python));
     }
 }
 

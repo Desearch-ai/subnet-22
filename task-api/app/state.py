@@ -10,8 +10,9 @@ from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 from pathlib import Path
 
-from . import proofs, queues, rounds
+from . import proofs, queues, rounds, sampling
 from .budget import Budgets
+from .checks import Checks
 from .embeddings import Embeddings
 from .logs import Logs
 from .registry import admins_from_env, receipt_key_from_env, registry_from_env
@@ -23,6 +24,7 @@ from .validations import Validations
 
 MAX_UPLOAD_BYTES = 100_000_000
 MAX_BACKLOG_S = 43_200
+QUEUE_TARGET = 1_200
 PAGES_BUCKET = "desearch-pages"
 READS_PER_MINUTE = 120
 LOG_READS_PER_MINUTE = 60
@@ -102,6 +104,8 @@ class State:
         )
         self.max_attempts = int(os.environ.get("TASK_API_MAX_ATTEMPTS", "3"))
         self.ledger_delay = float(os.environ.get("TASK_API_LEDGER_DELAY_S", "0"))
+        self.check_share = float(os.environ.get("TASK_API_CHECK_SHARE", sampling.SHARE))
+        self.queue_target = int(os.environ.get("TASK_API_QUEUE_TARGET", QUEUE_TARGET))
         self.open_listed: tuple[str, ...] | None = None
         self.tasks = {
             kind: queues.TaskQueue(redis, self.claim_ttl + rounds.UPLOAD_GRACE_S, kind)
@@ -125,6 +129,7 @@ class State:
         self.log = RoundLog(db)
         self.rounds = RoundStore(db)
         self.validations = Validations(db)
+        self.checks = Checks(db)
         self.embeddings = Embeddings(db)
         self.logs = Logs(connect(str(data / DB_FILE)))
         self.storage = Storage()

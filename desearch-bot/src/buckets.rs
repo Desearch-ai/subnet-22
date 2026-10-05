@@ -1,6 +1,8 @@
 //! Domains split into fixed buckets, each bucket in its own RocksDB store.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, MutexGuard};
 
 use anyhow::{Context, Result};
 use blake2::digest::consts::{U2, U8};
@@ -12,12 +14,15 @@ use rocksdb::{
 use serde::Deserialize;
 use serde_json::{Map, Value};
 
+use crate::listed::{self, ListedSet};
 use crate::urls::{Listing, Record, Url, TIMED};
 
 pub const BUCKETS: usize = 256;
 const DOMAIN: u8 = b'D';
+/// What each sitemap listed when last read, so unchanged entries skip their lookups.
+const LISTED: u8 = b'L';
 const SITEMAP: u8 = b'S';
-const URL: u8 = b'U';
+pub(crate) const URL: u8 = b'U';
 const META: u8 = b'M';
 
 pub type Json = Map<String, Value>;
@@ -75,6 +80,8 @@ impl Resources {
         options.set_max_write_buffer_number(3);
         options.set_write_buffer_manager(&self.memtables);
         options.set_level_compaction_dynamic_level_bytes(true);
+        // Hundreds of stores share one memtable budget and flush small files; merging more of them at once rewrites less.
+        options.set_level_zero_file_num_compaction_trigger(8);
         options.set_max_background_jobs(self.background_jobs);
         options.set_max_subcompactions(2);
         options.set_max_open_files(self.open_files);
@@ -109,7 +116,11 @@ pub struct Due {
 /// One bucket's domains, their sitemaps and every URL they list.
 pub struct BucketStore {
     pub path: PathBuf,
-    db: DB,
+    pub(crate) db: DB,
+    /// Held while URL records and ready lists change together, so neither a stamp nor a count is lost.
+    ready_lock: Mutex<()>,
+    /// Domains whose ready lists grew since the dispatcher last looked, and by how much; None until a dispatcher looks.
+    pub(crate) noticed: Mutex<Option<HashMap<String, u64>>>,
 }
 
 impl BucketStore {
@@ -118,7 +129,7 @@ impl BucketStore {
         // Compression, filters, cache and memtable sizes are column family options; the default family must get them too.
         let family = ColumnFamilyDescriptor::new("default", options.clone());
         let db = DB::open_cf_descriptors(&options, path, [family]).with_context(|| format!("opening {}", path.display()))?;
-        Ok(BucketStore { path: path.to_path_buf(), db })
+        Ok(BucketStore { path: path.to_path_buf(), db, ready_lock: Mutex::new(()), noticed: Mutex::new(None) })
     }
 
     pub fn write(&self, changes: Changes) -> Result<()> {
@@ -126,11 +137,15 @@ impl BucketStore {
     }
 
     pub fn meta(&self, name: &str) -> Result<Option<Value>> {
-        self.json(&[&[META], name.as_bytes()].concat())
+        self.json(&meta_key(name))
     }
 
     pub fn set_meta(&self, name: &str, value: &Value) -> Result<()> {
-        Ok(self.db.put([&[META], name.as_bytes()].concat(), serde_json::to_vec(value)?)?)
+        Ok(self.db.put(meta_key(name), serde_json::to_vec(value)?)?)
+    }
+
+    pub(crate) fn lock_ready(&self) -> MutexGuard<'_, ()> {
+        self.ready_lock.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     pub fn domain(&self, host: &str) -> Result<Option<Json>> {
@@ -171,8 +186,8 @@ impl BucketStore {
         })
     }
 
-    /// Store what one sitemap lists right now; each URL it names becomes its own.
-    pub fn record_listing(&self, sitemap_id: i64, mut entries: Vec<(Url, u32, bool)>, now: u32) -> Result<Listing> {
+    /// Store what one sitemap lists now, looking up only entries it did not list the same way when last read, and put pages due a send on their ready lists.
+    pub fn record_listing(&self, host: &str, sitemap_id: i64, mut entries: Vec<(Url, u32, bool)>, now: u32) -> Result<Listing> {
         for entry in entries.iter_mut() {
             entry.0.key.insert(0, URL);
         }
@@ -181,22 +196,45 @@ impl BucketStore {
         if entries.is_empty() {
             return Ok(Listing::default());
         }
-        let cf = self.db.cf_handle("default").context("default column family")?;
-        let found = self.db.batched_multi_get_cf(cf, entries.iter().map(|e| &e.0.key), true);
+        let listed_key = listed_key(host, sitemap_id);
+        let stored = self.db.get(&listed_key)?;
+        let before = stored.as_deref().and_then(ListedSet::decode);
+        let prints: Vec<u64> = entries.iter().map(|(url, lastmod, _)| listed::fingerprint(&url.key, *lastmod)).collect();
+        let changed: Vec<&(Url, u32, bool)> =
+            entries.iter().zip(&prints).filter(|(_, print)| !before.as_ref().is_some_and(|set| set.contains(**print))).map(|(entry, _)| entry).collect();
         let mut batch = WriteBatch::default();
         let mut listing = Listing { listed: entries.len(), ..Listing::default() };
-        for ((url, lastmod, timed), raw) in entries.iter().zip(found) {
+        let after = ListedSet::encode(&prints);
+        if stored.as_deref() != Some(&after[..]) {
+            batch.put(&listed_key, after);
+        }
+        if changed.is_empty() {
+            if !batch.is_empty() {
+                self.db.write(batch)?;
+            }
+            return Ok(listing);
+        }
+        let guard = self.lock_ready();
+        let cf = self.db.cf_handle("default").context("default column family")?;
+        let found = self.db.batched_multi_get_cf(cf, changed.iter().map(|e| &e.0.key), true);
+        let (mut fresh, mut moved) = (Vec::new(), Vec::new());
+        for ((url, lastmod, timed), raw) in changed.into_iter().zip(found) {
             let timed_flag = if *timed { TIMED } else { 0 };
             let record = match raw?.as_deref().and_then(Record::unpack) {
                 None => {
                     listing.new += 1;
-                    Record { sitemap_id, lastmod: *lastmod, first_seen: now, last_seen: now, flags: url.flags | timed_flag, ..Record::default() }
+                    let record = Record { sitemap_id, lastmod: *lastmod, first_seen: now, last_seen: now, flags: url.flags | timed_flag, ..Record::default() };
+                    fresh.push((url.key.clone(), record));
+                    record
                 }
                 Some(mut record) => {
                     if *lastmod != 0 && *lastmod != record.lastmod {
                         record.lastmod = *lastmod;
                         record.flags = (record.flags & !TIMED) | timed_flag;
                         listing.moved += 1;
+                        if record.pushed_at != 0 {
+                            moved.push((url.key.clone(), *lastmod));
+                        }
                     }
                     record.sitemap_id = sitemap_id;
                     record.last_seen = now;
@@ -205,7 +243,11 @@ impl BucketStore {
             };
             batch.put(&url.key, record.pack());
         }
+        let (ready, counts) = self.ready_from_listing(&mut batch, &fresh, &moved, listing.listed)?;
+        listing.ready = ready;
         self.db.write(batch)?;
+        drop(guard);
+        self.notice(&counts);
         Ok(listing)
     }
 
@@ -313,6 +355,11 @@ impl Buckets {
         self.stores[bucket_of(host)].as_ref().expect("a host outside this process's buckets")
     }
 
+    /// The store of a host named by data from outside, if this process owns it.
+    pub fn store_for(&self, host: &str) -> Option<&BucketStore> {
+        self.stores[bucket_of(host)].as_ref()
+    }
+
     pub fn stores(&self) -> impl Iterator<Item = &BucketStore> {
         self.stores.iter().flatten()
     }
@@ -322,8 +369,16 @@ impl Buckets {
     }
 }
 
+pub(crate) fn meta_key(name: &str) -> Vec<u8> {
+    [&[META], name.as_bytes()].concat()
+}
+
 fn domain_key(host: &str) -> Vec<u8> {
     [&[DOMAIN], host.as_bytes()].concat()
+}
+
+fn listed_key(host: &str, sitemap_id: i64) -> Vec<u8> {
+    [&[LISTED], host.as_bytes(), b"\0", &sitemap_id.to_be_bytes()].concat()
 }
 
 fn sitemap_key(host: &str, url: &str) -> Vec<u8> {
@@ -348,7 +403,7 @@ mod tests {
             .map(|i| (Url { key: format!("example.com\0example.com/products/category/item-{i}").into_bytes(), flags: 1 }, 0, false))
             .collect();
         let raw: usize = entries.iter().map(|e| e.0.key.len() + 1 + Record::SIZE).sum();
-        store.record_listing(7, entries, 1).unwrap();
+        store.record_listing("example.com", 7, entries, 1).unwrap();
         store.flush().unwrap();
         let stored: u64 = std::fs::read_dir(&dir)
             .unwrap()
@@ -359,6 +414,29 @@ mod tests {
         assert!(stored > 0 && (stored as usize) < raw / 4, "{stored} bytes stored for {raw} raw");
         assert!(store.url(&Url { key: b"example.com\0example.com/products/category/item-9".to_vec(), flags: 1 }).unwrap().is_some());
         assert!(resources.cache.get_usage() > 0, "reads go through the shared block cache");
+        drop(store);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn unchanged_entries_skip_their_lookups() {
+        let dir = std::env::temp_dir().join(format!("desearch-bot-listed-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let resources = Resources::new(8 << 20, 8 << 20, 1);
+        let store = BucketStore::open(&dir, &resources).unwrap();
+        let url = |path: &str| Url { key: format!("example.com\0example.com/{path}").into_bytes(), flags: 1 };
+        let entry = |path: &str, lastmod: u32| (url(path), lastmod, false);
+        let read = |path: &str| store.url(&url(path)).unwrap().unwrap();
+        let counts = |l: Listing| (l.listed, l.new, l.moved);
+
+        assert_eq!(counts(store.record_listing("example.com", 7, vec![entry("a", 10), entry("b", 20)], 100).unwrap()), (2, 2, 0));
+        assert_eq!(counts(store.record_listing("example.com", 7, vec![entry("b", 20), entry("a", 10)], 200).unwrap()), (2, 0, 0));
+        assert_eq!(read("a").last_seen, 100, "an entry listed the same way is not rewritten");
+        assert_eq!(counts(store.record_listing("example.com", 7, vec![entry("a", 10), entry("b", 30), entry("c", 5)], 300).unwrap()), (3, 1, 1));
+        let b = read("b");
+        assert_eq!((b.lastmod, b.first_seen, b.last_seen), (30, 100, 300));
+        assert_eq!(counts(store.record_listing("example.com", 8, vec![entry("a", 10)], 400).unwrap()), (1, 0, 0));
+        assert_eq!(read("a").sitemap_id, 8, "each sitemap remembers only what it listed itself");
         drop(store);
         std::fs::remove_dir_all(&dir).ok();
     }

@@ -772,7 +772,7 @@ fn digest(job: FileJob) -> Result<Digested, Crash> {
         Err(_) => Vec::new(),
     };
     let store = job.buckets.store(&job.known.host);
-    read.listing = store.record_listing(job.id, rows, epoch(Some(job.now)) as u32).map_err(|_| Crash::new("StoreError"))?;
+    read.listing = store.record_listing(&job.known.host, job.id, rows, epoch(Some(job.now)) as u32).map_err(|_| Crash::new("StoreError"))?;
     Ok(Digested::Read(read))
 }
 

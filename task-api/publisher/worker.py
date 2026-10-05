@@ -5,8 +5,8 @@ import contextlib
 import hashlib
 import io
 import logging
-import random
-import time
+import os
+import tempfile
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
@@ -21,8 +21,12 @@ from desearch.embedding import (
     read_parquet,
     write_parquet,
 )
+from app import outcomes
+from app.canonical import domain_of
 from desearch.extraction import looks_blocked
 from engine.chunking import doc_full, doc_head, para_chunks
+from publisher.index import VersionIndex
+from publisher.reading import RangeFile, read_rows
 from publisher.records import (
     ROW_COLUMNS,
     build_record,
@@ -36,8 +40,6 @@ log = logging.getLogger("publisher")
 
 IDLE_DELAY_S = 2.0
 RETRY_DELAY_S = 5.0
-# Only bounds pathological contention: each lost race is progress.
-PUT_ATTEMPTS = 12
 RACED = {"PreconditionFailed", "412"}
 MISSING = {"NoSuchKey", "404", "NotFound"}
 PARQUET = "application/vnd.apache.parquet"
@@ -101,19 +103,23 @@ class Publisher:
         workers: int = 32,
         batch: int = 20,
         embed_inputs: bool = False,
+        index: VersionIndex | None = None,
     ):
         self.queue = queue
         self.temp = temp
         self.pages = pages
         self.batch = batch
         self.embed_inputs = embed_inputs
+        self.index = index or VersionIndex(":memory:")
         self.pool = ThreadPoolExecutor(workers)
+        self.snapshot_day = ""
 
     async def run(self, stop: asyncio.Event, idle_exit: int = 0) -> None:
         idle = 0
         while not stop.is_set():
             try:
                 done = await self.run_once()
+                await self.snapshot_daily()
             except Exception:
                 log.exception("publish pass failed")
                 await _sleep(stop, RETRY_DELAY_S)
@@ -130,14 +136,41 @@ class Publisher:
         jobs = await self.queue.claim(self.batch)
         if not jobs:
             return None
-        finalized, changes = [], []
+        finalized, chosen, failed = [], {}, []
+        withdrawn = [
+            task_id
+            for job in jobs
+            if job.get("kind") == "withdraw"
+            for task_id in job["task_ids"]
+        ]
+        if withdrawn:
+            await asyncio.to_thread(self.index.withdraw, withdrawn)
+        removals = await asyncio.to_thread(self.index.of_tasks, withdrawn)
         for job in jobs:
             await self.queue.extend_claim(job["task_id"])
+            kind = job.get("kind")
+            if kind == "withdraw":
+                finalized.append(job)
+                continue
+            if await asyncio.to_thread(self.index.is_withdrawn, job["task_id"]):
+                failed += _failed(job, job["urls"])
+                finalized.append(job)
+                continue
             try:
-                done, failure = await asyncio.to_thread(self.publish, job)
+                if kind == "embed":
+                    await asyncio.to_thread(self.publish_vectors, job)
+                else:
+                    records, missed = await asyncio.to_thread(self.collect, job)
+                    for record in records:
+                        key = record_key(record)
+                        if key not in chosen or _rank(record) > _rank(chosen[key]):
+                            chosen[key] = record
+                    failed += missed
             except UploadGone as gone:
                 log.error("task=%s upload %s before publishing", job["task_id"], gone)
                 await self.queue.mark_lost(job["task_id"])
+                if kind != "embed":
+                    failed += _failed(job, job["urls"])
                 finalized.append(job)
                 continue
             except Exception:
@@ -145,34 +178,171 @@ class Publisher:
                     "task=%s publish failed; it will be retried", job["task_id"]
                 )
                 continue
-            changes += done
-            if failure:
-                log.error(
-                    "task=%s published %d pages, then %s; it will be retried",
-                    job["task_id"],
-                    len(done),
-                    failure,
-                )
-                continue
             finalized.append(job)
-        # Written before any ack, including partly failed jobs.
-        if changes:
+
+        changes, unchanged = await asyncio.to_thread(self.decide, chosen)
+        # A withdrawn page that this batch replaces with a newer version is replaced, not removed.
+        replaced = {change["key"] for change in changes}
+        removals = [removal for removal in removals if removal[0] not in replaced]
+        removed = [_removal(key, url, sha1) for key, url, _, sha1 in removals]
+        # The change file is written before the index learns of it, so a crash only replays.
+        if changes or removed:
             await asyncio.to_thread(
-                self.write_changes, changes, await self.queue.next_seq()
+                self.write_changes, changes + removed, await self.queue.next_seq()
             )
-            if self.embed_inputs:
+            await asyncio.to_thread(
+                self.index.store, [_indexed(change) for change in changes]
+            )
+            await asyncio.to_thread(
+                self.index.remove, [(key, version) for key, _, version, _ in removals]
+            )
+            await asyncio.gather(
+                *(asyncio.to_thread(self.put_page, change) for change in changes),
+                *(asyncio.to_thread(self.delete_page, key) for key, *_ in removals),
+            )
+            if self.embed_inputs and changes:
                 for entry in await asyncio.to_thread(self.write_embed_inputs, changes):
                     await self.queue.push_embed_input(entry)
+        await asyncio.to_thread(
+            self.index.touch,
+            [(record_key(record), record["fetched_at"]) for record in unchanged],
+        )
+        await self.report_outcomes(
+            changes, unchanged, failed, [url for _, url, _, _ in removals]
+        )
         for job in finalized:
             await self.queue.ack(job["task_id"])
-            for key in (job["key"], job.get("input_key")):
+            for key in (job.get("key"), job.get("input_key")):
                 if key:
                     with contextlib.suppress(Exception):
                         await self.temp.delete(key)
         log.info(
-            "published %d tasks, %d pages new or changed", len(finalized), len(changes)
+            "published %d tasks, %d pages new or changed, %d withdrawn",
+            len(finalized),
+            len(changes),
+            len(removed),
         )
         return len(finalized)
+
+    def read_rows(self, job: dict) -> list[dict]:
+        """Every published column, read in byte ranges; the HTML is never fetched."""
+        try:
+            found = self.temp.client.head_object(
+                Bucket=self.temp.bucket, Key=self.temp.path(job["key"])
+            )
+        except ClientError as exc:
+            if exc.response.get("Error", {}).get("Code") in MISSING:
+                raise UploadGone("expired") from None
+            raise
+        if job.get("etag") and found["ETag"].strip('"') != job["etag"].strip('"'):
+            raise UploadGone("changed")
+        remote = RangeFile(
+            int(found["ContentLength"]),
+            lambda start, end: self.temp.read_range_now(job["key"], start, end),
+        )
+        rows = read_rows(remote, ROW_COLUMNS, len(set(job["urls"])))
+        if rows is None:
+            raise UploadGone("unreadable")
+        return rows
+
+    def collect(self, job: dict) -> tuple[list[dict], list[dict]]:
+        """The job's publishable records, and the assigned URLs it could not publish."""
+        rows = self.read_rows(job)
+        window = publish_window(job)
+        captured = datetime.now(timezone.utc)
+        given = set(job["urls"])
+        assigned = given - set(job.get("skip", ()))
+        records, published = [], set()
+        for row in rows:
+            if not publishable(row, assigned):
+                continue
+            published.add(row["url"])
+            records.append(
+                build_record(
+                    row,
+                    job["task_id"],
+                    job["miner"],
+                    window,
+                    captured,
+                    job.get("validator", ""),
+                    job.get("validators", ()),
+                )
+            )
+        return records, _failed(job, sorted(given - published))
+
+    def decide(self, chosen: dict[str, dict]) -> tuple[list[dict], list[dict]]:
+        """New and changed pages, and pages seen again unchanged, against the version index."""
+        changes, unchanged = [], []
+        for key, record in chosen.items():
+            version = record_version(record)
+            current = self.index.current(key)
+            if current is None:
+                changes.append(_change(record, key, "new", "", version))
+            elif current.version == version or (
+                (current.fetched_at, current.version) >= (record["fetched_at"], version)
+            ):
+                unchanged.append(record)
+            else:
+                changes.append(
+                    _change(record, key, "changed", current.content_sha1, version)
+                )
+        return changes, unchanged
+
+    async def report_outcomes(
+        self,
+        changes: list[dict],
+        unchanged: list[dict],
+        failed: list[dict],
+        withdrawn: list[str] = (),
+    ) -> None:
+        rows = [
+            {
+                "url": c["assigned_url"],
+                "outcome": outcomes.PUBLISHED,
+                "task_id": c["task_id"],
+            }
+            for c in changes
+        ]
+        rows += [
+            {
+                "url": r["assigned_url"],
+                "outcome": outcomes.UNCHANGED,
+                "task_id": r["task_id"],
+            }
+            for r in unchanged
+        ]
+        rows += [{**row, "outcome": outcomes.FAILED} for row in failed]
+        # Taken back out, so the bot sends them again for an honest crawl.
+        rows += [
+            {"url": url, "outcome": outcomes.DROPPED, "task_id": ""}
+            for url in withdrawn
+        ]
+        for row in rows:
+            row["host"] = domain_of(row["url"])
+        try:
+            await outcomes.write(self.temp, self.queue.redis, rows)
+        except Exception:
+            log.exception("could not write %d outcomes", len(rows))
+
+    def put_page(self, change: dict) -> None:
+        record = {name: change[name] for name in RECORD_COLUMNS}
+        self.pages.client.put_object(
+            Bucket=self.pages.bucket,
+            Key=self.pages.path(change["key"]),
+            Body=to_zstd(record),
+            ContentType="application/zstd",
+            Metadata={
+                "version": change["version"],
+                "content-sha1": record["content_sha1"],
+                "fetched-at": record["fetched_at"],
+                "task-id": record["task_id"],
+            },
+        )
+
+    def delete_page(self, key: str) -> None:
+        self.pages.client.delete_object(
+            Bucket=self.pages.bucket, Key=self.pages.path(key)
+        )
 
     def read_temp(self, key: str, etag: str | None = None) -> bytes:
         extra = {"IfMatch": etag} if etag else {}
@@ -188,93 +358,27 @@ class Publisher:
                 raise UploadGone("changed") from None
             raise
 
-    def publish(self, job: dict) -> tuple[list[dict], str | None]:
-        if job.get("kind") == "embed":
-            return self.publish_vectors(job)
-        body = self.read_temp(job["key"], job.get("etag"))
-        window = publish_window(job)
-        captured = datetime.now(timezone.utc)
-        assigned = set(job["urls"]) - set(job.get("skip", ()))
-        chosen: dict[str, dict] = {}
-        for row in pq.read_table(io.BytesIO(body), columns=ROW_COLUMNS).to_pylist():
-            if not publishable(row, assigned):
-                continue
-            record = build_record(
-                row,
-                job["task_id"],
-                job["miner"],
-                window,
-                captured,
-                job.get("validator", ""),
-                job.get("validators", ()),
-            )
-            key = record_key(record)
-            if key not in chosen or _rank(record) > _rank(chosen[key]):
-                chosen[key] = record
-
-        changes, failure = [], None
-        for future in [self.pool.submit(self.put_latest, r) for r in chosen.values()]:
+    async def snapshot_daily(self) -> None:
+        """A copy of the version index a day, beside the pages it describes."""
+        day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        if day == self.snapshot_day:
+            return
+        self.snapshot_day = day
+        with tempfile.TemporaryDirectory() as folder:
+            path = os.path.join(folder, "index.sqlite")
             try:
-                change = future.result()
-            except Exception as exc:
-                failure = failure or f"{type(exc).__name__}: {exc}"
-                continue
-            if change:
-                changes.append(change)
-        return changes, failure
-
-    def put_latest(self, record: dict) -> dict | None:
-        key = record_key(record)
-        version = record_version(record)
-        for _ in range(PUT_ATTEMPTS):
-            current = self.head(key)
-            meta = current[1] if current else {}
-            unchanged = bool(current) and meta.get("version") == version
-            # Same task and content: an earlier attempt wrote it before a crash.
-            if unchanged and meta.get("task-id") == record["task_id"]:
-                return _change(record, key, "replayed", meta)
-            stored = (meta.get("fetched-at", ""), meta.get("version", ""))
-            if current and stored >= (record["fetched_at"], version):
-                return None
-            try:
-                self.put(key, record, version, current[0] if current else None)
-            except ClientError as exc:
-                if exc.response.get("Error", {}).get("Code") in RACED:
-                    time.sleep(random.uniform(0.01, 0.1))
-                    continue
-                raise
-            # Unchanged but seen later: the newer fetch time keeps an older fetch out.
-            if unchanged:
-                return None
-            return _change(record, key, "changed" if current else "new", meta)
-        raise RuntimeError(f"{key} kept changing underneath the publisher")
-
-    def head(self, key: str) -> tuple[str, dict] | None:
-        try:
-            found = self.pages.client.head_object(
-                Bucket=self.pages.bucket, Key=self.pages.path(key)
-            )
-        except ClientError as exc:
-            if exc.response.get("Error", {}).get("Code") in MISSING:
-                return None
-            raise
-        return found["ETag"], found.get("Metadata", {})
-
-    def put(self, key: str, record: dict, version: str, etag: str | None) -> None:
-        condition = {"IfMatch": etag} if etag else {"IfNoneMatch": "*"}
-        self.pages.client.put_object(
-            Bucket=self.pages.bucket,
-            Key=self.pages.path(key),
-            Body=to_zstd(record),
-            ContentType="application/zstd",
-            Metadata={
-                "version": version,
-                "content-sha1": record["content_sha1"],
-                "fetched-at": record["fetched_at"],
-                "task-id": record["task_id"],
-            },
-            **condition,
-        )
+                await asyncio.to_thread(self.index.backup_to, path)
+                with open(path, "rb") as handle:
+                    body = handle.read()
+                await asyncio.to_thread(
+                    self.pages.client.put_object,
+                    Bucket=self.pages.bucket,
+                    Key=self.pages.path(f"index/snapshots/{day}.sqlite"),
+                    Body=body,
+                    ContentType="application/vnd.sqlite3",
+                )
+            except Exception:
+                log.exception("could not snapshot the version index")
 
     def publish_vectors(self, job: dict) -> tuple[list[dict], str | None]:
         given = read_parquet(self.read_temp(job["input_key"]), INPUT_SCHEMA)
@@ -386,14 +490,49 @@ def _rank(record: dict) -> tuple:
     )
 
 
-def _change(record: dict, key: str, kind: str, previous: dict) -> dict:
+def _change(
+    record: dict, key: str, kind: str, previous_sha1: str, version: str
+) -> dict:
     return {
         "key": key,
         "kind": kind,
-        "previous_content_sha1": previous.get("content-sha1", ""),
+        "previous_content_sha1": previous_sha1,
         "published_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "version": version,
         **{name: record[name] for name in RECORD_COLUMNS},
     }
+
+
+def _removal(key: str, url: str, previous_sha1: str) -> dict:
+    """A page taken back: readers drop it from what they hold."""
+    return {
+        **{name: None for name in RECORD_COLUMNS},
+        "key": key,
+        "kind": "removed",
+        "previous_content_sha1": previous_sha1,
+        "published_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "url": url,
+        "domain": domain_of(url),
+        "assigned_url": url,
+        "json_ld_types": [],
+        "headings": [],
+        "validators": [],
+    }
+
+
+def _indexed(change: dict) -> dict:
+    return {
+        "key": change["key"],
+        "url": change["url"],
+        "version": change["version"],
+        "fetched_at": change["fetched_at"],
+        "task_id": change["task_id"],
+        "content_sha1": change["content_sha1"],
+    }
+
+
+def _failed(job: dict, urls) -> list[dict]:
+    return [{"url": url, "task_id": job["task_id"]} for url in urls]
 
 
 async def _sleep(stop: asyncio.Event, seconds: float) -> None:

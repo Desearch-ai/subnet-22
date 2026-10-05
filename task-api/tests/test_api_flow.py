@@ -136,20 +136,28 @@ class Harness:
         await revealed(self.core)
         return enqueued
 
-    async def mine(self, miner: TaskApiClient | None = None) -> dict:
+    async def mine(self, miner: TaskApiClient | None = None, errors: int = 0) -> dict:
         miner = miner or self.miner
         task = (await miner.post("/v1/tasks/claim"))["tasks"][0]
         body = _parquet(task, miner.hotkey)
         await _upload(self, task["upload"], body)
+        rows = len(task["urls"])
         await miner.post(
             f"/v1/tasks/{task['task_id']}/complete",
-            {"key": task["upload"]["key"], "bytes": len(body)},
+            {
+                "key": task["upload"]["key"],
+                "rows": rows,
+                "ok": rows - errors,
+                "errors": errors,
+                "bytes": len(body),
+            },
         )
         return task
 
 
 async def open_list(h: Harness) -> dict:
     """The open list as the task API last published it to storage."""
+    await lifecycle.settle_seeded(h.core)
     await lifecycle.publish_open(h.core)
     response = await h.r2.get(h.core.storage.presign_get(OPEN_LIST_KEY, 60))
     assert response.status == 200, response.text
@@ -702,7 +710,9 @@ async def _fault_scenario(h: Harness) -> None:
     await h.miner.post(
         f"/v1/tasks/{lost_id}/complete", {"key": lost["upload"]["key"], "bytes": 1}
     )
+    await opened(h, want=lost_id)
     job = await h.core.validation.job(lost_id)
+    assert job["picked"] == lifecycle.UNREPORTED, "a report without counts is checked"
     await h.core.storage.delete(job["key"])
     released = await h.validator.post(
         f"/v1/validation/{lost_id}/release", {"reason": "missing"}

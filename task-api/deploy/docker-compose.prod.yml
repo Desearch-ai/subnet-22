@@ -39,6 +39,7 @@ services:
       TASK_API_CORS_ORIGINS: ${TASK_API_CORS_ORIGINS:-}
       TASK_API_EMBED_TASKS: ${TASK_API_EMBED_TASKS:-0}
       TASK_API_EMBED_MODEL: ${TASK_API_EMBED_MODEL:-qwen3-embedding-8b}
+      TASK_API_QUEUE_TARGET: ${TASK_API_QUEUE_TARGET:-1200}
     volumes: ["api-data:/data"]
     ports: ["${TASK_API_BIND:-127.0.0.1:8080}:8080"]
     depends_on: [redis]
@@ -55,6 +56,8 @@ services:
     environment:
       <<: *r2-env
       TASK_API_EMBED_TASKS: ${TASK_API_EMBED_TASKS:-0}
+      PUBLISHER_INDEX: /data/publisher-index.sqlite
+    volumes: ["publisher-data:/data"]
     stop_grace_period: 60s
     depends_on:
       api:
@@ -63,3 +66,4 @@ services:
 volumes:
   redis-data:
   api-data:
+  publisher-data:

@@ -26,9 +26,9 @@ python3 -m pip install -e .
 ## 2. Register a hotkey
 
 ```bash
-btcli wallet new_coldkey --wallet.name miner
-btcli wallet new_hotkey --wallet.name miner --wallet.hotkey default
-btcli subnet register --netuid 22 --wallet.name miner --wallet.hotkey default --subtensor.network finney
+btcli wallet new-coldkey --wallet miner
+btcli wallet new-hotkey --wallet miner --wallet-hotkey default
+btcli subnets register --netuid 22 --wallet miner --wallet-hotkey default --network finney
 ```
 
 ## 3. Configure
@@ -91,9 +91,11 @@ to return.
 
 ## How you earn
 
-Your share is your verified pages over the last 24 hours, compared with every other miner's.
-Validators re-fetch a sample of each task you upload, and a passing task pays you at the rate that
-sample matched. [Emission](./emission.md) explains the rules and what raises your share.
+Your share is your paid pages over the last 24 hours, compared with every other miner's.
+Validators check a drawn share of the tasks you upload, and every one until your hotkey has passed
+10 checks; a checked task pays at the rate its sample matched, and the others are paid on the counts
+your miner reports. A failed check takes back what you were paid since your last passed one.
+[Emission](./emission.md) explains the rules and what raises your share.
 
 ## Monitor
 

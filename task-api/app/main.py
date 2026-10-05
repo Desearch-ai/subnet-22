@@ -13,7 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
-from . import lifecycle, logs, queues, rounds
+from . import lifecycle, logs, outcomes, queues, rounds, sampling, uploadlog
 from .auth import Authenticator, Caller, client_address
 from .limits import BodyLimit
 from .budget import CRAWL, EMBED, SHARE_WINDOW_H, WAITING_PER_BUDGET, hour_of
@@ -40,6 +40,8 @@ JANITOR_INTERVAL_S = 1.0
 ROUNDS_INTERVAL_S = 5.0
 COMPLETE_LOCK_S = 300
 TASKS_PAGE = 50
+ENQUEUED_TTL_S = 86_400
+UPLOAD_LOG_INTERVAL_S = 30.0
 MAX_TASKS_PAGE = 100
 # What a refused miner should wait, so idle polling does not fill the signed log.
 RETRY_AFTER_S = {
@@ -185,7 +187,10 @@ def create_app(redis=None) -> FastAPI:
             return await _refused(core, round_id, who, refusal)
 
         # Stop leasing work whose upload would expire before validation.
-        validating = await core.validation.oldest_age()
+        validating = max(
+            await core.validation.oldest_age(),
+            await core.validation.oldest_seeding_age(),
+        )
         publishing = await core.publish.oldest_age()
         if core.max_backlog and max(validating, publishing) > core.max_backlog:
             refusal = {
@@ -366,7 +371,9 @@ def create_app(redis=None) -> FastAPI:
             await lifecycle.delete_quietly(core.storage, frozen)
             raise HTTPException(409, "you do not hold a live claim on this task")
         await lifecycle.delete_quietly(core.storage, report.key)
-        await lifecycle.publish_open(core)
+        if kind == CRAWL:
+            await sampling.note_upload(core.redis, who.hotkey, completed_at)
+            await uploadlog.note(core.redis, job)
         await core.record(
             round_id,
             who.hotkey,
@@ -404,7 +411,7 @@ def create_app(redis=None) -> FastAPI:
     async def release(task_id: str, body: Release, who: Caller = Depends(validator)):
         """An upload storage lost is void; nothing else is anyone's to hand back."""
         job = await core.validation.job(task_id)
-        if job is None:
+        if job is None or not job.get("picked"):
             raise HTTPException(409, "no such open upload")
         try:
             gone = await core.storage.stat(job["key"]) is None
@@ -481,15 +488,44 @@ def create_app(redis=None) -> FastAPI:
             ),
         }
 
+    @app.get("/v1/room")
+    async def room():
+        """How many tasks the queue can take now, for the bot that fills it."""
+        depth = await core.tasks[CRAWL].depth()
+        unrevealed = await core.db(core.rounds.unrevealed_tasks)
+        refusing = core.max_backlog and (
+            max(
+                await core.validation.oldest_age(),
+                await core.validation.oldest_seeding_age(),
+                await core.publish.oldest_age(),
+            )
+            > core.max_backlog
+        )
+        return {
+            "room_tasks": 0
+            if refusing
+            else max(0, core.queue_target - depth - unrevealed),
+            "queue": depth,
+            "unrevealed": unrevealed,
+            "refusing": bool(refusing),
+        }
+
     @app.post("/v1/admin/enqueue")
     async def admin_enqueue(body: Enqueue, who: Caller = Depends(admin)):
+        """A batch sent twice, after a timeout, is queued once."""
+        seen = f"enqueued:{body.batch_id}" if body.batch_id else ""
+        if seen and (earlier := await core.redis.get(seen)):
+            return json.loads(earlier)
         round_ = await lifecycle.open_round(core, body.urls)
-        return {
+        found = {
             "round_id": round_.round_id,
             "batches": len(round_.batches),
             "seed_block": round_.seed_block,
             "manifest_hash": round_.manifest_hash,
         }
+        if seen:
+            await core.redis.set(seen, json.dumps(found), ex=ENQUEUED_TTL_S)
+        return found
 
     @app.get("/v1/key")
     async def key():
@@ -540,6 +576,8 @@ def create_app(redis=None) -> FastAPI:
                 kind: await tasks.depth() for kind, tasks in core.tasks.items()
             },
             "validation_depth": await core.validation.depth(),
+            "seeding": await core.validation.seeding(),
+            "outcomes": int(await core.redis.get(outcomes.SEQ) or 0),
             "active_validators": sorted(await core.validation.active()),
             "oldest_validation_s": await core.validation.oldest_age(),
             "publishing": await core.publish.depth(),
@@ -559,10 +597,11 @@ def create_app(redis=None) -> FastAPI:
 
 
 async def _janitor(core: State) -> None:
-    rounds_at, pruned_hour = 0.0, None
+    rounds_at, logged_at, pruned_hour = 0.0, 0.0, None
     while True:
         try:
             await lifecycle.reclaim_expired(core)
+            await lifecycle.settle_seeded(core)
             await lifecycle.finalize_due(core)
             await lifecycle.publish_open(core)
             await lifecycle.return_expired_publishes(core)
@@ -571,10 +610,15 @@ async def _janitor(core: State) -> None:
                 await lifecycle.fill_missing(core)
                 await lifecycle.reveal_pending(core)
                 await lifecycle.close_finished(core)
+                await outcomes.fill_holes(core.storage, core.redis)
                 rounds_at = time.monotonic()
+            if time.monotonic() - logged_at >= UPLOAD_LOG_INTERVAL_S:
+                logged_at = time.monotonic()
+                await uploadlog.flush(core.storage, core.redis, core.key)
             if pruned_hour != hour_of():
                 await core.db(core.budgets.prune)
                 await core.db(core.validations.prune_urls)
+                await core.db(core.checks.prune)
                 pruned_hour = hour_of()
         except Exception:
             log.exception("janitor pass failed")

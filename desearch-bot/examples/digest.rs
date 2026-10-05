@@ -39,7 +39,7 @@ fn main() -> Result<()> {
             })
             .collect();
         let normalised = started.elapsed();
-        let listing = store.record_listing(1, rows, visit::epoch(Some(now)) as u32)?;
+        let listing = store.record_listing(host, 1, rows, visit::epoch(Some(now)) as u32)?;
         let total = started.elapsed();
         println!(
             "{}",

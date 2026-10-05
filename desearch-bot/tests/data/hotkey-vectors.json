@@ -1,0 +1,75 @@
+{
+ "signer": "//test",
+ "keys": [
+  {
+   "uri": "//test",
+   "ss58": "5DffkFSt4zrP5rMBvVe6kEj9MrgFhhZGmAy87WH8tdH5W7C6",
+   "public": "46e6b7ab41c3e9c88bd8163735b5185e9e574d364bc416c73aa00c548c13136c"
+  },
+  {
+   "uri": "//admin",
+   "ss58": "5DWuE8o2Qp44ZA3Kaey5VJBkLFenePVJMnYCmk3LgwyzaU99",
+   "public": "4036e3a0c318140da69ee114853bc842c2b91f0d67a21a6050ea123254937916"
+  },
+  {
+   "uri": "//Alice",
+   "ss58": "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY",
+   "public": "d43593c715fdd31c61141abd04a99fd6822c8558854ccde39a5684e7a56da27d"
+  },
+  {
+   "uri": "bottom drive obey lake curtain smoke basket hold race lonely fit walk//Alice",
+   "ss58": "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY",
+   "public": "d43593c715fdd31c61141abd04a99fd6822c8558854ccde39a5684e7a56da27d"
+  },
+  {
+   "uri": "legal winner thank year wave sausage worth useful legal winner thank yellow",
+   "ss58": "5EHgWw2Af1pnoc7f1A8bfmM97W3DAYW8xr82RfhLL9oAabAe",
+   "public": "625e25364c7b68e0a83065ccb40afed43f8fe933e669b24f3d69a57eddb3b715"
+  },
+  {
+   "uri": "legal winner thank year wave sausage worth useful legal winner thank yellow//hard/soft",
+   "ss58": "5EErfH2p8CS2q2vBe3pmkrM4RSiNVgwXij1hzJtjUgGuCyqB",
+   "public": "60368e7618eae4f067260921a005e932a3c08a7845dc8c952d6a8b49128d0e62"
+  },
+  {
+   "uri": "legal winner thank year wave sausage worth useful legal winner thank yellow//desearch//0/7///secret",
+   "ss58": "5Fbbg5Tv3TB3G32G7BNynH7KGeyVFRk8DDDFGuja6SoFGKw6",
+   "public": "9c447ed25f0cf3ffa9d4261c8ef4b4680cd9be79799ad9109296f81683c12457"
+  },
+  {
+   "uri": "0x1111111111111111111111111111111111111111111111111111111111111111",
+   "ss58": "5DtDLm5rQHShDqojQpsvcN8tRXHVFaecfDoRet1SU6BFD9Fi",
+   "public": "50780547322a1ceba67ea8c552c9bc6c686f8698ac9a8cafab7cd15a1db19859"
+  },
+  {
+   "uri": "0x1111111111111111111111111111111111111111111111111111111111111111//test",
+   "ss58": "5GP5hcMPdntno9uAxcKU1r797H36HFWABQxRNDXVrjbYjp2G",
+   "public": "bef4e24a2a783bb41a42826309275705b4a0aaf7821099b15a21f91865d75e58"
+  },
+  {
+   "uri": "//a-junction-name-that-is-longer-than-thirty-two-bytes",
+   "ss58": "5GWmTaa2KP5iJtWvJS9TTygqcjHZFSHYMjz6HmwbMJ4RAdoN",
+   "public": "c4d1707f14ee2e101bf7dc45d1e08f7c390dac84438d5d3d2fafb29ebcda695d"
+  }
+ ],
+ "requests": [
+  {
+   "method": "GET",
+   "path": "/v1/room",
+   "body": "",
+   "timestamp": "1759400000",
+   "nonce": "0123456789abcdef0123456789abcdef",
+   "payload": "GET\n/v1/room\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\n1759400000\n0123456789abcdef0123456789abcdef",
+   "signature": "2cad89a74a7c451a952c0ef5277be5f3b838f3173b890313539abeae61e65737cd333e443fc0715e6985bbceb8a29064328d9a8e72dd2ea61417cbc7feeb3785"
+  },
+  {
+   "method": "POST",
+   "path": "/v1/admin/enqueue",
+   "body": "{\"urls\":[{\"host\":\"example.com\",\"url\":\"https://example.com/a\"}],\"batch_id\":\"ab12\"}",
+   "timestamp": "1759400000",
+   "nonce": "0123456789abcdef0123456789abcdef",
+   "payload": "POST\n/v1/admin/enqueue\ne0b2b055759703da07a44fe4ffb19f006289015311f28ab5ae724c0ccf0aab15\n1759400000\n0123456789abcdef0123456789abcdef",
+   "signature": "08fcdd6d25030e69adbdcec4be25e1994a186fd280c8acdc3197782a3f7f4462e20f03afa1423b77c8c86f5788a0cc26176f584aca9f7da7df7d38a383ca658c"
+  }
+ ]
+}

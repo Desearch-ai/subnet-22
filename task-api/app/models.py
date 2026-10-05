@@ -146,3 +146,4 @@ class Release(BaseModel):
 
 class Enqueue(BaseModel):
     urls: list[rounds.Url]
+    batch_id: str = Field("", max_length=128)
