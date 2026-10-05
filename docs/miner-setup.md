@@ -26,9 +26,9 @@ python3 -m pip install -e .
 ## 2. Register a hotkey
 
 ```bash
-btcli wallet new_coldkey --wallet.name miner
-btcli wallet new_hotkey --wallet.name miner --wallet.hotkey default
-btcli subnet register --netuid 22 --wallet.name miner --wallet.hotkey default --subtensor.network finney
+btcli wallet new-coldkey --wallet miner
+btcli wallet new-hotkey --wallet miner --wallet-hotkey default
+btcli subnets register --netuid 22 --wallet miner --wallet-hotkey default --network finney
 ```
 
 ## 3. Configure

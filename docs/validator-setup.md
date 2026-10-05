@@ -36,9 +36,9 @@ sudo apt update && sudo apt install -y jq npm && sudo npm install -g pm2
 ## 2. Register a hotkey
 
 ```bash
-btcli wallet new_coldkey --wallet.name validator
-btcli wallet new_hotkey --wallet.name validator --wallet.hotkey default
-btcli subnet register --netuid 22 --wallet.name validator --wallet.hotkey default --subtensor.network finney
+btcli wallet new-coldkey --wallet validator
+btcli wallet new-hotkey --wallet validator --wallet-hotkey default
+btcli subnets register --netuid 22 --wallet validator --wallet-hotkey default --network finney
 ```
 
 ## 3. Configure
