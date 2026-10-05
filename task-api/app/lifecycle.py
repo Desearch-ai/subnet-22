@@ -38,6 +38,7 @@ from .validations import (
 EMBED_FIELDS = ("model", "texts", "chars", "input_key", "input_sha256", "pages")
 EMBED_ROUND_INPUTS = 200
 FINALIZE_LOCK_S = 300
+SETTLE_AT_ONCE = 16
 UNCHECKED = "unchecked"
 REPORTED_ROWS = "reported_rows"
 # Uploads with no counts in their report, or from a locked-out hotkey, are all checked.
@@ -341,22 +342,39 @@ async def settle_seeded(core) -> int:
     except Exception as exc:
         log.warning("chain unavailable: %r", exc)
         return 0
-    settled = 0
-    for task_id in await core.validation.seeded(block):
-        job = await core.validation.job(task_id)
-        if job is None:
-            continue
-        seed = await core.seeds.seed_for(job["seed_block"])
+    ids = await core.validation.seeded(block)
+    found = await asyncio.gather(*(core.validation.job(task_id) for task_id in ids))
+    jobs = [(task_id, job) for task_id, job in zip(ids, found) if job is not None]
+    # Uploads frozen together share a seed block, so each block's hash is read once.
+    blocks = sorted({job["seed_block"] for _, job in jobs})
+    hashes = await asyncio.gather(
+        *(core.seeds.seed_for(block) for block in blocks), return_exceptions=True
+    )
+    seeds = {
+        block: seed for block, seed in zip(blocks, hashes) if isinstance(seed, str)
+    }
+    slots = asyncio.Semaphore(SETTLE_AT_ONCE)
+
+    async def settle(task_id: str, job: dict) -> int:
+        seed = seeds.get(job["seed_block"])
         if seed is None:
-            continue
-        lock = lock_key(task_id)
-        if not await core.redis.set(lock, "seeded", nx=True, ex=FINALIZE_LOCK_S):
-            continue
-        try:
-            await settle_one(core, task_id, job, seed)
-        finally:
-            await core.redis.delete(lock)
-        settled += 1
+            return 0
+        async with slots:
+            lock = lock_key(task_id)
+            if not await core.redis.set(lock, "seeded", nx=True, ex=FINALIZE_LOCK_S):
+                return 0
+            try:
+                await settle_one(core, task_id, job, seed)
+            except Exception:
+                log.exception(
+                    "task=%s could not be settled; it is tried again", task_id
+                )
+                return 0
+            finally:
+                await core.redis.delete(lock)
+        return 1
+
+    settled = sum(await asyncio.gather(*(settle(t, j) for t, j in jobs)))
     if settled:
         await publish_open(core)
     return settled
@@ -568,12 +586,14 @@ async def account_check(core, job: dict, decision: Decision) -> None:
         await full_penalty(core, miner, "repeated_fails")
 
 
-async def take_back(core, miner: str, since: float, reason: str) -> list[str]:
-    """Un-credits and unpublishes a hotkey's passed crawl uploads completed after `since`."""
+async def take_back(
+    core, miner: str, since: float, reason: str, checked_too: bool = False
+) -> list[str]:
+    """Un-credits and unpublishes a hotkey's passed crawl uploads completed after `since`: the unchecked ones, or every one."""
 
     def withdraw() -> list[tuple[str, int]]:
         with core.sqlite.batch():
-            taken = core.validations.withdraw(miner, since)
+            taken = core.validations.withdraw(miner, since, checked_too)
             core.budgets.credit(miner, -sum(credited for _, credited in taken), CRAWL)
         return taken
 
@@ -593,7 +613,9 @@ async def full_penalty(core, miner: str, reason: str) -> None:
     await core.db(
         core.budgets.lock_out, miner, CRAWL, FULL_PENALTY_LOCKOUT_H, reason, now
     )
-    await take_back(core, miner, now - credit.PENALTY_WINDOW_S, reason)
+    await take_back(
+        core, miner, now - credit.PENALTY_WINDOW_S, reason, checked_too=True
+    )
     await core.db(core.budgets.wipe_credits, miner, now - credit.PENALTY_WINDOW_S)
     log.warning("miner=%s full penalty: %s", miner[:10], reason)
 

@@ -370,3 +370,46 @@ def test_every_completed_upload_is_logged_signed_for_validators(api_env, memory)
     assert (written["entries"][1]["ok"], written["entries"][1]["errors"]) == (1, 1)
     assert again == 2, "the upload completed during the retry gets the next file"
     assert later is None
+
+
+def test_each_seed_block_is_read_once_however_many_uploads_wait_on_it(api_env, memory):
+    async def scenario(h):
+        tasks = [await h.mine() for _ in range(2)]
+        await asyncio.sleep(1.0)
+        reads = []
+        read = h.core.seeds.seed_for
+
+        async def counted(block):
+            reads.append(block)
+            return await read(block)
+
+        h.core.seeds.seed_for = counted
+        waiting = [await h.core.validation.job(t["task_id"]) for t in tasks]
+        settled = await lifecycle.settle_seeded(h.core)
+        return reads, {job["seed_block"] for job in waiting}, settled
+
+    reads, blocks, settled = run(memory, scenario)
+    assert settled == 2
+    assert sorted(reads) == sorted(blocks)
+
+
+def test_a_single_fail_takes_back_only_what_no_validator_checked(api_env, memory):
+    async def scenario(h):
+        hotkey = h.miner.hotkey
+        await established(h, hotkey)
+        unchecked = await h.mine()
+        await settled(h, unchecked["task_id"])
+        await h.core.db(h.core.checks.start_recheck, hotkey)
+        checked = await h.mine()
+        await settled(h, checked["task_id"])
+        job = await h.core.validation.job(checked["task_id"])
+        job.pop("picked")
+        await h.redis.set(f"vjob:{checked['task_id']}", json.dumps(job))
+        await judged(h, h.validator, task_id=checked["task_id"])
+        single = await lifecycle.take_back(h.core, hotkey, 0, "test")
+        day = await lifecycle.take_back(h.core, hotkey, 0, "test", checked_too=True)
+        return unchecked["task_id"], checked["task_id"], single, day
+
+    unchecked, checked, single, day = run(memory, scenario, task_urls=2)
+    assert single == [unchecked]
+    assert day == [checked], "a full penalty takes back the checked ones as well"
