@@ -7,6 +7,7 @@ import logging
 import os
 import secrets
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 from fastapi import Body, Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -39,6 +40,12 @@ DEFAULT_REDIS = "redis://localhost:6379/15"
 JANITOR_INTERVAL_S = 1.0
 ROUNDS_INTERVAL_S = 5.0
 COMPLETE_LOCK_S = 300
+COMPLETED_TTL_S = 900
+COMPLETE_WAIT_S = 20.0
+# R2's clock and ours may differ by this much.
+CLOCK_SLACK_S = 2.0
+SLOW_COMPLETE_S = 5.0
+LINK_SLACK_S = 60
 TASKS_PAGE = 50
 ENQUEUED_TTL_S = 86_400
 UPLOAD_LOG_INTERVAL_S = 30.0
@@ -69,6 +76,9 @@ def create_app(redis=None) -> FastAPI:
 
     @contextlib.asynccontextmanager
     async def lifespan(_: FastAPI):
+        asyncio.get_running_loop().set_default_executor(
+            ThreadPoolExecutor(32, thread_name_prefix="calls")
+        )
         for storage in (core.storage, core.pages):
             try:
                 await storage.check()
@@ -228,6 +238,14 @@ def create_app(redis=None) -> FastAPI:
                 )
         if not tasks:
             raise HTTPException(503, "upload signing is unavailable")
+        # The time spent signing and recording the claims is ours, not the miner's.
+        expiry = await core.tasks[kind].start_clocks(
+            who.hotkey, [task["task_id"] for task in tasks]
+        )
+        for task in tasks:
+            task["expires_at"] = task["upload"]["expires_at"] = (
+                expiry - rounds.UPLOAD_GRACE_S
+            )
         return {"tasks": tasks, "receipts": receipts}
 
     async def issue(got: queues.Claim, kind: str, who: Caller) -> dict | None:
@@ -236,8 +254,9 @@ def create_app(redis=None) -> FastAPI:
         name = f"task={task_id}/{who.hotkey}-{got.seq}.parquet"
         upload_key = f"uploads/dt={utc_day()}/{name}"
         try:
+            # It may outlive the claim; a late completion or a file written after it is refused.
             upload_url = core.storage.presign_put(
-                upload_key, PARQUET, core.claim_ttl + rounds.UPLOAD_GRACE_S
+                upload_key, PARQUET, core.claim_ttl + LINK_SLACK_S
             )
             inputs = embed_inputs(got.payload) if kind == EMBED else {}
         except Exception:
@@ -275,23 +294,53 @@ def create_app(redis=None) -> FastAPI:
     async def complete(
         task_id: str, report: CompleteBody, who: Caller = Depends(caller)
     ):
-        lock = f"completing:{task_id}"
-        if not await core.redis.set(lock, who.hotkey, nx=True, ex=COMPLETE_LOCK_S):
-            raise HTTPException(
-                503,
-                "a completion for this task is already running",
-                {"Retry-After": "2"},
-            )
+        # The deadline is judged when the request arrived, not after our own work on it.
+        arrived = time.time()
+        holds = await core.claim_holder(task_id) == who.hotkey
+        if not holds and not await completed_by(task_id, who.hotkey):
+            raise HTTPException(409, "you do not hold this claim")
+        lock = await hold_completion(task_id, who.hotkey)
         try:
-            return await verify_completion(task_id, report, who)
+            if done := await completed_by(task_id, who.hotkey):
+                return done
+            if await core.claim_holder(task_id) != who.hotkey:
+                raise HTTPException(409, "you do not hold this claim")
+            expiry = await core.tasks[CRAWL].claim_expiry(task_id)
+            if expiry is None or expiry < arrived:
+                raise HTTPException(409, "you do not hold a live claim on this task")
+            result = await verify_completion(task_id, report, who, arrived)
+            await core.redis.set(
+                f"completed:{task_id}",
+                json.dumps({"miner": who.hotkey, "result": result}),
+                ex=COMPLETED_TTL_S,
+            )
+            return result
         finally:
             await core.redis.delete(lock)
 
+    async def completed_by(task_id: str, hotkey: str) -> dict | None:
+        done = await core.redis.get(f"completed:{task_id}")
+        if done and json.loads(done)["miner"] == hotkey:
+            return json.loads(done)["result"]
+        return None
+
+    async def hold_completion(task_id: str, hotkey: str) -> str:
+        """A repeated call waits for the running one instead of failing, so a retry is never an abandon."""
+        lock = f"completing:{task_id}"
+        waited = time.monotonic()
+        while not await core.redis.set(lock, hotkey, nx=True, ex=COMPLETE_LOCK_S):
+            if time.monotonic() - waited > COMPLETE_WAIT_S:
+                raise HTTPException(
+                    503,
+                    "a completion for this task is already running",
+                    {"Retry-After": "2"},
+                )
+            await asyncio.sleep(0.25)
+        return lock
+
     async def verify_completion(
-        task_id: str, report: CompleteBody, who: Caller
+        task_id: str, report: CompleteBody, who: Caller, arrived: float
     ) -> dict:
-        if await core.claim_holder(task_id) != who.hotkey:
-            raise HTTPException(409, "you do not hold this claim")
         issued = json.loads(await core.redis.get(f"issued:{task_id}") or "{}")
         if report.key != issued.get("key"):
             raise HTTPException(400, "key is not the one issued with this claim")
@@ -300,9 +349,11 @@ def create_app(redis=None) -> FastAPI:
         except Exception:
             log.exception("HEAD failed for %s", report.key)
             raise HTTPException(502, "object storage is unavailable, retry") from None
-        if not found or not found[0]:
+        if not found or not found.size:
             raise HTTPException(422, "nothing was uploaded to the issued key")
-        size, etag = found
+        size, etag, modified = found
+        if modified and modified.timestamp() > arrived + CLOCK_SLACK_S:
+            raise HTTPException(409, "the upload was written after this completion")
         if size > core.max_upload:
             await lifecycle.delete_quietly(core.storage, report.key)
             raise HTTPException(
@@ -319,6 +370,7 @@ def create_app(redis=None) -> FastAPI:
         # The PUT URL outlives this call, so work on a copy the miner can't touch.
         attempt = secrets.token_hex(4)
         frozen = f"submitted/dt={utc_day()}/{issued['name'].removesuffix('.parquet')}-{attempt}.parquet"
+        stat_s = time.time() - arrived
         try:
             frozen_etag = await core.storage.copy(report.key, frozen, etag)
         except Changed:
@@ -334,7 +386,7 @@ def create_app(redis=None) -> FastAPI:
         round_id = payload.get("round_id") or core.current.get(kind, "")
         # The sample seed is a block hash nobody knew when the upload was frozen.
         frozen_block = await core.seeds.current_block()
-        completed_at = time.time()
+        completed_at = arrived
         job = {
             "task_id": task_id,
             "kind": kind,
@@ -366,11 +418,21 @@ def create_app(redis=None) -> FastAPI:
             log.exception("could not write the manifest for %s", frozen)
             await lifecycle.delete_quietly(core.storage, frozen)
             raise HTTPException(502, "object storage is unavailable, retry") from None
-        seq = await core.tasks[kind].complete(task_id, who.hotkey, job, report.key)
+        seq = await core.tasks[kind].complete(
+            task_id, who.hotkey, job, report.key, arrived
+        )
         if seq is None:
             await lifecycle.delete_quietly(core.storage, frozen)
             raise HTTPException(409, "you do not hold a live claim on this task")
         await lifecycle.delete_quietly(core.storage, report.key)
+        took = time.time() - arrived
+        if took > SLOW_COMPLETE_S:
+            log.warning(
+                "completing %s took %.1fs (%.1fs before the copy)",
+                task_id,
+                took,
+                stat_s,
+            )
         if kind == CRAWL:
             await sampling.note_upload(core.redis, who.hotkey, completed_at)
             await uploadlog.note(core.redis, job)
@@ -389,7 +451,14 @@ def create_app(redis=None) -> FastAPI:
     async def abandon(task_id: str, who: Caller = Depends(caller)):
         payload = await core.payload(task_id) or {}
         kind = payload.get("kind", CRAWL)
-        seq = await core.tasks[kind].abandon(task_id, who.hotkey)
+        if await core.claim_holder(task_id) != who.hotkey:
+            raise HTTPException(409, "you do not hold this claim")
+        # A completion still running decides first; a finished one leaves nothing to abandon.
+        lock = await hold_completion(task_id, who.hotkey)
+        try:
+            seq = await core.tasks[kind].abandon(task_id, who.hotkey)
+        finally:
+            await core.redis.delete(lock)
         if seq is None:
             raise HTTPException(409, "you do not hold this claim")
         round_id = payload.get("round_id") or core.current.get(kind, "")

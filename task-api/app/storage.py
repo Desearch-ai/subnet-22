@@ -3,7 +3,10 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-from functools import cached_property
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
+from functools import cached_property, partial
+from typing import NamedTuple
 
 import boto3
 from botocore.config import Config
@@ -15,8 +18,24 @@ MISSING = {"404", "NoSuchKey", "NotFound"}
 CHANGED = {"412", "PreconditionFailed"}
 
 
+# Storage calls wait on the network, so they get their own threads and never queue behind other work.
+CALLS = ThreadPoolExecutor(64, thread_name_prefix="r2")
+
+
 class Changed(Exception):
     pass
+
+
+class Stat(NamedTuple):
+    size: int
+    etag: str
+    modified: datetime | None
+
+
+async def _call(fn, *args, **kwargs):
+    return await asyncio.get_running_loop().run_in_executor(
+        CALLS, partial(fn, *args, **kwargs)
+    )
 
 
 class Storage:
@@ -48,7 +67,7 @@ class Storage:
         return self.prefix + key
 
     async def check(self) -> None:
-        await asyncio.to_thread(self.client.head_bucket, Bucket=self.bucket)
+        await _call(self.client.head_bucket, Bucket=self.bucket)
 
     def presign_put(self, key: str, content_type: str, expires: int) -> str:
         return self.client.generate_presigned_url(
@@ -68,16 +87,18 @@ class Storage:
             ExpiresIn=expires,
         )
 
-    async def stat(self, key: str) -> tuple[int, str] | None:
+    async def stat(self, key: str) -> Stat | None:
         try:
-            found = await asyncio.to_thread(
+            found = await _call(
                 self.client.head_object, Bucket=self.bucket, Key=self.path(key)
             )
         except ClientError as exc:
             if exc.response.get("Error", {}).get("Code") in MISSING:
                 return None
             raise
-        return int(found["ContentLength"]), found["ETag"]
+        return Stat(
+            int(found["ContentLength"]), found["ETag"], found.get("LastModified")
+        )
 
     async def copy(
         self, src: str, dst: str, etag: str | None = None, into: Storage | None = None
@@ -85,7 +106,7 @@ class Storage:
         target = into or self
         extra = {"CopySourceIfMatch": etag} if etag else {}
         try:
-            done = await asyncio.to_thread(
+            done = await _call(
                 target.client.copy_object,
                 Bucket=target.bucket,
                 Key=target.path(dst),
@@ -114,10 +135,10 @@ class Storage:
             )
             return found["Body"].read()
 
-        return await asyncio.to_thread(read)
+        return await _call(read)
 
     async def put_json(self, key: str, obj, cache_control: str = "") -> None:
-        await asyncio.to_thread(
+        await _call(
             self.client.put_object,
             Bucket=self.bucket,
             Key=self.path(key),
@@ -127,7 +148,7 @@ class Storage:
         )
 
     async def put_bytes(self, key: str, body: bytes, content_type: str) -> None:
-        await asyncio.to_thread(
+        await _call(
             self.client.put_object,
             Bucket=self.bucket,
             Key=self.path(key),
@@ -142,6 +163,4 @@ class Storage:
         return found["Body"].read()
 
     async def delete(self, key: str) -> None:
-        await asyncio.to_thread(
-            self.client.delete_object, Bucket=self.bucket, Key=self.path(key)
-        )
+        await _call(self.client.delete_object, Bucket=self.bucket, Key=self.path(key))

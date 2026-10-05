@@ -36,9 +36,12 @@ of a round taking whatever is left, publishes a hash of the batches, and commits
 blocks ahead; that block's hash sets the order the batches are served in.
 
 **Claims.** A miner asks for as many tasks as it can take and receives, for each, its URLs and an
-upload link for one key; it never holds storage credentials. On completion the API copies the upload
-to a key only it can write, so nothing changed afterwards is scored. A miner is never given a batch
-it held before.
+upload link for one key; it never holds storage credentials. The claim's time starts when the API
+hands the tasks over. On completion the API copies the upload to a key only it can write, so nothing
+changed afterwards is scored. A completion counts as on time when it reaches the API inside the
+claim, however long the API then takes over it; a file written after the completion reached the API
+is refused. Sending the same completion again returns the first one's answer. A miner is never given
+a batch it held before.
 
 **Which uploads are checked.** On completion the API freezes the upload and writes a signed note
 beside it (the task's URLs and the freeze block). Once the block ten blocks after the freeze exists,
@@ -89,9 +92,12 @@ report claims more content rows than its file holds fails.
 
 **Publishing.** The publisher reads a passed upload's text columns in byte ranges, never its HTML,
 and refuses a file whose footer promises more than its task could hold. It keeps its own index of
-every page's latest version, so a page is written to the pages bucket, one object per URL, only
-when the content changed and never over a newer fetch. A withdrawn upload's pages are deleted while
-they are still its version, and recorded as removed in `changes/`.
+every page's latest version, so a page is published only when its content changed and never over a
+newer fetch. Each batch's new, changed and removed pages, with their full records, go into one change
+file in the pages bucket, numbered like the outcome feed: `changes/seq/<n>.json` names the file and
+`changes/latest.json` holds the newest number. The index notes which change file and row hold every
+page's latest version. A withdrawn upload's pages are recorded as removed while they are still its
+version.
 
 **Outcome feed.** Every URL ends as published, unchanged, failed or dropped. The API and the
 publisher write these in numbered files, `outcomes/seq/<n>.json` in the uploads bucket each naming a
@@ -256,15 +262,15 @@ subnet-22 bucket, temporary, emptied after a day, public
   outcomes/             what became of every URL, numbered under seq/, newest in latest.json
   embed-inputs/         texts waiting to be embedded
 desearch-pages bucket, permanent
-  pages/<domain>/<sha1>   the latest verified version of each URL, zstd JSON, naming the miner
-                          that crawled it and the validator that checked it
-  changes/                every new, changed or removed page, for the index to follow
+  changes/                every new, changed or removed page with its full record, naming the miner
+                          that crawled it and the validator that checked it; numbered under seq/,
+                          newest in latest.json
   index/snapshots/        a daily copy of the publisher's version index
   reports/                every final result, with the checked pages and each validator's report
   vectors/model=<name>/   verified vectors
 ```
 
-A page's key comes from its URL alone:
+A page's key comes from its URL alone; it is how the index and the change files name a page:
 
 ```python
 from app.canonical import canonicalize

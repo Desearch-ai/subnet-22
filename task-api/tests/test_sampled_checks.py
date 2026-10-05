@@ -7,7 +7,7 @@ import pyarrow.parquet as pq
 from app import lifecycle, outcomes, sampling
 from app.canonical import canonicalize
 from publisher.records import page_key
-from publisher.worker import Publisher
+from publisher.worker import CHANGES, Publisher
 
 from tests.test_api_flow import Harness, _score
 from tests.test_trust import judged
@@ -252,15 +252,20 @@ def test_a_withdrawal_takes_the_pages_down_and_tells_the_bot(api_env, memory):
         task = await h.mine()
         await settled(h, task["task_id"])
         publisher = Publisher(h.core.publish, h.core.storage, h.core.pages, workers=2)
+        key = page_key(canonicalize(task["urls"][0]))
         try:
             await publisher.run_once()
-            key = h.core.pages.path(page_key(canonicalize(task["urls"][0])))
-            before = await h.core.pages.stat(page_key(canonicalize(task["urls"][0])))
+            before = publisher.index.current(key)
             await lifecycle.take_back(h.core, h.miner.hotkey, 0, "test")
             await publisher.run_once()
-            after = await h.core.pages.stat(page_key(canonicalize(task["urls"][0])))
+            after = publisher.index.current(key)
         finally:
             publisher.close()
+        removed = await h.pages_json(CHANGES.seq_key(await latest_change(h)))
+        changed = pq.read_table(
+            io.BytesIO(await h.pages_bytes(removed["key"]))
+        ).to_pylist()
+        assert {(row["key"], row["kind"]) for row in changed} >= {(key, "removed")}
         last = int(await h.redis.get(outcomes.SEQ))
         index = json.loads(
             h.core.storage.client.get_object(
@@ -277,6 +282,10 @@ def test_a_withdrawal_takes_the_pages_down_and_tells_the_bot(api_env, memory):
     assert before is not None and after is None
     assert {row["outcome"] for row in rows} == {outcomes.DROPPED}
     assert sorted(row["url"] for row in rows) == sorted(task["urls"])
+
+
+async def latest_change(h) -> int:
+    return (await h.pages_json(CHANGES.latest_key))["seq"]
 
 
 def test_an_unreadable_upload_is_not_published_and_its_urls_go_back(api_env, memory):

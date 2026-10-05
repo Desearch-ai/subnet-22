@@ -119,6 +119,8 @@ RECLAIM = (
 local task_id, now = ARGV[1], tonumber(ARGV[2])
 local expiry = redis.call('ZSCORE', KEYS[2], task_id)
 if not expiry or tonumber(expiry) > now then return nil end
+-- A completion that arrived in time is still being processed.
+if redis.call('EXISTS', 'completing:' .. task_id) == 1 then return nil end
 local holder = redis.call('GET', 'claim:' .. task_id) or ''
 """
     + REQUEUE
@@ -155,6 +157,17 @@ redis.call('SMOVE', inflight(kind, hotkey), waiting(kind, hotkey), task_id)
 return redis.call('INCR', 'log:seq')
 """
 )
+
+# A claim's clock restarts when its answer is ready, for the claims this hotkey still holds.
+START = """
+local hotkey, expiry = ARGV[1], tonumber(ARGV[2])
+for i = 3, #ARGV do
+  if redis.call('GET', 'claim:' .. ARGV[i]) == hotkey then
+    redis.call('ZADD', KEYS[1], 'XX', expiry, ARGV[i])
+  end
+end
+return 1
+"""
 
 RESTORE = """
 redis.call('SET', 'task:' .. ARGV[1], ARGV[2])
@@ -292,6 +305,7 @@ class TaskQueue:
         self._abandon = redis.register_script(ABANDON)
         self._complete = redis.register_script(COMPLETE)
         self._restore = redis.register_script(RESTORE)
+        self._start = redis.register_script(START)
 
     async def fill(
         self, round_id: str, order: list[str], payloads: dict[str, dict]
@@ -365,8 +379,21 @@ class TaskQueue:
     async def claim_holder(self, task_id: str) -> str | None:
         return _text(await self.redis.get(f"claim:{task_id}"))
 
+    async def start_clocks(self, hotkey: str, task_ids: list[str]) -> float:
+        expiry = time.time() + self.claim_ttl
+        await self._start(keys=[CLAIMS], args=[hotkey, expiry, *task_ids])
+        return expiry
+
+    async def claim_expiry(self, task_id: str) -> float | None:
+        return await self.redis.zscore(CLAIMS, task_id)
+
     async def complete(
-        self, task_id: str, hotkey: str, job: dict, upload_key: str
+        self,
+        task_id: str,
+        hotkey: str,
+        job: dict,
+        upload_key: str,
+        arrived: float | None = None,
     ) -> int | None:
         seq = await self._complete(
             keys=[CLAIMS, SEEDING],
@@ -374,7 +401,7 @@ class TaskQueue:
                 task_id,
                 hotkey,
                 json.dumps(job),
-                time.time(),
+                arrived or time.time(),
                 upload_key,
                 job.get("seed_block", 0),
             ],
@@ -546,9 +573,6 @@ class PublishQueue:
     async def mark_lost(self, task_id: str) -> None:
         await self.redis.incr("publish:lost")
         await self.redis.sadd("publish:lost:tasks", task_id)
-
-    async def next_seq(self) -> int:
-        return int(await self.redis.incr("changes:seq"))
 
     async def withdraw(self, task_ids: list[str], reason: str) -> str:
         """A job for the publisher to take these tasks' pages back out of the published set."""

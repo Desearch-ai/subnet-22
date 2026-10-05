@@ -22,6 +22,7 @@ from desearch.embedding import (
     write_parquet,
 )
 from app import outcomes
+from app.feeds import Feed
 from app.canonical import domain_of
 from desearch.extraction import looks_blocked
 from engine.chunking import doc_full, doc_head, para_chunks
@@ -31,7 +32,6 @@ from publisher.records import (
     ROW_COLUMNS,
     build_record,
     record_key,
-    to_zstd,
     record_version,
     publish_window,
 )
@@ -44,6 +44,9 @@ RACED = {"PreconditionFailed", "412"}
 MISSING = {"NoSuchKey", "404", "NotFound"}
 PARQUET = "application/vnd.apache.parquet"
 EMBED_INPUT_PAGES = 500
+# Small enough that one page's record is a single ranged read away.
+CHANGE_ROW_GROUP = 1000
+CHANGES = Feed("changes")
 # One file per embed task: every text with its page and model, so the engine needs nothing else.
 VECTORS_SCHEMA = pa.schema(
     [*INPUT_SCHEMA, ("model", pa.string()), *OUTPUT_SCHEMA.remove(0)]
@@ -120,6 +123,7 @@ class Publisher:
             try:
                 done = await self.run_once()
                 await self.snapshot_daily()
+                await CHANGES.fill_holes(self.pages, self.queue.redis)
             except Exception:
                 log.exception("publish pass failed")
                 await _sleep(stop, RETRY_DELAY_S)
@@ -158,7 +162,7 @@ class Publisher:
                 reading.append(job)
         # Each upload is read on its own thread, so a batch costs about one upload's reads.
         read = await asyncio.gather(
-            *(asyncio.to_thread(self.read_job, job) for job in reading),
+            *(self.on_pool(self.read_job, job) for job in reading),
             return_exceptions=True,
         )
         for job, outcome in zip(reading, read):
@@ -193,18 +197,16 @@ class Publisher:
         removed = [_removal(key, url, sha1) for key, url, _, sha1 in removals]
         # The change file is written before the index learns of it, so a crash only replays.
         if changes or removed:
-            await asyncio.to_thread(
-                self.write_changes, changes + removed, await self.queue.next_seq()
+            key = await asyncio.to_thread(self.write_changes, changes + removed)
+            seq = await CHANGES.number(
+                self.pages, self.queue.redis, key, len(changes) + len(removed)
             )
             await asyncio.to_thread(
-                self.index.store, [_indexed(change) for change in changes]
+                self.index.store,
+                [_indexed(change, seq, row) for row, change in enumerate(changes)],
             )
             await asyncio.to_thread(
                 self.index.remove, [(key, version) for key, _, version, _ in removals]
-            )
-            await asyncio.gather(
-                *(asyncio.to_thread(self.put_page, change) for change in changes),
-                *(asyncio.to_thread(self.delete_page, key) for key, *_ in removals),
             )
             if self.embed_inputs and changes:
                 for entry in await asyncio.to_thread(self.write_embed_inputs, changes):
@@ -229,6 +231,9 @@ class Publisher:
             len(removed),
         )
         return len(finalized)
+
+    async def on_pool(self, call, *args):
+        return await asyncio.get_running_loop().run_in_executor(self.pool, call, *args)
 
     def read_job(self, job: dict) -> tuple[list[dict], list[dict]]:
         if job.get("kind") == "embed":
@@ -336,26 +341,6 @@ class Publisher:
         except Exception:
             log.exception("could not write %d outcomes", len(rows))
 
-    def put_page(self, change: dict) -> None:
-        record = {name: change[name] for name in RECORD_COLUMNS}
-        self.pages.client.put_object(
-            Bucket=self.pages.bucket,
-            Key=self.pages.path(change["key"]),
-            Body=to_zstd(record),
-            ContentType="application/zstd",
-            Metadata={
-                "version": change["version"],
-                "content-sha1": record["content_sha1"],
-                "fetched-at": record["fetched_at"],
-                "task-id": record["task_id"],
-            },
-        )
-
-    def delete_page(self, key: str) -> None:
-        self.pages.client.delete_object(
-            Bucket=self.pages.bucket, Key=self.pages.path(key)
-        )
-
     def read_temp(self, key: str, etag: str | None = None) -> bytes:
         extra = {"IfMatch": etag} if etag else {}
         try:
@@ -444,14 +429,16 @@ class Publisher:
             )
         return entries
 
-    def write_changes(self, changes: list[dict], seq: int) -> str:
+    def write_changes(self, changes: list[dict]) -> str:
+        """Every new, changed or removed page of the batch with its full record: the permanent copy."""
         now = datetime.now(timezone.utc)
-        key = f"changes/dt={now:%Y-%m-%d}/{seq:012d}-{uuid.uuid4().hex[:8]}.parquet"
+        key = f"changes/dt={now:%Y-%m-%d}/{uuid.uuid4().hex}.parquet"
         sink = io.BytesIO()
         pq.write_table(
             pa.Table.from_pylist(changes, schema=CHANGE_SCHEMA),
             sink,
             compression="zstd",
+            row_group_size=CHANGE_ROW_GROUP,
         )
         self.pages.client.put_object(
             Bucket=self.pages.bucket,
@@ -532,8 +519,10 @@ def _removal(key: str, url: str, previous_sha1: str) -> dict:
     }
 
 
-def _indexed(change: dict) -> dict:
+def _indexed(change: dict, seq: int | None = None, row: int | None = None) -> dict:
     return {
+        "change_seq": seq,
+        "change_row": row,
         "key": change["key"],
         "url": change["url"],
         "version": change["version"],

@@ -77,7 +77,8 @@ MAX_DISAGREEMENT = 0.3
 MAX_CREDIT_DIVERGENCE = 0.15
 # The validator's own timeout or crash, never held against the miner.
 VALIDATOR_FAULT_REASONS = frozenset({"unscorable"})
-CONTENT_OUTCOMES = ("matched", "mismatched", "unverifiable", "not_fetched")
+# A page unreachable both for the miner and the validator (not_fetched) can sit on either kind of row.
+CONTENT_OUTCOMES = ("matched", "mismatched", "unverifiable")
 ERROR_OUTCOMES = ("errors_confirmed", "errors_unconfirmed")
 
 

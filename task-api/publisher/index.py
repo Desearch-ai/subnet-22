@@ -16,6 +16,8 @@ class Current:
     fetched_at: str
     task_id: str
     content_sha1: str
+    change_seq: int | None = None
+    change_row: int | None = None
 
 
 class VersionIndex:
@@ -39,12 +41,17 @@ class VersionIndex:
             ) WITHOUT ROWID;
             """
         )
+        # Where the newest version's full record sits: the change file's number and its row.
+        have = {row[1] for row in self.db.execute("PRAGMA table_info(pages)")}
+        for column in ("change_seq", "change_row"):
+            if column not in have:
+                self.db.execute(f"ALTER TABLE pages ADD COLUMN {column} INTEGER")
         self.db.commit()
 
     def current(self, key: str) -> Current | None:
         row = self.db.execute(
-            "SELECT url, version, fetched_at, task_id, content_sha1 FROM pages"
-            " WHERE key = ?",
+            "SELECT url, version, fetched_at, task_id, content_sha1, change_seq,"
+            " change_row FROM pages WHERE key = ?",
             (key,),
         ).fetchone()
         return Current(*row) if row else None
@@ -52,10 +59,13 @@ class VersionIndex:
     def store(self, records: list[dict]) -> None:
         """Called only after the change file holding these records is written."""
         self.db.executemany(
-            "INSERT INTO pages VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (key) DO UPDATE SET"
+            "INSERT INTO pages (key, url, version, fetched_at, task_id, content_sha1,"
+            " change_seq, change_row) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+            " ON CONFLICT (key) DO UPDATE SET"
             " url = excluded.url, version = excluded.version,"
             " fetched_at = excluded.fetched_at, task_id = excluded.task_id,"
-            " content_sha1 = excluded.content_sha1",
+            " content_sha1 = excluded.content_sha1, change_seq = excluded.change_seq,"
+            " change_row = excluded.change_row",
             [
                 (
                     r["key"],
@@ -64,6 +74,8 @@ class VersionIndex:
                     r["fetched_at"],
                     r["task_id"],
                     r["content_sha1"],
+                    r.get("change_seq"),
+                    r.get("change_row"),
                 )
                 for r in records
             ],

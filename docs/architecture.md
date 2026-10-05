@@ -125,8 +125,7 @@ subnet-22 bucket (temporary, objects expire after a day, readable by anyone)
   outcomes/         what became of every URL, for the bot
   embed-inputs/     texts waiting to be embedded
 desearch-pages bucket (permanent)
-  pages/          the latest verified version of every page
-  changes/        every new, changed or removed page, for the index to follow
+  changes/        every new, changed or removed page with its full text, numbered in order
   reports/        every final result with the pages that were checked
   vectors/        verified vectors, by model
 ```
