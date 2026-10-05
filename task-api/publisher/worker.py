@@ -218,24 +218,29 @@ class Publisher:
             self.index.touch,
             [(record_key(record), record["fetched_at"]) for record in unchanged],
         )
+        written_s = time.monotonic() - started
         await self.report_outcomes(
             changes, unchanged, failed, [url for _, url, _, _ in removals]
         )
-        for job in finalized:
-            await self.queue.ack(job["task_id"])
-            for key in (job.get("key"), job.get("input_key")):
-                if key:
-                    with contextlib.suppress(Exception):
-                        await self.temp.delete(key)
+        await asyncio.gather(*(self.finish(job) for job in finalized))
         log.info(
-            "published %d tasks, %d pages new or changed, %d withdrawn in %.1fs (%.1fs reading)",
+            "published %d tasks, %d pages new or changed, %d withdrawn in %.1fs"
+            " (read by %.1fs, written by %.1fs)",
             len(finalized),
             len(changes),
             len(removed),
             time.monotonic() - started,
             read_s,
+            written_s,
         )
         return len(finalized)
+
+    async def finish(self, job: dict) -> None:
+        await self.queue.ack(job["task_id"])
+        for key in (job.get("key"), job.get("input_key")):
+            if key:
+                with contextlib.suppress(Exception):
+                    await self.temp.delete(key)
 
     async def on_pool(self, call, *args):
         return await asyncio.get_running_loop().run_in_executor(self.pool, call, *args)
