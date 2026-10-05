@@ -90,7 +90,8 @@ def read_rows(
         parquet = pq.ParquetFile(source, pre_buffer=True)
         if too_big(parquet.metadata, columns, assigned):
             return None
-        table = parquet.read(columns=columns)
+        # pyarrow's own threads are shared by every upload read at once and serialize them.
+        table = parquet.read(columns=columns, use_threads=False)
         # The footer is the miner's word; the decoded columns are not.
         if table.nbytes > max(assigned, 1) * MAX_ROW_BYTES:
             return None
