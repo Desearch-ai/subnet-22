@@ -102,13 +102,17 @@ async def publish_open(core, now: float | None = None) -> bool:
     return True
 
 
-async def open_round(core, urls: list[rounds.Url]):
-    started = time.monotonic()
+def pack_round(urls: list[rounds.Url], target: int) -> rounds.Round:
     # Two spellings of one page would race for the same key.
     unique = list({canonicalize(u.url): u for u in urls}.values())
+    return rounds.open_round(unique, target)
+
+
+async def open_round(core, urls: list[rounds.Url]):
+    started = time.monotonic()
     target = await core.seeds.target_block()
     blocked = time.monotonic()
-    round_ = await asyncio.to_thread(rounds.open_round, unique, target)
+    round_ = await asyncio.to_thread(pack_round, urls, target)
     packed = time.monotonic()
     await core.db(core.rounds.save, round_)
     took = time.monotonic() - started
