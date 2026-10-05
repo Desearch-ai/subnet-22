@@ -39,6 +39,7 @@ EMBED_FIELDS = ("model", "texts", "chars", "input_key", "input_sha256", "pages")
 EMBED_ROUND_INPUTS = 200
 FINALIZE_LOCK_S = 300
 SETTLE_AT_ONCE = 16
+SLOW_ENQUEUE_S = 2.0
 UNCHECKED = "unchecked"
 REPORTED_ROWS = "reported_rows"
 # Uploads with no counts in their report, or from a locked-out hotkey, are all checked.
@@ -102,11 +103,24 @@ async def publish_open(core, now: float | None = None) -> bool:
 
 
 async def open_round(core, urls: list[rounds.Url]):
+    started = time.monotonic()
     # Two spellings of one page would race for the same key.
     unique = list({canonicalize(u.url): u for u in urls}.values())
     target = await core.seeds.target_block()
+    blocked = time.monotonic()
     round_ = await asyncio.to_thread(rounds.open_round, unique, target)
+    packed = time.monotonic()
     await core.db(core.rounds.save, round_)
+    took = time.monotonic() - started
+    if took > SLOW_ENQUEUE_S:
+        log.warning(
+            "enqueueing %d urls took %.1fs (block %.1fs, pack %.1fs, save %.1fs)",
+            len(urls),
+            took,
+            blocked - started,
+            packed - blocked,
+            time.monotonic() - packed,
+        )
     return round_
 
 
@@ -151,14 +165,9 @@ async def open_embed_rounds(core) -> rounds.Round | None:
 
 
 async def reveal_pending(core) -> int:
-    pending = await core.db(core.rounds.unrevealed)
-    if not pending:
-        return 0
     current = await core.seeds.current_block()
     filled = 0
-    for round_ in pending:
-        if round_.seed_block > current:
-            continue
+    for round_ in await core.db(core.rounds.unrevealed, current):
         seed = await core.seeds.seed_for(round_.seed_block)
         if seed is None:
             continue

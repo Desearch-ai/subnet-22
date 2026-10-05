@@ -75,17 +75,21 @@ class RoundStore:
         ).fetchone()
         return _round(row) if row else None
 
-    def unrevealed(self) -> list[Round]:
+    def unrevealed(self, by_block: int | None = None) -> list[Round]:
+        """Rounds not revealed yet; given a block, only those whose seed block it has reached."""
         rows = self.db.execute(
-            f"SELECT {COLUMNS} FROM rounds WHERE seed IS NULL ORDER BY opened_at"
+            f"SELECT {COLUMNS} FROM rounds WHERE seed IS NULL AND seed_block <= ?"
+            " ORDER BY opened_at",
+            (2**62 if by_block is None else by_block,),
         ).fetchall()
         return [_round(row) for row in rows]
 
     def unrevealed_tasks(self) -> int:
-        rows = self.db.execute(
-            "SELECT batches FROM rounds WHERE seed IS NULL"
-        ).fetchall()
-        return sum(len(json.loads(batches)) for (batches,) in rows)
+        (count,) = self.db.execute(
+            "SELECT COALESCE(SUM((SELECT COUNT(*) FROM json_each(batches))), 0)"
+            " FROM rounds WHERE seed IS NULL"
+        ).fetchone()
+        return count
 
     def unfilled(self) -> list[Round]:
         """Revealed rounds whose tasks never reached the queue."""
