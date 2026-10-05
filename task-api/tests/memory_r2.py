@@ -4,6 +4,7 @@ import hashlib
 import io
 import threading
 import uuid
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, quote, unquote, urlencode, urlsplit
@@ -88,6 +89,7 @@ class MemoryR2:
             "ContentLength": len(found["body"]),
             "ETag": found["etag"],
             "Metadata": found["metadata"],
+            "LastModified": found["modified"],
         }
 
     def copy_object(self, Bucket, Key, CopySource, CopySourceIfMatch=None):
@@ -125,6 +127,7 @@ class MemoryR2:
             "etag": etag,
             "type": content_type,
             "metadata": dict(metadata or {}),
+            "modified": datetime.now(timezone.utc),
         }
         return etag
 

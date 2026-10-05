@@ -126,6 +126,17 @@ class Harness:
         assert response.status == 200, response.text
         return response.json()
 
+    async def pages_bytes(self, key: str) -> bytes:
+        found = await asyncio.to_thread(
+            self.core.pages.client.get_object,
+            Bucket=self.core.pages.bucket,
+            Key=self.core.pages.path(key),
+        )
+        return found["Body"].read()
+
+    async def pages_json(self, key: str) -> dict:
+        return json.loads(await self.pages_bytes(key))
+
     async def size(self, key: str) -> int | None:
         found = await self.core.storage.stat(key)
         return found[0] if found else None
@@ -369,8 +380,8 @@ async def _scenario(h: Harness) -> None:
     assert await h.core.publish.depth() == 1
 
     from app.canonical import canonicalize
-    from publisher.records import from_zstd, page_key
-    from publisher.worker import Publisher
+    from publisher.records import page_key
+    from publisher.worker import CHANGES, Publisher
 
     publisher = Publisher(h.core.publish, h.core.storage, h.core.pages, workers=4)
     try:
@@ -379,14 +390,23 @@ async def _scenario(h: Harness) -> None:
         publisher.close()
     assert await h.size(job["key"]) is None
     assert await h.core.publish.depth() == 0
+    seq = (await h.pages_json(CHANGES.latest_key))["seq"]
+    numbered = await h.pages_json(CHANGES.seq_key(seq))
+    changed = pq.read_table(
+        io.BytesIO(await h.pages_bytes(numbered["key"]))
+    ).to_pylist()
+    assert numbered["rows"] == len(changed) == len(task["urls"])
     for url in task["urls"]:
-        key = h.core.pages.path(page_key(canonicalize(url)))
-        body = h.core.pages.client.get_object(Bucket=h.core.pages.bucket, Key=key)[
-            "Body"
-        ].read()
-        record = from_zstd(body)
-        assert record["assigned_url"] == url
+        key = page_key(canonicalize(url))
+        current = publisher.index.current(key)
+        record = changed[current.change_row]
+        assert current.change_seq == seq
+        assert (record["key"], record["assigned_url"]) == (key, url)
         assert record["validator"] == h.validator.hotkey
+    listed = h.core.pages.client.list_objects_v2(
+        Bucket=h.core.pages.bucket, Prefix=h.core.pages.path("pages/")
+    )
+    assert not listed.get("Contents"), "pages live in the change files only"
     assert (await h.report(summary["report_key"]))["verdict"] == "pass"
 
     second = (await h.miner.post("/v1/tasks/claim"))["tasks"][0]
@@ -613,7 +633,7 @@ def test_a_copy_is_refused_when_the_source_changed_since_its_etag(backend):
             Key=storage.path("src"),
             Body=b"validated bytes",
         )
-        _, etag = await storage.stat("src")
+        etag = (await storage.stat("src")).etag
         await asyncio.to_thread(
             storage.client.put_object,
             Bucket=storage.bucket,
@@ -623,7 +643,7 @@ def test_a_copy_is_refused_when_the_source_changed_since_its_etag(backend):
         with pytest.raises(Changed):
             await storage.copy("src", "dst", etag)
         assert await storage.stat("dst") is None
-        _, fresh = await storage.stat("src")
+        fresh = (await storage.stat("src")).etag
         await storage.copy("src", "dst", fresh)
         assert (await storage.stat("dst"))[0] == len(b"swapped bytes")
 
@@ -679,7 +699,9 @@ async def _fault_scenario(h: Harness) -> None:
         h.miner.post(complete, report),
         return_exceptions=True,
     )
-    assert sorted(type(r).__name__ for r in raced) == ["TaskApiError", "dict"]
+    assert raced[0] == raced[1] and isinstance(raced[0], dict), (
+        "the second completion gets the first one's answer"
+    )
     job = await h.core.validation.job(task_id)
     assert await h.size(job["key"]) == len(parquet)
 

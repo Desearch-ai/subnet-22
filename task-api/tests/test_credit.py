@@ -89,6 +89,16 @@ def test_a_report_the_task_could_not_have_produced_is_refused(result, why):
         build_vote(JOB, "v", {"verdict": "pass", **result})
 
 
+def test_a_page_neither_side_could_fetch_may_sit_on_an_error_row():
+    result = {
+        "verdict": "pass",
+        "returned": 20,
+        "error_rows": 5,
+        "samples": samples(matched=15, not_fetched=5),
+    }
+    assert build_vote(JOB, "v", result)["verdict"] == "pass"
+
+
 def test_a_validators_own_failure_is_void_not_a_fail():
     result = {"verdict": "fail", "reason": "unscorable", "returned": 0, "samples": []}
     vote = build_vote(JOB, "v", result)
