@@ -13,7 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
-from . import lifecycle, logs, outcomes, queues, rounds, sampling
+from . import lifecycle, logs, outcomes, queues, rounds, sampling, uploadlog
 from .auth import Authenticator, Caller, client_address
 from .limits import BodyLimit
 from .budget import CRAWL, EMBED, SHARE_WINDOW_H, WAITING_PER_BUDGET, hour_of
@@ -41,6 +41,7 @@ ROUNDS_INTERVAL_S = 5.0
 COMPLETE_LOCK_S = 300
 TASKS_PAGE = 50
 ENQUEUED_TTL_S = 86_400
+UPLOAD_LOG_INTERVAL_S = 30.0
 MAX_TASKS_PAGE = 100
 # What a refused miner should wait, so idle polling does not fill the signed log.
 RETRY_AFTER_S = {
@@ -372,6 +373,7 @@ def create_app(redis=None) -> FastAPI:
         await lifecycle.delete_quietly(core.storage, report.key)
         if kind == CRAWL:
             await sampling.note_upload(core.redis, who.hotkey, completed_at)
+            await uploadlog.note(core.redis, job)
         await core.record(
             round_id,
             who.hotkey,
@@ -595,7 +597,7 @@ def create_app(redis=None) -> FastAPI:
 
 
 async def _janitor(core: State) -> None:
-    rounds_at, pruned_hour = 0.0, None
+    rounds_at, logged_at, pruned_hour = 0.0, 0.0, None
     while True:
         try:
             await lifecycle.reclaim_expired(core)
@@ -610,6 +612,9 @@ async def _janitor(core: State) -> None:
                 await lifecycle.close_finished(core)
                 await outcomes.fill_holes(core.storage, core.redis)
                 rounds_at = time.monotonic()
+            if time.monotonic() - logged_at >= UPLOAD_LOG_INTERVAL_S:
+                logged_at = time.monotonic()
+                await uploadlog.flush(core.storage, core.redis, core.key)
             if pruned_hour != hour_of():
                 await core.db(core.budgets.prune)
                 await core.db(core.validations.prune_urls)

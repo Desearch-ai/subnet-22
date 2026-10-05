@@ -16,6 +16,7 @@ from desearch.client import TaskApiClient
 from desearch.embedding import MODELS, OPENROUTER_EMBEDDINGS, EmbeddingClient
 from desearch.credit import SHARE_WINDOW_H
 from desearch.fetch import Fetcher, ScrapingDog
+from desearch.kinds import CRAWL, EMBED
 from desearch.manifest import seed_from_hash
 from bittensor.wallets import Wallet
 
@@ -24,9 +25,12 @@ from neurons.validators.crawl import CrawlValidator
 from neurons.validators.embed import EmbedValidator
 from neurons.validators.fetchers import OWN_IP_SETTINGS, SampleFetcher
 from neurons.validators.ledger import Ledger
+from neurons.validators.upload_log import UploadLog
 from neurons.validators.weights import set_weights, weights_from_shares
 
 WEIGHTS_WINDOW_BLOCKS = 20
+UPLOAD_LOG_POLL_S = 60
+PRUNE_EVERY_S = 3600
 METAGRAPH_SYNC_S = 600
 POLL_S = 60
 AFTER_WEIGHTS_S = 300
@@ -98,7 +102,9 @@ class Validator:
         async with (
             TaskApiClient(self.config.neuron.task_api_url, self.wallet.hotkey) as api,
             ScrapingDog(
-                self.scrapingdog_key, SCRAPINGDOG_CONCURRENCY, timeout=SCRAPINGDOG_TIMEOUT_S
+                self.scrapingdog_key,
+                SCRAPINGDOG_CONCURRENCY,
+                timeout=SCRAPINGDOG_TIMEOUT_S,
             ) as scrapingdog,
         ):
             fetcher = SampleFetcher(Fetcher(OWN_IP_SETTINGS), scrapingdog)
@@ -115,11 +121,13 @@ class Validator:
                 f"Checking crawl uploads listed at {self.config.neuron.storage_url},"
                 f" reporting to {self.config.neuron.task_api_url}"
             )
+            following = asyncio.create_task(self.follow_upload_log(signer))
             try:
                 await asyncio.gather(
                     *(validator.run(self.stopping) for _ in range(VALIDATION_JOBS))
                 )
             finally:
+                following.cancel()
                 await fetcher.aclose()
         requests = scrapingdog.requests
         log.info(
@@ -220,36 +228,51 @@ class Validator:
                 await asyncio.sleep(SIGNER_RETRY_S)
         return ""
 
+    async def follow_upload_log(self, signer: str) -> None:
+        """Every miner's uploads, from the log the task API signs into the uploads bucket."""
+        upload_log = UploadLog(
+            self.http, self.config.neuron.storage_url, signer, self.ledger
+        )
+        pruned_at = 0.0
+        while not self.stopping.is_set():
+            try:
+                added = await upload_log.poll()
+                if added:
+                    log.info(f"{added} uploads read from the upload log")
+            except Exception as error:
+                log.warning(f"Upload log unavailable, retrying: {error!r}")
+            if time.time() - pruned_at > PRUNE_EVERY_S:
+                self.ledger.prune()
+                pruned_at = time.time()
+            await asyncio.sleep(UPLOAD_LOG_POLL_S)
+
     async def weights(self) -> np.ndarray | None:
-        """From this validator's own results; with none yet, everything goes to burn."""
-        if self.ledger.count():
-            shares = self.ledger.shares()
-            self.report_window(shares)
-        else:
+        """Crawl from every miner's logged uploads judged by this validator's own checks, embed from its own checks."""
+        paid = self.ledger.crawl_paid()
+        crawl = proportions({miner: found.rows for miner, found in paid.items()})
+        shares = {CRAWL: crawl} if crawl else {}
+        if embed := self.ledger.shares().get(EMBED):
+            shares[EMBED] = embed
+        if not shares:
             log.warning(
-                "No results of our own in the scoring window yet; all weight goes to"
-                " burn until there are"
+                "No paid work in the scoring window yet; all weight goes to burn"
             )
-            shares = {}
+        self.report_window(shares, paid)
         weights = weights_from_shares(list(self.metagraph.hotkeys), shares)
         return weights if weights.any() else None
 
-    def report_window(self, shares: dict) -> None:
-        """What each miner did in the scoring window, as these weights count it."""
+    def report_window(self, shares: dict, paid: dict) -> None:
+        """Each miner's share, its uploads, and what this validator's own checks of it found."""
         log.info(f"Scoring window, last {SHARE_WINDOW_H} h:")
-        for row in self.ledger.window():
-            share = shares.get(row["kind"], {}).get(row["miner"], 0.0)
-            failed = (
-                f", {row['failed']} failed ({row['net'] - row['credited']} rows)"
-                if row["failed"]
-                else ""
-            )
+        for miner, found in sorted(paid.items(), key=lambda item: -item[1].rows):
+            share = shares.get(CRAWL, {}).get(miner, 0.0)
             log.info(
-                f"  {row['kind']} {row['miner'][:10]}: {row['tasks']} tasks"
-                f" ({row['passed']} passed{failed}), {row['returned']} of"
-                f" {row['assigned']} URLs returned, {row['credited']} paid,"
-                f" share {share:.3f}"
+                f"  crawl {miner[:10]}: {found.uploads} uploads, checked {found.checked}"
+                f" ({found.failed} failed), paid at {found.rate:.2f},"
+                f" {found.rows:.0f} rows, share {share:.3f}"
             )
+        for miner, share in sorted(shares.get(EMBED, {}).items(), key=lambda i: -i[1]):
+            log.info(f"  embed {miner[:10]}: share {share:.3f}")
 
     async def sync_weights(self) -> None:
         while True:
@@ -321,6 +344,12 @@ class Validator:
             await self.http.close()
         if hasattr(self, "subtensor"):
             await self.subtensor.close()
+
+
+def proportions(amounts: dict[str, float]) -> dict[str, float]:
+    earned = {miner: amount for miner, amount in amounts.items() if amount > 0}
+    total = sum(earned.values())
+    return {miner: amount / total for miner, amount in earned.items()} if total else {}
 
 
 async def main() -> None:

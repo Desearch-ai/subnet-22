@@ -1,4 +1,5 @@
 import asyncio
+import time
 from types import SimpleNamespace
 
 import numpy as np
@@ -6,6 +7,7 @@ import pytest
 
 from neurons.validators.ledger import Ledger
 from neurons.validators.validator import Validator
+from tests.validators.test_crawl_pay import logged
 from desearch.kinds import CRAWL as CRAWL_KIND
 from desearch.kinds import EMBED as EMBED_KIND
 from neurons.validators.weights import (
@@ -109,7 +111,7 @@ def weights_of(hotkeys, ledger=None):
     return asyncio.run(made.weights())
 
 
-def test_a_validator_with_no_results_of_its_own_puts_everything_on_burn():
+def test_with_nothing_paid_in_the_window_everything_goes_to_burn():
     assert list(weights_of(["m1", BURN])) == pytest.approx([0.0, 1.0])
 
 
@@ -185,19 +187,24 @@ def test_a_validator_that_cannot_check_tasks_sets_no_weights():
     assert made.should_set_weights()
 
 
-def test_weights_come_from_the_validators_own_verdicts_once_it_has_any():
+def test_crawl_weights_follow_logged_uploads_and_embed_this_validators_checks(
+    monkeypatch,
+):
+    monkeypatch.setattr("neurons.validators.weights.EMISSION_CONTROL_PERC", 0.5)
+    monkeypatch.setattr("neurons.validators.weights.CRAWL_PERC", 0.6)
+    monkeypatch.setattr("neurons.validators.weights.EMBED_PERC", 0.4)
     ledger = Ledger(":memory:")
-    ledger.record("t1", "crawl", "m1", "pass", 90, 100, 100)
-    ledger.record("t2", "crawl", "m2", "pass", 10, 100, 100)
-    ledger.record("t3", "crawl", "short", "pass", 40, 100, 80)
-    ledger.record("t4", "crawl", "cheat", "pass", 50, 100, 100)
-    ledger.record("t5", "crawl", "cheat", "fail", 0, 100, 100)
+    now = time.time()
+    for miner, uploads in (("m1", 3), ("m2", 1)):
+        ledger.add_uploads(
+            [logged(f"{miner}-{n}", miner, now - 60, ok=100) for n in range(uploads)]
+        )
+        ledger.record_check(f"{miner}-0", miner, now - 60, "pass", 100, 100, 100, 100)
+    ledger.record("e1", "embed", "embedder", "pass", 500, 1, 1)
 
-    weights = weights_of(["m1", "m2", "short", "cheat", BURN], ledger)
+    weights = weights_of(["m1", "m2", "embedder", BURN], ledger)
 
-    assert list(weights) == pytest.approx(
-        [CRAWL * 0.64, CRAWL * 0.07, CRAWL * 0.29, 0.0, 1 - CRAWL], abs=0.01
-    )
+    assert list(weights) == pytest.approx([0.225, 0.075, 0.2, 0.5])
 
 
 def test_a_failed_task_takes_its_urls_back_but_never_below_nothing():
@@ -209,7 +216,6 @@ def test_a_failed_task_takes_its_urls_back_but_never_below_nothing():
     ledger.record("d", "crawl", "m3", "fail", 0, 100, 100)
 
     assert ledger.shares() == {"crawl": {"m2": 1.0}}
-    assert ledger.count() == 4
 
 
 def test_the_window_report_lists_what_each_miner_did_inside_the_scoring_window():

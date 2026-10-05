@@ -317,3 +317,56 @@ def test_an_unreadable_upload_is_not_published_and_its_urls_go_back(api_env, mem
     assert {row["outcome"] for row in rows} == {outcomes.FAILED}
     assert sorted(row["url"] for row in rows) == sorted(task["urls"])
 
+
+def test_every_completed_upload_is_logged_signed_for_validators(api_env, memory):
+    async def scenario(h):
+        from app import uploadlog
+
+        from desearch.manifest import UPLOAD_LOG_LATEST, upload_log_key, verify_log
+
+        first = await h.mine()
+        second = await h.mine(errors=1)
+
+        async def down(*_, **__):
+            raise RuntimeError("storage is down")
+
+        h.core.storage.put_json, kept = down, h.core.storage.put_json
+        try:
+            await uploadlog.flush(h.core.storage, h.redis, h.core.key)
+        except RuntimeError:
+            pass
+        h.core.storage.put_json = kept
+        third = await h.mine(h.rival)
+        seq = await uploadlog.flush(h.core.storage, h.redis, h.core.key)
+        again = await uploadlog.flush(h.core.storage, h.redis, h.core.key)
+
+        def read(key):
+            return json.loads(
+                h.core.storage.client.get_object(
+                    Bucket=h.core.storage.bucket, Key=h.core.storage.path(key)
+                )["Body"].read()
+            )
+
+        written = read(upload_log_key(seq))
+        later = await uploadlog.flush(h.core.storage, h.redis, h.core.key)
+        return (
+            [first, second, third],
+            seq,
+            again,
+            later,
+            written,
+            read(UPLOAD_LOG_LATEST),
+            verify_log(written, h.core.key.ss58_address),
+        )
+
+    tasks, seq, again, later, written, latest, signed = run(
+        memory, scenario, task_urls=2
+    )
+    assert seq == 1 and latest == {"seq": 2} and signed
+    assert [e["task_id"] for e in written["entries"]] == [
+        tasks[0]["task_id"],
+        tasks[1]["task_id"],
+    ], "a failed write is retried with the same entries"
+    assert (written["entries"][1]["ok"], written["entries"][1]["errors"]) == (1, 1)
+    assert again == 2, "the upload completed during the retry gets the next file"
+    assert later is None

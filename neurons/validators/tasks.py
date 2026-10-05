@@ -238,6 +238,18 @@ class TaskChecker:
             assigned,
             result.get("returned", 0),
         )
+        if kind == CRAWL:
+            returned = result.get("returned", 0)
+            self.ledger.record_check(
+                job["key"],
+                job["miner"],
+                job["completed_at"],
+                result["verdict"],
+                credited,
+                returned,
+                returned - result.get("error_rows", 0),
+                assigned,
+            )
 
     def provider_failed(self) -> None:
         """Several failures in a row mean our side is down, so back off before trying again."""
