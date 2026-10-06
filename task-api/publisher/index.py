@@ -7,6 +7,7 @@ import time
 from dataclasses import dataclass
 
 WITHDRAWN_KEEP_S = 7 * 86400
+CACHE_KIB = 1 << 20
 
 
 @dataclass
@@ -24,6 +25,9 @@ class VersionIndex:
     def __init__(self, path: str):
         self.db = sqlite3.connect(path, check_same_thread=False)
         self.db.execute("PRAGMA journal_mode=WAL")
+        # A crash loses at most the last batches, which replay; every batch is tens of thousands of upserts.
+        self.db.execute("PRAGMA synchronous=NORMAL")
+        self.db.execute(f"PRAGMA cache_size=-{CACHE_KIB}")
         self.db.executescript(
             """
             CREATE TABLE IF NOT EXISTS pages (
@@ -77,7 +81,7 @@ class VersionIndex:
                     r.get("change_seq"),
                     r.get("change_row"),
                 )
-                for r in records
+                for r in sorted(records, key=lambda r: r["key"])
             ],
         )
         self.db.commit()
@@ -86,7 +90,7 @@ class VersionIndex:
         """A later fetch that found the same content moves the fetch time forward."""
         self.db.executemany(
             "UPDATE pages SET fetched_at = MAX(fetched_at, ?) WHERE key = ?",
-            [(fetched_at, key) for key, fetched_at in seen],
+            [(fetched_at, key) for key, fetched_at in sorted(seen)],
         )
         self.db.commit()
 
