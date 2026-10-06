@@ -3,11 +3,19 @@
 from __future__ import annotations
 
 import sqlite3
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
 WITHDRAWN_KEEP_S = 7 * 86400
 CACHE_KIB = 1 << 20
+# The index outgrows memory, so each lookup is a random disk read; many readers at once keep the disk busy.
+READERS = 4
+READ_CHUNK = 500
+CURRENT_COLUMNS = (
+    "url, version, fetched_at, task_id, content_sha1, change_seq, change_row"
+)
 
 
 @dataclass
@@ -23,6 +31,9 @@ class Current:
 
 class VersionIndex:
     def __init__(self, path: str):
+        self.path = path
+        self.local = threading.local()
+        self.readers = None if path == ":memory:" else ThreadPoolExecutor(READERS)
         self.db = sqlite3.connect(path, check_same_thread=False)
         self.db.execute("PRAGMA journal_mode=WAL")
         # A crash loses at most the last batches, which replay; every batch is tens of thousands of upserts.
@@ -54,11 +65,43 @@ class VersionIndex:
 
     def current(self, key: str) -> Current | None:
         row = self.db.execute(
-            "SELECT url, version, fetched_at, task_id, content_sha1, change_seq,"
-            " change_row FROM pages WHERE key = ?",
-            (key,),
+            f"SELECT {CURRENT_COLUMNS} FROM pages WHERE key = ?", (key,)
         ).fetchone()
         return Current(*row) if row else None
+
+    def current_many(self, keys: list[str]) -> dict[str, Current]:
+        """The current version of each page the index holds, looked up in sorted chunks on parallel readers."""
+        keys = sorted(keys)
+        chunks = [keys[i : i + READ_CHUNK] for i in range(0, len(keys), READ_CHUNK)]
+        found: dict[str, Current] = {}
+        reading = (
+            self.readers.map(self.read_chunk, chunks)
+            if self.readers
+            else map(lambda chunk: self.read_chunk(chunk, self.db), chunks)
+        )
+        for part in reading:
+            found.update(part)
+        return found
+
+    def read_chunk(
+        self, keys: list[str], db: sqlite3.Connection | None = None
+    ) -> dict[str, Current]:
+        db = db or self.reader()
+        rows = db.execute(
+            f"SELECT key, {CURRENT_COLUMNS} FROM pages"
+            f" WHERE key IN ({','.join('?' * len(keys))})",
+            keys,
+        ).fetchall()
+        return {row[0]: Current(*row[1:]) for row in rows}
+
+    def reader(self) -> sqlite3.Connection:
+        """This thread's read-only connection."""
+        if getattr(self.local, "db", None) is None:
+            self.local.db = sqlite3.connect(
+                f"file:{self.path}?mode=ro", uri=True, check_same_thread=False
+            )
+            self.local.db.execute(f"PRAGMA cache_size=-{CACHE_KIB // READERS}")
+        return self.local.db
 
     def store(self, records: list[dict]) -> None:
         """Called only after the change file holding these records is written."""
@@ -132,4 +175,6 @@ class VersionIndex:
         target.close()
 
     def close(self) -> None:
+        if self.readers is not None:
+            self.readers.shutdown(wait=True)
         self.db.close()

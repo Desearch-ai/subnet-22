@@ -120,6 +120,7 @@ class Publisher:
         self.index = index or VersionIndex(":memory:")
         self.pool = ThreadPoolExecutor(workers)
         self.reader_count = readers
+        self.ahead: tuple[list[dict], asyncio.Task, float] | None = None
         # Building records is Python work on every page, so uploads are read in other processes too.
         self.readers = (
             ProcessPoolExecutor(
@@ -153,10 +154,27 @@ class Publisher:
             await _sleep(stop, IDLE_DELAY_S)
 
     async def run_once(self) -> int | None:
+        batch = self.ahead or await self.start_batch()
+        self.ahead = None
+        if batch is None:
+            return None
+        # The next batch is read in the reader processes while this one is written.
+        following = asyncio.create_task(self.start_batch())
+        try:
+            return await self.write_batch(*batch)
+        finally:
+            self.ahead = await following
+
+    async def start_batch(self) -> tuple[list[dict], asyncio.Task, float] | None:
         jobs = await self.queue.claim(self.batch)
         if not jobs:
             return None
-        started = time.monotonic()
+        reading = [job for job in jobs if job.get("kind") != "withdraw"]
+        return jobs, asyncio.create_task(self.read_all(reading)), time.monotonic()
+
+    async def write_batch(
+        self, jobs: list[dict], read_all: asyncio.Task, started: float
+    ) -> int:
         finalized, chosen, failed = [], {}, []
         withdrawn = [
             task_id
@@ -167,18 +185,22 @@ class Publisher:
         if withdrawn:
             await asyncio.to_thread(self.index.withdraw, withdrawn)
         removals = await asyncio.to_thread(self.index.of_tasks, withdrawn)
-        reading = []
+        reading, read = [], []
+        all_read = await read_all
+        read_s = time.monotonic() - started
+        readable = iter(all_read)
         for job in jobs:
             await self.queue.extend_claim(job["task_id"])
             if job.get("kind") == "withdraw":
                 finalized.append(job)
-            elif await asyncio.to_thread(self.index.is_withdrawn, job["task_id"]):
+                continue
+            outcome = next(readable)
+            if await asyncio.to_thread(self.index.is_withdrawn, job["task_id"]):
                 failed += _failed(job, job["urls"])
                 finalized.append(job)
             else:
                 reading.append(job)
-        read = await self.read_all(reading)
-        read_s = time.monotonic() - started
+                read.append(outcome)
         for job, outcome in zip(reading, read):
             if isinstance(outcome, UploadGone):
                 log.error(
@@ -344,9 +366,10 @@ class Publisher:
     def decide(self, chosen: dict[str, dict]) -> tuple[list[dict], list[dict]]:
         """New and changed pages, and pages seen again unchanged, against the version index."""
         changes, unchanged = [], []
+        currents = self.index.current_many(list(chosen))
         for key, record in chosen.items():
             version = record_version(record)
-            current = self.index.current(key)
+            current = currents.get(key)
             if current is None:
                 changes.append(_change(record, key, "new", "", version))
             elif current.version == version or (
