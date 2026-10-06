@@ -26,6 +26,8 @@ const UNSIGNED: &str = "UNSIGNED-PAYLOAD";
 const ATTEMPTS: u32 = 5;
 const FIRST_BACKOFF: Duration = Duration::from_millis(250);
 const SHORT: Duration = Duration::from_secs(30);
+/// A ranged read or HEAD answers in well under a second; one that hangs is retried instead of waited out.
+const READ: Duration = Duration::from_secs(10);
 const LONG: Duration = Duration::from_secs(300);
 
 #[derive(Clone)]
@@ -79,7 +81,12 @@ pub struct Bucket {
 }
 
 pub fn client() -> Result<reqwest::Client> {
-    Ok(reqwest::Client::builder().connect_timeout(Duration::from_secs(5)).pool_max_idle_per_host(512).build()?)
+    Ok(reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(5))
+        .pool_max_idle_per_host(512)
+        .pool_idle_timeout(Duration::from_secs(30))
+        .tcp_keepalive(Duration::from_secs(15))
+        .build()?)
 }
 
 impl Bucket {
@@ -105,7 +112,7 @@ impl Bucket {
     }
 
     pub async fn head(&self, key: &str) -> Result<Option<Head>, Error> {
-        match self.call(Method::HEAD, Some(key), &[], HeaderMap::new(), Bytes::new(), SHORT).await {
+        match self.call(Method::HEAD, Some(key), &[], HeaderMap::new(), Bytes::new(), READ).await {
             Ok((headers, _)) => {
                 let text = |name: &str| headers.get(name).and_then(|v| v.to_str().ok()).unwrap_or_default().to_string();
                 let size = text("content-length").parse().map_err(|_| Error::Transport("a HEAD without a length".into()))?;
@@ -127,7 +134,7 @@ impl Bucket {
         if let Some(etag) = if_match {
             headers.insert(reqwest::header::IF_MATCH, value(etag));
         }
-        let (_, body) = self.call(Method::GET, Some(key), &[], headers, Bytes::new(), SHORT).await?;
+        let (_, body) = self.call(Method::GET, Some(key), &[], headers, Bytes::new(), READ).await?;
         if body.len() as u64 != range.end - range.start {
             return Err(Error::Transport(format!("asked for {} bytes of {key}, got {}", range.end - range.start, body.len())));
         }

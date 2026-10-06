@@ -1,6 +1,6 @@
-//! The publisher as a service: claim batches from the task API's queue, read the next ones while this one is written, then report and acknowledge.
+//! The publisher as a service: claim batches from the task API's queue, read the next ones while one is written, then report and acknowledge.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -309,28 +309,33 @@ impl Snapshots {
 /// Publishes until `stop` turns true, then finishes the batches already claimed and claims no more; `idle_exit` passes in a row with nothing to do also stop it.
 pub async fn run(shared: Arc<Shared>, mut stop: watch::Receiver<bool>, idle_exit: u32) -> Result<()> {
     let mut idle = 0;
-    let mut ahead: VecDeque<JoinHandle<Result<Option<Claimed>>>> = VecDeque::new();
+    let mut claimed: Vec<Claimed> = Vec::new();
     let mut snapshots = Snapshots::default();
     loop {
         let finishing = *stop.borrow() || (idle_exit > 0 && idle >= idle_exit);
-        while !finishing && ahead.len() <= shared.settings.ahead {
-            ahead.push_back(tokio::spawn(start_batch(shared.clone())));
-        }
-        let Some(next) = ahead.pop_front() else { break };
-        match next.await {
-            Ok(Ok(Some(current))) => {
-                idle = 0;
-                if let Err(error) = write_batch(&shared, current).await {
-                    eprintln!("publish pass failed: {error:#}");
+        while !finishing && claimed.len() <= shared.settings.ahead {
+            match start_batch(shared.clone()).await {
+                Ok(Some(batch)) => claimed.push(batch),
+                Ok(None) => break,
+                Err(error) => {
+                    eprintln!("claiming a batch failed: {error:#}");
                     pause(&mut stop, RETRY_DELAY).await;
+                    break;
                 }
             }
-            Ok(Ok(None)) => idle += 1,
-            Ok(Err(error)) => {
-                eprintln!("claiming a batch failed: {error:#}");
+        }
+        if claimed.is_empty() {
+            if finishing {
+                break;
+            }
+            idle += 1;
+        } else {
+            idle = 0;
+            let current = claimed.remove(first_read(&claimed).await);
+            if let Err(error) = write_batch(&shared, current).await {
+                eprintln!("publish pass failed: {error:#}");
                 pause(&mut stop, RETRY_DELAY).await;
             }
-            Err(error) => eprintln!("reading a batch failed: {error}"),
         }
         snapshots.daily(&shared);
         if let Err(error) = CHANGES.fill_holes(&shared.pages, shared.redis()).await {
@@ -346,6 +351,16 @@ pub async fn run(shared: Arc<Shared>, mut stop: watch::Receiver<bool>, idle_exit
         }
     }
     Ok(())
+}
+
+/// The oldest batch in hand whose uploads are all read; a page keeps its latest fetch whichever batch lands first, so one slow upload holds up only its own batch.
+async fn first_read(claimed: &[Claimed]) -> usize {
+    loop {
+        if let Some(i) = claimed.iter().position(|batch| batch.reads.is_finished()) {
+            return i;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
 }
 
 async fn pause(stop: &mut watch::Receiver<bool>, delay: Duration) {
