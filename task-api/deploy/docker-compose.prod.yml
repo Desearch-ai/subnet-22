@@ -15,15 +15,9 @@ x-r2-env: &r2-env
   CF_R2_PAGES_BUCKET: ${CF_R2_PAGES_BUCKET:-desearch-pages}
   CF_R2_ACCESS_KEY_ID: ${CF_R2_ACCESS_KEY_ID:?set CF_R2_ACCESS_KEY_ID}
   CF_R2_SECRET_ACCESS_KEY: ${CF_R2_SECRET_ACCESS_KEY:?set CF_R2_SECRET_ACCESS_KEY}
-  TASK_API_REDIS: redis://redis:6379/0
+  TASK_API_REDIS: ${TASK_API_REDIS:?set the task API Redis URL}
 
 services:
-  redis:
-    image: redis:7-alpine
-    command: ["redis-server", "--appendonly", "yes", "--save", "", "--maxmemory-policy", "noeviction"]
-    volumes: ["redis-data:/data"]
-    restart: unless-stopped
-
   api:
     <<: *app
     command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080", "--workers", "1"]
@@ -42,7 +36,7 @@ services:
       TASK_API_QUEUE_TARGET: ${TASK_API_QUEUE_TARGET:-1200}
     volumes: ["api-data:/data"]
     ports: ["${TASK_API_BIND:-127.0.0.1:8080}:8080"]
-    depends_on: [redis]
+    networks: [coolify]
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/v1/health')"]
       interval: 10s
@@ -51,5 +45,9 @@ services:
       start_period: 20s
 
 volumes:
-  redis-data:
   api-data:
+
+# Redis is its own Coolify resource on this network.
+networks:
+  coolify:
+    external: true
