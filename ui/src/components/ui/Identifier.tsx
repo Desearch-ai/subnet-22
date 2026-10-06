@@ -4,7 +4,7 @@ import { truncateMiddle } from '@/lib/format'
 import { CopyButton } from './CopyButton'
 
 interface IdentifierProps {
-  value: string
+  value: string | null
   label: string
   to?: string
   uid?: number | null
@@ -20,6 +20,7 @@ export function Identifier({
   full = false,
   className,
 }: IdentifierProps) {
+  if (value === null) return <span className="text-ink-faint font-mono text-xs">—</span>
   const text = full ? value : uid === null ? truncateMiddle(value) : `UID ${uid}`
   return (
     <span

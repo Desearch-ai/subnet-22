@@ -193,12 +193,16 @@ async def in_progress(core) -> dict:
     claimed = await core.redis.zrange(queues.CLAIMS, 0, LIVE_ROWS - 1, withscores=True)
     claims = []
     for task_id, expires_at in claimed:
+        holder = await core.claim_holder(task_id)
+        # Completed or taken back since the claims were read.
+        if holder is None:
+            continue
         payload = await core.payload(task_id) or {}
         claims.append(
             {
                 "task_id": task_id,
                 "kind": payload.get("kind", CRAWL),
-                "miner": await core.claim_holder(task_id),
+                "miner": holder,
                 "urls": payload.get("url_count", len(payload.get("urls", []))),
                 "expires_at": expires_at,
             }
