@@ -1,0 +1,25 @@
+# docker compose --env-file .env -f publisher/docker-compose.yml up -d --build
+
+services:
+  publisher:
+    build: .
+    restart: unless-stopped
+    environment:
+      CF_R2_ENDPOINT: ${CF_R2_ENDPOINT:?set CF_R2_ENDPOINT}
+      CF_R2_ACCESS_KEY_ID: ${CF_R2_ACCESS_KEY_ID:?set CF_R2_ACCESS_KEY_ID}
+      CF_R2_SECRET_ACCESS_KEY: ${CF_R2_SECRET_ACCESS_KEY:?set CF_R2_SECRET_ACCESS_KEY}
+      CF_R2_BUCKET: ${CF_R2_BUCKET:-subnet-22}
+      CF_R2_PAGES_BUCKET: ${CF_R2_PAGES_BUCKET:-desearch-pages}
+      TASK_API_REDIS: ${TASK_API_REDIS:?set TASK_API_REDIS}
+      TASK_API_EMBED_TASKS: ${TASK_API_EMBED_TASKS:-0}
+      PUBLISHER_INDEX: /data/index
+      PUBLISHER_BATCH: ${PUBLISHER_BATCH:-40}
+      PUBLISHER_CACHE_MB: ${PUBLISHER_CACHE_MB:-4096}
+    volumes: ["publisher-index:/data"]
+    stop_grace_period: 120s
+    logging:
+      driver: json-file
+      options: { max-size: "50m", max-file: "5" }
+
+volumes:
+  publisher-index:
