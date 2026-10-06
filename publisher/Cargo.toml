@@ -1,0 +1,43 @@
+[package]
+name = "publisher"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+resolver = "3"
+publish = false
+description = "The SN22 publisher: validated uploads into the numbered change feed and the version index"
+
+[dependencies]
+anyhow = "1"
+arrow-array = "59"
+arrow-cast = "59"
+arrow-schema = "59"
+bytes = "1"
+clap = { version = "4", features = ["derive"] }
+parquet = { version = "59", default-features = false, features = ["arrow", "zstd", "snap", "lz4", "flate2-zlib-rs", "brotli"] }
+regex = "1"
+rocksdb = { version = "0.23", default-features = false, features = ["zstd", "bindgen-runtime"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha1 = "0.10"
+unicode-normalization = "0.1"
+unicode-properties = { version = "0.1", default-features = false, features = ["general-category"] }
+
+[target.'cfg(not(target_env = "msvc"))'.dependencies]
+tikv-jemallocator = "0.6"
+
+[dev-dependencies]
+libc = "0.2"
+
+[[example]]
+name = "parity"
+path = "bench/parity.rs"
+
+[[example]]
+name = "throughput"
+path = "bench/throughput.rs"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+debug = "line-tables-only"
