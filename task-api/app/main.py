@@ -202,13 +202,17 @@ def create_app(redis=None) -> FastAPI:
             await core.validation.oldest_seeding_age(),
         )
         publishing = await core.publish.oldest_age()
-        if core.max_backlog and max(validating, publishing) > core.max_backlog:
+        waiting = await core.publish.waiting()
+        if core.publish_rate.overloaded(waiting) or (
+            core.max_backlog and max(validating, publishing) > core.max_backlog
+        ):
             refusal = {
                 "code": "VALIDATION_BACKLOG",
                 "inputs": {
                     "validation_s": validating,
                     "publish_s": publishing,
                     "limit_s": core.max_backlog,
+                    "publish_waiting": waiting,
                 },
             }
             return await _refused(core, round_id, who, refusal)
@@ -562,6 +566,15 @@ def create_app(redis=None) -> FastAPI:
         """How many tasks the queue can take now, for the bot that fills it."""
         depth = await core.tasks[CRAWL].depth()
         unrevealed = await core.db(core.rounds.unrevealed_tasks)
+        # Everything not yet published, so the queue fills only as fast as the publisher empties it.
+        in_system = (
+            depth
+            + unrevealed
+            + int(await core.redis.zcard(queues.CLAIMS))
+            + await core.validation.seeding()
+            + await core.validation.depth()
+            + await core.publish.waiting()
+        )
         refusing = core.max_backlog and (
             max(
                 await core.validation.oldest_age(),
@@ -573,9 +586,14 @@ def create_app(redis=None) -> FastAPI:
         return {
             "room_tasks": 0
             if refusing
-            else max(0, core.queue_target - depth - unrevealed),
+            else min(
+                max(0, core.queue_target - depth - unrevealed),
+                core.publish_rate.room(in_system),
+            ),
             "queue": depth,
             "unrevealed": unrevealed,
+            "in_system": in_system,
+            "published_per_min": round(core.publish_rate.per_second() * 60, 1),
             "refusing": bool(refusing),
         }
 
@@ -669,6 +687,7 @@ async def _janitor(core: State) -> None:
     rounds_at, logged_at, pruned_hour = 0.0, 0.0, None
     while True:
         try:
+            core.publish_rate.note(await core.publish.finished(), time.time())
             await lifecycle.reclaim_expired(core)
             await lifecycle.settle_seeded(core)
             await lifecycle.finalize_due(core)

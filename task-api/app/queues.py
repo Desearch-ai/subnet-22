@@ -18,6 +18,8 @@ VACTIVE = "validators:active"
 PUBLISH = "publish:ready"
 PCLAIMS = "publish:claims"
 PACKED = "z:"
+# Every job the publisher finished, for measuring its pace.
+PUBLISHED = "publish:acked"
 PPENDING = "publish:pending"
 PDEAD = "publish:dead"
 ROUNDS = "rounds:seq"
@@ -234,7 +236,7 @@ return jobs
 
 PACK = """
 redis.call('ZREM', KEYS[1], ARGV[1])
-redis.call('ZREM', KEYS[2], ARGV[1])
+if redis.call('ZREM', KEYS[2], ARGV[1]) == 1 then redis.call('INCR', KEYS[3]) end
 return redis.call('DEL', 'pjob:' .. ARGV[1], 'ptries:' .. ARGV[1])
 """
 
@@ -580,7 +582,7 @@ class PublishQueue:
         return [unpack_job(job) for job in jobs or []]
 
     async def ack(self, task_id: str) -> None:
-        await self._ack(keys=[PCLAIMS, PPENDING], args=[task_id])
+        await self._ack(keys=[PCLAIMS, PPENDING, PUBLISHED], args=[task_id])
 
     async def extend_claim(self, task_id: str) -> None:
         await self.redis.zadd(PCLAIMS, {task_id: time.time() + self.claim_ttl}, xx=True)
@@ -627,6 +629,12 @@ class PublishQueue:
 
     async def depth(self) -> int:
         return int(await self.redis.llen(PUBLISH))
+
+    async def waiting(self) -> int:
+        return int(await self.redis.zcard(PPENDING))
+
+    async def finished(self) -> int:
+        return int(await self.redis.get(PUBLISHED) or 0)
 
     async def oldest_age(self) -> float:
         oldest = await self.redis.zrange(PPENDING, 0, 0, withscores=True)
