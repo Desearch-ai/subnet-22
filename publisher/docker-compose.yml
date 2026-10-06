@@ -14,6 +14,8 @@ services:
       TASK_API_EMBED_TASKS: ${TASK_API_EMBED_TASKS:-0}
       PUBLISHER_INDEX: /data/index
       PUBLISHER_BATCH: ${PUBLISHER_BATCH:-40}
+      PUBLISHER_READERS: ${PUBLISHER_READERS:-}
+      PUBLISHER_AHEAD: ${PUBLISHER_AHEAD:-}
       PUBLISHER_CACHE_MB: ${PUBLISHER_CACHE_MB:-4096}
     volumes: ["publisher-index:/data"]
     stop_grace_period: 120s
