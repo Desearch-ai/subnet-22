@@ -429,7 +429,11 @@ async def pick_reason(core, task_id: str, job: dict, seed: str) -> str | None:
         await sampling.uploads_last_hour(core.redis, miner),
         await core.db(core.checks.passes, miner),
         await core.db(core.checks.recheck_left, miner),
-        core.check_share,
+        sampling.budget_share(
+            core.check_share,
+            core.checks_per_hour,
+            await sampling.uploads_last_hour(core.redis, sampling.ALL),
+        ),
     )
 
 

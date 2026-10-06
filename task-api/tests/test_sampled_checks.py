@@ -422,3 +422,11 @@ def test_a_single_fail_takes_back_only_what_no_validator_checked(api_env, memory
     unchecked, checked, single, day = run(memory, scenario, task_urls=2)
     assert single == [unchecked]
     assert day == [checked], "a full penalty takes back the checked ones as well"
+
+
+def test_the_drawn_share_shrinks_so_all_draws_stay_within_the_hourly_budget():
+    assert sampling.budget_share(0.05, 400, 2_000) == 0.05, (
+        "under budget: the full share"
+    )
+    assert sampling.budget_share(0.05, 400, 30_000) == 400 / 30_000
+    assert sampling.budget_share(0.05, 0, 30_000) == 0.05, "no budget set: the share"

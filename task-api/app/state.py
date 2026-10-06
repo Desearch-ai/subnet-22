@@ -105,6 +105,9 @@ class State:
         self.max_attempts = int(os.environ.get("TASK_API_MAX_ATTEMPTS", "3"))
         self.ledger_delay = float(os.environ.get("TASK_API_LEDGER_DELAY_S", "0"))
         self.check_share = float(os.environ.get("TASK_API_CHECK_SHARE", sampling.SHARE))
+        self.checks_per_hour = float(
+            os.environ.get("TASK_API_CHECKS_PER_HOUR", sampling.CHECKS_PER_HOUR)
+        )
         self.queue_target = int(os.environ.get("TASK_API_QUEUE_TARGET", QUEUE_TARGET))
         self.open_listed: tuple[str, ...] | None = None
         self.publish_rate = flow.PublishRate(
