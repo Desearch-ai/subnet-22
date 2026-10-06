@@ -29,6 +29,8 @@ const SHORT: Duration = Duration::from_secs(30);
 /// A ranged read or HEAD answers in well under a second; one that hangs is retried instead of waited out.
 const READ: Duration = Duration::from_secs(10);
 const LONG: Duration = Duration::from_secs(300);
+/// Most 8 MB parts land in about a second, but about one in eight stalls for several.
+const PART_RESEND_AFTER: Duration = Duration::from_secs(2);
 
 /// Long enough to send `bytes` at 1 MB/s, so a stalled upload is retried rather than waited on for minutes.
 fn sending(bytes: usize) -> Duration {
@@ -171,7 +173,7 @@ impl Bucket {
         let sent: Result<Vec<(u32, String)>, Error> = futures::stream::iter(parts)
             .map(|(number, part)| {
                 let upload_id = &upload_id;
-                async move { Ok((number, self.upload_part(key, upload_id, number, part).await?)) }
+                async move { Ok((number, self.send_part(key, upload_id, number, part).await?)) }
             })
             .buffered(at_once.max(1))
             .try_collect()
@@ -206,6 +208,28 @@ impl Bucket {
         let timeout = sending(body.len());
         let (headers, _) = self.call(Method::PUT, Some(key), &[("partNumber", &number), ("uploadId", upload_id)], HeaderMap::new(), body, timeout).await?;
         Ok(headers.get("etag").and_then(|v| v.to_str().ok()).unwrap_or_default().to_string())
+    }
+
+    /// A part sent again when the first copy is slow; R2 tags a part with the MD5 of its bytes, so either copy completes the upload.
+    async fn send_part(&self, key: &str, upload_id: &str, number: u32, part: Bytes) -> Result<String, Error> {
+        let first = self.upload_part(key, upload_id, number, part.clone());
+        tokio::pin!(first);
+        tokio::select! {
+            sent = &mut first => return sent,
+            _ = tokio::time::sleep(PART_RESEND_AFTER) => {}
+        }
+        let second = self.upload_part(key, upload_id, number, part);
+        tokio::pin!(second);
+        tokio::select! {
+            sent = &mut first => match sent {
+                Ok(etag) => Ok(etag),
+                Err(_) => second.await,
+            },
+            sent = &mut second => match sent {
+                Ok(etag) => Ok(etag),
+                Err(_) => first.await,
+            },
+        }
     }
 
     pub async fn complete_multipart(&self, key: &str, upload_id: &str, parts: &[(u32, String)]) -> Result<(), Error> {

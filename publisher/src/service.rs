@@ -226,8 +226,10 @@ pub async fn write_batch(shared: &Shared, claimed: Claimed) -> Result<usize> {
             eprintln!("task={task_id} could not be acknowledged: {error:#}");
             return;
         }
+        // Deleting a published upload is housekeeping; a slow DELETE must not hold up the next batch.
         for key in uploads.get(task_id).into_iter().flatten() {
-            let _ = shared.temp.delete(key).await;
+            let (temp, key) = (shared.temp.clone(), key.clone());
+            tokio::spawn(async move { temp.delete(&key).await });
         }
     });
     futures::future::join_all(finishing).await;
