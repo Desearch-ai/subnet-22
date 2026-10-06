@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import json
+import math
 import logging
 import time
 import uuid
@@ -84,13 +85,19 @@ async def publish_open(core, now: float | None = None) -> bool:
     """Writes the open uploads, with their signed manifests, where validators read them."""
     uploads = []
     at = now or time.time()
-    for task_id in await core.validation.open_ids():
-        job = await core.validation.job(task_id)
-        if job is None or not job.get("manifest"):
-            continue
-        if job.get("deadline", at + CHECKABLE_LEFT_S) - at < CHECKABLE_LEFT_S:
-            continue
-        uploads.append(job["manifest"])
+    open_ids = await core.validation.open_ids()
+    known = core.open_manifests
+    for task_id in set(known) - set(open_ids):
+        del known[task_id]
+    for task_id in open_ids:
+        if task_id not in known:
+            job = await core.validation.job(task_id)
+            if job is None or not job.get("manifest"):
+                continue
+            known[task_id] = (job["manifest"], job.get("deadline", math.inf))
+        manifest, deadline = known[task_id]
+        if deadline - at >= CHECKABLE_LEFT_S:
+            uploads.append(manifest)
     listed = tuple(m["key"] for m in uploads)
     if listed == core.open_listed:
         return False

@@ -164,7 +164,8 @@ def test_a_claims_clock_starts_when_the_claim_is_handed_over(api_env, memory):
 def test_an_upload_too_close_to_its_deadline_is_not_listed_for_validators(
     api_env, memory
 ):
-    from tests.test_api_flow import open_list, opened
+    from desearch.manifest import OPEN_LIST_KEY
+    from tests.test_api_flow import opened
 
     async def scenario():
         async with Harness(memory) as h:
@@ -172,10 +173,13 @@ def test_an_upload_too_close_to_its_deadline_is_not_listed_for_validators(
             await h.miner.post(f"/v1/tasks/{task['task_id']}/complete", report)
             listed = [(await opened(h))["task_id"]]
             job = await h.core.validation.job(task["task_id"])
-            job["deadline"] = time.time() + lifecycle.CHECKABLE_LEFT_S - 30
-            await h.redis.set(f"vjob:{task['task_id']}", json.dumps(job))
-            later = [m["task_id"] for m in (await open_list(h))["uploads"]]
-            return listed, later
+            late = job["deadline"] - lifecycle.CHECKABLE_LEFT_S + 30
+            await lifecycle.publish_open(h.core, now=late)
+            body = h.core.storage.client.get_object(
+                Bucket=h.core.storage.bucket,
+                Key=h.core.storage.path(OPEN_LIST_KEY),
+            )["Body"].read()
+            return listed, [m["task_id"] for m in json.loads(body)["uploads"]]
 
     listed, later = asyncio.run(scenario())
     assert listed and later == []

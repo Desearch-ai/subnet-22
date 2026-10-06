@@ -107,6 +107,8 @@ class State:
         self.check_share = float(os.environ.get("TASK_API_CHECK_SHARE", sampling.SHARE))
         self.queue_target = int(os.environ.get("TASK_API_QUEUE_TARGET", QUEUE_TARGET))
         self.open_listed: tuple[str, ...] | None = None
+        # Each open upload's manifest and deadline, read once instead of on every listing.
+        self.open_manifests: dict[str, tuple[dict, float]] = {}
         self.tasks = {
             kind: queues.TaskQueue(redis, self.claim_ttl + rounds.UPLOAD_GRACE_S, kind)
             for kind in queues.KINDS
