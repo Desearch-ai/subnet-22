@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -158,3 +159,23 @@ def test_a_claims_clock_starts_when_the_claim_is_handed_over(api_env, memory):
             assert task["expires_at"] == expiry - rounds.UPLOAD_GRACE_S
 
     asyncio.run(scenario())
+
+
+def test_an_upload_too_close_to_its_deadline_is_not_listed_for_validators(
+    api_env, memory
+):
+    from tests.test_api_flow import open_list, opened
+
+    async def scenario():
+        async with Harness(memory) as h:
+            task, report = await uploaded(h)
+            await h.miner.post(f"/v1/tasks/{task['task_id']}/complete", report)
+            listed = [(await opened(h))["task_id"]]
+            job = await h.core.validation.job(task["task_id"])
+            job["deadline"] = time.time() + lifecycle.CHECKABLE_LEFT_S - 30
+            await h.redis.set(f"vjob:{task['task_id']}", json.dumps(job))
+            later = [m["task_id"] for m in (await open_list(h))["uploads"]]
+            return listed, later
+
+    listed, later = asyncio.run(scenario())
+    assert listed and later == []

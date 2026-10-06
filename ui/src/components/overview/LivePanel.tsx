@@ -7,7 +7,7 @@ import { EmptyState } from '@/components/ui/States'
 import { Table, Td, Th, Tr } from '@/components/ui/Table'
 import { TimeAgo } from '@/components/ui/TimeAgo'
 import { TICK_SECOND_MS, useNow } from '@/hooks/useNow'
-import { formatAbsolute, formatCountdown } from '@/lib/format'
+import { formatAbsolute, formatCountdown, formatInt } from '@/lib/format'
 import { minerPath, taskPath, validatorPath } from '@/lib/paths'
 
 function Countdown({ until }: { until: number }) {
@@ -116,6 +116,12 @@ function UploadsTable({ uploads }: { uploads: readonly LiveUpload[] }) {
   )
 }
 
+function shown(listed: number | undefined, total: number | undefined): string {
+  return listed !== undefined && total !== undefined && total > listed
+    ? `, the oldest ${formatInt(listed)} of ${formatInt(total)}`
+    : ''
+}
+
 export function LivePanel() {
   const query = useLive()
   return (
@@ -123,12 +129,15 @@ export function LivePanel() {
       <Card>
         <CardHeader
           title="Claimed now"
-          description="Tasks a miner holds and has not uploaded yet"
+          description={`Tasks a miner holds and has not uploaded yet${shown(query.data?.claims.length, query.data?.claims_total)}`}
         />
         <QueryState query={query}>{(live) => <ClaimsTable claims={live.claims} />}</QueryState>
       </Card>
       <Card>
-        <CardHeader title="Being checked now" description="Uploads validators are voting on" />
+        <CardHeader
+          title="Being checked now"
+          description={`Uploads validators are voting on${shown(query.data?.uploads.length, query.data?.uploads_total)}`}
+        />
         <QueryState query={query}>{(live) => <UploadsTable uploads={live.uploads} />}</QueryState>
       </Card>
     </div>

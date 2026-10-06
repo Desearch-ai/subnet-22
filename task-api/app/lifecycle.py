@@ -40,6 +40,8 @@ EMBED_ROUND_INPUTS = 200
 FINALIZE_LOCK_S = 300
 SETTLE_AT_ONCE = 16
 SLOW_ENQUEUE_S = 2.0
+# A check takes about a minute; an upload with less time left would be finalized before its votes land.
+CHECKABLE_LEFT_S = 180
 UNCHECKED = "unchecked"
 REPORTED_ROWS = "reported_rows"
 # Uploads with no counts in their report, or from a locked-out hotkey, are all checked.
@@ -81,10 +83,14 @@ def signed_manifest(core, job: dict) -> dict:
 async def publish_open(core, now: float | None = None) -> bool:
     """Writes the open uploads, with their signed manifests, where validators read them."""
     uploads = []
+    at = now or time.time()
     for task_id in await core.validation.open_ids():
         job = await core.validation.job(task_id)
-        if job is not None and job.get("manifest"):
-            uploads.append(job["manifest"])
+        if job is None or not job.get("manifest"):
+            continue
+        if job.get("deadline", at + CHECKABLE_LEFT_S) - at < CHECKABLE_LEFT_S:
+            continue
+        uploads.append(job["manifest"])
     listed = tuple(m["key"] for m in uploads)
     if listed == core.open_listed:
         return False

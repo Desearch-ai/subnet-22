@@ -70,6 +70,8 @@ export interface LiveUpload {
 export interface Live {
   claims: LiveClaim[]
   uploads: LiveUpload[]
+  claims_total: number
+  uploads_total: number
 }
 
 export interface MinerSummary extends VerdictCounts {

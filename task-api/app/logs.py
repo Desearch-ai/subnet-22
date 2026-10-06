@@ -206,7 +206,8 @@ async def in_progress(core) -> dict:
     uploads = []
     active = await core.validation.active()
     waiting = await core.validation.open_ids(LIVE_ROWS)
-    waiting += await core.validation.seeding_ids(LIVE_ROWS - len(waiting))
+    if len(waiting) < LIVE_ROWS:
+        waiting += await core.validation.seeding_ids(LIVE_ROWS - len(waiting))
     for task_id in waiting:
         job = await core.validation.job(task_id)
         if job is None:
@@ -230,6 +231,9 @@ async def in_progress(core) -> dict:
     return {
         "claims": [with_uids(core.registry, claim) for claim in claims],
         "uploads": [with_uids(core.registry, upload) for upload in uploads],
+        "claims_total": int(await core.redis.zcard(queues.CLAIMS)),
+        "uploads_total": await core.validation.depth()
+        + await core.validation.seeding(),
     }
 
 
