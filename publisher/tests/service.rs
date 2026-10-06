@@ -119,6 +119,7 @@ async fn the_service_publishes_reports_and_takes_back_as_the_python_one_does() {
         batch: 2,
         readers: 4,
         ranges: 4,
+        ahead: 2,
         index: dir.join("index"),
         cache_bytes: 8 << 20,
         idle_exit: 0,
@@ -236,6 +237,10 @@ async fn large_objects_go_up_in_parts_and_reads_survive_errors() {
     .unwrap();
     assert_eq!(stub.state.object(PAGES, "pre/big.bin").unwrap(), data);
     assert!(stub.state.count("PUT") >= 7, "{} parts", stub.state.count("PUT"));
+    let puts = stub.state.count("PUT");
+    pages.put_in_parts("parts.bin", Bytes::from(data.clone()), PARQUET, 64 << 10, 3).await.unwrap();
+    assert_eq!(stub.state.object(PAGES, "pre/parts.bin").unwrap(), data);
+    assert_eq!(stub.state.count("PUT") - puts, 7, "seven parts of at most 64 KiB");
 
     stub.state.fail("GET", &format!("{PAGES}/pre/big.bin"), 3);
     let read = pages.get_range("big.bin", 4..12, None).await.unwrap();

@@ -10,8 +10,10 @@ COPY Cargo.toml Cargo.lock ./
 COPY src src
 COPY bench bench
 ARG CARGO_BUILD_JOBS=4
-RUN cargo build --release --locked --bin publisher \
-    && strip target/release/publisher
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/src/target \
+    cargo build --release --locked --bin publisher \
+    && strip -o /publisher target/release/publisher
 
 FROM debian:bookworm-slim
 
@@ -22,7 +24,7 @@ RUN apt-get update \
     && mkdir -p /data \
     && chown publisher /data
 
-COPY --from=build /src/target/release/publisher /usr/local/bin/publisher
+COPY --from=build /publisher /usr/local/bin/publisher
 
 USER publisher
 ENV PUBLISHER_INDEX=/data/index \

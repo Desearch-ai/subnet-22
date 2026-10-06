@@ -148,6 +148,31 @@ impl Bucket {
         Ok(())
     }
 
+    /// A large object as parts sent `at_once`, since one stream to R2 tops out far below the link.
+    pub async fn put_in_parts(&self, key: &str, body: Bytes, content_type: &str, part_bytes: usize, at_once: usize) -> Result<(), Error> {
+        if body.len() <= part_bytes {
+            return self.put(key, body, content_type, None).await;
+        }
+        let upload_id = self.start_multipart(key, content_type).await?;
+        let parts = (0..body.len()).step_by(part_bytes).zip(1u32..).map(|(start, number)| (number, body.slice(start..(start + part_bytes).min(body.len()))));
+        let sent: Result<Vec<(u32, String)>, Error> = futures::stream::iter(parts)
+            .map(|(number, part)| {
+                let upload_id = &upload_id;
+                async move { Ok((number, self.upload_part(key, upload_id, number, part).await?)) }
+            })
+            .buffered(at_once.max(1))
+            .try_collect()
+            .await;
+        let finished = match sent {
+            Ok(parts) => self.complete_multipart(key, &upload_id, &parts).await,
+            Err(error) => Err(error),
+        };
+        if finished.is_err() {
+            let _ = self.abort_multipart(key, &upload_id).await;
+        }
+        finished
+    }
+
     pub async fn delete(&self, key: &str) -> Result<(), Error> {
         match self.call(Method::DELETE, Some(key), &[], HeaderMap::new(), Bytes::new(), SHORT).await {
             Ok(_) | Err(Error::Missing) => Ok(()),

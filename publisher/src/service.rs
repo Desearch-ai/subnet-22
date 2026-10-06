@@ -1,6 +1,6 @@
-//! The publisher as a service: claim batches from the task API's queue, read the next while this one is written, then report and acknowledge.
+//! The publisher as a service: claim batches from the task API's queue, read the next ones while this one is written, then report and acknowledge.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -26,6 +26,8 @@ use crate::worker::{self, ChangeFeed, Fault, Job, Read, Uploads};
 
 const RETRY_DELAY: Duration = Duration::from_secs(5);
 const SUMMARY_EVERY: Duration = Duration::from_secs(60);
+const CHANGE_PART_BYTES: usize = 8 << 20;
+const CHANGE_PARTS_AT_ONCE: usize = 8;
 
 pub struct Settings {
     pub redis_url: String,
@@ -35,6 +37,8 @@ pub struct Settings {
     pub readers: usize,
     /// Ranged reads in flight for one upload.
     pub ranges: usize,
+    /// Batches claimed and reading while one is written.
+    pub ahead: usize,
     pub index: PathBuf,
     pub cache_bytes: usize,
     /// Stop after this many passes in a row found nothing; 0 runs until stopped.
@@ -54,6 +58,7 @@ impl Settings {
             batch,
             readers: number("PUBLISHER_READERS", batch)?,
             ranges: number("PUBLISHER_RANGES", 8)?,
+            ahead: number("PUBLISHER_AHEAD", 2)?,
             index: PathBuf::from(text("PUBLISHER_INDEX", "publisher-index")),
             cache_bytes: number::<usize>("PUBLISHER_CACHE_MB", 1024)? << 20,
             idle_exit: number("PUBLISHER_IDLE_EXIT", 0)?,
@@ -167,7 +172,7 @@ impl ChangeFeed for R2Changes {
     fn append(&self, file: Vec<u8>, rows: usize) -> Result<u64> {
         let key = format!("changes/dt={}/{}.parquet", self.day, uuid::Uuid::new_v4().simple());
         self.handle.block_on(async {
-            self.pages.put(&key, Bytes::from(file), PARQUET, None).await.with_context(|| format!("writing {key}"))?;
+            self.pages.put_in_parts(&key, Bytes::from(file), PARQUET, CHANGE_PART_BYTES, CHANGE_PARTS_AT_ONCE).await.with_context(|| format!("writing {key}"))?;
             CHANGES.number(&self.pages, &self.redis, &key, rows).await
         })
     }
@@ -304,52 +309,34 @@ impl Snapshots {
 /// Publishes until `stop` turns true, then finishes the batches already claimed and claims no more; `idle_exit` passes in a row with nothing to do also stop it.
 pub async fn run(shared: Arc<Shared>, mut stop: watch::Receiver<bool>, idle_exit: u32) -> Result<()> {
     let mut idle = 0;
-    let mut ahead: Option<Claimed> = None;
+    let mut ahead: VecDeque<JoinHandle<Result<Option<Claimed>>>> = VecDeque::new();
     let mut snapshots = Snapshots::default();
     loop {
-        let current = match ahead.take() {
-            Some(claimed) => Some(claimed),
-            None if *stop.borrow() => break,
-            None => match start_batch(shared.clone()).await {
-                Ok(claimed) => claimed,
-                Err(error) => {
-                    eprintln!("claiming a batch failed: {error:#}");
+        let finishing = *stop.borrow() || (idle_exit > 0 && idle >= idle_exit);
+        while !finishing && ahead.len() <= shared.settings.ahead {
+            ahead.push_back(tokio::spawn(start_batch(shared.clone())));
+        }
+        let Some(next) = ahead.pop_front() else { break };
+        match next.await {
+            Ok(Ok(Some(current))) => {
+                idle = 0;
+                if let Err(error) = write_batch(&shared, current).await {
+                    eprintln!("publish pass failed: {error:#}");
                     pause(&mut stop, RETRY_DELAY).await;
-                    continue;
                 }
-            },
-        };
-        if let Some(current) = current {
-            idle = 0;
-            let following = (!*stop.borrow()).then(|| tokio::spawn(start_batch(shared.clone())));
-            if let Err(error) = write_batch(&shared, current).await {
-                eprintln!("publish pass failed: {error:#}");
+            }
+            Ok(Ok(None)) => idle += 1,
+            Ok(Err(error)) => {
+                eprintln!("claiming a batch failed: {error:#}");
                 pause(&mut stop, RETRY_DELAY).await;
             }
-            if let Some(following) = following {
-                ahead = match following.await {
-                    Ok(Ok(claimed)) => claimed,
-                    Ok(Err(error)) => {
-                        eprintln!("claiming a batch failed: {error:#}");
-                        None
-                    }
-                    Err(error) => {
-                        eprintln!("reading a batch failed: {error}");
-                        None
-                    }
-                };
-            }
-        } else {
-            idle += 1;
+            Err(error) => eprintln!("reading a batch failed: {error}"),
         }
         snapshots.daily(&shared);
         if let Err(error) = CHANGES.fill_holes(&shared.pages, shared.redis()).await {
             eprintln!("filling holes in the change feed failed: {error:#}");
         }
-        if ahead.is_none() && idle > 0 {
-            if idle_exit > 0 && idle >= idle_exit {
-                break;
-            }
+        if idle > 0 && !finishing {
             pause(&mut stop, shared.settings.idle_delay).await;
         }
     }
