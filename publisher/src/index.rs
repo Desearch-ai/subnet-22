@@ -16,7 +16,7 @@ use crate::records::{iso, SECOND};
 
 pub const WITHDRAWN_KEEP_S: f64 = 7.0 * 86_400.0;
 /// The index outgrows memory, so lookups are random disk reads; several readers at once keep the disk busy.
-pub const READERS: usize = 4;
+pub const READERS: usize = 8;
 const READ_CHUNK: usize = 500;
 const PAGES: &str = "pages";
 /// Task id, then page key: the pages a task's version is current for.
@@ -190,24 +190,48 @@ impl VersionIndex {
         Ok(self.db.write(batch)?)
     }
 
-    /// Pages whose current version came from these tasks.
+    /// Pages whose current version came from these tasks, read a task per reader at once.
     pub fn of_tasks(&self, task_ids: &[String]) -> Result<Vec<Withdrawn>> {
+        let next = AtomicUsize::new(0);
+        let mut found: Vec<(usize, Vec<Withdrawn>)> = std::thread::scope(|scope| {
+            let workers: Vec<_> = (0..self.readers.min(task_ids.len()).max(1))
+                .map(|_| {
+                    scope.spawn(|| {
+                        let mut done = Vec::new();
+                        loop {
+                            let i = next.fetch_add(1, Ordering::Relaxed);
+                            let Some(task_id) = task_ids.get(i) else {
+                                return Ok(done);
+                            };
+                            done.push((i, self.of_task(task_id)?));
+                        }
+                    })
+                })
+                .collect();
+            workers.into_iter().map(|w| w.join().expect("index reader panicked")).collect::<Result<Vec<_>>>()
+        })?
+        .into_iter()
+        .flatten()
+        .collect();
+        found.sort_by_key(|(i, _)| *i);
+        Ok(found.into_iter().flat_map(|(_, pages)| pages).collect())
+    }
+
+    fn of_task(&self, task_id: &str) -> Result<Vec<Withdrawn>> {
+        let prefix = task_key(task_id, "")?;
+        let mut keys = Vec::new();
+        for item in self.db.iterator_cf(self.family(TASKS), IteratorMode::From(&prefix, Direction::Forward)) {
+            let (entry, _) = item?;
+            let Some(key) = entry.strip_prefix(prefix.as_slice()) else {
+                break;
+            };
+            keys.push(String::from_utf8(key.to_vec()).context("a page key that is not UTF-8")?);
+        }
+        let keys: Vec<&str> = keys.iter().map(String::as_str).collect();
         let mut found = Vec::new();
-        for task_id in task_ids {
-            let prefix = task_key(task_id, "")?;
-            let mut keys = Vec::new();
-            for item in self.db.iterator_cf(self.family(TASKS), IteratorMode::From(&prefix, Direction::Forward)) {
-                let (entry, _) = item?;
-                let Some(key) = entry.strip_prefix(prefix.as_slice()) else {
-                    break;
-                };
-                keys.push(String::from_utf8(key.to_vec()).context("a page key that is not UTF-8")?);
-            }
-            let keys: Vec<&str> = keys.iter().map(String::as_str).collect();
-            for (key, current) in keys.iter().zip(self.currents(&keys)?) {
-                if let Some(current) = current.filter(|c| c.task_id == *task_id) {
-                    found.push(Withdrawn { key: key.to_string(), url: current.url, version: current.version, content_sha1: current.content_sha1 });
-                }
+        for (key, current) in keys.iter().zip(self.currents(&keys)?) {
+            if let Some(current) = current.filter(|c| c.task_id == task_id) {
+                found.push(Withdrawn { key: key.to_string(), url: current.url, version: current.version, content_sha1: current.content_sha1 });
             }
         }
         Ok(found)
@@ -243,16 +267,17 @@ impl VersionIndex {
     /// A withdrawal removes a page only while the withdrawn version is still current.
     pub fn remove(&self, removed: &[(String, String)]) -> Result<()> {
         let _writing = self.writing.lock().unwrap();
-        let mut gone = std::collections::HashSet::new();
+        let mut wanted: Vec<(&str, &str)> = removed.iter().map(|(key, version)| (key.as_str(), version.as_str())).collect();
+        wanted.sort_unstable();
+        wanted.dedup();
+        let mut keys: Vec<&str> = wanted.iter().map(|(key, _)| *key).collect();
+        keys.dedup();
         let mut batch = WriteBatch::default();
-        for (key, version) in removed {
-            if gone.contains(key) {
-                continue;
-            }
-            if let Some(current) = self.current(key)?.filter(|c| c.version == *version) {
+        for (key, current) in keys.iter().zip(self.currents(&keys)?) {
+            let Some(current) = current else { continue };
+            if wanted.binary_search(&(key, current.version.as_str())).is_ok() {
                 batch.delete_cf(self.family(PAGES), key);
                 batch.delete_cf(self.family(TASKS), task_key(&current.task_id, key)?);
-                gone.insert(key);
             }
         }
         Ok(self.db.write(batch)?)
