@@ -58,17 +58,21 @@ pub struct VersionIndex {
 impl VersionIndex {
     pub fn open(path: &Path, cache_bytes: usize) -> Result<Self> {
         let cache = Cache::new_lru_cache(cache_bytes);
-        let mut options = Options::default();
-        options.create_if_missing(true);
-        options.create_missing_column_families(true);
-        let cores = std::thread::available_parallelism().map_or(4, |n| n.get()) as i32;
-        options.set_max_background_jobs(cores.clamp(2, 8));
-        options.set_max_subcompactions(2);
-        options.set_max_open_files(4096);
-        // The task list is only ever scanned by prefix, so a whole-key filter would be memory spent for nothing.
-        let families = [(PAGES, true), (TASKS, false), (WITHDRAWN, true)].map(|(name, filtered)| ColumnFamilyDescriptor::new(name, family(&cache, filtered)));
-        let db = DB::open_cf_descriptors(&options, path, families).with_context(|| format!("opening the version index at {}", path.display()))?;
+        let db = DB::open_cf_descriptors(&options(), path, families(&cache)).with_context(|| format!("opening the version index at {}", path.display()))?;
         Ok(VersionIndex { db, readers: READERS, writing: Mutex::new(()) })
+    }
+
+    /// An index another process may be writing, or a checkpoint of one, for reading only.
+    pub fn open_read_only(path: &Path, cache_bytes: usize) -> Result<Self> {
+        let cache = Cache::new_lru_cache(cache_bytes);
+        let db = DB::open_cf_descriptors_read_only(&options(), path, families(&cache), false)
+            .with_context(|| format!("opening the version index at {} to read", path.display()))?;
+        Ok(VersionIndex { db, readers: READERS, writing: Mutex::new(()) })
+    }
+
+    /// A consistent copy of the index in `dir`, made of hard links to the same files, so it costs no copying.
+    pub fn checkpoint(&self, dir: &Path) -> Result<()> {
+        rocksdb::checkpoint::Checkpoint::new(&self.db)?.create_checkpoint(dir).with_context(|| format!("checkpointing the index into {}", dir.display()))
     }
 
     pub fn with_readers(mut self, readers: usize) -> Self {
@@ -257,11 +261,46 @@ impl VersionIndex {
     /// Every page the index holds, in key order.
     pub fn pages(&self) -> Result<Vec<(String, Current)>> {
         let mut pages = Vec::new();
-        for item in self.db.iterator_cf(self.family(PAGES), IteratorMode::Start) {
-            let (key, value) = item?;
-            pages.push((String::from_utf8(key.to_vec()).context("a page key that is not UTF-8")?, decode(&value)?));
-        }
+        self.scan(|key, current| {
+            pages.push((key, current));
+            Ok(())
+        })?;
         Ok(pages)
+    }
+
+    /// Every page in key order, one at a time, so the whole index never sits in memory.
+    pub fn scan(&self, mut each: impl FnMut(String, Current) -> Result<()>) -> Result<()> {
+        let mut read = rocksdb::ReadOptions::default();
+        read.fill_cache(false);
+        read.set_readahead_size(4 << 20);
+        for item in self.db.iterator_cf_opt(self.family(PAGES), read, IteratorMode::Start) {
+            let (key, value) = item?;
+            each(String::from_utf8(key.to_vec()).context("a page key that is not UTF-8")?, decode(&value)?)?;
+        }
+        Ok(())
+    }
+
+    pub fn is_empty(&self) -> Result<bool> {
+        Ok(self.db.iterator_cf(self.family(PAGES), IteratorMode::Start).next().transpose()?.is_none())
+    }
+
+    /// Pages written without reading what was there: only for filling an empty index.
+    pub fn load(&self, pages: &[(String, Current)]) -> Result<()> {
+        let mut batch = WriteBatch::default();
+        for (key, current) in pages {
+            batch.put_cf(self.family(PAGES), key, encode(current));
+            batch.put_cf(self.family(TASKS), task_key(&current.task_id, key)?, b"");
+        }
+        Ok(self.db.write(batch)?)
+    }
+
+    /// Withdrawn tasks with the time they were withdrawn, as they were kept elsewhere.
+    pub fn load_withdrawn(&self, withdrawn: &[(String, f64)]) -> Result<()> {
+        let mut batch = WriteBatch::default();
+        for (task_id, at) in withdrawn {
+            batch.put_cf(self.family(WITHDRAWN), task_id, at.to_le_bytes());
+        }
+        Ok(self.db.write(batch)?)
     }
 
     /// Withdrawn tasks and when they were withdrawn, in Unix seconds.
@@ -295,6 +334,22 @@ impl VersionIndex {
         }
         Ok(())
     }
+}
+
+fn options() -> Options {
+    let mut options = Options::default();
+    options.create_if_missing(true);
+    options.create_missing_column_families(true);
+    let cores = std::thread::available_parallelism().map_or(4, |n| n.get()) as i32;
+    options.set_max_background_jobs(cores.clamp(2, 8));
+    options.set_max_subcompactions(2);
+    options.set_max_open_files(4096);
+    options
+}
+
+fn families(cache: &Cache) -> [ColumnFamilyDescriptor; 3] {
+    // The task list is only ever scanned by prefix, so a whole-key filter would be memory spent for nothing.
+    [(PAGES, true), (TASKS, false), (WITHDRAWN, true)].map(|(name, filtered)| ColumnFamilyDescriptor::new(name, family(cache, filtered)))
 }
 
 fn family(cache: &Cache, filtered: bool) -> Options {

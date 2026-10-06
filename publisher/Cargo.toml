@@ -2,7 +2,7 @@
 name = "publisher"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.85"
+rust-version = "1.88"
 resolver = "3"
 publish = false
 description = "The SN22 publisher: validated uploads into the numbered change feed and the version index"
@@ -12,16 +12,26 @@ anyhow = "1"
 arrow-array = "59"
 arrow-cast = "59"
 arrow-schema = "59"
+base64 = "0.22"
 bytes = "1"
 clap = { version = "4", features = ["derive"] }
+flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
+futures = "0.3"
+hmac = "0.12"
 parquet = { version = "59", default-features = false, features = ["arrow", "zstd", "snap", "lz4", "flate2-zlib-rs", "brotli"] }
+redis = { version = "1", default-features = false, features = ["tokio-comp", "connection-manager", "script"] }
 regex = "1"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 rocksdb = { version = "0.23", default-features = false, features = ["zstd", "bindgen-runtime"] }
 serde = { version = "1", features = ["derive"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
 serde_json = "1"
 sha1 = "0.10"
+sha2 = "0.10"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "signal", "sync", "net", "io-util"] }
 unicode-normalization = "0.1"
 unicode-properties = { version = "0.1", default-features = false, features = ["general-category"] }
+uuid = { version = "1", features = ["v4"] }
 
 [target.'cfg(not(target_env = "msvc"))'.dependencies]
 tikv-jemallocator = "0.6"

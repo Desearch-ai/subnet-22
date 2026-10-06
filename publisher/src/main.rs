@@ -1,15 +1,15 @@
 //! publisher: publish validated uploads into the change feed and the version index.
 
 use std::path::PathBuf;
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 
 use publisher::index::VersionIndex;
 use publisher::local::{LocalFeed, LocalUploads};
-use publisher::outcomes;
 use publisher::worker::{self, Job};
+use publisher::{outcomes, service, sqlite, stub};
 
 #[cfg(not(target_env = "msvc"))]
 #[global_allocator]
@@ -24,8 +24,21 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Publish from the task API's queue in Redis to R2, configured from the environment, until SIGTERM.
+    Serve,
     /// Publish a JSON list of jobs whose uploads are `<task_id>.parquet` files in a folder.
     Local(LocalArgs),
+    /// Move the Python publisher's SQLite index into an empty RocksDB index.
+    ImportSqlite { sqlite: PathBuf, index: PathBuf },
+    /// Write the RocksDB index as a new SQLite file the Python publisher can open.
+    ExportSqlite { index: PathBuf, sqlite: PathBuf },
+    /// Serve a local stand-in for R2 that keeps objects as files under a folder; for local runs only.
+    StubR2 {
+        #[arg(long)]
+        root: PathBuf,
+        #[arg(long, default_value = "127.0.0.1:9000")]
+        listen: String,
+    },
 }
 
 #[derive(clap::Args)]
@@ -49,7 +62,43 @@ struct LocalArgs {
 }
 
 fn main() -> Result<()> {
-    let Command::Local(args) = Cli::parse().command;
+    match Cli::parse().command {
+        Command::Serve => {
+            let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().max_blocking_threads(1024).build()?;
+            let served = runtime.block_on(service::serve());
+            // An unfinished snapshot upload is left to the next start rather than holding up the exit.
+            runtime.shutdown_timeout(Duration::from_secs(5));
+            served
+        }
+        Command::Local(args) => local(args),
+        Command::ImportSqlite { sqlite: path, index } => {
+            let started = Instant::now();
+            let target = VersionIndex::open(&index, 256 << 20)?;
+            let moved = sqlite::import(&path, &target, sqlite::reporter("imported"))?;
+            target.compact();
+            println!("imported {} pages and {} withdrawn tasks in {:.0}s", moved.pages, moved.withdrawn, started.elapsed().as_secs_f64());
+            Ok(())
+        }
+        Command::ExportSqlite { index, sqlite: path } => {
+            let started = Instant::now();
+            let source = VersionIndex::open_read_only(&index, 256 << 20)?;
+            let moved = sqlite::export(&source, &path, sqlite::reporter("exported"))?;
+            println!("exported {} pages and {} withdrawn tasks in {:.0}s", moved.pages, moved.withdrawn, started.elapsed().as_secs_f64());
+            Ok(())
+        }
+        Command::StubR2 { root, listen } => {
+            let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
+            runtime.block_on(async {
+                let stub = stub::start(root.clone(), &listen).await?;
+                println!("serving {} as R2 on http://{}", root.display(), stub.addr);
+                tokio::signal::ctrl_c().await?;
+                anyhow::Ok(())
+            })
+        }
+    }
+}
+
+fn local(args: LocalArgs) -> Result<()> {
     let jobs: Vec<Job> = serde_json::from_slice(&std::fs::read(&args.jobs).with_context(|| format!("reading {}", args.jobs.display()))?)?;
     let index = VersionIndex::open(&args.index, args.cache_mb << 20)?;
     let uploads = LocalUploads::new(&args.uploads);

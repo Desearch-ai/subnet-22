@@ -29,6 +29,9 @@ pub struct Job {
     pub key: Option<String>,
     #[serde(default)]
     pub etag: Option<String>,
+    /// An embed job's input file in the temp bucket, deleted with the upload when the job is done.
+    #[serde(default)]
+    pub input_key: Option<String>,
     #[serde(default)]
     pub urls: Vec<String>,
     #[serde(default)]

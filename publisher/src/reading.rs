@@ -36,6 +36,11 @@ const BATCH_ROWS: usize = 1024;
 pub trait RangeRead: Send + Sync {
     fn size(&self) -> u64;
     fn read(&self, range: Range<u64>) -> io::Result<Bytes>;
+
+    /// Several ranges in order; a remote source fetches them at once.
+    fn read_many(&self, ranges: &[Range<u64>]) -> io::Result<Vec<Bytes>> {
+        ranges.iter().map(|range| self.read(range.clone())).collect()
+    }
 }
 
 pub struct LocalFile {
@@ -81,9 +86,13 @@ impl<R: RangeRead> RangeRead for Counted<R> {
     }
 
     fn read(&self, range: Range<u64>) -> io::Result<Bytes> {
-        self.traffic.requests.fetch_add(1, Ordering::Relaxed);
-        self.traffic.bytes.fetch_add(range.end - range.start, Ordering::Relaxed);
-        self.inner.read(range)
+        self.read_many(std::slice::from_ref(&range)).map(|mut found| found.remove(0))
+    }
+
+    fn read_many(&self, ranges: &[Range<u64>]) -> io::Result<Vec<Bytes>> {
+        self.traffic.requests.fetch_add(ranges.len() as u64, Ordering::Relaxed);
+        self.traffic.bytes.fetch_add(ranges.iter().map(|r| r.end - r.start).sum(), Ordering::Relaxed);
+        self.inner.read_many(ranges)
     }
 }
 
@@ -121,8 +130,14 @@ pub fn read_rows(source: &dyn RangeRead, assigned: usize) -> io::Result<Option<V
         return Ok(None);
     }
     let mut tail_start = size.saturating_sub(TAIL_BYTES);
-    let mut tail = source.read(tail_start..size)?;
-    let head = if tail_start == 0 { tail.slice(..4) } else { source.read(0..4)? };
+    let (head, mut tail) = if tail_start == 0 {
+        let whole = source.read(0..size)?;
+        (whole.slice(..4), whole)
+    } else {
+        let mut found = source.read_many(&[0..4, tail_start..size])?;
+        let tail = found.pop().unwrap_or_default();
+        (found.pop().unwrap_or_default(), tail)
+    };
     let Some(length) = footer_length(size, &head, &tail) else {
         return Ok(None);
     };
@@ -151,11 +166,10 @@ pub fn read_rows(source: &dyn RangeRead, assigned: usize) -> io::Result<Option<V
             chunks.push(start..start + length);
         }
     }
-    let mut fetched = Vec::new();
-    for range in coalesce(chunks) {
-        fetched.push((range.start, source.read(range)?));
-    }
-    Ok(decode(Prefetched { size, ranges: fetched }, metadata, assigned))
+    let ranges = coalesce(chunks);
+    let fetched = source.read_many(&ranges)?;
+    let ranges = ranges.iter().map(|r| r.start).zip(fetched).collect();
+    Ok(decode(Prefetched { size, ranges }, metadata, assigned))
 }
 
 fn coalesce(mut chunks: Vec<Range<u64>>) -> Vec<Range<u64>> {
