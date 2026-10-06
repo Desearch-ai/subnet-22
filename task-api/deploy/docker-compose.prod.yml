@@ -20,7 +20,7 @@ x-r2-env: &r2-env
 services:
   redis:
     image: redis:7-alpine
-    command: ["redis-server", "--appendonly", "yes", "--maxmemory-policy", "noeviction"]
+    command: ["redis-server", "--appendonly", "yes", "--save", "", "--maxmemory-policy", "noeviction"]
     volumes: ["redis-data:/data"]
     restart: unless-stopped
 

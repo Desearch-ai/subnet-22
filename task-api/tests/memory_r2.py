@@ -67,6 +67,10 @@ class MemoryR2:
             raise _error("PreconditionFailed", 412, "PutObject")
         return {"ETag": self._store(Bucket, Key, bytes(Body), ContentType, Metadata)}
 
+    def upload_file(self, Filename, Bucket, Key, ExtraArgs=None):
+        body = Path(Filename).read_bytes()
+        self._store(Bucket, Key, body, (ExtraArgs or {}).get("ContentType", ""), {})
+
     def get_object(self, Bucket, Key, IfMatch=None, Range=None):
         found = self._found(Bucket, Key, "GetObject")
         if IfMatch and found["etag"] != IfMatch:

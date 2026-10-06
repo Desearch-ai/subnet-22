@@ -142,3 +142,28 @@ def test_uploads_read_by_reader_processes_come_back_in_order_with_what_stopped_t
     for n in (0, 1, 2, 4):
         records, missed = found[n]
         assert [r["task_id"] for r in records] == [f"t{n}"] and missed == []
+
+
+def test_the_daily_index_snapshot_is_taken_once_even_across_restarts(memory, tmp_path):
+    import asyncio
+
+    temp, pages = buckets(memory)
+    index = VersionIndex(str(tmp_path / "index.sqlite"))
+    index.store([_indexed({**observed(1, T0, "t1"), "key": "k", "version": "v1"})])
+
+    def snapshots() -> list[str]:
+        listed = pages.client.list_objects_v2(
+            Bucket=pages.bucket, Prefix=pages.path("index/snapshots/")
+        )
+        return [item["Key"] for item in listed.get("Contents", [])]
+
+    first = Publisher(None, temp, pages, workers=2, index=index)
+    asyncio.run(first.snapshot_daily())
+    taken = memory.memory.objects[(pages.bucket, snapshots()[0])]["body"]
+    restarted = Publisher(None, temp, pages, workers=2, index=index)
+    memory.memory.objects[(pages.bucket, snapshots()[0])]["body"] = b"kept"
+    asyncio.run(restarted.snapshot_daily())
+
+    assert len(snapshots()) == 1 and taken.startswith(b"SQLite format 3")
+    assert memory.memory.objects[(pages.bucket, snapshots()[0])]["body"] == b"kept"
+    first.close()

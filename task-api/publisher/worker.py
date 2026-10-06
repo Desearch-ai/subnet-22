@@ -438,18 +438,23 @@ class Publisher:
         if day == self.snapshot_day:
             return
         self.snapshot_day = day
-        with tempfile.TemporaryDirectory() as folder:
+        key = f"index/snapshots/{day}.sqlite"
+        # A restart must not copy the whole index again; it outgrows memory, so it is uploaded from disk.
+        if await self.pages.stat(key):
+            return
+        beside = (
+            None if self.index.path == ":memory:" else os.path.dirname(self.index.path)
+        )
+        with tempfile.TemporaryDirectory(dir=beside or None) as folder:
             path = os.path.join(folder, "index.sqlite")
             try:
                 await asyncio.to_thread(self.index.backup_to, path)
-                with open(path, "rb") as handle:
-                    body = handle.read()
                 await asyncio.to_thread(
-                    self.pages.client.put_object,
-                    Bucket=self.pages.bucket,
-                    Key=self.pages.path(f"index/snapshots/{day}.sqlite"),
-                    Body=body,
-                    ContentType="application/vnd.sqlite3",
+                    self.pages.client.upload_file,
+                    path,
+                    self.pages.bucket,
+                    self.pages.path(key),
+                    ExtraArgs={"ContentType": "application/vnd.sqlite3"},
                 )
             except Exception:
                 log.exception("could not snapshot the version index")
