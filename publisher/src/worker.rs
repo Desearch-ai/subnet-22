@@ -3,6 +3,7 @@
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicUsize, Ordering as Atomic};
+use std::time::Instant;
 
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
@@ -235,6 +236,8 @@ pub struct Batch {
     pub retry: Vec<(String, String)>,
     pub change_seq: Option<u64>,
     pub change_bytes: usize,
+    /// Seconds into the write when the pages were decided, the change file stored and the index updated.
+    pub steps: [f64; 3],
 }
 
 /// Publishes one batch of jobs; `now` is microseconds since the epoch, `readers` the uploads read at once.
@@ -245,6 +248,7 @@ pub fn publish(jobs: &[Job], uploads: &dyn Uploads, index: &VersionIndex, feed: 
 
 /// The second half of a batch, from the jobs' reads in the jobs' order; the next batch can be read meanwhile.
 pub fn write(jobs: &[Job], reads: Vec<Read>, index: &VersionIndex, feed: &dyn ChangeFeed, now: i64) -> Result<Batch> {
+    let started = Instant::now();
     let mut batch = Batch::default();
     let withdrawn: Vec<String> = jobs.iter().filter(|job| job.is(WITHDRAW)).flat_map(|job| job.task_ids.iter().cloned()).collect();
     if !withdrawn.is_empty() {
@@ -283,6 +287,7 @@ pub fn write(jobs: &[Job], reads: Vec<Read>, index: &VersionIndex, feed: &dyn Ch
     }
     let published_at = iso(now);
     let (mut changes, unchanged) = decide(chosen.into_pages(), index, &published_at)?;
+    batch.steps[0] = started.elapsed().as_secs_f64();
     // A withdrawn page that this batch replaces with a newer version is replaced, not removed.
     let replaced: HashSet<&str> = changes.iter().map(|change| change.key.as_str()).collect();
     removals.retain(|removal| !replaced.contains(removal.key.as_str()));
@@ -300,10 +305,12 @@ pub fn write(jobs: &[Job], reads: Vec<Read>, index: &VersionIndex, feed: &dyn Ch
         batch.change_bytes = file.len();
         let seq = feed.append(file, changes.len())?;
         batch.change_seq = Some(seq);
+        batch.steps[1] = started.elapsed().as_secs_f64();
         index.store(&indexed(&changes[..published], seq as i64))?;
         index.remove(&removals.iter().map(|r| (r.key.clone(), r.version.clone())).collect::<Vec<_>>())?;
     }
     index.touch(&unchanged.iter().map(|page| (page.key.clone(), page.record.fetched_at.clone())).collect::<Vec<_>>())?;
+    batch.steps[2] = started.elapsed().as_secs_f64();
     batch.removed = removals;
     batch.changes = changes;
     batch.unchanged = unchanged;

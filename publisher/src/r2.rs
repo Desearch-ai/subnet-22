@@ -30,6 +30,11 @@ const SHORT: Duration = Duration::from_secs(30);
 const READ: Duration = Duration::from_secs(10);
 const LONG: Duration = Duration::from_secs(300);
 
+/// Long enough to send `bytes` at 1 MB/s, so a stalled upload is retried rather than waited on for minutes.
+fn sending(bytes: usize) -> Duration {
+    READ + Duration::from_secs((bytes >> 20) as u64)
+}
+
 #[derive(Clone)]
 pub struct Credentials {
     pub access_key: String,
@@ -151,7 +156,8 @@ impl Bucket {
         if let Some(cache_control) = cache_control {
             headers.insert(reqwest::header::CACHE_CONTROL, value(cache_control));
         }
-        self.call(Method::PUT, Some(key), &[], headers, body, LONG).await?;
+        let timeout = sending(body.len());
+        self.call(Method::PUT, Some(key), &[], headers, body, timeout).await?;
         Ok(())
     }
 
@@ -197,7 +203,8 @@ impl Bucket {
     /// One part of a multipart upload; returns its entity tag.
     pub async fn upload_part(&self, key: &str, upload_id: &str, number: u32, body: Bytes) -> Result<String, Error> {
         let number = number.to_string();
-        let (headers, _) = self.call(Method::PUT, Some(key), &[("partNumber", &number), ("uploadId", upload_id)], HeaderMap::new(), body, LONG).await?;
+        let timeout = sending(body.len());
+        let (headers, _) = self.call(Method::PUT, Some(key), &[("partNumber", &number), ("uploadId", upload_id)], HeaderMap::new(), body, timeout).await?;
         Ok(headers.get("etag").and_then(|v| v.to_str().ok()).unwrap_or_default().to_string())
     }
 
@@ -207,7 +214,7 @@ impl Bucket {
             xml.push_str(&format!("<Part><PartNumber>{number}</PartNumber><ETag>{etag}</ETag></Part>"));
         }
         xml.push_str("</CompleteMultipartUpload>");
-        let (_, body) = self.call(Method::POST, Some(key), &[("uploadId", upload_id)], HeaderMap::new(), Bytes::from(xml), LONG).await?;
+        let (_, body) = self.call(Method::POST, Some(key), &[("uploadId", upload_id)], HeaderMap::new(), Bytes::from(xml), SHORT).await?;
         // S3 can answer 200 and still report the failure in the body.
         if xml_field(&body, "Code").is_some() {
             return Err(Error::Status(200, String::from_utf8_lossy(&body).into_owned()));

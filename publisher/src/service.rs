@@ -242,13 +242,16 @@ pub async fn write_batch(shared: &Shared, claimed: Claimed) -> Result<usize> {
     m.lost.fetch_add(batch.lost.len() as u64, Ordering::Relaxed);
     m.retried.fetch_add(batch.retry.len() as u64, Ordering::Relaxed);
     println!(
-        "published {} tasks, {} pages new or changed, {} withdrawn in {:.1}s (read by {:.1}s, written by {:.1}s); {} unchanged, {} URLs failed, {} lost, {} left to retry, change file {}",
+        "published {} tasks, {} pages new or changed, {} withdrawn in {:.1}s (read by {:.1}s, written by {:.1}s: decided {:.1}s, stored {:.1}s, indexed {:.1}s); {} unchanged, {} URLs failed, {} lost, {} left to retry, change file {}",
         batch.finalized.len(),
         published,
         batch.removed.len(),
         started.elapsed().as_secs_f64(),
         read_s,
         written_s,
+        batch.steps[0],
+        batch.steps[1],
+        batch.steps[2],
         batch.unchanged.len(),
         batch.failed.len(),
         batch.lost.len(),
