@@ -43,6 +43,10 @@ REDIS_DOWN = (redis_errors.ConnectionError, redis_errors.TimeoutError, redis_err
 UNAVAILABLE_RETRY_S = 2
 JANITOR_INTERVAL_S = 1.0
 ROUNDS_INTERVAL_S = 5.0
+# A day after closing, a round keeps only each batch's URL count and hash, and a verdict drops its publish job.
+LISTS_KEEP_S = 86_400
+SEAL_ROUNDS = 20
+DROP_VERDICTS = 200
 COMPLETE_LOCK_S = 300
 COMPLETED_TTL_S = 900
 COMPLETE_WAIT_S = 20.0
@@ -724,6 +728,9 @@ async def _janitor(core: State) -> None:
                 await lifecycle.reveal_pending(core)
                 await lifecycle.close_finished(core)
                 await outcomes.fill_holes(core.storage, core.redis)
+                kept_after = time.time() - LISTS_KEEP_S
+                await core.db(core.rounds.seal_closed, kept_after, SEAL_ROUNDS)
+                await core.db(core.validations.drop_publish_copies, kept_after, DROP_VERDICTS)
                 rounds_at = time.monotonic()
             if time.monotonic() - logged_at >= UPLOAD_LOG_INTERVAL_S:
                 logged_at = time.monotonic()

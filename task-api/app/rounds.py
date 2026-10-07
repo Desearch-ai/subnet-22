@@ -24,16 +24,20 @@ class Batch:
     urls: list[Url]
     # What a task of this kind carries beyond its URLs, e.g. an embed batch's input file.
     extra: dict = field(default_factory=dict)
+    # The count and hash a closed round's URLs had, kept once the URLs themselves are dropped.
+    sealed: dict | None = None
 
     def urls_hash(self) -> str:
         return proofs.sha256(proofs.canonical_json([u.url for u in self.urls]))
 
-    def manifest_entry(self) -> dict:
-        entry = {
-            "batch_id": self.batch_id,
+    def seal(self) -> dict:
+        return self.sealed or {
             "url_count": len(self.urls),
             "urls_hash": self.urls_hash(),
         }
+
+    def manifest_entry(self) -> dict:
+        entry = {"batch_id": self.batch_id, **self.seal()}
         if "input_sha256" in self.extra:
             entry["input_sha256"] = self.extra["input_sha256"]
         return entry

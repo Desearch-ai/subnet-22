@@ -39,18 +39,15 @@ class RoundStore:
                 WHERE seed IS NOT NULL AND filled_at IS NULL AND closed_at IS NULL;
             CREATE INDEX IF NOT EXISTS rounds_open_filled ON rounds (round_id)
                 WHERE seed IS NOT NULL AND filled_at IS NOT NULL AND closed_at IS NULL;
+            CREATE INDEX IF NOT EXISTS rounds_closed ON rounds (closed_at)
+                WHERE closed_at IS NOT NULL;
+            CREATE TABLE IF NOT EXISTS retention (name TEXT PRIMARY KEY, mark REAL NOT NULL);
             """
         )
         self.db.commit()
 
     def save(self, round_: Round) -> None:
-        batches = {
-            batch_id: {
-                "urls": [[u.host, u.url] for u in batch.urls],
-                "extra": batch.extra,
-            }
-            for batch_id, batch in round_.batches.items()
-        }
+        batches = {batch_id: stored(batch) for batch_id, batch in round_.batches.items()}
         self.db.execute(
             f"INSERT INTO rounds ({COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
             " ON CONFLICT (round_id) DO UPDATE SET seed = excluded.seed,"
@@ -121,6 +118,34 @@ class RoundStore:
         ).fetchall()
         return dict(rows)
 
+    def seal_closed(self, closed_before: float, limit: int) -> int:
+        """Drops the URLs of rounds closed before `closed_before`, keeping each batch's count and hash."""
+        (mark,) = self.db.execute(
+            "SELECT COALESCE((SELECT mark FROM retention WHERE name = 'rounds'), 0)"
+        ).fetchone()
+        rows = self.db.execute(
+            "SELECT round_id, closed_at, batches FROM rounds INDEXED BY rounds_closed"
+            " WHERE closed_at >= ? AND closed_at < ? ORDER BY closed_at LIMIT ?",
+            (mark, closed_before, limit),
+        ).fetchall()
+        for round_id, _, batches in rows:
+            sealed = {
+                batch_id: stored(sealed_batch(batch_id, batch))
+                for batch_id, batch in json.loads(batches).items()
+            }
+            self.db.execute(
+                "UPDATE rounds SET batches = ? WHERE round_id = ?",
+                (json.dumps(sealed), round_id),
+            )
+        if rows:
+            self.db.execute(
+                "INSERT INTO retention VALUES ('rounds', ?)"
+                " ON CONFLICT (name) DO UPDATE SET mark = excluded.mark",
+                (rows[-1][1],),
+            )
+        self.db.commit()
+        return len(rows)
+
     def close(self, round_id: str, at: float) -> None:
         self.db.execute(
             "UPDATE rounds SET closed_at = ? WHERE round_id = ?", (at, round_id)
@@ -174,6 +199,7 @@ def _round(row: tuple) -> Round:
                 batch_id,
                 [Url(host, url) for host, url in stored["urls"]],
                 stored["extra"],
+                stored.get("sealed"),
             )
             for batch_id, stored in json.loads(batches).items()
         },
@@ -185,3 +211,17 @@ def _round(row: tuple) -> Round:
         order=json.loads(order),
         closed_at=closed_at,
     )
+
+
+def stored(batch: Batch) -> dict:
+    """A batch as the rounds table keeps it."""
+    entry = {"urls": [[u.host, u.url] for u in batch.urls], "extra": batch.extra}
+    if batch.sealed:
+        entry["sealed"] = batch.sealed
+    return entry
+
+
+def sealed_batch(batch_id: str, entry: dict) -> Batch:
+    urls = [Url(host, url) for host, url in entry["urls"]]
+    batch = Batch(batch_id, urls, entry["extra"], entry.get("sealed"))
+    return Batch(batch_id, [], batch.extra, batch.seal())
