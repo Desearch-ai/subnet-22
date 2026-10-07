@@ -852,7 +852,7 @@ pub fn backfill(buckets: &Buckets, per_second: u64, progress: &Progress, stop: &
 }
 
 /// Each item's work on one of the reader threads, results in the items' order.
-fn on_readers<T: Send, R: Send>(items: Vec<T>, work: impl Fn(T) -> Result<R> + Sync) -> Result<Vec<R>> {
+pub fn on_readers<T: Send, R: Send>(items: Vec<T>, work: impl Fn(T) -> Result<R> + Sync) -> Result<Vec<R>> {
     let items: Vec<Mutex<Option<T>>> = items.into_iter().map(|item| Mutex::new(Some(item))).collect();
     let done: Vec<Mutex<Option<Result<R>>>> = items.iter().map(|_| Mutex::new(None)).collect();
     let next = AtomicUsize::new(0);
