@@ -82,6 +82,8 @@ class Harness:
         await self.redis.flushdb()
         self.app = create_app(self.redis)
         self.core = self.app.state.core
+        # Running since long before any claim, so no claim counts as held through a restart.
+        self.core.started_at = float("-inf")
         # Two namespaces, so a result in the wrong bucket is caught.
         self.core.storage = self.backend.storage()
         self.core.pages = self.backend.storage(

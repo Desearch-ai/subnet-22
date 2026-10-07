@@ -244,17 +244,21 @@ async def finish_task(core, round_id: str, task_id: str) -> None:
     await core.redis.srem(open_round_key(round_id), task_id)
 
 
-async def reclaim_expired(core) -> list[tuple[str, str]]:
+async def reclaim_expired(core, now: float | None = None) -> list[tuple[str, str]]:
     reclaimed = []
-    for task_id in await core.tasks[CRAWL].expired():
+    for task_id in await core.tasks[CRAWL].expired(now):
         payload = await core.payload(task_id) or {}
         kind = payload.get("kind", CRAWL)
-        found = await core.tasks[kind].reclaim(task_id)
+        expiry = await core.tasks[kind].claim_expiry(task_id)
+        found = await core.tasks[kind].reclaim(task_id, now)
         if found is None:
             continue
         holder, seq = found
+        # Claimed before this process started: the miner may have tried to finish while we were down.
+        forgiven = expiry is not None and expiry <= core.started_at + core.tasks[kind].claim_ttl
         if holder:
-            await core.db(lapse, core, holder, task_id, payload, "claim_expired")
+            if not forgiven:
+                await core.db(lapse, core, holder, task_id, payload, "claim_expired")
             await core.record(
                 payload.get("round_id") or core.current.get(kind, ""),
                 holder,
@@ -262,7 +266,7 @@ async def reclaim_expired(core) -> list[tuple[str, str]]:
                 "reclaimed",
                 seq,
                 task_id=task_id,
-                cause="expired",
+                cause="restart" if forgiven else "expired",
             )
         reclaimed.append((task_id, holder))
     return reclaimed

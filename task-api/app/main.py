@@ -13,6 +13,7 @@ from fastapi import Body, Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
+from redis import exceptions as redis_errors
 
 from . import lifecycle, logs, outcomes, queues, rounds, sampling, uploadlog
 from .auth import Authenticator, Caller, client_address
@@ -37,6 +38,9 @@ from .validations import (
 )
 
 DEFAULT_REDIS = "redis://localhost:6379/15"
+# Redis unreachable, restarting or not yet promoted: callers are told to come back instead of seeing errors.
+REDIS_DOWN = (redis_errors.ConnectionError, redis_errors.TimeoutError, redis_errors.ReadOnlyError)
+UNAVAILABLE_RETRY_S = 2
 JANITOR_INTERVAL_S = 1.0
 ROUNDS_INTERVAL_S = 5.0
 COMPLETE_LOCK_S = 300
@@ -62,6 +66,18 @@ RETRY_AFTER_S = {
 DEFAULT_ORIGINS = "http://localhost:5173,http://localhost:8081,http://127.0.0.1:5173,http://127.0.0.1:8081"
 
 log = logging.getLogger("task_api")
+
+
+def unavailable(request: Request) -> JSONResponse:
+    """A claim finds no tasks; anything else is asked to retry."""
+    if request.url.path == "/v1/tasks/claim":
+        refusal = {"code": "UNAVAILABLE", "inputs": {"retry_after": UNAVAILABLE_RETRY_S}}
+        return JSONResponse({"tasks": [], "refusal": refusal, "receipt": None})
+    return JSONResponse(
+        {"detail": "temporarily unavailable, retry"},
+        status_code=503,
+        headers={"Retry-After": str(UNAVAILABLE_RETRY_S)},
+    )
 
 
 def create_app(redis=None) -> FastAPI:
@@ -97,13 +113,16 @@ def create_app(redis=None) -> FastAPI:
 
     @app.middleware("http")
     async def limit_requests(request: Request, call_next):
-        if request.method == "GET":
-            is_log = request.url.path.startswith(logs.PATHS)
-            wait = await core.read_wait(client_address(request), is_log)
-        elif request.method == "POST":
-            wait = await core.write_wait(client_address(request))
-        else:
-            wait = None
+        try:
+            if request.method == "GET":
+                is_log = request.url.path.startswith(logs.PATHS)
+                wait = await core.read_wait(client_address(request), is_log)
+            elif request.method == "POST":
+                wait = await core.write_wait(client_address(request))
+            else:
+                wait = None
+        except REDIS_DOWN:
+            return unavailable(request)
         if wait is not None:
             return JSONResponse(
                 {"detail": "too many requests"},
@@ -111,6 +130,12 @@ def create_app(redis=None) -> FastAPI:
                 headers={"Retry-After": str(wait)},
             )
         return await call_next(request)
+
+    async def redis_down(request: Request, _: Exception) -> JSONResponse:
+        return unavailable(request)
+
+    for error in REDIS_DOWN:
+        app.add_exception_handler(error, redis_down)
 
     @app.exception_handler(logs.Busy)
     async def busy(_: Request, __: logs.Busy):

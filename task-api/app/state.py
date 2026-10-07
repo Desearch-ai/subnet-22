@@ -116,6 +116,7 @@ class State:
         )
         # Each open upload's manifest and deadline, read once instead of on every listing.
         self.open_manifests: dict[str, tuple[dict, float]] = {}
+        self.started_at = time.time()
         self.tasks = {
             kind: queues.TaskQueue(redis, self.claim_ttl + rounds.UPLOAD_GRACE_S, kind)
             for kind in queues.KINDS
