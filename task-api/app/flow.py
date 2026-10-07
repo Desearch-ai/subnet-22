@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from collections import deque
 
-# Work in the system the bot may fill to, in seconds of publishing at the measured rate.
-LAG_TARGET_S = 600
+# Work in the system the bot may fill to, in seconds of publishing at the measured rate; well above the ~10 min a task takes end to end.
+LAG_TARGET_S = 1800
 # Claims stop once this much is waiting to be published.
 LAG_LIMIT_S = 1800
 # Assumed until the publisher has been measured, so a fresh start is not held at zero.
