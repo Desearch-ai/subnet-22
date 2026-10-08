@@ -77,13 +77,13 @@ impl Db {
     }
 }
 
-/// The log reader is busy; the caller is asked to come back.
+/// Every read connection of a pool is busy; the caller is asked to come back.
 #[derive(Debug)]
 pub struct Busy;
 
 impl std::fmt::Display for Busy {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("the log reader is busy")
+        f.write_str("the database readers are busy")
     }
 }
 

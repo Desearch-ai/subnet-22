@@ -1,6 +1,4 @@
-//! Production load on the task API: a bot at 50M URLs an hour with its five-minute burst, 200 miners, two validators,
-//! a publisher, a chain that blocks every 12 s and refuses for two minutes, and a second copy taking over mid-run.
-//! `LOAD_MINUTES=24 cargo test --release --test api load -- --ignored --nocapture`
+//! The task API at 50M URLs an hour: `LOAD_MINUTES=24 cargo test --release --test api load -- --ignored --nocapture`.
 
 use std::collections::{BTreeMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -180,7 +178,6 @@ async fn the_api_carries_50m_urls_an_hour() {
     let janitor_a = tokio::spawn(janitor::run(h.state.clone(), stopped_a));
     let mut tasks = Vec::new();
 
-    // The bot: room every pass, batches of 10k URLs four at a time, a pace that saves up five minutes.
     {
         let (bot, done, log) = (signer(Hotkey::from_uri(ADMIN).unwrap()), done.clone(), log.clone());
         let base = format!("{:x}", rand::random::<u32>());
@@ -231,7 +228,6 @@ async fn the_api_carries_50m_urls_an_hour() {
         }));
     }
 
-    // Miners: hold up to a few tasks each, crawl 30-120 s, upload, complete; idle polls honour retry_after.
     for key in miners {
         let (miner, done, log) = (signer(key), done.clone(), log.clone());
         tasks.push(tokio::spawn(async move {
@@ -281,7 +277,6 @@ async fn the_api_carries_50m_urls_an_hour() {
         }));
     }
 
-    // Validators: read the open list from storage, check each listed upload once, 20-40 s a check, with per-URL detail.
     for uri in [VALIDATOR, OTHER_VALIDATOR] {
         let (validator, done, log) = (signer(Hotkey::from_uri(uri).unwrap()), done.clone(), log.clone());
         let stub = h.stub.state.clone();
@@ -323,7 +318,6 @@ async fn the_api_carries_50m_urls_an_hour() {
         }));
     }
 
-    // The publisher: up to 80 jobs a claim at 1,200 jobs a minute, each acknowledged.
     {
         let (redis, done, log) = (h.redis.clone(), done.clone(), log.clone());
         tasks.push(tokio::spawn(async move {
@@ -346,7 +340,6 @@ async fn the_api_carries_50m_urls_an_hour() {
         }));
     }
 
-    // Probes: how long the writer and the lookup readers take to start a job, and how long a ping takes.
     let primary = Arc::new(RwLock::new(h.state.clone()));
     {
         let (primary, done, log, targets, http) = (primary.clone(), done.clone(), log.clone(), targets.clone(), http.clone());
@@ -368,7 +361,6 @@ async fn the_api_carries_50m_urls_an_hour() {
         }));
     }
 
-    // Snapshots every 30 s: backlogs, counters, chain calls, Redis memory, our memory.
     {
         let (done, log, targets, http, fake, redis) = (done.clone(), log.clone(), targets.clone(), http.clone(), fake.clone(), h.redis.clone());
         tasks.push(tokio::spawn(async move {
@@ -408,7 +400,6 @@ async fn the_api_carries_50m_urls_an_hour() {
         }));
     }
 
-    // The script: chain refusals, then a second copy takes over as in a rolling deploy.
     let at = |fraction: f64| total.mul_f64(fraction);
     let mut events = Vec::new();
     tokio::time::sleep(at(6.0 / 24.0)).await;

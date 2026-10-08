@@ -223,12 +223,13 @@ pub async fn open_embed_rounds(state: &State) -> Result<Option<Round>> {
         let target = state.seeds.target_block().await?;
         let round = rounds::open_batches(batches, target, EMBED, now());
         let sealed = round.sealed();
-        save_round(state, &sealed, &queues::pack_job(&round.url_lists())).await?;
-        let queued = sealed.clone();
+        queues::stage(&state.redis, &sealed.round_id, &queues::pack_job(&round.url_lists())).await?;
+        let saved = sealed.clone();
         state
             .db
             .run(move |conn| {
-                for batch in &queued.batches {
+                roundstore::save(conn, &saved)?;
+                for batch in &saved.batches {
                     let pages = batch.extra["pages"].as_array().cloned().unwrap_or_default();
                     embeddings::queue(conn, &pages, &model, &batch.batch_id, now())?;
                 }
@@ -245,9 +246,15 @@ pub async fn open_embed_rounds(state: &State) -> Result<Option<Round>> {
 pub async fn reveal_pending(state: &State) -> Result<usize> {
     let current = state.seeds.current_block().await?;
     let pending = state.lookups.read(move |conn| roundstore::unrevealed(conn, current, REVEAL_AT_ONCE)).await?;
-    let mut filled = 0;
+    let (mut filled, mut missing_from) = (0, i64::MAX);
     for mut round in pending {
-        let Some(seed) = state.seeds.seed_for(round.seed_block).await? else { continue };
+        if round.seed_block >= missing_from {
+            continue;
+        }
+        let Some(seed) = state.seeds.seed_for(round.seed_block).await? else {
+            missing_from = round.seed_block;
+            continue;
+        };
         rounds::reveal(&mut round, &seed);
         // Saved first, so a crash cannot queue the round twice.
         let saved = round.clone();

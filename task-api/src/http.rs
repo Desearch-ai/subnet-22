@@ -58,7 +58,7 @@ impl From<anyhow::Error> for ApiError {
                 return ApiError::Unavailable;
             }
             if cause.is::<Busy>() {
-                return ApiError::retry(503, "the log reader is busy, retry", "1");
+                return ApiError::retry(503, "the database readers are busy, retry", "1");
             }
         }
         ApiError::Internal(error)
@@ -251,7 +251,7 @@ mod tests {
     }
 
     #[test]
-    fn a_busy_log_reader_is_asked_to_retry_in_a_second() {
+    fn busy_readers_ask_the_caller_to_retry_in_a_second() {
         let ApiError::Status { status, retry_after, .. } = ApiError::from(anyhow::Error::from(Busy)) else { panic!("not a status") };
         assert_eq!((status, retry_after.as_deref()), (503, Some("1")));
     }

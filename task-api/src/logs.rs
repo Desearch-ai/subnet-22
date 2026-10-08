@@ -38,7 +38,6 @@ pub const PATHS: [&str; 8] = ["/v1/overview", "/v1/live", "/v1/stats", "/v1/task
 const MINER_TOTALS: [&str; 7] = ["tasks", "pass", "fail", "void", "returned", "missing", "credited"];
 const VALIDATOR_TOTALS: [&str; 7] = ["votes", "pass", "fail", "void", "agreed", "disagreed", "decided"];
 
-/// Pages computed in the last few seconds, so a busy dashboard reads SQLite once.
 /// Log pages kept briefly in memory: one computation per page at a time, the last copy served while the next is made.
 #[derive(Default)]
 pub struct Cache {
@@ -66,6 +65,9 @@ impl Cache {
         let mut entries = self.entries.lock().expect("cache");
         if entries.len() >= CACHE_ENTRIES {
             entries.retain(|_, (made, _)| made.elapsed() < CACHE_FOR);
+            if entries.len() >= CACHE_ENTRIES {
+                entries.clear();
+            }
         }
         entries.insert(key, (Instant::now(), value));
     }

@@ -35,6 +35,17 @@ async fn a_refusing_chain_is_paused_instead_of_called_for_every_request() {
 }
 
 #[tokio::test]
+async fn a_block_not_made_yet_is_asked_about_once_a_moment_not_once_per_round() {
+    let fake = FakeChain::start(5_000, 12.0).await;
+    let chain = Arc::new(Chain::new(&fake.url).unwrap());
+    for block in [5_003, 5_003, 5_004, 5_010] {
+        assert_eq!(chain.block_hash(block).await.unwrap(), None);
+    }
+    assert_eq!(fake.calls("chain_getBlockHash"), 1);
+    assert!(chain.block_hash(4_999).await.unwrap().is_some(), "an earlier block is still asked for");
+}
+
+#[tokio::test]
 async fn a_block_kept_by_another_copy_is_counted_on_without_the_chain() {
     let fake = FakeChain::start(5_000, 12.0).await;
     fake.refuse(true);

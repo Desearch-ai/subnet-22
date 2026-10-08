@@ -13,7 +13,8 @@ use scale_value::{Composite, Primitive, Value, ValueDef};
 use serde_json::json;
 use tokio::sync::Mutex;
 
-const BLOCK_SECONDS: f64 = 12.0;
+use crate::seeds::BLOCK_SECONDS;
+
 /// The best block is read this often; in between it is counted on the clock, at most a block behind.
 const BLOCK_REFRESH: Duration = Duration::from_secs(30);
 /// After a failed call every call waits this long, doubling up to `PAUSE_MAX`, so an unwell endpoint is not hammered.
@@ -21,6 +22,8 @@ const PAUSE_FIRST: Duration = Duration::from_secs(5);
 const PAUSE_MAX: Duration = Duration::from_secs(30);
 const RPC_TIMEOUT: Duration = Duration::from_secs(8);
 const HASHES_KEPT: usize = 4096;
+/// A block found not made yet is taken as still missing this long, so rounds waiting on it do not each ask.
+const ABSENT_FOR: Duration = Duration::from_secs(2);
 const METADATA_VERSION: u32 = 15;
 
 /// One hotkey of the subnet, as the metagraph lists it.
@@ -42,6 +45,7 @@ pub struct Chain {
     first: Mutex<()>,
     pause: std::sync::Mutex<Pause>,
     hashes: Mutex<HashMap<i64, String>>,
+    absent: std::sync::Mutex<Option<(i64, Instant)>>,
 }
 
 #[derive(Default)]
@@ -72,6 +76,7 @@ impl Chain {
             first: Mutex::default(),
             pause: std::sync::Mutex::default(),
             hashes: Mutex::default(),
+            absent: std::sync::Mutex::default(),
         })
     }
 
@@ -160,8 +165,14 @@ impl Chain {
         if let Some(found) = self.hashes.lock().await.get(&block) {
             return Ok(Some(found.clone()));
         }
+        if self.absent.lock().expect("absent block").is_some_and(|(from, at)| block >= from && at.elapsed() < ABSENT_FOR) {
+            return Ok(None);
+        }
         let found = self.rpc("chain_getBlockHash", json!([block])).await?;
-        let Some(hash) = found.as_str().map(str::to_lowercase) else { return Ok(None) };
+        let Some(hash) = found.as_str().map(str::to_lowercase) else {
+            *self.absent.lock().expect("absent block") = Some((block, Instant::now()));
+            return Ok(None);
+        };
         let mut hashes = self.hashes.lock().await;
         if hashes.len() >= HASHES_KEPT {
             hashes.clear();
