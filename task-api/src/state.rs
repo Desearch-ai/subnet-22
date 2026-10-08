@@ -74,6 +74,7 @@ pub async fn redis_from(url: &str) -> Result<Redis> {
 
 /// Log pages queued at once before more are turned away.
 const LOG_READS_WAITING: usize = 32;
+const LOG_THREADS: usize = 2;
 const LOOKUP_THREADS: usize = 4;
 const LOOKUPS_WAITING: usize = 1024;
 
@@ -100,7 +101,7 @@ impl State {
         std::fs::create_dir_all(&settings.data).with_context(|| format!("TASK_API_DATA {:?}", settings.data))?;
         let path = settings.data.join(db::FILE);
         let db = Db::open(&path)?;
-        let reader = Reader::open(&path, "logs", 1, LOG_READS_WAITING)?;
+        let reader = Reader::open(&path, "logs", LOG_THREADS, LOG_READS_WAITING)?;
         let lookups = Reader::open(&path, "lookups", LOOKUP_THREADS, LOOKUPS_WAITING)?;
         let current = db.run(roundstore::latest_revealed).await?;
         let network = match (&settings.registry, &settings.seeds) {

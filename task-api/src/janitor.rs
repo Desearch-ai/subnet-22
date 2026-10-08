@@ -12,8 +12,9 @@ use tokio::sync::watch;
 use tokio::task::JoinSet;
 
 use crate::budgets::{self, hour_of, KEEP_H};
+use crate::http::ApiError;
 use crate::state::State;
-use crate::{checks, lifecycle, roundstore, uploadlog, validations};
+use crate::{checks, lifecycle, logs, roundstore, uploadlog, validations};
 
 /// The copy of the API that runs the passes; a rolling deploy briefly runs two copies.
 pub const LEASE_KEY: &str = "janitor:leader";
@@ -34,6 +35,8 @@ static RELEASE: LazyLock<Script> =
     LazyLock::new(|| Script::new(r"if redis.call('GET', KEYS[1]) == ARGV[1] then return redis.call('DEL', KEYS[1]) end return 0"));
 
 const LEASE_EVERY: Duration = Duration::from_secs(1);
+/// Every copy keeps the overview's pages this fresh, whoever holds the lease.
+const WARM_EVERY: Duration = Duration::from_secs(15);
 const SEAL_EVERY: Duration = Duration::from_secs(5);
 const UPLOAD_LOG_EVERY: Duration = Duration::from_secs(30);
 const BEST_BLOCK_EVERY: Duration = Duration::from_secs(30);
@@ -45,6 +48,8 @@ const SEAL_ROUNDS: i64 = 4;
 const DROP_VERDICTS: i64 = 200;
 /// Per-URL details cleared per pass: each frees ~50 KB, ~2 ms of writer time.
 const PRUNE_DETAILS: i64 = 10;
+/// Verdict rows counted into the hourly totals per pass; a first start catches up on the kept week this way.
+const ROLL_UP_ROWS: i64 = 5000;
 
 #[derive(Clone, Copy, Debug)]
 enum Duty {
@@ -105,6 +110,7 @@ impl Duty {
 
 async fn upkeep(state: &Arc<State>, due: &mut Due) -> Result<()> {
     state.db.run(|conn| validations::prune_urls(conn, now(), PRUNE_DETAILS)).await?;
+    state.db.run(|conn| validations::roll_up(conn, ROLL_UP_ROWS)).await?;
     if elapsed(due.sealed_at, SEAL_EVERY) {
         due.sealed_at = Some(Instant::now());
         OUTCOMES.fill_holes(&state.storage, &state.redis).await?;
@@ -131,6 +137,7 @@ async fn upkeep(state: &Arc<State>, due: &mut Due) -> Result<()> {
             .run(|conn| {
                 let at = now();
                 budgets::prune(conn, KEEP_H, at)?;
+                validations::prune_hours(conn, at)?;
                 checks::prune(conn, at)
             })
             .await?;
@@ -164,6 +171,7 @@ pub async fn run(state: Arc<State>, stop: watch::Receiver<bool>) {
     for duty in DUTIES {
         duties.spawn(keep(duty, state.clone(), leading.clone(), stop.clone()));
     }
+    let warming = tokio::spawn(keep_warm(state.clone(), stop.clone()));
     let mut stopping = stop.clone();
     while !*stopping.borrow() {
         let held = hold(&state, &holder).await;
@@ -183,8 +191,23 @@ pub async fn run(state: Arc<State>, stop: watch::Receiver<bool>) {
     }
     leading.store(false, Ordering::Release);
     while duties.join_next().await.is_some() {}
+    let _ = warming.await;
     if let Err(error) = release(&state, &holder).await {
         eprintln!("could not release the janitor lease: {error:#}");
+    }
+}
+
+async fn keep_warm(state: Arc<State>, mut stop: watch::Receiver<bool>) {
+    while !*stop.borrow() {
+        match logs::warm(&state).await {
+            Err(ApiError::Internal(error)) => eprintln!("could not make the log pages: {error:#}"),
+            Err(ApiError::Status { status, detail, .. }) => eprintln!("could not make the log pages: {status} {detail}"),
+            Err(ApiError::Unavailable) | Ok(()) => {}
+        }
+        tokio::select! {
+            _ = tokio::time::sleep(WARM_EVERY) => {}
+            _ = stop.changed() => {}
+        }
     }
 }
 

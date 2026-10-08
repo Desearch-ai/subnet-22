@@ -138,6 +138,11 @@ impl Registry {
         }
     }
 
+    /// Whether log pages list this hotkey: one on the subnet now, or any while no metagraph is known.
+    pub fn lists(&self, hotkey: &str) -> bool {
+        !self.ready() || matches!(self, Registry::Local { .. }) || self.registered(hotkey).is_some()
+    }
+
     /// Whether a metagraph is known, kept from before or loaded since starting.
     pub fn ready(&self) -> bool {
         match self {

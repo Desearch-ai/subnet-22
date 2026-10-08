@@ -18,12 +18,14 @@ use crate::http::{Answer, ApiError, Query};
 use crate::lifecycle::{kind_of, text};
 use crate::models::Invalid;
 use crate::py::round_to;
-use crate::queues::{CLAIMS, KINDS};
+use crate::queues::{inflight_key, waiting_key, CLAIMS, KINDS};
 use crate::roundlog;
 use crate::state::State;
 use crate::validations::{self, TaskFilter, VoteFilter, VERDICTS};
 
-const CACHE_FOR: Duration = Duration::from_secs(5);
+const CACHE_FOR: Duration = Duration::from_secs(30);
+/// A page this old is still served while its next copy is made, never older.
+const STALE_FOR: Duration = Duration::from_secs(600);
 const CACHE_ENTRIES: usize = 256;
 const PAGE: i64 = 50;
 const MAX_PAGE: i64 = 100;
@@ -37,25 +39,70 @@ const MINER_TOTALS: [&str; 7] = ["tasks", "pass", "fail", "void", "returned", "m
 const VALIDATOR_TOTALS: [&str; 7] = ["votes", "pass", "fail", "void", "agreed", "disagreed", "decided"];
 
 /// Pages computed in the last few seconds, so a busy dashboard reads SQLite once.
+/// Log pages kept briefly in memory: one computation per page at a time, the last copy served while the next is made.
 #[derive(Default)]
 pub struct Cache {
     entries: Mutex<HashMap<String, (Instant, Value)>>,
+    turns: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
 }
 
 impl Cache {
-    pub async fn get_or<F: Future<Output = Result<Value, ApiError>>>(&self, key: String, make: impl FnOnce() -> F) -> Result<Value, ApiError> {
-        if let Some((until, value)) = self.entries.lock().expect("cache").get(&key) {
-            if *until > Instant::now() {
-                return Ok(value.clone());
-            }
+    /// The page kept for `key` and whether it is still fresh; none once too old to serve at all.
+    fn peek(&self, key: &str) -> Option<(Value, bool)> {
+        let entries = self.entries.lock().expect("cache");
+        let (made, value) = entries.get(key)?;
+        (made.elapsed() < STALE_FOR).then(|| (value.clone(), made.elapsed() < CACHE_FOR))
+    }
+
+    fn turn(&self, key: &str) -> Arc<tokio::sync::Mutex<()>> {
+        let mut turns = self.turns.lock().expect("cache turns");
+        if turns.len() >= CACHE_ENTRIES {
+            turns.retain(|_, turn| Arc::strong_count(turn) > 1);
         }
-        let value = make().await?;
+        turns.entry(key.to_string()).or_default().clone()
+    }
+
+    fn store(&self, key: String, value: Value) {
         let mut entries = self.entries.lock().expect("cache");
         if entries.len() >= CACHE_ENTRIES {
-            entries.clear();
+            entries.retain(|_, (made, _)| made.elapsed() < CACHE_FOR);
         }
-        entries.insert(key, (Instant::now() + CACHE_FOR, value.clone()));
+        entries.insert(key, (Instant::now(), value));
+    }
+
+    pub async fn get_or<F: Future<Output = Result<Value, ApiError>>>(&self, key: String, make: impl FnOnce() -> F) -> Result<Value, ApiError> {
+        if let Some((value, true)) = self.peek(&key) {
+            return Ok(value);
+        }
+        let turn = self.turn(&key);
+        let _making = match turn.clone().try_lock_owned() {
+            Ok(guard) => guard,
+            Err(_) => {
+                if let Some((stale, _)) = self.peek(&key) {
+                    return Ok(stale);
+                }
+                let guard = turn.lock_owned().await;
+                if let Some((value, _)) = self.peek(&key) {
+                    return Ok(value);
+                }
+                guard
+            }
+        };
+        if let Some((value, true)) = self.peek(&key) {
+            return Ok(value);
+        }
+        let value = make().await?;
+        self.store(key, value.clone());
         Ok(value)
+    }
+
+    /// Makes the page again whatever its age, so readers find it fresh.
+    pub async fn refresh<F: Future<Output = Result<Value, ApiError>>>(&self, key: String, make: impl FnOnce() -> F) -> Result<(), ApiError> {
+        let turn = self.turn(&key);
+        let _making = turn.lock().await;
+        let value = make().await?;
+        self.store(key, value);
+        Ok(())
     }
 }
 
@@ -221,15 +268,23 @@ fn validator_rows_at(conn: &Connection, since: f64, until: f64, last_seen: &Hash
     Ok(rows)
 }
 
+/// Hotkeys on the subnet now; deregistered ones drop out once the metagraph is known.
 async fn miner_rows(state: &Arc<State>, hours: i64) -> Result<Value, ApiError> {
     let until = visible(state);
-    let rows = state.reader.read(move |conn| miner_rows_at(conn, until - hours as f64 * HOUR, until)).await?;
+    let mut rows = state.reader.read(move |conn| miner_rows_at(conn, until - hours as f64 * HOUR, until)).await?;
+    rows.retain(|row| row.get("hotkey").and_then(Value::as_str).is_some_and(|hotkey| state.registry.lists(hotkey)));
+    let mut counts = redis::pipe();
+    for row in &rows {
+        let hotkey = row.get("hotkey").and_then(Value::as_str).unwrap_or_default();
+        counts.scard(inflight_key(CRAWL, hotkey)).scard(waiting_key(CRAWL, hotkey));
+    }
+    let counts: Vec<i64> = if rows.is_empty() { Vec::new() } else { counts.query_async(&mut state.redis.clone()).await.map_err(anyhow::Error::from)? };
     let mut out = Vec::with_capacity(rows.len());
-    for mut row in rows {
+    for (mut row, pair) in rows.into_iter().zip(counts.chunks(2)) {
         let hotkey = text(&Value::Object(row.clone()), "hotkey").to_string();
         row.insert("uid".into(), uid_of(state, Some(&hotkey)));
-        row.insert("in_flight".into(), state.crawl.in_flight(&state.redis, &hotkey).await?.into());
-        row.insert("waiting".into(), state.crawl.waiting(&state.redis, &hotkey).await?.into());
+        row.insert("in_flight".into(), pair[0].into());
+        row.insert("waiting".into(), pair[1].into());
         out.push(Value::Object(row));
     }
     Ok(out.into())
@@ -264,43 +319,41 @@ fn hours(query: &Query) -> Result<i64, ApiError> {
 
 pub async fn overview(Shared(state): Shared<Arc<State>>, QueryParams(query): QueryParams<Query>) -> Answer {
     let hours = hours(&query)?;
-    let made = state
-        .cache
-        .get_or(format!("overview:{hours}"), || async {
-            let miners = cached_miners(&state, hours).await?;
-            let validators = cached_validators(&state, hours).await?;
-            let worked: Vec<&Value> = miners.as_array().into_iter().flatten().filter(|m| number(&m["tasks"]) != 0.0).collect();
-            let validators: Vec<&Value> = validators.as_array().into_iter().flatten().collect();
-            let mut window: Map<String, Value> =
-                MINER_TOTALS.iter().map(|name| (name.to_string(), Value::from(worked.iter().map(|m| m[*name].as_i64().unwrap_or(0)).sum::<i64>()))).collect();
-            window.insert("votes".into(), validators.iter().map(|v| v["votes"].as_i64().unwrap_or(0)).sum::<i64>().into());
-            window.insert("disagreements".into(), validators.iter().map(|v| v["disagreed"].as_i64().unwrap_or(0)).sum::<i64>().into());
-            let mut total = Map::new();
-            total.insert("void".into(), 0.into());
-            total.extend(state.reader.read(|conn| validations::verdicts(conn, None)).await?);
-            let redis = &state.redis;
-            let at = now();
-            let mut queue = Map::new();
-            for kind in KINDS {
-                queue.insert(kind.into(), state.tasks(kind).depth(redis).await?.into());
-            }
-            let claimed: i64 = redis.clone().zcard(CLAIMS).await?;
-            Ok(json!({
-                "as_of": visible(&state),
-                "window_hours": hours,
-                "queue": queue,
-                "claimed": claimed,
-                "validating": state.validation.depth(redis).await? + state.validation.seeding(redis).await?,
-                "oldest_validation_s": state.validation.oldest_age(redis, at).await?,
-                "publishing": state.publish.depth(redis).await?,
-                "miners": worked.len(),
-                "validators": {"active": validators.iter().filter(|v| v["active"] == true).count(), "known": validators.len()},
-                "window": window,
-                "total": total,
-            }))
-        })
-        .await?;
-    Ok(Json(made))
+    Ok(Json(state.cache.get_or(format!("overview:{hours}"), || overview_of(&state, hours)).await?))
+}
+
+async fn overview_of(state: &Arc<State>, hours: i64) -> Result<Value, ApiError> {
+    let miners = cached_miners(state, hours).await?;
+    let validators = cached_validators(state, hours).await?;
+    let worked: Vec<&Value> = miners.as_array().into_iter().flatten().filter(|m| number(&m["tasks"]) != 0.0).collect();
+    let validators: Vec<&Value> = validators.as_array().into_iter().flatten().collect();
+    let mut window: Map<String, Value> =
+        MINER_TOTALS.iter().map(|name| (name.to_string(), Value::from(worked.iter().map(|m| m[*name].as_i64().unwrap_or(0)).sum::<i64>()))).collect();
+    window.insert("votes".into(), validators.iter().map(|v| v["votes"].as_i64().unwrap_or(0)).sum::<i64>().into());
+    window.insert("disagreements".into(), validators.iter().map(|v| v["disagreed"].as_i64().unwrap_or(0)).sum::<i64>().into());
+    let mut total = Map::new();
+    total.insert("void".into(), 0.into());
+    total.extend(state.reader.read(|conn| validations::verdicts(conn, None)).await?);
+    let redis = &state.redis;
+    let at = now();
+    let mut queue = Map::new();
+    for kind in KINDS {
+        queue.insert(kind.into(), state.tasks(kind).depth(redis).await?.into());
+    }
+    let claimed: i64 = redis.clone().zcard(CLAIMS).await?;
+    Ok(json!({
+        "as_of": visible(state),
+        "window_hours": hours,
+        "queue": queue,
+        "claimed": claimed,
+        "validating": state.validation.depth(redis).await? + state.validation.seeding(redis).await?,
+        "oldest_validation_s": state.validation.oldest_age(redis, at).await?,
+        "publishing": state.publish.depth(redis).await?,
+        "miners": worked.len(),
+        "validators": {"active": validators.iter().filter(|v| v["active"] == true).count(), "known": validators.len()},
+        "window": window,
+        "total": total,
+    }))
 }
 
 pub async fn series(Shared(state): Shared<Arc<State>>, QueryParams(query): QueryParams<Query>) -> Answer {
@@ -331,7 +384,11 @@ pub async fn series(Shared(state): Shared<Arc<State>>, QueryParams(query): Query
                         }
                         None => (
                             ["tasks", "pass", "fail", "void", "returned", "credited"],
-                            validations::task_series(conn, bucket_s, since, until, miner.as_deref())?,
+                            if bucket_s == HOUR as i64 {
+                                validations::hour_series(conn, since, until, miner.as_deref())?
+                            } else {
+                                validations::task_series(conn, bucket_s, since, until, miner.as_deref())?
+                            },
                         ),
                     };
                     Ok((first..=last)
@@ -356,11 +413,16 @@ pub async fn series(Shared(state): Shared<Arc<State>>, QueryParams(query): Query
 async fn in_progress(state: &Arc<State>) -> Result<Value, ApiError> {
     let redis = &state.redis;
     let claimed: Vec<(String, f64)> = redis.clone().zrange_withscores(CLAIMS, 0, LIVE_ROWS - 1).await?;
+    let mut reads = redis::pipe();
+    for (task_id, _) in &claimed {
+        reads.get(format!("claim:{task_id}")).get(format!("task:{task_id}"));
+    }
+    let found: Vec<Option<String>> = if claimed.is_empty() { Vec::new() } else { reads.query_async(&mut redis.clone()).await.map_err(anyhow::Error::from)? };
     let mut claims = Vec::new();
-    for (task_id, expires_at) in claimed {
+    for ((task_id, expires_at), pair) in claimed.into_iter().zip(found.chunks(2)) {
         // Completed or taken back since the claims were read.
-        let Some(holder) = state.claim_holder(&task_id).await? else { continue };
-        let payload = state.payload(&task_id).await?.unwrap_or_else(|| json!({}));
+        let Some(holder) = pair[0].clone() else { continue };
+        let payload: Value = pair[1].as_deref().and_then(|raw| serde_json::from_str(raw).ok()).unwrap_or_else(|| json!({}));
         let urls = payload.get("url_count").cloned().unwrap_or_else(|| payload["urls"].as_array().map_or(0, Vec::len).into());
         let claim = json!({"task_id": task_id, "kind": kind_of(&payload), "miner": holder, "urls": urls, "expires_at": expires_at});
         claims.push(with_uids(state, claim.as_object().cloned().unwrap_or_default()));
@@ -370,10 +432,20 @@ async fn in_progress(state: &Arc<State>) -> Result<Value, ApiError> {
     if waiting.len() < LIVE_ROWS as usize {
         waiting.extend(state.validation.seeding_ids(redis, LIVE_ROWS - waiting.len() as isize).await?);
     }
+    let (mut jobs, mut voting) = (redis::pipe(), redis::pipe());
+    for task_id in &waiting {
+        jobs.get(format!("vjob:{task_id}"));
+        voting.smembers(format!("vseen:{task_id}"));
+    }
+    let (jobs, voting): (Vec<Option<String>>, Vec<Vec<String>>) = if waiting.is_empty() {
+        (Vec::new(), Vec::new())
+    } else {
+        (jobs.query_async(&mut redis.clone()).await.map_err(anyhow::Error::from)?, voting.query_async(&mut redis.clone()).await.map_err(anyhow::Error::from)?)
+    };
     let mut uploads = Vec::new();
-    for task_id in waiting {
-        let Some(job) = state.validation.job(redis, &task_id).await? else { continue };
-        let voters = state.validation.voters(redis, &task_id).await?;
+    for ((task_id, job), mut voters) in waiting.into_iter().zip(jobs).zip(voting) {
+        let Some(job) = job.as_deref().and_then(|raw| serde_json::from_str::<Value>(raw).ok()) else { continue };
+        voters.sort();
         let electorate: BTreeSet<&String> = active.iter().chain(voters.iter()).collect();
         let upload = json!({
             "task_id": task_id,
@@ -568,4 +640,43 @@ async fn task_state(state: &State, task_id: &str, scored: Option<&Map<String, Va
         return Err(ApiError::status(404, "no such task"));
     };
     Ok(state_of(text(&Value::Object(scored.clone()), "verdict"), scored["round_id"].clone(), scored["miner"].clone()))
+}
+
+/// Makes the pages the overview opens with again, so a visitor never waits for them to be made.
+pub async fn warm(state: &Arc<State>) -> Result<(), ApiError> {
+    let hours = SHARE_WINDOW_H;
+    state.cache.refresh(format!("miners:{hours}"), || miner_rows(state, hours)).await?;
+    state.cache.refresh(format!("validators:{hours}"), || validator_rows(state, hours)).await?;
+    state.cache.refresh(format!("overview:{hours}"), || overview_of(state, hours)).await?;
+    state.cache.refresh("live".into(), || in_progress(state)).await
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use super::*;
+
+    #[tokio::test]
+    async fn a_page_is_made_once_for_callers_asking_together_and_the_last_copy_serves_while_it_is_remade() {
+        let cache = Cache::default();
+        let made = AtomicUsize::new(0);
+        let slow = |n: i64| {
+            let made = &made;
+            async move {
+                made.fetch_add(1, Ordering::SeqCst);
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                Ok(json!(n))
+            }
+        };
+        let (first, second) = tokio::join!(cache.get_or("k".into(), || slow(1)), cache.get_or("k".into(), || slow(2)));
+        assert_eq!((first.ok(), second.ok(), made.load(Ordering::SeqCst)), (Some(json!(1)), Some(json!(1)), 1));
+        cache.entries.lock().unwrap().insert("k".into(), (Instant::now() - CACHE_FOR - Duration::from_secs(1), json!(1)));
+        let (remade, meanwhile) = tokio::join!(cache.get_or("k".into(), || slow(3)), async {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            cache.get_or("k".into(), || slow(4)).await
+        });
+        assert_eq!((remade.ok(), meanwhile.ok()), (Some(json!(3)), Some(json!(1))), "the old copy is served while the new one is made");
+        assert_eq!(cache.get_or("k".into(), || slow(5)).await.ok(), Some(json!(3)));
+    }
 }

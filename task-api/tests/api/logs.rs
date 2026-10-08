@@ -170,3 +170,25 @@ async fn hotkeys_come_with_their_uids() {
     let first = read(&h, "/v1/votes").await["votes"][0].clone();
     assert_eq!((first["miner_uid"].clone(), first["validator_uid"].clone()), (json!(7), json!(2)));
 }
+
+#[tokio::test]
+async fn the_miners_page_lists_only_hotkeys_on_the_subnet_once_the_metagraph_is_known() {
+    let fake = crate::fakechain::FakeChain::start(1, 12.0).await;
+    fake.refuse(true);
+    let h = Harness::with(|s| s.registry = task_api::settings::RegistryMode::Chain { netuid: 22, network: fake.url.clone() }).await;
+    h.state
+        .db
+        .run(|conn| {
+            for hotkey in ["5Deregistered", "5OnTheSubnet"] {
+                conn.execute("INSERT INTO miners (hotkey, pool, budget, verified) VALUES (?, 'crawl', 1, 0)", [hotkey])?;
+            }
+            Ok(())
+        })
+        .await
+        .unwrap();
+    h.state.registry.restore(vec![task_api::registry::Entry { hotkey: "5OnTheSubnet".into(), uid: Some(4), is_validator: false, coldkey: None }]);
+    let listed = h.public("/v1/miners").await.1;
+    let hotkeys: Vec<&str> = listed["miners"].as_array().unwrap().iter().filter_map(|m| m["hotkey"].as_str()).collect();
+    assert_eq!(hotkeys, ["5OnTheSubnet"]);
+    assert_eq!(listed["miners"][0]["uid"], 4);
+}

@@ -133,6 +133,21 @@ pub fn create(conn: &Connection) -> Result<()> {
             PRIMARY KEY (task_id, upload_key)
         );
         CREATE TABLE IF NOT EXISTS retention (name TEXT PRIMARY KEY, mark REAL NOT NULL);
+        CREATE TABLE IF NOT EXISTS miner_hours (
+            miner          TEXT NOT NULL,
+            kind           TEXT NOT NULL,
+            hour           INTEGER NOT NULL,
+            tasks          INTEGER NOT NULL DEFAULT 0,
+            pass           INTEGER NOT NULL DEFAULT 0,
+            fail           INTEGER NOT NULL DEFAULT 0,
+            void           INTEGER NOT NULL DEFAULT 0,
+            returned       INTEGER NOT NULL DEFAULT 0,
+            missing        INTEGER NOT NULL DEFAULT 0,
+            credited       INTEGER NOT NULL DEFAULT 0,
+            last_scored_at REAL,
+            PRIMARY KEY (miner, kind, hour)
+        ) WITHOUT ROWID;
+        CREATE INDEX IF NOT EXISTS miner_hours_hour ON miner_hours (hour);
         CREATE TABLE IF NOT EXISTS votes (
             id             INTEGER PRIMARY KEY AUTOINCREMENT,
             task_id        TEXT NOT NULL,
@@ -225,8 +240,12 @@ pub fn record(conn: &Connection, report: &Map<String, Value>, details: Option<&[
         "INSERT INTO verdict_counts VALUES (?, ?, 1) ON CONFLICT (miner, verdict) DO UPDATE SET n = n + 1",
         params![report["miner"].as_str(), report["verdict"].as_str()],
     )?;
+    roll_up(conn, ROLL_UP_WITH_VERDICT)?;
     Ok(())
 }
+
+/// Rows counted into the hourly totals with each verdict: its own, and a few left behind by an older copy.
+const ROLL_UP_WITH_VERDICT: i64 = 20;
 
 /// Every validator's vote on one upload; `decided` is false when no vote carried it.
 pub fn record_votes(conn: &Connection, report: &Map<String, Value>, votes: &[Value], disagreed: &[String], decided: bool) -> Result<()> {
@@ -341,12 +360,13 @@ pub fn validator_totals(conn: &Connection, since: f64, until: f64) -> Result<BTr
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
+/// Each miner's verdicts in the whole hours that end inside `since..until`, from the hourly totals.
 pub fn miner_totals(conn: &Connection, since: f64, until: f64) -> Result<BTreeMap<String, Value>> {
-    let mut statement = conn.prepare(&format!(
-        "SELECT miner, COUNT(*), {VERDICT_SUMS}, SUM(returned), SUM(missing), SUM(credited), MAX(scored_at) FROM validations
-         WHERE scored_at >= ? AND scored_at <= ? GROUP BY miner"
-    ))?;
-    let rows = statement.query_map(params![since, until], |row| {
+    let mut statement = conn.prepare(
+        "SELECT miner, SUM(tasks), SUM(pass), SUM(fail), SUM(void), SUM(returned), SUM(missing), SUM(credited), MAX(last_scored_at) FROM miner_hours
+         WHERE hour > ? AND hour <= ? GROUP BY miner",
+    )?;
+    let rows = statement.query_map(params![hour_of(since), hour_of(until)], |row| {
         let names = ["tasks", "pass", "fail", "void", "returned", "missing", "credited", "last_scored_at"];
         Ok((row.get::<_, String>(0)?, Value::Object(object(row, &names, 1)?)))
     })?;
@@ -514,14 +534,19 @@ pub fn judged_since(conn: &Connection, miner: &str, since: f64, kind: &str) -> R
 /// Passed uploads of a miner completed after `since`, taken back: (task_id, credited) of each; only those no validator checked unless `checked_too`.
 pub fn withdraw(conn: &Connection, miner: &str, since: f64, checked_too: bool) -> Result<Vec<(String, i64)>> {
     let mut statement = conn.prepare(
-        "SELECT id, task_id, credited FROM validations
+        "SELECT id, task_id, credited, scored_at FROM validations
          WHERE miner = ? AND kind = 'crawl' AND verdict = 'pass' AND scored_at > ? AND COALESCE(completed_at, scored_at) > ? AND (? OR validator = '')",
     )?;
-    let rows =
-        statement.query_map(params![miner, since, since, checked_too], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?)))?;
-    let rows: Vec<(i64, String, i64)> = rows.collect::<rusqlite::Result<_>>()?;
-    for (id, _, _) in &rows {
+    let rows = statement.query_map(params![miner, since, since, checked_too], |row| {
+        Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?, real(row, 3)?))
+    })?;
+    let rows: Vec<(i64, String, i64, f64)> = rows.collect::<rusqlite::Result<_>>()?;
+    let rolled = rolled_through(conn)?;
+    for (id, _, _, scored_at) in &rows {
         conn.execute("UPDATE validations SET verdict = ? WHERE id = ?", params![WITHDRAWN, id])?;
+        if *id <= rolled {
+            conn.execute("UPDATE miner_hours SET pass = pass - 1 WHERE miner = ? AND kind = 'crawl' AND hour = ?", params![miner, hour_of(*scored_at)])?;
+        }
     }
     if !rows.is_empty() {
         conn.execute("UPDATE verdict_counts SET n = n - ? WHERE miner = ? AND verdict = 'pass'", params![rows.len() as i64, miner])?;
@@ -530,7 +555,84 @@ pub fn withdraw(conn: &Connection, miner: &str, since: f64, checked_too: bool) -
             params![miner, WITHDRAWN, rows.len() as i64],
         )?;
     }
-    Ok(rows.into_iter().map(|(_, task_id, credited)| (task_id, credited)).collect())
+    Ok(rows.into_iter().map(|(_, task_id, credited, _)| (task_id, credited)).collect())
+}
+
+pub fn hour_of(at: f64) -> i64 {
+    (at / 3600.0).floor() as i64
+}
+
+/// The last verdict row counted into the hourly totals; at first, the last one before the kept window.
+fn rolled_through(conn: &Connection) -> Result<i64> {
+    if let Some(mark) = conn.query_row("SELECT mark FROM retention WHERE name = 'miner_hours'", [], |row| real(row, 0)).optional()? {
+        return Ok(mark as i64);
+    }
+    let since = (hour_of(desearch::time::now()) - HOURS_KEPT) as f64 * 3600.0;
+    let first: Option<i64> = conn.query_row("SELECT MIN(id) FROM validations WHERE scored_at >= ?", [since], |row| row.get(0))?;
+    let start = first.map_or_else(|| conn.query_row("SELECT COALESCE(MAX(id), 0) FROM validations", [], |row| row.get(0)), |id| Ok(id - 1))?;
+    conn.execute("INSERT INTO retention VALUES ('miner_hours', ?)", [start as f64])?;
+    Ok(start)
+}
+
+/// Hours of verdict totals kept, a week and a day so a week's view always has whole hours.
+pub const HOURS_KEPT: i64 = 24 * 8;
+
+/// Counts up to `limit` more verdict rows into the hourly totals, in row order, and returns how many.
+pub fn roll_up(conn: &Connection, limit: i64) -> Result<usize> {
+    let rolled = rolled_through(conn)?;
+    let mut statement =
+        conn.prepare("SELECT id, miner, kind, verdict, returned, missing, credited, scored_at FROM validations WHERE id > ? ORDER BY id LIMIT ?")?;
+    let rows = statement.query_map(params![rolled, limit], |row| {
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, String>(3)?,
+            [row.get::<_, Option<i64>>(4)?.unwrap_or(0), row.get::<_, Option<i64>>(5)?.unwrap_or(0), row.get::<_, Option<i64>>(6)?.unwrap_or(0)],
+            real(row, 7)?,
+        ))
+    })?;
+    let rows: Vec<_> = rows.collect::<rusqlite::Result<_>>()?;
+    let Some(last) = rows.last().map(|row| row.0) else { return Ok(0) };
+    let mut totals: BTreeMap<(String, String, i64), [i64; 7]> = BTreeMap::new();
+    let mut latest: BTreeMap<(String, String, i64), f64> = BTreeMap::new();
+    for (_, miner, kind, verdict, [returned, missing, credited], scored_at) in &rows {
+        let key = (miner.clone(), kind.clone(), hour_of(*scored_at));
+        let total = totals.entry(key.clone()).or_default();
+        let counts = [1, i64::from(verdict == "pass"), i64::from(verdict == "fail"), i64::from(verdict == "void"), *returned, *missing, *credited];
+        for (sum, add) in total.iter_mut().zip(counts) {
+            *sum += add;
+        }
+        let at = latest.entry(key).or_insert(*scored_at);
+        *at = at.max(*scored_at);
+    }
+    for ((miner, kind, hour), [tasks, pass, fail, void, returned, missing, credited]) in &totals {
+        conn.execute(
+            "INSERT INTO miner_hours VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT (miner, kind, hour) DO UPDATE SET tasks = tasks + excluded.tasks, pass = pass + excluded.pass, fail = fail + excluded.fail,
+             void = void + excluded.void, returned = returned + excluded.returned, missing = missing + excluded.missing,
+             credited = credited + excluded.credited, last_scored_at = MAX(COALESCE(last_scored_at, 0), excluded.last_scored_at)",
+            params![miner, kind, hour, tasks, pass, fail, void, returned, missing, credited, latest[&(miner.clone(), kind.clone(), *hour)]],
+        )?;
+    }
+    conn.execute("UPDATE retention SET mark = ? WHERE name = 'miner_hours'", [last as f64])?;
+    Ok(rows.len())
+}
+
+/// Verdicts per hour from `since`'s hour on, summed over miners or for one, for a chart of whole hours.
+pub fn hour_series(conn: &Connection, since: f64, until: f64, miner: Option<&str>) -> Result<BTreeMap<i64, Value>> {
+    let sql = format!(
+        "SELECT hour, SUM(tasks), SUM(pass), SUM(fail), SUM(void), SUM(returned), SUM(credited) FROM miner_hours WHERE hour >= ? AND hour <= ?{} GROUP BY hour",
+        if miner.is_some() { " AND miner = ?" } else { "" }
+    );
+    let mut args: Vec<Sql> = vec![Sql::Integer(hour_of(since)), Sql::Integer(hour_of(until))];
+    args.extend(miner.map(|m| Sql::Text(m.into())));
+    series(conn, &sql, args, &["tasks", "pass", "fail", "void", "returned", "credited"])
+}
+
+pub fn prune_hours(conn: &Connection, now: f64) -> Result<()> {
+    conn.execute("DELETE FROM miner_hours WHERE hour < ?", [hour_of(now) - HOURS_KEPT])?;
+    Ok(())
 }
 
 pub fn record_audit(conn: &Connection, agreed: &[String], disagreed: &[String]) -> Result<()> {
@@ -617,6 +719,35 @@ mod tests {
 
     fn details() -> Value {
         json!([{"url": "https://a.example/", "status": 200, "miner_snippet": "Story"}])
+    }
+
+    #[test]
+    fn hourly_totals_match_the_verdicts_and_follow_take_backs_and_rows_written_elsewhere() {
+        let conn = store();
+        let base = 1_800_000_000.0 - 1_800_000_000.0 % 3600.0;
+        for (i, at) in [base + 10.0, base + 20.0, base + 3_700.0].into_iter().enumerate() {
+            let mut report = verdict(&format!("t{i}"), at);
+            report.insert("returned".into(), 3.into());
+            report.insert("credited".into(), 2.into());
+            record(&conn, &report, None).unwrap();
+        }
+        let totals = miner_totals(&conn, base - 1.0, base + 7_200.0).unwrap();
+        assert_eq!(
+            (totals["m"]["tasks"].clone(), totals["m"]["pass"].clone(), totals["m"]["returned"].clone(), totals["m"]["credited"].clone()),
+            (json!(3), json!(3), json!(9), json!(6))
+        );
+        conn.execute(
+            "INSERT INTO validations (task_id, kind, round_id, miner, validator, verdict, reason, upload_key, report_key, scored_at, report)
+             VALUES ('older-copy', 'crawl', 'r', 'm', 'v', 'fail', 'x', 'k', 'rk', ?, '{}')",
+            [base + 30.0],
+        )
+        .unwrap();
+        assert_eq!(roll_up(&conn, 100).unwrap(), 1, "a row an older copy wrote is counted later");
+        withdraw(&conn, "m", 0.0, true).unwrap();
+        let totals = miner_totals(&conn, base - 1.0, base + 7_200.0).unwrap();
+        assert_eq!((totals["m"]["tasks"].clone(), totals["m"]["pass"].clone(), totals["m"]["fail"].clone()), (json!(4), json!(0), json!(1)));
+        let hours = hour_series(&conn, base, base + 3_600.0, None).unwrap();
+        assert_eq!((hours[&hour_of(base)]["tasks"].clone(), hours[&(hour_of(base) + 1)]["tasks"].clone()), (json!(3), json!(1)));
     }
 
     #[test]
