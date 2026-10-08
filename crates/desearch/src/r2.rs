@@ -165,7 +165,7 @@ impl Bucket {
             headers.insert("x-amz-copy-source-if-match", value(etag));
         }
         match self.call(Method::PUT, Some(dst), &[], headers, Bytes::new(), LONG).await {
-            Ok((_, body)) => xml_field(&body, "ETag").map(|etag| etag.replace("&quot;", "\"")).ok_or_else(|| Error::Transport("a copy without an ETag".into())),
+            Ok((_, body)) => copy_etag(&body).ok_or_else(|| Error::Transport("a copy without an ETag".into())),
             Err(Error::Missing) if if_match.is_some() => Err(Error::Changed),
             Err(error) => Err(error),
         }
@@ -373,6 +373,11 @@ fn value(text: &str) -> HeaderValue {
     HeaderValue::from_str(text).unwrap_or_else(|_| HeaderValue::from_static(""))
 }
 
+/// A copy's entity tag with its quotes, which R2 escapes as `&quot;` and MinIO as `&#34;`.
+fn copy_etag(body: &[u8]) -> Option<String> {
+    xml_field(body, "ETag").map(|etag| etag.replace("&quot;", "\"").replace("&#34;", "\""))
+}
+
 fn xml_field(body: &[u8], name: &str) -> Option<String> {
     let text = std::str::from_utf8(body).ok()?;
     let start = text.find(&format!("<{name}>"))? + name.len() + 2;
@@ -433,6 +438,13 @@ fn hmac(key: &[u8], data: &[u8]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_copy_s_entity_tag_reads_the_same_however_its_quotes_are_escaped() {
+        for body in ["<CopyObjectResult><ETag>&quot;1b87&quot;</ETag></CopyObjectResult>", "<CopyObjectResult><ETag>&#34;1b87&#34;</ETag></CopyObjectResult>"] {
+            assert_eq!(copy_etag(body.as_bytes()).as_deref(), Some("\"1b87\""));
+        }
+    }
 
     #[test]
     fn signatures_match_botocore() {
