@@ -1,7 +1,10 @@
 //! The SN22 publisher: uploads that passed validation into the numbered change feed and the version index.
 
 pub mod blocked;
+pub mod build;
 pub mod changes;
+pub mod compactor;
+pub mod current;
 pub mod index;
 pub mod local;
 pub mod outcomes;

@@ -57,7 +57,7 @@ pub struct Row {
 }
 
 /// A page as published; Python's record also carries `html`, `lastmod` and `etag`, always empty.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Record {
     pub url: String,
     pub domain: String,

@@ -1,0 +1,174 @@
+//! The current state built once from an index snapshot: each current page is read from the change file and row the index points at.
+
+use std::collections::{HashMap, HashSet};
+use std::fs::File;
+use std::io::{BufRead, BufReader, BufWriter, Write};
+use std::ops::Range;
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+
+use anyhow::{anyhow, Context, Result};
+use arrow_array::cast::AsArray;
+use arrow_array::types::Int64Type;
+use arrow_array::Array;
+use bytes::Bytes;
+use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+
+use crate::compactor::{self, each, Spill, Store};
+use crate::current::{self, shard_of, ChangeRow, FileRef, Manifest};
+
+/// Wanted rows are sorted into this many files by change file, so one group fits in memory.
+const GROUPS: usize = 512;
+
+pub struct Settings {
+    pub prefix: String,
+    pub work: PathBuf,
+    pub threads: usize,
+    /// Only these shards, for a trial on part of the data.
+    pub shards: Range<usize>,
+    /// Only pages whose current row is in these change files, for a trial on part of the data.
+    pub seqs: Range<i64>,
+    pub spill_bytes: usize,
+}
+
+#[derive(Debug, Default)]
+pub struct Report {
+    pub wanted: u64,
+    pub written: u64,
+    pub files_read: u64,
+    /// The row the index points at holds another key, or no page.
+    pub misplaced: u64,
+    /// The row's content hashes to another version than the index holds.
+    pub other_version: u64,
+    pub through_seq: i64,
+    pub shards: usize,
+}
+
+struct Want {
+    row: usize,
+    key: String,
+    version: String,
+}
+
+/// Sorts the snapshot's rows by the change file they live in, into `GROUPS` files; returns how many and the newest change file.
+fn sort_wants(snapshot: &Path, settings: &Settings, groups: &Path) -> Result<(u64, i64)> {
+    std::fs::create_dir_all(groups)?;
+    let mut writers: Vec<BufWriter<File>> =
+        (0..GROUPS).map(|g| Ok(BufWriter::new(File::create(groups.join(format!("{g:04}.tsv")))?))).collect::<Result<_>>()?;
+    let reader = ParquetRecordBatchReaderBuilder::try_new(File::open(snapshot).with_context(|| format!("opening {}", snapshot.display()))?)?
+        .with_batch_size(65_536)
+        .build()?;
+    let (mut wanted, mut through) = (0u64, 0i64);
+    for batch in reader {
+        let batch = batch?;
+        let column = |name: &str| batch.column(batch.schema().index_of(name).expect("a snapshot column")).clone();
+        let (keys, versions, seqs, rows) = (column("key"), column("version"), column("change_seq"), column("change_row"));
+        let (keys, versions) = (keys.as_string::<i32>(), versions.as_string::<i32>());
+        let (seqs, rows) = (seqs.as_primitive::<Int64Type>(), rows.as_primitive::<Int64Type>());
+        for i in 0..batch.num_rows() {
+            if seqs.is_null(i) || rows.is_null(i) {
+                continue;
+            }
+            let (key, seq) = (keys.value(i), seqs.value(i));
+            through = through.max(seq);
+            let Some(shard) = shard_of(key) else { continue };
+            if !settings.shards.contains(&shard) || !settings.seqs.contains(&seq) {
+                continue;
+            }
+            writeln!(writers[(seq as usize) % GROUPS], "{seq}\t{}\t{key}\t{}", rows.value(i), versions.value(i))?;
+            wanted += 1;
+        }
+    }
+    for writer in &mut writers {
+        writer.flush()?;
+    }
+    Ok((wanted, through))
+}
+
+fn read_group(path: &Path) -> Result<HashMap<i64, Vec<Want>>> {
+    let mut wants: HashMap<i64, Vec<Want>> = HashMap::new();
+    for line in BufReader::new(File::open(path)?).lines() {
+        let line = line?;
+        let mut fields = line.splitn(4, '\t');
+        let mut next = || fields.next().ok_or_else(|| anyhow!("a short line in {}", path.display()));
+        let seq: i64 = next()?.parse()?;
+        let row: usize = next()?.parse()?;
+        let (key, version) = (next()?.to_string(), next()?.to_string());
+        wants.entry(seq).or_default().push(Want { row, key, version });
+    }
+    Ok(wants)
+}
+
+/// Builds every shard in `settings.shards` from `snapshot`, a local copy of `index/snapshots/<day>.parquet`.
+pub fn build(store: &dyn Store, snapshot: &Path, settings: &Settings) -> Result<Report> {
+    let groups = settings.work.join("wants");
+    let (wanted, through) = sort_wants(snapshot, settings, &groups)?;
+    let mut report = Report { wanted, through_seq: through, ..Report::default() };
+    println!("{wanted} pages to read, the snapshot reaches change file {through}");
+    let spill = Mutex::new(Spill::new(&settings.work.join("spill"), settings.spill_bytes)?);
+    let counted = Mutex::new((0u64, 0u64, 0u64));
+    for group in 0..GROUPS {
+        let wants = read_group(&groups.join(format!("{group:04}.tsv")))?;
+        let seqs: Vec<i64> = wants.keys().copied().collect();
+        each(&seqs, settings.threads, |&seq| -> Result<()> {
+            let key = compactor::change_key(store, seq)?.ok_or_else(|| anyhow!("change file {seq} has no number"))?;
+            let file = store.get(&key)?.ok_or_else(|| anyhow!("change file {seq} ({key}) is missing"))?;
+            let rows = current::decode_changes(file, seq).with_context(|| format!("change file {seq} ({key})"))?;
+            let (mut misplaced, mut other_version, mut found) = (0, 0, Vec::new());
+            for want in &wants[&seq] {
+                match rows.get(want.row) {
+                    Some(ChangeRow::Page(page)) if page.key == want.key => {
+                        if page.version != want.version {
+                            other_version += 1;
+                        }
+                        found.push(*page.clone());
+                    }
+                    _ => misplaced += 1,
+                }
+            }
+            let mut spill = spill.lock().unwrap();
+            for page in found {
+                if let Some(shard) = shard_of(&page.key) {
+                    spill.push(shard, page)?;
+                }
+            }
+            drop(spill);
+            let mut counted = counted.lock().unwrap();
+            counted.0 += 1;
+            counted.1 += misplaced;
+            counted.2 += other_version;
+            Ok(())
+        })?;
+        if group % 32 == 31 {
+            let counted = counted.lock().unwrap();
+            println!("{} of {GROUPS} groups read: {} change files", group + 1, counted.0);
+        }
+    }
+    let (files, misplaced, other_version) = *counted.lock().unwrap();
+    (report.files_read, report.misplaced, report.other_version) = (files, misplaced, other_version);
+    let spill = spill.into_inner().unwrap();
+    let shards: Vec<usize> = settings.shards.clone().collect();
+    let written = each(&shards, settings.threads, |&shard| -> Result<u64> {
+        let rows = current::merge(spill.take(shard)?, &HashSet::new(), false);
+        let manifest = if rows.is_empty() {
+            Manifest { shard, through_seq: through, merged_through: through, ..Manifest::default() }
+        } else {
+            let key = format!("{}{}/base-{through:012}.parquet", settings.prefix, current::shard_dir(shard));
+            let file = current::encode(&rows)?;
+            let bytes = file.len() as u64;
+            store.put(&key, Bytes::from(file))?;
+            Manifest {
+                shard,
+                through_seq: through,
+                merged_through: through,
+                base: Some(FileRef { key, rows: rows.len() as u64, bytes, through_seq: through }),
+                ..Manifest::default()
+            }
+        };
+        store.put(&compactor::manifest_key(&settings.prefix, shard), Bytes::from(serde_json::to_vec(&manifest)?))?;
+        Ok(rows.len() as u64)
+    })?;
+    report.written = written.iter().sum();
+    report.shards = shards.len();
+    Ok(report)
+}

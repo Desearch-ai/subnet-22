@@ -8,10 +8,11 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 
 use desearch::stub;
+use publisher::compactor::{self, R2Store, Store};
 use publisher::index::VersionIndex;
 use publisher::local::{LocalFeed, LocalUploads};
 use publisher::worker::{self, Job};
-use publisher::{outcomes, service, withdrawals};
+use publisher::{build, outcomes, service, withdrawals};
 
 #[cfg(not(target_env = "msvc"))]
 #[global_allocator]
@@ -36,6 +37,32 @@ enum Command {
     },
     /// Publish a JSON list of jobs whose uploads are `<task_id>.parquet` files in a folder.
     Local(LocalArgs),
+    /// Keep the current state under `COMPACTOR_PREFIX` (default `current/`) up to the change log, a cycle at a time, until SIGTERM.
+    Compact {
+        /// One cycle, then exit.
+        #[arg(long)]
+        once: bool,
+        /// Give shards without a manifest an empty one that follows the log after this change file.
+        #[arg(long)]
+        start_empty_at: Option<i64>,
+    },
+    /// Build the current state once from an index snapshot: a local file, or its key in the pages bucket.
+    BuildCurrent {
+        #[arg(long)]
+        snapshot: String,
+        #[arg(long)]
+        work: PathBuf,
+        #[arg(long, default_value = "current/")]
+        prefix: String,
+        /// Shards `a..b`, for a trial on part of the data.
+        #[arg(long, default_value = "0..1024")]
+        shards: String,
+        /// Change files `a..b`: only pages whose current row is in them, for a trial.
+        #[arg(long)]
+        seqs: Option<String>,
+        #[arg(long, default_value_t = 16)]
+        threads: usize,
+    },
     /// Serve a local stand-in for R2 that keeps objects as files under a folder; for local runs only.
     StubR2 {
         #[arg(long)]
@@ -78,6 +105,8 @@ fn main() -> Result<()> {
             tokio::runtime::Builder::new_multi_thread().enable_all().build()?.block_on(service::remove_escaped_from_env(backup))
         }
         Command::Local(args) => local(args),
+        Command::Compact { once, start_empty_at } => compact(once, start_empty_at),
+        Command::BuildCurrent { snapshot, work, prefix, shards, seqs, threads } => build_current(&snapshot, work, prefix, &shards, seqs.as_deref(), threads),
         Command::StubR2 { root, listen } => {
             let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
             runtime.block_on(async {
@@ -128,5 +157,119 @@ fn local(args: LocalArgs) -> Result<()> {
     if taken > 0 {
         println!("took {taken} pages of withdrawn tasks out of the index");
     }
+    Ok(())
+}
+
+fn env_number<T: std::str::FromStr>(name: &str, default: T) -> Result<T> {
+    match std::env::var(name).ok().filter(|v| !v.is_empty()) {
+        Some(value) => value.trim().parse().map_err(|_| anyhow::anyhow!("{name}={value:?} is not a number")),
+        None => Ok(default),
+    }
+}
+
+fn range<T: std::str::FromStr>(text: &str) -> Result<std::ops::Range<T>> {
+    let (start, end) = text.split_once("..").with_context(|| format!("{text:?} is not a range a..b"))?;
+    let parse = |part: &str| part.trim().parse::<T>().map_err(|_| anyhow::anyhow!("{text:?} is not a range a..b"));
+    Ok(parse(start)?..parse(end)?)
+}
+
+fn pages_store(runtime: &tokio::runtime::Runtime) -> Result<R2Store> {
+    let (_, pages) = runtime.block_on(async { service::buckets_from_env(Default::default()) })?;
+    Ok(R2Store { bucket: pages, handle: runtime.handle().clone() })
+}
+
+fn compact(once: bool, start_empty_at: Option<i64>) -> Result<()> {
+    let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
+    let store = pages_store(&runtime)?;
+    let defaults = compactor::Settings::default();
+    let settings = compactor::Settings {
+        prefix: std::env::var("COMPACTOR_PREFIX").ok().filter(|p| !p.is_empty()).unwrap_or(defaults.prefix),
+        work: std::env::var("COMPACTOR_WORK").map(PathBuf::from).unwrap_or(defaults.work),
+        files_per_cycle: env_number("COMPACTOR_FILES_PER_CYCLE", defaults.files_per_cycle)?,
+        merge_ratio: env_number("COMPACTOR_MERGE_RATIO", defaults.merge_ratio)?,
+        max_deltas: env_number("COMPACTOR_MAX_DELTAS", defaults.max_deltas)?,
+        merges_per_cycle: env_number("COMPACTOR_MERGES", defaults.merges_per_cycle)?,
+        retire_after_s: env_number("COMPACTOR_RETIRE_S", defaults.retire_after_s)?,
+        spill_bytes: env_number::<usize>("COMPACTOR_SPILL_MB", defaults.spill_bytes >> 20)? << 20,
+        threads: env_number("COMPACTOR_THREADS", defaults.threads)?,
+    };
+    if let Some(seq) = start_empty_at {
+        compactor::start_empty(&store, &settings.prefix, seq)?;
+    }
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let stopping = stop.clone();
+    runtime.spawn(async move {
+        if let Ok(mut term) = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            term.recv().await;
+        }
+        stopping.store(true, std::sync::atomic::Ordering::SeqCst);
+    });
+    loop {
+        let started = Instant::now();
+        let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs_f64();
+        let report = compactor::cycle(&store, &settings, now)?;
+        let latest = compactor::latest_seq(&store)?;
+        println!(
+            "cycle: change files {}..{} of {latest}, {} rows into {} deltas, {} withdrawn, {} shards merged, {} files deleted in {:.1}s",
+            report.from,
+            report.through,
+            report.rows,
+            report.deltas,
+            report.withdrawn,
+            report.merged,
+            report.deleted,
+            started.elapsed().as_secs_f64()
+        );
+        if once || stop.load(std::sync::atomic::Ordering::SeqCst) {
+            return Ok(());
+        }
+        if report.through >= latest {
+            for _ in 0..60 {
+                if stop.load(std::sync::atomic::Ordering::SeqCst) {
+                    return Ok(());
+                }
+                std::thread::sleep(Duration::from_secs(1));
+            }
+        }
+    }
+}
+
+/// Copies a large object to a local file a part at a time, so it never sits whole in memory.
+fn download(store: &R2Store, key: &str, path: &std::path::Path) -> Result<()> {
+    use std::io::Write;
+    let head = store.handle.block_on(store.bucket.head(key)).map_err(|e| anyhow::anyhow!("{key}: {e}"))?.with_context(|| format!("{key} does not exist"))?;
+    let mut file = std::io::BufWriter::new(std::fs::File::create(path)?);
+    let part = 64u64 << 20;
+    let mut at = 0;
+    while at < head.size {
+        let end = (at + part).min(head.size);
+        let bytes = store.handle.block_on(store.bucket.get_range(key, at..end, Some(&head.etag))).map_err(|e| anyhow::anyhow!("{key}: {e}"))?;
+        file.write_all(&bytes)?;
+        at = end;
+    }
+    file.flush()?;
+    Ok(())
+}
+
+fn build_current(snapshot: &str, work: PathBuf, prefix: String, shards: &str, seqs: Option<&str>, threads: usize) -> Result<()> {
+    let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
+    let store = pages_store(&runtime)?;
+    std::fs::create_dir_all(&work)?;
+    let local = if std::path::Path::new(snapshot).exists() {
+        PathBuf::from(snapshot)
+    } else {
+        let local = work.join("snapshot.parquet");
+        if !local.exists() {
+            let started = Instant::now();
+            download(&store, snapshot, &local)?;
+            println!("{snapshot} downloaded in {:.0}s", started.elapsed().as_secs_f64());
+        }
+        local
+    };
+    let settings =
+        build::Settings { prefix, work, threads, shards: range(shards)?, seqs: seqs.map(range).transpose()?.unwrap_or(0..i64::MAX), spill_bytes: 2 << 30 };
+    let started = Instant::now();
+    let report = build::build(&store as &dyn Store, &local, &settings)?;
+    println!("{report:?} in {:.0}s", started.elapsed().as_secs_f64());
     Ok(())
 }
