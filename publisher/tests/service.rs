@@ -36,11 +36,15 @@ fn scratch(name: &str) -> PathBuf {
     dir
 }
 
-async fn redis_db() -> Option<ConnectionManager> {
+static REDIS_TURN: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// The test database, emptied, held by one test at a time.
+async fn redis_db() -> Option<(tokio::sync::MutexGuard<'static, ()>, ConnectionManager)> {
+    let turn = REDIS_TURN.lock().await;
     let client = redis::Client::open(REDIS).ok()?;
     let mut redis = tokio::time::timeout(Duration::from_secs(2), client.get_connection_manager()).await.ok()?.ok()?;
     let () = redis::cmd("FLUSHDB").query_async(&mut redis).await.ok()?;
-    Some(redis)
+    Some((turn, redis))
 }
 
 fn bucket(addr: std::net::SocketAddr, name: &str, prefix: &str, errors: Arc<AtomicU64>) -> Bucket {
@@ -106,7 +110,7 @@ fn outcome_feed(state: &stub::State, first: u64, last: u64) -> Vec<(String, Stri
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_service_publishes_reports_and_takes_back_as_the_python_one_does() {
-    let Some(mut redis) = redis_db().await else {
+    let Some((_turn, mut redis)) = redis_db().await else {
         eprintln!("skipped: no Redis on {REDIS}");
         return;
     };
@@ -259,5 +263,54 @@ async fn large_objects_go_up_in_parts_and_reads_survive_errors() {
     assert!(matches!(pages.get("missing").await, Err(r2::Error::Missing)));
     stub.state.fail("PUT", &format!("{PAGES}/pre/doomed"), 10);
     assert!(pages.put("doomed", Bytes::from_static(b"x"), PARQUET, None).await.is_err(), "gives up after its attempts");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn pages_kept_with_sitemap_escapes_are_taken_down() {
+    let Some((_turn, mut redis)) = redis_db().await else {
+        eprintln!("skipped: no Redis on {REDIS}");
+        return;
+    };
+    let dir = scratch("escaped");
+    let stub = stub::start(dir.join("r2"), "127.0.0.1:0").await.unwrap();
+    let state = stub.state.clone();
+    let metrics = Arc::new(Metrics::default());
+    let temp = bucket(stub.addr, TEMP, PREFIX, metrics.r2_errors.clone());
+    let pages = bucket(stub.addr, PAGES, "", metrics.r2_errors.clone());
+    let settings = Settings {
+        redis_url: REDIS.into(),
+        claim_ttl: 600.0,
+        batch: 2,
+        readers: 4,
+        ranges: 4,
+        ahead: 2,
+        index: dir.join("index"),
+        cache_bytes: 8 << 20,
+        idle_exit: 0,
+        idle_delay: Duration::from_millis(50),
+    };
+    let shared = Shared::connect(settings, temp.clone(), pages.clone(), metrics).await.unwrap();
+    let urls = ["https://ex.com/story", "https://ex.com/shop?amp;p=2669&post_type=product", "https://ex.com/Q&amp;A"].map(String::from);
+    let fetched = service::now_us() - 90_000_000;
+    let upload = parquet(&urls.iter().map(|u| page(u, &format!("text of {u}"), fetched)).collect::<Vec<_>>(), None, None);
+    temp.put("submitted/t1.parquet", Bytes::from(upload), PARQUET, None).await.unwrap();
+    enqueue(&mut redis, &crawl("t1", &urls, service::now_us() as f64 / 1e6 - 60.0, ""), true).await;
+    publish_until_idle(&shared).await;
+    assert_eq!(shared.index.pages().unwrap().len(), 3);
+
+    assert_eq!(service::remove_escaped(&shared, false).await.unwrap(), 2);
+    assert_eq!(shared.index.pages().unwrap().len(), 3, "counting changes nothing");
+    assert_eq!(service::remove_escaped(&shared, true).await.unwrap(), 2);
+    let kept: Vec<String> = shared.index.pages().unwrap().into_iter().map(|(_, current)| current.url).collect();
+    assert_eq!(kept, ["https://ex.com/story"]);
+    let latest = json_object(&state, PAGES, "changes/latest.json").unwrap()["seq"].as_u64().unwrap();
+    let numbered = json_object(&state, PAGES, &format!("changes/seq/{latest:012}.json")).unwrap();
+    let removed = rows(&state.object(PAGES, numbered["key"].as_str().unwrap()).unwrap());
+    assert_eq!(column(&removed, "kind"), ["removed"; 2]);
+    let mut taken = column(&removed, "url");
+    taken.sort();
+    assert_eq!(taken, ["https://ex.com/Q&amp;A", "https://ex.com/shop?amp%3Bp=2669&post_type=product"]);
+    assert_eq!(service::remove_escaped(&shared, true).await.unwrap(), 0);
     let _ = std::fs::remove_dir_all(&dir);
 }

@@ -4,17 +4,19 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{bail, Context, Result};
 use bytes::Bytes;
 use redis::aio::ConnectionManager;
+use regex::Regex;
 use tokio::runtime::Handle;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
-use crate::index::VersionIndex;
+use crate::changes::{self, Body, Change, Kind};
+use crate::index::{Current, VersionIndex};
 use crate::outcomes;
 use crate::queue::PublishQueue;
 use crate::reading::{RangeRead, Remote, Traffic};
@@ -468,6 +470,72 @@ pub async fn serve() -> Result<()> {
     shared.index.flush()?;
     println!("publisher stopped");
     Ok(())
+}
+
+/// A page URL kept from a sitemap address whose XML escapes were never decoded, as in `?amp%3Bid=1`.
+static ESCAPED: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)[?&]amp%3B|&(amp|lt|gt|quot|apos|#[0-9]+|#x[0-9a-f]+);").expect("a valid pattern"));
+const REMOVED_PER_FILE: usize = 10_000;
+
+pub fn escaped(url: &str) -> bool {
+    ESCAPED.is_match(url)
+}
+
+/// `remove_escaped` with the storage, Redis and index `serve` uses.
+pub async fn remove_escaped_from_env(apply: bool) -> Result<()> {
+    let settings = Settings::from_env()?;
+    let metrics = Arc::new(Metrics::default());
+    let (temp, pages) = buckets_from_env(metrics.r2_errors.clone())?;
+    pages.check().await?;
+    let shared = Shared::connect(settings, temp, pages, metrics).await?;
+    remove_escaped(&shared, apply).await?;
+    Ok(())
+}
+
+/// Takes down every page whose URL still carries a sitemap's XML escapes, in change files of `removed` rows; without `apply` it only counts them.
+pub async fn remove_escaped(shared: &Shared, apply: bool) -> Result<usize> {
+    let index = shared.index.clone();
+    let found: Vec<(String, Current)> = tokio::task::spawn_blocking(move || {
+        let mut found = Vec::new();
+        index.scan(|key, current| {
+            if escaped(&current.url) {
+                found.push((key, current));
+            }
+            Ok(())
+        })?;
+        anyhow::Ok(found)
+    })
+    .await??;
+    println!("{} pages carry escaped URLs", found.len());
+    for (key, current) in found.iter().take(5) {
+        println!("  {key} {}", current.url);
+    }
+    if !apply || found.is_empty() {
+        return Ok(found.len());
+    }
+    let count = found.len();
+    let now = now_us();
+    let feed = R2Changes { pages: shared.pages.clone(), redis: shared.redis().clone(), handle: shared.handle.clone(), day: day(now) };
+    let index = shared.index.clone();
+    tokio::task::spawn_blocking(move || {
+        for chunk in found.chunks(REMOVED_PER_FILE) {
+            let removed: Vec<Change> = chunk
+                .iter()
+                .map(|(key, current)| Change {
+                    key: key.clone(),
+                    kind: Kind::Removed,
+                    previous_content_sha1: current.content_sha1.clone(),
+                    published_at: iso(now),
+                    body: Body::Removed { url: current.url.clone(), domain: desearch::canonical::domain_of(&current.url).unwrap_or_default() },
+                })
+                .collect();
+            let seq = feed.append(changes::encode(&removed)?, removed.len())?;
+            index.remove(&chunk.iter().map(|(key, current)| (key.clone(), current.version.clone())).collect::<Vec<_>>())?;
+            println!("removed {} pages in change file {seq}", removed.len());
+        }
+        index.flush()
+    })
+    .await??;
+    Ok(count)
 }
 
 pub fn now_us() -> i64 {

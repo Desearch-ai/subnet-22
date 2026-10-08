@@ -27,6 +27,11 @@ struct Cli {
 enum Command {
     /// Publish from the task API's queue in Redis to R2, configured from the environment, until SIGTERM.
     Serve,
+    /// Take down pages whose URL kept a sitemap's XML escapes; counts them unless `--apply`. Run it with `serve` stopped.
+    RemoveEscaped {
+        #[arg(long)]
+        apply: bool,
+    },
     /// Publish a JSON list of jobs whose uploads are `<task_id>.parquet` files in a folder.
     Local(LocalArgs),
     /// Serve a local stand-in for R2 that keeps objects as files under a folder; for local runs only.
@@ -67,6 +72,7 @@ fn main() -> Result<()> {
             runtime.shutdown_timeout(Duration::from_secs(5));
             served
         }
+        Command::RemoveEscaped { apply } => tokio::runtime::Builder::new_multi_thread().enable_all().build()?.block_on(service::remove_escaped_from_env(apply)),
         Command::Local(args) => local(args),
         Command::StubR2 { root, listen } => {
             let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
