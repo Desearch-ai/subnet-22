@@ -1,0 +1,33 @@
+//! The SN22 task API, as a library so its tests can run it in process.
+
+pub mod auth;
+pub mod budgets;
+pub mod chain;
+pub mod checks;
+pub mod credit;
+pub mod db;
+pub mod embeddings;
+pub mod flow;
+pub mod http;
+pub mod janitor;
+pub mod lifecycle;
+pub mod logs;
+pub mod manifest;
+pub mod models;
+pub mod outcomes;
+pub mod proofs;
+pub mod py;
+pub mod queues;
+pub mod registry;
+pub mod roundlog;
+pub mod rounds;
+pub mod roundstore;
+pub mod routes;
+pub mod sampling;
+pub mod seeds;
+pub mod settings;
+pub mod state;
+pub mod storage;
+pub mod uploadlog;
+pub mod validations;
+pub mod verdicts;

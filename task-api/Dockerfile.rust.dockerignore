@@ -1,0 +1,7 @@
+# The build context is the repository root: only the shared crate and the task API's Rust sources go in.
+*
+!crates/desearch/
+!task-api/Cargo.toml
+!task-api/Cargo.lock
+!task-api/src/
+**/target/

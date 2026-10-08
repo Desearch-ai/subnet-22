@@ -1,0 +1,32 @@
+# Build from the repository root: docker build -f task-api/Dockerfile.rust -t desearch-task-api .
+FROM rust:1-bookworm AS build
+
+WORKDIR /src
+COPY crates/desearch crates/desearch
+COPY task-api/Cargo.toml task-api/Cargo.lock task-api/
+COPY task-api/src task-api/src
+WORKDIR /src/task-api
+ARG CARGO_BUILD_JOBS=4
+ENV CARGO_TARGET_DIR=/src/target
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/src/target \
+    cargo build --release --locked --bin task-api \
+    && strip -o /task-api /src/target/release/task-api
+
+FROM debian:bookworm-slim
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl tini \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --create-home --uid 10001 crawler \
+    && mkdir -p /data \
+    && chown crawler /data
+
+COPY --from=build /task-api /usr/local/bin/task-api
+
+USER crawler
+ENV TASK_API_DATA=/data
+EXPOSE 8080
+
+# tini passes SIGTERM on, so requests in flight finish before the API exits.
+ENTRYPOINT ["/usr/bin/tini", "--", "task-api"]

@@ -1,0 +1,43 @@
+[package]
+name = "task-api"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88"
+publish = false
+description = "The SN22 task API: hands out crawl and embed tasks, takes uploads and verdicts, keeps the accounts"
+
+[dependencies]
+anyhow = "1"
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio", "tower-log"] }
+base64 = "0.22"
+bytes = "1"
+flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
+frame-metadata = { version = "23", default-features = false, features = ["current", "decode", "std"] }
+futures = "0.3"
+parity-scale-codec = { version = "3", default-features = false, features = ["std"] }
+rand = "0.8"
+redis = { version = "1", default-features = false, features = ["tokio-comp", "connection-manager", "script"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+scale-info = { version = "2", default-features = false, features = ["std", "decode"] }
+scale-value = "0.18"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+desearch = { path = "../crates/desearch" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "signal", "sync", "net"] }
+tower-http = { version = "0.6", features = ["cors"] }
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+arrow-array = "59"
+reqwest = { version = "0.12", default-features = false, features = ["stream"] }
+parquet = { version = "59", default-features = false, features = ["arrow", "zstd"] }
+
+[target.'cfg(not(target_env = "msvc"))'.dependencies]
+tikv-jemallocator = "0.6"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+debug = "line-tables-only"
