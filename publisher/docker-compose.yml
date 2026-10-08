@@ -20,6 +20,9 @@ services:
       PUBLISHER_AHEAD: ${PUBLISHER_AHEAD:-}
       PUBLISHER_CACHE_MB: ${PUBLISHER_CACHE_MB:-4096}
     volumes: ["publisher-index:/data"]
+    # The index keeps every table file open, and the daily snapshot opens a second copy.
+    ulimits:
+      nofile: { soft: 65536, hard: 65536 }
     stop_grace_period: 120s
     logging:
       driver: json-file
