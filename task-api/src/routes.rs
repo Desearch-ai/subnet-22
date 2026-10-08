@@ -615,6 +615,10 @@ pub async fn ping(Shared(state): Shared<Arc<State>>) -> Answer {
     if state.draining.load(Ordering::Relaxed) {
         return Err(ApiError::status(503, "shutting down"));
     }
+    // Healthy only once the subnet's hotkeys are known, so a deploy never routes callers to a copy that must turn them away.
+    if !state.registry.ready() {
+        return Err(ApiError::status(503, "the subnet's hotkeys are still loading"));
+    }
     Ok(Json(json!({"ok": true})))
 }
 

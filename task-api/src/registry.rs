@@ -138,6 +138,14 @@ impl Registry {
         }
     }
 
+    /// Whether a metagraph is known, kept from before or loaded since starting.
+    pub fn ready(&self) -> bool {
+        match self {
+            Registry::Local { .. } => true,
+            Registry::Chain { loaded, .. } => *loaded.borrow(),
+        }
+    }
+
     /// The caller's entry; before any metagraph is known, waits a few seconds for the first.
     pub async fn lookup(&self, hotkey: &str) -> Result<Option<Entry>, NotLoaded> {
         match self {

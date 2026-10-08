@@ -72,6 +72,7 @@ async fn a_kept_metagraph_lets_a_restarted_copy_serve_while_the_chain_refuses() 
     assert_eq!(restarted.registry.lookup(&h.miner.ss58()).await.unwrap().unwrap().uid, Some(3));
     assert!(restarted.registry.lookup(&h.rival.ss58()).await.unwrap().is_none());
     assert!(started.elapsed() < Duration::from_secs(1), "no wait on the chain");
+    assert!(restarted.registry.ready());
 }
 
 #[tokio::test]
@@ -79,6 +80,7 @@ async fn with_no_metagraph_yet_a_caller_is_asked_to_come_back() {
     let fake = FakeChain::start(1_000, 12.0).await;
     fake.refuse(true);
     let h = Harness::with(|s| s.registry = RegistryMode::Chain { netuid: 22, network: fake.url.clone() }).await;
+    assert_eq!(h.public("/v1/ping").await.0, 503, "not healthy, so no traffic is routed to it");
     let started = Instant::now();
     let refused = h.miner.post("/v1/tasks/claim", json!({})).await.unwrap_err();
     assert_eq!(refused.status, 503);
