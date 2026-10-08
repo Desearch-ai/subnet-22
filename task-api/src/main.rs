@@ -45,9 +45,15 @@ async fn main() -> Result<()> {
     if let (Some(chain), RegistryMode::Chain { netuid, .. }) = (&state.chain, &state.settings.registry) {
         state.registry.refresh(chain.clone(), *netuid);
     }
-    tokio::spawn(janitor::run(state.clone()));
+    let (stop, stopped) = tokio::sync::watch::channel(false);
+    let janitor = tokio::spawn(janitor::run(state.clone(), stopped));
     let listener = TcpListener::bind(&listen).await.with_context(|| format!("listening on {listen}"))?;
     eprintln!("task API on {listen}, signing as {}", state.signer());
-    axum::serve(listener, http::router(state).into_make_service_with_connect_info::<SocketAddr>()).with_graceful_shutdown(shutdown()).await?;
+    let stopping = async move {
+        shutdown().await;
+        let _ = stop.send(true);
+    };
+    axum::serve(listener, http::router(state).into_make_service_with_connect_info::<SocketAddr>()).with_graceful_shutdown(stopping).await?;
+    janitor.await?;
     Ok(())
 }

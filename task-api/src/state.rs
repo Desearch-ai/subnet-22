@@ -43,7 +43,7 @@ pub struct State {
     pub chain: Option<Arc<Chain>>,
     pub admins: HashSet<String>,
     pub seeds: Seeds,
-    pub key: Hotkey,
+    pub key: Arc<Hotkey>,
     pub crawl: TaskQueue,
     pub embed: TaskQueue,
     pub validation: ValidationQueue,
@@ -102,7 +102,7 @@ impl State {
             chain,
             admins,
             seeds,
-            key,
+            key: Arc::new(key),
             crawl: TaskQueue::new("crawl", held),
             embed: TaskQueue::new("embed", held),
             validation: ValidationQueue { active_s: settings.active_s },
@@ -160,25 +160,24 @@ impl State {
 
     /// Signs receipts and writes them to the log together; returns each as the caller is shown it.
     pub async fn record(&self, receipts: Vec<Receipt>) -> Result<Vec<Value>> {
-        let signed: Vec<(Receipt, Value, String)> = receipts
-            .into_iter()
-            .map(|receipt| {
-                let body = receipt.body();
-                let signature = self.sign(&canonical(&body));
-                (receipt, body, signature)
-            })
-            .collect();
-        let shown = signed.iter().map(|(_, body, signature)| json!({"body": body, "signature": signature})).collect();
+        let key = self.key.clone();
         let served_at = now();
         self.db
             .run(move |conn| {
-                for (receipt, _, signature) in &signed {
-                    roundlog::record(conn, receipt, signature, served_at)?;
+                let mut shown = Vec::with_capacity(receipts.len());
+                for mut receipt in receipts {
+                    // Another copy of the API may have sealed the round this one still names.
+                    if receipt.outcome == "refused" && roundlog::anchored_root(conn, &receipt.round_id)?.is_some() {
+                        receipt.round_id.clear();
+                    }
+                    let body = receipt.body();
+                    let signature = hex(&key.sign(&canonical(&body)));
+                    roundlog::record(conn, &receipt, &signature, served_at)?;
+                    shown.push(json!({"body": body, "signature": signature}));
                 }
-                Ok(())
+                Ok(shown)
             })
-            .await?;
-        Ok(shown)
+            .await
     }
 
     pub async fn record_one(&self, receipt: Receipt) -> Result<Value> {

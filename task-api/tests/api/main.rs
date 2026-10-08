@@ -5,6 +5,7 @@ mod embed;
 mod harness;
 mod limits;
 mod logs;
+mod overlap;
 mod punishment;
 mod queueing;
 mod timing;

@@ -28,5 +28,7 @@ USER crawler
 ENV TASK_API_DATA=/data
 EXPOSE 8080
 
+HEALTHCHECK --interval=5s --timeout=3s --start-period=20s --retries=3 CMD curl -fsS http://127.0.0.1:8080/v1/ping || exit 1
+
 # tini passes SIGTERM on, so requests in flight finish before the API exits.
 ENTRYPOINT ["/usr/bin/tini", "--", "task-api"]

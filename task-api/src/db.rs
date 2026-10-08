@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use anyhow::{anyhow, Result};
 use rusqlite::types::ValueRef;
-use rusqlite::{Connection, Row};
+use rusqlite::{Connection, Row, TransactionBehavior};
 use serde_json::{Map, Value};
 use tokio::sync::oneshot;
 
@@ -59,7 +59,8 @@ impl Db {
     pub async fn run<T: Send + 'static>(&self, work: impl FnOnce(&Connection) -> Result<T> + Send + 'static) -> Result<T> {
         let (done, result) = oneshot::channel();
         let job: Job = Box::new(move |conn| {
-            let outcome = conn.transaction().map_err(anyhow::Error::from).and_then(|tx| {
+            // Immediate, so a second copy of the API writing the same file waits its turn instead of failing.
+            let outcome = conn.transaction_with_behavior(TransactionBehavior::Immediate).map_err(anyhow::Error::from).and_then(|tx| {
                 let value = work(&tx)?;
                 tx.commit()?;
                 Ok(value)
