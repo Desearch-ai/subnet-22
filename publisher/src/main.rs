@@ -46,6 +46,21 @@ enum Command {
         #[arg(long)]
         start_empty_at: Option<i64>,
     },
+    /// Check sampled pages of change files `a..b` read back from the current state as that version or a newer one.
+    CheckCurrent {
+        #[arg(long, default_value = "current/")]
+        prefix: String,
+        #[arg(long)]
+        seqs: String,
+        /// Change files sampled across the range.
+        #[arg(long, default_value_t = 10)]
+        files: usize,
+        #[arg(long, default_value_t = 5)]
+        per_file: usize,
+        /// For each page found wrong, list every version and removal of it in `seqs`.
+        #[arg(long)]
+        explain: bool,
+    },
     /// Build the current state once from an index snapshot: a local file, or its key in the pages bucket.
     BuildCurrent {
         #[arg(long)]
@@ -106,6 +121,26 @@ fn main() -> Result<()> {
         }
         Command::Local(args) => local(args),
         Command::Compact { once, start_empty_at } => compact(once, start_empty_at),
+        Command::CheckCurrent { prefix, seqs, files, per_file, explain } => {
+            let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
+            let store = pages_store(&runtime)?;
+            let seqs = range::<i64>(&seqs)?;
+            let all: Vec<i64> = seqs.clone().collect();
+            let step = ((seqs.end - seqs.start) as usize / files.max(1)).max(1);
+            let sampled: Vec<i64> = seqs.step_by(step).take(files).collect();
+            let (checked, removed, wrong) = compactor::check(&store, &prefix, &sampled, per_file, 32)?;
+            for line in &wrong {
+                println!("{line}");
+                if explain {
+                    let key = line.split(' ').next().unwrap_or_default();
+                    for event in compactor::history(&store, key, &all, 32)? {
+                        println!("    {event}");
+                    }
+                }
+            }
+            println!("{checked} pages checked in change files {sampled:?}: {removed} removed by a later change, {} wrong", wrong.len());
+            Ok(())
+        }
         Command::BuildCurrent { snapshot, work, prefix, shards, seqs, threads } => build_current(&snapshot, work, prefix, &shards, seqs.as_deref(), threads),
         Command::StubR2 { root, listen } => {
             let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
@@ -194,7 +229,7 @@ fn compact(once: bool, start_empty_at: Option<i64>) -> Result<()> {
         threads: env_number("COMPACTOR_THREADS", defaults.threads)?,
     };
     if let Some(seq) = start_empty_at {
-        compactor::start_empty(&store, &settings.prefix, seq)?;
+        compactor::start_empty(&store, &settings.prefix, seq, settings.threads.max(16))?;
     }
     let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let stopping = stop.clone();

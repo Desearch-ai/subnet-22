@@ -1,12 +1,15 @@
 //! The current state of every page: 1,024 shards by URL hash, each a base file plus deltas of rows sorted by key, and a manifest.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, LazyLock};
 
 use anyhow::{anyhow, bail, Context, Result};
 use arrow_array::builder::{BooleanBuilder, Int32Builder, Int64Builder, LargeStringBuilder, ListBuilder, StringBuilder};
 use arrow_array::cast::AsArray;
-use arrow_array::{Array, ArrayRef, RecordBatch};
+use arrow_array::types::Int64Type;
+use arrow_array::{Array, ArrayRef, BooleanArray, Int64Array, RecordBatch, StringArray};
+use arrow_buffer::NullBuffer;
+use arrow_cast::cast;
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use bytes::Bytes;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
@@ -191,53 +194,63 @@ fn columns(rows: &[PageRow]) -> Vec<ArrayRef> {
     ]
 }
 
-/// A file's columns by name, whichever string types its writer chose.
+/// A batch's columns by name, every text column as UTF-8 whichever string type its writer chose, looked up once.
 struct Columns {
-    batch: RecordBatch,
+    rows: usize,
+    texts: HashMap<String, StringArray>,
+    lists: HashMap<String, (Vec<usize>, StringArray, Option<NullBuffer>)>,
+    ints: HashMap<String, Int64Array>,
+    removed: Option<BooleanArray>,
 }
 
 impl Columns {
-    fn get(&self, name: &str) -> Option<&ArrayRef> {
-        self.batch.schema().index_of(name).ok().map(|i| self.batch.column(i))
+    fn new(batch: RecordBatch) -> Result<Columns> {
+        let mut columns = Columns { rows: batch.num_rows(), texts: HashMap::new(), lists: HashMap::new(), ints: HashMap::new(), removed: None };
+        for (field, column) in batch.schema().fields().iter().zip(batch.columns()) {
+            let name = field.name().clone();
+            match column.data_type() {
+                DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View => {
+                    columns.texts.insert(name, cast(column, &DataType::Utf8)?.as_string::<i32>().clone());
+                }
+                DataType::List(_) | DataType::LargeList(_) => {
+                    let (offsets, values, nulls): (Vec<usize>, ArrayRef, Option<NullBuffer>) = match column.data_type() {
+                        DataType::List(_) => {
+                            let list = column.as_list::<i32>();
+                            (list.value_offsets().iter().map(|o| *o as usize).collect(), list.values().clone(), list.nulls().cloned())
+                        }
+                        _ => {
+                            let list = column.as_list::<i64>();
+                            (list.value_offsets().iter().map(|o| *o as usize).collect(), list.values().clone(), list.nulls().cloned())
+                        }
+                    };
+                    columns.lists.insert(name, (offsets, cast(&values, &DataType::Utf8)?.as_string::<i32>().clone(), nulls));
+                }
+                DataType::Int32 | DataType::Int64 => {
+                    columns.ints.insert(name, cast(column, &DataType::Int64)?.as_primitive::<Int64Type>().clone());
+                }
+                DataType::Boolean if name == "removed" => columns.removed = Some(column.as_boolean().clone()),
+                _ => {}
+            }
+        }
+        Ok(columns)
     }
 
     fn text(&self, name: &str, row: usize) -> Option<String> {
-        let column = self.get(name)?;
-        if column.is_null(row) {
-            return None;
-        }
-        Some(match column.data_type() {
-            DataType::Utf8 => column.as_string::<i32>().value(row).to_string(),
-            DataType::LargeUtf8 => column.as_string::<i64>().value(row).to_string(),
-            DataType::Utf8View => column.as_string_view().value(row).to_string(),
-            _ => return None,
-        })
+        let column = self.texts.get(name)?;
+        column.is_valid(row).then(|| column.value(row).to_string())
     }
 
     fn texts(&self, name: &str, row: usize) -> Vec<Option<String>> {
-        let Some(column) = self.get(name) else { return Vec::new() };
-        if column.is_null(row) {
+        let Some((offsets, values, nulls)) = self.lists.get(name) else { return Vec::new() };
+        if nulls.as_ref().is_some_and(|nulls| nulls.is_null(row)) {
             return Vec::new();
         }
-        let items = match column.data_type() {
-            DataType::List(_) => column.as_list::<i32>().value(row),
-            DataType::LargeList(_) => column.as_list::<i64>().value(row),
-            _ => return Vec::new(),
-        };
-        let wrapped = Columns { batch: RecordBatch::try_from_iter([("item", items)]).expect("one column") };
-        (0..wrapped.batch.num_rows()).map(|i| wrapped.text("item", i)).collect()
+        (offsets[row]..offsets[row + 1]).map(|i| values.is_valid(i).then(|| values.value(i).to_string())).collect()
     }
 
     fn int(&self, name: &str, row: usize) -> Option<i64> {
-        let column = self.get(name)?;
-        if column.is_null(row) {
-            return None;
-        }
-        match column.data_type() {
-            DataType::Int32 => Some(i64::from(column.as_primitive::<arrow_array::types::Int32Type>().value(row))),
-            DataType::Int64 => Some(column.as_primitive::<arrow_array::types::Int64Type>().value(row)),
-            _ => None,
-        }
+        let column = self.ints.get(name)?;
+        column.is_valid(row).then(|| column.value(row))
     }
 
     fn record(&self, row: usize) -> Record {
@@ -273,16 +286,26 @@ impl Columns {
 
 fn batches(file: Bytes) -> Result<Vec<Columns>> {
     let reader = ParquetRecordBatchReaderBuilder::try_new(file)?.with_batch_size(ROW_GROUP * 8).build()?;
-    reader.map(|batch| Ok(Columns { batch: batch? })).collect()
+    reader.map(|batch| Columns::new(batch?)).collect()
 }
 
 /// Every row of a change file in file order, from the Rust publisher or the Python one before it.
 pub fn decode_changes(file: Bytes, change_seq: i64) -> Result<Vec<ChangeRow>> {
+    Ok(decode_changes_where(file, change_seq, |_| true)?.into_iter().map(|(_, row)| row).collect())
+}
+
+/// The rows of a change file whose position `keep` accepts, with their positions; the others are not decoded.
+pub fn decode_changes_where(file: Bytes, change_seq: i64, keep: impl Fn(usize) -> bool) -> Result<Vec<(usize, ChangeRow)>> {
     let mut rows = Vec::new();
+    let mut at = 0;
     for columns in batches(file)? {
-        for row in 0..columns.batch.num_rows() {
+        for row in 0..columns.rows {
+            let position = at + row;
+            if !keep(position) {
+                continue;
+            }
             let kind = columns.text("kind", row).unwrap_or_default();
-            rows.push(match kind.as_str() {
+            let decoded = match kind.as_str() {
                 "task_withdrawn" => ChangeRow::TaskWithdrawn(columns.text("task_id", row).context("a task_withdrawn row without a task id")?),
                 "removed" => ChangeRow::Removed(columns.text("key", row).context("a removed row without a key")?),
                 "new" | "changed" | "page" => {
@@ -297,8 +320,10 @@ pub fn decode_changes(file: Bytes, change_seq: i64) -> Result<Vec<ChangeRow>> {
                     }))
                 }
                 other => bail!("a change row of kind {other:?}"),
-            });
+            };
+            rows.push((position, decoded));
         }
+        at += columns.rows;
     }
     Ok(rows)
 }
@@ -306,8 +331,8 @@ pub fn decode_changes(file: Bytes, change_seq: i64) -> Result<Vec<ChangeRow>> {
 pub fn decode(file: Bytes) -> Result<Vec<PageRow>> {
     let mut rows = Vec::new();
     for columns in batches(file)? {
-        let removed = columns.get("removed").ok_or_else(|| anyhow!("a pages file without removed"))?.as_boolean().clone();
-        for row in 0..columns.batch.num_rows() {
+        let removed = columns.removed.clone().ok_or_else(|| anyhow!("a pages file without removed"))?;
+        for row in 0..columns.rows {
             rows.push(PageRow {
                 key: columns.text("key", row).unwrap_or_default(),
                 removed: removed.value(row),

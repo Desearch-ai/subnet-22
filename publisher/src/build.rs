@@ -6,6 +6,7 @@ use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::time::Instant;
 
 use anyhow::{anyhow, Context, Result};
 use arrow_array::cast::AsArray;
@@ -42,6 +43,8 @@ pub struct Report {
     pub other_version: u64,
     pub through_seq: i64,
     pub shards: usize,
+    pub fetch_s: f64,
+    pub decode_s: f64,
 }
 
 struct Want {
@@ -107,16 +110,28 @@ pub fn build(store: &dyn Store, snapshot: &Path, settings: &Settings) -> Result<
     println!("{wanted} pages to read, the snapshot reaches change file {through}");
     let spill = Mutex::new(Spill::new(&settings.work.join("spill"), settings.spill_bytes)?);
     let counted = Mutex::new((0u64, 0u64, 0u64));
+    let timed = Mutex::new((0.0f64, 0.0f64));
     for group in 0..GROUPS {
         let wants = read_group(&groups.join(format!("{group:04}.tsv")))?;
         let seqs: Vec<i64> = wants.keys().copied().collect();
         each(&seqs, settings.threads, |&seq| -> Result<()> {
+            let started = Instant::now();
             let key = compactor::change_key(store, seq)?.ok_or_else(|| anyhow!("change file {seq} has no number"))?;
             let file = store.get(&key)?.ok_or_else(|| anyhow!("change file {seq} ({key}) is missing"))?;
-            let rows = current::decode_changes(file, seq).with_context(|| format!("change file {seq} ({key})"))?;
+            let fetched = started.elapsed().as_secs_f64();
+            let rows_wanted: HashSet<usize> = wants[&seq].iter().map(|want| want.row).collect();
+            let rows: HashMap<usize, ChangeRow> = current::decode_changes_where(file, seq, |row| rows_wanted.contains(&row))
+                .with_context(|| format!("change file {seq} ({key})"))?
+                .into_iter()
+                .collect();
+            {
+                let mut timed = timed.lock().unwrap();
+                timed.0 += fetched;
+                timed.1 += started.elapsed().as_secs_f64() - fetched;
+            }
             let (mut misplaced, mut other_version, mut found) = (0, 0, Vec::new());
             for want in &wants[&seq] {
-                match rows.get(want.row) {
+                match rows.get(&want.row) {
                     Some(ChangeRow::Page(page)) if page.key == want.key => {
                         if page.version != want.version {
                             other_version += 1;
@@ -146,6 +161,7 @@ pub fn build(store: &dyn Store, snapshot: &Path, settings: &Settings) -> Result<
     }
     let (files, misplaced, other_version) = *counted.lock().unwrap();
     (report.files_read, report.misplaced, report.other_version) = (files, misplaced, other_version);
+    (report.fetch_s, report.decode_s) = *timed.lock().unwrap();
     let spill = spill.into_inner().unwrap();
     let shards: Vec<usize> = settings.shards.clone().collect();
     let written = each(&shards, settings.threads, |&shard| -> Result<u64> {

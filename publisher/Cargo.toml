@@ -10,6 +10,7 @@ description = "The SN22 publisher: validated uploads into the numbered change fe
 [dependencies]
 anyhow = "1"
 arrow-array = "59"
+arrow-buffer = "59"
 arrow-cast = "59"
 arrow-schema = "59"
 base64 = "0.22"

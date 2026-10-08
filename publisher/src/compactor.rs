@@ -178,14 +178,105 @@ pub fn load_withdrawn(store: &dyn Store, prefix: &str) -> Result<Withdrawn> {
 }
 
 /// Empty shards that start following the change log after `through_seq`.
-pub fn start_empty(store: &dyn Store, prefix: &str, through_seq: i64) -> Result<()> {
-    for shard in 0..SHARDS {
+pub fn start_empty(store: &dyn Store, prefix: &str, through_seq: i64, threads: usize) -> Result<()> {
+    let shards: Vec<usize> = (0..SHARDS).collect();
+    each(&shards, threads, |&shard| -> Result<()> {
         if store.get(&manifest_key(prefix, shard))?.is_none() {
             let manifest = Manifest { shard, through_seq, merged_through: through_seq, ..Manifest::default() };
             store.put(&manifest_key(prefix, shard), Bytes::from(serde_json::to_vec(&manifest)?))?;
         }
-    }
+        Ok(())
+    })?;
     Ok(())
+}
+
+/// What the change files `seqs` say about one page key, in log order: each version and each removal.
+pub fn history(store: &dyn Store, key: &str, seqs: &[i64], threads: usize) -> Result<Vec<String>> {
+    let found = each(seqs, threads, |&seq| -> Result<Vec<String>> {
+        let Some(file_key) = change_key(store, seq)? else { return Ok(Vec::new()) };
+        let file = store.get(&file_key)?.ok_or_else(|| anyhow!("change file {seq} is missing"))?;
+        Ok(current::decode_changes(file, seq)?
+            .into_iter()
+            .filter_map(|row| match row {
+                ChangeRow::Page(page) if page.key == key => Some(format!("{seq}: page fetched {} task {}", page.record.fetched_at, page.record.task_id)),
+                ChangeRow::Removed(removed) if removed == key => Some(format!("{seq}: removed")),
+                _ => None,
+            })
+            .collect())
+    })?;
+    Ok(found.into_iter().flatten().collect())
+}
+
+/// Of these pages absent from the current state, the ones whose last logged event after `(key, seq)` is a removal.
+fn removed_later(store: &dyn Store, prefix: &str, absent: &[(String, i64)], threads: usize) -> Result<HashSet<String>> {
+    let Some(from) = absent.iter().map(|(_, seq)| seq + 1).min() else { return Ok(HashSet::new()) };
+    let mut through = i64::MAX;
+    for (key, _) in absent {
+        let shard = shard_of(key).ok_or_else(|| anyhow!("{key} is not a page key"))?;
+        let raw = store.get(&manifest_key(prefix, shard))?.ok_or_else(|| anyhow!("shard {shard} has no manifest"))?;
+        through = through.min(serde_json::from_slice::<Manifest>(&raw)?.through_seq);
+    }
+    let logged: HashMap<&str, i64> = absent.iter().map(|(key, seq)| (key.as_str(), *seq)).collect();
+    let seqs: Vec<i64> = (from..=through).collect();
+    let events = each(&seqs, threads, |&seq| -> Result<Vec<(String, bool)>> {
+        let Some(file_key) = change_key(store, seq)? else { return Ok(Vec::new()) };
+        let file = store.get(&file_key)?.ok_or_else(|| anyhow!("change file {seq} is missing"))?;
+        let after = |key: &str| logged.get(key).is_some_and(|&logged| seq > logged);
+        Ok(current::decode_changes(file, seq)?
+            .into_iter()
+            .filter_map(|row| match row {
+                ChangeRow::Page(page) if after(&page.key) => Some((page.key, false)),
+                ChangeRow::Removed(key) if after(&key) => Some((key, true)),
+                _ => None,
+            })
+            .collect())
+    })?;
+    let last: HashMap<String, bool> = events.into_iter().flatten().collect();
+    Ok(last.into_iter().filter(|&(_, removed)| removed).map(|(key, _)| key).collect())
+}
+
+/// Samples page rows of these change files and checks each reads back from the current state as that version or a newer one.
+pub fn check(store: &dyn Store, prefix: &str, seqs: &[i64], per_file: usize, threads: usize) -> Result<(usize, usize, Vec<String>)> {
+    let (mut checked, mut removed) = (0, 0);
+    let (mut wrong, mut absent) = (Vec::new(), Vec::new());
+    for &seq in seqs {
+        let Some(key) = change_key(store, seq)? else { continue };
+        let file = store.get(&key)?.ok_or_else(|| anyhow!("change file {seq} ({key}) is missing"))?;
+        let pages: Vec<PageRow> = current::decode_changes(file, seq)?
+            .into_iter()
+            .filter_map(|row| match row {
+                ChangeRow::Page(page) => Some(*page),
+                _ => None,
+            })
+            .collect();
+        let step = (pages.len() / per_file.max(1)).max(1);
+        for page in pages.iter().step_by(step).take(per_file) {
+            checked += 1;
+            match winner(store, prefix, &page.key)? {
+                Some(found) if found.removed && found.change_seq > seq => removed += 1,
+                Some(found) if !found.removed && !page.replaces(&found) => {}
+                Some(found) => wrong.push(format!(
+                    "{} in change file {seq}: current is {} {} from change file {}, logged {} {}",
+                    page.key,
+                    if found.removed { "a removal" } else { found.record.fetched_at.as_str() },
+                    found.version,
+                    found.change_seq,
+                    page.record.fetched_at,
+                    page.version
+                )),
+                None => absent.push((page.key.clone(), seq)),
+            }
+        }
+    }
+    let removed_since = removed_later(store, prefix, &absent, threads)?;
+    for (key, seq) in absent {
+        if removed_since.contains(&key) {
+            removed += 1;
+        } else {
+            wrong.push(format!("{key} in change file {seq}: not in the current state"));
+        }
+    }
+    Ok((checked, removed, wrong))
 }
 
 /// The newest numbered change file.
@@ -382,6 +473,11 @@ pub fn cycle(store: &dyn Store, settings: &Settings, now: f64) -> Result<Report>
 
 /// The current version of one page from R2 alone: its shard's base and deltas, newest wins, withdrawn tasks dropped.
 pub fn lookup(store: &dyn Store, prefix: &str, key: &str) -> Result<Option<PageRow>> {
+    Ok(winner(store, prefix, key)?.filter(|row| !row.removed))
+}
+
+/// The newest row kept for one page, a removal included; withdrawn tasks dropped.
+pub fn winner(store: &dyn Store, prefix: &str, key: &str) -> Result<Option<PageRow>> {
     let shard = shard_of(key).ok_or_else(|| anyhow!("{key} is not a page key"))?;
     let raw = store.get(&manifest_key(prefix, shard))?.ok_or_else(|| anyhow!("shard {shard} has no manifest"))?;
     let manifest: Manifest = serde_json::from_slice(&raw)?;
@@ -391,7 +487,7 @@ pub fn lookup(store: &dyn Store, prefix: &str, key: &str) -> Result<Option<PageR
         let rows = current::decode(store.get(&file.key)?.ok_or_else(|| anyhow!("{} is missing", file.key))?)?;
         found.extend(rows.into_iter().filter(|row| row.key == key));
     }
-    Ok(current::merge(found, &gone, false).pop())
+    Ok(current::merge(found, &gone, true).pop())
 }
 
 /// Every current page of a shard, as a reader merges it.

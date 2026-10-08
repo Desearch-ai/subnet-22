@@ -138,7 +138,7 @@ fn the_compactor_follows_the_log_into_shards_and_readers_see_the_newest_version(
     let root = scratch("follow");
     let mut log = Log::new(root.join("bucket"));
     let store = LocalStore { root: root.join("bucket") };
-    compactor::start_empty(&store, "current/", 0).unwrap();
+    compactor::start_empty(&store, "current/", 0, 4).unwrap();
     let urls: Vec<String> = (0..300).map(|i| format!("https://news.example/story-{i}")).collect();
     log.append(&urls.iter().map(|u| page(u, "2026-10-08T10:00:00+00:00", "t1", "v1")).collect::<Vec<_>>());
     log.append(&[page(&urls[0], "2026-10-08T11:00:00+00:00", "t2", "v2"), page(&urls[1], "2026-10-08T09:00:00+00:00", "t2", "stale")]);
@@ -167,7 +167,7 @@ fn merges_fold_deltas_into_a_base_and_replaced_files_go_after_their_grace() {
     let root = scratch("merge");
     let mut log = Log::new(root.join("bucket"));
     let store = LocalStore { root: root.join("bucket") };
-    compactor::start_empty(&store, "current/", 0).unwrap();
+    compactor::start_empty(&store, "current/", 0, 4).unwrap();
     let url = "https://news.example/one";
     let shard = shard_of(&page_key(url).unwrap()).unwrap();
     let mut settings = settings(root.join("work"));
@@ -194,7 +194,7 @@ fn a_number_not_written_yet_ends_the_cycle_without_skipping_it() {
     let root = scratch("hole");
     let mut log = Log::new(root.join("bucket"));
     let store = LocalStore { root: root.join("bucket") };
-    compactor::start_empty(&store, "current/", 0).unwrap();
+    compactor::start_empty(&store, "current/", 0, 4).unwrap();
     log.append(&[page("https://news.example/a", "2026-10-08T10:00:00+00:00", "t1", "a")]);
     let hole = log.append(&[page("https://news.example/b", "2026-10-08T10:00:00+00:00", "t1", "b")]);
     log.append(&[page("https://news.example/c", "2026-10-08T10:00:00+00:00", "t1", "c")]);
@@ -242,4 +242,28 @@ fn a_build_from_an_index_snapshot_matches_it_and_the_compactor_carries_on_after_
     let carried = compactor::cycle(&store, &self::settings(root.join("work")), 1.0).unwrap();
     assert_eq!((carried.from, carried.rows), (through + 1, 1));
     assert_eq!(text_of(&store, &urls[100]).as_deref(), Some("v3"));
+}
+
+#[test]
+fn the_check_counts_a_page_removed_later_as_removed_and_a_lost_page_as_wrong() {
+    let root = scratch("check");
+    let mut log = Log::new(root.join("bucket"));
+    let store = LocalStore { root: root.join("bucket") };
+    compactor::start_empty(&store, "current/", 0, 4).unwrap();
+    let mut settings = settings(root.join("work"));
+    settings.merge_ratio = 1.0;
+    let (gone, lost) = ("https://news.example/gone", "https://news.example/lost");
+    let first = log.append(&[page(gone, "2026-10-08T10:00:00+00:00", "t1", "v1"), page(lost, "2026-10-08T10:00:00+00:00", "t1", "v1")]);
+    log.append(&[removed(gone)]);
+    compactor::cycle(&store, &settings, 1_000.0).unwrap();
+    assert!(compactor::winner(&store, "current/", &page_key(gone).unwrap()).unwrap().is_none(), "a merged base keeps no removals");
+    assert_eq!(compactor::check(&store, "current/", &[first], 10, 4).unwrap(), (2, 1, Vec::new()));
+
+    let shard = shard_of(&page_key(lost).unwrap()).unwrap();
+    let mut manifest = compactor::load_manifests(&store, "current/", 4).unwrap().swap_remove(shard);
+    (manifest.base, manifest.deltas) = (None, Vec::new());
+    store.put(&compactor::manifest_key("current/", shard), Bytes::from(serde_json::to_vec(&manifest).unwrap())).unwrap();
+    let (checked, removed, wrong) = compactor::check(&store, "current/", &[first], 10, 4).unwrap();
+    assert_eq!((checked, removed), (2, 1));
+    assert_eq!(wrong, vec![format!("{} in change file {first}: not in the current state", page_key(lost).unwrap())]);
 }
