@@ -137,7 +137,7 @@ pub struct Shared {
 impl Shared {
     pub async fn connect(settings: Settings, temp: Bucket, pages: Bucket, metrics: Arc<Metrics>) -> Result<Arc<Self>> {
         if settings.index.is_file() {
-            bail!("PUBLISHER_INDEX {} is a file; move a SQLite index in with `publisher import-sqlite` first", settings.index.display());
+            bail!("PUBLISHER_INDEX {} is a file, not an index folder", settings.index.display());
         }
         let redis = redis::Client::open(settings.redis_url.as_str())?.get_connection_manager().await.context("connecting to TASK_API_REDIS")?;
         let index = Arc::new(VersionIndex::open(&settings.index, settings.cache_bytes)?);

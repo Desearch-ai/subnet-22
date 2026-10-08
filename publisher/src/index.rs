@@ -308,25 +308,6 @@ impl VersionIndex {
         Ok(self.db.iterator_cf(self.family(PAGES), IteratorMode::Start).next().transpose()?.is_none())
     }
 
-    /// Pages written without reading what was there: only for filling an empty index.
-    pub fn load(&self, pages: &[(String, Current)]) -> Result<()> {
-        let mut batch = WriteBatch::default();
-        for (key, current) in pages {
-            batch.put_cf(self.family(PAGES), key, encode(current));
-            batch.put_cf(self.family(TASKS), task_key(&current.task_id, key)?, b"");
-        }
-        Ok(self.db.write(batch)?)
-    }
-
-    /// Withdrawn tasks with the time they were withdrawn, as they were kept elsewhere.
-    pub fn load_withdrawn(&self, withdrawn: &[(String, f64)]) -> Result<()> {
-        let mut batch = WriteBatch::default();
-        for (task_id, at) in withdrawn {
-            batch.put_cf(self.family(WITHDRAWN), task_id, at.to_le_bytes());
-        }
-        Ok(self.db.write(batch)?)
-    }
-
     /// Withdrawn tasks and when they were withdrawn, in Unix seconds.
     pub fn withdrawn(&self) -> Result<Vec<(String, f64)>> {
         let mut found = Vec::new();

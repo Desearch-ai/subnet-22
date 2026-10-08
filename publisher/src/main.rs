@@ -10,7 +10,7 @@ use desearch::stub;
 use publisher::index::VersionIndex;
 use publisher::local::{LocalFeed, LocalUploads};
 use publisher::worker::{self, Job};
-use publisher::{outcomes, service, sqlite};
+use publisher::{outcomes, service};
 
 #[cfg(not(target_env = "msvc"))]
 #[global_allocator]
@@ -29,10 +29,6 @@ enum Command {
     Serve,
     /// Publish a JSON list of jobs whose uploads are `<task_id>.parquet` files in a folder.
     Local(LocalArgs),
-    /// Move the Python publisher's SQLite index into an empty RocksDB index.
-    ImportSqlite { sqlite: PathBuf, index: PathBuf },
-    /// Write the RocksDB index as a new SQLite file the Python publisher can open.
-    ExportSqlite { index: PathBuf, sqlite: PathBuf },
     /// Serve a local stand-in for R2 that keeps objects as files under a folder; for local runs only.
     StubR2 {
         #[arg(long)]
@@ -72,21 +68,6 @@ fn main() -> Result<()> {
             served
         }
         Command::Local(args) => local(args),
-        Command::ImportSqlite { sqlite: path, index } => {
-            let started = Instant::now();
-            let target = VersionIndex::open(&index, 256 << 20)?;
-            let moved = sqlite::import(&path, &target, sqlite::reporter("imported"))?;
-            target.compact();
-            println!("imported {} pages and {} withdrawn tasks in {:.0}s", moved.pages, moved.withdrawn, started.elapsed().as_secs_f64());
-            Ok(())
-        }
-        Command::ExportSqlite { index, sqlite: path } => {
-            let started = Instant::now();
-            let source = VersionIndex::open_read_only(&index, 256 << 20)?;
-            let moved = sqlite::export(&source, &path, sqlite::reporter("exported"))?;
-            println!("exported {} pages and {} withdrawn tasks in {:.0}s", moved.pages, moved.withdrawn, started.elapsed().as_secs_f64());
-            Ok(())
-        }
         Command::StubR2 { root, listen } => {
             let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
             runtime.block_on(async {
