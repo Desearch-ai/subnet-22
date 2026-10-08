@@ -36,6 +36,7 @@ uuid = { version = "1", features = ["v4"] }
 
 [target.'cfg(not(target_env = "msvc"))'.dependencies]
 tikv-jemallocator = "0.6"
+zstd = "0.13"
 
 [dev-dependencies]
 libc = "0.2"

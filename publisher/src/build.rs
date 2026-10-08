@@ -14,14 +14,17 @@ use arrow_array::types::Int64Type;
 use arrow_array::Array;
 use bytes::Bytes;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+use serde_json::Value;
 
 use crate::compactor::{self, each, Spill, Store};
-use crate::current::{self, shard_of, ChangeRow, FileRef, Manifest};
+use crate::current::{self, shard_of, ChangeRow, FileRef, Manifest, PageRow};
+use crate::records::{record_version, Record};
 
 /// Wanted rows are sorted into this many files by change file, so one group fits in memory.
 const GROUPS: usize = 512;
 /// Shards written at once; each holds its whole shard in memory, about 2 GB at full size.
 const WRITERS: usize = 4;
+const OBJECT_READERS: usize = 64;
 
 pub struct Settings {
     pub prefix: String,
@@ -41,6 +44,8 @@ pub struct Report {
     pub wanted: u64,
     /// Snapshot pages with no change file row to read them from.
     pub unlocated: u64,
+    /// Of those, read from the page objects kept before the change log was numbered.
+    pub filled: u64,
     pub written: u64,
     pub files_read: u64,
     /// The row the index points at holds another key, or no page.
@@ -59,9 +64,10 @@ struct Want {
     version: String,
 }
 
-/// Sorts the snapshot's rows by the change file they live in, into `GROUPS` files; returns how many, the newest change file, and how many name none.
+/// Sorts the snapshot's rows by the change file they live in, into `GROUPS` files; returns how many, the newest change file, and how many name none (listed in `unlocated.tsv`).
 fn sort_wants(snapshot: &Path, settings: &Settings, groups: &Path) -> Result<(u64, i64, u64)> {
     std::fs::create_dir_all(groups)?;
+    let mut unlocated_rows = BufWriter::new(File::create(settings.work.join("unlocated.tsv"))?);
     let mut writers: Vec<BufWriter<File>> =
         (0..GROUPS).map(|g| Ok(BufWriter::new(File::create(groups.join(format!("{g:04}.tsv")))?))).collect::<Result<_>>()?;
     let reader = ParquetRecordBatchReaderBuilder::try_new(File::open(snapshot).with_context(|| format!("opening {}", snapshot.display()))?)?
@@ -72,13 +78,18 @@ fn sort_wants(snapshot: &Path, settings: &Settings, groups: &Path) -> Result<(u6
         let batch = batch?;
         let column = |name: &str| batch.column(batch.schema().index_of(name).expect("a snapshot column")).clone();
         let (keys, versions, seqs, rows) = (column("key"), column("version"), column("change_seq"), column("change_row"));
+        let (urls, fetched, tasks) = (column("url"), column("fetched_at"), column("task_id"));
         let (keys, versions) = (keys.as_string::<i32>(), versions.as_string::<i32>());
+        let (urls, fetched, tasks) = (urls.as_string::<i32>(), fetched.as_string::<i32>(), tasks.as_string::<i32>());
         let (seqs, rows) = (seqs.as_primitive::<Int64Type>(), rows.as_primitive::<Int64Type>());
         for i in 0..batch.num_rows() {
             let key = keys.value(i);
             let Some(shard) = shard_of(key) else { continue };
             if seqs.is_null(i) || rows.is_null(i) {
-                unlocated += u64::from(settings.shards.contains(&shard));
+                if settings.shards.contains(&shard) {
+                    unlocated += 1;
+                    writeln!(unlocated_rows, "{key}\t{}\t{}\t{}\t{}", versions.value(i), urls.value(i), fetched.value(i), tasks.value(i))?;
+                }
                 continue;
             }
             let seq = seqs.value(i);
@@ -93,6 +104,7 @@ fn sort_wants(snapshot: &Path, settings: &Settings, groups: &Path) -> Result<(u6
     for writer in &mut writers {
         writer.flush()?;
     }
+    unlocated_rows.flush()?;
     Ok((wanted, through, unlocated))
 }
 
@@ -110,16 +122,79 @@ fn read_group(path: &Path) -> Result<HashMap<i64, Vec<Want>>> {
     Ok(wants)
 }
 
+/// Reads the pages in `unlocated.tsv` from the page objects kept under their keys before the change log was numbered; returns how many were found and how many hash to another version.
+fn fill_unlocated(store: &dyn Store, settings: &Settings, spill: &Mutex<Spill>) -> Result<(u64, u64)> {
+    let lines: Vec<String> = BufReader::new(File::open(settings.work.join("unlocated.tsv"))?).lines().collect::<Result<_, _>>()?;
+    let missing = Mutex::new(BufWriter::new(File::create(settings.work.join("unlocated-missing.tsv"))?));
+    let read = each(&lines, settings.threads.max(OBJECT_READERS), |line| -> Result<(u64, u64)> {
+        let mut fields = line.split('\t');
+        let (Some(key), Some(version)) = (fields.next(), fields.next()) else { bail!("a short line in unlocated.tsv: {line}") };
+        let Some(body) = store.get(key)? else {
+            writeln!(missing.lock().unwrap(), "{line}")?;
+            return Ok((0, 0));
+        };
+        let doc: Value = serde_json::from_slice(&zstd::decode_all(body.as_ref()).with_context(|| format!("{key} is not zstd"))?)?;
+        let record = page_object(&doc);
+        let other_version = u64::from(record_version(&record) != version);
+        let page =
+            PageRow { key: key.to_string(), removed: false, change_seq: 0, version: version.to_string(), published_at: record.captured_at.clone(), record };
+        if let Some(shard) = shard_of(key) {
+            spill.lock().unwrap().push(shard, page)?;
+        }
+        Ok((1, other_version))
+    })?;
+    missing.into_inner().unwrap().flush()?;
+    Ok(read.into_iter().fold((0, 0), |(a, b), (c, d)| (a + c, b + d)))
+}
+
+/// A page object as the Python publisher wrote it: the record as JSON.
+fn page_object(doc: &Value) -> Record {
+    let text = |name: &str| doc[name].as_str().unwrap_or_default().to_string();
+    let optional = |name: &str| doc[name].as_str().map(String::from);
+    let list = |name: &str| doc[name].as_array().map(|items| items.iter().map(|item| item.as_str().map(String::from)).collect()).unwrap_or_default();
+    Record {
+        url: text("url"),
+        domain: text("domain"),
+        title: text("title"),
+        published: text("published"),
+        author: text("author"),
+        lang: text("lang"),
+        text: text("text"),
+        fetched_at: text("fetched_at"),
+        content_sha1: text("content_sha1"),
+        captured_at: text("captured_at"),
+        doc_id: text("doc_id"),
+        assigned_url: text("assigned_url"),
+        final_url: optional("final_url"),
+        canonical: optional("canonical"),
+        status: doc["status"].as_i64().and_then(|s| i32::try_from(s).ok()),
+        page_type: optional("page_type"),
+        description: optional("description"),
+        json_ld_types: list("json_ld_types"),
+        headings: list("headings"),
+        text_sha256: optional("text_sha256"),
+        task_id: text("task_id"),
+        miner: text("miner"),
+        validator: optional("validator"),
+        validators: list("validators").into_iter().flatten().collect(),
+    }
+}
+
 /// Builds every shard in `settings.shards` from `snapshot`, a local copy of `index/snapshots/<day>.parquet`.
 pub fn build(store: &dyn Store, snapshot: &Path, settings: &Settings) -> Result<Report> {
     let groups = settings.work.join("wants");
     let (wanted, through, unlocated) = sort_wants(snapshot, settings, &groups)?;
-    if unlocated > 0 && !settings.allow_unlocated {
-        bail!("{unlocated} pages of the snapshot name no change file row to build them from; --allow-unlocated builds without them");
-    }
     let mut report = Report { wanted, unlocated, through_seq: through, ..Report::default() };
     println!("{wanted} pages to read, the snapshot reaches change file {through}");
     let spill = Mutex::new(Spill::new(&settings.work.join("spill"), settings.spill_bytes)?);
+    if unlocated > 0 {
+        let (filled, other_version) = fill_unlocated(store, settings, &spill)?;
+        (report.filled, report.other_version) = (filled, other_version);
+        println!("{filled} of {unlocated} pages without a change file row read from their page objects, {other_version} at another version");
+        if filled < unlocated && !settings.allow_unlocated {
+            bail!("{} pages of the snapshot have neither a change file row nor a page object (listed in unlocated-missing.tsv); --allow-unlocated builds without them", unlocated - filled);
+        }
+    }
     let counted = Mutex::new((0u64, 0u64, 0u64));
     let timed = Mutex::new((0.0f64, 0.0f64));
     for group in 0..GROUPS {
@@ -171,7 +246,8 @@ pub fn build(store: &dyn Store, snapshot: &Path, settings: &Settings) -> Result<
         }
     }
     let (files, misplaced, other_version) = *counted.lock().unwrap();
-    (report.files_read, report.misplaced, report.other_version) = (files, misplaced, other_version);
+    (report.files_read, report.misplaced) = (files, misplaced);
+    report.other_version += other_version;
     (report.fetch_s, report.decode_s) = *timed.lock().unwrap();
     let spill = spill.into_inner().unwrap();
     let shards: Vec<usize> = settings.shards.clone().collect();

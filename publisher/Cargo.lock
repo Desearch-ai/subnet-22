@@ -1613,6 +1613,7 @@ dependencies = [
  "unicode-normalization",
  "unicode-properties",
  "uuid",
+ "zstd",
 ]
 
 [[package]]

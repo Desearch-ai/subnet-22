@@ -347,3 +347,55 @@ fn a_removal_between_two_versions_holds_whichever_cycles_the_rows_land_in() {
     compactor::cycle(&store, &settings, 3_000.0).unwrap();
     assert_eq!(text_of(&store, url).as_deref(), Some("fetched earlier, logged after"), "and once merged");
 }
+
+#[test]
+fn a_snapshot_page_with_no_change_file_row_is_read_from_its_page_object_and_one_with_neither_stops_the_build() {
+    let root = scratch("unlocated");
+    let mut log = Log::new(root.join("bucket"));
+    let store = LocalStore { root: root.join("bucket") };
+    let index = publisher::index::VersionIndex::open(&root.join("index"), 64 << 20).unwrap();
+    let located = vec![page("https://news.example/located", "2026-10-08T10:00:00+00:00", "t1", "from the log")];
+    let seq = log.append(&located);
+    index.store(&publisher::worker::indexed(&located, seq)).unwrap();
+    for (url, kept) in [("https://news.example/kept-object", true), ("https://news.example/no-object", false)] {
+        let record = record(url, "2026-10-05T10:00:00+00:00", "t0", &format!("old text of {url}"));
+        let key = page_key(url).unwrap();
+        if kept {
+            let doc = serde_json::json!({
+                "url": record.url, "domain": record.domain, "title": record.title, "text": record.text, "fetched_at": record.fetched_at,
+                "content_sha1": record.content_sha1, "assigned_url": record.assigned_url, "task_id": record.task_id, "miner": record.miner,
+                "validators": record.validators, "json_ld_types": ["NewsArticle"], "status": 200, "published": "", "author": "", "lang": "",
+                "captured_at": "", "doc_id": "", "headings": [], "source": "subnet22", "final_url": null, "canonical": null,
+                "page_type": null, "description": null, "text_sha256": null, "validator": null
+            });
+            store.put(&key, Bytes::from(zstd::encode_all(serde_json::to_vec(&doc).unwrap().as_slice(), 3).unwrap())).unwrap();
+        }
+        let current = publisher::index::Current {
+            url: url.into(),
+            version: record_version(&record),
+            fetched_at: record.fetched_at.clone(),
+            task_id: "t0".into(),
+            content_sha1: record.content_sha1.clone(),
+            change_seq: None,
+            change_row: None,
+        };
+        index.store(&[(key, current)]).unwrap();
+    }
+    let snapshot = root.join("snapshot.parquet");
+    publisher::snapshot::write_parquet(&index, std::fs::File::create(&snapshot).unwrap()).unwrap();
+    let settings = |work: &str, allow_unlocated: bool| publisher::build::Settings {
+        prefix: "current/".into(),
+        work: root.join(work),
+        threads: 4,
+        shards: 0..SHARDS,
+        seqs: 0..i64::MAX,
+        spill_bytes: 4096,
+        allow_unlocated,
+    };
+    let refused = publisher::build::build(&store, &snapshot, &settings("refused", false)).unwrap_err();
+    assert!(refused.to_string().starts_with("1 pages of the snapshot have neither"), "{refused}");
+    let report = publisher::build::build(&store, &snapshot, &settings("allowed", true)).unwrap();
+    assert_eq!((report.unlocated, report.filled, report.other_version, report.written), (2, 1, 0, 2));
+    assert_eq!(text_of(&store, "https://news.example/kept-object").as_deref(), Some("old text of https://news.example/kept-object"));
+    assert_eq!(text_of(&store, "https://news.example/located").as_deref(), Some("from the log"));
+}
