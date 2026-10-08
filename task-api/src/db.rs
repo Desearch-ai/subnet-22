@@ -147,3 +147,22 @@ pub fn optional_real(row: &Row, at: usize) -> rusqlite::Result<Option<f64>> {
         _ => Some(real(row, at)?),
     })
 }
+
+/// The share of the volume holding `path` in use, from 0 to 1.
+#[cfg(unix)]
+pub fn disk_used(path: &Path) -> Option<f64> {
+    use std::os::unix::ffi::OsStrExt;
+    let path = std::ffi::CString::new(path.as_os_str().as_bytes()).ok()?;
+    // SAFETY: statvfs only writes into the struct it is given, and the path is NUL-terminated.
+    let mut stat: libc::statvfs = unsafe { std::mem::zeroed() };
+    if unsafe { libc::statvfs(path.as_ptr(), &mut stat) } != 0 {
+        return None;
+    }
+    let (total, free) = (stat.f_blocks as f64 * stat.f_frsize as f64, stat.f_bavail as f64 * stat.f_frsize as f64);
+    (total > 0.0).then(|| 1.0 - free / total)
+}
+
+#[cfg(not(unix))]
+pub fn disk_used(_path: &Path) -> Option<f64> {
+    None
+}

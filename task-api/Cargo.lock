@@ -2117,6 +2117,7 @@ dependencies = [
  "flate2",
  "frame-metadata",
  "futures",
+ "libc",
  "parity-scale-codec",
  "parquet",
  "rand 0.8.8",

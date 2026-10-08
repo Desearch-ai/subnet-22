@@ -637,6 +637,7 @@ pub async fn health(Shared(state): Shared<Arc<State>>) -> Answer {
         "oldest_publish_s": state.publish.oldest_age(redis, at).await?,
         "publish_set_aside": state.publish.dead_count(redis).await?,
         "publish_lost": state.publish.lost_count(redis).await?,
+        "data_disk_used": crate::db::disk_used(&state.settings.data).map(|used| round_to(used, 3)),
         "verdicts": accounts["verdicts"],
         "validators": accounts["validators"],
         "current_round": current,

@@ -180,6 +180,7 @@ async fn a_crawl_task_goes_round_trip() {
     assert_eq!(health["verdicts"], json!({"pass": 2, "fail": 1}));
     assert_eq!((health["queue_depth"]["crawl"].clone(), health["validation_depth"].clone()), (json!(0), json!(0)));
     assert_eq!(health["active_validators"], json!([h.validator.ss58()]));
+    assert!(health["data_disk_used"].as_f64().is_some_and(|used| (0.0..=1.0).contains(&used)));
     let miner = h.public(&format!("/v1/miners/{}", h.miner.ss58())).await.1;
     assert_eq!(miner["verdicts"], json!({"pass": 1, "fail": 1}));
     assert_eq!((miner["pools"]["crawl"]["budget"].clone(), miner["pools"]["crawl"]["in_flight"].clone()), (json!(1), json!(0)));
