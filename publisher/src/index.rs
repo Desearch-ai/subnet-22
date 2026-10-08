@@ -43,8 +43,6 @@ pub struct Current {
 pub struct Withdrawn {
     pub key: String,
     pub url: String,
-    pub version: String,
-    pub content_sha1: String,
 }
 
 pub struct VersionIndex {
@@ -212,7 +210,7 @@ impl VersionIndex {
         let mut pages = Vec::new();
         for (key, current) in keys.iter().zip(self.currents(&keys)?) {
             if let Some(current) = current.filter(|c| c.task_id == task_id) {
-                pages.push(Withdrawn { key: key.to_string(), url: current.url, version: current.version, content_sha1: current.content_sha1 });
+                pages.push(Withdrawn { key: key.to_string(), url: current.url });
             }
         }
         removed(&pages)?;
@@ -246,7 +244,6 @@ impl VersionIndex {
         Ok(self.db.get_pinned_cf(self.family(WITHDRAWN), task_id)?.is_some())
     }
 
-    /// Which of these tasks are withdrawn.
     pub fn withdrawn_among(&self, task_ids: &[&str]) -> Result<HashSet<String>> {
         let mut task_ids = task_ids.to_vec();
         task_ids.sort_unstable();

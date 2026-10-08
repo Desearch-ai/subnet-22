@@ -12,7 +12,7 @@ use arrow_buffer::NullBuffer;
 use arrow_cast::cast;
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use bytes::Bytes;
-use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+use parquet::arrow::arrow_reader::{ParquetRecordBatchReader, ParquetRecordBatchReaderBuilder};
 use parquet::arrow::ArrowWriter;
 use parquet::basic::{Compression, ZstdLevel};
 use parquet::file::properties::WriterProperties;
@@ -24,6 +24,8 @@ pub const SHARDS: usize = 1024;
 /// One lookup reads one row group.
 pub const ROW_GROUP: usize = 1000;
 const ZSTD_LEVEL: i32 = 3;
+/// Rows decoded at a time when a pages file is read in order; a merge holds this many of every file it reads.
+const READ_BATCH: usize = 256;
 
 pub static PAGES_SCHEMA: LazyLock<SchemaRef> = LazyLock::new(|| {
     let text = |name: &str| Field::new(name, DataType::Utf8, true);
@@ -85,6 +87,10 @@ pub struct PageRow {
 }
 
 impl PageRow {
+    pub fn removal(key: String, change_seq: i64) -> PageRow {
+        PageRow { key, removed: true, change_seq, version: String::new(), published_at: String::new(), record: Record::default() }
+    }
+
     /// Whether this row replaces `other` for the same key: removals go by log order, pages by the later fetch as the publisher decides.
     pub fn replaces(&self, other: &PageRow) -> bool {
         if self.removed || other.removed {
@@ -102,34 +108,102 @@ pub enum ChangeRow {
     TaskWithdrawn(String),
 }
 
-/// The winning version of every key across these rows, sorted by key; a key whose winner is removed or from a withdrawn task is gone.
+/// Each key as it stands, sorted by key: its last removal hides earlier rows, then the later fetch wins; a withdrawn task's rows are removals.
 pub fn merge(mut rows: Vec<PageRow>, withdrawn: &HashSet<String>, keep_removals: bool) -> Vec<PageRow> {
-    rows.sort_by(|a, b| a.key.cmp(&b.key));
-    let mut merged: Vec<PageRow> = Vec::with_capacity(rows.len());
-    for row in rows {
-        match merged.last_mut() {
-            Some(last) if last.key == row.key => {
-                if row.replaces(last) {
-                    *last = row;
-                }
-            }
-            _ => merged.push(row),
+    for row in &mut rows {
+        if !row.removed && withdrawn.contains(&row.record.task_id) {
+            *row = PageRow::removal(std::mem::take(&mut row.key), row.change_seq);
         }
     }
-    merged.retain(|row| !withdrawn.contains(&row.record.task_id) && (keep_removals || !row.removed));
-    merged
+    rows.sort_by(|a, b| a.key.cmp(&b.key));
+    let mut keep = vec![false; rows.len()];
+    let mut start = 0;
+    for group in rows.chunk_by(|a, b| a.key == b.key) {
+        let at = start..start + group.len();
+        start = at.end;
+        let removal = at.clone().filter(|&i| rows[i].removed).max_by_key(|&i| rows[i].change_seq);
+        let after = removal.map_or(i64::MIN, |i| rows[i].change_seq);
+        let page = at.filter(|&i| !rows[i].removed && rows[i].change_seq > after).reduce(|kept, i| if rows[i].replaces(&rows[kept]) { i } else { kept });
+        if let Some(i) = removal.filter(|_| keep_removals) {
+            keep[i] = true;
+        }
+        if let Some(i) = page {
+            keep[i] = true;
+        }
+    }
+    rows.into_iter().zip(keep).filter_map(|(row, keep)| keep.then_some(row)).collect()
+}
+
+/// Merges pages files, each sorted by key and given oldest first, into one, holding about a row group of each at a time.
+pub fn merge_files(files: Vec<Bytes>, withdrawn: &HashSet<String>, keep_removals: bool) -> Result<(Vec<u8>, u64)> {
+    let mut sources = files.into_iter().map(|file| Ok(rows(file, None)?.peekable())).collect::<Result<Vec<_>>>()?;
+    let mut out = PagesWriter::new()?;
+    loop {
+        let mut least: Option<String> = None;
+        for source in &mut sources {
+            match source.peek() {
+                Some(Ok(row)) if least.as_ref().is_none_or(|least| row.key < *least) => least = Some(row.key.clone()),
+                Some(Err(_)) => return Err(source.next().expect("peeked").expect_err("peeked an error")),
+                _ => {}
+            }
+        }
+        let Some(key) = least else { break };
+        let mut group = Vec::new();
+        for source in &mut sources {
+            while source.peek().is_some_and(|row| row.as_ref().is_ok_and(|row| row.key == key)) {
+                group.push(source.next().expect("peeked")?);
+            }
+        }
+        out.push(merge(group, withdrawn, keep_removals))?;
+    }
+    out.finish()
+}
+
+/// Rows written to one pages file as they come, a few row groups at a time.
+struct PagesWriter {
+    writer: ArrowWriter<Vec<u8>>,
+    pending: Vec<PageRow>,
+    rows: u64,
+}
+
+impl PagesWriter {
+    fn new() -> Result<PagesWriter> {
+        let properties = WriterProperties::builder()
+            .set_compression(Compression::ZSTD(ZstdLevel::try_new(ZSTD_LEVEL)?))
+            .set_max_row_group_row_count(Some(ROW_GROUP))
+            .build();
+        Ok(PagesWriter { writer: ArrowWriter::try_new(Vec::new(), PAGES_SCHEMA.clone(), Some(properties))?, pending: Vec::new(), rows: 0 })
+    }
+
+    fn push(&mut self, rows: Vec<PageRow>) -> Result<()> {
+        self.pending.extend(rows);
+        if self.pending.len() >= ROW_GROUP * 4 {
+            self.flush()?;
+        }
+        Ok(())
+    }
+
+    fn flush(&mut self) -> Result<()> {
+        if !self.pending.is_empty() {
+            self.writer.write(&RecordBatch::try_new(PAGES_SCHEMA.clone(), columns(&self.pending))?)?;
+            self.rows += self.pending.len() as u64;
+            self.pending.clear();
+        }
+        Ok(())
+    }
+
+    fn finish(mut self) -> Result<(Vec<u8>, u64)> {
+        self.flush()?;
+        Ok((self.writer.into_inner()?, self.rows))
+    }
 }
 
 pub fn encode(rows: &[PageRow]) -> Result<Vec<u8>> {
-    let properties =
-        WriterProperties::builder().set_compression(Compression::ZSTD(ZstdLevel::try_new(ZSTD_LEVEL)?)).set_max_row_group_row_count(Some(ROW_GROUP)).build();
-    let mut file = Vec::new();
-    let mut writer = ArrowWriter::try_new(&mut file, PAGES_SCHEMA.clone(), Some(properties))?;
-    for chunk in rows.chunks(ROW_GROUP * 16) {
-        writer.write(&RecordBatch::try_new(PAGES_SCHEMA.clone(), columns(chunk))?)?;
+    let mut out = PagesWriter::new()?;
+    for chunk in rows.chunks(ROW_GROUP * 4) {
+        out.push(chunk.to_vec())?;
     }
-    writer.close()?;
-    Ok(file)
+    Ok(out.finish()?.0)
 }
 
 fn columns(rows: &[PageRow]) -> Vec<ArrayRef> {
@@ -253,6 +327,26 @@ impl Columns {
         column.is_valid(row).then(|| column.value(row))
     }
 
+    fn page_rows(&self, wanted: Option<&(dyn Fn(&str) -> bool + Send)>) -> Result<Vec<PageRow>> {
+        let removed = self.removed.as_ref().ok_or_else(|| anyhow!("a pages file without removed"))?;
+        let mut rows = Vec::new();
+        for row in 0..self.rows {
+            let key = self.text("key", row).unwrap_or_default();
+            if wanted.is_some_and(|wanted| !wanted(&key)) {
+                continue;
+            }
+            rows.push(PageRow {
+                key,
+                removed: removed.value(row),
+                change_seq: self.int("change_seq", row).unwrap_or_default(),
+                version: self.text("version", row).unwrap_or_default(),
+                published_at: self.text("published_at", row).unwrap_or_default(),
+                record: self.record(row),
+            });
+        }
+        Ok(rows)
+    }
+
     fn record(&self, row: usize) -> Record {
         let text = |name: &str| self.text(name, row).unwrap_or_default();
         Record {
@@ -329,21 +423,41 @@ pub fn decode_changes_where(file: Bytes, change_seq: i64, keep: impl Fn(usize) -
 }
 
 pub fn decode(file: Bytes) -> Result<Vec<PageRow>> {
-    let mut rows = Vec::new();
-    for columns in batches(file)? {
-        let removed = columns.removed.clone().ok_or_else(|| anyhow!("a pages file without removed"))?;
-        for row in 0..columns.rows {
-            rows.push(PageRow {
-                key: columns.text("key", row).unwrap_or_default(),
-                removed: removed.value(row),
-                change_seq: columns.int("change_seq", row).unwrap_or_default(),
-                version: columns.text("version", row).unwrap_or_default(),
-                published_at: columns.text("published_at", row).unwrap_or_default(),
-                record: columns.record(row),
-            });
+    rows(file, None)?.collect()
+}
+
+pub type Wanted = Box<dyn Fn(&str) -> bool + Send>;
+
+/// The rows of a pages file in file order, decoded a row group at a time; `wanted` picks keys before the rest of a row is decoded.
+pub fn rows(file: Bytes, wanted: Option<Wanted>) -> Result<Rows> {
+    let reader = ParquetRecordBatchReaderBuilder::try_new(file)?.with_batch_size(READ_BATCH).build()?;
+    Ok(Rows { reader, batch: Vec::new().into_iter(), wanted })
+}
+
+pub struct Rows {
+    reader: ParquetRecordBatchReader,
+    batch: std::vec::IntoIter<PageRow>,
+    wanted: Option<Wanted>,
+}
+
+impl Iterator for Rows {
+    type Item = Result<PageRow>;
+
+    fn next(&mut self) -> Option<Result<PageRow>> {
+        loop {
+            if let Some(row) = self.batch.next() {
+                return Some(Ok(row));
+            }
+            let decoded = match self.reader.next()? {
+                Ok(batch) => Columns::new(batch).and_then(|columns| columns.page_rows(self.wanted.as_deref())),
+                Err(error) => Err(error.into()),
+            };
+            match decoded {
+                Ok(rows) => self.batch = rows.into_iter(),
+                Err(error) => return Some(Err(error)),
+            }
         }
     }
-    Ok(rows)
 }
 
 /// One file of a shard and how much it holds.

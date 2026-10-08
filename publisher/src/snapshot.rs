@@ -1,5 +1,6 @@
 //! A copy of the version index on request, as Parquet beside the pages it describes, streamed from a checkpoint into a multipart upload.
 
+use std::collections::HashSet;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock};
@@ -63,14 +64,18 @@ fn checkpoint_dir(index_dir: &Path) -> PathBuf {
     index_dir.with_file_name(format!("{name}.snapshot"))
 }
 
-/// Every page of the index as Parquet into `out`, a batch at a time.
+/// Every page of the index as Parquet into `out`, a batch at a time; pages of withdrawn tasks not drained yet are left out.
 pub fn write_parquet<W: Write + Send>(index: &VersionIndex, out: W) -> Result<(W, u64)> {
+    let withdrawn: HashSet<String> = index.withdrawn()?.into_iter().map(|(task_id, _)| task_id).collect();
     let properties =
         WriterProperties::builder().set_compression(Compression::ZSTD(ZstdLevel::try_new(3)?)).set_max_row_group_row_count(Some(ROW_GROUP_ROWS)).build();
     let mut writer = ArrowWriter::try_new(out, SNAPSHOT_SCHEMA.clone(), Some(properties))?;
     let mut pending: Vec<(String, Current)> = Vec::with_capacity(BATCH_ROWS);
     let mut rows = 0u64;
     index.scan(|key, current| {
+        if withdrawn.contains(&current.task_id) {
+            return Ok(());
+        }
         pending.push((key, current));
         if pending.len() == BATCH_ROWS {
             rows += pending.len() as u64;

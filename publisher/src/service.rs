@@ -120,8 +120,6 @@ pub struct Metrics {
     pub batches: AtomicU64,
     pub changed: AtomicU64,
     pub unchanged: AtomicU64,
-    pub withdrawn: AtomicU64,
-    pub removed: AtomicU64,
     pub failed_urls: AtomicU64,
     pub lost: AtomicU64,
     pub retried: AtomicU64,
@@ -281,7 +279,6 @@ pub async fn write_batch(shared: &Shared, claimed: Claimed) -> Result<usize> {
     m.tasks.fetch_add(batch.finalized.len() as u64, Ordering::Relaxed);
     m.changed.fetch_add(published as u64, Ordering::Relaxed);
     m.unchanged.fetch_add(batch.unchanged.len() as u64, Ordering::Relaxed);
-    m.withdrawn.fetch_add(batch.withdrawn.len() as u64, Ordering::Relaxed);
     m.failed_urls.fetch_add(batch.failed.len() as u64, Ordering::Relaxed);
     m.lost.fetch_add(batch.lost.len() as u64, Ordering::Relaxed);
     m.retried.fetch_add(batch.retry.len() as u64, Ordering::Relaxed);
@@ -371,10 +368,7 @@ impl Draining {
             let mut report = |pages: &[Withdrawn]| shared.handle.block_on(write_outcomes(&shared, outcomes::dropped(pages), now_us()));
             match withdrawals::drain(&shared.index, &mut drained, now_us() as f64 / 1e6, withdrawals::CHUNK, &|| *stop.borrow(), &mut report) {
                 Ok(0) => {}
-                Ok(pages) => {
-                    shared.metrics.removed.fetch_add(pages as u64, Ordering::Relaxed);
-                    println!("took {pages} pages of withdrawn tasks out of the index");
-                }
+                Ok(pages) => println!("took {pages} pages of withdrawn tasks out of the index"),
                 Err(error) => eprintln!("taking withdrawn tasks' pages out of the index failed: {error:#}"),
             }
             drained

@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Instant;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use arrow_array::cast::AsArray;
 use arrow_array::types::Int64Type;
 use arrow_array::Array;
@@ -20,6 +20,8 @@ use crate::current::{self, shard_of, ChangeRow, FileRef, Manifest};
 
 /// Wanted rows are sorted into this many files by change file, so one group fits in memory.
 const GROUPS: usize = 512;
+/// Shards written at once; each holds its whole shard in memory, about 2 GB at full size.
+const WRITERS: usize = 4;
 
 pub struct Settings {
     pub prefix: String,
@@ -30,11 +32,15 @@ pub struct Settings {
     /// Only pages whose current row is in these change files, for a trial on part of the data.
     pub seqs: Range<i64>,
     pub spill_bytes: usize,
+    /// Build without the snapshot's pages that name no change file row, instead of refusing.
+    pub allow_unlocated: bool,
 }
 
 #[derive(Debug, Default)]
 pub struct Report {
     pub wanted: u64,
+    /// Snapshot pages with no change file row to read them from.
+    pub unlocated: u64,
     pub written: u64,
     pub files_read: u64,
     /// The row the index points at holds another key, or no page.
@@ -53,15 +59,15 @@ struct Want {
     version: String,
 }
 
-/// Sorts the snapshot's rows by the change file they live in, into `GROUPS` files; returns how many and the newest change file.
-fn sort_wants(snapshot: &Path, settings: &Settings, groups: &Path) -> Result<(u64, i64)> {
+/// Sorts the snapshot's rows by the change file they live in, into `GROUPS` files; returns how many, the newest change file, and how many name none.
+fn sort_wants(snapshot: &Path, settings: &Settings, groups: &Path) -> Result<(u64, i64, u64)> {
     std::fs::create_dir_all(groups)?;
     let mut writers: Vec<BufWriter<File>> =
         (0..GROUPS).map(|g| Ok(BufWriter::new(File::create(groups.join(format!("{g:04}.tsv")))?))).collect::<Result<_>>()?;
     let reader = ParquetRecordBatchReaderBuilder::try_new(File::open(snapshot).with_context(|| format!("opening {}", snapshot.display()))?)?
         .with_batch_size(65_536)
         .build()?;
-    let (mut wanted, mut through) = (0u64, 0i64);
+    let (mut wanted, mut through, mut unlocated) = (0u64, 0i64, 0u64);
     for batch in reader {
         let batch = batch?;
         let column = |name: &str| batch.column(batch.schema().index_of(name).expect("a snapshot column")).clone();
@@ -69,12 +75,14 @@ fn sort_wants(snapshot: &Path, settings: &Settings, groups: &Path) -> Result<(u6
         let (keys, versions) = (keys.as_string::<i32>(), versions.as_string::<i32>());
         let (seqs, rows) = (seqs.as_primitive::<Int64Type>(), rows.as_primitive::<Int64Type>());
         for i in 0..batch.num_rows() {
+            let key = keys.value(i);
+            let Some(shard) = shard_of(key) else { continue };
             if seqs.is_null(i) || rows.is_null(i) {
+                unlocated += u64::from(settings.shards.contains(&shard));
                 continue;
             }
-            let (key, seq) = (keys.value(i), seqs.value(i));
+            let seq = seqs.value(i);
             through = through.max(seq);
-            let Some(shard) = shard_of(key) else { continue };
             if !settings.shards.contains(&shard) || !settings.seqs.contains(&seq) {
                 continue;
             }
@@ -85,7 +93,7 @@ fn sort_wants(snapshot: &Path, settings: &Settings, groups: &Path) -> Result<(u6
     for writer in &mut writers {
         writer.flush()?;
     }
-    Ok((wanted, through))
+    Ok((wanted, through, unlocated))
 }
 
 fn read_group(path: &Path) -> Result<HashMap<i64, Vec<Want>>> {
@@ -105,8 +113,11 @@ fn read_group(path: &Path) -> Result<HashMap<i64, Vec<Want>>> {
 /// Builds every shard in `settings.shards` from `snapshot`, a local copy of `index/snapshots/<day>.parquet`.
 pub fn build(store: &dyn Store, snapshot: &Path, settings: &Settings) -> Result<Report> {
     let groups = settings.work.join("wants");
-    let (wanted, through) = sort_wants(snapshot, settings, &groups)?;
-    let mut report = Report { wanted, through_seq: through, ..Report::default() };
+    let (wanted, through, unlocated) = sort_wants(snapshot, settings, &groups)?;
+    if unlocated > 0 && !settings.allow_unlocated {
+        bail!("{unlocated} pages of the snapshot name no change file row to build them from; --allow-unlocated builds without them");
+    }
+    let mut report = Report { wanted, unlocated, through_seq: through, ..Report::default() };
     println!("{wanted} pages to read, the snapshot reaches change file {through}");
     let spill = Mutex::new(Spill::new(&settings.work.join("spill"), settings.spill_bytes)?);
     let counted = Mutex::new((0u64, 0u64, 0u64));
@@ -164,7 +175,7 @@ pub fn build(store: &dyn Store, snapshot: &Path, settings: &Settings) -> Result<
     (report.fetch_s, report.decode_s) = *timed.lock().unwrap();
     let spill = spill.into_inner().unwrap();
     let shards: Vec<usize> = settings.shards.clone().collect();
-    let written = each(&shards, settings.threads, |&shard| -> Result<u64> {
+    let written = each(&shards, settings.threads.min(WRITERS), |&shard| -> Result<u64> {
         let rows = current::merge(spill.take(shard)?, &HashSet::new(), false);
         let manifest = if rows.is_empty() {
             Manifest { shard, through_seq: through, merged_through: through, ..Manifest::default() }

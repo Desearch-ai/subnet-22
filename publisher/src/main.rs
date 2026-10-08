@@ -57,9 +57,19 @@ enum Command {
         files: usize,
         #[arg(long, default_value_t = 5)]
         per_file: usize,
+        /// Only pages of shards `a..b`, so a check reads a few shards whole rather than every shard.
+        #[arg(long, default_value = "0..1024")]
+        shards: String,
         /// For each page found wrong, list every version and removal of it in `seqs`.
         #[arg(long)]
         explain: bool,
+    },
+    /// Compare every page of the current state with a stopped publisher's version index; for test runs.
+    CompareCurrent {
+        #[arg(long, default_value = "current/")]
+        prefix: String,
+        #[arg(long)]
+        index: PathBuf,
     },
     /// Build the current state once from an index snapshot: a local file, or its key in the pages bucket.
     BuildCurrent {
@@ -77,6 +87,9 @@ enum Command {
         seqs: Option<String>,
         #[arg(long, default_value_t = 16)]
         threads: usize,
+        /// Build without the snapshot's pages that name no change file row, instead of refusing.
+        #[arg(long)]
+        allow_unlocated: bool,
     },
     /// Serve a local stand-in for R2 that keeps objects as files under a folder; for local runs only.
     StubR2 {
@@ -121,14 +134,14 @@ fn main() -> Result<()> {
         }
         Command::Local(args) => local(args),
         Command::Compact { once, start_empty_at } => compact(once, start_empty_at),
-        Command::CheckCurrent { prefix, seqs, files, per_file, explain } => {
+        Command::CheckCurrent { prefix, seqs, files, per_file, shards, explain } => {
             let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
             let store = pages_store(&runtime)?;
             let seqs = range::<i64>(&seqs)?;
             let all: Vec<i64> = seqs.clone().collect();
             let step = ((seqs.end - seqs.start) as usize / files.max(1)).max(1);
             let sampled: Vec<i64> = seqs.step_by(step).take(files).collect();
-            let (checked, removed, wrong) = compactor::check(&store, &prefix, &sampled, per_file, 32)?;
+            let (checked, removed, wrong) = compactor::check(&store, &prefix, &sampled, per_file, &range(&shards)?, 32)?;
             for line in &wrong {
                 println!("{line}");
                 if explain {
@@ -141,7 +154,30 @@ fn main() -> Result<()> {
             println!("{checked} pages checked in change files {sampled:?}: {removed} removed by a later change, {} wrong", wrong.len());
             Ok(())
         }
-        Command::BuildCurrent { snapshot, work, prefix, shards, seqs, threads } => build_current(&snapshot, work, prefix, &shards, seqs.as_deref(), threads),
+        Command::CompareCurrent { prefix, index } => {
+            let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
+            let store = pages_store(&runtime)?;
+            let index = VersionIndex::open_read_only(&index, 64 << 20)?;
+            let compared = compactor::compare(&store, &prefix, &index, 16)?;
+            for (what, keys) in [("missing", &compared.missing), ("extra", &compared.extra), ("other version", &compared.other_version)] {
+                for key in keys.iter().take(20) {
+                    println!("{what}: {key}");
+                }
+            }
+            println!(
+                "index {} pages ({} of withdrawn tasks still draining), current {} pages: {} missing, {} extra, {} at another version",
+                compared.index_pages,
+                compared.draining,
+                compared.current_pages,
+                compared.missing.len(),
+                compared.extra.len(),
+                compared.other_version.len()
+            );
+            Ok(())
+        }
+        Command::BuildCurrent { snapshot, work, prefix, shards, seqs, threads, allow_unlocated } => {
+            build_current(&snapshot, work, prefix, &shards, seqs.as_deref(), threads, allow_unlocated)
+        }
         Command::StubR2 { root, listen } => {
             let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
             runtime.block_on(async {
@@ -213,6 +249,8 @@ fn pages_store(runtime: &tokio::runtime::Runtime) -> Result<R2Store> {
     Ok(R2Store { bucket: pages, handle: runtime.handle().clone() })
 }
 
+const COMPACT_RETRY_S: u64 = 30;
+
 fn compact(once: bool, start_empty_at: Option<i64>) -> Result<()> {
     let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
     let store = pages_store(&runtime)?;
@@ -227,6 +265,8 @@ fn compact(once: bool, start_empty_at: Option<i64>) -> Result<()> {
         retire_after_s: env_number("COMPACTOR_RETIRE_S", defaults.retire_after_s)?,
         spill_bytes: env_number::<usize>("COMPACTOR_SPILL_MB", defaults.spill_bytes >> 20)? << 20,
         threads: env_number("COMPACTOR_THREADS", defaults.threads)?,
+        merge_threads: env_number("COMPACTOR_MERGE_THREADS", defaults.merge_threads)?,
+        hole_wait_s: env_number("COMPACTOR_HOLE_WAIT_S", defaults.hole_wait_s)?,
     };
     if let Some(seq) = start_empty_at {
         compactor::start_empty(&store, &settings.prefix, seq, settings.threads.max(16))?;
@@ -239,13 +279,32 @@ fn compact(once: bool, start_empty_at: Option<i64>) -> Result<()> {
         }
         stopping.store(true, std::sync::atomic::Ordering::SeqCst);
     });
+    let stopped = || stop.load(std::sync::atomic::Ordering::SeqCst);
+    let pause = |seconds: u64| {
+        for _ in 0..seconds {
+            if stopped() {
+                return;
+            }
+            std::thread::sleep(Duration::from_secs(1));
+        }
+    };
     loop {
         let started = Instant::now();
         let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs_f64();
-        let report = compactor::cycle(&store, &settings, now)?;
-        let latest = compactor::latest_seq(&store)?;
+        let (report, latest) = match compactor::cycle(&store, &settings, now).and_then(|report| Ok((report, compactor::latest_seq(&store)?))) {
+            Ok(done) => done,
+            Err(error) if !once => {
+                eprintln!("cycle failed, trying again in {COMPACT_RETRY_S} s: {error:#}");
+                pause(COMPACT_RETRY_S);
+                if stopped() {
+                    return Ok(());
+                }
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
         println!(
-            "cycle: change files {}..{} of {latest}, {} rows into {} deltas, {} withdrawn, {} shards merged, {} files deleted in {:.1}s",
+            "cycle: change files {}..{} of {latest}, {} rows into {} deltas, {} withdrawn, {} shards merged, {} files deleted in {:.1}s{}{}",
             report.from,
             report.through,
             report.rows,
@@ -253,17 +312,17 @@ fn compact(once: bool, start_empty_at: Option<i64>) -> Result<()> {
             report.withdrawn,
             report.merged,
             report.deleted,
-            started.elapsed().as_secs_f64()
+            started.elapsed().as_secs_f64(),
+            if report.skipped.is_empty() { String::new() } else { format!(", numbers never written skipped: {:?}", report.skipped) },
+            if report.waiting { format!(", waiting for change file {}", report.through + 1) } else { String::new() }
         );
-        if once || stop.load(std::sync::atomic::Ordering::SeqCst) {
+        if once || stopped() {
             return Ok(());
         }
-        if report.through >= latest {
-            for _ in 0..60 {
-                if stop.load(std::sync::atomic::Ordering::SeqCst) {
-                    return Ok(());
-                }
-                std::thread::sleep(Duration::from_secs(1));
+        if report.through >= latest || report.waiting {
+            pause(60);
+            if stopped() {
+                return Ok(());
             }
         }
     }
@@ -286,7 +345,7 @@ fn download(store: &R2Store, key: &str, path: &std::path::Path) -> Result<()> {
     Ok(())
 }
 
-fn build_current(snapshot: &str, work: PathBuf, prefix: String, shards: &str, seqs: Option<&str>, threads: usize) -> Result<()> {
+fn build_current(snapshot: &str, work: PathBuf, prefix: String, shards: &str, seqs: Option<&str>, threads: usize, allow_unlocated: bool) -> Result<()> {
     let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
     let store = pages_store(&runtime)?;
     std::fs::create_dir_all(&work)?;
@@ -301,8 +360,15 @@ fn build_current(snapshot: &str, work: PathBuf, prefix: String, shards: &str, se
         }
         local
     };
-    let settings =
-        build::Settings { prefix, work, threads, shards: range(shards)?, seqs: seqs.map(range).transpose()?.unwrap_or(0..i64::MAX), spill_bytes: 2 << 30 };
+    let settings = build::Settings {
+        prefix,
+        work,
+        threads,
+        shards: range(shards)?,
+        seqs: seqs.map(range).transpose()?.unwrap_or(0..i64::MAX),
+        spill_bytes: 2 << 30,
+        allow_unlocated,
+    };
     let started = Instant::now();
     let report = build::build(&store as &dyn Store, &local, &settings)?;
     println!("{report:?} in {:.0}s", started.elapsed().as_secs_f64());

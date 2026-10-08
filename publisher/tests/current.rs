@@ -232,6 +232,7 @@ fn a_build_from_an_index_snapshot_matches_it_and_the_compactor_carries_on_after_
         shards: 0..SHARDS,
         seqs: 0..i64::MAX,
         spill_bytes: 4096,
+        allow_unlocated: false,
     };
     let report = publisher::build::build(&store, &snapshot, &settings).unwrap();
     assert_eq!((report.wanted, report.written, report.misplaced, report.other_version, report.through_seq), (200, 200, 0, 0, through));
@@ -257,13 +258,92 @@ fn the_check_counts_a_page_removed_later_as_removed_and_a_lost_page_as_wrong() {
     log.append(&[removed(gone)]);
     compactor::cycle(&store, &settings, 1_000.0).unwrap();
     assert!(compactor::winner(&store, "current/", &page_key(gone).unwrap()).unwrap().is_none(), "a merged base keeps no removals");
-    assert_eq!(compactor::check(&store, "current/", &[first], 10, 4).unwrap(), (2, 1, Vec::new()));
+    assert_eq!(compactor::check(&store, "current/", &[first], 10, &(0..SHARDS), 4).unwrap(), (2, 1, Vec::new()));
 
     let shard = shard_of(&page_key(lost).unwrap()).unwrap();
     let mut manifest = compactor::load_manifests(&store, "current/", 4).unwrap().swap_remove(shard);
     (manifest.base, manifest.deltas) = (None, Vec::new());
     store.put(&compactor::manifest_key("current/", shard), Bytes::from(serde_json::to_vec(&manifest).unwrap())).unwrap();
-    let (checked, removed, wrong) = compactor::check(&store, "current/", &[first], 10, 4).unwrap();
+    let (checked, removed, wrong) = compactor::check(&store, "current/", &[first], 10, &(0..SHARDS), 4).unwrap();
     assert_eq!((checked, removed), (2, 1));
     assert_eq!(wrong, vec![format!("{} in change file {first}: not in the current state", page_key(lost).unwrap())]);
+}
+
+#[test]
+fn a_page_fetched_earlier_and_published_after_a_take_back_is_the_current_one() {
+    let root = scratch("takeback-order");
+    let mut log = Log::new(root.join("bucket"));
+    let store = LocalStore { root: root.join("bucket") };
+    compactor::start_empty(&store, "current/", 0, 4).unwrap();
+    let url = "https://news.example/retaken";
+    log.append(&[page(url, "2026-10-08T10:00:00+00:00", "t0", "first")]);
+    log.append(&[page(url, "2026-10-08T12:00:00+00:00", "t2", "taken back")]);
+    log.append(&[Change::task_withdrawn("t2", "2026-10-08T12:30:00+00:00")]);
+    log.append(&[page(url, "2026-10-08T11:00:00+00:00", "t1", "published after")]);
+    let mut settings = settings(root.join("work"));
+    compactor::cycle(&store, &settings, 1_000.0).unwrap();
+    assert_eq!(text_of(&store, url).as_deref(), Some("published after"), "as the publisher's index holds it");
+    settings.merge_ratio = 0.0;
+    log.append(&[page("https://news.example/other", "2026-10-08T13:00:00+00:00", "t3", "x")]);
+    assert!(compactor::cycle(&store, &settings, 2_000.0).unwrap().merged > 0);
+    assert_eq!(text_of(&store, url).as_deref(), Some("published after"), "and after the shard merges");
+}
+
+#[test]
+fn a_number_never_written_is_skipped_once_a_later_one_is_old_enough() {
+    let root = scratch("never-written");
+    let mut log = Log::new(root.join("bucket"));
+    let store = LocalStore { root: root.join("bucket") };
+    compactor::start_empty(&store, "current/", 0, 4).unwrap();
+    log.append(&[page("https://news.example/a", "2026-10-08T10:00:00+00:00", "t1", "a")]);
+    let hole = log.append(&[page("https://news.example/b", "2026-10-08T10:00:00+00:00", "t1", "b")]);
+    log.append(&[page("https://news.example/c", "2026-10-08T10:00:00+00:00", "t1", "c")]);
+    store.delete(&CHANGES.seq_key(hole as u64)).unwrap();
+    let mut settings = settings(root.join("work"));
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs_f64();
+    let waited = compactor::cycle(&store, &settings, now).unwrap();
+    assert_eq!((waited.through, waited.waiting), (1, true));
+    settings.hole_wait_s = 0.0;
+    let skipped = compactor::cycle(&store, &settings, now).unwrap();
+    assert_eq!((skipped.through, skipped.skipped.clone(), skipped.waiting), (3, vec![hole], false));
+    assert_eq!(text_of(&store, "https://news.example/c").as_deref(), Some("c"));
+}
+
+#[test]
+fn a_snapshot_leaves_out_pages_of_withdrawn_tasks_the_index_has_not_drained() {
+    let root = scratch("snapshot-withdrawn");
+    let mut log = Log::new(root.join("bucket"));
+    let index = publisher::index::VersionIndex::open(&root.join("index"), 64 << 20).unwrap();
+    let kept: Vec<Change> = (0..5).map(|i| page(&format!("https://news.example/kept-{i}"), "2026-10-08T10:00:00+00:00", "t1", "k")).collect();
+    let taken: Vec<Change> = (0..3).map(|i| page(&format!("https://news.example/taken-{i}"), "2026-10-08T10:00:00+00:00", "t2", "t")).collect();
+    let seq = log.append(&kept);
+    index.store(&publisher::worker::indexed(&kept, seq)).unwrap();
+    let seq = log.append(&taken);
+    index.store(&publisher::worker::indexed(&taken, seq)).unwrap();
+    index.withdraw(&["t2".to_string()], 1_000.0).unwrap();
+    let (_, rows) = publisher::snapshot::write_parquet(&index, Vec::new()).unwrap();
+    assert_eq!(rows, 5);
+}
+
+#[test]
+fn a_removal_between_two_versions_holds_whichever_cycles_the_rows_land_in() {
+    let root = scratch("removal-between");
+    let mut log = Log::new(root.join("bucket"));
+    let store = LocalStore { root: root.join("bucket") };
+    compactor::start_empty(&store, "current/", 0, 4).unwrap();
+    let url = "https://news.example/refetched";
+    let mut settings = settings(root.join("work"));
+    log.append(&[page(url, "2026-10-08T10:00:00+00:00", "t1", "removed version")]);
+    compactor::cycle(&store, &settings, 1_000.0).unwrap();
+    log.append(&[removed(url)]);
+    log.append(&[page(url, "2026-10-08T09:00:00+00:00", "t2", "fetched earlier, logged after")]);
+    settings.merge_ratio = 100.0;
+    settings.max_deltas = 100;
+    let report = compactor::cycle(&store, &settings, 2_000.0).unwrap();
+    assert_eq!(report.merged, 0, "read from the base and a delta");
+    assert_eq!(text_of(&store, url).as_deref(), Some("fetched earlier, logged after"));
+    settings.merge_ratio = 0.0;
+    log.append(&[page("https://news.example/other", "2026-10-08T13:00:00+00:00", "t3", "x")]);
+    compactor::cycle(&store, &settings, 3_000.0).unwrap();
+    assert_eq!(text_of(&store, url).as_deref(), Some("fetched earlier, logged after"), "and once merged");
 }

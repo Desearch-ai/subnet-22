@@ -1,5 +1,4 @@
-//! The sample published against a pre-filled index: `prefill SAMPLE WORK PAGES`, then `run SAMPLE WORK THREADS [PASSES]`
-//! or `takeback SAMPLE WORK TASKS`, the sample published in one batch with a take-back of that many prefilled tasks.
+//! Publishing against a pre-filled index: `prefill SAMPLE WORK PAGES`, `run SAMPLE WORK THREADS [PASSES]`, `takeback SAMPLE WORK TASKS`.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
