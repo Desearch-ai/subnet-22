@@ -274,6 +274,8 @@ async fn a_final_verdict_recorded_before_redis_closed_the_upload_is_paid_once() 
     assert_eq!(h.status(&task).await, "pass");
     let miner = h.public(&format!("/v1/miners/{}", h.rival.ss58())).await.1;
     assert_eq!(miner["pools"]["crawl"]["verified"], 3, "closed later, not paid again");
+    let packed: String = h.redis.clone().get(format!("pjob:{task}")).await.unwrap();
+    assert_eq!(crate::unpack(&packed)["urls"], job["urls"], "published with the URLs its kept copy left out");
 }
 
 #[tokio::test]

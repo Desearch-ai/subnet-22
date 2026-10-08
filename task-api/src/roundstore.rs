@@ -1,4 +1,4 @@
-//! Rounds as SQLite keeps them, URLs inline until a day after the round closes.
+//! Rounds as SQLite keeps them, URLs inline until Redis holds the round's tasks.
 
 use std::collections::HashMap;
 
@@ -130,9 +130,15 @@ pub fn unfilled(conn: &Connection) -> Result<Vec<Round>> {
     Ok(rounds.collect::<rusqlite::Result<_>>()?)
 }
 
-pub fn mark_filled(conn: &Connection, round_id: &str, at: f64) -> Result<()> {
-    conn.execute("UPDATE rounds SET filled_at = ? WHERE round_id = ?", params![at, round_id])?;
+/// Once Redis holds a round's tasks, its URLs are dropped, keeping each batch's count and hash.
+pub fn mark_filled(conn: &Connection, round: &Round, at: f64) -> Result<()> {
+    let batches: Map<String, Value> = round.batches.iter().map(|b| (b.batch_id.clone(), stored(&sealed(b)))).collect();
+    conn.execute("UPDATE rounds SET filled_at = ?, batches = ? WHERE round_id = ?", params![at, Value::Object(batches).to_string(), round.round_id])?;
     Ok(())
+}
+
+fn sealed(batch: &Batch) -> Batch {
+    Batch { urls: Vec::new(), sealed: Some(batch.seal()), ..batch.clone() }
 }
 
 pub fn open_revealed(conn: &Connection) -> Result<Vec<String>> {
@@ -149,7 +155,7 @@ pub fn latest_revealed(conn: &Connection) -> Result<HashMap<String, String>> {
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
-/// Drops the URLs of rounds closed before `closed_before`, keeping each batch's count and hash.
+/// Drops the URLs rounds closed before `closed_before` still keep, keeping each batch's count and hash.
 pub fn seal_closed(conn: &Connection, closed_before: f64, limit: i64) -> Result<usize> {
     let mark: f64 = conn.query_row("SELECT COALESCE((SELECT mark FROM retention WHERE name = 'rounds'), 0)", [], |row| real(row, 0))?;
     let mut statement = conn.prepare(
@@ -159,14 +165,7 @@ pub fn seal_closed(conn: &Connection, closed_before: f64, limit: i64) -> Result<
     let rows: Vec<(String, f64, String)> = rows.collect::<rusqlite::Result<_>>()?;
     for (round_id, _, batches) in &rows {
         let batches: Map<String, Value> = serde_json::from_str(batches).context("a round's batches")?;
-        let sealed: Map<String, Value> = batches
-            .iter()
-            .map(|(id, entry)| {
-                let batch = batch_of(id, entry);
-                let sealed = Batch { urls: Vec::new(), sealed: Some(batch.seal()), ..batch };
-                (id.clone(), stored(&sealed))
-            })
-            .collect();
+        let sealed: Map<String, Value> = batches.iter().map(|(id, entry)| (id.clone(), stored(&sealed(&batch_of(id, entry))))).collect();
         conn.execute("UPDATE rounds SET batches = ? WHERE round_id = ?", params![Value::Object(sealed).to_string(), round_id])?;
     }
     if let Some((_, closed_at, _)) = rows.last() {
@@ -230,9 +229,10 @@ mod tests {
         for (n, (seed, filled, closed)) in
             [(None, None, None), (Some("s"), None, None), (Some("s"), Some(1.0), None), (Some("s"), Some(1.0), Some(2.0))].into_iter().enumerate()
         {
-            save(&conn, &round(&format!("r{n}"), 1, 1, n as f64, seed)).unwrap();
+            let saved = round(&format!("r{n}"), 1, 1, n as f64, seed);
+            save(&conn, &saved).unwrap();
             if let Some(at) = filled {
-                mark_filled(&conn, &format!("r{n}"), at).unwrap();
+                mark_filled(&conn, &saved, at).unwrap();
             }
             if let Some(at) = closed {
                 close(&conn, &format!("r{n}"), at).unwrap();
@@ -250,6 +250,21 @@ mod tests {
         assert_eq!(unrevealed(&conn, 15).unwrap().into_iter().map(|r| r.round_id).collect::<Vec<_>>(), ["due"]);
         assert_eq!(unrevealed(&conn, i64::MAX).unwrap().into_iter().map(|r| r.round_id).collect::<Vec<_>>(), ["due", "later"]);
         assert_eq!(unrevealed_tasks(&conn).unwrap(), 6);
+    }
+
+    #[test]
+    fn a_filled_round_keeps_its_manifest_without_its_urls() {
+        let conn = store();
+        let urls: Vec<Url> = (0..2500).map(|i| Url { host: "example.com".into(), url: format!("https://example.com/{i}") }).collect();
+        let mut filled = crate::rounds::open_batches(crate::rounds::pack(urls, 1000), 100, "crawl", 1_800_000_000.0);
+        crate::rounds::reveal(&mut filled, &"00".repeat(32));
+        save(&conn, &filled).unwrap();
+        close(&conn, &filled.round_id, 1_800_000_100.0).unwrap();
+        let before = get(&conn, &filled.round_id).unwrap().unwrap().public_view();
+        mark_filled(&conn, &filled, 1_800_000_010.0).unwrap();
+        let batches: String = conn.query_row("SELECT batches FROM rounds WHERE round_id = ?", [&filled.round_id], |row| row.get(0)).unwrap();
+        assert_eq!(batches.matches("https://example.com/").count(), 0);
+        assert_eq!(get(&conn, &filled.round_id).unwrap().unwrap().public_view(), before);
     }
 
     #[test]

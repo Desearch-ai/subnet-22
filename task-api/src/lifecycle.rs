@@ -262,8 +262,8 @@ pub async fn fill_round(state: &State, round: &Round) -> Result<usize> {
         let _: i64 = state.redis.clone().sadd(open_round_key(&round.round_id), &round.order).await?;
         state.tasks(&round.kind).fill(&state.redis, &round.round_id, &round.order, &payloads).await?;
     }
-    let round_id = round.round_id.clone();
-    state.db.run(move |conn| roundstore::mark_filled(conn, &round_id, now())).await?;
+    let filled = round.clone();
+    state.db.run(move |conn| roundstore::mark_filled(conn, &filled, now())).await?;
     state.current.lock().expect("current rounds").insert(round.kind.clone(), round.round_id.clone());
     Ok(round.order.len())
 }
@@ -274,8 +274,7 @@ pub async fn fill_missing(state: &State) -> Result<Vec<String>> {
     for round in state.db.run(roundstore::unfilled).await? {
         let open: i64 = state.redis.clone().scard(open_round_key(&round.round_id)).await?;
         if open > 0 {
-            let round_id = round.round_id.clone();
-            state.db.run(move |conn| roundstore::mark_filled(conn, &round_id, now())).await?;
+            state.db.run(move |conn| roundstore::mark_filled(conn, &round, now())).await?;
             continue;
         }
         fill_round(state, &round).await?;
@@ -882,7 +881,11 @@ pub async fn discard_upload(state: &State, job: &Value) {
 }
 
 async fn finish_finalized(state: &State, task_id: &str, job: &Value, finalized: FinalVerdict, seeding: bool) -> Result<Option<Value>> {
-    if !close_upload(state, task_id, job, &finalized.verdict, finalized.publish.as_ref(), seeding).await? {
+    let publish = finalized.publish.map(|mut copy| {
+        copy["urls"] = job["urls"].clone();
+        copy
+    });
+    if !close_upload(state, task_id, job, &finalized.verdict, publish.as_ref(), seeding).await? {
         return Ok(None);
     }
     let (miner, kind) = (text(job, "miner").to_string(), kind_of(job).to_string());

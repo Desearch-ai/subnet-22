@@ -32,8 +32,8 @@ static RELEASE: LazyLock<Script> =
 const INTERVAL: Duration = Duration::from_secs(1);
 const ROUNDS_INTERVAL: Duration = Duration::from_secs(5);
 const UPLOAD_LOG_INTERVAL: Duration = Duration::from_secs(30);
-/// A day after closing, a round keeps only each batch's URL count and hash, and a verdict drops its publish job.
-const LISTS_KEEP_S: f64 = 86_400.0;
+/// A verdict drops its publish job a day after it was finalized.
+const PUBLISH_COPY_KEEP_S: f64 = 86_400.0;
 const SEAL_ROUNDS: i64 = 20;
 const DROP_VERDICTS: i64 = 200;
 /// Per-URL details cleared per pass: each frees ~0.5 MB, ~2 ms of writer time.
@@ -112,12 +112,12 @@ async fn pass(state: &Arc<State>, due: &mut Due) -> Result<()> {
         lifecycle::reveal_pending(state).await?;
         lifecycle::close_finished(state).await?;
         OUTCOMES.fill_holes(&state.storage, &state.redis).await?;
-        let kept_after = now() - LISTS_KEEP_S;
         state
             .db
             .run(move |conn| {
-                roundstore::seal_closed(conn, kept_after, SEAL_ROUNDS)?;
-                validations::drop_publish_copies(conn, kept_after, DROP_VERDICTS)
+                let at = now();
+                roundstore::seal_closed(conn, at, SEAL_ROUNDS)?;
+                validations::drop_publish_copies(conn, at - PUBLISH_COPY_KEEP_S, DROP_VERDICTS)
             })
             .await?;
         due.rounds_at = Some(Instant::now());

@@ -178,8 +178,15 @@ pub struct FinalVerdict {
 
 /// False when this upload was finalized before, so nothing is paid twice.
 pub fn finalize(conn: &Connection, task_id: &str, upload_key: &str, verdict: &str, credited: i64, publish: Option<&Value>, now: f64) -> Result<bool> {
-    let inserted = conn
-        .execute("INSERT INTO final_verdicts VALUES (?, ?, ?, ?, ?, ?)", params![task_id, upload_key, verdict, credited, publish.map(Value::to_string), now]);
+    // Without its URLs: the copy is only read back while the upload's job, which has them, is still open.
+    let copy = publish.map(|job| {
+        let mut copy = job.clone();
+        if let Some(fields) = copy.as_object_mut() {
+            fields.remove("urls");
+        }
+        copy.to_string()
+    });
+    let inserted = conn.execute("INSERT INTO final_verdicts VALUES (?, ?, ?, ?, ?, ?)", params![task_id, upload_key, verdict, credited, copy, now]);
     match inserted {
         Ok(_) => Ok(true),
         Err(rusqlite::Error::SqliteFailure(error, _)) if error.code == ErrorCode::ConstraintViolation => Ok(false),
@@ -641,7 +648,8 @@ mod tests {
         drop_publish_copies(&conn, now - 86_400.0, 100).unwrap();
         let kept = |task_id: &str| final_verdict(&conn, task_id, &format!("submitted/{task_id}")).unwrap().unwrap();
         assert!(kept("old1").publish.is_none() && kept("old2").publish.is_none());
-        assert_eq!(kept("new1").publish.unwrap()["task_id"], "new1");
+        let copy = kept("new1").publish.unwrap();
+        assert_eq!((copy["task_id"].clone(), copy.get("urls")), (json!("new1"), None), "kept without the URLs its job holds");
         assert_eq!(kept("old1").verdict, "pass");
     }
 }
