@@ -16,7 +16,7 @@ use crate::buckets::{bucket_of, Buckets};
 use crate::outcomes::{self, Next, OutcomeFeed};
 use crate::ready::{Entry, Order, Pick, Reason, SentPage, CHANGED, FRESH, LANES, REQUEUED};
 use crate::records;
-use crate::taskapi::{QueuedUrl, TaskApi};
+use crate::taskapi::{ApiError, QueuedUrl, TaskApi};
 use crate::timetable::UNRANKED;
 
 pub const PASS_SECONDS: Duration = Duration::from_secs(15);
@@ -210,6 +210,8 @@ pub struct Progress {
     pub sent_refresh: AtomicU64,
     pub sent_retry: AtomicU64,
     pub batches: AtomicU64,
+    /// Pages the API refused on their own, kept off the ready lists like a page with no outcome yet.
+    pub set_aside: AtomicU64,
     pub room_tasks: AtomicI64,
     pub requeued: AtomicU64,
     /// Sent pages retried because no outcome came within a day.
@@ -257,7 +259,8 @@ impl Progress {
             thousands(self.backfill_scanned.load(Ordering::Relaxed)),
             thousands(self.backfill_added.load(Ordering::Relaxed)),
         ) + &format!(
-            "  last pass absorb {:.1}s pick {:.1}s send {:.1}s",
+            "  set aside {}  last pass absorb {:.1}s pick {:.1}s send {:.1}s",
+            thousands(self.set_aside.load(Ordering::Relaxed)),
             self.pass_ms[0].load(Ordering::Relaxed) as f64 / 1000.0,
             self.pass_ms[1].load(Ordering::Relaxed) as f64 / 1000.0,
             self.pass_ms[2].load(Ordering::Relaxed) as f64 / 1000.0,
@@ -294,9 +297,17 @@ struct Pending {
 
 impl Pending {
     fn of(picks: &[Pick], at: u32) -> Pending {
-        let picks: Vec<Sending> = picks.iter().map(Sending::of).collect();
+        Pending::new(picks.iter().map(Sending::of).collect(), at)
+    }
+
+    fn new(picks: Vec<Sending>, at: u32) -> Pending {
         let urls: Vec<QueuedUrl> = picks.iter().map(|p| QueuedUrl { host: p.domain.clone(), url: p.url.clone() }).collect();
         Pending { batch_id: batch_id(&urls), at, picks }
+    }
+
+    fn halves(&self) -> [Pending; 2] {
+        let (left, right) = self.picks.split_at(self.picks.len() / 2);
+        [Pending::new(left.to_vec(), self.at), Pending::new(right.to_vec(), self.at)]
     }
 
     fn urls(&self) -> Vec<QueuedUrl> {
@@ -593,27 +604,35 @@ impl Dispatcher {
         Ok(interleave(lists))
     }
 
-    /// Send the batches in flight together; how many URLs the API took, and whether all went (the rest go again first next pass).
+    /// Send the batches in flight together, halving one refused as too large or invalid down to the page at fault; how many URLs went, and whether all did.
     async fn send_pending(&mut self) -> Result<(u64, bool)> {
         if self.pending.is_empty() {
             return Ok((0, true));
         }
         self.save_pending().await?;
-        let mut sending = tokio::task::JoinSet::new();
-        for pending in self.pending.clone() {
-            let api = self.api.clone();
-            sending.spawn(async move {
-                let sent = api.enqueue(&pending.urls(), &pending.batch_id).await;
-                (pending, sent)
-            });
-        }
         let (mut taken, mut failed) = (0, Vec::new());
-        while let Some(joined) = sending.join_next().await {
-            match joined? {
-                (pending, Ok(_)) => taken += self.landed(pending).await?,
-                (pending, Err(error)) => {
-                    eprintln!("[rs] enqueueing batch {} of {} URLs failed, will send it again: {error}", &pending.batch_id[..12], pending.picks.len());
-                    failed.push(pending);
+        let mut wave = self.pending.clone();
+        while !wave.is_empty() {
+            let mut sending = tokio::task::JoinSet::new();
+            for pending in wave.drain(..) {
+                let api = self.api.clone();
+                sending.spawn(async move {
+                    let sent = api.enqueue(&pending.urls(), &pending.batch_id).await;
+                    (pending, sent)
+                });
+            }
+            while let Some(joined) = sending.join_next().await {
+                match joined? {
+                    (pending, Ok(_)) => taken += self.landed(pending).await?,
+                    (pending, Err(ApiError::Refused(413 | 422, _))) if pending.picks.len() > 1 => wave.extend(pending.halves()),
+                    (pending, Err(error @ ApiError::Refused(413 | 422, _))) => {
+                        eprintln!("[rs] the task API refused {}, set aside: {error}", pending.picks[0].url);
+                        self.set_aside(pending).await?;
+                    }
+                    (pending, Err(error)) => {
+                        eprintln!("[rs] enqueueing batch {} of {} URLs failed, will send it again: {error}", &pending.batch_id[..12], pending.picks.len());
+                        failed.push(pending);
+                    }
                 }
             }
         }
@@ -632,6 +651,36 @@ impl Dispatcher {
 
     /// A batch the API took: its pages leave the ready lists and count as sent.
     async fn landed(&mut self, pending: Pending) -> Result<u64> {
+        self.mark_sent(&pending).await?;
+        let mut per_domain: HashMap<&str, u64> = HashMap::new();
+        for sending in &pending.picks {
+            *per_domain.entry(&sending.domain).or_default() += 1;
+        }
+        for (domain, count) in per_domain {
+            self.cap.record(domain, pending.at, count);
+        }
+        for sending in &pending.picks {
+            let counter = match sending.reason {
+                0 => &self.progress.sent_new,
+                1 => &self.progress.sent_refresh,
+                _ => &self.progress.sent_retry,
+            };
+            counter.fetch_add(1, Ordering::Relaxed);
+        }
+        let count = pending.picks.len() as u64;
+        self.pace.spend(count);
+        self.progress.dispatched.fetch_add(count, Ordering::Relaxed);
+        self.progress.batches.fetch_add(1, Ordering::Relaxed);
+        Ok(count)
+    }
+
+    async fn set_aside(&mut self, pending: Pending) -> Result<()> {
+        self.mark_sent(&pending).await?;
+        self.progress.set_aside.fetch_add(pending.picks.len() as u64, Ordering::Relaxed);
+        Ok(())
+    }
+
+    async fn mark_sent(&mut self, pending: &Pending) -> Result<()> {
         let buckets = self.buckets.clone();
         let picks: Vec<Pick> = pending.picks.iter().map(Sending::pick).collect();
         let at = pending.at;
@@ -660,26 +709,7 @@ impl Dispatcher {
         for (domain, ready, rank) in left {
             self.set_ready(&domain, ready, rank);
         }
-        let mut per_domain: HashMap<&str, u64> = HashMap::new();
-        for sending in &pending.picks {
-            *per_domain.entry(&sending.domain).or_default() += 1;
-        }
-        for (domain, count) in per_domain {
-            self.cap.record(domain, pending.at, count);
-        }
-        for sending in &pending.picks {
-            let counter = match sending.reason {
-                0 => &self.progress.sent_new,
-                1 => &self.progress.sent_refresh,
-                _ => &self.progress.sent_retry,
-            };
-            counter.fetch_add(1, Ordering::Relaxed);
-        }
-        let count = pending.picks.len() as u64;
-        self.pace.spend(count);
-        self.progress.dispatched.fetch_add(count, Ordering::Relaxed);
-        self.progress.batches.fetch_add(1, Ordering::Relaxed);
-        Ok(count)
+        Ok(())
     }
 
     fn set_ready(&mut self, domain: &str, ready: u64, rank: i64) {

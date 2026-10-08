@@ -309,6 +309,9 @@ fn outcome_files_parse_and_land_on_their_pages() {
 struct FakeApi {
     room: i64,
     fail_next: usize,
+    /// Batches with more URLs are refused as too large, and any batch holding `refused` as invalid.
+    max_urls: usize,
+    refused: Option<String>,
     rooms: usize,
     enqueued: Vec<(HashMap<String, String>, Vec<u8>)>,
     files: HashMap<String, Vec<u8>>,
@@ -355,12 +358,20 @@ async fn serve_api(listener: TcpListener, api: Arc<Mutex<FakeApi>>) {
                         (200, format!(r#"{{"room_tasks":{},"queue":0,"unrevealed":0,"refusing":false}}"#, api.room))
                     }
                     "/v1/admin/enqueue" => {
-                        api.enqueued.push((headers, body));
-                        if api.fail_next > 0 {
-                            api.fail_next -= 1;
-                            (500, r#"{"detail":"try again"}"#.to_string())
+                        let sent: Value = serde_json::from_slice(&body).unwrap_or_default();
+                        let urls: Vec<&str> = sent["urls"].as_array().into_iter().flatten().filter_map(|u| u["url"].as_str()).collect();
+                        if api.max_urls > 0 && urls.len() > api.max_urls {
+                            (413, r#"{"detail":"too large"}"#.to_string())
+                        } else if api.refused.as_deref().is_some_and(|bad| urls.contains(&bad)) {
+                            (422, r#"{"detail":"not a URL"}"#.to_string())
                         } else {
-                            (200, r#"{"round_id":"r1","batches":1}"#.to_string())
+                            api.enqueued.push((headers, body));
+                            if api.fail_next > 0 {
+                                api.fail_next -= 1;
+                                (500, r#"{"detail":"try again"}"#.to_string())
+                            } else {
+                                (200, r#"{"round_id":"r1","batches":1}"#.to_string())
+                            }
                         }
                     }
                     _ => match api.files.get(path) {
@@ -652,4 +663,46 @@ fn the_pace_grows_steadily_and_saves_up_only_five_minutes() {
     assert_eq!(pace.allowance(1060), 60_000, "a minute later, a minute's worth");
     assert_eq!(pace.allowance(1000 + 7200), 300_000, "an idle hour saves no more than five minutes");
     assert_eq!(Pace::new(0, 1000).allowance(2000), u64::MAX, "no pace set sends whatever there is room for");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_batch_refused_as_too_large_or_invalid_goes_in_halves_and_only_the_page_at_fault_is_set_aside() {
+    let dir = Dir::new("dispatcher-refused");
+    let host = "example.net";
+    let buckets = Arc::new(Buckets::open(&dir.0, &[bucket_of(host)], &resources()).unwrap());
+    let store = buckets.store(host);
+    let mut changes = Changes::default();
+    changes.domain(host, &records::new_domain(Some(5), Some("net"), &[], State::Active, None, None));
+    store.write(changes).unwrap();
+    let pages = (0..40).map(|i| (urls::parse(&format!("https://{host}/p{i:02}"), host).unwrap(), 100 + i, false)).collect();
+    store.record_listing(host, 1, pages, 100).unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let bad = format!("https://{host}/p07");
+    let fake = Arc::new(Mutex::new(FakeApi { room: 1, max_urls: 16, refused: Some(bad.clone()), ..FakeApi::default() }));
+    tokio::spawn(serve_api(listener, fake.clone()));
+    let progress = Arc::new(Progress::default());
+    let api = TaskApi::new(&base, Hotkey::from_uri("//test").unwrap()).unwrap();
+    let mut dispatcher = Dispatcher::load(buckets.clone(), api, 1_000_000, shares(50, 10), progress.clone()).await.unwrap();
+
+    let now = 1_759_400_000;
+    assert_eq!(dispatcher.pass(now).await.unwrap(), 39, "everything but the bad page went in the same pass");
+    let taken: Vec<String> = fake
+        .lock()
+        .unwrap()
+        .enqueued
+        .iter()
+        .flat_map(|(_, body)| {
+            serde_json::from_slice::<Value>(body).unwrap()["urls"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|u| u["url"].as_str().unwrap().to_string())
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    assert_eq!((taken.len(), taken.contains(&bad)), (39, false));
+    assert_eq!(progress.set_aside.load(std::sync::atomic::Ordering::Relaxed), 1);
+    assert_eq!(buckets.store(host).ready_count(host).unwrap(), 0, "the bad page left the ready list too");
+    assert_eq!(dispatcher.pass(now + 15).await.unwrap(), 0);
 }
