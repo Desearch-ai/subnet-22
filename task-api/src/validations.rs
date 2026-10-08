@@ -75,7 +75,7 @@ pub const VOTE_FIELDS: [&str; 20] = [
 pub const VERDICTS: [&str; 3] = ["pass", "fail", "void"];
 pub const WITHDRAWN: &str = "withdrawn";
 pub const MIN_AUDITS: i64 = 10;
-pub const URL_DETAIL_DAYS: f64 = 7.0;
+pub const URL_DETAIL_DAYS: f64 = 2.0;
 pub const MAX_DISAGREEMENT: f64 = 0.3;
 const VERDICT_SUMS: &str = "SUM(verdict = 'pass'), SUM(verdict = 'fail'), SUM(verdict = 'void')";
 
@@ -402,9 +402,24 @@ pub fn drop_publish_copies(conn: &Connection, finalized_before: f64, limit: i64)
     Ok(last - mark)
 }
 
-pub fn prune_urls(conn: &Connection, now: f64) -> Result<()> {
-    conn.execute("UPDATE validations SET urls = NULL WHERE urls IS NOT NULL AND scored_at < ?", [now - URL_DETAIL_DAYS * 86_400.0])?;
-    Ok(())
+/// Clears the per-URL detail of up to `limit` verdicts older than `URL_DETAIL_DAYS`, oldest first, so one call never holds the writer long.
+pub fn prune_urls(conn: &Connection, now: f64, limit: i64) -> Result<usize> {
+    // Details older than a week were already cleared, so the first call starts there.
+    let mark: f64 =
+        conn.query_row("SELECT COALESCE((SELECT mark FROM retention WHERE name = 'url_details'), ?)", [now - 8.0 * 86_400.0], |row| real(row, 0))?;
+    let mut statement = conn.prepare(
+        "SELECT rowid, scored_at FROM validations INDEXED BY validations_scored
+         WHERE scored_at >= ? AND scored_at < ? AND urls IS NOT NULL ORDER BY scored_at LIMIT ?",
+    )?;
+    let rows = statement.query_map(params![mark, now - URL_DETAIL_DAYS * 86_400.0, limit], |row| Ok((row.get::<_, i64>(0)?, real(row, 1)?)))?;
+    let rows: Vec<(i64, f64)> = rows.collect::<rusqlite::Result<_>>()?;
+    for (rowid, _) in &rows {
+        conn.execute("UPDATE validations SET urls = NULL WHERE rowid = ?", [rowid])?;
+    }
+    if let Some((_, at)) = rows.last() {
+        conn.execute("INSERT INTO retention VALUES ('url_details', ?) ON CONFLICT (name) DO UPDATE SET mark = excluded.mark", [at])?;
+    }
+    Ok(rows.len())
 }
 
 /// Filters for the tasks page and a miner's own verdicts.
@@ -588,16 +603,31 @@ mod tests {
     }
 
     #[test]
-    fn the_detail_is_pruned_after_a_week_and_the_verdict_stays() {
+    fn the_detail_is_pruned_after_two_days_and_the_verdict_stays() {
         let conn = store();
         let now = 1_800_000_000.0;
         record(&conn, &verdict("old", now - URL_DETAIL_DAYS * 86_400.0 - 60.0), Some(&details())).unwrap();
         record(&conn, &verdict("new", now), Some(&details())).unwrap();
-        prune_urls(&conn, now).unwrap();
+        assert_eq!(prune_urls(&conn, now, 50).unwrap(), 1);
         assert_eq!((urls(&conn, "old").unwrap(), urls(&conn, "new").unwrap()), (json!([]), details()));
         assert_eq!(uploads(&conn, "old").unwrap()[0]["verdict"], "pass");
         let filter = TaskFilter { limit: 50, ..TaskFilter::default() };
         assert_eq!(recent(&conn, &filter).unwrap().iter().map(|t| t["task_id"].clone()).collect::<Vec<_>>(), [json!("new"), json!("old")]);
+    }
+
+    #[test]
+    fn details_are_pruned_a_few_at_a_time_from_where_the_last_call_stopped() {
+        let conn = store();
+        let now = 1_800_000_000.0;
+        let old = now - URL_DETAIL_DAYS * 86_400.0;
+        for (task_id, at) in [("a", old - 300.0), ("b", old - 200.0), ("c", old - 100.0), ("new", now)] {
+            record(&conn, &verdict(task_id, at), Some(&details())).unwrap();
+        }
+        assert_eq!(prune_urls(&conn, now, 2).unwrap(), 2);
+        assert_eq!((urls(&conn, "a").unwrap(), urls(&conn, "b").unwrap(), urls(&conn, "c").unwrap()), (json!([]), json!([]), details()));
+        assert_eq!(prune_urls(&conn, now, 2).unwrap(), 1);
+        assert_eq!(prune_urls(&conn, now, 2).unwrap(), 0);
+        assert_eq!(urls(&conn, "new").unwrap(), details());
     }
 
     #[test]

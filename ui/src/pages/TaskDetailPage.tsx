@@ -39,7 +39,7 @@ function UploadSections({ score, task }: UploadSectionsProps) {
         />
         {task.urls.length === 0 ? (
           <EmptyState title="No per-URL results to show.">
-            They are kept for 7 days after a task is finalized and are not stored for a void task.
+            They are kept for 2 days after a task is finalized and are not stored for a void task.
           </EmptyState>
         ) : (
           <UrlTable urls={task.urls} />

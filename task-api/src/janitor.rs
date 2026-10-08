@@ -36,6 +36,8 @@ const UPLOAD_LOG_INTERVAL: Duration = Duration::from_secs(30);
 const LISTS_KEEP_S: f64 = 86_400.0;
 const SEAL_ROUNDS: i64 = 20;
 const DROP_VERDICTS: i64 = 200;
+/// Per-URL details cleared per pass: each frees ~0.5 MB, ~2 ms of writer time.
+const PRUNE_DETAILS: i64 = 10;
 
 #[derive(Default)]
 struct Due {
@@ -103,6 +105,7 @@ async fn pass(state: &Arc<State>, due: &mut Due) -> Result<()> {
     lifecycle::finalize_due(state, now()).await?;
     lifecycle::publish_open(state, now()).await?;
     lifecycle::return_expired_publishes(state).await?;
+    state.db.run(|conn| validations::prune_urls(conn, now(), PRUNE_DETAILS)).await?;
     if elapsed(due.rounds_at, ROUNDS_INTERVAL) {
         lifecycle::open_embed_rounds(state).await?;
         lifecycle::fill_missing(state).await?;
@@ -129,7 +132,6 @@ async fn pass(state: &Arc<State>, due: &mut Due) -> Result<()> {
             .run(|conn| {
                 let at = now();
                 budgets::prune(conn, KEEP_H, at)?;
-                validations::prune_urls(conn, at)?;
                 checks::prune(conn, at)
             })
             .await?;

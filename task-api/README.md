@@ -228,7 +228,7 @@ Anyone can read these; the [UI](../ui/README.md) is built on them.
 | `GET /v1/live` | the tasks miners hold now and the uploads being checked, with who has voted |
 | `GET /v1/stats/series` | tasks, verdicts and rows per 5, 15 or 60 minutes; for everyone, one `miner` or one `validator` |
 | `GET /v1/tasks` | checked tasks with the rows each paid, newest first; filter with `miner`, `validator`, `verdict`, `kind`, `since` |
-| `GET /v1/tasks/{task_id}` | one task's state and result, every validator's vote, and per-URL detail for a week |
+| `GET /v1/tasks/{task_id}` | one task's state and result, every validator's vote, and per-URL detail for 2 days |
 | `GET /v1/votes` | every validator's vote on every checked upload; filter with `validator`, `miner`, `task_id`, `verdict`, `agreed` |
 | `GET /v1/miners` | every miner's budget, coverage, share and results in the window |
 | `GET /v1/miners/{hotkey}` | a miner's budget and its history, coverage, share, pass and fail counts and lockout |
