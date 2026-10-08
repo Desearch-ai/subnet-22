@@ -30,8 +30,10 @@ RUN apt-get update \
 COPY --from=build /publisher /usr/local/bin/publisher
 
 USER publisher
+# Freed memory goes back to the system within a second, so peaks from big take-backs do not stay resident.
 ENV PUBLISHER_INDEX=/data/index \
-    MALLOC_ARENA_MAX=2
+    MALLOC_ARENA_MAX=2 \
+    _RJEM_MALLOC_CONF=background_thread:true,dirty_decay_ms:1000,muzzy_decay_ms:0
 VOLUME /data
 
 # tini passes SIGTERM on, so the publisher finishes the batch in hand before it exits.
