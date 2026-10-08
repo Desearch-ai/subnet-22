@@ -1,6 +1,7 @@
 //! What every request and the janitor share: settings, Redis, SQLite, the buckets, the chain and the receipt key.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -56,6 +57,8 @@ pub struct State {
     pub open_listed: Mutex<Option<Vec<String>>>,
     /// Claims that expired before this moment plus one claim's time were held through a restart.
     pub started_at: f64,
+    /// Set on shutdown so /v1/ping fails and the proxy stops routing here before the server stops.
+    pub draining: AtomicBool,
 }
 
 pub async fn redis_from(url: &str) -> Result<Redis> {
@@ -112,6 +115,7 @@ impl State {
             open_manifests: Mutex::default(),
             open_listed: Mutex::default(),
             started_at: now(),
+            draining: AtomicBool::new(false),
             settings,
         })
     }

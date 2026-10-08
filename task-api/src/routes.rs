@@ -1,6 +1,7 @@
 //! Claims, completions and verdicts, the bot's enqueue and room, and the public round pages.
 
 use std::net::SocketAddr;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -600,7 +601,10 @@ pub async fn own_verdicts(
     Ok(Json(json!({"tasks": tasks})))
 }
 
-pub async fn ping() -> Answer {
+pub async fn ping(Shared(state): Shared<Arc<State>>) -> Answer {
+    if state.draining.load(Ordering::Relaxed) {
+        return Err(ApiError::status(503, "shutting down"));
+    }
     Ok(Json(json!({"ok": true})))
 }
 

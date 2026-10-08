@@ -55,3 +55,12 @@ async fn a_refusal_naming_a_sealed_round_is_logged_outside_it() {
     let (sealed, again) = h.state.db.run(|conn| Ok((roundlog::entries(conn, "sealed")?.len(), roundlog::anchor(conn, "sealed", 2.0)?))).await.unwrap();
     assert_eq!((sealed, again), (0, root), "the sealed round's log and root are unchanged");
 }
+
+#[tokio::test]
+async fn a_draining_copy_fails_its_health_check_but_still_serves() {
+    let h = Harness::start().await;
+    assert_eq!(h.public("/v1/ping").await.0, 200);
+    h.state.draining.store(true, std::sync::atomic::Ordering::Relaxed);
+    assert_eq!(h.public("/v1/ping").await.0, 503);
+    assert_eq!(h.public("/v1/rounds").await.0, 200);
+}

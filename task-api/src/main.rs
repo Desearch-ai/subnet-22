@@ -5,7 +5,9 @@
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
 use std::net::SocketAddr;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use tokio::net::TcpListener;
@@ -14,7 +16,11 @@ use task_api::settings::{RegistryMode, Settings};
 use task_api::state::{redis_from, State};
 use task_api::{http, janitor};
 
-async fn shutdown() {
+/// Docker marks the copy unhealthy after three failed 5 s health checks, and the proxy then stops routing to it.
+const DRAIN: Duration = Duration::from_secs(18);
+
+/// True when asked to terminate, as a deploy does, rather than interrupted by hand.
+async fn shutdown() -> bool {
     let interrupt = async {
         let _ = tokio::signal::ctrl_c().await;
     };
@@ -27,8 +33,8 @@ async fn shutdown() {
     #[cfg(not(unix))]
     let terminate = std::future::pending::<()>();
     tokio::select! {
-        _ = interrupt => {}
-        _ = terminate => {}
+        _ = interrupt => false,
+        _ = terminate => true,
     }
 }
 
@@ -49,9 +55,16 @@ async fn main() -> Result<()> {
     let janitor = tokio::spawn(janitor::run(state.clone(), stopped));
     let listener = TcpListener::bind(&listen).await.with_context(|| format!("listening on {listen}"))?;
     eprintln!("task API on {listen}, signing as {}", state.signer());
-    let stopping = async move {
-        shutdown().await;
-        let _ = stop.send(true);
+    let stopping = {
+        let state = state.clone();
+        async move {
+            let terminated = shutdown().await;
+            let _ = stop.send(true);
+            if terminated {
+                state.draining.store(true, Ordering::Relaxed);
+                tokio::time::sleep(DRAIN).await;
+            }
+        }
     };
     axum::serve(listener, http::router(state).into_make_service_with_connect_info::<SocketAddr>()).with_graceful_shutdown(stopping).await?;
     janitor.await?;
