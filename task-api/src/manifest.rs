@@ -53,3 +53,20 @@ pub fn seed_from_hash(block_hash: &str) -> String {
 pub fn local_block_hash(block: i64) -> String {
     format!("local:{block}")
 }
+
+#[cfg(test)]
+mod tests {
+    use serde_json::{json, Value};
+
+    use super::payload;
+
+    #[test]
+    fn a_note_read_back_signs_the_same_bytes() {
+        for i in 0..10_000 {
+            let at = 1_791_443_846.0 + i as f64 * 0.000_137;
+            let note = json!({"completed_at": at, "deadline": at + 900.2});
+            let back: Value = serde_json::from_str(&note.to_string()).unwrap();
+            assert_eq!(payload(note.as_object().unwrap()), payload(back.as_object().unwrap()), "{at}");
+        }
+    }
+}

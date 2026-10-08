@@ -52,6 +52,11 @@ async fn a_crawl_task_goes_round_trip() {
         (listed[0]["round_id"].as_str(), listed[0]["manifest_hash"].clone(), listed[0]["revealed"].clone()),
         (Some(round_id.as_str()), enqueued["manifest_hash"].clone(), json!(false))
     );
+    let into_minute = desearch::time::now() % task_api::state::MINUTE;
+    // Both QUEUE_EMPTY refusals must fall in one calendar minute.
+    if into_minute > 50.0 {
+        tokio::time::sleep(std::time::Duration::from_secs_f64(task_api::state::MINUTE - into_minute)).await;
+    }
     assert_eq!(h.miner.claim().await["refusal"]["code"], "QUEUE_EMPTY");
     assert_eq!(h.revealed().await, 2);
 
