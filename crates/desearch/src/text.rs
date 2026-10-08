@@ -1,4 +1,4 @@
-//! Python's notion of whitespace, word characters and case, so pages are judged as the Python publisher judged them.
+//! Python's notion of whitespace, word characters and case, so pages are judged as `desearch.extraction` judges them.
 
 use unicode_properties::{GeneralCategoryGroup, UnicodeGeneralCategory};
 

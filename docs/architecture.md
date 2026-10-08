@@ -25,7 +25,7 @@ built from. This page explains how those parts fit together.
 | Task API | Packs URLs into tasks, hands them to miners, draws which finished uploads validators check, works out what each miner is owed from their reports and the validators' results, and publishes every miner's share. | [`task-api/app/`](../task-api/app/) |
 | Miners | Fetch the pages of a task and extract their text; once embedding opens, turn text into vectors on a GPU. | [`neurons/miners/`](../neurons/miners/) |
 | Validators | Read each drawn upload from storage, check a sample of its pages against the live page, report pass or fail, and set weights from every miner's logged uploads at the rate their own checks found. | [`neurons/validators/`](../neurons/validators/) |
-| Publisher | Writes passed pages and vectors to permanent storage, takes withdrawn pages down, and reports what became of every URL to the bot. | [`task-api/publisher/`](../task-api/publisher/) |
+| Publisher | Writes passed pages and vectors to permanent storage, takes withdrawn pages down, and reports what became of every URL to the bot. | [`publisher/`](../publisher/) |
 | Engine | Builds the search index from the published pages and vectors, and serves search. | [`engine/`](../engine/) |
 | Shared package | Fetching, text extraction and embedding formats, so miners and validators run the same code. | [`desearch/`](../desearch/) |
 
@@ -77,7 +77,8 @@ published pages in `desearch-pages`, which is permanent.
 
 ## An embed task, start to finish
 
-Embedding is built and switched off until Desearch's own embedding model ships; see
+Embedding is switched off until Desearch's own embedding model ships and the publisher writes the
+inputs below; see
 [Embedding tasks](./embedding-tasks.md).
 
 1. **Input.** When the publisher writes new or changed pages, it cuts them into the texts the index

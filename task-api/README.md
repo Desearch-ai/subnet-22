@@ -18,12 +18,13 @@ bot ──URLs──▶ task API ──claim──▶ miner ──upload──�
 | Path | |
 | --- | --- |
 | `app/` | the API: auth, queues, rounds, upload links, check results, budgets and shares |
-| `publisher/` | writes passed pages and vectors to the pages bucket and takes withdrawn ones down |
 | `feeder/` | `feeder.sample` exports the URL dataset the miner sandbox serves |
 | `tools/verify_round.py` | checks a closed round against its commitment and signed log |
 
 The miner and validator are in [`neurons/`](../neurons/), and the code they share with the API
-(text extraction, the signed client, the payment rules) is in [`desearch/`](../desearch/).
+(text extraction, the signed client, the payment rules) is in [`desearch/`](../desearch/). The publisher,
+which writes passed pages and vectors to the pages bucket and takes withdrawn ones down, is in
+[`publisher/`](../publisher/).
 
 ## How it works
 
@@ -154,18 +155,18 @@ validator (`EMISSION_CONTROL_PERC`, `CRAWL_PERC` and `EMBED_PERC` in
 
 ## Embed tasks
 
-Embed tasks are off (`TASK_API_EMBED_TASKS=0`) until Desearch's embedding model ships. When on, the
-publisher cuts each batch of new or changed pages into texts (a head, the full text and each
-passage), and the API opens one embed task per 500 pages. The miner returns one vector per text. The
-validator checks every vector's shape and recomputes 20 of them with the same model; each must reach
-a cosine similarity of 0.99. A pass pays the characters embedded.
+Embed tasks are off (`TASK_API_EMBED_TASKS=0`) until Desearch's embedding model ships and the
+publisher writes their inputs; it refuses to start while they are on. Each embed task holds the
+texts of 500 new or changed pages (a head, the full text and each passage). The miner returns one
+vector per text. The validator checks every vector's shape and recomputes 20 of them with the same
+model; each must reach a cosine similarity of 0.99. A pass pays the characters embedded.
 
 The API records which version of each page every model has embedded, so an unchanged page is not
 embedded twice. The miner-facing description is [Embedding tasks](../docs/embedding-tasks.md).
 
 ## Run
 
-The API host runs the API, its Redis and the publisher:
+The API host runs the API and its Redis; the [publisher](../publisher/) runs on its own machine:
 
 ```bash
 cp deploy/.env.example .env   # R2 buckets and credentials, admin hotkeys, signing key
@@ -199,7 +200,6 @@ The [bot](../desearch-bot/README.md) fills the queue with the admin hotkey (`--t
 | `TASK_API_MAX_ATTEMPTS` | 3 | times a task is retried before it is dropped |
 | `TASK_API_CHECK_SHARE` | `SHARE` in [`app/sampling.py`](app/sampling.py) | share of an established hotkey's uploads drawn for a check; 1 checks every upload |
 | `TASK_API_QUEUE_TARGET` | 1200 | tasks the bot keeps queued and waiting for their round's reveal |
-| `PUBLISHER_INDEX` | `publisher-index.sqlite` | the publisher's version index; keep it on a volume |
 | `TASK_API_READS_PER_MINUTE` | 120 | `GET` requests one IP may make in a minute, outside the log endpoints |
 | `TASK_API_LOG_READS_PER_MINUTE` | 60 | log requests (tasks, votes, miners, validators, overview) one IP may make in a minute |
 | `TASK_API_FAILED_WRITES_PER_MINUTE` | 30 | failed sign-ins after which one IP's writes are refused for the rest of the minute |
@@ -273,10 +273,10 @@ desearch-pages bucket, permanent
 A page's key comes from its URL alone; it is how the index and the change files name a page:
 
 ```python
-from app.canonical import canonicalize
-from publisher.records import page_key
+from app.canonical import canonicalize, domain_of, url_sha1
 
-key = page_key(canonicalize(url))   # pages/<domain>/<sha1>
+url = canonicalize(assigned_url)
+key = f"pages/{domain_of(url)}/{url_sha1(url)}"
 ```
 
 ## Tests

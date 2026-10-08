@@ -9,4 +9,3 @@ bittensor==11.1.0
 trafilatura==2.1.0
 lxml==6.1.1
 lxml_html_clean==0.4.5
-zstandard==0.25.0

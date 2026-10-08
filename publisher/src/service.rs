@@ -49,7 +49,7 @@ pub struct Settings {
 impl Settings {
     pub fn from_env() -> Result<Self> {
         if text("TASK_API_EMBED_TASKS", "0") == "1" {
-            bail!("TASK_API_EMBED_TASKS=1: this publisher does not write embed inputs; run the Python publisher for embedding");
+            bail!("TASK_API_EMBED_TASKS=1: the publisher does not write embed inputs");
         }
         let batch = number("PUBLISHER_BATCH", 40)?;
         Ok(Settings {

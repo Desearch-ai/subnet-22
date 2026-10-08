@@ -5,9 +5,6 @@ import time
 
 import pyarrow.parquet as pq
 from app import lifecycle, outcomes, sampling
-from app.canonical import canonicalize
-from publisher.records import page_key
-from publisher.worker import CHANGES, Publisher
 
 from tests.test_api_flow import Harness, _score
 from tests.test_trust import judged
@@ -244,87 +241,6 @@ def test_a_task_dropped_after_its_last_attempt_reaches_the_outcome_feed(
     assert latest == {"seq": 1}
     assert sorted(row["url"] for row in rows) == sorted(task["urls"])
     assert {row["outcome"] for row in rows} == {outcomes.DROPPED}
-
-
-def test_a_withdrawal_takes_the_pages_down_and_tells_the_bot(api_env, memory):
-    async def scenario(h):
-        await established(h, h.miner.hotkey)
-        task = await h.mine()
-        await settled(h, task["task_id"])
-        publisher = Publisher(h.core.publish, h.core.storage, h.core.pages, workers=2)
-        key = page_key(canonicalize(task["urls"][0]))
-        try:
-            await publisher.run_once()
-            before = publisher.index.current(key)
-            await lifecycle.take_back(h.core, h.miner.hotkey, 0, "test")
-            await publisher.run_once()
-            after = publisher.index.current(key)
-        finally:
-            publisher.close()
-        removed = await h.pages_json(CHANGES.seq_key(await latest_change(h)))
-        changed = pq.read_table(
-            io.BytesIO(await h.pages_bytes(removed["key"]))
-        ).to_pylist()
-        assert {(row["key"], row["kind"]) for row in changed} >= {(key, "removed")}
-        last = int(await h.redis.get(outcomes.SEQ))
-        index = json.loads(
-            h.core.storage.client.get_object(
-                Bucket=h.core.storage.bucket,
-                Key=h.core.storage.path(outcomes.seq_key(last)),
-            )["Body"].read()
-        )
-        body = h.core.storage.client.get_object(
-            Bucket=h.core.storage.bucket, Key=h.core.storage.path(index["key"])
-        )["Body"].read()
-        return key, before, after, pq.read_table(io.BytesIO(body)).to_pylist(), task
-
-    _, before, after, rows, task = run(memory, scenario)
-    assert before is not None and after is None
-    assert {row["outcome"] for row in rows} == {outcomes.DROPPED}
-    assert sorted(row["url"] for row in rows) == sorted(task["urls"])
-
-
-async def latest_change(h) -> int:
-    return (await h.pages_json(CHANGES.latest_key))["seq"]
-
-
-def test_an_unreadable_upload_is_not_published_and_its_urls_go_back(api_env, memory):
-    async def scenario(h):
-        await established(h, h.miner.hotkey)
-        task = (await h.miner.post("/v1/tasks/claim"))["tasks"][0]
-        from tests.test_api_flow import _upload
-
-        await _upload(h, task["upload"], b"PAR1" + b"\0" * 64 + b"PAR1")
-        await h.miner.post(
-            f"/v1/tasks/{task['task_id']}/complete",
-            {"key": task["upload"]["key"], "rows": 3, "ok": 3, "errors": 0},
-        )
-        await settled(h, task["task_id"])
-        publisher = Publisher(h.core.publish, h.core.storage, h.core.pages, workers=2)
-        try:
-            done = await publisher.run_once()
-        finally:
-            publisher.close()
-        index = json.loads(
-            h.core.storage.client.get_object(
-                Bucket=h.core.storage.bucket,
-                Key=h.core.storage.path(outcomes.seq_key(1)),
-            )["Body"].read()
-        )
-        body = h.core.storage.client.get_object(
-            Bucket=h.core.storage.bucket, Key=h.core.storage.path(index["key"])
-        )["Body"].read()
-        return (
-            done,
-            await h.core.publish.lost_count(),
-            task,
-            pq.read_table(io.BytesIO(body)).to_pylist(),
-        )
-
-    done, lost, task, rows = run(memory, scenario)
-    assert done == 1 and lost == 1
-    assert {row["outcome"] for row in rows} == {outcomes.FAILED}
-    assert sorted(row["url"] for row in rows) == sorted(task["urls"])
 
 
 def test_every_completed_upload_is_logged_signed_for_validators(api_env, memory):

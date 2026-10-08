@@ -1,4 +1,4 @@
-"""`publisher serve` end to end against S3-compatible storage and Redis, fed and checked with the task API's own code: e2e.py BINARY SAMPLE_DIR WORK_DIR [PYTHON_JSON]."""
+"""`publisher serve` end to end against S3-compatible storage and Redis, fed and checked with the task API's own code: e2e.py BINARY SAMPLE_DIR WORK_DIR."""
 
 from __future__ import annotations
 
@@ -146,7 +146,6 @@ def main() -> None:
     latest = json_object(client, PAGES, "changes/latest.json")["seq"]
     changes = feed(client, PAGES, "", "changes", 1, latest)
     outcomes = feed(client, TEMP, PREFIX, "outcomes", 1, int(db.get("outcomes:seq")))
-    reference = json.loads(Path(sys.argv[4]).read_text()) if len(sys.argv) > 4 else None
     summary = {
         "first_run_s": round(first_s, 1),
         "change_files": latest,
@@ -157,13 +156,6 @@ def main() -> None:
             for k in ("published", "unchanged", "failed", "dropped")
         },
     }
-    if reference:
-        batch = reference["batches"][0]
-        published = {c["key"]: c for c in changes}
-        summary["keys_match_python"] = set(published) == {c["key"] for c in batch["changes"]} | {u["key"] for u in batch["unchanged"]}
-        fields = ("url", "domain", "doc_id", "title", "text", "fetched_at", "content_sha1", "assigned_url", "headings", "task_id")
-        summary["rows_match_python"] = sum(all(published[c["key"]][f] == c[f] for f in fields) for c in batch["changes"])
-        summary["rows_compared"] = len(batch["changes"])
     snapshot = f"index/snapshots/{datetime.now(timezone.utc):%Y-%m-%d}.parquet"
     for _ in range(100):
         if client.list_objects_v2(Bucket=PAGES, Prefix=snapshot).get("KeyCount"):

@@ -43,7 +43,7 @@ fn pages(reads: Vec<worker::Read>) -> Vec<Page> {
     reads.into_iter().flatten().filter_map(Result::ok).flat_map(|(pages, _)| pages).collect()
 }
 
-/// The Python harness's seed: half the sample's pages already indexed, a tenth of them at another version.
+/// Half the sample's pages already indexed, a tenth of them at another version.
 fn seed(pages: &[Page]) -> Vec<(String, Current)> {
     let mut seen = std::collections::HashSet::new();
     let mut seed = Vec::new();

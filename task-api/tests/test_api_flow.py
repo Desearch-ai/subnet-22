@@ -128,17 +128,6 @@ class Harness:
         assert response.status == 200, response.text
         return response.json()
 
-    async def pages_bytes(self, key: str) -> bytes:
-        found = await asyncio.to_thread(
-            self.core.pages.client.get_object,
-            Bucket=self.core.pages.bucket,
-            Key=self.core.pages.path(key),
-        )
-        return found["Body"].read()
-
-    async def pages_json(self, key: str) -> dict:
-        return json.loads(await self.pages_bytes(key))
-
     async def size(self, key: str) -> int | None:
         found = await self.core.storage.stat(key)
         return found[0] if found else None
@@ -381,34 +370,6 @@ async def _scenario(h: Harness) -> None:
     assert await h.size(job["key"]) == len(parquet)
     assert await h.core.publish.depth() == 1
 
-    from app.canonical import canonicalize
-    from publisher.records import page_key
-    from publisher.worker import CHANGES, Publisher
-
-    publisher = Publisher(h.core.publish, h.core.storage, h.core.pages, workers=4)
-    try:
-        assert await publisher.run_once() == 1
-    finally:
-        publisher.close()
-    assert await h.size(job["key"]) is None
-    assert await h.core.publish.depth() == 0
-    seq = (await h.pages_json(CHANGES.latest_key))["seq"]
-    numbered = await h.pages_json(CHANGES.seq_key(seq))
-    changed = pq.read_table(
-        io.BytesIO(await h.pages_bytes(numbered["key"]))
-    ).to_pylist()
-    assert numbered["rows"] == len(changed) == len(task["urls"])
-    for url in task["urls"]:
-        key = page_key(canonicalize(url))
-        current = publisher.index.current(key)
-        record = changed[current.change_row]
-        assert current.change_seq == seq
-        assert (record["key"], record["assigned_url"]) == (key, url)
-        assert record["validator"] == h.validator.hotkey
-    listed = h.core.pages.client.list_objects_v2(
-        Bucket=h.core.pages.bucket, Prefix=h.core.pages.path("pages/")
-    )
-    assert not listed.get("Contents"), "pages live in the change files only"
     assert (await h.report(summary["report_key"]))["verdict"] == "pass"
 
     second = (await h.miner.post("/v1/tasks/claim"))["tasks"][0]
