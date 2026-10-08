@@ -3,7 +3,7 @@
 use std::time::Duration;
 
 use futures::stream;
-use serde_json::json;
+use serde_json::{json, Value};
 use task_api::lifecycle;
 use task_api::settings::RegistryMode;
 use task_api::state::State;
@@ -90,6 +90,13 @@ async fn a_verdict_and_an_enqueue_may_be_larger_than_a_claim() {
     assert_eq!(body_limit("/v1/admin/enqueue"), 16_000_000);
     assert_eq!(body_limit("/v1/tasks/claim"), 64_000);
     assert_eq!(body_limit("/v1/tasks/t1/complete"), 64_000);
+
+    let h = Harness::start().await;
+    let long: Vec<Value> =
+        (0..10_000).map(|i| json!({"host": format!("site{i}.example"), "url": format!("https://site{i}.example/{}/{i}", "a".repeat(280))})).collect();
+    assert!(json!({"urls": long}).to_string().len() > 3_000_000);
+    h.enqueue(long).await;
+    assert!(h.revealed().await > 0, "a batch over 2 MB is taken whole");
 }
 
 #[tokio::test]

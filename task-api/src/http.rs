@@ -5,7 +5,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use axum::body::{to_bytes, Body};
-use axum::extract::{ConnectInfo, Request, State as Shared};
+use axum::extract::{ConnectInfo, DefaultBodyLimit, Request, State as Shared};
 use axum::http::header::{CONNECTION, CONTENT_LENGTH, RETRY_AFTER};
 use axum::http::{HeaderName, HeaderValue, Method, StatusCode};
 use axum::middleware::{self, Next};
@@ -233,6 +233,8 @@ pub fn router(state: Arc<State>) -> Router {
         .layer(middleware::from_fn_with_state(state.clone(), limit_requests))
         .layer(cors(&state.settings.cors_origins))
         .layer(middleware::from_fn(limit_body))
+        // `limit_body` sets each path's limit; axum's own 2 MB default would cut enqueues and verdicts short.
+        .layer(DefaultBodyLimit::disable())
         .with_state(state)
 }
 
