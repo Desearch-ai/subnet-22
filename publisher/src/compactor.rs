@@ -386,7 +386,6 @@ fn never_written(store: &dyn Store, seq: i64, latest: i64, wait_s: f64, now: f64
     Ok(false)
 }
 
-/// One pass: the change log read up to `files_per_cycle` files past the shard furthest behind, then merges and cleanup.
 /// Writes this cycle's deltas and merged bases and notes them in `manifests`, which are not saved yet; returns how many of each.
 fn write_files(
     store: &dyn Store,
@@ -452,6 +451,7 @@ fn write_files(
     Ok((wrote_deltas, due.len()))
 }
 
+/// One pass: the change log read up to `files_per_cycle` files past the shard furthest behind, then merges and cleanup.
 pub fn cycle(store: &dyn Store, settings: &Settings, now: f64) -> Result<Report> {
     let prefix = settings.prefix.as_str();
     let mut manifests = load_manifests(store, prefix, settings.threads)?;
