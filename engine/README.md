@@ -2,6 +2,9 @@
 
 The search index and API built from the pages and vectors the subnet verifies.
 
+This is the older Python code. It is due to be rewritten in Rust, like the
+[publisher](../publisher/) and the [task API](../task-api/).
+
 ## How search works
 
 Every page is indexed three ways, cut by [`chunking.py`](./chunking.py): its head (title and opening
