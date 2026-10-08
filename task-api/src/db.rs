@@ -17,9 +17,12 @@ pub const FILE: &str = "task_api.db";
 
 type Job = Box<dyn FnOnce(&mut Connection) + Send>;
 
+const BUSY: Duration = Duration::from_secs(5);
+const STARTUP_BUSY: Duration = Duration::from_secs(60);
+
 fn connect(path: &Path) -> Result<Connection> {
     let conn = Connection::open(path)?;
-    conn.busy_timeout(Duration::from_secs(5))?;
+    conn.busy_timeout(BUSY)?;
     conn.pragma_update(None, "journal_mode", "WAL")?;
     // Receipts are promises to miners, so every commit is synced in full.
     conn.pragma_update(None, "synchronous", "FULL")?;
@@ -44,6 +47,8 @@ pub struct Db {
 impl Db {
     pub fn open(path: &Path) -> Result<Db> {
         let conn = connect(path)?;
+        // During a rolling deploy the running copy holds the write lock often; starting waits its turn instead of failing.
+        conn.busy_timeout(STARTUP_BUSY)?;
         budgets::create(&conn)?;
         roundlog::create(&conn)?;
         roundstore::create(&conn)?;
@@ -51,6 +56,7 @@ impl Db {
         checks::create(&conn)?;
         embeddings::create(&conn)?;
         registry::create(&conn)?;
+        conn.busy_timeout(BUSY)?;
         Ok(Db { jobs: spawn("sqlite", conn)? })
     }
 

@@ -37,6 +37,8 @@ const LEASE_EVERY: Duration = Duration::from_secs(1);
 const SEAL_EVERY: Duration = Duration::from_secs(5);
 const UPLOAD_LOG_EVERY: Duration = Duration::from_secs(30);
 const BEST_BLOCK_EVERY: Duration = Duration::from_secs(30);
+/// The open list carries every open upload's URLs, so it is rewritten at most this often.
+const OPEN_LIST_EVERY: Duration = Duration::from_secs(5);
 /// A verdict drops its publish job a day after it was finalized.
 const PUBLISH_COPY_KEEP_S: f64 = 86_400.0;
 const SEAL_ROUNDS: i64 = 4;
@@ -61,6 +63,7 @@ struct Due {
     sealed_at: Option<Instant>,
     logged_at: Option<Instant>,
     kept_block_at: Option<Instant>,
+    listed_at: Option<Instant>,
     pruned_hour: Option<i64>,
 }
 
@@ -83,7 +86,10 @@ impl Duty {
             Duty::Finalize => lifecycle::finalize_due(state, now()).await.map(drop),
             Duty::Publish => {
                 note_publish_rate(state).await?;
-                lifecycle::publish_open(state, now()).await?;
+                if elapsed(due.listed_at, OPEN_LIST_EVERY) {
+                    due.listed_at = Some(Instant::now());
+                    lifecycle::publish_open(state, now()).await?;
+                }
                 lifecycle::return_expired_publishes(state).await.map(drop)
             }
             Duty::Rounds => {

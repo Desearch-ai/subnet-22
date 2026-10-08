@@ -522,11 +522,7 @@ pub async fn settle_seeded(state: &Arc<State>) -> Result<usize> {
         .buffer_unordered(SETTLE_AT_ONCE)
         .collect()
         .await;
-    let settled = settled.into_iter().sum();
-    if settled > 0 {
-        publish_open(state, now()).await?;
-    }
-    Ok(settled)
+    Ok(settled.into_iter().sum())
 }
 
 async fn settle_one(state: &State, task_id: &str, job: &Value, seed: &str) -> Result<()> {

@@ -18,7 +18,7 @@ const BLOCK_SECONDS: f64 = 12.0;
 const BLOCK_REFRESH: Duration = Duration::from_secs(30);
 /// After a failed call every call waits this long, doubling up to `PAUSE_MAX`, so an unwell endpoint is not hammered.
 const PAUSE_FIRST: Duration = Duration::from_secs(5);
-const PAUSE_MAX: Duration = Duration::from_secs(120);
+const PAUSE_MAX: Duration = Duration::from_secs(30);
 const RPC_TIMEOUT: Duration = Duration::from_secs(8);
 const HASHES_KEPT: usize = 4096;
 const METADATA_VERSION: u32 = 15;
