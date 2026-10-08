@@ -27,10 +27,11 @@ struct Cli {
 enum Command {
     /// Publish from the task API's queue in Redis to R2, configured from the environment, until SIGTERM.
     Serve,
-    /// Take down pages whose URL kept a sitemap's XML escapes; counts them unless `--apply`. Run it with `serve` stopped.
+    /// Take down pages whose URL kept a sitemap's XML escapes; counts them unless given `--backup`. Run it with `serve` stopped.
     RemoveEscaped {
+        /// Remove, after saving every removed index entry to this new file as JSON lines.
         #[arg(long)]
-        apply: bool,
+        backup: Option<PathBuf>,
     },
     /// Publish a JSON list of jobs whose uploads are `<task_id>.parquet` files in a folder.
     Local(LocalArgs),
@@ -72,7 +73,9 @@ fn main() -> Result<()> {
             runtime.shutdown_timeout(Duration::from_secs(5));
             served
         }
-        Command::RemoveEscaped { apply } => tokio::runtime::Builder::new_multi_thread().enable_all().build()?.block_on(service::remove_escaped_from_env(apply)),
+        Command::RemoveEscaped { backup } => {
+            tokio::runtime::Builder::new_multi_thread().enable_all().build()?.block_on(service::remove_escaped_from_env(backup))
+        }
         Command::Local(args) => local(args),
         Command::StubR2 { root, listen } => {
             let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;

@@ -299,9 +299,13 @@ async fn pages_kept_with_sitemap_escapes_are_taken_down() {
     publish_until_idle(&shared).await;
     assert_eq!(shared.index.pages().unwrap().len(), 3);
 
-    assert_eq!(service::remove_escaped(&shared, false).await.unwrap(), 2);
+    assert_eq!(service::remove_escaped(&shared, None).await.unwrap(), 2);
     assert_eq!(shared.index.pages().unwrap().len(), 3, "counting changes nothing");
-    assert_eq!(service::remove_escaped(&shared, true).await.unwrap(), 2);
+    let backup = dir.join("escaped.jsonl");
+    assert_eq!(service::remove_escaped(&shared, Some(&backup)).await.unwrap(), 2);
+    let saved: Vec<Value> = std::fs::read_to_string(&backup).unwrap().lines().map(|line| serde_json::from_str(line).unwrap()).collect();
+    assert_eq!(saved.len(), 2);
+    assert!(saved.iter().all(|entry| entry["change_seq"].as_i64().is_some() && entry["version"].as_str().is_some_and(|v| !v.is_empty())));
     let kept: Vec<String> = shared.index.pages().unwrap().into_iter().map(|(_, current)| current.url).collect();
     assert_eq!(kept, ["https://ex.com/story"]);
     let latest = json_object(&state, PAGES, "changes/latest.json").unwrap()["seq"].as_u64().unwrap();
@@ -311,6 +315,6 @@ async fn pages_kept_with_sitemap_escapes_are_taken_down() {
     let mut taken = column(&removed, "url");
     taken.sort();
     assert_eq!(taken, ["https://ex.com/Q&amp;A", "https://ex.com/shop?amp%3Bp=2669&post_type=product"]);
-    assert_eq!(service::remove_escaped(&shared, true).await.unwrap(), 0);
+    assert_eq!(service::remove_escaped(&shared, Some(&dir.join("again.jsonl"))).await.unwrap(), 0);
     let _ = std::fs::remove_dir_all(&dir);
 }

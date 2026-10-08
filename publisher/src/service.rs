@@ -1,7 +1,8 @@
 //! The publisher as a service: claim batches from the task API's queue, read the next ones while one is written, then report and acknowledge.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock};
@@ -481,18 +482,18 @@ pub fn escaped(url: &str) -> bool {
 }
 
 /// `remove_escaped` with the storage, Redis and index `serve` uses.
-pub async fn remove_escaped_from_env(apply: bool) -> Result<()> {
+pub async fn remove_escaped_from_env(backup: Option<PathBuf>) -> Result<()> {
     let settings = Settings::from_env()?;
     let metrics = Arc::new(Metrics::default());
     let (temp, pages) = buckets_from_env(metrics.r2_errors.clone())?;
     pages.check().await?;
     let shared = Shared::connect(settings, temp, pages, metrics).await?;
-    remove_escaped(&shared, apply).await?;
+    remove_escaped(&shared, backup.as_deref()).await?;
     Ok(())
 }
 
-/// Takes down every page whose URL still carries a sitemap's XML escapes, in change files of `removed` rows; without `apply` it only counts them.
-pub async fn remove_escaped(shared: &Shared, apply: bool) -> Result<usize> {
+/// Takes down every page whose URL still carries a sitemap's XML escapes, in change files of `removed` rows, each index entry saved to `backup` first as a JSON line; without a backup it only counts them.
+pub async fn remove_escaped(shared: &Shared, backup: Option<&Path>) -> Result<usize> {
     let index = shared.index.clone();
     let found: Vec<(String, Current)> = tokio::task::spawn_blocking(move || {
         let mut found = Vec::new();
@@ -509,15 +510,26 @@ pub async fn remove_escaped(shared: &Shared, apply: bool) -> Result<usize> {
     for (key, current) in found.iter().take(5) {
         println!("  {key} {}", current.url);
     }
-    if !apply || found.is_empty() {
+    let Some(backup) = backup.filter(|_| !found.is_empty()) else {
         return Ok(found.len());
-    }
+    };
+    let file = std::fs::OpenOptions::new().write(true).create_new(true).open(backup).with_context(|| format!("creating {}", backup.display()))?;
+    let mut saved = std::io::BufWriter::new(file);
     let count = found.len();
     let now = now_us();
     let feed = R2Changes { pages: shared.pages.clone(), redis: shared.redis().clone(), handle: shared.handle.clone(), day: day(now) };
     let index = shared.index.clone();
     tokio::task::spawn_blocking(move || {
         for chunk in found.chunks(REMOVED_PER_FILE) {
+            for (key, current) in chunk {
+                let entry = serde_json::json!({
+                    "key": key, "url": current.url, "version": current.version, "fetched_at": current.fetched_at, "task_id": current.task_id,
+                    "content_sha1": current.content_sha1, "change_seq": current.change_seq, "change_row": current.change_row,
+                });
+                writeln!(saved, "{entry}")?;
+            }
+            saved.flush()?;
+            saved.get_ref().sync_data()?;
             let removed: Vec<Change> = chunk
                 .iter()
                 .map(|(key, current)| Change {
