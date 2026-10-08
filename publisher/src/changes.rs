@@ -1,4 +1,4 @@
-//! Change files: every new, changed or removed page of a batch with its full record, in `CHANGE_SCHEMA`.
+//! Change files: every new, changed or removed page of a batch with its full record, and every task taken back, in `CHANGE_SCHEMA`.
 
 use std::sync::{Arc, LazyLock};
 
@@ -58,6 +58,7 @@ pub enum Kind {
     New,
     Changed,
     Removed,
+    TaskWithdrawn,
 }
 
 impl Kind {
@@ -66,6 +67,7 @@ impl Kind {
             Kind::New => "new",
             Kind::Changed => "changed",
             Kind::Removed => "removed",
+            Kind::TaskWithdrawn => "task_withdrawn",
         }
     }
 }
@@ -81,6 +83,10 @@ pub enum Body {
         url: String,
         domain: String,
     },
+    /// A task taken back: readers drop every page row it published, earlier or later.
+    TaskWithdrawn {
+        task_id: String,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -93,18 +99,34 @@ pub struct Change {
 }
 
 impl Change {
-    pub fn record(&self) -> Option<&Record> {
-        match &self.body {
-            Body::Page { record, .. } => Some(record),
-            Body::Removed { .. } => None,
+    /// The row for a withdrawn task: only its kind, time and task id are set.
+    pub fn task_withdrawn(task_id: &str, published_at: &str) -> Self {
+        Change {
+            key: String::new(),
+            kind: Kind::TaskWithdrawn,
+            previous_content_sha1: String::new(),
+            published_at: published_at.to_string(),
+            body: Body::TaskWithdrawn { task_id: task_id.to_string() },
         }
     }
 
-    pub fn url(&self) -> &str {
+    pub fn record(&self) -> Option<&Record> {
         match &self.body {
-            Body::Page { record, .. } => &record.url,
-            Body::Removed { url, .. } => url,
+            Body::Page { record, .. } => Some(record),
+            Body::Removed { .. } | Body::TaskWithdrawn { .. } => None,
         }
+    }
+
+    pub fn url(&self) -> Option<&str> {
+        match &self.body {
+            Body::Page { record, .. } => Some(&record.url),
+            Body::Removed { url, .. } => Some(url),
+            Body::TaskWithdrawn { .. } => None,
+        }
+    }
+
+    fn of_page(&self) -> bool {
+        !matches!(self.body, Body::TaskWithdrawn { .. })
     }
 }
 
@@ -157,14 +179,15 @@ fn columns(changes: &[Change]) -> Vec<ArrayRef> {
         status.append_option(change.record().and_then(|r| r.status));
     }
     vec![
-        text(|c| Some(&c.key)),
+        text(|c| c.of_page().then_some(c.key.as_str())),
         text(|c| Some(c.kind.as_str())),
-        text(|c| Some(&c.previous_content_sha1)),
+        text(|c| c.of_page().then_some(c.previous_content_sha1.as_str())),
         text(|c| Some(&c.published_at)),
-        text(|c| Some(c.url())),
+        text(Change::url),
         text(|c| match &c.body {
             Body::Page { record, .. } => Some(&record.domain),
             Body::Removed { domain, .. } => Some(domain),
+            Body::TaskWithdrawn { .. } => None,
         }),
         field(|r| Some(&r.doc_id)),
         field(|r| Some(&r.title)),
@@ -179,6 +202,7 @@ fn columns(changes: &[Change]) -> Vec<ArrayRef> {
         text(|c| match &c.body {
             Body::Page { record, .. } => Some(&record.assigned_url),
             Body::Removed { url, .. } => Some(url),
+            Body::TaskWithdrawn { .. } => None,
         }),
         field(|r| r.final_url.as_deref()),
         field(|r| r.canonical.as_deref()),
@@ -188,7 +212,11 @@ fn columns(changes: &[Change]) -> Vec<ArrayRef> {
         list(|r| r.json_ld_types.iter().map(Option::as_deref).collect()),
         list(|r| r.headings.iter().map(Option::as_deref).collect()),
         field(|r| r.text_sha256.as_deref()),
-        field(|r| Some(&r.task_id)),
+        text(|c| match &c.body {
+            Body::Page { record, .. } => Some(&record.task_id),
+            Body::Removed { .. } => None,
+            Body::TaskWithdrawn { task_id } => Some(task_id),
+        }),
         field(|r| Some(&r.miner)),
         field(|r| r.validator.as_deref()),
         list(|r| r.validators.iter().map(|v| Some(v.as_str())).collect()),

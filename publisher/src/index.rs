@@ -1,6 +1,6 @@
 //! The publisher's own record of every page's latest version and of the tasks taken back, in RocksDB.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
@@ -189,51 +189,43 @@ impl VersionIndex {
         Ok(self.db.write(batch)?)
     }
 
-    /// Pages whose current version came from these tasks, read a task per reader at once.
-    pub fn of_tasks(&self, task_ids: &[String]) -> Result<Vec<Withdrawn>> {
-        let next = AtomicUsize::new(0);
-        let mut found: Vec<(usize, Vec<Withdrawn>)> = std::thread::scope(|scope| {
-            let workers: Vec<_> = (0..self.readers.min(task_ids.len()).max(1))
-                .map(|_| {
-                    scope.spawn(|| {
-                        let mut done = Vec::new();
-                        loop {
-                            let i = next.fetch_add(1, Ordering::Relaxed);
-                            let Some(task_id) = task_ids.get(i) else {
-                                return Ok(done);
-                            };
-                            done.push((i, self.of_task(task_id)?));
-                        }
-                    })
-                })
-                .collect();
-            workers.into_iter().map(|w| w.join().expect("index reader panicked")).collect::<Result<Vec<_>>>()
-        })?
-        .into_iter()
-        .flatten()
-        .collect();
-        found.sort_by_key(|(i, _)| *i);
-        Ok(found.into_iter().flat_map(|(_, pages)| pages).collect())
-    }
-
-    fn of_task(&self, task_id: &str) -> Result<Vec<Withdrawn>> {
+    /// Takes up to `limit` of a withdrawn task's pages listed after `after` out of the index, handing the ones still current to `removed` first; returns the last key taken while more may follow.
+    pub fn drain(&self, task_id: &str, after: Option<&str>, limit: usize, removed: impl FnOnce(&[Withdrawn]) -> Result<()>) -> Result<Option<String>> {
+        let limit = limit.max(1);
         let prefix = task_key(task_id, "")?;
-        let mut keys = Vec::new();
-        for item in self.db.iterator_cf(self.family(TASKS), IteratorMode::From(&prefix, Direction::Forward)) {
+        let start = task_key(task_id, after.unwrap_or_default())?;
+        let mut keys = Vec::with_capacity(limit.min(READ_CHUNK));
+        for item in self.db.iterator_cf(self.family(TASKS), IteratorMode::From(&start, Direction::Forward)) {
             let (entry, _) = item?;
             let Some(key) = entry.strip_prefix(prefix.as_slice()) else {
                 break;
             };
+            if keys.len() == limit {
+                break;
+            }
             keys.push(String::from_utf8(key.to_vec()).context("a page key that is not UTF-8")?);
         }
+        if keys.is_empty() {
+            return Ok(None);
+        }
         let keys: Vec<&str> = keys.iter().map(String::as_str).collect();
-        let mut found = Vec::new();
+        let mut pages = Vec::new();
         for (key, current) in keys.iter().zip(self.currents(&keys)?) {
             if let Some(current) = current.filter(|c| c.task_id == task_id) {
-                found.push(Withdrawn { key: key.to_string(), url: current.url, version: current.version, content_sha1: current.content_sha1 });
+                pages.push(Withdrawn { key: key.to_string(), url: current.url, version: current.version, content_sha1: current.content_sha1 });
             }
         }
-        Ok(found)
+        removed(&pages)?;
+        let _writing = self.writing.lock().unwrap();
+        let mut batch = WriteBatch::default();
+        for (key, current) in keys.iter().zip(self.currents(&keys)?) {
+            batch.delete_cf(self.family(TASKS), task_key(task_id, key)?);
+            if current.is_some_and(|c| c.task_id == task_id) {
+                batch.delete_cf(self.family(PAGES), key);
+            }
+        }
+        self.db.write(batch)?;
+        Ok((keys.len() == limit).then(|| keys[limit - 1].to_string()))
     }
 
     /// Remembered, so a withdrawn task's pages are never published even if its job comes later.
@@ -241,19 +233,10 @@ impl VersionIndex {
         let _writing = self.writing.lock().unwrap();
         let family = self.family(WITHDRAWN);
         let mut batch = WriteBatch::default();
-        let mut added = std::collections::HashSet::new();
+        let mut added = HashSet::new();
         for task_id in task_ids {
             if self.db.get_pinned_cf(family, task_id)?.is_none() && added.insert(task_id) {
                 batch.put_cf(family, task_id, now.to_le_bytes());
-            }
-        }
-        self.db.write(batch)?;
-        let mut batch = WriteBatch::default();
-        for item in self.db.iterator_cf(family, IteratorMode::Start) {
-            let (task_id, at) = item?;
-            let at = f64::from_le_bytes(at.as_ref().try_into().context("a withdrawal time that is not 8 bytes")?);
-            if at < now - WITHDRAWN_KEEP_S {
-                batch.delete_cf(family, task_id);
             }
         }
         Ok(self.db.write(batch)?)
@@ -261,6 +244,30 @@ impl VersionIndex {
 
     pub fn is_withdrawn(&self, task_id: &str) -> Result<bool> {
         Ok(self.db.get_pinned_cf(self.family(WITHDRAWN), task_id)?.is_some())
+    }
+
+    /// Which of these tasks are withdrawn.
+    pub fn withdrawn_among(&self, task_ids: &[&str]) -> Result<HashSet<String>> {
+        let mut task_ids = task_ids.to_vec();
+        task_ids.sort_unstable();
+        task_ids.dedup();
+        let values = self.db.batched_multi_get_cf(self.family(WITHDRAWN), task_ids.iter().map(|t| t.as_bytes()), true);
+        let mut found = HashSet::new();
+        for (task_id, value) in task_ids.iter().zip(values) {
+            if value?.is_some() {
+                found.insert(task_id.to_string());
+            }
+        }
+        Ok(found)
+    }
+
+    /// Stops refusing these tasks' jobs; only for tasks drained and withdrawn long ago.
+    pub fn forget_withdrawn(&self, task_ids: &[String]) -> Result<()> {
+        let mut batch = WriteBatch::default();
+        for task_id in task_ids {
+            batch.delete_cf(self.family(WITHDRAWN), task_id);
+        }
+        Ok(self.db.write(batch)?)
     }
 
     /// A withdrawal removes a page only while the withdrawn version is still current.

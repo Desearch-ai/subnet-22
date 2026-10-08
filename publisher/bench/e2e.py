@@ -168,7 +168,7 @@ def main() -> None:
     queue("withdraw", [taken], "e2e")
     assert serve(binary, work, PUBLISHER_IDLE_EXIT="1").wait(timeout=120) == 0
     latest_after = json_object(client, PAGES, "changes/latest.json")["seq"]
-    removed = feed(client, PAGES, "", "changes", latest + 1, latest_after)
+    withdrawn = feed(client, PAGES, "", "changes", latest + 1, latest_after)
     dropped = [
         o
         for o in feed(
@@ -181,8 +181,10 @@ def main() -> None:
         )
         if o["outcome"] == "dropped"
     ]
-    summary["withdrawn_removed_rows"] = len(removed)
-    summary["withdrawn_kinds"] = sorted({c["kind"] for c in removed})
+    assert [(c["kind"], c["task_id"], c["key"]) for c in withdrawn] == [
+        ("task_withdrawn", taken, None)
+    ], "one row for the withdrawn task, none per page"
+    summary["withdrawn_rows"] = len(withdrawn)
     summary["dropped_outcomes"] = len(dropped)
 
     again = [

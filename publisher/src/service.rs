@@ -1,6 +1,6 @@
 //! The publisher as a service: claim batches from the task API's queue, read the next ones while one is written, then report and acknowledge.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
@@ -17,20 +17,22 @@ use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
 use crate::changes::{self, Body, Change, Kind};
-use crate::index::{Current, VersionIndex};
-use crate::outcomes;
+use crate::index::{Current, VersionIndex, Withdrawn};
 use crate::queue::PublishQueue;
 use crate::reading::{RangeRead, Remote, Traffic};
 use crate::records::iso;
-use crate::snapshot;
-use crate::worker::{self, ChangeFeed, Fault, Job, Read, Uploads};
+use crate::worker::{self, ChangeFeed, Fault, Job, Read, Uploads, WITHDRAW};
+use crate::{outcomes, snapshot, withdrawals};
 use desearch::feeds::{CHANGES, OUTCOMES};
+use desearch::outcomes::Outcome;
 use desearch::r2::{self, Bucket, Credentials, PARQUET};
 
 const RETRY_DELAY: Duration = Duration::from_secs(5);
 const SUMMARY_EVERY: Duration = Duration::from_secs(60);
 const CHANGE_PART_BYTES: usize = 8 << 20;
 const CHANGE_PARTS_AT_ONCE: usize = 8;
+/// Withdrawn tasks are looked over this often even with none new, so old ones are forgotten.
+const DRAIN_EVERY: Duration = Duration::from_secs(600);
 
 pub struct Settings {
     pub redis_url: String,
@@ -118,6 +120,7 @@ pub struct Metrics {
     pub batches: AtomicU64,
     pub changed: AtomicU64,
     pub unchanged: AtomicU64,
+    pub withdrawn: AtomicU64,
     pub removed: AtomicU64,
     pub failed_urls: AtomicU64,
     pub lost: AtomicU64,
@@ -261,21 +264,21 @@ pub async fn write_batch(shared: &Shared, claimed: Claimed) -> Result<usize> {
         }
     });
     futures::future::join_all(finishing).await;
-    let published = batch.changes.len() - batch.removed.len();
+    let published = batch.changes.len() - batch.withdrawn.len();
     let m = &shared.metrics;
     m.batches.fetch_add(1, Ordering::Relaxed);
     m.tasks.fetch_add(batch.finalized.len() as u64, Ordering::Relaxed);
     m.changed.fetch_add(published as u64, Ordering::Relaxed);
     m.unchanged.fetch_add(batch.unchanged.len() as u64, Ordering::Relaxed);
-    m.removed.fetch_add(batch.removed.len() as u64, Ordering::Relaxed);
+    m.withdrawn.fetch_add(batch.withdrawn.len() as u64, Ordering::Relaxed);
     m.failed_urls.fetch_add(batch.failed.len() as u64, Ordering::Relaxed);
     m.lost.fetch_add(batch.lost.len() as u64, Ordering::Relaxed);
     m.retried.fetch_add(batch.retry.len() as u64, Ordering::Relaxed);
     println!(
-        "published {} tasks, {} pages new or changed, {} withdrawn in {:.1}s (read by {:.1}s, written by {:.1}s: decided {:.1}s, stored {:.1}s, indexed {:.1}s); {} unchanged, {} URLs failed, {} lost, {} left to retry, change file {}",
+        "published {} tasks, {} pages new or changed, {} tasks withdrawn in {:.1}s (read by {:.1}s, written by {:.1}s: decided {:.1}s, stored {:.1}s, indexed {:.1}s); {} unchanged, {} URLs failed, {} lost, {} left to retry, change file {}",
         batch.finalized.len(),
         published,
-        batch.removed.len(),
+        batch.withdrawn.len(),
         started.elapsed().as_secs_f64(),
         read_s,
         written_s,
@@ -293,21 +296,22 @@ pub async fn write_batch(shared: &Shared, claimed: Claimed) -> Result<usize> {
 
 /// What became of every URL, for the bot; a failure here is logged and the batch still finishes.
 async fn report_outcomes(shared: &Shared, batch: &worker::Batch, now: i64) {
-    let rows = outcomes::rows(&batch.changes, &batch.unchanged, &batch.failed, &batch.removed);
-    if rows.is_empty() {
-        return;
-    }
-    let written = async {
-        let count = rows.len();
-        let file = tokio::task::spawn_blocking(move || desearch::outcomes::encode(&rows, now)).await??;
-        let key = format!("outcomes/dt={}/{}.parquet", day(now), uuid::Uuid::new_v4().simple());
-        shared.temp.put(&key, Bytes::from(file), PARQUET, None).await?;
-        OUTCOMES.number(&shared.temp, shared.redis(), &key, count).await?;
-        anyhow::Ok(count)
-    };
-    if let Err(error) = written.await {
+    if let Err(error) = write_outcomes(shared, outcomes::rows(&batch.changes, &batch.unchanged, &batch.failed), now).await {
         eprintln!("could not write the batch's outcomes: {error:#}");
     }
+}
+
+/// One outcome file, numbered in the feed.
+async fn write_outcomes(shared: &Shared, rows: Vec<Outcome>, now: i64) -> Result<()> {
+    if rows.is_empty() {
+        return Ok(());
+    }
+    let count = rows.len();
+    let file = tokio::task::spawn_blocking(move || desearch::outcomes::encode(&rows, now)).await??;
+    let key = format!("outcomes/dt={}/{}.parquet", day(now), uuid::Uuid::new_v4().simple());
+    shared.temp.put(&key, Bytes::from(file), PARQUET, None).await?;
+    OUTCOMES.number(&shared.temp, shared.redis(), &key, count).await?;
+    Ok(())
 }
 
 #[derive(Default)]
@@ -339,11 +343,47 @@ impl Snapshots {
     }
 }
 
+/// Withdrawn tasks' pages taken out of the index in the background, one pass at a time, each chunk reported to the bot as dropped.
+#[derive(Default)]
+struct Draining {
+    drained: HashSet<String>,
+    running: Option<JoinHandle<HashSet<String>>>,
+    started: Option<Instant>,
+    wanted: bool,
+}
+
+impl Draining {
+    async fn poll(&mut self, shared: &Arc<Shared>, stop: &watch::Receiver<bool>, withdrew: bool) {
+        self.wanted |= withdrew;
+        if let Some(running) = self.running.take_if(|running| running.is_finished()) {
+            self.drained = running.await.unwrap_or_default();
+        }
+        if self.running.is_some() || !(self.wanted || self.started.is_none_or(|at| at.elapsed() >= DRAIN_EVERY)) {
+            return;
+        }
+        (self.wanted, self.started) = (false, Some(Instant::now()));
+        let (shared, stop, mut drained) = (shared.clone(), stop.clone(), std::mem::take(&mut self.drained));
+        self.running = Some(tokio::task::spawn_blocking(move || {
+            let mut report = |pages: &[Withdrawn]| shared.handle.block_on(write_outcomes(&shared, outcomes::dropped(pages), now_us()));
+            match withdrawals::drain(&shared.index, &mut drained, now_us() as f64 / 1e6, withdrawals::CHUNK, &|| *stop.borrow(), &mut report) {
+                Ok(0) => {}
+                Ok(pages) => {
+                    shared.metrics.removed.fetch_add(pages as u64, Ordering::Relaxed);
+                    println!("took {pages} pages of withdrawn tasks out of the index");
+                }
+                Err(error) => eprintln!("taking withdrawn tasks' pages out of the index failed: {error:#}"),
+            }
+            drained
+        }));
+    }
+}
+
 /// Publishes until `stop` turns true, then finishes the batches already claimed and claims no more; `idle_exit` passes in a row with nothing to do also stop it.
 pub async fn run(shared: Arc<Shared>, mut stop: watch::Receiver<bool>, idle_exit: u32) -> Result<()> {
     let mut idle = 0;
     let mut claimed: Vec<Claimed> = Vec::new();
     let mut snapshots = Snapshots::default();
+    let mut draining = Draining::default();
     loop {
         let finishing = *stop.borrow() || (idle_exit > 0 && idle >= idle_exit);
         while !finishing && claimed.len() <= shared.settings.ahead {
@@ -357,6 +397,7 @@ pub async fn run(shared: Arc<Shared>, mut stop: watch::Receiver<bool>, idle_exit
                 }
             }
         }
+        let mut withdrew = false;
         if claimed.is_empty() {
             if finishing {
                 break;
@@ -365,11 +406,13 @@ pub async fn run(shared: Arc<Shared>, mut stop: watch::Receiver<bool>, idle_exit
         } else {
             idle = 0;
             let current = claimed.remove(first_read(&claimed).await);
+            withdrew = current.jobs.iter().any(|job| job.is(WITHDRAW));
             if let Err(error) = write_batch(&shared, current).await {
                 eprintln!("publish pass failed: {error:#}");
                 pause(&mut stop, RETRY_DELAY).await;
             }
         }
+        draining.poll(&shared, &stop, withdrew).await;
         snapshots.daily(&shared);
         if let Err(error) = CHANGES.fill_holes(&shared.pages, shared.redis()).await {
             eprintln!("filling holes in the change feed failed: {error:#}");
@@ -377,6 +420,9 @@ pub async fn run(shared: Arc<Shared>, mut stop: watch::Receiver<bool>, idle_exit
         if idle > 0 && !finishing {
             pause(&mut stop, shared.settings.idle_delay).await;
         }
+    }
+    if let Some(running) = draining.running {
+        let _ = tokio::time::timeout(Duration::from_secs(10), running).await;
     }
     if let Some(running) = snapshots.running {
         if tokio::time::timeout(Duration::from_secs(3), running).await.is_err() {

@@ -1,4 +1,4 @@
-//! One publish batch: read the uploads, keep publishable pages, decide new, changed or unchanged, write the change file, then the index.
+//! One publish batch: read the uploads, keep publishable pages, decide new, changed or unchanged, write the change file with a row per task withdrawn, then the index.
 
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
@@ -11,7 +11,7 @@ use serde_json::Value;
 
 use crate::blocked::looks_blocked;
 use crate::changes::{self, Body, Change, Kind};
-use crate::index::{Current, VersionIndex, Withdrawn};
+use crate::index::{Current, VersionIndex};
 use crate::reading::{read_rows, RangeRead};
 use crate::records::{build_record, iso, publish_window, record_key, record_version, Context as RecordContext, Record, Row, SECOND};
 
@@ -198,13 +198,14 @@ impl Chosen {
     }
 }
 
-/// New and changed pages, and pages seen again unchanged, against the version index.
+/// New and changed pages, and pages seen again unchanged, against the version index; a version from a withdrawn task counts as none.
 pub fn decide(pages: Vec<Page>, index: &VersionIndex, published_at: &str) -> Result<(Vec<Change>, Vec<Page>)> {
     let keys: Vec<&str> = pages.iter().map(|page| page.key.as_str()).collect();
     let currents = index.current_many(&keys)?;
+    let withdrawn = index.withdrawn_among(&currents.values().map(|current| current.task_id.as_str()).collect::<Vec<_>>())?;
     let (mut changes, mut unchanged) = (Vec::new(), Vec::new());
     for page in pages {
-        let (kind, previous) = match currents.get(&page.key) {
+        let (kind, previous) = match currents.get(&page.key).filter(|current| !withdrawn.contains(&current.task_id)) {
             None => (Kind::New, String::new()),
             Some(current)
                 if current.version == page.version
@@ -229,12 +230,12 @@ pub fn decide(pages: Vec<Page>, index: &VersionIndex, published_at: &str) -> Res
 /// What one batch did, for the queue and the bot.
 #[derive(Debug, Default)]
 pub struct Batch {
-    /// New and changed pages, then pages taken back, as the change file holds them.
+    /// New and changed pages, then a row per task withdrawn, as the change file holds them.
     pub changes: Vec<Change>,
     pub unchanged: Vec<Page>,
     pub failed: Vec<Failed>,
-    /// Withdrawn pages taken out of the index.
-    pub removed: Vec<Withdrawn>,
+    /// Tasks taken back; their pages leave the index later, a chunk at a time.
+    pub withdrawn: Vec<String>,
     /// Tasks done with: acknowledged and their uploads deleted.
     pub finalized: Vec<String>,
     /// Tasks whose upload was gone before publishing.
@@ -257,11 +258,12 @@ pub fn publish(jobs: &[Job], uploads: &dyn Uploads, index: &VersionIndex, feed: 
 pub fn write(jobs: &[Job], reads: Vec<Read>, index: &VersionIndex, feed: &dyn ChangeFeed, now: i64) -> Result<Batch> {
     let started = Instant::now();
     let mut batch = Batch::default();
-    let withdrawn: Vec<String> = jobs.iter().filter(|job| job.is(WITHDRAW)).flat_map(|job| job.task_ids.iter().cloned()).collect();
+    let mut named = HashSet::new();
+    let withdrawn: Vec<String> =
+        jobs.iter().filter(|job| job.is(WITHDRAW)).flat_map(|job| job.task_ids.iter().cloned()).filter(|task_id| named.insert(task_id.clone())).collect();
     if !withdrawn.is_empty() {
         index.withdraw(&withdrawn, now as f64 / SECOND as f64)?;
     }
-    let mut removals = index.of_tasks(&withdrawn)?;
     let mut chosen = Chosen::default();
     for (job, read) in jobs.iter().zip(reads) {
         let Some(read) = read else {
@@ -295,17 +297,8 @@ pub fn write(jobs: &[Job], reads: Vec<Read>, index: &VersionIndex, feed: &dyn Ch
     let published_at = iso(now);
     let (mut changes, unchanged) = decide(chosen.into_pages(), index, &published_at)?;
     batch.steps[0] = started.elapsed().as_secs_f64();
-    // A withdrawn page that this batch replaces with a newer version is replaced, not removed.
-    let replaced: HashSet<&str> = changes.iter().map(|change| change.key.as_str()).collect();
-    removals.retain(|removal| !replaced.contains(removal.key.as_str()));
     let published = changes.len();
-    changes.extend(removals.iter().map(|removal| Change {
-        key: removal.key.clone(),
-        kind: Kind::Removed,
-        previous_content_sha1: removal.content_sha1.clone(),
-        published_at: published_at.clone(),
-        body: Body::Removed { url: removal.url.clone(), domain: desearch::canonical::domain_of(&removal.url).unwrap_or_default() },
-    }));
+    changes.extend(withdrawn.iter().map(|task_id| Change::task_withdrawn(task_id, &published_at)));
     // The change file is written before the index learns of it, so a crash only replays.
     if !changes.is_empty() {
         let file = changes::encode(&changes)?;
@@ -314,11 +307,10 @@ pub fn write(jobs: &[Job], reads: Vec<Read>, index: &VersionIndex, feed: &dyn Ch
         batch.change_seq = Some(seq);
         batch.steps[1] = started.elapsed().as_secs_f64();
         index.store(&indexed(&changes[..published], seq as i64))?;
-        index.remove(&removals.iter().map(|r| (r.key.clone(), r.version.clone())).collect::<Vec<_>>())?;
     }
     index.touch(&unchanged.iter().map(|page| (page.key.clone(), page.record.fetched_at.clone())).collect::<Vec<_>>())?;
     batch.steps[2] = started.elapsed().as_secs_f64();
-    batch.removed = removals;
+    batch.withdrawn = withdrawn;
     batch.changes = changes;
     batch.unchanged = unchanged;
     Ok(batch)
@@ -342,7 +334,7 @@ pub fn indexed(changes: &[Change], seq: i64) -> Vec<(String, Current)> {
                     change_row: Some(row as i64),
                 },
             )),
-            Body::Removed { .. } => None,
+            Body::Removed { .. } | Body::TaskWithdrawn { .. } => None,
         })
         .collect()
 }

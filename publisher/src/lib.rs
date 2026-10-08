@@ -10,4 +10,5 @@ pub mod reading;
 pub mod records;
 pub mod service;
 pub mod snapshot;
+pub mod withdrawals;
 pub mod worker;

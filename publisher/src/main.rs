@@ -1,5 +1,6 @@
 //! publisher: publish validated uploads into the change feed and the version index.
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -10,7 +11,7 @@ use desearch::stub;
 use publisher::index::VersionIndex;
 use publisher::local::{LocalFeed, LocalUploads};
 use publisher::worker::{self, Job};
-use publisher::{outcomes, service};
+use publisher::{outcomes, service, withdrawals};
 
 #[cfg(not(target_env = "msvc"))]
 #[global_allocator]
@@ -96,16 +97,22 @@ fn local(args: LocalArgs) -> Result<()> {
     let feed = LocalFeed::new(args.out.join("changes"), 1)?;
     let outcome_dir = args.out.join("outcomes");
     std::fs::create_dir_all(&outcome_dir)?;
-    for (n, jobs) in jobs.chunks(args.batch.max(1)).enumerate() {
+    let mut files = 0;
+    let mut write_outcomes = |rows: &[desearch::outcomes::Outcome], now: i64| -> Result<()> {
+        files += 1;
+        Ok(std::fs::write(outcome_dir.join(format!("{files:012}.parquet")), desearch::outcomes::encode(rows, now)?)?)
+    };
+    let now_us = || -> Result<i64> { Ok(SystemTime::now().duration_since(UNIX_EPOCH)?.as_micros() as i64) };
+    for jobs in jobs.chunks(args.batch.max(1)) {
         let started = Instant::now();
-        let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_micros() as i64;
+        let now = now_us()?;
         let batch = worker::publish(jobs, &uploads, &index, &feed, now, args.readers)?;
-        let rows = outcomes::rows(&batch.changes, &batch.unchanged, &batch.failed, &batch.removed);
-        std::fs::write(outcome_dir.join(format!("{:012}.parquet", n + 1)), desearch::outcomes::encode(&rows, now)?)?;
+        write_outcomes(&outcomes::rows(&batch.changes, &batch.unchanged, &batch.failed), now)?;
         println!(
-            "published {} tasks, {} pages new or changed or removed, {} unchanged, {} failed URLs, {} to retry in {:.2}s",
+            "published {} tasks, {} pages new or changed, {} tasks withdrawn, {} unchanged, {} failed URLs, {} to retry in {:.2}s",
             batch.finalized.len(),
-            batch.changes.len(),
+            batch.changes.len() - batch.withdrawn.len(),
+            batch.withdrawn.len(),
             batch.unchanged.len(),
             batch.failed.len(),
             batch.retry.len(),
@@ -114,6 +121,12 @@ fn local(args: LocalArgs) -> Result<()> {
         for (task_id, why) in &batch.retry {
             eprintln!("task={task_id} will be retried: {why}");
         }
+    }
+    let now = now_us()?;
+    let mut report = |pages: &[publisher::index::Withdrawn]| write_outcomes(&outcomes::dropped(pages), now);
+    let taken = withdrawals::drain(&index, &mut HashSet::new(), now as f64 / 1e6, withdrawals::CHUNK, &|| false, &mut report)?;
+    if taken > 0 {
+        println!("took {taken} pages of withdrawn tasks out of the index");
     }
     Ok(())
 }

@@ -109,7 +109,7 @@ fn outcome_feed(state: &stub::State, first: u64, last: u64) -> Vec<(String, Stri
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn the_service_publishes_reports_and_takes_back_as_the_python_one_does() {
+async fn the_service_publishes_reports_and_takes_back() {
     let Some((_turn, mut redis)) = redis_db().await else {
         eprintln!("skipped: no Redis on {REDIS}");
         return;
@@ -207,7 +207,7 @@ async fn the_service_publishes_reports_and_takes_back_as_the_python_one_does() {
     let (stopping, stop) = watch::channel(false);
     let running = tokio::spawn(service::run(shared.clone(), stop, 0));
     for _ in 0..400 {
-        if redis.get::<_, u64>("publish:acked").await.unwrap() == 6 {
+        if redis.get::<_, u64>("publish:acked").await.unwrap() == 6 && shared.index.pages().unwrap().len() == 3 {
             break;
         }
         tokio::time::sleep(Duration::from_millis(25)).await;
@@ -218,14 +218,18 @@ async fn the_service_publishes_reports_and_takes_back_as_the_python_one_does() {
     assert_eq!(redis.get::<_, u64>("publish:acked").await.unwrap(), 6);
     assert_eq!(json_object(&state, PAGES, "changes/latest.json").unwrap(), json!({"seq": 2}));
     let second = json_object(&state, PAGES, "changes/seq/000000000002.json").unwrap();
-    assert_eq!(second["rows"], 3);
-    let removed = rows(&state.object(PAGES, second["key"].as_str().unwrap()).unwrap());
-    assert_eq!(column(&removed, "kind"), ["removed"; 3]);
-    let mut taken = column(&removed, "url");
-    taken.sort();
-    assert_eq!(taken, urls("t2"));
-    let kinds: Vec<String> = outcome_feed(&state, 3, 3).into_iter().map(|(kind, _)| kind).collect();
-    assert_eq!(kinds, ["unchanged", "unchanged", "unchanged", "dropped", "dropped", "dropped"]);
+    assert_eq!(second["rows"], 1, "one row for the withdrawn task, none per page");
+    let withdrawn = rows(&state.object(PAGES, second["key"].as_str().unwrap()).unwrap());
+    assert_eq!((column(&withdrawn, "kind"), column(&withdrawn, "task_id")), (vec!["task_withdrawn".to_string()], vec!["t2".to_string()]));
+    assert_eq!(withdrawn[0].column_by_name("url").unwrap().null_count(), 1);
+    let last: u64 = redis.get("outcomes:seq").await.unwrap();
+    let outcomes = outcome_feed(&state, 3, last);
+    let of = |kind: &str| {
+        let mut urls: Vec<String> = outcomes.iter().filter(|(k, _)| k == kind).map(|(_, url)| url.clone()).collect();
+        urls.sort();
+        urls
+    };
+    assert_eq!((of("unchanged"), of("dropped"), outcomes.len()), (urls("t1"), urls("t2"), 6), "t2's pages are dropped once they leave the index");
     assert!(shared.index.is_withdrawn("t2").unwrap());
     assert_eq!(shared.index.pages().unwrap().len(), 3, "t1's pages stay, t2's are taken back");
     let _ = std::fs::remove_dir_all(&dir);
