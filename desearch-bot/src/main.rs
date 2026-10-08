@@ -39,8 +39,10 @@ struct Cli {
 enum Command {
     /// Crawl the buckets this process owns, around the clock.
     Run(Box<RunArgs>),
-    /// Delete pages and sitemaps kept with a sitemap's XML escapes; counts them unless `--apply`. Run it with the crawl loop stopped.
+    /// Delete pages and sitemaps kept with a sitemap's XML escapes; counts them unless given `--backup-dir`. Run it with the crawl loop stopped.
     RemoveEscaped(RemoveEscapedArgs),
+    /// Put back what `remove-escaped` deleted, from its backup folder. Run it with the crawl loop stopped.
+    RestoreEscaped(RestoreEscapedArgs),
 }
 
 #[derive(clap::Args)]
@@ -49,8 +51,19 @@ struct RemoveEscapedArgs {
     buckets_dir: PathBuf,
     #[arg(long, default_value = "0-255")]
     buckets: String,
+    /// Delete, after saving every deleted entry here, one file per store; without it nothing is deleted.
     #[arg(long)]
-    apply: bool,
+    backup_dir: Option<PathBuf>,
+}
+
+#[derive(clap::Args)]
+struct RestoreEscapedArgs {
+    #[arg(long, default_value = "/var/lib/desearch-bot/buckets")]
+    buckets_dir: PathBuf,
+    #[arg(long, default_value = "0-255")]
+    buckets: String,
+    #[arg(long)]
+    backup_dir: PathBuf,
 }
 
 #[derive(clap::Args)]
@@ -136,6 +149,7 @@ fn main() -> Result<()> {
     let args = match Cli::parse().command {
         Command::Run(args) => *args,
         Command::RemoveEscaped(args) => return remove_escaped(args),
+        Command::RestoreEscaped(args) => return restore_escaped(args),
     };
     // Parsing is capped by its own slots; more blocking threads would only hold more allocator caches.
     tokio::runtime::Builder::new_multi_thread().enable_all().max_blocking_threads(128).build()?.block_on(run(args))
@@ -287,18 +301,23 @@ async fn run(args: RunArgs) -> Result<()> {
 }
 
 fn remove_escaped(args: RemoveEscapedArgs) -> Result<()> {
+    if let Some(dir) = &args.backup_dir {
+        std::fs::create_dir_all(dir)?;
+    }
     let owned = parse_buckets(&args.buckets)?;
     let resources = Resources::new(1 << 30, 512 << 20, owned.len());
     let buckets = Buckets::open(&args.buckets_dir, &owned, &resources)?;
     let stores: Vec<&BucketStore> = buckets.stores().collect();
     let threads = std::thread::available_parallelism().map_or(4, |n| n.get()).min(16);
+    let backup_dir = args.backup_dir.as_deref();
     let found = std::thread::scope(|scope| {
         let handles: Vec<_> = stores
             .chunks(stores.len().div_ceil(threads).max(1))
             .map(|chunk| {
                 scope.spawn(move || {
                     chunk.iter().try_fold(Escaped::default(), |sum, store| {
-                        let found = store.remove_escaped(args.apply)?;
+                        let backup = backup_dir.map(|dir| dir.join(format!("{}.bin", store.name())));
+                        let found = store.remove_escaped(backup.as_deref())?;
                         anyhow::Ok(Escaped { pages: sum.pages + found.pages, sitemaps: sum.sitemaps + found.sitemaps })
                     })
                 })
@@ -309,8 +328,23 @@ fn remove_escaped(args: RemoveEscapedArgs) -> Result<()> {
             anyhow::Ok(Escaped { pages: sum.pages + found.pages, sitemaps: sum.sitemaps + found.sitemaps })
         })
     })?;
-    let done = if args.apply { "deleted" } else { "found" };
+    let done = if backup_dir.is_some() { "deleted" } else { "found" };
     println!("{done} {} pages and {} sitemaps with escaped addresses in {} stores", found.pages, found.sitemaps, stores.len());
+    Ok(())
+}
+
+fn restore_escaped(args: RestoreEscapedArgs) -> Result<()> {
+    let owned = parse_buckets(&args.buckets)?;
+    let resources = Resources::new(1 << 30, 512 << 20, owned.len());
+    let buckets = Buckets::open(&args.buckets_dir, &owned, &resources)?;
+    let mut restored = 0;
+    for store in buckets.stores() {
+        let backup = args.backup_dir.join(format!("{}.bin", store.name()));
+        if backup.exists() {
+            restored += store.restore(&backup)?;
+        }
+    }
+    println!("restored {restored} entries");
     Ok(())
 }
 
