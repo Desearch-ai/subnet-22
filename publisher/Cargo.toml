@@ -18,6 +18,7 @@ clap = { version = "4", features = ["derive"] }
 flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
 futures = "0.3"
 hmac = "0.12"
+log = "0.4"
 parquet = { version = "59", default-features = false, features = ["arrow", "zstd", "snap", "lz4", "flate2-zlib-rs", "brotli"] }
 redis = { version = "1", default-features = false, features = ["tokio-comp", "connection-manager", "script"] }
 regex = "1"

@@ -25,11 +25,20 @@ RUN apt-get update \
     && chown publisher /data
 
 COPY --from=build /publisher /usr/local/bin/publisher
+COPY healthcheck.sh /usr/local/bin/publisher-healthcheck
+RUN chmod 755 /usr/local/bin/publisher-healthcheck
 
 USER publisher
 ENV PUBLISHER_INDEX=/data/index \
+    PUBLISHER_HEARTBEAT_PATH=/data/heartbeat \
+    PUBLISHER_HEARTBEAT_MAX_AGE_S=600 \
     MALLOC_ARENA_MAX=2
 VOLUME /data
+
+# No HEALTHCHECK instruction. debian:bookworm-slim has /bin/sh, sed, date, head, stat, and find,
+# and /usr/local/bin/publisher-healthcheck uses those. It is wired in docker-compose.yml with
+# `healthcheck.disable: true` until the measured max heartbeat staleness is known. Enabling it
+# sooner marks a healthy publisher unhealthy. This image has no HTTP server and no curl or wget.
 
 # tini passes SIGTERM on, so the publisher finishes the batch in hand before it exits.
 ENTRYPOINT ["/usr/bin/tini", "--", "publisher"]

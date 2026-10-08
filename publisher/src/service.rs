@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{bail, Context, Result};
@@ -15,6 +15,7 @@ use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
 use crate::feeds::{CHANGES, OUTCOMES};
+use crate::heartbeat::{self, Outcome};
 use crate::index::VersionIndex;
 use crate::outcomes;
 use crate::queue::PublishQueue;
@@ -44,6 +45,8 @@ pub struct Settings {
     /// Stop after this many passes in a row found nothing; 0 runs until stopped.
     pub idle_exit: u32,
     pub idle_delay: Duration,
+    /// Refreshed after init, after a published batch, and while the backlog is empty. Not refreshed on errors.
+    pub heartbeat_path: PathBuf,
 }
 
 impl Settings {
@@ -63,6 +66,7 @@ impl Settings {
             cache_bytes: number::<usize>("PUBLISHER_CACHE_MB", 1024)? << 20,
             idle_exit: number("PUBLISHER_IDLE_EXIT", 0)?,
             idle_delay: Duration::from_secs_f64(number("PUBLISHER_IDLE_DELAY_S", 2.0)?),
+            heartbeat_path: PathBuf::from(text("PUBLISHER_HEARTBEAT_PATH", heartbeat::DEFAULT_PATH)),
         })
     }
 }
@@ -118,6 +122,7 @@ pub struct Shared {
     pub settings: Settings,
     pub metrics: Arc<Metrics>,
     pub handle: Handle,
+    pub heartbeat: Mutex<heartbeat::Tracker>,
 }
 
 impl Shared {
@@ -127,7 +132,8 @@ impl Shared {
         }
         let redis = redis::Client::open(settings.redis_url.as_str())?.get_connection_manager().await.context("connecting to TASK_API_REDIS")?;
         let index = Arc::new(VersionIndex::open(&settings.index, settings.cache_bytes)?);
-        Ok(Arc::new(Shared { queue: PublishQueue::new(redis, settings.claim_ttl), temp, pages, index, settings, metrics, handle: Handle::current() }))
+        let heartbeat = Mutex::new(heartbeat::Tracker::new(settings.heartbeat_path.clone()));
+        Ok(Arc::new(Shared { queue: PublishQueue::new(redis, settings.claim_ttl), temp, pages, index, settings, metrics, handle: Handle::current(), heartbeat }))
     }
 
     fn redis(&self) -> &ConnectionManager {
@@ -318,30 +324,40 @@ pub async fn run(shared: Arc<Shared>, mut stop: watch::Receiver<bool>, idle_exit
     let mut snapshots = Snapshots::default();
     loop {
         let finishing = *stop.borrow() || (idle_exit > 0 && idle >= idle_exit);
+        // A claim error is not an empty backlog. Only `EmptyBacklog` and `Published` refresh the heartbeat.
+        let mut claim_failed = false;
         while !finishing && claimed.len() <= shared.settings.ahead {
             match start_batch(shared.clone()).await {
                 Ok(Some(batch)) => claimed.push(batch),
                 Ok(None) => break,
                 Err(error) => {
                     eprintln!("claiming a batch failed: {error:#}");
+                    claim_failed = true;
                     pause(&mut stop, RETRY_DELAY).await;
                     break;
                 }
             }
         }
-        if claimed.is_empty() {
+        let outcome = if claimed.is_empty() {
             if finishing {
                 break;
             }
             idle += 1;
+            if claim_failed { Outcome::ClaimFailed } else { Outcome::EmptyBacklog }
         } else {
             idle = 0;
             let current = claimed.remove(first_read(&claimed).await);
-            if let Err(error) = write_batch(&shared, current).await {
-                eprintln!("publish pass failed: {error:#}");
-                pause(&mut stop, RETRY_DELAY).await;
+            match write_batch(&shared, current).await {
+                Ok(_) => Outcome::Published,
+                Err(error) => {
+                    eprintln!("publish pass failed: {error:#}");
+                    pause(&mut stop, RETRY_DELAY).await;
+                    Outcome::PublishFailed
+                }
             }
-        }
+        };
+        // `ClaimFailed` and `PublishFailed` leave the file alone. Empty backlog still refreshes it.
+        record_heartbeat(&shared, outcome)?;
         snapshots.daily(&shared);
         if let Err(error) = CHANGES.fill_holes(&shared.pages, shared.redis()).await {
             eprintln!("filling holes in the change feed failed: {error:#}");
@@ -406,11 +422,33 @@ pub async fn summarize(shared: Arc<Shared>, mut stop: watch::Receiver<bool>) {
             d[7] as f64 / 1e6,
             d[8]
         );
+        shared.heartbeat.lock().expect("heartbeat").log_periodic();
     }
+}
+
+fn heartbeat_counters(metrics: &Metrics) -> heartbeat::Counters {
+    let load = |counter: &AtomicU64| counter.load(Ordering::Relaxed);
+    heartbeat::Counters {
+        batches: load(&metrics.batches),
+        tasks: load(&metrics.tasks),
+        changed: load(&metrics.changed),
+        unchanged: load(&metrics.unchanged),
+        removed: load(&metrics.removed),
+        failed_urls: load(&metrics.failed_urls),
+        lost: load(&metrics.lost),
+        retried: load(&metrics.retried),
+    }
+}
+
+fn record_heartbeat(shared: &Shared, outcome: Outcome) -> Result<()> {
+    let counters = heartbeat_counters(&shared.metrics);
+    shared.heartbeat.lock().expect("heartbeat").record(outcome, &counters)?;
+    Ok(())
 }
 
 /// `publisher serve`: everything from the environment, until SIGTERM or SIGINT.
 pub async fn serve() -> Result<()> {
+    heartbeat::init_info_log();
     let settings = Settings::from_env()?;
     let metrics = Arc::new(Metrics::default());
     let (temp, pages) = buckets_from_env(metrics.r2_errors.clone())?;
@@ -418,6 +456,12 @@ pub async fn serve() -> Result<()> {
         bucket.check().await?;
     }
     let shared = Shared::connect(settings, temp, pages, metrics).await?;
+    // Init has succeeded (buckets answer, Redis is up, the index is open). Write once before the first batch,
+    // which may run for a long time; a stall inside that batch is then visible as an ageing file.
+    {
+        let counters = heartbeat_counters(&shared.metrics);
+        shared.heartbeat.lock().expect("heartbeat").startup(&counters)?;
+    }
     let (stopping, stop) = watch::channel(false);
     tokio::spawn(async move {
         let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).expect("a SIGTERM handler");

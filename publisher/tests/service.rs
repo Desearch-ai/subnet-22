@@ -124,6 +124,7 @@ async fn the_service_publishes_reports_and_takes_back_as_the_python_one_does() {
         cache_bytes: 8 << 20,
         idle_exit: 0,
         idle_delay: Duration::from_millis(50),
+        heartbeat_path: dir.join("heartbeat"),
     };
     let shared = Shared::connect(settings, temp.clone(), pages.clone(), metrics.clone()).await.unwrap();
 

@@ -17,7 +17,41 @@ services:
       PUBLISHER_READERS: ${PUBLISHER_READERS:-}
       PUBLISHER_AHEAD: ${PUBLISHER_AHEAD:-}
       PUBLISHER_CACHE_MB: ${PUBLISHER_CACHE_MB:-4096}
+      # Sibling of /data/index on the publisher-index volume, not a file inside the RocksDB directory.
+      PUBLISHER_HEARTBEAT_PATH: /data/heartbeat
+      # Placeholder. Raise this above the logged max heartbeat staleness before enabling the check.
+      PUBLISHER_HEARTBEAT_MAX_AGE_S: ${PUBLISHER_HEARTBEAT_MAX_AGE_S:-600}
     volumes: ["publisher-index:/data"]
+    # DISABLED until INFO publisher::heartbeat has reported the normal max heartbeat staleness
+    # and max inter-batch gap. A limit below that gap marks a healthy publisher unhealthy.
+    # `restart: unless-stopped` does not itself restart an unhealthy container; Coolify uses the
+    # health status for deploy readiness and rolling replacement, and a tight limit will not settle.
+    #
+    # The file is /data/heartbeat (see PUBLISHER_HEARTBEAT_PATH). The command is a /bin/sh script.
+    # debian:bookworm-slim already has sh, sed, date, head, stat, and find. No new HTTP listener.
+    #
+    # Coolify Compose does not use the dashboard Healthcheck page. Do not enable an HTTP check:
+    # this container has no port and the image has no curl or wget.
+    #
+    # To enable, after the logs show a stable max staleness:
+    # 1. Set PUBLISHER_HEARTBEAT_MAX_AGE_S above that staleness (start at 2x, and above the longest
+    #    healthy batch). The default 600 is not a measurement.
+    # 2. Delete the `disable: true` line below.
+    # 3. Redeploy so Coolify recreates the container.
+    # Timing once enabled: interval 30s, timeout 5s, retries 3, start_period 300s.
+    # start_period covers index open and the startup heartbeat. It does not cover a long batch;
+    # the max-age limit has to.
+    # If this image is ever deployed as a Dockerfile app instead of Compose, leave the Dockerfile
+    # without a HEALTHCHECK and set Coolify's check type to CMD (not HTTP):
+    #   /usr/local/bin/publisher-healthcheck
+    # with the same interval, timeout, retries, and start period, then Enable and redeploy.
+    healthcheck:
+      disable: true
+      test: ["CMD", "/usr/local/bin/publisher-healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 300s
     stop_grace_period: 120s
     logging:
       driver: json-file

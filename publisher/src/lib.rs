@@ -5,6 +5,7 @@ pub mod canonical;
 pub mod changes;
 pub mod entities;
 pub mod feeds;
+pub mod heartbeat;
 pub mod index;
 pub mod local;
 pub mod outcomes;
