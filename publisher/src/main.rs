@@ -26,7 +26,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Publish from the task API's queue in Redis to R2, configured from the environment, until SIGTERM.
+    /// Publish from the task API's queue in Redis to R2, configured from the environment, until SIGTERM; SIGUSR1 uploads a copy of the index to `index/snapshots/`.
     Serve,
     /// Take down pages whose URL kept a sitemap's XML escapes; counts them unless given `--backup`. Run it with `serve` stopped.
     RemoveEscaped {
@@ -70,7 +70,7 @@ fn main() -> Result<()> {
         Command::Serve => {
             let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().max_blocking_threads(1024).build()?;
             let served = runtime.block_on(service::serve());
-            // An unfinished snapshot upload is left to the next start rather than holding up the exit.
+            // An unfinished snapshot upload is abandoned rather than holding up the exit.
             runtime.shutdown_timeout(Duration::from_secs(5));
             served
         }

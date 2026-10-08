@@ -190,6 +190,9 @@ async fn the_service_publishes_reports_and_takes_back() {
     assert_eq!(json_object(&state, TEMP, &format!("{PREFIX}outcomes/latest.json")).unwrap(), json!({"seq": 2}));
     assert_eq!(state.meta(TEMP, &format!("{PREFIX}outcomes/latest.json")).unwrap().1, "no-store");
 
+    assert!(state.keys(PAGES, "index/snapshots/").is_empty(), "no snapshot unless asked for");
+    shared.snapshot_asked.store(true, Ordering::Relaxed);
+    publish_until_idle(&shared).await;
     let snapshot_key = format!("index/snapshots/{}.parquet", service::day(service::now_us()));
     for _ in 0..100 {
         if state.object(PAGES, &snapshot_key).is_some() {

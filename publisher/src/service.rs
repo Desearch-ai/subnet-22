@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -138,6 +138,8 @@ pub struct Shared {
     pub settings: Settings,
     pub metrics: Arc<Metrics>,
     pub handle: Handle,
+    /// Set to have the loop upload a copy of the index once.
+    pub snapshot_asked: AtomicBool,
 }
 
 impl Shared {
@@ -147,7 +149,16 @@ impl Shared {
         }
         let redis = redis::Client::open(settings.redis_url.as_str())?.get_connection_manager().await.context("connecting to TASK_API_REDIS")?;
         let index = Arc::new(VersionIndex::open(&settings.index, settings.cache_bytes)?);
-        Ok(Arc::new(Shared { queue: PublishQueue::new(redis, settings.claim_ttl), temp, pages, index, settings, metrics, handle: Handle::current() }))
+        Ok(Arc::new(Shared {
+            queue: PublishQueue::new(redis, settings.claim_ttl),
+            temp,
+            pages,
+            index,
+            settings,
+            metrics,
+            handle: Handle::current(),
+            snapshot_asked: AtomicBool::new(false),
+        }))
     }
 
     fn redis(&self) -> &ConnectionManager {
@@ -316,27 +327,20 @@ async fn write_outcomes(shared: &Shared, rows: Vec<Outcome>, now: i64) -> Result
 
 #[derive(Default)]
 struct Snapshots {
-    day: String,
     running: Option<JoinHandle<()>>,
 }
 
 impl Snapshots {
-    /// A copy of the version index a day, made in the background from a checkpoint while publishing goes on.
-    fn daily(&mut self, shared: &Arc<Shared>) {
-        if self.running.as_ref().is_some_and(|running| !running.is_finished()) {
+    /// A copy of the version index when asked for, made in the background from a checkpoint while publishing goes on.
+    fn poll(&mut self, shared: &Arc<Shared>) {
+        if self.running.as_ref().is_some_and(|running| !running.is_finished()) || !shared.snapshot_asked.swap(false, Ordering::Relaxed) {
             return;
         }
-        let today = day(now_us());
-        if today == self.day {
-            return;
-        }
-        self.day = today.clone();
         let shared = shared.clone();
         self.running = Some(tokio::task::spawn_blocking(move || {
-            let started = Instant::now();
+            let (started, today) = (Instant::now(), day(now_us()));
             match snapshot::upload(&shared.index, &shared.settings.index, &shared.pages, &today, &shared.handle) {
-                Ok(Some(rows)) => println!("index snapshot {today}: {rows} pages in {:.0}s", started.elapsed().as_secs_f64()),
-                Ok(None) => {}
+                Ok(rows) => println!("index snapshot {today}: {rows} pages in {:.0}s", started.elapsed().as_secs_f64()),
                 Err(error) => eprintln!("could not snapshot the version index: {error:#}"),
             }
         }));
@@ -413,7 +417,7 @@ pub async fn run(shared: Arc<Shared>, mut stop: watch::Receiver<bool>, idle_exit
             }
         }
         draining.poll(&shared, &stop, withdrew).await;
-        snapshots.daily(&shared);
+        snapshots.poll(&shared);
         if let Err(error) = CHANGES.fill_holes(&shared.pages, shared.redis()).await {
             eprintln!("filling holes in the change feed failed: {error:#}");
         }
@@ -426,7 +430,7 @@ pub async fn run(shared: Arc<Shared>, mut stop: watch::Receiver<bool>, idle_exit
     }
     if let Some(running) = snapshots.running {
         if tokio::time::timeout(Duration::from_secs(3), running).await.is_err() {
-            println!("stopping with the index snapshot unfinished; it is made again on the next start");
+            println!("stopping with the index snapshot unfinished");
         }
     }
     Ok(())
@@ -501,6 +505,14 @@ pub async fn serve() -> Result<()> {
         }
         println!("stopping: finishing the batches in hand, claiming no more");
         let _ = stopping.send(true);
+    });
+    let asking = shared.clone();
+    tokio::spawn(async move {
+        let mut asked = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::user_defined1()).expect("a SIGUSR1 handler");
+        while asked.recv().await.is_some() {
+            println!("index snapshot asked for");
+            asking.snapshot_asked.store(true, Ordering::Relaxed);
+        }
     });
     println!(
         "publishing {}/{} -> {}/{}, batches of {}, {} uploads read at once, index {}",

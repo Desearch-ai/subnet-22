@@ -10,7 +10,6 @@ import signal
 import subprocess
 import sys
 import time
-from datetime import datetime, timezone
 from pathlib import Path
 
 import boto3
@@ -156,13 +155,9 @@ def main() -> None:
             for k in ("published", "unchanged", "failed", "dropped")
         },
     }
-    snapshot = f"index/snapshots/{datetime.now(timezone.utc):%Y-%m-%d}.parquet"
-    for _ in range(100):
-        if client.list_objects_v2(Bucket=PAGES, Prefix=snapshot).get("KeyCount"):
-            break
-        time.sleep(0.1)
-    found = client.get_object(Bucket=PAGES, Key=snapshot)["Body"].read()
-    summary["snapshot_rows"] = pq.read_metadata(io.BytesIO(found)).num_rows
+    assert not client.list_objects_v2(Bucket=PAGES, Prefix="index/snapshots/").get(
+        "KeyCount"
+    ), "no snapshot unless asked for"
 
     taken = jobs[0]["task_id"]
     queue("withdraw", [taken], "e2e")

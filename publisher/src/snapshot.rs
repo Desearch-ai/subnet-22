@@ -1,4 +1,4 @@
-//! A copy of the version index a day, as Parquet beside the pages it describes, streamed from a checkpoint into a multipart upload.
+//! A copy of the version index on request, as Parquet beside the pages it describes, streamed from a checkpoint into a multipart upload.
 
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -41,12 +41,9 @@ pub fn snapshot_key(day: &str) -> String {
     format!("index/snapshots/{day}.parquet")
 }
 
-/// Uploads the day's snapshot unless it is already there; returns the pages written, or None when it existed.
-pub fn upload(index: &VersionIndex, index_dir: &Path, pages: &Bucket, day: &str, handle: &Handle) -> Result<Option<u64>> {
+/// Uploads the day's snapshot, replacing an earlier one of the same day; returns the pages written.
+pub fn upload(index: &VersionIndex, index_dir: &Path, pages: &Bucket, day: &str, handle: &Handle) -> Result<u64> {
     let key = snapshot_key(day);
-    if handle.block_on(pages.exists(&key))? {
-        return Ok(None);
-    }
     let checkpoint = checkpoint_dir(index_dir);
     let _ = std::fs::remove_dir_all(&checkpoint);
     index.checkpoint(&checkpoint)?;
@@ -58,7 +55,7 @@ pub fn upload(index: &VersionIndex, index_dir: &Path, pages: &Bucket, day: &str,
         Ok(rows)
     })();
     let _ = std::fs::remove_dir_all(&checkpoint);
-    written.map(Some)
+    written
 }
 
 fn checkpoint_dir(index_dir: &Path) -> PathBuf {
