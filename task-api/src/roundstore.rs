@@ -24,7 +24,8 @@ pub fn create(conn: &Connection) -> Result<()> {
             serve_order   TEXT NOT NULL DEFAULT '[]',
             closed_at     REAL,
             batches       TEXT NOT NULL,
-            filled_at     REAL
+            filled_at     REAL,
+            tasks         INTEGER
         );
         CREATE INDEX IF NOT EXISTS rounds_opened ON rounds (opened_at);
         CREATE INDEX IF NOT EXISTS rounds_pending ON rounds (seed, closed_at);
@@ -37,6 +38,10 @@ pub fn create(conn: &Connection) -> Result<()> {
         CREATE TABLE IF NOT EXISTS retention (name TEXT PRIMARY KEY, mark REAL NOT NULL);
         ",
     )?;
+    if !conn.prepare("SELECT 1 FROM pragma_table_info('rounds') WHERE name = 'tasks'")?.exists([])? {
+        conn.execute("ALTER TABLE rounds ADD COLUMN tasks INTEGER", [])?;
+    }
+    conn.execute("UPDATE rounds SET tasks = (SELECT COUNT(*) FROM json_each(batches)) WHERE seed IS NULL AND tasks IS NULL", [])?;
     Ok(())
 }
 
@@ -88,7 +93,7 @@ fn round_of(row: &Row) -> rusqlite::Result<Round> {
 pub fn save(conn: &Connection, round: &Round) -> Result<()> {
     conn.execute(
         &format!(
-            "INSERT INTO rounds ({COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            "INSERT INTO rounds ({COLUMNS}, tasks) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT (round_id) DO UPDATE SET seed = excluded.seed, serve_order = excluded.serve_order, closed_at = excluded.closed_at"
         ),
         params![
@@ -100,7 +105,8 @@ pub fn save(conn: &Connection, round: &Round) -> Result<()> {
             round.seed,
             serde_json::to_string(&round.order)?,
             round.closed_at,
-            stored_batches(round)
+            stored_batches(round),
+            round.batches.len()
         ],
     )?;
     Ok(())
@@ -110,15 +116,23 @@ pub fn get(conn: &Connection, round_id: &str) -> Result<Option<Round>> {
     Ok(conn.query_row(&format!("SELECT {COLUMNS} FROM rounds WHERE round_id = ?"), [round_id], round_of).optional()?)
 }
 
-/// Rounds not revealed yet whose seed block `by_block` has reached.
-pub fn unrevealed(conn: &Connection, by_block: i64) -> Result<Vec<Round>> {
-    let mut statement = conn.prepare(&format!("SELECT {COLUMNS} FROM rounds WHERE seed IS NULL AND seed_block <= ? ORDER BY opened_at"))?;
-    let rounds = statement.query_map([by_block], round_of)?;
+/// Up to `limit` rounds not revealed yet whose seed block `by_block` has reached, oldest first.
+pub fn unrevealed(conn: &Connection, by_block: i64, limit: i64) -> Result<Vec<Round>> {
+    let mut statement = conn.prepare(&format!("SELECT {COLUMNS} FROM rounds WHERE seed IS NULL AND seed_block <= ? ORDER BY opened_at LIMIT ?"))?;
+    let rounds = statement.query_map([by_block, limit], round_of)?;
     Ok(rounds.collect::<rusqlite::Result<_>>()?)
 }
 
 pub fn unrevealed_tasks(conn: &Connection) -> Result<i64> {
-    Ok(conn.query_row("SELECT COALESCE(SUM((SELECT COUNT(*) FROM json_each(batches))), 0) FROM rounds WHERE seed IS NULL", [], |row| row.get(0))?)
+    Ok(conn.query_row("SELECT COALESCE(SUM(tasks), 0) FROM rounds WHERE seed IS NULL", [], |row| row.get(0))?)
+}
+
+pub fn mark_revealed(conn: &Connection, round: &Round) -> Result<()> {
+    conn.execute(
+        "UPDATE rounds SET seed = ?, serve_order = ? WHERE round_id = ?",
+        params![round.seed, serde_json::to_string(&round.order)?, round.round_id],
+    )?;
+    Ok(())
 }
 
 /// Revealed rounds whose tasks never reached the queue.
@@ -130,10 +144,15 @@ pub fn unfilled(conn: &Connection) -> Result<Vec<Round>> {
     Ok(rounds.collect::<rusqlite::Result<_>>()?)
 }
 
-/// Once Redis holds a round's tasks, its URLs are dropped, keeping each batch's count and hash.
-pub fn mark_filled(conn: &Connection, round: &Round, at: f64) -> Result<()> {
+/// The round's batches with their URLs dropped, keeping each batch's count and hash.
+pub fn sealed_batches(round: &Round) -> String {
     let batches: Map<String, Value> = round.batches.iter().map(|b| (b.batch_id.clone(), stored(&sealed(b)))).collect();
-    conn.execute("UPDATE rounds SET filled_at = ?, batches = ? WHERE round_id = ?", params![at, Value::Object(batches).to_string(), round.round_id])?;
+    Value::Object(batches).to_string()
+}
+
+/// Once Redis holds a round's tasks, it keeps only `sealed_batches`.
+pub fn mark_filled(conn: &Connection, round_id: &str, sealed_batches: &str, at: f64) -> Result<()> {
+    conn.execute("UPDATE rounds SET filled_at = ?, batches = ? WHERE round_id = ?", params![at, sealed_batches, round_id])?;
     Ok(())
 }
 
@@ -232,7 +251,7 @@ mod tests {
             let saved = round(&format!("r{n}"), 1, 1, n as f64, seed);
             save(&conn, &saved).unwrap();
             if let Some(at) = filled {
-                mark_filled(&conn, &saved, at).unwrap();
+                mark_filled(&conn, &saved.round_id, &sealed_batches(&saved), at).unwrap();
             }
             if let Some(at) = closed {
                 close(&conn, &format!("r{n}"), at).unwrap();
@@ -247,9 +266,31 @@ mod tests {
         let conn = store();
         save(&conn, &round("due", 3, 10, 1.0, None)).unwrap();
         save(&conn, &round("later", 3, 20, 2.0, None)).unwrap();
-        assert_eq!(unrevealed(&conn, 15).unwrap().into_iter().map(|r| r.round_id).collect::<Vec<_>>(), ["due"]);
-        assert_eq!(unrevealed(&conn, i64::MAX).unwrap().into_iter().map(|r| r.round_id).collect::<Vec<_>>(), ["due", "later"]);
+        assert_eq!(unrevealed(&conn, 15, 10).unwrap().into_iter().map(|r| r.round_id).collect::<Vec<_>>(), ["due"]);
+        assert_eq!(unrevealed(&conn, i64::MAX, 10).unwrap().into_iter().map(|r| r.round_id).collect::<Vec<_>>(), ["due", "later"]);
+        assert_eq!(unrevealed(&conn, i64::MAX, 1).unwrap().into_iter().map(|r| r.round_id).collect::<Vec<_>>(), ["due"]);
         assert_eq!(unrevealed_tasks(&conn).unwrap(), 6);
+    }
+
+    #[test]
+    fn a_rounds_table_from_before_task_counts_gets_them_for_rounds_still_to_reveal() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE rounds (round_id TEXT PRIMARY KEY, kind TEXT NOT NULL, manifest_hash TEXT NOT NULL, seed_block INTEGER NOT NULL,
+             opened_at REAL NOT NULL, seed TEXT, serve_order TEXT NOT NULL DEFAULT '[]', closed_at REAL, batches TEXT NOT NULL, filled_at REAL)",
+        )
+        .unwrap();
+        for (round_id, seed) in [("waiting", None), ("revealed", Some("s"))] {
+            conn.execute(
+                "INSERT INTO rounds (round_id, kind, manifest_hash, seed_block, opened_at, seed, batches) VALUES (?, 'crawl', 'h', 1, 1.0, ?, ?)",
+                params![round_id, seed, r#"{"b1": {}, "b2": {}, "b3": {}}"#],
+            )
+            .unwrap();
+        }
+        create(&conn).unwrap();
+        assert_eq!(unrevealed_tasks(&conn).unwrap(), 3);
+        save(&conn, &round("new", 2, 1, 2.0, None)).unwrap();
+        assert_eq!(unrevealed_tasks(&conn).unwrap(), 5);
     }
 
     #[test]
@@ -261,7 +302,7 @@ mod tests {
         save(&conn, &filled).unwrap();
         close(&conn, &filled.round_id, 1_800_000_100.0).unwrap();
         let before = get(&conn, &filled.round_id).unwrap().unwrap().public_view();
-        mark_filled(&conn, &filled, 1_800_000_010.0).unwrap();
+        mark_filled(&conn, &filled.round_id, &sealed_batches(&filled), 1_800_000_010.0).unwrap();
         let batches: String = conn.query_row("SELECT batches FROM rounds WHERE round_id = ?", [&filled.round_id], |row| row.get(0)).unwrap();
         assert_eq!(batches.matches("https://example.com/").count(), 0);
         assert_eq!(get(&conn, &filled.round_id).unwrap().unwrap().public_view(), before);

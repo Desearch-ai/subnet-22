@@ -34,7 +34,7 @@ const ROUNDS_INTERVAL: Duration = Duration::from_secs(5);
 const UPLOAD_LOG_INTERVAL: Duration = Duration::from_secs(30);
 /// A verdict drops its publish job a day after it was finalized.
 const PUBLISH_COPY_KEEP_S: f64 = 86_400.0;
-const SEAL_ROUNDS: i64 = 20;
+const SEAL_ROUNDS: i64 = 4;
 const DROP_VERDICTS: i64 = 200;
 /// Per-URL details cleared per pass: each frees ~0.5 MB, ~2 ms of writer time.
 const PRUNE_DETAILS: i64 = 10;

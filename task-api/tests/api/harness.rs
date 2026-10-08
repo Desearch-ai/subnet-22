@@ -286,7 +286,7 @@ impl Harness {
     pub async fn revealed(&self) -> i64 {
         let deadline = Instant::now() + Duration::from_secs(5);
         while Instant::now() < deadline {
-            let pending = self.state.db.run(|conn| task_api::roundstore::unrevealed(conn, i64::MAX)).await.expect("rounds");
+            let pending = self.state.db.run(|conn| task_api::roundstore::unrevealed(conn, i64::MAX, 1000)).await.expect("rounds");
             if pending.is_empty() {
                 return self.state.crawl.depth(&self.redis).await.expect("depth");
             }

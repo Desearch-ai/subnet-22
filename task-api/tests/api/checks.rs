@@ -163,7 +163,7 @@ async fn room_counts_the_queue_and_a_batch_sent_twice_is_queued_once() {
     let first = h.admin.post("/v1/admin/enqueue", body.clone()).await.unwrap();
     let again = h.admin.post("/v1/admin/enqueue", body).await.unwrap();
     assert_eq!(first, again);
-    assert_eq!(h.state.db.run(|conn| task_api::roundstore::unrevealed(conn, i64::MAX)).await.unwrap().len(), 1);
+    assert_eq!(h.state.db.run(|conn| task_api::roundstore::unrevealed(conn, i64::MAX, 1000)).await.unwrap().len(), 1);
     let room = h.public("/v1/room").await.1;
     assert_eq!(room["room_tasks"].as_i64().unwrap(), 10 - room["queue"].as_i64().unwrap() - room["unrevealed"].as_i64().unwrap());
     assert_eq!((room["unrevealed"].clone(), room["refusing"].clone()), (json!(1), json!(false)));

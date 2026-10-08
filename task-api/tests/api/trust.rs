@@ -337,9 +337,9 @@ async fn rounds_survive_a_restart_and_close_once_every_task_is_decided() {
     let enqueued = h.admin.post("/v1/admin/enqueue", json!({"urls": [{"host": "a.example", "url": "https://a.example/1"}]})).await.unwrap();
     let round_id = enqueued["round_id"].as_str().unwrap().to_string();
     let restarted = State::new(h.state.settings.clone(), h.redis.clone(), h.state.storage.clone(), h.state.pages.clone()).await.unwrap();
-    let pending: Vec<String> = restarted.db.run(|conn| roundstore::unrevealed(conn, i64::MAX)).await.unwrap().into_iter().map(|r| r.round_id).collect();
+    let pending: Vec<String> = restarted.db.run(|conn| roundstore::unrevealed(conn, i64::MAX, 1000)).await.unwrap().into_iter().map(|r| r.round_id).collect();
     assert_eq!(pending, [round_id.as_str()]);
-    while restarted.db.run(|conn| roundstore::unrevealed(conn, i64::MAX)).await.unwrap().len() == 1 {
+    while restarted.db.run(|conn| roundstore::unrevealed(conn, i64::MAX, 1000)).await.unwrap().len() == 1 {
         lifecycle::reveal_pending(&restarted).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }

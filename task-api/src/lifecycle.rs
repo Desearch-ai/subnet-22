@@ -30,6 +30,8 @@ use crate::{checks, outcomes, py, roundstore};
 pub const EMBED_FIELDS: [&str; 6] = ["model", "texts", "chars", "input_key", "input_sha256", "pages"];
 pub const EMBED_ROUND_INPUTS: isize = 200;
 pub const FINALIZE_LOCK_S: i64 = 300;
+/// Rounds revealed per pass, so a backlog cannot hold the janitor for minutes.
+const REVEAL_AT_ONCE: i64 = 64;
 const SETTLE_AT_ONCE: usize = 16;
 const SLOW_ENQUEUE_S: f64 = 2.0;
 /// A check takes about a minute; an upload with less time left would be finalized before its votes land.
@@ -233,14 +235,14 @@ pub async fn open_embed_rounds(state: &State) -> Result<Option<Round>> {
 
 pub async fn reveal_pending(state: &State) -> Result<usize> {
     let current = state.seeds.current_block().await?;
-    let pending = state.db.run(move |conn| roundstore::unrevealed(conn, current)).await?;
+    let pending = state.reader.read(move |conn| roundstore::unrevealed(conn, current, REVEAL_AT_ONCE)).await?;
     let mut filled = 0;
     for mut round in pending {
         let Some(seed) = state.seeds.seed_for(round.seed_block).await? else { continue };
         rounds::reveal(&mut round, &seed);
         // Saved first, so a crash cannot queue the round twice.
         let saved = round.clone();
-        state.db.run(move |conn| roundstore::save(conn, &saved)).await?;
+        state.db.run(move |conn| roundstore::mark_revealed(conn, &saved)).await?;
         filled += fill_round(state, &round).await?;
     }
     Ok(filled)
@@ -262,8 +264,8 @@ pub async fn fill_round(state: &State, round: &Round) -> Result<usize> {
         let _: i64 = state.redis.clone().sadd(open_round_key(&round.round_id), &round.order).await?;
         state.tasks(&round.kind).fill(&state.redis, &round.round_id, &round.order, &payloads).await?;
     }
-    let filled = round.clone();
-    state.db.run(move |conn| roundstore::mark_filled(conn, &filled, now())).await?;
+    let (round_id, sealed) = (round.round_id.clone(), roundstore::sealed_batches(round));
+    state.db.run(move |conn| roundstore::mark_filled(conn, &round_id, &sealed, now())).await?;
     state.current.lock().expect("current rounds").insert(round.kind.clone(), round.round_id.clone());
     Ok(round.order.len())
 }
@@ -271,10 +273,11 @@ pub async fn fill_round(state: &State, round: &Round) -> Result<usize> {
 /// Rounds revealed before Redis took their tasks get them now, not closed unserved.
 pub async fn fill_missing(state: &State) -> Result<Vec<String>> {
     let mut filled = Vec::new();
-    for round in state.db.run(roundstore::unfilled).await? {
+    for round in state.reader.read(roundstore::unfilled).await? {
         let open: i64 = state.redis.clone().scard(open_round_key(&round.round_id)).await?;
         if open > 0 {
-            state.db.run(move |conn| roundstore::mark_filled(conn, &round, now())).await?;
+            let (round_id, sealed) = (round.round_id.clone(), roundstore::sealed_batches(&round));
+            state.db.run(move |conn| roundstore::mark_filled(conn, &round_id, &sealed, now())).await?;
             continue;
         }
         fill_round(state, &round).await?;
