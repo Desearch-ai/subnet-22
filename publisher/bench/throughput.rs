@@ -1,6 +1,7 @@
-//! The sample published against a pre-filled index: `prefill SAMPLE WORK PAGES`, then `run SAMPLE WORK THREADS [PASSES]`.
+//! The sample published against a pre-filled index: `prefill SAMPLE WORK PAGES`, then `run SAMPLE WORK THREADS [PASSES]`
+//! or `takeback SAMPLE WORK TASKS`, the sample published in one batch with a take-back of that many prefilled tasks.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::Ordering;
@@ -10,6 +11,7 @@ use desearch::canonical::sha1_hex;
 use publisher::index::{Current, VersionIndex};
 use publisher::local::{LocalFeed, LocalUploads};
 use publisher::records::{iso, SECOND};
+use publisher::withdrawals;
 use publisher::worker::{self, Job, Page};
 use serde_json::json;
 
@@ -198,6 +200,52 @@ fn run(sample: &Path, work: &Path, threads: usize, passes: usize) {
     let _ = std::fs::remove_dir_all(&run_dir);
 }
 
+/// The tasks `synthetic` gave the first `tasks` thousand pages to.
+fn synthetic_tasks(tasks: u64) -> Vec<String> {
+    (0..tasks).map(|t| format!("{:016x}", t.wrapping_mul(0x9e37_79b9_7f4a_7c15))).collect()
+}
+
+fn takeback(sample: &Path, work: &Path, tasks: u64) {
+    let mut jobs = jobs(sample);
+    let published = jobs.len();
+    jobs.push(serde_json::from_value(json!({"task_id": "withdraw:bench", "kind": "withdraw", "task_ids": synthetic_tasks(tasks)})).unwrap());
+    let run_dir = work.join("rust-takeback");
+    let _ = std::fs::remove_dir_all(&run_dir);
+    std::fs::create_dir_all(&run_dir).unwrap();
+    let index_dir = run_dir.join("index");
+    assert!(Command::new("cp").arg("-R").arg(work.join("rust-template")).arg(&index_dir).status().unwrap().success());
+    let index = VersionIndex::open(&index_dir, CACHE_BYTES).unwrap();
+    let uploads = LocalUploads::new(sample);
+    let feed = LocalFeed::new(run_dir.join("changes"), 1).unwrap();
+    let reads = worker::read_all(&jobs, &uploads, NOW, 8);
+    let started = Instant::now();
+    let batch = worker::write(&jobs, reads, &index, &feed, NOW).unwrap();
+    let write_wall = started.elapsed().as_secs_f64();
+    let (before, started) = (usage(), Instant::now());
+    let mut reported = 0usize;
+    let taken = withdrawals::drain(&index, &mut HashSet::new(), NOW as f64 / SECOND as f64, withdrawals::CHUNK, &|| false, &mut |pages| {
+        reported += pages.len();
+        Ok(())
+    })
+    .unwrap();
+    let drain_wall = started.elapsed().as_secs_f64();
+    let report = json!({
+        "tasks_published": published,
+        "tasks_withdrawn": tasks,
+        "withdrawn_rows": batch.withdrawn.len(),
+        "write_wall_s_with_takeback": write_wall,
+        "drain_pages": taken,
+        "drain_pages_reported": reported,
+        "drain_wall_s": drain_wall,
+        "drain_cpu_s": usage().cpu - before.cpu,
+        "drain_pages_per_s": taken as f64 / drain_wall,
+        "peak_rss_bytes": usage().peak,
+    });
+    println!("{}", serde_json::to_string(&report).unwrap());
+    drop(index);
+    let _ = std::fs::remove_dir_all(&run_dir);
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let (sample, work) = (PathBuf::from(&args[2]), PathBuf::from(&args[3]));
@@ -205,6 +253,7 @@ fn main() {
     match args[1].as_str() {
         "prefill" => prefill(&sample, &work, args[4].parse().unwrap()),
         "run" => run(&sample, &work, args[4].parse().unwrap(), args.get(5).map_or(3, |p| p.parse().unwrap())),
+        "takeback" => takeback(&sample, &work, args[4].parse().unwrap()),
         other => panic!("unknown command {other}"),
     }
 }
