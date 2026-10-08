@@ -4,6 +4,10 @@ services:
   publisher:
     build: .
     restart: unless-stopped
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
     environment:
       CF_R2_ENDPOINT: ${CF_R2_ENDPOINT:?set CF_R2_ENDPOINT}
       CF_R2_ACCESS_KEY_ID: ${CF_R2_ACCESS_KEY_ID:?set CF_R2_ACCESS_KEY_ID}
