@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
+use std::sync::{Arc, LazyLock, Mutex, MutexGuard, OnceLock};
 
 use anyhow::{Context, Result};
 use blake2::digest::consts::{U2, U8};
@@ -11,11 +11,13 @@ use rocksdb::{
     BlockBasedIndexType, BlockBasedOptions, Cache, ColumnFamilyDescriptor, DBCompressionType, Direction, IteratorMode, Options, ReadOptions,
     WriteBatch, WriteBufferManager, DB,
 };
+use regex::bytes::Regex;
 use serde::Deserialize;
 use serde_json::{Map, Value};
 
 use crate::allowed::Allowed;
 use crate::listed::{self, ListedSet};
+use crate::ready::SENT;
 use crate::urls::{Listing, Record, Url, TIMED};
 
 pub const BUCKETS: usize = 256;
@@ -27,6 +29,17 @@ pub(crate) const URL: u8 = b'U';
 const META: u8 = b'M';
 
 pub type Json = Map<String, Value>;
+
+/// An address kept with a sitemap's XML escapes in, as in `?amp;id=1` or `Q&amp;A`.
+static ESCAPED: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"&(amp|lt|gt|quot|apos|#[0-9]+|#x[0-9a-fA-F]+);|[?&]amp;").expect("a valid pattern"));
+const DELETES_PER_WRITE: usize = 10_000;
+
+/// Pages and sitemaps found with escaped addresses.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Escaped {
+    pub pages: usize,
+    pub sitemaps: usize,
+}
 
 /// The bucket a domain belongs to; it never changes.
 pub fn bucket_of(host: &str) -> usize {
@@ -269,6 +282,42 @@ impl BucketStore {
         Ok(listing)
     }
 
+    /// Deletes pages and sitemaps whose address kept its XML escapes, with what was sent of those pages; without `apply` it only counts them.
+    pub fn remove_escaped(&self, apply: bool) -> Result<Escaped> {
+        let mut found = Escaped::default();
+        let mut batch = WriteBatch::default();
+        for prefix in [URL, SITEMAP] {
+            let mut bounds = ReadOptions::default();
+            bounds.set_iterate_upper_bound([prefix + 1]);
+            for item in self.db.iterator_opt(IteratorMode::From(&[prefix], Direction::Forward), bounds) {
+                let (key, _) = item?;
+                let Some(at) = key.iter().position(|&b| b == 0) else {
+                    continue;
+                };
+                if !ESCAPED.is_match(&key[at + 1..]) {
+                    continue;
+                }
+                if prefix == URL {
+                    found.pages += 1;
+                    batch.delete([&[SENT], &key[1..]].concat());
+                } else {
+                    found.sitemaps += 1;
+                }
+                batch.delete(&key);
+                if batch.len() >= DELETES_PER_WRITE {
+                    let full = std::mem::take(&mut batch);
+                    if apply {
+                        self.db.write(full)?;
+                    }
+                }
+            }
+        }
+        if apply && !batch.is_empty() {
+            self.db.write(batch)?;
+        }
+        Ok(found)
+    }
+
     pub fn url(&self, url: &Url) -> Result<Option<Record>> {
         Ok(self.db.get([&[URL], &url.key[..]].concat())?.as_deref().and_then(Record::unpack))
     }
@@ -443,6 +492,34 @@ mod tests {
         assert!(stored > 0 && (stored as usize) < raw / 4, "{stored} bytes stored for {raw} raw");
         assert!(store.url(&Url { key: b"example.com\0example.com/products/category/item-9".to_vec(), flags: 1 }).unwrap().is_some());
         assert!(resources.cache.get_usage() > 0, "reads go through the shared block cache");
+        drop(store);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn addresses_kept_with_xml_escapes_are_removed() {
+        let dir = std::env::temp_dir().join(format!("desearch-bot-escaped-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let resources = Resources::new(8 << 20, 8 << 20, 1);
+        let store = BucketStore::open(&dir, &resources).unwrap();
+        let url = |rest: &str| Url { key: format!("ex.com\0{rest}").into_bytes(), flags: 1 };
+        let listed = ["ex.com/story", "ex.com/shop?amp;p=2669&post_type=product", "ex.com/Q&amp;A", "ex.com/a?amp=1&b=2"];
+        store.record_listing("ex.com", 7, listed.iter().map(|rest| (url(rest), 1, false)).collect(), 1).unwrap();
+        let sent = [&[SENT][..], b"ex.com\0ex.com/Q&amp;A"].concat();
+        store.db.put(&sent, b"sent").unwrap();
+        let mut changes = Changes::default();
+        changes.sitemap("ex.com", "https://ex.com/sitemap.xml?page=2&amp;type=post", &Json::new());
+        changes.sitemap("ex.com", "https://ex.com/sitemap.xml", &Json::new());
+        store.write(changes).unwrap();
+
+        assert_eq!(store.remove_escaped(false).unwrap(), Escaped { pages: 2, sitemaps: 1 });
+        assert!(store.url(&url("ex.com/Q&amp;A")).unwrap().is_some(), "counting deletes nothing");
+        assert_eq!(store.remove_escaped(true).unwrap(), Escaped { pages: 2, sitemaps: 1 });
+        let kept: Vec<bool> = listed.iter().map(|rest| store.url(&url(rest)).unwrap().is_some()).collect();
+        assert_eq!(kept, [true, false, false, true]);
+        assert!(store.db.get(&sent).unwrap().is_none(), "what was sent of a removed page goes with it");
+        assert_eq!(store.sitemaps("ex.com").unwrap().into_iter().map(|(url, _)| url).collect::<Vec<_>>(), ["https://ex.com/sitemap.xml"]);
+        assert_eq!(store.remove_escaped(true).unwrap(), Escaped::default());
         drop(store);
         std::fs::remove_dir_all(&dir).ok();
     }

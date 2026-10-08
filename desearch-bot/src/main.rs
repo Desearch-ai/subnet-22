@@ -10,7 +10,7 @@ use clap::{Parser, Subcommand};
 use tokio::sync::watch;
 
 use desearch_bot::allowed::Allowed;
-use desearch_bot::buckets::{Buckets, Resources, BUCKETS};
+use desearch_bot::buckets::{BucketStore, Buckets, Escaped, Resources, BUCKETS};
 use desearch_bot::crawl::Loop;
 use desearch_bot::dispatch::{self, Dispatcher, Progress};
 use desearch_bot::hotkey::Hotkey;
@@ -38,7 +38,19 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     /// Crawl the buckets this process owns, around the clock.
-    Run(RunArgs),
+    Run(Box<RunArgs>),
+    /// Delete pages and sitemaps kept with a sitemap's XML escapes; counts them unless `--apply`. Run it with the crawl loop stopped.
+    RemoveEscaped(RemoveEscapedArgs),
+}
+
+#[derive(clap::Args)]
+struct RemoveEscapedArgs {
+    #[arg(long, default_value = "/var/lib/desearch-bot/buckets")]
+    buckets_dir: PathBuf,
+    #[arg(long, default_value = "0-255")]
+    buckets: String,
+    #[arg(long)]
+    apply: bool,
 }
 
 #[derive(clap::Args)]
@@ -121,7 +133,10 @@ struct RunArgs {
 }
 
 fn main() -> Result<()> {
-    let Command::Run(args) = Cli::parse().command;
+    let args = match Cli::parse().command {
+        Command::Run(args) => *args,
+        Command::RemoveEscaped(args) => return remove_escaped(args),
+    };
     // Parsing is capped by its own slots; more blocking threads would only hold more allocator caches.
     tokio::runtime::Builder::new_multi_thread().enable_all().max_blocking_threads(128).build()?.block_on(run(args))
 }
@@ -268,6 +283,34 @@ async fn run(args: RunArgs) -> Result<()> {
         let _ = tokio::task::spawn_blocking(move || backfill.join()).await;
     }
     println!("[rs] done {}", crawl.summary());
+    Ok(())
+}
+
+fn remove_escaped(args: RemoveEscapedArgs) -> Result<()> {
+    let owned = parse_buckets(&args.buckets)?;
+    let resources = Resources::new(1 << 30, 512 << 20, owned.len());
+    let buckets = Buckets::open(&args.buckets_dir, &owned, &resources)?;
+    let stores: Vec<&BucketStore> = buckets.stores().collect();
+    let threads = std::thread::available_parallelism().map_or(4, |n| n.get()).min(16);
+    let found = std::thread::scope(|scope| {
+        let handles: Vec<_> = stores
+            .chunks(stores.len().div_ceil(threads).max(1))
+            .map(|chunk| {
+                scope.spawn(move || {
+                    chunk.iter().try_fold(Escaped::default(), |sum, store| {
+                        let found = store.remove_escaped(args.apply)?;
+                        anyhow::Ok(Escaped { pages: sum.pages + found.pages, sitemaps: sum.sitemaps + found.sitemaps })
+                    })
+                })
+            })
+            .collect();
+        handles.into_iter().map(|h| h.join().expect("a store pass panicked")).try_fold(Escaped::default(), |sum, found| {
+            let found = found?;
+            anyhow::Ok(Escaped { pages: sum.pages + found.pages, sitemaps: sum.sitemaps + found.sitemaps })
+        })
+    })?;
+    let done = if args.apply { "deleted" } else { "found" };
+    println!("{done} {} pages and {} sitemaps with escaped addresses in {} stores", found.pages, found.sitemaps, stores.len());
     Ok(())
 }
 

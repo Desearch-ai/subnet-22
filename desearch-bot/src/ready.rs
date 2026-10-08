@@ -18,7 +18,7 @@ const READY: u8 = b'R';
 /// How many pages each domain has waiting.
 const READY_COUNT: u8 = b'Q';
 /// The lastmod each page was last sent with, and its failures since.
-const SENT: u8 = b'P';
+pub(crate) const SENT: u8 = b'P';
 /// Retries and re-crawls by the time they join their ready list again.
 const WAITING: u8 = b'W';
 /// Sent pages by the time their outcome is overdue.
