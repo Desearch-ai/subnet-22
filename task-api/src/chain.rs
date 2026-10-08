@@ -1,6 +1,8 @@
 //! The subtensor chain over JSON-RPC: the best block, block hashes, and a subnet's metagraph decoded with the chain's own metadata.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -11,9 +13,13 @@ use scale_value::{Composite, Primitive, Value, ValueDef};
 use serde_json::json;
 use tokio::sync::Mutex;
 
-/// A block is about 12 seconds, so a best block read this recently is still the best block or one behind.
-const BLOCK_FRESH: Duration = Duration::from_secs(1);
-const RPC_TIMEOUT: Duration = Duration::from_secs(20);
+const BLOCK_SECONDS: f64 = 12.0;
+/// The best block is read this often; in between it is counted on the clock, at most a block behind.
+const BLOCK_REFRESH: Duration = Duration::from_secs(30);
+/// After a failed call every call waits this long, doubling up to `PAUSE_MAX`, so an unwell endpoint is not hammered.
+const PAUSE_FIRST: Duration = Duration::from_secs(5);
+const PAUSE_MAX: Duration = Duration::from_secs(120);
+const RPC_TIMEOUT: Duration = Duration::from_secs(8);
 const HASHES_KEPT: usize = 4096;
 const METADATA_VERSION: u32 = 15;
 
@@ -31,8 +37,17 @@ pub struct Neuron {
 pub struct Chain {
     http: reqwest::Client,
     url: String,
-    block: Mutex<Option<(Instant, i64)>>,
+    best: std::sync::Mutex<Option<(i64, Instant)>>,
+    reading: AtomicBool,
+    first: Mutex<()>,
+    pause: std::sync::Mutex<Pause>,
     hashes: Mutex<HashMap<i64, String>>,
+}
+
+#[derive(Default)]
+struct Pause {
+    until: Option<Instant>,
+    length: Duration,
 }
 
 /// The JSON-RPC endpoint of a bittensor network name, or the URL itself.
@@ -49,10 +64,34 @@ pub fn endpoint(network: &str) -> String {
 impl Chain {
     pub fn new(network: &str) -> Result<Chain> {
         let http = reqwest::Client::builder().timeout(RPC_TIMEOUT).build()?;
-        Ok(Chain { http, url: endpoint(network), block: Mutex::default(), hashes: Mutex::default() })
+        Ok(Chain {
+            http,
+            url: endpoint(network),
+            best: std::sync::Mutex::default(),
+            reading: AtomicBool::new(false),
+            first: Mutex::default(),
+            pause: std::sync::Mutex::default(),
+            hashes: Mutex::default(),
+        })
     }
 
     async fn rpc(&self, method: &str, params: serde_json::Value) -> Result<serde_json::Value> {
+        if let Some(left) = self.paused_for() {
+            bail!("{method}: the chain is not called for {:.0}s after failing", left.as_secs_f64());
+        }
+        let reply = self.call(method, params).await;
+        let mut pause = self.pause.lock().expect("chain pause");
+        match &reply {
+            Ok(_) => *pause = Pause::default(),
+            Err(_) => {
+                pause.length = (pause.length * 2).clamp(PAUSE_FIRST, PAUSE_MAX);
+                pause.until = Some(Instant::now() + pause.length);
+            }
+        }
+        reply
+    }
+
+    async fn call(&self, method: &str, params: serde_json::Value) -> Result<serde_json::Value> {
         let request = json!({"id": 1, "jsonrpc": "2.0", "method": method, "params": params});
         let reply: serde_json::Value = self.http.post(&self.url).json(&request).send().await?.error_for_status()?.json().await?;
         if let Some(error) = reply.get("error") {
@@ -61,18 +100,58 @@ impl Chain {
         reply.get("result").cloned().ok_or_else(|| anyhow!("{method} answered without a result"))
     }
 
-    /// The best block's number, as bittensor's `Subtensor.block` reads it.
-    pub async fn current_block(&self) -> Result<i64> {
-        let mut cached = self.block.lock().await;
-        if let Some((at, block)) = *cached {
-            if at.elapsed() < BLOCK_FRESH {
-                return Ok(block);
-            }
+    fn paused_for(&self) -> Option<Duration> {
+        let until = self.pause.lock().expect("chain pause").until?;
+        until.checked_duration_since(Instant::now())
+    }
+
+    /// The best block, counted on from the last one read; only the very first call waits on the chain.
+    pub async fn current_block(self: &Arc<Self>) -> Result<i64> {
+        if let Some(block) = self.counted() {
+            return Ok(block);
         }
+        let _first = self.first.lock().await;
+        if let Some(block) = self.counted() {
+            return Ok(block);
+        }
+        self.read_best().await
+    }
+
+    fn counted(self: &Arc<Self>) -> Option<i64> {
+        let (block, at) = (*self.best.lock().expect("best block"))?;
+        if at.elapsed() >= BLOCK_REFRESH && self.paused_for().is_none() && !self.reading.swap(true, Ordering::AcqRel) {
+            let chain = self.clone();
+            tokio::spawn(async move {
+                if let Err(error) = chain.read_best().await {
+                    eprintln!("reading the best block failed: {error:#}");
+                }
+                chain.reading.store(false, Ordering::Release);
+            });
+        }
+        Some(block + (at.elapsed().as_secs_f64() / BLOCK_SECONDS).floor() as i64)
+    }
+
+    /// Counts on from a block read earlier by this or another copy, so a restart does not wait on the chain.
+    pub fn assume(&self, block: i64, read_at: f64) {
+        let age = Duration::from_secs_f64((desearch::time::now() - read_at).max(0.0));
+        let Some(at) = Instant::now().checked_sub(age) else { return };
+        let mut best = self.best.lock().expect("best block");
+        if best.is_none() {
+            *best = Some((block, at));
+        }
+    }
+
+    /// The last best block read and when, as a Unix time.
+    pub fn last_read(&self) -> Option<(i64, f64)> {
+        let (block, at) = (*self.best.lock().expect("best block"))?;
+        Some((block, desearch::time::now() - at.elapsed().as_secs_f64()))
+    }
+
+    async fn read_best(&self) -> Result<i64> {
         let header = self.rpc("chain_getHeader", json!([])).await?;
         let number = header["number"].as_str().ok_or_else(|| anyhow!("a header without a number"))?;
         let block = i64::from_str_radix(number.trim_start_matches("0x"), 16).context("a header's number")?;
-        *cached = Some((Instant::now(), block));
+        *self.best.lock().expect("best block") = Some((block, Instant::now()));
         Ok(block)
     }
 

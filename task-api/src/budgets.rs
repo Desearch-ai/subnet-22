@@ -131,6 +131,14 @@ pub fn get_or_create(conn: &Connection, hotkey: &str, pool: &str) -> Result<Mine
     Ok(miner)
 }
 
+pub fn find(conn: &Connection, hotkey: &str, pool: &str) -> Result<Option<MinerBudget>> {
+    Ok(conn
+        .query_row("SELECT budget, verified FROM miners WHERE hotkey = ? AND pool = ?", params![hotkey, pool], |row| {
+            Ok(MinerBudget { hotkey: hotkey.into(), pool: pool.into(), budget: row.get(0)?, verified: row.get(1)? })
+        })
+        .optional()?)
+}
+
 pub fn get(conn: &Connection, hotkey: &str, pool: &str) -> Result<MinerBudget> {
     let found = conn
         .query_row("SELECT budget, verified FROM miners WHERE hotkey = ? AND pool = ?", params![hotkey, pool], |row| Ok((row.get(0)?, row.get(1)?)))

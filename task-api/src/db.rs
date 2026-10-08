@@ -1,8 +1,8 @@
-//! SQLite on threads of its own: one writer that runs every change in order, and one read-only reader for the log pages.
+//! SQLite on threads of its own: one writer that runs every change in order, and read-only readers for everything else.
 
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{mpsc, Arc};
+use std::sync::{mpsc, Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{anyhow, Result};
@@ -11,11 +11,9 @@ use rusqlite::{Connection, Row, TransactionBehavior};
 use serde_json::{Map, Value};
 use tokio::sync::oneshot;
 
-use crate::{budgets, checks, embeddings, roundlog, roundstore, validations};
+use crate::{budgets, checks, embeddings, registry, roundlog, roundstore, validations};
 
 pub const FILE: &str = "task_api.db";
-/// Log reads queued at once before more are turned away.
-const MAX_WAITING: usize = 32;
 
 type Job = Box<dyn FnOnce(&mut Connection) + Send>;
 
@@ -52,6 +50,7 @@ impl Db {
         validations::create(&conn)?;
         checks::create(&conn)?;
         embeddings::create(&conn)?;
+        registry::create(&conn)?;
         Ok(Db { jobs: spawn("sqlite", conn)? })
     }
 
@@ -84,21 +83,35 @@ impl std::fmt::Display for Busy {
 
 impl std::error::Error for Busy {}
 
-/// Log reads have a connection and a thread of their own, so they never hold up a claim.
+/// Read-only connections on threads of their own, so reads never wait behind the writer or hold it up.
 pub struct Reader {
     jobs: mpsc::Sender<Job>,
     waiting: Arc<AtomicUsize>,
+    max_waiting: usize,
 }
 
 impl Reader {
-    pub fn open(path: &Path) -> Result<Reader> {
-        let conn = connect(path)?;
-        conn.pragma_update(None, "query_only", "ON")?;
-        Ok(Reader { jobs: spawn("logs", conn)?, waiting: Arc::default() })
+    /// `threads` connections share the reads; past `max_waiting` queued reads, more are turned away.
+    pub fn open(path: &Path, name: &str, threads: usize, max_waiting: usize) -> Result<Reader> {
+        let (jobs, inbox) = mpsc::channel::<Job>();
+        let inbox = Arc::new(Mutex::new(inbox));
+        for n in 0..threads {
+            let mut conn = connect(path)?;
+            conn.pragma_update(None, "query_only", "ON")?;
+            let inbox = inbox.clone();
+            std::thread::Builder::new().name(format!("{name}-{n}")).spawn(move || loop {
+                let job = inbox.lock().expect("reader inbox").recv();
+                match job {
+                    Ok(job) => job(&mut conn),
+                    Err(_) => break,
+                }
+            })?;
+        }
+        Ok(Reader { jobs, waiting: Arc::default(), max_waiting })
     }
 
     pub async fn read<T: Send + 'static>(&self, work: impl FnOnce(&Connection) -> Result<T> + Send + 'static) -> Result<T> {
-        if self.waiting.fetch_add(1, Ordering::SeqCst) >= MAX_WAITING {
+        if self.waiting.fetch_add(1, Ordering::SeqCst) >= self.max_waiting {
             self.waiting.fetch_sub(1, Ordering::SeqCst);
             return Err(Busy.into());
         }

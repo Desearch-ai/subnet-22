@@ -163,25 +163,33 @@ pub fn pack_round(urls: Vec<Url>, target: i64, task_urls: usize, now: f64) -> Re
     Ok(rounds::open_batches(rounds::pack(unique, task_urls), target, "crawl", now))
 }
 
-/// The round a bot's URLs make, committed before its seed block exists.
+/// The round a bot's URLs make, committed before its seed block exists; returned as SQLite keeps it.
 pub async fn open_round(state: &State, urls: Vec<Url>) -> Result<Result<Round, desearch::canonical::Invalid>> {
     let started = Instant::now();
     let target = state.seeds.target_block().await?;
     let blocked = started.elapsed().as_secs_f64();
     let task_urls = state.settings.task_urls;
     let count = urls.len();
-    let round = match tokio::task::spawn_blocking(move || pack_round(urls, target, task_urls, now())).await? {
-        Ok(round) => round,
+    let packing =
+        tokio::task::spawn_blocking(move || pack_round(urls, target, task_urls, now()).map(|round| (queues::pack_job(&round.url_lists()), round.sealed())));
+    let (lists, sealed) = match packing.await? {
+        Ok(packed) => packed,
         Err(invalid) => return Ok(Err(invalid)),
     };
     let packed = started.elapsed().as_secs_f64();
-    let saved = round.clone();
-    state.db.run(move |conn| roundstore::save(conn, &saved)).await?;
+    save_round(state, &sealed, &lists).await?;
     let took = started.elapsed().as_secs_f64();
     if took > SLOW_ENQUEUE_S {
         eprintln!("enqueueing {count} urls took {took:.1}s (block {blocked:.1}s, pack {:.1}s, save {:.1}s)", packed - blocked, took - packed);
     }
-    Ok(Ok(round))
+    Ok(Ok(sealed))
+}
+
+/// Staged before it is saved, so a saved round always has its URLs.
+async fn save_round(state: &State, sealed: &Round, lists: &str) -> Result<()> {
+    queues::stage(&state.redis, &sealed.round_id, lists).await?;
+    let saved = sealed.clone();
+    state.db.run(move |conn| roundstore::save(conn, &saved)).await
 }
 
 /// Turns the publisher's waiting inputs into one embed round, one batch per input.
@@ -200,7 +208,7 @@ pub async fn open_embed_rounds(state: &State) -> Result<Option<Round>> {
         let pages = entry["pages"].as_array().cloned().unwrap_or_default();
         let checked = pages.clone();
         let wanting = model.clone();
-        if state.db.run(move |conn| embeddings::missing(conn, &checked, &wanting)).await?.is_empty() {
+        if state.lookups.read(move |conn| embeddings::missing(conn, &checked, &wanting)).await?.is_empty() {
             continue;
         }
         let keep: Vec<Value> = pages.iter().map(|p| json!({"page_key": p["page_key"], "content_sha1": p["content_sha1"], "url": p["url"]})).collect();
@@ -214,19 +222,20 @@ pub async fn open_embed_rounds(state: &State) -> Result<Option<Round>> {
     if !batches.is_empty() {
         let target = state.seeds.target_block().await?;
         let round = rounds::open_batches(batches, target, EMBED, now());
-        let saved = round.clone();
+        let sealed = round.sealed();
+        save_round(state, &sealed, &queues::pack_job(&round.url_lists())).await?;
+        let queued = sealed.clone();
         state
             .db
             .run(move |conn| {
-                roundstore::save(conn, &saved)?;
-                for batch in &saved.batches {
+                for batch in &queued.batches {
                     let pages = batch.extra["pages"].as_array().cloned().unwrap_or_default();
                     embeddings::queue(conn, &pages, &model, &batch.batch_id, now())?;
                 }
                 Ok(())
             })
             .await?;
-        opened = Some(round);
+        opened = Some(sealed);
     }
     // Trimmed only once the round is saved, so a crash re-reads the inputs.
     let _: () = redis.ltrim(queues::EMBED_INPUTS, waiting.len() as isize, -1).await?;
@@ -235,7 +244,7 @@ pub async fn open_embed_rounds(state: &State) -> Result<Option<Round>> {
 
 pub async fn reveal_pending(state: &State) -> Result<usize> {
     let current = state.seeds.current_block().await?;
-    let pending = state.reader.read(move |conn| roundstore::unrevealed(conn, current, REVEAL_AT_ONCE)).await?;
+    let pending = state.lookups.read(move |conn| roundstore::unrevealed(conn, current, REVEAL_AT_ONCE)).await?;
     let mut filled = 0;
     for mut round in pending {
         let Some(seed) = state.seeds.seed_for(round.seed_block).await? else { continue };
@@ -250,6 +259,14 @@ pub async fn reveal_pending(state: &State) -> Result<usize> {
 
 /// Queues a revealed round's tasks; it counts as filled only once Redis holds them.
 pub async fn fill_round(state: &State, round: &Round) -> Result<usize> {
+    let mut round = round.clone();
+    if !round.has_urls() {
+        let lists = queues::staged(&state.redis, &round.round_id).await?;
+        if !lists.is_some_and(|lists| round.restore_urls(&lists)) {
+            eprintln!("round={} lost its URL lists before its tasks were queued; it closes without them", round.round_id);
+            round.order.clear();
+        }
+    }
     if !round.order.is_empty() {
         let payloads: Map<String, Value> = round
             .batches
@@ -264,8 +281,9 @@ pub async fn fill_round(state: &State, round: &Round) -> Result<usize> {
         let _: i64 = state.redis.clone().sadd(open_round_key(&round.round_id), &round.order).await?;
         state.tasks(&round.kind).fill(&state.redis, &round.round_id, &round.order, &payloads).await?;
     }
-    let (round_id, sealed) = (round.round_id.clone(), roundstore::sealed_batches(round));
+    let (round_id, sealed) = (round.round_id.clone(), roundstore::sealed_batches(&round));
     state.db.run(move |conn| roundstore::mark_filled(conn, &round_id, &sealed, now())).await?;
+    queues::unstage(&state.redis, &round.round_id).await?;
     state.current.lock().expect("current rounds").insert(round.kind.clone(), round.round_id.clone());
     Ok(round.order.len())
 }
@@ -273,11 +291,12 @@ pub async fn fill_round(state: &State, round: &Round) -> Result<usize> {
 /// Rounds revealed before Redis took their tasks get them now, not closed unserved.
 pub async fn fill_missing(state: &State) -> Result<Vec<String>> {
     let mut filled = Vec::new();
-    for round in state.reader.read(roundstore::unfilled).await? {
+    for round in state.lookups.read(roundstore::unfilled).await? {
         let open: i64 = state.redis.clone().scard(open_round_key(&round.round_id)).await?;
         if open > 0 {
             let (round_id, sealed) = (round.round_id.clone(), roundstore::sealed_batches(&round));
             state.db.run(move |conn| roundstore::mark_filled(conn, &round_id, &sealed, now())).await?;
+            queues::unstage(&state.redis, &round.round_id).await?;
             continue;
         }
         fill_round(state, &round).await?;
@@ -288,7 +307,7 @@ pub async fn fill_missing(state: &State) -> Result<Vec<String>> {
 
 pub async fn close_finished(state: &State) -> Result<Vec<String>> {
     let mut closed = Vec::new();
-    for round_id in state.db.run(roundstore::open_revealed).await? {
+    for round_id in state.lookups.read(roundstore::open_revealed).await? {
         let open: i64 = state.redis.clone().scard(open_round_key(&round_id)).await?;
         if open > 0 {
             continue;
@@ -534,11 +553,11 @@ async fn pick_reason(state: &State, task_id: &str, job: &Value, seed: &str) -> R
         return Ok(Some(UNREPORTED));
     }
     let (asked, pool) = (miner.clone(), kind.clone());
-    if state.db.run(move |conn| budgets::locked_until(conn, &asked, &pool, now())).await?.is_some() {
+    if state.lookups.read(move |conn| budgets::locked_until(conn, &asked, &pool, now())).await?.is_some() {
         return Ok(Some(LOCKED));
     }
     let asked = miner.clone();
-    let (passes, recheck_left) = state.db.run(move |conn| Ok((checks::passes(conn, &asked)?, checks::recheck_left(conn, &asked)?))).await?;
+    let (passes, recheck_left) = state.lookups.read(move |conn| Ok((checks::passes(conn, &asked)?, checks::recheck_left(conn, &asked)?))).await?;
     let at = now();
     let share =
         sampling::budget_share(state.settings.check_share, state.settings.checks_per_hour, sampling::uploads_last_hour(&state.redis, sampling::ALL, at).await?);
@@ -582,7 +601,7 @@ pub fn unchecked_vote(job: &Value, error_share: f64) -> Value {
 
 pub async fn finalize_unchecked(state: &State, task_id: &str, job: &Value, seeding: bool) -> Result<Option<Value>> {
     let miner = text(job, "miner").to_string();
-    let share = state.db.run(move |conn| checks::error_share(conn, &miner, now())).await?;
+    let share = state.lookups.read(move |conn| checks::error_share(conn, &miner, now())).await?;
     conclude_validation(state, task_id, job, Decision::last(unchecked_vote(job, share), Vec::new()), seeding).await
 }
 
@@ -653,7 +672,7 @@ pub fn held_to_report(job: &Value, decision: Decision) -> Decision {
 /// Accounts are finalized once per upload, in one transaction, before Redis lets go; None when storage failed or the upload was closed under it.
 pub async fn conclude_validation(state: &State, task_id: &str, job: &Value, decision: Decision, seeding: bool) -> Result<Option<Value>> {
     let (task, key) = (task_id.to_string(), text(job, "key").to_string());
-    if let Some(finalized) = state.db.run(move |conn| validations::final_verdict(conn, &task, &key)).await? {
+    if let Some(finalized) = state.lookups.read(move |conn| validations::final_verdict(conn, &task, &key)).await? {
         return finish_finalized(state, task_id, job, finalized, seeding).await;
     }
     let vote = decision.vote().clone();
@@ -666,9 +685,16 @@ pub async fn conclude_validation(state: &State, task_id: &str, job: &Value, deci
     }
     let publish = (verdict == "pass" && (truthy(result.get("matched")) || result.get("reason").and_then(Value::as_str) == Some(UNCHECKED)))
         .then(|| publish_job(state, task_id, job, &vote, &decision.agreed));
+    let details = validations::pack_details(result.get("urls"));
     let settled = {
         let (task, job, decision, report, publish) = (task_id.to_string(), job.clone(), decision.clone(), report.clone(), publish.clone());
-        state.db.run(move |conn| finalize_accounts(conn, &task, &job, &decision, &report, publish.as_ref(), now())).await?
+        state
+            .db
+            .run(move |conn| {
+                let kept = Kept { report: &report, publish: publish.as_ref(), details: details.as_deref() };
+                finalize_accounts(conn, &task, &job, &decision, kept, now())
+            })
+            .await?
     };
     let Some(budget) = settled else {
         let (task, key) = (task_id.to_string(), text(job, "key").to_string());
@@ -681,7 +707,7 @@ pub async fn conclude_validation(state: &State, task_id: &str, job: &Value, deci
     };
     for validator in &decision.disagreed {
         let asked = validator.clone();
-        if state.db.run(move |conn| validations::is_excluded(conn, &asked)).await? {
+        if state.lookups.read(move |conn| validations::is_excluded(conn, &asked)).await? {
             state.validation.leave(&state.redis, validator).await?;
         }
     }
@@ -775,16 +801,16 @@ pub async fn report_outcomes(state: &State, urls: &[String], outcome: &'static s
     }
 }
 
+/// What a verdict leaves behind: its report, the publish job for a pass, and the packed per-URL detail of a check.
+pub struct Kept<'a> {
+    pub report: &'a Map<String, Value>,
+    pub publish: Option<&'a Value>,
+    pub details: Option<&'a [u8]>,
+}
+
 /// Every SQLite effect of one verdict, committed together; the miner's budget, or None when the upload was finalized before.
-pub fn finalize_accounts(
-    conn: &Connection,
-    task_id: &str,
-    job: &Value,
-    decision: &Decision,
-    report: &Map<String, Value>,
-    publish: Option<&Value>,
-    now: f64,
-) -> Result<Option<i64>> {
+pub fn finalize_accounts(conn: &Connection, task_id: &str, job: &Value, decision: &Decision, kept: Kept, now: f64) -> Result<Option<i64>> {
+    let Kept { report, publish, details } = kept;
     let vote = decision.vote();
     let result = &vote["result"];
     let (verdict, kind, miner) = (text(vote, "verdict"), kind_of(job), text(job, "miner"));
@@ -816,7 +842,7 @@ pub fn finalize_accounts(
     if !decision.agreed.is_empty() || !decision.disagreed.is_empty() {
         validations::record_audit(conn, &decision.agreed, &decision.disagreed)?;
     }
-    validations::record(conn, report, result.get("urls"))?;
+    validations::record(conn, report, details)?;
     validations::record_votes(conn, report, &decision.votes, &decision.disagreed, reason != NO_MAJORITY)?;
     if verdict == "fail" && STRIKE_REASONS.contains(&reason) {
         strike(conn, miner, reason, task_id, kind, now)?;
@@ -892,7 +918,7 @@ async fn finish_finalized(state: &State, task_id: &str, job: &Value, finalized: 
         return Ok(None);
     }
     let (miner, kind) = (text(job, "miner").to_string(), kind_of(job).to_string());
-    let budget = state.db.run(move |conn| budgets::get(conn, &miner, &kind)).await?.budget;
+    let budget = state.lookups.read(move |conn| budgets::get(conn, &miner, &kind)).await?.budget;
     Ok(Some(json!({"task_id": task_id, "verdict": finalized.verdict, "credited": finalized.credited, "miner_budget": budget})))
 }
 

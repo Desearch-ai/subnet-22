@@ -1,10 +1,11 @@
 //! The task, validation and publish queues in Redis, each change one Lua script so it lands whole.
 
-use std::io::Write;
+use std::io::{Read, Write};
 use std::sync::LazyLock;
 
 use anyhow::{anyhow, Result};
 use base64::Engine;
+use flate2::read::ZlibDecoder;
 use flate2::write::ZlibEncoder;
 use flate2::Compression;
 use redis::{AsyncCommands, Script, Value as Reply};
@@ -39,6 +40,8 @@ pub const ACTIVE_S: f64 = 3600.0;
 pub const CLAIM_SCAN_MAX: i64 = 1000;
 pub const HOLDERS_TTL_S: i64 = 7 * 86_400;
 pub const KINDS: [&str; 2] = ["crawl", "embed"];
+/// Kept past any reveal, so lists a crash left behind still expire.
+pub const STAGED_TTL_S: u64 = 2 * 86_400;
 
 static CLAIM: LazyLock<Script> = LazyLock::new(|| Script::new(include_str!("lua/claim.lua")));
 static RECLAIM: LazyLock<Script> = LazyLock::new(|| {
@@ -86,6 +89,33 @@ pub fn pack_job(job: &Value) -> String {
     encoder.write_all(job.to_string().as_bytes()).expect("writing to memory");
     let compressed = encoder.finish().expect("writing to memory");
     format!("{PACKED}{}", base64::engine::general_purpose::STANDARD.encode(compressed))
+}
+
+pub fn unpack_job(packed: &str) -> Option<Value> {
+    let compressed = base64::engine::general_purpose::STANDARD.decode(packed.strip_prefix(PACKED)?).ok()?;
+    let mut json = String::new();
+    ZlibDecoder::new(compressed.as_slice()).read_to_string(&mut json).ok()?;
+    serde_json::from_str(&json).ok()
+}
+
+/// A round's URL lists between its commit and the queueing of its tasks.
+pub fn staged_key(round_id: &str) -> String {
+    format!("round:{round_id}:urls")
+}
+
+pub async fn stage(redis: &Redis, round_id: &str, packed: &str) -> Result<()> {
+    let _: () = redis.clone().set_ex(staged_key(round_id), packed, STAGED_TTL_S).await?;
+    Ok(())
+}
+
+pub async fn staged(redis: &Redis, round_id: &str) -> Result<Option<Value>> {
+    let packed: Option<String> = redis.clone().get(staged_key(round_id)).await?;
+    Ok(packed.and_then(|packed| unpack_job(&packed)))
+}
+
+pub async fn unstage(redis: &Redis, round_id: &str) -> Result<()> {
+    let _: i64 = redis.clone().del(staged_key(round_id)).await?;
+    Ok(())
 }
 
 pub fn text(reply: &Reply) -> Option<String> {

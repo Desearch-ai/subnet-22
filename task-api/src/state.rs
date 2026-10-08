@@ -19,7 +19,7 @@ use crate::flow::PublishRate;
 use crate::logs::Cache;
 use crate::py::{canonical, round_to};
 use crate::queues::{PublishQueue, TaskQueue, ValidationQueue};
-use crate::registry::{addresses, Registry};
+use crate::registry::{self, addresses, Registry};
 use crate::roundlog::{self, Receipt};
 use crate::rounds::UPLOAD_GRACE_S;
 use crate::seeds::Seeds;
@@ -37,6 +37,8 @@ pub struct State {
     pub redis: Redis,
     pub db: Db,
     pub reader: Reader,
+    /// Every other read, apart from the log pages so a busy dashboard cannot hold up a claim.
+    pub lookups: Reader,
     pub cache: Cache,
     pub storage: Bucket,
     pub pages: Bucket,
@@ -70,12 +72,36 @@ pub async fn redis_from(url: &str) -> Result<Redis> {
     Ok(redis::aio::ConnectionManager::new_with_config(client, config).await?)
 }
 
+/// Log pages queued at once before more are turned away.
+const LOG_READS_WAITING: usize = 32;
+const LOOKUP_THREADS: usize = 4;
+const LOOKUPS_WAITING: usize = 1024;
+
+/// The last best block any copy read, and when; a restart counts on from it instead of waiting on the chain.
+pub const BEST_BLOCK_KEY: &str = "chain:best";
+/// Older than this, a kept block may have drifted from the chain's, so it is read again.
+const KEPT_BLOCK_S: f64 = 600.0;
+
+async fn kept_block(redis: &Redis) -> Option<(i64, f64)> {
+    let raw: Option<String> = redis.clone().get(BEST_BLOCK_KEY).await.ok()?;
+    let kept: Value = serde_json::from_str(&raw?).ok()?;
+    Some((kept["block"].as_i64()?, kept["at"].as_f64()?))
+}
+
 impl State {
+    pub async fn keep_best_block(&self) -> Result<()> {
+        if let Some((block, at)) = self.chain.as_ref().and_then(|chain| chain.last_read()) {
+            let _: () = self.redis.clone().set(BEST_BLOCK_KEY, json!({"block": block, "at": at}).to_string()).await?;
+        }
+        Ok(())
+    }
+
     pub async fn new(settings: Settings, redis: Redis, storage: Bucket, pages: Bucket) -> Result<State> {
         std::fs::create_dir_all(&settings.data).with_context(|| format!("TASK_API_DATA {:?}", settings.data))?;
         let path = settings.data.join(db::FILE);
         let db = Db::open(&path)?;
-        let reader = Reader::open(&path)?;
+        let reader = Reader::open(&path, "logs", 1, LOG_READS_WAITING)?;
+        let lookups = Reader::open(&path, "lookups", LOOKUP_THREADS, LOOKUPS_WAITING)?;
         let current = db.run(roundstore::latest_revealed).await?;
         let network = match (&settings.registry, &settings.seeds) {
             (RegistryMode::Chain { network, .. }, _) | (_, SeedsMode::Chain { network }) => Some(network),
@@ -86,6 +112,15 @@ impl State {
             RegistryMode::Chain { .. } => Registry::chain(),
             RegistryMode::Local { validator_uris } => Registry::local(addresses(validator_uris)?),
         };
+        let kept = db.run(registry::saved).await?;
+        if !kept.is_empty() {
+            registry.restore(kept);
+        }
+        if let (Some(chain), Some((block, at))) = (&chain, kept_block(&redis).await) {
+            if now() - at < KEPT_BLOCK_S {
+                chain.assume(block, at);
+            }
+        }
         let seeds = match &settings.seeds {
             SeedsMode::Chain { .. } => Seeds::Chain(chain.clone().context("the seeds need the chain")?),
             SeedsMode::Local { block_seconds, genesis } => Seeds::Local { block_seconds: *block_seconds, genesis: *genesis },
@@ -98,6 +133,7 @@ impl State {
             redis,
             db,
             reader,
+            lookups,
             cache: Cache::default(),
             storage,
             pages,

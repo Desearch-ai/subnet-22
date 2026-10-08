@@ -67,7 +67,8 @@ async fn authenticate(state: &State, headers: &HeaderMap, method: &str, path: &s
         return Err(ApiError::status(401, "timestamp outside tolerance"));
     }
     let admin = state.admins.contains(hotkey);
-    let entry = if admin { None } else { state.registry.lookup(hotkey).await };
+    let entry =
+        if admin { None } else { state.registry.lookup(hotkey).await.map_err(|_| ApiError::retry(503, "the subnet's hotkeys are still loading", "5"))? };
     if entry.is_none() && !admin {
         return Err(ApiError::status(403, "hotkey is not registered on this subnet"));
     }

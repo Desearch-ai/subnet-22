@@ -1,10 +1,14 @@
 //! Finalized verdicts, every validator's vote, validators' audit standing, and the queries the log pages read.
 
 use std::collections::BTreeMap;
+use std::io::{Read, Write};
 
 use anyhow::Result;
 use desearch::time::utc_day;
-use rusqlite::types::Value as Sql;
+use flate2::read::ZlibDecoder;
+use flate2::write::ZlibEncoder;
+use flate2::Compression;
+use rusqlite::types::{Value as Sql, ValueRef};
 use rusqlite::{params, params_from_iter, Connection, ErrorCode, OptionalExtension, ToSql};
 use serde_json::{json, Map, Value};
 
@@ -203,14 +207,19 @@ pub fn final_verdict(conn: &Connection, task_id: &str, upload_key: &str) -> Resu
         .optional()?)
 }
 
-pub fn record(conn: &Connection, report: &Map<String, Value>, urls: Option<&Value>) -> Result<()> {
+/// A check's per-URL detail as the validations table keeps it, compressed about tenfold.
+pub fn pack_details(urls: Option<&Value>) -> Option<Vec<u8>> {
+    let Some(Value::Array(urls)) = urls.filter(|urls| urls.as_array().is_some_and(|urls| !urls.is_empty())) else { return None };
+    let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
+    encoder.write_all(&serde_json::to_vec(urls).ok()?).ok()?;
+    encoder.finish().ok()
+}
+
+pub fn record(conn: &Connection, report: &Map<String, Value>, details: Option<&[u8]>) -> Result<()> {
     let columns: Vec<&str> = FIELDS.iter().copied().chain(["report", "urls"]).collect();
     let mut values: Vec<Sql> = FIELDS.iter().map(|name| sql(report.get(*name).unwrap_or(&Value::Null))).collect();
     values.push(Sql::Text(Value::Object(report.clone()).to_string()));
-    values.push(match urls {
-        Some(Value::Array(urls)) if !urls.is_empty() => Sql::Text(Value::Array(urls.clone()).to_string()),
-        _ => Sql::Null,
-    });
+    values.push(details.map_or(Sql::Null, |details| Sql::Blob(details.to_vec())));
     conn.execute(&format!("INSERT INTO validations ({}) VALUES ({})", columns.join(", "), vec!["?"; columns.len()].join(", ")), params_from_iter(values))?;
     conn.execute(
         "INSERT INTO verdict_counts VALUES (?, ?, 1) ON CONFLICT (miner, verdict) DO UPDATE SET n = n + 1",
@@ -381,10 +390,21 @@ pub fn uploads(conn: &Connection, task_id: &str) -> Result<Vec<Map<String, Value
     reports(conn, &format!("SELECT {} FROM validations WHERE task_id = ? ORDER BY id DESC", FIELDS.join(", ")), &[&task_id])
 }
 
+/// The per-URL detail of the task's last check: compressed, or plain JSON as kept before.
 pub fn urls(conn: &Connection, task_id: &str) -> Result<Value> {
-    let found: Option<Option<String>> =
-        conn.query_row("SELECT urls FROM validations WHERE task_id = ? ORDER BY id DESC LIMIT 1", [task_id], |row| row.get(0)).optional()?;
-    Ok(found.flatten().and_then(|urls| serde_json::from_str(&urls).ok()).unwrap_or_else(|| json!([])))
+    let found: Option<Option<Value>> = conn
+        .query_row("SELECT urls FROM validations WHERE task_id = ? ORDER BY id DESC LIMIT 1", [task_id], |row| {
+            Ok(match row.get_ref(0)? {
+                ValueRef::Text(text) => serde_json::from_slice(text).ok(),
+                ValueRef::Blob(packed) => {
+                    let mut json = Vec::new();
+                    ZlibDecoder::new(packed).read_to_end(&mut json).ok().and_then(|_| serde_json::from_slice(&json).ok())
+                }
+                _ => None,
+            })
+        })
+        .optional()?;
+    Ok(found.flatten().unwrap_or_else(|| json!([])))
 }
 
 /// Clears the publish job kept with each verdict once it was finalized before `finalized_before`.
@@ -603,18 +623,21 @@ mod tests {
     fn the_per_url_detail_is_kept_beside_the_verdict_not_in_the_report() {
         let conn = store();
         let report = verdict("t1", 1_800_000_000.0);
-        record(&conn, &report, Some(&details())).unwrap();
+        record(&conn, &report, pack_details(Some(&details())).as_deref()).unwrap();
         assert!(!report.contains_key("urls"));
         assert_eq!(urls(&conn, "t1").unwrap(), details());
         assert_eq!(urls(&conn, "missing").unwrap(), json!([]));
+        record(&conn, &verdict("plain", 1_800_000_000.0), None).unwrap();
+        conn.execute("UPDATE validations SET urls = ? WHERE task_id = 'plain'", [details().to_string()]).unwrap();
+        assert_eq!(urls(&conn, "plain").unwrap(), details(), "kept as JSON text before it was compressed");
     }
 
     #[test]
     fn the_detail_is_pruned_after_two_days_and_the_verdict_stays() {
         let conn = store();
         let now = 1_800_000_000.0;
-        record(&conn, &verdict("old", now - URL_DETAIL_DAYS * 86_400.0 - 60.0), Some(&details())).unwrap();
-        record(&conn, &verdict("new", now), Some(&details())).unwrap();
+        record(&conn, &verdict("old", now - URL_DETAIL_DAYS * 86_400.0 - 60.0), pack_details(Some(&details())).as_deref()).unwrap();
+        record(&conn, &verdict("new", now), pack_details(Some(&details())).as_deref()).unwrap();
         assert_eq!(prune_urls(&conn, now, 50).unwrap(), 1);
         assert_eq!((urls(&conn, "old").unwrap(), urls(&conn, "new").unwrap()), (json!([]), details()));
         assert_eq!(uploads(&conn, "old").unwrap()[0]["verdict"], "pass");
@@ -628,7 +651,7 @@ mod tests {
         let now = 1_800_000_000.0;
         let old = now - URL_DETAIL_DAYS * 86_400.0;
         for (task_id, at) in [("a", old - 300.0), ("b", old - 200.0), ("c", old - 100.0), ("new", now)] {
-            record(&conn, &verdict(task_id, at), Some(&details())).unwrap();
+            record(&conn, &verdict(task_id, at), pack_details(Some(&details())).as_deref()).unwrap();
         }
         assert_eq!(prune_urls(&conn, now, 2).unwrap(), 2);
         assert_eq!((urls(&conn, "a").unwrap(), urls(&conn, "b").unwrap(), urls(&conn, "c").unwrap()), (json!([]), json!([]), details()));

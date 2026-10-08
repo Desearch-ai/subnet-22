@@ -49,7 +49,7 @@ async fn main() -> Result<()> {
     let redis = redis_from(&settings.redis_url).await?;
     let state = Arc::new(State::new(settings, redis, storage, pages).await?);
     if let (Some(chain), RegistryMode::Chain { netuid, .. }) = (&state.chain, &state.settings.registry) {
-        state.registry.refresh(chain.clone(), *netuid);
+        state.registry.refresh(chain.clone(), *netuid, state.db.clone());
     }
     let (stop, stopped) = tokio::sync::watch::channel(false);
     let janitor = tokio::spawn(janitor::run(state.clone(), stopped));

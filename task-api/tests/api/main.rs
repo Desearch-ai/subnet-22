@@ -1,13 +1,17 @@
 //! The task API end to end over HTTP, as miners, validators and the bot use it.
 
+mod backlog;
+mod chain;
 mod checks;
 mod embed;
+mod fakechain;
 mod harness;
 mod limits;
 mod logs;
 mod overlap;
 mod punishment;
 mod queueing;
+mod staging;
 mod timing;
 mod trust;
 

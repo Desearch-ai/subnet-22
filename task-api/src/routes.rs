@@ -107,7 +107,7 @@ async fn claim_tasks(state: &State, signed: &Signed<'_>) -> Answer {
     }
     let at = now();
     let (hotkey, pool) = (who.hotkey.clone(), kind.to_string());
-    if let Some(until) = state.db.run(move |conn| budgets::locked_until(conn, &hotkey, &pool, at)).await? {
+    if let Some(until) = state.lookups.read(move |conn| budgets::locked_until(conn, &hotkey, &pool, at)).await? {
         let inputs = json!({"until": round_to(until, 3), "retry_after": round_to(until - now(), 3)});
         return refused(state, &round_id, &who, Refusal::new("LOCKED_OUT", inputs)).await;
     }
@@ -121,7 +121,14 @@ async fn claim_tasks(state: &State, signed: &Signed<'_>) -> Answer {
         return refused(state, &round_id, &who, Refusal::new("VALIDATION_BACKLOG", inputs)).await;
     }
     let (hotkey, pool) = (who.hotkey.clone(), kind.to_string());
-    let budget = state.db.run(move |conn| budgets::get_or_create(conn, &hotkey, &pool)).await?.budget;
+    let found = {
+        let (hotkey, pool) = (hotkey.clone(), pool.clone());
+        state.lookups.read(move |conn| budgets::find(conn, &hotkey, &pool)).await?
+    };
+    let budget = match found {
+        Some(miner) => miner.budget,
+        None => state.db.run(move |conn| budgets::get_or_create(conn, &hotkey, &pool)).await?.budget,
+    };
     let tasks = state.tasks(kind);
     let claims = match tasks.claim(&state.redis, &who.hotkey, budget, WAITING_PER_BUDGET * budget, body.count, now()).await? {
         Ok(claims) => claims,
@@ -469,7 +476,7 @@ pub async fn score(
 
 async fn record_verdict(state: &State, task_id: &str, result: Map<String, Value>, who: &Caller) -> Result<Value, ApiError> {
     let hotkey = who.hotkey.clone();
-    if state.db.run(move |conn| validations::is_excluded(conn, &hotkey)).await? {
+    if state.lookups.read(move |conn| validations::is_excluded(conn, &hotkey)).await? {
         state.validation.leave(&state.redis, &who.hotkey).await?;
         return Err(ApiError::status(403, "this validator disagreed with too many audits"));
     }
@@ -489,13 +496,13 @@ async fn record_verdict(state: &State, task_id: &str, result: Map<String, Value>
         return Ok(finalized);
     }
     let (miner, pool) = (text(&job, "miner").to_string(), kind.clone());
-    let budget = state.db.run(move |conn| budgets::get(conn, &miner, &pool)).await?.budget;
+    let budget = state.lookups.read(move |conn| budgets::get(conn, &miner, &pool)).await?.budget;
     Ok(json!({"task_id": task_id, "verdict": "pending", "credited": 0, "miner_budget": budget}))
 }
 
 pub async fn shares(Shared(state): Shared<Arc<State>>) -> Answer {
     let as_of = now() - state.settings.ledger_delay;
-    let pools = state.db.run(move |conn| budgets::shares(conn, SHARE_WINDOW_H, as_of)).await?;
+    let pools = state.lookups.read(move |conn| budgets::shares(conn, SHARE_WINDOW_H, as_of)).await?;
     Ok(Json(json!({"window_hours": SHARE_WINDOW_H, "as_of": as_of, "pools": pools})))
 }
 
@@ -503,7 +510,7 @@ pub async fn shares(Shared(state): Shared<Arc<State>>) -> Answer {
 pub async fn room(Shared(state): Shared<Arc<State>>) -> Answer {
     let at = now();
     let depth = state.crawl.depth(&state.redis).await?;
-    let unrevealed = state.db.run(roundstore::unrevealed_tasks).await?;
+    let unrevealed = state.lookups.read(roundstore::unrevealed_tasks).await?;
     let claimed: i64 = state.redis.clone().zcard(CLAIMS).await?;
     // Everything not yet published, so the queue fills only as fast as the publisher empties it.
     let in_system = depth
@@ -541,6 +548,9 @@ pub async fn enqueue(Shared(state): Shared<Arc<State>>, ConnectInfo(peer): Conne
         return Err(ApiError::status(403, "only admins may do this"));
     }
     let request = Enqueue::parse(&json_body(&body)?)?;
+    if !crate::janitor::stages_rounds(&state).await? {
+        return Err(ApiError::retry(503, "an earlier version still leads; send the batch again shortly", "15"));
+    }
     let seen = (!request.batch_id.is_empty()).then(|| format!("enqueued:{}", request.batch_id));
     if let Some(seen) = &seen {
         let earlier: Option<String> = state.redis.clone().get(seen).await?;
@@ -562,12 +572,12 @@ pub async fn key(Shared(state): Shared<Arc<State>>) -> Answer {
 
 pub async fn round_list(Shared(state): Shared<Arc<State>>, QueryParams(query): QueryParams<Query>) -> Answer {
     let limit = crate::logs::int_param(&query, "limit", 100, 1, 1000)?;
-    let rounds = state.db.run(move |conn| roundstore::recent(conn, limit)).await?;
+    let rounds = state.lookups.read(move |conn| roundstore::recent(conn, limit)).await?;
     Ok(Json(json!({"rounds": rounds})))
 }
 
 pub async fn round_view(Shared(state): Shared<Arc<State>>, Path(round_id): Path<String>) -> Answer {
-    let Some(found) = state.db.run(move |conn| roundstore::get(conn, &round_id)).await? else {
+    let Some(found) = state.lookups.read(move |conn| roundstore::get(conn, &round_id)).await? else {
         return Err(ApiError::status(404, "no such round"));
     };
     let mut view = found.public_view();
@@ -577,7 +587,7 @@ pub async fn round_view(Shared(state): Shared<Arc<State>>, Path(round_id): Path<
 
 pub async fn round_log(Shared(state): Shared<Arc<State>>, Path(round_id): Path<String>) -> Answer {
     let asked = round_id.clone();
-    let (entries, anchor) = state.db.run(move |conn| Ok((roundlog::entries(conn, &asked)?, roundlog::anchored_root(conn, &asked)?))).await?;
+    let (entries, anchor) = state.lookups.read(move |conn| Ok((roundlog::entries(conn, &asked)?, roundlog::anchored_root(conn, &asked)?))).await?;
     Ok(Json(json!({"round_id": round_id, "entries": entries, "anchor_root": anchor})))
 }
 
@@ -597,7 +607,7 @@ pub async fn own_verdicts(
         return Err(ApiError::status(403, "only the miner itself may read this"));
     }
     let filter = TaskFilter { miner: Some(hotkey), since, limit, ..TaskFilter::default() };
-    let tasks = state.db.run(move |conn| validations::recent(conn, &filter)).await?;
+    let tasks = state.lookups.read(move |conn| validations::recent(conn, &filter)).await?;
     Ok(Json(json!({"tasks": tasks})))
 }
 
@@ -615,8 +625,8 @@ pub async fn health(Shared(state): Shared<Arc<State>>) -> Answer {
     let mut active = state.validation.active(redis, at).await?;
     active.sort();
     let accounts = state
-        .db
-        .run(move |conn| {
+        .lookups
+        .read(move |conn| {
             Ok(json!({
                 "verdicts": validations::verdicts(conn, None)?,
                 "validators": validations::audit_standing(conn)?,

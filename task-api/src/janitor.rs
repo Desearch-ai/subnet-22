@@ -1,13 +1,15 @@
-//! The background pass every second: reclaims, settles, finalizes and publishes; rounds every few seconds; logs and pruning less often.
+//! Background work in loops of their own, so a backlog in one never holds up the others; only the copy holding the lease runs them.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use desearch::feeds::OUTCOMES;
 use desearch::time::now;
-use redis::Script;
+use redis::{AsyncCommands, Script};
 use tokio::sync::watch;
+use tokio::task::JoinSet;
 
 use crate::budgets::{self, hour_of, KEEP_H};
 use crate::state::State;
@@ -17,6 +19,8 @@ use crate::{checks, lifecycle, roundstore, uploadlog, validations};
 pub const LEASE_KEY: &str = "janitor:leader";
 /// Outlasts any one pass; a copy that stops hands the lease over at once instead.
 const LEASE_MS: u64 = 60_000;
+/// Leaders that queue rounds from URL lists staged in Redis; an older leader would queue such a round empty.
+pub const STAGING_LEADER: &str = "staging:";
 
 static HOLD: LazyLock<Script> = LazyLock::new(|| {
     Script::new(
@@ -29,20 +33,34 @@ return 1",
 static RELEASE: LazyLock<Script> =
     LazyLock::new(|| Script::new(r"if redis.call('GET', KEYS[1]) == ARGV[1] then return redis.call('DEL', KEYS[1]) end return 0"));
 
-const INTERVAL: Duration = Duration::from_secs(1);
-const ROUNDS_INTERVAL: Duration = Duration::from_secs(5);
-const UPLOAD_LOG_INTERVAL: Duration = Duration::from_secs(30);
+const LEASE_EVERY: Duration = Duration::from_secs(1);
+const SEAL_EVERY: Duration = Duration::from_secs(5);
+const UPLOAD_LOG_EVERY: Duration = Duration::from_secs(30);
+const BEST_BLOCK_EVERY: Duration = Duration::from_secs(30);
 /// A verdict drops its publish job a day after it was finalized.
 const PUBLISH_COPY_KEEP_S: f64 = 86_400.0;
 const SEAL_ROUNDS: i64 = 4;
 const DROP_VERDICTS: i64 = 200;
-/// Per-URL details cleared per pass: each frees ~0.5 MB, ~2 ms of writer time.
+/// Per-URL details cleared per pass: each frees ~50 KB, ~2 ms of writer time.
 const PRUNE_DETAILS: i64 = 10;
+
+#[derive(Clone, Copy, Debug)]
+enum Duty {
+    Reclaim,
+    Settle,
+    Finalize,
+    Publish,
+    Rounds,
+    Upkeep,
+}
+
+const DUTIES: [Duty; 6] = [Duty::Reclaim, Duty::Settle, Duty::Finalize, Duty::Publish, Duty::Rounds, Duty::Upkeep];
 
 #[derive(Default)]
 struct Due {
-    rounds_at: Option<Instant>,
+    sealed_at: Option<Instant>,
     logged_at: Option<Instant>,
+    kept_block_at: Option<Instant>,
     pruned_hour: Option<i64>,
 }
 
@@ -50,67 +68,39 @@ fn elapsed(at: Option<Instant>, interval: Duration) -> bool {
     at.is_none_or(|at| at.elapsed() >= interval)
 }
 
-/// Takes or renews the lease for `holder`; false while another copy holds it.
-pub async fn hold(state: &State, holder: &str) -> Result<bool> {
-    let held: i64 = HOLD.key(LEASE_KEY).arg(holder).arg(LEASE_MS).invoke_async(&mut state.redis.clone()).await?;
-    Ok(held == 1)
-}
-
-pub async fn release(state: &State, holder: &str) -> Result<()> {
-    let _: i64 = RELEASE.key(LEASE_KEY).arg(holder).invoke_async(&mut state.redis.clone()).await?;
-    Ok(())
-}
-
-/// Runs passes until `stop` turns true, then lets the next copy take over.
-pub async fn run(state: Arc<State>, mut stop: watch::Receiver<bool>) {
-    let holder = uuid::Uuid::new_v4().simple().to_string();
-    let mut due = Due::default();
-    while !*stop.borrow() {
-        let passed = match hold(&state, &holder).await {
-            Ok(true) => pass(&state, &mut due).await,
-            Ok(false) => follow(&state).await,
-            Err(error) => Err(error),
-        };
-        if let Err(error) = passed {
-            eprintln!("janitor pass failed: {error:#}");
-        }
-        tokio::select! {
-            _ = tokio::time::sleep(INTERVAL) => {}
-            _ = stop.changed() => {}
+impl Duty {
+    fn every(self) -> Duration {
+        match self {
+            Duty::Rounds => Duration::from_secs(2),
+            _ => Duration::from_secs(1),
         }
     }
-    if let Err(error) = release(&state, &holder).await {
-        eprintln!("could not release the janitor lease: {error:#}");
+
+    async fn pass(self, state: &Arc<State>, due: &mut Due) -> Result<()> {
+        match self {
+            Duty::Reclaim => lifecycle::reclaim_expired(state, now()).await.map(drop),
+            Duty::Settle => lifecycle::settle_seeded(state).await.map(drop),
+            Duty::Finalize => lifecycle::finalize_due(state, now()).await.map(drop),
+            Duty::Publish => {
+                note_publish_rate(state).await?;
+                lifecycle::publish_open(state, now()).await?;
+                lifecycle::return_expired_publishes(state).await.map(drop)
+            }
+            Duty::Rounds => {
+                lifecycle::open_embed_rounds(state).await?;
+                lifecycle::fill_missing(state).await?;
+                lifecycle::reveal_pending(state).await?;
+                lifecycle::close_finished(state).await.map(drop)
+            }
+            Duty::Upkeep => upkeep(state, due).await,
+        }
     }
 }
 
-/// What a copy without the lease still needs to answer requests: the publish pace and the rounds to log refusals in.
-async fn follow(state: &State) -> Result<()> {
-    note_publish_rate(state).await?;
-    let current = state.reader.read(roundstore::latest_revealed).await?;
-    *state.current.lock().expect("current rounds") = current;
-    Ok(())
-}
-
-async fn note_publish_rate(state: &State) -> Result<()> {
-    let finished = state.publish.finished(&state.redis).await?;
-    state.publish_rate.lock().expect("publish rate").note(finished, now());
-    Ok(())
-}
-
-async fn pass(state: &Arc<State>, due: &mut Due) -> Result<()> {
-    note_publish_rate(state).await?;
-    lifecycle::reclaim_expired(state, now()).await?;
-    lifecycle::settle_seeded(state).await?;
-    lifecycle::finalize_due(state, now()).await?;
-    lifecycle::publish_open(state, now()).await?;
-    lifecycle::return_expired_publishes(state).await?;
+async fn upkeep(state: &Arc<State>, due: &mut Due) -> Result<()> {
     state.db.run(|conn| validations::prune_urls(conn, now(), PRUNE_DETAILS)).await?;
-    if elapsed(due.rounds_at, ROUNDS_INTERVAL) {
-        lifecycle::open_embed_rounds(state).await?;
-        lifecycle::fill_missing(state).await?;
-        lifecycle::reveal_pending(state).await?;
-        lifecycle::close_finished(state).await?;
+    if elapsed(due.sealed_at, SEAL_EVERY) {
+        due.sealed_at = Some(Instant::now());
         OUTCOMES.fill_holes(&state.storage, &state.redis).await?;
         state
             .db
@@ -120,11 +110,14 @@ async fn pass(state: &Arc<State>, due: &mut Due) -> Result<()> {
                 validations::drop_publish_copies(conn, at - PUBLISH_COPY_KEEP_S, DROP_VERDICTS)
             })
             .await?;
-        due.rounds_at = Some(Instant::now());
     }
-    if elapsed(due.logged_at, UPLOAD_LOG_INTERVAL) {
+    if elapsed(due.logged_at, UPLOAD_LOG_EVERY) {
         due.logged_at = Some(Instant::now());
         uploadlog::flush(state, &state.storage).await?;
+    }
+    if elapsed(due.kept_block_at, BEST_BLOCK_EVERY) {
+        due.kept_block_at = Some(Instant::now());
+        state.keep_best_block().await?;
     }
     if due.pruned_hour != Some(hour_of(now())) {
         state
@@ -137,5 +130,83 @@ async fn pass(state: &Arc<State>, due: &mut Due) -> Result<()> {
             .await?;
         due.pruned_hour = Some(hour_of(now()));
     }
+    Ok(())
+}
+
+/// Takes or renews the lease for `holder`; false while another copy holds it.
+pub async fn hold(state: &State, holder: &str) -> Result<bool> {
+    let held: i64 = HOLD.key(LEASE_KEY).arg(holder).arg(LEASE_MS).invoke_async(&mut state.redis.clone()).await?;
+    Ok(held == 1)
+}
+
+/// False while a leader from before staged URL lists still runs, as in a rolling deploy.
+pub async fn stages_rounds(state: &State) -> Result<bool> {
+    let holder: Option<String> = state.redis.clone().get(LEASE_KEY).await?;
+    Ok(holder.is_none_or(|holder| holder.starts_with(STAGING_LEADER)))
+}
+
+pub async fn release(state: &State, holder: &str) -> Result<()> {
+    let _: i64 = RELEASE.key(LEASE_KEY).arg(holder).invoke_async(&mut state.redis.clone()).await?;
+    Ok(())
+}
+
+/// Holds the lease and runs every duty while it does, until `stop` turns true; the lease goes only once every duty has stopped.
+pub async fn run(state: Arc<State>, stop: watch::Receiver<bool>) {
+    let holder = format!("{STAGING_LEADER}{}", uuid::Uuid::new_v4().simple());
+    let leading = Arc::new(AtomicBool::new(false));
+    let mut duties = JoinSet::new();
+    for duty in DUTIES {
+        duties.spawn(keep(duty, state.clone(), leading.clone(), stop.clone()));
+    }
+    let mut stopping = stop.clone();
+    while !*stopping.borrow() {
+        let held = hold(&state, &holder).await;
+        leading.store(matches!(held, Ok(true)), Ordering::Release);
+        let followed = match held {
+            Ok(true) => Ok(()),
+            Ok(false) => follow(&state).await,
+            Err(error) => Err(error),
+        };
+        if let Err(error) = followed {
+            eprintln!("janitor lease failed: {error:#}");
+        }
+        tokio::select! {
+            _ = tokio::time::sleep(LEASE_EVERY) => {}
+            _ = stopping.changed() => {}
+        }
+    }
+    leading.store(false, Ordering::Release);
+    while duties.join_next().await.is_some() {}
+    if let Err(error) = release(&state, &holder).await {
+        eprintln!("could not release the janitor lease: {error:#}");
+    }
+}
+
+async fn keep(duty: Duty, state: Arc<State>, leading: Arc<AtomicBool>, mut stop: watch::Receiver<bool>) {
+    let mut due = Due::default();
+    while !*stop.borrow() {
+        if leading.load(Ordering::Acquire) {
+            if let Err(error) = duty.pass(&state, &mut due).await {
+                eprintln!("janitor {duty:?} failed: {error:#}");
+            }
+        }
+        tokio::select! {
+            _ = tokio::time::sleep(duty.every()) => {}
+            _ = stop.changed() => {}
+        }
+    }
+}
+
+/// What a copy without the lease still needs to answer requests: the publish pace and the rounds to log refusals in.
+async fn follow(state: &State) -> Result<()> {
+    note_publish_rate(state).await?;
+    let current = state.lookups.read(roundstore::latest_revealed).await?;
+    *state.current.lock().expect("current rounds") = current;
+    Ok(())
+}
+
+async fn note_publish_rate(state: &State) -> Result<()> {
+    let finished = state.publish.finished(&state.redis).await?;
+    state.publish_rate.lock().expect("publish rate").note(finished, now());
     Ok(())
 }

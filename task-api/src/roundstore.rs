@@ -1,4 +1,4 @@
-//! Rounds as SQLite keeps them, URLs inline until Redis holds the round's tasks.
+//! Rounds as SQLite keeps them: each batch's count and hash; the URLs wait in Redis until the round's tasks are queued.
 
 use std::collections::HashMap;
 
@@ -24,8 +24,7 @@ pub fn create(conn: &Connection) -> Result<()> {
             serve_order   TEXT NOT NULL DEFAULT '[]',
             closed_at     REAL,
             batches       TEXT NOT NULL,
-            filled_at     REAL,
-            tasks         INTEGER
+            filled_at     REAL
         );
         CREATE INDEX IF NOT EXISTS rounds_opened ON rounds (opened_at);
         CREATE INDEX IF NOT EXISTS rounds_pending ON rounds (seed, closed_at);
@@ -38,10 +37,6 @@ pub fn create(conn: &Connection) -> Result<()> {
         CREATE TABLE IF NOT EXISTS retention (name TEXT PRIMARY KEY, mark REAL NOT NULL);
         ",
     )?;
-    if !conn.prepare("SELECT 1 FROM pragma_table_info('rounds') WHERE name = 'tasks'")?.exists([])? {
-        conn.execute("ALTER TABLE rounds ADD COLUMN tasks INTEGER", [])?;
-    }
-    conn.execute("UPDATE rounds SET tasks = (SELECT COUNT(*) FROM json_each(batches)) WHERE seed IS NULL AND tasks IS NULL", [])?;
     Ok(())
 }
 
@@ -93,7 +88,7 @@ fn round_of(row: &Row) -> rusqlite::Result<Round> {
 pub fn save(conn: &Connection, round: &Round) -> Result<()> {
     conn.execute(
         &format!(
-            "INSERT INTO rounds ({COLUMNS}, tasks) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            "INSERT INTO rounds ({COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT (round_id) DO UPDATE SET seed = excluded.seed, serve_order = excluded.serve_order, closed_at = excluded.closed_at"
         ),
         params![
@@ -105,8 +100,7 @@ pub fn save(conn: &Connection, round: &Round) -> Result<()> {
             round.seed,
             serde_json::to_string(&round.order)?,
             round.closed_at,
-            stored_batches(round),
-            round.batches.len()
+            stored_batches(round)
         ],
     )?;
     Ok(())
@@ -124,14 +118,11 @@ pub fn unrevealed(conn: &Connection, by_block: i64, limit: i64) -> Result<Vec<Ro
 }
 
 pub fn unrevealed_tasks(conn: &Connection) -> Result<i64> {
-    Ok(conn.query_row("SELECT COALESCE(SUM(tasks), 0) FROM rounds WHERE seed IS NULL", [], |row| row.get(0))?)
+    Ok(conn.query_row("SELECT COALESCE(SUM((SELECT COUNT(*) FROM json_each(batches))), 0) FROM rounds WHERE seed IS NULL", [], |row| row.get(0))?)
 }
 
 pub fn mark_revealed(conn: &Connection, round: &Round) -> Result<()> {
-    conn.execute(
-        "UPDATE rounds SET seed = ?, serve_order = ? WHERE round_id = ?",
-        params![round.seed, serde_json::to_string(&round.order)?, round.round_id],
-    )?;
+    conn.execute("UPDATE rounds SET seed = ?, serve_order = ? WHERE round_id = ?", params![round.seed, serde_json::to_string(&round.order)?, round.round_id])?;
     Ok(())
 }
 
@@ -146,7 +137,7 @@ pub fn unfilled(conn: &Connection) -> Result<Vec<Round>> {
 
 /// The round's batches with their URLs dropped, keeping each batch's count and hash.
 pub fn sealed_batches(round: &Round) -> String {
-    let batches: Map<String, Value> = round.batches.iter().map(|b| (b.batch_id.clone(), stored(&sealed(b)))).collect();
+    let batches: Map<String, Value> = round.batches.iter().map(|b| (b.batch_id.clone(), stored(&b.sealed()))).collect();
     Value::Object(batches).to_string()
 }
 
@@ -154,10 +145,6 @@ pub fn sealed_batches(round: &Round) -> String {
 pub fn mark_filled(conn: &Connection, round_id: &str, sealed_batches: &str, at: f64) -> Result<()> {
     conn.execute("UPDATE rounds SET filled_at = ?, batches = ? WHERE round_id = ?", params![at, sealed_batches, round_id])?;
     Ok(())
-}
-
-fn sealed(batch: &Batch) -> Batch {
-    Batch { urls: Vec::new(), sealed: Some(batch.seal()), ..batch.clone() }
 }
 
 pub fn open_revealed(conn: &Connection) -> Result<Vec<String>> {
@@ -184,7 +171,7 @@ pub fn seal_closed(conn: &Connection, closed_before: f64, limit: i64) -> Result<
     let rows: Vec<(String, f64, String)> = rows.collect::<rusqlite::Result<_>>()?;
     for (round_id, _, batches) in &rows {
         let batches: Map<String, Value> = serde_json::from_str(batches).context("a round's batches")?;
-        let sealed: Map<String, Value> = batches.iter().map(|(id, entry)| (id.clone(), stored(&sealed(&batch_of(id, entry))))).collect();
+        let sealed: Map<String, Value> = batches.iter().map(|(id, entry)| (id.clone(), stored(&batch_of(id, entry).sealed()))).collect();
         conn.execute("UPDATE rounds SET batches = ? WHERE round_id = ?", params![Value::Object(sealed).to_string(), round_id])?;
     }
     if let Some((_, closed_at, _)) = rows.last() {
@@ -270,27 +257,6 @@ mod tests {
         assert_eq!(unrevealed(&conn, i64::MAX, 10).unwrap().into_iter().map(|r| r.round_id).collect::<Vec<_>>(), ["due", "later"]);
         assert_eq!(unrevealed(&conn, i64::MAX, 1).unwrap().into_iter().map(|r| r.round_id).collect::<Vec<_>>(), ["due"]);
         assert_eq!(unrevealed_tasks(&conn).unwrap(), 6);
-    }
-
-    #[test]
-    fn a_rounds_table_from_before_task_counts_gets_them_for_rounds_still_to_reveal() {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(
-            "CREATE TABLE rounds (round_id TEXT PRIMARY KEY, kind TEXT NOT NULL, manifest_hash TEXT NOT NULL, seed_block INTEGER NOT NULL,
-             opened_at REAL NOT NULL, seed TEXT, serve_order TEXT NOT NULL DEFAULT '[]', closed_at REAL, batches TEXT NOT NULL, filled_at REAL)",
-        )
-        .unwrap();
-        for (round_id, seed) in [("waiting", None), ("revealed", Some("s"))] {
-            conn.execute(
-                "INSERT INTO rounds (round_id, kind, manifest_hash, seed_block, opened_at, seed, batches) VALUES (?, 'crawl', 'h', 1, 1.0, ?, ?)",
-                params![round_id, seed, r#"{"b1": {}, "b2": {}, "b3": {}}"#],
-            )
-            .unwrap();
-        }
-        create(&conn).unwrap();
-        assert_eq!(unrevealed_tasks(&conn).unwrap(), 3);
-        save(&conn, &round("new", 2, 1, 2.0, None)).unwrap();
-        assert_eq!(unrevealed_tasks(&conn).unwrap(), 5);
     }
 
     #[test]

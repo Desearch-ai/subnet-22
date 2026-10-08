@@ -42,6 +42,11 @@ impl Batch {
         self.sealed.clone().unwrap_or_else(|| json!({"url_count": self.urls.len(), "urls_hash": self.urls_hash()}))
     }
 
+    /// The batch as SQLite keeps it: its count and hash, without the URLs.
+    pub fn sealed(&self) -> Batch {
+        Batch { urls: Vec::new(), sealed: Some(self.seal()), ..self.clone() }
+    }
+
     pub fn manifest_entry(&self) -> Value {
         let mut entry = Map::new();
         entry.insert("batch_id".into(), self.batch_id.clone().into());
@@ -75,6 +80,38 @@ impl Round {
 
     pub fn batch(&self, batch_id: &str) -> Option<&Batch> {
         self.batches.iter().find(|b| b.batch_id == batch_id)
+    }
+
+    pub fn sealed(&self) -> Round {
+        Round { batches: self.batches.iter().map(Batch::sealed).collect(), ..self.clone() }
+    }
+
+    pub fn has_urls(&self) -> bool {
+        self.batches.iter().any(|batch| !batch.urls.is_empty())
+    }
+
+    /// Each batch's URLs, as staged in Redis between commit and reveal.
+    pub fn url_lists(&self) -> Value {
+        Value::Object(
+            self.batches.iter().map(|batch| (batch.batch_id.clone(), batch.urls.iter().map(|u| json!([u.host, u.url])).collect::<Vec<_>>().into())).collect(),
+        )
+    }
+
+    /// Puts staged URL lists back on their batches; false when some batch has none.
+    pub fn restore_urls(&mut self, lists: &Value) -> bool {
+        let mut whole = true;
+        for batch in &mut self.batches {
+            match lists.get(&batch.batch_id).and_then(Value::as_array) {
+                Some(urls) => {
+                    batch.urls = urls
+                        .iter()
+                        .map(|pair| Url { host: pair[0].as_str().unwrap_or_default().into(), url: pair[1].as_str().unwrap_or_default().into() })
+                        .collect()
+                }
+                None => whole = false,
+            }
+        }
+        whole
     }
 
     pub fn manifest(&self) -> Vec<Value> {
