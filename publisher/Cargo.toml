@@ -24,6 +24,7 @@ regex = "1"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 rocksdb = { version = "0.23", default-features = false, features = ["zstd", "bindgen-runtime"] }
 serde = { version = "1", features = ["derive"] }
+desearch = { path = "../crates/desearch" }
 rusqlite = { version = "0.32", features = ["bundled"] }
 serde_json = "1"
 sha1 = "0.10"

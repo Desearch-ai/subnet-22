@@ -81,7 +81,15 @@ fn main() {
     let seeded: Vec<(String, Current)> = seed
         .into_iter()
         .map(|s| {
-            let current = Current { url: s.url, version: s.version, fetched_at: s.fetched_at, task_id: s.task_id, content_sha1: s.content_sha1, change_seq: s.change_seq, change_row: s.change_row };
+            let current = Current {
+                url: s.url,
+                version: s.version,
+                fetched_at: s.fetched_at,
+                task_id: s.task_id,
+                content_sha1: s.content_sha1,
+                change_seq: s.change_seq,
+                change_row: s.change_row,
+            };
             (s.key, current)
         })
         .collect();

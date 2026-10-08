@@ -3,7 +3,8 @@
 use anyhow::{bail, Result};
 use sha1::{Digest, Sha1};
 
-use crate::canonical::{self, canonicalize, domain_of, hex, url_sha1};
+use desearch::canonical::{self, canonicalize, domain_of, hex, url_sha1};
+use desearch::time::{civil_from_days, days_from_civil};
 
 pub const PREFIX: &str = "pages";
 pub const SOURCE: &str = "subnet22";
@@ -271,35 +272,12 @@ pub fn parse_iso(text: &str) -> Option<i64> {
     if b.len() != 25 || &b[19..] != b"+00:00" || b[4] != b'-' || b[7] != b'-' || b[10] != b'T' || b[13] != b':' || b[16] != b':' {
         return None;
     }
-    let number = |range: std::ops::Range<usize>| -> Option<i64> {
-        b[range].iter().try_fold(0i64, |n, &d| d.is_ascii_digit().then(|| n * 10 + i64::from(d - b'0')))
-    };
+    let number =
+        |range: std::ops::Range<usize>| -> Option<i64> { b[range].iter().try_fold(0i64, |n, &d| d.is_ascii_digit().then(|| n * 10 + i64::from(d - b'0'))) };
     let (year, month, day) = (number(0..4)?, number(5..7)?, number(8..10)?);
     let (hour, minute, second) = (number(11..13)?, number(14..16)?, number(17..19)?);
     let seconds = days_from_civil(year, month, day) * 86_400 + hour * 3600 + minute * 60 + second;
     (iso(seconds * SECOND) == text).then_some(seconds)
-}
-
-fn civil_from_days(days: i64) -> (i64, i64, i64) {
-    let z = days + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z.rem_euclid(146_097);
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let day = doy - (153 * mp + 2) / 5 + 1;
-    let month = if mp < 10 { mp + 3 } else { mp - 9 };
-    (yoe + era * 400 + i64::from(month <= 2), month, day)
-}
-
-fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
-    let y = if month <= 2 { year - 1 } else { year };
-    let era = y.div_euclid(400);
-    let yoe = y.rem_euclid(400);
-    let mp = if month > 2 { month - 3 } else { month + 9 };
-    let doy = (153 * mp + 2) / 5 + day - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    era * 146_097 + doe - 719_468
 }
 
 fn in_range(us: i64) -> Result<i64> {

@@ -37,7 +37,13 @@ fn an_index_survives_export_and_import() {
     let db = rusqlite::Connection::open(&file).unwrap();
     let columns: Vec<String> = db.prepare("PRAGMA table_info(pages)").unwrap().query_map([], |r| r.get(1)).unwrap().map(Result::unwrap).collect();
     assert_eq!(columns, ["key", "url", "version", "fetched_at", "task_id", "content_sha1", "change_seq", "change_row"]);
-    let indexes: Vec<String> = db.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'pages'").unwrap().query_map([], |r| r.get(0)).unwrap().map(Result::unwrap).collect();
+    let indexes: Vec<String> = db
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'pages'")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
     assert!(indexes.contains(&"pages_task".to_string()));
     let nulls: i64 = db.query_row("SELECT COUNT(*) FROM pages WHERE change_seq IS NULL", [], |r| r.get(0)).unwrap();
     assert_eq!(nulls, 125_000);

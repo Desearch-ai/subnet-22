@@ -104,10 +104,8 @@ pub fn parquet(rows: &[Upload], fetched_at: Option<(DataType, ArrayRef)>, drop: 
     let kept: Vec<_> = columns.into_iter().filter(|(name, _, _)| Some(*name) != drop).collect();
     let schema = Arc::new(Schema::new(kept.iter().map(|(name, kind, _)| Field::new(*name, kind.clone(), true)).collect::<Vec<_>>()));
     let batch = RecordBatch::try_new(schema.clone(), kept.into_iter().map(|(_, _, array)| array).collect()).unwrap();
-    let properties = WriterProperties::builder()
-        .set_compression(Compression::ZSTD(ZstdLevel::try_new(1).unwrap()))
-        .set_max_row_group_row_count(Some(2))
-        .build();
+    let properties =
+        WriterProperties::builder().set_compression(Compression::ZSTD(ZstdLevel::try_new(1).unwrap())).set_max_row_group_row_count(Some(2)).build();
     let mut file = Vec::new();
     let mut writer = ArrowWriter::try_new(&mut file, schema, Some(properties)).unwrap();
     writer.write(&batch).unwrap();

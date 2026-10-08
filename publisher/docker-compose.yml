@@ -2,7 +2,9 @@
 
 services:
   publisher:
-    build: .
+    build:
+      context: ..
+      dockerfile: publisher/Dockerfile
     restart: unless-stopped
     environment:
       CF_R2_ENDPOINT: ${CF_R2_ENDPOINT:?set CF_R2_ENDPOINT}

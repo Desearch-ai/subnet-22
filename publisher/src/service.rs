@@ -14,15 +14,15 @@ use tokio::runtime::Handle;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
-use crate::feeds::{CHANGES, OUTCOMES};
 use crate::index::VersionIndex;
 use crate::outcomes;
 use crate::queue::PublishQueue;
-use crate::r2::{self, Bucket, Credentials, Remote, PARQUET};
-use crate::reading::{RangeRead, Traffic};
+use crate::reading::{RangeRead, Remote, Traffic};
 use crate::records::iso;
 use crate::snapshot;
 use crate::worker::{self, ChangeFeed, Fault, Job, Read, Uploads};
+use desearch::feeds::{CHANGES, OUTCOMES};
+use desearch::r2::{self, Bucket, Credentials, PARQUET};
 
 const RETRY_DELAY: Duration = Duration::from_secs(5);
 const SUMMARY_EVERY: Duration = Duration::from_secs(60);
@@ -87,8 +87,22 @@ pub fn buckets_from_env(errors: Arc<AtomicU64>) -> Result<(Bucket, Bucket)> {
         region: text("CF_R2_REGION", "auto"),
     };
     let http = r2::client()?;
-    let temp = Bucket::new(http.clone(), &endpoint, &text("CF_R2_BUCKET", "subnet-22"), &std::env::var("TASK_API_R2_PREFIX").unwrap_or_default(), credentials.clone(), errors.clone())?;
-    let pages = Bucket::new(http, &endpoint, &text("CF_R2_PAGES_BUCKET", "desearch-pages"), &std::env::var("CF_R2_PAGES_PREFIX").unwrap_or_default(), credentials, errors)?;
+    let temp = Bucket::new(
+        http.clone(),
+        &endpoint,
+        &text("CF_R2_BUCKET", "subnet-22"),
+        &std::env::var("TASK_API_R2_PREFIX").unwrap_or_default(),
+        credentials.clone(),
+        errors.clone(),
+    )?;
+    let pages = Bucket::new(
+        http,
+        &endpoint,
+        &text("CF_R2_PAGES_BUCKET", "desearch-pages"),
+        &std::env::var("CF_R2_PAGES_PREFIX").unwrap_or_default(),
+        credentials,
+        errors,
+    )?;
     if (&temp.bucket, &temp.prefix) == (&pages.bucket, &pages.prefix) {
         bail!("CF_R2_PAGES_BUCKET is {:?}, the same place uploads are kept and expired; point it at the permanent bucket", pages.bucket);
     }
@@ -156,7 +170,14 @@ impl Uploads for R2Uploads {
                 return Err(Fault::Gone("changed"));
             }
         }
-        Ok(Box::new(Remote { bucket: self.temp.clone(), key: key.to_string(), head, handle: self.handle.clone(), ranges_at_once: self.ranges, traffic: self.traffic.clone() }))
+        Ok(Box::new(Remote {
+            bucket: self.temp.clone(),
+            key: key.to_string(),
+            head,
+            handle: self.handle.clone(),
+            ranges_at_once: self.ranges,
+            traffic: self.traffic.clone(),
+        }))
     }
 }
 
@@ -172,7 +193,10 @@ impl ChangeFeed for R2Changes {
     fn append(&self, file: Vec<u8>, rows: usize) -> Result<u64> {
         let key = format!("changes/dt={}/{}.parquet", self.day, uuid::Uuid::new_v4().simple());
         self.handle.block_on(async {
-            self.pages.put_in_parts(&key, Bytes::from(file), PARQUET, CHANGE_PART_BYTES, CHANGE_PARTS_AT_ONCE).await.with_context(|| format!("writing {key}"))?;
+            self.pages
+                .put_in_parts(&key, Bytes::from(file), PARQUET, CHANGE_PART_BYTES, CHANGE_PARTS_AT_ONCE)
+                .await
+                .with_context(|| format!("writing {key}"))?;
             CHANGES.number(&self.pages, &self.redis, &key, rows).await
         })
     }
@@ -191,7 +215,8 @@ pub async fn start_batch(shared: Arc<Shared>) -> Result<Option<Claimed>> {
         return Ok(None);
     }
     let started = Instant::now();
-    let uploads = R2Uploads { temp: shared.temp.clone(), handle: shared.handle.clone(), ranges: shared.settings.ranges, traffic: shared.metrics.traffic.clone() };
+    let uploads =
+        R2Uploads { temp: shared.temp.clone(), handle: shared.handle.clone(), ranges: shared.settings.ranges, traffic: shared.metrics.traffic.clone() };
     let (reading, readers, now) = (jobs.clone(), shared.settings.readers, now_us());
     let reads = tokio::task::spawn_blocking(move || worker::read_all(&reading, &uploads, now, readers));
     Ok(Some(Claimed { jobs, reads, started }))
@@ -271,7 +296,7 @@ async fn report_outcomes(shared: &Shared, batch: &worker::Batch, now: i64) {
     }
     let written = async {
         let count = rows.len();
-        let file = tokio::task::spawn_blocking(move || outcomes::encode(&rows, now)).await??;
+        let file = tokio::task::spawn_blocking(move || desearch::outcomes::encode(&rows, now)).await??;
         let key = format!("outcomes/dt={}/{}.parquet", day(now), uuid::Uuid::new_v4().simple());
         shared.temp.put(&key, Bytes::from(file), PARQUET, None).await?;
         OUTCOMES.number(&shared.temp, shared.redis(), &key, count).await?;

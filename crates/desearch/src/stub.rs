@@ -10,12 +10,15 @@ use anyhow::Result;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 
+use crate::time::http_date;
+
 #[derive(Default)]
 pub struct State {
     pub root: PathBuf,
     meta: Mutex<HashMap<String, (String, String)>>,
     uploads: Mutex<HashMap<String, BTreeMap<u32, Vec<u8>>>>,
     failures: Mutex<Vec<(String, String, u32)>>,
+    delays: Mutex<Vec<(String, String, u32, std::time::Duration)>>,
     next_upload: AtomicU64,
     counts: Mutex<HashMap<String, u64>>,
 }
@@ -37,6 +40,19 @@ impl State {
     /// The next `times` requests of this method for objects under `prefix` (`bucket/key...`) get a 503.
     pub fn fail(&self, method: &str, prefix: &str, times: u32) {
         self.failures.lock().unwrap().push((method.into(), prefix.into(), times));
+    }
+
+    /// The next `times` requests of this method for objects under `prefix` are answered after `delay`.
+    pub fn slow(&self, method: &str, prefix: &str, times: u32, delay: std::time::Duration) {
+        self.delays.lock().unwrap().push((method.into(), prefix.into(), times, delay));
+    }
+
+    fn delay(&self, method: &str, path: &str) -> Option<std::time::Duration> {
+        let target = path.trim_start_matches('/');
+        let mut delays = self.delays.lock().unwrap();
+        let rule = delays.iter_mut().find(|(m, prefix, times, _)| m == method && target.starts_with(prefix.as_str()) && *times > 0)?;
+        rule.2 -= 1;
+        Some(rule.3)
     }
 
     pub fn object(&self, bucket: &str, key: &str) -> Option<Vec<u8>> {
@@ -124,9 +140,13 @@ async fn connection(stream: TcpStream, state: Arc<State>) -> std::io::Result<()>
             (decode(k), decode(v))
         });
         let request = Request { method, path: decode(path), query: query.collect(), headers, body };
+        if let Some(delay) = state.delay(&request.method, &request.path) {
+            tokio::time::sleep(delay).await;
+        }
         let head = request.method == "HEAD";
         let (status, headers, body) = respond(&state, request);
-        let mut out = format!("HTTP/1.1 {status} {}\r\nContent-Length: {}\r\n", reason(status), headers.get("length").cloned().unwrap_or(body.len().to_string()));
+        let mut out =
+            format!("HTTP/1.1 {status} {}\r\nContent-Length: {}\r\n", reason(status), headers.get("length").cloned().unwrap_or(body.len().to_string()));
         for (name, value) in headers.iter().filter(|(name, _)| **name != "length") {
             out.push_str(&format!("{name}: {value}\r\n"));
         }
@@ -176,6 +196,11 @@ fn etag(path: &Path) -> Option<String> {
     Some(format!("\"{:x}{modified:x}\"", found.len()))
 }
 
+fn last_modified(path: &Path) -> Option<String> {
+    let modified = std::fs::metadata(path).ok()?.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?;
+    Some(http_date(modified.as_secs() as i64))
+}
+
 type Response = (u16, BTreeMap<&'static str, String>, Vec<u8>);
 
 fn respond(state: &State, request: Request) -> Response {
@@ -199,7 +224,8 @@ fn respond(state: &State, request: Request) -> Response {
         ("POST", None, true) => {
             let id = format!("upload-{}", state.next_upload.fetch_add(1, Ordering::Relaxed));
             state.uploads.lock().unwrap().insert(id.clone(), BTreeMap::new());
-            let body = format!("<InitiateMultipartUploadResult><Bucket>{bucket}</Bucket><Key>{key}</Key><UploadId>{id}</UploadId></InitiateMultipartUploadResult>");
+            let body =
+                format!("<InitiateMultipartUploadResult><Bucket>{bucket}</Bucket><Key>{key}</Key><UploadId>{id}</UploadId></InitiateMultipartUploadResult>");
             (200, empty(), body.into_bytes())
         }
         ("PUT", Some(id), _) => {
@@ -227,6 +253,25 @@ fn respond(state: &State, request: Request) -> Response {
             state.uploads.lock().unwrap().remove(id);
             (204, empty(), Vec::new())
         }
+        ("PUT", None, _) if request.headers.contains_key("x-amz-copy-source") => {
+            let source = decode(request.headers["x-amz-copy-source"].trim_start_matches('/'));
+            let from = state.root.join(&source);
+            let (Some(tag), Ok(data)) = (etag(&from), std::fs::read(&from)) else {
+                return (404, empty(), Vec::new());
+            };
+            if request.headers.get("x-amz-copy-source-if-match").is_some_and(|wanted| *wanted != tag) {
+                return (412, empty(), Vec::new());
+            }
+            if write(&path, &data).is_err() {
+                return (500, empty(), Vec::new());
+            }
+            let copied = state.meta.lock().unwrap().get(&source).cloned();
+            if let Some(meta) = copied {
+                state.meta.lock().unwrap().insert(name, meta);
+            }
+            let tag = etag(&path).unwrap_or_default();
+            (200, empty(), format!("<CopyObjectResult><ETag>{tag}</ETag></CopyObjectResult>").into_bytes())
+        }
         ("PUT", None, _) => {
             if write(&path, &request.body).is_err() {
                 return (500, empty(), Vec::new());
@@ -247,12 +292,16 @@ fn respond(state: &State, request: Request) -> Response {
             if request.headers.get("if-match").is_some_and(|wanted| *wanted != tag) {
                 return (412, empty(), Vec::new());
             }
-            let mut headers = BTreeMap::from([("ETag", tag)]);
+            let mut headers = BTreeMap::from([("ETag", tag), ("Last-Modified", last_modified(&path).unwrap_or_default())]);
             if request.method == "HEAD" {
                 headers.insert("length", data.len().to_string());
                 return (200, headers, Vec::new());
             }
             match request.headers.get("range").and_then(|r| r.strip_prefix("bytes=")).and_then(|r| r.split_once('-')) {
+                Some(("", tail)) => {
+                    let tail: usize = tail.parse().unwrap_or(0);
+                    (206, headers, data[data.len().saturating_sub(tail)..].to_vec())
+                }
                 Some((start, end)) => {
                     let start: usize = start.parse().unwrap_or(0);
                     let end: usize = end.parse::<usize>().map_or(data.len(), |e| (e + 1).min(data.len()));

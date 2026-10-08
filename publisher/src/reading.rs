@@ -13,11 +13,14 @@ use arrow_array::types::{Int16Type, Int32Type, Int64Type, Int8Type, UInt16Type, 
 use arrow_array::{Array, ArrayRef, RecordBatch};
 use arrow_schema::{DataType, TimeUnit};
 use bytes::{Buf, Bytes};
+use desearch::r2::{Bucket, Head};
+use futures::{StreamExt, TryStreamExt};
 use parquet::arrow::arrow_reader::{ArrowReaderMetadata, ArrowReaderOptions, ParquetRecordBatchReaderBuilder};
 use parquet::arrow::ProjectionMask;
 use parquet::errors::ParquetError;
 use parquet::file::metadata::{ParquetMetaData, ParquetMetaDataReader};
 use parquet::file::reader::{ChunkReader, Length};
+use tokio::runtime::Handle;
 
 use crate::records::{Row, MAX_US, MIN_US, ROW_COLUMNS};
 
@@ -96,6 +99,43 @@ impl<R: RangeRead> RangeRead for Counted<R> {
     }
 }
 
+/// An upload read in ranges from R2, several ranges at once, each refused if the object changed since its HEAD.
+pub struct Remote {
+    pub bucket: Bucket,
+    pub key: String,
+    pub head: Head,
+    pub handle: Handle,
+    pub ranges_at_once: usize,
+    pub traffic: Arc<Traffic>,
+}
+
+impl Remote {
+    fn count(&self, ranges: &[Range<u64>]) {
+        self.traffic.requests.fetch_add(ranges.len() as u64, Ordering::Relaxed);
+        self.traffic.bytes.fetch_add(ranges.iter().map(|r| r.end - r.start).sum(), Ordering::Relaxed);
+    }
+}
+
+impl RangeRead for Remote {
+    fn size(&self) -> u64 {
+        self.head.size
+    }
+
+    fn read(&self, range: Range<u64>) -> io::Result<Bytes> {
+        self.count(std::slice::from_ref(&range));
+        let etag = Some(self.head.etag.as_str()).filter(|e| !e.is_empty());
+        self.handle.block_on(self.bucket.get_range(&self.key, range, etag)).map_err(io::Error::other)
+    }
+
+    fn read_many(&self, ranges: &[Range<u64>]) -> io::Result<Vec<Bytes>> {
+        self.count(ranges);
+        let etag = Some(self.head.etag.as_str()).filter(|e| !e.is_empty());
+        let reads =
+            futures::stream::iter(ranges.iter().cloned()).map(|range| self.bucket.get_range(&self.key, range, etag)).buffered(self.ranges_at_once.max(1));
+        self.handle.block_on(reads.try_collect()).map_err(io::Error::other)
+    }
+}
+
 /// The footer's length when both magic markers are present and the footer is small enough to parse.
 pub fn footer_length(size: u64, head: &[u8], tail: &[u8]) -> Option<u64> {
     if size < 12 || head != MAGIC || tail.len() < 8 || &tail[tail.len() - 4..] != MAGIC {
@@ -157,7 +197,9 @@ pub fn read_rows(source: &dyn RangeRead, assigned: usize) -> io::Result<Option<V
     let mut chunks = Vec::new();
     for group in metadata.row_groups() {
         for column in group.columns().iter().filter(|c| wanted(&c.column_path().string())) {
-            let (Ok(start), Ok(length)) = (u64::try_from(column.dictionary_page_offset().unwrap_or(column.data_page_offset())), u64::try_from(column.compressed_size())) else {
+            let (Ok(start), Ok(length)) =
+                (u64::try_from(column.dictionary_page_offset().unwrap_or(column.data_page_offset())), u64::try_from(column.compressed_size()))
+            else {
                 return Ok(None);
             };
             if start.checked_add(length).is_none_or(|end| end > footer_start) {
@@ -355,9 +397,5 @@ fn lists(array: &ArrayRef) -> Option<Vec<Option<Vec<Option<String>>>>> {
         _ => return None,
     };
     let values = strings(&values)?;
-    Some(
-        (0..array.len())
-            .map(|i| array.is_valid(i).then(|| values[offsets[i]..offsets[i + 1]].to_vec()))
-            .collect(),
-    )
+    Some((0..array.len()).map(|i| array.is_valid(i).then(|| values[offsets[i]..offsets[i + 1]].to_vec())).collect())
 }

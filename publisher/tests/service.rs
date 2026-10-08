@@ -14,11 +14,11 @@ use arrow_array::RecordBatch;
 use base64::Engine;
 use bytes::Bytes;
 use common::{page, parquet};
+use desearch::r2::{self, Bucket, Credentials, PARQUET};
+use desearch::stub;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
-use publisher::r2::{self, Bucket, Credentials, PARQUET};
 use publisher::service::{self, Metrics, Settings, Shared};
 use publisher::snapshot::Multipart;
-use publisher::stub;
 use redis::aio::ConnectionManager;
 use redis::AsyncCommands;
 use serde_json::{json, Value};
@@ -77,7 +77,10 @@ fn rows(file: &[u8]) -> Vec<RecordBatch> {
 }
 
 fn column(batches: &[RecordBatch], name: &str) -> Vec<String> {
-    batches.iter().flat_map(|b| b.column_by_name(name).unwrap().as_string::<i32>().iter().map(|v| v.unwrap_or_default().to_string()).collect::<Vec<_>>()).collect()
+    batches
+        .iter()
+        .flat_map(|b| b.column_by_name(name).unwrap().as_string::<i32>().iter().map(|v| v.unwrap_or_default().to_string()).collect::<Vec<_>>())
+        .collect()
 }
 
 fn json_object(state: &stub::State, bucket: &str, key: &str) -> Option<Value> {
@@ -139,7 +142,12 @@ async fn the_service_publishes_reports_and_takes_back_as_the_python_one_does() {
     enqueue(&mut redis, &crawl("t2", &urls("t2"), completed, ""), false).await;
     enqueue(&mut redis, &crawl("t3", &urls("t3"), completed, ""), true).await;
     enqueue(&mut redis, &crawl("t4", &urls("t4"), completed, "\"not-this-one\""), true).await;
-    enqueue(&mut redis, &json!({"task_id": "t5", "kind": "embed", "key": "embed/t5.parquet", "input_key": "embed-inputs/t5.parquet", "completed_at": completed}), true).await;
+    enqueue(
+        &mut redis,
+        &json!({"task_id": "t5", "kind": "embed", "key": "embed/t5.parquet", "input_key": "embed-inputs/t5.parquet", "completed_at": completed}),
+        true,
+    )
+    .await;
     state.fail("GET", &format!("{TEMP}/{PREFIX}submitted/t1"), 2);
     state.fail("PUT", &format!("{PAGES}/changes/seq/"), 5);
 

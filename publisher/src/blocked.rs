@@ -4,7 +4,7 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 
-use crate::text;
+use desearch::text;
 
 const REAL_CONTENT_CHARS: usize = 3000;
 const TITLE_PREFIX_TEXT_CHARS: usize = 500;
@@ -29,23 +29,14 @@ const CHALLENGE_PHRASES: [&str; 17] = [
     "access to this page has been denied",
 ];
 const WEAK_PHRASES: [&str; 4] = ["captcha", "access denied", "forbidden", "too many requests"];
-const SCRIPT_ONLY_PHRASES: [&str; 5] = [
-    "enable javascript",
-    "javascript is disabled",
-    "javascript is required",
-    "requires javascript",
-    "turn on javascript",
-];
+const SCRIPT_ONLY_PHRASES: [&str; 5] = ["enable javascript", "javascript is disabled", "javascript is required", "requires javascript", "turn on javascript"];
 const REFUSAL_STATUSES: [i32; 4] = [401, 403, 407, 429];
 
-static CHALLENGE_TITLE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(&format!(r"(?i)^{CHALLENGE_PHRASE}[\s.!?\u{{2026}}]*(?:$|(?P<suffix>(?:\||\s[-\u{{2013}}\u{{2014}}\u{{b7}}]\s).*))")).unwrap()
-});
+static CHALLENGE_TITLE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(&format!(r"(?i)^{CHALLENGE_PHRASE}[\s.!?\u{{2026}}]*(?:$|(?P<suffix>(?:\||\s[-\u{{2013}}\u{{2014}}\u{{b7}}]\s).*))")).unwrap());
 static CHALLENGE_PREFIX: LazyLock<Regex> = LazyLock::new(|| Regex::new(&format!("(?i)^{CHALLENGE_PHRASE}")).unwrap());
-static VENDOR_NAME: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)^(?:cloudflare|sucuri|incapsula|imperva|ddos-guard|vercel|akamai|perimeterx|human security|datadome|kasada)")
-        .unwrap()
-});
+static VENDOR_NAME: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)^(?:cloudflare|sucuri|incapsula|imperva|ddos-guard|vercel|akamai|perimeterx|human security|datadome|kasada)").unwrap());
 
 pub fn looks_blocked(status: Option<i32>, text: &str, title: &str) -> bool {
     // Lowercasing never shortens text, so a long text is real content before it is lowercased.

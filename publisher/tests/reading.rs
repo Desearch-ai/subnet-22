@@ -7,7 +7,7 @@ use std::ops::Range;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
-use arrow_array::{ArrayRef, Int64Array, TimestampMillisecondArray, TimestampMicrosecondArray, TimestampNanosecondArray};
+use arrow_array::{ArrayRef, Int64Array, TimestampMicrosecondArray, TimestampMillisecondArray, TimestampNanosecondArray};
 use arrow_schema::{DataType, TimeUnit};
 use bytes::Bytes;
 use common::{page, parquet, Upload};
@@ -54,7 +54,11 @@ fn fetch_times_read_with_or_without_a_timezone() {
     let micros = vec![AT, AT + 1_500, AT + 2];
     let millis: Vec<i64> = micros.iter().map(|us| us / 1000).collect();
     let cases: [(DataType, ArrayRef, Vec<i64>); 3] = [
-        (DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())), Arc::new(TimestampMicrosecondArray::from(micros.clone()).with_timezone("UTC")), micros.clone()),
+        (
+            DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
+            Arc::new(TimestampMicrosecondArray::from(micros.clone()).with_timezone("UTC")),
+            micros.clone(),
+        ),
         (DataType::Timestamp(TimeUnit::Microsecond, None), Arc::new(TimestampMicrosecondArray::from(micros.clone())), micros.clone()),
         (
             DataType::Timestamp(TimeUnit::Millisecond, Some("+02:00".into())),

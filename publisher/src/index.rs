@@ -7,8 +7,7 @@ use std::sync::Mutex;
 
 use anyhow::{bail, Context, Result};
 use rocksdb::{
-    BlockBasedIndexType, BlockBasedOptions, Cache, ColumnFamily, ColumnFamilyDescriptor, DBCompressionType, Direction, IteratorMode, Options,
-    WriteBatch, DB,
+    BlockBasedIndexType, BlockBasedOptions, Cache, ColumnFamily, ColumnFamilyDescriptor, DBCompressionType, Direction, IteratorMode, Options, WriteBatch, DB,
 };
 
 use crate::records::parse_iso;
@@ -475,7 +474,7 @@ fn take_sha1(rest: &mut &[u8], packed: bool) -> Result<String> {
     }
     let (digest, tail) = rest.split_at(20);
     *rest = tail;
-    Ok(crate::canonical::hex(digest))
+    Ok(desearch::canonical::hex(digest))
 }
 
 fn nibble(c: u8) -> u8 {
@@ -544,7 +543,8 @@ mod tests {
             change_seq: Some(12),
             change_row: Some(0),
         };
-        let loose = Current { version: "V".into(), content_sha1: String::new(), fetched_at: "yesterday".into(), change_seq: None, change_row: None, ..packed.clone() };
+        let loose =
+            Current { version: "V".into(), content_sha1: String::new(), fetched_at: "yesterday".into(), change_seq: None, change_row: None, ..packed.clone() };
         for current in [packed, loose] {
             assert_eq!(decode(&encode(&current)).unwrap(), current);
         }

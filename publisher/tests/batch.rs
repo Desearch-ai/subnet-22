@@ -78,9 +78,9 @@ fn a_batch_publishes_the_best_copy_and_a_withdrawal_takes_it_back() {
     assert_eq!(index.current(&change.key).unwrap(), None);
     assert!(index.is_withdrawn("t2").unwrap());
     let rows = outcomes::rows(&batch.changes, &batch.unchanged, &batch.failed, &batch.removed);
-    let dropped: Vec<_> = rows.iter().filter(|r| r.outcome == outcomes::DROPPED).map(|r| (r.url.as_str(), r.host.as_str())).collect();
+    let dropped: Vec<_> = rows.iter().filter(|r| r.outcome == desearch::outcomes::DROPPED).map(|r| (r.url.as_str(), r.host.as_str())).collect();
     assert_eq!(dropped, [(A, "ex.com")]);
-    assert!(!outcomes::encode(&rows, NOW).unwrap().is_empty());
+    assert!(!desearch::outcomes::encode(&rows, NOW).unwrap().is_empty());
     let _ = std::fs::remove_dir_all(&dir);
 }
 

@@ -1,0 +1,29 @@
+[package]
+name = "desearch"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88"
+publish = false
+description = "What the Desearch Rust services share: URL canonicalisation, R2, numbered feeds, outcome files and hotkeys"
+
+[dependencies]
+anyhow = "1"
+arrow-array = "59"
+arrow-schema = "59"
+bip39 = { version = "2", default-features = false, features = ["std"] }
+blake2 = "0.10"
+bs58 = "0.5"
+bytes = "1"
+futures = "0.3"
+hmac = "0.12"
+parquet = { version = "59", default-features = false, features = ["arrow", "zstd"] }
+redis = { version = "1", default-features = false, features = ["tokio-comp", "connection-manager"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+schnorrkel = "0.11"
+serde_json = "1"
+sha1 = "0.10"
+sha2 = "0.10"
+substrate-bip39 = "0.6"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "net", "io-util"] }
+unicode-normalization = "0.1"
+unicode-properties = { version = "0.1", default-features = false, features = ["general-category"] }

@@ -6,7 +6,7 @@ use std::process::Command;
 use std::sync::atomic::Ordering;
 use std::time::Instant;
 
-use publisher::canonical::sha1_hex;
+use desearch::canonical::sha1_hex;
 use publisher::index::{Current, VersionIndex};
 use publisher::local::{LocalFeed, LocalUploads};
 use publisher::records::{iso, SECOND};

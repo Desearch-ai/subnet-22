@@ -10,8 +10,32 @@ use crate::entities::ENTITIES;
 use crate::text;
 
 const USES_NETLOC: [&str; 27] = [
-    "", "ftp", "http", "gopher", "nntp", "telnet", "imap", "wais", "file", "mms", "https", "shttp", "snews",
-    "prospero", "rtsp", "rtsps", "rtspu", "rsync", "svn", "svn+ssh", "sftp", "nfs", "git", "git+ssh", "ws", "wss",
+    "",
+    "ftp",
+    "http",
+    "gopher",
+    "nntp",
+    "telnet",
+    "imap",
+    "wais",
+    "file",
+    "mms",
+    "https",
+    "shttp",
+    "snews",
+    "prospero",
+    "rtsp",
+    "rtsps",
+    "rtspu",
+    "rsync",
+    "svn",
+    "svn+ssh",
+    "sftp",
+    "nfs",
+    "git",
+    "git+ssh",
+    "ws",
+    "wss",
     "itms-services",
 ];
 const TRACKING: [&str; 7] = ["fbclid", "gclid", "mc_cid", "mc_eid", "ref", "cmpid", "ito"];
@@ -20,10 +44,9 @@ const HEX: &[u8; 16] = b"0123456789ABCDEF";
 const MAX_INT_DIGITS: usize = 4300;
 const LONGEST_NAME: usize = 32;
 const WINDOWS_1252: [char; 32] = [
-    '\u{20ac}', '\u{81}', '\u{201a}', '\u{192}', '\u{201e}', '\u{2026}', '\u{2020}', '\u{2021}', '\u{2c6}', '\u{2030}',
-    '\u{160}', '\u{2039}', '\u{152}', '\u{8d}', '\u{17d}', '\u{8f}', '\u{90}', '\u{2018}', '\u{2019}', '\u{201c}',
-    '\u{201d}', '\u{2022}', '\u{2013}', '\u{2014}', '\u{2dc}', '\u{2122}', '\u{161}', '\u{203a}', '\u{153}', '\u{9d}',
-    '\u{17e}', '\u{178}',
+    '\u{20ac}', '\u{81}', '\u{201a}', '\u{192}', '\u{201e}', '\u{2026}', '\u{2020}', '\u{2021}', '\u{2c6}', '\u{2030}', '\u{160}', '\u{2039}', '\u{152}',
+    '\u{8d}', '\u{17d}', '\u{8f}', '\u{90}', '\u{2018}', '\u{2019}', '\u{201c}', '\u{201d}', '\u{2022}', '\u{2013}', '\u{2014}', '\u{2dc}', '\u{2122}',
+    '\u{161}', '\u{203a}', '\u{153}', '\u{9d}', '\u{17e}', '\u{178}',
 ];
 
 /// A URL Python would reject with a ValueError.
@@ -99,10 +122,7 @@ pub fn split(url: &str) -> Result<Parts, Invalid> {
     let mut parts = Parts::default();
     if let Some(i) = rest.find(':') {
         let bytes = rest.as_bytes();
-        if i > 0
-            && bytes[0].is_ascii_alphabetic()
-            && bytes[..i].iter().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'-' | b'.'))
-        {
+        if i > 0 && bytes[0].is_ascii_alphabetic() && bytes[..i].iter().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'-' | b'.')) {
             parts.scheme = rest[..i].to_ascii_lowercase();
             rest = &rest[i + 1..];
         }

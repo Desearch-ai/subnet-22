@@ -66,7 +66,8 @@ pub fn import(sqlite: &Path, index: &VersionIndex, mut progress: impl FnMut(u64)
     }
     index.load(&chunk)?;
     moved.pages += chunk.len() as u64;
-    let withdrawn: Vec<(String, f64)> = db.prepare("SELECT task_id, at FROM withdrawn")?.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?.collect::<Result<_, _>>()?;
+    let withdrawn: Vec<(String, f64)> =
+        db.prepare("SELECT task_id, at FROM withdrawn")?.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?.collect::<Result<_, _>>()?;
     index.load_withdrawn(&withdrawn)?;
     moved.withdrawn = withdrawn.len() as u64;
     index.flush()?;

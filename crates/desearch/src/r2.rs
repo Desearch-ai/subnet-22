@@ -1,6 +1,5 @@
-//! Cloudflare R2 over the S3 API: SigV4-signed HEAD, ranged GET, PUT, DELETE and multipart uploads, retried with backoff.
+//! Cloudflare R2 over the S3 API: SigV4-signed HEAD, ranged GET, PUT, COPY, DELETE and multipart uploads, retried with backoff, and presigned URLs.
 
-use std::io;
 use std::ops::Range;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -13,11 +12,9 @@ use hmac::{Hmac, Mac};
 use reqwest::header::{HeaderMap, HeaderValue};
 use reqwest::{Method, StatusCode};
 use sha2::{Digest, Sha256};
-use tokio::runtime::Handle;
 
 use crate::canonical::hex;
-use crate::reading::RangeRead;
-use crate::records::iso;
+use crate::time::{parse_http_date, utc};
 
 pub const PARQUET: &str = "application/vnd.apache.parquet";
 pub const JSON: &str = "application/json";
@@ -67,11 +64,12 @@ impl std::fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
-/// A stored object's size and entity tag, quotes included as R2 sends it.
+/// A stored object's size, entity tag (quotes included, as R2 sends it) and when it was last written.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Head {
     pub size: u64,
     pub etag: String,
+    pub modified: Option<i64>,
 }
 
 /// One bucket under one key prefix.
@@ -123,7 +121,7 @@ impl Bucket {
             Ok((headers, _)) => {
                 let text = |name: &str| headers.get(name).and_then(|v| v.to_str().ok()).unwrap_or_default().to_string();
                 let size = text("content-length").parse().map_err(|_| Error::Transport("a HEAD without a length".into()))?;
-                Ok(Some(Head { size, etag: text("etag") }))
+                Ok(Some(Head { size, etag: text("etag"), modified: parse_http_date(&text("last-modified")) }))
             }
             Err(Error::Missing) => Ok(None),
             Err(error) => Err(error),
@@ -148,8 +146,56 @@ impl Bucket {
         Ok(body)
     }
 
+    /// The last `bytes` bytes of an object.
+    pub async fn get_tail(&self, key: &str, bytes: u64) -> Result<Bytes, Error> {
+        let mut headers = HeaderMap::new();
+        headers.insert(reqwest::header::RANGE, value(&format!("bytes=-{bytes}")));
+        Ok(self.call(Method::GET, Some(key), &[], headers, Bytes::new(), READ).await?.1)
+    }
+
     pub async fn get(&self, key: &str) -> Result<Bytes, Error> {
         Ok(self.call(Method::GET, Some(key), &[], HeaderMap::new(), Bytes::new(), LONG).await?.1)
+    }
+
+    /// Copies `src` to `dst` within this bucket, refused as `Changed` unless `src` is still the version `if_match` names; returns the copy's entity tag.
+    pub async fn copy(&self, src: &str, dst: &str, if_match: Option<&str>) -> Result<String, Error> {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-amz-copy-source", value(&format!("/{}/{}", self.bucket, encode(&self.path(src), false))));
+        if let Some(etag) = if_match {
+            headers.insert("x-amz-copy-source-if-match", value(etag));
+        }
+        match self.call(Method::PUT, Some(dst), &[], headers, Bytes::new(), LONG).await {
+            Ok((_, body)) => xml_field(&body, "ETag").map(|etag| etag.replace("&quot;", "\"")).ok_or_else(|| Error::Transport("a copy without an ETag".into())),
+            Err(Error::Missing) if if_match.is_some() => Err(Error::Changed),
+            Err(error) => Err(error),
+        }
+    }
+
+    /// A URL its holder may `method` the key with for `expires` seconds; a PUT must send `content_type`, as botocore presigns it.
+    pub fn presign(&self, method: &str, key: &str, expires: u64, content_type: Option<&str>, now: Duration) -> String {
+        let path = format!("/{}/{}", self.bucket, encode(&self.path(key), false));
+        let amz_date = amz_date(now);
+        let scope = format!("{}/{}/s3/aws4_request", &amz_date[..8], self.credentials.region);
+        let signed = if content_type.is_some() { "content-type;host" } else { "host" };
+        let query = [
+            ("X-Amz-Algorithm", "AWS4-HMAC-SHA256".to_string()),
+            ("X-Amz-Credential", format!("{}/{scope}", self.credentials.access_key)),
+            ("X-Amz-Date", amz_date.clone()),
+            ("X-Amz-Expires", expires.to_string()),
+            ("X-Amz-SignedHeaders", signed.to_string()),
+        ]
+        .iter()
+        .map(|(name, value)| format!("{name}={}", encode(value, true)))
+        .collect::<Vec<_>>()
+        .join("&");
+        let headers = match content_type {
+            Some(content_type) => format!("content-type:{content_type}\nhost:{}\n", self.host),
+            None => format!("host:{}\n", self.host),
+        };
+        let canonical = format!("{method}\n{path}\n{query}\n{headers}\n{signed}\n{UNSIGNED}");
+        let to_sign = format!("AWS4-HMAC-SHA256\n{amz_date}\n{scope}\n{}", hex(&Sha256::digest(canonical.as_bytes())));
+        let signature = signature(&amz_date[..8], &to_sign, &self.credentials);
+        format!("{}{path}?{query}&X-Amz-Signature={signature}", self.endpoint)
     }
 
     pub async fn put(&self, key: &str, body: Bytes, content_type: &str, cache_control: Option<&str>) -> Result<(), Error> {
@@ -251,7 +297,15 @@ impl Bucket {
         Ok(())
     }
 
-    async fn call(&self, method: Method, key: Option<&str>, query: &[(&str, &str)], headers: HeaderMap, body: Bytes, timeout: Duration) -> Result<(HeaderMap, Bytes), Error> {
+    async fn call(
+        &self,
+        method: Method,
+        key: Option<&str>,
+        query: &[(&str, &str)],
+        headers: HeaderMap,
+        body: Bytes,
+        timeout: Duration,
+    ) -> Result<(HeaderMap, Bytes), Error> {
         let path = match key {
             Some(key) => format!("/{}/{}", self.bucket, encode(&self.path(key), false)),
             None => format!("/{}", self.bucket),
@@ -264,7 +318,12 @@ impl Bucket {
         let mut attempt = 0;
         loop {
             let amz_date = amz_date(SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default());
-            let authorization = sign(method.as_str(), &self.host, &path, &query, payload, &amz_date, &self.credentials);
+            let amz: Vec<(&str, &str)> = headers
+                .iter()
+                .filter(|(name, _)| name.as_str().starts_with("x-amz-"))
+                .map(|(name, v)| (name.as_str(), v.to_str().unwrap_or_default()))
+                .collect();
+            let authorization = sign(method.as_str(), &self.host, &path, &query, payload, &amz_date, &amz, &self.credentials);
             let request = self
                 .http
                 .request(method.clone(), &url)
@@ -337,23 +396,32 @@ pub fn encode(text: &str, slash: bool) -> String {
 
 /// The `x-amz-date` for a moment since the epoch, as `20261006T221000Z`.
 pub fn amz_date(since_epoch: Duration) -> String {
-    let t = iso(since_epoch.as_micros() as i64);
-    format!("{}{}{}T{}{}{}Z", &t[0..4], &t[5..7], &t[8..10], &t[11..13], &t[14..16], &t[17..19])
+    let [year, month, day, hour, minute, second] = utc(since_epoch.as_secs() as i64);
+    format!("{year:04}{month:02}{day:02}T{hour:02}{minute:02}{second:02}Z")
 }
 
-/// The `Authorization` header for a request signed over its host, payload hash and date.
-pub fn sign(method: &str, host: &str, path: &str, query: &str, payload: &str, amz_date: &str, credentials: &Credentials) -> String {
-    const SIGNED: &str = "host;x-amz-content-sha256;x-amz-date";
-    let canonical = format!("{method}\n{path}\n{query}\nhost:{host}\nx-amz-content-sha256:{payload}\nx-amz-date:{amz_date}\n\n{SIGNED}\n{payload}");
+/// The `Authorization` header for a request signed over its host, payload hash, date and any other `x-amz-` headers.
+#[allow(clippy::too_many_arguments)]
+pub fn sign(method: &str, host: &str, path: &str, query: &str, payload: &str, amz_date: &str, amz: &[(&str, &str)], credentials: &Credentials) -> String {
+    let mut headers = vec![("host", host), ("x-amz-content-sha256", payload), ("x-amz-date", amz_date)];
+    headers.extend(amz.iter().filter(|(name, _)| !matches!(*name, "x-amz-content-sha256" | "x-amz-date")));
+    headers.sort();
+    let canonical_headers: String = headers.iter().map(|(name, value)| format!("{name}:{}\n", value.trim())).collect();
+    let signed = headers.iter().map(|(name, _)| *name).collect::<Vec<_>>().join(";");
+    let canonical = format!("{method}\n{path}\n{query}\n{canonical_headers}\n{signed}\n{payload}");
     let day = &amz_date[..8];
     let scope = format!("{day}/{}/s3/aws4_request", credentials.region);
     let to_sign = format!("AWS4-HMAC-SHA256\n{amz_date}\n{scope}\n{}", hex(&Sha256::digest(canonical.as_bytes())));
+    let signature = signature(day, &to_sign, credentials);
+    format!("AWS4-HMAC-SHA256 Credential={}/{scope}, SignedHeaders={signed}, Signature={signature}", credentials.access_key)
+}
+
+fn signature(day: &str, to_sign: &str, credentials: &Credentials) -> String {
     let mut key = hmac(format!("AWS4{}", credentials.secret_key).as_bytes(), day.as_bytes());
     for part in [credentials.region.as_str(), "s3", "aws4_request"] {
         key = hmac(&key, part.as_bytes());
     }
-    let signature = hex(&hmac(&key, to_sign.as_bytes()));
-    format!("AWS4-HMAC-SHA256 Credential={}/{scope}, SignedHeaders={SIGNED}, Signature={signature}", credentials.access_key)
+    hex(&hmac(&key, to_sign.as_bytes()))
 }
 
 fn hmac(key: &[u8], data: &[u8]) -> Vec<u8> {
@@ -362,64 +430,50 @@ fn hmac(key: &[u8], data: &[u8]) -> Vec<u8> {
     mac.finalize().into_bytes().to_vec()
 }
 
-/// An upload read in ranges from R2, several ranges at once, each refused if the object changed since its HEAD.
-pub struct Remote {
-    pub bucket: Bucket,
-    pub key: String,
-    pub head: Head,
-    pub handle: Handle,
-    pub ranges_at_once: usize,
-    pub traffic: Arc<crate::reading::Traffic>,
-}
-
-impl Remote {
-    fn count(&self, ranges: &[Range<u64>]) {
-        self.traffic.requests.fetch_add(ranges.len() as u64, Ordering::Relaxed);
-        self.traffic.bytes.fetch_add(ranges.iter().map(|r| r.end - r.start).sum(), Ordering::Relaxed);
-    }
-}
-
-impl RangeRead for Remote {
-    fn size(&self) -> u64 {
-        self.head.size
-    }
-
-    fn read(&self, range: Range<u64>) -> io::Result<Bytes> {
-        self.count(std::slice::from_ref(&range));
-        let etag = Some(self.head.etag.as_str()).filter(|e| !e.is_empty());
-        self.handle.block_on(self.bucket.get_range(&self.key, range, etag)).map_err(io::Error::other)
-    }
-
-    fn read_many(&self, ranges: &[Range<u64>]) -> io::Result<Vec<Bytes>> {
-        self.count(ranges);
-        let etag = Some(self.head.etag.as_str()).filter(|e| !e.is_empty());
-        let reads = futures::stream::iter(ranges.iter().cloned()).map(|range| self.bucket.get_range(&self.key, range, etag)).buffered(self.ranges_at_once.max(1));
-        self.handle.block_on(reads.try_collect()).map_err(io::Error::other)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn signatures_match_botocore() {
-        let credentials = Credentials { access_key: "AKIDEXAMPLE".into(), secret_key: "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY".into(), region: "auto".into() };
+        let credentials =
+            Credentials { access_key: "AKIDEXAMPLE".into(), secret_key: "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY".into(), region: "auto".into() };
         let host = "acct.r2.cloudflarestorage.com";
         let cases = [
             ("GET", "/subnet-22/submitted/dt%3D2026-10-06/task%3Dabc/5C-1-x.parquet", "", "87280451a346b94fe40653477628deb526bd967a022c8a9e2c3b256883ba70d1"),
             ("POST", "/desearch-pages/index/snapshots/2026-10-06.parquet", "uploads=", "8b4dabbb5d023ba72e5255cc47fecca67d5c5839757df107b7ff9e5759b0dc9d"),
-            ("PUT", "/desearch-pages/index/snapshots/2026-10-06.parquet", "partNumber=2&uploadId=a%2Fb%2Bc", "898408ff584294933f157dd8f6aee783f67851ae6d761b168e588310076dd6a3"),
+            (
+                "PUT",
+                "/desearch-pages/index/snapshots/2026-10-06.parquet",
+                "partNumber=2&uploadId=a%2Fb%2Bc",
+                "898408ff584294933f157dd8f6aee783f67851ae6d761b168e588310076dd6a3",
+            ),
             ("HEAD", "/subnet-22/a%20b/%C3%A9~_.-", "", "ee7189b1f9615bc4c1c43d68e4f3f79a6c71acf1ad6b54d69866fb860f2332b0"),
         ];
         let date = amz_date(Duration::from_secs(1_791_324_600));
         assert_eq!(date, "20261006T221000Z");
         for (method, path, query, signature) in cases {
-            let header = sign(method, host, path, query, EMPTY_SHA256, &date, &credentials);
+            let header = sign(method, host, path, query, EMPTY_SHA256, &date, &[], &credentials);
             assert!(header.ends_with(&format!("Signature={signature}")), "{method} {path}: {header}");
         }
         assert_eq!(encode("submitted/dt=2026-10-06/a b/\u{e9}~", false), "submitted/dt%3D2026-10-06/a%20b/%C3%A9~");
         assert_eq!(encode("a/b+c", true), "a%2Fb%2Bc");
+    }
+
+    #[test]
+    fn presigned_urls_match_botocore() {
+        let credentials =
+            Credentials { access_key: "AKIDEXAMPLE".into(), secret_key: "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY".into(), region: "auto".into() };
+        let bucket = Bucket::new(client().unwrap(), "https://acct.r2.cloudflarestorage.com", "subnet-22", "", credentials, Default::default()).unwrap();
+        let at = Duration::from_secs(1_791_404_507);
+        assert_eq!(amz_date(at), "20261007T202147Z");
+        let put = bucket.presign("PUT", "uploads/dt=2026-10-08/task=abc/5Hk-3.parquet", 240, Some("application/vnd.apache.parquet"), at);
+        assert_eq!(put, "https://acct.r2.cloudflarestorage.com/subnet-22/uploads/dt%3D2026-10-08/task%3Dabc/5Hk-3.parquet?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=AKIDEXAMPLE%2F20261007%2Fauto%2Fs3%2Faws4_request&X-Amz-Date=20261007T202147Z&X-Amz-Expires=240&X-Amz-SignedHeaders=content-type%3Bhost&X-Amz-Signature=2839b7c7fe2ebeea5617f05c87202382ee4190e0b531f865c1f3cdcd1caafcea");
+        let get = bucket.presign("GET", "embed/inputs/a b.json", 180, None, at);
+        assert!(
+            get.ends_with("X-Amz-Expires=180&X-Amz-SignedHeaders=host&X-Amz-Signature=5d217d5c397104b6903027cf043f2c330073223a56ecbdc9f978428e85eb0f55"),
+            "{get}"
+        );
     }
 
     #[test]

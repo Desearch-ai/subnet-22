@@ -1,4 +1,4 @@
-# Build from this folder: docker build -t desearch-publisher publisher/
+# Build from the repository root: docker build -f publisher/Dockerfile -t desearch-publisher .
 FROM rust:1-bookworm AS build
 
 RUN apt-get update \
@@ -6,14 +6,17 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /src
-COPY Cargo.toml Cargo.lock ./
-COPY src src
-COPY bench bench
+COPY crates/desearch crates/desearch
+COPY publisher/Cargo.toml publisher/Cargo.lock publisher/
+COPY publisher/src publisher/src
+COPY publisher/bench publisher/bench
+WORKDIR /src/publisher
 ARG CARGO_BUILD_JOBS=4
+ENV CARGO_TARGET_DIR=/src/target
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/target \
     cargo build --release --locked --bin publisher \
-    && strip -o /publisher target/release/publisher
+    && strip -o /publisher /src/target/release/publisher
 
 FROM debian:bookworm-slim
 

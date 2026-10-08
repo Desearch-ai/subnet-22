@@ -72,9 +72,15 @@ impl Kind {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Body {
-    Page { record: Box<Record>, version: String },
+    Page {
+        record: Box<Record>,
+        version: String,
+    },
     /// A page taken back: readers drop it from what they hold.
-    Removed { url: String, domain: String },
+    Removed {
+        url: String,
+        domain: String,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

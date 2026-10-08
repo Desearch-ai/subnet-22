@@ -114,7 +114,14 @@ pub fn read_job(job: &Job, uploads: &dyn Uploads, now: i64) -> Result<(Vec<Page>
 pub fn collect(job: &Job, rows: &[Row], now: i64) -> Result<(Vec<Page>, Vec<Failed>)> {
     let window = publish_window(python_float(&job.completed_at)?, python_float(&job.claim_ttl)?, now)?;
     let miner = job.miner.as_deref();
-    let context = RecordContext { task_id: &job.task_id, miner: miner.unwrap_or_default(), window, captured_at: now, validator: job.validator.as_deref(), validators: &job.validators };
+    let context = RecordContext {
+        task_id: &job.task_id,
+        miner: miner.unwrap_or_default(),
+        window,
+        captured_at: now,
+        validator: job.validator.as_deref(),
+        validators: &job.validators,
+    };
     let given: HashSet<&str> = job.urls.iter().map(String::as_str).collect();
     let skipped: HashSet<&str> = job.skip.iter().map(String::as_str).collect();
     let assigned: HashSet<&str> = given.difference(&skipped).copied().collect();
@@ -297,7 +304,7 @@ pub fn write(jobs: &[Job], reads: Vec<Read>, index: &VersionIndex, feed: &dyn Ch
         kind: Kind::Removed,
         previous_content_sha1: removal.content_sha1.clone(),
         published_at: published_at.clone(),
-        body: Body::Removed { url: removal.url.clone(), domain: crate::canonical::domain_of(&removal.url).unwrap_or_default() },
+        body: Body::Removed { url: removal.url.clone(), domain: desearch::canonical::domain_of(&removal.url).unwrap_or_default() },
     }));
     // The change file is written before the index learns of it, so a crash only replays.
     if !changes.is_empty() {

@@ -6,10 +6,11 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 
+use desearch::stub;
 use publisher::index::VersionIndex;
 use publisher::local::{LocalFeed, LocalUploads};
 use publisher::worker::{self, Job};
-use publisher::{outcomes, service, sqlite, stub};
+use publisher::{outcomes, service, sqlite};
 
 #[cfg(not(target_env = "msvc"))]
 #[global_allocator]
@@ -110,7 +111,7 @@ fn local(args: LocalArgs) -> Result<()> {
         let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_micros() as i64;
         let batch = worker::publish(jobs, &uploads, &index, &feed, now, args.readers)?;
         let rows = outcomes::rows(&batch.changes, &batch.unchanged, &batch.failed, &batch.removed);
-        std::fs::write(outcome_dir.join(format!("{:012}.parquet", n + 1)), outcomes::encode(&rows, now)?)?;
+        std::fs::write(outcome_dir.join(format!("{:012}.parquet", n + 1)), desearch::outcomes::encode(&rows, now)?)?;
         println!(
             "published {} tasks, {} pages new or changed or removed, {} unchanged, {} failed URLs, {} to retry in {:.2}s",
             batch.finalized.len(),

@@ -1,6 +1,6 @@
 //! URLs canonicalised and keyed as Python's `app.canonical` does; the expected values come from running it.
 
-use publisher::canonical::{canonicalize, domain_of, unescape, unquote_plus};
+use desearch::canonical::{canonicalize, domain_of, unescape, unquote_plus};
 use publisher::records::page_key;
 
 const VECTORS: [(&str, &str, &str, &str); 19] = [
@@ -41,7 +41,12 @@ const VECTORS: [(&str, &str, &str, &str); 19] = [
         "ex.com",
         "pages/ex.com/2676b23e39ab68b68d7f2d15b946370f83c68223",
     ),
-    ("https://\u{130}STANBUL.com/x", "https://i\u{307}stanbul.com/x", "i\u{307}stanbul.com", "pages/i\u{307}stanbul.com/5711056500cd4431cb7f0cd6dda5663ef79c4fcf"),
+    (
+        "https://\u{130}STANBUL.com/x",
+        "https://i\u{307}stanbul.com/x",
+        "i\u{307}stanbul.com",
+        "pages/i\u{307}stanbul.com/5711056500cd4431cb7f0cd6dda5663ef79c4fcf",
+    ),
     ("HTTPS://Ex.com:443/p;params?x=1", "https://ex.com:443/p;params?x=1", "ex.com:443", "pages/ex.com:443/7c17edf2f440ab99ad5818bee887817acb7cb8d7"),
     (
         "https://ex.com/a&lt;b&gt;?fbcl\u{130}d=1&mc_cid=2&ito=3&cmpid=4&gclid=5&utm_=6&keep=7",

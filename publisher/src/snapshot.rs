@@ -15,7 +15,7 @@ use parquet::file::properties::WriterProperties;
 use tokio::runtime::Handle;
 
 use crate::index::{Current, VersionIndex};
-use crate::r2::{Bucket, PARQUET};
+use desearch::r2::{Bucket, PARQUET};
 
 /// R2 takes parts of at least 5 MiB; bigger parts mean fewer requests for a large index.
 const PART_BYTES: usize = 64 << 20;
@@ -68,10 +68,8 @@ fn checkpoint_dir(index_dir: &Path) -> PathBuf {
 
 /// Every page of the index as Parquet into `out`, a batch at a time.
 pub fn write_parquet<W: Write + Send>(index: &VersionIndex, out: W) -> Result<(W, u64)> {
-    let properties = WriterProperties::builder()
-        .set_compression(Compression::ZSTD(ZstdLevel::try_new(3)?))
-        .set_max_row_group_row_count(Some(ROW_GROUP_ROWS))
-        .build();
+    let properties =
+        WriterProperties::builder().set_compression(Compression::ZSTD(ZstdLevel::try_new(3)?)).set_max_row_group_row_count(Some(ROW_GROUP_ROWS)).build();
     let mut writer = ArrowWriter::try_new(out, SNAPSHOT_SCHEMA.clone(), Some(properties))?;
     let mut pending: Vec<(String, Current)> = Vec::with_capacity(BATCH_ROWS);
     let mut rows = 0u64;
