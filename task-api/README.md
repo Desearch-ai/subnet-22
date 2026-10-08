@@ -166,13 +166,18 @@ embedded twice. The miner-facing description is [Embedding tasks](../docs/embedd
 
 ## Run
 
-The API host runs the API and its Redis; the [publisher](../publisher/) runs on its own machine:
+The API is built from `Dockerfile.rust` at the repository root. It keeps its SQLite file in `/data`
+and needs a Redis (`TASK_API_REDIS`); the [publisher](../publisher/) runs on its own machine:
 
 ```bash
-cp deploy/.env.example .env   # R2 buckets and credentials, admin hotkeys, signing key
-docker compose --env-file .env -f deploy/docker-compose.prod.yml up -d --build
-curl -s localhost:8080/v1/health
+docker build -f task-api/Dockerfile.rust -t task-api .
+docker run -d --env-file task-api/deploy/.env.example -e TASK_API_REGISTRY=chain -e TASK_API_SEEDS=chain -v task-api-data:/data -p 127.0.0.1:8080:8080 task-api
+curl -s localhost:8080/v1/ping
 ```
+
+Fill in the R2 credentials, admin hotkeys, signing key and Redis URL in the env file first. Behind a
+proxy that checks `/v1/ping`, a deploy can roll: the new copy serves next to the old one until the old
+one stops, and only one copy at a time runs the background work.
 
 It needs two R2 buckets in the same jurisdiction, with a token that can read and write both:
 
@@ -190,6 +195,9 @@ The [bot](../desearch-bot/README.md) fills the queue with the admin hotkey (`--t
 | Variable | Default | |
 | --- | --- | --- |
 | `TASK_API_REGISTRY` | — | `chain` or `local` |
+| `TASK_API_SEEDS` | `local` | `chain` or `local`: where round seeds come from |
+| `TASK_API_REDIS` | `redis://localhost:6379/15` | the Redis URL |
+| `TASK_API_LISTEN` | `0.0.0.0:8080` | the address the API listens on |
 | `TASK_API_ADMIN_HOTKEYS` | — | hotkeys allowed to enqueue |
 | `TASK_API_KEY_URI` | — | the key the log is signed with; required in `chain` mode |
 | `TASK_API_CLAIM_TTL` | 180 | seconds a miner is given to upload a task after claiming it; the claim and its upload link last 10 seconds longer |
