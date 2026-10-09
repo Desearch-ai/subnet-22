@@ -659,20 +659,22 @@ pub struct Compared {
     pub other_version: Vec<String>,
 }
 
-/// Compares every page of the current state under `prefix` with `index`; holds the whole state in memory, so for test runs.
-pub fn compare(store: &dyn Store, prefix: &str, index: &VersionIndex, threads: usize) -> Result<Compared> {
+/// Compares every page of `shards` in the current state under `prefix` with `index`; holds those shards in memory.
+pub fn compare(store: &dyn Store, prefix: &str, index: &VersionIndex, shards: &Range<usize>, threads: usize) -> Result<Compared> {
     let draining: HashSet<String> = index.withdrawn()?.into_iter().map(|(task_id, _)| task_id).collect();
     let mut expected = Vec::new();
     index.scan(|key, page| {
-        let waiting = draining.contains(&page.task_id);
-        expected.push((key, page.version, waiting));
+        if shard_of(&key).is_some_and(|shard| shards.contains(&shard)) {
+            let waiting = draining.contains(&page.task_id);
+            expected.push((key, page.version, waiting));
+        }
         Ok(())
     })?;
-    compared(current_versions(store, prefix, threads)?, expected)
+    compared(current_versions(store, prefix, shards, threads)?, expected)
 }
 
-/// Compares every page of the current state under `prefix` with a plain fold of the change log it covers, one page at a time, without shards or files; for test runs.
-pub fn compare_log(store: &dyn Store, prefix: &str, threads: usize) -> Result<Compared> {
+/// Compares every page of `shards` in the current state under `prefix` with a plain fold of the change log it covers, without shards or files; reads the whole log, so for test runs.
+pub fn compare_log(store: &dyn Store, prefix: &str, shards: &Range<usize>, threads: usize) -> Result<Compared> {
     let through = load_manifests(store, prefix, threads)?.iter().map(|m| m.through_seq).min().unwrap_or(0);
     let seqs: Vec<i64> = (1..=through).collect();
     let files = each(&seqs, threads, |&seq| -> Result<Vec<ChangeRow>> {
@@ -681,11 +683,13 @@ pub fn compare_log(store: &dyn Store, prefix: &str, threads: usize) -> Result<Co
         current::decode_changes(file, seq)
     })?;
     let (mut rows, mut withdrawn) = (Vec::new(), Withdrawals::new());
+    let wanted = |key: &str| shard_of(key).is_some_and(|shard| shards.contains(&shard));
     for (&seq, file) in seqs.iter().zip(files) {
         for row in file {
             match row {
-                ChangeRow::Page(page) => rows.push(*page),
-                ChangeRow::Removed(key) => rows.push(PageRow::removal(key, seq)),
+                ChangeRow::Page(page) if wanted(&page.key) => rows.push(*page),
+                ChangeRow::Removed(key) if wanted(&key) => rows.push(PageRow::removal(key, seq)),
+                ChangeRow::Page(_) | ChangeRow::Removed(_) => {}
                 ChangeRow::TaskWithdrawn(task_id) => {
                     withdrawn.entry(task_id).or_insert(seq);
                 }
@@ -693,11 +697,11 @@ pub fn compare_log(store: &dyn Store, prefix: &str, threads: usize) -> Result<Co
         }
     }
     let expected = current::merge(rows, &withdrawn, false).into_iter().map(|row| (row.key, row.version, false)).collect();
-    compared(current_versions(store, prefix, threads)?, expected)
+    compared(current_versions(store, prefix, shards, threads)?, expected)
 }
 
-fn current_versions(store: &dyn Store, prefix: &str, threads: usize) -> Result<HashMap<String, String>> {
-    let shards: Vec<usize> = (0..SHARDS).collect();
+fn current_versions(store: &dyn Store, prefix: &str, shards: &Range<usize>, threads: usize) -> Result<HashMap<String, String>> {
+    let shards: Vec<usize> = shards.clone().collect();
     Ok(each(&shards, threads, |&shard| shard_rows(store, prefix, shard))?
         .into_iter()
         .flatten()

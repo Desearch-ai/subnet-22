@@ -471,7 +471,7 @@ fn the_compacted_state_matches_a_plain_fold_of_the_log_through_combines_rewrites
         log.append(&changes);
         compactor::cycle(&store, &settings, 1_000.0 * round as f64).unwrap();
     }
-    let compared = compactor::compare_log(&store, "current/", 4).unwrap();
+    let compared = compactor::compare_log(&store, "current/", &(0..SHARDS), 4).unwrap();
     assert!(compared.index_pages > 20);
     assert_eq!((compared.missing, compared.extra, compared.other_version), (vec![], vec![], vec![]));
 }

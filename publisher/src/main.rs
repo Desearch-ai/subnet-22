@@ -73,6 +73,9 @@ enum Command {
         prefix: String,
         #[arg(long)]
         index: Option<PathBuf>,
+        /// Only shards `a..b`, so a check of a full-size state fits in memory.
+        #[arg(long, default_value = "0..1024")]
+        shards: String,
     },
     /// Build the current state once from an index snapshot: a local file, or its key in the pages bucket.
     BuildCurrent {
@@ -152,12 +155,13 @@ fn main() -> Result<()> {
             println!("{checked} pages checked in change files {sampled:?}: {removed} removed by a later change, {} wrong", wrong.len());
             Ok(())
         }
-        Command::CompareCurrent { prefix, index } => {
+        Command::CompareCurrent { prefix, index, shards } => {
+            let shards = range::<usize>(&shards)?;
             let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
             let store = pages_store(&runtime)?;
             let (compared, against) = match index {
-                Some(index) => (compactor::compare(&store, &prefix, &VersionIndex::open_read_only(&index, 64 << 20)?, 16)?, "index"),
-                None => (compactor::compare_log(&store, &prefix, 16)?, "change log"),
+                Some(index) => (compactor::compare(&store, &prefix, &VersionIndex::open_read_only(&index, 64 << 20)?, &shards, 16)?, "index"),
+                None => (compactor::compare_log(&store, &prefix, &shards, 16)?, "change log"),
             };
             for (what, keys) in [("missing", &compared.missing), ("extra", &compared.extra), ("other version", &compared.other_version)] {
                 for key in keys.iter().take(20) {
