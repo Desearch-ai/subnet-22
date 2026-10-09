@@ -260,7 +260,8 @@ fn compact(once: bool, start_empty_at: Option<i64>) -> Result<()> {
         work: std::env::var("COMPACTOR_WORK").map(PathBuf::from).unwrap_or(defaults.work),
         files_per_cycle: env_number("COMPACTOR_FILES_PER_CYCLE", defaults.files_per_cycle)?,
         merge_ratio: env_number("COMPACTOR_MERGE_RATIO", defaults.merge_ratio)?,
-        max_deltas: env_number("COMPACTOR_MAX_DELTAS", defaults.max_deltas)?,
+        every_s: env_number("COMPACTOR_EVERY_S", defaults.every_s)?,
+        fanout: env_number("COMPACTOR_FANOUT", defaults.fanout)?,
         merges_per_cycle: env_number("COMPACTOR_MERGES", defaults.merges_per_cycle)?,
         retire_after_s: env_number("COMPACTOR_RETIRE_S", defaults.retire_after_s)?,
         spill_bytes: env_number::<usize>("COMPACTOR_SPILL_MB", defaults.spill_bytes >> 20)? << 20,
@@ -304,13 +305,14 @@ fn compact(once: bool, start_empty_at: Option<i64>) -> Result<()> {
             Err(error) => return Err(error),
         };
         println!(
-            "cycle: change files {}..{} of {latest}, {} rows into {} deltas, {} withdrawn, {} shards merged, {} files deleted in {:.1}s{}{}",
+            "cycle: change files {}..{} of {latest}, {} rows into {} deltas, {} withdrawn, {} bases rewritten, {} deltas combined, {} files deleted in {:.1}s{}{}",
             report.from,
             report.through,
             report.rows,
             report.deltas,
             report.withdrawn,
             report.merged,
+            report.combined,
             report.deleted,
             started.elapsed().as_secs_f64(),
             if report.skipped.is_empty() { String::new() } else { format!(", numbers never written skipped: {:?}", report.skipped) },
@@ -320,7 +322,7 @@ fn compact(once: bool, start_empty_at: Option<i64>) -> Result<()> {
             return Ok(());
         }
         if report.through >= latest || report.waiting {
-            pause(60);
+            pause((settings.every_s - started.elapsed().as_secs_f64()).max(COMPACT_RETRY_S as f64) as u64);
             if stopped() {
                 return Ok(());
             }

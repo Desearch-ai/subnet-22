@@ -14,7 +14,7 @@ use desearch::r2::{self, Bucket};
 use serde::{Deserialize, Serialize};
 use tokio::runtime::Handle;
 
-use crate::current::{self, shard_dir, shard_of, ChangeRow, FileRef, Manifest, PageRow, Retired, SHARDS};
+use crate::current::{self, shard_dir, shard_of, ChangeRow, FileRef, Manifest, PageRow, Retired, Withdrawals, SHARDS};
 use crate::index::VersionIndex;
 
 /// Objects in a bucket or a folder, as the compactor reads and writes them.
@@ -105,9 +105,12 @@ pub struct Settings {
     /// Local room for rows waiting to be sorted into their shard.
     pub work: PathBuf,
     pub files_per_cycle: i64,
-    /// A shard merges once its deltas hold this share of its base, or `max_deltas` files.
+    /// Once caught up, a cycle starts this long after the last one, so each delta holds a while of the log.
+    pub every_s: f64,
+    /// A shard's base is rewritten once its deltas hold this share of it.
     pub merge_ratio: f64,
-    pub max_deltas: usize,
+    /// Deltas of one size combined into one of the next size, so a reader opens few files and a base is not rewritten for them.
+    pub fanout: usize,
     pub merges_per_cycle: usize,
     /// Replaced files stay this long, so a reader mid-read is not cut off.
     pub retire_after_s: f64,
@@ -127,7 +130,8 @@ impl Default for Settings {
             work: PathBuf::from("compactor-work"),
             files_per_cycle: 300,
             merge_ratio: 1.0,
-            max_deltas: 48,
+            every_s: 900.0,
+            fanout: 12,
             merges_per_cycle: 64,
             retire_after_s: 86_400.0,
             spill_bytes: 1 << 30,
@@ -146,6 +150,7 @@ pub struct Report {
     pub withdrawn: u64,
     pub deltas: usize,
     pub merged: usize,
+    pub combined: usize,
     pub deleted: usize,
     /// Numbers never written, passed over.
     pub skipped: Vec<i64>,
@@ -153,10 +158,24 @@ pub struct Report {
     pub waiting: bool,
 }
 
-/// Tasks taken back and the change file each was withdrawn in; readers drop their rows until every shard has merged past it.
+/// Tasks taken back; their rows count as removals until every shard's base is rewritten past the last row of theirs read.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Withdrawn {
-    pub tasks: BTreeMap<String, i64>,
+    pub tasks: BTreeMap<String, Withdrawal>,
+}
+
+impl Withdrawn {
+    pub fn by_task(&self) -> Withdrawals {
+        self.tasks.iter().map(|(task_id, taken)| (task_id.clone(), taken.seq)).collect()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Withdrawal {
+    /// The change file that took the task back.
+    pub seq: i64,
+    /// The last change file read with a row of the task: a publisher racing the take-back may log one after it.
+    pub last: i64,
 }
 
 pub fn manifest_key(prefix: &str, shard: usize) -> String {
@@ -386,16 +405,16 @@ fn never_written(store: &dyn Store, seq: i64, latest: i64, wait_s: f64, now: f64
     Ok(false)
 }
 
-/// Writes this cycle's deltas and merged bases and notes them in `manifests`, which are not saved yet; returns how many of each.
+/// Writes this cycle's deltas, combined deltas and merged bases and notes them in `manifests`, which are not saved yet; returns how many of each.
 fn write_files(
     store: &dyn Store,
     settings: &Settings,
     manifests: &mut [Manifest],
     spill: &Spill,
-    gone: &HashSet<String>,
+    gone: &Withdrawals,
     (from, through, now): (i64, i64, f64),
     written: &Mutex<Vec<String>>,
-) -> Result<(usize, usize)> {
+) -> Result<(usize, usize, usize)> {
     let prefix = settings.prefix.as_str();
     let shards: Vec<usize> = (0..SHARDS).collect();
     let deltas = each(&shards, settings.threads, |&shard| -> Result<Option<FileRef>> {
@@ -408,7 +427,7 @@ fn write_files(
         let bytes = file.len() as u64;
         store.put(&key, Bytes::from(file))?;
         written.lock().unwrap().push(key.clone());
-        Ok(Some(FileRef { key, rows: rows.len() as u64, bytes, through_seq: through }))
+        Ok(Some(FileRef { key, rows: rows.len() as u64, bytes, through_seq: through, level: 0 }))
     })?;
     let wrote_deltas = deltas.iter().flatten().count();
     for (manifest, delta) in manifests.iter_mut().zip(deltas) {
@@ -418,37 +437,71 @@ fn write_files(
         manifest.through_seq = manifest.through_seq.max(through);
     }
 
-    let mut due: Vec<usize> = (0..SHARDS)
-        .filter(|&shard| {
-            let manifest = &manifests[shard];
-            let base_rows = manifest.base.as_ref().map_or(0, |b| b.rows) as f64;
-            !manifest.deltas.is_empty() && (manifest.delta_rows() as f64 >= settings.merge_ratio * base_rows || manifest.deltas.len() >= settings.max_deltas)
-        })
-        .collect();
-    due.sort_by_key(|&shard| std::cmp::Reverse(manifests[shard].delta_rows()));
+    let mut due: Vec<Rewrite> = (0..SHARDS).filter_map(|shard| rewrite_due(&manifests[shard], settings).map(|level| Rewrite { shard, level })).collect();
+    due.sort_by_key(|rewrite| (rewrite.level.is_some(), std::cmp::Reverse(manifests[rewrite.shard].delta_rows())));
     due.truncate(settings.merges_per_cycle);
-    let merged = each(&due, settings.merge_threads, |&shard| -> Result<FileRef> {
-        let manifest = &manifests[shard];
-        let files = manifest
-            .files()
-            .map(|file| store.get(&file.key)?.ok_or_else(|| anyhow!("{} is in a manifest but missing", file.key)))
-            .collect::<Result<Vec<_>>>()?;
-        let (file, rows) = current::merge_files(files, gone, false)?;
-        let key = file_key(prefix, shard, "base", manifest.through_seq);
+    let made = each(&due, settings.merge_threads, |rewrite| -> Result<FileRef> {
+        let manifest = &manifests[rewrite.shard];
+        let inputs: Vec<&FileRef> = match rewrite.level {
+            None => manifest.files().collect(),
+            Some(level) => manifest.deltas.iter().filter(|delta| delta.level == level).collect(),
+        };
+        let files =
+            inputs.iter().map(|file| store.get(&file.key)?.ok_or_else(|| anyhow!("{} is in a manifest but missing", file.key))).collect::<Result<Vec<_>>>()?;
+        let (file, rows) = current::merge_files(files, gone, rewrite.level.is_some())?;
+        let (key, level) = match rewrite.level {
+            None => (file_key(prefix, rewrite.shard, "base", manifest.through_seq), 0),
+            Some(level) => (file_key(prefix, rewrite.shard, &format!("delta{}", level + 1), manifest.through_seq), level + 1),
+        };
         let bytes = file.len() as u64;
         store.put(&key, Bytes::from(file))?;
         written.lock().unwrap().push(key.clone());
-        Ok(FileRef { key, rows, bytes, through_seq: manifest.through_seq })
+        Ok(FileRef { key, rows, bytes, through_seq: inputs.iter().map(|f| f.through_seq).max().unwrap_or(manifest.through_seq), level })
     })?;
-    for (&shard, base) in due.iter().zip(merged) {
-        let manifest = &mut manifests[shard];
-        let replaced: Vec<Retired> = manifest.files().filter(|f| f.key != base.key).map(|f| Retired { key: f.key.clone(), at: now }).collect();
-        manifest.retired.extend(replaced);
-        manifest.merged_through = base.through_seq;
-        manifest.base = Some(base);
-        manifest.deltas.clear();
+    let (mut merged, mut combined) = (0, 0);
+    for (rewrite, made) in due.iter().zip(made) {
+        let manifest = &mut manifests[rewrite.shard];
+        match rewrite.level {
+            None => {
+                let replaced: Vec<Retired> = manifest.files().filter(|f| f.key != made.key).map(|f| Retired { key: f.key.clone(), at: now }).collect();
+                manifest.retired.extend(replaced);
+                manifest.merged_through = manifest.through_seq;
+                manifest.base = Some(made);
+                manifest.deltas.clear();
+                merged += 1;
+            }
+            Some(level) => {
+                let (old, kept): (Vec<FileRef>, Vec<FileRef>) = manifest.deltas.drain(..).partition(|delta| delta.level == level);
+                manifest.retired.extend(old.into_iter().filter(|f| f.key != made.key).map(|f| Retired { key: f.key, at: now }));
+                manifest.deltas = kept;
+                manifest.deltas.push(made);
+                combined += 1;
+            }
+        }
     }
-    Ok((wrote_deltas, due.len()))
+    Ok((wrote_deltas, merged, combined))
+}
+
+/// A base rewrite (`level` None) or a combining of one size of deltas.
+struct Rewrite {
+    shard: usize,
+    level: Option<u32>,
+}
+
+/// What a shard's files are due: its base rewritten once its deltas reach `merge_ratio` of it, else the smallest size of delta with `fanout` files combined.
+fn rewrite_due(manifest: &Manifest, settings: &Settings) -> Option<Option<u32>> {
+    if manifest.deltas.is_empty() {
+        return None;
+    }
+    let base_rows = manifest.base.as_ref().map_or(0, |b| b.rows) as f64;
+    if manifest.delta_rows() as f64 >= settings.merge_ratio * base_rows {
+        return Some(None);
+    }
+    let mut levels: BTreeMap<u32, usize> = BTreeMap::new();
+    for delta in &manifest.deltas {
+        *levels.entry(delta.level).or_default() += 1;
+    }
+    levels.into_iter().find(|&(_, count)| count >= settings.fanout.max(2)).map(|(level, _)| Some(level))
 }
 
 /// One pass: the change log read up to `files_per_cycle` files past the shard furthest behind, then merges and cleanup.
@@ -483,11 +536,17 @@ pub fn cycle(store: &dyn Store, settings: &Settings, now: f64) -> Result<Report>
             for row in rows {
                 let (shard, row) = match row {
                     ChangeRow::TaskWithdrawn(task_id) => {
-                        withdrawn.tasks.entry(task_id).or_insert(seq);
+                        let taken = withdrawn.tasks.entry(task_id).or_insert(Withdrawal { seq, last: seq });
+                        taken.last = taken.last.max(seq);
                         report.withdrawn += 1;
                         continue;
                     }
-                    ChangeRow::Page(page) => (shard_of(&page.key), *page),
+                    ChangeRow::Page(page) => {
+                        if let Some(taken) = withdrawn.tasks.get_mut(&page.record.task_id) {
+                            taken.last = taken.last.max(seq);
+                        }
+                        (shard_of(&page.key), *page)
+                    }
                     ChangeRow::Removed(key) => (shard_of(&key), PageRow::removal(key, seq)),
                 };
                 let Some(shard) = shard else { continue };
@@ -502,12 +561,12 @@ pub fn cycle(store: &dyn Store, settings: &Settings, now: f64) -> Result<Report>
     let through = report.through;
     // Kept before any manifest moves past the rows that withdrew them.
     store.put(&withdrawn_key(prefix), Bytes::from(serde_json::to_vec(&withdrawn)?))?;
-    let gone: HashSet<String> = withdrawn.tasks.keys().cloned().collect();
+    let gone = withdrawn.by_task();
 
     let referenced: HashSet<String> = manifests.iter().flat_map(|m| m.files().map(|f| f.key.clone())).collect();
     let written = Mutex::new(Vec::new());
     match write_files(store, settings, &mut manifests, &spill, &gone, (from, through, now), &written) {
-        Ok((deltas, merged)) => (report.deltas, report.merged) = (deltas, merged),
+        Ok((deltas, merged, combined)) => (report.deltas, report.merged, report.combined) = (deltas, merged, combined),
         Err(error) => {
             for key in written.into_inner().unwrap().iter().filter(|key| !referenced.contains(*key)) {
                 let _ = store.delete(key);
@@ -534,7 +593,7 @@ pub fn cycle(store: &dyn Store, settings: &Settings, now: f64) -> Result<Report>
 
     let merged_everywhere = manifests.iter().map(|m| m.merged_through).min().unwrap_or(0);
     let before = withdrawn.tasks.len();
-    withdrawn.tasks.retain(|_, at| *at > merged_everywhere);
+    withdrawn.tasks.retain(|_, taken| taken.last > merged_everywhere);
     if withdrawn.tasks.len() != before {
         store.put(&withdrawn_key(prefix), Bytes::from(serde_json::to_vec(&withdrawn)?))?;
     }
@@ -554,7 +613,7 @@ pub fn winner(store: &dyn Store, prefix: &str, key: &str) -> Result<Option<PageR
 
 /// The newest row kept for each of `keys` in one shard; the withdrawn tasks are read before the manifest, so a task pruned meanwhile cannot show.
 fn winners(store: &dyn Store, prefix: &str, shard: usize, keys: HashSet<String>) -> Result<HashMap<String, PageRow>> {
-    let gone: HashSet<String> = load_withdrawn(store, prefix)?.tasks.into_keys().collect();
+    let gone = load_withdrawn(store, prefix)?.by_task();
     let raw = store.get(&manifest_key(prefix, shard))?.ok_or_else(|| anyhow!("shard {shard} has no manifest"))?;
     let manifest: Manifest = serde_json::from_slice(&raw)?;
     let keys = Arc::new(keys);
@@ -577,7 +636,7 @@ fn winners(store: &dyn Store, prefix: &str, shard: usize, keys: HashSet<String>)
 
 /// Every current page of a shard, as a reader merges it.
 pub fn shard_rows(store: &dyn Store, prefix: &str, shard: usize) -> Result<Vec<PageRow>> {
-    let gone: HashSet<String> = load_withdrawn(store, prefix)?.tasks.into_keys().collect();
+    let gone = load_withdrawn(store, prefix)?.by_task();
     let raw = store.get(&manifest_key(prefix, shard))?.ok_or_else(|| anyhow!("shard {shard} has no manifest"))?;
     let manifest: Manifest = serde_json::from_slice(&raw)?;
     let mut rows = Vec::new();

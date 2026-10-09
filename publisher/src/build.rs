@@ -252,7 +252,7 @@ pub fn build(store: &dyn Store, snapshot: &Path, settings: &Settings) -> Result<
     let spill = spill.into_inner().unwrap();
     let shards: Vec<usize> = settings.shards.clone().collect();
     let written = each(&shards, settings.threads.min(WRITERS), |&shard| -> Result<u64> {
-        let rows = current::merge(spill.take(shard)?, &HashSet::new(), false);
+        let rows = current::merge(spill.take(shard)?, &current::Withdrawals::new(), false);
         let manifest = if rows.is_empty() {
             Manifest { shard, through_seq: through, merged_through: through, ..Manifest::default() }
         } else {
@@ -264,7 +264,7 @@ pub fn build(store: &dyn Store, snapshot: &Path, settings: &Settings) -> Result<
                 shard,
                 through_seq: through,
                 merged_through: through,
-                base: Some(FileRef { key, rows: rows.len() as u64, bytes, through_seq: through }),
+                base: Some(FileRef { key, rows: rows.len() as u64, bytes, through_seq: through, level: 0 }),
                 ..Manifest::default()
             }
         };

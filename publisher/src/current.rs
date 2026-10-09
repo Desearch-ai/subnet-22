@@ -1,6 +1,6 @@
 //! The current state of every page: 1,024 shards by URL hash, each a base file plus deltas of rows sorted by key, and a manifest.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::{Arc, LazyLock};
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -108,10 +108,14 @@ pub enum ChangeRow {
     TaskWithdrawn(String),
 }
 
-/// Each key as it stands, sorted by key: its last removal hides earlier rows, then the later fetch wins; a withdrawn task's rows are removals.
-pub fn merge(mut rows: Vec<PageRow>, withdrawn: &HashSet<String>, keep_removals: bool) -> Vec<PageRow> {
+/// Tasks taken back, each with the change file that took it back.
+pub type Withdrawals = HashMap<String, i64>;
+
+/// Each key as it stands, sorted by key: its last removal hides earlier rows, then the later fetch wins; a withdrawn task's rows up to its take-back are removals and any after it never happened.
+pub fn merge(mut rows: Vec<PageRow>, withdrawn: &Withdrawals, keep_removals: bool) -> Vec<PageRow> {
+    rows.retain(|row| row.removed || withdrawn.get(&row.record.task_id).is_none_or(|&taken| row.change_seq <= taken));
     for row in &mut rows {
-        if !row.removed && withdrawn.contains(&row.record.task_id) {
+        if !row.removed && withdrawn.contains_key(&row.record.task_id) {
             *row = PageRow::removal(std::mem::take(&mut row.key), row.change_seq);
         }
     }
@@ -135,7 +139,7 @@ pub fn merge(mut rows: Vec<PageRow>, withdrawn: &HashSet<String>, keep_removals:
 }
 
 /// Merges pages files, each sorted by key and given oldest first, into one, holding about a row group of each at a time.
-pub fn merge_files(files: Vec<Bytes>, withdrawn: &HashSet<String>, keep_removals: bool) -> Result<(Vec<u8>, u64)> {
+pub fn merge_files(files: Vec<Bytes>, withdrawn: &Withdrawals, keep_removals: bool) -> Result<(Vec<u8>, u64)> {
     let mut sources = files.into_iter().map(|file| Ok(rows(file, None)?.peekable())).collect::<Result<Vec<_>>>()?;
     let mut out = PagesWriter::new()?;
     loop {
@@ -467,6 +471,9 @@ pub struct FileRef {
     pub rows: u64,
     pub bytes: u64,
     pub through_seq: i64,
+    /// 0 for a cycle's delta; each combining of `fanout` deltas of one level makes one of the next.
+    #[serde(default)]
+    pub level: u32,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

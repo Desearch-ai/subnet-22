@@ -7,7 +7,7 @@ use bytes::Bytes;
 use desearch::feeds::CHANGES;
 use publisher::changes::{self, Body, Change, Kind};
 use publisher::compactor::{self, LocalStore, Settings, Store};
-use publisher::current::{self, shard_of, ChangeRow, PageRow, SHARDS};
+use publisher::current::{self, shard_of, ChangeRow, PageRow, Withdrawals, SHARDS};
 use publisher::records::{page_key, record_version, Record};
 
 fn scratch(name: &str) -> PathBuf {
@@ -78,7 +78,7 @@ impl Log {
 }
 
 fn settings(work: PathBuf) -> Settings {
-    Settings { work, threads: 4, spill_bytes: 4096, merge_ratio: 100.0, max_deltas: 100, retire_after_s: 3600.0, ..Settings::default() }
+    Settings { work, threads: 4, spill_bytes: 4096, merge_ratio: 100.0, fanout: 100, retire_after_s: 3600.0, ..Settings::default() }
 }
 
 fn text_of(store: &dyn Store, url: &str) -> Option<String> {
@@ -124,13 +124,15 @@ fn the_later_fetch_wins_whatever_order_it_was_logged_in_and_a_removal_goes_by_lo
     };
     let newer = row("2026-10-08T11:00:00+00:00", 1, "newer");
     let older_logged_later = row("2026-10-08T09:00:00+00:00", 2, "older");
-    let merged = current::merge(vec![newer.clone(), older_logged_later], &HashSet::new(), false);
+    let merged = current::merge(vec![newer.clone(), older_logged_later], &Withdrawals::new(), false);
     assert_eq!(merged[0].record.text, "newer");
     let gone = PageRow { key: newer.key.clone(), removed: true, change_seq: 3, version: String::new(), published_at: String::new(), record: Record::default() };
-    assert!(current::merge(vec![newer.clone(), gone.clone()], &HashSet::new(), false).is_empty());
-    assert_eq!(current::merge(vec![newer.clone(), gone], &HashSet::new(), true).len(), 1, "a delta keeps the removal for the base");
-    let withdrawn: HashSet<String> = ["t1".to_string()].into();
-    assert!(current::merge(vec![newer], &withdrawn, false).is_empty());
+    assert!(current::merge(vec![newer.clone(), gone.clone()], &Withdrawals::new(), false).is_empty());
+    assert_eq!(current::merge(vec![newer.clone(), gone], &Withdrawals::new(), true).len(), 1, "a delta keeps the removal for the base");
+    let withdrawn: Withdrawals = [("t1".to_string(), newer.change_seq)].into();
+    assert!(current::merge(vec![newer.clone()], &withdrawn, false).is_empty());
+    let taken_back_before: Withdrawals = [("t1".to_string(), newer.change_seq - 1)].into();
+    assert!(current::merge(vec![newer], &taken_back_before, true).is_empty(), "logged after its take-back: never happened, not a removal");
 }
 
 #[test]
@@ -338,7 +340,7 @@ fn a_removal_between_two_versions_holds_whichever_cycles_the_rows_land_in() {
     log.append(&[removed(url)]);
     log.append(&[page(url, "2026-10-08T09:00:00+00:00", "t2", "fetched earlier, logged after")]);
     settings.merge_ratio = 100.0;
-    settings.max_deltas = 100;
+    settings.fanout = 100;
     let report = compactor::cycle(&store, &settings, 2_000.0).unwrap();
     assert_eq!(report.merged, 0, "read from the base and a delta");
     assert_eq!(text_of(&store, url).as_deref(), Some("fetched earlier, logged after"));
@@ -398,4 +400,67 @@ fn a_snapshot_page_with_no_change_file_row_is_read_from_its_page_object_and_one_
     assert_eq!((report.unlocated, report.filled, report.other_version, report.written), (2, 1, 0, 2));
     assert_eq!(text_of(&store, "https://news.example/kept-object").as_deref(), Some("old text of https://news.example/kept-object"));
     assert_eq!(text_of(&store, "https://news.example/located").as_deref(), Some("from the log"));
+}
+
+#[test]
+fn small_deltas_combine_without_rewriting_the_base_and_a_removal_in_them_still_hides_the_base() {
+    let root = scratch("combine");
+    let mut log = Log::new(root.join("bucket"));
+    let store = LocalStore { root: root.join("bucket") };
+    compactor::start_empty(&store, "current/", 0, 4).unwrap();
+    let urls: Vec<String> = (0..40).map(|i| format!("https://news.example/base-{i}")).collect();
+    log.append(&urls.iter().map(|u| page(u, "2026-10-08T10:00:00+00:00", "t1", "first")).collect::<Vec<_>>());
+    let mut settings = settings(root.join("work"));
+    settings.fanout = 3;
+    compactor::cycle(&store, &settings, 1_000.0).unwrap();
+    let based: Vec<_> = compactor::load_manifests(&store, "current/", 4).unwrap().into_iter().map(|m| m.base.map(|b| b.key)).collect();
+
+    let (changed, gone) = (&urls[0], &urls[1]);
+    let shard = shard_of(&page_key(changed).unwrap()).unwrap();
+    log.append(&[page(changed, "2026-10-08T11:00:00+00:00", "t2", "second")]);
+    compactor::cycle(&store, &settings, 2_000.0).unwrap();
+    log.append(&[removed(gone)]);
+    compactor::cycle(&store, &settings, 3_000.0).unwrap();
+    for i in 0..3 {
+        log.append(&[page(changed, &format!("2026-10-08T0{i}:00:00+00:00"), "t3", "older fetch")]);
+        compactor::cycle(&store, &settings, 4_000.0 + f64::from(i)).unwrap();
+    }
+    let manifests = compactor::load_manifests(&store, "current/", 4).unwrap();
+    assert_eq!(manifests.iter().map(|m| m.base.clone().map(|b| b.key)).collect::<Vec<_>>(), based, "no base rewritten");
+    assert!(manifests[shard].deltas.iter().any(|d| d.level == 1), "the shard's small deltas were combined");
+    assert!(manifests.iter().all(|m| m.deltas.iter().filter(|d| d.level == 0).count() < 3));
+    assert_eq!(text_of(&store, changed).as_deref(), Some("second"));
+    assert_eq!(text_of(&store, gone), None);
+    assert_eq!(text_of(&store, &urls[2]).as_deref(), Some("first"));
+}
+
+#[test]
+fn a_withdrawn_task_s_row_logged_after_its_take_back_stays_out_until_the_base_is_rewritten_past_it() {
+    let root = scratch("late-row");
+    let mut log = Log::new(root.join("bucket"));
+    let store = LocalStore { root: root.join("bucket") };
+    compactor::start_empty(&store, "current/", 0, 4).unwrap();
+    let (first, late, kept) = ("https://news.example/first", "https://news.example/late", "https://news.example/kept");
+    let based: Vec<Change> = [first, late, kept].iter().map(|u| page(u, "2026-10-08T09:00:00+00:00", "t0", "older")).collect();
+    log.append(&based);
+    let mut settings = settings(root.join("work"));
+    compactor::cycle(&store, &settings, 500.0).unwrap();
+    log.append(&[page(first, "2026-10-08T10:00:00+00:00", "t5", "t5's"), page(kept, "2026-10-08T10:00:00+00:00", "t1", "kept")]);
+    log.append(&[Change::task_withdrawn("t5", "2026-10-08T11:00:00+00:00")]);
+    let late_seq = log.append(&[page(late, "2026-10-08T10:30:00+00:00", "t5", "t5's, published late")]);
+    compactor::cycle(&store, &settings, 1_000.0).unwrap();
+    assert_eq!((text_of(&store, first), text_of(&store, late).as_deref()), (None, Some("older")), "the late row never happened");
+    let listed = compactor::load_withdrawn(&store, "current/").unwrap().tasks["t5"];
+    assert_eq!((listed.seq, listed.last), (late_seq - 1, late_seq));
+
+    settings.merge_ratio = 100.0;
+    log.append(&[page("https://news.example/other", "2026-10-08T12:00:00+00:00", "t6", "x")]);
+    compactor::cycle(&store, &settings, 2_000.0).unwrap();
+    assert!(compactor::load_withdrawn(&store, "current/").unwrap().tasks.contains_key("t5"), "kept while a base may still hold its rows");
+
+    settings.merge_ratio = 0.0;
+    log.append(&[first, late, kept].iter().map(|u| page(u, "2026-10-08T13:00:00+00:00", "t7", "t7's")).collect::<Vec<_>>());
+    compactor::cycle(&store, &settings, 3_000.0).unwrap();
+    assert!(!compactor::load_withdrawn(&store, "current/").unwrap().tasks.contains_key("t5"), "every base rewritten past its last row");
+    assert_eq!(text_of(&store, late).as_deref(), Some("t7's"));
 }
