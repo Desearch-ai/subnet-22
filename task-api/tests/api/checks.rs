@@ -9,7 +9,7 @@ use serde_json::{json, Value};
 use task_api::manifest::{log_payload, upload_log_key, UPLOAD_LOG_LATEST};
 use task_api::{budgets, checks, lifecycle, sampling, uploadlog};
 
-use crate::harness::{judged, parquet, score, task_id, urls, Harness, BUCKET};
+use crate::harness::{judged, parquet, score, task_id, urls, Harness, BUCKET, PAGES_PREFIX};
 
 async fn started(task_urls: usize, check_share: f64) -> Harness {
     let h = Harness::with(|s| {
@@ -237,4 +237,35 @@ async fn a_single_fail_takes_back_only_what_no_validator_checked() {
     judged(&h, &h.validator, "pass", Some(&checked), json!({})).await.1.unwrap();
     assert_eq!(lifecycle::take_back(&h.state, &hotkey, 0.0, "test", false).await.unwrap(), [unchecked]);
     assert_eq!(lifecycle::take_back(&h.state, &hotkey, 0.0, "test", true).await.unwrap(), [checked], "a full penalty takes back the checked ones as well");
+}
+
+#[tokio::test]
+async fn a_take_back_refuses_the_task_s_publish_job_and_sends_its_urls_again() {
+    let h = started(2, 0.0).await;
+    let hotkey = h.miner.ss58();
+    established(&h, hotkey.clone()).await;
+    let task = h.mine(&h.miner, 0).await;
+    let taken = task_id(&task);
+    settled(&h, &taken).await;
+    let kept = format!("{PAGES_PREFIX}{}", lifecycle::round_urls_key(task["round_id"].as_str().unwrap()));
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while h.stub.state.object(BUCKET, &kept).is_none() && Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(h.stub.state.object(BUCKET, &kept).is_some(), "the round's URL lists are kept once its tasks are queued");
+
+    assert_eq!(lifecycle::take_back(&h.state, &hotkey, 0.0, "test", false).await.unwrap(), std::slice::from_ref(&taken));
+    let refused: Vec<String> = h.redis.clone().zrange("publish:withdrawn", 0, -1).await.unwrap();
+    assert_eq!(refused, [taken], "every publisher refuses its job from now on");
+    while h.json_object("outcomes/latest.json").is_none() && Instant::now() < deadline + Duration::from_secs(5) {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let index = h.json_object(&desearch::outcomes::seq_key("outcomes", 1)).expect("an outcome file for the take-back");
+    let rows = outcome_rows(&h.object(index["key"].as_str().unwrap()).unwrap());
+    let mut sent: Vec<String> = task["urls"].as_array().unwrap().iter().map(|u| u.as_str().unwrap().to_string()).collect();
+    let mut dropped: Vec<String> = rows.iter().map(|(url, _)| url.clone()).collect();
+    sent.sort();
+    dropped.sort();
+    assert_eq!(dropped, sent);
+    assert!(rows.iter().all(|(_, outcome)| outcome == "dropped"));
 }

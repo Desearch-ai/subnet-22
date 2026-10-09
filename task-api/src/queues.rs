@@ -29,6 +29,8 @@ pub const PACKED: &str = "z:";
 pub const PUBLISHED: &str = "publish:acked";
 pub const PPENDING: &str = "publish:pending";
 pub const PDEAD: &str = "publish:dead";
+/// Tasks taken back, scored by when; publishers refuse their jobs and forget them after a week.
+pub const PWITHDRAWN: &str = "publish:withdrawn";
 pub const ROUNDS: &str = "rounds:seq";
 /// Published pages waiting to become embed batches, pushed by the publisher.
 pub const EMBED_INPUTS: &str = "embed:inputs";
@@ -428,11 +430,15 @@ pub struct PublishQueue {
 }
 
 impl PublishQueue {
-    /// A job for the publisher to take these tasks' pages back out of the published set.
+    /// A job for the publisher to take these tasks' pages back out of the published set; their publish jobs still queued are refused from now on.
     pub async fn withdraw(&self, redis: &Redis, task_ids: &[String], reason: &str, now: f64) -> Result<String> {
         let job_id = format!("withdraw:{}", crate::rounds::new_id());
         let job = json!({"task_id": job_id, "kind": "withdraw", "task_ids": task_ids, "reason": reason});
         let mut redis = redis.clone();
+        let taken: Vec<(f64, &str)> = task_ids.iter().map(|task_id| (now, task_id.as_str())).collect();
+        if !taken.is_empty() {
+            let _: i64 = redis.zadd_multiple(PWITHDRAWN, &taken).await?;
+        }
         let _: () = redis.set(format!("pjob:{job_id}"), job.to_string()).await?;
         let _: i64 = redis.rpush(PUBLISH, &job_id).await?;
         let _: i64 = redis.zadd(PPENDING, &job_id, number(now)).await?;

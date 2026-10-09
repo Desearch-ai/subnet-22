@@ -1,12 +1,14 @@
 //! A task's life after the queue: rounds revealed and closed, claims reclaimed, uploads settled by their seed, verdicts finalized with their accounts.
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::{anyhow, Result};
+use bytes::Bytes;
 use desearch::canonical::canonicalize;
 use desearch::outcomes::DROPPED as OUTCOME_DROPPED;
+use desearch::r2::Bucket;
 use desearch::time::{now, utc_day};
 use futures::stream::{self, StreamExt};
 use redis::AsyncCommands;
@@ -21,7 +23,7 @@ use crate::queues::{self, Finalized, OPEN_SCAN};
 use crate::roundlog::{self, Receipt};
 use crate::rounds::{self, Batch, Round, Url};
 use crate::sampling;
-use crate::state::State;
+use crate::state::{Redis, State};
 use crate::storage::{delete_quietly, put_json};
 use crate::validations::{self, build_report, FinalVerdict};
 use crate::verdicts::{decide, Decision, ERROR_OUTCOMES, NO_MAJORITY};
@@ -287,6 +289,15 @@ pub async fn fill_round(state: &State, round: &Round) -> Result<usize> {
             .collect();
         let _: i64 = state.redis.clone().sadd(open_round_key(&round.round_id), &round.order).await?;
         state.tasks(&round.kind).fill(&state.redis, &round.round_id, &round.order, &payloads).await?;
+    }
+    if !round.order.is_empty() {
+        let (pages, key, lists) = (state.pages.clone(), round_urls_key(&round.round_id), round.url_lists());
+        tokio::spawn(async move {
+            let packed = queues::pack_job(&lists);
+            if let Err(error) = pages.put(&key, Bytes::from(packed), "text/plain", None).await {
+                eprintln!("{key} not kept ({error}); a take-back of its tasks cannot send their URLs again");
+            }
+        });
     }
     let (round_id, sealed) = (round.round_id.clone(), roundstore::sealed_batches(&round));
     state.db.run(move |conn| roundstore::mark_filled(conn, &round_id, &sealed, now())).await?;
@@ -774,16 +785,53 @@ pub async fn take_back(state: &State, miner: &str, since: f64, reason: &str, che
         .db
         .run(move |conn| {
             let taken = validations::withdraw(conn, &asked, since, checked_too)?;
-            budgets::credit(conn, &asked, -taken.iter().map(|(_, credited)| credited).sum::<i64>(), CRAWL, now())?;
+            budgets::credit(conn, &asked, -taken.iter().map(|t| t.credited).sum::<i64>(), CRAWL, now())?;
             Ok(taken)
         })
         .await?;
-    let task_ids: Vec<String> = taken.into_iter().map(|(task_id, _)| task_id).collect();
+    let task_ids: Vec<String> = taken.iter().map(|t| t.task_id.clone()).collect();
     if !task_ids.is_empty() {
         state.publish.withdraw(&state.redis, &task_ids, reason, now()).await?;
         eprintln!("miner={} {} uploads taken back: {reason}", &miner[..miner.len().min(10)], task_ids.len());
+        let (pages, storage, redis) = (state.pages.clone(), state.storage.clone(), state.redis.clone());
+        tokio::spawn(async move { report_dropped(&pages, &storage, &redis, taken).await });
     }
     Ok(task_ids)
+}
+
+/// Where a round's URL lists are kept once its tasks are queued, so a take-back can tell the bot which URLs to send again.
+pub fn round_urls_key(round_id: &str) -> String {
+    format!("rounds/{round_id}")
+}
+
+/// Every URL of the tasks taken back, as dropped in the outcome feed, so the bot sends them again; a round without kept lists is logged and passed over.
+pub async fn report_dropped(pages: &Bucket, storage: &Bucket, redis: &Redis, taken: Vec<validations::Taken>) {
+    let mut by_round: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for t in taken {
+        by_round.entry(t.round_id).or_default().push(t.task_id);
+    }
+    for (round_id, task_ids) in by_round {
+        let lists = match pages.get(&round_urls_key(&round_id)).await {
+            Ok(body) => String::from_utf8(body.to_vec()).ok().and_then(|packed| queues::unpack_job(&packed)),
+            Err(error) => {
+                eprintln!("round={round_id} URL lists unreadable ({error}); {} tasks taken back are not sent again", task_ids.len());
+                continue;
+            }
+        };
+        let mut rows = Vec::new();
+        for task_id in &task_ids {
+            let urls: Vec<String> = lists
+                .as_ref()
+                .and_then(|lists| lists.get(task_id))
+                .and_then(Value::as_array)
+                .map(|urls| urls.iter().filter_map(|pair| pair.get(1).and_then(Value::as_str).map(String::from)).collect())
+                .unwrap_or_default();
+            rows.extend(outcomes::rows_for(&urls, OUTCOME_DROPPED, task_id));
+        }
+        if let Err(error) = outcomes::write(storage, redis, rows).await {
+            eprintln!("round={round_id} dropped outcomes not written: {error:#}");
+        }
+    }
 }
 
 /// The hotkey's last day of credit and pages, and a lockout.

@@ -569,17 +569,24 @@ pub fn judged_since(conn: &Connection, miner: &str, since: f64, kind: &str) -> R
 }
 
 /// Passed uploads of a miner completed after `since`, taken back: (task_id, credited) of each; only those no validator checked unless `checked_too`.
-pub fn withdraw(conn: &Connection, miner: &str, since: f64, checked_too: bool) -> Result<Vec<(String, i64)>> {
+/// A passed upload taken back: its task, the credit it had, and the round it came from.
+pub struct Taken {
+    pub task_id: String,
+    pub credited: i64,
+    pub round_id: String,
+}
+
+pub fn withdraw(conn: &Connection, miner: &str, since: f64, checked_too: bool) -> Result<Vec<Taken>> {
     let mut statement = conn.prepare(
-        "SELECT id, task_id, credited, scored_at FROM validations
+        "SELECT id, task_id, credited, scored_at, round_id FROM validations
          WHERE miner = ? AND kind = 'crawl' AND verdict = 'pass' AND scored_at > ? AND COALESCE(completed_at, scored_at) > ? AND (? OR validator = '')",
     )?;
     let rows = statement.query_map(params![miner, since, since, checked_too], |row| {
-        Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?, real(row, 3)?))
+        Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?, real(row, 3)?, row.get::<_, Option<String>>(4)?.unwrap_or_default()))
     })?;
-    let rows: Vec<(i64, String, i64, f64)> = rows.collect::<rusqlite::Result<_>>()?;
+    let rows: Vec<(i64, String, i64, f64, String)> = rows.collect::<rusqlite::Result<_>>()?;
     let rolled = rolled_through(conn)?;
-    for (id, _, _, scored_at) in &rows {
+    for (id, _, _, scored_at, _) in &rows {
         conn.execute("UPDATE validations SET verdict = ? WHERE id = ?", params![WITHDRAWN, id])?;
         if *id <= rolled {
             conn.execute("UPDATE miner_hours SET pass = pass - 1 WHERE miner = ? AND kind = 'crawl' AND hour = ?", params![miner, hour_of(*scored_at)])?;
@@ -592,7 +599,7 @@ pub fn withdraw(conn: &Connection, miner: &str, since: f64, checked_too: bool) -
             params![miner, WITHDRAWN, rows.len() as i64],
         )?;
     }
-    Ok(rows.into_iter().map(|(_, task_id, credited, _)| (task_id, credited)).collect())
+    Ok(rows.into_iter().map(|(_, task_id, credited, _, round_id)| Taken { task_id, credited, round_id }).collect())
 }
 
 /// The last verdict row counted into the hourly totals; at first, the last one before the kept window.
