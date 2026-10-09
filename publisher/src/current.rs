@@ -111,31 +111,43 @@ pub enum ChangeRow {
 /// Tasks taken back, each with the change file that took it back.
 pub type Withdrawals = HashMap<String, i64>;
 
-/// Each key as it stands, sorted by key: its last removal hides earlier rows, then the later fetch wins; a withdrawn task's rows up to its take-back are removals and any after it never happened.
-pub fn merge(mut rows: Vec<PageRow>, withdrawn: &Withdrawals, keep_removals: bool) -> Vec<PageRow> {
-    rows.retain(|row| row.removed || withdrawn.get(&row.record.task_id).is_none_or(|&taken| row.change_seq <= taken));
-    for row in &mut rows {
-        if !row.removed && withdrawn.contains_key(&row.record.task_id) {
-            *row = PageRow::removal(std::mem::take(&mut row.key), row.change_seq);
-        }
-    }
-    rows.sort_by(|a, b| a.key.cmp(&b.key));
-    let mut keep = vec![false; rows.len()];
+/// Each key as it stands, sorted by key: after its last removal the later fetch wins, and a winner from a withdrawn task is taken down where the take-back was logged.
+pub fn merge(rows: Vec<PageRow>, withdrawn: &Withdrawals, keep_removals: bool) -> Vec<PageRow> {
+    let mut rows: Vec<Option<PageRow>> =
+        rows.into_iter().filter(|row| row.removed || withdrawn.get(&row.record.task_id).is_none_or(|&taken| row.change_seq <= taken)).map(Some).collect();
+    rows.sort_by(|a, b| a.as_ref().map(|r| &r.key).cmp(&b.as_ref().map(|r| &r.key)));
+    let mut merged = Vec::with_capacity(rows.len());
     let mut start = 0;
-    for group in rows.chunk_by(|a, b| a.key == b.key) {
-        let at = start..start + group.len();
-        start = at.end;
-        let removal = at.clone().filter(|&i| rows[i].removed).max_by_key(|&i| rows[i].change_seq);
-        let after = removal.map_or(i64::MIN, |i| rows[i].change_seq);
-        let page = at.filter(|&i| !rows[i].removed && rows[i].change_seq > after).reduce(|kept, i| if rows[i].replaces(&rows[kept]) { i } else { kept });
-        if let Some(i) = removal.filter(|_| keep_removals) {
-            keep[i] = true;
+    while start < rows.len() {
+        let key = rows[start].as_ref().map(|r| r.key.clone()).unwrap_or_default();
+        let end = start + rows[start..].iter().take_while(|r| r.as_ref().is_some_and(|r| r.key == key)).count();
+        let (removal, barrier, page) = standing(&rows[start..end], withdrawn);
+        if keep_removals {
+            match removal {
+                Some(i) => merged.extend(rows[start + i].take()),
+                None if barrier > i64::MIN => merged.push(PageRow::removal(key, barrier)),
+                None => {}
+            }
         }
-        if let Some(i) = page {
-            keep[i] = true;
+        merged.extend(page.and_then(|i| rows[start + i].take()));
+        start = end;
+    }
+    merged
+}
+
+/// One key's rows: the removal row that stands, if a logged one does; where everything before is hidden; and the page that wins after it.
+fn standing(group: &[Option<PageRow>], withdrawn: &Withdrawals) -> (Option<usize>, i64, Option<usize>) {
+    let row = |i: usize| group[i].as_ref().expect("a row not taken yet");
+    let removal = (0..group.len()).filter(|&i| row(i).removed).max_by_key(|&i| row(i).change_seq);
+    let mut barrier = removal.map_or(i64::MIN, |i| row(i).change_seq);
+    loop {
+        let best =
+            (0..group.len()).filter(|&i| !row(i).removed && row(i).change_seq > barrier).reduce(|kept, i| if row(i).replaces(row(kept)) { i } else { kept });
+        match best.and_then(|i| withdrawn.get(&row(i).record.task_id)) {
+            Some(&taken) => barrier = barrier.max(taken),
+            None => return (removal.filter(|&i| row(i).change_seq == barrier), barrier, best),
         }
     }
-    rows.into_iter().zip(keep).filter_map(|(row, keep)| keep.then_some(row)).collect()
 }
 
 /// Merges pages files, each sorted by key and given oldest first, into one, holding about a row group of each at a time.

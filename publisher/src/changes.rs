@@ -55,6 +55,8 @@ pub static CHANGE_SCHEMA: LazyLock<SchemaRef> = LazyLock::new(|| {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
+    /// A page as published; whether it is new or changed is for readers of the current state to tell.
+    Page,
     New,
     Changed,
     Removed,
@@ -64,6 +66,7 @@ pub enum Kind {
 impl Kind {
     pub fn as_str(self) -> &'static str {
         match self {
+            Kind::Page => "page",
             Kind::New => "new",
             Kind::Changed => "changed",
             Kind::Removed => "removed",

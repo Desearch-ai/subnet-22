@@ -1,14 +1,11 @@
 //! The publisher's own record of every page's latest version and of the tasks taken back, in RocksDB.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::Path;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
 use anyhow::{bail, Context, Result};
-use rocksdb::{
-    BlockBasedIndexType, BlockBasedOptions, Cache, ColumnFamily, ColumnFamilyDescriptor, DBCompressionType, Direction, IteratorMode, Options, WriteBatch, DB,
-};
+use rocksdb::{BlockBasedIndexType, BlockBasedOptions, Cache, ColumnFamily, ColumnFamilyDescriptor, DBCompressionType, IteratorMode, Options, WriteBatch, DB};
 
 use crate::records::parse_iso;
 use crate::records::{iso, SECOND};
@@ -16,7 +13,6 @@ use crate::records::{iso, SECOND};
 pub const WITHDRAWN_KEEP_S: f64 = 7.0 * 86_400.0;
 /// The index outgrows memory, so lookups are random disk reads; several readers at once keep the disk busy.
 pub const READERS: usize = 8;
-const READ_CHUNK: usize = 500;
 const PAGES: &str = "pages";
 /// Task id, then page key: the pages a task's version is current for.
 const TASKS: &str = "tasks";
@@ -36,13 +32,6 @@ pub struct Current {
     pub content_sha1: String,
     pub change_seq: Option<i64>,
     pub change_row: Option<i64>,
-}
-
-/// A page whose current version came from a withdrawn task.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Withdrawn {
-    pub key: String,
-    pub url: String,
 }
 
 pub struct VersionIndex {
@@ -67,11 +56,6 @@ impl VersionIndex {
         Ok(VersionIndex { db, readers: READERS, writing: Mutex::new(()) })
     }
 
-    /// A consistent copy of the index in `dir`, made of hard links to the same files, so it costs no copying.
-    pub fn checkpoint(&self, dir: &Path) -> Result<()> {
-        rocksdb::checkpoint::Checkpoint::new(&self.db)?.create_checkpoint(dir).with_context(|| format!("checkpointing the index into {}", dir.display()))
-    }
-
     pub fn with_readers(mut self, readers: usize) -> Self {
         self.readers = readers.max(1);
         self
@@ -83,52 +67,6 @@ impl VersionIndex {
 
     pub fn current(&self, key: &str) -> Result<Option<Current>> {
         self.db.get_pinned_cf(self.family(PAGES), key)?.map(|value| decode(&value)).transpose()
-    }
-
-    /// The current version of each page the index holds, looked up in sorted chunks on parallel readers.
-    pub fn current_many(&self, keys: &[&str]) -> Result<HashMap<String, Current>> {
-        let mut keys = keys.to_vec();
-        keys.sort_unstable();
-        keys.dedup();
-        let chunks: Vec<&[&str]> = keys.chunks(READ_CHUNK).collect();
-        let readers = self.readers.min(chunks.len()).max(1);
-        if readers == 1 {
-            let mut found = HashMap::with_capacity(keys.len());
-            for chunk in chunks {
-                self.read_chunk(chunk, &mut found)?;
-            }
-            return Ok(found);
-        }
-        let next = AtomicUsize::new(0);
-        let parts: Vec<Result<HashMap<String, Current>>> = std::thread::scope(|scope| {
-            let workers: Vec<_> = (0..readers)
-                .map(|_| {
-                    scope.spawn(|| {
-                        let mut found = HashMap::new();
-                        while let Some(chunk) = chunks.get(next.fetch_add(1, Ordering::Relaxed)) {
-                            self.read_chunk(chunk, &mut found)?;
-                        }
-                        Ok(found)
-                    })
-                })
-                .collect();
-            workers.into_iter().map(|w| w.join().expect("index reader panicked")).collect()
-        });
-        let mut found = HashMap::with_capacity(keys.len());
-        for part in parts {
-            found.extend(part?);
-        }
-        Ok(found)
-    }
-
-    fn read_chunk(&self, keys: &[&str], found: &mut HashMap<String, Current>) -> Result<()> {
-        let values = self.db.batched_multi_get_cf(self.family(PAGES), keys.iter().map(|k| k.as_bytes()), true);
-        for (key, value) in keys.iter().zip(values) {
-            if let Some(value) = value? {
-                found.insert(key.to_string(), decode(&value)?);
-            }
-        }
-        Ok(())
     }
 
     fn currents(&self, keys: &[&str]) -> Result<Vec<Option<Current>>> {
@@ -159,110 +97,6 @@ impl VersionIndex {
             batch.put_cf(self.family(PAGES), key, encode(current));
             batch.put_cf(self.family(TASKS), task_key(&current.task_id, key)?, b"");
             task_of.insert(key, current.task_id.clone());
-        }
-        Ok(self.db.write(batch)?)
-    }
-
-    /// A later fetch that found the same content moves the fetch time forward.
-    pub fn touch(&self, seen: &[(String, String)]) -> Result<()> {
-        let _writing = self.writing.lock().unwrap();
-        let mut sorted: Vec<&(String, String)> = seen.iter().collect();
-        sorted.sort();
-        let keys: Vec<&str> = sorted.iter().map(|(key, _)| key.as_str()).collect();
-        let mut latest: HashMap<&str, Current> = HashMap::new();
-        for (key, current) in keys.iter().zip(self.currents(&keys)?) {
-            if let Some(current) = current {
-                latest.insert(key, current);
-            }
-        }
-        let mut batch = WriteBatch::default();
-        for (key, fetched_at) in sorted {
-            if let Some(current) = latest.get_mut(key.as_str()) {
-                if *fetched_at > current.fetched_at {
-                    current.fetched_at = fetched_at.clone();
-                    batch.put_cf(self.family(PAGES), key, encode(current));
-                }
-            }
-        }
-        Ok(self.db.write(batch)?)
-    }
-
-    /// Takes up to `limit` of a withdrawn task's pages listed after `after` out of the index, handing the ones still current to `removed` first; returns the last key taken while more may follow.
-    pub fn drain(&self, task_id: &str, after: Option<&str>, limit: usize, removed: impl FnOnce(&[Withdrawn]) -> Result<()>) -> Result<Option<String>> {
-        let limit = limit.max(1);
-        let prefix = task_key(task_id, "")?;
-        let start = task_key(task_id, after.unwrap_or_default())?;
-        let mut keys = Vec::with_capacity(limit.min(READ_CHUNK));
-        for item in self.db.iterator_cf(self.family(TASKS), IteratorMode::From(&start, Direction::Forward)) {
-            let (entry, _) = item?;
-            let Some(key) = entry.strip_prefix(prefix.as_slice()) else {
-                break;
-            };
-            if keys.len() == limit {
-                break;
-            }
-            keys.push(String::from_utf8(key.to_vec()).context("a page key that is not UTF-8")?);
-        }
-        if keys.is_empty() {
-            return Ok(None);
-        }
-        let keys: Vec<&str> = keys.iter().map(String::as_str).collect();
-        let mut pages = Vec::new();
-        for (key, current) in keys.iter().zip(self.currents(&keys)?) {
-            if let Some(current) = current.filter(|c| c.task_id == task_id) {
-                pages.push(Withdrawn { key: key.to_string(), url: current.url });
-            }
-        }
-        removed(&pages)?;
-        let _writing = self.writing.lock().unwrap();
-        let mut batch = WriteBatch::default();
-        for (key, current) in keys.iter().zip(self.currents(&keys)?) {
-            batch.delete_cf(self.family(TASKS), task_key(task_id, key)?);
-            if current.is_some_and(|c| c.task_id == task_id) {
-                batch.delete_cf(self.family(PAGES), key);
-            }
-        }
-        self.db.write(batch)?;
-        Ok((keys.len() == limit).then(|| keys[limit - 1].to_string()))
-    }
-
-    /// Remembered, so a withdrawn task's pages are never published even if its job comes later.
-    pub fn withdraw(&self, task_ids: &[String], now: f64) -> Result<()> {
-        let _writing = self.writing.lock().unwrap();
-        let family = self.family(WITHDRAWN);
-        let mut batch = WriteBatch::default();
-        let mut added = HashSet::new();
-        for task_id in task_ids {
-            if self.db.get_pinned_cf(family, task_id)?.is_none() && added.insert(task_id) {
-                batch.put_cf(family, task_id, now.to_le_bytes());
-            }
-        }
-        Ok(self.db.write(batch)?)
-    }
-
-    pub fn is_withdrawn(&self, task_id: &str) -> Result<bool> {
-        Ok(self.db.get_pinned_cf(self.family(WITHDRAWN), task_id)?.is_some())
-    }
-
-    pub fn withdrawn_among(&self, task_ids: &[&str]) -> Result<HashSet<String>> {
-        let mut task_ids = task_ids.to_vec();
-        task_ids.sort_unstable();
-        task_ids.dedup();
-        let values = self.db.batched_multi_get_cf(self.family(WITHDRAWN), task_ids.iter().map(|t| t.as_bytes()), true);
-        let mut found = HashSet::new();
-        for (task_id, value) in task_ids.iter().zip(values) {
-            if value?.is_some() {
-                found.insert(task_id.to_string());
-            }
-        }
-        Ok(found)
-    }
-
-    /// Stops refusing these tasks' jobs; only for tasks drained and withdrawn long ago.
-    pub fn forget_withdrawn(&self, task_ids: &[String]) -> Result<()> {
-        let mut batch = WriteBatch::default();
-        for task_id in task_ids {
-            batch.delete_cf(self.family(WITHDRAWN), task_id);
         }
         Ok(self.db.write(batch)?)
     }
@@ -511,6 +345,29 @@ fn zigzag(value: i64) -> u64 {
 
 fn unzigzag(value: u64) -> i64 {
     ((value >> 1) as i64) ^ -((value & 1) as i64)
+}
+
+/// The index entries for a change file's pages: where each full record sits.
+pub fn entries(changes: &[crate::changes::Change], seq: i64) -> Vec<(String, Current)> {
+    changes
+        .iter()
+        .enumerate()
+        .filter_map(|(row, change)| match &change.body {
+            crate::changes::Body::Page { record, version } => Some((
+                change.key.clone(),
+                Current {
+                    url: record.url.clone(),
+                    version: version.clone(),
+                    fetched_at: record.fetched_at.clone(),
+                    task_id: record.task_id.clone(),
+                    content_sha1: record.content_sha1.clone(),
+                    change_seq: Some(seq),
+                    change_row: Some(row as i64),
+                },
+            )),
+            _ => None,
+        })
+        .collect()
 }
 
 #[cfg(test)]

@@ -1,4 +1,4 @@
-//! publisher: publish validated uploads into the change feed and the version index.
+//! publisher: publish validated uploads into the change feed, and keep the current state of every page compacted from it.
 
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -12,14 +12,14 @@ use publisher::compactor::{self, R2Store, Store};
 use publisher::index::VersionIndex;
 use publisher::local::{LocalFeed, LocalUploads};
 use publisher::worker::{self, Job};
-use publisher::{build, outcomes, service, withdrawals};
+use publisher::{build, outcomes, service};
 
 #[cfg(not(target_env = "msvc"))]
 #[global_allocator]
 static ALLOCATOR: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
 #[derive(Parser)]
-#[command(name = "publisher", about = "Publish validated uploads into the change feed and the version index")]
+#[command(name = "publisher", about = "Publish validated uploads into the change feed and compact it into the current state")]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -27,10 +27,13 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Publish from the task API's queue in Redis to R2, configured from the environment, until SIGTERM; SIGUSR1 uploads a copy of the index to `index/snapshots/`.
+    /// Publish from the task API's queue in Redis to R2, configured from the environment, until SIGTERM; any number may run at once.
     Serve,
-    /// Take down pages whose URL kept a sitemap's XML escapes; counts them unless given `--backup`. Run it with `serve` stopped.
+    /// Take down the pages of a version index whose URL kept a sitemap's XML escapes; counts them unless given `--backup`.
     RemoveEscaped {
+        /// The version index the publisher kept before it published without one.
+        #[arg(long)]
+        index: PathBuf,
         /// Remove, after saving every removed index entry to this new file as JSON lines.
         #[arg(long)]
         backup: Option<PathBuf>,
@@ -64,12 +67,12 @@ enum Command {
         #[arg(long)]
         explain: bool,
     },
-    /// Compare every page of the current state with a stopped publisher's version index; for test runs.
+    /// Compare every page of the current state with a version index the publisher kept, or else with a plain fold of the change log; for test runs.
     CompareCurrent {
         #[arg(long, default_value = "current/")]
         prefix: String,
         #[arg(long)]
-        index: PathBuf,
+        index: Option<PathBuf>,
     },
     /// Build the current state once from an index snapshot: a local file, or its key in the pages bucket.
     BuildCurrent {
@@ -106,8 +109,6 @@ struct LocalArgs {
     jobs: PathBuf,
     #[arg(long)]
     uploads: PathBuf,
-    #[arg(long)]
-    index: PathBuf,
     /// Change files go to `<out>/changes`, outcome files to `<out>/outcomes`.
     #[arg(long)]
     out: PathBuf,
@@ -116,8 +117,6 @@ struct LocalArgs {
     /// Uploads read at once.
     #[arg(long, default_value_t = 8)]
     readers: usize,
-    #[arg(long, default_value_t = 1024)]
-    cache_mb: usize,
 }
 
 fn main() -> Result<()> {
@@ -125,12 +124,11 @@ fn main() -> Result<()> {
         Command::Serve => {
             let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().max_blocking_threads(1024).build()?;
             let served = runtime.block_on(service::serve());
-            // An unfinished snapshot upload is abandoned rather than holding up the exit.
             runtime.shutdown_timeout(Duration::from_secs(5));
             served
         }
-        Command::RemoveEscaped { backup } => {
-            tokio::runtime::Builder::new_multi_thread().enable_all().build()?.block_on(service::remove_escaped_from_env(backup))
+        Command::RemoveEscaped { index, backup } => {
+            tokio::runtime::Builder::new_multi_thread().enable_all().build()?.block_on(service::remove_escaped_from_env(&index, backup))
         }
         Command::Local(args) => local(args),
         Command::Compact { once, start_empty_at } => compact(once, start_empty_at),
@@ -157,15 +155,17 @@ fn main() -> Result<()> {
         Command::CompareCurrent { prefix, index } => {
             let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
             let store = pages_store(&runtime)?;
-            let index = VersionIndex::open_read_only(&index, 64 << 20)?;
-            let compared = compactor::compare(&store, &prefix, &index, 16)?;
+            let (compared, against) = match index {
+                Some(index) => (compactor::compare(&store, &prefix, &VersionIndex::open_read_only(&index, 64 << 20)?, 16)?, "index"),
+                None => (compactor::compare_log(&store, &prefix, 16)?, "change log"),
+            };
             for (what, keys) in [("missing", &compared.missing), ("extra", &compared.extra), ("other version", &compared.other_version)] {
                 for key in keys.iter().take(20) {
                     println!("{what}: {key}");
                 }
             }
             println!(
-                "index {} pages ({} of withdrawn tasks still draining), current {} pages: {} missing, {} extra, {} at another version",
+                "{against} {} pages ({} of withdrawn tasks still draining), current {} pages: {} missing, {} extra, {} at another version",
                 compared.index_pages,
                 compared.draining,
                 compared.current_pages,
@@ -192,7 +192,7 @@ fn main() -> Result<()> {
 
 fn local(args: LocalArgs) -> Result<()> {
     let jobs: Vec<Job> = serde_json::from_slice(&std::fs::read(&args.jobs).with_context(|| format!("reading {}", args.jobs.display()))?)?;
-    let index = VersionIndex::open(&args.index, args.cache_mb << 20)?;
+    let mut refused = HashSet::new();
     let uploads = LocalUploads::new(&args.uploads);
     let feed = LocalFeed::new(args.out.join("changes"), 1)?;
     let outcome_dir = args.out.join("outcomes");
@@ -206,14 +206,14 @@ fn local(args: LocalArgs) -> Result<()> {
     for jobs in jobs.chunks(args.batch.max(1)) {
         let started = Instant::now();
         let now = now_us()?;
-        let batch = worker::publish(jobs, &uploads, &index, &feed, now, args.readers)?;
-        write_outcomes(&outcomes::rows(&batch.changes, &batch.unchanged, &batch.failed), now)?;
+        let batch = worker::publish(jobs, &uploads, &refused, &feed, now, args.readers)?;
+        refused.extend(batch.withdrawn.iter().cloned());
+        write_outcomes(&outcomes::rows(&batch.changes, &batch.failed), now)?;
         println!(
-            "published {} tasks, {} pages new or changed, {} tasks withdrawn, {} unchanged, {} failed URLs, {} to retry in {:.2}s",
+            "published {} tasks, {} pages, {} tasks withdrawn, {} failed URLs, {} to retry in {:.2}s",
             batch.finalized.len(),
             batch.changes.len() - batch.withdrawn.len(),
             batch.withdrawn.len(),
-            batch.unchanged.len(),
             batch.failed.len(),
             batch.retry.len(),
             started.elapsed().as_secs_f64()
@@ -221,12 +221,6 @@ fn local(args: LocalArgs) -> Result<()> {
         for (task_id, why) in &batch.retry {
             eprintln!("task={task_id} will be retried: {why}");
         }
-    }
-    let now = now_us()?;
-    let mut report = |pages: &[publisher::index::Withdrawn]| write_outcomes(&outcomes::dropped(pages), now);
-    let taken = withdrawals::drain(&index, &mut HashSet::new(), now as f64 / 1e6, withdrawals::CHUNK, &|| false, &mut report)?;
-    if taken > 0 {
-        println!("took {taken} pages of withdrawn tasks out of the index");
     }
     Ok(())
 }

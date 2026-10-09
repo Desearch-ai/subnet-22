@@ -1,4 +1,4 @@
-//! The SN22 publisher: uploads that passed validation into the numbered change feed and the version index.
+//! The SN22 publisher: uploads that passed validation into the numbered change feed, and the current state of every page compacted from it.
 
 pub mod blocked;
 pub mod build;
@@ -13,5 +13,4 @@ pub mod reading;
 pub mod records;
 pub mod service;
 pub mod snapshot;
-pub mod withdrawals;
 pub mod worker;

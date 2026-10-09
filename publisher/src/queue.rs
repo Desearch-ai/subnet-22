@@ -18,6 +18,9 @@ pub const PPENDING: &str = "publish:pending";
 pub const PDEAD: &str = "publish:dead";
 pub const LOST: &str = "publish:lost";
 pub const LOST_TASKS: &str = "publish:lost:tasks";
+/// Tasks taken back, scored by when, so a publish job still queued for one is refused.
+pub const WITHDRAWN: &str = "publish:withdrawn";
+pub const WITHDRAWN_KEEP_S: f64 = 7.0 * 86_400.0;
 /// Byte for byte the text in `app/queues.py`, so both load the script under one SHA.
 pub const PCLAIM: &str = "
 local jobs = {}
@@ -94,6 +97,31 @@ impl PublishQueue {
         let mut redis = self.redis.clone();
         let _: i64 = redis.incr(LOST, 1).await?;
         let _: i64 = redis.sadd(LOST_TASKS, task_id).await?;
+        Ok(())
+    }
+
+    /// Notes tasks as taken back, for every publisher.
+    pub async fn note_withdrawn(&self, task_ids: &[String], at: f64) -> Result<()> {
+        if task_ids.is_empty() {
+            return Ok(());
+        }
+        let members: Vec<(f64, &str)> = task_ids.iter().map(|task_id| (at, task_id.as_str())).collect();
+        let _: i64 = self.redis.clone().zadd_multiple(WITHDRAWN, &members).await?;
+        Ok(())
+    }
+
+    /// Which of these tasks were taken back.
+    pub async fn withdrawn_among(&self, task_ids: &[&str]) -> Result<std::collections::HashSet<String>> {
+        if task_ids.is_empty() {
+            return Ok(Default::default());
+        }
+        let scores: Vec<Option<f64>> = redis::cmd("ZMSCORE").arg(WITHDRAWN).arg(task_ids).query_async(&mut self.redis.clone()).await?;
+        Ok(task_ids.iter().zip(scores).filter(|(_, score)| score.is_some()).map(|(task_id, _)| task_id.to_string()).collect())
+    }
+
+    /// Forgets tasks taken back more than `WITHDRAWN_KEEP_S` ago, when no job of theirs can still be queued.
+    pub async fn forget_withdrawn(&self, now: f64) -> Result<()> {
+        let _: i64 = self.redis.clone().zrembyscore(WITHDRAWN, "-inf", now - WITHDRAWN_KEEP_S).await?;
         Ok(())
     }
 

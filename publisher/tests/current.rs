@@ -220,10 +220,10 @@ fn a_build_from_an_index_snapshot_matches_it_and_the_compactor_carries_on_after_
     let urls: Vec<String> = (0..200).map(|i| format!("https://news.example/built-{i}")).collect();
     let first: Vec<Change> = urls.iter().map(|u| page(u, "2026-10-08T10:00:00+00:00", "t1", "v1")).collect();
     let seq = log.append(&first);
-    index.store(&publisher::worker::indexed(&first, seq)).unwrap();
+    index.store(&publisher::index::entries(&first, seq)).unwrap();
     let second: Vec<Change> = urls[..50].iter().map(|u| page(u, "2026-10-08T11:00:00+00:00", "t2", "v2")).collect();
     let through = log.append(&second);
-    index.store(&publisher::worker::indexed(&second, through)).unwrap();
+    index.store(&publisher::index::entries(&second, through)).unwrap();
     let snapshot = root.join("snapshot.parquet");
     publisher::snapshot::write_parquet(&index, std::fs::File::create(&snapshot).unwrap()).unwrap();
 
@@ -312,22 +312,6 @@ fn a_number_never_written_is_skipped_once_a_later_one_is_old_enough() {
 }
 
 #[test]
-fn a_snapshot_leaves_out_pages_of_withdrawn_tasks_the_index_has_not_drained() {
-    let root = scratch("snapshot-withdrawn");
-    let mut log = Log::new(root.join("bucket"));
-    let index = publisher::index::VersionIndex::open(&root.join("index"), 64 << 20).unwrap();
-    let kept: Vec<Change> = (0..5).map(|i| page(&format!("https://news.example/kept-{i}"), "2026-10-08T10:00:00+00:00", "t1", "k")).collect();
-    let taken: Vec<Change> = (0..3).map(|i| page(&format!("https://news.example/taken-{i}"), "2026-10-08T10:00:00+00:00", "t2", "t")).collect();
-    let seq = log.append(&kept);
-    index.store(&publisher::worker::indexed(&kept, seq)).unwrap();
-    let seq = log.append(&taken);
-    index.store(&publisher::worker::indexed(&taken, seq)).unwrap();
-    index.withdraw(&["t2".to_string()], 1_000.0).unwrap();
-    let (_, rows) = publisher::snapshot::write_parquet(&index, Vec::new()).unwrap();
-    assert_eq!(rows, 5);
-}
-
-#[test]
 fn a_removal_between_two_versions_holds_whichever_cycles_the_rows_land_in() {
     let root = scratch("removal-between");
     let mut log = Log::new(root.join("bucket"));
@@ -358,7 +342,7 @@ fn a_snapshot_page_with_no_change_file_row_is_read_from_its_page_object_and_one_
     let index = publisher::index::VersionIndex::open(&root.join("index"), 64 << 20).unwrap();
     let located = vec![page("https://news.example/located", "2026-10-08T10:00:00+00:00", "t1", "from the log")];
     let seq = log.append(&located);
-    index.store(&publisher::worker::indexed(&located, seq)).unwrap();
+    index.store(&publisher::index::entries(&located, seq)).unwrap();
     for (url, kept) in [("https://news.example/kept-object", true), ("https://news.example/no-object", false)] {
         let record = record(url, "2026-10-05T10:00:00+00:00", "t0", &format!("old text of {url}"));
         let key = page_key(url).unwrap();
@@ -463,4 +447,48 @@ fn a_withdrawn_task_s_row_logged_after_its_take_back_stays_out_until_the_base_is
     compactor::cycle(&store, &settings, 3_000.0).unwrap();
     assert!(!compactor::load_withdrawn(&store, "current/").unwrap().tasks.contains_key("t5"), "every base rewritten past its last row");
     assert_eq!(text_of(&store, late).as_deref(), Some("t7's"));
+}
+
+#[test]
+fn the_compacted_state_matches_a_plain_fold_of_the_log_through_combines_rewrites_and_take_backs() {
+    let root = scratch("fold");
+    let mut log = Log::new(root.join("bucket"));
+    let store = LocalStore { root: root.join("bucket") };
+    compactor::start_empty(&store, "current/", 0, 4).unwrap();
+    let mut settings = settings(root.join("work"));
+    (settings.fanout, settings.merge_ratio) = (2, 3.0);
+    let url = |i: usize| format!("https://news.example/fold-{i}");
+    for round in 0..8usize {
+        let task = format!("t{round}");
+        let mut changes: Vec<Change> = (0..30)
+            .map(|i| page(&url((i * 7 + round * 3) % 60), &format!("2026-10-08T{:02}:00:00+00:00", 10 + (round + i) % 9), &task, &format!("{task}-{i}")))
+            .collect();
+        changes.push(removed(&url(round * 5)));
+        if round == 5 {
+            changes.push(Change::task_withdrawn("t3", "2026-10-08T15:00:00+00:00"));
+            changes.push(page(&url(59), "2026-10-08T23:00:00+00:00", "t3", "late"));
+        }
+        log.append(&changes);
+        compactor::cycle(&store, &settings, 1_000.0 * round as f64).unwrap();
+    }
+    let compared = compactor::compare_log(&store, "current/", 4).unwrap();
+    assert!(compared.index_pages > 20);
+    assert_eq!((compared.missing, compared.extra, compared.other_version), (vec![], vec![], vec![]));
+}
+
+#[test]
+fn a_take_back_takes_down_only_the_version_that_stands() {
+    let row = |task: &str, seq: i64, fetched_at: &str| {
+        let record = record("https://news.example/one", fetched_at, task, task);
+        PageRow { key: page_key(&record.url).unwrap(), removed: false, change_seq: seq, version: record_version(&record), published_at: String::new(), record }
+    };
+    let rows = vec![row("t1", 2, "2026-10-08T17:00:00+00:00"), row("t2", 3, "2026-10-08T18:00:00+00:00"), row("t3", 4, "2026-10-08T10:00:00+00:00")];
+    let withdrawn: Withdrawals = [("t3".to_string(), 6)].into();
+    let standing = current::merge(rows.clone(), &withdrawn, false);
+    assert_eq!(standing.iter().map(|r| r.record.task_id.as_str()).collect::<Vec<_>>(), ["t2"], "t3 never stood, so its take-back hides nothing");
+    let withdrawn: Withdrawals = [("t2".to_string(), 6)].into();
+    assert!(current::merge(rows.clone(), &withdrawn, false).is_empty(), "t2 stood: the page is down until fetched again");
+    let mut later = rows;
+    later.push(row("t4", 7, "2026-10-08T09:00:00+00:00"));
+    assert_eq!(current::merge(later, &withdrawn, false)[0].record.task_id, "t4", "a fetch logged after the take-back stands again");
 }

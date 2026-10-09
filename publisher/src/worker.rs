@@ -1,4 +1,4 @@
-//! One publish batch: read the uploads, keep publishable pages, decide new, changed or unchanged, write the change file with a row per task withdrawn, then the index.
+//! One publish batch: read the uploads, keep publishable pages, write them to one change file with a row per task withdrawn.
 
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
@@ -11,9 +11,8 @@ use serde_json::Value;
 
 use crate::blocked::looks_blocked;
 use crate::changes::{self, Body, Change, Kind};
-use crate::index::{Current, VersionIndex};
 use crate::reading::{read_rows, RangeRead};
-use crate::records::{build_record, iso, publish_window, record_key, record_version, Context as RecordContext, Record, Row, SECOND};
+use crate::records::{build_record, iso, publish_window, record_key, record_version, Context as RecordContext, Record, Row};
 
 pub const WITHDRAW: &str = "withdraw";
 pub const EMBED: &str = "embed";
@@ -198,43 +197,27 @@ impl Chosen {
     }
 }
 
-/// New and changed pages, and pages seen again unchanged, against the version index; a version from a withdrawn task counts as none.
-pub fn decide(pages: Vec<Page>, index: &VersionIndex, published_at: &str) -> Result<(Vec<Change>, Vec<Page>)> {
-    let keys: Vec<&str> = pages.iter().map(|page| page.key.as_str()).collect();
-    let currents = index.current_many(&keys)?;
-    let withdrawn = index.withdrawn_among(&currents.values().map(|current| current.task_id.as_str()).collect::<Vec<_>>())?;
-    let (mut changes, mut unchanged) = (Vec::new(), Vec::new());
-    for page in pages {
-        let (kind, previous) = match currents.get(&page.key).filter(|current| !withdrawn.contains(&current.task_id)) {
-            None => (Kind::New, String::new()),
-            Some(current)
-                if current.version == page.version
-                    || (current.fetched_at.as_str(), current.version.as_str()) >= (page.record.fetched_at.as_str(), page.version.as_str()) =>
-            {
-                unchanged.push(page);
-                continue;
-            }
-            Some(current) => (Kind::Changed, current.content_sha1.clone()),
-        };
-        changes.push(Change {
+/// The change rows for a batch's pages.
+pub fn page_changes(pages: Vec<Page>, published_at: &str) -> Vec<Change> {
+    pages
+        .into_iter()
+        .map(|page| Change {
             key: page.key,
-            kind,
-            previous_content_sha1: previous,
+            kind: Kind::Page,
+            previous_content_sha1: String::new(),
             published_at: published_at.to_string(),
             body: Body::Page { record: Box::new(page.record), version: page.version },
-        });
-    }
-    Ok((changes, unchanged))
+        })
+        .collect()
 }
 
 /// What one batch did, for the queue and the bot.
 #[derive(Debug, Default)]
 pub struct Batch {
-    /// New and changed pages, then a row per task withdrawn, as the change file holds them.
+    /// The pages, then a row per task withdrawn, as the change file holds them.
     pub changes: Vec<Change>,
-    pub unchanged: Vec<Page>,
     pub failed: Vec<Failed>,
-    /// Tasks taken back; their pages leave the index later, a chunk at a time.
+    /// Tasks taken back in this batch.
     pub withdrawn: Vec<String>,
     /// Tasks done with: acknowledged and their uploads deleted.
     pub finalized: Vec<String>,
@@ -244,33 +227,34 @@ pub struct Batch {
     pub retry: Vec<(String, String)>,
     pub change_seq: Option<u64>,
     pub change_bytes: usize,
-    /// Seconds into the write when the pages were decided, the change file stored and the index updated.
-    pub steps: [f64; 3],
+    /// Seconds the change file took to write and number.
+    pub stored_s: f64,
 }
 
-/// Publishes one batch of jobs; `now` is microseconds since the epoch, `readers` the uploads read at once.
-pub fn publish(jobs: &[Job], uploads: &dyn Uploads, index: &VersionIndex, feed: &dyn ChangeFeed, now: i64, readers: usize) -> Result<Batch> {
+/// Publishes one batch of jobs; `now` is microseconds since the epoch, `readers` the uploads read at once, `refused` the tasks already taken back.
+pub fn publish(jobs: &[Job], uploads: &dyn Uploads, refused: &HashSet<String>, feed: &dyn ChangeFeed, now: i64, readers: usize) -> Result<Batch> {
     let reads = read_all(jobs, uploads, now, readers);
-    write(jobs, reads, index, feed, now)
+    write(jobs, reads, refused, feed, now)
+}
+
+/// The tasks a batch's withdraw jobs take back, each once, in order.
+pub fn withdrawn_in(jobs: &[Job]) -> Vec<String> {
+    let mut named = HashSet::new();
+    jobs.iter().filter(|job| job.is(WITHDRAW)).flat_map(|job| job.task_ids.iter().cloned()).filter(|task_id| named.insert(task_id.clone())).collect()
 }
 
 /// The second half of a batch, from the jobs' reads in the jobs' order; the next batch can be read meanwhile.
-pub fn write(jobs: &[Job], reads: Vec<Read>, index: &VersionIndex, feed: &dyn ChangeFeed, now: i64) -> Result<Batch> {
-    let started = Instant::now();
+pub fn write(jobs: &[Job], reads: Vec<Read>, refused: &HashSet<String>, feed: &dyn ChangeFeed, now: i64) -> Result<Batch> {
     let mut batch = Batch::default();
-    let mut named = HashSet::new();
-    let withdrawn: Vec<String> =
-        jobs.iter().filter(|job| job.is(WITHDRAW)).flat_map(|job| job.task_ids.iter().cloned()).filter(|task_id| named.insert(task_id.clone())).collect();
-    if !withdrawn.is_empty() {
-        index.withdraw(&withdrawn, now as f64 / SECOND as f64)?;
-    }
+    let withdrawn = withdrawn_in(jobs);
+    let taken_back: HashSet<&str> = withdrawn.iter().map(String::as_str).collect();
     let mut chosen = Chosen::default();
     for (job, read) in jobs.iter().zip(reads) {
         let Some(read) = read else {
             batch.finalized.push(job.task_id.clone());
             continue;
         };
-        if index.is_withdrawn(&job.task_id)? {
+        if refused.contains(&job.task_id) || taken_back.contains(job.task_id.as_str()) {
             batch.failed.extend(failed(job, job.urls.iter().map(String::as_str)));
             batch.finalized.push(job.task_id.clone());
             continue;
@@ -295,48 +279,18 @@ pub fn write(jobs: &[Job], reads: Vec<Read>, index: &VersionIndex, feed: &dyn Ch
         }
     }
     let published_at = iso(now);
-    let (mut changes, unchanged) = decide(chosen.into_pages(), index, &published_at)?;
-    batch.steps[0] = started.elapsed().as_secs_f64();
-    let published = changes.len();
+    let mut changes = page_changes(chosen.into_pages(), &published_at);
     changes.extend(withdrawn.iter().map(|task_id| Change::task_withdrawn(task_id, &published_at)));
-    // The change file is written before the index learns of it, so a crash only replays.
     if !changes.is_empty() {
+        let started = Instant::now();
         let file = changes::encode(&changes)?;
         batch.change_bytes = file.len();
-        let seq = feed.append(file, changes.len())?;
-        batch.change_seq = Some(seq);
-        batch.steps[1] = started.elapsed().as_secs_f64();
-        index.store(&indexed(&changes[..published], seq as i64))?;
+        batch.change_seq = Some(feed.append(file, changes.len())?);
+        batch.stored_s = started.elapsed().as_secs_f64();
     }
-    index.touch(&unchanged.iter().map(|page| (page.key.clone(), page.record.fetched_at.clone())).collect::<Vec<_>>())?;
-    batch.steps[2] = started.elapsed().as_secs_f64();
     batch.withdrawn = withdrawn;
     batch.changes = changes;
-    batch.unchanged = unchanged;
     Ok(batch)
-}
-
-/// The index entries for a change file's new and changed pages: where each full record sits.
-pub fn indexed(changes: &[Change], seq: i64) -> Vec<(String, Current)> {
-    changes
-        .iter()
-        .enumerate()
-        .filter_map(|(row, change)| match &change.body {
-            Body::Page { record, version } => Some((
-                change.key.clone(),
-                Current {
-                    url: record.url.clone(),
-                    version: version.clone(),
-                    fetched_at: record.fetched_at.clone(),
-                    task_id: record.task_id.clone(),
-                    content_sha1: record.content_sha1.clone(),
-                    change_seq: Some(seq),
-                    change_row: Some(row as i64),
-                },
-            )),
-            Body::Removed { .. } | Body::TaskWithdrawn { .. } => None,
-        })
-        .collect()
 }
 
 pub type Read = Option<Result<(Vec<Page>, Vec<Failed>), Fault>>;

@@ -17,6 +17,7 @@ use common::{page, parquet};
 use desearch::r2::{self, Bucket, Credentials, PARQUET};
 use desearch::stub;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+use publisher::index::{Current, VersionIndex};
 use publisher::service::{self, Metrics, Settings, Shared};
 use publisher::snapshot::Multipart;
 use redis::aio::ConnectionManager;
@@ -120,18 +121,8 @@ async fn the_service_publishes_reports_and_takes_back() {
     let metrics = Arc::new(Metrics::default());
     let temp = bucket(stub.addr, TEMP, PREFIX, metrics.r2_errors.clone());
     let pages = bucket(stub.addr, PAGES, "", metrics.r2_errors.clone());
-    let settings = Settings {
-        redis_url: REDIS.into(),
-        claim_ttl: 600.0,
-        batch: 2,
-        readers: 4,
-        ranges: 4,
-        ahead: 2,
-        index: dir.join("index"),
-        cache_bytes: 8 << 20,
-        idle_exit: 0,
-        idle_delay: Duration::from_millis(50),
-    };
+    let settings =
+        Settings { redis_url: REDIS.into(), claim_ttl: 600.0, batch: 2, readers: 4, ranges: 4, ahead: 2, idle_exit: 0, idle_delay: Duration::from_millis(50) };
     let shared = Shared::connect(settings, temp.clone(), pages.clone(), metrics.clone()).await.unwrap();
 
     let completed = service::now_us() as f64 / 1e6 - 60.0;
@@ -180,7 +171,7 @@ async fn the_service_publishes_reports_and_takes_back() {
     assert!(change_key.starts_with("changes/dt=") && change_key.ends_with(".parquet"));
     assert_eq!(state.object(PAGES, "changes/latest.json"), None, "latest moves only after a numbered index is written");
     let changes = rows(&state.object(PAGES, &change_key).unwrap());
-    assert_eq!(column(&changes, "kind"), ["new"; 6]);
+    assert_eq!(column(&changes, "kind"), ["page"; 6]);
     assert_eq!(state.meta(PAGES, &change_key).unwrap().0, PARQUET);
 
     assert_eq!(redis.get::<_, u64>("outcomes:seq").await.unwrap(), 2, "the two batches that finished tasks");
@@ -190,27 +181,15 @@ async fn the_service_publishes_reports_and_takes_back() {
     assert_eq!(json_object(&state, TEMP, &format!("{PREFIX}outcomes/latest.json")).unwrap(), json!({"seq": 2}));
     assert_eq!(state.meta(TEMP, &format!("{PREFIX}outcomes/latest.json")).unwrap().1, "no-store");
 
-    assert!(state.keys(PAGES, "index/snapshots/").is_empty(), "no snapshot unless asked for");
-    shared.snapshot_asked.store(true, Ordering::Relaxed);
-    publish_until_idle(&shared).await;
-    let snapshot_key = format!("index/snapshots/{}.parquet", service::day(service::now_us()));
-    for _ in 0..100 {
-        if state.object(PAGES, &snapshot_key).is_some() {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    let snapshot = Bytes::from(state.object(PAGES, &snapshot_key).expect("the day's index snapshot"));
-    assert_eq!(ParquetRecordBatchReaderBuilder::try_new(snapshot).unwrap().schema().fields().len(), 8);
-
     temp.put("submitted/t6.parquet", Bytes::from(upload("t1", "first")), PARQUET, None).await.unwrap();
     enqueue(&mut redis, &crawl("t6", &urls("t1"), completed + 30.0, ""), true).await;
     let withdraw = json!({"task_id": "withdraw:0123456789abcdef", "kind": "withdraw", "task_ids": ["t2"], "reason": "test"});
     enqueue(&mut redis, &withdraw, false).await;
+    enqueue(&mut redis, &crawl("t2", &urls("t2"), completed, ""), true).await;
     let (stopping, stop) = watch::channel(false);
     let running = tokio::spawn(service::run(shared.clone(), stop, 0));
     for _ in 0..400 {
-        if redis.get::<_, u64>("publish:acked").await.unwrap() == 6 && shared.index.pages().unwrap().len() == 3 {
+        if redis.get::<_, u64>("publish:acked").await.unwrap() == 7 {
             break;
         }
         tokio::time::sleep(Duration::from_millis(25)).await;
@@ -218,13 +197,14 @@ async fn the_service_publishes_reports_and_takes_back() {
     stopping.send(true).unwrap();
     tokio::time::timeout(Duration::from_secs(10), running).await.expect("stopping on request").unwrap().unwrap();
 
-    assert_eq!(redis.get::<_, u64>("publish:acked").await.unwrap(), 6);
-    assert_eq!(json_object(&state, PAGES, "changes/latest.json").unwrap(), json!({"seq": 2}));
+    assert_eq!(redis.get::<_, u64>("publish:acked").await.unwrap(), 7);
+    assert_eq!(json_object(&state, PAGES, "changes/latest.json").unwrap(), json!({"seq": 2}), "the refused job writes no change file");
     let second = json_object(&state, PAGES, "changes/seq/000000000002.json").unwrap();
-    assert_eq!(second["rows"], 1, "one row for the withdrawn task, none per page");
-    let withdrawn = rows(&state.object(PAGES, second["key"].as_str().unwrap()).unwrap());
-    assert_eq!((column(&withdrawn, "kind"), column(&withdrawn, "task_id")), (vec!["task_withdrawn".to_string()], vec!["t2".to_string()]));
-    assert_eq!(withdrawn[0].column_by_name("url").unwrap().null_count(), 1);
+    assert_eq!(second["rows"], 4, "t1's pages logged again, and one row for the withdrawn task");
+    let written = rows(&state.object(PAGES, second["key"].as_str().unwrap()).unwrap());
+    assert_eq!(column(&written, "kind"), ["page", "page", "page", "task_withdrawn"]);
+    let withdrawn: Vec<String> = redis.zrange("publish:withdrawn", 0, -1).await.unwrap();
+    assert_eq!(withdrawn, ["t2"], "every publisher refuses its jobs from now on");
     let last: u64 = redis.get("outcomes:seq").await.unwrap();
     let outcomes = outcome_feed(&state, 3, last);
     let of = |kind: &str| {
@@ -232,9 +212,7 @@ async fn the_service_publishes_reports_and_takes_back() {
         urls.sort();
         urls
     };
-    assert_eq!((of("unchanged"), of("dropped"), outcomes.len()), (urls("t1"), urls("t2"), 6), "t2's pages are dropped once they leave the index");
-    assert!(shared.index.is_withdrawn("t2").unwrap());
-    assert_eq!(shared.index.pages().unwrap().len(), 3, "t1's pages stay, t2's are taken back");
+    assert_eq!((of("published"), of("failed"), outcomes.len()), (urls("t1"), urls("t2"), 6), "the late job for t2 is refused");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -275,7 +253,7 @@ async fn large_objects_go_up_in_parts_and_reads_survive_errors() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn pages_kept_with_sitemap_escapes_are_taken_down() {
-    let Some((_turn, mut redis)) = redis_db().await else {
+    let Some((_turn, _redis)) = redis_db().await else {
         eprintln!("skipped: no Redis on {REDIS}");
         return;
     };
@@ -285,35 +263,37 @@ async fn pages_kept_with_sitemap_escapes_are_taken_down() {
     let metrics = Arc::new(Metrics::default());
     let temp = bucket(stub.addr, TEMP, PREFIX, metrics.r2_errors.clone());
     let pages = bucket(stub.addr, PAGES, "", metrics.r2_errors.clone());
-    let settings = Settings {
-        redis_url: REDIS.into(),
-        claim_ttl: 600.0,
-        batch: 2,
-        readers: 4,
-        ranges: 4,
-        ahead: 2,
-        index: dir.join("index"),
-        cache_bytes: 8 << 20,
-        idle_exit: 0,
-        idle_delay: Duration::from_millis(50),
-    };
+    let settings =
+        Settings { redis_url: REDIS.into(), claim_ttl: 600.0, batch: 2, readers: 4, ranges: 4, ahead: 2, idle_exit: 0, idle_delay: Duration::from_millis(50) };
     let shared = Shared::connect(settings, temp.clone(), pages.clone(), metrics).await.unwrap();
-    let urls = ["https://ex.com/story", "https://ex.com/shop?amp;p=2669&post_type=product", "https://ex.com/Q&amp;A"].map(String::from);
-    let fetched = service::now_us() - 90_000_000;
-    let upload = parquet(&urls.iter().map(|u| page(u, &format!("text of {u}"), fetched)).collect::<Vec<_>>(), None, None);
-    temp.put("submitted/t1.parquet", Bytes::from(upload), PARQUET, None).await.unwrap();
-    enqueue(&mut redis, &crawl("t1", &urls, service::now_us() as f64 / 1e6 - 60.0, ""), true).await;
-    publish_until_idle(&shared).await;
-    assert_eq!(shared.index.pages().unwrap().len(), 3);
+    let urls = ["https://ex.com/story", "https://ex.com/shop?amp%3Bp=2669&post_type=product", "https://ex.com/Q&amp;A"].map(String::from);
+    let index = Arc::new(VersionIndex::open(&dir.join("index"), 8 << 20).unwrap());
+    let entries: Vec<(String, Current)> = urls
+        .iter()
+        .enumerate()
+        .map(|(row, url)| {
+            let current = Current {
+                url: url.clone(),
+                version: format!("{row:040}"),
+                fetched_at: "2026-10-08T10:00:00+00:00".into(),
+                task_id: "t1".into(),
+                content_sha1: "c".repeat(40),
+                change_seq: Some(1),
+                change_row: Some(row as i64),
+            };
+            (format!("pages/ex.com/{row:040x}"), current)
+        })
+        .collect();
+    index.store(&entries).unwrap();
 
-    assert_eq!(service::remove_escaped(&shared, None).await.unwrap(), 2);
-    assert_eq!(shared.index.pages().unwrap().len(), 3, "counting changes nothing");
+    assert_eq!(service::remove_escaped(&shared, &index, None).await.unwrap(), 2);
+    assert_eq!(index.pages().unwrap().len(), 3, "counting changes nothing");
     let backup = dir.join("escaped.jsonl");
-    assert_eq!(service::remove_escaped(&shared, Some(&backup)).await.unwrap(), 2);
+    assert_eq!(service::remove_escaped(&shared, &index, Some(&backup)).await.unwrap(), 2);
     let saved: Vec<Value> = std::fs::read_to_string(&backup).unwrap().lines().map(|line| serde_json::from_str(line).unwrap()).collect();
     assert_eq!(saved.len(), 2);
     assert!(saved.iter().all(|entry| entry["change_seq"].as_i64().is_some() && entry["version"].as_str().is_some_and(|v| !v.is_empty())));
-    let kept: Vec<String> = shared.index.pages().unwrap().into_iter().map(|(_, current)| current.url).collect();
+    let kept: Vec<String> = index.pages().unwrap().into_iter().map(|(_, current)| current.url).collect();
     assert_eq!(kept, ["https://ex.com/story"]);
     let latest = json_object(&state, PAGES, "changes/latest.json").unwrap()["seq"].as_u64().unwrap();
     let numbered = json_object(&state, PAGES, &format!("changes/seq/{latest:012}.json")).unwrap();
@@ -322,6 +302,6 @@ async fn pages_kept_with_sitemap_escapes_are_taken_down() {
     let mut taken = column(&removed, "url");
     taken.sort();
     assert_eq!(taken, ["https://ex.com/Q&amp;A", "https://ex.com/shop?amp%3Bp=2669&post_type=product"]);
-    assert_eq!(service::remove_escaped(&shared, Some(&dir.join("again.jsonl"))).await.unwrap(), 0);
+    assert_eq!(service::remove_escaped(&shared, &index, Some(&dir.join("again.jsonl"))).await.unwrap(), 0);
     let _ = std::fs::remove_dir_all(&dir);
 }

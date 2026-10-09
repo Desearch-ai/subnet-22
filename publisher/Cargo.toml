@@ -5,7 +5,7 @@ edition = "2021"
 rust-version = "1.88"
 resolver = "3"
 publish = false
-description = "The SN22 publisher: validated uploads into the numbered change feed and the version index"
+description = "The SN22 publisher: validated uploads into the numbered change feed, compacted into the current state of every page"
 
 [dependencies]
 anyhow = "1"

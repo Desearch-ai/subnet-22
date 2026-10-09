@@ -49,8 +49,6 @@ def environment(work: Path, **extra) -> dict:
         "TASK_API_R2_PREFIX": PREFIX,
         "CF_R2_PAGES_BUCKET": PAGES,
         "TASK_API_REDIS": REDIS_URL,
-        "PUBLISHER_INDEX": str(work / "index"),
-        "PUBLISHER_CACHE_MB": "256",
         **extra,
     }
 

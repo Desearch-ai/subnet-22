@@ -649,6 +649,7 @@ pub fn shard_rows(store: &dyn Store, prefix: &str, shard: usize) -> Result<Vec<P
 /// How the current state differs from the publisher's version index, page by page.
 #[derive(Debug, Default)]
 pub struct Compared {
+    /// Pages expected: in the index, or in the fold of the change log.
     pub index_pages: u64,
     pub current_pages: u64,
     /// In the index only because its task is withdrawn and the index has not drained it yet.
@@ -660,25 +661,63 @@ pub struct Compared {
 
 /// Compares every page of the current state under `prefix` with `index`; holds the whole state in memory, so for test runs.
 pub fn compare(store: &dyn Store, prefix: &str, index: &VersionIndex, threads: usize) -> Result<Compared> {
+    let draining: HashSet<String> = index.withdrawn()?.into_iter().map(|(task_id, _)| task_id).collect();
+    let mut expected = Vec::new();
+    index.scan(|key, page| {
+        let waiting = draining.contains(&page.task_id);
+        expected.push((key, page.version, waiting));
+        Ok(())
+    })?;
+    compared(current_versions(store, prefix, threads)?, expected)
+}
+
+/// Compares every page of the current state under `prefix` with a plain fold of the change log it covers, one page at a time, without shards or files; for test runs.
+pub fn compare_log(store: &dyn Store, prefix: &str, threads: usize) -> Result<Compared> {
+    let through = load_manifests(store, prefix, threads)?.iter().map(|m| m.through_seq).min().unwrap_or(0);
+    let seqs: Vec<i64> = (1..=through).collect();
+    let files = each(&seqs, threads, |&seq| -> Result<Vec<ChangeRow>> {
+        let Some(key) = change_key(store, seq)? else { return Ok(Vec::new()) };
+        let file = store.get(&key)?.ok_or_else(|| anyhow!("change file {seq} is missing"))?;
+        current::decode_changes(file, seq)
+    })?;
+    let (mut rows, mut withdrawn) = (Vec::new(), Withdrawals::new());
+    for (&seq, file) in seqs.iter().zip(files) {
+        for row in file {
+            match row {
+                ChangeRow::Page(page) => rows.push(*page),
+                ChangeRow::Removed(key) => rows.push(PageRow::removal(key, seq)),
+                ChangeRow::TaskWithdrawn(task_id) => {
+                    withdrawn.entry(task_id).or_insert(seq);
+                }
+            }
+        }
+    }
+    let expected = current::merge(rows, &withdrawn, false).into_iter().map(|row| (row.key, row.version, false)).collect();
+    compared(current_versions(store, prefix, threads)?, expected)
+}
+
+fn current_versions(store: &dyn Store, prefix: &str, threads: usize) -> Result<HashMap<String, String>> {
     let shards: Vec<usize> = (0..SHARDS).collect();
-    let mut current: HashMap<String, String> = each(&shards, threads, |&shard| shard_rows(store, prefix, shard))?
+    Ok(each(&shards, threads, |&shard| shard_rows(store, prefix, shard))?
         .into_iter()
         .flatten()
         .filter(|row| !row.removed)
         .map(|row| (row.key, row.version))
-        .collect();
-    let draining: HashSet<String> = index.withdrawn()?.into_iter().map(|(task_id, _)| task_id).collect();
+        .collect())
+}
+
+/// `expected` holds each page's key, version, and whether it is waiting to leave because its task was withdrawn.
+fn compared(mut current: HashMap<String, String>, expected: Vec<(String, String, bool)>) -> Result<Compared> {
     let mut compared = Compared { current_pages: current.len() as u64, ..Compared::default() };
-    index.scan(|key, page| {
+    for (key, version, waiting) in expected {
         compared.index_pages += 1;
         match current.remove(&key) {
-            Some(version) if version == page.version => {}
-            Some(version) => compared.other_version.push(format!("{key}: index {} current {version}", page.version)),
-            None if draining.contains(&page.task_id) => compared.draining += 1,
+            Some(found) if found == version => {}
+            Some(found) => compared.other_version.push(format!("{key}: expected {version} current {found}")),
+            None if waiting => compared.draining += 1,
             None => compared.missing.push(key),
         }
-        Ok(())
-    })?;
+    }
     compared.extra = current.into_keys().collect();
     Ok(compared)
 }

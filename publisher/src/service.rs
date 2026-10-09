@@ -1,10 +1,10 @@
 //! The publisher as a service: claim batches from the task API's queue, read the next ones while one is written, then report and acknowledge.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -17,12 +17,12 @@ use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
 use crate::changes::{self, Body, Change, Kind};
-use crate::index::{Current, VersionIndex, Withdrawn};
+use crate::index::{Current, VersionIndex};
+use crate::outcomes;
 use crate::queue::PublishQueue;
 use crate::reading::{RangeRead, Remote, Traffic};
 use crate::records::iso;
-use crate::worker::{self, ChangeFeed, Fault, Job, Read, Uploads, WITHDRAW};
-use crate::{outcomes, snapshot, withdrawals};
+use crate::worker::{self, ChangeFeed, Fault, Job, Read, Uploads};
 use desearch::feeds::{CHANGES, OUTCOMES};
 use desearch::outcomes::Outcome;
 use desearch::r2::{self, Bucket, Credentials, PARQUET};
@@ -31,8 +31,8 @@ const RETRY_DELAY: Duration = Duration::from_secs(5);
 const SUMMARY_EVERY: Duration = Duration::from_secs(60);
 const CHANGE_PART_BYTES: usize = 8 << 20;
 const CHANGE_PARTS_AT_ONCE: usize = 8;
-/// Withdrawn tasks are looked over this often even with none new, so old ones are forgotten.
-const DRAIN_EVERY: Duration = Duration::from_secs(600);
+/// Tasks taken back over a week ago are forgotten this often.
+const FORGET_WITHDRAWN_EVERY: Duration = Duration::from_secs(600);
 
 pub struct Settings {
     pub redis_url: String,
@@ -44,8 +44,6 @@ pub struct Settings {
     pub ranges: usize,
     /// Batches claimed and reading while one is written.
     pub ahead: usize,
-    pub index: PathBuf,
-    pub cache_bytes: usize,
     /// Stop after this many passes in a row found nothing; 0 runs until stopped.
     pub idle_exit: u32,
     pub idle_delay: Duration,
@@ -64,8 +62,6 @@ impl Settings {
             readers: number("PUBLISHER_READERS", batch)?,
             ranges: number("PUBLISHER_RANGES", 8)?,
             ahead: number("PUBLISHER_AHEAD", 2)?,
-            index: PathBuf::from(text("PUBLISHER_INDEX", "publisher-index")),
-            cache_bytes: number::<usize>("PUBLISHER_CACHE_MB", 1024)? << 20,
             idle_exit: number("PUBLISHER_IDLE_EXIT", 0)?,
             idle_delay: Duration::from_secs_f64(number("PUBLISHER_IDLE_DELAY_S", 2.0)?),
         })
@@ -119,7 +115,6 @@ pub struct Metrics {
     pub tasks: AtomicU64,
     pub batches: AtomicU64,
     pub changed: AtomicU64,
-    pub unchanged: AtomicU64,
     pub failed_urls: AtomicU64,
     pub lost: AtomicU64,
     pub retried: AtomicU64,
@@ -132,31 +127,15 @@ pub struct Shared {
     pub queue: PublishQueue,
     pub temp: Bucket,
     pub pages: Bucket,
-    pub index: Arc<VersionIndex>,
     pub settings: Settings,
     pub metrics: Arc<Metrics>,
     pub handle: Handle,
-    /// Set to have the loop upload a copy of the index once.
-    pub snapshot_asked: AtomicBool,
 }
 
 impl Shared {
     pub async fn connect(settings: Settings, temp: Bucket, pages: Bucket, metrics: Arc<Metrics>) -> Result<Arc<Self>> {
-        if settings.index.is_file() {
-            bail!("PUBLISHER_INDEX {} is a file, not an index folder", settings.index.display());
-        }
         let redis = redis::Client::open(settings.redis_url.as_str())?.get_connection_manager().await.context("connecting to TASK_API_REDIS")?;
-        let index = Arc::new(VersionIndex::open(&settings.index, settings.cache_bytes)?);
-        Ok(Arc::new(Shared {
-            queue: PublishQueue::new(redis, settings.claim_ttl),
-            temp,
-            pages,
-            index,
-            settings,
-            metrics,
-            handle: Handle::current(),
-            snapshot_asked: AtomicBool::new(false),
-        }))
+        Ok(Arc::new(Shared { queue: PublishQueue::new(redis, settings.claim_ttl), temp, pages, settings, metrics, handle: Handle::current() }))
     }
 
     fn redis(&self) -> &ConnectionManager {
@@ -237,7 +216,7 @@ pub async fn start_batch(shared: Arc<Shared>) -> Result<Option<Claimed>> {
     Ok(Some(Claimed { jobs, reads, started }))
 }
 
-/// Writes a batch already read: change file, index, outcomes, acknowledgements; returns the jobs finished.
+/// Writes a batch already read: change file, outcomes, acknowledgements; returns the jobs finished.
 pub async fn write_batch(shared: &Shared, claimed: Claimed) -> Result<usize> {
     let Claimed { jobs, reads, started } = claimed;
     let reads = reads.await.context("reading the batch")?;
@@ -247,9 +226,10 @@ pub async fn write_batch(shared: &Shared, claimed: Claimed) -> Result<usize> {
     let uploads: HashMap<String, Vec<String>> =
         jobs.iter().map(|job| (job.task_id.clone(), [job.key.clone(), job.input_key.clone()].into_iter().flatten().collect())).collect();
     let now = now_us();
+    shared.queue.note_withdrawn(&worker::withdrawn_in(&jobs), now as f64 / 1e6).await?;
+    let refused = shared.queue.withdrawn_among(&ids).await?;
     let feed = R2Changes { pages: shared.pages.clone(), redis: shared.redis().clone(), handle: shared.handle.clone(), day: day(now) };
-    let index = shared.index.clone();
-    let batch = tokio::task::spawn_blocking(move || worker::write(&jobs, reads, &index, &feed, now)).await??;
+    let batch = tokio::task::spawn_blocking(move || worker::write(&jobs, reads, &refused, &feed, now)).await??;
     let written_s = started.elapsed().as_secs_f64();
     for task_id in &batch.lost {
         if let Err(error) = shared.queue.mark_lost(task_id).await {
@@ -278,22 +258,18 @@ pub async fn write_batch(shared: &Shared, claimed: Claimed) -> Result<usize> {
     m.batches.fetch_add(1, Ordering::Relaxed);
     m.tasks.fetch_add(batch.finalized.len() as u64, Ordering::Relaxed);
     m.changed.fetch_add(published as u64, Ordering::Relaxed);
-    m.unchanged.fetch_add(batch.unchanged.len() as u64, Ordering::Relaxed);
     m.failed_urls.fetch_add(batch.failed.len() as u64, Ordering::Relaxed);
     m.lost.fetch_add(batch.lost.len() as u64, Ordering::Relaxed);
     m.retried.fetch_add(batch.retry.len() as u64, Ordering::Relaxed);
     println!(
-        "published {} tasks, {} pages new or changed, {} tasks withdrawn in {:.1}s (read by {:.1}s, written by {:.1}s: decided {:.1}s, stored {:.1}s, indexed {:.1}s); {} unchanged, {} URLs failed, {} lost, {} left to retry, change file {}",
+        "published {} tasks, {} pages, {} tasks withdrawn in {:.1}s (read by {:.1}s, written by {:.1}s, change file stored in {:.1}s); {} URLs failed, {} lost, {} left to retry, change file {}",
         batch.finalized.len(),
         published,
         batch.withdrawn.len(),
         started.elapsed().as_secs_f64(),
         read_s,
         written_s,
-        batch.steps[0],
-        batch.steps[1],
-        batch.steps[2],
-        batch.unchanged.len(),
+        batch.stored_s,
         batch.failed.len(),
         batch.lost.len(),
         batch.retry.len(),
@@ -304,7 +280,7 @@ pub async fn write_batch(shared: &Shared, claimed: Claimed) -> Result<usize> {
 
 /// What became of every URL, for the bot; a failure here is logged and the batch still finishes.
 async fn report_outcomes(shared: &Shared, batch: &worker::Batch, now: i64) {
-    if let Err(error) = write_outcomes(shared, outcomes::rows(&batch.changes, &batch.unchanged, &batch.failed), now).await {
+    if let Err(error) = write_outcomes(shared, outcomes::rows(&batch.changes, &batch.failed), now).await {
         eprintln!("could not write the batch's outcomes: {error:#}");
     }
 }
@@ -322,66 +298,11 @@ async fn write_outcomes(shared: &Shared, rows: Vec<Outcome>, now: i64) -> Result
     Ok(())
 }
 
-#[derive(Default)]
-struct Snapshots {
-    running: Option<JoinHandle<()>>,
-}
-
-impl Snapshots {
-    /// A copy of the version index when asked for, made in the background from a checkpoint while publishing goes on.
-    fn poll(&mut self, shared: &Arc<Shared>) {
-        if self.running.as_ref().is_some_and(|running| !running.is_finished()) || !shared.snapshot_asked.swap(false, Ordering::Relaxed) {
-            return;
-        }
-        let shared = shared.clone();
-        self.running = Some(tokio::task::spawn_blocking(move || {
-            let (started, today) = (Instant::now(), day(now_us()));
-            match snapshot::upload(&shared.index, &shared.settings.index, &shared.pages, &today, &shared.handle) {
-                Ok(rows) => println!("index snapshot {today}: {rows} pages in {:.0}s", started.elapsed().as_secs_f64()),
-                Err(error) => eprintln!("could not snapshot the version index: {error:#}"),
-            }
-        }));
-    }
-}
-
-/// Withdrawn tasks' pages taken out of the index in the background, one pass at a time, each chunk reported to the bot as dropped.
-#[derive(Default)]
-struct Draining {
-    drained: HashSet<String>,
-    running: Option<JoinHandle<HashSet<String>>>,
-    started: Option<Instant>,
-    wanted: bool,
-}
-
-impl Draining {
-    async fn poll(&mut self, shared: &Arc<Shared>, stop: &watch::Receiver<bool>, withdrew: bool) {
-        self.wanted |= withdrew;
-        if let Some(running) = self.running.take_if(|running| running.is_finished()) {
-            self.drained = running.await.unwrap_or_default();
-        }
-        if self.running.is_some() || !(self.wanted || self.started.is_none_or(|at| at.elapsed() >= DRAIN_EVERY)) {
-            return;
-        }
-        (self.wanted, self.started) = (false, Some(Instant::now()));
-        let (shared, stop, mut drained) = (shared.clone(), stop.clone(), std::mem::take(&mut self.drained));
-        self.running = Some(tokio::task::spawn_blocking(move || {
-            let mut report = |pages: &[Withdrawn]| shared.handle.block_on(write_outcomes(&shared, outcomes::dropped(pages), now_us()));
-            match withdrawals::drain(&shared.index, &mut drained, now_us() as f64 / 1e6, withdrawals::CHUNK, &|| *stop.borrow(), &mut report) {
-                Ok(0) => {}
-                Ok(pages) => println!("took {pages} pages of withdrawn tasks out of the index"),
-                Err(error) => eprintln!("taking withdrawn tasks' pages out of the index failed: {error:#}"),
-            }
-            drained
-        }));
-    }
-}
-
 /// Publishes until `stop` turns true, then finishes the batches already claimed and claims no more; `idle_exit` passes in a row with nothing to do also stop it.
 pub async fn run(shared: Arc<Shared>, mut stop: watch::Receiver<bool>, idle_exit: u32) -> Result<()> {
     let mut idle = 0;
     let mut claimed: Vec<Claimed> = Vec::new();
-    let mut snapshots = Snapshots::default();
-    let mut draining = Draining::default();
+    let mut forgot: Option<Instant> = None;
     loop {
         let finishing = *stop.borrow() || (idle_exit > 0 && idle >= idle_exit);
         while !finishing && claimed.len() <= shared.settings.ahead {
@@ -395,7 +316,6 @@ pub async fn run(shared: Arc<Shared>, mut stop: watch::Receiver<bool>, idle_exit
                 }
             }
         }
-        let mut withdrew = false;
         if claimed.is_empty() {
             if finishing {
                 break;
@@ -404,27 +324,22 @@ pub async fn run(shared: Arc<Shared>, mut stop: watch::Receiver<bool>, idle_exit
         } else {
             idle = 0;
             let current = claimed.remove(first_read(&claimed).await);
-            withdrew = current.jobs.iter().any(|job| job.is(WITHDRAW));
             if let Err(error) = write_batch(&shared, current).await {
                 eprintln!("publish pass failed: {error:#}");
                 pause(&mut stop, RETRY_DELAY).await;
             }
         }
-        draining.poll(&shared, &stop, withdrew).await;
-        snapshots.poll(&shared);
+        if forgot.is_none_or(|at| at.elapsed() >= FORGET_WITHDRAWN_EVERY) {
+            forgot = Some(Instant::now());
+            if let Err(error) = shared.queue.forget_withdrawn(now_us() as f64 / 1e6).await {
+                eprintln!("forgetting old take-backs failed: {error:#}");
+            }
+        }
         if let Err(error) = CHANGES.fill_holes(&shared.pages, shared.redis()).await {
             eprintln!("filling holes in the change feed failed: {error:#}");
         }
         if idle > 0 && !finishing {
             pause(&mut stop, shared.settings.idle_delay).await;
-        }
-    }
-    if let Some(running) = draining.running {
-        let _ = tokio::time::timeout(Duration::from_secs(10), running).await;
-    }
-    if let Some(running) = snapshots.running {
-        if tokio::time::timeout(Duration::from_secs(3), running).await.is_err() {
-            println!("stopping with the index snapshot unfinished");
         }
     }
     Ok(())
@@ -451,7 +366,7 @@ async fn pause(stop: &mut watch::Receiver<bool>, delay: Duration) {
 pub async fn summarize(shared: Arc<Shared>, mut stop: watch::Receiver<bool>) {
     let m = shared.metrics.clone();
     let counters = || {
-        [&m.tasks, &m.changed, &m.unchanged, &m.failed_urls, &m.lost, &m.retried, m.r2_errors.as_ref(), &m.traffic.bytes, &m.traffic.requests]
+        [&m.tasks, &m.changed, &m.failed_urls, &m.lost, &m.retried, m.r2_errors.as_ref(), &m.traffic.bytes, &m.traffic.requests]
             .map(|c| c.load(Ordering::Relaxed))
     };
     let mut before = counters();
@@ -467,16 +382,15 @@ pub async fn summarize(shared: Arc<Shared>, mut stop: watch::Receiver<bool>) {
             Err(error) => format!("unknown ({error})"),
         };
         println!(
-            "minute: {} tasks/min, {} pages new or changed, {} unchanged, {} URLs failed, {} lost, {} left to retry; backlog {backlog}; R2 {} errors, read {:.0} MB in {} requests",
+            "minute: {} tasks/min, {} pages, {} URLs failed, {} lost, {} left to retry; backlog {backlog}; R2 {} errors, read {:.0} MB in {} requests",
             d[0],
             d[1],
             d[2],
             d[3],
             d[4],
             d[5],
-            d[6],
-            d[7] as f64 / 1e6,
-            d[8]
+            d[6] as f64 / 1e6,
+            d[7]
         );
     }
 }
@@ -500,27 +414,12 @@ pub async fn serve() -> Result<()> {
         println!("stopping: finishing the batches in hand, claiming no more");
         let _ = stopping.send(true);
     });
-    let asking = shared.clone();
-    tokio::spawn(async move {
-        let mut asked = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::user_defined1()).expect("a SIGUSR1 handler");
-        while asked.recv().await.is_some() {
-            println!("index snapshot asked for");
-            asking.snapshot_asked.store(true, Ordering::Relaxed);
-        }
-    });
     println!(
-        "publishing {}/{} -> {}/{}, batches of {}, {} uploads read at once, index {}",
-        shared.temp.bucket,
-        shared.temp.prefix,
-        shared.pages.bucket,
-        shared.pages.prefix,
-        shared.settings.batch,
-        shared.settings.readers,
-        shared.settings.index.display()
+        "publishing {}/{} -> {}/{}, batches of {}, {} uploads read at once",
+        shared.temp.bucket, shared.temp.prefix, shared.pages.bucket, shared.pages.prefix, shared.settings.batch, shared.settings.readers
     );
     tokio::spawn(summarize(shared.clone(), stop.clone()));
     run(shared.clone(), stop, shared.settings.idle_exit).await?;
-    shared.index.flush()?;
     println!("publisher stopped");
     Ok(())
 }
@@ -533,23 +432,24 @@ pub fn escaped(url: &str) -> bool {
     ESCAPED.is_match(url)
 }
 
-/// `remove_escaped` with the storage, Redis and index `serve` uses.
-pub async fn remove_escaped_from_env(backup: Option<PathBuf>) -> Result<()> {
+/// `remove_escaped` on the version index at `index`, with the storage and Redis `serve` uses.
+pub async fn remove_escaped_from_env(index: &Path, backup: Option<PathBuf>) -> Result<()> {
     let settings = Settings::from_env()?;
     let metrics = Arc::new(Metrics::default());
     let (temp, pages) = buckets_from_env(metrics.r2_errors.clone())?;
     pages.check().await?;
     let shared = Shared::connect(settings, temp, pages, metrics).await?;
-    remove_escaped(&shared, backup.as_deref()).await?;
+    let index = Arc::new(VersionIndex::open(index, 256 << 20)?);
+    remove_escaped(&shared, &index, backup.as_deref()).await?;
     Ok(())
 }
 
 /// Takes down every page whose URL still carries a sitemap's XML escapes, in change files of `removed` rows, each index entry saved to `backup` first as a JSON line; without a backup it only counts them.
-pub async fn remove_escaped(shared: &Shared, backup: Option<&Path>) -> Result<usize> {
-    let index = shared.index.clone();
+pub async fn remove_escaped(shared: &Shared, index: &Arc<VersionIndex>, backup: Option<&Path>) -> Result<usize> {
+    let scanning = index.clone();
     let found: Vec<(String, Current)> = tokio::task::spawn_blocking(move || {
         let mut found = Vec::new();
-        index.scan(|key, current| {
+        scanning.scan(|key, current| {
             if escaped(&current.url) {
                 found.push((key, current));
             }
@@ -570,7 +470,7 @@ pub async fn remove_escaped(shared: &Shared, backup: Option<&Path>) -> Result<us
     let count = found.len();
     let now = now_us();
     let feed = R2Changes { pages: shared.pages.clone(), redis: shared.redis().clone(), handle: shared.handle.clone(), day: day(now) };
-    let index = shared.index.clone();
+    let index = index.clone();
     tokio::task::spawn_blocking(move || {
         for chunk in found.chunks(REMOVED_PER_FILE) {
             for (key, current) in chunk {

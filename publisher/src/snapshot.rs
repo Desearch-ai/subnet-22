@@ -1,8 +1,6 @@
-//! A copy of the version index on request, as Parquet beside the pages it describes, streamed from a checkpoint into a multipart upload.
+//! A version index as Parquet, for building the current state from it, and multipart uploads of large files.
 
-use std::collections::HashSet;
 use std::io::{self, Write};
-use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock};
 
 use anyhow::{Context, Result};
@@ -22,7 +20,6 @@ use desearch::r2::{Bucket, PARQUET};
 const PART_BYTES: usize = 64 << 20;
 const BATCH_ROWS: usize = 65_536;
 const ROW_GROUP_ROWS: usize = 524_288;
-const CHECKPOINT_CACHE: usize = 64 << 20;
 
 pub static SNAPSHOT_SCHEMA: LazyLock<SchemaRef> = LazyLock::new(|| {
     let text = |name: &str| Field::new(name, DataType::Utf8, true);
@@ -42,40 +39,14 @@ pub fn snapshot_key(day: &str) -> String {
     format!("index/snapshots/{day}.parquet")
 }
 
-/// Uploads the day's snapshot, replacing an earlier one of the same day; returns the pages written.
-pub fn upload(index: &VersionIndex, index_dir: &Path, pages: &Bucket, day: &str, handle: &Handle) -> Result<u64> {
-    let key = snapshot_key(day);
-    let checkpoint = checkpoint_dir(index_dir);
-    let _ = std::fs::remove_dir_all(&checkpoint);
-    index.checkpoint(&checkpoint)?;
-    let written = (|| {
-        let copy = VersionIndex::open_read_only(&checkpoint, CHECKPOINT_CACHE)?;
-        let upload = Multipart::new(pages.clone(), key.clone(), handle.clone());
-        let (upload, rows) = write_parquet(&copy, upload)?;
-        upload.finish()?;
-        Ok(rows)
-    })();
-    let _ = std::fs::remove_dir_all(&checkpoint);
-    written
-}
-
-fn checkpoint_dir(index_dir: &Path) -> PathBuf {
-    let name = index_dir.file_name().map_or("index".into(), |n| n.to_string_lossy().into_owned());
-    index_dir.with_file_name(format!("{name}.snapshot"))
-}
-
-/// Every page of the index as Parquet into `out`, a batch at a time; pages of withdrawn tasks not drained yet are left out.
+/// Every page of the index as Parquet into `out`, a batch at a time.
 pub fn write_parquet<W: Write + Send>(index: &VersionIndex, out: W) -> Result<(W, u64)> {
-    let withdrawn: HashSet<String> = index.withdrawn()?.into_iter().map(|(task_id, _)| task_id).collect();
     let properties =
         WriterProperties::builder().set_compression(Compression::ZSTD(ZstdLevel::try_new(3)?)).set_max_row_group_row_count(Some(ROW_GROUP_ROWS)).build();
     let mut writer = ArrowWriter::try_new(out, SNAPSHOT_SCHEMA.clone(), Some(properties))?;
     let mut pending: Vec<(String, Current)> = Vec::with_capacity(BATCH_ROWS);
     let mut rows = 0u64;
     index.scan(|key, current| {
-        if withdrawn.contains(&current.task_id) {
-            return Ok(());
-        }
         pending.push((key, current));
         if pending.len() == BATCH_ROWS {
             rows += pending.len() as u64;

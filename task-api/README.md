@@ -273,12 +273,13 @@ desearch-pages bucket, permanent
   changes/                every new, changed or removed page with its full record, naming the miner
                           that crawled it and the validator that checked it; numbered under seq/,
                           newest in latest.json
-  index/snapshots/        a daily copy of the publisher's version index
+  current/                the latest version of every page, compacted from changes/: 1,024 shards by
+                          URL hash, each a sorted base file plus delta files and a manifest naming them
   reports/                every final result, with the checked pages and each validator's report
   vectors/model=<name>/   verified vectors
 ```
 
-A page's key comes from its URL alone; it is how the index and the change files name a page:
+A page's key comes from its URL alone; it is how the change files and `current/` name a page:
 
 ```python
 from app.canonical import canonicalize, domain_of, url_sha1
