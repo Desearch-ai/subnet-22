@@ -9,7 +9,7 @@ import aiohttp
 import pytest
 from aiohttp import web
 
-from neurons.validators.crawl import CrawlValidator
+from neurons.validators.crawl import CrawlValidator, ProviderRefused
 from neurons.validators.scoring import FetchedPage
 from neurons.validators.scoring_process import ScoringProcess, Unscorable
 from tests.local_http import serving
@@ -21,9 +21,8 @@ def check(rows, assigned, fetched, **options) -> tuple[dict, list[str]]:
     parquet = to_parquet(rows, task_id="t1", hotkey="m")
     asked: list[str] = []
 
-    async def fetch(url: str, rendered: bool = False) -> FetchedPage:
-        if not rendered:
-            asked.append(url)
+    async def fetch(url: str) -> FetchedPage:
+        asked.append(url)
         return fetched[url]
 
     async def upload(_) -> web.Response:
@@ -65,7 +64,7 @@ def test_a_page_the_validator_cannot_load_in_time_is_not_held_against_the_miner(
     slow = assigned[0]
     monkeypatch.setattr("neurons.validators.crawl.PAGE_TIMEOUT_S", 0.2)
 
-    async def fetch(url: str, rendered: bool = False) -> FetchedPage:
+    async def fetch(url: str) -> FetchedPage:
         if url == slow:
             await asyncio.sleep(5)
         return fetched[url]
@@ -74,6 +73,15 @@ def test_a_page_the_validator_cannot_load_in_time_is_not_held_against_the_miner(
     page = asyncio.run(validator._fetch_sample(slow))
 
     assert (page.status, page.error) == (0, "timeout")
+
+
+def test_one_sample_scrapingdog_refused_stops_the_check_before_it_is_scored():
+    rows, assigned, fetched = synthetic(100)
+    _, asked = check(rows, assigned, fetched)
+    refused = FetchedPage(403, error="http_403", via="scrapingdog")
+
+    with pytest.raises(ProviderRefused, match="refused 1 of 10"):
+        check(rows, assigned, {**fetched, asked[3]: refused})
 
 
 def test_an_honest_task_gets_the_full_sample():
@@ -130,7 +138,12 @@ def test_the_oldest_upload_is_checked_first_whoever_uploaded_it():
         {"task_id": "d", "miner": "new", "completed_at": 40.0},
     ]
 
-    assert [m["task_id"] for m in validator.oldest_first(waiting)] == ["b", "c", "a", "d"]
+    assert [m["task_id"] for m in validator.oldest_first(waiting)] == [
+        "b",
+        "c",
+        "a",
+        "d",
+    ]
 
 
 def test_the_parent_reads_plain_data_only_from_the_check():

@@ -199,6 +199,15 @@ def test_a_scrapingdog_outage_is_retried_not_passed():
     assert result["not_fetched"] == 5
 
 
+def test_a_scrapingdog_refusal_says_nothing_about_the_page():
+    rows, assigned, _ = synthetic(10)
+    refused = FetchedPage(403, error="http_403", via="scrapingdog")
+    result = run(rows, assigned, dict.fromkeys(assigned, refused))
+
+    assert (result["verdict"], result["reason"]) == ("retry", "provider")
+    assert result["unverifiable"] == 0
+
+
 def test_a_task_with_nothing_judged_is_void_so_it_goes_back_out():
     rows, assigned, _ = synthetic(10)
     result = run(rows, assigned, dict.fromkeys(assigned, FetchedPage(200, CHALLENGE)))
@@ -238,21 +247,30 @@ def test_fabricated_text_fails_as_text_not_from_html():
     assert (result["verdict"], result["reason"]) == ("fail", "text_not_from_html")
 
 
-@pytest.mark.parametrize("wrong, verdict", [(1, "pass"), (2, "fail")])
-def test_content_mismatch_below_the_match_ratio(wrong, verdict):
-    rows, assigned, fetched = synthetic(10)
-    for n, url in enumerate(
-        pick_samples(rows_by_url(rows, assigned)[0], SEED, 5)[:wrong]
-    ):
-        fetched[url] = FetchedPage(200, synthetic_html(200 + n))
-    result = run(rows, assigned, fetched)
+@pytest.mark.parametrize(
+    "rows, samples, wrong, verdict",
+    [
+        (20, 10, 4, "pass"),
+        (20, 10, 5, "fail"),
+        (400, 30, 6, "pass"),
+        (400, 30, 7, "fail"),
+    ],
+)
+def test_content_mismatch_needs_five_wrong_pages_under_the_match_ratio(
+    rows, samples, wrong, verdict
+):
+    rows, assigned, fetched = synthetic(rows)
+    kept = rows_by_url(rows, assigned)[0]
+    for n, url in enumerate(pick_samples(kept, SEED, samples)[:wrong]):
+        fetched[url] = FetchedPage(200, synthetic_html(1000 + n))
+    result = run(rows, assigned, fetched, min_samples=samples)
 
-    assert (result["matched"], result["mismatched"]) == (5 - wrong, wrong)
+    assert (result["matched"], result["mismatched"]) == (samples - wrong, wrong)
     assert result["verdict"] == verdict
     assert result["reason"] == ("content_mismatch" if verdict == "fail" else "ok")
 
 
-def test_errors_not_reproducible_when_most_claimed_errors_load_fine():
+def test_errors_that_load_fine_are_not_paid_but_do_not_fail_the_task():
     rows, assigned, fetched = synthetic(5, errors=3)
     result = run(rows, assigned, fetched)
 
@@ -261,7 +279,7 @@ def test_errors_not_reproducible_when_most_claimed_errors_load_fine():
         3,
         2,
     )
-    assert (result["verdict"], result["reason"]) == ("fail", "errors_not_reproducible")
+    assert (result["verdict"], result["reason"]) == ("pass", "ok")
 
 
 def test_a_few_unconfirmed_errors_still_pass():
@@ -522,7 +540,7 @@ def test_a_presigned_download_url_is_sent_exactly_as_signed():
 
 
 @pytest.mark.parametrize(
-    "rows, samples", [(0, 10), (20, 10), (200, 10), (500, 25), (1000, 50)]
+    "rows, samples", [(0, 10), (200, 10), (500, 10), (1000, 20), (2000, 40)]
 )
 def test_samples_grow_with_the_task_but_never_below_the_minimum(rows, samples):
     assert sample_count(rows) == samples
@@ -533,8 +551,8 @@ def test_error_rows_get_a_fifth_of_a_large_sample():
     kept = rows_by_url(rows, assigned)[0]
     picked = pick_samples(kept, SEED, sample_count(len(kept)))
 
-    assert len(picked) == 50
-    assert sum(kept[url]["error"] is not None for url in picked) == 10
+    assert len(picked) == 20
+    assert sum(kept[url]["error"] is not None for url in picked) == 4
 
 
 @pytest.mark.parametrize(
@@ -629,8 +647,7 @@ def test_a_forged_date_is_a_mismatch_and_a_changed_title_only_holds_back_the_row
     assert (dated["outcome"], dated["fields_differ"]) == ("mismatched", ["published"])
     assert "does not happen between two fetches" in dated["why"]
     result = run([row], [url], {url: live})
-    assert (result["verdict"], result["reason"]) == ("fail", "content_mismatch")
-    assert result["rejected"] == [url]
+    assert result["mismatched"] == 1 and result["rejected"] == [url]
 
     retitled = judge_sample(
         page_row(url, article("2026-09-01T10:00:00Z", "Harbor report, updated")), live

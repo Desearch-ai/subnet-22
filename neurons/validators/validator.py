@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import math
 import os
 import signal
 import sys
@@ -23,7 +24,12 @@ from bittensor.wallets import Wallet
 from neurons.validators.config import ENV_FILE, config, flat, setup_logging
 from neurons.validators.crawl import CrawlValidator
 from neurons.validators.embed import EmbedValidator
-from neurons.validators.fetchers import OWN_IP_SETTINGS, SampleFetcher
+from neurons.validators.fetchers import (
+    OWN_IP_SETTINGS,
+    HourlyBudget,
+    SampleFetcher,
+    ScrapingDogAccount,
+)
 from neurons.validators.ledger import Ledger
 from neurons.validators.upload_log import UploadLog
 from neurons.validators.weights import set_weights, weights_from_shares
@@ -36,11 +42,13 @@ POLL_S = 60
 AFTER_WEIGHTS_S = 300
 SHARES_TIMEOUT = aiohttp.ClientTimeout(total=30.0)
 SIGNER_RETRY_S = 30
+ACCOUNT_CHECK_S = 300
 VALIDATION_JOBS = 12
 EMBED_JOBS = 2
 # The engine pins the same hosts for its queries; SiliconFlow is left out as it runs fp8.
 EMBED_PROVIDERS = "DeepInfra,Nebius"
 SCRAPINGDOG_CONCURRENCY = 50
+SCRAPINGDOG_DAILY_CREDITS = 100_000
 SCRAPINGDOG_TIMEOUT_S = 30.0
 DOWNLOAD_TIMEOUT = aiohttp.ClientTimeout(total=120.0)
 WANDB_PROJECT = "smart-scrape-1.0"
@@ -56,6 +64,9 @@ class Validator:
         setup_logging(self.config)
         log.info(str(flat(self.config)))
         self.scrapingdog_key = os.environ.get("SCRAPINGDOG_API_KEY", "")
+        self.scrapingdog_daily = int(
+            os.environ.get("SCRAPINGDOG_DAILY_CREDITS", SCRAPINGDOG_DAILY_CREDITS)
+        )
         self.ledger = Ledger(os.path.join(self.config.neuron.full_path, "verdicts.db"))
         self.stopping = asyncio.Event()
 
@@ -107,7 +118,11 @@ class Validator:
                 timeout=SCRAPINGDOG_TIMEOUT_S,
             ) as scrapingdog,
         ):
-            fetcher = SampleFetcher(Fetcher(OWN_IP_SETTINGS), scrapingdog)
+            fetcher = SampleFetcher(
+                Fetcher(OWN_IP_SETTINGS),
+                scrapingdog,
+                HourlyBudget(math.ceil(self.scrapingdog_daily / 24)),
+            )
             validator = self.crawl_checker = CrawlValidator(
                 api,
                 fetcher,
@@ -121,19 +136,23 @@ class Validator:
                 f"Checking crawl uploads listed at {self.config.neuron.storage_url},"
                 f" reporting to {self.config.neuron.task_api_url}"
             )
+            account = ScrapingDogAccount(self.http, self.scrapingdog_key)
+            await self.read_scrapingdog_account(validator, account)
             following = asyncio.create_task(self.follow_upload_log(signer))
+            watching = asyncio.create_task(
+                self.follow_scrapingdog_account(validator, account)
+            )
             try:
                 await asyncio.gather(
                     *(validator.run(self.stopping) for _ in range(VALIDATION_JOBS))
                 )
             finally:
                 following.cancel()
+                watching.cancel()
                 await fetcher.aclose()
-        requests = scrapingdog.requests
         log.info(
             f"Crawl validation stopped: {fetcher.own_ip_fetches} samples fetched from"
             f" our own IP, {fetcher.scrapingdog_fetches} through ScrapingDog"
-            f" ({requests['plain']} plain and {requests['rendered']} rendered requests)"
         )
 
     async def check_embed_tasks(self) -> None:
@@ -245,6 +264,31 @@ class Validator:
                 self.ledger.prune()
                 pruned_at = time.time()
             await asyncio.sleep(UPLOAD_LOG_POLL_S)
+
+    async def follow_scrapingdog_account(
+        self, checker: CrawlValidator, account: ScrapingDogAccount
+    ) -> None:
+        while not self.stopping.is_set():
+            await asyncio.sleep(ACCOUNT_CHECK_S)
+            await self.read_scrapingdog_account(checker, account)
+
+    async def read_scrapingdog_account(
+        self, checker: CrawlValidator, account: ScrapingDogAccount
+    ) -> None:
+        try:
+            problem = await account.problem()
+        except Exception as error:
+            log.warning(
+                f"ScrapingDog account unavailable, keeping the last answer: {error!r}"
+            )
+            return
+        if problem and problem != checker.provider_down:
+            log.error(
+                f"Not checking crawl tasks or setting weights until ScrapingDog serves again: {problem}"
+            )
+        elif checker.provider_down and not problem:
+            log.info("ScrapingDog serves this key again, checking crawl tasks")
+        checker.provider_down = problem
 
     async def weights(self) -> np.ndarray | None:
         """Crawl from every miner's logged uploads judged by this validator's own checks, embed from its own checks."""

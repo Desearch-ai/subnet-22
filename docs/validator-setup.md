@@ -50,6 +50,7 @@ cp neurons/validators/.env.template neurons/validators/.env
 | Variable | |
 | --- | --- |
 | `SCRAPINGDOG_API_KEY` | required: a validator that cannot check crawl tasks sets no weights |
+| `SCRAPINGDOG_DAILY_CREDITS` | ScrapingDog credits to use per day, spread evenly over the hours; 100,000 by default |
 | `WANDB_API_KEY` | Weights & Biases login, unless `--wandb.off`; `wandb login` also stores it |
 | `EMBED_API_KEY` | for checking [embed tasks](./embedding-tasks.md) once they open: a key for the hosted model service |
 | `EMBED_API_URL` | the hosted model service, OpenRouter's `/embeddings` by default |
@@ -67,6 +68,9 @@ them.
 Weights are set only while the checker is healthy. When ScrapingDog refuses three tasks in a row,
 three tasks in a row cannot be scored, or the task API refuses the validator's reports, the
 validator logs why and sets no weights until a task is checked again.
+
+Keep ScrapingDog credits topped up: with an invalid key or no credits left, the validator stops
+checking and setting weights until the account works again. It warns a day before credits run out.
 
 ## 4. Run
 

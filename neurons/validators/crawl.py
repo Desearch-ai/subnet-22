@@ -12,8 +12,10 @@ from neurons.validators.scoring import (
     MATCH_RATIO,
     MIN_SAMPLES,
     NOT_FETCHED,
+    SCRAPINGDOG,
     FetchedPage,
     empty_result,
+    provider_refused,
 )
 from neurons.validators.scoring_process import (
     MEMORY_MB,
@@ -34,6 +36,15 @@ PAGE_TIMEOUT_S = 60.0
 CHECK_ATTEMPTS = 2
 
 log = logging.getLogger("validator")
+
+
+class ProviderRefused(Exception):
+    pass
+
+
+def raise_if_refused(pages: list[FetchedPage]) -> None:
+    if refused := sum(map(provider_refused, pages)):
+        raise ProviderRefused(f"ScrapingDog refused {refused} of {len(pages)} requests")
 
 
 class CrawlValidator(TaskChecker):
@@ -73,7 +84,22 @@ class CrawlValidator(TaskChecker):
             log.warning("%s, trying again later", exc)
             self.defer(job["task_id"])
             return {}
+        except ProviderRefused as exc:
+            log.error(
+                "task=%s %s: its key is invalid or its plan lacks the scrape API, not voting",
+                job["task_id"],
+                exc,
+            )
+            self.provider_failed()
+            self.defer(job["task_id"])
+            return {}
 
+        if self.provider_down:
+            log.warning(
+                "task=%s %s, trying again later", job["task_id"], self.provider_down
+            )
+            self.defer(job["task_id"])
+            return {}
         if result["verdict"] == "retry":
             log.warning(
                 "task=%s ScrapingDog failed %d of %d samples, trying again later",
@@ -94,13 +120,15 @@ class CrawlValidator(TaskChecker):
         self.note_verdict(job, result)
         comparable = result["matched"] + result["mismatched"]
         log.info(
-            "task=%s miner=%s returned=%d/%d matched=%d/%d verdict=%s reason=%s",
+            "task=%s miner=%s returned=%d/%d matched=%d/%d scrapingdog=%d/%d verdict=%s reason=%s",
             job["task_id"],
             job["miner"][:10],
             result["returned"],
             len(set(job["urls"])),
             result["matched"],
             comparable,
+            sum(sample["via"] == SCRAPINGDOG for sample in result["samples"]),
+            result["sampled"],
             result["verdict"],
             result["reason"],
         )
@@ -126,7 +154,6 @@ class CrawlValidator(TaskChecker):
         return {**result, "took_ms": int((time.monotonic() - started) * 1000)}
 
     async def run_check(self, job: dict, data: bytes) -> dict:
-        """Fetches every sample page at once, then a rendered copy of those that need one."""
         session = ScoringProcess(
             data,
             job["urls"],
@@ -142,11 +169,8 @@ class CrawlValidator(TaskChecker):
             self.note_confinement(planned["unconfined"])
             urls = planned["urls"]
             pages = await asyncio.gather(*(self._fetch_sample(url) for url in urls))
-            doubtful = await session.ask("doubtful", dict(zip(urls, pages, strict=True)))
-            rendered = await asyncio.gather(
-                *(self._fetch_sample(url, rendered=True) for url in doubtful)
-            )
-            return await session.ask("scored", dict(zip(doubtful, rendered, strict=True)))
+            raise_if_refused(pages)
+            return await session.ask("scored", dict(zip(urls, pages, strict=True)))
         finally:
             await session.aclose()
 
@@ -159,11 +183,10 @@ class CrawlValidator(TaskChecker):
                 " or ".join(unconfined),
             )
 
-    async def _fetch_sample(self, url: str, rendered: bool = False) -> FetchedPage:
+    async def _fetch_sample(self, url: str) -> FetchedPage:
         """A page the validator cannot load in time counts as unverifiable, never against the miner."""
         try:
-            fetch = self.fetcher(url, rendered=True) if rendered else self.fetcher(url)
-            return await asyncio.wait_for(fetch, PAGE_TIMEOUT_S)
+            return await asyncio.wait_for(self.fetcher(url), PAGE_TIMEOUT_S)
         except asyncio.TimeoutError:
             return FetchedPage(0, error="timeout")
         except Exception as exc:
