@@ -68,6 +68,9 @@ Weights are set only while the checker is healthy. When ScrapingDog refuses thre
 three tasks in a row cannot be scored, or the task API refuses the validator's reports, the
 validator logs why and sets no weights until a task is checked again.
 
+Keep ScrapingDog credits topped up: with an invalid key or no credits left, the validator stops
+checking and setting weights until the account works again. It warns a day before credits run out.
+
 ## 4. Run
 
 ```bash

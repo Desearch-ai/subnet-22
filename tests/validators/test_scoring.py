@@ -199,6 +199,15 @@ def test_a_scrapingdog_outage_is_retried_not_passed():
     assert result["not_fetched"] == 5
 
 
+def test_a_scrapingdog_refusal_says_nothing_about_the_page():
+    rows, assigned, _ = synthetic(10)
+    refused = FetchedPage(403, error="http_403", via="scrapingdog")
+    result = run(rows, assigned, dict.fromkeys(assigned, refused))
+
+    assert (result["verdict"], result["reason"]) == ("retry", "provider")
+    assert result["unverifiable"] == 0
+
+
 def test_a_task_with_nothing_judged_is_void_so_it_goes_back_out():
     rows, assigned, _ = synthetic(10)
     result = run(rows, assigned, dict.fromkeys(assigned, FetchedPage(200, CHALLENGE)))
@@ -522,7 +531,7 @@ def test_a_presigned_download_url_is_sent_exactly_as_signed():
 
 
 @pytest.mark.parametrize(
-    "rows, samples", [(0, 10), (20, 10), (200, 10), (500, 25), (1000, 50)]
+    "rows, samples", [(0, 10), (200, 10), (500, 10), (1000, 20), (2000, 40)]
 )
 def test_samples_grow_with_the_task_but_never_below_the_minimum(rows, samples):
     assert sample_count(rows) == samples
@@ -533,8 +542,8 @@ def test_error_rows_get_a_fifth_of_a_large_sample():
     kept = rows_by_url(rows, assigned)[0]
     picked = pick_samples(kept, SEED, sample_count(len(kept)))
 
-    assert len(picked) == 50
-    assert sum(kept[url]["error"] is not None for url in picked) == 10
+    assert len(picked) == 20
+    assert sum(kept[url]["error"] is not None for url in picked) == 4
 
 
 @pytest.mark.parametrize(

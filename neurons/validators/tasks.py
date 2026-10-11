@@ -71,6 +71,7 @@ class TaskChecker:
         self.provider_failures = 0
         self.failures = 0
         self.refused: str | None = None
+        self.provider_down: str | None = None
         self.in_flight: set[str] = set()
         self.recent: deque[bool] = deque(maxlen=RECENT_CHECKS)
         self.deferred: dict[str, float] = {}
@@ -83,6 +84,8 @@ class TaskChecker:
         """Why this checker cannot vouch for its verdicts right now, if it cannot."""
         if self.refused:
             return f"the task API refuses this validator: {self.refused}"
+        if self.provider_down:
+            return self.provider_down
         if self.provider_failures >= PROVIDER_STREAK:
             return f"the provider failed on {self.provider_failures} tasks in a row"
         if self.failures >= FAILURE_STREAK:
@@ -114,6 +117,9 @@ class TaskChecker:
             waiting = self.paused_until - time.monotonic()
             if waiting > 0:
                 await sleep_unless_stopped(stop, waiting)
+                continue
+            if self.provider_down:
+                await sleep_unless_stopped(stop, IDLE_DELAY_S)
                 continue
             job = await self.next_job()
             if job is None:
