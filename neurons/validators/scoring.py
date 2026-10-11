@@ -41,7 +41,7 @@ OUTCOMES = (
 )
 COVERAGE = 0.85
 MIN_SAMPLES = 10
-SAMPLE_RATE = 0.05
+SAMPLE_RATE = 0.02
 # Share of compared samples that must match; set from calibration runs.
 MATCH_RATIO = 0.8
 REEXTRACT_TOLERANCE = 0.2
@@ -53,7 +53,8 @@ MAX_ROW_BYTES = 6_000_000
 MAX_ROW_GROUP_BYTES = 512_000_000
 TOO_LARGE_BYTES = 5_000_000
 # Provider failures say nothing about the page.
-PROVIDER_STATUSES = frozenset({400, 401, 402, 407, 429})
+PROVIDER_STATUSES = frozenset({400, 401, 402, 403, 407, 429})
+REFUSED_STATUSES = frozenset({401, 403})
 UNREACHED = frozenset({"timeout", "connect", "dns", "tls", "other", "not_fetched"})
 OWN_IP = "own_ip"
 SCRAPINGDOG = "scrapingdog"
@@ -257,28 +258,6 @@ def pick_samples(kept: dict[str, dict], seed: str, size: int) -> list[str]:
     return picked + errors[from_errors : from_errors + size - len(picked)]
 
 
-def needs_rendered_check(
-    kept: dict[str, dict], fetched: Mapping[str, FetchedPage]
-) -> list[str]:
-    return [
-        url
-        for url, page in fetched.items()
-        if kept[url]["error"] is None
-        and judge_sample(kept[url], page)["outcome"] != MATCHED
-    ]
-
-
-def cleared_by_render(
-    kept: dict[str, dict], rendered: Mapping[str, FetchedPage]
-) -> dict[str, FetchedPage]:
-    """Rendering can only clear a sample, never fail one."""
-    return {
-        url: page
-        for url, page in rendered.items()
-        if judge_sample(kept[url], page)["outcome"] == MATCHED
-    }
-
-
 def fetch_failed(fetched: FetchedPage) -> bool:
     """No evidence either way: the page was never reached, or the provider failed."""
     if fetched.error in UNREACHED or fetched.error.startswith("fetcher_"):
@@ -286,6 +265,10 @@ def fetch_failed(fetched: FetchedPage) -> bool:
     if fetched.via == OWN_IP:
         return False
     return fetched.status in PROVIDER_STATUSES or fetched.status >= 500
+
+
+def provider_refused(fetched: FetchedPage) -> bool:
+    return fetched.via == SCRAPINGDOG and fetched.status in REFUSED_STATUSES
 
 
 def unreachable_both_ways(fetched: FetchedPage) -> bool:

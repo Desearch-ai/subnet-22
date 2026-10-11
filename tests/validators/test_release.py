@@ -1,7 +1,8 @@
 import asyncio
 
 from desearch.client import TaskApiError
-from neurons.validators.crawl import CrawlValidator
+from neurons.validators import tasks
+from neurons.validators.crawl import CrawlValidator, ProviderRefused
 from tests.validators.test_worklist import Listed, manifest
 
 
@@ -93,3 +94,33 @@ def test_a_validator_the_api_refuses_is_in_trouble_until_it_is_served_again():
     assert "refuses this validator" in checker.trouble
     checker.refused = None
     assert checker.trouble is None
+
+
+def test_a_check_scrapingdog_refused_is_put_off_without_a_verdict():
+    api = Api(failing="")
+    checker = CrawlValidator(api, None, None)
+
+    async def refused(job):
+        raise ProviderRefused("ScrapingDog refused 1 of 10 requests")
+
+    checker.score_task = refused
+    assert asyncio.run(checker.check(manifest("t"))) == {}
+    assert "t" in checker.deferred and checker.provider_failures == 1
+    assert api.reasons == [], "no verdict sent"
+
+
+def test_a_checker_whose_provider_is_down_takes_no_tasks_and_says_why(monkeypatch):
+    monkeypatch.setattr(tasks, "IDLE_DELAY_S", 0.01)
+    checker = Listed([manifest("t")])
+    checker.provider_down = "ScrapingDog has no credits left: 100 of 100 used"
+    assert checker.trouble == checker.provider_down
+
+    async def run():
+        stop = asyncio.Event()
+        running = asyncio.create_task(checker.run(stop))
+        await asyncio.sleep(0.1)
+        stop.set()
+        await running
+
+    asyncio.run(run())
+    assert checker.fetches == 0

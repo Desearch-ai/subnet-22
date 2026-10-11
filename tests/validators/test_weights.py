@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
+from neurons.validators.crawl import CrawlValidator
 from neurons.validators.ledger import Ledger
 from neurons.validators.validator import Validator
 from tests.validators.test_crawl_pay import logged
@@ -184,6 +185,43 @@ def test_a_validator_that_cannot_check_tasks_sets_no_weights():
     assert not made.should_set_weights()
 
     made.crawl_checker.trouble = None
+    assert made.should_set_weights()
+
+
+def test_a_validator_whose_scrapingdog_will_not_serve_waits_until_it_does():
+    made = Validator.__new__(Validator)
+    made.config = SimpleNamespace(
+        neuron=SimpleNamespace(
+            disable_set_weights=False, storage_url="https://files.example"
+        )
+    )
+    made.scrapingdog_key = "key"
+    made.crawl_checker = CrawlValidator(None, None, None)
+    answers = iter(
+        [
+            "ScrapingDog has no credits left: 100 of 100 used",
+            RuntimeError("ScrapingDog account endpoint answered HTTP 503"),
+            None,
+        ]
+    )
+
+    class Account:
+        async def problem(self):
+            answer = next(answers)
+            if isinstance(answer, Exception):
+                raise answer
+            return answer
+
+    account = Account()
+    asyncio.run(made.read_scrapingdog_account(made.crawl_checker, account))
+    assert "no credits left" in made.crawl_checker.provider_down
+    assert not made.should_set_weights()
+
+    asyncio.run(made.read_scrapingdog_account(made.crawl_checker, account))
+    assert not made.should_set_weights(), "an unreadable account keeps the last answer"
+
+    asyncio.run(made.read_scrapingdog_account(made.crawl_checker, account))
+    assert made.crawl_checker.provider_down is None
     assert made.should_set_weights()
 
 

@@ -23,7 +23,11 @@ from bittensor.wallets import Wallet
 from neurons.validators.config import ENV_FILE, config, flat, setup_logging
 from neurons.validators.crawl import CrawlValidator
 from neurons.validators.embed import EmbedValidator
-from neurons.validators.fetchers import OWN_IP_SETTINGS, SampleFetcher
+from neurons.validators.fetchers import (
+    OWN_IP_SETTINGS,
+    SampleFetcher,
+    ScrapingDogAccount,
+)
 from neurons.validators.ledger import Ledger
 from neurons.validators.upload_log import UploadLog
 from neurons.validators.weights import set_weights, weights_from_shares
@@ -36,6 +40,7 @@ POLL_S = 60
 AFTER_WEIGHTS_S = 300
 SHARES_TIMEOUT = aiohttp.ClientTimeout(total=30.0)
 SIGNER_RETRY_S = 30
+ACCOUNT_CHECK_S = 300
 VALIDATION_JOBS = 12
 EMBED_JOBS = 2
 # The engine pins the same hosts for its queries; SiliconFlow is left out as it runs fp8.
@@ -121,19 +126,23 @@ class Validator:
                 f"Checking crawl uploads listed at {self.config.neuron.storage_url},"
                 f" reporting to {self.config.neuron.task_api_url}"
             )
+            account = ScrapingDogAccount(self.http, self.scrapingdog_key)
+            await self.read_scrapingdog_account(validator, account)
             following = asyncio.create_task(self.follow_upload_log(signer))
+            watching = asyncio.create_task(
+                self.follow_scrapingdog_account(validator, account)
+            )
             try:
                 await asyncio.gather(
                     *(validator.run(self.stopping) for _ in range(VALIDATION_JOBS))
                 )
             finally:
                 following.cancel()
+                watching.cancel()
                 await fetcher.aclose()
-        requests = scrapingdog.requests
         log.info(
             f"Crawl validation stopped: {fetcher.own_ip_fetches} samples fetched from"
             f" our own IP, {fetcher.scrapingdog_fetches} through ScrapingDog"
-            f" ({requests['plain']} plain and {requests['rendered']} rendered requests)"
         )
 
     async def check_embed_tasks(self) -> None:
@@ -245,6 +254,31 @@ class Validator:
                 self.ledger.prune()
                 pruned_at = time.time()
             await asyncio.sleep(UPLOAD_LOG_POLL_S)
+
+    async def follow_scrapingdog_account(
+        self, checker: CrawlValidator, account: ScrapingDogAccount
+    ) -> None:
+        while not self.stopping.is_set():
+            await asyncio.sleep(ACCOUNT_CHECK_S)
+            await self.read_scrapingdog_account(checker, account)
+
+    async def read_scrapingdog_account(
+        self, checker: CrawlValidator, account: ScrapingDogAccount
+    ) -> None:
+        try:
+            problem = await account.problem()
+        except Exception as error:
+            log.warning(
+                f"ScrapingDog account unavailable, keeping the last answer: {error!r}"
+            )
+            return
+        if problem and problem != checker.provider_down:
+            log.error(
+                f"Not checking crawl tasks or setting weights until ScrapingDog serves again: {problem}"
+            )
+        elif checker.provider_down and not problem:
+            log.info("ScrapingDog serves this key again, checking crawl tasks")
+        checker.provider_down = problem
 
     async def weights(self) -> np.ndarray | None:
         """Crawl from every miner's logged uploads judged by this validator's own checks, embed from its own checks."""
