@@ -154,6 +154,7 @@ class CrawlValidator(TaskChecker):
         return {**result, "took_ms": int((time.monotonic() - started) * 1000)}
 
     async def run_check(self, job: dict, data: bytes) -> dict:
+        """Fetches every sample page at once, then a rendered copy of those that need one."""
         session = ScoringProcess(
             data,
             job["urls"],
@@ -170,7 +171,16 @@ class CrawlValidator(TaskChecker):
             urls = planned["urls"]
             pages = await asyncio.gather(*(self._fetch_sample(url) for url in urls))
             raise_if_refused(pages)
-            return await session.ask("scored", dict(zip(urls, pages, strict=True)))
+            doubtful = await session.ask(
+                "doubtful", dict(zip(urls, pages, strict=True))
+            )
+            rendered = await asyncio.gather(
+                *(self._fetch_sample(url, rendered=True) for url in doubtful)
+            )
+            raise_if_refused(rendered)
+            return await session.ask(
+                "scored", dict(zip(doubtful, rendered, strict=True))
+            )
         finally:
             await session.aclose()
 
@@ -183,10 +193,11 @@ class CrawlValidator(TaskChecker):
                 " or ".join(unconfined),
             )
 
-    async def _fetch_sample(self, url: str) -> FetchedPage:
+    async def _fetch_sample(self, url: str, rendered: bool = False) -> FetchedPage:
         """A page the validator cannot load in time counts as unverifiable, never against the miner."""
         try:
-            return await asyncio.wait_for(self.fetcher(url), PAGE_TIMEOUT_S)
+            fetch = self.fetcher(url, rendered=True) if rendered else self.fetcher(url)
+            return await asyncio.wait_for(fetch, PAGE_TIMEOUT_S)
         except asyncio.TimeoutError:
             return FetchedPage(0, error="timeout")
         except Exception as exc:

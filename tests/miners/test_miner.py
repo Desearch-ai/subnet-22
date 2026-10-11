@@ -976,7 +976,7 @@ class FakeScrapingDog:
     def __init__(self):
         self.calls: list[str] = []
 
-    async def fetch(self, url: str, deadline=None) -> Fetched:
+    async def fetch(self, url: str, rendered: bool = False, deadline=None) -> Fetched:
         self.calls.append(url)
         return page(HTML, url=url)
 
@@ -1035,9 +1035,9 @@ def test_a_slow_scrapingdog_call_does_not_hold_up_our_own_fetches():
             return await super().attempt(url, deadline, timeout)
 
     class SlowDog(FakeScrapingDog):
-        async def fetch(self, url: str, deadline=None):
+        async def fetch(self, url: str, rendered: bool = False, deadline=None):
             await fetched_ourselves.wait()
-            return await super().fetch(url, deadline)
+            return await super().fetch(url, rendered, deadline)
 
     miner = Miner(Settings(concurrency=1), api=ClaimApi(), fetcher=OwnIp(pages))
     miner.scrapingdog = SlowDog()
