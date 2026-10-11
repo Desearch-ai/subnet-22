@@ -50,6 +50,7 @@ cp neurons/validators/.env.template neurons/validators/.env
 | Variable | |
 | --- | --- |
 | `SCRAPINGDOG_API_KEY` | required: a validator that cannot check crawl tasks sets no weights |
+| `SCRAPINGDOG_DAILY_CREDITS` | ScrapingDog credits to use per day, spread evenly over the hours; 100,000 by default |
 | `WANDB_API_KEY` | Weights & Biases login, unless `--wandb.off`; `wandb login` also stores it |
 | `EMBED_API_KEY` | for checking [embed tasks](./embedding-tasks.md) once they open: a key for the hosted model service |
 | `EMBED_API_URL` | the hosted model service, OpenRouter's `/embeddings` by default |

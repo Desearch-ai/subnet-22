@@ -111,17 +111,17 @@ def test_a_split_sample_judges_each_error_on_its_own():
     assert (result["errors_confirmed"], result["errors_unconfirmed"]) == (1, 1)
 
 
-def test_claiming_most_of_a_batch_failed_when_it_was_fetchable_fails():
+def test_claiming_most_of_a_batch_failed_when_it_was_fetchable_is_not_paid():
     urls, rows = batch(20, errors=12)
     result = run(urls, rows, live(urls))
-    assert result["verdict"] == "fail"
-    assert result["reason"] == "errors_not_reproducible"
+    assert result["verdict"] == "pass"
+    assert result["errors_confirmed"] == 0 and result["errors_unconfirmed"] > 0
 
 
-def test_a_miner_that_fetched_nothing_fails():
+def test_a_miner_that_fetched_nothing_has_nothing_confirmed():
     urls, rows = batch(20, errors=20)
     result = run(urls, rows, live(urls))
-    assert result["verdict"] == "fail"
+    assert result["errors_confirmed"] == 0 and result["matched"] == 0
 
 
 def test_errors_on_a_thin_page_the_validator_loaded_are_unconfirmed():
@@ -152,11 +152,11 @@ def test_one_caught_mismatch_does_not_fail_the_task():
     assert result["verdict"] == "pass"
 
 
-@pytest.mark.parametrize("errors, verdict", [(10, "pass"), (11, "fail")])
-def test_fake_errors_fail_above_half_the_batch(errors, verdict):
+@pytest.mark.parametrize("errors", [10, 11])
+def test_fake_errors_are_unconfirmed_whatever_their_share(errors):
     urls, rows = batch(20, errors=errors)
     result = run(urls, rows, live(urls))
-    assert result["verdict"] == verdict
+    assert result["errors_confirmed"] == 0 and result["errors_unconfirmed"] > 0
 
 
 def test_an_unreadable_upload_fails():

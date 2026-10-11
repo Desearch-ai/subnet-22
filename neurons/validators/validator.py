@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import math
 import os
 import signal
 import sys
@@ -25,6 +26,7 @@ from neurons.validators.crawl import CrawlValidator
 from neurons.validators.embed import EmbedValidator
 from neurons.validators.fetchers import (
     OWN_IP_SETTINGS,
+    HourlyBudget,
     SampleFetcher,
     ScrapingDogAccount,
 )
@@ -46,6 +48,7 @@ EMBED_JOBS = 2
 # The engine pins the same hosts for its queries; SiliconFlow is left out as it runs fp8.
 EMBED_PROVIDERS = "DeepInfra,Nebius"
 SCRAPINGDOG_CONCURRENCY = 50
+SCRAPINGDOG_DAILY_CREDITS = 100_000
 SCRAPINGDOG_TIMEOUT_S = 30.0
 DOWNLOAD_TIMEOUT = aiohttp.ClientTimeout(total=120.0)
 WANDB_PROJECT = "smart-scrape-1.0"
@@ -61,6 +64,9 @@ class Validator:
         setup_logging(self.config)
         log.info(str(flat(self.config)))
         self.scrapingdog_key = os.environ.get("SCRAPINGDOG_API_KEY", "")
+        self.scrapingdog_daily = int(
+            os.environ.get("SCRAPINGDOG_DAILY_CREDITS", SCRAPINGDOG_DAILY_CREDITS)
+        )
         self.ledger = Ledger(os.path.join(self.config.neuron.full_path, "verdicts.db"))
         self.stopping = asyncio.Event()
 
@@ -112,7 +118,11 @@ class Validator:
                 timeout=SCRAPINGDOG_TIMEOUT_S,
             ) as scrapingdog,
         ):
-            fetcher = SampleFetcher(Fetcher(OWN_IP_SETTINGS), scrapingdog)
+            fetcher = SampleFetcher(
+                Fetcher(OWN_IP_SETTINGS),
+                scrapingdog,
+                HourlyBudget(math.ceil(self.scrapingdog_daily / 24)),
+            )
             validator = self.crawl_checker = CrawlValidator(
                 api,
                 fetcher,
@@ -140,11 +150,9 @@ class Validator:
                 following.cancel()
                 watching.cancel()
                 await fetcher.aclose()
-        requests = scrapingdog.requests
         log.info(
             f"Crawl validation stopped: {fetcher.own_ip_fetches} samples fetched from"
             f" our own IP, {fetcher.scrapingdog_fetches} through ScrapingDog"
-            f" ({requests['plain']} plain and {requests['rendered']} rendered requests)"
         )
 
     async def check_embed_tasks(self) -> None:
