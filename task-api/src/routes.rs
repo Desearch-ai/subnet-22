@@ -400,6 +400,7 @@ pub async fn abandon(
     if state.claim_holder(&task_id).await?.as_deref() != Some(who.hotkey.as_str()) {
         return Err(ApiError::status(409, "you do not hold this claim"));
     }
+    let forgiven = lifecycle::held_through_restart(&state, state.tasks(&kind).claim_ttl, queues::claim_expiry(&state.redis, &task_id).await?);
     // A completion still running decides first; a finished one leaves nothing to abandon.
     let lock = hold_completion(&state, &task_id, &who.hotkey).await?;
     let seq = state.tasks(&kind).abandon(&state.redis, &task_id, &who.hotkey).await;
@@ -416,12 +417,21 @@ pub async fn abandon(
             outcome: "reclaimed",
             seq,
             task_id: Some(task_id.clone()),
-            cause: Some("abandoned".into()),
+            cause: Some(if forgiven { "restart" } else { "abandoned" }.into()),
             ..Receipt::default()
         })
         .await?;
     let (hotkey, task, lapsed) = (who.hotkey.clone(), task_id.clone(), payload);
-    let budget = state.db.run(move |conn| lifecycle::lapse(conn, &hotkey, &task, &lapsed, "abandoned", now())).await?;
+    let budget = state
+        .db
+        .run(move |conn| {
+            if forgiven {
+                Ok(budgets::get_or_create(conn, &hotkey, kind_of(&lapsed))?.budget)
+            } else {
+                lifecycle::lapse(conn, &hotkey, &task, &lapsed, "abandoned", now())
+            }
+        })
+        .await?;
     Ok(Json(json!({"task_id": task_id, "budget": budget})))
 }
 

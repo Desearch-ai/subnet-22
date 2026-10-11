@@ -6,7 +6,7 @@ use task_api::budgets::{self, HOSTILE_LOCKOUT_H, HOUR, LOCKOUT_STEPS_H};
 use task_api::lifecycle;
 use task_api::queues::{CLAIMS, PPENDING};
 
-use crate::harness::{judged, parquet, task_id, urls, Harness};
+use crate::harness::{judged, parquet, task_id, urls, Harness, MINER, RIVAL};
 
 async fn started(task_urls: usize) -> Harness {
     let h = Harness::with(|s| s.task_urls = task_urls).await;
@@ -83,6 +83,23 @@ async fn an_abandoned_task_is_a_lapse_too() {
     let reason: String = sql(&h, "SELECT reason FROM strikes WHERE hotkey = ?", h.miner.ss58()).await;
     assert_eq!((answer["budget"].clone(), reason.as_str()), (json!(1), "abandoned"));
     assert_eq!(credit_of(&h, h.miner.ss58()).await, -1);
+}
+
+#[tokio::test]
+async fn abandoning_a_claim_held_through_a_restart_costs_nothing() {
+    let h = started(1).await;
+    let task = h.miner.claim().await["tasks"][0].clone();
+    let budget: i64 = sql(&h, "SELECT budget FROM miners WHERE hotkey = ?", h.miner.ss58()).await;
+    let restarted = h.restarted().await;
+    let answer = h.client(MINER, &restarted).post(&format!("/v1/tasks/{}/abandon", task_id(&task)), json!({})).await.unwrap();
+    let strikes: i64 = sql(&h, "SELECT COUNT(*) FROM strikes WHERE hotkey = ?", h.miner.ss58()).await;
+    assert_eq!((answer["budget"].clone(), strikes), (json!(budget), 0));
+    assert_eq!(credit_of(&h, h.miner.ss58()).await, 0, "its URLs stay the miner's");
+    let rival = h.client(RIVAL, &restarted);
+    let later = rival.claim().await["tasks"][0].clone();
+    rival.post(&format!("/v1/tasks/{}/abandon", task_id(&later)), json!({})).await.unwrap();
+    let reason: String = sql(&h, "SELECT reason FROM strikes WHERE hotkey = ?", rival.ss58()).await;
+    assert_eq!(reason, "abandoned", "a claim taken after the restart is a lapse");
 }
 
 #[tokio::test]

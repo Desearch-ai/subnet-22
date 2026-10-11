@@ -240,6 +240,22 @@ impl Harness {
         }
     }
 
+    /// Serves another copy started now on the same Redis and database, as after a restart; returns its URL.
+    pub async fn restarted(&self) -> String {
+        let state = State::new(self.state.settings.clone(), self.redis.clone(), self.state.storage.clone(), self.state.pages.clone()).await.expect("the copy opens");
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("a port");
+        let url = format!("http://{}", listener.local_addr().expect("an address"));
+        let router = task_api::http::router(Arc::new(state));
+        tokio::spawn(async move {
+            axum::serve(listener, router.into_make_service_with_connect_info::<SocketAddr>()).await.expect("serving");
+        });
+        url
+    }
+
+    pub fn client(&self, uri: &str, base: &str) -> Client {
+        Client { hotkey: Hotkey::from_uri(uri).expect("a test key"), base: base.into(), http: self.http.clone() }
+    }
+
     pub async fn public(&self, path: &str) -> (StatusCode, Value) {
         let response = self.http.get(format!("{}{path}", self.url)).send().await.expect("the API answers");
         let status = response.status();

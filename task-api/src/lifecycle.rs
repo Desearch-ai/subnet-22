@@ -362,8 +362,7 @@ pub async fn reclaim_expired(state: &State, now: f64) -> Result<Vec<(String, Str
         let tasks = state.tasks(&kind);
         let expiry = queues::claim_expiry(&state.redis, &task_id).await?;
         let Some((holder, seq)) = tasks.reclaim(&state.redis, &task_id, now).await? else { continue };
-        // Claimed before this process started: the miner may have tried to finish while we were down.
-        let forgiven = expiry.is_some_and(|expiry| expiry <= state.started_at + tasks.claim_ttl);
+        let forgiven = held_through_restart(state, tasks.claim_ttl, expiry);
         if !holder.is_empty() {
             if !forgiven {
                 let (hotkey, task, lapsed) = (holder.clone(), task_id.clone(), payload.clone());
@@ -387,6 +386,11 @@ pub async fn reclaim_expired(state: &State, now: f64) -> Result<Vec<(String, Str
         reclaimed.push((task_id, holder));
     }
     Ok(reclaimed)
+}
+
+/// Claimed before this process started: the miner may have tried to finish while we were down.
+pub fn held_through_restart(state: &State, claim_ttl: f64, expiry: Option<f64>) -> bool {
+    expiry.is_some_and(|expiry| expiry <= state.started_at + claim_ttl)
 }
 
 /// A claim that ended without an upload: its URLs, the budget and a strike; returns the budget.
