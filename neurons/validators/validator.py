@@ -140,11 +140,9 @@ class Validator:
                 following.cancel()
                 watching.cancel()
                 await fetcher.aclose()
-        requests = scrapingdog.requests
         log.info(
             f"Crawl validation stopped: {fetcher.own_ip_fetches} samples fetched from"
             f" our own IP, {fetcher.scrapingdog_fetches} through ScrapingDog"
-            f" ({requests['plain']} plain and {requests['rendered']} rendered requests)"
         )
 
     async def check_embed_tasks(self) -> None:

@@ -258,28 +258,6 @@ def pick_samples(kept: dict[str, dict], seed: str, size: int) -> list[str]:
     return picked + errors[from_errors : from_errors + size - len(picked)]
 
 
-def needs_rendered_check(
-    kept: dict[str, dict], fetched: Mapping[str, FetchedPage]
-) -> list[str]:
-    return [
-        url
-        for url, page in fetched.items()
-        if kept[url]["error"] is None
-        and judge_sample(kept[url], page)["outcome"] != MATCHED
-    ]
-
-
-def cleared_by_render(
-    kept: dict[str, dict], rendered: Mapping[str, FetchedPage]
-) -> dict[str, FetchedPage]:
-    """Rendering can only clear a sample, never fail one."""
-    return {
-        url: page
-        for url, page in rendered.items()
-        if judge_sample(kept[url], page)["outcome"] == MATCHED
-    }
-
-
 def fetch_failed(fetched: FetchedPage) -> bool:
     """No evidence either way: the page was never reached, or the provider failed."""
     if fetched.error in UNREACHED or fetched.error.startswith("fetcher_"):

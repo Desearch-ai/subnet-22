@@ -21,9 +21,8 @@ def check(rows, assigned, fetched, **options) -> tuple[dict, list[str]]:
     parquet = to_parquet(rows, task_id="t1", hotkey="m")
     asked: list[str] = []
 
-    async def fetch(url: str, rendered: bool = False) -> FetchedPage:
-        if not rendered:
-            asked.append(url)
+    async def fetch(url: str) -> FetchedPage:
+        asked.append(url)
         return fetched[url]
 
     async def upload(_) -> web.Response:
@@ -65,7 +64,7 @@ def test_a_page_the_validator_cannot_load_in_time_is_not_held_against_the_miner(
     slow = assigned[0]
     monkeypatch.setattr("neurons.validators.crawl.PAGE_TIMEOUT_S", 0.2)
 
-    async def fetch(url: str, rendered: bool = False) -> FetchedPage:
+    async def fetch(url: str) -> FetchedPage:
         if url == slow:
             await asyncio.sleep(5)
         return fetched[url]
