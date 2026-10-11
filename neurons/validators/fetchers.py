@@ -55,33 +55,61 @@ def page_problem(page: FetchedPage, url: str) -> str | None:
     return None
 
 
+class HourlyBudget:
+    def __init__(self, per_hour: int):
+        self.per_hour = per_hour
+        self.hour = -1
+        self.used = 0
+
+    def take(self) -> bool:
+        hour = int(time.time() // 3600)
+        if hour != self.hour:
+            self.hour, self.used = hour, 0
+        if self.used >= self.per_hour:
+            return False
+        self.used += 1
+        if self.used == self.per_hour:
+            log.warning(
+                "ScrapingDog's %d requests for this hour are used; until the next hour"
+                " pages our own IP cannot load are judged without it",
+                self.per_hour,
+            )
+        return True
+
+
 class SampleFetcher:
-    def __init__(self, own_ip: Fetcher, scrapingdog: ScrapingDog):
+    def __init__(
+        self,
+        own_ip: Fetcher,
+        scrapingdog: ScrapingDog,
+        budget: HourlyBudget | None = None,
+    ):
         self.own_ip = own_ip
         self.scrapingdog = scrapingdog
+        self.budget = budget
         self.own_ip_fetches = 0
         self.scrapingdog_fetches = 0
         self.extraction = ThreadPoolExecutor(
             EXTRACTION_THREADS, thread_name_prefix="extract"
         )
 
-    async def __call__(self, url: str, rendered: bool = False) -> FetchedPage:
-        return (await self.fetch(url, rendered))[0]
+    async def __call__(self, url: str) -> FetchedPage:
+        return (await self.fetch(url))[0]
 
-    async def fetch(self, url: str, rendered: bool = False) -> tuple[FetchedPage, str]:
+    async def fetch(self, url: str) -> tuple[FetchedPage, str]:
         """ScrapingDog can add evidence but never erase what our own IP saw."""
-        own = None
-        if not rendered:
-            own = await to_page(await self.own_ip.attempt(url), OWN_IP)
-            problem = await asyncio.get_running_loop().run_in_executor(
-                self.extraction, page_problem, own, url
-            )
-            if problem is None or not needs_fallback(problem, own.status):
-                self.own_ip_fetches += 1
-                return own, OWN_IP
+        own = await to_page(await self.own_ip.attempt(url), OWN_IP)
+        problem = await asyncio.get_running_loop().run_in_executor(
+            self.extraction, page_problem, own, url
+        )
+        if problem is None or not needs_fallback(problem, own.status):
+            self.own_ip_fetches += 1
+            return own, OWN_IP
+        if self.budget is not None and not self.budget.take():
+            return own, OWN_IP
         self.scrapingdog_fetches += 1
-        page = await to_page(await self.scrapingdog.fetch(url, rendered), SCRAPINGDOG)
-        if own is not None and fetch_failed(page) and not provider_refused(page):
+        page = await to_page(await self.scrapingdog.fetch(url), SCRAPINGDOG)
+        if fetch_failed(page) and not provider_refused(page):
             return own, OWN_IP
         return page, SCRAPINGDOG
 

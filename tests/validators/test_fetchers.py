@@ -6,9 +6,10 @@ import aiohttp
 import pytest
 from aiohttp import web
 
-from desearch.fetch import Fetched, Fetcher, FetchSettings
+from desearch.fetch import Fetched, Fetcher, FetchSettings, ScrapingDog
 from neurons.validators.fetchers import (
     OWN_IP_SETTINGS,
+    HourlyBudget,
     SampleFetcher,
     ScrapingDogAccount,
     page_problem,
@@ -72,12 +73,12 @@ def test_a_non_html_body_is_not_usable():
     assert page_problem(FetchedPage(200, "%PDF-1.7 binary"), "https://x/") == "not_html"
 
 
-def through_chain(handler, rendered: bool = False):
+def through_chain(handler):
     calls = []
 
     class ScrapingDog:
-        async def fetch(self, url, rendered=False, deadline=None):
-            calls.append(rendered)
+        async def fetch(self, url, deadline=None):
+            calls.append(url)
             return Fetched(
                 url=url,
                 final_url=url,
@@ -90,7 +91,7 @@ def through_chain(handler, rendered: bool = False):
         async with serving(handler) as base:
             chain = SampleFetcher(Fetcher(LOOPBACK), ScrapingDog())
             try:
-                page, route = await chain.fetch(base + "story", rendered)
+                page, route = await chain.fetch(base + "story")
             finally:
                 await chain.aclose()
             return chain, page, route
@@ -116,7 +117,7 @@ def test_a_page_that_does_not_answer_in_time_is_tried_once_then_goes_to_scraping
         return web.Response(text=PAGE, content_type="text/html")
 
     class ScrapingDog:
-        async def fetch(self, url, rendered=False, deadline=None):
+        async def fetch(self, url, deadline=None):
             return Fetched(
                 url=url,
                 final_url=url,
@@ -145,7 +146,7 @@ def test_a_page_that_does_not_answer_in_time_is_tried_once_then_goes_to_scraping
 def test_scrapingdog_takes_over_when_our_own_ip_is_refused(handler):
     chain, page, route, calls = through_chain(handler)
 
-    assert calls == [False] and route == "scrapingdog"
+    assert len(calls) == 1 and route == "scrapingdog"
     assert (chain.own_ip_fetches, chain.scrapingdog_fetches) == (0, 1)
     assert page.html == PAGE
 
@@ -159,13 +160,6 @@ def test_a_page_fact_is_not_worth_a_scrapingdog_credit(handler, status):
 
     assert calls == [] and route == "own_ip"
     assert page.status == status and page.html == ""
-
-
-def test_a_rendered_recheck_always_goes_to_scrapingdog():
-    chain, _, route, calls = through_chain(answer(), rendered=True)
-
-    assert calls == [True] and route == "scrapingdog"
-    assert (chain.own_ip_fetches, chain.scrapingdog_fetches) == (0, 1)
 
 
 @pytest.mark.parametrize("host", ["127.0.0.1", "localhost"])
@@ -187,7 +181,7 @@ def test_the_validator_will_not_fetch_a_private_address(host):
 
 def test_when_scrapingdog_fails_what_our_own_ip_saw_stands():
     class FailingScrapingDog:
-        async def fetch(self, url, rendered=False, deadline=None):
+        async def fetch(self, url, deadline=None):
             return Fetched(
                 url=url,
                 final_url=url,
@@ -211,7 +205,7 @@ def test_when_scrapingdog_fails_what_our_own_ip_saw_stands():
 @pytest.mark.parametrize("status", [401, 403])
 def test_a_scrapingdog_refusal_is_passed_on_for_the_check_to_see(status):
     class RefusingScrapingDog:
-        async def fetch(self, url, rendered=False, deadline=None):
+        async def fetch(self, url, deadline=None):
             return Fetched(
                 url=url,
                 final_url=url,
@@ -230,6 +224,28 @@ def test_a_scrapingdog_refusal_is_passed_on_for_the_check_to_see(status):
 
     page, route = asyncio.run(run())
     assert (page.status, page.via, route) == (status, "scrapingdog", "scrapingdog")
+
+
+def test_scrapingdog_retries_its_own_400_and_never_renders():
+    calls = []
+    plan = {"https://a.example/": [400, 200]}
+
+    async def handler(request: web.Request) -> web.Response:
+        calls.append(request.query["dynamic"])
+        return web.Response(
+            status=plan[request.query["url"]].pop(0), text="<html></html>"
+        )
+
+    async def fetch():
+        async with (
+            serving(handler) as endpoint,
+            ScrapingDog("k", endpoint=endpoint) as scrapingdog,
+        ):
+            return await scrapingdog.fetch("https://a.example/")
+
+    retried = asyncio.run(fetch())
+    assert (retried.status, retried.error, retried.attempts) == (200, None, 2)
+    assert calls == ["false", "false"]
 
 
 def read_account(status: int, body: dict | str) -> str | None:
@@ -291,6 +307,44 @@ def test_credits_that_run_out_within_a_day_are_warned_about(monkeypatch, caplog)
 
     account.note_pace(7_100, 43_900)
     assert "43,900 credits left, about 1.2 hours" in caplog.text
+
+
+def test_scrapingdog_stops_once_the_hours_budget_is_used(monkeypatch):
+    calls = []
+
+    class ScrapingDog:
+        async def fetch(self, url, deadline=None):
+            calls.append(url)
+            return Fetched(
+                url=url,
+                final_url=url,
+                fetched_at=datetime.now(timezone.utc),
+                status=200,
+                body=PAGE.encode(),
+            )
+
+    clock = [7200.0]
+    monkeypatch.setattr("neurons.validators.fetchers.time.time", lambda: clock[0])
+
+    async def run():
+        async with serving(answer(403, "<html>no</html>")) as base:
+            chain = SampleFetcher(Fetcher(LOOPBACK), ScrapingDog(), HourlyBudget(1))
+            try:
+                first = await chain.fetch(base + "a")
+                second = await chain.fetch(base + "b")
+                clock[0] += 3600
+                third = await chain.fetch(base + "c")
+                return first, second, third
+            finally:
+                await chain.aclose()
+
+    first, second, third = asyncio.run(run())
+    assert [route for _, route in (first, second, third)] == [
+        "scrapingdog",
+        "own_ip",
+        "scrapingdog",
+    ]
+    assert second[0].status == 403 and len(calls) == 2
 
 
 def test_a_javascript_only_stub_is_treated_as_blocked():

@@ -11,10 +11,8 @@ from desearch.extraction import extract
 from neurons.validators.confinement import confine
 from neurons.validators.scoring import (
     FetchedPage,
-    cleared_by_render,
     extraction_url,
     load_upload,
-    needs_rendered_check,
     pick_samples,
     sample_count,
     score,
@@ -74,8 +72,6 @@ def _score_in_child(
         planned = pick_samples(kept, seed, sample_count(len(kept), min_samples))
         answer(conn, "samples", {"urls": planned, "unconfined": unconfined})
         fetched: dict[str, FetchedPage] = conn.recv()
-        answer(conn, "doubtful", needs_rendered_check(kept, fetched))
-        fetched |= cleared_by_render(kept, conn.recv())
         result = score(rows, assigned, fetched, seed, min_samples, match_ratio)
         texts = live_texts(kept, fetched)
         result["urls"] = url_log(rows, result["samples"], texts, result["rejected"])

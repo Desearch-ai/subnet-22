@@ -27,7 +27,7 @@ from tests.synthetic import SEED, synthetic, to_parquet
 def score_task(rows, assigned, fetched, **options):
     parquet = to_parquet(rows, task_id="t1", hotkey="m")
 
-    async def fetch(url: str, rendered: bool = False) -> FetchedPage:
+    async def fetch(url: str) -> FetchedPage:
         return fetched[url]
 
     async def upload(_) -> web.Response:
