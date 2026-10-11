@@ -9,7 +9,7 @@ import socket
 import ssl
 import time
 import zlib
-from collections import defaultdict
+from collections import Counter, defaultdict
 from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
@@ -316,11 +316,14 @@ class ScrapingDog:
         self.slots = asyncio.Semaphore(concurrency)
         self.timeout = aiohttp.ClientTimeout(total=timeout)
         self.session: aiohttp.ClientSession | None = None
+        self.requests: Counter[str] = Counter()
 
-    async def fetch(self, url: str, deadline: float | None = None) -> Fetched:
+    async def fetch(
+        self, url: str, rendered: bool = False, deadline: float | None = None
+    ) -> Fetched:
         async with self.slots:
             for attempt in range(1, SCRAPINGDOG_ATTEMPTS + 1):
-                fetched = await self._attempt(url, deadline)
+                fetched = await self._attempt(url, rendered, deadline)
                 fetched.attempts = attempt
                 again = fetched.error == "timeout" or (
                     fetched.status >= 500
@@ -340,7 +343,9 @@ class ScrapingDog:
     async def __aexit__(self, *_) -> None:
         await self.aclose()
 
-    async def _attempt(self, url: str, deadline: float | None) -> Fetched:
+    async def _attempt(
+        self, url: str, rendered: bool, deadline: float | None
+    ) -> Fetched:
         if self.session is None:
             # No brotli: a stale brotli library breaks aiohttp's decoder.
             self.session = aiohttp.ClientSession(
@@ -350,7 +355,7 @@ class ScrapingDog:
         params = {
             "api_key": self.api_key,
             "url": url,
-            "dynamic": "false",
+            "dynamic": "true" if rendered else "false",
         }
         allowed = self.timeout.total
         if deadline is not None:
@@ -358,6 +363,7 @@ class ScrapingDog:
         if allowed <= 0:
             fetched.error = "timeout"
             return fetched
+        self.requests["rendered" if rendered else "plain"] += 1
         started = time.monotonic()
         try:
             async with self.session.get(

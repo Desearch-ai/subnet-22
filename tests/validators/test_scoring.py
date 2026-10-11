@@ -531,7 +531,7 @@ def test_a_presigned_download_url_is_sent_exactly_as_signed():
 
 
 @pytest.mark.parametrize(
-    "rows, samples", [(0, 10), (200, 10), (500, 10), (1000, 20), (2000, 40)]
+    "rows, samples", [(0, 10), (20, 10), (200, 10), (500, 25), (1000, 50)]
 )
 def test_samples_grow_with_the_task_but_never_below_the_minimum(rows, samples):
     assert sample_count(rows) == samples
@@ -542,8 +542,8 @@ def test_error_rows_get_a_fifth_of_a_large_sample():
     kept = rows_by_url(rows, assigned)[0]
     picked = pick_samples(kept, SEED, sample_count(len(kept)))
 
-    assert len(picked) == 20
-    assert sum(kept[url]["error"] is not None for url in picked) == 4
+    assert len(picked) == 50
+    assert sum(kept[url]["error"] is not None for url in picked) == 10
 
 
 @pytest.mark.parametrize(

@@ -41,7 +41,7 @@ OUTCOMES = (
 )
 COVERAGE = 0.85
 MIN_SAMPLES = 10
-SAMPLE_RATE = 0.02
+SAMPLE_RATE = 0.05
 # Share of compared samples that must match; set from calibration runs.
 MATCH_RATIO = 0.8
 REEXTRACT_TOLERANCE = 0.2
@@ -256,6 +256,28 @@ def pick_samples(kept: dict[str, dict], seed: str, size: int) -> list[str]:
     from_errors = min(len(errors), max(1, min(size // 2, error_slots)))
     picked = errors[:from_errors] + fine[: size - from_errors]
     return picked + errors[from_errors : from_errors + size - len(picked)]
+
+
+def needs_rendered_check(
+    kept: dict[str, dict], fetched: Mapping[str, FetchedPage]
+) -> list[str]:
+    return [
+        url
+        for url, page in fetched.items()
+        if kept[url]["error"] is None
+        and judge_sample(kept[url], page)["outcome"] != MATCHED
+    ]
+
+
+def cleared_by_render(
+    kept: dict[str, dict], rendered: Mapping[str, FetchedPage]
+) -> dict[str, FetchedPage]:
+    """Rendering can only clear a sample, never fail one."""
+    return {
+        url: page
+        for url, page in rendered.items()
+        if judge_sample(kept[url], page)["outcome"] == MATCHED
+    }
 
 
 def fetch_failed(fetched: FetchedPage) -> bool:

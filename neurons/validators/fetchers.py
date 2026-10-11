@@ -65,21 +65,23 @@ class SampleFetcher:
             EXTRACTION_THREADS, thread_name_prefix="extract"
         )
 
-    async def __call__(self, url: str) -> FetchedPage:
-        return (await self.fetch(url))[0]
+    async def __call__(self, url: str, rendered: bool = False) -> FetchedPage:
+        return (await self.fetch(url, rendered))[0]
 
-    async def fetch(self, url: str) -> tuple[FetchedPage, str]:
+    async def fetch(self, url: str, rendered: bool = False) -> tuple[FetchedPage, str]:
         """ScrapingDog can add evidence but never erase what our own IP saw."""
-        own = await to_page(await self.own_ip.attempt(url), OWN_IP)
-        problem = await asyncio.get_running_loop().run_in_executor(
-            self.extraction, page_problem, own, url
-        )
-        if problem is None or not needs_fallback(problem, own.status):
-            self.own_ip_fetches += 1
-            return own, OWN_IP
+        own = None
+        if not rendered:
+            own = await to_page(await self.own_ip.attempt(url), OWN_IP)
+            problem = await asyncio.get_running_loop().run_in_executor(
+                self.extraction, page_problem, own, url
+            )
+            if problem is None or not needs_fallback(problem, own.status):
+                self.own_ip_fetches += 1
+                return own, OWN_IP
         self.scrapingdog_fetches += 1
-        page = await to_page(await self.scrapingdog.fetch(url), SCRAPINGDOG)
-        if fetch_failed(page) and not provider_refused(page):
+        page = await to_page(await self.scrapingdog.fetch(url, rendered), SCRAPINGDOG)
+        if own is not None and fetch_failed(page) and not provider_refused(page):
             return own, OWN_IP
         return page, SCRAPINGDOG
 
