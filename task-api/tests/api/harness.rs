@@ -169,8 +169,6 @@ pub fn settings(data: PathBuf, endpoint: &str) -> Settings {
         checks_per_hour: 400.0,
         queue_target: 1200,
         task_urls: 3,
-        publish_lag: 1800.0,
-        publish_lag_limit: 1800.0,
         embed_tasks: false,
         embed_model: "qwen3-embedding-8b".into(),
         active_s: 3600.0,

@@ -163,21 +163,21 @@ async fn a_repeated_refusal_is_answered_but_signed_only_once_a_minute() {
 }
 
 #[tokio::test]
-async fn the_bot_gets_no_room_and_miners_no_tasks_while_publishing_is_far_behind() {
-    let h = Harness::with(|s| {
-        s.publish_lag = 60.0;
-        s.publish_lag_limit = 120.0;
-    })
-    .await;
+async fn a_stopped_publisher_holds_back_the_queue_only_once_its_oldest_job_passes_the_backlog_limit() {
+    let h = Harness::with(|s| s.max_backlog = 600.0).await;
     h.enqueue(urls(6)).await;
-    assert!(h.public("/v1/room").await.1["room_tasks"].as_i64().unwrap() > 0);
     let now = desearch::time::now();
     for n in 0..250 {
-        let _: i64 = h.redis.clone().zadd(PPENDING, format!("waiting-{n}"), now).await.unwrap();
+        let _: i64 = h.redis.clone().zadd(PPENDING, format!("waiting-{n}"), now - 60.0).await.unwrap();
     }
     let room = h.public("/v1/room").await.1;
-    assert_eq!(room["room_tasks"], 0);
+    assert!(room["room_tasks"].as_i64().unwrap() > 0 && room["refusing"] == json!(false));
     assert!(room["in_system"].as_i64().unwrap() >= 250);
+    assert!(!h.miner.claim().await["tasks"].as_array().unwrap().is_empty(), "250 jobs waiting to be published do not stop claims");
+
+    let _: i64 = h.redis.clone().zadd(PPENDING, "waiting-0", now - 601.0).await.unwrap();
+    let room = h.public("/v1/room").await.1;
+    assert_eq!((room["room_tasks"].clone(), room["refusing"].clone()), (json!(0), json!(true)));
     let claim = h.miner.claim().await;
     assert_eq!((claim["tasks"].clone(), claim["refusal"]["code"].clone()), (json!([]), json!("VALIDATION_BACKLOG")));
     assert_eq!(claim["refusal"]["inputs"]["publish_waiting"], 250);

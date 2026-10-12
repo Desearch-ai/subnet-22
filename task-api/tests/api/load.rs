@@ -126,6 +126,13 @@ fn minutes() -> f64 {
     std::env::var("LOAD_MINUTES").ok().and_then(|m| m.parse().ok()).unwrap_or(24.0)
 }
 
+/// `LOAD_PUBLISHER_PAUSE=6-16`: the publisher stops between these minutes, as in a publisher switch.
+fn publisher_pause() -> Option<(f64, f64)> {
+    let pause = std::env::var("LOAD_PUBLISHER_PAUSE").ok()?;
+    let (from, to) = pause.split_once('-')?;
+    Some((from.parse().ok()?, to.parse().ok()?))
+}
+
 async fn serve(state: Arc<State>) -> String {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
@@ -322,6 +329,11 @@ async fn the_api_carries_50m_urls_an_hour() {
         let (redis, done, log) = (h.redis.clone(), done.clone(), log.clone());
         tasks.push(tokio::spawn(async move {
             while !done.load(Ordering::Relaxed) {
+                let min = started.elapsed().as_secs_f64() / 60.0;
+                if publisher_pause().is_some_and(|(from, to)| (from..to).contains(&min)) {
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                    continue;
+                }
                 let expiry = desearch::time::now() + 600.0;
                 let jobs: Vec<String> =
                     PCLAIM.key(PUBLISH).key(PCLAIMS).arg(PUBLISH_BATCH).arg(expiry).invoke_async(&mut redis.clone()).await.unwrap_or_default();
@@ -386,7 +398,7 @@ async fn the_api_carries_50m_urls_an_hour() {
                 log.snapshots.lock().unwrap().push(json!({
                     "min": started.elapsed().as_secs_f64() / 60.0,
                     "unrevealed": room["unrevealed"], "queue": room["queue"], "room": room["room_tasks"], "in_system": room["in_system"],
-                    "published_per_min": room["published_per_min"],
+                    "published_per_min": room["published_per_min"], "refusing": room["refusing"],
                     "seeding": health["seeding"], "validating": health["validation_depth"], "publishing": health["publishing"],
                     "oldest_publish_s": health["oldest_publish_s"], "oldest_validation_s": health["oldest_validation_s"],
                     "issued": log.issued.load(Ordering::Relaxed), "completed": log.completed.load(Ordering::Relaxed),
@@ -433,7 +445,27 @@ async fn the_api_carries_50m_urls_an_hour() {
     }
 
     report(&log, &events, minutes());
+    if let Some(pause) = publisher_pause() {
+        judge_pause(&log, pause);
+    }
     judge(&log, minutes());
+}
+
+/// Miners keep getting tasks at the wanted pace while nothing is published.
+fn judge_pause(log: &Log, (from, to): (f64, f64)) {
+    let snapshots = log.snapshots.lock().unwrap();
+    let window: Vec<&Value> = snapshots.iter().filter(|s| (from + 1.0..=to).contains(&s["min"].as_f64().unwrap_or(0.0))).collect();
+    let (first, last) = (window.first().unwrap(), window.last().unwrap());
+    let span = last["min"].as_f64().unwrap() - first["min"].as_f64().unwrap();
+    let per_min = |name: &str| (last[name].as_f64().unwrap_or(0.0) - first[name].as_f64().unwrap_or(0.0)) / span;
+    println!(
+        "\n== publisher paused {from}-{to} min: issued {:.0}/min, published {:.0}/min, refusing {}",
+        per_min("issued"),
+        per_min("published"),
+        last["refusing"]
+    );
+    assert!(per_min("issued") >= 0.95 * WANTED, "claims slowed while the publisher was paused");
+    assert_eq!(per_min("published"), 0.0, "the pause did not hold the publisher");
 }
 
 /// The release bar: steady throughput at the wanted pace over the last ten minutes, quick answers, no failures, few chain calls.

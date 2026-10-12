@@ -114,9 +114,9 @@ async fn claim_tasks(state: &State, signed: &Signed<'_>) -> Answer {
     // Stop leasing work whose upload would expire before validation.
     let validating = state.validation.oldest_age(&state.redis, at).await?.max(state.validation.oldest_seeding_age(&state.redis, at).await?);
     let publishing = state.publish.oldest_age(&state.redis, at).await?;
-    let waiting = state.publish.waiting(&state.redis).await?;
     let max_backlog = state.settings.max_backlog;
-    if state.publish_rate.lock().expect("publish rate").overloaded(waiting) || (max_backlog != 0.0 && validating.max(publishing) > max_backlog) {
+    if max_backlog != 0.0 && validating.max(publishing) > max_backlog {
+        let waiting = state.publish.waiting(&state.redis).await?;
         let inputs = json!({"validation_s": validating, "publish_s": publishing, "limit_s": max_backlog, "publish_waiting": waiting});
         return refused(state, &round_id, &who, Refusal::new("VALIDATION_BACKLOG", inputs)).await;
     }
@@ -522,7 +522,6 @@ pub async fn room(Shared(state): Shared<Arc<State>>) -> Answer {
     let depth = state.crawl.depth(&state.redis).await?;
     let unrevealed = state.lookups.read(roundstore::unrevealed_tasks).await?;
     let claimed: i64 = state.redis.clone().zcard(CLAIMS).await?;
-    // Everything not yet published, so the queue fills only as fast as the publisher empties it.
     let in_system = depth
         + unrevealed
         + claimed
@@ -537,10 +536,8 @@ pub async fn room(Shared(state): Shared<Arc<State>>) -> Answer {
         .max(state.validation.oldest_seeding_age(&state.redis, at).await?)
         .max(state.publish.oldest_age(&state.redis, at).await?);
     let refusing = max_backlog != 0.0 && oldest > max_backlog;
-    let (room, per_minute) = {
-        let rate = state.publish_rate.lock().expect("publish rate");
-        ((state.settings.queue_target - depth - unrevealed).max(0).min(rate.room(in_system)), rate.per_second() * 60.0)
-    };
+    let room = (state.settings.queue_target - depth - unrevealed).max(0);
+    let per_minute = state.publish_rate.lock().expect("publish rate").per_second() * 60.0;
     Ok(Json(json!({
         "room_tasks": if refusing { 0 } else { room },
         "queue": depth,

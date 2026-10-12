@@ -5,7 +5,6 @@ use std::str::FromStr;
 
 use anyhow::{bail, Context, Result};
 
-use crate::flow::{LAG_LIMIT_S, LAG_TARGET_S};
 use crate::queues::ACTIVE_S;
 use crate::rounds::CLAIM_TTL_S;
 use crate::sampling::{CHECKS_PER_HOUR, SHARE};
@@ -43,8 +42,6 @@ pub struct Settings {
     pub checks_per_hour: f64,
     pub queue_target: i64,
     pub task_urls: usize,
-    pub publish_lag: f64,
-    pub publish_lag_limit: f64,
     pub embed_tasks: bool,
     pub embed_model: String,
     pub active_s: f64,
@@ -109,15 +106,13 @@ impl Settings {
             log_reads_per_minute: number("TASK_API_LOG_READS_PER_MINUTE", 60)?,
             failed_writes_per_minute: number("TASK_API_FAILED_WRITES_PER_MINUTE", 30)?,
             max_upload: number("TASK_API_MAX_UPLOAD_BYTES", 100_000_000)?,
-            max_backlog: number("TASK_API_MAX_BACKLOG_S", 43_200.0)?,
+            max_backlog: number("TASK_API_MAX_BACKLOG_S", 21_600.0)?,
             max_attempts: number("TASK_API_MAX_ATTEMPTS", 3)?,
             ledger_delay: number("TASK_API_LEDGER_DELAY_S", 0.0)?,
             check_share: number("TASK_API_CHECK_SHARE", SHARE)?,
             checks_per_hour: number("TASK_API_CHECKS_PER_HOUR", CHECKS_PER_HOUR)?,
             queue_target: number("TASK_API_QUEUE_TARGET", 1_200)?,
             task_urls: number("TASK_API_TASK_URLS", 1_000)?,
-            publish_lag: number("TASK_API_PUBLISH_LAG_S", LAG_TARGET_S)?,
-            publish_lag_limit: number("TASK_API_PUBLISH_LAG_LIMIT_S", LAG_LIMIT_S)?,
             embed_tasks: text("TASK_API_EMBED_TASKS", "0") == "1",
             embed_model: text("TASK_API_EMBED_MODEL", "qwen3-embedding-8b"),
             active_s: number("TASK_API_ACTIVE_S", ACTIVE_S)?,

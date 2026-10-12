@@ -147,7 +147,7 @@ impl State {
             embed: TaskQueue::new("embed", held),
             validation: ValidationQueue { active_s: settings.active_s },
             publish: PublishQueue { claim_ttl: settings.publish_ttl, max_tries: settings.publish_tries },
-            publish_rate: Mutex::new(PublishRate::new(settings.publish_lag, settings.publish_lag_limit)),
+            publish_rate: Mutex::new(PublishRate::default()),
             current: Mutex::new(current),
             open_manifests: Mutex::default(),
             open_listed: Mutex::default(),
