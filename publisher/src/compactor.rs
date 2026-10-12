@@ -68,6 +68,41 @@ pub struct R2Store {
     pub handle: Handle,
 }
 
+/// The current state under `prefix` in one store and everything else, the change log and snapshots, in another.
+pub struct Split {
+    pub prefix: String,
+    pub current: Box<dyn Store>,
+    pub log: Box<dyn Store>,
+}
+
+impl Split {
+    fn holding(&self, key: &str) -> &dyn Store {
+        if key.starts_with(&self.prefix) {
+            self.current.as_ref()
+        } else {
+            self.log.as_ref()
+        }
+    }
+}
+
+impl Store for Split {
+    fn get(&self, key: &str) -> Result<Option<Bytes>> {
+        self.holding(key).get(key)
+    }
+
+    fn put(&self, key: &str, body: Bytes) -> Result<()> {
+        self.holding(key).put(key, body)
+    }
+
+    fn delete(&self, key: &str) -> Result<()> {
+        self.holding(key).delete(key)
+    }
+
+    fn modified(&self, key: &str) -> Result<Option<f64>> {
+        self.holding(key).modified(key)
+    }
+}
+
 const PART_BYTES: usize = 32 << 20;
 
 impl Store for R2Store {

@@ -7,8 +7,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 
+use desearch::r2::{self, Bucket, Credentials};
 use desearch::stub;
-use publisher::compactor::{self, R2Store, Store};
+use publisher::compactor::{self, R2Store, Split, Store};
 use publisher::index::VersionIndex;
 use publisher::local::{LocalFeed, LocalUploads};
 use publisher::worker::{self, Job};
@@ -137,7 +138,7 @@ fn main() -> Result<()> {
         Command::Compact { once, start_empty_at } => compact(once, start_empty_at),
         Command::CheckCurrent { prefix, seqs, files, per_file, shards, explain } => {
             let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
-            let store = pages_store(&runtime)?;
+            let store = current_store(&runtime, &prefix, pages_store(&runtime)?)?;
             let seqs = range::<i64>(&seqs)?;
             let all: Vec<i64> = seqs.clone().collect();
             let step = ((seqs.end - seqs.start) as usize / files.max(1)).max(1);
@@ -158,7 +159,7 @@ fn main() -> Result<()> {
         Command::CompareCurrent { prefix, index, shards } => {
             let shards = range::<usize>(&shards)?;
             let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
-            let store = pages_store(&runtime)?;
+            let store = current_store(&runtime, &prefix, pages_store(&runtime)?)?;
             let (compared, against) = match index {
                 Some(index) => (compactor::compare(&store, &prefix, &VersionIndex::open_read_only(&index, 64 << 20)?, &shards, 16)?, "index"),
                 None => (compactor::compare_log(&store, &prefix, &shards, 16)?, "change log"),
@@ -247,11 +248,30 @@ fn pages_store(runtime: &tokio::runtime::Runtime) -> Result<R2Store> {
     Ok(R2Store { bucket: pages, handle: runtime.handle().clone() })
 }
 
+/// The change log in the pages bucket and the current state under `prefix` in `CURRENT_S3_BUCKET` when that is set, else in the pages bucket too.
+fn current_store(runtime: &tokio::runtime::Runtime, prefix: &str, log: R2Store) -> Result<Split> {
+    let (current, at) = match std::env::var("CURRENT_S3_ENDPOINT").ok().filter(|e| !e.is_empty()) {
+        Some(endpoint) => {
+            let credentials = Credentials {
+                access_key: std::env::var("CURRENT_S3_ACCESS_KEY_ID").context("CURRENT_S3_ACCESS_KEY_ID is not set")?,
+                secret_key: std::env::var("CURRENT_S3_SECRET_ACCESS_KEY").context("CURRENT_S3_SECRET_ACCESS_KEY is not set")?,
+                region: std::env::var("CURRENT_S3_REGION").context("CURRENT_S3_REGION is not set")?,
+            };
+            let bucket = std::env::var("CURRENT_S3_BUCKET").context("CURRENT_S3_BUCKET is not set")?;
+            let bucket = Bucket::new(r2::client()?, &endpoint, &bucket, "", credentials, Default::default())?;
+            runtime.block_on(bucket.check())?;
+            (R2Store { bucket, handle: runtime.handle().clone() }, endpoint)
+        }
+        None => (pages_store(runtime)?, "the pages bucket".to_string()),
+    };
+    println!("current state under {}{prefix} at {at}; change log in {}{}", current.bucket.bucket, log.bucket.bucket, log.bucket.prefix);
+    Ok(Split { prefix: prefix.to_string(), current: Box::new(current), log: Box::new(log) })
+}
+
 const COMPACT_RETRY_S: u64 = 30;
 
 fn compact(once: bool, start_empty_at: Option<i64>) -> Result<()> {
     let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
-    let store = pages_store(&runtime)?;
     let defaults = compactor::Settings::default();
     let settings = compactor::Settings {
         prefix: std::env::var("COMPACTOR_PREFIX").ok().filter(|p| !p.is_empty()).unwrap_or(defaults.prefix),
@@ -267,6 +287,7 @@ fn compact(once: bool, start_empty_at: Option<i64>) -> Result<()> {
         merge_threads: env_number("COMPACTOR_MERGE_THREADS", defaults.merge_threads)?,
         hole_wait_s: env_number("COMPACTOR_HOLE_WAIT_S", defaults.hole_wait_s)?,
     };
+    let store = current_store(&runtime, &settings.prefix, pages_store(&runtime)?)?;
     if let Some(seq) = start_empty_at {
         compactor::start_empty(&store, &settings.prefix, seq, settings.threads.max(16))?;
     }
@@ -347,7 +368,7 @@ fn download(store: &R2Store, key: &str, path: &std::path::Path) -> Result<()> {
 
 fn build_current(snapshot: &str, work: PathBuf, prefix: String, shards: &str, seqs: Option<&str>, threads: usize, allow_unlocated: bool) -> Result<()> {
     let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
-    let store = pages_store(&runtime)?;
+    let log = pages_store(&runtime)?;
     std::fs::create_dir_all(&work)?;
     let local = if std::path::Path::new(snapshot).exists() {
         PathBuf::from(snapshot)
@@ -355,11 +376,12 @@ fn build_current(snapshot: &str, work: PathBuf, prefix: String, shards: &str, se
         let local = work.join("snapshot.parquet");
         if !local.exists() {
             let started = Instant::now();
-            download(&store, snapshot, &local)?;
+            download(&log, snapshot, &local)?;
             println!("{snapshot} downloaded in {:.0}s", started.elapsed().as_secs_f64());
         }
         local
     };
+    let store = current_store(&runtime, &prefix, log)?;
     let settings = build::Settings {
         prefix,
         work,

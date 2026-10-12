@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use bytes::Bytes;
 use desearch::feeds::CHANGES;
 use publisher::changes::{self, Body, Change, Kind};
-use publisher::compactor::{self, LocalStore, Settings, Store};
+use publisher::compactor::{self, LocalStore, Settings, Split, Store};
 use publisher::current::{self, shard_of, ChangeRow, PageRow, Withdrawals, SHARDS};
 use publisher::records::{page_key, record_version, Record};
 
@@ -162,6 +162,24 @@ fn the_compactor_follows_the_log_into_shards_and_readers_see_the_newest_version(
     let all: usize = (0..SHARDS).map(|shard| compactor::shard_rows(&store, "current/", shard).unwrap().len()).sum();
     assert_eq!(all, 298);
     assert!(compactor::load_withdrawn(&store, "current/").unwrap().tasks.contains_key("t2"), "unmerged deltas still hold its rows");
+}
+
+#[test]
+fn the_current_state_can_live_in_another_store_than_the_change_log() {
+    let root = scratch("split");
+    let mut log = Log::new(root.join("log"));
+    let store =
+        Split { prefix: "current/".into(), current: Box::new(LocalStore { root: root.join("state") }), log: Box::new(LocalStore { root: root.join("log") }) };
+    compactor::start_empty(&store, "current/", 0, 4).unwrap();
+    let urls: Vec<String> = (0..50).map(|i| format!("https://news.example/split-{i}")).collect();
+    let first = log.append(&urls.iter().map(|u| page(u, "2026-10-08T10:00:00+00:00", "t1", "v1")).collect::<Vec<_>>());
+    let report = compactor::cycle(&store, &settings(root.join("work")), 1_000.0).unwrap();
+    assert_eq!((report.through, report.rows), (first, 50));
+    assert_eq!(text_of(&store, &urls[7]).as_deref(), Some("v1"));
+    assert!(root.join("state/current").is_dir() && !root.join("state/changes").exists(), "the state store holds only the current state");
+    assert!(root.join("log/changes").is_dir() && !root.join("log/current").exists(), "the log store is only read");
+    let (checked, _, wrong) = compactor::check(&store, "current/", &[first], 10, &(0..SHARDS), 4).unwrap();
+    assert!(checked > 0 && wrong.is_empty(), "{wrong:?}");
 }
 
 #[test]
