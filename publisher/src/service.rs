@@ -81,32 +81,45 @@ fn number<T: FromStr>(name: &str, default: T) -> Result<T> {
 
 /// The temp bucket uploads wait in and the permanent bucket pages are published to, as the Python service names them.
 pub fn buckets_from_env(errors: Arc<AtomicU64>) -> Result<(Bucket, Bucket)> {
-    let endpoint = std::env::var("CF_R2_ENDPOINT").context("CF_R2_ENDPOINT is not set")?;
+    buckets_from(|name| std::env::var(name).ok().filter(|v| !v.is_empty()), errors)
+}
+
+/// Both buckets on the R2 endpoint, unless `PAGES_S3_ENDPOINT` puts the pages bucket on its own endpoint with its own keys.
+pub fn buckets_from(var: impl Fn(&str) -> Option<String>, errors: Arc<AtomicU64>) -> Result<(Bucket, Bucket)> {
+    let required = |name: &str| var(name).with_context(|| format!("{name} is not set"));
+    let endpoint = required("CF_R2_ENDPOINT")?;
     let credentials = Credentials {
-        access_key: std::env::var("CF_R2_ACCESS_KEY_ID").context("CF_R2_ACCESS_KEY_ID is not set")?,
-        secret_key: std::env::var("CF_R2_SECRET_ACCESS_KEY").context("CF_R2_SECRET_ACCESS_KEY is not set")?,
-        region: text("CF_R2_REGION", "auto"),
+        access_key: required("CF_R2_ACCESS_KEY_ID")?,
+        secret_key: required("CF_R2_SECRET_ACCESS_KEY")?,
+        region: var("CF_R2_REGION").unwrap_or_else(|| "auto".into()),
     };
     let http = r2::client()?;
     let temp = Bucket::new(
         http.clone(),
         &endpoint,
-        &text("CF_R2_BUCKET", "subnet-22"),
-        &std::env::var("TASK_API_R2_PREFIX").unwrap_or_default(),
+        &var("CF_R2_BUCKET").unwrap_or_else(|| "subnet-22".into()),
+        &var("TASK_API_R2_PREFIX").unwrap_or_default(),
         credentials.clone(),
         errors.clone(),
     )?;
-    let pages = Bucket::new(
-        http,
-        &endpoint,
-        &text("CF_R2_PAGES_BUCKET", "desearch-pages"),
-        &std::env::var("CF_R2_PAGES_PREFIX").unwrap_or_default(),
-        credentials,
-        errors,
-    )?;
-    if (&temp.bucket, &temp.prefix) == (&pages.bucket, &pages.prefix) {
-        bail!("CF_R2_PAGES_BUCKET is {:?}, the same place uploads are kept and expired; point it at the permanent bucket", pages.bucket);
-    }
+    let pages_bucket = var("CF_R2_PAGES_BUCKET").unwrap_or_else(|| "desearch-pages".into());
+    let pages_prefix = var("CF_R2_PAGES_PREFIX").unwrap_or_default();
+    let pages = match var("PAGES_S3_ENDPOINT") {
+        Some(own) => {
+            let own_credentials = Credentials {
+                access_key: required("PAGES_S3_ACCESS_KEY_ID")?,
+                secret_key: required("PAGES_S3_SECRET_ACCESS_KEY")?,
+                region: required("PAGES_S3_REGION")?,
+            };
+            Bucket::new(http, &own, &var("PAGES_S3_BUCKET").unwrap_or(pages_bucket), &pages_prefix, own_credentials, errors)?
+        }
+        None => {
+            if (&temp.bucket, &temp.prefix) == (&pages_bucket, &pages_prefix) {
+                bail!("CF_R2_PAGES_BUCKET is {pages_bucket:?}, the same place uploads are kept and expired; point it at the permanent bucket");
+            }
+            Bucket::new(http, &endpoint, &pages_bucket, &pages_prefix, credentials, errors)?
+        }
+    };
     Ok((temp, pages))
 }
 

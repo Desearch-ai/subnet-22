@@ -305,3 +305,37 @@ async fn pages_kept_with_sitemap_escapes_are_taken_down() {
     assert_eq!(service::remove_escaped(&shared, &index, Some(&dir.join("again.jsonl"))).await.unwrap(), 0);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn the_pages_bucket_can_live_on_its_own_endpoint() {
+    let env = |pairs: &[(&str, &str)]| -> std::collections::HashMap<String, String> { pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect() };
+    let r2 = [("CF_R2_ENDPOINT", "https://r2.example"), ("CF_R2_ACCESS_KEY_ID", "r2key"), ("CF_R2_SECRET_ACCESS_KEY", "r2secret")];
+    let signed = |bucket: &Bucket| bucket.presign("GET", "k", 60, None, Duration::from_secs(1_700_000_000));
+
+    let both = env(&r2);
+    let (temp, pages) = service::buckets_from(|name| both.get(name).cloned(), Arc::default()).unwrap();
+    assert_eq!((temp.bucket.as_str(), pages.bucket.as_str()), (TEMP, PAGES));
+    assert!(signed(&pages).starts_with("https://r2.example/desearch-pages/k?") && signed(&pages).contains("r2key%2F20231114%2Fauto%2F"));
+
+    let mut split = r2.to_vec();
+    split.extend([
+        ("PAGES_S3_ENDPOINT", "https://s3.example"),
+        ("PAGES_S3_REGION", "us-east-va"),
+        ("PAGES_S3_ACCESS_KEY_ID", "s3key"),
+        ("PAGES_S3_SECRET_ACCESS_KEY", "s3secret"),
+    ]);
+    let split = env(&split);
+    let (temp, pages) = service::buckets_from(|name| split.get(name).cloned(), Arc::default()).unwrap();
+    assert!(signed(&temp).starts_with("https://r2.example/subnet-22/k?") && signed(&temp).contains("r2key%2F20231114%2Fauto%2F"));
+    assert!(signed(&pages).starts_with("https://s3.example/desearch-pages/k?") && signed(&pages).contains("s3key%2F20231114%2Fus-east-va%2F"));
+
+    let mut keyless = r2.to_vec();
+    keyless.push(("PAGES_S3_ENDPOINT", "https://s3.example"));
+    let keyless = env(&keyless);
+    assert!(service::buckets_from(|name| keyless.get(name).cloned(), Arc::default()).is_err());
+
+    let mut same = r2.to_vec();
+    same.push(("CF_R2_PAGES_BUCKET", TEMP));
+    let same = env(&same);
+    assert!(service::buckets_from(|name| same.get(name).cloned(), Arc::default()).is_err());
+}
