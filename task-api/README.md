@@ -182,8 +182,8 @@ one stops, and only one copy at a time runs the background work.
 It needs two buckets:
 
 - `subnet-22`, the temporary R2 bucket for uploads, with a lifecycle rule that deletes objects after one day;
-- `desearch-pages`, the bucket for published work, with a lifecycle rule that deletes `changes/` after
-  three days. It is reached with the same R2 token unless
+- `desearch-pages`, the bucket for published work, with lifecycle rules that delete `changes/` and
+  `rounds/` after three days and `reports/` after 30 days; `current/` is kept by the compactor. It is reached with the same R2 token unless
   `PAGES_S3_ENDPOINT`, `PAGES_S3_REGION`, `PAGES_S3_ACCESS_KEY_ID` and `PAGES_S3_SECRET_ACCESS_KEY`
   (and `PAGES_S3_BUCKET` when the name differs) put it on another S3 store; the publisher and the
   compactor read the same settings.
@@ -279,8 +279,10 @@ desearch-pages bucket
                           newest in latest.json; kept three days
   current/                the latest version of every page, compacted from changes/: 1,024 shards by
                           URL hash, each a sorted base file plus delta files and a manifest naming them
-  rounds/                 each round's URL lists, so the URLs of uploads taken back go to the bot again
-  reports/                every final result, with the checked pages and each validator's report
+  rounds/                 each round's URL lists, so the URLs of uploads taken back go to the bot again;
+                          kept three days
+  reports/                every final result, with the checked pages and each validator's report;
+                          kept 30 days, the API keeps them all
   vectors/model=<name>/   verified vectors
 ```
 

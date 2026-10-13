@@ -129,8 +129,8 @@ subnet-22 bucket (temporary, objects expire after a day, readable by anyone)
 desearch-pages bucket
   changes/        every new, changed or removed page with its full text, numbered in order, kept three days
   current/        the latest version of every page, compacted from changes/ into 1,024 shards
-  rounds/         each round's URL lists, so the URLs of uploads taken back go to the bot again
-  reports/        every final result with the pages that were checked
+  rounds/         each round's URL lists, kept three days
+  reports/        every final result with the pages that were checked, kept 30 days
   vectors/        verified vectors, by model
 ```
 
