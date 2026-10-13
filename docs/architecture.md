@@ -30,9 +30,10 @@ built from. This page explains how those parts fit together.
 | Shared package | Fetching, text extraction and embedding formats, so miners and validators run the same code. | [`desearch/`](../desearch/) |
 
 The task API keeps its live queues in Redis and its records (rounds, the signed log, the validators'
-results, budgets and what each miner is owed) in SQLite. Files live in two Cloudflare R2 buckets:
-uploads in `subnet-22`, which is temporary and readable by anyone at `https://r2.desearch.ai`, and
-published pages in `desearch-pages`, which is permanent.
+results, budgets and what each miner is owed) in SQLite. Files live in two buckets: uploads in
+`subnet-22`, a Cloudflare R2 bucket that is temporary and readable by anyone at
+`https://r2.desearch.ai`, and published pages in `desearch-pages`, which keeps the latest version of
+every page.
 
 ## A crawl task, start to finish
 
@@ -125,8 +126,10 @@ subnet-22 bucket (temporary, objects expire after a day, readable by anyone)
   log/uploads/      every completed upload with the counts its miner reported, signed, for validators to count
   outcomes/         what became of every URL, for the bot
   embed-inputs/     texts waiting to be embedded
-desearch-pages bucket (permanent)
-  changes/        every new, changed or removed page with its full text, numbered in order
+desearch-pages bucket
+  changes/        every new, changed or removed page with its full text, numbered in order, kept three days
+  current/        the latest version of every page, compacted from changes/ into 1,024 shards
+  rounds/         each round's URL lists, so the URLs of uploads taken back go to the bot again
   reports/        every final result with the pages that were checked
   vectors/        verified vectors, by model
 ```

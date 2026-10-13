@@ -44,7 +44,7 @@ async fn main() -> Result<()> {
     let listen = settings.listen.clone();
     let (storage, pages) = State::buckets(&settings)?;
     for bucket in [&storage, &pages] {
-        bucket.check().await.with_context(|| format!("R2 bucket {} is not reachable", bucket.bucket))?;
+        bucket.check().await.with_context(|| format!("bucket {} is not reachable", bucket.bucket))?;
     }
     let redis = redis_from(&settings.redis_url).await?;
     let state = Arc::new(State::new(settings, redis, storage, pages).await?);

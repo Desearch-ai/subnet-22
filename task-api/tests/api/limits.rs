@@ -1,11 +1,11 @@
-//! Redis going away, request bodies over their limit, and the addresses limits are counted by.
+//! Redis going away, request bodies over their limit, the addresses limits are counted by, and where the buckets live.
 
 use std::time::Duration;
 
 use futures::stream;
 use serde_json::{json, Value};
 use task_api::lifecycle;
-use task_api::settings::RegistryMode;
+use task_api::settings::{PagesStore, RegistryMode};
 use task_api::state::State;
 
 use crate::harness::{urls, Harness};
@@ -158,4 +158,21 @@ async fn an_unregistered_hotkey_is_turned_away_before_its_signature_is_checked()
         .unwrap();
     assert_eq!(response.status(), 403);
     assert!(response.text().await.unwrap().contains("not registered"));
+}
+
+#[test]
+fn the_pages_bucket_can_live_on_its_own_endpoint_while_uploads_stay_on_r2() {
+    let mut settings = crate::harness::settings(std::env::temp_dir(), "https://r2.example");
+    settings.pages_bucket = "desearch-pages".into();
+    let signed = |bucket: &desearch::r2::Bucket| bucket.presign("GET", "k", 60, None, Duration::from_secs(1_700_000_000));
+
+    let (storage, pages) = State::buckets(&settings).unwrap();
+    assert!(signed(&storage).starts_with("https://r2.example/subnet-22/k?"));
+    assert!(signed(&pages).starts_with("https://r2.example/desearch-pages/") && signed(&pages).contains("%2Fauto%2F"));
+
+    settings.pages_store =
+        Some(PagesStore { endpoint: "https://s3.example".into(), region: "us-east-va".into(), access_key: "s3key".into(), secret_key: "s3secret".into() });
+    let (storage, pages) = State::buckets(&settings).unwrap();
+    assert!(signed(&storage).starts_with("https://r2.example/subnet-22/k?") && signed(&storage).contains("test%2F20231114%2Fauto%2F"));
+    assert!(signed(&pages).starts_with("https://s3.example/desearch-pages/") && signed(&pages).contains("s3key%2F20231114%2Fus-east-va%2F"));
 }

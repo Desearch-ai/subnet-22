@@ -23,6 +23,28 @@ pub enum SeedsMode {
     Local { block_seconds: f64, genesis: f64 },
 }
 
+/// The pages bucket's own endpoint and keys, when it is not on the R2 endpoint.
+#[derive(Clone, Debug)]
+pub struct PagesStore {
+    pub endpoint: String,
+    pub region: String,
+    pub access_key: String,
+    pub secret_key: String,
+}
+
+impl PagesStore {
+    pub fn from(var: impl Fn(&str) -> Option<String>) -> Result<Option<PagesStore>> {
+        let Some(endpoint) = var("PAGES_S3_ENDPOINT").filter(|v| !v.is_empty()) else { return Ok(None) };
+        let required = |name: &str| var(name).filter(|v| !v.is_empty()).with_context(|| format!("{name} must be set with PAGES_S3_ENDPOINT"));
+        Ok(Some(PagesStore {
+            endpoint,
+            region: required("PAGES_S3_REGION")?,
+            access_key: required("PAGES_S3_ACCESS_KEY_ID")?,
+            secret_key: required("PAGES_S3_SECRET_ACCESS_KEY")?,
+        }))
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Settings {
     pub listen: String,
@@ -54,6 +76,7 @@ pub struct Settings {
     pub prefix: String,
     pub pages_bucket: String,
     pub pages_prefix: String,
+    pub pages_store: Option<PagesStore>,
     pub registry: RegistryMode,
     pub seeds: SeedsMode,
     pub admin_hotkeys: Vec<String>,
@@ -92,6 +115,8 @@ impl Settings {
             _ => SeedsMode::Local { block_seconds: number("TASK_API_BLOCK_SECONDS", 12.0)?, genesis: number("TASK_API_GENESIS", 0.0)? },
         };
         let key_uri = text("TASK_API_KEY_URI", "");
+        let pages_store = PagesStore::from(|name| std::env::var(name).ok())?;
+        let pages_bucket = text("CF_R2_PAGES_BUCKET", "desearch-pages");
         if key_uri.is_empty() && matches!(registry, RegistryMode::Chain { .. }) {
             bail!("TASK_API_KEY_URI must be set when TASK_API_REGISTRY=chain");
         }
@@ -123,8 +148,12 @@ impl Settings {
             r2_secret_key: text("CF_R2_SECRET_ACCESS_KEY", ""),
             bucket: text("CF_R2_BUCKET", "subnet-22"),
             prefix: text("TASK_API_R2_PREFIX", ""),
-            pages_bucket: text("CF_R2_PAGES_BUCKET", "desearch-pages"),
+            pages_bucket: match pages_store {
+                Some(_) => std::env::var("PAGES_S3_BUCKET").ok().filter(|v| !v.is_empty()).unwrap_or(pages_bucket),
+                None => pages_bucket,
+            },
             pages_prefix: text("CF_R2_PAGES_PREFIX", ""),
+            pages_store,
             registry,
             seeds,
             admin_hotkeys: listed(&text("TASK_API_ADMIN_HOTKEYS", "")),
@@ -132,5 +161,31 @@ impl Settings {
             key_uri,
             cors_origins: listed(&text("TASK_API_CORS_ORIGINS", DEFAULT_ORIGINS)),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use super::*;
+
+    #[test]
+    fn the_pages_bucket_gets_its_own_endpoint_only_with_all_its_keys() {
+        let lookup = |pairs: &[(&str, &str)]| -> HashMap<String, String> { pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect() };
+        let none = lookup(&[("CF_R2_ENDPOINT", "https://r2.example")]);
+        assert!(PagesStore::from(|name| none.get(name).cloned()).unwrap().is_none());
+
+        let keyless = lookup(&[("PAGES_S3_ENDPOINT", "https://s3.example"), ("PAGES_S3_REGION", "us-east-va")]);
+        assert!(PagesStore::from(|name| keyless.get(name).cloned()).is_err());
+
+        let own = lookup(&[
+            ("PAGES_S3_ENDPOINT", "https://s3.example"),
+            ("PAGES_S3_REGION", "us-east-va"),
+            ("PAGES_S3_ACCESS_KEY_ID", "s3key"),
+            ("PAGES_S3_SECRET_ACCESS_KEY", "s3secret"),
+        ]);
+        let store = PagesStore::from(|name| own.get(name).cloned()).unwrap().unwrap();
+        assert_eq!((store.endpoint.as_str(), store.region.as_str(), store.access_key.as_str()), ("https://s3.example", "us-east-va", "s3key"));
     }
 }

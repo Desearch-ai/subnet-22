@@ -157,12 +157,16 @@ impl State {
         })
     }
 
-    /// The buckets the settings name, under one set of credentials.
+    /// The buckets the settings name, both on the R2 endpoint unless the pages bucket has its own.
     pub fn buckets(settings: &Settings) -> Result<(Bucket, Bucket)> {
         let http = desearch::r2::client()?;
         let credentials = Credentials { access_key: settings.r2_access_key.clone(), secret_key: settings.r2_secret_key.clone(), region: "auto".into() };
         let storage = Bucket::new(http.clone(), &settings.r2_endpoint, &settings.bucket, &settings.prefix, credentials.clone(), Default::default())?;
-        let pages = Bucket::new(http, &settings.r2_endpoint, &settings.pages_bucket, &settings.pages_prefix, credentials, Default::default())?;
+        let (endpoint, credentials) = match &settings.pages_store {
+            Some(own) => (&own.endpoint, Credentials { access_key: own.access_key.clone(), secret_key: own.secret_key.clone(), region: own.region.clone() }),
+            None => (&settings.r2_endpoint, credentials),
+        };
+        let pages = Bucket::new(http, endpoint, &settings.pages_bucket, &settings.pages_prefix, credentials, Default::default())?;
         Ok((storage, pages))
     }
 

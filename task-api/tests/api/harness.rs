@@ -181,6 +181,7 @@ pub fn settings(data: PathBuf, endpoint: &str) -> Settings {
         prefix: String::new(),
         pages_bucket: BUCKET.into(),
         pages_prefix: PAGES_PREFIX.into(),
+        pages_store: None,
         registry: RegistryMode::Local { validator_uris: [VALIDATOR, OTHER_VALIDATOR, THIRD_VALIDATOR].join(",") },
         seeds: SeedsMode::Local { block_seconds: 0.02, genesis: 0.0 },
         admin_hotkeys: Vec::new(),
@@ -240,7 +241,8 @@ impl Harness {
 
     /// Serves another copy started now on the same Redis and database, as after a restart; returns its URL.
     pub async fn restarted(&self) -> String {
-        let state = State::new(self.state.settings.clone(), self.redis.clone(), self.state.storage.clone(), self.state.pages.clone()).await.expect("the copy opens");
+        let state =
+            State::new(self.state.settings.clone(), self.redis.clone(), self.state.storage.clone(), self.state.pages.clone()).await.expect("the copy opens");
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("a port");
         let url = format!("http://{}", listener.local_addr().expect("an address"));
         let router = task_api::http::router(Arc::new(state));
