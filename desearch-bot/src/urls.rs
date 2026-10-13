@@ -531,6 +531,14 @@ pub fn parse(url: &str, domain: &str) -> Option<Url> {
     Normaliser::new(domain).ok()?.parse(url)
 }
 
+/// A path with its query, escaped the way stored URLs are so robots.txt rules compare byte for byte.
+pub fn tidy_target(target: &str) -> String {
+    match target.split_once('?') {
+        Some((path, query)) => format!("{}?{}", tidy(path, SAFE_PATH), tidy(query, SAFE_QUERY)),
+        None => tidy(target, SAFE_PATH).into_owned(),
+    }
+}
+
 fn tidy<'a>(part: &'a str, safe: &[u8]) -> Cow<'a, str> {
     let plain = |b: u8| b.is_ascii_alphanumeric() || b"-._~/:@!$&'()*+,;=".contains(&b);
     if part.bytes().all(plain) {

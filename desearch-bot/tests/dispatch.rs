@@ -97,6 +97,34 @@ fn new_pages_join_their_ready_list_newest_first_without_junk() {
 }
 
 #[test]
+fn pages_robots_txt_disallows_leave_the_ready_list_unsent() {
+    let dir = Dir::new("ready-robots");
+    let store = open(&dir);
+    let blog = urls::parse("https://blog.example.com/members/x", "example.com").unwrap();
+    let pages = vec![page("news/a", 10), page("members/b", 20), page("members/join", 30), (blog, 40, false)];
+    store.record_listing("example.com", 7, pages, 100).unwrap();
+    let mut record = records::new_domain(Some(1), Some("com"), &[], State::Active, None, None);
+    record.insert("rules".into(), serde_json::json!({"allow": ["/members/join"], "disallow": ["/members/"]}));
+    let mut changes = Changes::default();
+    changes.domain("example.com", &record);
+    store.write(changes).unwrap();
+
+    let mut sent: Vec<String> = take(&store, 10).into_iter().map(|p| p.url).collect();
+    sent.sort();
+    assert_eq!(sent, ["https://blog.example.com/members/x", "https://example.com/members/join", "https://example.com/news/a"]);
+    assert_eq!(store.ready_count("example.com").unwrap(), 3, "a disallowed page leaves its list; the picks wait to be marked sent");
+
+    store.record_listing("example.com", 7, vec![page("news/c", 50)], 200).unwrap();
+    record.remove("rules");
+    record.insert("allows".into(), false.into());
+    let mut changes = Changes::default();
+    changes.domain("example.com", &record);
+    store.write(changes).unwrap();
+    let sent: Vec<String> = take(&store, 10).into_iter().map(|p| p.url).collect();
+    assert_eq!(sent, ["https://blog.example.com/members/x"], "a domain blocked before its rules were kept sends only other hosts' pages");
+}
+
+#[test]
 fn a_sent_page_returns_once_its_lastmod_moves_past_what_it_was_sent_with() {
     let dir = Dir::new("ready-changed");
     let store = open(&dir);

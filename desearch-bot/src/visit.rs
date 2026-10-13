@@ -14,13 +14,14 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio::time::Instant;
 
 use crate::buckets::{sitemap_id, Buckets};
+use crate::robots::{self, Paths};
 use crate::schedule::{self, Trust, DAY, SECOND};
 use crate::signing::Signer;
 use crate::sitemaps::{self, Entry};
 use crate::states::{Outcome, State, JITTER};
 use crate::suffixes::PublicSuffixList;
 use crate::urls::{self, Listing, Normaliser};
-use crate::{homepage, isodate, net, robots};
+use crate::{homepage, isodate, net};
 
 pub const MIN_HOST_INTERVAL: f64 = 1.0;
 /// Some sites ask for hours between requests; past this we slow down no further.
@@ -77,6 +78,7 @@ pub struct Known {
     pub last_ok_at: Option<i64>,
     pub robots_checked_at: Option<i64>,
     pub robots_allows: Option<bool>,
+    pub robots_paths: Paths,
     pub crawl_delay: Option<f64>,
     pub language: Option<String>,
     pub categories: Vec<String>,
@@ -114,6 +116,7 @@ pub struct Visit {
     pub robots_read: bool,
     pub robots_status: Option<u16>,
     pub robots_allows: Option<bool>,
+    pub robots_paths: Paths,
     pub crawl_delay: Option<f64>,
     pub language: Option<String>,
     pub declared_lang: Option<String>,
@@ -137,6 +140,7 @@ impl Visit {
             robots_read: false,
             robots_status: None,
             robots_allows: None,
+            robots_paths: Paths::default(),
             crawl_delay: None,
             language: None,
             declared_lang: None,
@@ -255,7 +259,12 @@ impl Visitor {
         let mut run = Run {
             visitor: self,
             pacer: Pacer::new(known.crawl_delay, self.floor),
-            result: Visit { robots_allows: known.robots_allows, crawl_delay: known.crawl_delay, ..Visit::new(&known.host) },
+            result: Visit {
+                robots_allows: known.robots_allows,
+                robots_paths: known.robots_paths.clone(),
+                crawl_delay: known.crawl_delay,
+                ..Visit::new(&known.host)
+            },
             known,
             now,
             guesses: HashSet::new(),
@@ -345,13 +354,15 @@ impl Run<'_> {
             self.stop(Outcome::Unreachable, Some(format!("robots_{}", answer.status)));
             return Ok(None);
         }
-        let (mut allowed, mut delay, mut named) = (true, None, Vec::new());
+        let (mut paths, mut delay, mut named) = (Paths::default(), None, Vec::new());
         if answer.status == 200 {
             let text = homepage::decode(&answer.body);
-            (allowed, delay) = robots::rules(&text, robots::TOKEN);
+            (paths, delay) = robots::rules(&text, robots::TOKEN);
             named = robots::sitemaps(&text);
         }
+        let allowed = paths.allows("/");
         self.result.robots_allows = Some(allowed);
+        self.result.robots_paths = paths;
         self.result.crawl_delay = delay;
         self.pacer.slow_to(delay);
         if !allowed {
@@ -376,6 +387,9 @@ impl Run<'_> {
                 continue;
             }
             seen.insert(url.clone());
+            if !self.robots_allow(&url) {
+                continue;
+            }
             let stored = known.sitemaps.get(&url);
             if stored.is_some_and(|s| !force && !due(s, self.now)) {
                 continue;
@@ -394,6 +408,22 @@ impl Run<'_> {
             }
         }
         Ok(())
+    }
+
+    /// Whether robots.txt lets us fetch this URL; the file we read covers the domain and its www host only.
+    fn robots_allow(&self, url: &str) -> bool {
+        let Ok(parts) = urls::split(url) else {
+            return true;
+        };
+        let host = parts.hostname().unwrap_or_default();
+        if host.strip_prefix("www.").unwrap_or(&host) != self.known.host || parts.port().ok().flatten().is_some_and(|port| port != 80 && port != 443) {
+            return true;
+        }
+        let target = match &parts.query {
+            Some(query) => format!("{}?{query}", parts.path),
+            None => parts.path.clone(),
+        };
+        self.result.robots_paths.allows(&urls::tidy_target(if target.is_empty() { "/" } else { &target }))
     }
 
     /// Read one sitemap file and return the child sitemaps worth reading next.
@@ -455,6 +485,7 @@ impl Run<'_> {
             id: update.id,
             depth,
             known: self.known.clone(),
+            robots: self.result.robots_paths.clone(),
             buckets: self.visitor.buckets.clone(),
         };
         let read = match self.visitor.cpu(move || digest(job)).await?? {
@@ -707,6 +738,7 @@ struct FileJob {
     id: i64,
     depth: i64,
     known: Arc<Known>,
+    robots: Paths,
     buckets: Arc<Buckets>,
 }
 
@@ -765,6 +797,10 @@ fn digest(job: FileJob) -> Result<Digested, Crash> {
             .zip(&dates)
             .filter_map(|(entry, date)| {
                 let url = normaliser.parse(&entry.url)?;
+                let rest = url.key.splitn(2, |&b| b == 0).nth(1)?;
+                if !job.robots.allows_page(&job.known.host, rest) {
+                    return None;
+                }
                 let timed = sitemaps::has_time(entry.lastmod.as_deref().or(entry.published.as_deref()));
                 Some((url, epoch(*date) as u32, timed))
             })

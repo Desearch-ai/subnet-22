@@ -10,6 +10,8 @@ use rocksdb::{Direction, IteratorMode, ReadOptions, WriteBatch};
 use serde_json::{json, Value};
 
 use crate::buckets::{meta_key, BucketStore, URL};
+use crate::records;
+use crate::robots::Paths;
 use crate::schedule::DAY;
 use crate::urls::{Record, HTTPS, WWW};
 
@@ -305,7 +307,8 @@ impl BucketStore {
     /// Pages of a domain that still need sending: each lane up to its quota, then lanes with pages left fill what the others could not; entries gone stale are dropped on the way.
     pub fn take_ready(&self, domain: &str, quotas: [usize; LANES]) -> Result<Vec<Pick>> {
         let want: usize = quotas.iter().sum();
-        let mut taking = Taking::default();
+        let robots = self.domain(domain)?.map(|record| records::robots_paths(&record)).unwrap_or_default();
+        let mut taking = Taking { robots, ..Taking::default() };
         for (lane, quota) in quotas.into_iter().enumerate() {
             self.take_lane(domain, lane, quota, &mut taking)?;
         }
@@ -350,7 +353,8 @@ impl BucketStore {
                     break;
                 }
                 taking.after[lane] = Some(key.clone());
-                let due = record.and_then(|r| reason(&r, sent.as_ref()).map(|why| (r, why)));
+                let allowed = taking.robots.allows_page(domain, &entry.rest);
+                let due = record.filter(|_| allowed).and_then(|r| reason(&r, sent.as_ref()).map(|why| (r, why)));
                 // A page listed twice, under an older and a newer lastmod, goes once.
                 let Some((record, why)) = due.filter(|_| taking.picked.insert(entry.rest.clone())) else {
                     taking.stale.push(key);
@@ -790,6 +794,7 @@ impl BucketStore {
 
 #[derive(Default)]
 struct Taking {
+    robots: Paths,
     picks: Vec<Pick>,
     stale: Vec<Vec<u8>>,
     picked: std::collections::HashSet<Vec<u8>>,
