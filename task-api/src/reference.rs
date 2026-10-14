@@ -42,7 +42,9 @@ impl Reference {
     /// Each asked text's vector, as base64 little-endian float32, from the kept ones or the model server.
     pub async fn vectors(&self, state: &State, task_id: &str, job: &Value, validator: &str, text_ids: &[String]) -> Result<Vec<String>, ApiError> {
         let mut redis = state.redis.clone();
-        let asked = format!("eref:asked:{task_id}:{validator}");
+        // Per upload: a task handed to another miner is sampled afresh, from the same input.
+        let upload = hex(&Sha256::digest(job["key"].as_str().unwrap_or_default().as_bytes()));
+        let asked = format!("eref:asked:{task_id}:{}:{validator}", &upload[..16]);
         let before: HashSet<String> = redis.smembers(&asked).await?;
         if before.union(&text_ids.iter().cloned().collect()).count() > MAX_TEXTS {
             return Err(ApiError::status(429, format!("a validator may ask for at most {MAX_TEXTS} texts of one upload")));

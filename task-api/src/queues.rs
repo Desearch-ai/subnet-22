@@ -36,6 +36,8 @@ pub const PWITHDRAWN: &str = "publish:withdrawn";
 pub const ROUNDS: &str = "rounds:seq";
 /// Published pages waiting to become embed batches, pushed by the publisher.
 pub const EMBED_INPUTS: &str = "embed:inputs";
+/// Inputs whose task was dropped after its last attempt, for the planner to plan their pages again.
+pub const EMBED_DROPPED: &str = "embed:dropped";
 pub const ROUND_SPAN: i64 = 10_000_000;
 pub const CLAIM_SCAN: i64 = 50;
 pub const OPEN_SCAN: isize = 500;

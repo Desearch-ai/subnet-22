@@ -125,3 +125,45 @@ async fn without_a_reference_model_server_the_endpoint_says_so() {
     let h = Harness::with(|s| s.embed_tasks = true).await;
     assert_eq!(h.validator.post("/v1/embed/0000000000000000/reference", json!({"text_ids": ["t1"]})).await.unwrap_err().status, 503);
 }
+
+#[tokio::test]
+async fn a_task_handed_to_another_miner_is_sampled_afresh_from_the_same_input() {
+    let sent = Arc::new(AtomicUsize::new(0));
+    let url = model_server(sent.clone()).await;
+    let h = Harness::with(|s| {
+        s.embed_tasks = true;
+        s.embed_reference_url = url.clone();
+        s.embed_reference_key = "key".into();
+    })
+    .await;
+    let names: Vec<(String, String)> = (0..70).map(|i| (format!("t{i}"), "x".repeat(i + 1))).collect();
+    let input = input_file(&names.iter().map(|(id, text)| (id.as_str(), text.as_str())).collect::<Vec<_>>());
+    let input_key = "embed/inputs/dt=2026-10-14/b.parquet";
+    h.state.storage.put(input_key, Bytes::from(input.clone()), "application/vnd.apache.parquet", None).await.unwrap();
+    let entry = json!({"input_key": input_key, "input_sha256": format!("{:x}", Sha256::digest(&input)), "texts": 70, "chars": 2485,
+                       "pages": [{"page_key": "pages/a.example/1", "content_sha1": "c".repeat(40), "url": "https://a.example/1", "host": "a.example"}]});
+    let _: i64 = h.redis.clone().rpush(EMBED_INPUTS, entry.to_string()).await.unwrap();
+    lifecycle::open_embed_rounds(&h.state).await.unwrap().expect("an embed round");
+    h.revealed().await;
+    let claim = json!({"kind": "embed", "models": ["desearch-4b-v1"]});
+    let ids = |range: std::ops::Range<usize>| json!({"text_ids": range.map(|i| format!("t{i}")).collect::<Vec<_>>()});
+
+    let task = h.miner.post("/v1/tasks/claim", claim.clone()).await.unwrap()["tasks"][0].clone();
+    h.put(task["upload"]["url"].as_str().unwrap(), b"PAR1vectorsPAR1".to_vec()).await;
+    h.miner.post(&format!("/v1/tasks/{}/complete", task_id(&task)), json!({"key": task["upload"]["key"], "bytes": 7})).await.unwrap();
+    h.opened(Some(&h.validator), Some(&task_id(&task))).await;
+    let path = format!("/v1/embed/{}/reference", task_id(&task));
+    h.validator.post(&path, ids(0..40)).await.unwrap();
+    let failed = json!({"returned": 70, "sampled": 2, "matched": 0, "mismatched": 2, "min_similarity": 0.12, "verdict": "fail", "reason": "vectors_mismatch",
+                        "samples": [{"text_id": "t0", "outcome": "mismatched", "similarity": 0.12}, {"text_id": "t1", "outcome": "mismatched", "similarity": 0.12}]});
+    h.validator.post(&format!("/v1/validation/{}/score", task_id(&task)), failed).await.unwrap();
+
+    let again = h.rival.post("/v1/tasks/claim", claim).await.unwrap()["tasks"][0].clone();
+    assert_eq!(task_id(&again), task_id(&task));
+    h.put(again["upload"]["url"].as_str().unwrap(), b"PAR1vectorsPAR1".to_vec()).await;
+    h.rival.post(&format!("/v1/tasks/{}/complete", task_id(&again)), json!({"key": again["upload"]["key"], "bytes": 7})).await.unwrap();
+    h.opened(None, Some(&task_id(&again))).await;
+    h.validator.post(&path, ids(30..70)).await.expect("a new upload gets its own sample");
+    assert_eq!(sent.load(Ordering::SeqCst), 70, "texts asked before are not embedded again");
+    assert_eq!(h.validator.post(&path, ids(0..30)).await.unwrap_err().status, 429, "still at most 64 texts of one upload");
+}

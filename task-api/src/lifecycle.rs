@@ -420,6 +420,9 @@ pub async fn requeue(state: &State, task_id: &str, job: &Value, cause: &str) -> 
         finish_task(state, &round_id, task_id).await?;
         if kind == CRAWL {
             report_outcomes(state, &urls_of(job), OUTCOME_DROPPED, task_id).await;
+        } else {
+            let dropped = json!({"input_key": job["input_key"], "pages": job["pages"]});
+            let _: i64 = state.redis.clone().rpush(queues::EMBED_DROPPED, dropped.to_string()).await?;
         }
         return Ok(());
     }

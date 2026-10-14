@@ -4,7 +4,7 @@ use desearch::time::now;
 use redis::AsyncCommands;
 use serde_json::{json, Value};
 use task_api::lifecycle;
-use task_api::queues::{self, EMBED_INPUTS};
+use task_api::queues::{self, EMBED_DROPPED, EMBED_INPUTS};
 
 use crate::harness::{judged, task_id, urls, Client, Harness};
 
@@ -230,4 +230,26 @@ async fn an_embed_upload_no_validator_scored_by_its_deadline_is_void_and_goes_to
     assert_eq!(strikes, 0);
     h.revealed().await;
     assert_eq!(h.rival.post("/v1/tasks/claim", embed_claim()).await.unwrap()["tasks"][0]["task_id"], json!(task_id));
+}
+
+#[tokio::test]
+async fn an_embed_task_dropped_after_its_last_attempt_hands_its_pages_back_to_the_planner() {
+    let h = Harness::with(|s| {
+        s.embed_tasks = true;
+        s.max_attempts = 1;
+    })
+    .await;
+    embed_round(&h, input()).await;
+    let task = embed_task(&h, &h.miner).await;
+    h.opened(Some(&h.validator), None).await;
+    h.validator.post(&format!("/v1/validation/{}/score", task_id(&task)), embed_score("fail", "mismatched", "vectors_mismatch")).await.unwrap();
+
+    let dropped: Vec<String> = h.redis.clone().lrange(EMBED_DROPPED, 0, -1).await.unwrap();
+    let dropped: Vec<Value> = dropped.iter().map(|raw| serde_json::from_str(raw).unwrap()).collect();
+    assert_eq!(dropped.len(), 1);
+    assert_eq!(dropped[0]["input_key"], input()["input_key"]);
+    let given: Vec<(Value, Value)> = dropped[0]["pages"].as_array().unwrap().iter().map(|p| (p["page_key"].clone(), p["content_sha1"].clone())).collect();
+    let planned: Vec<(Value, Value)> = pages().as_array().unwrap().iter().map(|p| (p["page_key"].clone(), p["content_sha1"].clone())).collect();
+    assert_eq!(given, planned);
+    assert_eq!(h.rival.post("/v1/tasks/claim", embed_claim()).await.unwrap()["refusal"]["code"], "QUEUE_EMPTY");
 }
