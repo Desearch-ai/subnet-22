@@ -10,7 +10,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use arrow_array::cast::AsArray;
-use arrow_array::RecordBatch;
+use arrow_array::{ArrayRef, BinaryArray, Int32Array, LargeStringArray, RecordBatch, StringArray};
+use arrow_schema::{DataType, Field, Schema};
 use base64::Engine;
 use bytes::Bytes;
 use common::{page, parquet};
@@ -137,12 +138,6 @@ async fn the_service_publishes_reports_and_takes_back() {
     enqueue(&mut redis, &crawl("t2", &urls("t2"), completed, ""), false).await;
     enqueue(&mut redis, &crawl("t3", &urls("t3"), completed, ""), true).await;
     enqueue(&mut redis, &crawl("t4", &urls("t4"), completed, "\"not-this-one\""), true).await;
-    enqueue(
-        &mut redis,
-        &json!({"task_id": "t5", "kind": "embed", "key": "embed/t5.parquet", "input_key": "embed-inputs/t5.parquet", "completed_at": completed}),
-        true,
-    )
-    .await;
     state.fail("GET", &format!("{TEMP}/{PREFIX}submitted/t1"), 2);
     state.fail("PUT", &format!("{PAGES}/changes/seq/"), 5);
 
@@ -151,10 +146,7 @@ async fn the_service_publishes_reports_and_takes_back() {
     let acked: u64 = redis.get("publish:acked").await.unwrap();
     assert_eq!(acked, 4, "t1, t2 and the lost t3 and t4");
     let claimed: Vec<String> = redis.zrange("publish:claims", 0, -1).await.unwrap();
-    assert_eq!(claimed, ["t5"], "an embed job stays claimed for the API to give back");
-    let pending: Vec<String> = redis.zrange("publish:pending", 0, -1).await.unwrap();
-    assert_eq!(pending, ["t5"]);
-    assert!(!redis.exists::<_, bool>("pjob:t1").await.unwrap() && redis.exists::<_, bool>("pjob:t5").await.unwrap());
+    assert!(claimed.is_empty() && !redis.exists::<_, bool>("pjob:t1").await.unwrap());
     let lost: u64 = redis.get("publish:lost").await.unwrap();
     let lost_tasks: HashSet<String> = redis.smembers("publish:lost:tasks").await.unwrap();
     assert_eq!((lost, lost_tasks), (2, HashSet::from(["t3".to_string(), "t4".to_string()])), "t3 expired, t4 changed");
@@ -214,6 +206,102 @@ async fn the_service_publishes_reports_and_takes_back() {
     };
     assert_eq!((of("published"), of("failed"), outcomes.len()), (urls("t1"), urls("t2"), 6), "the late job for t2 is refused");
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+fn embed_input(texts: &[(&str, &str, &str, i32)]) -> Vec<u8> {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("text_id", DataType::Utf8, false),
+        Field::new("page_key", DataType::Utf8, false),
+        Field::new("url", DataType::Utf8, false),
+        Field::new("content_sha1", DataType::Utf8, false),
+        Field::new("kind", DataType::Utf8, false),
+        Field::new("index", DataType::Int32, false),
+        Field::new("text", DataType::LargeUtf8, false),
+    ]));
+    let strings = |pick: fn(&(&str, &str, &str, i32)) -> String| -> ArrayRef { Arc::new(StringArray::from(texts.iter().map(pick).collect::<Vec<_>>())) };
+    let columns = vec![
+        strings(|t| t.0.to_string()),
+        strings(|t| t.1.to_string()),
+        strings(|t| format!("https://example.com/{}", t.1)),
+        strings(|t| format!("sha-{}", t.1)),
+        strings(|t| t.2.to_string()),
+        Arc::new(Int32Array::from(texts.iter().map(|t| t.3).collect::<Vec<_>>())) as ArrayRef,
+        Arc::new(LargeStringArray::from(texts.iter().map(|t| format!("text of {}", t.0)).collect::<Vec<_>>())) as ArrayRef,
+    ];
+    write_parquet(RecordBatch::try_new(schema, columns).unwrap())
+}
+
+fn embed_upload(vectors: &[(&str, Vec<u8>)]) -> Vec<u8> {
+    let schema = Arc::new(Schema::new(vec![Field::new("text_id", DataType::Utf8, false), Field::new("vector", DataType::Binary, false)]));
+    let ids: ArrayRef = Arc::new(StringArray::from(vectors.iter().map(|v| v.0).collect::<Vec<_>>()));
+    let values: ArrayRef = Arc::new(BinaryArray::from(vectors.iter().map(|v| v.1.as_slice()).collect::<Vec<_>>()));
+    write_parquet(RecordBatch::try_new(schema, vec![ids, values]).unwrap())
+}
+
+fn write_parquet(batch: RecordBatch) -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut writer = parquet::arrow::ArrowWriter::try_new(&mut out, batch.schema(), None).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
+    out
+}
+
+/// A unit vector of float16 values pointing along `axis`.
+fn unit(dims: usize, axis: usize) -> Vec<u8> {
+    (0..dims).flat_map(|i| half::f16::from_f32(if i == axis { 1.0 } else { 0.0 }).to_le_bytes()).collect()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_embed_job_publishes_its_vectors_by_page_in_its_models_feed() {
+    let Some((_turn, mut redis)) = redis_db().await else {
+        eprintln!("skipped: no Redis on {REDIS}");
+        return;
+    };
+    let dir = scratch("vectors");
+    let stub = stub::start(dir.join("r2"), "127.0.0.1:0").await.unwrap();
+    let state = stub.state.clone();
+    let metrics = Arc::new(Metrics::default());
+    let temp = bucket(stub.addr, TEMP, PREFIX, metrics.r2_errors.clone());
+    let pages = bucket(stub.addr, PAGES, "", metrics.r2_errors.clone());
+    let settings =
+        Settings { redis_url: REDIS.into(), claim_ttl: 600.0, batch: 4, readers: 4, ranges: 4, ahead: 2, idle_exit: 0, idle_delay: Duration::from_millis(50) };
+    let shared = Shared::connect(settings, temp.clone(), pages.clone(), metrics.clone()).await.unwrap();
+
+    let texts = [("p2#page", "p2", "page", 0), ("p1#p1", "p1", "passage", 1), ("p1#page", "p1", "page", 0)];
+    temp.put("embed/inputs/t7.parquet", Bytes::from(embed_input(&texts)), PARQUET, None).await.unwrap();
+    let upload = embed_upload(&[("p1#page", unit(8, 0)), ("p2#page", unit(8, 1)), ("p1#p1", unit(8, 2))]);
+    temp.put("submitted/t7.parquet", Bytes::from(upload), PARQUET, None).await.unwrap();
+    temp.put("embed/inputs/t8.parquet", Bytes::from(embed_input(&texts[..1])), PARQUET, None).await.unwrap();
+    let mut long = unit(8, 0);
+    long[1] = 0x40;
+    temp.put("submitted/t8.parquet", Bytes::from(embed_upload(&[("p2#page", long)])), PARQUET, None).await.unwrap();
+    let embed = |task: &str| {
+        json!({"task_id": task, "kind": "embed", "miner": "5Miner", "model": "desearch-4b-v1", "key": format!("submitted/{task}.parquet"),
+               "input_key": format!("embed/inputs/{task}.parquet"), "texts": 3, "completed_at": service::now_us() as f64 / 1e6})
+    };
+    enqueue(&mut redis, &embed("t7"), true).await;
+    enqueue(&mut redis, &embed("t8"), true).await;
+
+    publish_until_idle(&shared).await;
+
+    assert_eq!(redis.get::<_, u64>("publish:acked").await.unwrap(), 2);
+    let lost: HashSet<String> = redis.smembers("publish:lost:tasks").await.unwrap();
+    assert_eq!(lost, HashSet::from(["t8".to_string()]), "a vector twice too long is not published");
+    let index = json_object(&state, PAGES, "vectors/desearch-4b-v1/seq/000000000001.json").unwrap();
+    assert_eq!(index["rows"], 3);
+    assert_eq!(json_object(&state, PAGES, "vectors/desearch-4b-v1/latest.json").unwrap(), json!({"seq": 1}));
+    let key = index["key"].as_str().unwrap();
+    assert!(key.starts_with("vectors/desearch-4b-v1/log/dt=") && key.ends_with(".parquet"));
+    let written = publisher::vectors::decode(Bytes::from(state.object(PAGES, key).unwrap())).unwrap();
+    let placed: Vec<(&str, &str, i32)> = written.iter().map(|r| (r.key.as_str(), r.kind.as_str(), r.index)).collect();
+    assert_eq!(placed, [("p1", "page", 0), ("p1", "passage", 1), ("p2", "page", 0)], "sorted by page, each vector with its own text");
+    assert_eq!((written[0].vector.clone(), written[2].vector.clone()), (unit(8, 0), unit(8, 1)));
+    assert_eq!((written[1].url.as_str(), written[1].content_sha1.as_str()), ("https://example.com/p1", "sha-p1"));
+    assert!(
+        state.keys(TEMP, &format!("{PREFIX}submitted/")).is_empty() && state.keys(TEMP, &format!("{PREFIX}embed/")).is_empty(),
+        "uploads and inputs are deleted"
+    );
+    assert!(state.keys(PAGES, "changes/").is_empty(), "embed jobs write no change file");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

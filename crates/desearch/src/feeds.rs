@@ -1,5 +1,6 @@
 //! Files numbered in the order they were written, as `app.feeds.Feed` numbers them, so a reader follows them one number at a time.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 
 use anyhow::Result;
@@ -10,13 +11,18 @@ use redis::AsyncCommands;
 use crate::r2::{Bucket, JSON};
 
 pub struct Feed {
-    pub name: &'static str,
+    pub name: Cow<'static, str>,
 }
 
-pub const CHANGES: Feed = Feed { name: "changes" };
-pub const OUTCOMES: Feed = Feed { name: "outcomes" };
+pub const CHANGES: Feed = Feed { name: Cow::Borrowed("changes") };
+pub const OUTCOMES: Feed = Feed { name: Cow::Borrowed("outcomes") };
 
 impl Feed {
+    /// The accepted vectors of one embedding model, under `vectors/<model>/`.
+    pub fn vectors(model: &str) -> Feed {
+        Feed { name: Cow::Owned(format!("vectors/{model}")) }
+    }
+
     pub fn counter(&self) -> String {
         format!("{}:seq", self.name)
     }

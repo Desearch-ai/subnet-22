@@ -32,6 +32,9 @@ pub struct Job {
     /// An embed job's input file in the temp bucket, deleted with the upload when the job is done.
     #[serde(default)]
     pub input_key: Option<String>,
+    /// The embedding model an embed job's vectors come from.
+    #[serde(default)]
+    pub model: Option<String>,
     #[serde(default)]
     pub urls: Vec<String>,
     #[serde(default)]

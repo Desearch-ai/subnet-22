@@ -22,8 +22,9 @@ use crate::outcomes;
 use crate::queue::PublishQueue;
 use crate::reading::{RangeRead, Remote, Traffic};
 use crate::records::iso;
-use crate::worker::{self, ChangeFeed, Fault, Job, Read, Uploads};
-use desearch::feeds::{CHANGES, OUTCOMES};
+use crate::vectors;
+use crate::worker::{self, ChangeFeed, Fault, Job, Read, Uploads, EMBED};
+use desearch::feeds::{Feed, CHANGES, OUTCOMES};
 use desearch::outcomes::Outcome;
 use desearch::r2::{self, Bucket, Credentials, PARQUET};
 
@@ -51,9 +52,6 @@ pub struct Settings {
 
 impl Settings {
     pub fn from_env() -> Result<Self> {
-        if text("TASK_API_EMBED_TASKS", "0") == "1" {
-            bail!("TASK_API_EMBED_TASKS=1: the publisher does not write embed inputs");
-        }
         let batch = number("PUBLISHER_BATCH", 40)?;
         Ok(Settings {
             redis_url: text("TASK_API_REDIS", "redis://localhost:6379/15"),
@@ -211,6 +209,7 @@ impl ChangeFeed for R2Changes {
 
 pub struct Claimed {
     jobs: Vec<Job>,
+    embeds: Vec<Job>,
     reads: JoinHandle<Vec<Read>>,
     started: Instant,
 }
@@ -222,16 +221,21 @@ pub async fn start_batch(shared: Arc<Shared>) -> Result<Option<Claimed>> {
         return Ok(None);
     }
     let started = Instant::now();
+    let (embeds, jobs): (Vec<Job>, Vec<Job>) = jobs.into_iter().partition(|job| job.is(EMBED));
     let uploads =
         R2Uploads { temp: shared.temp.clone(), handle: shared.handle.clone(), ranges: shared.settings.ranges, traffic: shared.metrics.traffic.clone() };
     let (reading, readers, now) = (jobs.clone(), shared.settings.readers, now_us());
     let reads = tokio::task::spawn_blocking(move || worker::read_all(&reading, &uploads, now, readers));
-    Ok(Some(Claimed { jobs, reads, started }))
+    Ok(Some(Claimed { jobs, embeds, reads, started }))
 }
 
-/// Writes a batch already read: change file, outcomes, acknowledgements; returns the jobs finished.
+/// Writes a batch already read: change file, outcomes and acknowledgements for pages, a vector file for each embed job; returns the jobs finished.
 pub async fn write_batch(shared: &Shared, claimed: Claimed) -> Result<usize> {
-    let Claimed { jobs, reads, started } = claimed;
+    let Claimed { jobs, embeds, reads, started } = claimed;
+    let embedded = publish_vectors(shared, embeds).await;
+    if jobs.is_empty() {
+        return Ok(embedded);
+    }
     let reads = reads.await.context("reading the batch")?;
     let read_s = started.elapsed().as_secs_f64();
     let ids: Vec<&str> = jobs.iter().map(|job| job.task_id.as_str()).collect();
@@ -288,7 +292,86 @@ pub async fn write_batch(shared: &Shared, claimed: Claimed) -> Result<usize> {
         batch.retry.len(),
         batch.change_seq.map_or("none".to_string(), |seq| format!("#{seq} ({} bytes)", batch.change_bytes)),
     );
-    Ok(batch.finalized.len())
+    Ok(batch.finalized.len() + embedded)
+}
+
+/// Publishes each embed job's vectors and finishes it; a job that cannot be read any more is finished as lost, any other failure leaves it claimed to be tried again.
+async fn publish_vectors(shared: &Shared, jobs: Vec<Job>) -> usize {
+    let mut finished = 0;
+    let mut models = std::collections::BTreeSet::new();
+    for job in jobs {
+        let task_id = job.task_id.as_str();
+        match publish_job_vectors(shared, &job).await {
+            Ok((rows, key)) => println!("task={task_id} published {rows} vectors to {key}"),
+            Err(Fault::Gone(why)) => {
+                eprintln!("task={task_id} embed upload lost: {why}");
+                if let Err(error) = shared.queue.mark_lost(task_id).await {
+                    eprintln!("task={task_id} could not be marked lost: {error:#}");
+                }
+            }
+            Err(Fault::Retry(why)) => {
+                eprintln!("task={task_id} vectors not published; they will be retried: {why}");
+                continue;
+            }
+        }
+        models.extend(job.model.clone());
+        if let Err(error) = shared.queue.ack(task_id).await {
+            eprintln!("task={task_id} could not be acknowledged: {error:#}");
+            continue;
+        }
+        finished += 1;
+        for key in [job.key.clone(), job.input_key.clone()].into_iter().flatten() {
+            let temp = shared.temp.clone();
+            tokio::spawn(async move { temp.delete(&key).await });
+        }
+    }
+    for model in models {
+        if let Err(error) = Feed::vectors(&model).fill_holes(&shared.pages, shared.redis()).await {
+            eprintln!("filling holes in the {model} vectors feed failed: {error:#}");
+        }
+    }
+    finished
+}
+
+/// One embed job's vector file, written and numbered in its model's feed: the rows and the file's key.
+async fn publish_job_vectors(shared: &Shared, job: &Job) -> Result<(usize, String), Fault> {
+    let missing = |what: &str| Fault::Retry(format!("an embed job without {what}"));
+    let (key, input_key, model) = (
+        job.key.as_deref().ok_or_else(|| missing("an upload key"))?,
+        job.input_key.as_deref().ok_or_else(|| missing("an input"))?,
+        job.model.as_deref().ok_or_else(|| missing("a model"))?,
+    );
+    let head = shared.temp.head(key).await.map_err(|error| Fault::Retry(format!("HEAD {key}: {error}")))?.ok_or(Fault::Gone("expired"))?;
+    if job.etag.as_deref().is_some_and(|etag| !etag.is_empty() && head.etag.trim_matches('"') != etag.trim_matches('"')) {
+        return Err(Fault::Gone("changed"));
+    }
+    let read = |key: String| async move {
+        match shared.temp.get(&key).await {
+            Ok(body) => Ok(body),
+            Err(r2::Error::Missing) => Err(Fault::Gone("expired")),
+            Err(error) => Err(Fault::Retry(format!("reading {key}: {error}"))),
+        }
+    };
+    let (upload, input) = (read(key.to_string()).await?, read(input_key.to_string()).await?);
+    let now = now_us();
+    let (task_id, miner) = (job.task_id.clone(), job.miner.clone().unwrap_or_default());
+    let encoded = tokio::task::spawn_blocking(move || {
+        let rows = vectors::join(input, upload)?;
+        Ok::<_, anyhow::Error>((rows.len(), vectors::encode(&rows, &task_id, &miner, &iso(now))?))
+    })
+    .await
+    .map_err(|error| Fault::Retry(format!("joining the vectors: {error}")))?;
+    let (rows, file) = encoded.map_err(|error| {
+        eprintln!("task={} vectors refused: {error:#}", job.task_id);
+        Fault::Gone("unreadable")
+    })?;
+    let file_key = vectors::file_key(model, &day(now), &uuid::Uuid::new_v4().simple().to_string());
+    shared.pages.put(&file_key, Bytes::from(file), PARQUET, None).await.map_err(|error| Fault::Retry(format!("writing {file_key}: {error}")))?;
+    Feed::vectors(model)
+        .number(&shared.pages, shared.redis(), &file_key, rows)
+        .await
+        .map_err(|error| Fault::Retry(format!("numbering {file_key}: {error:#}")))?;
+    Ok((rows, file_key))
 }
 
 /// What became of every URL, for the bot; a failure here is logged and the batch still finishes.
