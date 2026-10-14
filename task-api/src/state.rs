@@ -20,6 +20,7 @@ use crate::flow::PublishRate;
 use crate::logs::Cache;
 use crate::py::{canonical, round_to};
 use crate::queues::{PublishQueue, TaskQueue, ValidationQueue};
+use crate::reference::Reference;
 use crate::registry::{self, addresses, Registry};
 use crate::roundlog::{self, Receipt};
 use crate::rounds::UPLOAD_GRACE_S;
@@ -43,6 +44,7 @@ pub struct State {
     pub cache: Cache,
     pub storage: Bucket,
     pub pages: Bucket,
+    pub reference: Option<Reference>,
     pub registry: Arc<Registry>,
     pub chain: Option<Arc<Chain>>,
     pub admins: HashSet<String>,
@@ -130,7 +132,11 @@ impl State {
         let mut admins: HashSet<String> = settings.admin_hotkeys.iter().cloned().collect();
         admins.extend(addresses(&settings.admin_uris)?);
         let key = Hotkey::from_uri(if settings.key_uri.is_empty() { DEV_RECEIPT_KEY } else { &settings.key_uri }).context("TASK_API_KEY_URI")?;
+        let reference = (!settings.embed_reference_url.is_empty())
+            .then(|| Reference::new(&settings.embed_reference_url, &settings.embed_reference_key, settings.embed_reference_calls))
+            .transpose()?;
         Ok(State {
+            reference,
             redis,
             db,
             reader,

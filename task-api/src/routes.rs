@@ -465,6 +465,31 @@ pub async fn release(
     Ok(Json(json!({"task_id": task_id, "status": "void"})))
 }
 
+/// Reference vectors for the texts a validator sampled from an open embed upload, for validators without a model server of their own.
+pub async fn embed_reference(
+    Shared(state): Shared<Arc<State>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    Path(task_id): Path<String>,
+    headers: HeaderMap,
+    uri: Uri,
+    body: Bytes,
+) -> Answer {
+    let who = validator(&state, &Signed { headers: &headers, method: "POST", uri: &uri, body: &body, peer }).await?;
+    let text_ids = models::reference_body(&json_body(&body)?)?;
+    let Some(reference) = state.reference.as_ref() else {
+        return Err(ApiError::status(503, "this task API has no reference model server"));
+    };
+    let Some(job) = state.validation.job(&state.redis, &task_id).await? else {
+        return Err(ApiError::status(409, "no such open upload"));
+    };
+    if kind_of(&job) != EMBED {
+        return Err(ApiError::status(422, "not an embed upload"));
+    }
+    let vectors = reference.vectors(&state, &task_id, &job, &who.hotkey, &text_ids).await?;
+    let rows: Vec<Value> = text_ids.iter().zip(vectors).map(|(text_id, embedding)| json!({"text_id": text_id, "embedding": embedding})).collect();
+    Ok(Json(json!({"task_id": task_id, "model": job["model"], "vectors": rows})))
+}
+
 pub async fn score(
     Shared(state): Shared<Arc<State>>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,

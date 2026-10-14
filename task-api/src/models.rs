@@ -268,6 +268,28 @@ impl ClaimBody {
     }
 }
 
+/// The text ids a validator asks reference vectors for: one to `reference::MAX_TEXTS`, each once.
+pub fn reference_body(body: &Value) -> Result<Vec<String>, Invalid> {
+    let Some(input) = body.as_object() else {
+        return Err(Invalid::single("model_attributes_type", &["body"], "Input should be a valid dictionary or object to extract fields from"));
+    };
+    let mut fields = Fields::new(input, vec!["body".into()], false);
+    fields.forbid_extra(&["text_ids"]);
+    let items = fields.list("text_ids", Some(crate::reference::MAX_TEXTS));
+    let mut ids: Vec<String> = Vec::new();
+    for (i, item) in items.iter().enumerate() {
+        match item.as_str() {
+            Some(id) if !ids.iter().any(|seen| seen == id) => ids.push(id.to_string()),
+            Some(_) => fields.invalid.add("value_error", &[Value::from("body"), "text_ids".into(), i.into()], "Value error, a text id is asked twice"),
+            None => fields.invalid.add("string_type", &[Value::from("body"), "text_ids".into(), i.into()], "Input should be a valid string"),
+        }
+    }
+    if ids.is_empty() && fields.invalid.0.is_empty() {
+        fields.invalid.add("too_short", &[Value::from("body"), "text_ids".into()], "List should have at least 1 item after validation, not 0");
+    }
+    fields.invalid.result(ids)
+}
+
 pub struct CompleteBody {
     pub key: String,
     /// The miner's counts, as `model_dump(exclude={"key"})` gives them.

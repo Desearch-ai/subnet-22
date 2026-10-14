@@ -207,6 +207,7 @@ pub fn router(state: Arc<State>) -> Router {
         .route("/v1/tasks/{task_id}/abandon", post(routes::abandon))
         .route("/v1/validation/{task_id}/release", post(routes::release))
         .route("/v1/validation/{task_id}/score", post(routes::score))
+        .route("/v1/embed/{task_id}/reference", post(routes::embed_reference))
         .route("/v1/shares", get(routes::shares))
         .route("/v1/room", get(routes::room))
         .route("/v1/admin/enqueue", post(routes::enqueue))
