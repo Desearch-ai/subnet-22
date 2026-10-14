@@ -9,6 +9,8 @@ use crate::proofs::{self, sha256};
 use crate::py::canonical;
 
 pub const CLAIM_TTL_S: i64 = 180;
+/// An embed task is a GPU batch, so its claim lasts longer than a crawl task's.
+pub const EMBED_CLAIM_TTL_S: i64 = 300;
 /// Past the expiry miners are told, so an upload that ends a few seconds late still counts.
 pub const UPLOAD_GRACE_S: f64 = 10.0;
 

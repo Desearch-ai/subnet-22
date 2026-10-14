@@ -50,7 +50,7 @@ fn retry_after_for(code: &str) -> f64 {
         "QUEUE_EMPTY" | "ALREADY_HELD" | "WAITING_FOR_VERDICTS" => 10.0,
         "NO_CAPACITY" => 5.0,
         "VALIDATION_BACKLOG" => 30.0,
-        "KIND_CLOSED" => 3600.0,
+        "KIND_CLOSED" | "MODEL_MISMATCH" => 3600.0,
         _ => 5.0,
     }
 }
@@ -104,6 +104,9 @@ async fn claim_tasks(state: &State, signed: &Signed<'_>) -> Answer {
     }
     if kind == EMBED && !state.settings.embed_tasks {
         return refused(state, &round_id, &who, Refusal::new("KIND_CLOSED", json!({"kind": kind}))).await;
+    }
+    if kind == EMBED && !body.models.contains(&state.settings.embed_model) {
+        return refused(state, &round_id, &who, Refusal::new("MODEL_MISMATCH", json!({"model": state.settings.embed_model}))).await;
     }
     let at = now();
     let (hotkey, pool) = (who.hotkey.clone(), kind.to_string());
@@ -192,12 +195,13 @@ async fn issue(state: &State, got: &Claim, kind: &str, who: &Caller) -> Result<O
     let upload_key = format!("uploads/dt={}/{name}", utc_day(now()));
     let since_epoch = Duration::from_secs_f64(now());
     // It may outlive the claim; a late completion or a file written after it is refused.
-    let upload_url = state.storage.presign("PUT", &upload_key, state.settings.claim_ttl as u64 + LINK_SLACK_S, Some(PARQUET), since_epoch);
+    let claim_ttl = state.settings.claim_ttl_for(kind) as u64;
+    let upload_url = state.storage.presign("PUT", &upload_key, claim_ttl + LINK_SLACK_S, Some(PARQUET), since_epoch);
     let inputs = if kind == EMBED {
         let payload = &got.payload;
         match (payload.get("model"), payload.get("texts"), payload.get("input_key").and_then(Value::as_str), payload.get("input_sha256")) {
             (Some(model), Some(texts), Some(input_key), Some(sha256)) => {
-                let url = state.storage.presign("GET", input_key, state.settings.claim_ttl as u64, None, since_epoch);
+                let url = state.storage.presign("GET", input_key, claim_ttl, None, since_epoch);
                 json!({"model": model, "texts": texts, "input": {"url": url, "sha256": sha256}})
             }
             _ => {

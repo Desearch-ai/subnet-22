@@ -13,6 +13,7 @@ use desearch::time::now;
 use redis::AsyncCommands;
 use serde_json::{json, Value};
 
+use crate::budgets::{CRAWL, EMBED};
 use crate::chain::Chain;
 use crate::db::{Db, Reader};
 use crate::flow::PublishRate;
@@ -129,7 +130,6 @@ impl State {
         let mut admins: HashSet<String> = settings.admin_hotkeys.iter().cloned().collect();
         admins.extend(addresses(&settings.admin_uris)?);
         let key = Hotkey::from_uri(if settings.key_uri.is_empty() { DEV_RECEIPT_KEY } else { &settings.key_uri }).context("TASK_API_KEY_URI")?;
-        let held = settings.claim_ttl + UPLOAD_GRACE_S;
         Ok(State {
             redis,
             db,
@@ -143,8 +143,8 @@ impl State {
             admins,
             seeds,
             key: Arc::new(key),
-            crawl: TaskQueue::new("crawl", held),
-            embed: TaskQueue::new("embed", held),
+            crawl: TaskQueue::new("crawl", settings.claim_ttl_for(CRAWL) + UPLOAD_GRACE_S),
+            embed: TaskQueue::new("embed", settings.claim_ttl_for(EMBED) + UPLOAD_GRACE_S),
             validation: ValidationQueue { active_s: settings.active_s },
             publish: PublishQueue { claim_ttl: settings.publish_ttl, max_tries: settings.publish_tries },
             publish_rate: Mutex::new(PublishRate::default()),

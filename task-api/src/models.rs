@@ -6,6 +6,7 @@ use crate::rounds::Url;
 
 pub const MAX_URL_DETAILS: usize = 1000;
 pub const MAX_CLAIM: i64 = 50;
+const MAX_CLAIM_MODELS: usize = 8;
 const OUTCOMES: [&str; 6] = ["matched", "mismatched", "unverifiable", "errors_confirmed", "errors_unconfirmed", "not_fetched"];
 const EMBED_OUTCOMES: [&str; 3] = ["matched", "mismatched", "unverifiable"];
 
@@ -233,13 +234,15 @@ fn counts_match(fields: &mut Fields, outcomes: &[&str], samples: &[Value]) {
 pub struct ClaimBody {
     pub kind: String,
     pub count: i64,
+    /// The embedding models the miner runs; an embed task goes only to a miner that runs its model.
+    pub models: Vec<String>,
 }
 
 impl ClaimBody {
     pub fn parse(body: &Value) -> Result<ClaimBody, Invalid> {
         let Some(input) = body.as_object() else {
             if body.is_null() {
-                return Ok(ClaimBody { kind: "crawl".into(), count: 1 });
+                return Ok(ClaimBody { kind: "crawl".into(), count: 1, models: Vec::new() });
             }
             return Err(Invalid::single("model_attributes_type", &["body"], "Input should be a valid dictionary or object to extract fields from"));
         };
@@ -250,7 +253,18 @@ impl ClaimBody {
             let loc = at(&fields.loc, "count");
             fields.invalid.add("less_than_equal", &loc, format!("Input should be less than or equal to {MAX_CLAIM}"));
         }
-        fields.invalid.result(ClaimBody { kind: kind.unwrap_or_default(), count })
+        let mut models = Vec::new();
+        for (i, item) in fields.list("models", Some(MAX_CLAIM_MODELS)).iter().enumerate() {
+            match item.as_str() {
+                Some(name) => models.push(name.to_string()),
+                None => {
+                    let mut loc = at(&fields.loc, "models");
+                    loc.push(i.into());
+                    fields.invalid.add("string_type", &loc, "Input should be a valid string");
+                }
+            }
+        }
+        fields.invalid.result(ClaimBody { kind: kind.unwrap_or_default(), count, models })
     }
 }
 

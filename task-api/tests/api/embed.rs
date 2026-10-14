@@ -1,5 +1,6 @@
-//! Embed tasks: rounds from the publisher's inputs, their own pool, and closed until switched on.
+//! Embed tasks: rounds from the publisher's inputs, their own pool and claim time, only for miners running the model, and closed until switched on.
 
+use desearch::time::now;
 use redis::AsyncCommands;
 use serde_json::{json, Value};
 use task_api::lifecycle;
@@ -39,8 +40,12 @@ async fn embed_round(h: &Harness, entry: Value) -> String {
     round.round_id
 }
 
+fn embed_claim() -> Value {
+    json!({"kind": "embed", "models": ["desearch-4b-v1"]})
+}
+
 async fn embed_task(h: &Harness, miner: &Client) -> Value {
-    let task = miner.post("/v1/tasks/claim", json!({"kind": "embed"})).await.unwrap()["tasks"][0].clone();
+    let task = miner.post("/v1/tasks/claim", embed_claim()).await.unwrap()["tasks"][0].clone();
     h.put(task["upload"]["url"].as_str().unwrap(), b"PAR1vectorsPAR1".to_vec()).await;
     miner.post(&format!("/v1/tasks/{}/complete", task_id(&task)), json!({"key": task["upload"]["key"], "bytes": 7})).await.unwrap();
     task
@@ -135,8 +140,8 @@ async fn a_failed_embed_task_strikes_only_the_embed_pool() {
         .await
         .unwrap();
     assert_eq!(strikes, [("embed".to_string(), "vectors_mismatch".to_string())]);
-    assert_eq!(h.miner.post("/v1/tasks/claim", json!({"kind": "embed"})).await.unwrap()["refusal"]["code"], "ALREADY_HELD");
-    assert_eq!(h.rival.post("/v1/tasks/claim", json!({"kind": "embed"})).await.unwrap()["tasks"][0]["task_id"], task["task_id"]);
+    assert_eq!(h.miner.post("/v1/tasks/claim", embed_claim()).await.unwrap()["refusal"]["code"], "ALREADY_HELD");
+    assert_eq!(h.rival.post("/v1/tasks/claim", embed_claim()).await.unwrap()["tasks"][0]["task_id"], task["task_id"]);
 }
 
 #[tokio::test]
@@ -146,9 +151,66 @@ async fn embed_tasks_stay_closed_until_switched_on() {
     assert!(lifecycle::open_embed_rounds(&h.state).await.unwrap().is_none());
     let left: i64 = h.redis.clone().llen(EMBED_INPUTS).await.unwrap();
     assert_eq!(left, 1, "nothing is thrown away");
-    let answer = h.miner.post("/v1/tasks/claim", json!({"kind": "embed"})).await.unwrap();
+    let answer = h.miner.post("/v1/tasks/claim", embed_claim()).await.unwrap();
     assert_eq!(answer["refusal"], json!({"code": "KIND_CLOSED", "inputs": {"kind": "embed", "retry_after": 3600.0}}));
     assert!(!answer["receipt"].is_null());
     let health = h.public("/v1/health").await.1;
-    assert_eq!((health["embed_tasks"].clone(), health["embed_model"].clone()), (json!(false), json!("qwen3-embedding-8b")));
+    assert_eq!((health["embed_tasks"].clone(), health["embed_model"].clone()), (json!(false), json!("desearch-4b-v1")));
+}
+
+#[tokio::test]
+async fn a_miner_that_does_not_run_the_model_is_refused_at_no_cost() {
+    let h = embedding().await;
+    embed_round(&h, input()).await;
+    for claim in [json!({"kind": "embed"}), json!({"kind": "embed", "models": ["qwen3-embedding-8b"]})] {
+        let answer = h.miner.post("/v1/tasks/claim", claim).await.unwrap();
+        assert_eq!(answer["refusal"], json!({"code": "MODEL_MISMATCH", "inputs": {"model": "desearch-4b-v1", "retry_after": 3600.0}}));
+    }
+    let bad = h.miner.post("/v1/tasks/claim", json!({"kind": "embed", "models": [7]})).await.unwrap_err();
+    assert_eq!(bad.status, 422);
+    let miner = h.public(&format!("/v1/miners/{}", h.miner.ss58())).await.1;
+    assert_eq!(miner["pools"]["embed"]["budget"], json!(1), "a refusal is not a strike");
+    assert_eq!(h.miner.post("/v1/tasks/claim", embed_claim()).await.unwrap()["tasks"].as_array().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn an_embed_task_has_its_own_claim_time() {
+    let h = embedding().await;
+    embed_round(&h, input()).await;
+    let claimed_at = now();
+    let task = h.miner.post("/v1/tasks/claim", embed_claim()).await.unwrap()["tasks"][0].clone();
+    let left = task["expires_at"].as_f64().unwrap() - claimed_at;
+    assert!((h.state.settings.embed_claim_ttl - 1.0..=h.state.settings.embed_claim_ttl + 1.0).contains(&left), "{left}");
+    assert!(h.state.settings.embed_claim_ttl > h.state.settings.claim_ttl);
+}
+
+#[tokio::test]
+async fn an_embed_upload_no_validator_scored_by_its_deadline_is_void_and_goes_to_another_miner() {
+    let h = embedding().await;
+    embed_round(&h, input()).await;
+    let task = embed_task(&h, &h.miner).await;
+    let task_id = task_id(&task);
+    h.opened(None, Some(&task_id)).await;
+    let mut job = h.state.validation.job(&h.redis, &task_id).await.unwrap().unwrap();
+    let key = job["key"].as_str().unwrap().to_string();
+    assert!(h.object(&key).is_some());
+    job["deadline"] = 0.into();
+    let _: () = h.redis.clone().set(format!("vjob:{task_id}"), job.to_string()).await.unwrap();
+
+    assert_eq!(lifecycle::finalize_due(&h.state, now()).await.unwrap(), [task_id.as_str()]);
+
+    let view = h.view(&task_id).await;
+    assert_eq!(
+        (view["status"].clone(), view["score"]["verdict"].clone(), view["score"]["reason"].clone()),
+        (json!("queued"), json!("void"), json!("unscored"))
+    );
+    assert!(h.object(&key).is_none(), "the upload is deleted, so the next miner cannot copy it");
+    let miner = h.public(&format!("/v1/miners/{}", h.miner.ss58())).await.1;
+    assert_eq!(miner["pools"]["embed"]["budget"], json!(1));
+    let hotkey = h.miner.ss58();
+    let strikes: i64 =
+        h.state.db.run(move |conn| Ok(conn.query_row("SELECT COUNT(*) FROM strikes WHERE hotkey = ?", [hotkey], |row| row.get(0))?)).await.unwrap();
+    assert_eq!(strikes, 0);
+    h.revealed().await;
+    assert_eq!(h.rival.post("/v1/tasks/claim", embed_claim()).await.unwrap()["tasks"][0]["task_id"], json!(task_id));
 }

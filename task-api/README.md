@@ -155,11 +155,13 @@ validator (`EMISSION_CONTROL_PERC`, `CRAWL_PERC` and `EMBED_PERC` in
 
 ## Embed tasks
 
-Embed tasks are off (`TASK_API_EMBED_TASKS=0`) until Desearch's embedding model ships and the
-publisher writes their inputs; it refuses to start while they are on. Each embed task holds the
-texts of 500 new or changed pages (a head, the full text and each passage). The miner returns one
-vector per text. The validator checks every vector's shape and recomputes 20 of them with the same
-model; each must reach a cosine similarity of 0.99. A pass pays the characters embedded.
+Embed tasks are off (`TASK_API_EMBED_TASKS=0`) until their inputs and the publishing of vectors run;
+the publisher refuses to start while they are on. Each task holds one text per page and names the
+model (`TASK_API_EMBED_MODEL`); a claim must list that model in `models` or is refused with
+`MODEL_MISMATCH`. The miner returns one vector per text within `TASK_API_EMBED_CLAIM_TTL`. Validators
+check every vector's shape and embed 32 texts again with the same model; each must reach a cosine
+similarity of 0.999. A pass pays the characters embedded. An upload no validator scored by its
+deadline is void, deleted and handed to another miner, at no cost.
 
 The API records which version of each page every model has embedded, so an unchanged page is not
 embedded twice. The miner-facing description is [Embedding tasks](../docs/embedding-tasks.md).
@@ -217,7 +219,8 @@ The [bot](../desearch-bot/README.md) fills the queue with the admin hotkey (`--t
 | `TASK_API_FAILED_WRITES_PER_MINUTE` | 30 | failed sign-ins after which one IP's writes are refused for the rest of the minute |
 | `TASK_API_CORS_ORIGINS` | local dev servers | comma-separated origins whose pages may read the API from a browser |
 | `TASK_API_EMBED_TASKS` | 0 | 1 opens embed tasks |
-| `TASK_API_EMBED_MODEL` | `qwen3-embedding-8b` | the model embed tasks name, from [`desearch/embedding.py`](../desearch/embedding.py) |
+| `TASK_API_EMBED_MODEL` | `desearch-4b-v1` | the model embed tasks name, from [`desearch/embedding.py`](../desearch/embedding.py) |
+| `TASK_API_EMBED_CLAIM_TTL` | 300 | seconds a miner is given to upload an embed task after claiming it |
 
 In `chain` mode a validator needs a validator permit, at least 10,000 total stake and at least 20
 alpha of its own.

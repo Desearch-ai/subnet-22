@@ -39,6 +39,7 @@ const SLOW_ENQUEUE_S: f64 = 2.0;
 /// A check takes about a minute; an upload with less time left would be finalized before its votes land.
 pub const CHECKABLE_LEFT_S: f64 = 180.0;
 pub const UNCHECKED: &str = "unchecked";
+pub const UNSCORED: &str = "unscored";
 pub const REPORTED_ROWS: &str = "reported_rows";
 /// Uploads with no counts in their report, or from a locked-out hotkey, are all checked.
 pub const UNREPORTED: &str = "unreported";
@@ -588,6 +589,16 @@ async fn pick_reason(state: &State, task_id: &str, job: &Value, seed: &str) -> R
     ))
 }
 
+/// An embed upload no validator scored in time: void, at no cost to the miner, and the task goes to another.
+pub fn unscored_vote() -> Value {
+    json!({
+        "validator": "",
+        "verdict": "void",
+        "credited": 0,
+        "result": {"verdict": "void", "reason": UNSCORED, "credited": 0, "samples": []},
+    })
+}
+
 /// No validator checked it: the miner's own counts, within what it was assigned, errors at its confirmed share.
 pub fn unchecked_vote(job: &Value, error_share: f64) -> Value {
     let assigned = assigned(job);
@@ -641,7 +652,7 @@ pub async fn finalize_due(state: &State, now: f64) -> Result<Vec<String>> {
     Ok(finalized)
 }
 
-/// Finalizes once every active validator voted, or at the deadline on the votes it has; with none, on the miner's own counts.
+/// Finalizes once every active validator voted, or at the deadline on the votes it has; with none, a crawl upload on the miner's own counts and an embed upload as void.
 pub async fn finalize_task(state: &State, task_id: &str, job: &Value, now: f64) -> Result<Option<Value>> {
     let voters: HashSet<String> = state.validation.voters(&state.redis, task_id).await?.into_iter().collect();
     let mut active: HashSet<String> = state.validation.active(&state.redis, now).await?.into_iter().collect();
@@ -652,7 +663,7 @@ pub async fn finalize_task(state: &State, task_id: &str, job: &Value, now: f64) 
     }
     if voters.is_empty() {
         if kind_of(job) != CRAWL {
-            return Ok(None);
+            return conclude_validation(state, task_id, job, Decision::last(unscored_vote(), Vec::new()), false).await;
         }
         return finalize_unchecked(state, task_id, job, false).await;
     }
@@ -922,7 +933,7 @@ pub fn publish_job(state: &State, task_id: &str, job: &Value, vote: &Value, agre
     publish.insert("validators".into(), validators.into_iter().collect::<Vec<_>>().into());
     publish.insert("urls".into(), job["urls"].clone());
     publish.insert("completed_at".into(), job["completed_at"].clone());
-    publish.insert("claim_ttl".into(), whole(state.settings.claim_ttl));
+    publish.insert("claim_ttl".into(), whole(state.settings.claim_ttl_for(kind)));
     if kind == EMBED {
         for name in ["model", "input_key", "pages", "texts"] {
             publish.insert(name.into(), job[name].clone());

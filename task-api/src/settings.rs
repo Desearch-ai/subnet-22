@@ -5,8 +5,9 @@ use std::str::FromStr;
 
 use anyhow::{bail, Context, Result};
 
+use crate::budgets::EMBED;
 use crate::queues::ACTIVE_S;
-use crate::rounds::CLAIM_TTL_S;
+use crate::rounds::{CLAIM_TTL_S, EMBED_CLAIM_TTL_S};
 use crate::sampling::{CHECKS_PER_HOUR, SHARE};
 
 const DEFAULT_ORIGINS: &str = "http://localhost:5173,http://localhost:8081,http://127.0.0.1:5173,http://127.0.0.1:8081";
@@ -51,6 +52,7 @@ pub struct Settings {
     pub data: PathBuf,
     pub redis_url: String,
     pub claim_ttl: f64,
+    pub embed_claim_ttl: f64,
     pub validation_ttl: f64,
     pub poll_rate: f64,
     pub reads_per_minute: i64,
@@ -104,6 +106,15 @@ fn listed(value: &str) -> Vec<String> {
 }
 
 impl Settings {
+    /// Seconds a miner has to upload a task of this kind after claiming it.
+    pub fn claim_ttl_for(&self, kind: &str) -> f64 {
+        if kind == EMBED {
+            self.embed_claim_ttl
+        } else {
+            self.claim_ttl
+        }
+    }
+
     pub fn from_env() -> Result<Settings> {
         let registry = match text("TASK_API_REGISTRY", "").as_str() {
             "chain" => RegistryMode::Chain { netuid: number("TASK_API_NETUID", 22)?, network: text("TASK_API_NETWORK", "finney") },
@@ -125,6 +136,7 @@ impl Settings {
             data: PathBuf::from(text("TASK_API_DATA", ".")),
             redis_url: text("TASK_API_REDIS", "redis://localhost:6379/15"),
             claim_ttl: number("TASK_API_CLAIM_TTL", CLAIM_TTL_S as f64)?,
+            embed_claim_ttl: number("TASK_API_EMBED_CLAIM_TTL", EMBED_CLAIM_TTL_S as f64)?,
             validation_ttl: number("TASK_API_VALIDATION_TTL", 900.0)?,
             poll_rate: number("TASK_API_POLL_RATE", 0.5)?,
             reads_per_minute: number("TASK_API_READS_PER_MINUTE", 120)?,
@@ -139,7 +151,7 @@ impl Settings {
             queue_target: number("TASK_API_QUEUE_TARGET", 1_200)?,
             task_urls: number("TASK_API_TASK_URLS", 1_000)?,
             embed_tasks: text("TASK_API_EMBED_TASKS", "0") == "1",
-            embed_model: text("TASK_API_EMBED_MODEL", "qwen3-embedding-8b"),
+            embed_model: text("TASK_API_EMBED_MODEL", "desearch-4b-v1"),
             active_s: number("TASK_API_ACTIVE_S", ACTIVE_S)?,
             publish_ttl: number("TASK_API_PUBLISH_TTL", 600.0)?,
             publish_tries: number("TASK_API_PUBLISH_TRIES", 5)?,
