@@ -14,7 +14,7 @@ use desearch::r2::{self, Bucket, Credentials, JSON, PARQUET};
 use desearch::stub;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use publisher::changes::{self, Body, Change, Kind};
-use publisher::planner::{page_text, passages, texts, Planner, Room, Settings, EMBED_INPUTS, PAGE, PASSAGE};
+use publisher::planner::{page_text, passages, texts, Planner, Room, Settings, EMBED_DROPPED, EMBED_INPUTS, PAGE, PASSAGE};
 use publisher::records::{page_key, record_version, Record};
 use redis::aio::ConnectionManager;
 use redis::AsyncCommands;
@@ -249,4 +249,11 @@ async fn published_pages_become_inputs_once_per_version_within_the_budget_and_th
     log(&pages, 4, vec![page(1, &article(40), "article", "en")]).await;
     waited.pass().await.unwrap();
     assert_eq!((waited.counts.planned, waited.counts.unchanged), (3, 1), "a dropped input's pages are planned again when the log shows them next");
+
+    waited.flush().await.unwrap();
+    let entry: Value = serde_json::from_str(&waited.state.pending().unwrap()[0].1).unwrap();
+    let _: i64 = redis.rpush(EMBED_DROPPED, json!({"input_key": entry["input_key"], "pages": entry["pages"]}).to_string()).await.unwrap();
+    log(&pages, 5, vec![page(1, &article(40), "article", "en")]).await;
+    waited.pass().await.unwrap();
+    assert_eq!((waited.counts.dropped, waited.counts.planned), (1, 4), "pages of an input the task API dropped are planned again");
 }

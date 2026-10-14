@@ -38,6 +38,8 @@ const PASSAGE_MAX_CHARS: usize = 1_500;
 const MAX_PASSAGES: usize = 16;
 /// The task API's list of inputs waiting for a round.
 pub const EMBED_INPUTS: &str = "embed:inputs";
+/// Inputs whose task the API dropped after its last attempt.
+pub const EMBED_DROPPED: &str = "embed:dropped";
 const CURSOR: &[u8] = b"cursor";
 const ROOM_TIMEOUT: Duration = Duration::from_secs(20);
 const FILES_PER_PASS: usize = 20;
@@ -301,15 +303,25 @@ impl State {
 
     /// Drops an input never handed over; its pages are planned again the next time the log shows them.
     fn expire(&self, input_key: &str, entry: &Value) -> Result<()> {
+        let mut batch = self.forgetting(&entry["pages"])?;
+        batch.delete(format!("pending/{input_key}"));
+        Ok(self.db.write(batch)?)
+    }
+
+    /// Forgets the versions of an input's pages that never got vectors, so the log's next showing plans them again.
+    fn forget(&self, pages: &Value) -> Result<()> {
+        Ok(self.db.write(self.forgetting(pages)?)?)
+    }
+
+    fn forgetting(&self, pages: &Value) -> Result<WriteBatch> {
         let mut batch = WriteBatch::default();
-        for page in entry["pages"].as_array().into_iter().flatten() {
+        for page in pages.as_array().into_iter().flatten() {
             let (Some(key), Some(content_sha1)) = (page["page_key"].as_str(), page["content_sha1"].as_str()) else { continue };
             if self.planned(key)?.as_deref() == Some(content_sha1) {
                 batch.delete(planned_key(key));
             }
         }
-        batch.delete(format!("pending/{input_key}"));
-        Ok(self.db.write(batch)?)
+        Ok(batch)
     }
 
     fn keep_cursor(&self, seq: i64) -> Result<()> {
@@ -356,6 +368,7 @@ pub struct Counts {
     pub inputs: u64,
     pub handed_over: u64,
     pub expired: u64,
+    pub dropped: u64,
 }
 
 pub struct Planner {
@@ -410,6 +423,7 @@ impl Planner {
 
     /// Reads what the log added since the last pass, writes the inputs that are due and hands over what the API has room for; whether it read anything.
     pub async fn pass(&mut self) -> Result<bool> {
+        self.forget_dropped().await?;
         let latest = latest(&self.pages).await?;
         let mut read = 0;
         while self.read_through < latest && read < FILES_PER_PASS {
@@ -447,6 +461,18 @@ impl Planner {
         }
         self.hand_over().await?;
         Ok(read > 0)
+    }
+
+    /// Takes back the pages of inputs the task API dropped after their last attempt.
+    pub async fn forget_dropped(&mut self) -> Result<usize> {
+        let dropped: Option<Vec<String>> = redis::cmd("LPOP").arg(EMBED_DROPPED).arg(FILES_PER_PASS * 10).query_async(&mut self.redis).await?;
+        let dropped = dropped.unwrap_or_default();
+        for raw in &dropped {
+            let entry: Value = serde_json::from_str(raw).unwrap_or(Value::Null);
+            self.state.forget(&entry["pages"])?;
+        }
+        self.counts.dropped += dropped.len() as u64;
+        Ok(dropped.len())
     }
 
     /// Plans until `stop` turns true, writing what is buffered first.
