@@ -188,6 +188,7 @@ The planner keeps its place in the log and the version of every page it planned 
 | `PLANNER_PAGES_PER_INPUT` | 1000 | pages per input file |
 | `PLANNER_FLUSH_S` | 600 | a part-filled input is written once its first page waited this long |
 | `PLANNER_MAX_PENDING` | 50 | input files waiting for room; past this, pages are left out |
+| `PLANNER_PENDING_MAX_AGE_S` | 43200 | an input waiting longer is dropped, before the temporary bucket deletes its file |
 | `PLANNER_MIN_CHARS` | 300 | characters of text a page needs |
 | `PLANNER_LANGS` | `en` | languages planned |
 | `PLANNER_EXCLUDE_FILE` | — | a file of domains, one a line, never planned |

@@ -13,7 +13,7 @@ one vector per text; validators embed a sample themselves and check that yours m
 | | |
 | --- | --- |
 | Name | `desearch-4b-v1` |
-| Weights | [`desearch/Desearch-Embedding-4B`](https://huggingface.co/desearch/Desearch-Embedding-4B), revision `12e5c6910d49dd5534e8a77a6fa7d8a057bd534a` |
+| Weights | [`desearch/Desearch-Embedding-4B`](https://huggingface.co/desearch/Desearch-Embedding-4B/blob/v1/README.md), tag `v1`, revision `12e5c6910d49dd5534e8a77a6fa7d8a057bd534a` |
 | Precision | float16 |
 | Vector size | 2560 |
 | Input limit | 2,048 tokens |

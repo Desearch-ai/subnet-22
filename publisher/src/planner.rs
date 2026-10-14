@@ -171,6 +171,8 @@ pub struct Settings {
     pub flush_after: Duration,
     /// Inputs written but not yet handed over; past this, new pages are left out.
     pub max_pending: usize,
+    /// The temporary bucket keeps an input a day; one waiting longer than this is dropped, so no miner is sent a file already gone.
+    pub pending_max_age: Duration,
     pub min_chars: usize,
     pub langs: Vec<String>,
     pub excluded: HashSet<String>,
@@ -198,6 +200,7 @@ impl Settings {
             pages_per_input: number("PLANNER_PAGES_PER_INPUT", 1_000)?,
             flush_after: Duration::from_secs_f64(number("PLANNER_FLUSH_S", 600.0)?),
             max_pending: number("PLANNER_MAX_PENDING", 50)?,
+            pending_max_age: Duration::from_secs_f64(number("PLANNER_PENDING_MAX_AGE_S", 12.0 * 3600.0)?),
             min_chars: number("PLANNER_MIN_CHARS", 300)?,
             langs: text("PLANNER_LANGS", "en").split(',').map(|lang| lang.trim().to_lowercase()).filter(|lang| !lang.is_empty()).collect(),
             excluded,
@@ -317,6 +320,7 @@ pub struct Counts {
     pub no_room: u64,
     pub inputs: u64,
     pub handed_over: u64,
+    pub expired: u64,
 }
 
 pub struct Planner {
@@ -513,6 +517,7 @@ impl Planner {
         let entry = json!({
             "input_key": input_key,
             "input_sha256": hex(&Sha256::digest(&file)),
+            "written_at": now_us() as f64 / 1e6,
             "texts": rows.len(),
             "chars": rows.iter().map(|(_, text)| text.text.chars().count()).sum::<usize>(),
             "pages": self.buffer.iter().map(|p| json!({"page_key": p.key, "content_sha1": p.content_sha1, "url": p.url, "host": p.host})).collect::<Vec<_>>(),
@@ -542,14 +547,26 @@ impl Planner {
                 return Ok(0);
             }
         };
-        let mut handed = 0;
-        for (input_key, entry) in pending.into_iter().take(room) {
+        let now = now_us() as f64 / 1e6;
+        let (mut handed, mut expired) = (0, 0);
+        for (input_key, entry) in pending {
+            let written_at = serde_json::from_str::<Value>(&entry).ok().and_then(|e| e["written_at"].as_f64()).unwrap_or(now);
+            if now - written_at > self.settings.pending_max_age.as_secs_f64() {
+                eprintln!("{input_key} waited longer than {:?} for room; dropped", self.settings.pending_max_age);
+                self.state.handed_over(&input_key)?;
+                expired += 1;
+                continue;
+            }
+            if handed == room {
+                break;
+            }
             let _: i64 = self.redis.rpush(EMBED_INPUTS, &entry).await?;
             self.state.handed_over(&input_key)?;
             handed += 1;
         }
-        self.pending -= handed;
+        self.pending -= handed + expired;
         self.counts.handed_over += handed as u64;
+        self.counts.expired += expired as u64;
         Ok(handed)
     }
 

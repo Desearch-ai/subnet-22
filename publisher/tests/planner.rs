@@ -117,6 +117,7 @@ fn settings(dir: PathBuf, pages_per_hour: f64, start_after: i64) -> Settings {
         pages_per_input: 3,
         flush_after: Duration::from_secs(3600),
         max_pending: 10,
+        pending_max_age: Duration::from_secs(3600),
         min_chars: 300,
         langs: vec!["en".into()],
         excluded: HashSet::from(["spam.example".to_string()]),
@@ -203,4 +204,15 @@ async fn published_pages_become_inputs_once_per_version_within_the_budget_and_th
     let mut budget = Planner::new(settings(dir.join("budget"), 4.0, 1), pages.clone(), temp.clone(), redis.clone(), Room::Fixed(5)).await.unwrap();
     budget.pass().await.unwrap();
     assert_eq!((budget.counts.planned, budget.counts.over_budget), (1, 2), "4 pages an hour allow one at once; the rest is left for later");
+
+    let mut stale = settings(dir.join("stale"), 3600.0, 1);
+    stale.pending_max_age = Duration::ZERO;
+    let mut waited = Planner::new(stale, pages.clone(), temp.clone(), redis.clone(), Room::Fixed(0)).await.unwrap();
+    waited.pass().await.unwrap();
+    waited.flush().await.unwrap();
+    tokio::time::sleep(Duration::from_millis(10)).await;
+    waited.room = Room::Fixed(5);
+    let before: i64 = redis.llen(EMBED_INPUTS).await.unwrap();
+    assert_eq!(waited.hand_over().await.unwrap(), 0);
+    assert_eq!((waited.counts.expired, redis.llen::<_, i64>(EMBED_INPUTS).await.unwrap()), (1, before), "an input that waited too long is dropped, not sent");
 }
