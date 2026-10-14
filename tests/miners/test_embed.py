@@ -195,12 +195,108 @@ def test_the_client_cuts_texts_at_the_models_token_limit_and_checks_the_vector_s
     asked, vectors, wrong_size = asyncio.run(scenario())
 
     assert vectors.shape == (3, 4)
-    assert [body["input"] for _, body in asked] == [["a", "b"], ["c"]]
+    assert sorted(body["input"] for _, body in asked) == [["a", "b"], ["c"]]
     assert {(body["model"], body["truncate_prompt_tokens"]) for _, body in asked} == {
         ("tiny", 16)
     }
     assert all("Authorization" not in headers for headers, _ in asked)
     assert wrong_size and "expected 4" in wrong_size
+
+
+def test_the_client_keeps_a_few_batches_in_flight_and_the_vectors_in_order():
+    live = {"now": 0, "most": 0}
+
+    async def handler(request: web.Request) -> web.Response:
+        body = await request.json()
+        live["now"] += 1
+        live["most"] = max(live["most"], live["now"])
+        await asyncio.sleep(0.01 * (10 - int(body["input"][0])))
+        live["now"] -= 1
+        data = [
+            {
+                "index": i,
+                "embedding": base64.b64encode(
+                    np.array([float(text), 0, 0, 0], dtype=np.float32).tobytes()
+                ).decode(),
+            }
+            for i, text in enumerate(body["input"])
+        ]
+        return web.json_response({"data": data})
+
+    async def scenario():
+        async with serving(handler) as base:
+            client = EmbeddingClient(base + "v1/embeddings", MODEL, batch=2, in_flight=3)
+            try:
+                return await client.embed([str(i) for i in range(10)])
+            finally:
+                await client.aclose()
+
+    vectors = asyncio.run(scenario())
+
+    assert vectors[:, 0].tolist() == list(range(10)), "later batches answered first"
+    assert live["most"] == 3
+
+
+def test_another_task_is_claimed_only_if_every_held_one_still_finishes_in_time():
+    miner = EmbedMiner(Settings(), api=Api(), embedder=Embedder())
+    assert miner.has_room()
+
+    miner.claimed({"task_id": "t1", "texts": 1800, "expires_at": time.time() + 300})
+    assert not miner.has_room(), "one task until the pace is measured"
+    miner.recent.append((1800, 20.0))
+    assert miner.has_room(), "at 90 texts a second two tasks take 40 s of the claim"
+    miner.recent[0] = (1800, 180.0)
+    assert not miner.has_room(), "at 10 texts a second they would outlast it"
+
+
+def test_held_tasks_are_embedded_one_after_another():
+    class Counting(Embedder):
+        def __init__(self):
+            super().__init__(delay=0.05)
+            self.live = self.most = 0
+
+        async def embed(self, texts):
+            self.live += 1
+            self.most = max(self.most, self.live)
+            try:
+                return await super().embed(texts)
+            finally:
+                self.live -= 1
+
+    async def handler(request: web.Request) -> web.Response:
+        if request.method == "PUT":
+            await request.read()
+            return web.Response()
+        return web.Response(body=GIVEN)
+
+    async def scenario():
+        embedder, api = Counting(), Api()
+        async with serving(handler) as base:
+            miner = EmbedMiner(Settings(), api=api, embedder=embedder)
+            tasks = [
+                {
+                    "task_id": f"t{i}",
+                    "model": "tiny",
+                    "texts": 3,
+                    "expires_at": time.time() + 180,
+                    "input": {"url": base + "input", "sha256": hashlib.sha256(GIVEN).hexdigest()},
+                    "upload": {"url": base + "upload", "key": f"k{i}", "content_type": "application/x"},
+                }
+                for i in range(2)
+            ]
+            for task in tasks:
+                miner.claimed(task)
+            try:
+                await asyncio.gather(*(miner.process_task(task) for task in tasks))
+            finally:
+                await miner.aclose()
+        return embedder, api, miner
+
+    embedder, api, miner = asyncio.run(scenario())
+
+    assert embedder.most == 1
+    assert sorted(path for path, _ in api.posts) == ["/v1/tasks/t0/complete", "/v1/tasks/t1/complete"]
+    assert not miner.ahead and len(miner.recent) == 2
 
 
 def test_the_miner_starts_only_once_its_server_serves_the_model():

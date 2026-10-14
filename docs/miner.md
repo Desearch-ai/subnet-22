@@ -92,7 +92,7 @@ The miners read `neurons/miners/.env` on start; variables already set in the she
 | `CRAWL_TIMEOUT` | 30 | seconds for each later try |
 | `CRAWL_ATTEMPTS` | 3 | tries per page from your own addresses before ScrapingDog or an error row |
 | `CRAWL_USER_AGENT` | a desktop Chrome string | |
-| `MAX_TASKS` | 4 | most tasks held at once; the crawl miner also claims only what its measured pace can finish, within its budget |
+| `MAX_TASKS` | 4 | most tasks held at once; each miner also claims only what its measured pace can finish in time, within its budget |
 | `EXTRACTION_THREADS` | 4 | pages turned into text at once; each holds a whole page in memory |
 | `SCRAPINGDOG_API_KEY` | none | optional: a page your address cannot load (refused, blocked, timed out) is retried through ScrapingDog |
 | `SCRAPINGDOG_CONCURRENCY` | 8 | ScrapingDog requests at once; they wait outside the crawl slots, so your own fetches keep going |

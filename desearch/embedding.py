@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 from dataclasses import dataclass
 
@@ -76,11 +77,13 @@ class EmbeddingClient:
         api_key: str = "",
         batch: int = 32,
         timeout: float = 120.0,
+        in_flight: int = 4,
     ):
         self.url = url
         self.model = model
         self.api_key = api_key
         self.batch = batch
+        self.in_flight = in_flight
         self.timeout = aiohttp.ClientTimeout(total=timeout)
         self.session: aiohttp.ClientSession | None = None
 
@@ -101,9 +104,17 @@ class EmbeddingClient:
         return [row["id"] for row in answer.get("data", [])]
 
     async def embed(self, texts: list[str]) -> np.ndarray:
-        vectors = []
-        for start in range(0, len(texts), self.batch):
-            vectors += await self._embed(texts[start : start + self.batch])
+        """Vectors in the texts' order; a few batches in flight keep the server busy."""
+        slots = asyncio.Semaphore(self.in_flight)
+
+        async def batch(start: int) -> list[np.ndarray]:
+            async with slots:
+                return await self._embed(texts[start : start + self.batch])
+
+        parts = await asyncio.gather(
+            *(batch(start) for start in range(0, len(texts), self.batch))
+        )
+        vectors = [vector for part in parts for vector in part]
         return np.array(vectors, dtype=np.float32).reshape(len(texts), self.model.dims)
 
     async def _embed(self, texts: list[str]) -> list[np.ndarray]:

@@ -51,7 +51,7 @@ pm2 start python3 --name desearch_embed_miner -- -m neurons.miners.embed
 | `EMBED_MODEL` | `desearch-4b-v1` | the model your server runs |
 | `EMBED_API_URL` | `http://127.0.0.1:8000/v1/embeddings` | your model server |
 | `EMBED_API_KEY` | none | if your server requires one |
-| `MAX_TASKS` | 4 | tasks embedded at once |
+| `MAX_TASKS` | 4 | most tasks held at once; they are embedded one after another, and another is claimed only when the measured pace still finishes every held one in time |
 
 The miner waits for the server to answer to the model's name before it claims anything, and stops
 with an error when the server runs a different model.

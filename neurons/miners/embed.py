@@ -5,6 +5,7 @@ import hashlib
 import logging
 import signal
 import time
+from collections import deque
 
 import aiohttp
 from yarl import URL
@@ -21,7 +22,7 @@ from desearch.embedding import (
 )
 from desearch.kinds import EMBED
 from neurons.miners.config import ENV_FILE, Settings
-from neurons.miners.miner import TaskWorker, with_retries
+from neurons.miners.miner import HEADROOM, TaskWorker, with_retries
 
 log = logging.getLogger("embed_miner")
 
@@ -30,6 +31,7 @@ DOWNLOAD_ATTEMPTS = 3
 # Kept before the claim expires for the upload and the completion call.
 UPLOAD_MARGIN_S = 20.0
 SERVER_WAIT_S = 10.0
+PACE_TASKS = 5
 
 
 class EmbedMiner(TaskWorker):
@@ -43,9 +45,35 @@ class EmbedMiner(TaskWorker):
             settings.embed_api_key,
         )
         self.download_http: aiohttp.ClientSession | None = None
+        # One task at a time on the model server: sharing it only makes every task late.
+        self.server = asyncio.Lock()
+        self.ahead: dict[str, int] = {}
+        self.recent: deque[tuple[int, float]] = deque(maxlen=PACE_TASKS)
+        self.window = 0.0
+        self.task_texts = 0
 
     def claim_body(self) -> dict:
         return {**super().claim_body(), "models": [self.embedder.model.name]}
+
+    def claimed(self, task: dict) -> None:
+        self.ahead[task["task_id"]] = task.get("texts", 0)
+        self.task_texts = max(self.task_texts, task.get("texts", 0))
+        self.window = task["expires_at"] - time.time() - UPLOAD_MARGIN_S
+
+    def has_room(self) -> bool:
+        """Another task is claimed only if, at the measured pace, every held one still finishes in time."""
+        ahead = sum(self.ahead.values())
+        if not ahead:
+            return True
+        pace = self.pace()
+        if not pace:
+            return False
+        return (ahead + self.task_texts) / pace <= HEADROOM * self.window
+
+    def pace(self) -> float | None:
+        """Texts a second the model server embedded over the last few tasks."""
+        seconds = sum(took for _, took in self.recent)
+        return sum(texts for texts, _ in self.recent) / seconds if seconds else None
 
     async def process_task(self, task: dict) -> None:
         task_id, upload = task["task_id"], task["upload"]
@@ -76,6 +104,8 @@ class EmbedMiner(TaskWorker):
         except Exception as exc:
             await self.abandon(task_id, f"{type(exc).__name__}: {exc}")
             return
+        finally:
+            self.ahead.pop(task_id, None)
         log.info(
             "task %s: %d texts embedded in %.1fs",
             task_id,
@@ -89,7 +119,11 @@ class EmbedMiner(TaskWorker):
         if hashlib.sha256(body).hexdigest() != task["input"]["sha256"]:
             raise ValueError("the input does not match the hash it was issued with")
         rows = read_parquet(body, INPUT_SCHEMA)
-        vectors = await self.embedder.embed([row["text"] for row in rows])
+        async with self.server:
+            started = time.monotonic()
+            vectors = await self.embedder.embed([row["text"] for row in rows])
+            self.recent.append((len(rows), time.monotonic() - started))
+        self.ahead.pop(task["task_id"], None)
         out = write_parquet(
             [
                 {"text_id": row["text_id"], "vector": encode_vector(vector)}
