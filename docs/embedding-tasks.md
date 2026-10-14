@@ -82,8 +82,9 @@ row holds one text:
 | `kind`, `index` | `page` and 0 for a page's own text; `passage` and 1, 2, … for an article's passages |
 | `text` | exactly what to embed |
 
-Every page gives one page text: its title, description and text. A long article also gives up to 16
-passages of its paragraphs, each starting with the title. A task holds the texts of up to 1,000 pages.
+Every page gives one page text: its title, description and text. An article over 2,000 characters also
+gives up to 16 passages of its paragraphs, split at its section headings, each starting with the title and
+the section's heading. A task holds the texts of up to 1,000 pages and 3 million characters.
 
 Embed each text as given, with no prompt in front, and cut it at the model's input limit as vLLM
 does with `truncate_prompt_tokens` set to 2048. Upload within 5 minutes of claiming.
@@ -102,7 +103,7 @@ Upload it to `upload.url` with the given content type, then call `POST /v1/tasks
 ## How it is checked
 
 1. Every `text_id` must have exactly one vector of the right size, with finite values and length 1.
-2. 32 texts, chosen after your upload and including some of the longest, are embedded again by
+2. 48 texts, chosen after your upload and including some of the longest, are embedded again by
    validators with the same model. Each must reach a cosine similarity of 0.999 with yours.
 
 A task that fails either check earns nothing, halves your embed budget and is a strike. An upload

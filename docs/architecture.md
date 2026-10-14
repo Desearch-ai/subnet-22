@@ -85,8 +85,9 @@ Embedding is switched off until its inputs and the publishing of vectors below a
    has room.
 2. **Claim.** A miner running that model receives the batch.
 3. **Embed.** The miner runs the model on its GPU and uploads one vector per text.
-4. **Check.** Validators check every vector is present and well formed, and embed a random sample
-   again on their own model server. Every sample must match.
+4. **Check.** Validators check every vector is present and well formed, and get a random sample
+   embedded again, on their own model server or on Desearch's through the task API. Every sample must
+   match.
 5. **Publish and index.** The publisher writes the passed vectors, each with its page and text, to the
    pages bucket under `vectors/<model>/` for the index.
 

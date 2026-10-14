@@ -159,17 +159,21 @@ Embed tasks are off until `TASK_API_EMBED_TASKS=1`. The flow:
 
 1. **Planner** (`publisher plan`): follows the change log, keeps English pages with enough text whose
    text has no vector yet, and writes their texts to input files in the temporary bucket
-   (`embed/inputs/`), 1,000 pages a file. Every page gives a page text (title, description, text); an
-   article over 2,000 characters also gives up to 16 passages of its paragraphs, each starting with the
-   title. It hands an input to the API (`embed:inputs` in Redis) only while
+   (`embed/inputs/`), up to 1,000 pages and 3 million characters a file. Every page gives a page text
+   (title, description, text); an article over 2,000 characters also gives up to 16 passages of its
+   paragraphs, split at its section headings, each starting with the title and the section's heading.
+   It hands an input to the API (`embed:inputs` in Redis) only while
    `GET /v1/room?kind=embed` has room, and plans at most `PLANNER_PAGES_PER_HOUR` pages an hour.
 2. **Task API:** each input becomes one task naming the model (`TASK_API_EMBED_MODEL`). A claim must
    list that model in `models` or is refused with `MODEL_MISMATCH`, at no cost. The miner returns one
    vector per text within `TASK_API_EMBED_CLAIM_TTL`.
-3. **Validators** check every vector's shape and embed 32 texts again with the same model; each must
-   reach a cosine similarity of 0.999. An embed upload waits only for validators that vote on embed
-   uploads; one nobody scored by its deadline is void, deleted and handed to another miner, at no cost.
-   A pass pays the characters embedded.
+3. **Validators** check every vector's shape and get 48 sampled texts embedded again with the same
+   model, each of which must reach a cosine similarity of 0.999. A validator with its own model server
+   uses it; the others ask `POST /v1/embed/{task_id}/reference` with the sampled text ids, and the API
+   reads those texts from the upload's input, embeds each once on Desearch's model server
+   (`TASK_API_EMBED_REFERENCE_URL`) and keeps it for the next validator. An embed upload waits only for
+   validators that vote on embed uploads; one nobody scored by its deadline is void, deleted and handed
+   to another miner, at no cost. A pass pays the characters embedded.
 4. **Publisher:** writes a passed task's vectors, each with its page key, URL, text hash, kind and
    index, to `vectors/<model>/log/` in the pages bucket, numbered under `vectors/<model>/seq/`, and
    deletes the upload and the input.
@@ -185,7 +189,8 @@ The planner keeps its place in the log and the version of every page it planned 
 | `TASK_API_REDIS` | `redis://localhost:6379/15` | where it hands inputs over |
 | `PLANNER_DIR` | `/home/publisher/planner` | its state |
 | `PLANNER_PAGES_PER_HOUR` | 100000 | pages planned an hour at most; the rest of the log's pages wait for a backfill |
-| `PLANNER_PAGES_PER_INPUT` | 1000 | pages per input file |
+| `PLANNER_PAGES_PER_INPUT` | 1000 | pages per input file at most |
+| `PLANNER_CHARS_PER_INPUT` | 3000000 | characters of text per input file at most |
 | `PLANNER_FLUSH_S` | 600 | a part-filled input is written once its first page waited this long |
 | `PLANNER_MAX_PENDING` | 50 | input files waiting for room; past this, pages are left out |
 | `PLANNER_PENDING_MAX_AGE_S` | 43200 | an input waiting longer is dropped, before the temporary bucket deletes its file |
@@ -250,6 +255,9 @@ The [bot](../desearch-bot/README.md) fills the queue with the admin hotkey (`--t
 | `TASK_API_EMBED_MODEL` | `desearch-4b-v1` | the model embed tasks name, from [`desearch/embedding.py`](../desearch/embedding.py) |
 | `TASK_API_EMBED_CLAIM_TTL` | 300 | seconds a miner is given to upload an embed task after claiming it |
 | `TASK_API_EMBED_QUEUE_TARGET` | 100 | embed tasks the planner keeps queued and waiting for their round's reveal |
+| `TASK_API_EMBED_REFERENCE_URL` | — | Desearch's model server (an OpenAI-compatible `/v1/embeddings` serving the model under its name) for validators without their own; without it, the reference endpoint answers 503 |
+| `TASK_API_EMBED_REFERENCE_KEY` | — | that server's key |
+| `TASK_API_EMBED_REFERENCE_CALLS` | 4 | requests to that server at once |
 
 In `chain` mode a validator needs a validator permit, at least 10,000 total stake and at least 20
 alpha of its own.
