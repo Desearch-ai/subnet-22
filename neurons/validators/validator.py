@@ -14,7 +14,7 @@ import wandb
 import desearch
 from desearch import env
 from desearch.client import TaskApiClient
-from desearch.embedding import MODELS, OPENROUTER_EMBEDDINGS, EmbeddingClient
+from desearch.embedding import MODELS, EmbeddingClient
 from desearch.credit import SHARE_WINDOW_H
 from desearch.fetch import Fetcher, ScrapingDog
 from desearch.kinds import CRAWL, EMBED
@@ -45,8 +45,7 @@ SIGNER_RETRY_S = 30
 ACCOUNT_CHECK_S = 300
 VALIDATION_JOBS = 12
 EMBED_JOBS = 2
-# The engine pins the same hosts for its queries; SiliconFlow is left out as it runs fp8.
-EMBED_PROVIDERS = "DeepInfra,Nebius"
+EMBED_SERVER_WAIT_S = 30
 SCRAPINGDOG_CONCURRENCY = 50
 SCRAPINGDOG_DAILY_CREDITS = 100_000
 SCRAPINGDOG_TIMEOUT_S = 30.0
@@ -156,24 +155,16 @@ class Validator:
         )
 
     async def check_embed_tasks(self) -> None:
-        key = os.environ.get("EMBED_API_KEY", "")
-        if not key:
-            log.info(
-                f"Not checking embed tasks: EMBED_API_KEY is not set in {ENV_FILE}"
-            )
+        url = os.environ.get("EMBED_API_URL", "")
+        if not url:
+            log.info(f"Not checking embed tasks: EMBED_API_URL is not set in {ENV_FILE}")
             await self.stopping.wait()
             return
 
-        url = os.environ.get("EMBED_API_URL", OPENROUTER_EMBEDDINGS)
-        providers = tuple(
-            p.strip()
-            for p in os.environ.get("EMBED_PROVIDERS", EMBED_PROVIDERS).split(",")
-            if p.strip()
-        )
-        references = {
-            name: EmbeddingClient(url, key, model, providers)
-            for name, model in MODELS.items()
-        }
+        references = await self.embed_references(url)
+        if not references:
+            await self.stopping.wait()
+            return
         signer = await self.api_signer()
         async with TaskApiClient(
             self.config.neuron.task_api_url, self.wallet.hotkey
@@ -187,7 +178,7 @@ class Validator:
                 seeds=self.seed_for,
                 signer=signer,
             )
-            log.info(f"Validating embed tasks through {url}")
+            log.info(f"Checking embed tasks for {sorted(references)} on {url}")
             try:
                 await asyncio.gather(
                     *(checker.run(self.stopping) for _ in range(EMBED_JOBS))
@@ -195,6 +186,32 @@ class Validator:
             finally:
                 for reference in references.values():
                     await reference.aclose()
+
+    async def embed_references(self, url: str) -> dict[str, EmbeddingClient]:
+        """A client for each model the validator's own server answers to, once the server is up."""
+        key = os.environ.get("EMBED_API_KEY", "")
+        clients = {
+            name: EmbeddingClient(url, model, key) for name, model in MODELS.items()
+        }
+        probe = next(iter(clients.values()))
+        served: list[str] = []
+        while not self.stopping.is_set():
+            try:
+                served = await probe.served_models()
+                break
+            except (aiohttp.ClientError, asyncio.TimeoutError) as error:
+                log.warning(f"Embedding server at {url} unavailable, retrying: {error!r}")
+                await asyncio.sleep(EMBED_SERVER_WAIT_S)
+        references = {name: c for name, c in clients.items() if name in served}
+        for name, client in clients.items():
+            if name not in references:
+                await client.aclose()
+        if not references:
+            log.error(
+                f"Not checking embed tasks: {url} serves {served}, none of {sorted(MODELS)};"
+                f" start it with --served-model-name set to the model's name"
+            )
+        return references
 
     def init_wandb(self) -> None:
         if not self.config.wandb_on:

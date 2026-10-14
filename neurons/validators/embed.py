@@ -18,9 +18,11 @@ from neurons.validators.tasks import DownloadFailed, TaskChecker, UploadMissing
 
 log = logging.getLogger("validator")
 
-EMBED_SAMPLES = 20
-# Two independent hosts of the same weights agree above 0.9998; another model lands near 0.
-MATCH_SIMILARITY = 0.99
+EMBED_SAMPLES = 32
+LONG_SAMPLES = 4
+# Long enough to reach the model's token limit.
+LONG_CHARS = 6000
+MATCH_SIMILARITY = 0.999
 NORM_TOLERANCE = 0.01
 
 
@@ -66,8 +68,14 @@ def check_rows(
 def pick_samples(
     inputs: list[dict], seed: str, count: int = EMBED_SAMPLES
 ) -> list[dict]:
+    """The same texts for every validator of the upload, a few of them long ones when it has any."""
     ordered = sorted(inputs, key=lambda row: row["text_id"])
-    return random.Random(seed).sample(ordered, min(count, len(ordered)))
+    draw = random.Random(seed)
+    long = [row for row in ordered if len(row["text"]) >= LONG_CHARS]
+    picked = draw.sample(long, min(LONG_SAMPLES, len(long), count))
+    taken = {row["text_id"] for row in picked}
+    rest = [row for row in ordered if row["text_id"] not in taken]
+    return picked + draw.sample(rest, min(count - len(picked), len(rest)))
 
 
 def compare(
@@ -100,7 +108,7 @@ def compare(
 
 
 class EmbedValidator(TaskChecker):
-    """Recomputes a sample of each embed task's vectors with a reference model."""
+    """Recomputes a sample of each embed task's vectors on the validator's own model server."""
 
     kinds = (EMBED,)
 

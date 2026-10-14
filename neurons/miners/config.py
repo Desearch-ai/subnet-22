@@ -27,7 +27,7 @@ class Settings(FetchSettings):
     scrapingdog_api_key: str = ""
     scrapingdog_concurrency: int = 8
     extraction_threads: int = 4
-    embed_model: str = "qwen3-embedding-8b"
+    embed_model: str = "desearch-4b-v1"
     embed_api_url: str = LOCAL_EMBEDDINGS
     embed_api_key: str = ""
 

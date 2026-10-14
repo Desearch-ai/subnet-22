@@ -85,9 +85,9 @@ mainnet, and see exactly how your uploads are scored:
 
 ## Embedding (not open yet)
 
-Embed tasks open when Desearch's own embedding model ships, and run on your own GPU.
-[Embedding tasks](./embedding-tasks.md) describes what you will receive, the model to run and what
-to return.
+Embed tasks run Desearch's embedding model on your own GPU, under the same hotkey as your crawl
+miner. [Embedding tasks](./embedding-tasks.md) describes the model and how to serve it, what you
+receive and what to return.
 
 ## How you earn
 

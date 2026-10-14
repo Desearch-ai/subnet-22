@@ -15,6 +15,9 @@ from desearch.embedding import (
 )
 from neurons.validators.embed import (
     EMBED_SAMPLES,
+    LONG_CHARS,
+    LONG_SAMPLES,
+    MATCH_SIMILARITY,
     EmbedValidator,
     check_rows,
     pick_samples,
@@ -22,18 +25,18 @@ from neurons.validators.embed import (
 from tests.local_http import serving
 
 DIMS = 8
-MODEL = EmbeddingModel("tiny", "tiny/tiny", "rev", DIMS, "tiny")
+MODEL = EmbeddingModel("tiny", "tiny/tiny", "rev", DIMS, 16)
 INPUTS = [
     {
-        "text_id": f"p#chunk{i}",
-        "page_key": "p",
-        "url": "https://a.example/p",
+        "text_id": f"p{i}",
+        "page_key": f"p{i}",
+        "url": f"https://a.example/p{i}",
         "content_sha1": "c" * 40,
-        "kind": "chunk",
-        "index": i,
-        "text": f"passage {i}",
+        "kind": "page",
+        "index": 0,
+        "text": f"page {i}",
     }
-    for i in range(30)
+    for i in range(40)
 ]
 
 
@@ -53,8 +56,8 @@ def upload(rows=INPUTS, vector=lambda row: encode_vector(truth(row["text"]))) ->
 def test_every_vector_present_well_formed_and_unit_length_passes_the_row_check():
     counts, vectors = check_rows(INPUTS, upload(), DIMS)
 
-    assert counts == {"returned": 30, "missing": 0, "duplicates": 0, "malformed": 0}
-    assert len(vectors) == 30
+    assert counts == {"returned": 40, "missing": 0, "duplicates": 0, "malformed": 0}
+    assert len(vectors) == 40
 
 
 @pytest.mark.parametrize(
@@ -84,6 +87,18 @@ def test_the_sample_is_fixed_by_its_seed_and_capped():
     assert first == pick_samples(list(reversed(INPUTS)), "seed")
     assert first != pick_samples(INPUTS, "other seed")
     assert len(first) == EMBED_SAMPLES and len(pick_samples(INPUTS[:3], "seed")) == 3
+
+
+def test_every_sample_includes_long_texts_when_the_task_has_them():
+    long = [{**row, "text": "x" * LONG_CHARS + row["text"]} for row in INPUTS[:6]]
+    inputs = long + INPUTS[6:]
+
+    picked = pick_samples(inputs, "seed")
+    ids = [row["text_id"] for row in picked]
+
+    assert len(ids) == len(set(ids)) == EMBED_SAMPLES
+    assert sum(len(row["text"]) >= LONG_CHARS for row in picked) >= LONG_SAMPLES
+    assert picked == pick_samples(list(reversed(inputs)), "seed")
 
 
 class Reference:
@@ -213,4 +228,42 @@ def test_a_vector_inflated_within_the_norm_tolerance_is_judged_on_its_cosine():
     ((_, result),), _ = asyncio.run(judged(upload(vector=slanted), Reference()))
 
     assert (result["verdict"], result["reason"]) == ("fail", "vectors_mismatch")
-    assert result["min_similarity"] < 0.99
+    assert result["min_similarity"] < MATCH_SIMILARITY
+
+
+def near(row, cosine: float) -> bytes:
+    exact = truth(row["text"])
+    other = truth(row["text"] + " other")
+    other -= (other @ exact) * exact
+    other /= np.linalg.norm(other)
+    return encode_vector(cosine * exact + np.sqrt(1 - cosine**2) * other)
+
+
+def test_vectors_a_little_off_the_model_fail_and_the_same_model_on_other_hardware_passes():
+    off = upload(vector=lambda row: near(row, 0.998))
+    same = upload(vector=lambda row: near(row, 0.99995))
+
+    ((_, failed),), _ = asyncio.run(judged(off, Reference()))
+    ((_, passed),), _ = asyncio.run(judged(same, Reference()))
+
+    assert (failed["verdict"], failed["reason"]) == ("fail", "vectors_mismatch")
+    assert (passed["verdict"], passed["matched"]) == ("pass", EMBED_SAMPLES)
+
+
+def test_a_validator_checks_only_the_models_its_own_server_serves():
+    from neurons.validators.validator import Validator
+
+    async def references(served):
+        async def handler(request: web.Request) -> web.Response:
+            return web.json_response({"data": [{"id": name} for name in served]})
+
+        made = Validator.__new__(Validator)
+        made.stopping = asyncio.Event()
+        async with serving(handler) as base:
+            found = await made.embed_references(base + "v1/embeddings")
+        for client in found.values():
+            await client.aclose()
+        return sorted(found)
+
+    assert asyncio.run(references(["desearch-4b-v1"])) == ["desearch-4b-v1"]
+    assert asyncio.run(references(["Qwen/Qwen3-Embedding-4B"])) == []

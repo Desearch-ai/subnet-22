@@ -52,12 +52,15 @@ cp neurons/validators/.env.template neurons/validators/.env
 | `SCRAPINGDOG_API_KEY` | required: a validator that cannot check crawl tasks sets no weights |
 | `SCRAPINGDOG_DAILY_CREDITS` | ScrapingDog credits to use per day, spread evenly over the hours; 100,000 by default |
 | `WANDB_API_KEY` | Weights & Biases login, unless `--wandb.off`; `wandb login` also stores it |
-| `EMBED_API_KEY` | for checking [embed tasks](./embedding-tasks.md) once they open: a key for the hosted model service |
-| `EMBED_API_URL` | the hosted model service, OpenRouter's `/embeddings` by default |
-| `EMBED_PROVIDERS` | which OpenRouter providers run the reference model, `DeepInfra,Nebius` by default |
+| `EMBED_API_URL` | for checking [embed tasks](./embedding-tasks.md) once they open: your own model server's `/v1/embeddings`; without it, embed tasks are left to other validators |
+| `EMBED_API_KEY` | if that server requires one |
 
 Nothing else is configurable: sampling and match rules are fixed in code, so every validator checks
 the same way.
+
+The model server runs the same `vllm serve` command miners use, from
+[Embedding tasks](./embedding-tasks.md), on an NVIDIA GPU with 16 GB of memory or more. The validator
+checks the models the server answers to and waits for it when it is not up yet.
 
 Uploads are checked in a separate, memory-capped process. On Linux it also has no environment, no
 network and read-only access to Python's files only, so it cannot reach your wallet, keys or the

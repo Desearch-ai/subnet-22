@@ -77,18 +77,16 @@ every page.
 
 ## An embed task, start to finish
 
-Embedding is switched off until Desearch's own embedding model ships and the publisher writes the
-inputs below; see
+Embedding is switched off until its inputs and the publishing of vectors below are running; see
 [Embedding tasks](./embedding-tasks.md).
 
-1. **Input.** When the publisher writes new or changed pages, it cuts them into the texts the index
-   uses (a head, the full text and each passage) and hands them to the task API as a batch.
-2. **Claim.** A miner receives the batch and the name of the model to run.
+1. **Input.** Published pages without a vector from the current model are batched, one text per page
+   cut to fit the model, and handed to the task API.
+2. **Claim.** A miner running that model receives the batch.
 3. **Embed.** The miner runs the model on its GPU and uploads one vector per text.
-4. **Check.** A validator checks every vector is present and well formed, and recomputes a random
-   sample through a hosted service running the same model. Every sample must match.
-5. **Publish and index.** The vectors are published next to their pages, and the engine picks them
-   up within a minute, without a restart.
+4. **Check.** Validators check every vector is present and well formed, and embed a random sample
+   again on their own model server. Every sample must match.
+5. **Publish and index.** The vectors are published next to their pages for the index.
 
 ## How the work stays honest
 
