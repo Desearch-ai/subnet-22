@@ -13,7 +13,7 @@ use publisher::compactor::{self, R2Store, Split, Store};
 use publisher::index::VersionIndex;
 use publisher::local::{LocalFeed, LocalUploads};
 use publisher::worker::{self, Job};
-use publisher::{build, outcomes, service};
+use publisher::{build, outcomes, planner, service};
 
 #[cfg(not(target_env = "msvc"))]
 #[global_allocator]
@@ -98,6 +98,8 @@ enum Command {
         #[arg(long)]
         allow_unlocated: bool,
     },
+    /// Turn published pages that need a vector into embed inputs for the task API, following the change log until SIGTERM.
+    Plan,
     /// Serve a local stand-in for R2 that keeps objects as files under a folder; for local runs only.
     StubR2 {
         #[arg(long)]
@@ -136,6 +138,7 @@ fn main() -> Result<()> {
         }
         Command::Local(args) => local(args),
         Command::Compact { once, start_empty_at } => compact(once, start_empty_at),
+        Command::Plan => tokio::runtime::Builder::new_multi_thread().enable_all().build()?.block_on(plan()),
         Command::CheckCurrent { prefix, seqs, files, per_file, shards, explain } => {
             let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
             let store = current_store(&runtime, &prefix, pages_store(&runtime)?)?;
@@ -269,6 +272,30 @@ fn current_store(runtime: &tokio::runtime::Runtime, prefix: &str, log: R2Store) 
 }
 
 const COMPACT_RETRY_S: u64 = 30;
+
+async fn plan() -> Result<()> {
+    let settings = planner::Settings::from_env()?;
+    let (temp, pages) = service::buckets_from_env(Default::default())?;
+    let redis_url = std::env::var("TASK_API_REDIS").ok().filter(|v| !v.is_empty()).unwrap_or_else(|| "redis://localhost:6379/15".into());
+    let redis = redis::Client::open(redis_url.as_str())?.get_connection_manager().await.context("connecting to TASK_API_REDIS")?;
+    let task_api = std::env::var("TASK_API_URL").ok().filter(|v| !v.is_empty()).unwrap_or_else(|| "https://api-22.desearch.ai".into());
+    let mut planner = planner::Planner::new(settings, pages, temp, redis, planner::Room::api(&task_api)?).await?;
+    println!(
+        "planning {} texts after change file {}, at most {} pages an hour, inputs of {} pages, room from {task_api}",
+        planner::RECIPE,
+        planner.read_through(),
+        planner.settings.pages_per_hour,
+        planner.settings.pages_per_input
+    );
+    let (stopping, stop) = tokio::sync::watch::channel(false);
+    tokio::spawn(async move {
+        if let Ok(mut term) = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            term.recv().await;
+        }
+        let _ = stopping.send(true);
+    });
+    planner.run(stop).await
+}
 
 fn compact(once: bool, start_empty_at: Option<i64>) -> Result<()> {
     let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;

@@ -155,16 +155,43 @@ validator (`EMISSION_CONTROL_PERC`, `CRAWL_PERC` and `EMBED_PERC` in
 
 ## Embed tasks
 
-Embed tasks are off (`TASK_API_EMBED_TASKS=0`) until their inputs and the publishing of vectors run;
-the publisher refuses to start while they are on. Each task holds one text per page and names the
-model (`TASK_API_EMBED_MODEL`); a claim must list that model in `models` or is refused with
-`MODEL_MISMATCH`. The miner returns one vector per text within `TASK_API_EMBED_CLAIM_TTL`. Validators
-check every vector's shape and embed 32 texts again with the same model; each must reach a cosine
-similarity of 0.999. A pass pays the characters embedded. An upload no validator scored by its
-deadline is void, deleted and handed to another miner, at no cost.
+Embed tasks are off until `TASK_API_EMBED_TASKS=1`. The flow:
 
-The API records which version of each page every model has embedded, so an unchanged page is not
-embedded twice. The miner-facing description is [Embedding tasks](../docs/embedding-tasks.md).
+1. **Planner** (`publisher plan`): follows the change log, keeps English pages with enough text whose
+   text has no vector yet, and writes their texts to input files in the temporary bucket
+   (`embed/inputs/`), 1,000 pages a file. Every page gives a page text (title, description, text); an
+   article over 2,000 characters also gives up to 16 passages of its paragraphs, each starting with the
+   title. It hands an input to the API (`embed:inputs` in Redis) only while
+   `GET /v1/room?kind=embed` has room, and plans at most `PLANNER_PAGES_PER_HOUR` pages an hour.
+2. **Task API:** each input becomes one task naming the model (`TASK_API_EMBED_MODEL`). A claim must
+   list that model in `models` or is refused with `MODEL_MISMATCH`, at no cost. The miner returns one
+   vector per text within `TASK_API_EMBED_CLAIM_TTL`.
+3. **Validators** check every vector's shape and embed 32 texts again with the same model; each must
+   reach a cosine similarity of 0.999. An embed upload waits only for validators that vote on embed
+   uploads; one nobody scored by its deadline is void, deleted and handed to another miner, at no cost.
+   A pass pays the characters embedded.
+4. **Publisher:** writes a passed task's vectors, each with its page key, URL, text hash, kind and
+   index, to `vectors/<model>/log/` in the pages bucket, numbered under `vectors/<model>/seq/`, and
+   deletes the upload and the input.
+
+The miner-facing description is [Embedding tasks](../docs/embedding-tasks.md).
+
+The planner keeps its place in the log and the version of every page it planned in RocksDB under
+`PLANNER_DIR`, reads the same bucket settings as the publisher, and is configured with:
+
+| Variable | Default | |
+| --- | --- | --- |
+| `TASK_API_URL` | `https://api-22.desearch.ai` | where it asks for room |
+| `TASK_API_REDIS` | `redis://localhost:6379/15` | where it hands inputs over |
+| `PLANNER_DIR` | `/home/publisher/planner` | its state |
+| `PLANNER_PAGES_PER_HOUR` | 100000 | pages planned an hour at most; the rest of the log's pages wait for a backfill |
+| `PLANNER_PAGES_PER_INPUT` | 1000 | pages per input file |
+| `PLANNER_FLUSH_S` | 600 | a part-filled input is written once its first page waited this long |
+| `PLANNER_MAX_PENDING` | 50 | input files waiting for room; past this, pages are left out |
+| `PLANNER_MIN_CHARS` | 300 | characters of text a page needs |
+| `PLANNER_LANGS` | `en` | languages planned |
+| `PLANNER_EXCLUDE_FILE` | — | a file of domains, one a line, never planned |
+| `PLANNER_START_AFTER` | the newest change file | where a planner without state starts |
 
 ## Run
 
@@ -221,6 +248,7 @@ The [bot](../desearch-bot/README.md) fills the queue with the admin hotkey (`--t
 | `TASK_API_EMBED_TASKS` | 0 | 1 opens embed tasks |
 | `TASK_API_EMBED_MODEL` | `desearch-4b-v1` | the model embed tasks name, from [`desearch/embedding.py`](../desearch/embedding.py) |
 | `TASK_API_EMBED_CLAIM_TTL` | 300 | seconds a miner is given to upload an embed task after claiming it |
+| `TASK_API_EMBED_QUEUE_TARGET` | 100 | embed tasks the planner keeps queued and waiting for their round's reveal |
 
 In `chain` mode a validator needs a validator permit, at least 10,000 total stake and at least 20
 alpha of its own.
@@ -275,7 +303,7 @@ subnet-22 bucket, temporary, emptied after a day, public
   validation/open.json  the uploads waiting for validators, with their manifests, rewritten as they change
   log/uploads/          every completed upload with its reported counts, numbered and signed
   outcomes/             what became of every URL, numbered under seq/, newest in latest.json
-  embed-inputs/         texts waiting to be embedded
+  embed/inputs/         the planner's input files, deleted once their vectors are published
 desearch-pages bucket
   changes/                every new, changed or removed page with its full record, naming the miner
                           that crawled it and the validator that checked it; numbered under seq/,
@@ -286,7 +314,8 @@ desearch-pages bucket
                           kept three days
   reports/                every final result, with the checked pages and each validator's report;
                           kept 30 days, the API keeps them all
-  vectors/model=<name>/   verified vectors
+  vectors/<model>/        verified vectors, one file per task under log/, numbered under seq/,
+                          newest in latest.json
 ```
 
 A page's key comes from its URL alone; it is how the change files and `current/` name a page:

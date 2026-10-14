@@ -80,13 +80,15 @@ every page.
 Embedding is switched off until its inputs and the publishing of vectors below are running; see
 [Embedding tasks](./embedding-tasks.md).
 
-1. **Input.** Published pages without a vector from the current model are batched, one text per page
-   cut to fit the model, and handed to the task API.
+1. **Input.** A planner follows the published pages and batches those whose text has no vector yet:
+   a page text for each, and passages for long articles. It hands the task API a batch when the API
+   has room.
 2. **Claim.** A miner running that model receives the batch.
 3. **Embed.** The miner runs the model on its GPU and uploads one vector per text.
 4. **Check.** Validators check every vector is present and well formed, and embed a random sample
    again on their own model server. Every sample must match.
-5. **Publish and index.** The vectors are published next to their pages for the index.
+5. **Publish and index.** The publisher writes the passed vectors, each with its page and text, to the
+   pages bucket under `vectors/<model>/` for the index.
 
 ## How the work stays honest
 

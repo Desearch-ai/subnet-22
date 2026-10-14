@@ -79,8 +79,11 @@ row holds one text:
 | --- | --- |
 | `text_id` | what your vector is filed under |
 | `page_key`, `url`, `content_sha1` | the page and the version of it the text was taken from |
-| `kind`, `index` | `page` and 0: one text per page |
+| `kind`, `index` | `page` and 0 for a page's own text; `passage` and 1, 2, … for an article's passages |
 | `text` | exactly what to embed |
+
+Every page gives one page text: its title, description and text. A long article also gives up to 16
+passages of its paragraphs, each starting with the title. A task holds the texts of up to 1,000 pages.
 
 Embed each text as given, with no prompt in front, and cut it at the model's input limit as vLLM
 does with `truncate_prompt_tokens` set to 2048. Upload within 5 minutes of claiming.

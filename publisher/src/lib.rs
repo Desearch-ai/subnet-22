@@ -8,6 +8,7 @@ pub mod current;
 pub mod index;
 pub mod local;
 pub mod outcomes;
+pub mod planner;
 pub mod queue;
 pub mod reading;
 pub mod records;
