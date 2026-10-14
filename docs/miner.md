@@ -1,6 +1,6 @@
 # ⛏️ Miner
 
-- [🧭 What a miner does](#-what-a-miner-does)
+- [📋 What a miner does](#-what-a-miner-does)
   - [💰 How you earn](#-how-you-earn)
 - [🔧 Setup](#-setup)
   - [Requirements](#requirements)
@@ -11,7 +11,7 @@
   - [🧪 Test your miner locally](#-test-your-miner-locally)
   - [📈 Monitor](#-monitor)
 
-## 🧭 What a miner does
+## 📋 What a miner does
 
 Subnet 22 builds Desearch's web index. Miners do its work in two kinds of tasks, each paid from its own
 part of the emission: 30% for crawling, 20% for embedding, and 50% burned. A part no miner earns is
