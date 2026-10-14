@@ -275,6 +275,52 @@ def test_a_validator_without_a_model_server_gets_its_sample_from_the_task_api():
     assert np.allclose(vectors, [truth(row["text_id"]) for row in picked], atol=1e-6), "in the order asked"
 
 
+def test_the_task_api_reference_is_waited_for_while_another_validator_computes_it():
+    from desearch.client import TaskApiError
+    from neurons.validators.embed import ApiReference
+
+    class Api:
+        def __init__(self, answers):
+            self.answers = answers
+
+        async def post(self, path, body=None):
+            answer = self.answers.pop(0)
+            if isinstance(answer, Exception):
+                raise answer
+            return {
+                "vectors": [
+                    {"text_id": i, "embedding": base64.b64encode(truth(i).astype("<f4").tobytes()).decode()}
+                    for i in body["text_ids"]
+                ]
+            }
+
+    busy = TaskApiError(503, "the reference for this upload is being computed", 0.01)
+    picked = INPUTS[:2]
+    api = Api([busy, busy, None])
+    vectors = asyncio.run(ApiReference(api, MODEL).vectors({"task_id": "t1"}, picked))
+    assert api.answers == [] and vectors.shape == (2, MODEL.dims)
+
+    down = TaskApiError(503, "the reference model server is unavailable", 30)
+    with pytest.raises(TaskApiError):
+        asyncio.run(ApiReference(Api([down]), MODEL).vectors({"task_id": "t1"}, picked))
+
+
+@pytest.mark.parametrize("status", [409, 422, 429])
+def test_a_reference_refused_for_one_upload_defers_it_without_pausing_the_checks(status):
+    from desearch.client import TaskApiError
+    from neurons.validators.embed import ApiReference
+
+    class Refusing:
+        async def post(self, path, body=None):
+            raise TaskApiError(status, "no")
+
+    reference = ApiReference(Refusing(), MODEL)
+    posts, checker = asyncio.run(judged(upload(), reference))
+
+    assert posts == [] and "t1" in checker.deferred
+    assert checker.provider_failures == 0
+
+
 def test_a_validator_checks_only_the_models_its_own_server_serves():
     from neurons.validators.validator import Validator
 
