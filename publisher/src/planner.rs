@@ -125,6 +125,9 @@ pub fn passages(text: &str, headings: &[Option<String>]) -> Vec<Passage> {
             if held > 0 && held + 1 + size > PASSAGE_MAX_CHARS {
                 passages.push(Passage { heading: heading.clone(), body: std::mem::take(&mut current) });
                 held = 0;
+                if passages.len() >= MAX_PASSAGES {
+                    return passages;
+                }
             }
             if held > 0 {
                 current.push('\n');

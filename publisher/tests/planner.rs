@@ -102,6 +102,9 @@ fn passages_group_paragraphs_and_split_long_lines_at_sentences() {
     capped.extend(["s".repeat(300), "Later".into()]);
     capped.extend((0..5).map(|_| "z".repeat(700)));
     assert_eq!(passages(&capped.join("\n"), &[Some("Later".into())]).len(), 16, "no more than 16, a heading closing the 16th included");
+    let mut overflowing: Vec<String> = (0..15).map(|i| format!("{i}").repeat(600)).collect();
+    overflowing.extend(["s".repeat(500), "o".repeat(1_200)]);
+    assert_eq!(passages(&overflowing.join("\n"), &[]).len(), 16, "no more than 16 when a long line both closes one passage and fills the next");
 
     let mut description = record("https://news.example/d", "Opening line. More.", "other", "en");
     description.description = Some("Opening line.".into());
