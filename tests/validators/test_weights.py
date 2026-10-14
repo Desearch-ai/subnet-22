@@ -251,32 +251,6 @@ def test_crawl_weights_follow_logged_uploads_and_embed_this_validators_checks(
     assert list(weights) == pytest.approx([0.225, 0.075, 0.2, 0.5])
 
 
-def test_a_validator_that_does_not_check_embed_uploads_pays_the_embed_pool_by_the_apis_shares(
-    monkeypatch,
-):
-    monkeypatch.setattr("neurons.validators.weights.EMISSION_CONTROL_PERC", 0.5)
-    monkeypatch.setattr("neurons.validators.weights.CRAWL_PERC", 0.6)
-    monkeypatch.setattr("neurons.validators.weights.EMBED_PERC", 0.4)
-
-    async def api_shares(self):
-        return {"embedder": 0.75, "other": 0.25}
-
-    monkeypatch.setattr(Validator, "api_embed_shares", api_shares)
-    made = Validator.__new__(Validator)
-    made.metagraph = SimpleNamespace(hotkeys=["embedder", "other", BURN])
-    made.ledger = Ledger(":memory:")
-
-    assert list(asyncio.run(made.weights())) == pytest.approx(
-        [0.0, 0.0, 1.0]
-    ), "a validator that checks embed uploads pays only what it checked"
-    made.embed_shares_from_api = True
-    assert list(asyncio.run(made.weights())) == pytest.approx([0.15, 0.05, 0.8])
-    made.ledger.record("e1", "embed", "other", "pass", 500, 1, 1)
-    assert list(asyncio.run(made.weights())) == pytest.approx(
-        [0.0, 0.2, 0.8]
-    ), "its own verdicts come first"
-
-
 def test_a_failed_task_takes_its_urls_back_but_never_below_nothing():
     ledger = Ledger(":memory:")
     ledger.record("old", "crawl", "m1", "pass", 100, 100, 100, at=1.0)

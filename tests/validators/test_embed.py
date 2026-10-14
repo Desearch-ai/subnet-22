@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import hashlib
 
 import aiohttp
@@ -36,7 +37,7 @@ INPUTS = [
         "index": 0,
         "text": f"page {i}",
     }
-    for i in range(40)
+    for i in range(60)
 ]
 
 
@@ -56,8 +57,8 @@ def upload(rows=INPUTS, vector=lambda row: encode_vector(truth(row["text"]))) ->
 def test_every_vector_present_well_formed_and_unit_length_passes_the_row_check():
     counts, vectors = check_rows(INPUTS, upload(), DIMS)
 
-    assert counts == {"returned": 40, "missing": 0, "duplicates": 0, "malformed": 0}
-    assert len(vectors) == 40
+    assert counts == {"returned": 60, "missing": 0, "duplicates": 0, "malformed": 0}
+    assert len(vectors) == 60
 
 
 @pytest.mark.parametrize(
@@ -108,11 +109,11 @@ class Reference:
         self.fail = fail
         self.asked: list[str] = []
 
-    async def embed(self, texts):
+    async def vectors(self, job, picked):
         if self.fail:
             raise RuntimeError("provider is down")
-        self.asked += texts
-        return np.array([truth(t) * 5 for t in texts])
+        self.asked += [row["text"] for row in picked]
+        return np.array([truth(row["text"]) * 5 for row in picked])
 
 
 class Api:
@@ -248,6 +249,30 @@ def test_vectors_a_little_off_the_model_fail_and_the_same_model_on_other_hardwar
 
     assert (failed["verdict"], failed["reason"]) == ("fail", "vectors_mismatch")
     assert (passed["verdict"], passed["matched"]) == ("pass", EMBED_SAMPLES)
+
+
+def test_a_validator_without_a_model_server_gets_its_sample_from_the_task_api():
+    from neurons.validators.embed import ApiReference
+
+    class Api:
+        def __init__(self):
+            self.posts = []
+
+        async def post(self, path, body=None):
+            self.posts.append((path, body))
+            return {
+                "vectors": [
+                    {"text_id": i, "embedding": base64.b64encode(truth(i).astype("<f4").tobytes()).decode()}
+                    for i in reversed(body["text_ids"])
+                ]
+            }
+
+    api = Api()
+    picked = INPUTS[:3]
+    vectors = asyncio.run(ApiReference(api, MODEL).vectors({"task_id": "t1"}, picked))
+
+    assert api.posts == [("/v1/embed/t1/reference", {"text_ids": ["p0", "p1", "p2"]})]
+    assert np.allclose(vectors, [truth(row["text_id"]) for row in picked], atol=1e-6), "in the order asked"
 
 
 def test_a_validator_checks_only_the_models_its_own_server_serves():
