@@ -98,6 +98,11 @@ fn passages_group_paragraphs_and_split_long_lines_at_sentences() {
     assert_eq!(shape, [(None, 716), (Some("Pricing"), 701), (Some("FAQ"), 13)], "a heading starts a section, and names the passages under it");
     assert!(!found.iter().any(|p| p.body.contains("Pricing")), "the heading leads the passage rather than sitting in it");
 
+    let mut capped: Vec<String> = (0..15).map(|i| format!("{i}").repeat(600)).collect();
+    capped.extend(["s".repeat(300), "Later".into()]);
+    capped.extend((0..5).map(|_| "z".repeat(700)));
+    assert_eq!(passages(&capped.join("\n"), &[Some("Later".into())]).len(), 16, "no more than 16, a heading closing the 16th included");
+
     let mut description = record("https://news.example/d", "Opening line. More.", "other", "en");
     description.description = Some("Opening line.".into());
     assert_eq!(page_text(&description), "A title\nOpening line. More.", "a description the text opens with is not repeated");

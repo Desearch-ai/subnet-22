@@ -113,6 +113,9 @@ pub fn passages(text: &str, headings: &[Option<String>]) -> Vec<Passage> {
             if held >= PASSAGE_MIN_CHARS / 3 {
                 passages.push(Passage { heading: heading.clone(), body: std::mem::take(&mut current) });
                 held = 0;
+                if passages.len() >= MAX_PASSAGES {
+                    return passages;
+                }
             }
             heading = Some(line.to_string());
             continue;
@@ -133,17 +136,18 @@ pub fn passages(text: &str, headings: &[Option<String>]) -> Vec<Passage> {
                 passages.push(Passage { heading: heading.clone(), body: std::mem::take(&mut current) });
                 held = 0;
             }
-            if passages.len() == MAX_PASSAGES {
+            if passages.len() >= MAX_PASSAGES {
                 return passages;
             }
         }
     }
+    let room = passages.len() < MAX_PASSAGES;
     match passages.last_mut() {
         Some(last) if held > 0 && held < PASSAGE_MIN_CHARS / 2 && last.heading == heading => {
             last.body.push('\n');
             last.body.push_str(&current);
         }
-        _ if held > 0 => passages.push(Passage { heading, body: current }),
+        _ if held > 0 && room => passages.push(Passage { heading, body: current }),
         _ => {}
     }
     passages
