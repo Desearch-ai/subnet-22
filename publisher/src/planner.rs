@@ -64,13 +64,14 @@ pub struct Text {
     pub text: String,
 }
 
-/// The texts of one page: its page text, and the passages of an article long enough to need them.
+/// The texts of one page: its page text, and the passages of an article long enough to need them, each led by the title and its section's heading.
 pub fn texts(key: &str, record: &Record) -> Vec<Text> {
     let mut texts = vec![Text { text_id: format!("{key}#page"), kind: PAGE, index: 0, text: page_text(record) }];
     if record.page_type.as_deref() == Some("article") && record.text.chars().count() > PASSAGES_FROM_CHARS {
         let title = record.title.trim();
-        for (i, passage) in passages(&record.text).into_iter().enumerate() {
-            let text = if title.is_empty() { passage } else { format!("{title}\n{passage}") };
+        for (i, passage) in passages(&record.text, &record.headings).into_iter().enumerate() {
+            let lead = [Some(title).filter(|t| !t.is_empty()), passage.heading.as_deref()].into_iter().flatten().collect::<Vec<_>>().join(" › ");
+            let text = if lead.is_empty() { passage.body } else { format!("{lead}\n{}", passage.body) };
             texts.push(Text { text_id: format!("{key}#p{}", i + 1), kind: PASSAGE, index: i as i32 + 1, text });
         }
     }
@@ -91,15 +92,33 @@ pub fn page_text(record: &Record) -> String {
     cut(&parts.join("\n"), PAGE_CHARS)
 }
 
-/// Consecutive lines grouped into passages of about `PASSAGE_MIN_CHARS` to `PASSAGE_MAX_CHARS` characters, a long line split at its sentences.
-pub fn passages(text: &str) -> Vec<String> {
-    let mut passages: Vec<String> = Vec::new();
+/// A passage of an article and the heading of the section it is in.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Passage {
+    pub heading: Option<String>,
+    pub body: String,
+}
+
+/// Consecutive lines grouped into passages of about `PASSAGE_MIN_CHARS` to `PASSAGE_MAX_CHARS` characters; a line that is one of the page's headings starts a new section, and a long line is split at its sentences.
+pub fn passages(text: &str, headings: &[Option<String>]) -> Vec<Passage> {
+    let headings: HashSet<&str> = headings.iter().flatten().map(|h| h.trim()).filter(|h| !h.is_empty()).collect();
+    let mut passages: Vec<Passage> = Vec::new();
+    let mut heading: Option<String> = None;
     let (mut current, mut held) = (String::new(), 0);
     for line in text.lines().map(str::trim).filter(|line| !line.is_empty()) {
+        if headings.contains(line) {
+            // A section's short tail stays with the next one rather than standing alone.
+            if held >= PASSAGE_MIN_CHARS / 3 {
+                passages.push(Passage { heading: heading.clone(), body: std::mem::take(&mut current) });
+                held = 0;
+            }
+            heading = Some(line.to_string());
+            continue;
+        }
         for piece in sentences_within(line, PASSAGE_MAX_CHARS) {
             let size = piece.chars().count();
             if held > 0 && held + 1 + size > PASSAGE_MAX_CHARS {
-                passages.push(std::mem::take(&mut current));
+                passages.push(Passage { heading: heading.clone(), body: std::mem::take(&mut current) });
                 held = 0;
             }
             if held > 0 {
@@ -109,7 +128,7 @@ pub fn passages(text: &str) -> Vec<String> {
             current.push_str(&piece);
             held += size;
             if held >= PASSAGE_MIN_CHARS {
-                passages.push(std::mem::take(&mut current));
+                passages.push(Passage { heading: heading.clone(), body: std::mem::take(&mut current) });
                 held = 0;
             }
             if passages.len() == MAX_PASSAGES {
@@ -118,11 +137,11 @@ pub fn passages(text: &str) -> Vec<String> {
         }
     }
     match passages.last_mut() {
-        Some(last) if held > 0 && held < PASSAGE_MIN_CHARS / 2 => {
-            last.push('\n');
-            last.push_str(&current);
+        Some(last) if held > 0 && held < PASSAGE_MIN_CHARS / 2 && last.heading == heading => {
+            last.body.push('\n');
+            last.body.push_str(&current);
         }
-        _ if held > 0 => passages.push(current),
+        _ if held > 0 => passages.push(Passage { heading, body: current }),
         _ => {}
     }
     passages
@@ -167,6 +186,8 @@ pub struct Settings {
     /// Pages planned an hour at most; the rest of the log's pages are left for a later backfill.
     pub pages_per_hour: f64,
     pub pages_per_input: usize,
+    /// An input is written once its texts reach this many characters, so a task of long articles stays one a miner finishes in its claim time.
+    pub chars_per_input: usize,
     /// A part-filled input is written once its first page waited this long.
     pub flush_after: Duration,
     /// Inputs written but not yet handed over; past this, new pages are left out.
@@ -198,6 +219,7 @@ impl Settings {
             dir: PathBuf::from(text("PLANNER_DIR", "/home/publisher/planner")),
             pages_per_hour: number("PLANNER_PAGES_PER_HOUR", 100_000.0)?,
             pages_per_input: number("PLANNER_PAGES_PER_INPUT", 1_000)?,
+            chars_per_input: number("PLANNER_CHARS_PER_INPUT", 3_000_000)?,
             flush_after: Duration::from_secs_f64(number("PLANNER_FLUSH_S", 600.0)?),
             max_pending: number("PLANNER_MAX_PENDING", 50)?,
             pending_max_age: Duration::from_secs_f64(number("PLANNER_PENDING_MAX_AGE_S", 12.0 * 3600.0)?),
@@ -333,6 +355,7 @@ pub struct Planner {
     pub counts: Counts,
     buffer: Vec<Planned>,
     buffered: HashMap<String, usize>,
+    buffer_chars: usize,
     buffer_since: Option<Instant>,
     read_through: i64,
     tokens: f64,
@@ -362,6 +385,7 @@ impl Planner {
             counts: Counts::default(),
             buffer: Vec::new(),
             buffered: HashMap::new(),
+            buffer_chars: 0,
             buffer_since: None,
             read_through,
             tokens,
@@ -392,6 +416,9 @@ impl Planner {
                     for row in rows {
                         if let ChangeRow::Page(page) = row {
                             self.consider(*page);
+                            if self.buffer.len() >= self.settings.pages_per_input || self.buffer_chars >= self.settings.chars_per_input {
+                                self.flush().await?;
+                            }
                         }
                     }
                 }
@@ -401,9 +428,6 @@ impl Planner {
             self.counts.files += 1;
             self.advance(seq)?;
             read += 1;
-            if self.buffer.len() >= self.settings.pages_per_input {
-                self.flush().await?;
-            }
         }
         if self.buffer_since.is_some_and(|since| since.elapsed() >= self.settings.flush_after) {
             self.flush().await?;
@@ -469,6 +493,7 @@ impl Planner {
             texts: texts(&page.key, record),
         };
         if let Some(&at) = self.buffered.get(&page.key) {
+            self.buffer_chars = self.buffer_chars - chars_of(&self.buffer[at]) + chars_of(&planned);
             self.buffer[at] = planned;
             return;
         }
@@ -481,6 +506,7 @@ impl Planner {
             return;
         }
         self.buffered.insert(page.key, self.buffer.len());
+        self.buffer_chars += chars_of(&planned);
         self.buffer.push(planned);
         self.buffer_since.get_or_insert_with(Instant::now);
         self.counts.planned += 1;
@@ -527,6 +553,7 @@ impl Planner {
         self.state.commit(&self.buffer, &input_key, &entry.to_string(), Some(self.read_through))?;
         self.buffer.clear();
         self.buffered.clear();
+        self.buffer_chars = 0;
         self.buffer_since = None;
         self.pending += 1;
         self.counts.inputs += 1;
@@ -573,6 +600,10 @@ impl Planner {
     pub fn read_through(&self) -> i64 {
         self.read_through
     }
+}
+
+fn chars_of(page: &Planned) -> usize {
+    page.texts.iter().map(|text| text.text.chars().count()).sum()
 }
 
 fn budget_cap(pages_per_hour: f64) -> f64 {

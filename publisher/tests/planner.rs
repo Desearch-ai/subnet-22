@@ -71,19 +71,32 @@ fn every_page_gets_its_page_text_and_only_long_articles_get_passages() {
     assert_eq!(parts.len(), 16, "at most 16 passages");
     assert!(parts.iter().enumerate().all(|(i, p)| p.kind == PASSAGE && p.index == i as i32 + 1 && p.text_id == format!("k#p{}", i + 1)));
     assert!(parts.iter().all(|p| p.text.starts_with("A title\nParagraph ")), "each passage starts with the title");
+
+    let mut sectioned = record("https://news.example/h", &format!("{}\nHow it works\n{}", article(4), article(4)), "article", "en");
+    sectioned.headings = vec![Some("How it works".into())];
+    let led: Vec<String> = texts("k", &sectioned).into_iter().skip(1).map(|t| t.text.lines().next().unwrap().to_string()).collect();
+    assert_eq!(led.first().map(String::as_str), Some("A title"));
+    assert_eq!(led.last().map(String::as_str), Some("A title › How it works"), "a section's passages say where they are");
 }
 
 #[test]
 fn passages_group_paragraphs_and_split_long_lines_at_sentences() {
-    let grouped = passages(&["a".repeat(400), "b".repeat(400), "c".repeat(100)].join("\n"));
-    assert_eq!(grouped, [format!("{}\n{}\n{}", "a".repeat(400), "b".repeat(400), "c".repeat(100))], "short paragraphs join; a small tail joins the last");
+    let grouped = passages(&["a".repeat(400), "b".repeat(400), "c".repeat(100)].join("\n"), &[]);
+    let bodies: Vec<String> = grouped.iter().map(|p| p.body.clone()).collect();
+    assert_eq!(bodies, [format!("{}\n{}\n{}", "a".repeat(400), "b".repeat(400), "c".repeat(100))], "short paragraphs join; a small tail joins the last");
 
     let sentence = format!("{}. ", "x".repeat(299));
     let long_line = sentence.repeat(12);
-    let pieces = passages(&long_line);
+    let pieces: Vec<String> = passages(&long_line, &[]).into_iter().map(|p| p.body).collect();
     assert!(pieces.iter().all(|p| p.chars().count() <= 1_500 + 300), "{:?}", pieces.iter().map(|p| p.chars().count()).collect::<Vec<_>>());
     assert!(pieces.iter().all(|p| p.ends_with('.')), "split after a sentence");
     assert_eq!(pieces.concat().replace(['.', ' ', '\n'], "").len(), 12 * 299, "nothing lost");
+
+    let sectioned = ["Intro line one.", &"x".repeat(700), "Pricing", &"p".repeat(300), &"q".repeat(400), "FAQ", "Short answer."].join("\n");
+    let found = passages(&sectioned, &[Some("Pricing".into()), Some("FAQ".into()), None]);
+    let shape: Vec<(Option<&str>, usize)> = found.iter().map(|p| (p.heading.as_deref(), p.body.chars().count())).collect();
+    assert_eq!(shape, [(None, 716), (Some("Pricing"), 701), (Some("FAQ"), 13)], "a heading starts a section, and names the passages under it");
+    assert!(!found.iter().any(|p| p.body.contains("Pricing")), "the heading leads the passage rather than sitting in it");
 
     let mut description = record("https://news.example/d", "Opening line. More.", "other", "en");
     description.description = Some("Opening line.".into());
@@ -115,6 +128,7 @@ fn settings(dir: PathBuf, pages_per_hour: f64, start_after: i64) -> Settings {
         dir,
         pages_per_hour,
         pages_per_input: 3,
+        chars_per_input: 3_000_000,
         flush_after: Duration::from_secs(3600),
         max_pending: 10,
         pending_max_age: Duration::from_secs(3600),
@@ -204,6 +218,12 @@ async fn published_pages_become_inputs_once_per_version_within_the_budget_and_th
     let mut budget = Planner::new(settings(dir.join("budget"), 4.0, 1), pages.clone(), temp.clone(), redis.clone(), Room::Fixed(5)).await.unwrap();
     budget.pass().await.unwrap();
     assert_eq!((budget.counts.planned, budget.counts.over_budget), (1, 2), "4 pages an hour allow one at once; the rest is left for later");
+
+    let mut small = settings(dir.join("small"), 3600.0, 1);
+    small.chars_per_input = 1;
+    let mut split = Planner::new(small, pages.clone(), temp.clone(), redis.clone(), Room::Fixed(0)).await.unwrap();
+    split.pass().await.unwrap();
+    assert_eq!((split.counts.planned, split.counts.inputs), (3, 3), "an input is written as soon as its texts reach the character cap");
 
     let mut stale = settings(dir.join("stale"), 3600.0, 1);
     stale.pending_max_age = Duration::ZERO;
