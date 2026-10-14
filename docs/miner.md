@@ -6,7 +6,7 @@
 ## 📋 What a miner does
 
 Subnet 22 builds Desearch's web index. Miners do its work in two kinds of tasks, each paid from its own
-part of the emission: 30% for crawling, 20% for embedding, and 50% burned. A part no miner earns is
+part of the emission: 20% for crawling, 30% for embedding, and 50% burned. A part no miner earns is
 burned too.
 
 - **Crawl tasks:**
