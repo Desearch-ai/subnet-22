@@ -17,7 +17,7 @@ jobs:
      the same for every validator.
    - It reports pass or fail to the task API, with what it found per URL. Every validator checks every
      listed upload.
-2. **Checks embed tasks** (not open yet).
+2. **Checks embed tasks.**
    - Every embed upload is checked.
    - The validator samples 48 of its texts, gets their vectors from the same model and compares them
      with the miner's. Each must reach a cosine similarity of 0.999.

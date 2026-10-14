@@ -15,7 +15,7 @@ burned too.
     [`desearch`](../desearch/) package and uploads the result within 3 minutes. Validators check pages
     with that same package.
   - Validators re-fetch the pages of a drawn share of uploads and compare them with yours.
-- **Embed tasks** (not open yet):
+- **Embed tasks:**
   - A task is a batch of page texts, the texts of up to 1,000 pages.
   - The miner runs Desearch's embedding model on its own GPU and uploads one vector per text within
     5 minutes.
@@ -125,7 +125,7 @@ From the repository root, the crawl miner:
 pm2 start python3 --name desearch_miner -- -m neurons.miners.miner
 ```
 
-The embed miner (once embed tasks open), after starting the model server as
+The embed miner, after starting the model server as
 [Embedding tasks](./embedding-tasks.md) shows:
 
 ```bash

@@ -23,7 +23,7 @@ built from. This page explains how those parts fit together.
 | --- | --- | --- |
 | Desearch Bot | Reads the robots.txt and sitemaps of every domain on its list on a schedule, keeps every URL they list, and fills the task API's queue with new, changed and retried pages as it has room. | [`desearch-bot/`](../desearch-bot/) |
 | Task API | Packs URLs into tasks, hands them to miners, draws which finished uploads validators check, works out what each miner is owed from their reports and the validators' results, and publishes every miner's share. | [`task-api/app/`](../task-api/app/) |
-| Miners | Fetch the pages of a task and extract their text; once embedding opens, turn text into vectors on a GPU. | [`neurons/miners/`](../neurons/miners/) |
+| Miners | Fetch the pages of a task and extract their text, and turn text into vectors on a GPU. | [`neurons/miners/`](../neurons/miners/) |
 | Validators | Read each drawn upload from storage, check a sample of its pages against the live page, report pass or fail, and set weights from every miner's logged uploads at the rate their own checks found. | [`neurons/validators/`](../neurons/validators/) |
 | Publisher | Writes passed pages and vectors to permanent storage, takes withdrawn pages down, and reports what became of every URL to the bot. | [`publisher/`](../publisher/) |
 | Shared package | Fetching, text extraction and embedding formats, so miners and validators run the same code. | [`desearch/`](../desearch/) |

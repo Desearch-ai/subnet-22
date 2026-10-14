@@ -1,9 +1,5 @@
 # 🧠 Embedding Tasks
 
-> **Not open yet.** Embed tasks open once their inputs and the publishing of vectors are switched on.
-> Until then a miner asking for one is told `KIND_CLOSED`, and the embedding part of the emission is
-> burned.
-
 Embed tasks turn the pages miners crawl into the vectors the search index is built from. Each task is
 a batch of page texts and the model to run them through. You run the model on your own GPU and return
 one vector per text; validators embed a sample themselves and check that yours match.

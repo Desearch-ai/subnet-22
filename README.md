@@ -67,15 +67,15 @@ starts with selected sources and grows as results prove useful.
 | Work | Who does it | Status |
 | --- | --- | --- |
 | **Crawl** and refresh pages, extract their text | Miners fetch assigned pages; validators re-check a sample of their tasks | Running on SN22 |
-| **Embed** accepted text with a selected model | Miners run the model on their GPUs; validators recompute a sample | Built; opens with Desearch's embedding model |
+| **Embed** accepted text with a selected model | Miners run the model on their GPUs; validators recompute a sample | Running on SN22, with Desearch's embedding model |
 | Train retrieval models, improve ranking, extraction and coverage | Model builders and data operators | Later programs, announced before they open |
 | Build, test and serve the index | The Desearch team | Team-operated; queries never wait on miner work |
 
 ## Mining and validating
 
 **Miners** crawl and embed: they take tasks, fetch the assigned pages and upload the extracted text,
-and, once embedding opens, turn that text into vectors on their own GPU. They are paid by their share
-of accepted work, and can test their miner locally before registering.
+and turn that text into vectors on their own GPU. They are paid by their share of accepted work, and
+can test their miner locally before registering.
 [What a miner does →](./docs/miner.md#-what-a-miner-does) · [Miner setup →](./docs/miner.md#-setup) ·
 [Test locally →](./docs/test-your-miner.md) · [Emission →](./docs/emission.md)
 
@@ -110,7 +110,7 @@ the [console](https://console.desearch.ai) and start with the
 | 🛡️ [Validator](./docs/validator.md) | [What a validator does](./docs/validator.md#-what-a-validator-does): checks and weights; [setup](./docs/validator.md#-setup): install, register, configure, run, monitor |
 | 💰 [Emission](./docs/emission.md) | How miners' shares are worked out and what raises them |
 | ⚙️ [Architecture](./docs/architecture.md) | How the bot, task API, miners, validators and storage work together |
-| 🧠 [Embedding tasks](./docs/embedding-tasks.md) | What embed tasks will contain and how they are checked, before they open |
+| 🧠 [Embedding tasks](./docs/embedding-tasks.md) | The embedding model, what a task contains and how it is checked |
 | 🔌 [Task API](./task-api/README.md) | Endpoints, rounds, scoring rules, public logs and the storage layout |
 | 🧭 [Desearch 2.0](./docs/desearch-2.0/README.md) | The direction: why an index, the first phase, incentives and participation |
 
