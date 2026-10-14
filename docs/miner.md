@@ -1,8 +1,15 @@
 # ⛏️ Miner
 
-**Contents:** [What a miner does](#-what-a-miner-does) · [How you earn](#-how-you-earn) ·
-[Setup](#-setup) ([requirements](#requirements), [install](#1-install), [register](#2-register-a-hotkey),
-[configure](#3-configure), [run](#4-run), [test locally](#-test-your-miner-locally), [monitor](#-monitor))
+- [🧭 What a miner does](#-what-a-miner-does)
+  - [💰 How you earn](#-how-you-earn)
+- [🔧 Setup](#-setup)
+  - [Requirements](#requirements)
+  - [1. Install](#1-install)
+  - [2. Register a hotkey](#2-register-a-hotkey)
+  - [3. Configure](#3-configure)
+  - [4. Run](#4-run)
+  - [🧪 Test your miner locally](#-test-your-miner-locally)
+  - [📈 Monitor](#-monitor)
 
 ## 🧭 What a miner does
 

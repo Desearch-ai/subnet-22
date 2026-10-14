@@ -1,9 +1,14 @@
 # 🛡️ Validator
 
-**Contents:** [What a validator does](#-what-a-validator-does) · [Setup](#-setup)
-([requirements](#requirements), [install](#1-install), [register](#2-register-a-hotkey),
-[configure](#3-configure), [run](#4-run), [upgrading](#upgrading-from-the-search-validator),
-[monitor](#-monitor))
+- [🔍 What a validator does](#-what-a-validator-does)
+- [🔧 Setup](#-setup)
+  - [Requirements](#requirements)
+  - [1. Install](#1-install)
+  - [2. Register a hotkey](#2-register-a-hotkey)
+  - [3. Configure](#3-configure)
+  - [4. Run](#4-run)
+  - [Upgrading from the search validator](#upgrading-from-the-search-validator)
+  - [📈 Monitor](#-monitor)
 
 ## 🔍 What a validator does
 
