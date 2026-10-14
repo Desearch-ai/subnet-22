@@ -117,8 +117,10 @@ pub fn unrevealed(conn: &Connection, by_block: i64, limit: i64) -> Result<Vec<Ro
     Ok(rounds.collect::<rusqlite::Result<_>>()?)
 }
 
-pub fn unrevealed_tasks(conn: &Connection) -> Result<i64> {
-    Ok(conn.query_row("SELECT COALESCE(SUM((SELECT COUNT(*) FROM json_each(batches))), 0) FROM rounds WHERE seed IS NULL", [], |row| row.get(0))?)
+pub fn unrevealed_tasks(conn: &Connection, kind: &str) -> Result<i64> {
+    Ok(conn.query_row("SELECT COALESCE(SUM((SELECT COUNT(*) FROM json_each(batches))), 0) FROM rounds WHERE seed IS NULL AND kind = ?", [kind], |row| {
+        row.get(0)
+    })?)
 }
 
 pub fn mark_revealed(conn: &Connection, round: &Round) -> Result<()> {
@@ -256,7 +258,7 @@ mod tests {
         assert_eq!(unrevealed(&conn, 15, 10).unwrap().into_iter().map(|r| r.round_id).collect::<Vec<_>>(), ["due"]);
         assert_eq!(unrevealed(&conn, i64::MAX, 10).unwrap().into_iter().map(|r| r.round_id).collect::<Vec<_>>(), ["due", "later"]);
         assert_eq!(unrevealed(&conn, i64::MAX, 1).unwrap().into_iter().map(|r| r.round_id).collect::<Vec<_>>(), ["due"]);
-        assert_eq!(unrevealed_tasks(&conn).unwrap(), 6);
+        assert_eq!((unrevealed_tasks(&conn, "crawl").unwrap(), unrevealed_tasks(&conn, "embed").unwrap()), (6, 0));
     }
 
     #[test]

@@ -1,12 +1,12 @@
-//! Embed tasks: rounds from the publisher's inputs, their own pool and claim time, only for miners running the model, and closed until switched on.
+//! Embed tasks: rounds from the planner's inputs, their own pool, room, claim time and electorate, only for miners running the model, and closed until switched on.
 
 use desearch::time::now;
 use redis::AsyncCommands;
 use serde_json::{json, Value};
 use task_api::lifecycle;
-use task_api::queues::EMBED_INPUTS;
+use task_api::queues::{self, EMBED_INPUTS};
 
-use crate::harness::{task_id, Client, Harness};
+use crate::harness::{judged, task_id, urls, Client, Harness};
 
 fn pages() -> Value {
     json!((0..2).map(|i| json!({"url": format!("https://site{i}.example/story/{i}"), "host": format!("site{i}.example"), "page_key": format!("pages/{i:040x}.zst"), "content_sha1": format!("{i:040x}")})).collect::<Vec<_>>())
@@ -78,21 +78,13 @@ async fn a_published_page_is_embedded_credited_and_recorded() {
     assert_eq!((miner["pools"]["embed"]["budget"].clone(), miner["pools"]["crawl"]["budget"].clone()), (json!(2), json!(1)));
     assert_eq!(h.public("/v1/shares").await.1["pools"], json!({"embed": {h.miner.ss58(): 1.0}}));
 
-    let page = pages()[0]["page_key"].as_str().unwrap().to_string();
-    let catalog: Vec<(String, String, Option<String>)> = h
-        .state
-        .db
-        .run(move |conn| {
-            Ok(conn
-                .prepare("SELECT model, state, vectors_key FROM embeddings WHERE page_key = ?")?
-                .query_map([page], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
-                .collect::<rusqlite::Result<Vec<_>>>()?)
-        })
-        .await
-        .unwrap();
-    assert_eq!((catalog[0].0.as_str(), catalog[0].1.as_str()), (h.state.settings.embed_model.as_str(), "done"));
-    let vectors_key = catalog[0].2.clone().unwrap();
-    assert!(vectors_key.ends_with(&format!("task={}.parquet", task_id(&task))));
+    let packed: String = h.redis.clone().get(format!("pjob:{}", task_id(&task))).await.unwrap();
+    let publish = queues::unpack_job(&packed).expect("a publish job");
+    assert_eq!(
+        (publish["kind"].clone(), publish["model"].clone(), publish["input_key"].clone(), publish["texts"].clone()),
+        (json!("embed"), json!(h.state.settings.embed_model), input()["input_key"].clone(), json!(6))
+    );
+    assert!(publish.get("pages").is_none() && publish.get("vectors_key").is_none(), "the publisher reads pages from the input file");
 
     assert_eq!(lifecycle::close_finished(&h.state).await.unwrap(), [round_id.as_str()]);
     let published = h.public(&format!("/v1/rounds/{round_id}")).await.1;
@@ -103,20 +95,45 @@ async fn a_published_page_is_embedded_credited_and_recorded() {
 }
 
 #[tokio::test]
-async fn the_same_page_version_is_not_embedded_twice() {
-    let h = embedding().await;
-    embed_round(&h, input()).await;
+async fn the_planner_gets_room_for_embed_inputs_apart_from_the_bots_crawl_room() {
+    {
+        let closed = Harness::start().await;
+        assert_eq!(closed.public("/v1/room?kind=embed").await.1["room_tasks"], 0, "no room while embed tasks are closed");
+    }
+    let h = Harness::with(|s| {
+        s.embed_tasks = true;
+        s.embed_queue_target = 5;
+    })
+    .await;
+    assert_eq!(h.public("/v1/room?kind=embed").await.1["room_tasks"], 5);
     let _: i64 = h.redis.clone().rpush(EMBED_INPUTS, input().to_string()).await.unwrap();
-    assert!(lifecycle::open_embed_rounds(&h.state).await.unwrap().is_none());
-    let left: i64 = h.redis.clone().llen(EMBED_INPUTS).await.unwrap();
-    assert_eq!(left, 0);
-    let mut changed = input();
-    let mut page = pages()[0].clone();
-    page["content_sha1"] = "f".repeat(40).into();
-    changed["pages"] = json!([page]);
-    assert!(lifecycle::open_embed_rounds(&h.state).await.unwrap().is_none());
-    let _: i64 = h.redis.clone().rpush(EMBED_INPUTS, changed.to_string()).await.unwrap();
-    assert!(lifecycle::open_embed_rounds(&h.state).await.unwrap().is_some());
+    assert_eq!(h.public("/v1/room?kind=embed").await.1["room_tasks"], 4, "a waiting input takes room");
+    lifecycle::open_embed_rounds(&h.state).await.unwrap().expect("an embed round");
+    let unrevealed = h.public("/v1/room?kind=embed").await.1;
+    assert_eq!((unrevealed["room_tasks"].clone(), unrevealed["unrevealed"].clone()), (json!(4), json!(1)));
+    assert_eq!(h.public("/v1/room").await.1["unrevealed"], 0, "embed rounds take none of the crawl room");
+    h.revealed().await;
+    let queued = h.public("/v1/room?kind=embed").await.1;
+    assert_eq!((queued["room_tasks"].clone(), queued["queue"].clone()), (json!(4), json!(1)));
+}
+
+#[tokio::test]
+async fn an_embed_upload_waits_only_for_validators_that_check_embed_uploads() {
+    let h = Harness::with(|s| {
+        s.embed_tasks = true;
+        s.task_urls = 3;
+    })
+    .await;
+    h.enqueue(urls(3)).await;
+    let crawl = task_id(&h.mine(&h.miner, 0).await);
+    let (_, scored) = judged(&h, &h.other_validator, "pass", Some(&crawl), json!({})).await;
+    assert!(scored.is_ok(), "the other validator is active, on crawl uploads only");
+
+    embed_round(&h, input()).await;
+    let task = embed_task(&h, &h.rival).await;
+    h.opened(Some(&h.validator), Some(&task_id(&task))).await;
+    let scored = h.validator.post(&format!("/v1/validation/{}/score", task_id(&task)), embed_score("pass", "matched", "ok")).await.unwrap();
+    assert_eq!(scored["verdict"], "pass", "decided on the first embed checker's vote, without waiting for the crawl-only validator");
 }
 
 #[tokio::test]

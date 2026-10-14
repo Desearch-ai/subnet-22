@@ -22,6 +22,8 @@ pub const VOPEN: &str = "vjobs:open";
 pub const SEEDING: &str = "vjobs:seeding";
 /// Validators by the time they last asked for work or voted.
 pub const VACTIVE: &str = "validators:active";
+/// Validators that voted on an embed upload lately; only they hold up an embed upload's verdict.
+pub const VACTIVE_EMBED: &str = "validators:active:embed";
 pub const PUBLISH: &str = "publish:ready";
 pub const PCLAIMS: &str = "publish:claims";
 pub const PACKED: &str = "z:";
@@ -386,9 +388,28 @@ impl ValidationQueue {
         Ok(())
     }
 
+    /// A vote on an embed upload also puts the validator in the embed electorate.
+    pub async fn present_for(&self, redis: &Redis, kind: &str, validator: &str, now: f64) -> Result<()> {
+        if kind == "embed" {
+            let _: i64 = redis.clone().zadd(VACTIVE_EMBED, validator, number(now)).await?;
+        }
+        Ok(())
+    }
+
     pub async fn leave(&self, redis: &Redis, validator: &str) -> Result<()> {
         let _: i64 = redis.clone().zrem(VACTIVE, validator).await?;
+        let _: i64 = redis.clone().zrem(VACTIVE_EMBED, validator).await?;
         Ok(())
+    }
+
+    /// The validators an upload of this kind waits for: every active one for crawl, only those checking embed uploads for embed.
+    pub async fn active_for(&self, redis: &Redis, kind: &str, now: f64) -> Result<Vec<String>> {
+        if kind != "embed" {
+            return self.active(redis, now).await;
+        }
+        let mut redis = redis.clone();
+        let _: i64 = redis.zrembyscore(VACTIVE_EMBED, "-inf", number(now - self.active_s)).await?;
+        Ok(redis.zrange(VACTIVE_EMBED, 0, -1).await?)
     }
 
     /// Validators that asked for work or voted within the activity window.

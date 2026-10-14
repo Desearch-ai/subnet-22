@@ -169,6 +169,7 @@ pub fn settings(data: PathBuf, endpoint: &str) -> Settings {
         check_share: 1.0,
         checks_per_hour: 400.0,
         queue_target: 1200,
+        embed_queue_target: 100,
         task_urls: 3,
         embed_tasks: false,
         embed_model: "desearch-4b-v1".into(),

@@ -9,7 +9,7 @@ use bytes::Bytes;
 use desearch::canonical::canonicalize;
 use desearch::outcomes::DROPPED as OUTCOME_DROPPED;
 use desearch::r2::Bucket;
-use desearch::time::{now, utc_day};
+use desearch::time::now;
 use futures::stream::{self, StreamExt};
 use redis::AsyncCommands;
 use rusqlite::Connection;
@@ -17,7 +17,6 @@ use serde_json::{json, Map, Value};
 
 use crate::budgets::{self, COVERAGE_GATE, CRAWL, EMBED, FULL_PENALTY_LOCKOUT_H, HOSTILE_LOCKOUT_H, HOUR, STRIKE_REASONS, STRIKE_WINDOW_H};
 use crate::credit::{self, FAILS_FOR_PENALTY, PENALTY_WINDOW_S};
-use crate::embeddings::{self, DONE, DROPPED};
 use crate::manifest::{self, OPEN_LIST_KEY};
 use crate::queues::{self, Finalized, OPEN_SCAN};
 use crate::roundlog::{self, Receipt};
@@ -96,10 +95,6 @@ pub fn manifest_key(frozen_key: &str) -> String {
 
 pub fn lock_key(task_id: &str) -> String {
     format!("scoring:{task_id}")
-}
-
-pub fn vectors_key(model: &str, task_id: &str) -> String {
-    format!("vectors/model={model}/dt={}/task={task_id}.parquet", utc_day(now()))
 }
 
 /// What the miner was given and when it was frozen, signed by the task API.
@@ -195,7 +190,7 @@ async fn save_round(state: &State, sealed: &Round, lists: &str) -> Result<()> {
     state.db.run(move |conn| roundstore::save(conn, &saved)).await
 }
 
-/// Turns the publisher's waiting inputs into one embed round, one batch per input.
+/// Turns the planner's waiting inputs into one embed round, one batch per input.
 pub async fn open_embed_rounds(state: &State) -> Result<Option<Round>> {
     if !state.settings.embed_tasks {
         return Ok(None);
@@ -209,11 +204,6 @@ pub async fn open_embed_rounds(state: &State) -> Result<Option<Round>> {
     let mut batches = Vec::new();
     for entry in waiting.iter().filter_map(|raw| serde_json::from_str::<Value>(raw).ok()) {
         let pages = entry["pages"].as_array().cloned().unwrap_or_default();
-        let checked = pages.clone();
-        let wanting = model.clone();
-        if state.lookups.read(move |conn| embeddings::missing(conn, &checked, &wanting)).await?.is_empty() {
-            continue;
-        }
         let keep: Vec<Value> = pages.iter().map(|p| json!({"page_key": p["page_key"], "content_sha1": p["content_sha1"], "url": p["url"]})).collect();
         let mut extra: Map<String, Value> = EMBED_FIELDS.iter().filter_map(|name| entry.get(*name).map(|v| (name.to_string(), v.clone()))).collect();
         extra.insert("model".into(), model.clone().into());
@@ -228,17 +218,7 @@ pub async fn open_embed_rounds(state: &State) -> Result<Option<Round>> {
         let sealed = round.sealed();
         queues::stage(&state.redis, &sealed.round_id, &queues::pack_job(&round.url_lists())).await?;
         let saved = sealed.clone();
-        state
-            .db
-            .run(move |conn| {
-                roundstore::save(conn, &saved)?;
-                for batch in &saved.batches {
-                    let pages = batch.extra["pages"].as_array().cloned().unwrap_or_default();
-                    embeddings::queue(conn, &pages, &model, &batch.batch_id, now())?;
-                }
-                Ok(())
-            })
-            .await?;
+        state.db.run(move |conn| roundstore::save(conn, &saved)).await?;
         opened = Some(sealed);
     }
     // Trimmed only once the round is saved, so a crash re-reads the inputs.
@@ -426,10 +406,6 @@ pub async fn requeue(state: &State, task_id: &str, job: &Value, cause: &str) -> 
     let miner = text(job, "miner").to_string();
     if attempts >= state.settings.max_attempts {
         let seq = state.next_seq().await?;
-        if kind == EMBED {
-            let (batch, model) = (task_id.to_string(), text(job, "model").to_string());
-            state.db.run(move |conn| embeddings::finalize(conn, &batch, &model, DROPPED, None, now())).await?;
-        }
         state
             .record_one(Receipt {
                 round_id: round_id.clone(),
@@ -655,7 +631,7 @@ pub async fn finalize_due(state: &State, now: f64) -> Result<Vec<String>> {
 /// Finalizes once every active validator voted, or at the deadline on the votes it has; with none, a crawl upload on the miner's own counts and an embed upload as void.
 pub async fn finalize_task(state: &State, task_id: &str, job: &Value, now: f64) -> Result<Option<Value>> {
     let voters: HashSet<String> = state.validation.voters(&state.redis, task_id).await?.into_iter().collect();
-    let mut active: HashSet<String> = state.validation.active(&state.redis, now).await?.into_iter().collect();
+    let mut active: HashSet<String> = state.validation.active_for(&state.redis, kind_of(job), now).await?.into_iter().collect();
     active.extend(voters.iter().cloned());
     let due = now >= job.get("deadline").and_then(Value::as_f64).unwrap_or(0.0);
     if !due && !(!voters.is_empty() && active.is_subset(&voters)) {
@@ -713,7 +689,7 @@ pub async fn conclude_validation(state: &State, task_id: &str, job: &Value, deci
         return Ok(None);
     }
     let publish = (verdict == "pass" && (truthy(result.get("matched")) || result.get("reason").and_then(Value::as_str) == Some(UNCHECKED)))
-        .then(|| publish_job(state, task_id, job, &vote, &decision.agreed));
+        .then(|| publish_job(state, job, &vote, &decision.agreed));
     let details = validations::pack_details(result.get("urls"));
     let settled = {
         let (task, job, decision, report, publish) = (task_id.to_string(), job.clone(), decision.clone(), report.clone(), publish.clone());
@@ -902,9 +878,6 @@ pub fn finalize_accounts(conn: &Connection, task_id: &str, job: &Value, decision
     } else {
         budgets::get(conn, miner, kind)?.budget
     };
-    if let (Some(publish), true) = (publish, kind == EMBED) {
-        embeddings::finalize(conn, task_id, text(job, "model"), DONE, publish.get("vectors_key").and_then(Value::as_str), now)?;
-    }
     if !decision.agreed.is_empty() || !decision.disagreed.is_empty() {
         validations::record_audit(conn, &decision.agreed, &decision.disagreed)?;
     }
@@ -919,7 +892,7 @@ pub fn finalize_accounts(conn: &Connection, task_id: &str, job: &Value, decision
     Ok(Some(budget))
 }
 
-pub fn publish_job(state: &State, task_id: &str, job: &Value, vote: &Value, agreed: &[String]) -> Value {
+pub fn publish_job(state: &State, job: &Value, vote: &Value, agreed: &[String]) -> Value {
     let kind = kind_of(job);
     let mut publish: Map<String, Value> =
         ["task_id", "round_id", "miner", "key", "etag"].iter().map(|name| (name.to_string(), job.get(*name).cloned().unwrap_or_else(|| "".into()))).collect();
@@ -935,10 +908,9 @@ pub fn publish_job(state: &State, task_id: &str, job: &Value, vote: &Value, agre
     publish.insert("completed_at".into(), job["completed_at"].clone());
     publish.insert("claim_ttl".into(), whole(state.settings.claim_ttl_for(kind)));
     if kind == EMBED {
-        for name in ["model", "input_key", "pages", "texts"] {
+        for name in ["model", "input_key", "texts"] {
             publish.insert(name.into(), job[name].clone());
         }
-        publish.insert("vectors_key".into(), vectors_key(text(job, "model"), task_id).into());
     } else {
         publish.insert("skip".into(), rejected_urls(&vote["result"]).into());
     }

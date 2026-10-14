@@ -499,6 +499,7 @@ async fn record_verdict(state: &State, task_id: &str, result: Map<String, Value>
         return Err(ApiError::status(409, "no such open upload"));
     };
     let kind = kind_of(&job).to_string();
+    state.validation.present_for(&state.redis, &kind, &who.hotkey, now()).await?;
     let built =
         if kind == EMBED { build_embed_vote(&job, &who.hotkey, models::embed_score(&result)?) } else { build_vote(&job, &who.hotkey, models::score(&result)?) };
     let mut vote = built.map_err(|why| ApiError::status(422, why.0))?;
@@ -520,11 +521,14 @@ pub async fn shares(Shared(state): Shared<Arc<State>>) -> Answer {
     Ok(Json(json!({"window_hours": SHARE_WINDOW_H, "as_of": as_of, "pools": pools})))
 }
 
-/// How many tasks the queue can take now, for the bot that fills it.
-pub async fn room(Shared(state): Shared<Arc<State>>) -> Answer {
+/// How many tasks the queue can take now: crawl tasks for the bot, or with `?kind=embed` embed inputs for the planner.
+pub async fn room(Shared(state): Shared<Arc<State>>, QueryParams(query): QueryParams<Query>) -> Answer {
+    if query.get("kind").map(String::as_str) == Some(EMBED) {
+        return embed_room(&state).await;
+    }
     let at = now();
     let depth = state.crawl.depth(&state.redis).await?;
-    let unrevealed = state.lookups.read(roundstore::unrevealed_tasks).await?;
+    let unrevealed = state.lookups.read(|conn| roundstore::unrevealed_tasks(conn, CRAWL)).await?;
     let claimed: i64 = state.redis.clone().zcard(CLAIMS).await?;
     let in_system = depth
         + unrevealed
@@ -548,6 +552,25 @@ pub async fn room(Shared(state): Shared<Arc<State>>) -> Answer {
         "unrevealed": unrevealed,
         "in_system": in_system,
         "published_per_min": round_to(per_minute, 1),
+        "refusing": refusing,
+    })))
+}
+
+/// Embed inputs the planner may hand over now: none while embed tasks are closed or old work holds claims back.
+async fn embed_room(state: &State) -> Answer {
+    let at = now();
+    let depth = state.embed.depth(&state.redis).await?;
+    let unrevealed = state.lookups.read(|conn| roundstore::unrevealed_tasks(conn, EMBED)).await?;
+    let waiting: i64 = state.redis.clone().llen(queues::EMBED_INPUTS).await?;
+    let oldest = state.validation.oldest_age(&state.redis, at).await?.max(state.publish.oldest_age(&state.redis, at).await?);
+    let refusing = state.settings.max_backlog != 0.0 && oldest > state.settings.max_backlog;
+    let room = if state.settings.embed_tasks && !refusing { (state.settings.embed_queue_target - depth - unrevealed - waiting).max(0) } else { 0 };
+    Ok(Json(json!({
+        "room_tasks": room,
+        "queue": depth,
+        "unrevealed": unrevealed,
+        "waiting_inputs": waiting,
+        "open": state.settings.embed_tasks,
         "refusing": refusing,
     })))
 }
