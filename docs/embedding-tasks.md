@@ -29,6 +29,13 @@ vllm serve desearch/Desearch-Embedding-4B \
   --port 8000
 ```
 
+vLLM downloads the weights (about 8 GB) from Hugging Face the first time it starts; no account or token
+is needed. To fetch them ahead of time:
+
+```bash
+hf download desearch/Desearch-Embedding-4B --revision 12e5c6910d49dd5534e8a77a6fa7d8a057bd534a
+```
+
 Run it as given: that revision, in float16. bfloat16, 8-bit or 4-bit weights, another revision or a
 shorter input limit give different vectors, and those fail the check. Models are listed in
 [`desearch/embedding.py`](../desearch/embedding.py) under their names. A task names its model, and
