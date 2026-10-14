@@ -16,6 +16,7 @@ from pathlib import Path
 import aiohttp
 
 from desearch.client import TaskApiClient
+from desearch.kinds import CRAWL
 
 from sandbox import local
 from sandbox.local import ADMIN_URI, ROOT, Ports
@@ -27,6 +28,7 @@ HELD_RECENTLY_S = 30
 REVEAL_WAIT_S = 20.0
 POLL_S = 3.0
 SUMMARY_EVERY_S = 60.0
+START_TIMEOUT_S = 60.0
 # A confirmed error is a page nobody could load, not a problem with the miner.
 FINE = ("matched", "errors_confirmed")
 # Kept in the log file, left out of the terminal.
@@ -46,9 +48,12 @@ def describe(task: dict, urls: list[dict], upload: str = "", details: str = "") 
         for u in urls
         if u.get("sampled") and (u.get("outcome") not in FINE or u.get("rejected"))
     ]
-    where = [f"  upload:  {upload}"] if upload else []
-    where += [f"  details: {details}"] if details else []
-    return "\n".join([head, *problems, *where])
+    return "\n".join([head, *problems, *where(upload, details)])
+
+
+def where(upload: str, details: str) -> list[str]:
+    lines = [f"  upload:  {upload}"] if upload else []
+    return lines + ([f"  details: {details}"] if details else [])
 
 
 @dataclass
@@ -86,6 +91,10 @@ class MinerStats:
 
 
 class Sandbox:
+    """Crawl tasks from a URL source; EmbedSandbox swaps in embed inputs and its own reports."""
+
+    kind = CRAWL
+
     def __init__(self, ports: Ports, run_dir: Path, source, task_size: int):
         self.task_size = task_size
         self.ports = ports
@@ -93,7 +102,7 @@ class Sandbox:
         self.source = source
         self.processes: dict[str, subprocess.Popen] = {}
         self.stopping = asyncio.Event()
-        self.stats: dict[str, MinerStats] = {}
+        self.stats: dict = {}
         self.seen: set[str] = set()
         self.fed_at = 0.0
         self.exhausted = False
@@ -107,7 +116,7 @@ class Sandbox:
             stdout=(self.run_dir / "logs" / f"{name}.log").open("ab"),
             stderr=subprocess.STDOUT,
             env=env,
-            cwd=ROOT / "task-api" if name == "api" else ROOT,
+            cwd=ROOT,
             start_new_session=True,
         )
 
@@ -119,20 +128,7 @@ class Sandbox:
         try:
             await self.start_services(genesis)
             self.start(
-                "validator",
-                [
-                    sys.executable,
-                    "-m",
-                    "sandbox",
-                    "validator",
-                    "--port",
-                    str(self.ports.api),
-                    "--run-dir",
-                    str(self.run_dir),
-                    "--genesis",
-                    str(genesis),
-                ],
-                {**os.environ, "PYTHONUNBUFFERED": "1"},
+                "validator", self.validator_command(genesis), self.validator_env()
             )
             async with aiohttp.ClientSession(
                 timeout=aiohttp.ClientTimeout(total=10)
@@ -140,23 +136,59 @@ class Sandbox:
                 await self.feed(http)
                 self.banner()
                 await self.watch(http)
+        except (RuntimeError, TimeoutError, subprocess.CalledProcessError) as error:
+            print(f"the sandbox could not start: {error}", flush=True)
+            return 1
         finally:
             await self.shutdown()
         return 0
 
+    def validator_command(self, genesis: float) -> list[str]:
+        return [
+            sys.executable,
+            "-m",
+            "sandbox.validator",
+            "--port",
+            str(self.ports.api),
+            "--run-dir",
+            str(self.run_dir),
+            "--genesis",
+            str(genesis),
+        ]
+
+    def validator_env(self) -> dict[str, str]:
+        return {**os.environ, "PYTHONUNBUFFERED": "1"}
+
+    def api_env(self, genesis: float) -> dict[str, str]:
+        return local.api_env(self.ports, genesis, self.task_size)
+
     async def start_services(self, genesis: float) -> None:
-        local.start_containers(self.ports, self.run_dir)
-        await wait_for_port(self.ports.redis)
-        await wait_for_port(self.ports.minio)
+        image = await asyncio.to_thread(local.build_image)
+        await asyncio.to_thread(local.start_storage, self.ports, self.run_dir)
+        await wait_until(self.storage_ready, "storage")
+        await wait_until(self.redis_ready, "Redis")
         await asyncio.to_thread(local.create_buckets, self.ports)
-        self.start(
-            "api",
-            local.api_command(sys.executable, self.ports, self.task_size),
-            local.api_env(self.ports, self.run_dir, genesis),
+        await asyncio.to_thread(
+            local.start_api, image, self.api_env(genesis), self.run_dir / "api"
         )
+        self.start("api", local.follow_logs(local.API), dict(os.environ))
         await self.wait_healthy()
 
-    async def wait_healthy(self, timeout: float = 60) -> None:
+    async def storage_ready(self) -> bool:
+        url = f"http://127.0.0.1:{self.ports.minio}/minio/health/live"
+        async with aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=2)
+        ) as http:
+            try:
+                async with http.get(url) as response:
+                    return response.status == 200
+            except (aiohttp.ClientError, asyncio.TimeoutError):
+                return False
+
+    async def redis_ready(self) -> bool:
+        return await asyncio.to_thread(local.redis_ready, self.ports)
+
+    async def wait_healthy(self, timeout: float = START_TIMEOUT_S) -> None:
         deadline = time.time() + timeout
         async with aiohttp.ClientSession(
             timeout=aiohttp.ClientTimeout(total=5)
@@ -233,7 +265,9 @@ class Sandbox:
                 summary_at = time.time() + SUMMARY_EVERY_S
 
     async def report_verdicts(self, http: aiohttp.ClientSession, since: float) -> None:
-        listing = await get_json(http, f"{self.ports.api_url}/v1/tasks?since={since}")
+        listing = await get_json(
+            http, f"{self.ports.api_url}/v1/tasks?since={since}&kind={self.kind}"
+        )
         for task in reversed(listing.get("tasks", [])):
             if task["task_id"] in self.seen:
                 continue
@@ -246,14 +280,16 @@ class Sandbox:
             details.write_text(
                 json.dumps({**task, "urls": detail.get("urls", [])}, indent=1)
             )
-            upload = (
-                f"{self.ports.storage_url}/{task['upload_key']}"
-                if task.get("upload_key")
-                else ""
-            )
             print(
-                describe(task, detail.get("urls", []), upload, str(details)), flush=True
+                describe(
+                    task, detail.get("urls", []), self.upload_link(task), str(details)
+                ),
+                flush=True,
             )
+
+    def upload_link(self, task: dict) -> str:
+        key = task.get("upload_key")
+        return f"{self.ports.storage_url}/{key}" if key else ""
 
     def echo_logs(self) -> None:
         """The validator's log and the API's warnings, as they are written."""
@@ -271,20 +307,19 @@ class Sandbox:
 
     async def summary(self, http: aiohttp.ClientSession) -> None:
         health = await get_json(http, f"{self.ports.api_url}/v1/health")
-        waiting = (health.get("queue_depth") or {}).get("crawl", "?")
+        waiting = (health.get("queue_depth") or {}).get(self.kind, "?")
         checking = health.get("validation_depth", "?")
         lines = [f"summary: {waiting} tasks waiting, {checking} uploads being checked"]
         now = time.time()
         for miner, stats in self.stats.items():
             about = await get_json(http, f"{self.ports.api_url}/v1/miners/{miner}")
-            budget = ((about.get("pools") or {}).get("crawl") or {}).get("budget")
+            budget = ((about.get("pools") or {}).get(self.kind) or {}).get("budget")
             lines.append(stats.line(miner, budget, now))
         print("\n".join(lines), flush=True)
 
     async def shutdown(self) -> None:
-        for name in ("validator", "api"):
-            process = self.processes.get(name)
-            if process is not None and process.poll() is None:
+        for process in self.processes.values():
+            if process.poll() is None:
                 os.killpg(process.pid, signal.SIGTERM)
         deadline = time.time() + 30
         while time.time() < deadline and any(
@@ -308,13 +343,10 @@ async def get_json(http: aiohttp.ClientSession, url: str) -> dict:
         return {}
 
 
-async def wait_for_port(port: int, timeout: float = 60) -> None:
+async def wait_until(ready, what: str, timeout: float = START_TIMEOUT_S) -> None:
     deadline = time.time() + timeout
     while time.time() < deadline:
-        try:
-            _, writer = await asyncio.open_connection("127.0.0.1", port)
-            writer.close()
+        if await ready():
             return
-        except OSError:
-            await asyncio.sleep(0.5)
-    raise TimeoutError(f"nothing listening on port {port}")
+        await asyncio.sleep(0.5)
+    raise TimeoutError(f"{what} did not start within {timeout:.0f}s")

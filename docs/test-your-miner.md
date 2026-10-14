@@ -2,23 +2,28 @@
 
 The sandbox runs a task API, storage and a validator on your own machine, with the same code as
 mainnet. Point your miner at it to see how your uploads are scored before you register: which pages
-passed, which did not and why, and how many rows you would be paid.
+passed, which did not and why, and how many rows you would be paid. It tests the crawl miner, and in
+[embed mode](#test-your-embed-miner) the embed miner.
 
 It needs no registration and no TAO: any wallet works, registered or not.
 
 ## Requirements
 
-- [Docker](https://docs.docker.com/get-docker/), running
-- Python 3.10 or newer, with the requirements of both the miner and the task API:
+- [Docker](https://docs.docker.com/get-docker/), running. Redis, storage and the task API run in
+  containers. The sandbox builds the task API's image from this repository the first time it starts,
+  which takes several minutes; later starts reuse it until the task API's code changes.
+- Python 3.10 or newer, with the sandbox's requirements (the miner's, and boto3):
 
   ```bash
-  python3 -m pip install -r requirements.txt -r task-api/requirements.txt
+  python3 -m pip install -r sandbox/requirements.txt
   ```
 
-- A [ScrapingDog](https://www.scrapingdog.com/) API key. The local validator checks pages the same
-  way a mainnet validator does, including its ScrapingDog fallback for pages its own address cannot
-  load. Set `SCRAPINGDOG_API_KEY` in your shell, or in `neurons/validators/.env` or
-  `neurons/miners/.env`.
+- For crawl tasks, a [ScrapingDog](https://www.scrapingdog.com/) API key. The local validator checks
+  pages the same way a mainnet validator does, including its ScrapingDog fallback for pages its own
+  address cannot load. Set `SCRAPINGDOG_API_KEY` in your shell, or in `neurons/validators/.env` or
+  `neurons/miners/.env`. Embed mode needs no key.
+- For embed mode, your embedding model server: vLLM on an NVIDIA GPU, as
+  [Embedding tasks](./embedding-tasks.md) describes.
 
 ## 1. Start the sandbox
 
@@ -28,10 +33,13 @@ From the repository root:
 python3 -m sandbox
 ```
 
-It downloads a file of URLs, queues them as tasks, starts a validator, and prints the address of
-the local task API:
+The first start builds the task API, printing Docker's progress as it goes. Then it downloads a
+file of URLs, queues them as tasks, starts a validator, and prints the address of the local task
+API:
 
 ```
+Building the task API image desearch-sandbox-task-api:0ae23bbd3af1 with Docker. The first build compiles it from source and takes several minutes; later starts reuse it.
+...
 serving urls-00008.parquet from desearch/sn22-sandbox-urls
 queued 1000 URLs as 10 tasks
 
@@ -109,11 +117,89 @@ If you started the sandbox with another `--port`, set `VITE_TASK_API_URL` to tha
 | --- | --- | --- |
 | `--task-size` | `100` | URLs per task. Use `1000` for mainnet-sized tasks, to check that your miner finishes one within the 3-minute claim. |
 | `--urls FILE` | the public dataset | Serve your own URLs: a parquet file with a `url` column, or a text file with one URL per line. |
-| `--port` | `18080` | Port of the local task API; storage uses the next two ports. |
+| `--port` | `18080` | Port of the local task API; Redis and storage use the next two ports, and embed mode's model server the third. |
 
 By default the URLs come from the public dataset
 [desearch/sn22-sandbox-urls](https://huggingface.co/datasets/desearch/sn22-sandbox-urls): about a
 million pages from news and general sites, downloaded one file at a time as the queue needs them.
+
+## Test your embed miner
+
+Embed mode hands out [embed tasks](./embedding-tasks.md) made from a fixed set of texts, each stored
+with its reference vector from the model. The validator checks your vectors against those reference
+vectors, the way a mainnet validator checks them against its own model server, so you see whether
+your model server gives the vectors validators expect before you register.
+
+### 1. Start your model server
+
+Start vLLM on your GPU exactly as [Embedding tasks](./embedding-tasks.md#the-model) shows: that
+revision, in float16.
+
+### 2. Start the sandbox in embed mode
+
+```bash
+python3 -m sandbox embed
+```
+
+It downloads the test set, hands its texts to the task API as embed inputs, and starts a validator.
+The validator checks every upload against the set's reference vectors through a small model server
+of the sandbox's own, which knows only the set's texts; your model server is never used for
+checking.
+
+```
+14,226 texts of 3,000 pages, handed out as 30 inputs of up to 100 pages
+
+Task API: http://127.0.0.1:18080
+```
+
+### 3. Start your embed miner
+
+In a second terminal, start the embed miner pointed at the sandbox and at your model server:
+
+```bash
+TASK_API_URL=http://127.0.0.1:18080 EMBED_API_URL=http://127.0.0.1:8000/v1/embeddings \
+  python3 -m neurons.miners.embed
+```
+
+Add `EMBED_API_KEY` if your model server needs one.
+
+### 4. Read the results
+
+For each upload, the sandbox prints the validator's verdict, how many of the sampled texts matched
+and the lowest cosine similarity among them, the task's size, how long after the claim the upload
+came (it must come within 5 minutes), a link to the file your miner uploaded and a JSON file with
+the full result. Each text that did not reach 0.999 is listed with its similarity:
+
+```
+task 211008abb81642ea miner 5CkpVdiz: FAIL (vectors_mismatch), 14/15 sampled texts matched, lowest similarity 0.989792
+  15 texts, 31,120 characters, uploaded 0.4s after the claim (limit 300s)
+  https://docs.example.org/emission passage 4: similarity 0.989792
+  upload:  http://127.0.0.1:18082/sandbox-uploads/submitted/dt=2026-10-14/task=211008abb81642ea/...parquet
+  details: sandbox/runs/20261014-224232/tasks/211008abb81642ea.json
+```
+
+The JSON file names each sampled text's page and position, and holds the text of each one that did
+not match, so you can embed it again yourself. Every minute the sandbox prints your miner's
+throughput and embed budget:
+
+```
+summary: 12 tasks waiting, 0 uploads being checked
+  5GWvYCiS: 19 tasks checked, 19 passed, 225 texts (152/min), 477,340 characters (322,984/min), budget 100
+```
+
+### Embed options
+
+| Option | Default | |
+| --- | --- | --- |
+| `--task-size` | `100` | Pages per task. Use `1000` for mainnet-sized tasks, to check that your miner uploads one within 5 minutes. A task also stays within mainnet's 3 million characters. |
+| `--embed-set DIR` | the public set | A folder holding a test set in the public set's layout. |
+| `--port` | `18080` | As in crawl mode. |
+
+By default the texts come from the public dataset
+[desearch/sn22-sandbox-embed](https://huggingface.co/datasets/desearch/sn22-sandbox-embed):
+English Wikipedia articles made into page texts and passages by the same code that makes mainnet
+embed tasks, each with its vector from the model in float32. It is downloaded once; the sandbox hands
+its texts out again and again, each time as new inputs.
 
 ## Stopping
 
@@ -123,6 +209,9 @@ runs if you want to keep it.
 
 Two folders stay on disk, both ignored by git and safe to delete at any time:
 
-- `sandbox/runs/<start time>/`: the JSON result of every checked task, and the validator's and task
-  API's logs;
-- `sandbox/cache/`: the downloaded URL files, reused by the next run.
+- `sandbox/runs/<start time>/`: the JSON result of every checked task, the task API's data, and the
+  validator's and task API's logs;
+- `sandbox/cache/`: the downloaded URL files and embed test set, reused by the next run.
+
+The task API's Docker image, `desearch-sandbox-task-api`, stays for the next start. Remove it with
+`docker image rm` when you no longer need it.
