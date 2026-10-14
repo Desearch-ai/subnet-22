@@ -26,7 +26,6 @@ built from. This page explains how those parts fit together.
 | Miners | Fetch the pages of a task and extract their text; once embedding opens, turn text into vectors on a GPU. | [`neurons/miners/`](../neurons/miners/) |
 | Validators | Read each drawn upload from storage, check a sample of its pages against the live page, report pass or fail, and set weights from every miner's logged uploads at the rate their own checks found. | [`neurons/validators/`](../neurons/validators/) |
 | Publisher | Writes passed pages and vectors to permanent storage, takes withdrawn pages down, and reports what became of every URL to the bot. | [`publisher/`](../publisher/) |
-| Engine | Builds the search index from the published pages and vectors, and serves search. | [`engine/`](../engine/) |
 | Shared package | Fetching, text extraction and embedding formats, so miners and validators run the same code. | [`desearch/`](../desearch/) |
 
 The task API keeps its live queues in Redis and its records (rounds, the signed log, the validators'
@@ -72,8 +71,8 @@ every page.
    two failed checks among its last 10 cost its last 24 hours of pay and a 48-hour lockout. The
    exact rules are in [the task API's scoring section](../task-api/README.md#scoring).
 7. **Publish.** The publisher writes each passed page to the pages bucket, only when its text
-   changed and never over a newer fetch, leaving out the rows the checks turned down, takes
-   withdrawn pages down, and the engine indexes them. What became of every URL goes back to the bot
+   changed and never over a newer fetch, leaving out the rows the checks turned down, and takes
+   withdrawn pages down. What became of every URL goes back to the bot
    through the outcome feed, so failed and withdrawn pages are sent again.
 
 ## An embed task, start to finish

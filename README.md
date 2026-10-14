@@ -105,9 +105,8 @@ the [console](https://console.desearch.ai) and start with the
 | [Test your miner locally](./docs/test-your-miner.md) | Run your miner against a local task API and validator before registering |
 | [Validator setup](./docs/validator-setup.md) | Install, register, configure, run, automatic upgrades, monitoring |
 | [Emission](./docs/emission.md) | How miners' shares are worked out and what raises them |
-| [Architecture](./docs/architecture.md) | How the bot, task API, miners, validators, storage and engine work together |
+| [Architecture](./docs/architecture.md) | How the bot, task API, miners, validators and storage work together |
 | [Embedding tasks](./docs/embedding-tasks.md) | What embed tasks will contain and how they are checked, before they open |
-| [Engine](./engine/README.md) | The search index and API, and how new pages reach it |
 | [Task API](./task-api/README.md) | Endpoints, rounds, scoring rules, public logs and the storage layout |
 | [Desearch 2.0](./docs/desearch-2.0/README.md) | The direction: why an index, the first phase, incentives and participation |
 
