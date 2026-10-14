@@ -193,10 +193,10 @@ The planner keeps its place in the log and the version of every page it planned 
 | `PLANNER_CHARS_PER_INPUT` | 3000000 | characters of text per input file at most |
 | `PLANNER_FLUSH_S` | 600 | a part-filled input is written once its first page waited this long |
 | `PLANNER_MAX_PENDING` | 50 | input files waiting for room; past this, pages are left out |
-| `PLANNER_PENDING_MAX_AGE_S` | 43200 | an input waiting longer is dropped, before the temporary bucket deletes its file |
+| `PLANNER_PENDING_MAX_AGE_S` | 43200 | an input waiting longer is dropped before the temporary bucket deletes its file; its pages are planned again when the log shows them next |
 | `PLANNER_MIN_CHARS` | 300 | characters of text a page needs |
 | `PLANNER_LANGS` | `en` | languages planned |
-| `PLANNER_EXCLUDE_FILE` | — | a file of domains, one a line, never planned |
+| `PLANNER_EXCLUDE_FILE` | — | a file of domains, one a line, never planned, with their subdomains |
 | `PLANNER_START_AFTER` | the newest change file | where a planner without state starts |
 
 ## Run

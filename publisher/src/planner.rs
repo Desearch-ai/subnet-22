@@ -299,6 +299,19 @@ impl State {
         Ok(self.db.delete(format!("pending/{input_key}"))?)
     }
 
+    /// Drops an input never handed over; its pages are planned again the next time the log shows them.
+    fn expire(&self, input_key: &str, entry: &Value) -> Result<()> {
+        let mut batch = WriteBatch::default();
+        for page in entry["pages"].as_array().into_iter().flatten() {
+            let (Some(key), Some(content_sha1)) = (page["page_key"].as_str(), page["content_sha1"].as_str()) else { continue };
+            if self.planned(key)?.as_deref() == Some(content_sha1) {
+                batch.delete(planned_key(key));
+            }
+        }
+        batch.delete(format!("pending/{input_key}"));
+        Ok(self.db.write(batch)?)
+    }
+
     fn keep_cursor(&self, seq: i64) -> Result<()> {
         Ok(self.db.put(CURSOR, seq.to_string())?)
     }
@@ -514,11 +527,23 @@ impl Planner {
 
     fn admitted(&self, record: &Record) -> bool {
         let lang = record.lang.to_lowercase();
-        let host = record.domain.to_lowercase();
-        let excluded = self.settings.excluded.iter().any(|domain| host == *domain || host.ends_with(&format!(".{domain}")));
         self.settings.langs.iter().any(|want| lang == *want || lang.starts_with(&format!("{want}-")) || lang.starts_with(&format!("{want}_")))
             && record.text.chars().count() >= self.settings.min_chars
-            && !excluded
+            && !self.excluded(&record.domain.to_lowercase())
+    }
+
+    /// Whether the host or a domain it is under is on the exclusion list.
+    fn excluded(&self, host: &str) -> bool {
+        let mut rest = host;
+        loop {
+            if self.settings.excluded.contains(rest) {
+                return true;
+            }
+            match rest.split_once('.') {
+                Some((_, parent)) => rest = parent,
+                None => return false,
+            }
+        }
     }
 
     fn take_token(&mut self) -> bool {
@@ -560,7 +585,7 @@ impl Planner {
         Ok(())
     }
 
-    /// Hands pending inputs to the task API, as many as it has room for.
+    /// Hands pending inputs to the task API, oldest first, as many as it has room for.
     pub async fn hand_over(&mut self) -> Result<usize> {
         let pending = self.state.pending()?;
         self.pending = pending.len();
@@ -575,12 +600,19 @@ impl Planner {
             }
         };
         let now = now_us() as f64 / 1e6;
+        let mut pending: Vec<(String, String, Value)> = pending
+            .into_iter()
+            .map(|(input_key, entry)| {
+                let parsed = serde_json::from_str::<Value>(&entry).unwrap_or(Value::Null);
+                (input_key, entry, parsed)
+            })
+            .collect();
+        pending.sort_by(|a, b| a.2["written_at"].as_f64().unwrap_or(now).total_cmp(&b.2["written_at"].as_f64().unwrap_or(now)));
         let (mut handed, mut expired) = (0, 0);
-        for (input_key, entry) in pending {
-            let written_at = serde_json::from_str::<Value>(&entry).ok().and_then(|e| e["written_at"].as_f64()).unwrap_or(now);
-            if now - written_at > self.settings.pending_max_age.as_secs_f64() {
+        for (input_key, entry, parsed) in pending {
+            if now - parsed["written_at"].as_f64().unwrap_or(now) > self.settings.pending_max_age.as_secs_f64() {
                 eprintln!("{input_key} waited longer than {:?} for room; dropped", self.settings.pending_max_age);
-                self.state.handed_over(&input_key)?;
+                self.state.expire(&input_key, &parsed)?;
                 expired += 1;
                 continue;
             }

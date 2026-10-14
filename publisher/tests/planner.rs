@@ -225,6 +225,17 @@ async fn published_pages_become_inputs_once_per_version_within_the_budget_and_th
     split.pass().await.unwrap();
     assert_eq!((split.counts.planned, split.counts.inputs), (3, 3), "an input is written as soon as its texts reach the character cap");
 
+    let mut one_page = settings(dir.join("order"), 3600.0, 1);
+    one_page.pages_per_input = 1;
+    let mut ordered = Planner::new(one_page, pages.clone(), temp.clone(), redis.clone(), Room::Fixed(0)).await.unwrap();
+    ordered.pass().await.unwrap();
+    assert_eq!(ordered.counts.inputs, 3);
+    let () = redis.del(EMBED_INPUTS).await.unwrap();
+    ordered.room = Room::Fixed(1);
+    assert_eq!(ordered.hand_over().await.unwrap(), 1);
+    let first: Value = serde_json::from_str(&redis.lpop::<_, String>(EMBED_INPUTS, None).await.unwrap()).unwrap();
+    assert_eq!(first["pages"][0]["url"], "https://news.example/story/1", "the input written first is handed over first");
+
     let mut stale = settings(dir.join("stale"), 3600.0, 1);
     stale.pending_max_age = Duration::ZERO;
     let mut waited = Planner::new(stale, pages.clone(), temp.clone(), redis.clone(), Room::Fixed(0)).await.unwrap();
@@ -235,4 +246,7 @@ async fn published_pages_become_inputs_once_per_version_within_the_budget_and_th
     let before: i64 = redis.llen(EMBED_INPUTS).await.unwrap();
     assert_eq!(waited.hand_over().await.unwrap(), 0);
     assert_eq!((waited.counts.expired, redis.llen::<_, i64>(EMBED_INPUTS).await.unwrap()), (1, before), "an input that waited too long is dropped, not sent");
+    log(&pages, 4, vec![page(1, &article(40), "article", "en")]).await;
+    waited.pass().await.unwrap();
+    assert_eq!((waited.counts.planned, waited.counts.unchanged), (3, 1), "a dropped input's pages are planned again when the log shows them next");
 }
