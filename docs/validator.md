@@ -1,6 +1,11 @@
-# Validator
+# 🛡️ Validator
 
-## What a validator does
+**Contents:** [What a validator does](#-what-a-validator-does) · [Setup](#-setup)
+([requirements](#requirements), [install](#1-install), [register](#2-register-a-hotkey),
+[configure](#3-configure), [run](#4-run), [upgrading](#upgrading-from-the-search-validator),
+[monitor](#-monitor))
+
+## 🔍 What a validator does
 
 A validator checks miners' work under rules fixed in code, so every validator checks the same way, and
 sets weights from what its own checks found. It is one process,
@@ -39,7 +44,7 @@ until a task is checked again, when any of these happens:
 **Updates:** `run.sh` checks for a new release every 20 minutes, installs it and restarts the
 validator.
 
-## Setup
+## 🔧 Setup
 
 ### Requirements
 
@@ -131,7 +136,7 @@ Nothing to do by hand.
 - Without a key it checks nothing and sets no weights, and logs so, until the key is in
   `neurons/validators/.env` and the validator restarts.
 
-### Monitor
+### 📈 Monitor
 
 ```bash
 pm2 logs desearch_validator_process

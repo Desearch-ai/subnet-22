@@ -1,4 +1,4 @@
-# Embedding Tasks
+# 🧠 Embedding Tasks
 
 > **Not open yet.** Embed tasks open once their inputs and the publishing of vectors are switched on.
 > Until then a miner asking for one is told `KIND_CLOSED`, and the embedding part of the emission is

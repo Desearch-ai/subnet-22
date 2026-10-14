@@ -1,6 +1,10 @@
-# Miner
+# ⛏️ Miner
 
-## What a miner does
+**Contents:** [What a miner does](#-what-a-miner-does) · [How you earn](#-how-you-earn) ·
+[Setup](#-setup) ([requirements](#requirements), [install](#1-install), [register](#2-register-a-hotkey),
+[configure](#3-configure), [run](#4-run), [test locally](#-test-your-miner-locally), [monitor](#-monitor))
+
+## 🧭 What a miner does
 
 Subnet 22 builds Desearch's web index. Miners do its work in two kinds of tasks, each paid from its own
 part of the emission: 30% for crawling, 20% for embedding, and 50% burned. A part no miner earns is
@@ -23,7 +27,7 @@ The crawl miner (`neurons.miners.miner`) and the embed miner (`neurons.miners.em
 hotkey, on one machine or two, and either can run alone. Each claims only its own kind of task. A miner
 pulls its tasks and uploads its files, so it needs no open port.
 
-### How you earn
+### 💰 How you earn
 
 - **Crawling:**
   - Your share is your paid pages over the last 24 hours, compared with every other miner's.
@@ -40,7 +44,7 @@ pulls its tasks and uploads its files, so it needs no open port.
 Crawling and embedding keep separate budgets and lockouts. [Emission](./emission.md) explains the rules
 and what raises your share.
 
-## Setup
+## 🔧 Setup
 
 ### Requirements
 
@@ -131,12 +135,12 @@ pm2 start python3 --name desearch_embed_miner -- -m neurons.miners.embed
 
 It waits for the server to answer to the model's name before it claims anything.
 
-### Test your miner locally
+### 🧪 Test your miner locally
 
 Before registering, run your miner against a local task API and validator that use the same code as
 mainnet, and see exactly how your uploads are scored: [Test your miner locally](./test-your-miner.md).
 
-### Monitor
+### 📈 Monitor
 
 ```bash
 pm2 logs desearch_miner
