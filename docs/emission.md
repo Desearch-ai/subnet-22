@@ -38,8 +38,10 @@ since your last passed check, and those pages leave the published set; your next
 all checked. Two failed checks among your last 10 take back your last 24 hours and lock you out for
 48 hours. A checked task whose report claims more pages than its file holds fails.
 
-**Embedding** opens later; see [Embedding tasks](./embedding-tasks.md). There, a passing task is
-paid by the characters of the texts it embedded.
+**Embedding** has its own part of the emission and opens later; see
+[Embedding tasks](./embedding-tasks.md). A passing task is paid by the characters of the texts it
+embedded, and a failed one earns nothing and is a strike. Until embed tasks open, their part is
+burned.
 
 ## What raises your share
 
