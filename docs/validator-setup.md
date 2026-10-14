@@ -52,7 +52,7 @@ cp neurons/validators/.env.template neurons/validators/.env
 | `SCRAPINGDOG_API_KEY` | required: a validator that cannot check crawl tasks sets no weights |
 | `SCRAPINGDOG_DAILY_CREDITS` | ScrapingDog credits to use per day, spread evenly over the hours; 100,000 by default |
 | `WANDB_API_KEY` | Weights & Biases login, unless `--wandb.off`; `wandb login` also stores it |
-| `EMBED_API_URL` | for checking [embed tasks](./embedding-tasks.md) once they open: your own model server's `/v1/embeddings`; without it, embed tasks are left to other validators |
+| `EMBED_API_URL` | for checking [embed tasks](./embedding-tasks.md) once they open: your own model server's `/v1/embeddings`. Without it, the validator leaves embed uploads to others and weights the embed pool by the task API's shares |
 | `EMBED_API_KEY` | if that server requires one |
 
 Nothing else is configurable: sampling and match rules are fixed in code, so every validator checks

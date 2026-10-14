@@ -57,6 +57,9 @@ log = logging.getLogger("validator")
 
 
 class Validator:
+    # A validator that does not check embed uploads pays the embed pool as the task API's shares say.
+    embed_shares_from_api = False
+
     def __init__(self):
         env.load(ENV_FILE)
         self.config = config()
@@ -157,12 +160,17 @@ class Validator:
     async def check_embed_tasks(self) -> None:
         url = os.environ.get("EMBED_API_URL", "")
         if not url:
-            log.info(f"Not checking embed tasks: EMBED_API_URL is not set in {ENV_FILE}")
+            log.info(
+                f"Not checking embed tasks (EMBED_API_URL is not set in {ENV_FILE});"
+                " the embed pool is weighted by the task API's shares"
+            )
+            self.embed_shares_from_api = True
             await self.stopping.wait()
             return
 
         references = await self.embed_references(url)
         if not references:
+            self.embed_shares_from_api = True
             await self.stopping.wait()
             return
         signer = await self.api_signer()
@@ -312,7 +320,10 @@ class Validator:
         paid = self.ledger.crawl_paid()
         crawl = proportions({miner: found.rows for miner, found in paid.items()})
         shares = {CRAWL: crawl} if crawl else {}
-        if embed := self.ledger.shares().get(EMBED):
+        embed = self.ledger.shares().get(EMBED)
+        if not embed and self.embed_shares_from_api:
+            embed = await self.api_embed_shares()
+        if embed:
             shares[EMBED] = embed
         if not shares:
             log.warning(
@@ -321,6 +332,23 @@ class Validator:
         self.report_window(shares, paid)
         weights = weights_from_shares(list(self.metagraph.hotkeys), shares)
         return weights if weights.any() else None
+
+    async def api_embed_shares(self) -> dict[str, float]:
+        """Each miner's share of the embed work the task API finalized, or nothing when it cannot be read."""
+        url = f"{self.config.neuron.task_api_url.rstrip('/')}/v1/shares"
+        try:
+            async with self.http.get(
+                url, timeout=SHARES_TIMEOUT, raise_for_status=True
+            ) as response:
+                pools = (await response.json()).get("pools", {})
+        except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as error:
+            log.warning(f"Task API shares unavailable, the embed pool is burned: {error!r}")
+            return {}
+        return {
+            miner: float(share)
+            for miner, share in (pools.get(EMBED) or {}).items()
+            if float(share) > 0
+        }
 
     def report_window(self, shares: dict, paid: dict) -> None:
         """Each miner's share, its uploads, and what this validator's own checks of it found."""
