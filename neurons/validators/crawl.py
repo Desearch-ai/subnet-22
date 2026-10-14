@@ -178,8 +178,7 @@ class CrawlValidator(TaskChecker):
         if unconfined and not CrawlValidator.warned_unconfined:
             CrawlValidator.warned_unconfined = True
             log.warning(
-                "The check runs without %s isolation on this system; see the validator"
-                " setup guide",
+                "The check runs without %s isolation on this system; see docs/validator.md",
                 " or ".join(unconfined),
             )
 

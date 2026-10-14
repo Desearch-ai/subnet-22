@@ -35,8 +35,8 @@ validators check their work under published rules, and the Desearch team integra
 into a tested index and the search API.
 
 <p align="center">
-  <a href="./docs/miner-setup.md">⛏️ Mine</a> ·
-  <a href="./docs/validator-setup.md">🛡️ Validate</a> ·
+  <a href="./docs/miner.md">⛏️ Mine</a> ·
+  <a href="./docs/validator.md">🛡️ Validate</a> ·
   <a href="./docs/architecture.md">⚙️ How it works</a> ·
   <a href="./docs/desearch-2.0/README.md">🧭 Desearch 2.0</a> ·
   <a href="https://console.desearch.ai">🔑 Search API</a>
@@ -73,14 +73,16 @@ starts with selected sources and grows as results prove useful.
 
 ## Mining and validating
 
-**Miners** crawl: they take tasks, fetch the assigned pages and upload the extracted text. They are
-paid by their share of accepted pages, and can test their miner locally before registering.
-[Miner setup →](./docs/miner-setup.md) · [Test locally →](./docs/test-your-miner.md)
+**Miners** crawl and embed: they take tasks, fetch the assigned pages and upload the extracted text,
+and, once embedding opens, turn that text into vectors on their own GPU. They are paid by their share
+of accepted work, and can test their miner locally before registering.
+[Miner →](./docs/miner.md) · [Test locally →](./docs/test-your-miner.md)
 · [Emission →](./docs/emission.md)
 
-**Validators** check: they re-fetch a random sample of miners' tasks, compare it with what the miner
-returned, and set weights from the accepted work. A miner caught returning bad pages loses what it
-earned since its last good check. [Validator setup →](./docs/validator-setup.md)
+**Validators** check: they re-fetch a random sample of miners' crawl tasks and re-embed a sample of
+every embed task, compare it with what the miner returned, and set weights from the accepted work. A
+miner caught returning bad pages loses what it earned since its last good check. No GPU is needed.
+[Validator →](./docs/validator.md)
 
 The rules are published and every result is [public](https://api-22.desearch.ai/v1/tasks).
 [How it works →](./docs/architecture.md)
@@ -101,9 +103,9 @@ the [console](https://console.desearch.ai) and start with the
 
 | Guide | What's inside |
 | --- | --- |
-| [Miner setup](./docs/miner-setup.md) | Install, register, configure, run, how you earn, monitoring |
+| [Miner](./docs/miner.md) | What a miner does and how it earns; install, register, configure, run, monitor |
 | [Test your miner locally](./docs/test-your-miner.md) | Run your miner against a local task API and validator before registering |
-| [Validator setup](./docs/validator-setup.md) | Install, register, configure, run, automatic upgrades, monitoring |
+| [Validator](./docs/validator.md) | What a validator checks and how it sets weights; install, register, configure, run, monitor |
 | [Emission](./docs/emission.md) | How miners' shares are worked out and what raises them |
 | [Architecture](./docs/architecture.md) | How the bot, task API, miners, validators and storage work together |
 | [Embedding tasks](./docs/embedding-tasks.md) | What embed tasks will contain and how they are checked, before they open |
