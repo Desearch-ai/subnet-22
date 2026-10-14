@@ -81,7 +81,8 @@ of accepted work, and can test their miner locally before registering.
 
 **Validators** check: they re-fetch a random sample of miners' crawl tasks and re-embed a sample of
 every embed task, compare it with what the miner returned, and set weights from the accepted work. A
-miner caught returning bad pages loses what it earned since its last good check. No GPU is needed.
+miner caught returning bad pages loses what it earned since its last good check. Embed checks run on the
+validator's own GPU, or fall back to Desearch's model server.
 [What a validator does →](./docs/validator.md#-what-a-validator-does) ·
 [Validator setup →](./docs/validator.md#-setup)
 

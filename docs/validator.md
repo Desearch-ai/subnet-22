@@ -21,9 +21,8 @@ jobs:
    - Every embed upload is checked.
    - The validator samples 48 of its texts, gets their vectors from the same model and compares them
      with the miner's. Each must reach a cosine similarity of 0.999.
-   - The vectors come from Desearch's model server through the task API, which embeds each sampled
-     text once, so the validator needs no GPU. A validator with its own model server can use it
-     instead.
+   - The vectors come from the validator's own model server. A validator without one falls back to
+     Desearch's model server through the task API, which embeds each sampled text once.
 3. **Sets weights.**
    - Each epoch, 50% of the emission goes to burn, 30% to crawl miners and 20% to embed miners; a part
      no miner earned is burned.
@@ -52,7 +51,8 @@ validator.
 - A [ScrapingDog](https://www.scrapingdog.com/) API key: the validator fetches each sample itself
   first and uses ScrapingDog only for pages its own address cannot load
 - A [Weights & Biases](https://wandb.ai/) login, unless you pass `--wandb.off`
-- No GPU: embed checks use Desearch's model server unless you set your own
+- For embed checks, your own model server on a GPU (see Configure); without one, the validator falls
+  back to Desearch's model server
 
 ### 1. Install
 
