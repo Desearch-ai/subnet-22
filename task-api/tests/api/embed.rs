@@ -259,6 +259,7 @@ async fn the_explorer_shows_an_embed_task_s_checked_texts_and_counts_each_kind_a
     let h = embedding().await;
     embed_round(&h, input()).await;
     let task = embed_task(&h, &h.miner).await;
+    assert_eq!(h.view(&task_id(&task)).await["kind"], "embed", "the kind shows before any verdict");
     let live = h.public("/v1/live").await.1;
     assert_eq!((live["uploads"][0]["kind"].clone(), live["uploads"][0]["texts"].clone()), (json!("embed"), json!(6)));
 

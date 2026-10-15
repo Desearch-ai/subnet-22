@@ -652,22 +652,27 @@ pub async fn task(Shared(state): Shared<Arc<State>>, Path(task_id): Path<String>
 
 async fn task_state(state: &State, task_id: &str, scored: Option<&Map<String, Value>>) -> Result<Map<String, Value>, ApiError> {
     let score = scored.cloned().map_or(Value::Null, Value::Object);
-    let state_of = |status: &str, round_id: Value, miner: Value| -> Map<String, Value> {
-        json!({"task_id": task_id, "status": status, "round_id": round_id, "miner": miner, "score": score}).as_object().cloned().unwrap_or_default()
+    let state_of = |status: &str, kind: &str, round_id: Value, miner: Value| -> Map<String, Value> {
+        json!({"task_id": task_id, "kind": kind, "status": status, "round_id": round_id, "miner": miner, "score": score})
+            .as_object()
+            .cloned()
+            .unwrap_or_default()
     };
     if let Some(job) = state.validation.job(&state.redis, task_id).await? {
         let status = if state.validation.voters(&state.redis, task_id).await?.is_empty() { "open" } else { "voting" };
-        return Ok(state_of(status, job["round_id"].clone(), job["miner"].clone()));
+        return Ok(state_of(status, kind_of(&job), job["round_id"].clone(), job["miner"].clone()));
     }
     if let Some(payload) = state.payload(task_id).await? {
         let holder = state.claim_holder(task_id).await?;
         let status = if holder.is_some() { "claimed" } else { "queued" };
-        return Ok(state_of(status, payload.get("round_id").cloned().unwrap_or(Value::Null), holder.map_or(Value::Null, Value::from)));
+        let round_id = payload.get("round_id").cloned().unwrap_or(Value::Null);
+        return Ok(state_of(status, kind_of(&payload), round_id, holder.map_or(Value::Null, Value::from)));
     }
     let Some(scored) = scored else {
         return Err(ApiError::status(404, "no such task"));
     };
-    Ok(state_of(text(&Value::Object(scored.clone()), "verdict"), scored["round_id"].clone(), scored["miner"].clone()))
+    let finished = Value::Object(scored.clone());
+    Ok(state_of(text(&finished, "verdict"), kind_of(&finished), scored["round_id"].clone(), scored["miner"].clone()))
 }
 
 /// Makes the pages the overview opens with again, so a visitor never waits for them to be made.
