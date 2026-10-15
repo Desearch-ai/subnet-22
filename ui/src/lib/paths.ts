@@ -1,3 +1,6 @@
+import type { Kind } from '@/api/types'
+import { DEFAULT_KIND, KIND_PARAM } from './kinds'
+
 export const OVERVIEW_PATH = '/'
 export const TASKS_PATH = '/tasks'
 export const MINERS_PATH = '/miners'
@@ -13,4 +16,8 @@ export function minerPath(hotkey: string): string {
 
 export function validatorPath(hotkey: string): string {
   return `${VALIDATORS_PATH}/${encodeURIComponent(hotkey)}`
+}
+
+export function withKind(path: string, kind: Kind): string {
+  return kind === DEFAULT_KIND ? path : `${path}?${KIND_PARAM}=${kind}`
 }

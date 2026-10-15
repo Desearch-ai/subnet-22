@@ -1,4 +1,4 @@
-import type { BudgetCause, TaskStatus, UrlOutcome, Verdict } from '@/api/types'
+import type { BudgetCause, Kind, TaskStatus, UrlOutcome, Verdict } from '@/api/types'
 
 export const VERDICTS: readonly Verdict[] = ['pass', 'fail', 'void']
 
@@ -9,9 +9,9 @@ export const VERDICT_LABEL: Record<Verdict, string> = {
 }
 
 export const VERDICT_MEANING: Record<Verdict, string> = {
-  pass: 'The upload held up when validators checked it. Its rows count toward the share of its miner.',
-  fail: 'The upload did not hold up. No rows count and the task goes back to the queue.',
-  void: 'No result could be reached. No rows count, the miner is not penalised and the task goes back to the queue.',
+  pass: "The upload held up when validators checked it. What it returned counts toward its miner's share.",
+  fail: 'The upload did not hold up. Nothing in it counts and the task goes back to the queue.',
+  void: 'No result could be reached. Nothing in it counts, the miner is not penalised and the task goes back to the queue.',
 }
 
 export const STATUS_LABEL: Record<TaskStatus, string> = {
@@ -26,8 +26,8 @@ export const STATUS_LABEL: Record<TaskStatus, string> = {
 
 export const STATUS_MEANING: Record<TaskStatus, string> = {
   queued: 'Waiting in the queue for a miner to claim it.',
-  claimed: 'A miner holds this task and has not uploaded its rows yet.',
-  open: 'The miner uploaded its rows. Validators have not voted yet.',
+  claimed: 'A miner holds this task and has not uploaded its work yet.',
+  open: 'The miner uploaded its work. Validators have not voted yet.',
   voting: 'Validators are checking the upload and voting.',
   pass: VERDICT_MEANING.pass,
   fail: VERDICT_MEANING.fail,
@@ -41,16 +41,30 @@ const REASON_MEANING: Record<string, string> = {
   text_not_from_html: 'The uploaded text could not be reproduced from the uploaded HTML.',
   errors_not_reproducible: 'Pages the miner reported as errors loaded fine for the validator.',
   extra_rows: 'The upload contained rows for URLs that were not part of the task.',
+  reported_rows: 'The upload held fewer good rows than the miner reported for it.',
   unreadable: 'The uploaded file could not be read.',
+  unscorable: 'The validator could not finish its check. This does not count against the miner.',
   no_quorum: 'Not enough validators voted before the deadline.',
   validators_disagree: 'Validators reached different results and no majority formed.',
   upload_missing: 'The uploaded file could not be found.',
   inconclusive: 'The checked pages gave no evidence either way.',
   unverifiable: 'Too many of the checked pages could not be verified.',
+  vectors_missing: 'Some texts of the task came back without a vector.',
+  vectors_malformed:
+    'Some vectors were malformed or repeated, or belonged to texts that were not part of the task.',
+  vectors_mismatch:
+    "A sampled text's vector fell below a similarity of 0.999 to the one the validator computed.",
 }
 
-export function explainReason(reason: string): string | null {
-  return REASON_MEANING[reason] ?? null
+const EMBED_REASON_MEANING: Record<string, string> = {
+  ok: "Every sampled text's vector reached a similarity of 0.999 to the one the validator computed.",
+  inconclusive: 'No sampled text could be compared.',
+}
+
+export function explainReason(reason: string, kind: Kind): string | null {
+  return (
+    (kind === 'embed' ? EMBED_REASON_MEANING[reason] : undefined) ?? REASON_MEANING[reason] ?? null
+  )
 }
 
 export const BUDGET_CAUSE_MEANING: Record<BudgetCause, string> = {

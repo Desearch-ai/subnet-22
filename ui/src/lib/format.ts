@@ -2,6 +2,8 @@ const SECONDS_PER_MINUTE = 60
 const SECONDS_PER_HOUR = 3600
 const SECONDS_PER_DAY = 86400
 const JUST_NOW_S = 10
+const SIMILARITY_DIGITS = 6
+const MINUS = '−'
 
 export const EMPTY_VALUE = '–'
 
@@ -34,6 +36,17 @@ export function formatScore(value: number | null | undefined): string {
   return value === null || value === undefined ? EMPTY_VALUE : value.toFixed(2)
 }
 
+export function formatSimilarity(value: number | null | undefined): string {
+  return value === null || value === undefined ? EMPTY_VALUE : value.toFixed(SIMILARITY_DIGITS)
+}
+
+export function formatSimilarityMargin(value: number | null | undefined, bar: number): string {
+  if (value === null || value === undefined) return EMPTY_VALUE
+  const margin = value - bar
+  const digits = Math.abs(margin).toFixed(SIMILARITY_DIGITS)
+  return Number(digits) === 0 || margin > 0 ? `+${digits}` : `${MINUS}${digits}`
+}
+
 export function formatDuration(seconds: number): string {
   const total = Math.max(0, Math.round(seconds))
   if (total < SECONDS_PER_MINUTE) return `${total} s`
@@ -57,7 +70,7 @@ export function formatElapsed(seconds: number): string {
   return formatDuration(total)
 }
 
-export function crawlSeconds(task: {
+export function workSeconds(task: {
   claimed_at: number | null
   completed_at: number | null
 }): number | null {
@@ -65,11 +78,11 @@ export function crawlSeconds(task: {
   return task.completed_at - task.claimed_at
 }
 
-export function formatCrawlTime(task: {
+export function formatWorkTime(task: {
   claimed_at: number | null
   completed_at: number | null
 }): string {
-  const seconds = crawlSeconds(task)
+  const seconds = workSeconds(task)
   return seconds === null ? EMPTY_VALUE : formatElapsed(seconds)
 }
 

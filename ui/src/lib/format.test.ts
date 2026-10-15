@@ -6,6 +6,9 @@ import {
   formatInt,
   formatPercent,
   formatRelative,
+  formatSimilarity,
+  formatSimilarityMargin,
+  formatWorkTime,
   ratio,
   truncateMiddle,
 } from './format'
@@ -61,5 +64,29 @@ describe('truncateMiddle', () => {
   it('keeps short values and shortens long ones', () => {
     expect(truncateMiddle('ab12')).toBe('ab12')
     expect(truncateMiddle('5FGtU35pohrno7p2m5ex9jv9pbzAVGiGSZijvTFknLfu4N9q')).toBe('5FGtU3…fu4N9q')
+  })
+})
+
+describe('formatSimilarity', () => {
+  it('shows six decimals so values near the bar stay apart', () => {
+    expect(formatSimilarity(0.9991)).toBe('0.999100')
+    expect(formatSimilarity(0.998734)).toBe('0.998734')
+    expect(formatSimilarity(null)).toBe(EMPTY_VALUE)
+  })
+})
+
+describe('formatSimilarityMargin', () => {
+  it('signs the distance to the bar', () => {
+    expect(formatSimilarityMargin(0.999734, 0.999)).toBe('+0.000734')
+    expect(formatSimilarityMargin(0.998999, 0.999)).toBe('−0.000001')
+    expect(formatSimilarityMargin(0.999, 0.999)).toBe('+0.000000')
+    expect(formatSimilarityMargin(null, 0.999)).toBe(EMPTY_VALUE)
+  })
+})
+
+describe('formatWorkTime', () => {
+  it('measures from claim to upload and shows a dash when either is missing', () => {
+    expect(formatWorkTime({ claimed_at: NOW_S - 95, completed_at: NOW_S })).toBe('1 min 35 s')
+    expect(formatWorkTime({ claimed_at: null, completed_at: NOW_S })).toBe(EMPTY_VALUE)
   })
 })

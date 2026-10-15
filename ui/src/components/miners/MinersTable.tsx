@@ -1,12 +1,13 @@
 import { useState } from 'react'
-import type { MinerSummary } from '@/api/types'
+import type { Kind, MinerSummary } from '@/api/types'
 import { Identifier } from '@/components/ui/Identifier'
 import { SortTh } from '@/components/ui/SortTh'
 import { Table, Td, Tr } from '@/components/ui/Table'
 import { TimeAgo } from '@/components/ui/TimeAgo'
 import { VerdictCounts } from '@/components/ui/VerdictBadge'
 import { formatInt, formatPercent } from '@/lib/format'
-import { minerPath } from '@/lib/paths'
+import { countColumns, KIND_LABEL, KIND_WORDS } from '@/lib/kinds'
+import { minerPath, withKind } from '@/lib/paths'
 import { nextSort, sortRows, type SortState, type SortValue } from '@/lib/sort'
 import { Lockout } from './Lockout'
 
@@ -30,12 +31,25 @@ function sortValue(miner: MinerSummary, key: MinerSortKey): SortValue {
   return miner[key]
 }
 
-export function MinersTable({ miners }: { miners: readonly MinerSummary[] }) {
+const VERIFIED_HINT: Record<Kind, string> = {
+  crawl: 'Rows counted since the start',
+  embed: 'Characters counted since the start',
+}
+
+interface MinersTableProps {
+  miners: readonly MinerSummary[]
+  kind: Kind
+}
+
+export function MinersTable({ miners, kind }: MinersTableProps) {
   const [sort, setSort] = useState(DEFAULT_SORT)
   const onSort = (key: MinerSortKey) => {
     setSort(nextSort(sort, key))
   }
   const column = { sort, onSort }
+  const { returned, credited } = countColumns(kind)
+  const working = KIND_WORDS[kind].working
+  const hasCoverage = kind === 'crawl'
 
   return (
     <Table>
@@ -46,19 +60,19 @@ export function MinersTable({ miners }: { miners: readonly MinerSummary[] }) {
             {...column}
             sortKey="share"
             label="Share"
-            hint="The miner's part of the crawl pool"
+            hint={`The miner's part of the ${kind} pool, last 24 hours`}
           />
           <SortTh
             {...column}
             sortKey="budget"
             label="Budget"
-            hint="How many tasks the miner may hold at once"
+            hint={`How many ${kind} tasks the miner may hold at once`}
           />
           <SortTh
             {...column}
             sortKey="in_flight"
-            label="Crawling"
-            hint="Tasks the miner holds and has not uploaded yet"
+            label={working}
+            hint={`${KIND_LABEL[kind]} tasks the miner holds and has not uploaded yet`}
           />
           <SortTh
             {...column}
@@ -66,32 +80,29 @@ export function MinersTable({ miners }: { miners: readonly MinerSummary[] }) {
             label="Waiting"
             hint="Uploads waiting for validators' verdict"
           />
-          <SortTh
-            {...column}
-            sortKey="coverage"
-            label="Coverage"
-            hint="Rows returned out of URLs assigned"
-          />
+          {hasCoverage ? (
+            <SortTh
+              {...column}
+              sortKey="coverage"
+              label="Coverage"
+              hint="Rows returned out of URLs assigned"
+            />
+          ) : null}
           <SortTh {...column} sortKey="pass" label="Pass / fail / void" align="left" />
-          <SortTh {...column} sortKey="returned" label="Returned" hint="Rows the miner uploaded" />
-          <SortTh
-            {...column}
-            sortKey="credited"
-            label="Counted"
-            hint="Rows that count toward the miner's share"
-          />
+          <SortTh {...column} sortKey="returned" label={returned.label} hint={returned.hint} />
+          <SortTh {...column} sortKey="credited" label={credited.label} hint={credited.hint} />
           <SortTh
             {...column}
             sortKey="verified"
             label="Counted all time"
-            hint="Rows counted since the start"
+            hint={VERIFIED_HINT[kind]}
           />
           <SortTh
             {...column}
             sortKey="locked_until"
             label="Lockout"
             align="left"
-            hint="A locked-out miner gets no new tasks until the lockout ends"
+            hint={`A locked-out miner gets no new ${kind} tasks until the lockout ends`}
           />
           <SortTh {...column} sortKey="last_scored_at" label="Last finalized" />
         </tr>
@@ -104,14 +115,14 @@ export function MinersTable({ miners }: { miners: readonly MinerSummary[] }) {
                 value={miner.hotkey}
                 label="miner hotkey"
                 uid={miner.uid}
-                to={minerPath(miner.hotkey)}
+                to={withKind(minerPath(miner.hotkey), kind)}
               />
             </Td>
             <Td numeric>{formatPercent(miner.share)}</Td>
             <Td numeric>{miner.budget}</Td>
             <Td numeric>{miner.in_flight}</Td>
             <Td numeric>{miner.waiting}</Td>
-            <Td numeric>{formatPercent(miner.coverage)}</Td>
+            {hasCoverage ? <Td numeric>{formatPercent(miner.coverage)}</Td> : null}
             <Td>
               <VerdictCounts pass={miner.pass} fail={miner.fail} void={miner.void} />
             </Td>

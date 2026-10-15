@@ -2,13 +2,10 @@ import { useInfiniteQuery, useQuery } from '@tanstack/react-query'
 import { apiGet } from '../client'
 import { PAGE_SIZE, POLL_INTERVAL_MS } from '../config'
 import type { TaskDetail, TasksResponse, Verdict } from '../types'
+import { keepsTaskList, queryKeys, type TaskFilters } from './keys'
 import { FIRST_PAGE, nextPageParam, pollFirstPageOnly } from './paging'
 
-export interface TaskFilters {
-  miner?: string
-  validator?: string
-  verdict?: Verdict
-}
+export type { TaskFilters } from './keys'
 
 const FINAL_STATUSES: ReadonlySet<string> = new Set<Verdict>(['pass', 'fail', 'void'])
 
@@ -18,25 +15,20 @@ export function fetchTask(taskId: string, signal?: AbortSignal): Promise<TaskDet
 
 export function useTasks(filters: TaskFilters, limit = PAGE_SIZE) {
   return useInfiniteQuery({
-    queryKey: ['tasks', filters, limit],
+    queryKey: queryKeys.tasks(filters, limit),
     queryFn: ({ pageParam, signal }) =>
       apiGet<TasksResponse>('/v1/tasks', { ...filters, limit, before: pageParam }, signal),
     initialPageParam: FIRST_PAGE,
     getNextPageParam: nextPageParam,
     refetchInterval: (query) => pollFirstPageOnly(query.state.data),
-    // Another result filter on the same miner or validator keeps the old list up while it loads.
-    placeholderData: (previous, previousQuery) => {
-      const before = previousQuery?.queryKey[1] as TaskFilters | undefined
-      return before?.miner === filters.miner && before?.validator === filters.validator
-        ? previous
-        : undefined
-    },
+    placeholderData: (previous, previousQuery) =>
+      keepsTaskList(previousQuery?.queryKey[1], filters) ? previous : undefined,
   })
 }
 
 export function useTask(taskId: string) {
   return useQuery({
-    queryKey: ['task', taskId],
+    queryKey: queryKeys.task(taskId),
     queryFn: ({ signal }) => fetchTask(taskId, signal),
     refetchInterval: (query) =>
       query.state.data && FINAL_STATUSES.has(query.state.data.status) ? false : POLL_INTERVAL_MS,

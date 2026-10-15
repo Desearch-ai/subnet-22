@@ -1,14 +1,21 @@
-import type { TaskScore } from '@/api/types'
+import type { Kind, TaskScore } from '@/api/types'
 import { Badge } from '@/components/ui/Badge'
 import { Identifier } from '@/components/ui/Identifier'
 import { Table, Td, Th, Tr } from '@/components/ui/Table'
 import { TimeAgo } from '@/components/ui/TimeAgo'
 import { StatusBadge } from '@/components/ui/VerdictBadge'
 import { formatInt } from '@/lib/format'
+import { countColumns } from '@/lib/kinds'
 import { explainReason } from '@/lib/labels'
 import { minerPath } from '@/lib/paths'
 
-export function UploadsTable({ uploads }: { uploads: readonly TaskScore[] }) {
+interface UploadsTableProps {
+  uploads: readonly TaskScore[]
+  kind: Kind
+}
+
+export function UploadsTable({ uploads, kind }: UploadsTableProps) {
+  const { credited } = countColumns(kind)
   return (
     <Table>
       <thead>
@@ -17,8 +24,8 @@ export function UploadsTable({ uploads }: { uploads: readonly TaskScore[] }) {
           <Th>Miner</Th>
           <Th>Result</Th>
           <Th>Reason</Th>
-          <Th align="right" hint="Rows that count toward the miner's share">
-            Rows counted
+          <Th align="right" hint={credited.hint}>
+            {credited.label}
           </Th>
           <Th />
         </tr>
@@ -42,7 +49,7 @@ export function UploadsTable({ uploads }: { uploads: readonly TaskScore[] }) {
             </Td>
             <Td
               className="text-ink-muted font-mono text-xs"
-              title={explainReason(upload.reason) ?? undefined}
+              title={explainReason(upload.reason, upload.kind) ?? undefined}
             >
               {upload.reason}
             </Td>

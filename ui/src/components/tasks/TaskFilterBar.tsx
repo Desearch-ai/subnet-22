@@ -2,11 +2,13 @@ import type { SubmitEvent } from 'react'
 import type { TaskFilters } from '@/api/queries/tasks'
 import { Button } from '@/components/ui/Button'
 import { Input, Select } from '@/components/ui/Input'
+import { KIND_LABEL, KIND_PARAM, KINDS } from '@/lib/kinds'
 import { VERDICT_LABEL, VERDICTS } from '@/lib/labels'
 
 export const FILTER_MINER = 'miner'
 export const FILTER_VALIDATOR = 'validator'
 export const FILTER_VERDICT = 'verdict'
+export const FILTER_KIND = KIND_PARAM
 
 interface TaskFilterBarProps {
   filters: TaskFilters
@@ -25,7 +27,7 @@ export function TaskFilterBar({ filters, onApply, onClear }: TaskFilterBarProps)
     <form
       key={JSON.stringify(filters)}
       onSubmit={submit}
-      className="border-line grid gap-2 border-b px-4 py-3 sm:grid-cols-2 lg:grid-cols-[1fr_1fr_10rem_auto]"
+      className="border-line grid gap-2 border-b px-4 py-3 sm:grid-cols-2 lg:grid-cols-[1fr_1fr_9rem_9rem_auto]"
     >
       <Input
         name={FILTER_MINER}
@@ -43,6 +45,14 @@ export function TaskFilterBar({ filters, onApply, onClear }: TaskFilterBarProps)
         spellCheck={false}
         autoComplete="off"
       />
+      <Select name={FILTER_KIND} defaultValue={filters.kind ?? ''} aria-label="Filter by kind">
+        <option value="">All kinds</option>
+        {KINDS.map((kind) => (
+          <option key={kind} value={kind}>
+            {KIND_LABEL[kind]}
+          </option>
+        ))}
+      </Select>
       <Select
         name={FILTER_VERDICT}
         defaultValue={filters.verdict ?? ''}
