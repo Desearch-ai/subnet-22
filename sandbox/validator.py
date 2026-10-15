@@ -11,6 +11,7 @@ from types import SimpleNamespace
 import aiohttp
 from bittensor.wallets import Keypair
 
+from desearch.kinds import EMBED
 from neurons.validators import validator as neuron
 from neurons.validators.weights import EMISSION_CONTROL_HOTKEY
 
@@ -40,6 +41,21 @@ class SandboxValidator(neuron.Validator):
             await self.stopping.wait()
             return
         await super().check_crawl_tasks()
+
+    async def check_embed_tasks(self) -> None:
+        if not self.embed:
+            await self.stopping.wait()
+            return
+        await super().check_embed_tasks()
+
+    async def weights(self):
+        # The pretend chain registers every miner with paid work, so its share reaches the weights.
+        paid = sorted({*self.ledger.crawl_paid(), *self.ledger.shares().get(EMBED, {})})
+        self.chain.hotkeys += [
+            miner for miner in paid if miner not in self.chain.hotkeys
+        ]
+        self.metagraph = await self.chain.subnets.metagraph(self.config.netuid)
+        return await super().weights()
 
 
 async def serve(validator: SandboxValidator) -> None:

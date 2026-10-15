@@ -2,6 +2,7 @@ import asyncio
 
 import pyarrow as pa
 import pyarrow.parquet as pq
+import pytest
 from aiohttp import web
 
 from sandbox import local, run, urls
@@ -567,3 +568,60 @@ def test_in_embed_mode_the_validator_sets_weights_without_a_scrapingdog_key():
     assert validator.should_set_weights()
     asyncio.run(validator.check_crawl_tasks())
     assert not hasattr(validator, "crawl_checker"), "no crawl checker in embed mode"
+
+
+def test_the_sandbox_validator_checks_only_its_own_mode_s_tasks():
+    from sandbox.validator import SandboxValidator
+
+    validator = object.__new__(SandboxValidator)
+    validator.stopping = asyncio.Event()
+    validator.stopping.set()
+    validator.embed = False
+    assert asyncio.run(validator.check_embed_tasks()) is None, (
+        "crawl mode waits instead of checking embed tasks"
+    )
+
+
+def test_paid_miners_join_the_pretend_chain_so_their_share_reaches_the_weights():
+    from types import SimpleNamespace
+
+    from desearch.kinds import EMBED
+    from neurons.validators.weights import (
+        CRAWL_PERC,
+        EMBED_PERC,
+        EMISSION_CONTROL_HOTKEY,
+        EMISSION_CONTROL_PERC,
+    )
+    from sandbox.validator import SandboxValidator
+
+    class Ledger:
+        def crawl_paid(self):
+            return {
+                "crawler": SimpleNamespace(
+                    rows=100.0, uploads=1, checked=1, failed=0, rate=1.0
+                )
+            }
+
+        def shares(self):
+            return {EMBED: {"embedder": 1.0}}
+
+    chain = FakeChain(
+        [EMISSION_CONTROL_HOTKEY, "validator"], genesis=0.0, block_seconds=1.0, tempo=60
+    )
+    validator = object.__new__(SandboxValidator)
+    validator.chain, validator.ledger = chain, Ledger()
+    validator.config = SimpleNamespace(netuid=22)
+
+    weights = asyncio.run(validator.weights())
+
+    assert chain.hotkeys == [
+        EMISSION_CONTROL_HOTKEY,
+        "validator",
+        "crawler",
+        "embedder",
+    ]
+    miners = 1.0 - EMISSION_CONTROL_PERC
+    assert weights[0] == pytest.approx(EMISSION_CONTROL_PERC)
+    assert weights[2] == pytest.approx(miners * CRAWL_PERC) and weights[
+        3
+    ] == pytest.approx(miners * EMBED_PERC)
