@@ -15,10 +15,11 @@ export function MinersPage() {
       <PageHeader
         title="Miners"
         description="Share, budget and results per miner for one kind of task. Each kind has its own pool, budget and lockout. Counts cover the last 24 hours unless a column says otherwise. Select a column heading to sort."
-      >
-        <KindSwitch kind={kind} onChange={setKind} />
-      </PageHeader>
+      />
       <Card>
+        <div className="border-line border-b px-4 py-3">
+          <KindSwitch kind={kind} onChange={setKind} noun="miners" />
+        </div>
         <QueryState query={query}>
           {({ miners }) =>
             miners.length === 0 ? (
