@@ -677,6 +677,29 @@ pub fn held_to_report(job: &Value, decision: Decision) -> Decision {
     Decision { vote: Some(Value::Object(failed)), ..decision }
 }
 
+/// An embed check's sampled texts, each with what it is and the URL of its page, as the task page shows them.
+fn checked_texts(job: &Value, result: &Map<String, Value>) -> Value {
+    let urls: HashMap<&str, &Value> =
+        job["pages"].as_array().into_iter().flatten().filter_map(|page| Some((page["page_key"].as_str()?, &page["url"]))).collect();
+    let samples = result.get("samples").and_then(Value::as_array).into_iter().flatten();
+    samples
+        .map(|sample| {
+            let text_id = sample["text_id"].as_str().unwrap_or_default();
+            let (page, part) = text_id.rsplit_once('#').unwrap_or((text_id, ""));
+            let passage = part.strip_prefix('p').and_then(|n| n.parse::<i64>().ok());
+            json!({
+                "text_id": text_id,
+                "kind": if passage.is_some() { "passage" } else { "page" },
+                "index": passage.unwrap_or(0),
+                "url": urls.get(page).copied().cloned().unwrap_or(Value::Null),
+                "outcome": sample["outcome"],
+                "similarity": sample["similarity"],
+            })
+        })
+        .collect::<Vec<_>>()
+        .into()
+}
+
 /// Accounts are finalized once per upload, in one transaction, before Redis lets go; None when storage failed or the upload was closed under it.
 pub async fn conclude_validation(state: &State, task_id: &str, job: &Value, decision: Decision, seeding: bool) -> Result<Option<Value>> {
     let (task, key) = (task_id.to_string(), text(job, "key").to_string());
@@ -693,7 +716,8 @@ pub async fn conclude_validation(state: &State, task_id: &str, job: &Value, deci
     }
     let publish = (verdict == "pass" && (truthy(result.get("matched")) || result.get("reason").and_then(Value::as_str) == Some(UNCHECKED)))
         .then(|| publish_job(state, job, &vote, &decision.agreed));
-    let details = validations::pack_details(result.get("urls"));
+    let details =
+        if kind_of(job) == EMBED { validations::pack_details(Some(&checked_texts(job, &result))) } else { validations::pack_details(result.get("urls")) };
     let settled = {
         let (task, job, decision, report, publish) = (task_id.to_string(), job.clone(), decision.clone(), report.clone(), publish.clone());
         state

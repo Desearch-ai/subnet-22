@@ -253,3 +253,49 @@ async fn an_embed_task_dropped_after_its_last_attempt_hands_its_pages_back_to_th
     assert_eq!(given, planned);
     assert_eq!(h.rival.post("/v1/tasks/claim", embed_claim()).await.unwrap()["refusal"]["code"], "QUEUE_EMPTY");
 }
+
+#[tokio::test]
+async fn the_explorer_shows_an_embed_task_s_checked_texts_and_counts_each_kind_apart() {
+    let h = embedding().await;
+    embed_round(&h, input()).await;
+    let task = embed_task(&h, &h.miner).await;
+    let live = h.public("/v1/live").await.1;
+    assert_eq!((live["uploads"][0]["kind"].clone(), live["uploads"][0]["texts"].clone()), (json!("embed"), json!(6)));
+
+    h.opened(Some(&h.validator), None).await;
+    let keys: Vec<String> = pages().as_array().unwrap().iter().map(|p| p["page_key"].as_str().unwrap().to_string()).collect();
+    let mut score = embed_score("pass", "matched", "ok");
+    score["samples"] = json!([
+        {"text_id": format!("{}#page", keys[0]), "outcome": "matched", "similarity": 0.9999},
+        {"text_id": format!("{}#p2", keys[1]), "outcome": "matched", "similarity": 0.99995},
+    ]);
+    h.validator.post(&format!("/v1/validation/{}/score", task_id(&task)), score).await.unwrap();
+
+    let view = h.view(&task_id(&task)).await;
+    assert_eq!(view["urls"], json!([]));
+    assert_eq!(
+        view["texts"],
+        json!([
+            {"text_id": format!("{}#page", keys[0]), "kind": "page", "index": 0, "url": "https://site0.example/story/0", "outcome": "matched", "similarity": 0.9999},
+            {"text_id": format!("{}#p2", keys[1]), "kind": "passage", "index": 2, "url": "https://site1.example/story/1", "outcome": "matched", "similarity": 0.99995},
+        ])
+    );
+
+    let hotkey = h.miner.ss58();
+    let row = |list: &Value| list["miners"].as_array().unwrap().iter().find(|m| m["hotkey"] == hotkey.as_str()).cloned();
+    let embed_miners = h.public("/v1/miners?kind=embed").await.1;
+    let embedded = row(&embed_miners).expect("the embed miner is listed");
+    assert_eq!((embed_miners["kind"].clone(), embedded["credited"].clone(), embedded["share"].clone()), (json!("embed"), json!(5400), json!(1.0)));
+    assert_eq!(row(&h.public("/v1/miners").await.1).map_or(json!(0), |m| m["tasks"].clone()), json!(0), "crawl lists no embed work");
+
+    let (crawl, embed) = (h.public("/v1/overview").await.1, h.public("/v1/overview?kind=embed").await.1);
+    assert_eq!((crawl["kind"].clone(), crawl["window"]["tasks"].clone()), (json!("crawl"), json!(0)));
+    assert_eq!((embed["kind"].clone(), embed["window"]["tasks"].clone(), embed["window"]["credited"].clone()), (json!("embed"), json!(1), json!(5400)));
+    assert_eq!(h.public("/v1/overview?kind=search").await.0, 422);
+
+    let miner = h.public(&format!("/v1/miners/{hotkey}")).await.1;
+    assert_eq!((miner["kinds"]["embed"]["window"]["credited"].clone(), miner["kinds"]["embed"]["share"].clone()), (json!(5400), json!(1.0)));
+    assert_eq!((miner["kinds"]["crawl"]["window"]["tasks"].clone(), miner["window"]["tasks"].clone()), (json!(0), json!(0)));
+    let series = h.public("/v1/stats/series?kind=embed&bucket_minutes=5&buckets=2").await.1;
+    assert_eq!(series["points"].as_array().unwrap().iter().map(|p| p["tasks"].as_i64().unwrap()).sum::<i64>(), 1);
+}

@@ -13,7 +13,7 @@ use redis::AsyncCommands;
 use rusqlite::Connection;
 use serde_json::{json, Map, Value};
 
-use crate::budgets::{self, CRAWL, HOUR, SHARE_WINDOW_H};
+use crate::budgets::{self, CRAWL, EMBED, HOUR, SHARE_WINDOW_H};
 use crate::http::{Answer, ApiError, Query};
 use crate::lifecycle::{kind_of, text};
 use crate::models::Invalid;
@@ -200,18 +200,19 @@ fn number(value: &Value) -> f64 {
     value.as_f64().unwrap_or(0.0)
 }
 
-fn miner_rows_at(conn: &Connection, since: f64, until: f64) -> Result<Vec<Map<String, Value>>> {
-    let totals = validations::miner_totals(conn, since, until)?;
-    let budgets: BTreeMap<String, budgets::MinerBudget> = budgets::all(conn, CRAWL)?.into_iter().map(|b| (b.hotkey.clone(), b)).collect();
-    let locked = budgets::lockouts(conn, CRAWL, now())?;
-    let coverage = budgets::coverage_report(conn, SHARE_WINDOW_H, until)?;
-    let shares = budgets::shares(conn, SHARE_WINDOW_H, until)?.remove(CRAWL).unwrap_or_default();
+fn miner_rows_at(conn: &Connection, since: f64, until: f64, kind: &str) -> Result<Vec<Map<String, Value>>> {
+    let totals = validations::miner_totals(conn, since, until, kind)?;
+    let budgets: BTreeMap<String, budgets::MinerBudget> = budgets::all(conn, kind)?.into_iter().map(|b| (b.hotkey.clone(), b)).collect();
+    let locked = budgets::lockouts(conn, kind, now())?;
+    // Coverage counts assigned URLs, so only crawl has one.
+    let coverage = if kind == CRAWL { budgets::coverage_report(conn, SHARE_WINDOW_H, until)? } else { BTreeMap::new() };
+    let shares = budgets::shares(conn, SHARE_WINDOW_H, until)?.remove(kind).unwrap_or_default();
     let hotkeys: BTreeSet<&String> = totals.keys().chain(budgets.keys()).collect();
     let mut rows = Vec::with_capacity(hotkeys.len());
     for hotkey in hotkeys {
         let budget = match budgets.get(hotkey) {
             Some(budget) => budget.clone(),
-            None => budgets::get(conn, hotkey, CRAWL)?,
+            None => budgets::get(conn, hotkey, kind)?,
         };
         let mut row = Map::new();
         row.insert("hotkey".into(), hotkey.clone().into());
@@ -271,14 +272,14 @@ fn validator_rows_at(conn: &Connection, since: f64, until: f64, last_seen: &Hash
 }
 
 /// Hotkeys on the subnet now; deregistered ones drop out once the metagraph is known.
-async fn miner_rows(state: &Arc<State>, hours: i64) -> Result<Value, ApiError> {
+async fn miner_rows(state: &Arc<State>, hours: i64, kind: &'static str) -> Result<Value, ApiError> {
     let until = visible(state);
-    let mut rows = state.reader.read(move |conn| miner_rows_at(conn, until - hours as f64 * HOUR, until)).await?;
+    let mut rows = state.reader.read(move |conn| miner_rows_at(conn, until - hours as f64 * HOUR, until, kind)).await?;
     rows.retain(|row| row.get("hotkey").and_then(Value::as_str).is_some_and(|hotkey| state.registry.lists(hotkey)));
     let mut counts = redis::pipe();
     for row in &rows {
         let hotkey = row.get("hotkey").and_then(Value::as_str).unwrap_or_default();
-        counts.scard(inflight_key(CRAWL, hotkey)).scard(waiting_key(CRAWL, hotkey));
+        counts.scard(inflight_key(kind, hotkey)).scard(waiting_key(kind, hotkey));
     }
     let counts: Vec<i64> = if rows.is_empty() { Vec::new() } else { counts.query_async(&mut state.redis.clone()).await.map_err(anyhow::Error::from)? };
     let mut out = Vec::with_capacity(rows.len());
@@ -307,8 +308,8 @@ async fn validator_rows(state: &Arc<State>, hours: i64) -> Result<Value, ApiErro
         .into())
 }
 
-async fn cached_miners(state: &Arc<State>, hours: i64) -> Result<Value, ApiError> {
-    state.cache.get_or(format!("miners:{hours}"), || miner_rows(state, hours)).await
+async fn cached_miners(state: &Arc<State>, hours: i64, kind: &'static str) -> Result<Value, ApiError> {
+    state.cache.get_or(format!("miners:{hours}:{kind}"), || miner_rows(state, hours, kind)).await
 }
 
 async fn cached_validators(state: &Arc<State>, hours: i64) -> Result<Value, ApiError> {
@@ -319,13 +320,19 @@ fn hours(query: &Query) -> Result<i64, ApiError> {
     int_param(query, "hours", SHARE_WINDOW_H, 1, MAX_WINDOW_H)
 }
 
-pub async fn overview(Shared(state): Shared<Arc<State>>, QueryParams(query): QueryParams<Query>) -> Answer {
-    let hours = hours(&query)?;
-    Ok(Json(state.cache.get_or(format!("overview:{hours}"), || overview_of(&state, hours)).await?))
+/// The kind of task a page is about, crawl unless asked.
+fn kind(query: &Query) -> Result<&'static str, ApiError> {
+    let asked = literal_param(query, "kind", &KINDS)?;
+    Ok(KINDS.into_iter().find(|kind| asked.as_deref() == Some(*kind)).unwrap_or(CRAWL))
 }
 
-async fn overview_of(state: &Arc<State>, hours: i64) -> Result<Value, ApiError> {
-    let miners = cached_miners(state, hours).await?;
+pub async fn overview(Shared(state): Shared<Arc<State>>, QueryParams(query): QueryParams<Query>) -> Answer {
+    let (hours, kind) = (hours(&query)?, kind(&query)?);
+    Ok(Json(state.cache.get_or(format!("overview:{hours}:{kind}"), || overview_of(&state, hours, kind)).await?))
+}
+
+async fn overview_of(state: &Arc<State>, hours: i64, kind: &'static str) -> Result<Value, ApiError> {
+    let miners = cached_miners(state, hours, kind).await?;
     let validators = cached_validators(state, hours).await?;
     let worked: Vec<&Value> = miners.as_array().into_iter().flatten().filter(|m| number(&m["tasks"]) != 0.0).collect();
     let validators: Vec<&Value> = validators.as_array().into_iter().flatten().collect();
@@ -346,6 +353,7 @@ async fn overview_of(state: &Arc<State>, hours: i64) -> Result<Value, ApiError> 
     Ok(json!({
         "as_of": visible(state),
         "window_hours": hours,
+        "kind": kind,
         "queue": queue,
         "claimed": claimed,
         "validating": state.validation.depth(redis).await? + state.validation.seeding(redis).await?,
@@ -361,7 +369,7 @@ async fn overview_of(state: &Arc<State>, hours: i64) -> Result<Value, ApiError> 
 pub async fn series(Shared(state): Shared<Arc<State>>, QueryParams(query): QueryParams<Query>) -> Answer {
     let bucket_minutes = int_param(&query, "bucket_minutes", 60, i64::MIN, i64::MAX)?;
     let buckets = int_param(&query, "buckets", 24, 1, MAX_BUCKETS)?;
-    let (miner, validator) = (id_param(&query, "miner")?, id_param(&query, "validator")?);
+    let (miner, validator, kind) = (id_param(&query, "miner")?, id_param(&query, "validator")?, kind(&query)?);
     if !BUCKET_MINUTES.contains(&bucket_minutes) {
         return Err(ApiError::status(422, "bucket_minutes is one of (5, 15, 60)"));
     }
@@ -369,7 +377,7 @@ pub async fn series(Shared(state): Shared<Arc<State>>, QueryParams(query): Query
         return Err(ApiError::status(422, "pass a miner or a validator, not both"));
     }
     let bucket_s = bucket_minutes * 60;
-    let key = format!("series:{bucket_s}:{buckets}:{miner:?}:{validator:?}");
+    let key = format!("series:{bucket_s}:{buckets}:{kind}:{miner:?}:{validator:?}");
     let made = state
         .cache
         .get_or(key, || async {
@@ -387,9 +395,9 @@ pub async fn series(Shared(state): Shared<Arc<State>>, QueryParams(query): Query
                         None => (
                             ["tasks", "pass", "fail", "void", "returned", "credited"],
                             if bucket_s == HOUR as i64 {
-                                validations::hour_series(conn, since, until, miner.as_deref())?
+                                validations::hour_series(conn, since, until, kind, miner.as_deref())?
                             } else {
-                                validations::task_series(conn, bucket_s, since, until, miner.as_deref())?
+                                validations::task_series(conn, bucket_s, since, until, kind, miner.as_deref())?
                             },
                         ),
                     };
@@ -426,10 +434,14 @@ async fn in_progress(state: &Arc<State>) -> Result<Value, ApiError> {
         let Some(holder) = pair[0].clone() else { continue };
         let payload: Value = pair[1].as_deref().and_then(|raw| serde_json::from_str(raw).ok()).unwrap_or_else(|| json!({}));
         let urls = payload.get("url_count").cloned().unwrap_or_else(|| payload["urls"].as_array().map_or(0, Vec::len).into());
-        let claim = json!({"task_id": task_id, "kind": kind_of(&payload), "miner": holder, "urls": urls, "expires_at": expires_at});
+        let texts = payload.get("texts").cloned().unwrap_or(Value::Null);
+        let claim = json!({"task_id": task_id, "kind": kind_of(&payload), "miner": holder, "urls": urls, "texts": texts, "expires_at": expires_at});
         claims.push(with_uids(state, claim.as_object().cloned().unwrap_or_default()));
     }
-    let active: BTreeSet<String> = state.validation.active(redis, now()).await?.into_iter().collect();
+    let mut active: HashMap<&str, BTreeSet<String>> = HashMap::new();
+    for kind in KINDS {
+        active.insert(kind, state.validation.active_for(redis, kind, now()).await?.into_iter().collect());
+    }
     let mut waiting = state.validation.open_ids(redis, LIVE_ROWS).await?;
     if waiting.len() < LIVE_ROWS as usize {
         waiting.extend(state.validation.seeding_ids(redis, LIVE_ROWS - waiting.len() as isize).await?);
@@ -448,12 +460,14 @@ async fn in_progress(state: &Arc<State>) -> Result<Value, ApiError> {
     for ((task_id, job), mut voters) in waiting.into_iter().zip(jobs).zip(voting) {
         let Some(job) = job.as_deref().and_then(|raw| serde_json::from_str::<Value>(raw).ok()) else { continue };
         voters.sort();
-        let electorate: BTreeSet<&String> = active.iter().chain(voters.iter()).collect();
+        let kind = kind_of(&job);
+        let electorate: BTreeSet<&String> = active.get(kind).into_iter().flatten().chain(voters.iter()).collect();
         let upload = json!({
             "task_id": task_id,
-            "kind": kind_of(&job),
+            "kind": kind,
             "miner": job["miner"],
             "urls": job["urls"].as_array().map_or(0, Vec::len),
+            "texts": job.get("texts").cloned().unwrap_or(Value::Null),
             "completed_at": job["completed_at"],
             "deadline": job.get("deadline").cloned().unwrap_or(Value::Null),
             "voters": voters.iter().map(|v| json!({"hotkey": v, "uid": uid_of(state, Some(v))})).collect::<Vec<_>>(),
@@ -475,8 +489,8 @@ pub async fn live(Shared(state): Shared<Arc<State>>) -> Answer {
 }
 
 pub async fn miners(Shared(state): Shared<Arc<State>>, QueryParams(query): QueryParams<Query>) -> Answer {
-    let hours = hours(&query)?;
-    Ok(Json(json!({"window_hours": hours, "miners": cached_miners(&state, hours).await?})))
+    let (hours, kind) = (hours(&query)?, kind(&query)?);
+    Ok(Json(json!({"window_hours": hours, "kind": kind, "miners": cached_miners(&state, hours, kind).await?})))
 }
 
 pub async fn miner(Shared(state): Shared<Arc<State>>, Path(hotkey): Path<String>) -> Answer {
@@ -503,8 +517,11 @@ pub async fn miner(Shared(state): Shared<Arc<State>>, Path(hotkey): Path<String>
     let (totals, shares, verdicts, pools_of, coverage, transitions) = state
         .reader
         .read(move |conn| {
+            let since = until - SHARE_WINDOW_H as f64 * HOUR;
+            let totals: BTreeMap<&str, BTreeMap<String, Value>> =
+                KINDS.into_iter().map(|kind| Ok((kind, validations::miner_totals(conn, since, until, kind)?))).collect::<Result<_>>()?;
             Ok((
-                validations::miner_totals(conn, until - SHARE_WINDOW_H as f64 * HOUR, until)?,
+                totals,
                 budgets::shares(conn, SHARE_WINDOW_H, until)?,
                 validations::verdicts(conn, Some(&asked))?,
                 budgets::pools_of(conn, &asked)?,
@@ -513,11 +530,16 @@ pub async fn miner(Shared(state): Shared<Arc<State>>, Path(hotkey): Path<String>
             ))
         })
         .await?;
-    let mut window: Map<String, Value> = MINER_TOTALS.iter().map(|name| (name.to_string(), Value::from(0))).collect();
-    if let Some(Value::Object(total)) = totals.get(&hotkey) {
-        window.extend(total.clone());
-    }
-    window.remove("last_scored_at");
+    let window_of = |kind: &str| -> Value {
+        let mut window: Map<String, Value> = MINER_TOTALS.iter().map(|name| (name.to_string(), Value::from(0))).collect();
+        if let Some(Value::Object(total)) = totals.get(kind).and_then(|totals| totals.get(&hotkey)) {
+            window.extend(total.clone());
+        }
+        window.remove("last_scored_at");
+        Value::Object(window)
+    };
+    let share_of = |kind: &str| shares.get(kind).and_then(|s| s.get(&hotkey)).copied().unwrap_or(0.0);
+    let kinds: Map<String, Value> = KINDS.into_iter().map(|kind| (kind.to_string(), json!({"window": window_of(kind), "share": share_of(kind)}))).collect();
     let known = verdicts.values().map(|v| v.as_i64().unwrap_or(0)).sum::<i64>() != 0 || !pools_of.is_empty();
     let mut page = json!({
         "known": known,
@@ -525,8 +547,9 @@ pub async fn miner(Shared(state): Shared<Arc<State>>, Path(hotkey): Path<String>
         "pools": pools,
         "coverage": coverage.get(&hotkey).cloned().unwrap_or_else(|| json!({})),
         "verdicts": verdicts,
-        "share": shares.get(CRAWL).and_then(|s| s.get(&hotkey)).copied().unwrap_or(0.0),
-        "window": window,
+        "share": share_of(CRAWL),
+        "window": window_of(CRAWL),
+        "kinds": kinds,
         "transitions": transitions,
     });
     let mut keys = with_keys(&state, Map::from_iter([("hotkey".to_string(), Value::from(hotkey.as_str()))]), &hotkey).as_object().cloned().unwrap_or_default();
@@ -613,14 +636,17 @@ pub async fn task(Shared(state): Shared<Arc<State>>, Path(task_id): Path<String>
     let scored = uploads.first().cloned();
     let mut page = with_uids(&state, task_state(&state, &task_id, scored.as_ref()).await?).as_object().cloned().unwrap_or_default();
     let Some(scored) = scored else {
-        page.extend([("uploads".to_string(), json!([])), ("votes".to_string(), json!([])), ("urls".to_string(), json!([]))]);
+        page.extend([("uploads", json!([])), ("votes", json!([])), ("urls", json!([])), ("texts", json!([]))].map(|(name, empty)| (name.to_string(), empty)));
         return Ok(Json(Value::Object(page)));
     };
     let (asked, key) = (task_id.clone(), text(&Value::Object(scored.clone()), "upload_key").to_string());
     let (votes, urls) = state.reader.read(move |conn| Ok((validations::votes_on(conn, &asked, &key)?, validations::urls(conn, &asked)?))).await?;
     page.insert("uploads".into(), uploads.into_iter().map(Value::Object).collect::<Vec<_>>().into());
     page.insert("votes".into(), votes.into_iter().map(|v| with_uids(&state, v.as_object().cloned().unwrap_or_default())).collect::<Vec<_>>().into());
+    // An embed check keeps its sampled texts where a crawl check keeps its URLs.
+    let (urls, texts) = if text(&Value::Object(scored), "kind") == EMBED { (json!([]), urls) } else { (urls, json!([])) };
     page.insert("urls".into(), urls);
+    page.insert("texts".into(), texts);
     Ok(Json(Value::Object(page)))
 }
 
@@ -647,9 +673,13 @@ async fn task_state(state: &State, task_id: &str, scored: Option<&Map<String, Va
 /// Makes the pages the overview opens with again, so a visitor never waits for them to be made.
 pub async fn warm(state: &Arc<State>) -> Result<(), ApiError> {
     let hours = SHARE_WINDOW_H;
-    state.cache.refresh(format!("miners:{hours}"), || miner_rows(state, hours)).await?;
+    for kind in KINDS {
+        state.cache.refresh(format!("miners:{hours}:{kind}"), || miner_rows(state, hours, kind)).await?;
+    }
     state.cache.refresh(format!("validators:{hours}"), || validator_rows(state, hours)).await?;
-    state.cache.refresh(format!("overview:{hours}"), || overview_of(state, hours)).await?;
+    for kind in KINDS {
+        state.cache.refresh(format!("overview:{hours}:{kind}"), || overview_of(state, hours, kind)).await?;
+    }
     state.cache.refresh("live".into(), || in_progress(state)).await
 }
 

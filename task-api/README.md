@@ -270,14 +270,14 @@ Anyone can read these; the [UI](../ui/README.md) is built on them.
 
 | Endpoint | |
 | --- | --- |
-| `GET /v1/overview` | the queue, the work in progress and the totals of the window |
-| `GET /v1/live` | the tasks miners hold now and the uploads being checked, with who has voted |
-| `GET /v1/stats/series` | tasks, verdicts and rows per 5, 15 or 60 minutes; for everyone, one `miner` or one `validator` |
+| `GET /v1/overview` | the queue of each kind, the work in progress and the window's totals for one `kind` (`crawl` unless asked) |
+| `GET /v1/live` | the tasks miners hold now and the uploads being checked, with their size and who has voted |
+| `GET /v1/stats/series` | tasks, verdicts and credited work of one `kind` per 5, 15 or 60 minutes; for everyone, one `miner` or one `validator` |
 | `GET /v1/tasks` | checked tasks with the rows each paid, newest first; filter with `miner`, `validator`, `verdict`, `kind`, `since` |
-| `GET /v1/tasks/{task_id}` | one task's state and result, every validator's vote, and per-URL detail for 2 days |
+| `GET /v1/tasks/{task_id}` | one task's state and result, every validator's vote, and for 2 days its per-URL detail (crawl) or sampled texts with their similarity (embed) |
 | `GET /v1/votes` | every validator's vote on every checked upload; filter with `validator`, `miner`, `task_id`, `verdict`, `agreed` |
-| `GET /v1/miners` | every miner's budget, coverage, share and results in the window |
-| `GET /v1/miners/{hotkey}` | a miner's budget and its history, coverage, share, pass and fail counts and lockout |
+| `GET /v1/miners` | every miner's budget, coverage, share and results in the window, for one `kind` (`crawl` unless asked) |
+| `GET /v1/miners/{hotkey}` | a miner's budget of each kind and its history, coverage, each kind's share and results, and lockouts |
 | `GET /v1/miners/{hotkey}/verdicts` | signed by that miner: its own finalized uploads, without the ledger delay |
 | `GET /v1/validators` | every validator's votes, how often it agreed with the final result, and its standing |
 | `GET /v1/validators/{hotkey}` | the same for one validator |
