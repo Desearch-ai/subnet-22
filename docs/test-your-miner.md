@@ -1,9 +1,15 @@
-# Test Your Miner Locally
+# 🧪 Test Your Miner Locally
+
+- [Requirements](#requirements)
+- [🌐 Test crawling](#-test-crawling)
+- [🧠 Test embedding](#-test-embedding)
+- [📊 See it in the browser](#-see-it-in-the-browser)
+- [🛑 Stopping](#-stopping)
 
 The sandbox runs a task API, storage and a validator on your own machine, with the same code as
-mainnet. Point your miner at it to see how your uploads are scored before you register: which pages
-passed, which did not and why, and how many rows you would be paid. It tests the crawl miner, and in
-[embed mode](#test-your-embed-miner) the embed miner.
+mainnet. Point your miner at it to see how your uploads are scored before you register: what passed,
+what did not and why, and what you would be paid. It tests the crawl miner, and in embed mode the embed
+miner.
 
 It needs no registration and no TAO: any wallet works, registered or not.
 
@@ -18,14 +24,16 @@ It needs no registration and no TAO: any wallet works, registered or not.
   python3 -m pip install -r sandbox/requirements.txt
   ```
 
-- For crawl tasks, a [ScrapingDog](https://www.scrapingdog.com/) API key. The local validator checks
+- For crawling, a [ScrapingDog](https://www.scrapingdog.com/) API key. The local validator checks
   pages the same way a mainnet validator does, including its ScrapingDog fallback for pages its own
   address cannot load. Set `SCRAPINGDOG_API_KEY` in your shell, or in `neurons/validators/.env` or
-  `neurons/miners/.env`. Embed mode needs no key.
-- For embed mode, your embedding model server: vLLM on an NVIDIA GPU, as
-  [Embedding tasks](./embedding-tasks.md) describes.
+  `neurons/miners/.env`.
+- For embedding, your model server: vLLM on an NVIDIA GPU, as
+  [Miner → Embedding](./miner.md#5-embedding) shows. Embed mode needs no ScrapingDog key.
 
-## 1. Start the sandbox
+## 🌐 Test crawling
+
+### 1. Start the sandbox
 
 From the repository root:
 
@@ -48,7 +56,7 @@ Task API: http://127.0.0.1:18080
 
 Leave it running.
 
-## 2. Start your miner
+### 2. Start your crawl miner
 
 In a second terminal, start your miner the way you would on mainnet, pointed at the sandbox:
 
@@ -59,7 +67,7 @@ TASK_API_URL=http://127.0.0.1:18080 python3 -m neurons.miners.miner
 `TASK_API_URL` can also go in `neurons/miners/.env`. Add your `PROXY_URLS` as you would on mainnet.
 Add `LOG_LEVEL=DEBUG` to see every page as the miner fetches it.
 
-## 3. Read the results
+### 3. Read the results
 
 **In the miner's terminal**, one line per task and a summary every minute:
 
@@ -92,38 +100,19 @@ summary: 2 tasks waiting, 1 uploads being checked
 
 How the paid rows follow from the checked pages is explained in [Emission](./emission.md).
 
-## 4. See it in the browser
-
-The same results are available as a web page. It needs [Node.js](https://nodejs.org/) 22 or newer.
-In a third terminal:
-
-```bash
-cd ui
-npm install
-npm run dev
-```
-
-Open <http://localhost:5173>. It reads the sandbox's task API and shows the tasks waiting and in
-progress, every finalized task with how long your miner took to crawl it, the validator's vote, and
-for each checked page what your miner uploaded next to what the validator fetched. Your miner's
-page shows its budget, coverage and the rows that counted.
-
-If you started the sandbox with another `--port`, set `VITE_TASK_API_URL` to that address in
-`ui/.env.local`.
-
-## Options
+### Crawl options
 
 | Option | Default | |
 | --- | --- | --- |
 | `--task-size` | `100` | URLs per task. Use `1000` for mainnet-sized tasks, to check that your miner finishes one within the 3-minute claim. |
 | `--urls FILE` | the public dataset | Serve your own URLs: a parquet file with a `url` column, or a text file with one URL per line. |
-| `--port` | `18080` | Port of the local task API; Redis and storage use the next two ports, and embed mode's model server the third. |
+| `--port` | `18080` | Port of the local task API; Redis and storage use the next two ports. |
 
 By default the URLs come from the public dataset
 [desearch/sn22-sandbox-urls](https://huggingface.co/datasets/desearch/sn22-sandbox-urls): about a
 million pages from news and general sites, downloaded one file at a time as the queue needs them.
 
-## Test your embed miner
+## 🧠 Test embedding
 
 Embed mode hands out [embed tasks](./embedding-tasks.md) made from a fixed set of texts, each stored
 with its reference vector from the model. The validator checks your vectors against those reference
@@ -132,8 +121,8 @@ your model server gives the vectors validators expect before you register.
 
 ### 1. Start your model server
 
-Start vLLM on your GPU exactly as [Embedding tasks](./embedding-tasks.md#the-model) shows: that
-revision, in float16.
+Start vLLM on your GPU exactly as [Miner → Embedding](./miner.md#5-embedding) shows: that revision,
+in float16.
 
 ### 2. Start the sandbox in embed mode
 
@@ -193,7 +182,7 @@ summary: 12 tasks waiting, 0 uploads being checked
 | --- | --- | --- |
 | `--task-size` | `100` | Pages per task. Use `1000` for mainnet-sized tasks, to check that your miner uploads one within 5 minutes. A task also stays within mainnet's 3 million characters. |
 | `--embed-set DIR` | the public set | A folder holding a test set in the public set's layout. |
-| `--port` | `18080` | As in crawl mode. |
+| `--port` | `18080` | Port of the local task API; Redis, storage and the sandbox's model server use the next three ports. |
 
 By default the texts come from the public dataset
 [desearch/sn22-sandbox-embed](https://huggingface.co/datasets/desearch/sn22-sandbox-embed):
@@ -201,7 +190,29 @@ English Wikipedia articles made into page texts and passages by the same code th
 embed tasks, each with its vector from the model in float32. It is downloaded once; the sandbox hands
 its texts out again and again, each time as new inputs.
 
-## Stopping
+## 📊 See it in the browser
+
+The same results are available as a web page, for both kinds of task. It needs
+[Node.js](https://nodejs.org/) 22 or newer. While the sandbox runs, in another terminal:
+
+```bash
+cd ui
+npm install
+npm run dev
+```
+
+Open <http://localhost:5173>. It reads the sandbox's task API and shows the tasks waiting and in
+progress, every finalized task with how long your miner took, and the validator's vote:
+
+- for a crawl task, each checked page with what your miner uploaded next to what the validator fetched;
+- for an embed task, each checked text with its page and its similarity to the reference vector.
+
+Your miner's page shows its budget, results and share for each kind.
+
+If you started the sandbox with another `--port`, set `VITE_TASK_API_URL` to that address in
+`ui/.env.local`.
+
+## 🛑 Stopping
 
 Press `Ctrl-C` in the sandbox's terminal. It stops the validator and the task API, removes its
 Docker containers, and deletes the uploaded files, so download one from its link while the sandbox

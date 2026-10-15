@@ -89,7 +89,7 @@ cp neurons/validators/.env.template neurons/validators/.env
 Nothing else is configurable.
 
 **Your own model server** runs the same `vllm serve` command miners use, from
-[Embedding tasks](./embedding-tasks.md), on an NVIDIA GPU with 16 GB of memory or more. The validator
+[Miner → Embedding](./miner.md#5-embedding), on an NVIDIA GPU with 16 GB of memory or more. The validator
 checks which models the server answers to, and waits for it when it is not up yet.
 
 **Sandboxed checks:** uploads are checked in a separate, memory-capped process.

@@ -20,7 +20,7 @@ burned too.
   - The miner runs Desearch's embedding model on its own GPU and uploads one vector per text within
     5 minutes.
   - Validators embed a sample of the texts again and compare.
-  - [Embedding tasks](./embedding-tasks.md) describes the model, the files and the check.
+  - [Embedding tasks](./embedding-tasks.md) describes the model, what a task holds and the check.
 
 The crawl miner (`neurons.miners.miner`) and the embed miner (`neurons.miners.embed`) run under the same
 hotkey, on one machine or two, and either can run alone. Each claims only its own kind of task. A miner
@@ -45,14 +45,15 @@ and what raises your share.
 
 ## 🔧 Setup
 
+Steps 1 to 3 are the same for both kinds of task. Then set up crawling (step 4), embedding (step 5) or
+both.
+
 ### Requirements
 
 - Python 3.10 or newer, and [PM2](https://pm2.io/docs/runtime/guide/installation/)
 - A hotkey registered on netuid 22 (netuid 41 on testnet)
-- For crawling, proxies: sites refuse repeated requests from one address, and a page a validator can
-  load but you could not is not paid
-- For embedding, an NVIDIA GPU with 16 GB of memory or more (24 GB recommended) running vLLM; see
-  [Embedding tasks](./embedding-tasks.md)
+- For crawling: proxies (see step 4)
+- For embedding: an NVIDIA GPU with 16 GB of memory or more, 24 GB recommended (see step 5)
 
 ### 1. Install
 
@@ -77,7 +78,8 @@ btcli subnets register --netuid 22 --wallet miner --wallet-hotkey default --netw
 cp neurons/miners/.env.template neurons/miners/.env
 ```
 
-The miners read `neurons/miners/.env` on start; variables already set in the shell win.
+Both miners read `neurons/miners/.env` on start; variables already set in the shell win. These settings
+apply to both:
 
 | Variable | Default | |
 | --- | --- | --- |
@@ -85,6 +87,16 @@ The miners read `neurons/miners/.env` on start; variables already set in the she
 | `WALLET_HOTKEY` | `default` | hotkey the miner signs its requests with |
 | `WALLET_PATH` | `~/.bittensor/wallets` | |
 | `TASK_API_URL` | `https://api-22.desearch.ai` | the task API |
+| `MAX_TASKS` | 4 | most tasks held at once; a miner also claims only what its measured pace can finish in time, within its budget |
+| `RECEIPTS_FILE` | none | file each signed receipt is appended to, as proof of what you were served |
+
+### 4. Crawling
+
+Sites refuse repeated requests from one address, and a page a validator can load but you could not is
+not paid, so a crawl miner needs proxies.
+
+| Variable | Default | |
+| --- | --- | --- |
 | `PROXY_URLS` | none | comma-separated `http://user:pass@host:port`, rotated per request |
 | `CRAWL_CONCURRENCY` | 32 | pages fetched at once |
 | `CRAWL_CONCURRENCY_PER_DOMAIN` | 8 | pages fetched at once from one domain, so a site does not block you |
@@ -92,16 +104,11 @@ The miners read `neurons/miners/.env` on start; variables already set in the she
 | `CRAWL_TIMEOUT` | 30 | seconds for each later try |
 | `CRAWL_ATTEMPTS` | 3 | tries per page from your own addresses before ScrapingDog or an error row |
 | `CRAWL_USER_AGENT` | a desktop Chrome string | |
-| `MAX_TASKS` | 4 | most tasks held at once; each miner also claims only what its measured pace can finish in time, within its budget |
 | `EXTRACTION_THREADS` | 4 | pages turned into text at once; each holds a whole page in memory |
 | `SCRAPINGDOG_API_KEY` | none | optional: a page your address cannot load (refused, blocked, timed out) is retried through ScrapingDog |
 | `SCRAPINGDOG_CONCURRENCY` | 8 | ScrapingDog requests at once; they wait outside the crawl slots, so your own fetches keep going |
-| `RECEIPTS_FILE` | none | file each signed receipt is appended to, as proof of what you were served |
-| `EMBED_MODEL` | `desearch-4b-v1` | the model your embedding server runs |
-| `EMBED_API_URL` | `http://127.0.0.1:8000/v1/embeddings` | your embedding server |
-| `EMBED_API_KEY` | none | if your embedding server requires one |
 
-**Crawl timing:**
+**Timing:**
 - A crawl task must be uploaded within 3 minutes of claiming it.
 - The miner tries every page once with a short timeout, then retries slow and failed pages behind the
   untried ones.
@@ -117,32 +124,69 @@ The miners read `neurons/miners/.env` on start; variables already set in the she
 - Private addresses are refused only on direct connections, so use proxies that reach the public
   internet only.
 
-### 4. Run
-
-From the repository root, the crawl miner:
+**Run** from the repository root:
 
 ```bash
 pm2 start python3 --name desearch_miner -- -m neurons.miners.miner
 ```
 
-The embed miner, after starting the model server as
-[Embedding tasks](./embedding-tasks.md) shows:
+### 5. Embedding
+
+An embed miner needs an NVIDIA GPU with 16 GB of memory or more (24 GB recommended), serving
+[the model](./embedding-tasks.md#the-model) with [vLLM](https://docs.vllm.ai).
+
+**Start the model server:**
+
+```bash
+vllm serve desearch/Desearch-Embedding-4B \
+  --revision 12e5c6910d49dd5534e8a77a6fa7d8a057bd534a \
+  --served-model-name desearch-4b-v1 \
+  --runner pooling --dtype float16 \
+  --no-enable-chunked-prefill --max-num-batched-tokens 16384 \
+  --port 8000
+```
+
+vLLM downloads the weights (about 8 GB) from Hugging Face the first time it starts; no account or token
+is needed. To fetch them ahead of time:
+
+```bash
+hf download desearch/Desearch-Embedding-4B --revision 12e5c6910d49dd5534e8a77a6fa7d8a057bd534a
+```
+
+Run it as given: that revision, in float16. bfloat16, 8-bit or 4-bit weights, another revision or a
+shorter input limit give different vectors, and those fail the check.
+
+**Settings:**
+
+| Variable | Default | |
+| --- | --- | --- |
+| `EMBED_MODEL` | `desearch-4b-v1` | the model your server runs |
+| `EMBED_API_URL` | `http://127.0.0.1:8000/v1/embeddings` | your model server |
+| `EMBED_API_KEY` | none | if your server requires one |
+
+The miner embeds its tasks one after another and claims another only when its measured pace still
+finishes every held one within 5 minutes.
+
+**Run** from the repository root:
 
 ```bash
 pm2 start python3 --name desearch_embed_miner -- -m neurons.miners.embed
 ```
 
-It waits for the server to answer to the model's name before it claims anything.
+It waits for the server to answer to the model's name before it claims anything, and stops with an
+error when the server runs a different model.
 
 ### 🧪 Test your miner locally
 
-Before registering, run your miner against a local task API and validator that use the same code as
-mainnet, and see exactly how your uploads are scored: [Test your miner locally](./test-your-miner.md).
+Before registering, run your crawl or embed miner against a local task API and validator that use the
+same code as mainnet, and see exactly how your uploads are scored:
+[Test your miner locally](./test-your-miner.md).
 
 ### 📈 Monitor
 
 ```bash
 pm2 logs desearch_miner
+pm2 logs desearch_embed_miner
 curl -s https://api-22.desearch.ai/v1/miners/<hotkey>
 curl -s "https://api-22.desearch.ai/v1/tasks?miner=<hotkey>"
 ```
