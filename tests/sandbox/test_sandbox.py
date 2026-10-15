@@ -78,6 +78,7 @@ def test_every_container_shares_the_storage_network_and_has_a_memory_cap(
     assert "--port" in runs[local.REDIS] and "19001" in runs[local.REDIS]
     api = runs[local.API]
     assert api[api.index("--user") + 1] == f"{local.os.getuid()}:{local.os.getgid()}"
+    assert "127.0.0.1:19000/v1/ping" in api[api.index("--health-cmd") + 1]
     assert f"{tmp_path / 'api'}:/data" in api
     assert "TASK_API_LISTEN=0.0.0.0:19000" in api and api[-1] == "image:tag"
 

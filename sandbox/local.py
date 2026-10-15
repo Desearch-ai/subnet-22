@@ -178,6 +178,9 @@ def start_api(image: str, env: dict[str, str], data: Path) -> None:
             f"{os.getuid()}:{os.getgid()}",
             "-v",
             f"{data}:/data",
+            # The image's own health check probes the production port.
+            "--health-cmd",
+            f"curl -fsS http://127.0.0.1:{env['TASK_API_LISTEN'].rsplit(':', 1)[1]}/v1/ping || exit 1",
             *[
                 flag
                 for name, value in env.items()
