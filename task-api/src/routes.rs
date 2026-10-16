@@ -261,9 +261,16 @@ pub async fn complete(
         return Err(ApiError::status(409, "you do not hold this claim"));
     }
     let lock = hold_completion(&state, &task_id, &who.hotkey).await?;
-    let outcome = finish_completion(&state, &task_id, &report, &who, arrived).await;
-    state.delete(&lock).await?;
-    outcome.map(Json)
+    // Detached so a miner that times out can't cancel it and leave the lock to block its retries.
+    let finishing = tokio::spawn(async move {
+        let outcome = finish_completion(&state, &task_id, &report, &who, arrived).await;
+        state.delete(&lock).await?;
+        outcome
+    });
+    match finishing.await {
+        Ok(outcome) => outcome.map(Json),
+        Err(error) => Err(anyhow::anyhow!("completion task failed: {error}").into()),
+    }
 }
 
 async fn finish_completion(state: &State, task_id: &str, report: &CompleteBody, who: &Caller, arrived: f64) -> Result<Value, ApiError> {

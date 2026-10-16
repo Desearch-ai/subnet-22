@@ -94,6 +94,21 @@ async fn a_repeated_completion_gets_the_first_ones_answer() {
 }
 
 #[tokio::test]
+async fn a_miner_that_gives_up_mid_copy_gets_the_completion_on_its_retry() {
+    let h = Harness::start().await;
+    let (task, report) = uploaded(&h).await;
+    let id = task_id(&task);
+    slow_copies(&h, Duration::from_secs(1));
+    let path = format!("/v1/tasks/{id}/complete");
+    assert!(tokio::time::timeout(Duration::from_millis(200), h.miner.post(&path, report.clone())).await.is_err());
+    let retried = tokio::time::timeout(Duration::from_secs(5), h.miner.post(&path, report)).await.expect("the retry answers before the lock would lapse");
+    assert_eq!(retried.unwrap()["status"], "open_for_validation");
+    let lock: Option<String> = h.redis.clone().get(format!("completing:{id}")).await.unwrap();
+    assert_eq!(lock, None);
+    assert_eq!(strikes(&h).await, 0);
+}
+
+#[tokio::test]
 async fn an_abandon_during_a_completion_waits_and_costs_nothing() {
     let h = Harness::start().await;
     let (task, report) = uploaded(&h).await;
