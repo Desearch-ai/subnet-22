@@ -23,16 +23,16 @@ built from. This page explains how those parts fit together.
 | --- | --- | --- |
 | Desearch Bot | Reads the robots.txt and sitemaps of every domain on its list on a schedule, keeps every URL they list, and fills the task API's queue with new, changed and retried pages as it has room. | [`desearch-bot/`](../desearch-bot/) |
 | Task API | Packs URLs into tasks, hands them to miners, draws which finished uploads validators check, works out what each miner is owed from their reports and the validators' results, and publishes every miner's share. | [`task-api/app/`](../task-api/app/) |
-| Miners | Fetch the pages of a task and extract their text; once embedding opens, turn text into vectors on a GPU. | [`neurons/miners/`](../neurons/miners/) |
+| Miners | Fetch the pages of a task and extract their text, and turn text into vectors on a GPU. | [`neurons/miners/`](../neurons/miners/) |
 | Validators | Read each drawn upload from storage, check a sample of its pages against the live page, report pass or fail, and set weights from every miner's logged uploads at the rate their own checks found. | [`neurons/validators/`](../neurons/validators/) |
-| Publisher | Writes passed pages and vectors to permanent storage, takes withdrawn pages down, and reports what became of every URL to the bot. | [`task-api/publisher/`](../task-api/publisher/) |
-| Engine | Builds the search index from the published pages and vectors, and serves search. | [`engine/`](../engine/) |
+| Publisher | Writes passed pages and vectors to permanent storage, takes withdrawn pages down, and reports what became of every URL to the bot. | [`publisher/`](../publisher/) |
 | Shared package | Fetching, text extraction and embedding formats, so miners and validators run the same code. | [`desearch/`](../desearch/) |
 
 The task API keeps its live queues in Redis and its records (rounds, the signed log, the validators'
-results, budgets and what each miner is owed) in SQLite. Files live in two Cloudflare R2 buckets:
-uploads in `subnet-22`, which is temporary and readable by anyone at `https://r2.desearch.ai`, and
-published pages in `desearch-pages`, which is permanent.
+results, budgets and what each miner is owed) in SQLite. Files live in two buckets: uploads in
+`subnet-22`, a Cloudflare R2 bucket that is temporary and readable by anyone at
+`https://r2.desearch.ai`, and published pages in `desearch-pages`, which keeps the latest version of
+every page.
 
 ## A crawl task, start to finish
 
@@ -71,23 +71,25 @@ published pages in `desearch-pages`, which is permanent.
    two failed checks among its last 10 cost its last 24 hours of pay and a 48-hour lockout. The
    exact rules are in [the task API's scoring section](../task-api/README.md#scoring).
 7. **Publish.** The publisher writes each passed page to the pages bucket, only when its text
-   changed and never over a newer fetch, leaving out the rows the checks turned down, takes
-   withdrawn pages down, and the engine indexes them. What became of every URL goes back to the bot
+   changed and never over a newer fetch, leaving out the rows the checks turned down, and takes
+   withdrawn pages down. What became of every URL goes back to the bot
    through the outcome feed, so failed and withdrawn pages are sent again.
 
 ## An embed task, start to finish
 
-Embedding is built and switched off until Desearch's own embedding model ships; see
+Embedding is switched off until its inputs and the publishing of vectors below are running; see
 [Embedding tasks](./embedding-tasks.md).
 
-1. **Input.** When the publisher writes new or changed pages, it cuts them into the texts the index
-   uses (a head, the full text and each passage) and hands them to the task API as a batch.
-2. **Claim.** A miner receives the batch and the name of the model to run.
+1. **Input.** A planner follows the published pages and batches those whose text has no vector yet:
+   a page text for each, and passages for long articles. It hands the task API a batch when the API
+   has room.
+2. **Claim.** A miner running that model receives the batch.
 3. **Embed.** The miner runs the model on its GPU and uploads one vector per text.
-4. **Check.** A validator checks every vector is present and well formed, and recomputes a random
-   sample through a hosted service running the same model. Every sample must match.
-5. **Publish and index.** The vectors are published next to their pages, and the engine picks them
-   up within a minute, without a restart.
+4. **Check.** Validators check every vector is present and well formed, and get a random sample
+   embedded again, on their own model server or on Desearch's through the task API. Every sample must
+   match.
+5. **Publish and index.** The publisher writes the passed vectors, each with its page and text, to the
+   pages bucket under `vectors/<model>/` for the index.
 
 ## How the work stays honest
 
@@ -124,9 +126,11 @@ subnet-22 bucket (temporary, objects expire after a day, readable by anyone)
   log/uploads/      every completed upload with the counts its miner reported, signed, for validators to count
   outcomes/         what became of every URL, for the bot
   embed-inputs/     texts waiting to be embedded
-desearch-pages bucket (permanent)
-  changes/        every new, changed or removed page with its full text, numbered in order
-  reports/        every final result with the pages that were checked
+desearch-pages bucket
+  changes/        every new, changed or removed page with its full text, numbered in order, kept three days
+  current/        the latest version of every page, compacted from changes/ into 1,024 shards
+  rounds/         each round's URL lists, kept three days
+  reports/        every final result with the pages that were checked, kept 30 days
   vectors/        verified vectors, by model
 ```
 

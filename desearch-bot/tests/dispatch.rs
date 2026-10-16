@@ -4,8 +4,9 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
+use desearch_bot::allowed::{self, Allowed};
 use desearch_bot::buckets::{bucket_of, BucketStore, Buckets, Changes, Resources};
-use desearch_bot::dispatch::{allot, batch_id, interleave, settle, shares, slots, split, Dispatcher, HourlyCap, Progress, Want};
+use desearch_bot::dispatch::{allot, batch_id, interleave, settle, shares, slots, split, Dispatcher, HourlyCap, Pace, Progress, Want};
 use desearch_bot::hotkey::{self, Hotkey};
 use desearch_bot::outcomes::{self, Next, OutcomeFeed, OutcomeRow};
 use desearch_bot::ready::{Order, Outcome, PageOutcome, Pick, Reason, SentPage, BACKOFF, CHANGED, FRESH, LANES, NO_OUTCOME, REQUEUED};
@@ -93,6 +94,34 @@ fn new_pages_join_their_ready_list_newest_first_without_junk() {
     let listing = store.record_listing("example.com", 7, vec![page("a", 11), page("b", 20), page("c", 5)], 300).unwrap();
     assert_eq!((listing.moved, listing.ready), (1, 0), "a page never sent is on its list already");
     assert_eq!(store.ready_count("example.com").unwrap(), 3);
+}
+
+#[test]
+fn pages_robots_txt_disallows_leave_the_ready_list_unsent() {
+    let dir = Dir::new("ready-robots");
+    let store = open(&dir);
+    let blog = urls::parse("https://blog.example.com/members/x", "example.com").unwrap();
+    let pages = vec![page("news/a", 10), page("members/b", 20), page("members/join", 30), (blog, 40, false)];
+    store.record_listing("example.com", 7, pages, 100).unwrap();
+    let mut record = records::new_domain(Some(1), Some("com"), &[], State::Active, None, None);
+    record.insert("rules".into(), serde_json::json!({"allow": ["/members/join"], "disallow": ["/members/"]}));
+    let mut changes = Changes::default();
+    changes.domain("example.com", &record);
+    store.write(changes).unwrap();
+
+    let mut sent: Vec<String> = take(&store, 10).into_iter().map(|p| p.url).collect();
+    sent.sort();
+    assert_eq!(sent, ["https://blog.example.com/members/x", "https://example.com/members/join", "https://example.com/news/a"]);
+    assert_eq!(store.ready_count("example.com").unwrap(), 3, "a disallowed page leaves its list; the picks wait to be marked sent");
+
+    store.record_listing("example.com", 7, vec![page("news/c", 50)], 200).unwrap();
+    record.remove("rules");
+    record.insert("allows".into(), false.into());
+    let mut changes = Changes::default();
+    changes.domain("example.com", &record);
+    store.write(changes).unwrap();
+    let sent: Vec<String> = take(&store, 10).into_iter().map(|p| p.url).collect();
+    assert_eq!(sent, ["https://blog.example.com/members/x"], "a domain blocked before its rules were kept sends only other hosts' pages");
 }
 
 #[test]
@@ -308,6 +337,9 @@ fn outcome_files_parse_and_land_on_their_pages() {
 struct FakeApi {
     room: i64,
     fail_next: usize,
+    /// Batches with more URLs are refused as too large, and any batch holding `refused` as invalid.
+    max_urls: usize,
+    refused: Option<String>,
     rooms: usize,
     enqueued: Vec<(HashMap<String, String>, Vec<u8>)>,
     files: HashMap<String, Vec<u8>>,
@@ -354,12 +386,20 @@ async fn serve_api(listener: TcpListener, api: Arc<Mutex<FakeApi>>) {
                         (200, format!(r#"{{"room_tasks":{},"queue":0,"unrevealed":0,"refusing":false}}"#, api.room))
                     }
                     "/v1/admin/enqueue" => {
-                        api.enqueued.push((headers, body));
-                        if api.fail_next > 0 {
-                            api.fail_next -= 1;
-                            (500, r#"{"detail":"try again"}"#.to_string())
+                        let sent: Value = serde_json::from_slice(&body).unwrap_or_default();
+                        let urls: Vec<&str> = sent["urls"].as_array().into_iter().flatten().filter_map(|u| u["url"].as_str()).collect();
+                        if api.max_urls > 0 && urls.len() > api.max_urls {
+                            (413, r#"{"detail":"too large"}"#.to_string())
+                        } else if api.refused.as_deref().is_some_and(|bad| urls.contains(&bad)) {
+                            (422, r#"{"detail":"not a URL"}"#.to_string())
                         } else {
-                            (200, r#"{"round_id":"r1","batches":1}"#.to_string())
+                            api.enqueued.push((headers, body));
+                            if api.fail_next > 0 {
+                                api.fail_next -= 1;
+                                (500, r#"{"detail":"try again"}"#.to_string())
+                            } else {
+                                (200, r#"{"round_id":"r1","batches":1}"#.to_string())
+                            }
                         }
                     }
                     _ => match api.files.get(path) {
@@ -528,4 +568,169 @@ async fn the_outcome_feed_tells_a_number_not_written_yet_from_one_that_is_gone()
     assert_eq!(feed.latest().await.unwrap(), Some(7), "where a bot reading the feed for the first time starts");
     assert!(matches!(feed.fetch(5).await.unwrap(), Next::Missing), "later numbers exist, so 5 is gone or late");
     assert!(matches!(feed.fetch(8).await.unwrap(), Next::Wait), "8 is simply not written yet");
+}
+
+
+#[test]
+fn the_domain_list_takes_names_or_hosts_and_is_read_again_when_its_file_changes() {
+    let names = allowed::parse(br#"["a.com", {"host": "b.org", "rank": 2}, 7]"#).unwrap();
+    assert_eq!(names, ["a.com".to_string(), "b.org".to_string()].into_iter().collect());
+    assert!(allowed::parse(b"{}").is_err());
+    assert!(Allowed::all().allows("anything.net"));
+
+    let dir = Dir::new("allowed");
+    std::fs::create_dir_all(&dir.0).unwrap();
+    let path = dir.0.join("domains.json");
+    std::fs::write(&path, r#"["a.com"]"#).unwrap();
+    let list = Allowed::from_file(&path).unwrap();
+    assert!(list.allows("a.com") && !list.allows("b.org"));
+    assert!(!list.reload().unwrap(), "an unchanged file is not read again");
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    std::fs::write(&path, r#"["b.org"]"#).unwrap();
+    assert!(list.reload().unwrap());
+    assert!(list.allows("b.org") && !list.allows("a.com"));
+}
+
+#[test]
+fn with_a_domain_list_only_listed_domains_get_ready_pages_and_the_backfill_jumps_the_rest() {
+    let dir = Dir::new("ready-allowed");
+    {
+        let db = rocksdb::DB::open_default(&dir.0).unwrap();
+        for domain in ["aaa.com", "example.com", "example.com.au", "zzz.org"] {
+            for i in 0..50 {
+                let record = Record { sitemap_id: 1, lastmod: 10, first_seen: 50, last_seen: 50, flags: HTTPS, ..Record::default() };
+                db.put([b"U", format!("{domain}\0{domain}/p{i:02}").as_bytes()].concat(), record.pack()).unwrap();
+            }
+        }
+    }
+    let store = open(&dir);
+    store.allow(Allowed::of(["example.com"]));
+
+    let mut state = store.backfill_state(1000).unwrap();
+    let mut steps = 0;
+    while !state.done {
+        store.backfill_step(&mut state, 20).unwrap();
+        steps += 1;
+    }
+    assert_eq!(store.ready_count("example.com").unwrap(), 50);
+    for other in ["aaa.com", "example.com.au", "zzz.org"] {
+        assert_eq!(store.ready_count(other).unwrap(), 0, "{other} is not listed");
+    }
+    assert!(steps <= 7, "unlisted domains are jumped, not read: {steps} steps");
+
+    let pages = (0..5).map(|i| (urls::parse(&format!("https://zzz.org/new{i}"), "zzz.org").unwrap(), 200, false)).collect();
+    store.record_listing("zzz.org", 2, pages, 300).unwrap();
+    assert_eq!(store.ready_count("zzz.org").unwrap(), 0, "a sitemap read of an unlisted domain queues nothing");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_dispatcher_sends_only_listed_domains_even_with_pages_queued_before_the_list() {
+    let dir = Dir::new("dispatcher-allowed");
+    let mut owned = vec![bucket_of("example.com"), bucket_of("example.org")];
+    owned.sort_unstable();
+    owned.dedup();
+    let buckets = Arc::new(Buckets::open(&dir.0, &owned, &resources()).unwrap());
+    for host in ["example.com", "example.org"] {
+        let store = buckets.store(host);
+        let mut changes = Changes::default();
+        changes.domain(host, &records::new_domain(Some(5), Some("com"), &[], State::Active, None, None));
+        store.write(changes).unwrap();
+        let pages = (0..10).map(|i| (urls::parse(&format!("https://{host}/p{i}"), host).unwrap(), 100 + i, false)).collect();
+        store.record_listing(host, 1, pages, 100).unwrap();
+    }
+    buckets.allow(&Allowed::of(["example.org"]));
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let fake = Arc::new(Mutex::new(FakeApi { room: 1, ..FakeApi::default() }));
+    tokio::spawn(serve_api(listener, fake.clone()));
+    let api = TaskApi::new(&base, Hotkey::from_uri("//test").unwrap()).unwrap();
+    let mut dispatcher = Dispatcher::load(buckets.clone(), api, 100, shares(50, 10), Arc::new(Progress::default())).await.unwrap();
+
+    assert_eq!(dispatcher.pass(1_759_400_000).await.unwrap(), 10);
+    let body: Value = serde_json::from_slice(&fake.lock().unwrap().enqueued[0].1).unwrap();
+    assert!(body["urls"].as_array().unwrap().iter().all(|u| u["host"] == "example.org"));
+    assert_eq!(buckets.store("example.com").ready_count("example.com").unwrap(), 10, "kept, not sent");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn several_batches_go_out_together_and_only_a_failed_one_is_sent_again() {
+    let dir = Dir::new("dispatcher-waves");
+    let host = "example.net";
+    let buckets = Arc::new(Buckets::open(&dir.0, &[bucket_of(host)], &resources()).unwrap());
+    let store = buckets.store(host);
+    let mut changes = Changes::default();
+    changes.domain(host, &records::new_domain(Some(5), Some("net"), &[], State::Active, None, None));
+    store.write(changes).unwrap();
+    let pages = (0..25_000).map(|i| (urls::parse(&format!("https://{host}/p{i:05}"), host).unwrap(), 100 + i, false)).collect();
+    store.record_listing(host, 1, pages, 100).unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let fake = Arc::new(Mutex::new(FakeApi { room: 30, fail_next: 1, ..FakeApi::default() }));
+    tokio::spawn(serve_api(listener, fake.clone()));
+    let dispatcher = |progress: Arc<Progress>| Dispatcher::load(buckets.clone(), TaskApi::new(&base, Hotkey::from_uri("//test").unwrap()).unwrap(), 1_000_000, shares(50, 10), progress);
+
+    let now = 1_759_400_000;
+    let progress = Arc::new(Progress::default());
+    let first = dispatcher(progress.clone()).await.unwrap().pass(now).await.unwrap();
+    let failed = fake.lock().unwrap().enqueued[0].1.clone();
+    assert_eq!(fake.lock().unwrap().enqueued.len(), 3, "three batches in one wave");
+    assert!(first == 15_000 || first == 20_000, "all but the failed batch went: {first}");
+
+    let second = dispatcher(progress.clone()).await.unwrap().pass(now + 15).await.unwrap();
+    let api = fake.lock().unwrap();
+    assert_eq!(api.enqueued[3].1, failed, "after a restart the failed batch went again unchanged, first");
+    assert_eq!(first + second, 25_000);
+    assert_eq!(buckets.store(host).ready_count(host).unwrap(), 0);
+}
+
+#[test]
+fn the_pace_grows_steadily_and_saves_up_only_five_minutes() {
+    let mut pace = Pace::new(3_600_000, 1000);
+    assert_eq!(pace.allowance(1000), 300_000, "five minutes' worth to start");
+    pace.spend(300_000);
+    assert_eq!(pace.allowance(1060), 60_000, "a minute later, a minute's worth");
+    assert_eq!(pace.allowance(1000 + 7200), 300_000, "an idle hour saves no more than five minutes");
+    assert_eq!(Pace::new(0, 1000).allowance(2000), u64::MAX, "no pace set sends whatever there is room for");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_batch_refused_as_too_large_or_invalid_goes_in_halves_and_only_the_page_at_fault_is_set_aside() {
+    let dir = Dir::new("dispatcher-refused");
+    let host = "example.net";
+    let buckets = Arc::new(Buckets::open(&dir.0, &[bucket_of(host)], &resources()).unwrap());
+    let store = buckets.store(host);
+    let mut changes = Changes::default();
+    changes.domain(host, &records::new_domain(Some(5), Some("net"), &[], State::Active, None, None));
+    store.write(changes).unwrap();
+    let pages = (0..40).map(|i| (urls::parse(&format!("https://{host}/p{i:02}"), host).unwrap(), 100 + i, false)).collect();
+    store.record_listing(host, 1, pages, 100).unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let bad = format!("https://{host}/p07");
+    let fake = Arc::new(Mutex::new(FakeApi { room: 1, max_urls: 16, refused: Some(bad.clone()), ..FakeApi::default() }));
+    tokio::spawn(serve_api(listener, fake.clone()));
+    let progress = Arc::new(Progress::default());
+    let api = TaskApi::new(&base, Hotkey::from_uri("//test").unwrap()).unwrap();
+    let mut dispatcher = Dispatcher::load(buckets.clone(), api, 1_000_000, shares(50, 10), progress.clone()).await.unwrap();
+
+    let now = 1_759_400_000;
+    assert_eq!(dispatcher.pass(now).await.unwrap(), 39, "everything but the bad page went in the same pass");
+    let taken: Vec<String> = fake
+        .lock()
+        .unwrap()
+        .enqueued
+        .iter()
+        .flat_map(|(_, body)| {
+            serde_json::from_slice::<Value>(body).unwrap()["urls"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|u| u["url"].as_str().unwrap().to_string())
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    assert_eq!((taken.len(), taken.contains(&bad)), (39, false));
+    assert_eq!(progress.set_aside.load(std::sync::atomic::Ordering::Relaxed), 1);
+    assert_eq!(buckets.store(host).ready_count(host).unwrap(), 0, "the bad page left the ready list too");
+    assert_eq!(dispatcher.pass(now + 15).await.unwrap(), 0);
 }

@@ -12,7 +12,7 @@ We plan to expand beyond these tasks. Possible later programs include model trai
 
 Embedding miners and validators checking embeddings will need GPU capacity. The model and tested hardware requirements are not final. Do not buy equipment based on this proposal.
 
-Crawling replaces AI and X search as SN22's work. Validators move over automatically through `run.sh`; miners switch to the crawl miner ([miner setup](../../miner-setup.md)). No other program is open yet.
+Crawling replaces AI and X search as SN22's work. Validators move over automatically through `run.sh`; miners switch to the crawl miner ([miner](../../miner.md)). No other program is open yet.
 
 Read the [Desearch 2.0 overview](../README.md) for the technical plan, incentives and participation details.
 

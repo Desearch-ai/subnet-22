@@ -1,6 +1,6 @@
 import { Fragment, useState } from 'react'
-import type { TaskUrl, UrlOutcome } from '@/api/types'
-import { Badge, type Tone } from '@/components/ui/Badge'
+import type { TaskUrl } from '@/api/types'
+import { Badge } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
 import { ScrollValue } from '@/components/ui/ScrollValue'
 import { SegmentedControl } from '@/components/ui/SegmentedControl'
@@ -8,19 +8,10 @@ import { EmptyState } from '@/components/ui/States'
 import { Table, Td, Th } from '@/components/ui/Table'
 import { cn } from '@/lib/cn'
 import { EMPTY_VALUE, formatInt, formatScore } from '@/lib/format'
-import { URL_OUTCOME_LABEL } from '@/lib/labels'
+import { OutcomeBadge } from './OutcomeBadge'
 import { UrlDetail } from './UrlDetail'
 
 type UrlFilter = 'all' | 'checked' | 'mismatched' | 'errors'
-
-const OUTCOME_TONE: Record<UrlOutcome, Tone> = {
-  matched: 'pass',
-  mismatched: 'fail',
-  unverifiable: 'void',
-  errors_confirmed: 'neutral',
-  errors_unconfirmed: 'fail',
-  not_fetched: 'neutral',
-}
 
 const FILTER_TEST: Record<UrlFilter, (row: TaskUrl) => boolean> = {
   all: () => true,
@@ -85,7 +76,7 @@ function UrlRow({ row, open, onToggle }: UrlRowProps) {
         <Td numeric>{formatInt(row.text_chars)}</Td>
         <Td>
           {row.outcome ? (
-            <Badge tone={OUTCOME_TONE[row.outcome]}>{URL_OUTCOME_LABEL[row.outcome]}</Badge>
+            <OutcomeBadge outcome={row.outcome} />
           ) : (
             <span className="text-ink-faint text-xs">
               {row.sampled ? EMPTY_VALUE : 'not checked'}

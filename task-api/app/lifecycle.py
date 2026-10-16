@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import json
+import math
 import logging
 import time
 import uuid
@@ -39,6 +40,9 @@ EMBED_FIELDS = ("model", "texts", "chars", "input_key", "input_sha256", "pages")
 EMBED_ROUND_INPUTS = 200
 FINALIZE_LOCK_S = 300
 SETTLE_AT_ONCE = 16
+SLOW_ENQUEUE_S = 2.0
+# A check takes about a minute; an upload with less time left would be finalized before its votes land.
+CHECKABLE_LEFT_S = 180
 UNCHECKED = "unchecked"
 REPORTED_ROWS = "reported_rows"
 # Uploads with no counts in their report, or from a locked-out hotkey, are all checked.
@@ -80,10 +84,20 @@ def signed_manifest(core, job: dict) -> dict:
 async def publish_open(core, now: float | None = None) -> bool:
     """Writes the open uploads, with their signed manifests, where validators read them."""
     uploads = []
-    for task_id in await core.validation.open_ids():
-        job = await core.validation.job(task_id)
-        if job is not None and job.get("manifest"):
-            uploads.append(job["manifest"])
+    at = now or time.time()
+    open_ids = await core.validation.open_ids()
+    known = core.open_manifests
+    for task_id in set(known) - set(open_ids):
+        del known[task_id]
+    for task_id in open_ids:
+        if task_id not in known:
+            job = await core.validation.job(task_id)
+            if job is None or not job.get("manifest"):
+                continue
+            known[task_id] = (job["manifest"], job.get("deadline", math.inf))
+        manifest, deadline = known[task_id]
+        if deadline - at >= CHECKABLE_LEFT_S:
+            uploads.append(manifest)
     listed = tuple(m["key"] for m in uploads)
     if listed == core.open_listed:
         return False
@@ -101,12 +115,29 @@ async def publish_open(core, now: float | None = None) -> bool:
     return True
 
 
-async def open_round(core, urls: list[rounds.Url]):
+def pack_round(urls: list[rounds.Url], target: int) -> rounds.Round:
     # Two spellings of one page would race for the same key.
     unique = list({canonicalize(u.url): u for u in urls}.values())
+    return rounds.open_round(unique, target)
+
+
+async def open_round(core, urls: list[rounds.Url]):
+    started = time.monotonic()
     target = await core.seeds.target_block()
-    round_ = await asyncio.to_thread(rounds.open_round, unique, target)
+    blocked = time.monotonic()
+    round_ = await asyncio.to_thread(pack_round, urls, target)
+    packed = time.monotonic()
     await core.db(core.rounds.save, round_)
+    took = time.monotonic() - started
+    if took > SLOW_ENQUEUE_S:
+        log.warning(
+            "enqueueing %d urls took %.1fs (block %.1fs, pack %.1fs, save %.1fs)",
+            len(urls),
+            took,
+            blocked - started,
+            packed - blocked,
+            time.monotonic() - packed,
+        )
     return round_
 
 
@@ -151,14 +182,9 @@ async def open_embed_rounds(core) -> rounds.Round | None:
 
 
 async def reveal_pending(core) -> int:
-    pending = await core.db(core.rounds.unrevealed)
-    if not pending:
-        return 0
     current = await core.seeds.current_block()
     filled = 0
-    for round_ in pending:
-        if round_.seed_block > current:
-            continue
+    for round_ in await core.db(core.rounds.unrevealed, current):
         seed = await core.seeds.seed_for(round_.seed_block)
         if seed is None:
             continue
@@ -218,17 +244,21 @@ async def finish_task(core, round_id: str, task_id: str) -> None:
     await core.redis.srem(open_round_key(round_id), task_id)
 
 
-async def reclaim_expired(core) -> list[tuple[str, str]]:
+async def reclaim_expired(core, now: float | None = None) -> list[tuple[str, str]]:
     reclaimed = []
-    for task_id in await core.tasks[CRAWL].expired():
+    for task_id in await core.tasks[CRAWL].expired(now):
         payload = await core.payload(task_id) or {}
         kind = payload.get("kind", CRAWL)
-        found = await core.tasks[kind].reclaim(task_id)
+        expiry = await core.tasks[kind].claim_expiry(task_id)
+        found = await core.tasks[kind].reclaim(task_id, now)
         if found is None:
             continue
         holder, seq = found
+        # Claimed before this process started: the miner may have tried to finish while we were down.
+        forgiven = expiry is not None and expiry <= core.started_at + core.tasks[kind].claim_ttl
         if holder:
-            await core.db(lapse, core, holder, task_id, payload, "claim_expired")
+            if not forgiven:
+                await core.db(lapse, core, holder, task_id, payload, "claim_expired")
             await core.record(
                 payload.get("round_id") or core.current.get(kind, ""),
                 holder,
@@ -236,7 +266,7 @@ async def reclaim_expired(core) -> list[tuple[str, str]]:
                 "reclaimed",
                 seq,
                 task_id=task_id,
-                cause="expired",
+                cause="restart" if forgiven else "expired",
             )
         reclaimed.append((task_id, holder))
     return reclaimed
@@ -403,7 +433,11 @@ async def pick_reason(core, task_id: str, job: dict, seed: str) -> str | None:
         await sampling.uploads_last_hour(core.redis, miner),
         await core.db(core.checks.passes, miner),
         await core.db(core.checks.recheck_left, miner),
-        core.check_share,
+        sampling.budget_share(
+            core.check_share,
+            core.checks_per_hour,
+            await sampling.uploads_last_hour(core.redis, sampling.ALL),
+        ),
     )
 
 

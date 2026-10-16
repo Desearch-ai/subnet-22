@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react'
-import type { Vote } from '@/api/types'
+import type { Kind, Vote } from '@/api/types'
 import { Badge } from '@/components/ui/Badge'
 import { Identifier } from '@/components/ui/Identifier'
 import { EmptyState } from '@/components/ui/States'
@@ -19,30 +19,56 @@ interface Metric {
   render?: (vote: Vote) => ReactNode
 }
 
-const METRICS: readonly Metric[] = [
+const SHARED_METRICS: readonly Metric[] = [
   {
     label: 'Result',
     valueOf: (vote) => vote.verdict,
     render: (vote) => <StatusBadge status={vote.verdict} />,
   },
   { label: 'Reason', valueOf: (vote) => vote.reason },
-  { label: 'Rows returned', valueOf: (vote) => vote.returned },
-  {
-    label: 'Checked pages',
-    hint: 'Pages this validator fetched again',
-    valueOf: (vote) => vote.sampled,
-  },
-  { label: 'Matched', valueOf: (vote) => vote.matched },
-  { label: 'Mismatched', valueOf: (vote) => vote.mismatched },
-  { label: 'Unverifiable', valueOf: (vote) => vote.unverifiable },
-  { label: 'Errors confirmed', valueOf: (vote) => vote.errors_confirmed },
-  { label: 'Errors not confirmed', valueOf: (vote) => vote.errors_unconfirmed },
-  {
-    label: 'Rows counted',
-    hint: 'Rows this validator would pay for',
-    valueOf: (vote) => vote.credited,
-  },
 ]
+
+const KIND_METRICS: Record<Kind, readonly Metric[]> = {
+  crawl: [
+    ...SHARED_METRICS,
+    { label: 'Rows returned', valueOf: (vote) => vote.returned },
+    {
+      label: 'Checked pages',
+      hint: 'Pages this validator fetched again',
+      valueOf: (vote) => vote.sampled,
+    },
+    { label: 'Matched', valueOf: (vote) => vote.matched },
+    { label: 'Mismatched', valueOf: (vote) => vote.mismatched },
+    { label: 'Unverifiable', valueOf: (vote) => vote.unverifiable },
+    { label: 'Errors confirmed', valueOf: (vote) => vote.errors_confirmed },
+    { label: 'Errors not confirmed', valueOf: (vote) => vote.errors_unconfirmed },
+    {
+      label: 'Rows counted',
+      hint: 'Rows this validator would pay for',
+      valueOf: (vote) => vote.credited,
+    },
+  ],
+  embed: [
+    ...SHARED_METRICS,
+    { label: 'Texts returned', valueOf: (vote) => vote.returned },
+    {
+      label: 'Checked texts',
+      hint: 'Texts this validator embedded again',
+      valueOf: (vote) => vote.sampled,
+    },
+    {
+      label: 'Matched',
+      hint: 'Checked texts that reached a similarity of 0.999',
+      valueOf: (vote) => vote.matched,
+    },
+    { label: 'Mismatched', valueOf: (vote) => vote.mismatched },
+    {
+      label: 'Characters counted',
+      hint: 'Characters this validator would pay for',
+      valueOf: (vote) => vote.credited,
+    },
+  ],
+}
 
 function VoteHeading({ vote }: { vote: Vote }) {
   return (
@@ -95,7 +121,12 @@ function summarize(votes: readonly Vote[]): string {
   return `${voters} ${outcome} Values that differ from the deciding vote are marked.`
 }
 
-export function VotesComparison({ votes }: { votes: readonly Vote[] }) {
+interface VotesComparisonProps {
+  votes: readonly Vote[]
+  kind: Kind
+}
+
+export function VotesComparison({ votes, kind }: VotesComparisonProps) {
   if (votes.length === 0) {
     return <EmptyState title="No votes are recorded for this upload." />
   }
@@ -115,7 +146,7 @@ export function VotesComparison({ votes }: { votes: readonly Vote[] }) {
           </tr>
         </thead>
         <tbody>
-          {METRICS.map((metric) => (
+          {KIND_METRICS[kind].map((metric) => (
             <tr key={metric.label} className="[&:last-child>*]:border-b-0">
               <th
                 scope="row"

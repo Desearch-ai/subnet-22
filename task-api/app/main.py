@@ -13,6 +13,7 @@ from fastapi import Body, Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
+from redis import exceptions as redis_errors
 
 from . import lifecycle, logs, outcomes, queues, rounds, sampling, uploadlog
 from .auth import Authenticator, Caller, client_address
@@ -37,8 +38,15 @@ from .validations import (
 )
 
 DEFAULT_REDIS = "redis://localhost:6379/15"
+# Redis unreachable, restarting or not yet promoted: callers are told to come back instead of seeing errors.
+REDIS_DOWN = (redis_errors.ConnectionError, redis_errors.TimeoutError, redis_errors.ReadOnlyError)
+UNAVAILABLE_RETRY_S = 2
 JANITOR_INTERVAL_S = 1.0
 ROUNDS_INTERVAL_S = 5.0
+# A day after closing, a round keeps only each batch's URL count and hash, and a verdict drops its publish job.
+LISTS_KEEP_S = 86_400
+SEAL_ROUNDS = 20
+DROP_VERDICTS = 200
 COMPLETE_LOCK_S = 300
 COMPLETED_TTL_S = 900
 COMPLETE_WAIT_S = 20.0
@@ -62,6 +70,18 @@ RETRY_AFTER_S = {
 DEFAULT_ORIGINS = "http://localhost:5173,http://localhost:8081,http://127.0.0.1:5173,http://127.0.0.1:8081"
 
 log = logging.getLogger("task_api")
+
+
+def unavailable(request: Request) -> JSONResponse:
+    """A claim finds no tasks; anything else is asked to retry."""
+    if request.url.path == "/v1/tasks/claim":
+        refusal = {"code": "UNAVAILABLE", "inputs": {"retry_after": UNAVAILABLE_RETRY_S}}
+        return JSONResponse({"tasks": [], "refusal": refusal, "receipt": None})
+    return JSONResponse(
+        {"detail": "temporarily unavailable, retry"},
+        status_code=503,
+        headers={"Retry-After": str(UNAVAILABLE_RETRY_S)},
+    )
 
 
 def create_app(redis=None) -> FastAPI:
@@ -97,13 +117,16 @@ def create_app(redis=None) -> FastAPI:
 
     @app.middleware("http")
     async def limit_requests(request: Request, call_next):
-        if request.method == "GET":
-            is_log = request.url.path.startswith(logs.PATHS)
-            wait = await core.read_wait(client_address(request), is_log)
-        elif request.method == "POST":
-            wait = await core.write_wait(client_address(request))
-        else:
-            wait = None
+        try:
+            if request.method == "GET":
+                is_log = request.url.path.startswith(logs.PATHS)
+                wait = await core.read_wait(client_address(request), is_log)
+            elif request.method == "POST":
+                wait = await core.write_wait(client_address(request))
+            else:
+                wait = None
+        except REDIS_DOWN:
+            return unavailable(request)
         if wait is not None:
             return JSONResponse(
                 {"detail": "too many requests"},
@@ -111,6 +134,12 @@ def create_app(redis=None) -> FastAPI:
                 headers={"Retry-After": str(wait)},
             )
         return await call_next(request)
+
+    async def redis_down(request: Request, _: Exception) -> JSONResponse:
+        return unavailable(request)
+
+    for error in REDIS_DOWN:
+        app.add_exception_handler(error, redis_down)
 
     @app.exception_handler(logs.Busy)
     async def busy(_: Request, __: logs.Busy):
@@ -202,13 +231,17 @@ def create_app(redis=None) -> FastAPI:
             await core.validation.oldest_seeding_age(),
         )
         publishing = await core.publish.oldest_age()
-        if core.max_backlog and max(validating, publishing) > core.max_backlog:
+        waiting = await core.publish.waiting()
+        if core.publish_rate.overloaded(waiting) or (
+            core.max_backlog and max(validating, publishing) > core.max_backlog
+        ):
             refusal = {
                 "code": "VALIDATION_BACKLOG",
                 "inputs": {
                     "validation_s": validating,
                     "publish_s": publishing,
                     "limit_s": core.max_backlog,
+                    "publish_waiting": waiting,
                 },
             }
             return await _refused(core, round_id, who, refusal)
@@ -562,6 +595,15 @@ def create_app(redis=None) -> FastAPI:
         """How many tasks the queue can take now, for the bot that fills it."""
         depth = await core.tasks[CRAWL].depth()
         unrevealed = await core.db(core.rounds.unrevealed_tasks)
+        # Everything not yet published, so the queue fills only as fast as the publisher empties it.
+        in_system = (
+            depth
+            + unrevealed
+            + int(await core.redis.zcard(queues.CLAIMS))
+            + await core.validation.seeding()
+            + await core.validation.depth()
+            + await core.publish.waiting()
+        )
         refusing = core.max_backlog and (
             max(
                 await core.validation.oldest_age(),
@@ -573,9 +615,14 @@ def create_app(redis=None) -> FastAPI:
         return {
             "room_tasks": 0
             if refusing
-            else max(0, core.queue_target - depth - unrevealed),
+            else min(
+                max(0, core.queue_target - depth - unrevealed),
+                core.publish_rate.room(in_system),
+            ),
             "queue": depth,
             "unrevealed": unrevealed,
+            "in_system": in_system,
+            "published_per_min": round(core.publish_rate.per_second() * 60, 1),
             "refusing": bool(refusing),
         }
 
@@ -669,6 +716,7 @@ async def _janitor(core: State) -> None:
     rounds_at, logged_at, pruned_hour = 0.0, 0.0, None
     while True:
         try:
+            core.publish_rate.note(await core.publish.finished(), time.time())
             await lifecycle.reclaim_expired(core)
             await lifecycle.settle_seeded(core)
             await lifecycle.finalize_due(core)
@@ -680,6 +728,9 @@ async def _janitor(core: State) -> None:
                 await lifecycle.reveal_pending(core)
                 await lifecycle.close_finished(core)
                 await outcomes.fill_holes(core.storage, core.redis)
+                kept_after = time.time() - LISTS_KEEP_S
+                await core.db(core.rounds.seal_closed, kept_after, SEAL_ROUNDS)
+                await core.db(core.validations.drop_publish_copies, kept_after, DROP_VERDICTS)
                 rounds_at = time.monotonic()
             if time.monotonic() - logged_at >= UPLOAD_LOG_INTERVAL_S:
                 logged_at = time.monotonic()

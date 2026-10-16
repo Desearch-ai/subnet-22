@@ -6,6 +6,9 @@ import hashlib
 import time
 
 SHARE = 0.05
+# Drawn checks an hour across all miners, so validators keep up whatever the volume.
+CHECKS_PER_HOUR = 400
+ALL = "all"
 NEW_HOTKEY_PASSES = 10
 RECHECK_UPLOADS = 10
 NEW, RECHECK, DRAW = "new", "recheck", "draw"
@@ -39,9 +42,17 @@ def hour_of(at: float | None = None) -> int:
 
 
 async def note_upload(redis, hotkey: str, at: float | None = None) -> None:
-    key = f"uploads:{hotkey}:{hour_of(at)}"
-    if await redis.incr(key) == 1:
-        await redis.expire(key, 3 * HOUR)
+    for counted in (hotkey, ALL):
+        key = f"uploads:{counted}:{hour_of(at)}"
+        if await redis.incr(key) == 1:
+            await redis.expire(key, 3 * HOUR)
+
+
+def budget_share(share: float, per_hour: float, all_last_hour: float) -> float:
+    """The drawn share, lowered so all miners' draws together stay within the hourly budget."""
+    if per_hour <= 0:
+        return share
+    return min(share, per_hour / max(all_last_hour, 1.0))
 
 
 async def uploads_last_hour(redis, hotkey: str, now: float | None = None) -> float:

@@ -193,12 +193,16 @@ async def in_progress(core) -> dict:
     claimed = await core.redis.zrange(queues.CLAIMS, 0, LIVE_ROWS - 1, withscores=True)
     claims = []
     for task_id, expires_at in claimed:
+        holder = await core.claim_holder(task_id)
+        # Completed or taken back since the claims were read.
+        if holder is None:
+            continue
         payload = await core.payload(task_id) or {}
         claims.append(
             {
                 "task_id": task_id,
                 "kind": payload.get("kind", CRAWL),
-                "miner": await core.claim_holder(task_id),
+                "miner": holder,
                 "urls": payload.get("url_count", len(payload.get("urls", []))),
                 "expires_at": expires_at,
             }
@@ -206,7 +210,8 @@ async def in_progress(core) -> dict:
     uploads = []
     active = await core.validation.active()
     waiting = await core.validation.open_ids(LIVE_ROWS)
-    waiting += await core.validation.seeding_ids(LIVE_ROWS - len(waiting))
+    if len(waiting) < LIVE_ROWS:
+        waiting += await core.validation.seeding_ids(LIVE_ROWS - len(waiting))
     for task_id in waiting:
         job = await core.validation.job(task_id)
         if job is None:
@@ -230,6 +235,9 @@ async def in_progress(core) -> dict:
     return {
         "claims": [with_uids(core.registry, claim) for claim in claims],
         "uploads": [with_uids(core.registry, upload) for upload in uploads],
+        "claims_total": int(await core.redis.zcard(queues.CLAIMS)),
+        "uploads_total": await core.validation.depth()
+        + await core.validation.seeding(),
     }
 
 

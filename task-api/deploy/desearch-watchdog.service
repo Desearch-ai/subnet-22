@@ -1,0 +1,8 @@
+[Unit]
+Description=Posts crawl pipeline stalls to Discord
+After=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/desearch-watchdog.env
+ExecStart=/usr/bin/python3 /opt/desearch-watchdog/watchdog.py

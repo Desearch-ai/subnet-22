@@ -63,23 +63,29 @@ def test_a_pool_nobody_earned_goes_to_the_burn_hotkey():
     assert list(unknown_pool) == pytest.approx([0.0, 1.0])
 
 
-def test_the_burn_takes_its_part_and_crawling_all_of_the_rest():
-    assert (EMISSION_CONTROL_PERC, CRAWL_PERC, EMBED_PERC) == (0.7, 1.0, 0.0)
+def test_half_is_burned_and_the_rest_split_two_to_three_between_crawling_and_embedding():
+    assert (EMISSION_CONTROL_PERC, CRAWL_PERC, EMBED_PERC) == (0.5, 0.4, 0.6)
 
     weights = weights_from_shares(
         ["crawler", "embedder", BURN],
         {CRAWL_KIND: {"crawler": 1.0}, EMBED_KIND: {"embedder": 1.0}},
     )
 
-    assert list(weights) == pytest.approx([0.3, 0.0, 0.7])
+    assert list(weights) == pytest.approx([0.2, 0.3, 0.5])
+
+
+def test_an_embed_pool_nobody_earned_is_burned():
+    weights = weights_from_shares(["crawler", BURN], {CRAWL_KIND: {"crawler": 1.0}})
+
+    assert list(weights) == pytest.approx([0.2, 0.8])
 
 
 def test_changing_the_burn_alone_moves_the_miners_part(monkeypatch):
-    monkeypatch.setattr("neurons.validators.weights.EMISSION_CONTROL_PERC", 0.5)
+    monkeypatch.setattr("neurons.validators.weights.EMISSION_CONTROL_PERC", 0.2)
 
     weights = weights_from_shares(["crawler", BURN], {CRAWL_KIND: {"crawler": 1.0}})
 
-    assert list(weights) == pytest.approx([0.5, 0.5])
+    assert list(weights) == pytest.approx([0.8 * CRAWL_PERC, 1 - 0.8 * CRAWL_PERC])
 
 
 def test_every_pool_pays_its_part(monkeypatch):

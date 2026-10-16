@@ -1,15 +1,19 @@
 from __future__ import annotations
 
+import asyncio
+import base64
 import hashlib
 import logging
 import random
 
 import numpy as np
 
+from desearch.client import TaskApiError
 from desearch.embedding import (
     INPUT_SCHEMA,
     OUTPUT_SCHEMA,
     EmbeddingClient,
+    EmbeddingModel,
     decode_vector,
     read_parquet,
 )
@@ -18,10 +22,19 @@ from neurons.validators.tasks import DownloadFailed, TaskChecker, UploadMissing
 
 log = logging.getLogger("validator")
 
-EMBED_SAMPLES = 20
-# Two independent hosts of the same weights agree above 0.9998; another model lands near 0.
-MATCH_SIMILARITY = 0.99
+EMBED_SAMPLES = 48
+LONG_SAMPLES = 6
+# Long enough to reach the model's token limit.
+LONG_CHARS = 6000
+MATCH_SIMILARITY = 0.999
 NORM_TOLERANCE = 0.01
+# Another validator's request for the same upload is being embedded; it takes seconds.
+BUSY_WAIT_S = 60.0
+BUSY_RETRY_MAX_S = 5.0
+
+
+class ReferenceRefused(Exception):
+    """The task API gives no reference vectors for this upload; the model server is not at fault."""
 
 
 def check_rows(
@@ -66,8 +79,14 @@ def check_rows(
 def pick_samples(
     inputs: list[dict], seed: str, count: int = EMBED_SAMPLES
 ) -> list[dict]:
+    """The same texts for every validator of the upload, a few of them long ones when it has any."""
     ordered = sorted(inputs, key=lambda row: row["text_id"])
-    return random.Random(seed).sample(ordered, min(count, len(ordered)))
+    draw = random.Random(seed)
+    long = [row for row in ordered if len(row["text"]) >= LONG_CHARS]
+    picked = draw.sample(long, min(LONG_SAMPLES, len(long), count))
+    taken = {row["text_id"] for row in picked}
+    rest = [row for row in ordered if row["text_id"] not in taken]
+    return picked + draw.sample(rest, min(count - len(picked), len(rest)))
 
 
 def compare(
@@ -99,8 +118,62 @@ def compare(
     }
 
 
+class ServerReference:
+    """The validator's own model server."""
+
+    def __init__(self, client: EmbeddingClient):
+        self.client = client
+        self.model = client.model
+
+    async def vectors(self, job: dict, picked: list[dict]) -> np.ndarray:
+        return await self.client.embed([row["text"] for row in picked])
+
+    async def aclose(self) -> None:
+        await self.client.aclose()
+
+
+class ApiReference:
+    """Desearch's model server through the task API, for a validator without one."""
+
+    def __init__(self, api, model: EmbeddingModel):
+        self.api = api
+        self.model = model
+
+    async def vectors(self, job: dict, picked: list[dict]) -> np.ndarray:
+        ids = [row["text_id"] for row in picked]
+        answer = await self.ask(f"/v1/embed/{job['task_id']}/reference", ids)
+        given = {
+            row["text_id"]: np.frombuffer(base64.b64decode(row["embedding"]), dtype="<f4")
+            for row in answer["vectors"]
+        }
+        vectors = [given[text_id] for text_id in ids]
+        if any(vector.size != self.model.dims for vector in vectors):
+            raise ValueError(f"reference vectors are not {self.model.dims} long")
+        return np.array(vectors, dtype=np.float32)
+
+    async def ask(self, path: str, ids: list[str]) -> dict:
+        """The API's answer, waiting while another validator's request for the upload is embedded."""
+        waited = 0.0
+        while True:
+            try:
+                return await self.api.post(path, {"text_ids": ids})
+            except TaskApiError as exc:
+                if exc.status in (409, 422, 429):
+                    raise ReferenceRefused(str(exc)) from exc
+                pause = exc.retry_after
+                if exc.status != 503 or pause is None or pause > BUSY_RETRY_MAX_S:
+                    raise
+                if waited >= BUSY_WAIT_S:
+                    raise ReferenceRefused("its reference stayed busy") from exc
+                await asyncio.sleep(pause)
+                waited += pause
+
+    async def aclose(self) -> None:
+        pass
+
+
 class EmbedValidator(TaskChecker):
-    """Recomputes a sample of each embed task's vectors with a reference model."""
+    """Recomputes a sample of each embed task's vectors, on the validator's own model server or Desearch's."""
 
     kinds = (EMBED,)
 
@@ -108,7 +181,7 @@ class EmbedValidator(TaskChecker):
         self,
         api,
         http,
-        references: dict[str, EmbeddingClient],
+        references: dict[str, ServerReference | ApiReference],
         ledger=None,
         storage_url: str = "",
         seeds=None,
@@ -152,7 +225,11 @@ class EmbedValidator(TaskChecker):
         if "verdict" not in result:
             picked = pick_samples(inputs, job["seed"])
             try:
-                expected = await reference.embed([row["text"] for row in picked])
+                expected = await reference.vectors(job, picked)
+            except ReferenceRefused as exc:
+                log.warning("task=%s no reference vectors: %s", task_id, exc)
+                self.defer(task_id)
+                return {}
             except Exception as exc:
                 log.warning("task=%s reference failed: %s", task_id, exc)
                 self.provider_failed()

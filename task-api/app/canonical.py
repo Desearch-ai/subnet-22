@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import html
 import re
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
@@ -9,8 +8,7 @@ TRACKING = re.compile(r"^(utm_|fbclid$|gclid$|mc_cid$|mc_eid$|ref$|cmpid$|ito$)"
 
 
 def canonicalize(url: str) -> str:
-    u = html.unescape((url or "").strip())
-    parts = urlsplit(u)
+    parts = urlsplit((url or "").strip())
     query = [
         (k, v)
         for k, v in parse_qsl(parts.query, keep_blank_values=True)

@@ -4,6 +4,7 @@ use serde_json::{json, Value};
 
 use crate::buckets::{sitemap_id, Json};
 use crate::crawl::DomainWrite;
+use crate::robots::Paths;
 use crate::schedule::{Trust, DEFAULT_INTERVAL, SECOND};
 use crate::states::State;
 use crate::visit::{Known, KnownSitemap, SitemapUpdate};
@@ -60,6 +61,7 @@ pub fn known(host: &str, domain: &Json, sitemaps: &[(String, Json)]) -> Option<K
         last_ok_at: moment(domain.get("ok")),
         robots_checked_at: moment(domain.get("robots")),
         robots_allows: domain.get("allows").and_then(Value::as_bool),
+        robots_paths: robots_paths(domain),
         crawl_delay: domain.get("delay").and_then(Value::as_f64),
         language: text(domain.get("lang")),
         categories: domain
@@ -70,6 +72,19 @@ pub fn known(host: &str, domain: &Json, sitemaps: &[(String, Json)]) -> Option<K
         sitemaps: sitemaps.iter().filter_map(|(url, record)| Some((url.clone(), known_sitemap(url, record)?))).collect(),
         canonical_host: text(domain.get("canonical")),
     })
+}
+
+/// The robots.txt paths kept with a domain; one blocked before they were kept is blocked everywhere.
+pub fn robots_paths(domain: &Json) -> Paths {
+    let list = |name: &str| -> Vec<String> {
+        let rules = domain.get("rules").and_then(|rules| rules.get(name)).and_then(Value::as_array);
+        rules.map(|all| all.iter().filter_map(|rule| rule.as_str().map(str::to_string)).collect()).unwrap_or_default()
+    };
+    let mut paths = Paths { allow: list("allow"), disallow: list("disallow") };
+    if domain.get("allows").and_then(Value::as_bool) == Some(false) && paths.disallow.is_empty() {
+        paths.disallow.push("/".into());
+    }
+    paths
 }
 
 fn known_sitemap(url: &str, record: &Json) -> Option<KnownSitemap> {
@@ -108,6 +123,12 @@ pub fn written_domain(previous: &Json, write: &DomainWrite, url_count: i64) -> J
         record.insert("robots_status".into(), visit.robots_status.into());
         record.insert("allows".into(), visit.robots_allows.into());
         record.insert("delay".into(), visit.crawl_delay.into());
+        let paths = &visit.robots_paths;
+        if paths.allow.is_empty() && paths.disallow.is_empty() {
+            record.remove("rules");
+        } else {
+            record.insert("rules".into(), json!({"allow": paths.allow, "disallow": paths.disallow}));
+        }
     }
     if let Some(language) = &visit.language {
         record.insert("lang".into(), language.clone().into());

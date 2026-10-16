@@ -81,7 +81,7 @@ fn entry(inner: &[u8]) -> Option<Entry> {
         }
     }
     Some(Entry {
-        url: lossy(fields[0]?),
+        url: location(fields[0]?),
         lastmod: fields[1].map(lossy),
         changefreq: fields[2].map(ascii_lower),
         published: fields[3].map(lossy),
@@ -102,7 +102,7 @@ fn bare_locations(body: &[u8]) -> Vec<Entry> {
         if value.is_empty() || !starts_with(body, end, b"</loc>") {
             continue;
         }
-        locations.push(Entry { url: lossy(value), ..Entry::default() });
+        locations.push(Entry { url: location(value), ..Entry::default() });
         at = end + 6;
     }
     locations
@@ -157,6 +157,47 @@ fn lossy(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).into_owned()
 }
 
+/// The address with XML's character references decoded, so `&amp;` in a sitemap reads as `&`.
+fn location(bytes: &[u8]) -> String {
+    let text = String::from_utf8_lossy(bytes);
+    if !text.contains('&') {
+        return text.into_owned();
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut rest = &*text;
+    while let Some(at) = rest.find('&') {
+        out.push_str(&rest[..at]);
+        rest = &rest[at + 1..];
+        match rest.find(';').and_then(|end| reference(&rest[..end]).map(|c| (c, end))) {
+            Some((c, end)) => {
+                out.push(c);
+                rest = &rest[end + 1..];
+            }
+            None => out.push('&'),
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+fn reference(name: &str) -> Option<char> {
+    let number = |digits: &str, radix: u32| {
+        let valid = !digits.is_empty() && digits.chars().all(|c| c.is_digit(radix));
+        valid.then(|| u32::from_str_radix(digits, radix).ok()).flatten().and_then(char::from_u32).filter(|c| !c.is_control())
+    };
+    match name {
+        "amp" => Some('&'),
+        "lt" => Some('<'),
+        "gt" => Some('>'),
+        "quot" => Some('"'),
+        "apos" => Some('\''),
+        _ => match name.strip_prefix("#x") {
+            Some(hex) => number(hex, 16),
+            None => number(name.strip_prefix('#')?, 10),
+        },
+    }
+}
+
 fn ascii_lower(bytes: &[u8]) -> String {
     bytes.iter().map(|&b| if b < 0x80 { b.to_ascii_lowercase() as char } else { '\u{fffd}' }).collect()
 }
@@ -187,7 +228,7 @@ mod tests {
             }
             if let Some(location) = fields[0] {
                 entries.push(Entry {
-                    url: lossy(location),
+                    url: super::location(location),
                     lastmod: fields[1].map(lossy),
                     changefreq: fields[2].map(ascii_lower),
                     published: fields[3].map(lossy),
@@ -197,7 +238,7 @@ mod tests {
         if let (Some(kind), false) = (kind, entries.is_empty()) {
             return (kind, entries);
         }
-        let locations: Vec<Entry> = loc.captures_iter(body).map(|c| Entry { url: lossy(&c[1]), ..Entry::default() }).collect();
+        let locations: Vec<Entry> = loc.captures_iter(body).map(|c| Entry { url: super::location(&c[1]), ..Entry::default() }).collect();
         if locations.is_empty() {
             return ("invalid", Vec::new());
         }
@@ -232,6 +273,15 @@ mod tests {
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].lastmod.as_deref(), Some("2024-01-01"));
         assert_eq!(entries[1].changefreq.as_deref(), Some("daily"));
+    }
+
+    #[test]
+    fn locations_decode_xml_references() {
+        let body = b"<urlset><url><loc>https://a.com/?post_type=product&amp;p=2669</loc></url>\
+            <url><loc>https://a.com/Q&amp;A&#39;s&#x2F;&amp;amp;&nbsp;&#0;&region=en&amp</loc></url></urlset>";
+        let (_, entries) = parse_entries(body);
+        assert_eq!(entries[0].url, "https://a.com/?post_type=product&p=2669");
+        assert_eq!(entries[1].url, "https://a.com/Q&A's/&amp;&nbsp;&#0;&region=en&amp");
     }
 
     #[test]

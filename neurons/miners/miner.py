@@ -106,9 +106,8 @@ class TaskWorker:
             await self.aclose()
 
     async def poll(self) -> float:
-        body = {"kind": self.kind, "count": self.wanted()}
         try:
-            answer = await self.api.post("/v1/tasks/claim", body)
+            answer = await self.api.post("/v1/tasks/claim", self.claim_body())
         except TaskApiError as exc:
             log.warning("claim failed: %s", exc)
             return ERROR_BACKOFF
@@ -143,6 +142,9 @@ class TaskWorker:
 
     def wanted(self) -> int:
         return 1
+
+    def claim_body(self) -> dict:
+        return {"kind": self.kind, "count": self.wanted()}
 
     def claimed(self, task: dict) -> None:
         pass

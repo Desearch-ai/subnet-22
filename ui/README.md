@@ -1,8 +1,9 @@
 # SN22 UI
 
 A public, read-only dashboard over the task API's log endpoints. It shows what Subnet 22 is doing
-right now and what it did recently: tasks waiting and claimed, uploads being checked, every
-validator's vote, the final result of each task and the rows that were paid.
+right now and what it did recently, for both kinds of task (crawl and embed): tasks waiting and
+claimed, uploads being checked, every validator's vote, the final result of each task and what was
+paid for it.
 
 ## Requirements
 
@@ -41,19 +42,22 @@ Copy `.env.example` to `.env.local` to change it. The value is read at build tim
 | `npm run typecheck` | `tsc --noEmit`                                 |
 | `npm run lint`      | ESLint, warnings fail                          |
 | `npm run format`    | Prettier                                       |
-| `npm test`          | Unit tests for the helpers in `src/lib`        |
+| `npm test`          | Unit tests for `src/lib` and the query keys    |
 
 ## Pages
 
-| Path                  | Shows                                                                  |
-| --------------------- | ---------------------------------------------------------------------- |
-| `/`                   | Tasks waiting and in progress, recent tasks, miners by share           |
-| `/tasks`              | Finalized tasks, filtered by miner, validator or result                |
-| `/tasks/:taskId`      | One task: result, crawl time, every validator's vote, the checked URLs |
-| `/miners`             | Every miner: share, budget, tasks crawling and waiting, results, rows  |
-| `/miners/:hotkey`     | One miner: stats, rows over time, budget history, its tasks            |
-| `/validators`         | Every validator: activity, votes, agreement with the final result      |
-| `/validators/:hotkey` | One validator: stats and its votes                                     |
+| Path                  | Shows                                                                        |
+| --------------------- | ---------------------------------------------------------------------------- |
+| `/`                   | Tasks waiting and in progress, the chosen kind's last 24 hours, recent tasks |
+| `/tasks`              | Finalized tasks, filtered by miner, validator, kind or result                |
+| `/tasks/:taskId`      | One task: result, every validator's vote, the checked URLs or texts          |
+| `/miners`             | Every miner for the chosen kind: share, budget, tasks in flight, results     |
+| `/miners/:hotkey`     | One miner: both kinds side by side, activity over time, budget, its tasks    |
+| `/validators`         | Every validator: activity, votes, agreement with the final result            |
+| `/validators/:hotkey` | One validator: stats and its votes                                           |
+
+The Crawl / Embed switch on the overview, miners and miner pages is kept in the address as
+`?kind=embed`.
 
 Live views refresh every minute while the tab is visible. When the API answers `429` or `503`
 the page waits for the `Retry-After` time before it asks again.
@@ -63,13 +67,13 @@ the page waits for the `Retry-After` time before it asks again.
 ```
 src/
   api/            typed client, response types, request pause on 429/503
-    queries/      one file of TanStack Query hooks per resource
+    queries/      one file of TanStack Query hooks per resource, and their keys
   components/
     ui/           primitives: card, table, badge, stat, states
     layout/       app shell, notices
-    charts/       the rows-over-time chart
+    charts/       the activity-over-time chart
     overview/     panels of the overview page
-    tasks/        task table, votes comparison, per-URL table
+    tasks/        task table, votes comparison, per-URL and per-text tables
     miners/       miner table, stats, budget history
     validators/   validator table, stats, votes
   hooks/          shared hooks

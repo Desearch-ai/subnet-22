@@ -18,7 +18,7 @@ export function TaskList({ filters, showMiner = true, emptyTitle, emptyDetail }:
       emptyTitle={emptyTitle}
       {...(emptyDetail ? { emptyDetail } : {})}
     >
-      {(tasks) => <TasksTable tasks={tasks} showMiner={showMiner} />}
+      {(tasks) => <TasksTable tasks={tasks} kind={filters.kind} showMiner={showMiner} />}
     </PagedList>
   )
 }

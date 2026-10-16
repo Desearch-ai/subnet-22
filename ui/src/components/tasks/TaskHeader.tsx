@@ -3,6 +3,7 @@ import { Badge, type Tone } from '@/components/ui/Badge'
 import { Card } from '@/components/ui/Card'
 import { Field, FieldList } from '@/components/ui/Field'
 import { Identifier } from '@/components/ui/Identifier'
+import { KindBadge } from '@/components/ui/KindBadge'
 import { EMPTY_VALUE } from '@/lib/format'
 import { STATUS_MEANING } from '@/lib/labels'
 import { minerPath } from '@/lib/paths'
@@ -62,7 +63,10 @@ export function TaskHeader({ task }: { task: TaskDetail }) {
   return (
     <Card>
       <div className="border-line border-b px-4 py-3">
-        <Badge tone={STATUS_TONE[status]}>{statusTitle(status, earlier)}</Badge>
+        <div className="flex flex-wrap items-center gap-2">
+          <Badge tone={STATUS_TONE[status]}>{statusTitle(status, earlier)}</Badge>
+          <KindBadge kind={task.kind} />
+        </div>
         <p className="text-ink-muted mt-1.5 text-sm">
           {STATUS_MEANING[status]}
           {open && earlier

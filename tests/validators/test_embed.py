@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import hashlib
 
 import aiohttp
@@ -15,6 +16,9 @@ from desearch.embedding import (
 )
 from neurons.validators.embed import (
     EMBED_SAMPLES,
+    LONG_CHARS,
+    LONG_SAMPLES,
+    MATCH_SIMILARITY,
     EmbedValidator,
     check_rows,
     pick_samples,
@@ -22,18 +26,18 @@ from neurons.validators.embed import (
 from tests.local_http import serving
 
 DIMS = 8
-MODEL = EmbeddingModel("tiny", "tiny/tiny", "rev", DIMS, "tiny")
+MODEL = EmbeddingModel("tiny", "tiny/tiny", "rev", DIMS, 16)
 INPUTS = [
     {
-        "text_id": f"p#chunk{i}",
-        "page_key": "p",
-        "url": "https://a.example/p",
+        "text_id": f"p{i}",
+        "page_key": f"p{i}",
+        "url": f"https://a.example/p{i}",
         "content_sha1": "c" * 40,
-        "kind": "chunk",
-        "index": i,
-        "text": f"passage {i}",
+        "kind": "page",
+        "index": 0,
+        "text": f"page {i}",
     }
-    for i in range(30)
+    for i in range(60)
 ]
 
 
@@ -53,8 +57,8 @@ def upload(rows=INPUTS, vector=lambda row: encode_vector(truth(row["text"]))) ->
 def test_every_vector_present_well_formed_and_unit_length_passes_the_row_check():
     counts, vectors = check_rows(INPUTS, upload(), DIMS)
 
-    assert counts == {"returned": 30, "missing": 0, "duplicates": 0, "malformed": 0}
-    assert len(vectors) == 30
+    assert counts == {"returned": 60, "missing": 0, "duplicates": 0, "malformed": 0}
+    assert len(vectors) == 60
 
 
 @pytest.mark.parametrize(
@@ -86,6 +90,18 @@ def test_the_sample_is_fixed_by_its_seed_and_capped():
     assert len(first) == EMBED_SAMPLES and len(pick_samples(INPUTS[:3], "seed")) == 3
 
 
+def test_every_sample_includes_long_texts_when_the_task_has_them():
+    long = [{**row, "text": "x" * LONG_CHARS + row["text"]} for row in INPUTS[:6]]
+    inputs = long + INPUTS[6:]
+
+    picked = pick_samples(inputs, "seed")
+    ids = [row["text_id"] for row in picked]
+
+    assert len(ids) == len(set(ids)) == EMBED_SAMPLES
+    assert sum(len(row["text"]) >= LONG_CHARS for row in picked) >= LONG_SAMPLES
+    assert picked == pick_samples(list(reversed(inputs)), "seed")
+
+
 class Reference:
     model = MODEL
 
@@ -93,11 +109,11 @@ class Reference:
         self.fail = fail
         self.asked: list[str] = []
 
-    async def embed(self, texts):
+    async def vectors(self, job, picked):
         if self.fail:
             raise RuntimeError("provider is down")
-        self.asked += texts
-        return np.array([truth(t) * 5 for t in texts])
+        self.asked += [row["text"] for row in picked]
+        return np.array([truth(row["text"]) * 5 for row in picked])
 
 
 class Api:
@@ -213,4 +229,112 @@ def test_a_vector_inflated_within_the_norm_tolerance_is_judged_on_its_cosine():
     ((_, result),), _ = asyncio.run(judged(upload(vector=slanted), Reference()))
 
     assert (result["verdict"], result["reason"]) == ("fail", "vectors_mismatch")
-    assert result["min_similarity"] < 0.99
+    assert result["min_similarity"] < MATCH_SIMILARITY
+
+
+def near(row, cosine: float) -> bytes:
+    exact = truth(row["text"])
+    other = truth(row["text"] + " other")
+    other -= (other @ exact) * exact
+    other /= np.linalg.norm(other)
+    return encode_vector(cosine * exact + np.sqrt(1 - cosine**2) * other)
+
+
+def test_vectors_a_little_off_the_model_fail_and_the_same_model_on_other_hardware_passes():
+    off = upload(vector=lambda row: near(row, 0.998))
+    same = upload(vector=lambda row: near(row, 0.99995))
+
+    ((_, failed),), _ = asyncio.run(judged(off, Reference()))
+    ((_, passed),), _ = asyncio.run(judged(same, Reference()))
+
+    assert (failed["verdict"], failed["reason"]) == ("fail", "vectors_mismatch")
+    assert (passed["verdict"], passed["matched"]) == ("pass", EMBED_SAMPLES)
+
+
+def test_a_validator_without_a_model_server_gets_its_sample_from_the_task_api():
+    from neurons.validators.embed import ApiReference
+
+    class Api:
+        def __init__(self):
+            self.posts = []
+
+        async def post(self, path, body=None):
+            self.posts.append((path, body))
+            return {
+                "vectors": [
+                    {"text_id": i, "embedding": base64.b64encode(truth(i).astype("<f4").tobytes()).decode()}
+                    for i in reversed(body["text_ids"])
+                ]
+            }
+
+    api = Api()
+    picked = INPUTS[:3]
+    vectors = asyncio.run(ApiReference(api, MODEL).vectors({"task_id": "t1"}, picked))
+
+    assert api.posts == [("/v1/embed/t1/reference", {"text_ids": ["p0", "p1", "p2"]})]
+    assert np.allclose(vectors, [truth(row["text_id"]) for row in picked], atol=1e-6), "in the order asked"
+
+
+def test_the_task_api_reference_is_waited_for_while_another_validator_computes_it():
+    from desearch.client import TaskApiError
+    from neurons.validators.embed import ApiReference
+
+    class Api:
+        def __init__(self, answers):
+            self.answers = answers
+
+        async def post(self, path, body=None):
+            answer = self.answers.pop(0)
+            if isinstance(answer, Exception):
+                raise answer
+            return {
+                "vectors": [
+                    {"text_id": i, "embedding": base64.b64encode(truth(i).astype("<f4").tobytes()).decode()}
+                    for i in body["text_ids"]
+                ]
+            }
+
+    busy = TaskApiError(503, "the reference for this upload is being computed", 0.01)
+    picked = INPUTS[:2]
+    api = Api([busy, busy, None])
+    vectors = asyncio.run(ApiReference(api, MODEL).vectors({"task_id": "t1"}, picked))
+    assert api.answers == [] and vectors.shape == (2, MODEL.dims)
+
+    down = TaskApiError(503, "the reference model server is unavailable", 30)
+    with pytest.raises(TaskApiError):
+        asyncio.run(ApiReference(Api([down]), MODEL).vectors({"task_id": "t1"}, picked))
+
+
+@pytest.mark.parametrize("status", [409, 422, 429])
+def test_a_reference_refused_for_one_upload_defers_it_without_pausing_the_checks(status):
+    from desearch.client import TaskApiError
+    from neurons.validators.embed import ApiReference
+
+    class Refusing:
+        async def post(self, path, body=None):
+            raise TaskApiError(status, "no")
+
+    reference = ApiReference(Refusing(), MODEL)
+    posts, checker = asyncio.run(judged(upload(), reference))
+
+    assert posts == [] and "t1" in checker.deferred
+    assert checker.provider_failures == 0
+
+
+def test_a_validator_checks_only_the_models_its_own_server_serves():
+    from neurons.validators.validator import Validator
+
+    async def references(served):
+        async def handler(request: web.Request) -> web.Response:
+            return web.json_response({"data": [{"id": name} for name in served]})
+
+        made = Validator.__new__(Validator)
+        made.stopping = asyncio.Event()
+        async with serving(handler) as base:
+            found = await made.embed_references(base + "v1/embeddings")
+        for client in found.values():
+            await client.aclose()
+        return sorted(found)
+
+    assert asyncio.run(references(["desearch-4b-v1"])) == ["desearch-4b-v1"]
+    assert asyncio.run(references(["Qwen/Qwen3-Embedding-4B"])) == []

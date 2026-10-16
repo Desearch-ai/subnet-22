@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import base64
 import json
+import zlib
 import time
 import uuid
 from dataclasses import dataclass
@@ -15,6 +17,9 @@ SEEDING = "vjobs:seeding"
 VACTIVE = "validators:active"
 PUBLISH = "publish:ready"
 PCLAIMS = "publish:claims"
+PACKED = "z:"
+# Every job the publisher finished, for measuring its pace.
+PUBLISHED = "publish:acked"
 PPENDING = "publish:pending"
 PDEAD = "publish:dead"
 ROUNDS = "rounds:seq"
@@ -231,7 +236,7 @@ return jobs
 
 PACK = """
 redis.call('ZREM', KEYS[1], ARGV[1])
-redis.call('ZREM', KEYS[2], ARGV[1])
+if redis.call('ZREM', KEYS[2], ARGV[1]) == 1 then redis.call('INCR', KEYS[3]) end
 return redis.call('DEL', 'pjob:' .. ARGV[1], 'ptries:' .. ARGV[1])
 """
 
@@ -247,6 +252,18 @@ end
 redis.call('RPUSH', KEYS[2], ARGV[1])
 return 1
 """
+
+
+def pack_job(job: dict) -> str:
+    """A publish job waits in Redis until published; its URL list compresses several times over."""
+    return PACKED + base64.b64encode(zlib.compress(json.dumps(job).encode())).decode()
+
+
+def unpack_job(raw) -> dict:
+    raw = _text(raw)
+    if raw.startswith(PACKED):
+        return json.loads(zlib.decompress(base64.b64decode(raw[len(PACKED) :])))
+    return json.loads(raw)
 
 
 def _text(value) -> str | None:
@@ -539,7 +556,7 @@ class ValidationQueue:
             keys=[SEEDING if seeding else VOPEN, PUBLISH, PPENDING],
             args=[
                 task_id,
-                json.dumps(publish) if publish else "",
+                pack_job(publish) if publish else "",
                 (publish or {}).get("completed_at") or time.time(),
             ],
         )
@@ -562,10 +579,10 @@ class PublishQueue:
         jobs = await self._claim(
             keys=[PUBLISH, PCLAIMS], args=[count, time.time() + self.claim_ttl]
         )
-        return [json.loads(job) for job in jobs or []]
+        return [unpack_job(job) for job in jobs or []]
 
     async def ack(self, task_id: str) -> None:
-        await self._ack(keys=[PCLAIMS, PPENDING], args=[task_id])
+        await self._ack(keys=[PCLAIMS, PPENDING, PUBLISHED], args=[task_id])
 
     async def extend_claim(self, task_id: str) -> None:
         await self.redis.zadd(PCLAIMS, {task_id: time.time() + self.claim_ttl}, xx=True)
@@ -612,6 +629,12 @@ class PublishQueue:
 
     async def depth(self) -> int:
         return int(await self.redis.llen(PUBLISH))
+
+    async def waiting(self) -> int:
+        return int(await self.redis.zcard(PPENDING))
+
+    async def finished(self) -> int:
+        return int(await self.redis.get(PUBLISHED) or 0)
 
     async def oldest_age(self) -> float:
         oldest = await self.redis.zrange(PPENDING, 0, 0, withscores=True)

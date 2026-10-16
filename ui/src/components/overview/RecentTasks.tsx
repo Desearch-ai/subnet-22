@@ -15,7 +15,7 @@ export function RecentTasks() {
     <Card>
       <CardHeader
         title="Recent tasks"
-        description="The latest finalized uploads"
+        description="The latest finalized uploads of both kinds"
         actions={
           <Link to={TASKS_PATH} className="text-accent text-xs hover:underline">
             All tasks

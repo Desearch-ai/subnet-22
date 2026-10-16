@@ -1,6 +1,7 @@
 import type { Vote } from '@/api/types'
 import { Badge } from '@/components/ui/Badge'
 import { Identifier } from '@/components/ui/Identifier'
+import { KindBadge } from '@/components/ui/KindBadge'
 import { Table, Td, Th, Tr } from '@/components/ui/Table'
 import { TimeAgo } from '@/components/ui/TimeAgo'
 import { StatusBadge } from '@/components/ui/VerdictBadge'
@@ -19,16 +20,23 @@ export function VotesTable({ votes }: { votes: readonly Vote[] }) {
       <thead>
         <tr>
           <Th>Task</Th>
+          <Th>Kind</Th>
           <Th>Miner</Th>
           <Th>Its vote</Th>
           <Th>Reason</Th>
           <Th>Final result</Th>
           <Th hint="Whether this vote matched the final result">Match</Th>
           <Th hint="The final result was taken from this vote">Decided</Th>
-          <Th align="right" hint="Pages this validator fetched again: matched / checked">
+          <Th
+            align="right"
+            hint="Matched / checked by this validator. Crawl: pages it fetched again. Embed: texts it embedded again"
+          >
             Checked
           </Th>
-          <Th align="right" hint="Rows this validator would count / rows finally counted">
+          <Th
+            align="right"
+            hint="What this validator would count / what finally counted. Crawl: rows. Embed: characters"
+          >
             Counted
           </Th>
           <Th align="right">Voted</Th>
@@ -39,6 +47,9 @@ export function VotesTable({ votes }: { votes: readonly Vote[] }) {
           <Tr key={`${vote.task_id}:${vote.voted_at}`}>
             <Td>
               <Identifier value={vote.task_id} label="task id" to={taskPath(vote.task_id)} />
+            </Td>
+            <Td>
+              <KindBadge kind={vote.kind} />
             </Td>
             <Td>
               <Identifier
@@ -53,7 +64,7 @@ export function VotesTable({ votes }: { votes: readonly Vote[] }) {
             </Td>
             <Td
               className="text-ink-muted font-mono text-xs"
-              title={explainReason(vote.reason) ?? undefined}
+              title={explainReason(vote.reason, vote.kind) ?? undefined}
             >
               {vote.reason}
             </Td>

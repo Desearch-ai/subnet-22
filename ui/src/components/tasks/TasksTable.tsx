@@ -1,41 +1,46 @@
-import type { TaskScore } from '@/api/types'
+import type { Kind, TaskScore } from '@/api/types'
 import { Identifier } from '@/components/ui/Identifier'
+import { KindBadge } from '@/components/ui/KindBadge'
 import { Table, Td, Th, Tr } from '@/components/ui/Table'
 import { TimeAgo } from '@/components/ui/TimeAgo'
 import { StatusBadge } from '@/components/ui/VerdictBadge'
-import { formatCrawlTime, formatInt } from '@/lib/format'
+import { formatInt, formatWorkTime } from '@/lib/format'
+import { countColumns } from '@/lib/kinds'
 import { explainReason } from '@/lib/labels'
 import { minerPath, taskPath, validatorPath } from '@/lib/paths'
 
 interface TasksTableProps {
   tasks: readonly TaskScore[]
+  kind?: Kind | undefined
   showMiner?: boolean
 }
 
-export function TasksTable({ tasks, showMiner = true }: TasksTableProps) {
+export function TasksTable({ tasks, kind, showMiner = true }: TasksTableProps) {
+  const columns = countColumns(kind)
   return (
     <Table>
       <thead>
         <tr>
           <Th>Task</Th>
+          <Th>Kind</Th>
           <Th>Result</Th>
           <Th>Reason</Th>
           {showMiner ? <Th>Miner</Th> : null}
           <Th hint="The validator whose report became the final result">Validator</Th>
-          <Th align="right" hint="Rows the miner uploaded">
-            Returned
+          <Th align="right" hint={columns.returned.hint}>
+            {columns.returned.label}
           </Th>
-          <Th align="right" hint="Assigned URLs with no row in the upload">
-            Missing
+          <Th align="right" hint={columns.missing.hint}>
+            {columns.missing.label}
           </Th>
-          <Th align="right" hint="Pages the validator fetched again: matched / checked">
-            Checked
+          <Th align="right" hint={columns.checked.hint}>
+            {columns.checked.label}
           </Th>
-          <Th align="right" hint="Rows that count toward the miner's share">
-            Counted
+          <Th align="right" hint={columns.credited.hint}>
+            {columns.credited.label}
           </Th>
-          <Th align="right" hint="From the miner claiming the task to its upload being accepted">
-            Crawl time
+          <Th align="right" hint={columns.time.hint}>
+            {columns.time.label}
           </Th>
           <Th align="right">Finalized</Th>
         </tr>
@@ -47,11 +52,14 @@ export function TasksTable({ tasks, showMiner = true }: TasksTableProps) {
               <Identifier value={task.task_id} label="task id" to={taskPath(task.task_id)} />
             </Td>
             <Td>
+              <KindBadge kind={task.kind} />
+            </Td>
+            <Td>
               <StatusBadge status={task.verdict} />
             </Td>
             <Td
               className="text-ink-muted font-mono text-xs"
-              title={explainReason(task.reason) ?? undefined}
+              title={explainReason(task.reason, task.kind) ?? undefined}
             >
               {task.reason}
             </Td>
@@ -82,7 +90,7 @@ export function TasksTable({ tasks, showMiner = true }: TasksTableProps) {
               <span className="text-ink-faint"> / {task.sampled}</span>
             </Td>
             <Td numeric>{formatInt(task.credited)}</Td>
-            <Td numeric>{formatCrawlTime(task)}</Td>
+            <Td numeric>{formatWorkTime(task)}</Td>
             <Td align="right" className="text-ink-muted text-xs">
               <TimeAgo at={task.scored_at} />
             </Td>
