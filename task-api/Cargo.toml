@@ -10,7 +10,7 @@ description = "The SN22 task API: hands out crawl and embed tasks, takes uploads
 anyhow = "1"
 arrow-array = "59"
 arrow-schema = "59"
-axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio", "tower-log"] }
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "matched-path", "query", "tokio", "tower-log"] }
 base64 = "0.22"
 bytes = "1"
 flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }

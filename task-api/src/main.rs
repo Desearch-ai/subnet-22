@@ -66,7 +66,11 @@ async fn main() -> Result<()> {
             }
         }
     };
-    axum::serve(listener, http::router(state).into_make_service_with_connect_info::<SocketAddr>()).with_graceful_shutdown(stopping).await?;
+    axum::serve(listener, http::router(state.clone()).into_make_service_with_connect_info::<SocketAddr>()).with_graceful_shutdown(stopping).await?;
+    let cut = state.detached.load(Ordering::SeqCst);
+    if cut > 0 {
+        eprintln!("stopping with {cut} completions or reference calls still running");
+    }
     janitor.await?;
     Ok(())
 }

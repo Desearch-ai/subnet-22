@@ -1,9 +1,11 @@
 //! SQLite on threads of its own: one writer that runs every change in order, and read-only readers for everything else.
 
+use std::future::Future;
+use std::panic::Location;
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Result};
 use rusqlite::types::ValueRef;
@@ -19,6 +21,14 @@ type Job = Box<dyn FnOnce(&mut Connection) + Send>;
 
 const BUSY: Duration = Duration::from_secs(5);
 const STARTUP_BUSY: Duration = Duration::from_secs(60);
+/// A database call that waited and ran this long in all is logged with the code that made it.
+const SLOW: Duration = Duration::from_secs(1);
+
+fn note_slow(kind: &str, pool: &str, caller: &Location, waited: Duration, ran: Duration) {
+    if waited + ran >= SLOW {
+        eprintln!("sqlite {kind} on {pool} from {caller} waited {:.1}s, ran {:.1}s", waited.as_secs_f64(), ran.as_secs_f64());
+    }
+}
 
 fn connect(path: &Path) -> Result<Connection> {
     let conn = Connection::open(path)?;
@@ -60,19 +70,25 @@ impl Db {
     }
 
     /// Runs `work` in one transaction on the writer thread: all of it lands, or none of it.
-    pub async fn run<T: Send + 'static>(&self, work: impl FnOnce(&Connection) -> Result<T> + Send + 'static) -> Result<T> {
-        let (done, result) = oneshot::channel();
-        let job: Job = Box::new(move |conn| {
-            // Immediate, so a second copy of the API writing the same file waits its turn instead of failing.
-            let outcome = conn.transaction_with_behavior(TransactionBehavior::Immediate).map_err(anyhow::Error::from).and_then(|tx| {
-                let value = work(&tx)?;
-                tx.commit()?;
-                Ok(value)
+    #[track_caller]
+    pub fn run<T: Send + 'static>(&self, work: impl FnOnce(&Connection) -> Result<T> + Send + 'static) -> impl Future<Output = Result<T>> + '_ {
+        let (caller, queued) = (Location::caller(), Instant::now());
+        async move {
+            let (done, result) = oneshot::channel();
+            let job: Job = Box::new(move |conn| {
+                let started = Instant::now();
+                // Immediate, so a second copy of the API writing the same file waits its turn instead of failing.
+                let outcome = conn.transaction_with_behavior(TransactionBehavior::Immediate).map_err(anyhow::Error::from).and_then(|tx| {
+                    let value = work(&tx)?;
+                    tx.commit()?;
+                    Ok(value)
+                });
+                note_slow("write", "writer", caller, started - queued, started.elapsed());
+                let _ = done.send(outcome);
             });
-            let _ = done.send(outcome);
-        });
-        self.jobs.send(job).map_err(|_| anyhow!("the SQLite writer stopped"))?;
-        result.await.map_err(|_| anyhow!("the SQLite writer stopped"))?
+            self.jobs.send(job).map_err(|_| anyhow!("the SQLite writer stopped"))?;
+            result.await.map_err(|_| anyhow!("the SQLite writer stopped"))?
+        }
     }
 }
 
@@ -90,6 +106,7 @@ impl std::error::Error for Busy {}
 
 /// Read-only connections on threads of their own, so reads never wait behind the writer or hold it up.
 pub struct Reader {
+    name: String,
     jobs: mpsc::Sender<Job>,
     waiting: Arc<AtomicUsize>,
     max_waiting: usize,
@@ -112,25 +129,31 @@ impl Reader {
                 }
             })?;
         }
-        Ok(Reader { jobs, waiting: Arc::default(), max_waiting })
+        Ok(Reader { name: name.into(), jobs, waiting: Arc::default(), max_waiting })
     }
 
-    pub async fn read<T: Send + 'static>(&self, work: impl FnOnce(&Connection) -> Result<T> + Send + 'static) -> Result<T> {
-        if self.waiting.fetch_add(1, Ordering::SeqCst) >= self.max_waiting {
-            self.waiting.fetch_sub(1, Ordering::SeqCst);
-            return Err(Busy.into());
+    #[track_caller]
+    pub fn read<T: Send + 'static>(&self, work: impl FnOnce(&Connection) -> Result<T> + Send + 'static) -> impl Future<Output = Result<T>> + '_ {
+        let (caller, queued) = (Location::caller(), Instant::now());
+        async move {
+            if self.waiting.fetch_add(1, Ordering::SeqCst) >= self.max_waiting {
+                self.waiting.fetch_sub(1, Ordering::SeqCst);
+                return Err(Busy.into());
+            }
+            let (waiting, pool) = (self.waiting.clone(), self.name.clone());
+            let (done, result) = oneshot::channel();
+            let job: Job = Box::new(move |conn| {
+                let started = Instant::now();
+                let _ = done.send(work(conn));
+                note_slow("read", &pool, caller, started - queued, started.elapsed());
+                waiting.fetch_sub(1, Ordering::SeqCst);
+            });
+            if self.jobs.send(job).is_err() {
+                self.waiting.fetch_sub(1, Ordering::SeqCst);
+                return Err(anyhow!("the SQLite reader stopped"));
+            }
+            result.await.map_err(|_| anyhow!("the SQLite reader stopped"))?
         }
-        let waiting = self.waiting.clone();
-        let (done, result) = oneshot::channel();
-        let job: Job = Box::new(move |conn| {
-            let _ = done.send(work(conn));
-            waiting.fetch_sub(1, Ordering::SeqCst);
-        });
-        if self.jobs.send(job).is_err() {
-            self.waiting.fetch_sub(1, Ordering::SeqCst);
-            return Err(anyhow!("the SQLite reader stopped"));
-        }
-        result.await.map_err(|_| anyhow!("the SQLite reader stopped"))?
     }
 }
 
