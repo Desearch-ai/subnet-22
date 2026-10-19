@@ -1,6 +1,6 @@
 //! The publisher as a service: claim batches from the task API's queue, read the next ones while one is written, then report and acknowledge.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
@@ -19,7 +19,7 @@ use tokio::task::JoinHandle;
 use crate::changes::{self, Body, Change, Kind};
 use crate::index::{Current, VersionIndex};
 use crate::outcomes;
-use crate::queue::PublishQueue;
+use crate::queue::{PublishQueue, PublishedVectors};
 use crate::reading::{RangeRead, Remote, Traffic};
 use crate::records::iso;
 use crate::vectors;
@@ -229,10 +229,14 @@ pub async fn start_batch(shared: Arc<Shared>) -> Result<Option<Claimed>> {
     Ok(Some(Claimed { jobs, embeds, reads, started }))
 }
 
-/// Writes a batch already read: change file, outcomes and acknowledgements for pages, a vector file for each embed job; returns the jobs finished.
+/// Writes a batch already read: change file, outcomes and acknowledgements for pages, a vector file for each embed job, a withdrawal entry for vectors taken back; returns the jobs finished.
 pub async fn write_batch(shared: &Shared, claimed: Claimed) -> Result<usize> {
     let Claimed { jobs, embeds, reads, started } = claimed;
+    let withdrawn = worker::withdrawn_in(&jobs);
+    shared.queue.note_withdrawn(&withdrawn, now_us() as f64 / 1e6).await?;
     let embedded = publish_vectors(shared, embeds).await;
+    let models = take_back_vectors(shared, &withdrawn).await.context("taking back published vectors")?;
+    fill_vector_holes(shared, models).await;
     if jobs.is_empty() {
         return Ok(embedded);
     }
@@ -243,7 +247,6 @@ pub async fn write_batch(shared: &Shared, claimed: Claimed) -> Result<usize> {
     let uploads: HashMap<String, Vec<String>> =
         jobs.iter().map(|job| (job.task_id.clone(), [job.key.clone(), job.input_key.clone()].into_iter().flatten().collect())).collect();
     let now = now_us();
-    shared.queue.note_withdrawn(&worker::withdrawn_in(&jobs), now as f64 / 1e6).await?;
     let refused = shared.queue.withdrawn_among(&ids).await?;
     let feed = R2Changes { pages: shared.pages.clone(), redis: shared.redis().clone(), handle: shared.handle.clone(), day: day(now) };
     let batch = tokio::task::spawn_blocking(move || worker::write(&jobs, reads, &refused, &feed, now)).await??;
@@ -295,14 +298,23 @@ pub async fn write_batch(shared: &Shared, claimed: Claimed) -> Result<usize> {
     Ok(batch.finalized.len() + embedded)
 }
 
-/// Publishes each embed job's vectors and finishes it; a job that cannot be read any more is finished as lost, any other failure leaves it claimed to be tried again.
+/// Publishes each embed job's vectors and finishes it; a job taken back first publishes nothing, a job that cannot be read any more is finished as lost, any other failure leaves it claimed to be tried again.
 async fn publish_vectors(shared: &Shared, jobs: Vec<Job>) -> usize {
+    let ids: Vec<&str> = jobs.iter().map(|job| job.task_id.as_str()).collect();
+    let refused = match shared.queue.withdrawn_among(&ids).await {
+        Ok(refused) => refused,
+        Err(error) => {
+            eprintln!("{} embed jobs left to retry, their take-backs unknown: {error:#}", jobs.len());
+            return 0;
+        }
+    };
     let mut finished = 0;
-    let mut models = std::collections::BTreeSet::new();
+    let mut models = BTreeSet::new();
     for job in jobs {
         let task_id = job.task_id.as_str();
-        match publish_job_vectors(shared, &job).await {
-            Ok((rows, key)) => println!("task={task_id} published {rows} vectors to {key}"),
+        let done = if refused.contains(task_id) { refuse_vectors(shared, &job).await } else { publish_job_vectors(shared, &job).await };
+        match done {
+            Ok(()) => {}
             Err(Fault::Gone(why)) => {
                 eprintln!("task={task_id} embed upload lost: {why}");
                 if let Err(error) = shared.queue.mark_lost(task_id).await {
@@ -325,16 +337,65 @@ async fn publish_vectors(shared: &Shared, jobs: Vec<Job>) -> usize {
             tokio::spawn(async move { temp.delete(&key).await });
         }
     }
+    fill_vector_holes(shared, models).await;
+    finished
+}
+
+async fn fill_vector_holes(shared: &Shared, models: BTreeSet<String>) {
     for model in models {
         if let Err(error) = Feed::vectors(&model).fill_holes(&shared.pages, shared.redis()).await {
             eprintln!("filling holes in the {model} vectors feed failed: {error:#}");
         }
     }
-    finished
 }
 
-/// One embed job's vector file, written and numbered in its model's feed: the rows and the file's key.
-async fn publish_job_vectors(shared: &Shared, job: &Job) -> Result<(usize, String), Fault> {
+/// A job taken back before publishing sends its pages back to the planner; vectors of it published meanwhile are withdrawn instead.
+async fn refuse_vectors(shared: &Shared, job: &Job) -> Result<(), Fault> {
+    let retry = |error: anyhow::Error| Fault::Retry(format!("{error:#}"));
+    if !take_back_vectors(shared, std::slice::from_ref(&job.task_id)).await.map_err(retry)?.is_empty() {
+        return Ok(());
+    }
+    shared.queue.drop_pages(job.input_key.as_deref().unwrap_or_default(), &job.pages).await.map_err(retry)?;
+    println!("task={} taken back before publishing; {} pages sent back to the planner", job.task_id, job.pages.len());
+    Ok(())
+}
+
+/// Withdraws the published vectors of these tasks with a `task_withdrawn` row for each in its model's feed, and sends their pages back to the planner; the models written to.
+async fn take_back_vectors(shared: &Shared, task_ids: &[String]) -> Result<BTreeSet<String>> {
+    let published = shared.queue.published_vectors(task_ids).await?;
+    let mut by_model: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
+    for (task_id, remembered) in &published {
+        by_model.entry(remembered.model.clone()).or_default().push((task_id.clone(), remembered.miner.clone()));
+    }
+    let now = now_us();
+    for (model, tasks) in &by_model {
+        let (rows, taken, published_at) = (tasks.len(), tasks.clone(), iso(now));
+        let file = tokio::task::spawn_blocking(move || vectors::encode_withdrawn(&taken, &published_at)).await??;
+        let key = vectors::file_key(model, &day(now), &uuid::Uuid::new_v4().simple().to_string());
+        shared.pages.put(&key, Bytes::from(file), PARQUET, None).await.with_context(|| format!("writing {key}"))?;
+        let seq = Feed::vectors(model).number(&shared.pages, shared.redis(), &key, rows).await?;
+        println!("withdrew the vectors of {rows} tasks in {model} vectors file #{seq}");
+    }
+    for (task_id, remembered) in published {
+        let pages = match shared.pages.get(&remembered.key).await {
+            Ok(body) => tokio::task::spawn_blocking(move || vectors::pages(body)).await?.unwrap_or_else(|error| {
+                eprintln!("task={task_id} vector file {} unreadable; its pages are not sent back: {error:#}", remembered.key);
+                Vec::new()
+            }),
+            Err(r2::Error::Missing) => {
+                eprintln!("task={task_id} vector file {} is gone; its pages are not sent back", remembered.key);
+                Vec::new()
+            }
+            Err(error) => bail!("reading {}: {error}", remembered.key),
+        };
+        shared.queue.drop_pages(&remembered.input_key, &pages).await?;
+        shared.queue.forget_vectors(&task_id).await?;
+    }
+    Ok(by_model.into_keys().collect())
+}
+
+/// One embed job's vector file, written, numbered in its model's feed and remembered for take-backs; pages with a malformed vector are left out, sent back to the planner and reported.
+async fn publish_job_vectors(shared: &Shared, job: &Job) -> Result<(), Fault> {
     let missing = |what: &str| Fault::Retry(format!("an embed job without {what}"));
     let (key, input_key, model) = (
         job.key.as_deref().ok_or_else(|| missing("an upload key"))?,
@@ -354,24 +415,41 @@ async fn publish_job_vectors(shared: &Shared, job: &Job) -> Result<(usize, Strin
     };
     let (upload, input) = (read(key.to_string()).await?, read(input_key.to_string()).await?);
     let now = now_us();
-    let (task_id, miner) = (job.task_id.clone(), job.miner.clone().unwrap_or_default());
+    let (task_id, miner) = (job.task_id.as_str(), job.miner.as_deref().unwrap_or_default());
+    let (writing, writer, published_at) = (task_id.to_string(), miner.to_string(), iso(now));
     let encoded = tokio::task::spawn_blocking(move || {
-        let rows = vectors::join(input, upload)?;
-        Ok::<_, anyhow::Error>((rows.len(), vectors::encode(&rows, &task_id, &miner, &iso(now))?))
+        let joined = vectors::join(input, &upload)?;
+        let file = if joined.rows.is_empty() { None } else { Some(vectors::encode(&joined.rows, &writing, &writer, &published_at)?) };
+        Ok::<_, anyhow::Error>((joined, file))
     })
     .await
     .map_err(|error| Fault::Retry(format!("joining the vectors: {error}")))?;
-    let (rows, file) = encoded.map_err(|error| {
-        eprintln!("task={} vectors refused: {error:#}", job.task_id);
+    let (joined, file) = encoded.map_err(|error| {
+        eprintln!("task={task_id} vectors refused: {error:#}");
         Fault::Gone("unreadable")
     })?;
-    let file_key = vectors::file_key(model, &day(now), &uuid::Uuid::new_v4().simple().to_string());
-    shared.pages.put(&file_key, Bytes::from(file), PARQUET, None).await.map_err(|error| Fault::Retry(format!("writing {file_key}: {error}")))?;
-    Feed::vectors(model)
-        .number(&shared.pages, shared.redis(), &file_key, rows)
-        .await
-        .map_err(|error| Fault::Retry(format!("numbering {file_key}: {error:#}")))?;
-    Ok((rows, file_key))
+    let retry = |error: anyhow::Error| Fault::Retry(format!("{error:#}"));
+    if let Some(file) = file {
+        let file_key = vectors::file_key(model, &day(now), &uuid::Uuid::new_v4().simple().to_string());
+        shared.pages.put(&file_key, Bytes::from(file), PARQUET, None).await.map_err(|error| Fault::Retry(format!("writing {file_key}: {error}")))?;
+        Feed::vectors(model)
+            .number(&shared.pages, shared.redis(), &file_key, joined.rows.len())
+            .await
+            .map_err(|error| Fault::Retry(format!("numbering {file_key}: {error:#}")))?;
+        let published = PublishedVectors { model: model.into(), key: file_key.clone(), miner: miner.into(), input_key: input_key.into() };
+        shared.queue.remember_vectors(task_id, &published).await.map_err(retry)?;
+        println!("task={task_id} published {} vectors to {file_key}", joined.rows.len());
+        // A take-back that came while the file was written found nothing to withdraw yet.
+        if shared.queue.withdrawn_among(&[task_id]).await.map_err(retry)?.contains(task_id) {
+            take_back_vectors(shared, std::slice::from_ref(&job.task_id)).await.map_err(retry)?;
+        }
+    }
+    if joined.malformed > 0 {
+        shared.queue.drop_pages(input_key, &joined.dropped).await.map_err(retry)?;
+        shared.queue.note_malformed(task_id, miner, joined.malformed).await.map_err(retry)?;
+        eprintln!("task={task_id} has {} malformed vectors; {} pages left out and sent back to the planner", joined.malformed, joined.dropped.len());
+    }
+    Ok(())
 }
 
 /// What became of every URL, for the bot; a failure here is logged and the batch still finishes.

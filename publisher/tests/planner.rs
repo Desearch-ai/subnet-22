@@ -21,7 +21,7 @@ use redis::AsyncCommands;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
-const REDIS: &str = "redis://127.0.0.1:6379/13";
+const REDIS: &str = "redis://127.0.0.1:6379/12";
 
 fn record(url: &str, text: &str, page_type: &str, lang: &str) -> Record {
     Record {
@@ -149,11 +149,15 @@ fn settings(dir: PathBuf, pages_per_hour: f64, start_after: i64) -> Settings {
     }
 }
 
-async fn redis_db() -> Option<ConnectionManager> {
+static REDIS_TURN: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// The test database, emptied, held by one test at a time.
+async fn redis_db() -> Option<(tokio::sync::MutexGuard<'static, ()>, ConnectionManager)> {
+    let turn = REDIS_TURN.lock().await;
     let client = redis::Client::open(REDIS).ok()?;
     let mut redis = tokio::time::timeout(Duration::from_secs(2), client.get_connection_manager()).await.ok()?.ok()?;
     let () = redis::cmd("FLUSHDB").query_async(&mut redis).await.ok()?;
-    Some(redis)
+    Some((turn, redis))
 }
 
 fn input_rows(file: Bytes) -> Vec<(String, String, i32)> {
@@ -168,7 +172,7 @@ fn input_rows(file: Bytes) -> Vec<(String, String, i32)> {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn published_pages_become_inputs_once_per_version_within_the_budget_and_the_room() {
-    let Some(mut redis) = redis_db().await else {
+    let Some((_turn, mut redis)) = redis_db().await else {
         eprintln!("skipped: no Redis on {REDIS}");
         return;
     };
@@ -264,4 +268,29 @@ async fn published_pages_become_inputs_once_per_version_within_the_budget_and_th
     log(&pages, 5, vec![page(1, &article(40), "article", "en")]).await;
     waited.pass().await.unwrap();
     assert_eq!((waited.counts.dropped, waited.counts.planned), (1, 4), "pages of an input the task API dropped are planned again");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_page_the_publisher_sends_back_is_planned_again_alone() {
+    let Some((_turn, mut redis)) = redis_db().await else {
+        eprintln!("skipped: no Redis on {REDIS}");
+        return;
+    };
+    let dir = scratch("sent-back");
+    let stub = stub::start(dir.join("r2"), "127.0.0.1:0").await.unwrap();
+    let (pages, temp) = (bucket(stub.addr, "desearch-pages"), bucket(stub.addr, "subnet-22"));
+    let page = |n: usize| record(&format!("https://news.example/story/{n}"), &article(2), "article", "en");
+    log(&pages, 1, vec![page(0), page(1)]).await;
+    let mut planner = Planner::new(settings(dir.join("state"), 3600.0, 0), pages.clone(), temp.clone(), redis.clone(), Room::Fixed(5)).await.unwrap();
+    planner.pass().await.unwrap();
+    planner.flush().await.unwrap();
+    assert_eq!((planner.counts.planned, planner.hand_over().await.unwrap()), (2, 1));
+
+    let malformed = page(0);
+    let one = json!({"page_key": page_key(&malformed.url).unwrap(), "content_sha1": malformed.content_sha1, "url": malformed.url});
+    let _: i64 = redis.rpush(EMBED_DROPPED, json!({"input_key": "embed/inputs/t1.parquet", "pages": [one]}).to_string()).await.unwrap();
+    log(&pages, 2, vec![page(0), page(1)]).await;
+    planner.pass().await.unwrap();
+    assert_eq!((planner.counts.dropped, planner.counts.planned, planner.counts.unchanged), (1, 3, 1), "only the page sent back is planned again");
+    let _ = std::fs::remove_dir_all(&dir);
 }

@@ -7,7 +7,10 @@ use anyhow::{Context, Result};
 use base64::Engine;
 use redis::aio::ConnectionManager;
 use redis::{AsyncCommands, Script};
+use serde::{Deserialize, Serialize};
+use serde_json::json;
 
+use crate::planner::EMBED_DROPPED;
 use crate::worker::Job;
 
 pub const PUBLISH: &str = "publish:ready";
@@ -21,6 +24,10 @@ pub const LOST_TASKS: &str = "publish:lost:tasks";
 /// Tasks taken back, scored by when, so a publish job still queued for one is refused.
 pub const WITHDRAWN: &str = "publish:withdrawn";
 pub const WITHDRAWN_KEEP_S: f64 = 7.0 * 86_400.0;
+/// Followed by a task id: that embed task's published vectors, kept as long as a take-back is remembered.
+pub const EMBED_PUBLISHED: &str = "embed:published:";
+/// Embed tasks with malformed vectors, for the task API to check their miner's next uploads.
+pub const EMBED_MALFORMED: &str = "embed:malformed";
 /// Byte for byte the text in `app/queues.py`, so both load the script under one SHA.
 pub const PCLAIM: &str = "
 local jobs = {}
@@ -46,6 +53,15 @@ pub struct PublishQueue {
     claim_ttl: f64,
     claim: Script,
     ack: Script,
+}
+
+/// Where an embed task's vectors were published, so they can be withdrawn.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PublishedVectors {
+    pub model: String,
+    pub key: String,
+    pub miner: String,
+    pub input_key: String,
 }
 
 /// How far behind publishing is, as the queue shows it.
@@ -122,6 +138,46 @@ impl PublishQueue {
     /// Forgets tasks taken back more than `WITHDRAWN_KEEP_S` ago, when no job of theirs can still be queued.
     pub async fn forget_withdrawn(&self, now: f64) -> Result<()> {
         let _: i64 = self.redis.clone().zrembyscore(WITHDRAWN, "-inf", now - WITHDRAWN_KEEP_S).await?;
+        Ok(())
+    }
+
+    pub async fn remember_vectors(&self, task_id: &str, published: &PublishedVectors) -> Result<()> {
+        let () = self.redis.clone().set_ex(format!("{EMBED_PUBLISHED}{task_id}"), serde_json::to_string(published)?, WITHDRAWN_KEEP_S as u64).await?;
+        Ok(())
+    }
+
+    /// The published vectors remembered for these tasks.
+    pub async fn published_vectors(&self, task_ids: &[String]) -> Result<Vec<(String, PublishedVectors)>> {
+        if task_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let keys: Vec<String> = task_ids.iter().map(|task_id| format!("{EMBED_PUBLISHED}{task_id}")).collect();
+        let found: Vec<Option<String>> = redis::cmd("MGET").arg(&keys).query_async(&mut self.redis.clone()).await?;
+        let mut published = Vec::new();
+        for (task_id, raw) in task_ids.iter().zip(found) {
+            if let Some(raw) = raw {
+                published.push((task_id.clone(), serde_json::from_str(&raw).with_context(|| format!("the published vectors of {task_id}"))?));
+            }
+        }
+        Ok(published)
+    }
+
+    pub async fn forget_vectors(&self, task_id: &str) -> Result<()> {
+        let _: i64 = self.redis.clone().del(format!("{EMBED_PUBLISHED}{task_id}")).await?;
+        Ok(())
+    }
+
+    /// Sends pages back to the planner, as the task API sends a dropped task's.
+    pub async fn drop_pages<P: Serialize>(&self, input_key: &str, pages: &[P]) -> Result<()> {
+        if pages.is_empty() {
+            return Ok(());
+        }
+        let _: i64 = self.redis.clone().rpush(EMBED_DROPPED, json!({"input_key": input_key, "pages": pages}).to_string()).await?;
+        Ok(())
+    }
+
+    pub async fn note_malformed(&self, task_id: &str, miner: &str, malformed: usize) -> Result<()> {
+        let _: i64 = self.redis.clone().rpush(EMBED_MALFORMED, json!({"task_id": task_id, "miner": miner, "malformed": malformed}).to_string()).await?;
         Ok(())
     }
 

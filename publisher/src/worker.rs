@@ -35,6 +35,9 @@ pub struct Job {
     /// The embedding model an embed job's vectors come from.
     #[serde(default)]
     pub model: Option<String>,
+    /// An embed job's pages, as the planner listed them, sent back to it when the task is taken back before publishing.
+    #[serde(default)]
+    pub pages: Vec<Value>,
     #[serde(default)]
     pub urls: Vec<String>,
     #[serde(default)]
