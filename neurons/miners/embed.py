@@ -13,12 +13,10 @@ from yarl import URL
 from desearch import env
 from desearch.embedding import (
     INPUT_SCHEMA,
-    OUTPUT_SCHEMA,
     EmbeddingClient,
-    encode_vector,
+    encode_vectors,
     model_named,
     read_parquet,
-    write_parquet,
 )
 from desearch.kinds import EMBED
 from neurons.miners.config import ENV_FILE, Settings
@@ -124,14 +122,7 @@ class EmbedMiner(TaskWorker):
             vectors = await self.embedder.embed([row["text"] for row in rows])
             self.recent.append((len(rows), time.monotonic() - started))
         self.ahead.pop(task["task_id"], None)
-        out = write_parquet(
-            [
-                {"text_id": row["text_id"], "vector": encode_vector(vector)}
-                for row, vector in zip(rows, vectors, strict=True)
-            ],
-            OUTPUT_SCHEMA,
-        )
-        return rows, out
+        return rows, encode_vectors(vectors)
 
     async def download(self, url: str) -> bytes:
         if self.download_http is None:

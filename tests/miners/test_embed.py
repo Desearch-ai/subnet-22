@@ -4,16 +4,16 @@ import hashlib
 import time
 
 import numpy as np
+import pytest
 from aiohttp import web
 
 from desearch.embedding import (
     INPUT_SCHEMA,
     MODELS,
-    OUTPUT_SCHEMA,
     EmbeddingClient,
     EmbeddingModel,
     decode_vector,
-    read_parquet,
+    encode_vectors,
     write_parquet,
 )
 from neurons.miners.config import Settings
@@ -46,7 +46,7 @@ class Embedder:
     async def embed(self, texts):
         await asyncio.sleep(self.delay)
         self.texts += texts
-        return np.array([[i + 1.0, 0, 0, 0] for i in range(len(texts))])
+        return np.array([np.eye(4)[i % 4] * (i + 1) for i in range(len(texts))])
 
     async def aclose(self):
         pass
@@ -76,6 +76,7 @@ async def run_task(
 
     async def handler(request: web.Request) -> web.Response:
         if request.method == "PUT":
+            assert request.content_type == "application/octet-stream"
             uploaded.append(await request.read())
             return web.Response()
         return web.Response(body=GIVEN)
@@ -94,7 +95,7 @@ async def run_task(
             "upload": {
                 "url": base + "upload",
                 "key": "k1",
-                "content_type": "application/x",
+                "content_type": "application/octet-stream",
             },
         }
         try:
@@ -104,19 +105,41 @@ async def run_task(
     return api.posts, uploaded, embedder.texts
 
 
-def test_every_text_gets_a_unit_vector_and_the_task_completes():
+def test_the_upload_is_every_texts_unit_vector_in_the_inputs_row_order():
     posts, uploaded, texts = asyncio.run(run_task())
 
     assert texts == [row["text"] for row in INPUTS]
-    rows = read_parquet(uploaded[0], OUTPUT_SCHEMA)
-    assert [row["text_id"] for row in rows] == [row["text_id"] for row in INPUTS]
-    assert all(decode_vector(row["vector"], 4).tolist() == [1, 0, 0, 0] for row in rows)
+    assert len(uploaded[0]) == len(INPUTS) * MODEL.vector_bytes
+    slices = [
+        uploaded[0][i * MODEL.vector_bytes : (i + 1) * MODEL.vector_bytes]
+        for i in range(len(INPUTS))
+    ]
+    assert [decode_vector(raw, 4).tolist() for raw in slices] == [
+        [1, 0, 0, 0],
+        [0, 1, 0, 0],
+        [0, 0, 1, 0],
+    ]
     assert posts == [
         (
             "/v1/tasks/t1/complete",
             {"key": "k1", "rows": 3, "ok": 3, "errors": 0, "bytes": len(uploaded[0])},
         )
     ]
+
+
+def test_the_vectors_file_round_trips_each_vector_at_length_1():
+    vectors = np.random.default_rng(0).normal(size=(5, 2560)) * 7
+
+    raw = encode_vectors(vectors)
+
+    size = MODELS["desearch-4b-v1"].vector_bytes
+    assert size == 5120 and len(raw) == 5 * size
+    for i, vector in enumerate(vectors):
+        decoded = decode_vector(raw[i * size : (i + 1) * size], 2560)
+        assert np.linalg.norm(decoded) == pytest.approx(1.0, abs=1e-3)
+        assert decoded @ vector / np.linalg.norm(vector) == pytest.approx(1.0, abs=1e-3)
+    assert decode_vector(raw[: size - 2], 2560) is None
+    assert encode_vectors(np.empty((0, 2560))) == b""
 
 
 def test_a_task_for_another_model_is_handed_back():

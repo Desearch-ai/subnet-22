@@ -92,6 +92,7 @@ class Validator:
         background = [
             asyncio.create_task(self.sync_metagraph()),
             asyncio.create_task(self.sync_weights()),
+            asyncio.create_task(self.follow_upload_log()),
         ]
         try:
             await asyncio.gather(self.check_crawl_tasks(), self.check_embed_tasks())
@@ -137,7 +138,6 @@ class Validator:
             )
             account = ScrapingDogAccount(self.http, self.scrapingdog_key)
             await self.read_scrapingdog_account(validator, account)
-            following = asyncio.create_task(self.follow_upload_log(signer))
             watching = asyncio.create_task(
                 self.follow_scrapingdog_account(validator, account)
             )
@@ -146,7 +146,6 @@ class Validator:
                     *(validator.run(self.stopping) for _ in range(VALIDATION_JOBS))
                 )
             finally:
-                following.cancel()
                 watching.cancel()
                 await fetcher.aclose()
         log.info(
@@ -266,10 +265,13 @@ class Validator:
                 await asyncio.sleep(SIGNER_RETRY_S)
         return ""
 
-    async def follow_upload_log(self, signer: str) -> None:
-        """Every miner's uploads, from the log the task API signs into the uploads bucket."""
+    async def follow_upload_log(self) -> None:
+        """Every miner's uploads of both kinds, from the log the task API signs into the uploads bucket."""
         upload_log = UploadLog(
-            self.http, self.config.neuron.storage_url, signer, self.ledger
+            self.http,
+            self.config.neuron.storage_url,
+            await self.api_signer(),
+            self.ledger,
         )
         pruned_at = 0.0
         while not self.stopping.is_set():
@@ -310,12 +312,12 @@ class Validator:
         checker.provider_down = problem
 
     async def weights(self) -> np.ndarray | None:
-        """Crawl from every miner's logged uploads judged by this validator's own checks, embed from its own checks."""
-        paid = self.ledger.crawl_paid()
-        crawl = proportions({miner: found.rows for miner, found in paid.items()})
-        shares = {CRAWL: crawl} if crawl else {}
-        if embed := self.ledger.shares().get(EMBED):
-            shares[EMBED] = embed
+        """Each pool from every miner's logged uploads, judged by this validator's own checks."""
+        paid = {CRAWL: self.ledger.crawl_paid(), EMBED: self.ledger.embed_paid()}
+        shares = {}
+        for kind, found in paid.items():
+            if earned := proportions({m: f.amount for m, f in found.items()}):
+                shares[kind] = earned
         if not shares:
             log.warning(
                 "No paid work in the scoring window yet; all weight goes to burn"
@@ -327,15 +329,14 @@ class Validator:
     def report_window(self, shares: dict, paid: dict) -> None:
         """Each miner's share, its uploads, and what this validator's own checks of it found."""
         log.info(f"Scoring window, last {SHARE_WINDOW_H} h:")
-        for miner, found in sorted(paid.items(), key=lambda item: -item[1].rows):
-            share = shares.get(CRAWL, {}).get(miner, 0.0)
-            log.info(
-                f"  crawl {miner[:10]}: {found.uploads} uploads, checked {found.checked}"
-                f" ({found.failed} failed), paid at {found.rate:.2f},"
-                f" {found.rows:.0f} rows, share {share:.3f}"
-            )
-        for miner, share in sorted(shares.get(EMBED, {}).items(), key=lambda i: -i[1]):
-            log.info(f"  embed {miner[:10]}: share {share:.3f}")
+        for kind, unit in ((CRAWL, "rows"), (EMBED, "characters")):
+            for miner, found in sorted(paid[kind].items(), key=lambda i: -i[1].amount):
+                share = shares.get(kind, {}).get(miner, 0.0)
+                log.info(
+                    f"  {kind} {miner[:10]}: {found.uploads} uploads, checked {found.checked}"
+                    f" ({found.failed} failed), paid at {found.rate:.2f},"
+                    f" {found.amount:.0f} {unit}, share {share:.3f}"
+                )
 
     async def sync_weights(self) -> None:
         while True:

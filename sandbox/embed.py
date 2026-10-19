@@ -244,38 +244,47 @@ def describe(
     upload: str = "",
     details: str = "",
 ) -> str:
-    """One embed upload's verdict: the sample, the size, the time it took, and every text that did not match."""
+    """One embed upload's verdict: the sample, the size, the time it took, and every sampled text that did not match."""
+    result = {**task, **report}
     head = f"task {task['task_id']} miner {task['miner'][:8]}: {task['verdict'].upper()} ({task['reason']})"
-    if task.get("sampled"):
-        head += (
-            f", {task['matched']}/{task['sampled']} sampled texts matched,"
-            f" lowest similarity {report.get('min_similarity', '?')}"
-        )
-    else:
-        counts = [
-            f"{report[n]} {n}"
-            for n in ("missing", "duplicates", "malformed")
-            if report.get(n)
-        ]
-        head += f", {task['returned']} vectors returned" + "".join(
-            f", {c}" for c in counts
-        )
+    if result.get("sampled"):
+        head += f", {result['matched']}/{result['sampled']} sampled texts matched"
+        if result.get("malformed"):
+            head += f", {result['malformed']} malformed"
+        lowest = result.get("min_similarity", "?")
+        if lowest is not None:
+            head += f", lowest similarity {lowest}"
+    elif task["reason"] == "wrong_size":
+        head += ", the upload's size is not one vector for each text"
     size = f"  {texts:,} texts" + (
         f", {chars:,} characters" if chars is not None else ""
     )
     if task.get("claimed_at") and task.get("completed_at"):
         took = task["completed_at"] - task["claimed_at"]
         size += f", uploaded {took:.1f}s after the claim (limit {CLAIM_LIMIT_S}s)"
+    samples = report.get("samples", [])
     mismatched = sorted(
-        (s for s in report.get("samples", []) if s.get("outcome") == "mismatched"),
+        (s for s in samples if s.get("outcome") == "mismatched"),
         key=lambda s: s["similarity"],
     )
     problems = [
-        f"  {s.get('url', s['text_id'])} {s.get('kind', '')} {s.get('index', '')}:"
-        f" similarity {s['similarity']:.6f}"
-        for s in mismatched
+        f"  {origin(s)}: similarity {s['similarity']:.6f}" for s in mismatched
+    ] + [
+        f"  {origin(s)}: not a finite vector of length 1"
+        for s in samples
+        if s.get("outcome") == "malformed"
     ]
     return "\n".join([head, size, *problems, *where(upload, details)])
+
+
+def origin(sample: dict) -> str:
+    """The page and position of a sampled text, or its id when the set does not hold it."""
+    parts = (
+        sample.get("url", sample["text_id"]),
+        sample.get("kind"),
+        sample.get("position"),
+    )
+    return " ".join(str(part) for part in parts if part is not None)
 
 
 @dataclass
@@ -420,12 +429,8 @@ class EmbedSandbox(Sandbox):
                 ),
                 None,
             )
-            texts = (
-                given.texts
-                if given
-                else report.get("returned", 0) + report.get("missing", 0)
-            )
-            chars = given.chars if given else None
+            texts = given.texts if given else task.get("texts", 0)
+            chars = given.chars if given else task.get("chars")
             self.stats.setdefault(task["miner"], EmbedStats(time.time())).add(
                 task["verdict"], texts, chars or 0
             )
@@ -445,8 +450,8 @@ class EmbedSandbox(Sandbox):
         row = self.texts.rows.get(sample.get("text_id", ""))
         if row is None:
             return {}
-        found = {"url": row["url"], "kind": row["kind"], "index": row["index"]}
-        if sample.get("outcome") == "mismatched":
+        found = {"url": row["url"], "kind": row["kind"], "position": row["index"]}
+        if sample.get("outcome") in ("mismatched", "malformed"):
             found["text"] = row["text"]
         return found
 

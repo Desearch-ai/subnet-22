@@ -20,6 +20,10 @@ class EmbeddingModel:
     dims: int
     max_tokens: int
 
+    @property
+    def vector_bytes(self) -> int:
+        return self.dims * VECTOR_DTYPE.itemsize
+
 
 MODELS = {
     "desearch-4b-v1": EmbeddingModel(
@@ -43,7 +47,6 @@ INPUT_SCHEMA = pa.schema(
         ("text", pa.large_string()),
     ]
 )
-OUTPUT_SCHEMA = pa.schema([("text_id", pa.string()), ("vector", pa.binary())])
 VECTOR_DTYPE = np.dtype("<f2")
 MAX_DECODED_BYTES = 256_000_000
 
@@ -59,6 +62,11 @@ def model_named(name: str) -> EmbeddingModel:
 def encode_vector(vector: np.ndarray) -> bytes:
     unit = vector / max(float(np.linalg.norm(vector)), 1e-12)
     return unit.astype(VECTOR_DTYPE).tobytes()
+
+
+def encode_vectors(vectors: np.ndarray) -> bytes:
+    """An embed upload: every vector at length 1, in the input's row order, with nothing around them."""
+    return b"".join(encode_vector(vector) for vector in vectors)
 
 
 def decode_vector(raw: bytes | None, dims: int) -> np.ndarray | None:

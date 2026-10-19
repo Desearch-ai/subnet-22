@@ -5,13 +5,13 @@ import base64
 import hashlib
 import logging
 import random
+from collections import Counter
 
 import numpy as np
 
 from desearch.client import TaskApiError
 from desearch.embedding import (
     INPUT_SCHEMA,
-    OUTPUT_SCHEMA,
     EmbeddingClient,
     EmbeddingModel,
     decode_vector,
@@ -28,6 +28,7 @@ LONG_SAMPLES = 6
 LONG_CHARS = 6000
 MATCH_SIMILARITY = 0.999
 NORM_TOLERANCE = 0.01
+RANGE_READS = 16
 # Another validator's request for the same upload is being embedded; it takes seconds.
 BUSY_WAIT_S = 60.0
 BUSY_RETRY_MAX_S = 5.0
@@ -37,43 +38,16 @@ class ReferenceRefused(Exception):
     """The task API gives no reference vectors for this upload; the model server is not at fault."""
 
 
-def check_rows(
-    inputs: list[dict], upload: bytes | None, dims: int
-) -> tuple[dict, dict[str, np.ndarray]]:
-    """Counts for every row of the upload, and the usable vectors by text id."""
-    counts = {"returned": 0, "missing": 0, "duplicates": 0, "malformed": 0}
-    if upload is None:
-        return {**counts, "verdict": "fail", "reason": "unreadable"}, {}
-    try:
-        rows = read_parquet(upload, OUTPUT_SCHEMA)
-    except ValueError:
-        return {**counts, "verdict": "fail", "reason": "unreadable"}, {}
-
-    wanted = {row["text_id"] for row in inputs}
-    vectors: dict[str, np.ndarray] = {}
-    seen: set[str] = set()
-    for row in rows:
-        text_id = row["text_id"]
-        if text_id in seen or text_id not in wanted:
-            counts["duplicates"] += 1
-            continue
-        seen.add(text_id)
-        vector = decode_vector(row["vector"], dims)
-        if (
-            vector is None
-            or not np.all(np.isfinite(vector))
-            or abs(float(np.linalg.norm(vector)) - 1.0) > NORM_TOLERANCE
-        ):
-            counts["malformed"] += 1
-            continue
-        vectors[text_id] = vector
-    counts["returned"] = len(seen)
-    counts["missing"] = len(wanted - seen)
-    if counts["duplicates"] or counts["malformed"]:
-        return {**counts, "verdict": "fail", "reason": "vectors_malformed"}, vectors
-    if counts["missing"]:
-        return {**counts, "verdict": "fail", "reason": "vectors_missing"}, vectors
-    return counts, vectors
+def unit_vector(raw: bytes, dims: int) -> np.ndarray | None:
+    """The vector in one slice of an upload, or None when it is not finite and of length 1."""
+    vector = decode_vector(raw, dims)
+    if (
+        vector is None
+        or not np.all(np.isfinite(vector))
+        or abs(float(np.linalg.norm(vector)) - 1.0) > NORM_TOLERANCE
+    ):
+        return None
+    return vector
 
 
 def pick_samples(
@@ -90,31 +64,53 @@ def pick_samples(
 
 
 def compare(
-    picked: list[dict], vectors: dict[str, np.ndarray], reference: np.ndarray
+    picked: list[dict],
+    indexes: list[int],
+    vectors: list[np.ndarray | None],
+    reference: np.ndarray,
 ) -> dict:
+    """Each sampled vector against the reference vectors of the well-formed ones, in order."""
+    expected = iter(reference)
     samples = []
-    for row, expected in zip(picked, reference, strict=True):
-        expected = expected / max(float(np.linalg.norm(expected)), 1e-12)
-        mine = vectors[row["text_id"]]
-        mine = mine / max(float(np.linalg.norm(mine)), 1e-12)
-        similarity = float(np.dot(mine, expected))
+    for row, index, vector in zip(picked, indexes, vectors, strict=True):
+        sample = {"text_id": row["text_id"], "index": index}
+        if vector is None:
+            samples.append({**sample, "outcome": "malformed", "similarity": None})
+            continue
+        want = next(expected)
+        want = want / max(float(np.linalg.norm(want)), 1e-12)
+        mine = vector / max(float(np.linalg.norm(vector)), 1e-12)
+        similarity = float(np.dot(mine, want))
         outcome = "matched" if similarity >= MATCH_SIMILARITY else "mismatched"
         samples.append(
-            {
-                "text_id": row["text_id"],
-                "outcome": outcome,
-                "similarity": round(similarity, 6),
-            }
+            {**sample, "outcome": outcome, "similarity": round(similarity, 6)}
         )
-    mismatched = sum(s["outcome"] == "mismatched" for s in samples)
+    counts = Counter(sample["outcome"] for sample in samples)
+    if counts["malformed"]:
+        reason = "vectors_malformed"
+    elif counts["mismatched"]:
+        reason = "vectors_mismatch"
+    else:
+        reason = "ok"
+    similarities = [s["similarity"] for s in samples if s["similarity"] is not None]
     return {
+        "verdict": "pass" if reason == "ok" else "fail",
+        "reason": reason,
         "sampled": len(samples),
-        "matched": len(samples) - mismatched,
-        "mismatched": mismatched,
-        "min_similarity": min((s["similarity"] for s in samples), default=None),
-        "verdict": "fail" if mismatched else "pass",
-        "reason": "vectors_mismatch" if mismatched else "ok",
+        "matched": counts["matched"],
+        "mismatched": counts["mismatched"],
+        "malformed": counts["malformed"],
+        "min_similarity": min(similarities, default=None),
         "samples": samples,
+    }
+
+
+def wrong_size() -> dict:
+    """An upload that is not one vector for each text of the input."""
+    return {
+        **compare([], [], [], np.empty(0)),
+        "verdict": "fail",
+        "reason": "wrong_size",
     }
 
 
@@ -143,7 +139,9 @@ class ApiReference:
         ids = [row["text_id"] for row in picked]
         answer = await self.ask(f"/v1/embed/{job['task_id']}/reference", ids)
         given = {
-            row["text_id"]: np.frombuffer(base64.b64decode(row["embedding"]), dtype="<f4")
+            row["text_id"]: np.frombuffer(
+                base64.b64decode(row["embedding"]), dtype="<f4"
+            )
             for row in answer["vectors"]
         }
         vectors = [given[text_id] for text_id in ids]
@@ -207,7 +205,6 @@ class EmbedValidator(TaskChecker):
 
         try:
             given = await self.download(job["input"]["url"], task_id)
-            upload = await self.download(job["download_url"], task_id)
         except UploadMissing:
             await self.hand_back(task_id, "missing")
             return {}
@@ -221,11 +218,29 @@ class EmbedValidator(TaskChecker):
             return {}
 
         inputs = read_parquet(given, INPUT_SCHEMA)
-        result, vectors = check_rows(inputs, upload, reference.model.dims)
-        if "verdict" not in result:
-            picked = pick_samples(inputs, job["seed"])
+        picked = pick_samples(inputs, job["seed"])
+        index_of = {row["text_id"]: index for index, row in enumerate(inputs)}
+        indexes = [index_of[row["text_id"]] for row in picked]
+        size = reference.model.vector_bytes
+        try:
+            slices = await self.read_vectors(job, indexes, size)
+        except UploadMissing:
+            await self.hand_back(task_id, "missing")
+            return {}
+        except DownloadFailed as exc:
+            log.warning("%s, trying again later", exc)
+            self.defer(task_id)
+            return {}
+
+        if any(total != len(inputs) * size for _, total in slices):
+            result = wrong_size()
+        else:
+            vectors = [unit_vector(raw, reference.model.dims) for raw, _ in slices]
+            formed = [row for row, v in zip(picked, vectors) if v is not None]
             try:
-                expected = await reference.vectors(job, picked)
+                expected = (
+                    await reference.vectors(job, formed) if formed else np.empty(0)
+                )
             except ReferenceRefused as exc:
                 log.warning("task=%s no reference vectors: %s", task_id, exc)
                 self.defer(task_id)
@@ -236,19 +251,41 @@ class EmbedValidator(TaskChecker):
                 self.defer(task_id)
                 return {}
             self.provider_worked()
-            result |= compare(picked, vectors, expected)
+            result = compare(picked, indexes, vectors, expected)
 
         await self.submit_verdict(job, result)
         self.note_verdict(job, result)
         log.info(
-            "task=%s miner=%s embed %d texts, matched %d/%d (min %s) verdict=%s reason=%s",
+            "task=%s miner=%s embed %d texts, matched %d/%d (min %s), %d malformed,"
+            " verdict=%s reason=%s",
             task_id,
             job["miner"][:10],
-            result["returned"],
-            result.get("matched", 0),
-            result.get("sampled", 0),
-            result.get("min_similarity"),
+            len(inputs),
+            result["matched"],
+            result["sampled"],
+            result["min_similarity"],
+            result["malformed"],
             result["verdict"],
             result["reason"],
         )
         return result
+
+    async def read_vectors(
+        self, job: dict, indexes: list[int], size: int
+    ) -> list[tuple[bytes, int]]:
+        """Each sampled row's slice of the upload and the upload's total size, a few reads at a time."""
+        slots = asyncio.Semaphore(RANGE_READS)
+
+        async def read(index: int) -> tuple[bytes, int]:
+            async with slots:
+                return await self.read_range(
+                    job["download_url"], index * size, size, job["task_id"]
+                )
+
+        found = await asyncio.gather(
+            *(read(index) for index in indexes), return_exceptions=True
+        )
+        for item in found:
+            if isinstance(item, BaseException):
+                raise item
+        return found

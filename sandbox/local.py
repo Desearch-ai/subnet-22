@@ -314,8 +314,9 @@ def api_env(
         "TASK_API_TASK_URLS": str(int(task_size)),
         "TASK_API_READS_PER_MINUTE": "6000",
         "TASK_API_LOG_READS_PER_MINUTE": "6000",
-        # Every upload is checked, so a miner sees each verdict.
+        # Every upload of both kinds is checked, so a miner sees each verdict.
         "TASK_API_CHECK_SHARE": "1",
+        "TASK_API_EMBED_CHECK_SHARE": "1",
         # No publisher runs here to take the passed work, so its backlog never closes the queue.
         "TASK_API_MAX_BACKLOG_S": "0",
         "TASK_API_EMBED_TASKS": "1" if embed else "0",

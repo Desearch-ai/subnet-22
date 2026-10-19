@@ -7,6 +7,7 @@ import time
 from collections import deque
 
 import aiohttp
+from aiohttp import hdrs
 from yarl import URL
 
 from desearch.client import TaskApiError
@@ -230,32 +231,55 @@ class TaskChecker:
         """What this validator itself decided, kept for its own weights."""
         if self.ledger is None:
             return
-        kind = job.get("kind", CRAWL)
-        if kind == EMBED:
-            credited, assigned = embed_credit(job, result), job.get("texts", 0)
-        else:
-            credited, assigned = crawl_credit(result), len(set(job["urls"]))
+        if job.get("kind", CRAWL) == EMBED:
+            self.note_embed_verdict(job, result)
+            return
+        credited, assigned = crawl_credit(result), len(set(job["urls"]))
+        returned = result.get("returned", 0)
         self.ledger.record(
             job["task_id"],
-            kind,
+            CRAWL,
             job["miner"],
             result["verdict"],
             credited,
             assigned,
-            result.get("returned", 0),
+            returned,
         )
-        if kind == CRAWL:
-            returned = result.get("returned", 0)
-            self.ledger.record_check(
-                job["key"],
-                job["miner"],
-                job["completed_at"],
-                result["verdict"],
-                credited,
-                returned,
-                returned - result.get("error_rows", 0),
-                assigned,
-            )
+        self.ledger.record_check(
+            job["key"],
+            job["miner"],
+            job["completed_at"],
+            result["verdict"],
+            credited,
+            returned,
+            returned - result.get("error_rows", 0),
+            assigned,
+        )
+
+    def note_embed_verdict(self, job: dict, result: dict) -> None:
+        """Counted in characters: every one on a pass, none on a fail."""
+        credited, chars = embed_credit(job, result), int(job.get("chars", 0))
+        texts = job.get("texts", 0)
+        self.ledger.record(
+            job["task_id"],
+            EMBED,
+            job["miner"],
+            result["verdict"],
+            credited,
+            texts,
+            texts,
+        )
+        self.ledger.record_check(
+            job["key"],
+            job["miner"],
+            job["completed_at"],
+            result["verdict"],
+            credited,
+            chars,
+            chars,
+            chars,
+            kind=EMBED,
+        )
 
     def provider_failed(self) -> None:
         """Several failures in a row mean our side is down, so back off before trying again."""
@@ -292,6 +316,42 @@ class TaskChecker:
             if status < 500:
                 break
         raise DownloadFailed(f"task={task_id} download failed: {problem}")
+
+    async def read_range(
+        self, url: str, start: int, size: int, task_id: str
+    ) -> tuple[bytes, int]:
+        """Bytes start to start + size - 1 of an object and its total size; no bytes when it ends before start."""
+        headers = {
+            hdrs.RANGE: f"bytes={start}-{start + size - 1}",
+            hdrs.ACCEPT_ENCODING: "identity",
+        }
+        problem = ""
+        for attempt in range(DOWNLOAD_ATTEMPTS):
+            if attempt:
+                await asyncio.sleep(RETRY_DELAY_S)
+            try:
+                async with self.http.get(
+                    URL(url, encoded=True), headers=headers, auto_decompress=False
+                ) as response:
+                    status = response.status
+                    total = object_size(response.headers.get(hdrs.CONTENT_RANGE, ""))
+                    if status == 416:
+                        return b"", total or 0
+                    if status == 206 and total is not None:
+                        body = await response.read()
+                        if len(body) == min(size, total - start):
+                            return body, total
+                        problem = f"{len(body)} bytes for a range of {size}"
+                        continue
+            except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+                problem = type(exc).__name__
+                continue
+            if status == 404:
+                raise UploadMissing(task_id)
+            problem = f"HTTP {status} to a range request"
+            if status < 500:
+                break
+        raise DownloadFailed(f"task={task_id} range read failed: {problem}")
 
     async def _read_capped(self, response: aiohttp.ClientResponse) -> bytes | None:
         if (response.content_length or 0) > self.max_download:
@@ -333,6 +393,13 @@ class TaskChecker:
                     raise
             await asyncio.sleep(RETRY_DELAY_S)
         return False
+
+
+def object_size(content_range: str) -> int | None:
+    """The total in a Content-Range header such as bytes 0-9/100 or bytes */100."""
+    unit, _, span = content_range.partition(" ")
+    total = span.rpartition("/")[2]
+    return int(total) if unit == "bytes" and total.isdigit() else None
 
 
 async def sleep_unless_stopped(stop: asyncio.Event, seconds: float) -> None:

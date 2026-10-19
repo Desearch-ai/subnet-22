@@ -9,7 +9,6 @@ from aiohttp import web
 
 from desearch.embedding import (
     INPUT_SCHEMA,
-    OUTPUT_SCHEMA,
     EmbeddingModel,
     encode_vector,
     write_parquet,
@@ -19,14 +18,16 @@ from neurons.validators.embed import (
     LONG_CHARS,
     LONG_SAMPLES,
     MATCH_SIMILARITY,
+    RANGE_READS,
     EmbedValidator,
-    check_rows,
     pick_samples,
 )
+from neurons.validators.ledger import Ledger
 from tests.local_http import serving
 
 DIMS = 8
 MODEL = EmbeddingModel("tiny", "tiny/tiny", "rev", DIMS, 16)
+SLICE = MODEL.vector_bytes
 INPUTS = [
     {
         "text_id": f"p{i}",
@@ -39,6 +40,9 @@ INPUTS = [
     }
     for i in range(60)
 ]
+GIVEN = write_parquet(INPUTS, INPUT_SCHEMA)
+SAMPLED = {row["text_id"] for row in pick_samples(INPUTS, "seed")}
+UNSAMPLED = next(row for row in INPUTS if row["text_id"] not in SAMPLED)
 
 
 def truth(text: str) -> np.ndarray:
@@ -48,38 +52,19 @@ def truth(text: str) -> np.ndarray:
 
 
 def upload(rows=INPUTS, vector=lambda row: encode_vector(truth(row["text"]))) -> bytes:
-    return write_parquet(
-        [{"text_id": row["text_id"], "vector": vector(row)} for row in rows],
-        OUTPUT_SCHEMA,
+    return b"".join(vector(row) for row in rows)
+
+
+def but(text_ids: set[str], raw: bytes):
+    """Honest vectors except raw for the given texts."""
+    return (
+        lambda row: raw
+        if row["text_id"] in text_ids
+        else encode_vector(truth(row["text"]))
     )
 
 
-def test_every_vector_present_well_formed_and_unit_length_passes_the_row_check():
-    counts, vectors = check_rows(INPUTS, upload(), DIMS)
-
-    assert counts == {"returned": 60, "missing": 0, "duplicates": 0, "malformed": 0}
-    assert len(vectors) == 60
-
-
-@pytest.mark.parametrize(
-    "body, reason",
-    [
-        (upload(INPUTS[:-1]), "vectors_missing"),
-        (upload(INPUTS + INPUTS[:1]), "vectors_malformed"),
-        (upload(vector=lambda row: b"\x00" * 6), "vectors_malformed"),
-        (upload(vector=lambda row: encode_vector(np.ones(DIMS))), None),
-        (
-            upload(vector=lambda row: (np.ones(DIMS) * 3).astype("<f2").tobytes()),
-            "vectors_malformed",
-        ),
-        (b"not parquet", "unreadable"),
-        (None, "unreadable"),
-    ],
-)
-def test_a_broken_upload_fails_before_any_sample_is_recomputed(body, reason):
-    counts, _ = check_rows(INPUTS, body, DIMS)
-
-    assert counts.get("reason") == reason
+NAN = np.full(DIMS, np.nan).astype("<f2").tobytes()
 
 
 def test_the_sample_is_fixed_by_its_seed_and_capped():
@@ -127,58 +112,172 @@ class Api:
         return {}
 
 
-async def judged(body: bytes, reference: Reference, given: bytes | None = None):
-    given = given or write_parquet(INPUTS, INPUT_SCHEMA)
+def stored(body: bytes | None, ranges: list, live: dict | None = None):
+    """Storage holding the input and the upload, answering range requests as R2 does."""
 
     async def handler(request: web.Request) -> web.Response:
-        return web.Response(body=given if request.path == "/input" else body)
+        if request.path == "/input":
+            return web.Response(body=GIVEN)
+        if body is None:
+            return web.Response(status=404)
+        asked = request.headers.get("Range")
+        ranges.append(asked)
+        if live is not None:
+            live["now"] += 1
+            live["most"] = max(live["most"], live["now"])
+            await asyncio.sleep(0.005)
+            live["now"] -= 1
+        if asked is None:
+            return web.Response(body=body)
+        start, end = (int(n) for n in asked.removeprefix("bytes=").split("-"))
+        if start >= len(body):
+            return web.Response(
+                status=416, headers={"Content-Range": f"bytes */{len(body)}"}
+            )
+        end = min(end, len(body) - 1)
+        return web.Response(
+            status=206,
+            body=body[start : end + 1],
+            headers={"Content-Range": f"bytes {start}-{end}/{len(body)}"},
+        )
 
-    async with serving(handler) as base, aiohttp.ClientSession() as http:
+    return handler
+
+
+async def judged(
+    body: bytes | None,
+    reference: Reference,
+    given: bytes = GIVEN,
+    ledger: Ledger | None = None,
+    live: dict | None = None,
+):
+    ranges: list = []
+    async with (
+        serving(stored(body, ranges, live)) as base,
+        aiohttp.ClientSession() as http,
+    ):
         job = {
             "task_id": "t1",
-            "key": "submitted/dt=2026-09-25/task=t1/5Miner-1-abcd1234.parquet",
+            "key": "submitted/dt=2026-09-25/task=t1/5Miner-1-abcd1234.bin",
             "kind": "embed",
             "miner": "5Miner",
             "model": "tiny",
             "seed": "seed",
             "texts": len(INPUTS),
-            "chars": 100,
+            "chars": 1000,
+            "completed_at": 100.0,
             "download_url": base + "upload",
             "input": {
                 "url": base + "input",
-                "sha256": hashlib.sha256(
-                    write_parquet(INPUTS, INPUT_SCHEMA)
-                ).hexdigest(),
+                "sha256": hashlib.sha256(given).hexdigest(),
             },
         }
         api = Api()
-        checker = EmbedValidator(api, http, {"tiny": reference})
+        checker = EmbedValidator(api, http, {"tiny": reference}, ledger=ledger)
         await checker.check(job)
-        return api.posts, checker
+        return api.posts, checker, ranges
 
 
-def test_honest_vectors_pass_on_a_recomputed_sample():
+def scored(body: bytes | None, reference: Reference | None = None) -> dict:
+    ((path, result),), _, _ = asyncio.run(judged(body, reference or Reference()))
+    assert path == "/v1/validation/t1/score"
+    return result
+
+
+def test_honest_vectors_pass_and_only_the_sampled_slices_are_read():
     reference = Reference()
 
-    ((path, result),), _ = asyncio.run(judged(upload(), reference))
+    ((_, result),), _, ranges = asyncio.run(judged(upload(), reference))
 
-    assert path == "/v1/validation/t1/score"
-    assert (result["verdict"], result["matched"]) == ("pass", EMBED_SAMPLES)
+    assert (result["verdict"], result["reason"]) == ("pass", "ok")
+    assert (result["sampled"], result["matched"]) == (EMBED_SAMPLES, EMBED_SAMPLES)
     assert result["min_similarity"] == pytest.approx(1.0, abs=1e-3)
     assert len(reference.asked) == EMBED_SAMPLES
+    rows = {row["text_id"]: i for i, row in enumerate(INPUTS)}
+    assert sorted(ranges) == sorted(
+        f"bytes={rows[t] * SLICE}-{rows[t] * SLICE + SLICE - 1}" for t in SAMPLED
+    ), "one range per sampled text, never the whole upload"
+    assert all(
+        sample["index"] == rows[sample["text_id"]] for sample in result["samples"]
+    )
+
+
+def test_the_result_holds_exactly_the_fields_the_task_api_takes():
+    result = scored(upload(vector=but({next(iter(SAMPLED))}, NAN)))
+
+    assert set(result) == {
+        "verdict",
+        "reason",
+        "sampled",
+        "matched",
+        "mismatched",
+        "malformed",
+        "min_similarity",
+        "samples",
+    }
+    assert all(
+        set(sample) == {"text_id", "index", "outcome", "similarity"}
+        for sample in result["samples"]
+    )
+    assert (
+        result["sampled"]
+        == len(result["samples"])
+        == (result["matched"] + result["mismatched"] + result["malformed"])
+    )
 
 
 def test_vectors_from_another_model_fail_as_a_mismatch():
-    other = upload(vector=lambda row: encode_vector(truth(row["text"] + " other")))
-
-    ((_, result),), _ = asyncio.run(judged(other, Reference()))
+    result = scored(
+        upload(vector=lambda row: encode_vector(truth(row["text"] + " other")))
+    )
 
     assert (result["verdict"], result["reason"]) == ("fail", "vectors_mismatch")
     assert result["mismatched"] == EMBED_SAMPLES
 
 
+@pytest.mark.parametrize(
+    "body",
+    [upload(INPUTS[:-1]), upload(INPUTS + INPUTS[:1]), upload() + b"\x00", b""],
+    ids=["one short", "one extra", "a byte extra", "empty"],
+)
+def test_an_upload_of_the_wrong_size_fails_without_asking_the_reference(body):
+    reference = Reference()
+
+    result = scored(body, reference)
+
+    assert (result["verdict"], result["reason"]) == ("fail", "wrong_size")
+    assert (result["sampled"], result["samples"]) == (0, [])
+    assert reference.asked == []
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [NAN, (np.ones(DIMS) * 3).astype("<f2").tobytes(), b"\x00" * SLICE],
+    ids=["nan", "not length 1", "zeros"],
+)
+def test_a_sampled_vector_that_is_not_a_finite_unit_vector_is_malformed(raw):
+    bad = next(iter(SAMPLED))
+    reference = Reference()
+
+    result = scored(upload(vector=but({bad}, raw)), reference)
+
+    assert (result["verdict"], result["reason"]) == ("fail", "vectors_malformed")
+    assert (result["malformed"], result["matched"]) == (1, EMBED_SAMPLES - 1)
+    (sample,) = [s for s in result["samples"] if s["outcome"] == "malformed"]
+    assert (sample["text_id"], sample["similarity"]) == (bad, None)
+    assert len(reference.asked) == EMBED_SAMPLES - 1, (
+        "only the well-formed are recomputed"
+    )
+
+
+def test_a_broken_vector_outside_the_sample_is_never_read():
+    result = scored(upload(vector=but({UNSAMPLED["text_id"]}, NAN)))
+
+    assert (result["verdict"], result["matched"]) == ("pass", EMBED_SAMPLES)
+
+
 def test_a_reference_outage_leaves_the_upload_for_later_instead_of_judging():
-    posts, checker = asyncio.run(judged(upload(), Reference(fail=True)))
+    posts, checker, _ = asyncio.run(judged(upload(), Reference(fail=True)))
 
     assert posts == [] and "t1" in checker.deferred
     assert checker.provider_failures == 1
@@ -187,34 +286,25 @@ def test_a_reference_outage_leaves_the_upload_for_later_instead_of_judging():
 def test_an_input_that_does_not_match_its_hash_is_our_problem_not_the_miners():
     swapped = write_parquet(INPUTS[:1], INPUT_SCHEMA)
 
-    posts, checker = asyncio.run(judged(upload(), Reference(), given=swapped))
+    posts, checker, ranges = asyncio.run(judged(upload(), Reference(), given=swapped))
 
-    assert posts == [] and "t1" in checker.deferred
+    assert posts == [] and "t1" in checker.deferred and ranges == []
 
 
-@pytest.mark.parametrize(
-    "body",
-    [
-        upload(),
-        upload(vector=lambda row: encode_vector(truth(row["text"] + " other"))),
-        upload(INPUTS[:-1]),
-        b"not parquet",
-    ],
-)
-def test_the_task_api_accepts_every_result_the_checker_sends(body, monkeypatch):
-    from pathlib import Path
+def test_a_lost_upload_is_handed_back_to_the_task_api():
+    posts, checker, _ = asyncio.run(judged(None, Reference()))
 
-    from neurons.validators.embed import compare
+    assert posts == [("/v1/validation/t1/release", {"reason": "missing"})]
+    assert "t1" in checker.deferred
 
-    monkeypatch.syspath_prepend(str(Path(__file__).parents[2] / "task-api"))
-    from app.models import EmbedScore
 
-    result, vectors = check_rows(INPUTS, body, DIMS)
-    if "verdict" not in result:
-        picked = pick_samples(INPUTS, "seed")
-        result |= compare(picked, vectors, np.array([truth(r["text"]) for r in picked]))
+def test_the_sampled_slices_are_read_a_few_at_a_time():
+    live = {"now": 0, "most": 0}
 
-    assert EmbedScore.model_validate(result).model_dump(exclude_unset=True) == result
+    ((_, result),), _, _ = asyncio.run(judged(upload(), Reference(), live=live))
+
+    assert result["verdict"] == "pass"
+    assert 1 < live["most"] <= RANGE_READS
 
 
 def test_a_vector_inflated_within_the_norm_tolerance_is_judged_on_its_cosine():
@@ -226,7 +316,7 @@ def test_a_vector_inflated_within_the_norm_tolerance_is_judged_on_its_cosine():
         unit = 0.982 * exact + np.sqrt(1 - 0.982**2) * other
         return (unit * 1.0089).astype("<f2").tobytes()
 
-    ((_, result),), _ = asyncio.run(judged(upload(vector=slanted), Reference()))
+    result = scored(upload(vector=slanted))
 
     assert (result["verdict"], result["reason"]) == ("fail", "vectors_mismatch")
     assert result["min_similarity"] < MATCH_SIMILARITY
@@ -241,14 +331,28 @@ def near(row, cosine: float) -> bytes:
 
 
 def test_vectors_a_little_off_the_model_fail_and_the_same_model_on_other_hardware_passes():
-    off = upload(vector=lambda row: near(row, 0.998))
-    same = upload(vector=lambda row: near(row, 0.99995))
-
-    ((_, failed),), _ = asyncio.run(judged(off, Reference()))
-    ((_, passed),), _ = asyncio.run(judged(same, Reference()))
+    failed = scored(upload(vector=lambda row: near(row, 0.998)))
+    passed = scored(upload(vector=lambda row: near(row, 0.99995)))
 
     assert (failed["verdict"], failed["reason"]) == ("fail", "vectors_mismatch")
     assert (passed["verdict"], passed["matched"]) == ("pass", EMBED_SAMPLES)
+
+
+def test_a_check_is_kept_in_characters_for_the_validators_own_weights():
+    ledger = Ledger(":memory:")
+    asyncio.run(judged(upload(), Reference(), ledger=ledger))
+
+    check = ledger.db.execute(
+        "SELECT kind, verdict, credited, returned, content, assigned FROM checks"
+    ).fetchone()
+    assert check == ("embed", "pass", 1000, 1000, 1000, 1000)
+
+    asyncio.run(judged(upload(INPUTS[:-1]), Reference(), ledger=ledger))
+    check = ledger.db.execute(
+        "SELECT kind, verdict, credited, assigned FROM checks"
+    ).fetchone()
+    assert check == ("embed", "fail", 0, 1000)
+    assert ledger.embed_paid(200.0)["5Miner"].amount == -1000
 
 
 def test_a_validator_without_a_model_server_gets_its_sample_from_the_task_api():
@@ -262,7 +366,12 @@ def test_a_validator_without_a_model_server_gets_its_sample_from_the_task_api():
             self.posts.append((path, body))
             return {
                 "vectors": [
-                    {"text_id": i, "embedding": base64.b64encode(truth(i).astype("<f4").tobytes()).decode()}
+                    {
+                        "text_id": i,
+                        "embedding": base64.b64encode(
+                            truth(i).astype("<f4").tobytes()
+                        ).decode(),
+                    }
                     for i in reversed(body["text_ids"])
                 ]
             }
@@ -272,7 +381,9 @@ def test_a_validator_without_a_model_server_gets_its_sample_from_the_task_api():
     vectors = asyncio.run(ApiReference(api, MODEL).vectors({"task_id": "t1"}, picked))
 
     assert api.posts == [("/v1/embed/t1/reference", {"text_ids": ["p0", "p1", "p2"]})]
-    assert np.allclose(vectors, [truth(row["text_id"]) for row in picked], atol=1e-6), "in the order asked"
+    assert np.allclose(vectors, [truth(row["text_id"]) for row in picked], atol=1e-6), (
+        "in the order asked"
+    )
 
 
 def test_the_task_api_reference_is_waited_for_while_another_validator_computes_it():
@@ -289,7 +400,12 @@ def test_the_task_api_reference_is_waited_for_while_another_validator_computes_i
                 raise answer
             return {
                 "vectors": [
-                    {"text_id": i, "embedding": base64.b64encode(truth(i).astype("<f4").tobytes()).decode()}
+                    {
+                        "text_id": i,
+                        "embedding": base64.b64encode(
+                            truth(i).astype("<f4").tobytes()
+                        ).decode(),
+                    }
                     for i in body["text_ids"]
                 ]
             }
@@ -306,7 +422,9 @@ def test_the_task_api_reference_is_waited_for_while_another_validator_computes_i
 
 
 @pytest.mark.parametrize("status", [409, 422, 429])
-def test_a_reference_refused_for_one_upload_defers_it_without_pausing_the_checks(status):
+def test_a_reference_refused_for_one_upload_defers_it_without_pausing_the_checks(
+    status,
+):
     from desearch.client import TaskApiError
     from neurons.validators.embed import ApiReference
 
@@ -315,7 +433,7 @@ def test_a_reference_refused_for_one_upload_defers_it_without_pausing_the_checks
             raise TaskApiError(status, "no")
 
     reference = ApiReference(Refusing(), MODEL)
-    posts, checker = asyncio.run(judged(upload(), reference))
+    posts, checker, _ = asyncio.run(judged(upload(), reference))
 
     assert posts == [] and "t1" in checker.deferred
     assert checker.provider_failures == 0

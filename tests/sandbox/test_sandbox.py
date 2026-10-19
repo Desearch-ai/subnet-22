@@ -27,6 +27,9 @@ def test_the_api_listens_on_its_port_inside_and_reaches_redis_and_storage_on_loc
     assert (found["TASK_API_DATA"], found["TASK_API_TASK_URLS"]) == ("/data", "100")
     assert (found["TASK_API_REGISTRY"], found["TASK_API_SEEDS"]) == ("local", "local")
     assert (found["TASK_API_GENESIS"], found["TASK_API_CHECK_SHARE"]) == ("5.0", "1")
+    assert found["TASK_API_EMBED_CHECK_SHARE"] == "1", (
+        "every embed upload is checked too"
+    )
     assert found["TASK_API_EMBED_TASKS"] == "0"
     assert (
         local.api_env(Ports(19000), 5.0, 100, embed=True)["TASK_API_EMBED_TASKS"] == "1"
@@ -471,7 +474,6 @@ EMBED_TASK = {
     "miner": "5GYoQ4rynWSzEBVTwKypeiK5AjhuB7KtSZwTbPgydvNqe8EY",
     "verdict": "fail",
     "reason": "vectors_mismatch",
-    "returned": 1043,
     "sampled": 48,
     "matched": 46,
     "mismatched": 2,
@@ -493,7 +495,7 @@ def test_an_embed_verdict_shows_the_sample_the_size_the_time_and_each_mismatch()
                 "similarity": 0.98,
                 "url": "https://w/B",
                 "kind": "passage",
-                "index": 3,
+                "position": 3,
             },
             {
                 "text_id": "c",
@@ -501,7 +503,7 @@ def test_an_embed_verdict_shows_the_sample_the_size_the_time_and_each_mismatch()
                 "similarity": 0.91,
                 "url": "https://w/C",
                 "kind": "page",
-                "index": 0,
+                "position": 0,
             },
         ],
     }
@@ -522,16 +524,47 @@ def test_an_embed_verdict_shows_the_sample_the_size_the_time_and_each_mismatch()
         "  details: /runs/e1.json",
     ]
 
-    missing = {
-        **EMBED_TASK,
-        "reason": "vectors_missing",
-        "sampled": 0,
-        "matched": 0,
-        "returned": 1000,
-    }
-    head = embed.describe(missing, {"missing": 43}, 1043, None).splitlines()
-    assert head[0].endswith("FAIL (vectors_missing), 1000 vectors returned, 43 missing")
+    malformed = {**EMBED_TASK, "reason": "vectors_malformed", "matched": 47}
+    lines = embed.describe(
+        malformed,
+        {
+            "malformed": 1,
+            "min_similarity": 0.9999,
+            "samples": [
+                {"text_id": "d", "outcome": "malformed", "similarity": None, "index": 7}
+            ],
+        },
+        1043,
+        None,
+    ).splitlines()
+    assert lines[0].endswith(
+        "FAIL (vectors_malformed), 47/48 sampled texts matched, 1 malformed,"
+        " lowest similarity 0.9999"
+    )
+    assert lines[2] == "  d: not a finite vector of length 1"
+
+    wrong = {**EMBED_TASK, "reason": "wrong_size", "sampled": 0, "matched": 0}
+    head = embed.describe(wrong, {"sampled": 0, "samples": []}, 1043, None).splitlines()
+    assert head[0].endswith(
+        "FAIL (wrong_size), the upload's size is not one vector for each text"
+    )
     assert head[1].startswith("  1,043 texts, uploaded 41.2s")
+
+
+def test_a_sampled_text_keeps_its_row_in_the_upload_and_gains_its_place_in_the_page(
+    tmp_path,
+):
+    from sandbox.embed import EmbedSandbox, EmbedSet
+
+    rows = embed_set(tmp_path)
+    sandbox = object.__new__(EmbedSandbox)
+    sandbox.texts = EmbedSet.read(tmp_path)
+    sample = {"text_id": rows[1]["text_id"], "index": 9, "outcome": "malformed"}
+
+    found = {**sample, **sandbox.text_of(sample)}
+
+    assert found["index"] == 9 and found["position"] == rows[1]["index"]
+    assert found["text"] == rows[1]["text"]
 
 
 def test_the_embed_summary_rates_count_only_work_checked_after_the_first_verdict():
@@ -586,7 +619,6 @@ def test_the_sandbox_validator_checks_only_its_own_mode_s_tasks():
 def test_paid_miners_join_the_pretend_chain_so_their_share_reaches_the_weights():
     from types import SimpleNamespace
 
-    from desearch.kinds import EMBED
     from neurons.validators.weights import (
         CRAWL_PERC,
         EMBED_PERC,
@@ -595,16 +627,15 @@ def test_paid_miners_join_the_pretend_chain_so_their_share_reaches_the_weights()
     )
     from sandbox.validator import SandboxValidator
 
+    def paid(amount: float) -> SimpleNamespace:
+        return SimpleNamespace(amount=amount, uploads=1, checked=1, failed=0, rate=1.0)
+
     class Ledger:
         def crawl_paid(self):
-            return {
-                "crawler": SimpleNamespace(
-                    rows=100.0, uploads=1, checked=1, failed=0, rate=1.0
-                )
-            }
+            return {"crawler": paid(100.0)}
 
-        def shares(self):
-            return {EMBED: {"embedder": 1.0}}
+        def embed_paid(self):
+            return {"embedder": paid(5000.0)}
 
     chain = FakeChain(
         [EMISSION_CONTROL_HOTKEY, "validator"], genesis=0.0, block_seconds=1.0, tempo=60
