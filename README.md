@@ -79,10 +79,8 @@ can test their miner locally before registering.
 [What a miner does →](./docs/miner.md#-what-a-miner-does) · [Miner setup →](./docs/miner.md#-setup) ·
 [Test locally →](./docs/test-your-miner.md) · [Emission →](./docs/emission.md)
 
-**Validators** check: they re-fetch a random sample of miners' crawl tasks and re-embed a sample of
-every embed task, compare it with what the miner returned, and set weights from the accepted work. A
-miner caught returning bad pages loses what it earned since its last good check. Embed checks run on the
-validator's own GPU, or fall back to Desearch's model server.
+**Validators** check miners' work, the pages they crawl and the vectors they embed, and set weights
+from the work that holds up.
 [What a validator does →](./docs/validator.md#-what-a-validator-does) ·
 [Validator setup →](./docs/validator.md#-setup)
 
