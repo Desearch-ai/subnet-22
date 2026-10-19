@@ -38,6 +38,10 @@ pub const ROUNDS: &str = "rounds:seq";
 pub const EMBED_INPUTS: &str = "embed:inputs";
 /// Inputs whose task was dropped after its last attempt, for the planner to plan their pages again.
 pub const EMBED_DROPPED: &str = "embed:dropped";
+/// Embed uploads the publisher found malformed vectors in, pushed by the publisher, so their miner's next uploads are checked.
+pub const EMBED_MALFORMED: &str = "embed:malformed";
+/// Embed uploads opened for validators; one no longer open is dropped when they are counted.
+pub const VOPEN_EMBED: &str = "vjobs:open:embed";
 pub const ROUND_SPAN: i64 = 10_000_000;
 pub const CLAIM_SCAN: i64 = 50;
 pub const OPEN_SCAN: isize = 500;
@@ -59,6 +63,7 @@ static COMPLETE: LazyLock<Script> = LazyLock::new(|| Script::new(concat!(include
 static START: LazyLock<Script> = LazyLock::new(|| Script::new(include_str!("lua/start.lua")));
 static RESTORE: LazyLock<Script> = LazyLock::new(|| Script::new(include_str!("lua/restore.lua")));
 static VOPEN_PICKED: LazyLock<Script> = LazyLock::new(|| Script::new(include_str!("lua/vopen_picked.lua")));
+static VOPEN_COUNT: LazyLock<Script> = LazyLock::new(|| Script::new(include_str!("lua/vopen_count.lua")));
 static VVOTE: LazyLock<Script> = LazyLock::new(|| Script::new(include_str!("lua/vvote.lua")));
 static VSETTLE: LazyLock<Script> = LazyLock::new(|| Script::new(concat!(include_str!("lua/inflight.lua"), include_str!("lua/vsettle.lua"))));
 static PRETURN: LazyLock<Script> = LazyLock::new(|| Script::new(include_str!("lua/preturn.lua")));
@@ -345,9 +350,23 @@ impl ValidationQueue {
     /// A picked upload goes on the open list for validators.
     pub async fn open(&self, redis: &Redis, task_id: &str, job: &Value, now: f64) -> Result<bool> {
         let completed = job.get("completed_at").and_then(Value::as_f64).filter(|c| *c != 0.0).unwrap_or(now);
-        let opened: i64 =
-            VOPEN_PICKED.key(SEEDING).key(VOPEN).arg(task_id).arg(job.to_string()).arg(number(completed)).invoke_async(&mut redis.clone()).await?;
+        let embed = job.get("kind").and_then(Value::as_str) == Some("embed");
+        let opened: i64 = VOPEN_PICKED
+            .key(SEEDING)
+            .key(VOPEN)
+            .key(VOPEN_EMBED)
+            .arg(task_id)
+            .arg(job.to_string())
+            .arg(number(completed))
+            .arg(i64::from(embed))
+            .invoke_async(&mut redis.clone())
+            .await?;
         Ok(opened == 1)
+    }
+
+    /// Embed uploads open for validators, each awaiting its verdict.
+    pub async fn open_embed(&self, redis: &Redis) -> Result<i64> {
+        Ok(VOPEN_COUNT.key(VOPEN_EMBED).key(VOPEN).invoke_async(&mut redis.clone()).await?)
     }
 
     pub async fn job(&self, redis: &Redis, task_id: &str) -> Result<Option<Value>> {

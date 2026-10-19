@@ -166,7 +166,7 @@ async fn the_api_carries_50m_urls_an_hour() {
             for hotkey in &seeded {
                 conn.execute("INSERT INTO miners (hotkey, pool, budget, verified) VALUES (?, 'crawl', 100, 100000)", [hotkey])?;
                 for n in 0..10 {
-                    task_api::checks::record(conn, hotkey, &format!("seed-{n}"), true, 0.0, 0, 0, desearch::time::now() - 7200.0)?;
+                    task_api::checks::record(conn, hotkey, task_api::budgets::CRAWL, &format!("seed-{n}"), true, 0.0, 0, 0, desearch::time::now() - 7200.0)?;
                 }
             }
             Ok(())

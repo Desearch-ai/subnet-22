@@ -15,6 +15,8 @@ pub const VALIDATOR_FAULT_REASONS: [&str; 1] = ["unscorable"];
 /// A page unreachable both for the miner and the validator (not_fetched) can sit on either kind of row.
 pub const CONTENT_OUTCOMES: [&str; 3] = ["matched", "mismatched", "unverifiable"];
 pub const ERROR_OUTCOMES: [&str; 2] = ["errors_confirmed", "errors_unconfirmed"];
+/// Texts a check of an embed upload compares, or every text of a task with fewer.
+pub const EMBED_SAMPLES: i64 = 48;
 
 /// A result the task could not have produced.
 #[derive(Debug)]
@@ -142,29 +144,28 @@ pub fn build_vote(job: &Value, validator: &str, result: Map<String, Value>) -> R
     Ok(json!({"validator": validator, "verdict": verdict, "credited": credited, "result": full}))
 }
 
-/// A pass must account for every text; a validator's counts are not taken on trust.
+/// A pass must compare the whole sample and match every text of it; a validator's counts are not taken on trust.
 pub fn check_embed_feasible(job: &Value, result: &Value) -> Result<(), Infeasible> {
     let samples = samples(result);
+    let texts = int(&job["texts"]);
     let mut ids: Vec<&str> = samples.iter().map(|s| s["text_id"].as_str().unwrap_or_default()).collect();
-    let sampled = ids.len();
+    let mut rows: Vec<i64> = samples.iter().map(|s| int(&s["index"])).collect();
     ids.sort_unstable();
     ids.dedup();
-    let outcomes = Counted::of(&samples, "outcome");
-    let texts = int(&job["texts"]);
-    let returned = int(&result["returned"]);
-    let truthy = |name: &str| int(&result[name]) != 0;
+    rows.sort_unstable();
+    rows.dedup();
+    let wanted = EMBED_SAMPLES.min(texts);
+    let count = |name: &str| int(&result[name]);
     let problems = [
-        (ids.len() < sampled, "a text was sampled twice"),
-        (returned > texts, "more vectors returned than texts assigned"),
-        (sampled as i64 > returned, "more samples than vectors returned"),
+        (ids.len() < samples.len() || rows.len() < samples.len(), "a text was sampled twice".to_string()),
+        (rows.iter().any(|row| !(0..texts).contains(row)), "a sampled index is not a text of the task".to_string()),
         (
-            result["verdict"] == "pass"
-                && (returned < texts || truthy("missing") || truthy("duplicates") || truthy("malformed") || outcomes.count("mismatched") > 0),
-            "a pass needs every text embedded and every sample matched",
+            result["verdict"] == "pass" && (count("sampled") != wanted || count("matched") != wanted || count("mismatched") > 0 || count("malformed") > 0),
+            format!("a pass needs {wanted} sampled texts, every one matched"),
         ),
     ];
     match problems.into_iter().find(|(wrong, _)| *wrong) {
-        Some((_, why)) => Err(Infeasible(why.into())),
+        Some((_, why)) => Err(Infeasible(why)),
         None => Ok(()),
     }
 }
@@ -183,6 +184,8 @@ pub fn build_embed_vote(job: &Value, validator: &str, result: Map<String, Value>
     full.insert("verdict".into(), verdict.clone().into());
     full.insert("reason".into(), reason.into());
     full.insert("credited".into(), credited.into());
+    // The size check at completion holds every task's file to one vector per text.
+    full.insert("returned".into(), int(&job["texts"]).into());
     Ok(json!({"validator": validator, "verdict": verdict, "credited": credited, "result": full}))
 }
 
@@ -402,27 +405,33 @@ mod tests {
         assert_eq!((differ.agreed, differ.disagreed), (vec!["careful".to_string()], vec!["strict".to_string(), "stamp".into()]));
     }
 
+    fn embed_result(texts: i64, extra: Value) -> Result<Value, Infeasible> {
+        let sampled = EMBED_SAMPLES.min(texts);
+        let samples: Vec<Value> = (0..sampled).map(|i| json!({"text_id": format!("t{i}"), "index": i, "outcome": "matched", "similarity": 0.9995})).collect();
+        let mut result =
+            json!({"verdict": "pass", "reason": "ok", "sampled": sampled, "matched": sampled, "mismatched": 0, "malformed": 0, "samples": samples});
+        for (name, value) in extra.as_object().unwrap() {
+            result[name] = value.clone();
+        }
+        build_embed_vote(&json!({"texts": texts, "chars": 5400}), "v", result.as_object().unwrap().clone())
+    }
+
     #[test]
-    fn an_embed_pass_must_account_for_every_text() {
-        let job = json!({"texts": 6, "chars": 5400});
-        let matched: Vec<Value> = (0..3).map(|i| json!({"text_id": format!("t{i}"), "outcome": "matched"})).collect();
-        let whole = |extra: Value| {
-            let mut result = json!({"verdict": "pass", "returned": 6, "matched": 3, "missing": 0, "samples": matched.clone()});
-            for (name, value) in extra.as_object().unwrap() {
-                result[name] = value.clone();
-            }
-            build_embed_vote(&job, "v", result.as_object().unwrap().clone())
-        };
-        assert_eq!(whole(json!({})).unwrap()["credited"], 5400);
-        let mut four = matched.clone();
-        four.push(matched[0].clone());
-        for (broken, why) in [
-            (json!({"returned": 0}), "more samples"),
-            (json!({"missing": 6}), "every text embedded"),
-            (json!({"malformed": 6}), "every text embedded"),
-            (json!({"samples": four}), "sampled twice"),
+    fn an_embed_pass_must_match_the_whole_sample() {
+        assert_eq!(embed_result(6, json!({})).unwrap()["credited"], 5400, "a task of fewer texts than the sample has every one compared");
+        assert_eq!(embed_result(200, json!({})).unwrap()["credited"], 5400);
+        let failed = embed_result(200, json!({"verdict": "fail", "reason": "vectors_mismatch", "matched": 47, "mismatched": 1})).unwrap();
+        assert_eq!((failed["verdict"].clone(), failed["credited"].clone()), (json!("fail"), json!(0)));
+        let short = json!({"sampled": 47, "matched": 47, "samples": (0..47).map(|i| json!({"text_id": format!("t{i}"), "index": i, "outcome": "matched"})).collect::<Vec<_>>()});
+        let twice = json!({"samples": [{"text_id": "t0", "index": 0}, {"text_id": "t1", "index": 0}]});
+        for (broken, texts, why) in [
+            (short, 200, "48 sampled texts"),
+            (json!({"malformed": 1}), 200, "every one matched"),
+            (json!({"mismatched": 1}), 6, "every one matched"),
+            (twice, 6, "sampled twice"),
+            (json!({"verdict": "fail", "samples": [{"text_id": "t9", "index": 6}]}), 6, "not a text of the task"),
         ] {
-            let refused = whole(broken).unwrap_err().0;
+            let refused = embed_result(texts, broken).unwrap_err().0;
             assert!(refused.contains(why), "{refused} does not say {why}");
         }
     }

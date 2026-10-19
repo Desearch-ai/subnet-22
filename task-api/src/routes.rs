@@ -18,6 +18,7 @@ use serde_json::{json, Map, Value};
 
 use crate::auth::{self, client_address, Caller};
 use crate::budgets::{self, CRAWL, EMBED, SHARE_WINDOW_H, WAITING_PER_BUDGET};
+use crate::embedding::{self, VECTORS_SUFFIX, VECTORS_TYPE};
 use crate::http::{json_body, unavailable, Answer, ApiError, Query, CLAIM_PATH};
 use crate::lifecycle::{self, kind_of, signed_manifest, text, EMBED_FIELDS};
 use crate::manifest::REVEAL_AFTER_BLOCKS;
@@ -191,12 +192,13 @@ async fn refused(state: &State, round_id: &str, who: &Caller, mut refusal: Refus
 /// The task as the miner receives it, with an upload link only it can use.
 async fn issue(state: &State, got: &Claim, kind: &str, who: &Caller) -> Result<Option<Value>, ApiError> {
     let task_id = &got.task_id;
-    let name = format!("task={task_id}/{}-{}.parquet", who.hotkey, got.seq);
+    let (suffix, content_type) = if kind == EMBED { (VECTORS_SUFFIX, VECTORS_TYPE) } else { (".parquet", PARQUET) };
+    let name = format!("task={task_id}/{}-{}{suffix}", who.hotkey, got.seq);
     let upload_key = format!("uploads/dt={}/{name}", utc_day(now()));
     let since_epoch = Duration::from_secs_f64(now());
     // It may outlive the claim; a late completion or a file written after it is refused.
     let claim_ttl = state.settings.claim_ttl_for(kind) as u64;
-    let upload_url = state.storage.presign("PUT", &upload_key, claim_ttl + LINK_SLACK_S, Some(PARQUET), since_epoch);
+    let upload_url = state.storage.presign("PUT", &upload_key, claim_ttl + LINK_SLACK_S, Some(content_type), since_epoch);
     let inputs = if kind == EMBED {
         let payload = &got.payload;
         match (payload.get("model"), payload.get("texts"), payload.get("input_key").and_then(Value::as_str), payload.get("input_sha256")) {
@@ -224,7 +226,7 @@ async fn issue(state: &State, got: &Claim, kind: &str, who: &Caller) -> Result<O
     task.insert("expires_at".into(), expires_at.into());
     task.insert("urls".into(), got.payload.get("urls").cloned().unwrap_or_else(|| json!([])));
     task.extend(inputs.as_object().cloned().unwrap_or_default());
-    task.insert("upload".into(), json!({"url": upload_url, "key": upload_key, "content_type": PARQUET, "expires_at": expires_at}));
+    task.insert("upload".into(), json!({"url": upload_url, "key": upload_key, "content_type": content_type, "expires_at": expires_at}));
     Ok(Some(Value::Object(task)))
 }
 
@@ -316,16 +318,31 @@ async fn verify_completion(state: &State, task_id: &str, report: &CompleteBody, 
         delete_quietly(&state.storage, &report.key).await;
         return Err(ApiError::status(413, format!("upload is {} bytes, the limit is {}", found.size, state.settings.max_upload)));
     }
-    let framed =
-        is_parquet(&state.storage, &report.key, found.size).await.map_err(|e| storage_down(&format!("could not read the ends of {}", report.key), e))?;
-    if !framed {
-        return Err(ApiError::status(422, "the upload is not a Parquet file"));
+    let payload = state.payload(task_id).await?.unwrap_or_else(|| json!({}));
+    let kind = kind_of(&payload).to_string();
+    if kind == EMBED {
+        let model = text(&payload, "model");
+        let model =
+            embedding::model(model).ok_or_else(|| anyhow::anyhow!("task={task_id} names {model:?}, a model whose vectors the task API does not know"))?;
+        let texts = payload.get("texts").and_then(Value::as_u64).unwrap_or(0);
+        let expected = embedding::upload_bytes(model, texts);
+        if found.size != expected {
+            let detail = format!("the upload is {} bytes; {texts} vectors of {} float16 values are {expected}", found.size, model.dims);
+            return Err(ApiError::status(422, detail));
+        }
+    } else {
+        let framed =
+            is_parquet(&state.storage, &report.key, found.size).await.map_err(|e| storage_down(&format!("could not read the ends of {}", report.key), e))?;
+        if !framed {
+            return Err(ApiError::status(422, "the upload is not a Parquet file"));
+        }
     }
 
     // The PUT URL outlives this call, so work on a copy the miner can't touch.
     let attempt: String = (0..4).map(|_| format!("{:02x}", rand::thread_rng().gen::<u8>())).collect();
     let name = text(&issued, "name");
-    let frozen = format!("submitted/dt={}/{}-{attempt}.parquet", utc_day(now()), name.strip_suffix(".parquet").unwrap_or(name));
+    let (stem, suffix) = name.rfind('.').map_or((name, ""), |at| name.split_at(at));
+    let frozen = format!("submitted/dt={}/{stem}-{attempt}{suffix}", utc_day(now()));
     let stat_s = now() - arrived;
     let frozen_etag = match state.storage.copy(&report.key, &frozen, Some(&found.etag)).await {
         Ok(etag) => etag,
@@ -333,8 +350,6 @@ async fn verify_completion(state: &State, task_id: &str, report: &CompleteBody, 
         Err(error) => return Err(storage_down(&format!("could not freeze {}", report.key), error)),
     };
 
-    let payload = state.payload(task_id).await?.unwrap_or_else(|| json!({}));
-    let kind = kind_of(&payload).to_string();
     let round_id = Some(text(&payload, "round_id")).filter(|r| !r.is_empty()).map(String::from).unwrap_or_else(|| state.current_round(&kind));
     // The sample seed is a block hash nobody knew when the upload was frozen.
     let frozen_block = state.seeds.current_block().await?;
@@ -352,7 +367,6 @@ async fn verify_completion(state: &State, task_id: &str, report: &CompleteBody, 
         "rank": payload.get("rank").cloned().unwrap_or(position),
         "attempts": payload.get("attempts").cloned().unwrap_or_else(|| 0.into()),
         "size": found.size,
-        "reported": report.reported,
         "claimed_at": issued.get("at").cloned().unwrap_or(Value::Null),
         "completed_at": completed_at,
         "frozen_block": frozen_block,
@@ -363,6 +377,10 @@ async fn verify_completion(state: &State, task_id: &str, report: &CompleteBody, 
         if let Some(value) = payload.get(name) {
             job[name] = value.clone();
         }
+    }
+    // An embed upload's counts come from its input, never from the miner.
+    if kind == CRAWL {
+        job["reported"] = report.reported.clone();
     }
     job["manifest"] = signed_manifest(state, &job);
     if let Err(error) = put_json(&state.storage, &lifecycle::manifest_key(&frozen), &job["manifest"], None).await {
@@ -378,10 +396,8 @@ async fn verify_completion(state: &State, task_id: &str, report: &CompleteBody, 
     if took > SLOW_COMPLETE_S {
         eprintln!("completing {task_id} took {took:.1}s ({stat_s:.1}s before the copy)");
     }
-    if kind == CRAWL {
-        sampling::note_upload(&state.redis, &who.hotkey, completed_at).await?;
-        uploadlog::note(&state.redis, &job).await?;
-    }
+    sampling::note_upload(&state.redis, &kind, &who.hotkey, completed_at).await?;
+    uploadlog::note(&state.redis, &job).await?;
     state
         .record_one(Receipt {
             round_id,
@@ -588,20 +604,22 @@ pub async fn room(Shared(state): Shared<Arc<State>>, QueryParams(query): QueryPa
     })))
 }
 
-/// Embed inputs the planner may hand over now: none while embed tasks are closed or old work holds claims back.
+/// Embed inputs the planner may hand over now: none while embed tasks are closed or old work holds claims back, and less while validators owe verdicts.
 async fn embed_room(state: &State) -> Answer {
     let at = now();
     let depth = state.embed.depth(&state.redis).await?;
     let unrevealed = state.lookups.read(|conn| roundstore::unrevealed_tasks(conn, EMBED)).await?;
     let waiting: i64 = state.redis.clone().llen(queues::EMBED_INPUTS).await?;
+    let awaiting = state.validation.open_embed(&state.redis).await?;
     let oldest = state.validation.oldest_age(&state.redis, at).await?.max(state.publish.oldest_age(&state.redis, at).await?);
     let refusing = state.settings.max_backlog != 0.0 && oldest > state.settings.max_backlog;
-    let room = if state.settings.embed_tasks && !refusing { (state.settings.embed_queue_target - depth - unrevealed - waiting).max(0) } else { 0 };
+    let room = if state.settings.embed_tasks && !refusing { (state.settings.embed_queue_target - depth - unrevealed - waiting - awaiting).max(0) } else { 0 };
     Ok(Json(json!({
         "room_tasks": room,
         "queue": depth,
         "unrevealed": unrevealed,
         "waiting_inputs": waiting,
+        "awaiting_verdict": awaiting,
         "open": state.settings.embed_tasks,
         "refusing": refusing,
     })))

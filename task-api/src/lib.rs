@@ -6,6 +6,7 @@ pub mod chain;
 pub mod checks;
 pub mod credit;
 pub mod db;
+pub mod embedding;
 pub mod flow;
 pub mod http;
 pub mod janitor;

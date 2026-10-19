@@ -87,7 +87,10 @@ impl Duty {
     async fn pass(self, state: &Arc<State>, due: &mut Due) -> Result<()> {
         match self {
             Duty::Reclaim => lifecycle::reclaim_expired(state, now()).await.map(drop),
-            Duty::Settle => lifecycle::settle_seeded(state).await.map(drop),
+            Duty::Settle => {
+                lifecycle::recheck_malformed(state).await?;
+                lifecycle::settle_seeded(state).await.map(drop)
+            }
             Duty::Finalize => lifecycle::finalize_due(state, now()).await.map(drop),
             Duty::Publish => {
                 note_publish_rate(state).await?;

@@ -26,7 +26,7 @@ pub const REWARD: &str = "verified";
 pub const EXPIRY_REASONS: [&str; 2] = ["claim_expired", "abandoned"];
 pub const STRIKE_BURST_S: f64 = 300.0;
 /// Only fails the miner caused count; "unscorable" is the validator's own timeout or crash.
-pub const STRIKE_REASONS: [&str; 12] = [
+pub const STRIKE_REASONS: [&str; 13] = [
     "claim_expired",
     "abandoned",
     "extra_rows",
@@ -39,6 +39,7 @@ pub const STRIKE_REASONS: [&str; 12] = [
     "vectors_missing",
     "vectors_malformed",
     "vectors_mismatch",
+    "wrong_size",
 ];
 pub const STRIKES_TO_LOCK: i64 = 2;
 pub const STRIKE_SHARE: f64 = 0.05;

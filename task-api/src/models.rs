@@ -8,7 +8,7 @@ pub const MAX_URL_DETAILS: usize = 1000;
 pub const MAX_CLAIM: i64 = 50;
 const MAX_CLAIM_MODELS: usize = 8;
 const OUTCOMES: [&str; 6] = ["matched", "mismatched", "unverifiable", "errors_confirmed", "errors_unconfirmed", "not_fetched"];
-const EMBED_OUTCOMES: [&str; 3] = ["matched", "mismatched", "unverifiable"];
+const EMBED_OUTCOMES: [&str; 3] = ["matched", "mismatched", "malformed"];
 
 /// What pydantic found wrong, as FastAPI's 422 `detail` lists it.
 #[derive(Debug, Default)]
@@ -443,21 +443,8 @@ fn nullable_int(fields: &mut Fields, name: &str) {
 /// An embed verdict's result, every field declared and nothing else allowed.
 pub fn embed_score(body: &Map<String, Value>) -> Result<Map<String, Value>, Invalid> {
     let mut fields = Fields::new(body, Vec::new(), false);
-    fields.forbid_extra(&[
-        "returned",
-        "missing",
-        "duplicates",
-        "malformed",
-        "sampled",
-        "matched",
-        "mismatched",
-        "unverifiable",
-        "min_similarity",
-        "verdict",
-        "reason",
-        "samples",
-    ]);
-    for name in ["returned", "missing", "duplicates", "malformed", "sampled", "matched", "mismatched", "unverifiable"] {
+    fields.forbid_extra(&["sampled", "matched", "mismatched", "malformed", "min_similarity", "verdict", "reason", "samples"]);
+    for name in ["sampled", "matched", "mismatched", "malformed"] {
         fields.int(name, Some(0), Some(0));
     }
     fields.float("min_similarity", None, true);
@@ -469,8 +456,9 @@ pub fn embed_score(body: &Map<String, Value>) -> Result<Map<String, Value>, Inva
         let loc = vec!["samples".into(), i.into()];
         if let Some(input) = fields.object(sample, loc.clone()) {
             let mut inner = Fields::new(input, loc, false);
-            inner.forbid_extra(&["text_id", "outcome", "similarity"]);
+            inner.forbid_extra(&["text_id", "index", "outcome", "similarity"]);
             inner.text("text_id", None, false, Some(300));
+            inner.int("index", None, Some(0));
             inner.literal("outcome", &EMBED_OUTCOMES, None);
             inner.float("similarity", None, true);
             fields.merge(inner.invalid);
@@ -545,6 +533,24 @@ mod tests {
         assert_eq!(score(wrong.as_object().unwrap()).unwrap_err().0[0]["msg"], "Value error, the counts do not match the samples");
         let bad = json!({"verdict": "maybe", "returned": -1});
         assert_eq!(score(bad.as_object().unwrap()).unwrap_err().0.len(), 2);
+    }
+
+    #[test]
+    fn an_embed_score_names_each_sampled_text_and_its_index() {
+        let body = json!({"sampled": 2, "matched": 1, "malformed": 1, "min_similarity": null, "verdict": "fail", "reason": "vectors_malformed",
+                          "samples": [{"text_id": "a#page", "index": 0, "outcome": "matched", "similarity": 0.9995},
+                                      {"text_id": "a#p1", "index": 1, "outcome": "malformed", "similarity": null}]});
+        let dumped = embed_score(body.as_object().unwrap()).unwrap();
+        assert_eq!((dumped["mismatched"].clone(), dumped["samples"][1]["index"].clone()), (json!(0), json!(1)));
+        let mut counted = body.clone();
+        counted["returned"] = 6.into();
+        assert_eq!(embed_score(counted.as_object().unwrap()).unwrap_err().0[0]["type"], "extra_forbidden");
+        let mut unplaced = body.clone();
+        unplaced["samples"][0].as_object_mut().unwrap().remove("index");
+        assert_eq!(embed_score(unplaced.as_object().unwrap()).unwrap_err().0[0]["loc"], json!(["samples", 0, "index"]));
+        let mut miscounted = body;
+        miscounted["malformed"] = 0.into();
+        assert_eq!(embed_score(miscounted.as_object().unwrap()).unwrap_err().0[0]["msg"], "Value error, the counts do not match the samples");
     }
 
     #[test]

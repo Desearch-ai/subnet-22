@@ -168,6 +168,8 @@ pub fn settings(data: PathBuf, endpoint: &str) -> Settings {
         ledger_delay: 0.0,
         check_share: 1.0,
         checks_per_hour: 400.0,
+        embed_check_share: 1.0,
+        embed_checks_per_hour: 600.0,
         queue_target: 1200,
         embed_queue_target: 100,
         task_urls: 3,
@@ -369,6 +371,11 @@ fn buckets(settings: &Settings, endpoint: &str) -> (Bucket, Bucket) {
     let storage = Bucket::new(http.clone(), endpoint, &settings.bucket, "", credentials.clone(), Default::default()).expect("a bucket");
     let pages = Bucket::new(http, endpoint, &settings.pages_bucket, &settings.pages_prefix, credentials, Default::default()).expect("a bucket");
     (storage, pages)
+}
+
+/// An embed upload of the size the API expects: one float16 vector of the model per text.
+pub fn vectors(texts: u64) -> Vec<u8> {
+    vec![0; task_api::embedding::upload_bytes(task_api::embedding::DESEARCH_4B_V1, texts) as usize]
 }
 
 /// A file the API takes for Parquet: it only checks the magic bytes at both ends.

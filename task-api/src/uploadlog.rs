@@ -1,4 +1,4 @@
-//! Every completed crawl upload, written in numbered signed files to the uploads bucket, so validators count each miner's work themselves.
+//! Every completed upload of either kind, written in numbered signed files to the uploads bucket, so validators count each miner's work themselves.
 
 use anyhow::Result;
 use desearch::r2::Bucket;
@@ -6,6 +6,8 @@ use desearch::time::now;
 use redis::AsyncCommands;
 use serde_json::{json, Map, Value};
 
+use crate::budgets::{CRAWL, EMBED};
+use crate::lifecycle::kind_of;
 use crate::manifest::{log_payload, upload_log_key, UPLOAD_LOG_LATEST};
 use crate::state::{Redis, State};
 use crate::storage::put_json;
@@ -16,10 +18,23 @@ pub const NEXT: &str = "uploadlog:next";
 pub const WRITING: &str = "uploadlog:writing";
 pub const BATCH: isize = 1000;
 
+/// An embed upload is counted in the texts and characters its input holds; a crawl upload in the URLs it was given and the miner's counts.
 pub fn entry(job: &Value) -> Value {
+    if kind_of(job) == EMBED {
+        return json!({
+            "kind": EMBED,
+            "key": job["key"],
+            "task_id": job["task_id"],
+            "miner": job["miner"],
+            "completed_at": job["completed_at"],
+            "texts": job["texts"],
+            "chars": job["chars"],
+        });
+    }
     let reported = &job["reported"];
     let number = |name: &str| reported.get(name).and_then(Value::as_f64).map_or(0, |n| n as i64);
     json!({
+        "kind": CRAWL,
         "task_id": job["task_id"],
         "miner": job["miner"],
         "key": job["key"],

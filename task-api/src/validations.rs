@@ -568,7 +568,6 @@ pub fn judged_since(conn: &Connection, miner: &str, since: f64, kind: &str) -> R
     )?)
 }
 
-/// Passed uploads of a miner completed after `since`, taken back: (task_id, credited) of each; only those no validator checked unless `checked_too`.
 /// A passed upload taken back: its task, the credit it had, and the round it came from.
 pub struct Taken {
     pub task_id: String,
@@ -576,12 +575,13 @@ pub struct Taken {
     pub round_id: String,
 }
 
-pub fn withdraw(conn: &Connection, miner: &str, since: f64, checked_too: bool) -> Result<Vec<Taken>> {
+/// A miner's passed uploads of one kind completed after `since`, taken back; only those no validator checked unless `checked_too`.
+pub fn withdraw(conn: &Connection, miner: &str, kind: &str, since: f64, checked_too: bool) -> Result<Vec<Taken>> {
     let mut statement = conn.prepare(
         "SELECT id, task_id, credited, scored_at, round_id FROM validations
-         WHERE miner = ? AND kind = 'crawl' AND verdict = 'pass' AND scored_at > ? AND COALESCE(completed_at, scored_at) > ? AND (? OR validator = '')",
+         WHERE miner = ? AND kind = ? AND verdict = 'pass' AND scored_at > ? AND COALESCE(completed_at, scored_at) > ? AND (? OR validator = '')",
     )?;
-    let rows = statement.query_map(params![miner, since, since, checked_too], |row| {
+    let rows = statement.query_map(params![miner, kind, since, since, checked_too], |row| {
         Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?, real(row, 3)?, row.get::<_, Option<String>>(4)?.unwrap_or_default()))
     })?;
     let rows: Vec<(i64, String, i64, f64, String)> = rows.collect::<rusqlite::Result<_>>()?;
@@ -589,7 +589,7 @@ pub fn withdraw(conn: &Connection, miner: &str, since: f64, checked_too: bool) -
     for (id, _, _, scored_at, _) in &rows {
         conn.execute("UPDATE validations SET verdict = ? WHERE id = ?", params![WITHDRAWN, id])?;
         if *id <= rolled {
-            conn.execute("UPDATE miner_hours SET pass = pass - 1 WHERE miner = ? AND kind = 'crawl' AND hour = ?", params![miner, hour_of(*scored_at)])?;
+            conn.execute("UPDATE miner_hours SET pass = pass - 1 WHERE miner = ? AND kind = ? AND hour = ?", params![miner, kind, hour_of(*scored_at)])?;
         }
     }
     if !rows.is_empty() {
@@ -788,7 +788,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(roll_up(&conn, 100).unwrap(), 1, "a row an older copy wrote is counted later");
-        withdraw(&conn, "m", 0.0, true).unwrap();
+        withdraw(&conn, "m", "crawl", 0.0, true).unwrap();
         let totals = miner_totals(&conn, base - 1.0, base + 7_200.0, "crawl").unwrap();
         assert_eq!((totals["m"]["tasks"].clone(), totals["m"]["pass"].clone(), totals["m"]["fail"].clone()), (json!(4), json!(0), json!(1)));
         let hours = hour_series(&conn, base, base + 7_199.0, "crawl", None).unwrap();

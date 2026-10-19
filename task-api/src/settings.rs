@@ -6,9 +6,10 @@ use std::str::FromStr;
 use anyhow::{bail, Context, Result};
 
 use crate::budgets::EMBED;
+use crate::embedding::{self, DESEARCH_4B_V1};
 use crate::queues::ACTIVE_S;
 use crate::rounds::{CLAIM_TTL_S, EMBED_CLAIM_TTL_S};
-use crate::sampling::{CHECKS_PER_HOUR, SHARE};
+use crate::sampling::{CHECKS_PER_HOUR, EMBED_CHECKS_PER_HOUR, EMBED_SHARE, SHARE};
 
 const DEFAULT_ORIGINS: &str = "http://localhost:5173,http://localhost:8081,http://127.0.0.1:5173,http://127.0.0.1:8081";
 
@@ -64,6 +65,8 @@ pub struct Settings {
     pub ledger_delay: f64,
     pub check_share: f64,
     pub checks_per_hour: f64,
+    pub embed_check_share: f64,
+    pub embed_checks_per_hour: f64,
     pub queue_target: i64,
     pub embed_queue_target: i64,
     pub task_urls: usize,
@@ -120,6 +123,15 @@ impl Settings {
         }
     }
 
+    /// The share of an established hotkey's uploads of this kind drawn for a check, and the hourly budget of those draws.
+    pub fn checks_for(&self, kind: &str) -> (f64, f64) {
+        if kind == EMBED {
+            (self.embed_check_share, self.embed_checks_per_hour)
+        } else {
+            (self.check_share, self.checks_per_hour)
+        }
+    }
+
     pub fn from_env() -> Result<Settings> {
         let registry = match text("TASK_API_REGISTRY", "").as_str() {
             "chain" => RegistryMode::Chain { netuid: number("TASK_API_NETUID", 22)?, network: text("TASK_API_NETWORK", "finney") },
@@ -133,6 +145,11 @@ impl Settings {
         let key_uri = text("TASK_API_KEY_URI", "");
         let pages_store = PagesStore::from(|name| std::env::var(name).ok())?;
         let pages_bucket = text("CF_R2_PAGES_BUCKET", "desearch-pages");
+        let embed_tasks = text("TASK_API_EMBED_TASKS", "0") == "1";
+        let embed_model = text("TASK_API_EMBED_MODEL", DESEARCH_4B_V1.name);
+        if embed_tasks && embedding::model(&embed_model).is_none() {
+            bail!("TASK_API_EMBED_MODEL={embed_model:?} is not a model whose vectors the task API knows");
+        }
         if key_uri.is_empty() && matches!(registry, RegistryMode::Chain { .. }) {
             bail!("TASK_API_KEY_URI must be set when TASK_API_REGISTRY=chain");
         }
@@ -153,11 +170,13 @@ impl Settings {
             ledger_delay: number("TASK_API_LEDGER_DELAY_S", 0.0)?,
             check_share: number("TASK_API_CHECK_SHARE", SHARE)?,
             checks_per_hour: number("TASK_API_CHECKS_PER_HOUR", CHECKS_PER_HOUR)?,
+            embed_check_share: number("TASK_API_EMBED_CHECK_SHARE", EMBED_SHARE)?,
+            embed_checks_per_hour: number("TASK_API_EMBED_CHECKS_PER_HOUR", EMBED_CHECKS_PER_HOUR)?,
             queue_target: number("TASK_API_QUEUE_TARGET", 1_200)?,
             embed_queue_target: number("TASK_API_EMBED_QUEUE_TARGET", 100)?,
             task_urls: number("TASK_API_TASK_URLS", 1_000)?,
-            embed_tasks: text("TASK_API_EMBED_TASKS", "0") == "1",
-            embed_model: text("TASK_API_EMBED_MODEL", "desearch-4b-v1"),
+            embed_tasks,
+            embed_model,
             embed_reference_url: text("TASK_API_EMBED_REFERENCE_URL", ""),
             embed_reference_key: text("TASK_API_EMBED_REFERENCE_KEY", ""),
             embed_reference_calls: number("TASK_API_EMBED_REFERENCE_CALLS", 4)?,

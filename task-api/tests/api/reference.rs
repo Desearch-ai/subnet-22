@@ -15,7 +15,7 @@ use sha2::{Digest, Sha256};
 use task_api::lifecycle;
 use task_api::queues::EMBED_INPUTS;
 
-use crate::harness::{task_id, Harness};
+use crate::harness::{task_id, vectors, Harness};
 
 /// A model server answering each text with a vector holding its length, counting the texts it was sent.
 async fn model_server(texts: Arc<AtomicUsize>) -> String {
@@ -99,7 +99,7 @@ async fn a_validator_without_a_model_server_gets_reference_vectors_from_the_uplo
     lifecycle::open_embed_rounds(&h.state).await.unwrap().expect("an embed round");
     h.revealed().await;
     let task = h.miner.post("/v1/tasks/claim", json!({"kind": "embed", "models": ["desearch-4b-v1"]})).await.unwrap()["tasks"][0].clone();
-    h.put(task["upload"]["url"].as_str().unwrap(), b"PAR1vectorsPAR1".to_vec()).await;
+    h.put(task["upload"]["url"].as_str().unwrap(), vectors(3)).await;
     h.miner.post(&format!("/v1/tasks/{}/complete", task_id(&task)), json!({"key": task["upload"]["key"], "bytes": 7})).await.unwrap();
     h.opened(Some(&h.validator), Some(&task_id(&task))).await;
     let path = format!("/v1/embed/{}/reference", task_id(&task));
@@ -149,18 +149,18 @@ async fn a_task_handed_to_another_miner_is_sampled_afresh_from_the_same_input() 
     let ids = |range: std::ops::Range<usize>| json!({"text_ids": range.map(|i| format!("t{i}")).collect::<Vec<_>>()});
 
     let task = h.miner.post("/v1/tasks/claim", claim.clone()).await.unwrap()["tasks"][0].clone();
-    h.put(task["upload"]["url"].as_str().unwrap(), b"PAR1vectorsPAR1".to_vec()).await;
+    h.put(task["upload"]["url"].as_str().unwrap(), vectors(70)).await;
     h.miner.post(&format!("/v1/tasks/{}/complete", task_id(&task)), json!({"key": task["upload"]["key"], "bytes": 7})).await.unwrap();
     h.opened(Some(&h.validator), Some(&task_id(&task))).await;
     let path = format!("/v1/embed/{}/reference", task_id(&task));
     h.validator.post(&path, ids(0..40)).await.unwrap();
-    let failed = json!({"returned": 70, "sampled": 2, "matched": 0, "mismatched": 2, "min_similarity": 0.12, "verdict": "fail", "reason": "vectors_mismatch",
-                        "samples": [{"text_id": "t0", "outcome": "mismatched", "similarity": 0.12}, {"text_id": "t1", "outcome": "mismatched", "similarity": 0.12}]});
+    let failed = json!({"sampled": 2, "matched": 0, "mismatched": 2, "min_similarity": 0.12, "verdict": "fail", "reason": "vectors_mismatch",
+                        "samples": [{"text_id": "t0", "index": 0, "outcome": "mismatched", "similarity": 0.12}, {"text_id": "t1", "index": 1, "outcome": "mismatched", "similarity": 0.12}]});
     h.validator.post(&format!("/v1/validation/{}/score", task_id(&task)), failed).await.unwrap();
 
     let again = h.rival.post("/v1/tasks/claim", claim).await.unwrap()["tasks"][0].clone();
     assert_eq!(task_id(&again), task_id(&task));
-    h.put(again["upload"]["url"].as_str().unwrap(), b"PAR1vectorsPAR1".to_vec()).await;
+    h.put(again["upload"]["url"].as_str().unwrap(), vectors(70)).await;
     h.rival.post(&format!("/v1/tasks/{}/complete", task_id(&again)), json!({"key": again["upload"]["key"], "bytes": 7})).await.unwrap();
     h.opened(None, Some(&task_id(&again))).await;
     h.validator.post(&path, ids(30..70)).await.expect("a new upload gets its own sample");

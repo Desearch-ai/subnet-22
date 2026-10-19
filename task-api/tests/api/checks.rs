@@ -6,6 +6,7 @@ use arrow_array::cast::AsArray;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use redis::AsyncCommands;
 use serde_json::{json, Value};
+use task_api::budgets::CRAWL;
 use task_api::manifest::{log_payload, upload_log_key, UPLOAD_LOG_LATEST};
 use task_api::{budgets, checks, lifecycle, sampling, uploadlog};
 
@@ -21,23 +22,27 @@ async fn started(task_urls: usize, check_share: f64) -> Harness {
     h
 }
 
-/// A hotkey past its first checks, busy enough that the draw never picks it.
-async fn established(h: &Harness, hotkey: String) {
+/// A hotkey past its first checks of the kind, busy enough in it that the draw never picks it.
+pub async fn established_in(h: &Harness, hotkey: String, kind: &'static str) {
     let passed_at = desearch::time::now() - 3600.0;
     let asked = hotkey.clone();
     h.state
         .db
         .run(move |conn| {
-            (0..sampling::NEW_HOTKEY_PASSES).try_for_each(|n| checks::record(conn, &asked, &format!("earlier-{n}"), true, passed_at, 0, 0, passed_at))
+            (0..sampling::NEW_HOTKEY_PASSES).try_for_each(|n| checks::record(conn, &asked, kind, &format!("earlier-{n}"), true, passed_at, 0, 0, passed_at))
         })
         .await
         .unwrap();
-    let hour = (desearch::time::now() / 3600.0).floor() as i64;
-    let _: () = h.redis.clone().set(format!("uploads:{hotkey}:{hour}"), 1_000_000_000i64).await.unwrap();
+    let hour = budgets::hour_of(desearch::time::now());
+    let _: () = h.redis.clone().set(sampling::counter_key(kind, &hotkey, hour), 1_000_000_000i64).await.unwrap();
+}
+
+async fn established(h: &Harness, hotkey: String) {
+    established_in(h, hotkey, CRAWL).await;
 }
 
 /// Why the upload was picked for a check, or "finalized" when it was not.
-async fn settled(h: &Harness, task: &str) -> String {
+pub async fn settled(h: &Harness, task: &str) -> String {
     let deadline = Instant::now() + Duration::from_secs(5);
     while Instant::now() < deadline {
         lifecycle::settle_seeded(&h.state).await.unwrap();
@@ -55,7 +60,7 @@ async fn credits(h: &Harness, hotkey: String) -> i64 {
 }
 
 async fn start_recheck(h: &Harness, hotkey: String) {
-    h.state.db.run(move |conn| checks::start_recheck(conn, &hotkey)).await.unwrap();
+    h.state.db.run(move |conn| checks::start_recheck(conn, &hotkey, CRAWL)).await.unwrap();
 }
 
 #[tokio::test]
@@ -70,7 +75,7 @@ async fn an_upload_no_check_drew_is_paid_on_its_report_and_published() {
     let h = started(3, 0.0).await;
     established(&h, h.miner.ss58()).await;
     let hotkey = h.miner.ss58();
-    h.state.db.run(move |conn| checks::record(conn, &hotkey, "with-errors", true, 0.0, 8, 0, desearch::time::now())).await.unwrap();
+    h.state.db.run(move |conn| checks::record(conn, &hotkey, CRAWL, "with-errors", true, 0.0, 8, 0, desearch::time::now())).await.unwrap();
     let task = task_id(&h.mine(&h.miner, 1).await);
     assert_eq!(settled(&h, &task).await, "finalized");
     let view = h.view(&task).await;
@@ -111,7 +116,7 @@ async fn a_failed_check_takes_back_what_passed_since_the_last_pass() {
     let (recheck, locked) = h
         .state
         .db
-        .run(move |conn| Ok((checks::recheck_left(conn, &asked)?, budgets::locked_until(conn, &asked, "crawl", desearch::time::now())?)))
+        .run(move |conn| Ok((checks::recheck_left(conn, &asked, CRAWL)?, budgets::locked_until(conn, &asked, CRAWL, desearch::time::now())?)))
         .await
         .unwrap();
     assert_eq!(recheck, sampling::RECHECK_UPLOADS, "its next uploads are checked");
@@ -216,7 +221,10 @@ async fn every_completed_upload_is_logged_signed_for_validators() {
     assert!(desearch::hotkey::verify(&desearch::hotkey::public_of(&h.state.signer()).unwrap(), &log_payload(written.as_object().unwrap()), &signature));
     let entries: Vec<Value> = written["entries"].as_array().unwrap().iter().map(|e| e["task_id"].clone()).collect();
     assert_eq!(entries, [json!(first), json!(second)], "a failed write is retried with the same entries");
-    assert_eq!((written["entries"][1]["ok"].clone(), written["entries"][1]["errors"].clone()), (json!(1), json!(1)));
+    assert_eq!(
+        (written["entries"][1]["kind"].clone(), written["entries"][1]["ok"].clone(), written["entries"][1]["errors"].clone()),
+        (json!("crawl"), json!(1), json!(1))
+    );
     assert_eq!(again, Some(2), "the upload completed during the retry gets the next file");
     assert_eq!(later, None);
 }
@@ -235,8 +243,12 @@ async fn a_single_fail_takes_back_only_what_no_validator_checked() {
     job.as_object_mut().unwrap().remove("picked");
     let _: () = h.redis.clone().set(format!("vjob:{checked}"), job.to_string()).await.unwrap();
     judged(&h, &h.validator, "pass", Some(&checked), json!({})).await.1.unwrap();
-    assert_eq!(lifecycle::take_back(&h.state, &hotkey, 0.0, "test", false).await.unwrap(), [unchecked]);
-    assert_eq!(lifecycle::take_back(&h.state, &hotkey, 0.0, "test", true).await.unwrap(), [checked], "a full penalty takes back the checked ones as well");
+    assert_eq!(lifecycle::take_back(&h.state, &hotkey, CRAWL, 0.0, "test", false).await.unwrap(), [unchecked]);
+    assert_eq!(
+        lifecycle::take_back(&h.state, &hotkey, CRAWL, 0.0, "test", true).await.unwrap(),
+        [checked],
+        "a full penalty takes back the checked ones as well"
+    );
 }
 
 #[tokio::test]
@@ -254,7 +266,7 @@ async fn a_take_back_refuses_the_task_s_publish_job_and_sends_its_urls_again() {
     }
     assert!(h.stub.state.object(BUCKET, &kept).is_some(), "the round's URL lists are kept once its tasks are queued");
 
-    assert_eq!(lifecycle::take_back(&h.state, &hotkey, 0.0, "test", false).await.unwrap(), std::slice::from_ref(&taken));
+    assert_eq!(lifecycle::take_back(&h.state, &hotkey, CRAWL, 0.0, "test", false).await.unwrap(), std::slice::from_ref(&taken));
     let refused: Vec<String> = h.redis.clone().zrange("publish:withdrawn", 0, -1).await.unwrap();
     assert_eq!(refused, [taken], "every publisher refuses its job from now on");
     while h.json_object("outcomes/latest.json").is_none() && Instant::now() < deadline + Duration::from_secs(5) {

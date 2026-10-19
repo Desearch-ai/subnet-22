@@ -17,6 +17,7 @@ use serde_json::{json, Map, Value};
 
 use crate::budgets::{self, COVERAGE_GATE, CRAWL, EMBED, FULL_PENALTY_LOCKOUT_H, HOSTILE_LOCKOUT_H, HOUR, STRIKE_REASONS, STRIKE_WINDOW_H};
 use crate::credit::{self, FAILS_FOR_PENALTY, PENALTY_WINDOW_S};
+use crate::embedding::VECTORS_SUFFIX;
 use crate::manifest::{self, OPEN_LIST_KEY};
 use crate::queues::{self, Finalized, OPEN_SCAN};
 use crate::roundlog::{self, Receipt};
@@ -35,6 +36,8 @@ pub const FINALIZE_LOCK_S: i64 = 300;
 const REVEAL_AT_ONCE: i64 = 64;
 const SETTLE_AT_ONCE: usize = 16;
 const SLOW_ENQUEUE_S: f64 = 2.0;
+/// Malformed-vector reports read per pass, so a flood cannot hold the janitor.
+const MALFORMED_AT_ONCE: isize = 100;
 /// A check takes about a minute; an upload with less time left would be finalized before its votes land.
 pub const CHECKABLE_LEFT_S: f64 = 180.0;
 pub const UNCHECKED: &str = "unchecked";
@@ -90,7 +93,8 @@ pub fn open_round_key(round_id: &str) -> String {
 }
 
 pub fn manifest_key(frozen_key: &str) -> String {
-    format!("{}.manifest.json", frozen_key.strip_suffix(".parquet").unwrap_or(frozen_key))
+    let stem = [".parquet", VECTORS_SUFFIX].into_iter().find_map(|suffix| frozen_key.strip_suffix(suffix)).unwrap_or(frozen_key);
+    format!("{stem}.manifest.json")
 }
 
 pub fn lock_key(task_id: &str) -> String {
@@ -204,7 +208,8 @@ pub async fn open_embed_rounds(state: &State) -> Result<Option<Round>> {
     let mut batches = Vec::new();
     for entry in waiting.iter().filter_map(|raw| serde_json::from_str::<Value>(raw).ok()) {
         let pages = entry["pages"].as_array().cloned().unwrap_or_default();
-        let keep: Vec<Value> = pages.iter().map(|p| json!({"page_key": p["page_key"], "content_sha1": p["content_sha1"], "url": p["url"]})).collect();
+        let keep: Vec<Value> =
+            pages.iter().map(|p| json!({"page_key": p["page_key"], "content_sha1": p["content_sha1"], "url": p["url"], "host": p["host"]})).collect();
         let mut extra: Map<String, Value> = EMBED_FIELDS.iter().filter_map(|name| entry.get(*name).map(|v| (name.to_string(), v.clone()))).collect();
         extra.insert("model".into(), model.clone().into());
         extra.insert("pages".into(), keep.into());
@@ -474,7 +479,7 @@ pub async fn void_task(state: &State, task_id: &str, lapsed: Finalized, validato
     Ok(report)
 }
 
-/// Uploads whose seed block exists: a drawn share opens for validators, the rest finalize on the miner's own counts.
+/// Uploads whose seed block exists: a drawn share opens for validators, the rest finalize unchecked.
 pub async fn settle_seeded(state: &Arc<State>) -> Result<usize> {
     let block = match state.seeds.current_block().await {
         Ok(block) => block,
@@ -533,8 +538,8 @@ async fn settle_one(state: &State, task_id: &str, job: &Value, seed: &str) -> Re
         return Ok(());
     };
     if reason == sampling::RECHECK {
-        let miner = text(job, "miner").to_string();
-        state.db.run(move |conn| checks::took_recheck(conn, &miner)).await?;
+        let (miner, kind) = (text(job, "miner").to_string(), kind_of(job).to_string());
+        state.db.run(move |conn| checks::took_recheck(conn, &miner, &kind)).await?;
     }
     let mut picked = job.as_object().cloned().unwrap_or_default();
     picked.insert("picked".into(), reason.into());
@@ -544,28 +549,58 @@ async fn settle_one(state: &State, task_id: &str, job: &Value, seed: &str) -> Re
 
 async fn pick_reason(state: &State, task_id: &str, job: &Value, seed: &str) -> Result<Option<&'static str>> {
     let (kind, miner) = (kind_of(job).to_string(), text(job, "miner").to_string());
-    if kind == EMBED {
-        return Ok(Some(sampling::NEW));
-    }
-    if !truthy(job.get("reported").and_then(|r| r.get("rows"))) {
+    if kind == CRAWL && !truthy(job.get("reported").and_then(|r| r.get("rows"))) {
         return Ok(Some(UNREPORTED));
     }
     let (asked, pool) = (miner.clone(), kind.clone());
     if state.lookups.read(move |conn| budgets::locked_until(conn, &asked, &pool, now())).await?.is_some() {
         return Ok(Some(LOCKED));
     }
-    let asked = miner.clone();
-    let (passes, recheck_left) = state.lookups.read(move |conn| Ok((checks::passes(conn, &asked)?, checks::recheck_left(conn, &asked)?))).await?;
+    let (asked, pool) = (miner.clone(), kind.clone());
+    let (passes, recheck_left) = state.lookups.read(move |conn| Ok((checks::passes(conn, &asked, &pool)?, checks::recheck_left(conn, &asked, &pool)?))).await?;
     let at = now();
-    let share =
-        sampling::budget_share(state.settings.check_share, state.settings.checks_per_hour, sampling::uploads_last_hour(&state.redis, sampling::ALL, at).await?);
+    let (share, per_hour) = state.settings.checks_for(&kind);
+    let share = sampling::budget_share(share, per_hour, sampling::uploads_last_hour(&state.redis, &kind, sampling::ALL, at).await?);
     Ok(sampling::pick_reason(
         sampling::draw(seed, task_id, text(job, "etag")),
-        sampling::uploads_last_hour(&state.redis, &miner, at).await?,
+        sampling::uploads_last_hour(&state.redis, &kind, &miner, at).await?,
         passes,
         recheck_left,
         share,
     ))
+}
+
+/// Embed uploads the publisher found malformed vectors in: their miners' next embed uploads are checked, with no strike or verdict.
+pub async fn recheck_malformed(state: &State) -> Result<usize> {
+    let mut redis = state.redis.clone();
+    let reported: Vec<String> = redis.lrange(queues::EMBED_MALFORMED, 0, MALFORMED_AT_ONCE - 1).await?;
+    if reported.is_empty() {
+        return Ok(0);
+    }
+    let found: Vec<Value> = reported.iter().filter_map(|raw| serde_json::from_str(raw).ok()).collect();
+    let miners: BTreeSet<String> = found.iter().map(|entry| text(entry, "miner").to_string()).filter(|miner| !miner.is_empty()).collect();
+    for entry in &found {
+        let miner = text(entry, "miner");
+        eprintln!(
+            "miner={} embed uploads checked again: task={} had {} malformed vectors",
+            miner.get(..10).unwrap_or(miner),
+            text(entry, "task_id"),
+            entry["malformed"]
+        );
+    }
+    let rechecked = miners.len();
+    state
+        .db
+        .run(move |conn| {
+            for miner in &miners {
+                checks::start_recheck(conn, miner, EMBED)?;
+            }
+            Ok(())
+        })
+        .await?;
+    // Trimmed only once the rechecks are saved, so a crash reads the reports again.
+    let _: () = redis.ltrim(queues::EMBED_MALFORMED, reported.len() as isize, -1).await?;
+    Ok(rechecked)
 }
 
 /// An embed upload no validator scored in time: void, at no cost to the miner, and the task goes to another.
@@ -607,10 +642,26 @@ pub fn unchecked_vote(job: &Value, error_share: f64) -> Value {
     })
 }
 
+/// No validator checked it: every character the task was assigned, as a checked pass pays.
+pub fn unchecked_embed_vote(job: &Value) -> Value {
+    let credited = number(job, "chars");
+    json!({
+        "validator": "",
+        "verdict": "pass",
+        "credited": credited,
+        "result": {"verdict": "pass", "reason": UNCHECKED, "credited": credited, "returned": number(job, "texts"), "samples": []},
+    })
+}
+
 pub async fn finalize_unchecked(state: &State, task_id: &str, job: &Value, seeding: bool) -> Result<Option<Value>> {
-    let miner = text(job, "miner").to_string();
-    let share = state.lookups.read(move |conn| checks::error_share(conn, &miner, now())).await?;
-    conclude_validation(state, task_id, job, Decision::last(unchecked_vote(job, share), Vec::new()), seeding).await
+    let vote = if kind_of(job) == EMBED {
+        unchecked_embed_vote(job)
+    } else {
+        let miner = text(job, "miner").to_string();
+        let share = state.lookups.read(move |conn| checks::error_share(conn, &miner, now())).await?;
+        unchecked_vote(job, share)
+    };
+    conclude_validation(state, task_id, job, Decision::last(vote, Vec::new()), seeding).await
 }
 
 /// Finalizes every open upload that is ready, oldest first.
@@ -677,7 +728,7 @@ pub fn held_to_report(job: &Value, decision: Decision) -> Decision {
     Decision { vote: Some(Value::Object(failed)), ..decision }
 }
 
-/// An embed check's sampled texts, each with what it is and the URL of its page, as the task page shows them.
+/// An embed check's sampled texts, each with what it is, its row in the task's input and the URL of its page, as the task page shows them.
 fn checked_texts(job: &Value, result: &Map<String, Value>) -> Value {
     let urls: HashMap<&str, &Value> =
         job["pages"].as_array().into_iter().flatten().filter_map(|page| Some((page["page_key"].as_str()?, &page["url"]))).collect();
@@ -691,6 +742,7 @@ fn checked_texts(job: &Value, result: &Map<String, Value>) -> Value {
                 "text_id": text_id,
                 "kind": if passage.is_some() { "passage" } else { "page" },
                 "index": passage.unwrap_or(0),
+                "row": sample["index"],
                 "url": urls.get(page).copied().cloned().unwrap_or(Value::Null),
                 "outcome": sample["outcome"],
                 "similarity": sample["similarity"],
@@ -746,7 +798,7 @@ pub async fn conclude_validation(state: &State, task_id: &str, job: &Value, deci
     if !close_upload(state, task_id, job, &verdict, publish.as_ref(), seeding).await? {
         return Ok(None);
     }
-    if truthy(job.get("picked")) && kind_of(job) == CRAWL {
+    if truthy(job.get("picked")) {
         account_check(state, job, &decision).await?;
     }
     Ok(Some(json!({
@@ -757,10 +809,10 @@ pub async fn conclude_validation(state: &State, task_id: &str, job: &Value, deci
     })))
 }
 
-/// A pass marks where the hotkey last stood; a fail takes back what passed since then and checks its next uploads.
+/// A pass marks where the hotkey last stood in its kind; a fail takes back what passed since then and checks its next uploads of the kind.
 async fn account_check(state: &State, job: &Value, decision: &Decision) -> Result<()> {
     let vote = decision.vote();
-    let (verdict, miner) = (text(vote, "verdict").to_string(), text(job, "miner").to_string());
+    let (verdict, miner, kind) = (text(vote, "verdict").to_string(), text(job, "miner").to_string(), kind_of(job).to_string());
     if verdict != "pass" && verdict != "fail" {
         return Ok(());
     }
@@ -768,51 +820,54 @@ async fn account_check(state: &State, job: &Value, decision: &Decision) -> Resul
     let judged = samples.iter().filter(|s| ERROR_OUTCOMES.contains(&text(s, "outcome"))).count() as i64;
     let unconfirmed = samples.iter().filter(|s| text(s, "outcome") == "errors_unconfirmed").count() as i64;
     let passed = verdict == "pass";
-    let (asked, task_id) = (miner.clone(), text(job, "task_id").to_string());
+    let (asked, pool, task_id) = (miner.clone(), kind.clone(), text(job, "task_id").to_string());
     let upload_at = job.get("completed_at").and_then(Value::as_f64).filter(|c| *c != 0.0).unwrap_or_else(now);
     let since = state
         .db
         .run(move |conn| {
-            let since = checks::last_pass_at(conn, &asked)?;
-            checks::record(conn, &asked, &task_id, passed, upload_at, judged, unconfirmed, now())?;
+            let since = checks::last_pass_at(conn, &asked, &pool)?;
+            checks::record(conn, &asked, &pool, &task_id, passed, upload_at, judged, unconfirmed, now())?;
             Ok(since)
         })
         .await?;
     if passed {
         return Ok(());
     }
-    take_back(state, &miner, since, "check_failed", false).await?;
-    let asked = miner.clone();
+    take_back(state, &miner, &kind, since, "check_failed", false).await?;
+    let (asked, pool) = (miner.clone(), kind.clone());
     let fails = state
         .db
         .run(move |conn| {
-            checks::start_recheck(conn, &asked)?;
-            checks::fails_in_recent(conn, &asked)
+            checks::start_recheck(conn, &asked, &pool)?;
+            checks::fails_in_recent(conn, &asked, &pool)
         })
         .await?;
     if fails >= FAILS_FOR_PENALTY {
-        full_penalty(state, &miner, "repeated_fails").await?;
+        full_penalty(state, &miner, &kind, "repeated_fails").await?;
     }
     Ok(())
 }
 
-/// Un-credits and unpublishes a hotkey's passed crawl uploads completed after `since`: the unchecked ones, or every one.
-pub async fn take_back(state: &State, miner: &str, since: f64, reason: &str, checked_too: bool) -> Result<Vec<String>> {
-    let asked = miner.to_string();
+/// Un-credits and unpublishes a hotkey's passed uploads of one kind completed after `since`: the unchecked ones, or every one.
+pub async fn take_back(state: &State, miner: &str, kind: &str, since: f64, reason: &str, checked_too: bool) -> Result<Vec<String>> {
+    let (asked, pool) = (miner.to_string(), kind.to_string());
     let taken = state
         .db
         .run(move |conn| {
-            let taken = validations::withdraw(conn, &asked, since, checked_too)?;
-            budgets::credit(conn, &asked, -taken.iter().map(|t| t.credited).sum::<i64>(), CRAWL, now())?;
+            let taken = validations::withdraw(conn, &asked, &pool, since, checked_too)?;
+            budgets::credit(conn, &asked, -taken.iter().map(|t| t.credited).sum::<i64>(), &pool, now())?;
             Ok(taken)
         })
         .await?;
     let task_ids: Vec<String> = taken.iter().map(|t| t.task_id.clone()).collect();
     if !task_ids.is_empty() {
         state.publish.withdraw(&state.redis, &task_ids, reason, now()).await?;
-        eprintln!("miner={} {} uploads taken back: {reason}", &miner[..miner.len().min(10)], task_ids.len());
-        let (pages, storage, redis) = (state.pages.clone(), state.storage.clone(), state.redis.clone());
-        tokio::spawn(async move { report_dropped(&pages, &storage, &redis, taken).await });
+        eprintln!("miner={} {} {kind} uploads taken back: {reason}", &miner[..miner.len().min(10)], task_ids.len());
+        // An embed take-back's pages go back to the planner from the publisher.
+        if kind == CRAWL {
+            let (pages, storage, redis) = (state.pages.clone(), state.storage.clone(), state.redis.clone());
+            tokio::spawn(async move { report_dropped(&pages, &storage, &redis, taken).await });
+        }
     }
     Ok(task_ids)
 }
@@ -852,15 +907,15 @@ pub async fn report_dropped(pages: &Bucket, storage: &Bucket, redis: &Redis, tak
     }
 }
 
-/// The hotkey's last day of credit and pages, and a lockout.
-pub async fn full_penalty(state: &State, miner: &str, reason: &str) -> Result<()> {
+/// The hotkey's last day of credit and published work in one kind's pool, and a lockout from it.
+pub async fn full_penalty(state: &State, miner: &str, kind: &str, reason: &str) -> Result<()> {
     let at = now();
-    let (asked, why) = (miner.to_string(), reason.to_string());
-    state.db.run(move |conn| budgets::lock_out(conn, &asked, CRAWL, FULL_PENALTY_LOCKOUT_H, &why, at)).await?;
-    take_back(state, miner, at - PENALTY_WINDOW_S, reason, true).await?;
-    let asked = miner.to_string();
-    state.db.run(move |conn| budgets::wipe_credits(conn, &asked, at - PENALTY_WINDOW_S, CRAWL)).await?;
-    eprintln!("miner={} full penalty: {reason}", &miner[..miner.len().min(10)]);
+    let (asked, pool, why) = (miner.to_string(), kind.to_string(), reason.to_string());
+    state.db.run(move |conn| budgets::lock_out(conn, &asked, &pool, FULL_PENALTY_LOCKOUT_H, &why, at)).await?;
+    take_back(state, miner, kind, at - PENALTY_WINDOW_S, reason, true).await?;
+    let (asked, pool) = (miner.to_string(), kind.to_string());
+    state.db.run(move |conn| budgets::wipe_credits(conn, &asked, at - PENALTY_WINDOW_S, &pool)).await?;
+    eprintln!("miner={} {kind} full penalty: {reason}", &miner[..miner.len().min(10)]);
     Ok(())
 }
 
@@ -935,7 +990,7 @@ pub fn publish_job(state: &State, job: &Value, vote: &Value, agreed: &[String]) 
     publish.insert("completed_at".into(), job["completed_at"].clone());
     publish.insert("claim_ttl".into(), whole(state.settings.claim_ttl_for(kind)));
     if kind == EMBED {
-        for name in ["model", "input_key", "texts"] {
+        for name in ["model", "input_key", "texts", "pages"] {
             publish.insert(name.into(), job[name].clone());
         }
     } else {
