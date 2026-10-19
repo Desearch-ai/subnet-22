@@ -38,14 +38,15 @@ blocks ahead; that block's hash sets the order the batches are served in.
 
 **Claims.** A miner asks for as many tasks as it can take and receives, for each, its URLs and an
 upload link for one key; it never holds storage credentials. The claim's time starts when the API
-hands the tasks over. On completion the API copies the upload to a key only it can write, so nothing
-changed afterwards is scored. A completion counts as on time when it reaches the API inside the
-claim, however long the API then takes over it; a file written after the completion reached the API
-is refused. Sending the same completion again returns the first one's answer. A miner is never given
-a batch it held before.
+hands the tasks over. On completion the API records the upload's entity tag in the signed note, and
+validators and the publisher read the upload with `If-Match` on that tag, so a file changed afterwards
+is answered with 412 and fails its check (`upload_changed`). A completion counts as on time when it
+reaches the API inside the claim, however long the API then takes over it; a file written after the
+completion reached the API is refused. Sending the same completion again returns the first one's
+answer. A miner is never given a batch it held before.
 
-**Which uploads are checked.** On completion the API freezes the upload and writes a signed note
-beside it (the task's URLs and the freeze block). Once the block ten blocks after the freeze exists,
+**Which uploads are checked.** On completion the API writes a signed note beside the upload (the
+task's URLs, its entity tag and the completion block). Once the block ten blocks after that exists,
 its hash decides whether validators check the upload, so no miner can know while uploading. Checked
 are:
 
@@ -328,8 +329,8 @@ Lists return a page at a time (`limit`, at most 100) with a `next` value to pass
 
 ```
 subnet-22 bucket, temporary, emptied after a day, public
-  uploads/              miner uploads
-  submitted/            the frozen copies validators check, each with a signed .manifest.json beside it
+  uploads/              miner uploads, each completed one with a signed .manifest.json beside it naming
+                        the version that was completed
   validation/open.json  the uploads waiting for validators, with their manifests, rewritten as they change
   log/uploads/          every completed upload with its reported counts, numbered and signed
   outcomes/             what became of every URL, numbered under seq/, newest in latest.json
