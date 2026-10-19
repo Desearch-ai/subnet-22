@@ -132,8 +132,8 @@ impl State {
         let mut admins: HashSet<String> = settings.admin_hotkeys.iter().cloned().collect();
         admins.extend(addresses(&settings.admin_uris)?);
         let key = Hotkey::from_uri(if settings.key_uri.is_empty() { DEV_RECEIPT_KEY } else { &settings.key_uri }).context("TASK_API_KEY_URI")?;
-        let reference = (!settings.embed_reference_url.is_empty())
-            .then(|| Reference::new(&settings.embed_reference_url, &settings.embed_reference_key, settings.embed_reference_calls))
+        let reference = (!settings.embed_reference_urls.is_empty())
+            .then(|| Reference::new(&settings.embed_reference_urls, &settings.embed_reference_key, settings.embed_reference_calls))
             .transpose()?;
         Ok(State {
             reference,

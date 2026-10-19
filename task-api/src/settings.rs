@@ -72,8 +72,8 @@ pub struct Settings {
     pub task_urls: usize,
     pub embed_tasks: bool,
     pub embed_model: String,
-    /// Desearch's model server for validators without their own; none when the URL is empty.
-    pub embed_reference_url: String,
+    /// Desearch's model servers for validators without their own, tried in order; none when empty.
+    pub embed_reference_urls: Vec<String>,
     pub embed_reference_key: String,
     pub embed_reference_calls: usize,
     pub active_s: f64,
@@ -109,7 +109,7 @@ where
     }
 }
 
-fn listed(value: &str) -> Vec<String> {
+pub(crate) fn listed(value: &str) -> Vec<String> {
     value.split(',').map(str::trim).filter(|v| !v.is_empty()).map(String::from).collect()
 }
 
@@ -177,7 +177,7 @@ impl Settings {
             task_urls: number("TASK_API_TASK_URLS", 1_000)?,
             embed_tasks,
             embed_model,
-            embed_reference_url: text("TASK_API_EMBED_REFERENCE_URL", ""),
+            embed_reference_urls: listed(&text("TASK_API_EMBED_REFERENCE_URL", "")),
             embed_reference_key: text("TASK_API_EMBED_REFERENCE_KEY", ""),
             embed_reference_calls: number("TASK_API_EMBED_REFERENCE_CALLS", 4)?,
             active_s: number("TASK_API_ACTIVE_S", ACTIVE_S)?,

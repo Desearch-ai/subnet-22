@@ -178,7 +178,7 @@ Embed tasks are off until `TASK_API_EMBED_TASKS=1`. The flow:
    embedded again with the same model, each of which must reach a cosine similarity of 0.999. A
    validator with its own model server uses it; the others ask `POST /v1/embed/{task_id}/reference`
    with the sampled text ids (at most 64 of one upload), and the API reads those texts from the
-   upload's input, embeds each once on Desearch's model server (`TASK_API_EMBED_REFERENCE_URL`) and
+   upload's input, embeds each once on Desearch's model servers (`TASK_API_EMBED_REFERENCE_URL`) and
    keeps it for the next validator, which waits while it is computed. A picked embed upload waits only
    for validators that vote on embed uploads; one nobody scored by its deadline is void, deleted and
    handed to another miner, at no cost. A pass pays the characters embedded. Embed uploads awaiting a
@@ -272,9 +272,13 @@ The [bot](../desearch-bot/README.md) fills the queue with the admin hotkey (`--t
 | `TASK_API_EMBED_QUEUE_TARGET` | 100 | embed tasks the planner keeps queued and waiting for their round's reveal |
 | `TASK_API_EMBED_CHECK_SHARE` | 0.05 | share of an established hotkey's embed uploads drawn for a check; 1 checks every upload |
 | `TASK_API_EMBED_CHECKS_PER_HOUR` | 600 | drawn embed checks an hour across all miners; the share is lowered to stay within it |
-| `TASK_API_EMBED_REFERENCE_URL` | — | Desearch's model server (an OpenAI-compatible `/v1/embeddings` serving the model under its name) for validators without their own; without it, the reference endpoint answers 503 |
-| `TASK_API_EMBED_REFERENCE_KEY` | — | that server's key |
-| `TASK_API_EMBED_REFERENCE_CALLS` | 4 | requests to that server at once |
+| `TASK_API_EMBED_REFERENCE_URL` | — | Desearch's model servers (each an OpenAI-compatible `/v1/embeddings` serving the model under its name) for validators without their own, comma-separated and tried in order; without one, the reference endpoint answers 503 |
+| `TASK_API_EMBED_REFERENCE_KEY` | — | those servers' key |
+| `TASK_API_EMBED_REFERENCE_CALLS` | 4 | requests to those servers at once |
+
+While the Redis key `reference:servers` holds a comma-separated list of servers, it is used instead of
+`TASK_API_EMBED_REFERENCE_URL`, so servers are added or replaced without a restart; deleting the key
+goes back to the configured ones. A server that fails is tried after the others for a minute.
 
 In `chain` mode a validator needs a validator permit, at least 10,000 total stake and at least 20
 alpha of its own.

@@ -1,7 +1,8 @@
 //! Reference vectors for validators without a model server of their own: the texts a validator sampled from an embed upload's input, embedded once on Desearch's model server and kept for the other validators.
 
 use std::collections::{HashMap, HashSet};
-use std::time::Duration;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail, Context, Result};
 use arrow_array::cast::AsArray;
@@ -16,6 +17,7 @@ use sha2::{Digest, Sha256};
 use tokio::sync::Semaphore;
 
 use crate::http::ApiError;
+use crate::settings::listed;
 use crate::state::State;
 
 /// More than a validator's sample needs; a validator asks at most this many texts of one upload.
@@ -23,20 +25,52 @@ pub const MAX_TEXTS: usize = 64;
 /// The model reads this many tokens of a text, as miners' servers are told to cut them.
 const MAX_TOKENS: u32 = 2048;
 const LOCK_S: i64 = 120;
-const TIMEOUT: Duration = Duration::from_secs(120);
+const TIMEOUT: Duration = Duration::from_secs(30);
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+/// Comma-separated model servers that, while set, are used instead of the configured ones.
+pub const SERVERS: &str = "reference:servers";
+/// How long a server that failed is tried after the others.
+const BENCHED: Duration = Duration::from_secs(60);
 
-/// Desearch's model server, behind an OpenAI-compatible `/v1/embeddings` with a key.
+/// Desearch's model servers, each behind an OpenAI-compatible `/v1/embeddings` with the same key, tried in order.
 pub struct Reference {
     http: reqwest::Client,
-    url: String,
+    servers: Vec<String>,
     key: String,
     calls: Semaphore,
+    failed: Mutex<HashMap<String, Instant>>,
 }
 
 impl Reference {
-    pub fn new(url: &str, key: &str, concurrency: usize) -> Result<Reference> {
-        let http = reqwest::Client::builder().timeout(TIMEOUT).build()?;
-        Ok(Reference { http, url: url.to_string(), key: key.to_string(), calls: Semaphore::new(concurrency.max(1)) })
+    pub fn new(servers: &[String], key: &str, concurrency: usize) -> Result<Reference> {
+        Ok(Reference {
+            http: reqwest::Client::builder().timeout(TIMEOUT).connect_timeout(CONNECT_TIMEOUT).build()?,
+            servers: servers.to_vec(),
+            key: key.to_string(),
+            calls: Semaphore::new(concurrency.max(1)),
+            failed: Mutex::default(),
+        })
+    }
+
+    /// The servers to try, in order: those set in Redis, else the configured ones, with any that just failed last.
+    async fn servers(&self, state: &State) -> Vec<String> {
+        let set: Option<String> = state.redis.clone().get(SERVERS).await.ok().flatten();
+        let mut servers = set.map(|set| listed(&set)).filter(|set| !set.is_empty()).unwrap_or_else(|| self.servers.clone());
+        let failed = self.failed.lock().unwrap();
+        servers.sort_by_key(|server| failed.get(server).is_some_and(|at| at.elapsed() < BENCHED));
+        servers
+    }
+
+    /// One vector per input, in input order, as base64 from one server.
+    async fn embed(&self, server: &str, body: &Value, count: usize) -> Result<Vec<String>> {
+        let sent = self.http.post(server).bearer_auth(&self.key).json(body).send().await?.error_for_status()?;
+        let answer: Value = sent.json().await.context("the model server's answer")?;
+        let mut rows = answer["data"].as_array().cloned().ok_or_else(|| anyhow!("the model server answered without data"))?;
+        rows.sort_by_key(|row| row["index"].as_u64().unwrap_or(u64::MAX));
+        if rows.len() != count {
+            bail!("the model server answered {} vectors for {count} texts", rows.len());
+        }
+        rows.iter().map(|row| row["embedding"].as_str().map(String::from).ok_or_else(|| anyhow!("a vector that is not base64"))).collect()
     }
 
     /// Each asked text's vector, as base64 little-endian float32, from the kept ones or the model server.
@@ -105,27 +139,21 @@ impl Reference {
         }
         let _permit = self.calls.acquire().await.map_err(anyhow::Error::from)?;
         let body = json!({"model": job["model"], "input": inputs, "encoding_format": "base64", "truncate_prompt_tokens": MAX_TOKENS});
-        let sent = self
-            .http
-            .post(&self.url)
-            .bearer_auth(&self.key)
-            .json(&body)
-            .send()
-            .await
-            .and_then(reqwest::Response::error_for_status)
-            .map_err(anyhow::Error::from)?;
-        let answer: Value = sent.json().await.context("the model server's answer")?;
-        let mut rows = answer["data"].as_array().cloned().ok_or_else(|| anyhow!("the model server answered without data"))?;
-        rows.sort_by_key(|row| row["index"].as_u64().unwrap_or(u64::MAX));
-        if rows.len() != missing.len() {
-            return Err(anyhow!("the model server answered {} vectors for {} texts", rows.len(), missing.len()).into());
+        let mut failure = anyhow!("no model server is set");
+        for server in self.servers(state).await {
+            match self.embed(&server, &body, missing.len()).await {
+                Ok(vectors) => {
+                    self.failed.lock().unwrap().remove(&server);
+                    return Ok(missing.into_iter().cloned().zip(vectors).collect());
+                }
+                Err(error) => {
+                    eprintln!("reference model server {server} failed: {error:#}");
+                    self.failed.lock().unwrap().insert(server, Instant::now());
+                    failure = error;
+                }
+            }
         }
-        let mut vectors = Vec::with_capacity(rows.len());
-        for (row, id) in rows.iter().zip(missing) {
-            let vector = row["embedding"].as_str().ok_or_else(|| anyhow!("a vector that is not base64"))?;
-            vectors.push((id.clone(), vector.to_string()));
-        }
-        Ok(vectors)
+        Err(failure.into())
     }
 }
 
