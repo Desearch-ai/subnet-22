@@ -38,9 +38,16 @@ since your last passed check, and those pages leave the published set; your next
 all checked. Two failed checks among your last 10 take back your last 24 hours and lock you out for
 48 hours. A checked task whose report claims more pages than its file holds fails.
 
-**Embedding** has its own part of the emission; see [Embedding tasks](./embedding-tasks.md). A
-passing task is paid by the characters of the texts it embedded, and a failed one earns nothing and is
-a strike.
+**Embedding** has its own part of the emission and is paid the same way, counted in the characters
+of the texts instead of rows; see [Embedding tasks](./embedding-tasks.md). Every validator checks a
+random sample of your uploads, and every upload of a new hotkey until it has passed 10 checks. A
+checked task passes only if every sampled vector matches the validator's own, and then pays its
+characters. Your other uploads are paid their characters at the rate your checks paid.
+
+A failed check earns nothing and costs the task's characters. It also takes back everything you
+uploaded since your last passed check, and those vectors leave the published set; your next 10
+uploads are all checked. Two failed checks among your last 10 take back your last 24 hours and lock
+you out of embed tasks for 48 hours.
 
 ## What raises your share
 

@@ -31,14 +31,29 @@ A task holds the texts of up to 1,000 pages and 3 million characters. Upload its
 
 ## How it is checked
 
-1. Every text must have exactly one vector of the right size, with finite values and length 1.
-2. 48 texts, chosen after your upload and including some of the longest, are embedded again by
-   validators with the same model. Each must reach a cosine similarity of 0.999 with yours.
+When you complete a task, its file must hold exactly one vector per text. A file of any other size
+is refused, and you can upload again while your claim lasts.
 
-A task that fails either check earns nothing, halves your embed budget and is a strike. An upload
-no validator could check in time costs nothing and goes to another miner. Embedding keeps its budget
-and lockouts separate from crawling. A passing task is paid by the characters of its texts; see
-[Emission](./emission.md).
+Validators check a sample of your uploads, picked by a chain block's hash that nobody knew when you
+uploaded:
+- every upload of a new hotkey until it has passed 10 checks;
+- your next 10 uploads after a failed check;
+- otherwise a share of your uploads, at least about one an hour.
+
+In a checked task, validators embed 48 of its texts again with the same model, including some of the
+longest. Each of your vectors for them must have finite values and length 1, and reach a cosine
+similarity of 0.999 with theirs.
+
+**Pay:** a passing task, and every task not picked for a check, is paid by the characters of its
+texts. A failed check earns nothing and costs the task's characters, halves your embed budget and is
+a strike. It also takes back everything you uploaded since your last passed check, and those vectors
+leave the published set. Two failed checks among your last 10 take back your last 24 hours and lock
+you out of embed tasks for 48 hours.
+
+Every vector is checked for finite values and length 1 before it is published. One that fails is
+never published, and your next 10 uploads are all checked. An upload picked for a check that no
+validator could check in time costs nothing and goes to another miner. Embedding keeps its budget and
+lockouts separate from crawling; see [Emission](./emission.md).
 
 ## Task format
 
@@ -56,7 +71,7 @@ the answer's `tasks` list looks like this:
   "texts": 1000,
   "urls": ["https://example.com/story", "..."],
   "input": {"url": "<download link>", "sha256": "5e3b...c1"},
-  "upload": {"url": "<upload link>", "key": "uploads/...", "content_type": "application/vnd.apache.parquet"},
+  "upload": {"url": "<upload link>", "key": "uploads/...", "content_type": "application/octet-stream"},
   "expires_at": 1790410000.0
 }
 ```
@@ -74,11 +89,8 @@ Each row holds one text:
 Embed each text as given, with no prompt in front, and cut it at the model's input limit as vLLM
 does with `truncate_prompt_tokens` set to 2048.
 
-**Output:** a Parquet file with one row per `text_id`:
-
-| Column | |
-| --- | --- |
-| `text_id` | as given |
-| `vector` | the vector, length 1, as little-endian float16 bytes (2560 × 2 = 5,120 bytes) |
+**Output:** one file of vectors with no header: for each row of the input, in the input's order, its
+vector normalized to length 1, as 2,560 little-endian float16 values (5,120 bytes). The file is
+exactly the number of texts × 5,120 bytes.
 
 Upload it to `upload.url` with the given content type, then call `POST /v1/tasks/{task_id}/complete`.

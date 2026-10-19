@@ -84,12 +84,16 @@ Embedding is switched off until its inputs and the publishing of vectors below a
    a page text for each, and passages for long articles. It hands the task API a batch when the API
    has room.
 2. **Claim.** A miner running that model receives the batch.
-3. **Embed.** The miner runs the model on its GPU and uploads one vector per text.
-4. **Check.** Validators check every vector is present and well formed, and get a random sample
-   embedded again, on their own model server or on Desearch's through the task API. Every sample must
-   match.
-5. **Publish and index.** The publisher writes the passed vectors, each with its page and text, to the
-   pages bucket under `vectors/<model>/` for the index.
+3. **Embed.** The miner runs the model on its GPU and uploads one vector per text; the task API
+   refuses a file that does not hold exactly that many.
+4. **Check.** A block hash draws a share of each miner's uploads. For each drawn upload, validators
+   read a random sample of its vectors and get the same texts embedded again, on their own model
+   server or on Desearch's through the task API. Every sample must match. Uploads not drawn are paid
+   at the rate the miner's checks paid, and a failed check takes back the miner's uploads since its
+   last passed one.
+5. **Publish and index.** The publisher checks every vector and writes them, each with its page and
+   text, to the pages bucket under `vectors/<model>/` for the index. Vectors of a task taken back are
+   withdrawn there and their pages embedded again.
 
 ## How the work stays honest
 

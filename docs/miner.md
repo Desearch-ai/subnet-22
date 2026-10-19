@@ -19,7 +19,7 @@ burned too.
   - A task is a batch of page texts, the texts of up to 1,000 pages.
   - The miner runs Desearch's embedding model on its own GPU and uploads one vector per text within
     5 minutes.
-  - Validators embed a sample of the texts again and compare.
+  - Validators embed a sample of the texts of a drawn share of uploads again and compare.
   - [Embedding tasks](./embedding-tasks.md) describes the model, what a task holds and the check.
 
 The crawl miner (`neurons.miners.miner`) and the embed miner (`neurons.miners.embed`) run under the same
@@ -36,9 +36,11 @@ pulls its tasks and uploads its files, so it needs no open port.
     reports.
   - A failed check takes back what you were paid since your last passed one.
 - **Embedding:**
-  - Every upload is checked.
-  - A passing task is paid by the characters of the texts it embedded.
-  - A failing one earns nothing and is a strike.
+  - Validators check a drawn share of your uploads, and every one until your hotkey has passed 10
+    checks.
+  - A passing task, and every task not checked, is paid by the characters of the texts it embedded.
+  - A failed check earns nothing, is a strike, and takes back what you were paid since your last
+    passed one.
 
 Crawling and embedding keep separate budgets and lockouts. [Emission](./emission.md) explains the rules
 and what raises your share.

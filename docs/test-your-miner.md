@@ -154,10 +154,12 @@ Add `EMBED_API_KEY` if your model server needs one.
 
 ### 4. Read the results
 
-For each upload, the sandbox prints the validator's verdict, how many of the sampled texts matched
-and the lowest cosine similarity among them, the task's size, how long after the claim the upload
-came (it must come within 5 minutes), a link to the file your miner uploaded and a JSON file with
-the full result. Each text that did not reach 0.999 is listed with its similarity:
+The sandbox checks every upload, so you see a verdict for each; on mainnet validators check a share of
+them, as [Embedding tasks](./embedding-tasks.md#how-it-is-checked) explains. For each upload, the
+sandbox prints the validator's verdict, how many of the sampled texts matched and the lowest cosine
+similarity among them, the task's size, how long after the claim the upload came (it must come within
+5 minutes), a link to the file your miner uploaded and a JSON file with the full result. Each sampled
+text that did not reach 0.999, or whose vector is not finite with length 1, is listed:
 
 ```
 task 211008abb81642ea miner 5CkpVdiz: FAIL (vectors_mismatch), 14/15 sampled texts matched, lowest similarity 0.989792

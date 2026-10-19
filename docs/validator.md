@@ -18,9 +18,11 @@ jobs:
    - It reports pass or fail to the task API, with what it found per URL. Every validator checks every
      listed upload.
 2. **Checks embed tasks.**
-   - Every embed upload is checked.
-   - The validator samples 48 of its texts, gets their vectors from the same model and compares them
-     with the miner's. Each must reach a cosine similarity of 0.999.
+   - The same way, a block hash draws a share of every miner's embed uploads, and the task API lists
+     those too.
+   - For each listed upload, the validator samples 48 of its texts and reads only their vectors from
+     the upload. It gets vectors for the same texts from the same model and compares. Each must reach
+     a cosine similarity of 0.999.
    - The vectors come from the validator's own model server. A validator without one falls back to
      Desearch's model server through the task API, which embeds each sampled text once.
 3. **Sets weights.**
@@ -28,8 +30,7 @@ jobs:
      no miner earned is burned.
    - Crawl miners are paid from the log of every completed upload, at the rate the validator's own
      checks of each miner paid, less what its failed checks take back.
-   - Embed miners are paid by the characters their passed tasks embedded over the last 24 hours, as
-     the validator's own checks found.
+   - Embed miners are paid the same way, counted in the characters of the texts they embedded.
    - See [Emission](./emission.md).
 
 **Healthy checking:** weights are set only while the validator is checking. It sets none, and logs why,

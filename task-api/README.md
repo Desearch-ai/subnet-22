@@ -165,20 +165,33 @@ Embed tasks are off until `TASK_API_EMBED_TASKS=1`. The flow:
    It hands an input to the API (`embed:inputs` in Redis) only while
    `GET /v1/room?kind=embed` has room, and plans at most `PLANNER_PAGES_PER_HOUR` pages an hour.
 2. **Task API:** each input becomes one task naming the model (`TASK_API_EMBED_MODEL`). A claim must
-   list that model in `models` or is refused with `MODEL_MISMATCH`, at no cost. The miner returns one
-   vector per text within `TASK_API_EMBED_CLAIM_TTL`.
-3. **Validators** check every vector's shape and get 48 sampled texts embedded again with the same
-   model, each of which must reach a cosine similarity of 0.999. A validator with its own model server
-   uses it; the others ask `POST /v1/embed/{task_id}/reference` with the sampled text ids (at most 64
-   of one upload), and the API reads those texts from the upload's input, embeds each once on
-   Desearch's model server (`TASK_API_EMBED_REFERENCE_URL`) and keeps it for the next validator, which
-   waits while it is computed. An embed upload waits only for validators that vote on embed uploads; one
-   nobody scored by its deadline is void, deleted and handed to another miner, at no cost. A pass pays
-   the characters embedded. A task that fails `TASK_API_MAX_ATTEMPTS` times is dropped and its pages go
-   back to the planner (`embed:dropped`), which plans them again the next time the log shows them.
-4. **Publisher:** writes a passed task's vectors, each with its page key, URL, text hash, kind and
-   index, to `vectors/<model>/log/` in the pages bucket, numbered under `vectors/<model>/seq/`, and
-   deletes the upload and the input.
+   list that model in `models` or is refused with `MODEL_MISMATCH`, at no cost. The miner uploads one
+   vector per text, as raw float16 in the input's order, within `TASK_API_EMBED_CLAIM_TTL`; a
+   completion whose file is not exactly texts × dimensions × 2 bytes is refused.
+3. **Check picking:** like crawl uploads, by the seed: every embed upload of a hotkey with fewer than
+   10 passed embed checks, the next 10 after a failed one, otherwise a share
+   (`TASK_API_EMBED_CHECK_SHARE`) within `TASK_API_EMBED_CHECKS_PER_HOUR`. An upload not picked is
+   finalized as passed and paid its characters. A failed check takes back the miner's embed uploads
+   since its last passed embed check, and two among its last 10 bring the full penalty, in the embed
+   pool only.
+4. **Validators** read the 48 sampled vectors of a picked upload by byte range and get the same texts
+   embedded again with the same model, each of which must reach a cosine similarity of 0.999. A
+   validator with its own model server uses it; the others ask `POST /v1/embed/{task_id}/reference`
+   with the sampled text ids (at most 64 of one upload), and the API reads those texts from the
+   upload's input, embeds each once on Desearch's model server (`TASK_API_EMBED_REFERENCE_URL`) and
+   keeps it for the next validator, which waits while it is computed. A picked embed upload waits only
+   for validators that vote on embed uploads; one nobody scored by its deadline is void, deleted and
+   handed to another miner, at no cost. A pass pays the characters embedded. Embed uploads awaiting a
+   verdict count against the planner's room. A task that fails `TASK_API_MAX_ATTEMPTS` times is
+   dropped and its pages go back to the planner (`embed:dropped`), which plans them again the next
+   time the log shows them.
+5. **Publisher:** writes the vectors of every finalized embed task that passed or was not picked, each
+   with its page key, URL, text hash, kind and index, to `vectors/<model>/log/` in the pages bucket,
+   numbered under `vectors/<model>/seq/`, and deletes the upload and the input. A vector that is not
+   finite or not of length 1 is left out, its page goes back to the planner, and the miner's next 10
+   uploads are checked (`embed:malformed`). A task taken back is withdrawn from the vectors feed by a
+   withdrawal entry ([publisher README](../publisher/README.md#vectors)) and its pages go back to the
+   planner.
 
 The miner-facing description is [Embedding tasks](../docs/embedding-tasks.md).
 
@@ -257,6 +270,8 @@ The [bot](../desearch-bot/README.md) fills the queue with the admin hotkey (`--t
 | `TASK_API_EMBED_MODEL` | `desearch-4b-v1` | the model embed tasks name, from [`desearch/embedding.py`](../desearch/embedding.py) |
 | `TASK_API_EMBED_CLAIM_TTL` | 300 | seconds a miner is given to upload an embed task after claiming it |
 | `TASK_API_EMBED_QUEUE_TARGET` | 100 | embed tasks the planner keeps queued and waiting for their round's reveal |
+| `TASK_API_EMBED_CHECK_SHARE` | 0.05 | share of an established hotkey's embed uploads drawn for a check; 1 checks every upload |
+| `TASK_API_EMBED_CHECKS_PER_HOUR` | 600 | drawn embed checks an hour across all miners; the share is lowered to stay within it |
 | `TASK_API_EMBED_REFERENCE_URL` | — | Desearch's model server (an OpenAI-compatible `/v1/embeddings` serving the model under its name) for validators without their own; without it, the reference endpoint answers 503 |
 | `TASK_API_EMBED_REFERENCE_KEY` | — | that server's key |
 | `TASK_API_EMBED_REFERENCE_CALLS` | 4 | requests to that server at once |
@@ -325,8 +340,9 @@ desearch-pages bucket
                           kept three days
   reports/                every final result, with the checked pages and each validator's report;
                           kept 30 days, the API keeps them all
-  vectors/<model>/        verified vectors, one file per task under log/, numbered under seq/,
-                          newest in latest.json
+  vectors/<model>/        vectors, one file per task under log/, numbered under seq/, newest in
+                          latest.json; a withdrawal entry drops a task taken back (see the
+                          publisher's README)
 ```
 
 A page's key comes from its URL alone; it is how the change files and `current/` name a page:
