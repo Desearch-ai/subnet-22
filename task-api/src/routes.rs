@@ -499,18 +499,29 @@ pub async fn embed_reference(
 ) -> Answer {
     let who = validator(&state, &Signed { headers: &headers, method: "POST", uri: &uri, body: &body, peer }).await?;
     let text_ids = models::reference_body(&json_body(&body)?)?;
-    let Some(reference) = state.reference.as_ref() else {
+    if state.reference.is_none() {
         return Err(ApiError::status(503, "this task API has no reference model server"));
-    };
+    }
     let Some(job) = state.validation.job(&state.redis, &task_id).await? else {
         return Err(ApiError::status(409, "no such open upload"));
     };
     if kind_of(&job) != EMBED {
         return Err(ApiError::status(422, "not an embed upload"));
     }
-    let vectors = reference.vectors(&state, &task_id, &job, &who.hotkey, &text_ids).await?;
+    // Detached so a validator that times out can't cancel it, leaving its lock and losing the vectors.
+    let (asked, ids, model) = (task_id.clone(), text_ids.clone(), job["model"].clone());
+    let computing = tokio::spawn(async move {
+        let Some(reference) = state.reference.as_ref() else {
+            return Err(ApiError::status(503, "this task API has no reference model server"));
+        };
+        reference.vectors(&state, &asked, &job, &who.hotkey, &ids).await
+    });
+    let vectors = match computing.await {
+        Ok(vectors) => vectors?,
+        Err(error) => return Err(anyhow::anyhow!("reference task failed: {error}").into()),
+    };
     let rows: Vec<Value> = text_ids.iter().zip(vectors).map(|(text_id, embedding)| json!({"text_id": text_id, "embedding": embedding})).collect();
-    Ok(Json(json!({"task_id": task_id, "model": job["model"], "vectors": rows})))
+    Ok(Json(json!({"task_id": task_id, "model": model, "vectors": rows})))
 }
 
 pub async fn score(

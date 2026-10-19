@@ -2,6 +2,7 @@
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use arrow_array::{ArrayRef, Int32Array, LargeStringArray, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema};
@@ -19,11 +20,16 @@ use crate::harness::{task_id, vectors, Harness};
 
 /// A model server answering each text with a vector holding its length, counting the texts it was sent.
 async fn model_server(texts: Arc<AtomicUsize>) -> String {
+    slow_model_server(texts, Duration::ZERO).await
+}
+
+async fn slow_model_server(texts: Arc<AtomicUsize>, delay: Duration) -> String {
     let app = Router::new().route(
         "/v1/embeddings",
         post(move |Json(body): Json<Value>| {
             let texts = texts.clone();
             async move {
+                tokio::time::sleep(delay).await;
                 let inputs = body["input"].as_array().cloned().unwrap_or_default();
                 texts.fetch_add(inputs.len(), Ordering::SeqCst);
                 assert_eq!((body["model"].clone(), body["truncate_prompt_tokens"].clone()), (json!("desearch-4b-v1"), json!(2048)));
@@ -118,6 +124,37 @@ async fn a_validator_without_a_model_server_gets_reference_vectors_from_the_uplo
     assert_eq!(h.validator.post(&path, json!({"text_ids": (0..65).map(|i| format!("t{i}")).collect::<Vec<_>>()})).await.unwrap_err().status, 422);
     assert_eq!(h.miner.post(&path, json!({"text_ids": ["t1"]})).await.unwrap_err().status, 403, "only validators");
     assert_eq!(h.validator.post("/v1/embed/0000000000000000/reference", json!({"text_ids": ["t1"]})).await.unwrap_err().status, 409);
+}
+
+#[tokio::test]
+async fn a_validator_that_gives_up_mid_call_still_leaves_the_vectors_for_its_retry() {
+    let sent = Arc::new(AtomicUsize::new(0));
+    let url = slow_model_server(sent.clone(), Duration::from_secs(1)).await;
+    let h = Harness::with(|s| {
+        s.embed_tasks = true;
+        s.embed_reference_url = url.clone();
+        s.embed_reference_key = "key".into();
+    })
+    .await;
+    let input = input_file(&[("t1", "one"), ("t2", "three")]);
+    let input_key = "embed/inputs/dt=2026-10-19/slow.parquet";
+    h.state.storage.put(input_key, Bytes::from(input.clone()), "application/vnd.apache.parquet", None).await.unwrap();
+    let entry = json!({"input_key": input_key, "input_sha256": format!("{:x}", Sha256::digest(&input)), "texts": 2, "chars": 8,
+                       "pages": [{"page_key": "pages/a.example/1", "content_sha1": "c".repeat(40), "url": "https://a.example/1", "host": "a.example"}]});
+    let _: i64 = h.redis.clone().rpush(EMBED_INPUTS, entry.to_string()).await.unwrap();
+    lifecycle::open_embed_rounds(&h.state).await.unwrap().expect("an embed round");
+    h.revealed().await;
+    let task = h.miner.post("/v1/tasks/claim", json!({"kind": "embed", "models": ["desearch-4b-v1"]})).await.unwrap()["tasks"][0].clone();
+    h.put(task["upload"]["url"].as_str().unwrap(), vectors(2)).await;
+    h.miner.post(&format!("/v1/tasks/{}/complete", task_id(&task)), json!({"key": task["upload"]["key"], "bytes": 7})).await.unwrap();
+    h.opened(Some(&h.validator), Some(&task_id(&task))).await;
+    let path = format!("/v1/embed/{}/reference", task_id(&task));
+
+    assert!(tokio::time::timeout(Duration::from_millis(200), h.validator.post(&path, json!({"text_ids": ["t1", "t2"]}))).await.is_err());
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    let answer = h.validator.post(&path, json!({"text_ids": ["t1", "t2"]})).await.expect("the retry gets the vectors the first call computed");
+    assert_eq!(first_number(&answer["vectors"][1]["embedding"]), 5.0);
+    assert_eq!(sent.load(Ordering::SeqCst), 2, "the model server was asked once");
 }
 
 #[tokio::test]
