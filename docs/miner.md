@@ -135,7 +135,8 @@ pm2 start python3 --name desearch_miner -- -m neurons.miners.miner
 ### 5. Embedding
 
 An embed miner needs an NVIDIA GPU with 16 GB of memory or more (24 GB recommended), serving
-[the model](./embedding-tasks.md#the-model) with [vLLM](https://docs.vllm.ai).
+[the model](./embedding-tasks.md#the-model) with [vLLM](https://docs.vllm.ai) 0.31.0: install it with
+`pip install vllm==0.31.0`, or run the Docker image `vllm/vllm-openai:v0.31.0`.
 
 **Start the model server:**
 
