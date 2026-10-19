@@ -35,8 +35,10 @@ LONG_CHARS = 6000
 MATCH_SIMILARITY = 0.999
 NORM_TOLERANCE = 0.01
 RANGE_READS = 16
-# Another validator's request for the same upload is being embedded; it takes seconds.
-BUSY_WAIT_S = 60.0
+# The task API keeps computing vectors a validator stopped waiting for; this covers a slow input read or a model server failing over.
+REFERENCE_WAIT_S = 120.0
+# Another validator's request for the same upload is being embedded, which may take as long.
+BUSY_WAIT_S = REFERENCE_WAIT_S
 BUSY_RETRY_MAX_S = 5.0
 
 

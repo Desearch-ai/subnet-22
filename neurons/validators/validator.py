@@ -23,7 +23,12 @@ from bittensor.wallets import Wallet
 
 from neurons.validators.config import ENV_FILE, config, flat, setup_logging
 from neurons.validators.crawl import CrawlValidator
-from neurons.validators.embed import ApiReference, EmbedValidator, ServerReference
+from neurons.validators.embed import (
+    REFERENCE_WAIT_S,
+    ApiReference,
+    EmbedValidator,
+    ServerReference,
+)
 from neurons.validators.fetchers import (
     OWN_IP_SETTINGS,
     HourlyBudget,
@@ -157,13 +162,17 @@ class Validator:
         url = os.environ.get("EMBED_API_URL", "")
         signer = await self.api_signer()
         async with TaskApiClient(
-            self.config.neuron.task_api_url, self.wallet.hotkey
+            self.config.neuron.task_api_url,
+            self.wallet.hotkey,
+            timeout=REFERENCE_WAIT_S,
         ) as api:
             if url:
                 references = await self.embed_references(url)
                 where = url
             else:
-                references = {name: ApiReference(api, model) for name, model in MODELS.items()}
+                references = {
+                    name: ApiReference(api, model) for name, model in MODELS.items()
+                }
                 where = "Desearch's model server, through the task API"
             if not references:
                 await self.stopping.wait()
@@ -199,7 +208,9 @@ class Validator:
                 served = await probe.served_models()
                 break
             except (aiohttp.ClientError, asyncio.TimeoutError) as error:
-                log.warning(f"Embedding server at {url} unavailable, retrying: {error!r}")
+                log.warning(
+                    f"Embedding server at {url} unavailable, retrying: {error!r}"
+                )
                 await asyncio.sleep(EMBED_SERVER_WAIT_S)
         references = {
             name: ServerReference(c) for name, c in clients.items() if name in served
