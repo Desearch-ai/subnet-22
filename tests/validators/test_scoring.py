@@ -16,6 +16,7 @@ from neurons.miners.rows import write_parquet
 from neurons.validators import crawl, tasks
 from neurons.validators.crawl import CrawlValidator, DownloadFailed
 from neurons.validators.fetchers import to_page
+from neurons.validators.ledger import Ledger
 from neurons.validators.scoring import (
     FetchedPage,
     attach_html,
@@ -537,6 +538,91 @@ def test_a_presigned_download_url_is_sent_exactly_as_signed():
     with pytest.raises(crawl.UploadMissing):
         asyncio.run(download())
     assert seen == ["/b/k%2Fx.parquet?X-Amz-Credential=a%2Fb&s=%3D"]
+
+
+ETAG = '"9f86d081884c7d659a2feaa0c55ad015-2"'
+PRECONDITION_PAGE = (
+    b"<!DOCTYPE html><html><body>412 Precondition Failed</body></html>" * 300
+)
+CHANGED_ROWS, CHANGED_URLS, _ = synthetic(12)
+
+
+class Votes:
+    hotkey = "v"
+
+    def __init__(self):
+        self.posts: list[tuple[str, dict]] = []
+
+    async def post(self, path: str, body: dict | None = None) -> dict:
+        self.posts.append((path, body))
+        return {}
+
+
+def _checked(status: int, body: bytes, ledger=None, **manifest) -> tuple[list, list]:
+    """The task API calls of one crawl check, and the If-Match header of each read of the upload."""
+    pins = []
+
+    async def upload(request) -> web.Response:
+        pins.append(request.headers.get("If-Match"))
+        return web.Response(status=status, body=body)
+
+    async def check():
+        async with serving(upload) as base, aiohttp.ClientSession() as http:
+            api = Votes()
+            checker = CrawlValidator(api, None, http, ledger=ledger, storage_url=base)
+            listed = {
+                "task_id": "t1",
+                "kind": "crawl",
+                "miner": "m",
+                "key": "uploads/dt=2026-10-20/task=t1/m-1.parquet",
+                "urls": CHANGED_URLS,
+                "completed_at": 100.0,
+                **manifest,
+            }
+            await checker.check(checker.job_of(listed, SEED))
+            return api.posts
+
+    return asyncio.run(check()), pins
+
+
+def test_the_upload_is_downloaded_only_in_the_version_its_completion_pinned():
+    posts, pins = _checked(404, b"", etag=ETAG)
+
+    assert pins == [ETAG], "the manifest's ETag, quotes included"
+    assert posts == [("/v1/validation/t1/release", {"reason": "missing"})]
+
+
+def test_a_manifest_without_an_etag_downloads_without_if_match():
+    _, pins = _checked(404, b"")
+
+    assert pins == [None]
+
+
+@pytest.mark.parametrize(
+    "body",
+    [PRECONDITION_PAGE, to_parquet(CHANGED_ROWS)],
+    ids=["r2 error page", "a readable upload"],
+)
+def test_an_upload_changed_after_its_completion_fails_and_costs_its_urls(
+    monkeypatch, body
+):
+    async def never(*_):
+        raise AssertionError("a 412 answer was scored as the upload")
+
+    monkeypatch.setattr(CrawlValidator, "run_check", never)
+    ledger = Ledger(":memory:")
+
+    ((path, vote),), pins = _checked(412, body, ledger=ledger, etag=ETAG)
+
+    assert path == "/v1/validation/t1/score" and pins == [ETAG]
+    assert (vote["verdict"], vote["reason"]) == ("fail", tasks.UPLOAD_CHANGED)
+    assert (vote["returned"], vote["sampled"], vote["error_rows"]) == (0, 0, 0)
+    assert (vote["samples"], vote["rejected"]) == ([], [])
+    check = ledger.db.execute(
+        "SELECT kind, verdict, credited, returned, assigned FROM checks"
+    ).fetchone()
+    assert check == ("crawl", "fail", 0, 0, len(CHANGED_URLS))
+    assert ledger.crawl_paid(200.0)["m"].amount == -len(CHANGED_URLS)
 
 
 @pytest.mark.parametrize(

@@ -17,6 +17,7 @@ import aiohttp
 
 from desearch.client import TaskApiClient
 from desearch.kinds import CRAWL
+from neurons.validators.tasks import UPLOAD_CHANGED
 
 from sandbox import local
 from sandbox.local import ADMIN_URI, ROOT, Ports
@@ -31,6 +32,7 @@ SUMMARY_EVERY_S = 60.0
 START_TIMEOUT_S = 60.0
 # A confirmed error is a page nobody could load, not a problem with the miner.
 FINE = ("matched", "errors_confirmed")
+CHANGED_NOTE = "the upload changed after it was completed"
 # Kept in the log file, left out of the terminal.
 QUIET = ("Blocks left until next epoch", "{'netuid'")
 
@@ -38,10 +40,16 @@ QUIET = ("Blocks left until next epoch", "{'netuid'")
 def describe(task: dict, urls: list[dict], upload: str = "", details: str = "") -> str:
     head = (
         f"task {task['task_id']} miner {task['miner'][:8]}: {task['verdict'].upper()}"
-        f" ({task['reason']}), paid {task['credited']} of {task['returned']} rows,"
-        f" {task['matched']} matched / {task['mismatched']} mismatched"
-        f" / {task['unverifiable']} unverifiable"
+        f" ({task['reason']}), "
     )
+    if task["reason"] == UPLOAD_CHANGED:
+        head += CHANGED_NOTE
+    else:
+        head += (
+            f"paid {task['credited']} of {task['returned']} rows,"
+            f" {task['matched']} matched / {task['mismatched']} mismatched"
+            f" / {task['unverifiable']} unverifiable"
+        )
     problems = [
         f"  {u['url']}: {u.get('outcome') or 'rejected'}"
         + (f", {u['why']}" if u.get("why") else "")

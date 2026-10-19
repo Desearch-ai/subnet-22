@@ -18,7 +18,13 @@ from desearch.embedding import (
     read_parquet,
 )
 from desearch.kinds import EMBED
-from neurons.validators.tasks import DownloadFailed, TaskChecker, UploadMissing
+from neurons.validators.tasks import (
+    UPLOAD_CHANGED,
+    DownloadFailed,
+    TaskChecker,
+    UploadChanged,
+    UploadMissing,
+)
 
 log = logging.getLogger("validator")
 
@@ -105,12 +111,12 @@ def compare(
     }
 
 
-def wrong_size() -> dict:
-    """An upload that is not one vector for each text of the input."""
+def unsampled_fail(reason: str) -> dict:
+    """A fail decided before any vector was compared."""
     return {
         **compare([], [], [], np.empty(0)),
         "verdict": "fail",
-        "reason": "wrong_size",
+        "reason": reason,
     }
 
 
@@ -227,13 +233,18 @@ class EmbedValidator(TaskChecker):
         except UploadMissing:
             await self.hand_back(task_id, "missing")
             return {}
+        except UploadChanged:
+            log.warning("task=%s upload changed after it was completed", task_id)
+            slices = None
         except DownloadFailed as exc:
             log.warning("%s, trying again later", exc)
             self.defer(task_id)
             return {}
 
-        if any(total != len(inputs) * size for _, total in slices):
-            result = wrong_size()
+        if slices is None:
+            result = unsampled_fail(UPLOAD_CHANGED)
+        elif any(total != len(inputs) * size for _, total in slices):
+            result = unsampled_fail("wrong_size")
         else:
             vectors = [unit_vector(raw, reference.model.dims) for raw, _ in slices]
             formed = [row for row, v in zip(picked, vectors) if v is not None]
@@ -279,13 +290,19 @@ class EmbedValidator(TaskChecker):
         async def read(index: int) -> tuple[bytes, int]:
             async with slots:
                 return await self.read_range(
-                    job["download_url"], index * size, size, job["task_id"]
+                    job["download_url"],
+                    index * size,
+                    size,
+                    job["task_id"],
+                    job.get("etag"),
                 )
 
         found = await asyncio.gather(
             *(read(index) for index in indexes), return_exceptions=True
         )
-        for item in found:
-            if isinstance(item, BaseException):
-                raise item
+        failed = [item for item in found if isinstance(item, BaseException)]
+        if failed:
+            # Proof of a rewritten upload outranks a read that merely failed.
+            changed = [error for error in failed if isinstance(error, UploadChanged)]
+            raise (changed or failed)[0]
         return found

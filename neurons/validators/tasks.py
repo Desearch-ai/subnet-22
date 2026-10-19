@@ -33,6 +33,7 @@ RECENT_CHECKS = 20
 HEALTHY_AFTER = 5
 HEALTHY_SHARE = 0.8
 DEFER_S = 60.0
+UPLOAD_CHANGED = "upload_changed"
 
 log = logging.getLogger("validator")
 
@@ -43,6 +44,10 @@ class DownloadFailed(Exception):
 
 class UploadMissing(Exception):
     pass
+
+
+class UploadChanged(Exception):
+    """Storage holds another version than the one the completion pinned: the miner rewrote it."""
 
 
 class TaskChecker:
@@ -294,7 +299,9 @@ class TaskChecker:
     def provider_worked(self) -> None:
         self.provider_failures, self.pause = 0, PAUSE_S
 
-    async def download(self, url: str, task_id: str) -> bytes | None:
+    async def download(
+        self, url: str, task_id: str, etag: str | None = None
+    ) -> bytes | None:
         problem = ""
         for attempt in range(DOWNLOAD_ATTEMPTS):
             if attempt:
@@ -302,7 +309,9 @@ class TaskChecker:
             try:
                 # Presigned: sent as is. Raw: never inflate a Content-Encoding the miner set.
                 async with self.http.get(
-                    URL(url, encoded=True), auto_decompress=False
+                    URL(url, encoded=True),
+                    headers=pinned(etag),
+                    auto_decompress=False,
                 ) as response:
                     status = response.status
                     if status == 200:
@@ -312,18 +321,21 @@ class TaskChecker:
                 continue
             if status == 404:
                 raise UploadMissing(task_id)
+            if status == 412:
+                raise UploadChanged(task_id)
             problem = f"HTTP {status}"
             if status < 500:
                 break
         raise DownloadFailed(f"task={task_id} download failed: {problem}")
 
     async def read_range(
-        self, url: str, start: int, size: int, task_id: str
+        self, url: str, start: int, size: int, task_id: str, etag: str | None = None
     ) -> tuple[bytes, int]:
         """Bytes start to start + size - 1 of an object and its total size; no bytes when it ends before start."""
         headers = {
             hdrs.RANGE: f"bytes={start}-{start + size - 1}",
             hdrs.ACCEPT_ENCODING: "identity",
+            **pinned(etag),
         }
         problem = ""
         for attempt in range(DOWNLOAD_ATTEMPTS):
@@ -348,6 +360,8 @@ class TaskChecker:
                 continue
             if status == 404:
                 raise UploadMissing(task_id)
+            if status == 412:
+                raise UploadChanged(task_id)
             problem = f"HTTP {status} to a range request"
             if status < 500:
                 break
@@ -393,6 +407,11 @@ class TaskChecker:
                     raise
             await asyncio.sleep(RETRY_DELAY_S)
         return False
+
+
+def pinned(etag: str | None) -> dict[str, str]:
+    """Headers that read only the version of an upload its completion pinned."""
+    return {hdrs.IF_MATCH: etag} if etag else {}
 
 
 def object_size(content_range: str) -> int | None:
