@@ -22,9 +22,9 @@ async fn uploaded(h: &Harness) -> (Value, Value) {
     (task, report)
 }
 
-/// The next upload copies take this long, as when storage is slow.
-fn slow_copies(h: &Harness, delay: Duration) {
-    h.stub.state.slow("PUT", &format!("{BUCKET}/submitted/"), 10, delay);
+/// The next reads of uploads take this long, as when storage is slow.
+fn slow_reads(h: &Harness, delay: Duration) {
+    h.stub.state.slow("HEAD", &format!("{BUCKET}/uploads/"), 10, delay);
 }
 
 async fn strikes(h: &Harness) -> i64 {
@@ -41,7 +41,7 @@ async fn a_completion_that_arrived_in_time_counts_however_long_the_api_takes() {
     let h = Harness::start().await;
     let (task, report) = uploaded(&h).await;
     let id = task_id(&task);
-    slow_copies(&h, Duration::from_secs(1));
+    slow_reads(&h, Duration::from_secs(1));
     let sent = desearch::time::now();
     expire_at(&h, &id, sent + 0.3).await;
     let path = format!("/v1/tasks/{id}/complete");
@@ -56,6 +56,49 @@ async fn a_completion_that_arrived_in_time_counts_however_long_the_api_takes() {
     let job = h.state.validation.job(&h.redis, &id).await.unwrap().unwrap();
     let completed = job["completed_at"].as_f64().unwrap();
     assert!(sent - 0.05 <= completed && completed < sent + 0.3, "stamped on arrival");
+    assert_eq!(strikes(&h).await, 0);
+}
+
+#[tokio::test]
+async fn a_completion_pins_the_upload_where_the_miner_put_it() {
+    let h = Harness::start().await;
+    let (task, report) = uploaded(&h).await;
+    let (id, key) = (task_id(&task), report["key"].as_str().unwrap().to_string());
+    let stored = h.state.storage.head(&key).await.unwrap().unwrap();
+    let deletes = h.stub.state.count("DELETE");
+    h.miner.post(&format!("/v1/tasks/{id}/complete"), report).await.unwrap();
+    assert_eq!(h.object(&key), Some(parquet(&task)), "the upload stays where the miner put it");
+    assert_eq!(h.stub.state.count("DELETE"), deletes, "and nothing is deleted");
+    let mut expected = vec![key.clone(), lifecycle::manifest_key(&key)];
+    expected.sort();
+    let kept: Vec<String> = h.stub.state.keys(BUCKET, "").into_iter().filter(|k| k.contains(&format!("/task={id}/"))).collect();
+    assert_eq!(kept, expected, "nor copied");
+    let manifest = h.json_object(&lifecycle::manifest_key(&key)).unwrap();
+    assert_eq!((manifest["key"].clone(), manifest["etag"].clone()), (json!(key), json!(stored.etag)));
+    let job = h.state.validation.job(&h.redis, &id).await.unwrap().unwrap();
+    assert_eq!((job["key"].clone(), job["etag"].clone(), job["manifest"].clone()), (json!(key), json!(stored.etag), manifest));
+}
+
+#[tokio::test]
+async fn an_upload_written_again_while_its_ends_are_read_is_refused_and_kept_for_a_retry() {
+    let h = Harness::start().await;
+    let (task, report) = uploaded(&h).await;
+    let (id, key) = (task_id(&task), report["key"].as_str().unwrap().to_string());
+    h.stub.state.slow("GET", &format!("{BUCKET}/{key}"), 1, Duration::from_millis(500));
+    let path = format!("/v1/tasks/{id}/complete");
+    let rewritten = [parquet(&task), b"PAR1".to_vec()].concat();
+    let rewriting = async {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        h.put(task["upload"]["url"].as_str().unwrap(), rewritten.clone()).await;
+    };
+    let (refused, ()) = tokio::join!(h.miner.post(&path, report.clone()), rewriting);
+    let refused = refused.unwrap_err();
+    assert_eq!((refused.status, refused.detail), (409, json!("the upload changed while completing, retry")));
+    assert!(h.state.validation.job(&h.redis, &id).await.unwrap().is_none());
+    assert_eq!(h.object(&key), Some(rewritten), "the miner's file is not deleted");
+    h.miner.post(&path, report).await.unwrap();
+    let job = h.state.validation.job(&h.redis, &id).await.unwrap().unwrap();
+    assert_eq!(job["etag"], json!(h.state.storage.head(&key).await.unwrap().unwrap().etag), "the retry pins the file as it is now");
     assert_eq!(strikes(&h).await, 0);
 }
 
@@ -83,22 +126,23 @@ async fn a_repeated_completion_gets_the_first_ones_answer() {
     let h = Harness::start().await;
     let (task, report) = uploaded(&h).await;
     let path = format!("/v1/tasks/{}/complete", task_id(&task));
-    slow_copies(&h, Duration::from_millis(500));
+    slow_reads(&h, Duration::from_millis(500));
     let (first, again) = tokio::join!(h.miner.post(&path, report.clone()), h.miner.post(&path, report.clone()));
     let later = h.miner.post(&path, report.clone()).await.unwrap();
     assert_eq!(first.unwrap(), again.unwrap());
     assert_eq!(h.miner.post(&path, report.clone()).await.unwrap(), later);
-    let frozen: Vec<String> = h.stub.state.keys(BUCKET, "submitted/").into_iter().filter(|k| k.ends_with(".parquet")).collect();
-    assert_eq!(frozen.len(), 1, "the upload was taken in once");
+    let log = h.public(&format!("/v1/rounds/{}/log", task["round_id"].as_str().unwrap())).await.1;
+    let completed = log["entries"].as_array().unwrap().iter().filter(|e| e["outcome"] == "completed").count();
+    assert_eq!(completed, 1, "the upload was taken in once");
     assert_eq!(h.rival.post(&path, report).await.unwrap_err().status, 409);
 }
 
 #[tokio::test]
-async fn a_miner_that_gives_up_mid_copy_gets_the_completion_on_its_retry() {
+async fn a_miner_that_gives_up_mid_completion_gets_it_on_its_retry() {
     let h = Harness::start().await;
     let (task, report) = uploaded(&h).await;
     let id = task_id(&task);
-    slow_copies(&h, Duration::from_secs(1));
+    slow_reads(&h, Duration::from_secs(1));
     let path = format!("/v1/tasks/{id}/complete");
     assert!(tokio::time::timeout(Duration::from_millis(200), h.miner.post(&path, report.clone())).await.is_err());
     let retried = tokio::time::timeout(Duration::from_secs(5), h.miner.post(&path, report)).await.expect("the retry answers before the lock would lapse");
@@ -113,7 +157,7 @@ async fn an_abandon_during_a_completion_waits_and_costs_nothing() {
     let h = Harness::start().await;
     let (task, report) = uploaded(&h).await;
     let id = task_id(&task);
-    slow_copies(&h, Duration::from_millis(500));
+    slow_reads(&h, Duration::from_millis(500));
     let path = format!("/v1/tasks/{id}/complete");
     let completing = h.miner.post(&path, report);
     let abandoning = async {

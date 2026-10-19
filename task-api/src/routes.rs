@@ -13,7 +13,6 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use desearch::r2::{Error as StorageError, PARQUET};
 use desearch::time::{now, utc_day};
-use rand::Rng;
 use redis::AsyncCommands;
 use serde_json::{json, Map, Value};
 
@@ -382,39 +381,31 @@ async fn verify_completion(state: &State, task_id: &str, report: &CompleteBody, 
             return Err(ApiError::status(422, detail));
         }
     } else {
-        let framed =
-            is_parquet(&state.storage, &report.key, found.size).await.map_err(|e| storage_down(&format!("could not read the ends of {}", report.key), e))?;
+        let framed = match is_parquet(&state.storage, &report.key, &found).await {
+            Ok(framed) => framed,
+            Err(StorageError::Changed | StorageError::Missing) => return Err(ApiError::status(409, "the upload changed while completing, retry")),
+            Err(error) => return Err(storage_down(&format!("could not read the ends of {}", report.key), error)),
+        };
         if !framed {
             return Err(ApiError::status(422, "the upload is not a Parquet file"));
         }
     }
 
-    // The PUT URL outlives this call, so work on a copy the miner can't touch.
-    let attempt: String = (0..4).map(|_| format!("{:02x}", rand::thread_rng().gen::<u8>())).collect();
-    let name = text(&issued, "name");
-    let (stem, suffix) = name.rfind('.').map_or((name, ""), |at| name.split_at(at));
-    let frozen = format!("submitted/dt={}/{stem}-{attempt}{suffix}", utc_day(now()));
     let mut steps = Steps::since(arrived);
     steps.mark("checks");
-    let frozen_etag = match state.storage.copy(&report.key, &frozen, Some(&found.etag)).await {
-        Ok(etag) => etag,
-        Err(StorageError::Changed) => return Err(ApiError::status(409, "the upload changed while completing, retry")),
-        Err(error) => return Err(storage_down(&format!("could not freeze {}", report.key), error)),
-    };
-
-    steps.mark("copy");
     let round_id = Some(text(&payload, "round_id")).filter(|r| !r.is_empty()).map(String::from).unwrap_or_else(|| state.current_round(&kind));
-    // The sample seed is a block hash nobody knew when the upload was frozen.
+    // The sample seed is a block hash nobody knew when the upload was pinned.
     let frozen_block = state.seeds.current_block().await?;
     let completed_at = arrived;
     let position = payload.get("position").cloned().unwrap_or_else(|| 0.into());
+    // The PUT URL outlives this call, so every reader asks for the version checked here by its entity tag.
     let mut job = json!({
         "task_id": task_id,
         "kind": kind,
         "round_id": round_id,
         "miner": who.hotkey,
-        "key": frozen,
-        "etag": frozen_etag,
+        "key": report.key,
+        "etag": found.etag,
         "urls": payload.get("urls").cloned().unwrap_or_else(|| json!([])),
         "position": position,
         "rank": payload.get("rank").cloned().unwrap_or(position),
@@ -436,18 +427,14 @@ async fn verify_completion(state: &State, task_id: &str, report: &CompleteBody, 
         job["reported"] = report.reported.clone();
     }
     job["manifest"] = signed_manifest(state, &job);
-    if let Err(error) = put_json(&state.storage, &lifecycle::manifest_key(&frozen), &job["manifest"], None).await {
-        delete_quietly(&state.storage, &frozen).await;
-        return Err(storage_down(&format!("could not write the manifest for {frozen}"), error));
+    if let Err(error) = put_json(&state.storage, &lifecycle::manifest_key(&report.key), &job["manifest"], None).await {
+        return Err(storage_down(&format!("could not write the manifest for {}", report.key), error));
     }
     steps.mark("manifest");
     let Some(seq) = state.tasks(&kind).complete(&state.redis, task_id, &who.hotkey, &job, &report.key, arrived).await? else {
-        delete_quietly(&state.storage, &frozen).await;
         return Err(ApiError::status(409, "you do not hold a live claim on this task"));
     };
     steps.mark("queues");
-    delete_quietly(&state.storage, &report.key).await;
-    steps.mark("cleanup");
     sampling::note_upload(&state.redis, &kind, &who.hotkey, completed_at).await?;
     uploadlog::note(&state.redis, &job).await?;
     steps.mark("logs");

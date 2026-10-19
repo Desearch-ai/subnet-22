@@ -12,6 +12,8 @@ pub const NO_MAJORITY: &str = "validators_disagree";
 pub const MAX_CREDIT_DIVERGENCE: f64 = 0.15;
 /// The validator's own timeout or crash, never held against the miner.
 pub const VALIDATOR_FAULT_REASONS: [&str; 1] = ["unscorable"];
+/// The file was no longer the version its manifest pins: the miner wrote it again after completing.
+pub const UPLOAD_CHANGED: &str = "upload_changed";
 /// A page unreachable both for the miner and the validator (not_fetched) can sit on either kind of row.
 pub const CONTENT_OUTCOMES: [&str; 3] = ["matched", "mismatched", "unverifiable"];
 pub const ERROR_OUTCOMES: [&str; 2] = ["errors_confirmed", "errors_unconfirmed"];
@@ -403,6 +405,16 @@ mod tests {
         let differ = decide(&[vote("stamp", "pass", 100), vote("careful", "pass", 70), vote("strict", "fail", 0)], false, false);
         assert_eq!((differ.outcome, differ.vote()["validator"].clone(), differ.vote()["credited"].clone()), ("final", json!("careful"), json!(70)));
         assert_eq!((differ.agreed, differ.disagreed), (vec!["careful".to_string()], vec!["strict".to_string(), "stamp".into()]));
+    }
+
+    #[test]
+    fn a_fail_on_a_changed_upload_needs_no_samples() {
+        let crawl =
+            built(json!({"verdict": "fail", "reason": UPLOAD_CHANGED, "returned": 0, "error_rows": 0, "samples": [], "urls": [], "rejected": []})).unwrap();
+        assert_eq!((crawl["verdict"].clone(), crawl["credited"].clone(), crawl["result"]["reason"].clone()), (json!("fail"), json!(0), json!(UPLOAD_CHANGED)));
+        let changed = json!({"verdict": "fail", "reason": UPLOAD_CHANGED, "sampled": 0, "matched": 0, "mismatched": 0, "malformed": 0, "min_similarity": null, "samples": []});
+        let embed = embed_result(200, changed).unwrap();
+        assert_eq!((embed["verdict"].clone(), embed["credited"].clone(), embed["result"]["reason"].clone()), (json!("fail"), json!(0), json!(UPLOAD_CHANGED)));
     }
 
     fn embed_result(texts: i64, extra: Value) -> Result<Value, Infeasible> {

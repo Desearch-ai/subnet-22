@@ -6,6 +6,7 @@ use serde_json::{json, Value};
 use task_api::budgets::{self, CRAWL, EMBED};
 use task_api::manifest::upload_log_key;
 use task_api::queues::{self, EMBED_DROPPED, EMBED_INPUTS, EMBED_MALFORMED, PWITHDRAWN};
+use task_api::verdicts::UPLOAD_CHANGED;
 use task_api::{checks, lifecycle, sampling, uploadlog};
 
 use crate::checks::{established_in, settled};
@@ -103,6 +104,21 @@ async fn rechecks(h: &Harness) -> (i64, i64) {
     h.state.db.run(move |conn| Ok((checks::recheck_left(conn, &hotkey, CRAWL)?, checks::recheck_left(conn, &hotkey, EMBED)?))).await.unwrap()
 }
 
+/// The miner's strikes, each with its pool and reason.
+async fn strikes(h: &Harness) -> Vec<(String, String)> {
+    let hotkey = h.miner.ss58();
+    h.state
+        .db
+        .run(move |conn| {
+            Ok(conn
+                .prepare("SELECT pool, reason FROM strikes WHERE hotkey = ?")?
+                .query_map([hotkey], |row| Ok((row.get(0)?, row.get(1)?)))?
+                .collect::<rusqlite::Result<Vec<_>>>()?)
+        })
+        .await
+        .unwrap()
+}
+
 async fn locked(h: &Harness) -> (Option<f64>, Option<f64>) {
     let hotkey = h.miner.ss58();
     let at = now();
@@ -143,6 +159,9 @@ async fn a_published_page_is_embedded_credited_and_recorded() {
         (json!("embed"), json!(h.state.settings.embed_model), input()["input_key"].clone(), json!(6))
     );
     assert_eq!(publish["pages"], pages(), "the planner's pages, each with its host");
+    let etag = h.state.storage.head(task["upload"]["key"].as_str().unwrap()).await.unwrap().unwrap().etag;
+    assert_eq!((publish["key"].clone(), publish["etag"].clone()), (task["upload"]["key"].clone(), json!(etag)));
+    assert_eq!(job["etag"], json!(etag));
 
     assert_eq!(lifecycle::close_finished(&h.state).await.unwrap(), [round_id.as_str()]);
     let published = h.public(&format!("/v1/rounds/{round_id}")).await.1;
@@ -202,21 +221,22 @@ async fn a_failed_embed_task_strikes_only_the_embed_pool() {
     h.opened(Some(&h.validator), None).await;
     let scored = h.validator.post(&format!("/v1/validation/{}/score", task_id(&task)), embed_score("fail", "mismatched", "vectors_mismatch")).await.unwrap();
     assert_eq!(scored["verdict"], "fail");
-    let hotkey = h.miner.ss58();
-    let strikes: Vec<(String, String)> = h
-        .state
-        .db
-        .run(move |conn| {
-            Ok(conn
-                .prepare("SELECT pool, reason FROM strikes WHERE hotkey = ?")?
-                .query_map([hotkey], |row| Ok((row.get(0)?, row.get(1)?)))?
-                .collect::<rusqlite::Result<Vec<_>>>()?)
-        })
-        .await
-        .unwrap();
-    assert_eq!(strikes, [("embed".to_string(), "vectors_mismatch".to_string())]);
+    assert_eq!(strikes(&h).await, [("embed".to_string(), "vectors_mismatch".to_string())]);
     assert_eq!(h.miner.post("/v1/tasks/claim", embed_claim()).await.unwrap()["refusal"]["code"], "ALREADY_HELD");
     assert_eq!(h.rival.post("/v1/tasks/claim", embed_claim()).await.unwrap()["tasks"][0]["task_id"], task["task_id"]);
+}
+
+#[tokio::test]
+async fn an_embed_upload_written_again_after_completion_fails_its_check_and_strikes_the_miner() {
+    let h = embedding().await;
+    embed_round(&h, input()).await;
+    let task = task_id(&embed_task(&h, &h.miner).await);
+    h.opened(Some(&h.validator), None).await;
+    let changed = json!({"verdict": "fail", "reason": UPLOAD_CHANGED, "sampled": 0, "matched": 0, "mismatched": 0, "malformed": 0, "min_similarity": null, "samples": []});
+    assert_eq!(score(&h, &task, changed).await["verdict"], "fail");
+    assert_eq!(h.view(&task).await["score"]["reason"], UPLOAD_CHANGED);
+    assert_eq!(strikes(&h).await, [("embed".to_string(), UPLOAD_CHANGED.to_string())]);
+    assert_eq!(rechecks(&h).await, (0, sampling::RECHECK_UPLOADS), "its next embed uploads are checked");
 }
 
 #[tokio::test]
@@ -379,10 +399,9 @@ async fn an_embed_upload_is_one_float16_vector_per_text_and_its_size_is_checked_
     assert_eq!(h.miner.post(&complete, report).await.unwrap()["status"], "open_for_validation", "the right size, whatever the report says");
 
     let job = h.state.validation.job(&h.redis, &task_id(&task)).await.unwrap().unwrap();
-    let frozen = job["key"].as_str().unwrap();
-    assert!(frozen.starts_with("submitted/dt=") && frozen.ends_with(".f16"), "{frozen}");
-    assert_eq!(h.object(frozen), Some(vectors(6)));
-    assert!(h.json_object(&lifecycle::manifest_key(frozen)).is_some());
+    assert_eq!(job["key"], key, "the upload is pinned where the miner put it");
+    assert_eq!(h.object(key), Some(vectors(6)));
+    assert!(h.json_object(&lifecycle::manifest_key(key)).is_some());
     assert!(job.get("reported").is_none(), "the miner's counts are not kept");
     let hotkey = h.miner.ss58();
     let strikes: i64 =
