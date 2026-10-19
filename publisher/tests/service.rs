@@ -74,7 +74,7 @@ async fn enqueue(redis: &mut ConnectionManager, job: &Value, packed: bool) {
 fn crawl(task_id: &str, urls: &[String], completed: f64, etag: &str) -> Value {
     json!({
         "task_id": task_id, "round_id": "r1", "miner": "5Miner", "kind": "crawl", "validator": "", "validators": [],
-        "key": format!("submitted/{task_id}.parquet"), "etag": etag, "urls": urls, "skip": [],
+        "key": format!("uploads/{task_id}.parquet"), "etag": etag, "urls": urls, "skip": [],
         "completed_at": completed, "claim_ttl": 180,
     })
 }
@@ -132,14 +132,14 @@ async fn the_service_publishes_reports_and_takes_back() {
     let urls = |task: &str| (0..3).map(|i| format!("https://ex{task}.com/story/{i}")).collect::<Vec<_>>();
     let upload = |task: &str, text: &str| parquet(&urls(task).iter().map(|u| page(u, &format!("{text} {u}"), fetched)).collect::<Vec<_>>(), None, None);
     for task in ["t1", "t2", "t4"] {
-        temp.put(&format!("submitted/{task}.parquet"), Bytes::from(upload(task, "first")), PARQUET, None).await.unwrap();
+        temp.put(&format!("uploads/{task}.parquet"), Bytes::from(upload(task, "first")), PARQUET, None).await.unwrap();
     }
-    let t1_etag = temp.head("submitted/t1.parquet").await.unwrap().unwrap().etag;
+    let t1_etag = temp.head("uploads/t1.parquet").await.unwrap().unwrap().etag;
     enqueue(&mut redis, &crawl("t1", &urls("t1"), completed, &t1_etag), true).await;
     enqueue(&mut redis, &crawl("t2", &urls("t2"), completed, ""), false).await;
     enqueue(&mut redis, &crawl("t3", &urls("t3"), completed, ""), true).await;
     enqueue(&mut redis, &crawl("t4", &urls("t4"), completed, "\"not-this-one\""), true).await;
-    state.fail("GET", &format!("{TEMP}/{PREFIX}submitted/t1"), 2);
+    state.fail("GET", &format!("{TEMP}/{PREFIX}uploads/t1"), 2);
     state.fail("PUT", &format!("{PAGES}/changes/seq/"), 5);
 
     publish_until_idle(&shared).await;
@@ -151,7 +151,7 @@ async fn the_service_publishes_reports_and_takes_back() {
     let lost: u64 = redis.get("publish:lost").await.unwrap();
     let lost_tasks: HashSet<String> = redis.smembers("publish:lost:tasks").await.unwrap();
     assert_eq!((lost, lost_tasks), (2, HashSet::from(["t3".to_string(), "t4".to_string()])), "t3 expired, t4 changed");
-    assert!(state.keys(TEMP, &format!("{PREFIX}submitted/")).is_empty(), "finished jobs' uploads are deleted, the changed one too");
+    assert!(state.keys(TEMP, &format!("{PREFIX}uploads/")).is_empty(), "finished jobs' uploads are deleted, the changed one too");
     assert!(metrics.r2_errors.load(Ordering::Relaxed) >= 7, "two GETs and five seq writes failed and were retried");
 
     let seq: u64 = redis.get("changes:seq").await.unwrap();
@@ -174,7 +174,7 @@ async fn the_service_publishes_reports_and_takes_back() {
     assert_eq!(json_object(&state, TEMP, &format!("{PREFIX}outcomes/latest.json")).unwrap(), json!({"seq": 2}));
     assert_eq!(state.meta(TEMP, &format!("{PREFIX}outcomes/latest.json")).unwrap().1, "no-store");
 
-    temp.put("submitted/t6.parquet", Bytes::from(upload("t1", "first")), PARQUET, None).await.unwrap();
+    temp.put("uploads/t6.parquet", Bytes::from(upload("t1", "first")), PARQUET, None).await.unwrap();
     enqueue(&mut redis, &crawl("t6", &urls("t1"), completed + 30.0, ""), true).await;
     let withdraw = json!({"task_id": "withdraw:0123456789abcdef", "kind": "withdraw", "task_ids": ["t2"], "reason": "test"});
     enqueue(&mut redis, &withdraw, false).await;
@@ -235,7 +235,7 @@ fn embed_input(texts: &[(&str, &str, &str, i32)]) -> Vec<u8> {
 /// An embed task's input and its raw upload, the vectors in the input's order.
 async fn stage(temp: &Bucket, task: &str, texts: &[(&str, &str, &str, i32)], vectors: &[Vec<u8>]) {
     temp.put(&format!("embed/inputs/{task}.parquet"), Bytes::from(embed_input(texts)), PARQUET, None).await.unwrap();
-    temp.put(&format!("submitted/{task}.f16"), Bytes::from(vectors.concat()), "application/octet-stream", None).await.unwrap();
+    temp.put(&format!("uploads/{task}.f16"), Bytes::from(vectors.concat()), "application/octet-stream", None).await.unwrap();
 }
 
 /// The publish job the task API queues for an embed task that passed its check.
@@ -247,7 +247,7 @@ fn embed(task: &str, texts: &[(&str, &str, &str, i32)]) -> Value {
         .into_iter()
         .map(|p| json!({"page_key": p, "content_sha1": format!("sha-{p}"), "url": format!("https://example.com/{p}")}))
         .collect();
-    json!({"task_id": task, "round_id": "r2", "kind": "embed", "miner": "5Miner", "model": MODEL, "key": format!("submitted/{task}.f16"),
+    json!({"task_id": task, "round_id": "r2", "kind": "embed", "miner": "5Miner", "model": MODEL, "key": format!("uploads/{task}.f16"),
            "input_key": format!("embed/inputs/{task}.parquet"), "texts": texts.len(), "pages": pages, "validator": "5Validator",
            "validators": ["5Validator"], "completed_at": service::now_us() as f64 / 1e6})
 }
@@ -354,14 +354,19 @@ async fn embed_jobs_publish_well_formed_vectors_and_withdraw_those_taken_back() 
     assert_eq!(kept, [("p4".to_string(), 0), ("p4".to_string(), 1)], "only the page whose vectors are all well formed");
     assert_eq!(published(&state, "t10").len(), 1, "an unchecked upload is published like a checked one");
     let dropped = entries(&mut redis, "embed:dropped").await;
-    assert_eq!(sent_back(&dropped), [("embed/inputs/t9.parquet".to_string(), vec!["p3".to_string(), "p5".to_string()])]);
-    assert_eq!(dropped[0]["pages"][0], json!({"page_key": "p3", "content_sha1": "sha-p3", "url": "https://example.com/p3"}));
+    let expected = [
+        ("embed/inputs/t8.parquet".to_string(), vec!["p1".to_string(), "p2".to_string()]),
+        ("embed/inputs/t9.parquet".to_string(), vec!["p3".to_string(), "p5".to_string()]),
+    ];
+    assert_eq!(sent_back(&dropped), expected, "every page of the lost t8, and t9's pages with a malformed vector");
+    let t9 = dropped.iter().find(|entry| entry["input_key"] == "embed/inputs/t9.parquet").unwrap();
+    assert_eq!(t9["pages"][0], json!({"page_key": "p3", "content_sha1": "sha-p3", "url": "https://example.com/p3"}));
     assert_eq!(entries(&mut redis, "embed:malformed").await, [json!({"task_id": "t9", "miner": "5Miner", "malformed": 2})]);
     let remembered: Option<String> = redis.get("embed:published:t7").await.unwrap();
     assert_eq!(serde_json::from_str::<Value>(&remembered.unwrap()).unwrap()["model"], MODEL);
     assert!(redis.ttl::<_, i64>("embed:published:t7").await.unwrap() > 6 * 86_400, "remembered as long as take-backs are");
     assert!(
-        state.keys(TEMP, &format!("{PREFIX}submitted/")).is_empty() && state.keys(TEMP, &format!("{PREFIX}embed/")).is_empty(),
+        state.keys(TEMP, &format!("{PREFIX}uploads/")).is_empty() && state.keys(TEMP, &format!("{PREFIX}embed/")).is_empty(),
         "uploads and inputs are deleted"
     );
     assert!(state.keys(PAGES, "changes/").is_empty(), "embed jobs write no change file");
@@ -396,10 +401,131 @@ async fn embed_jobs_publish_well_formed_vectors_and_withdraw_those_taken_back() 
     for (task, kept) in [("t7", false), ("t10", false), ("t9", true)] {
         assert_eq!(redis.exists::<_, bool>(format!("embed:published:{task}")).await.unwrap(), kept, "{task}");
     }
-    assert!(state.keys(TEMP, &format!("{PREFIX}submitted/")).is_empty() && state.keys(TEMP, &format!("{PREFIX}embed/")).is_empty());
+    assert!(state.keys(TEMP, &format!("{PREFIX}uploads/")).is_empty() && state.keys(TEMP, &format!("{PREFIX}embed/")).is_empty());
     let changes = json_object(&state, PAGES, "changes/seq/000000000001.json").unwrap();
     let changes = rows(&state.object(PAGES, changes["key"].as_str().unwrap()).unwrap());
     assert_eq!((column(&changes, "kind"), column(&changes, "task_id")), (vec!["task_withdrawn".to_string(); 2], vec!["t7".to_string(), "t11".to_string()]));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The entity tag the task API's completion names for an upload.
+async fn etag(temp: &Bucket, key: &str) -> String {
+    temp.head(key).await.unwrap().unwrap().etag
+}
+
+/// Writes over an upload as a miner could after completing it.
+async fn rewrite(temp: &Bucket, key: &str, body: Vec<u8>, content_type: &str) {
+    let before = etag(temp, key).await;
+    // The stub tags an object by its length and modification time.
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    temp.put(key, Bytes::from(body), content_type, None).await.unwrap();
+    assert_ne!(etag(temp, key).await, before);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_crawl_upload_is_published_only_in_the_version_its_completion_named() {
+    let Some((_turn, mut redis)) = redis_db().await else {
+        eprintln!("skipped: no Redis on {REDIS}");
+        return;
+    };
+    let dir = scratch("crawl-version");
+    let stub = stub::start(dir.join("r2"), "127.0.0.1:0").await.unwrap();
+    let state = stub.state.clone();
+    let metrics = Arc::new(Metrics::default());
+    let temp = bucket(stub.addr, TEMP, PREFIX, metrics.r2_errors.clone());
+    let pages = bucket(stub.addr, PAGES, "", metrics.r2_errors.clone());
+    let settings =
+        Settings { redis_url: REDIS.into(), claim_ttl: 600.0, batch: 4, readers: 4, ranges: 4, ahead: 2, idle_exit: 0, idle_delay: Duration::from_millis(50) };
+    let shared = Shared::connect(settings, temp.clone(), pages.clone(), metrics).await.unwrap();
+
+    let completed = service::now_us() as f64 / 1e6 - 60.0;
+    let fetched = service::now_us() - 90_000_000;
+    let urls = |task: &str| (0..3).map(|i| format!("https://{task}.com/story/{i}")).collect::<Vec<_>>();
+    let upload = |task: &str, text: &str| parquet(&urls(task).iter().map(|u| page(u, &format!("{text} {u}"), fetched)).collect::<Vec<_>>(), None, None);
+    let key = |task: &str| format!("uploads/{task}.parquet");
+    for task in ["v1", "v2", "v3", "v4"] {
+        temp.put(&key(task), Bytes::from(upload(task, "first")), PARQUET, None).await.unwrap();
+    }
+    enqueue(&mut redis, &crawl("v1", &urls("v1"), completed, &etag(&temp, &key("v1")).await), true).await;
+    enqueue(&mut redis, &crawl("v2", &urls("v2"), completed, ""), true).await;
+    enqueue(&mut redis, &crawl("v3", &urls("v3"), completed, &etag(&temp, &key("v3")).await), true).await;
+    rewrite(&temp, &key("v3"), upload("v3", "rewritten"), PARQUET).await;
+
+    publish_until_idle(&shared).await;
+
+    assert_eq!(redis.get::<_, u64>("publish:acked").await.unwrap(), 3);
+    let lost: HashSet<String> = redis.smembers("publish:lost:tasks").await.unwrap();
+    assert_eq!(lost, HashSet::from(["v3".to_string()]), "v1 named its version, v2 named none");
+    let index = json_object(&state, PAGES, "changes/seq/000000000001.json").unwrap();
+    let published: BTreeSet<String> = column(&rows(&state.object(PAGES, index["key"].as_str().unwrap()).unwrap()), "url").into_iter().collect();
+    assert_eq!(published, urls("v1").into_iter().chain(urls("v2")).collect::<BTreeSet<_>>());
+    let outcomes = outcome_feed(&state, 1, redis.get::<_, u64>("outcomes:seq").await.unwrap());
+    let failed: BTreeSet<String> = outcomes.into_iter().filter(|(kind, _)| kind == "failed").map(|(_, url)| url).collect();
+    assert_eq!(failed, urls("v3").into_iter().collect::<BTreeSet<_>>());
+
+    enqueue(&mut redis, &crawl("v4", &urls("v4"), completed, &etag(&temp, &key("v4")).await), true).await;
+    state.slow("GET", &format!("{TEMP}/{PREFIX}{}", key("v4")), 1, Duration::from_secs(1));
+    let heads = state.count("HEAD");
+    let publishing = tokio::spawn({
+        let shared = shared.clone();
+        async move { publish_until_idle(&shared).await }
+    });
+    for _ in 0..2000 {
+        if state.count("HEAD") > heads {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    rewrite(&temp, &key("v4"), upload("v4", "first"), PARQUET).await;
+    publishing.await.unwrap();
+
+    assert_eq!(redis.get::<_, u64>("publish:acked").await.unwrap(), 4);
+    let lost: HashSet<String> = redis.smembers("publish:lost:tasks").await.unwrap();
+    assert!(lost.contains("v4"), "rewritten between its HEAD and its read, even with the same bytes");
+    assert_eq!(redis.get::<_, u64>("changes:seq").await.unwrap(), 1, "nothing of v4 is published");
+    assert!(state.keys(TEMP, &format!("{PREFIX}uploads/")).is_empty(), "every upload is deleted once its job is done");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_embed_upload_changed_after_completion_is_lost_and_its_pages_go_back_to_the_planner() {
+    let Some((_turn, mut redis)) = redis_db().await else {
+        eprintln!("skipped: no Redis on {REDIS}");
+        return;
+    };
+    let dir = scratch("embed-version");
+    let stub = stub::start(dir.join("r2"), "127.0.0.1:0").await.unwrap();
+    let state = stub.state.clone();
+    let metrics = Arc::new(Metrics::default());
+    let temp = bucket(stub.addr, TEMP, PREFIX, metrics.r2_errors.clone());
+    let pages = bucket(stub.addr, PAGES, "", metrics.r2_errors.clone());
+    let settings =
+        Settings { redis_url: REDIS.into(), claim_ttl: 600.0, batch: 4, readers: 4, ranges: 4, ahead: 2, idle_exit: 0, idle_delay: Duration::from_millis(50) };
+    let shared = Shared::connect(settings, temp.clone(), pages.clone(), metrics).await.unwrap();
+
+    let texts = [("p2#page", "p2", "page", 0), ("p1#page", "p1", "page", 0)];
+    for task in ["e1", "e2", "e3"] {
+        stage(&temp, task, &texts, &[unit(8, 0), unit(8, 1)]).await;
+    }
+    let named = |task: &str, etag: String| {
+        let mut job = embed(task, &texts);
+        job["etag"] = json!(etag);
+        job
+    };
+    enqueue(&mut redis, &named("e1", etag(&temp, "uploads/e1.f16").await), true).await;
+    enqueue(&mut redis, &named("e2", etag(&temp, "uploads/e2.f16").await), true).await;
+    enqueue(&mut redis, &embed("e3", &texts), true).await;
+    rewrite(&temp, "uploads/e2.f16", [unit(8, 2), unit(8, 3)].concat(), "application/octet-stream").await;
+
+    publish_until_idle(&shared).await;
+
+    assert_eq!(redis.get::<_, u64>("publish:acked").await.unwrap(), 3);
+    let lost: HashSet<String> = redis.smembers("publish:lost:tasks").await.unwrap();
+    assert_eq!(lost, HashSet::from(["e2".to_string()]));
+    assert_eq!((published(&state, "e1").len(), published(&state, "e2").len(), published(&state, "e3").len()), (2, 0, 2));
+    let back = sent_back(&entries(&mut redis, "embed:dropped").await);
+    assert_eq!(back, [("embed/inputs/e2.parquet".to_string(), vec!["p1".to_string(), "p2".to_string()])]);
+    assert!(state.keys(TEMP, &format!("{PREFIX}uploads/")).is_empty() && state.keys(TEMP, &format!("{PREFIX}embed/")).is_empty());
     let _ = std::fs::remove_dir_all(&dir);
 }
 

@@ -154,7 +154,16 @@ impl Bucket {
     }
 
     pub async fn get(&self, key: &str) -> Result<Bytes, Error> {
-        Ok(self.call(Method::GET, Some(key), &[], HeaderMap::new(), Bytes::new(), LONG).await?.1)
+        self.get_matching(key, None).await
+    }
+
+    /// A whole object, refused as `Changed` when it is no longer the version `if_match` names.
+    pub async fn get_matching(&self, key: &str, if_match: Option<&str>) -> Result<Bytes, Error> {
+        let mut headers = HeaderMap::new();
+        if let Some(etag) = if_match {
+            headers.insert(reqwest::header::IF_MATCH, value(etag));
+        }
+        Ok(self.call(Method::GET, Some(key), &[], headers, Bytes::new(), LONG).await?.1)
     }
 
     /// Copies `src` to `dst` within this bucket, refused as `Changed` unless `src` is still the version `if_match` names; returns the copy's entity tag.

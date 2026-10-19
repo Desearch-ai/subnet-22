@@ -23,7 +23,7 @@ use crate::queue::{PublishQueue, PublishedVectors};
 use crate::reading::{RangeRead, Remote, Traffic};
 use crate::records::iso;
 use crate::vectors;
-use crate::worker::{self, ChangeFeed, Fault, Job, Read, Uploads, EMBED};
+use crate::worker::{self, ChangeFeed, Fault, Job, Read, Uploads, CHANGED, EMBED};
 use desearch::feeds::{Feed, CHANGES, OUTCOMES};
 use desearch::outcomes::Outcome;
 use desearch::r2::{self, Bucket, Credentials, PARQUET};
@@ -154,7 +154,7 @@ impl Shared {
     }
 }
 
-/// Uploads read from the temp bucket after a HEAD that checks they are still the one validated.
+/// Uploads read from the temp bucket in the version their completion named, or as first found when it named none.
 struct R2Uploads {
     temp: Bucket,
     handle: Handle,
@@ -170,15 +170,15 @@ impl Uploads for R2Uploads {
             Ok(None) => return Err(Fault::Gone("expired")),
             Err(error) => return Err(Fault::Retry(format!("HEAD {key}: {error}"))),
         };
-        if let Some(etag) = job.etag.as_deref().filter(|e| !e.is_empty()) {
-            if head.etag.trim_matches('"') != etag.trim_matches('"') {
-                return Err(Fault::Gone("changed"));
-            }
+        let etag = job.etag.clone().filter(|e| !e.is_empty());
+        if etag.as_deref().is_some_and(|etag| head.etag.trim_matches('"') != etag.trim_matches('"')) {
+            return Err(Fault::Gone(CHANGED));
         }
         Ok(Box::new(Remote {
             bucket: self.temp.clone(),
             key: key.to_string(),
-            head,
+            size: head.size,
+            etag: etag.or(Some(head.etag).filter(|e| !e.is_empty())),
             handle: self.handle.clone(),
             ranges_at_once: self.ranges,
             traffic: self.traffic.clone(),
@@ -298,7 +298,7 @@ pub async fn write_batch(shared: &Shared, claimed: Claimed) -> Result<usize> {
     Ok(batch.finalized.len() + embedded)
 }
 
-/// Publishes each embed job's vectors and finishes it; a job taken back first publishes nothing, a job that cannot be read any more is finished as lost, any other failure leaves it claimed to be tried again.
+/// Publishes each embed job's vectors and finishes it; a job taken back first publishes nothing, a job that cannot be read any more is finished as lost with its pages sent back to the planner, any other failure leaves it claimed to be tried again.
 async fn publish_vectors(shared: &Shared, jobs: Vec<Job>) -> usize {
     let ids: Vec<&str> = jobs.iter().map(|job| job.task_id.as_str()).collect();
     let refused = match shared.queue.withdrawn_among(&ids).await {
@@ -317,6 +317,10 @@ async fn publish_vectors(shared: &Shared, jobs: Vec<Job>) -> usize {
             Ok(()) => {}
             Err(Fault::Gone(why)) => {
                 eprintln!("task={task_id} embed upload lost: {why}");
+                if let Err(error) = shared.queue.drop_pages(job.input_key.as_deref().unwrap_or_default(), &job.pages).await {
+                    eprintln!("task={task_id} pages not sent back to the planner; it will be retried: {error:#}");
+                    continue;
+                }
                 if let Err(error) = shared.queue.mark_lost(task_id).await {
                     eprintln!("task={task_id} could not be marked lost: {error:#}");
                 }
@@ -402,18 +406,8 @@ async fn publish_job_vectors(shared: &Shared, job: &Job) -> Result<(), Fault> {
         job.input_key.as_deref().ok_or_else(|| missing("an input"))?,
         job.model.as_deref().ok_or_else(|| missing("a model"))?,
     );
-    let head = shared.temp.head(key).await.map_err(|error| Fault::Retry(format!("HEAD {key}: {error}")))?.ok_or(Fault::Gone("expired"))?;
-    if job.etag.as_deref().is_some_and(|etag| !etag.is_empty() && head.etag.trim_matches('"') != etag.trim_matches('"')) {
-        return Err(Fault::Gone("changed"));
-    }
-    let read = |key: String| async move {
-        match shared.temp.get(&key).await {
-            Ok(body) => Ok(body),
-            Err(r2::Error::Missing) => Err(Fault::Gone("expired")),
-            Err(error) => Err(Fault::Retry(format!("reading {key}: {error}"))),
-        }
-    };
-    let (upload, input) = (read(key.to_string()).await?, read(input_key.to_string()).await?);
+    let etag = job.etag.as_deref().filter(|e| !e.is_empty());
+    let (upload, input) = (read_whole(&shared.temp, key, etag).await?, read_whole(&shared.temp, input_key, None).await?);
     let now = now_us();
     let (task_id, miner) = (job.task_id.as_str(), job.miner.as_deref().unwrap_or_default());
     let (writing, writer, published_at) = (task_id.to_string(), miner.to_string(), iso(now));
@@ -450,6 +444,16 @@ async fn publish_job_vectors(shared: &Shared, job: &Job) -> Result<(), Fault> {
         eprintln!("task={task_id} has {} malformed vectors; {} pages left out and sent back to the planner", joined.malformed, joined.dropped.len());
     }
     Ok(())
+}
+
+/// A whole object of the temp bucket, refused as changed unless it is still the version `etag` names.
+async fn read_whole(temp: &Bucket, key: &str, etag: Option<&str>) -> Result<Bytes, Fault> {
+    match temp.get_matching(key, etag).await {
+        Ok(body) => Ok(body),
+        Err(r2::Error::Missing) => Err(Fault::Gone("expired")),
+        Err(r2::Error::Changed) => Err(Fault::Gone(CHANGED)),
+        Err(error) => Err(Fault::Retry(format!("reading {key}: {error}"))),
+    }
 }
 
 /// What became of every URL, for the bot; a failure here is logged and the batch still finishes.
