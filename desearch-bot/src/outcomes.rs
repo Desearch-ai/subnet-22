@@ -10,6 +10,7 @@ use parquet::record::Field;
 use serde_json::{json, Value};
 
 use crate::buckets::{bucket_of, Buckets};
+use crate::dispatch::on_readers;
 use crate::ready::{Applied, Outcome, PageOutcome};
 use crate::urls::{self, Normaliser, Url};
 
@@ -91,8 +92,8 @@ pub fn apply(buckets: &Buckets, rows: &[OutcomeRow], recrawl_after: u32) -> Resu
         let at = row.at.div_euclid(1_000_000).clamp(0, u32::MAX.into()) as u32;
         by_bucket.entry(bucket_of(&domain)).or_default().push(PageOutcome { domain, rest, outcome: row.outcome, at });
     }
-    for rows in by_bucket.values() {
-        let applied = buckets.store(&rows[0].domain).apply_outcomes(rows, recrawl_after)?;
+    let groups: Vec<Vec<PageOutcome>> = by_bucket.into_values().collect();
+    for applied in on_readers(groups, |rows| buckets.store(&rows[0].domain).apply_outcomes(&rows, recrawl_after))? {
         total.crawled += applied.crawled;
         total.retried += applied.retried;
         total.gave_up += applied.gave_up;

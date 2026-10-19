@@ -2,16 +2,14 @@ import { useInfiniteQuery } from '@tanstack/react-query'
 import { apiGet } from '../client'
 import { PAGE_SIZE } from '../config'
 import type { VotesResponse } from '../types'
+import { queryKeys, type VoteFilters } from './keys'
 import { FIRST_PAGE, nextPageParam, pollFirstPageOnly } from './paging'
 
-export interface VoteFilters {
-  validator: string
-  agreed?: boolean
-}
+export type { VoteFilters } from './keys'
 
 export function useVotes(filters: VoteFilters) {
   return useInfiniteQuery({
-    queryKey: ['votes', filters],
+    queryKey: queryKeys.votes(filters),
     queryFn: ({ pageParam, signal }) =>
       apiGet<VotesResponse>(
         '/v1/votes',
@@ -22,8 +20,6 @@ export function useVotes(filters: VoteFilters) {
     getNextPageParam: nextPageParam,
     refetchInterval: (query) => pollFirstPageOnly(query.state.data),
     placeholderData: (previous, previousQuery) =>
-      (previousQuery?.queryKey[1] as VoteFilters | undefined)?.validator === filters.validator
-        ? previous
-        : undefined,
+      previousQuery?.queryKey[1].validator === filters.validator ? previous : undefined,
   })
 }

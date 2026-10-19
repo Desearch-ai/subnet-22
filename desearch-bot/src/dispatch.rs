@@ -2,7 +2,7 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -16,7 +16,7 @@ use crate::buckets::{bucket_of, Buckets};
 use crate::outcomes::{self, Next, OutcomeFeed};
 use crate::ready::{Entry, Order, Pick, Reason, SentPage, CHANGED, FRESH, LANES, REQUEUED};
 use crate::records;
-use crate::taskapi::{QueuedUrl, TaskApi};
+use crate::taskapi::{ApiError, QueuedUrl, TaskApi};
 use crate::timetable::UNRANKED;
 
 pub const PASS_SECONDS: Duration = Duration::from_secs(15);
@@ -25,6 +25,10 @@ const MISSING_GRACE: Duration = Duration::from_secs(120);
 /// URLs in one task, as the API counts its room.
 pub const TASK_URLS: u64 = 1000;
 pub const BATCH_URLS: usize = 10_000;
+/// Batches in flight to the API at once; each waits there for seconds, so one at a time leaves its queue short.
+pub const SENDS_AT_ONCE: usize = 4;
+/// Threads reading the stores at once: a network disk answers many reads together far faster than one after another.
+const READERS: usize = 16;
 const HOUR: u32 = 3600;
 const RANKS_SECONDS: Duration = Duration::from_secs(600);
 /// Retries and re-crawls moved back onto ready lists per store per pass.
@@ -130,6 +134,41 @@ pub fn interleave<T>(lists: Vec<Vec<T>>) -> Vec<T> {
 
 /// URLs each domain sent within the last hour.
 #[derive(Default)]
+/// A steady sending pace: allowance grows by the hourly rate and saves up at most a few minutes of it, so sends never come as an hour's burst.
+pub struct Pace {
+    per_hour: u64,
+    saved: f64,
+    at: u32,
+}
+
+impl Pace {
+    const SAVED_SECONDS: f64 = 300.0;
+
+    pub fn new(per_hour: u64, now: u32) -> Self {
+        let mut pace = Pace { per_hour, saved: 0.0, at: now };
+        pace.saved = pace.most();
+        pace
+    }
+
+    fn most(&self) -> f64 {
+        self.per_hour as f64 * Self::SAVED_SECONDS / 3600.0
+    }
+
+    pub fn allowance(&mut self, now: u32) -> u64 {
+        if self.per_hour == 0 {
+            return u64::MAX;
+        }
+        let grown = self.per_hour as f64 * now.saturating_sub(self.at) as f64 / 3600.0;
+        self.saved = (self.saved + grown).min(self.most());
+        self.at = self.at.max(now);
+        self.saved as u64
+    }
+
+    pub fn spend(&mut self, count: u64) {
+        self.saved -= count as f64;
+    }
+}
+
 pub struct HourlyCap {
     limit: u64,
     sent: HashMap<String, VecDeque<(u32, u64)>>,
@@ -171,6 +210,8 @@ pub struct Progress {
     pub sent_refresh: AtomicU64,
     pub sent_retry: AtomicU64,
     pub batches: AtomicU64,
+    /// Pages the API refused on their own, kept off the ready lists like a page with no outcome yet.
+    pub set_aside: AtomicU64,
     pub room_tasks: AtomicI64,
     pub requeued: AtomicU64,
     /// Sent pages retried because no outcome came within a day.
@@ -184,6 +225,8 @@ pub struct Progress {
     pub backfill_stores: AtomicU64,
     pub backfill_of: AtomicU64,
     pub backfill_scanned: AtomicU64,
+    /// The last pass's milliseconds in each step: absorbing, picking, sending.
+    pub pass_ms: [AtomicU64; 3],
     pub backfill_added: AtomicU64,
 }
 
@@ -215,6 +258,12 @@ impl Progress {
             self.backfill_of.load(Ordering::Relaxed),
             thousands(self.backfill_scanned.load(Ordering::Relaxed)),
             thousands(self.backfill_added.load(Ordering::Relaxed)),
+        ) + &format!(
+            "  set aside {}  last pass absorb {:.1}s pick {:.1}s send {:.1}s",
+            thousands(self.set_aside.load(Ordering::Relaxed)),
+            self.pass_ms[0].load(Ordering::Relaxed) as f64 / 1000.0,
+            self.pass_ms[1].load(Ordering::Relaxed) as f64 / 1000.0,
+            self.pass_ms[2].load(Ordering::Relaxed) as f64 / 1000.0,
         )
     }
 }
@@ -248,9 +297,17 @@ struct Pending {
 
 impl Pending {
     fn of(picks: &[Pick], at: u32) -> Pending {
-        let picks: Vec<Sending> = picks.iter().map(Sending::of).collect();
+        Pending::new(picks.iter().map(Sending::of).collect(), at)
+    }
+
+    fn new(picks: Vec<Sending>, at: u32) -> Pending {
         let urls: Vec<QueuedUrl> = picks.iter().map(|p| QueuedUrl { host: p.domain.clone(), url: p.url.clone() }).collect();
         Pending { batch_id: batch_id(&urls), at, picks }
+    }
+
+    fn halves(&self) -> [Pending; 2] {
+        let (left, right) = self.picks.split_at(self.picks.len() / 2);
+        [Pending::new(left.to_vec(), self.at), Pending::new(right.to_vec(), self.at)]
     }
 
     fn urls(&self) -> Vec<QueuedUrl> {
@@ -309,12 +366,14 @@ struct Domain {
 
 pub struct Dispatcher {
     buckets: Arc<Buckets>,
-    api: TaskApi,
+    api: Arc<TaskApi>,
     cap: HourlyCap,
+    pace: Pace,
     domains: HashMap<String, Domain>,
     /// The domain whose turn comes first next pass, as (rank, domain).
     resume: Option<(i64, String)>,
-    pending: Option<Pending>,
+    /// The batches in flight, kept so a restart sends them again unchanged.
+    pending: Vec<Pending>,
     progress: Arc<Progress>,
     ranks_read: Instant,
     shares: [f64; LANES],
@@ -337,21 +396,26 @@ impl Dispatcher {
                 // The counts already hold what grew before now.
                 store.take_noticed();
                 for (domain, ready) in store.ready_domains()? {
+                    if !reading.allows(&domain) {
+                        continue;
+                    }
                     let rank = rank_of(&reading, &domain);
                     domains.insert(domain, Domain { rank, ready });
                 }
             }
-            let pending = match reading.stores().next() {
-                Some(store) => store.meta(PENDING)?.filter(|v| !v.is_null()).map(serde_json::from_value).transpose()?,
-                None => None,
+            let pending: Vec<Pending> = match reading.stores().next().map(|store| store.meta(PENDING)).transpose()?.flatten() {
+                Some(Value::Array(saved)) => saved.into_iter().map(serde_json::from_value).collect::<Result<_, _>>()?,
+                Some(Value::Null) | None => Vec::new(),
+                Some(one) => vec![serde_json::from_value(one)?],
             };
             Ok((domains, pending))
         })
         .await??;
         let dispatcher = Dispatcher {
             buckets,
-            api,
+            api: Arc::new(api),
             cap: HourlyCap::new(per_domain_hourly),
+            pace: Pace::new(0, 0),
             domains,
             resume: None,
             pending,
@@ -362,6 +426,12 @@ impl Dispatcher {
         };
         dispatcher.report();
         Ok(dispatcher)
+    }
+
+    /// Send at most this many URLs an hour, at a steady pace; 0 sends as fast as the API has room.
+    pub fn paced(mut self, per_hour: u64) -> Self {
+        self.pace = Pace::new(per_hour, now());
+        self
     }
 
     pub async fn run(mut self, mut stop: watch::Receiver<bool>) {
@@ -381,10 +451,24 @@ impl Dispatcher {
 
     /// One look at the room and as many batches as fit.
     pub async fn pass(&mut self, now: u32) -> Result<u64> {
+        let mut spent = [Duration::ZERO; 3];
+        let sent = self.timed_pass(now, &mut spent).await;
+        for (slot, took) in self.progress.pass_ms.iter().zip(spent) {
+            slot.store(took.as_millis() as u64, Ordering::Relaxed);
+        }
+        sent
+    }
+
+    async fn timed_pass(&mut self, now: u32, spent: &mut [Duration; 3]) -> Result<u64> {
+        let started = Instant::now();
         self.absorb(now).await?;
-        let Some(mut sent) = self.send_pending().await? else {
-            return Ok(0);
-        };
+        spent[0] = started.elapsed();
+        let started = Instant::now();
+        let (mut sent, cleared) = self.send_pending().await?;
+        spent[2] += started.elapsed();
+        if !cleared {
+            return Ok(sent);
+        }
         let room = match self.api.room().await {
             Ok(room) => room,
             Err(error) => {
@@ -397,20 +481,25 @@ impl Dispatcher {
             self.report();
             return Ok(sent);
         }
-        let mut budget = room.room_tasks as u64 * TASK_URLS;
+        let mut budget = (room.room_tasks as u64 * TASK_URLS).min(self.pace.allowance(now));
         for _ in 0..ALLOT_TRIES {
+            let started = Instant::now();
             let picks = self.pick(budget, now).await?;
+            spent[1] += started.elapsed();
             if picks.is_empty() {
                 break;
             }
-            for batch in picks.chunks(BATCH_URLS) {
-                self.pending = Some(Pending::of(batch, now));
-                let Some(taken) = self.send_pending().await? else {
+            for wave in picks.chunks(BATCH_URLS * SENDS_AT_ONCE) {
+                self.pending = wave.chunks(BATCH_URLS).map(|batch| Pending::of(batch, now)).collect();
+                let started = Instant::now();
+                let (taken, cleared) = self.send_pending().await?;
+                spent[2] += started.elapsed();
+                sent += taken;
+                budget = budget.saturating_sub(taken);
+                if !cleared {
                     self.report();
                     return Ok(sent);
-                };
-                sent += taken;
-                budget -= taken;
+                }
             }
             if budget == 0 {
                 break;
@@ -431,10 +520,13 @@ impl Dispatcher {
         let (grown, ranks, requeued, overdue) = tokio::task::spawn_blocking(move || -> Result<_> {
             let (mut requeued, mut overdue) = (0, 0);
             let mut grown: HashMap<String, u64> = HashMap::new();
-            for store in buckets.stores() {
-                overdue += store.expire_unanswered(now, REQUEUE_PER_PASS)?;
-                requeued += store.requeue_due(now, REQUEUE_PER_PASS)?;
-                for (domain, added) in store.take_noticed() {
+            let swept = on_readers(buckets.stores().collect(), |store| {
+                Ok((store.expire_unanswered(now, REQUEUE_PER_PASS)?, store.requeue_due(now, REQUEUE_PER_PASS)?, store.take_noticed()))
+            })?;
+            for (expired, due, noticed) in swept {
+                overdue += expired;
+                requeued += due;
+                for (domain, added) in noticed {
                     *grown.entry(domain).or_default() += added;
                 }
             }
@@ -460,7 +552,13 @@ impl Dispatcher {
 
     /// Pages for one pass, interleaved across domains best first.
     async fn pick(&mut self, budget: u64, now: u32) -> Result<Vec<Pick>> {
-        let mut order: Vec<(i64, String)> = self.domains.iter().filter(|(_, d)| d.ready > 0).map(|(name, d)| (d.rank, name.clone())).collect();
+        let buckets = self.buckets.clone();
+        let mut order: Vec<(i64, String)> = self
+            .domains
+            .iter()
+            .filter(|(name, d)| d.ready > 0 && buckets.allows(name))
+            .map(|(name, d)| (d.rank, name.clone()))
+            .collect();
         order.sort_unstable();
         let wants: Vec<Want> = order
             .iter()
@@ -480,16 +578,14 @@ impl Dispatcher {
         }
         let buckets = self.buckets.clone();
         let taken = tokio::task::spawn_blocking(move || -> Result<Vec<Taken>> {
-            asks.into_iter()
-                .map(|(domain, quotas)| {
-                    let Some(store) = buckets.store_for(&domain) else {
-                        return Ok(Taken { domain, quotas, picks: Vec::new(), left: 0 });
-                    };
-                    let picks = store.take_ready(&domain, quotas)?;
-                    let left = store.ready_count(&domain)?;
-                    Ok(Taken { domain, quotas, picks, left })
-                })
-                .collect()
+            on_readers(asks, |(domain, quotas)| {
+                let Some(store) = buckets.store_for(&domain) else {
+                    return Ok(Taken { domain, quotas, picks: Vec::new(), left: 0 });
+                };
+                let picks = store.take_ready(&domain, quotas)?;
+                let left = store.ready_count(&domain)?;
+                Ok(Taken { domain, quotas, picks, left })
+            })
         })
         .await??;
         let mut lists = Vec::with_capacity(taken.len());
@@ -508,49 +604,54 @@ impl Dispatcher {
         Ok(interleave(lists))
     }
 
-    /// Send the batch in flight, if any, and return how many URLs the API took; None when it did not take them, so they go again next pass.
-    async fn send_pending(&mut self) -> Result<Option<u64>> {
-        let Some(pending) = self.pending.clone() else {
-            return Ok(Some(0));
-        };
-        let saved = serde_json::to_value(&pending)?;
-        let buckets = self.buckets.clone();
-        tokio::task::spawn_blocking(move || buckets.stores().next().map(|s| s.set_meta(PENDING, &saved)).transpose()).await??;
-        let urls = pending.urls();
-        if let Err(error) = self.api.enqueue(&urls, &pending.batch_id).await {
-            eprintln!("[rs] enqueueing batch {} of {} URLs failed, will send it again: {error}", &pending.batch_id[..12], urls.len());
-            return Ok(None);
+    /// Send the batches in flight together, halving one refused as too large or invalid down to the page at fault; how many URLs went, and whether all did.
+    async fn send_pending(&mut self) -> Result<(u64, bool)> {
+        if self.pending.is_empty() {
+            return Ok((0, true));
         }
-        let buckets = self.buckets.clone();
-        let picks: Vec<Pick> = pending.picks.iter().map(Sending::pick).collect();
-        let at = pending.at;
-        let left = tokio::task::spawn_blocking(move || -> Result<Vec<(String, u64, i64)>> {
-            let mut by_bucket: HashMap<usize, Vec<Pick>> = HashMap::new();
-            for pick in picks {
-                by_bucket.entry(bucket_of(&pick.entry.domain)).or_default().push(pick);
+        self.save_pending().await?;
+        let (mut taken, mut failed) = (0, Vec::new());
+        let mut wave = self.pending.clone();
+        while !wave.is_empty() {
+            let mut sending = tokio::task::JoinSet::new();
+            for pending in wave.drain(..) {
+                let api = self.api.clone();
+                sending.spawn(async move {
+                    let sent = api.enqueue(&pending.urls(), &pending.batch_id).await;
+                    (pending, sent)
+                });
             }
-            let mut left = Vec::new();
-            for picks in by_bucket.values() {
-                let Some(store) = buckets.store_for(&picks[0].entry.domain) else {
-                    continue;
-                };
-                store.mark_sent(picks, at)?;
-                let mut domains: Vec<&str> = picks.iter().map(|p| p.entry.domain.as_str()).collect();
-                domains.sort_unstable();
-                domains.dedup();
-                for domain in domains {
-                    left.push((domain.to_string(), store.ready_count(domain)?, rank_of(&buckets, domain)));
+            while let Some(joined) = sending.join_next().await {
+                match joined? {
+                    (pending, Ok(_)) => taken += self.landed(pending).await?,
+                    (pending, Err(ApiError::Refused(413 | 422, _))) if pending.picks.len() > 1 => wave.extend(pending.halves()),
+                    (pending, Err(error @ ApiError::Refused(413 | 422, _))) => {
+                        eprintln!("[rs] the task API refused {}, set aside: {error}", pending.picks[0].url);
+                        self.set_aside(pending).await?;
+                    }
+                    (pending, Err(error)) => {
+                        eprintln!("[rs] enqueueing batch {} of {} URLs failed, will send it again: {error}", &pending.batch_id[..12], pending.picks.len());
+                        failed.push(pending);
+                    }
                 }
             }
-            if let Some(store) = buckets.stores().next() {
-                store.set_meta(PENDING, &Value::Null)?;
-            }
-            Ok(left)
-        })
-        .await??;
-        for (domain, ready, rank) in left {
-            self.set_ready(&domain, ready, rank);
         }
+        let cleared = failed.is_empty();
+        self.pending = failed;
+        self.save_pending().await?;
+        Ok((taken, cleared))
+    }
+
+    async fn save_pending(&self) -> Result<()> {
+        let saved = if self.pending.is_empty() { Value::Null } else { serde_json::to_value(&self.pending)? };
+        let buckets = self.buckets.clone();
+        tokio::task::spawn_blocking(move || buckets.stores().next().map(|s| s.set_meta(PENDING, &saved)).transpose()).await??;
+        Ok(())
+    }
+
+    /// A batch the API took: its pages leave the ready lists and count as sent.
+    async fn landed(&mut self, pending: Pending) -> Result<u64> {
+        self.mark_sent(&pending).await?;
         let mut per_domain: HashMap<&str, u64> = HashMap::new();
         for sending in &pending.picks {
             *per_domain.entry(&sending.domain).or_default() += 1;
@@ -566,10 +667,49 @@ impl Dispatcher {
             };
             counter.fetch_add(1, Ordering::Relaxed);
         }
-        self.pending = None;
-        self.progress.dispatched.fetch_add(urls.len() as u64, Ordering::Relaxed);
+        let count = pending.picks.len() as u64;
+        self.pace.spend(count);
+        self.progress.dispatched.fetch_add(count, Ordering::Relaxed);
         self.progress.batches.fetch_add(1, Ordering::Relaxed);
-        Ok(Some(urls.len() as u64))
+        Ok(count)
+    }
+
+    async fn set_aside(&mut self, pending: Pending) -> Result<()> {
+        self.mark_sent(&pending).await?;
+        self.progress.set_aside.fetch_add(pending.picks.len() as u64, Ordering::Relaxed);
+        Ok(())
+    }
+
+    async fn mark_sent(&mut self, pending: &Pending) -> Result<()> {
+        let buckets = self.buckets.clone();
+        let picks: Vec<Pick> = pending.picks.iter().map(Sending::pick).collect();
+        let at = pending.at;
+        let left = tokio::task::spawn_blocking(move || -> Result<Vec<(String, u64, i64)>> {
+            let mut by_bucket: HashMap<usize, Vec<Pick>> = HashMap::new();
+            for pick in picks {
+                by_bucket.entry(bucket_of(&pick.entry.domain)).or_default().push(pick);
+            }
+            let per_store = on_readers(by_bucket.into_values().collect(), |picks| {
+                let mut left = Vec::new();
+                let Some(store) = buckets.store_for(&picks[0].entry.domain) else {
+                    return Ok(left);
+                };
+                store.mark_sent(&picks, at)?;
+                let mut domains: Vec<&str> = picks.iter().map(|p| p.entry.domain.as_str()).collect();
+                domains.sort_unstable();
+                domains.dedup();
+                for domain in domains {
+                    left.push((domain.to_string(), store.ready_count(domain)?, rank_of(&buckets, domain)));
+                }
+                Ok(left)
+            })?;
+            Ok(per_store.into_iter().flatten().collect())
+        })
+        .await??;
+        for (domain, ready, rank) in left {
+            self.set_ready(&domain, ready, rank);
+        }
+        Ok(())
     }
 
     fn set_ready(&mut self, domain: &str, ready: u64, rank: i64) {
@@ -739,6 +879,25 @@ pub fn backfill(buckets: &Buckets, per_second: u64, progress: &Progress, stop: &
         progress.backfill_stores.fetch_add(1, Ordering::Relaxed);
     }
     Ok(())
+}
+
+/// Each item's work on one of the reader threads, results in the items' order.
+pub fn on_readers<T: Send, R: Send>(items: Vec<T>, work: impl Fn(T) -> Result<R> + Sync) -> Result<Vec<R>> {
+    let items: Vec<Mutex<Option<T>>> = items.into_iter().map(|item| Mutex::new(Some(item))).collect();
+    let done: Vec<Mutex<Option<Result<R>>>> = items.iter().map(|_| Mutex::new(None)).collect();
+    let next = AtomicUsize::new(0);
+    std::thread::scope(|scope| {
+        for _ in 0..READERS.min(items.len()) {
+            scope.spawn(|| loop {
+                let i = next.fetch_add(1, Ordering::Relaxed);
+                let Some(item) = items.get(i).and_then(|slot| slot.lock().unwrap_or_else(|e| e.into_inner()).take()) else {
+                    break;
+                };
+                *done[i].lock().unwrap_or_else(|e| e.into_inner()) = Some(work(item));
+            });
+        }
+    });
+    done.into_iter().map(|slot| slot.into_inner().unwrap_or_else(|e| e.into_inner()).expect("every item ran")).collect()
 }
 
 fn rank_of(buckets: &Buckets, domain: &str) -> i64 {

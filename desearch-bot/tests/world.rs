@@ -136,20 +136,21 @@ async fn crawls_a_small_web() {
     let web: Shared = Arc::default();
     {
         let mut w = web.lock().unwrap();
-        w.add("site.test", "/robots.txt", 200, None, b"User-agent: *\nAllow: /\nSitemap: http://site.test/sitemap_index.xml\n");
+        w.add("site.test", "/robots.txt", 200, None, b"User-agent: *\nAllow: /\nDisallow: /private/\nSitemap: http://site.test/sitemap_index.xml\n");
         w.add(
             "site.test",
             "/sitemap_index.xml",
             200,
             None,
             b"<sitemapindex><sitemap><loc>http://site.test/posts.xml.gz</loc><lastmod>2024-01-01</lastmod></sitemap>\
-              <sitemap><loc>/pages.xml</loc></sitemap></sitemapindex>",
+              <sitemap><loc>/pages.xml</loc></sitemap><sitemap><loc>/private/more.xml</loc></sitemap></sitemapindex>",
         );
         let posts: Vec<String> = (1..=12).map(|i| format!("/post/{i}")).collect();
         w.add("site.test", "/posts.xml.gz", 200, None, &gzip(urlset("site.test", &posts).as_bytes()));
-        let pages = urlset("site.test", &["/".into(), "/about".into(), "/contact".into()])
+        let pages = urlset("site.test", &["/".into(), "/about".into(), "/contact".into(), "/private/b".into()])
             .replace("</urlset>", "<url><loc>http://elsewhere.test/x</loc></url></urlset>");
         w.add("site.test", "/pages.xml", 200, Some("\"v1\""), pages.as_bytes());
+        w.add("site.test", "/private/more.xml", 200, None, urlset("site.test", &["/private/a".into()]).as_bytes());
         w.add("site.test", "/", 200, None, format!("<html lang=\"en\"><body><p>{ENGLISH}</p></body></html>").as_bytes());
         w.add("blocked.test", "/robots.txt", 200, None, b"User-agent: *\nDisallow: /\n");
     }
@@ -195,8 +196,11 @@ async fn crawls_a_small_web() {
     let site = domain("site.test");
     assert_eq!((site["state"].as_str(), site["urls"].as_i64(), site["lang"].as_str()), (Some("active"), Some(15), Some("en")));
     assert_eq!(buckets.store("site.test").sitemaps("site.test").unwrap().len(), 3);
+    assert_eq!(site["rules"]["disallow"], serde_json::json!(["/private/"]));
+    assert!(!web.lock().unwrap().hits.iter().any(|(_, path, _)| path.starts_with("/private/")));
     let stored = |url: &str| buckets.store("site.test").url(&urls::parse(url, "site.test").unwrap()).unwrap();
     assert!(stored("http://site.test/post/12").is_some() && stored("http://site.test/about").is_some());
+    assert!(stored("http://site.test/private/b").is_none(), "a page robots.txt disallows is never kept");
     assert_eq!(domain("blocked.test")["reason"], "robots_disallow");
     assert_eq!((domain("empty.test")["state"].as_str(), domain("empty.test")["reason"].as_str()), (Some("no_sitemap"), Some("no_sitemap")));
     assert_eq!(domain("gone.test")["reason"], "ClientConnectorDNSError");

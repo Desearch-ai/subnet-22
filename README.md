@@ -35,8 +35,8 @@ validators check their work under published rules, and the Desearch team integra
 into a tested index and the search API.
 
 <p align="center">
-  <a href="./docs/miner-setup.md">⛏️ Mine</a> ·
-  <a href="./docs/validator-setup.md">🛡️ Validate</a> ·
+  <a href="./docs/miner.md">⛏️ Mine</a> ·
+  <a href="./docs/validator.md">🛡️ Validate</a> ·
   <a href="./docs/architecture.md">⚙️ How it works</a> ·
   <a href="./docs/desearch-2.0/README.md">🧭 Desearch 2.0</a> ·
   <a href="https://console.desearch.ai">🔑 Search API</a>
@@ -67,20 +67,22 @@ starts with selected sources and grows as results prove useful.
 | Work | Who does it | Status |
 | --- | --- | --- |
 | **Crawl** and refresh pages, extract their text | Miners fetch assigned pages; validators re-check a sample of their tasks | Running on SN22 |
-| **Embed** accepted text with a selected model | Miners run the model on their GPUs; validators recompute a sample | Built; opens with Desearch's embedding model |
+| **Embed** accepted text with a selected model | Miners run the model on their GPUs; validators recompute a sample | Running on SN22, with Desearch's embedding model |
 | Train retrieval models, improve ranking, extraction and coverage | Model builders and data operators | Later programs, announced before they open |
 | Build, test and serve the index | The Desearch team | Team-operated; queries never wait on miner work |
 
 ## Mining and validating
 
-**Miners** crawl: they take tasks, fetch the assigned pages and upload the extracted text. They are
-paid by their share of accepted pages, and can test their miner locally before registering.
-[Miner setup →](./docs/miner-setup.md) · [Test locally →](./docs/test-your-miner.md)
-· [Emission →](./docs/emission.md)
+**Miners** crawl and embed: they take tasks, fetch the assigned pages and upload the extracted text,
+and turn that text into vectors on their own GPU. They are paid by their share of accepted work, and
+can test their miner locally before registering.
+[What a miner does →](./docs/miner.md#-what-a-miner-does) · [Miner setup →](./docs/miner.md#-setup) ·
+[Test locally →](./docs/test-your-miner.md) · [Emission →](./docs/emission.md)
 
-**Validators** check: they re-fetch a random sample of miners' tasks, compare it with what the miner
-returned, and set weights from the accepted work. A miner caught returning bad pages loses what it
-earned since its last good check. [Validator setup →](./docs/validator-setup.md)
+**Validators** check miners' work, the pages they crawl and the vectors they embed, and set weights
+from the work that holds up.
+[What a validator does →](./docs/validator.md#-what-a-validator-does) ·
+[Validator setup →](./docs/validator.md#-setup)
 
 The rules are published and every result is [public](https://api-22.desearch.ai/v1/tasks).
 [How it works →](./docs/architecture.md)
@@ -101,15 +103,14 @@ the [console](https://console.desearch.ai) and start with the
 
 | Guide | What's inside |
 | --- | --- |
-| [Miner setup](./docs/miner-setup.md) | Install, register, configure, run, how you earn, monitoring |
-| [Test your miner locally](./docs/test-your-miner.md) | Run your miner against a local task API and validator before registering |
-| [Validator setup](./docs/validator-setup.md) | Install, register, configure, run, automatic upgrades, monitoring |
-| [Emission](./docs/emission.md) | How miners' shares are worked out and what raises them |
-| [Architecture](./docs/architecture.md) | How the bot, task API, miners, validators, storage and engine work together |
-| [Embedding tasks](./docs/embedding-tasks.md) | What embed tasks will contain and how they are checked, before they open |
-| [Engine](./engine/README.md) | The search index and API, and how new pages reach it |
-| [Task API](./task-api/README.md) | Endpoints, rounds, scoring rules, public logs and the storage layout |
-| [Desearch 2.0](./docs/desearch-2.0/README.md) | The direction: why an index, the first phase, incentives and participation |
+| ⛏️ [Miner](./docs/miner.md) | [What a miner does](./docs/miner.md#-what-a-miner-does) and how it earns; [setup](./docs/miner.md#-setup): install, register, configure, run, monitor |
+| 🧪 [Test your miner locally](./docs/test-your-miner.md) | Run your miner against a local task API and validator before registering |
+| 🛡️ [Validator](./docs/validator.md) | [What a validator does](./docs/validator.md#-what-a-validator-does): checks and weights; [setup](./docs/validator.md#-setup): install, register, configure, run, monitor |
+| 💰 [Emission](./docs/emission.md) | How miners' shares are worked out and what raises them |
+| ⚙️ [Architecture](./docs/architecture.md) | How the bot, task API, miners, validators and storage work together |
+| 🧠 [Embedding tasks](./docs/embedding-tasks.md) | The embedding model, what a task contains and how it is checked |
+| 🔌 [Task API](./task-api/README.md) | Endpoints, rounds, scoring rules, public logs and the storage layout |
+| 🧭 [Desearch 2.0](./docs/desearch-2.0/README.md) | The direction: why an index, the first phase, incentives and participation |
 
 ## Contributors
 

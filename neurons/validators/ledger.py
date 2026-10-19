@@ -16,11 +16,19 @@ from desearch.credit import (
     SHARE_WINDOW_H,
     overstated,
 )
-from desearch.kinds import CRAWL
+from desearch.kinds import CRAWL, EMBED
 
 
 # A failed crawl task takes its assigned URLs back, so failing costs more than not trying.
 NET = f"SUM(CASE WHEN kind = '{CRAWL}' AND verdict = 'fail' THEN -assigned ELSE credited END)"
+CRAWL_RETURNED = "MIN(ok + errors, assigned)"
+EMBED_RETURNED = "chars"
+# Ledgers written before embed uploads were logged hold only crawl rows.
+ADDED_COLUMNS = (
+    ("uploads", "kind", f"TEXT NOT NULL DEFAULT '{CRAWL}'"),
+    ("uploads", "chars", "INTEGER NOT NULL DEFAULT 0"),
+    ("checks", "kind", f"TEXT NOT NULL DEFAULT '{CRAWL}'"),
+)
 
 
 class Ledger:
@@ -67,6 +75,10 @@ class Ledger:
             );
             """
         )
+        for table, column, declared in ADDED_COLUMNS:
+            have = {row[1] for row in self.db.execute(f"PRAGMA table_info({table})")}
+            if column not in have:
+                self.db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declared}")
         self.db.commit()
 
     def record(
@@ -98,19 +110,9 @@ class Ledger:
     def add_uploads(self, entries: list[dict]) -> int:
         before = self.db.total_changes
         self.db.executemany(
-            "INSERT OR IGNORE INTO uploads VALUES (?, ?, ?, ?, ?, ?, ?)",
-            [
-                (
-                    e["key"],
-                    e["task_id"],
-                    e["miner"],
-                    e["completed_at"],
-                    e["assigned"],
-                    e["ok"],
-                    e["errors"],
-                )
-                for e in entries
-            ],
+            "INSERT OR IGNORE INTO uploads (key, task_id, miner, completed_at, assigned,"
+            " ok, errors, kind, chars) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            [upload_row(e) for e in entries],
         )
         self.db.commit()
         return self.db.total_changes - before
@@ -126,9 +128,11 @@ class Ledger:
         content: int,
         assigned: int,
         at: float | None = None,
+        kind: str = CRAWL,
     ) -> None:
         self.db.execute(
-            "INSERT OR REPLACE INTO checks VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT OR REPLACE INTO checks (key, miner, completed_at, scored_at, verdict,"
+            " credited, returned, content, assigned, kind) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 key,
                 miner,
@@ -139,6 +143,7 @@ class Ledger:
                 returned,
                 content,
                 assigned,
+                kind,
             ),
         )
         self.db.commit()
@@ -155,6 +160,13 @@ class Ledger:
 
     def crawl_paid(self, now: float | None = None) -> dict[str, Paid]:
         """Each miner's rows of the scoring window as this validator's own checks judge them."""
+        return self._paid(CRAWL, CRAWL_RETURNED, now)
+
+    def embed_paid(self, now: float | None = None) -> dict[str, Paid]:
+        """Each miner's characters of the scoring window as this validator's own checks judge them."""
+        return self._paid(EMBED, EMBED_RETURNED, now)
+
+    def _paid(self, kind: str, returned_of: str, now: float | None) -> dict[str, Paid]:
         now = now or time.time()
         since = now - SHARE_WINDOW_H * 3600
         checks: dict[str, list[Check]] = defaultdict(list)
@@ -171,11 +183,12 @@ class Ledger:
         ) in self.db.execute(
             "SELECT c.miner, c.key, c.completed_at, c.verdict, c.credited, c.returned,"
             " c.content, c.assigned, u.ok FROM checks c LEFT JOIN uploads u ON u.key = c.key"
-            " WHERE c.scored_at >= ? AND c.verdict IN ('pass', 'fail') ORDER BY c.scored_at",
-            (now - RATE_WINDOW_S,),
+            " WHERE c.scored_at >= ? AND c.kind = ? AND c.verdict IN ('pass', 'fail')"
+            " ORDER BY c.scored_at",
+            (now - RATE_WINDOW_S, kind),
         ):
             passed = verdict == "pass" and not (
-                ok is not None and overstated(ok, content, assigned)
+                kind == CRAWL and ok is not None and overstated(ok, content, assigned)
             )
             checks[miner].append(
                 Check(
@@ -189,9 +202,9 @@ class Ledger:
             )
         uploads: dict[str, list[tuple[str, float, int]]] = defaultdict(list)
         for miner, key, completed_at, returned in self.db.execute(
-            "SELECT miner, key, completed_at, MIN(ok + errors, assigned) FROM uploads"
-            " WHERE completed_at >= ?",
-            (since,),
+            f"SELECT miner, key, completed_at, {returned_of} FROM uploads"
+            " WHERE completed_at >= ? AND kind = ?",
+            (since, kind),
         ):
             uploads[miner].append((key, completed_at, returned))
         return {
@@ -223,24 +236,6 @@ class Ledger:
             for kind, miner, tasks, passed, failed, assigned, returned, credited, net in rows
         ]
 
-    def shares(self, now: float | None = None) -> dict[str, dict[str, float]]:
-        """Each miner's part of the work this validator verified, less its failed tasks."""
-        since = (now or time.time()) - SHARE_WINDOW_H * 3600
-        earned: dict[str, dict[str, int]] = {}
-        for kind, miner, net in self.db.execute(
-            f"SELECT kind, miner, {NET} FROM verdicts WHERE scored_at >= ?"
-            " GROUP BY kind, miner",
-            (since,),
-        ):
-            if net > 0:
-                earned.setdefault(kind, {})[miner] = net
-        return {
-            kind: {
-                miner: amount / sum(miners.values()) for miner, amount in miners.items()
-            }
-            for kind, miners in earned.items()
-        }
-
     def prune(self, keep_days: int = 7) -> None:
         oldest = time.time() - keep_days * 86400
         self.db.execute("DELETE FROM verdicts WHERE scored_at < ?", (oldest,))
@@ -264,11 +259,26 @@ class Check:
 
 @dataclass
 class Paid:
-    rows: float
+    amount: float
     uploads: int
     checked: int
     failed: int
     rate: float
+
+
+def upload_row(entry: dict) -> tuple:
+    """A logged upload as stored; an entry without a kind is a crawl upload from an older log."""
+    if entry.get("kind", CRAWL) == EMBED:
+        counts = (entry["texts"], entry["texts"], 0, EMBED, entry["chars"])
+    else:
+        counts = (entry["assigned"], entry["ok"], entry["errors"], CRAWL, 0)
+    return (
+        entry["key"],
+        entry["task_id"],
+        entry["miner"],
+        entry["completed_at"],
+        *counts,
+    )
 
 
 def paid(
@@ -280,17 +290,17 @@ def paid(
     taken = taken_back(checks)
     checked = {check.key for check in checks}
     recent = [check for check in checks if check.completed_at >= since]
-    rows = 0.0
+    amount = 0.0
     for check in recent:
         if not check.passed:
-            rows -= check.assigned
+            amount -= check.assigned
         elif not taken_at(taken, check.completed_at):
-            rows += check.credited
+            amount += check.credited
     for key, completed_at, returned in uploads:
         if key not in checked and not taken_at(taken, completed_at):
-            rows += rate * returned
+            amount += rate * returned
     failed = sum(1 for check in recent if not check.passed)
-    return Paid(rows, len(uploads), len(recent), failed, round(rate, 4))
+    return Paid(amount, len(uploads), len(recent), failed, round(rate, 4))
 
 
 def taken_back(checks: list[Check]) -> list[tuple[float, float]]:

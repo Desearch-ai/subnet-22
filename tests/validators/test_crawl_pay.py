@@ -60,7 +60,7 @@ def test_unchecked_uploads_are_paid_at_the_rate_the_checks_paid():
     found = ledger.crawl_paid(NOW)["m"]
 
     assert found.rate == pytest.approx(0.9)
-    assert found.rows == pytest.approx(2 * 90 + 8 * 90)
+    assert found.amount == pytest.approx(2 * 90 + 8 * 90)
     assert (found.uploads, found.checked, found.failed) == (10, 2, 0)
 
 
@@ -73,7 +73,7 @@ def test_a_failed_check_takes_back_what_came_since_the_last_pass_and_costs_its_u
 
     rate = 100 / 200
     kept = [0, 1, 7, 8, 9]
-    assert found.rows == pytest.approx(100 + rate * 100 * len(kept) - 100)
+    assert found.amount == pytest.approx(100 + rate * 100 * len(kept) - 100)
 
 
 def test_two_fails_among_the_last_ten_checks_take_back_the_day_before():
@@ -85,7 +85,7 @@ def test_two_fails_among_the_last_ten_checks_take_back_the_day_before():
     found = ledger.crawl_paid(NOW)["m"]
 
     assert found.failed == 2
-    assert found.rows == pytest.approx(100 / 300 * 100 * 1 - 200), (
+    assert found.amount == pytest.approx(100 / 300 * 100 * 1 - 200), (
         "only the upload after the second fail is left, less both fails' URLs"
     )
 
@@ -96,13 +96,13 @@ def test_a_check_that_counted_fewer_pages_than_reported_is_a_fail():
 
     found = ledger.crawl_paid(NOW)["m"]
 
-    assert found.failed == 1 and found.rows < 0
+    assert found.failed == 1 and found.amount < 0
 
 
 def test_a_miner_this_validator_never_checked_earns_nothing_yet():
     found = ledger_with(5).crawl_paid(NOW)["m"]
 
-    assert (found.rate, found.rows) == (0.0, 0.0)
+    assert (found.rate, found.amount) == (0.0, 0.0)
 
 
 def test_uploads_older_than_the_window_are_not_counted():

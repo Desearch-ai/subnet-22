@@ -13,10 +13,11 @@ from bittensor.wallets import Keypair
 
 
 class TaskApiError(Exception):
-    def __init__(self, status: int, detail: str):
+    def __init__(self, status: int, detail: str, retry_after: float | None = None):
         super().__init__(f"HTTP {status}: {detail}" if status else detail)
         self.status = status
         self.detail = detail
+        self.retry_after = retry_after
 
 
 class TaskApiClient:
@@ -63,7 +64,11 @@ class TaskApiClient:
         except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
             raise TaskApiError(0, f"{type(exc).__name__}: {exc}") from exc
         if response.status >= 400:
-            raise TaskApiError(response.status, _detail(raw))
+            raise TaskApiError(
+                response.status,
+                _detail(raw),
+                _seconds(response.headers.get("Retry-After")),
+            )
         return json.loads(raw)
 
     def _auth(self, method: str, path: str, body: bytes) -> dict[str, str]:
@@ -77,6 +82,13 @@ class TaskApiClient:
             "X-Nonce": nonce,
             "X-Signature": self.key.sign(payload).hex(),
         }
+
+
+def _seconds(value: str | None) -> float | None:
+    try:
+        return float(value) if value is not None else None
+    except ValueError:
+        return None
 
 
 def _detail(raw: bytes) -> str:

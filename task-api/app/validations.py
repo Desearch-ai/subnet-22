@@ -311,6 +311,7 @@ class Validations:
                 finalized_at REAL NOT NULL,
                 PRIMARY KEY (task_id, upload_key)
             );
+            CREATE TABLE IF NOT EXISTS retention (name TEXT PRIMARY KEY, mark REAL NOT NULL);
             CREATE TABLE IF NOT EXISTS votes (
                 id             INTEGER PRIMARY KEY AUTOINCREMENT,
                 task_id        TEXT NOT NULL,
@@ -570,6 +571,35 @@ class Validations:
             (task_id,),
         ).fetchone()
         return json.loads(row[0]) if row and row[0] else []
+
+    def drop_publish_copies(self, finalized_before: float, limit: int) -> int:
+        """Clears the publish job kept with each verdict once it was finalized before `finalized_before`."""
+        (mark,) = self.db.execute(
+            "SELECT COALESCE((SELECT mark FROM retention WHERE name = 'final_verdicts'), 0)"
+        ).fetchone()
+        # Rows are inserted as uploads finalize, so row order is time order.
+        rows = self.db.execute(
+            "SELECT rowid, finalized_at FROM final_verdicts WHERE rowid > ? ORDER BY rowid LIMIT ?",
+            (int(mark), limit),
+        ).fetchall()
+        last = int(mark)
+        for rowid, at in rows:
+            if at >= finalized_before:
+                break
+            last = rowid
+        if last > mark:
+            self.db.execute(
+                "UPDATE final_verdicts SET publish = NULL"
+                " WHERE rowid > ? AND rowid <= ? AND publish IS NOT NULL",
+                (int(mark), last),
+            )
+            self.db.execute(
+                "INSERT INTO retention VALUES ('final_verdicts', ?)"
+                " ON CONFLICT (name) DO UPDATE SET mark = excluded.mark",
+                (last,),
+            )
+        self.db.commit()
+        return last - int(mark)
 
     def prune_urls(self, keep_days: float = URL_DETAIL_DAYS) -> None:
         self.db.execute(

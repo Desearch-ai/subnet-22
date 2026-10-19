@@ -432,3 +432,16 @@ def test_a_miner_that_held_the_whole_front_of_the_queue_is_served_from_behind():
 
     got, order = run(scenario)
     assert got == order[55]
+
+
+def test_a_waiting_publish_job_is_kept_compressed_and_an_old_one_still_reads():
+    from app.queues import pack_job, unpack_job
+
+    job = {
+        "task_id": "t",
+        "urls": [f"https://site{n}.example/page/{n}" for n in range(1000)],
+    }
+    packed = pack_job(job)
+
+    assert unpack_job(packed) == job == unpack_job(json.dumps(job))
+    assert len(packed) * 3 < len(json.dumps(job))

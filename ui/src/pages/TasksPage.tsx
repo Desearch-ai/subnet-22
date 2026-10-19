@@ -2,6 +2,7 @@ import { useSearchParams } from 'react-router'
 import type { TaskFilters } from '@/api/queries/tasks'
 import type { Verdict } from '@/api/types'
 import {
+  FILTER_KIND,
   FILTER_MINER,
   FILTER_VALIDATOR,
   FILTER_VERDICT,
@@ -10,9 +11,10 @@ import {
 import { TaskList } from '@/components/tasks/TaskList'
 import { Card } from '@/components/ui/Card'
 import { PageHeader } from '@/components/ui/PageHeader'
+import { readKind } from '@/lib/kinds'
 import { VERDICTS } from '@/lib/labels'
 
-const FILTER_KEYS = [FILTER_MINER, FILTER_VALIDATOR, FILTER_VERDICT] as const
+const FILTER_KEYS = [FILTER_MINER, FILTER_VALIDATOR, FILTER_KIND, FILTER_VERDICT] as const
 
 function readVerdict(value: string | null): Verdict | undefined {
   return VERDICTS.find((verdict) => verdict === value)
@@ -22,10 +24,12 @@ function readFilters(params: URLSearchParams): TaskFilters {
   const miner = params.get(FILTER_MINER)
   const validator = params.get(FILTER_VALIDATOR)
   const verdict = readVerdict(params.get(FILTER_VERDICT))
+  const kind = readKind(params.get(FILTER_KIND))
   return {
     ...(miner ? { miner } : {}),
     ...(validator ? { validator } : {}),
     ...(verdict ? { verdict } : {}),
+    ...(kind ? { kind } : {}),
   }
 }
 
@@ -46,7 +50,7 @@ export function TasksPage() {
     <>
       <PageHeader
         title="Tasks"
-        description="Finalized uploads, newest first. A task that failed or ended void is queued again for another miner, so it can appear once per upload."
+        description="Finalized uploads of both kinds, newest first: crawl tasks return one row per URL, embed tasks one vector per text. A task that failed or ended void is queued again for another miner, so it can appear once per upload."
       />
       <Card>
         <TaskFilterBar

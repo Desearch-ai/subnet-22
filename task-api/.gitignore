@@ -9,3 +9,4 @@ local/news_small.json
 local/eval/
 local/eval_urls.json
 *.sqlite*
+target/

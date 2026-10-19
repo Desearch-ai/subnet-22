@@ -2,9 +2,10 @@ import asyncio
 
 import pyarrow as pa
 import pyarrow.parquet as pq
+import pytest
 from aiohttp import web
 
-from sandbox import run, urls
+from sandbox import local, run, urls
 from sandbox.chain import FakeChain
 from sandbox.local import Ports
 from tests.local_http import serving
@@ -12,17 +13,77 @@ from tests.local_http import serving
 
 def test_ports_derive_from_the_api_port():
     ports = Ports(19000)
-    assert (ports.redis, ports.minio) == (19001, 19002)
+    assert (ports.redis, ports.minio, ports.reference) == (19001, 19002, 19003)
     assert ports.api_url == "http://127.0.0.1:19000"
     assert ports.storage_url == "http://127.0.0.1:19002/sandbox-uploads"
+    assert ports.reference_url == "http://127.0.0.1:19003/v1/embeddings"
 
 
-def test_the_sandbox_api_gets_its_task_size_without_touching_the_constant():
-    from sandbox import local
+def test_the_api_listens_on_its_port_inside_and_reaches_redis_and_storage_on_localhost():
+    found = local.api_env(Ports(19000), genesis=5.0, task_size=100)
+    assert found["TASK_API_LISTEN"] == "0.0.0.0:19000"
+    assert found["TASK_API_REDIS"] == "redis://127.0.0.1:19001/0"
+    assert found["CF_R2_ENDPOINT"] == "http://127.0.0.1:19002"
+    assert (found["TASK_API_DATA"], found["TASK_API_TASK_URLS"]) == ("/data", "100")
+    assert (found["TASK_API_REGISTRY"], found["TASK_API_SEEDS"]) == ("local", "local")
+    assert (found["TASK_API_GENESIS"], found["TASK_API_CHECK_SHARE"]) == ("5.0", "1")
+    assert found["TASK_API_EMBED_CHECK_SHARE"] == "1", (
+        "every embed upload is checked too"
+    )
+    assert found["TASK_API_EMBED_TASKS"] == "0"
+    assert (
+        local.api_env(Ports(19000), 5.0, 100, embed=True)["TASK_API_EMBED_TASKS"] == "1"
+    )
 
-    command = local.api_command("python", Ports(19000), 100)
-    assert command[:2] == ["python", "-c"]
-    assert "rounds.TASK_URLS = 100;" in command[2] and "port=19000" in command[2]
+
+def test_the_image_is_named_for_its_sources_and_ignores_build_output(tmp_path):
+    for name, body in {
+        "crates/desearch/src/lib.rs": "pub fn a() {}",
+        "crates/desearch/target/release/junk": "x",
+        "task-api/Cargo.toml": "[package]",
+        "task-api/Cargo.lock": "",
+        "task-api/src/main.rs": "fn main() {}",
+        "task-api/app/main.py": "",
+    }.items():
+        (tmp_path / name).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / name).write_text(body)
+    tag = local.image_tag(tmp_path)
+    assert tag.startswith("desearch-sandbox-task-api:") and len(tag.split(":")[1]) == 12
+
+    (tmp_path / "crates/desearch/target/release/junk").write_text("y")
+    (tmp_path / "task-api/app/main.py").write_text("changed")
+    assert local.image_tag(tmp_path) == tag, (
+        "build output and other folders do not count"
+    )
+    (tmp_path / "task-api/src/main.rs").write_text("fn main() { }")
+    assert local.image_tag(tmp_path) != tag
+
+
+def test_every_container_shares_the_storage_network_and_has_a_memory_cap(
+    tmp_path, monkeypatch
+):
+    commands = []
+    monkeypatch.setattr(
+        local.subprocess, "run", lambda command, **_: commands.append(command)
+    )
+    local.start_storage(Ports(19000), tmp_path)
+    local.start_api("image:tag", {"TASK_API_LISTEN": "0.0.0.0:19000"}, tmp_path / "api")
+    runs = {c[c.index("--name") + 1]: c for c in commands if c[:2] == ["docker", "run"]}
+    assert set(runs) == {local.MINIO, local.REDIS, local.API}
+    assert all("--memory" in command for command in runs.values())
+    minio = runs[local.MINIO]
+    published = [minio[i + 1] for i, flag in enumerate(minio) if flag == "-p"]
+    assert published == [f"127.0.0.1:{p}:{p}" for p in (19000, 19001, 19002)]
+    assert minio[-4:] == ["/data", "--address", ":19002", "--quiet"]
+    for name in (local.REDIS, local.API):
+        assert f"container:{local.MINIO}" in runs[name]
+        assert "-p" not in runs[name]
+    assert "--port" in runs[local.REDIS] and "19001" in runs[local.REDIS]
+    api = runs[local.API]
+    assert api[api.index("--user") + 1] == f"{local.os.getuid()}:{local.os.getgid()}"
+    assert "127.0.0.1:19000/v1/ping" in api[api.index("--health-cmd") + 1]
+    assert f"{tmp_path / 'api'}:/data" in api
+    assert "TASK_API_LISTEN=0.0.0.0:19000" in api and api[-1] == "image:tag"
 
 
 def test_the_site_of_a_url_is_its_host_without_www():
@@ -241,3 +302,358 @@ def test_more_tasks_are_queued_when_the_miner_is_only_offered_tasks_it_held(tmp_
         return answers
 
     assert asyncio.run(scenario()) == [False, True, False, False]
+
+
+def embed_set(folder, pages: int = 3, texts_per_page: int = 2, dims: int = 2560):
+    """A test set in the published layout: rows grouped by page, each with its reference vector."""
+    import json
+
+    import numpy as np
+
+    from desearch.embedding import INPUT_SCHEMA
+
+    rows = []
+    for page in range(pages):
+        for index in range(texts_per_page):
+            vector = np.zeros(dims, dtype="<f4")
+            vector[page * texts_per_page + index] = 1.0
+            rows.append(
+                {
+                    "text_id": f"t{page}-{index}",
+                    "page_key": f"p{page}",
+                    "url": f"https://www.site{page}.example/a",
+                    "content_sha1": f"c{page}",
+                    "kind": "page" if index == 0 else "passage",
+                    "index": index,
+                    "text": f"text {index} of page {page} " + "x" * (10 * page),
+                    "reference": vector.tobytes(),
+                }
+            )
+    schema = pa.schema([*INPUT_SCHEMA, pa.field("reference", pa.binary())])
+    (folder / "data").mkdir(parents=True)
+    pq.write_table(
+        pa.Table.from_pylist(rows, schema=schema), folder / "data/texts-00000.parquet"
+    )
+    manifest = {
+        "model": "desearch-4b-v1",
+        "dims": dims,
+        "pages": pages,
+        "files": ["data/texts-00000.parquet"],
+    }
+    (folder / "manifest.json").write_text(json.dumps(manifest))
+    return rows
+
+
+def test_the_embed_set_is_read_by_page_with_a_reference_for_each_text(tmp_path):
+    from sandbox.embed import EmbedSet
+
+    rows = embed_set(tmp_path)
+    texts = EmbedSet.read(tmp_path)
+    assert [[r["text_id"] for r in page] for page in texts.pages] == [
+        ["t0-0", "t0-1"],
+        ["t1-0", "t1-1"],
+        ["t2-0", "t2-1"],
+    ]
+    assert "reference" not in texts.pages[0][0]
+    assert texts.reference(rows[3]["text"]).argmax() == 3
+    assert texts.reference("a text the set does not have") is None
+
+
+def test_inputs_hold_whole_pages_up_to_the_task_size_and_the_character_cap(tmp_path):
+    from sandbox.embed import EmbedSet
+
+    embed_set(tmp_path, pages=5)
+    texts = EmbedSet.read(tmp_path)
+    sized = texts.inputs(task_size=2)
+    assert [len(given.pages) for given in sized] == [2, 2, 1]
+    assert [given.texts for given in sized] == [4, 4, 2]
+    assert sized[0].chars == sum(len(r["text"]) for r in sized[0].rows())
+
+    page_chars = [sum(len(r["text"]) for r in page) for page in texts.pages]
+    capped = texts.inputs(task_size=100, max_chars=page_chars[0] + page_chars[1])
+    assert [len(given.pages) for given in capped][:2] == [2, 1]
+    assert all(
+        given.chars <= page_chars[0] + page_chars[1] or len(given.pages) == 1
+        for given in capped
+    ), "a page is never split, so one over the cap goes alone"
+
+
+def test_an_input_is_the_exact_input_columns_and_its_entry_is_the_planners(tmp_path):
+    import hashlib
+    import re
+
+    from desearch.embedding import INPUT_SCHEMA, read_parquet
+    from sandbox.embed import EmbedSet, input_body, input_entry, input_key
+
+    embed_set(tmp_path)
+    given = EmbedSet.read(tmp_path).inputs(task_size=2)[0]
+    body = input_body(given)
+    assert pq.read_table(pa.BufferReader(body)).column_names == INPUT_SCHEMA.names
+    assert read_parquet(body, INPUT_SCHEMA) == given.rows()
+
+    key = input_key(86_400.0 * 3)
+    assert re.fullmatch(r"embed/inputs/dt=1970-01-04/[0-9a-f]{32}\.parquet", key)
+    assert input_key(0.0) != input_key(0.0), "a new key each time"
+    entry = input_entry(given, key, body, now=12.5)
+    assert entry == {
+        "input_key": key,
+        "input_sha256": hashlib.sha256(body).hexdigest(),
+        "written_at": 12.5,
+        "texts": 4,
+        "chars": given.chars,
+        "pages": [
+            {
+                "page_key": "p0",
+                "content_sha1": "c0",
+                "url": "https://www.site0.example/a",
+                "host": "site0.example",
+            },
+            {
+                "page_key": "p1",
+                "content_sha1": "c1",
+                "url": "https://www.site1.example/a",
+                "host": "site1.example",
+            },
+        ],
+    }
+
+
+def test_the_reference_server_answers_the_validators_client_with_the_stored_vectors(
+    tmp_path,
+):
+    import aiohttp
+    import numpy as np
+
+    from desearch.embedding import MODELS, EmbeddingClient
+    from sandbox.embed import EmbedSet, serve_reference
+
+    rows = embed_set(tmp_path)
+    texts = EmbedSet.read(tmp_path)
+
+    async def scenario():
+        runner = await serve_reference(texts, 0)
+        port = runner.addresses[0][1]
+        url = f"http://127.0.0.1:{port}/v1/embeddings"
+        client = EmbeddingClient(url, MODELS["desearch-4b-v1"])
+        try:
+            served = await client.served_models()
+            vectors = await client.embed([rows[4]["text"], rows[1]["text"]])
+            async with aiohttp.ClientSession() as http:
+                async with http.get(f"http://127.0.0.1:{port}/v1/models") as r:
+                    listed = (await r.json())["data"][0]
+                answers = []
+                for body in (
+                    {"model": "desearch-4b-v1", "input": rows[2]["text"]},
+                    {"model": "desearch-4b-v1", "input": ["never seen"]},
+                    {"model": "another-model", "input": [rows[0]["text"]]},
+                    {
+                        "model": "desearch-4b-v1",
+                        "input": [rows[0]["text"]],
+                        "encoding_format": "int8",
+                    },
+                ):
+                    async with http.post(url, json=body) as r:
+                        answers.append((r.status, await r.json()))
+        finally:
+            await client.aclose()
+            await runner.cleanup()
+        return served, vectors, listed, answers
+
+    served, vectors, listed, answers = asyncio.run(scenario())
+    assert served == ["desearch-4b-v1"] and listed["max_model_len"] == 2048
+    assert vectors.shape == (2, 2560) and list(vectors.argmax(axis=1)) == [4, 1]
+    (ok, floats), (unknown, _), (other, _), (encoding, _) = answers
+    assert ok == 200 and np.argmax(floats["data"][0]["embedding"]) == 2, (
+        "floats unless asked for base64"
+    )
+    assert (unknown, other, encoding) == (400, 404, 400)
+
+
+EMBED_TASK = {
+    "task_id": "e1",
+    "miner": "5GYoQ4rynWSzEBVTwKypeiK5AjhuB7KtSZwTbPgydvNqe8EY",
+    "verdict": "fail",
+    "reason": "vectors_mismatch",
+    "sampled": 48,
+    "matched": 46,
+    "mismatched": 2,
+    "claimed_at": 100.0,
+    "completed_at": 141.25,
+}
+
+
+def test_an_embed_verdict_shows_the_sample_the_size_the_time_and_each_mismatch():
+    from sandbox import embed
+
+    report = {
+        "min_similarity": 0.91,
+        "samples": [
+            {"text_id": "a", "outcome": "matched", "similarity": 1.0},
+            {
+                "text_id": "b",
+                "outcome": "mismatched",
+                "similarity": 0.98,
+                "url": "https://w/B",
+                "kind": "passage",
+                "position": 3,
+            },
+            {
+                "text_id": "c",
+                "outcome": "mismatched",
+                "similarity": 0.91,
+                "url": "https://w/C",
+                "kind": "page",
+                "position": 0,
+            },
+        ],
+    }
+    lines = embed.describe(
+        EMBED_TASK,
+        report,
+        1043,
+        812331,
+        upload="http://u/e1.parquet",
+        details="/runs/e1.json",
+    ).splitlines()
+    assert lines == [
+        "task e1 miner 5GYoQ4ry: FAIL (vectors_mismatch), 46/48 sampled texts matched, lowest similarity 0.91",
+        "  1,043 texts, 812,331 characters, uploaded 41.2s after the claim (limit 300s)",
+        "  https://w/C page 0: similarity 0.910000",
+        "  https://w/B passage 3: similarity 0.980000",
+        "  upload:  http://u/e1.parquet",
+        "  details: /runs/e1.json",
+    ]
+
+    malformed = {**EMBED_TASK, "reason": "vectors_malformed", "matched": 47}
+    lines = embed.describe(
+        malformed,
+        {
+            "malformed": 1,
+            "min_similarity": 0.9999,
+            "samples": [
+                {"text_id": "d", "outcome": "malformed", "similarity": None, "index": 7}
+            ],
+        },
+        1043,
+        None,
+    ).splitlines()
+    assert lines[0].endswith(
+        "FAIL (vectors_malformed), 47/48 sampled texts matched, 1 malformed,"
+        " lowest similarity 0.9999"
+    )
+    assert lines[2] == "  d: not a finite vector of length 1"
+
+    wrong = {**EMBED_TASK, "reason": "wrong_size", "sampled": 0, "matched": 0}
+    head = embed.describe(wrong, {"sampled": 0, "samples": []}, 1043, None).splitlines()
+    assert head[0].endswith(
+        "FAIL (wrong_size), the upload's size is not one vector for each text"
+    )
+    assert head[1].startswith("  1,043 texts, uploaded 41.2s")
+
+
+def test_a_sampled_text_keeps_its_row_in_the_upload_and_gains_its_place_in_the_page(
+    tmp_path,
+):
+    from sandbox.embed import EmbedSandbox, EmbedSet
+
+    rows = embed_set(tmp_path)
+    sandbox = object.__new__(EmbedSandbox)
+    sandbox.texts = EmbedSet.read(tmp_path)
+    sample = {"text_id": rows[1]["text_id"], "index": 9, "outcome": "malformed"}
+
+    found = {**sample, **sandbox.text_of(sample)}
+
+    assert found["index"] == 9 and found["position"] == rows[1]["index"]
+    assert found["text"] == rows[1]["text"]
+
+
+def test_the_embed_summary_rates_count_only_work_checked_after_the_first_verdict():
+    from sandbox.embed import EmbedStats
+
+    stats = EmbedStats(first_at=0.0)
+    stats.add("pass", texts=1000, chars=800_000)
+    assert "rate after the next task" in stats.line("5GYoQ4rynWSz", 3, now=1.0)
+    stats.add("fail", texts=1000, chars=700_000)
+    assert stats.line("5GYoQ4rynWSz", budget=3, now=120.0) == (
+        "  5GYoQ4ry: 2 tasks checked, 1 passed, 2,000 texts (500/min),"
+        " 1,500,000 characters (350,000/min), budget 3"
+    )
+
+
+def test_in_embed_mode_the_validator_sets_weights_without_a_scrapingdog_key():
+    from types import SimpleNamespace
+
+    from sandbox.validator import SandboxValidator
+
+    validator = object.__new__(SandboxValidator)
+    validator.scrapingdog_key = ""
+    validator.config = SimpleNamespace(
+        neuron=SimpleNamespace(storage_url="http://s", disable_set_weights=False)
+    )
+    validator.stopping = asyncio.Event()
+    validator.stopping.set()
+
+    validator.embed = False
+    assert "SCRAPINGDOG_API_KEY" in validator.crawl_disabled_reason()
+    assert not validator.should_set_weights()
+
+    validator.embed = True
+    assert validator.crawl_disabled_reason() is None
+    assert validator.should_set_weights()
+    asyncio.run(validator.check_crawl_tasks())
+    assert not hasattr(validator, "crawl_checker"), "no crawl checker in embed mode"
+
+
+def test_the_sandbox_validator_checks_only_its_own_mode_s_tasks():
+    from sandbox.validator import SandboxValidator
+
+    validator = object.__new__(SandboxValidator)
+    validator.stopping = asyncio.Event()
+    validator.stopping.set()
+    validator.embed = False
+    assert asyncio.run(validator.check_embed_tasks()) is None, (
+        "crawl mode waits instead of checking embed tasks"
+    )
+
+
+def test_paid_miners_join_the_pretend_chain_so_their_share_reaches_the_weights():
+    from types import SimpleNamespace
+
+    from neurons.validators.weights import (
+        CRAWL_PERC,
+        EMBED_PERC,
+        EMISSION_CONTROL_HOTKEY,
+        EMISSION_CONTROL_PERC,
+    )
+    from sandbox.validator import SandboxValidator
+
+    def paid(amount: float) -> SimpleNamespace:
+        return SimpleNamespace(amount=amount, uploads=1, checked=1, failed=0, rate=1.0)
+
+    class Ledger:
+        def crawl_paid(self):
+            return {"crawler": paid(100.0)}
+
+        def embed_paid(self):
+            return {"embedder": paid(5000.0)}
+
+    chain = FakeChain(
+        [EMISSION_CONTROL_HOTKEY, "validator"], genesis=0.0, block_seconds=1.0, tempo=60
+    )
+    validator = object.__new__(SandboxValidator)
+    validator.chain, validator.ledger = chain, Ledger()
+    validator.config = SimpleNamespace(netuid=22)
+
+    weights = asyncio.run(validator.weights())
+
+    assert chain.hotkeys == [
+        EMISSION_CONTROL_HOTKEY,
+        "validator",
+        "crawler",
+        "embedder",
+    ]
+    miners = 1.0 - EMISSION_CONTROL_PERC
+    assert weights[0] == pytest.approx(EMISSION_CONTROL_PERC)
+    assert weights[2] == pytest.approx(miners * CRAWL_PERC) and weights[
+        3
+    ] == pytest.approx(miners * EMBED_PERC)

@@ -10,6 +10,8 @@ use rocksdb::{Direction, IteratorMode, ReadOptions, WriteBatch};
 use serde_json::{json, Value};
 
 use crate::buckets::{meta_key, BucketStore, URL};
+use crate::records;
+use crate::robots::Paths;
 use crate::schedule::DAY;
 use crate::urls::{Record, HTTPS, WWW};
 
@@ -18,7 +20,7 @@ const READY: u8 = b'R';
 /// How many pages each domain has waiting.
 const READY_COUNT: u8 = b'Q';
 /// The lastmod each page was last sent with, and its failures since.
-const SENT: u8 = b'P';
+pub(crate) const SENT: u8 = b'P';
 /// Retries and re-crawls by the time they join their ready list again.
 const WAITING: u8 = b'W';
 /// Sent pages by the time their outcome is overdue.
@@ -305,7 +307,8 @@ impl BucketStore {
     /// Pages of a domain that still need sending: each lane up to its quota, then lanes with pages left fill what the others could not; entries gone stale are dropped on the way.
     pub fn take_ready(&self, domain: &str, quotas: [usize; LANES]) -> Result<Vec<Pick>> {
         let want: usize = quotas.iter().sum();
-        let mut taking = Taking::default();
+        let robots = self.domain(domain)?.map(|record| records::robots_paths(&record)).unwrap_or_default();
+        let mut taking = Taking { robots, ..Taking::default() };
         for (lane, quota) in quotas.into_iter().enumerate() {
             self.take_lane(domain, lane, quota, &mut taking)?;
         }
@@ -350,7 +353,8 @@ impl BucketStore {
                     break;
                 }
                 taking.after[lane] = Some(key.clone());
-                let due = record.and_then(|r| reason(&r, sent.as_ref()).map(|why| (r, why)));
+                let allowed = taking.robots.allows_page(domain, &entry.rest);
+                let due = record.filter(|_| allowed).and_then(|r| reason(&r, sent.as_ref()).map(|why| (r, why)));
                 // A page listed twice, under an older and a newer lastmod, goes once.
                 let Some((record, why)) = due.filter(|_| taking.picked.insert(entry.rest.clone())) else {
                     taking.stale.push(key);
@@ -596,13 +600,22 @@ impl BucketStore {
             key
         });
         let mut entries = Vec::new();
-        let mut read = 0;
+        let (mut read, mut skipped) = (0, false);
         for item in self.db.iterator_opt(IteratorMode::From(&start, Direction::Forward), options).take(limit) {
             let (key, raw) = item?;
             read += 1;
             let Some((domain, rest)) = split_key(&key[1..]) else {
                 continue;
             };
+            if !self.allows(&String::from_utf8_lossy(domain)) {
+                if let Some(done) = state.domain.take() {
+                    entries.extend(changed_entries(done));
+                }
+                // No page path holds 0xFF, so the walk goes on from the next domain.
+                state.after = Some([&[URL], domain, b"\0\xff"].concat());
+                skipped = true;
+                break;
+            }
             if state.domain.as_ref().is_none_or(|d| d.domain != domain) {
                 if let Some(done) = state.domain.take() {
                     entries.extend(changed_entries(done));
@@ -629,7 +642,7 @@ impl BucketStore {
             }
         }
         state.scanned += read as u64;
-        if read < limit {
+        if read < limit && !skipped {
             state.done = true;
             if let Some(done) = state.domain.take() {
                 entries.extend(changed_entries(done));
@@ -702,6 +715,7 @@ impl BucketStore {
 
     /// Entries not on their lists yet go on; the caller holds the ready lock and writes the batch.
     fn add_ready(&self, batch: &mut WriteBatch, mut entries: Vec<Entry>, counts: &mut HashMap<String, i64>) -> Result<usize> {
+        entries.retain(|entry| self.allows(&entry.domain));
         let mut keys: Vec<(Vec<u8>, String)> = entries.drain(..).map(|e| (e.key(), e.domain)).collect();
         keys.sort_unstable();
         keys.dedup_by(|a, b| a.0 == b.0);
@@ -780,6 +794,7 @@ impl BucketStore {
 
 #[derive(Default)]
 struct Taking {
+    robots: Paths,
     picks: Vec<Pick>,
     stale: Vec<Vec<u8>>,
     picked: std::collections::HashSet<Vec<u8>>,

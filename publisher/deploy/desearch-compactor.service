@@ -1,0 +1,18 @@
+[Unit]
+Description=Keeps the page store under current/ up to the change log
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/desearch-compactor.env
+Environment=COMPACTOR_WORK=/var/lib/desearch-compactor
+ExecStart=/usr/local/bin/publisher compact
+Restart=on-failure
+RestartSec=30
+TimeoutStopSec=900
+Nice=10
+MemoryMax=10G
+
+[Install]
+WantedBy=multi-user.target

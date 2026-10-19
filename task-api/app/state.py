@@ -10,7 +10,7 @@ from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 from pathlib import Path
 
-from . import proofs, queues, rounds, sampling
+from . import flow, proofs, queues, rounds, sampling
 from .budget import Budgets
 from .checks import Checks
 from .embeddings import Embeddings
@@ -105,8 +105,18 @@ class State:
         self.max_attempts = int(os.environ.get("TASK_API_MAX_ATTEMPTS", "3"))
         self.ledger_delay = float(os.environ.get("TASK_API_LEDGER_DELAY_S", "0"))
         self.check_share = float(os.environ.get("TASK_API_CHECK_SHARE", sampling.SHARE))
+        self.checks_per_hour = float(
+            os.environ.get("TASK_API_CHECKS_PER_HOUR", sampling.CHECKS_PER_HOUR)
+        )
         self.queue_target = int(os.environ.get("TASK_API_QUEUE_TARGET", QUEUE_TARGET))
         self.open_listed: tuple[str, ...] | None = None
+        self.publish_rate = flow.PublishRate(
+            float(os.environ.get("TASK_API_PUBLISH_LAG_S", flow.LAG_TARGET_S)),
+            float(os.environ.get("TASK_API_PUBLISH_LAG_LIMIT_S", flow.LAG_LIMIT_S)),
+        )
+        # Each open upload's manifest and deadline, read once instead of on every listing.
+        self.open_manifests: dict[str, tuple[dict, float]] = {}
+        self.started_at = time.time()
         self.tasks = {
             kind: queues.TaskQueue(redis, self.claim_ttl + rounds.UPLOAD_GRACE_S, kind)
             for kind in queues.KINDS

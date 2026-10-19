@@ -16,7 +16,6 @@ RUN useradd --create-home --uid 10001 crawler \
     && chown crawler /data
 
 COPY desearch/ desearch/
-COPY engine/__init__.py engine/chunking.py engine/
 COPY task-api/ .
 
 USER crawler

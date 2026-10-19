@@ -1,7 +1,8 @@
-"""Embedding models, the files an embed task reads and writes, and a client for hosted models."""
+"""Embedding models, the files an embed task reads and writes, and a client for a model server."""
 
 from __future__ import annotations
 
+import asyncio
 import base64
 from dataclasses import dataclass
 
@@ -17,24 +18,24 @@ class EmbeddingModel:
     repo: str
     revision: str
     dims: int
-    # The same weights on OpenAI-compatible hosts, for anyone who does not run them locally.
-    hosted: str
+    max_tokens: int
+
+    @property
+    def vector_bytes(self) -> int:
+        return self.dims * VECTOR_DTYPE.itemsize
 
 
 MODELS = {
-    "qwen3-embedding-8b": EmbeddingModel(
-        name="qwen3-embedding-8b",
-        repo="Qwen/Qwen3-Embedding-8B",
-        revision="1d8ad4ca9b3dd8059ad90a75d4983776a23d44af",
-        dims=4096,
-        hosted="qwen/qwen3-embedding-8b",
+    "desearch-4b-v1": EmbeddingModel(
+        name="desearch-4b-v1",
+        repo="desearch/Desearch-Embedding-4B",
+        revision="12e5c6910d49dd5534e8a77a6fa7d8a057bd534a",
+        dims=2560,
+        max_tokens=2048,
     ),
 }
-TEXT_KINDS = ("head", "full", "chunk")
-OPENROUTER_EMBEDDINGS = "https://openrouter.ai/api/v1/embeddings"
 LOCAL_EMBEDDINGS = "http://127.0.0.1:8000/v1/embeddings"
 
-# Texts are sized by the publisher to fit the model, so nobody truncates them.
 INPUT_SCHEMA = pa.schema(
     [
         ("text_id", pa.string()),
@@ -46,20 +47,26 @@ INPUT_SCHEMA = pa.schema(
         ("text", pa.large_string()),
     ]
 )
-OUTPUT_SCHEMA = pa.schema([("text_id", pa.string()), ("vector", pa.binary())])
 VECTOR_DTYPE = np.dtype("<f2")
 MAX_DECODED_BYTES = 256_000_000
 
 
 def model_named(name: str) -> EmbeddingModel:
     if name not in MODELS:
-        raise ValueError(f"unknown embedding model {name!r}")
+        raise ValueError(
+            f"unknown embedding model {name!r}, expected one of {sorted(MODELS)}"
+        )
     return MODELS[name]
 
 
 def encode_vector(vector: np.ndarray) -> bytes:
     unit = vector / max(float(np.linalg.norm(vector)), 1e-12)
     return unit.astype(VECTOR_DTYPE).tobytes()
+
+
+def encode_vectors(vectors: np.ndarray) -> bytes:
+    """An embed upload: every vector at length 1, in the input's row order, with nothing around them."""
+    return b"".join(encode_vector(vector) for vector in vectors)
 
 
 def decode_vector(raw: bytes | None, dims: int) -> np.ndarray | None:
@@ -69,49 +76,78 @@ def decode_vector(raw: bytes | None, dims: int) -> np.ndarray | None:
 
 
 class EmbeddingClient:
-    """An OpenAI-compatible /embeddings endpoint: a miner's own GPU server, or a validator's hosted one."""
+    """An OpenAI-compatible /embeddings endpoint, such as vLLM, serving the model under its name."""
 
     def __init__(
         self,
         url: str,
-        api_key: str,
         model: EmbeddingModel,
-        providers: tuple[str, ...] = (),
-        served_as: str = "",
+        api_key: str = "",
         batch: int = 32,
         timeout: float = 120.0,
+        in_flight: int = 4,
     ):
         self.url = url
-        self.api_key = api_key
         self.model = model
-        self.providers = providers
-        self.served_as = served_as or model.hosted
+        self.api_key = api_key
         self.batch = batch
+        self.in_flight = in_flight
         self.timeout = aiohttp.ClientTimeout(total=timeout)
         self.session: aiohttp.ClientSession | None = None
 
-    async def embed(self, texts: list[str]) -> np.ndarray:
+    def _session(self) -> aiohttp.ClientSession:
         if self.session is None:
-            self.session = aiohttp.ClientSession(timeout=self.timeout)
-        vectors = []
-        for start in range(0, len(texts), self.batch):
-            vectors += await self._embed(texts[start : start + self.batch])
+            headers = (
+                {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
+            )
+            self.session = aiohttp.ClientSession(timeout=self.timeout, headers=headers)
+        return self.session
+
+    async def served_models(self) -> list[str]:
+        """The model names the server answers to, from its /models list."""
+        url = self.url.rsplit("/embeddings", 1)[0] + "/models"
+        async with self._session().get(url) as response:
+            response.raise_for_status()
+            answer = await response.json()
+        return [row["id"] for row in answer.get("data", [])]
+
+    async def embed(self, texts: list[str]) -> np.ndarray:
+        """Vectors in the texts' order; a few batches in flight keep the server busy."""
+        slots = asyncio.Semaphore(self.in_flight)
+
+        async def batch(start: int) -> list[np.ndarray]:
+            async with slots:
+                return await self._embed(texts[start : start + self.batch])
+
+        parts = await asyncio.gather(
+            *(batch(start) for start in range(0, len(texts), self.batch))
+        )
+        vectors = [vector for part in parts for vector in part]
         return np.array(vectors, dtype=np.float32).reshape(len(texts), self.model.dims)
 
     async def _embed(self, texts: list[str]) -> list[np.ndarray]:
-        body = {"model": self.served_as, "input": texts, "encoding_format": "base64"}
-        if self.providers:
-            body["provider"] = {"order": list(self.providers), "allow_fallbacks": False}
-        async with self.session.post(
-            self.url, json=body, headers={"Authorization": f"Bearer {self.api_key}"}
-        ) as response:
+        body = {
+            "model": self.model.name,
+            "input": texts,
+            "encoding_format": "base64",
+            "truncate_prompt_tokens": self.model.max_tokens,
+        }
+        async with self._session().post(self.url, json=body) as response:
             response.raise_for_status()
             answer = await response.json()
         rows = sorted(answer["data"], key=lambda row: row["index"])
-        return [
+        vectors = [
             np.frombuffer(base64.b64decode(row["embedding"]), dtype=np.float32)
             for row in rows
         ]
+        if len(vectors) != len(texts) or any(
+            v.size != self.model.dims for v in vectors
+        ):
+            raise ValueError(
+                f"the server answered {len(vectors)} vectors of {sorted({v.size for v in vectors})}"
+                f" dims for {len(texts)} texts, expected {self.model.dims}"
+            )
+        return vectors
 
     async def aclose(self) -> None:
         if self.session is not None:

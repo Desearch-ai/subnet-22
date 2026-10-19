@@ -1,5 +1,6 @@
 import type { BudgetTransition } from '@/api/types'
 import { Identifier } from '@/components/ui/Identifier'
+import { KindBadge } from '@/components/ui/KindBadge'
 import { EmptyState } from '@/components/ui/States'
 import { Table, Td, Th, Tr } from '@/components/ui/Table'
 import { TimeAgo } from '@/components/ui/TimeAgo'
@@ -33,7 +34,9 @@ export function BudgetHistory({ transitions }: { transitions: readonly BudgetTra
               <Td className="text-ink-muted text-xs">
                 <TimeAgo at={step.at} />
               </Td>
-              <Td className="font-mono text-xs">{step.pool}</Td>
+              <Td>
+                <KindBadge kind={step.pool} />
+              </Td>
               <Td numeric>
                 <span className="text-ink-faint">{step.old} → </span>
                 {step.new}

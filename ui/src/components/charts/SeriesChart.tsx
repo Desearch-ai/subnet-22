@@ -23,9 +23,11 @@ interface SeriesChartProps {
 
 export function SeriesChart({ title, points, series, emptyTitle }: SeriesChartProps) {
   const highest = Math.max(0, ...points.flatMap((point) => series.map((item) => point[item.key])))
+  // A top divisible by the steps keeps every axis label a whole, distinct number.
+  const top = Math.ceil(highest / Y_STEPS) * Y_STEPS
   const xOf = (index: number) =>
     PAD_LEFT + (points.length > 1 ? (index / (points.length - 1)) * PLOT_WIDTH : PLOT_WIDTH / 2)
-  const yOf = (value: number) => PAD_TOP + PLOT_HEIGHT - (value / highest) * PLOT_HEIGHT
+  const yOf = (value: number) => PAD_TOP + PLOT_HEIGHT - (value / top) * PLOT_HEIGHT
 
   return (
     <figure className="min-w-0">
@@ -43,7 +45,7 @@ export function SeriesChart({ title, points, series, emptyTitle }: SeriesChartPr
           className="fill-ink-faint w-full font-mono text-[11px]"
         >
           {Array.from({ length: Y_STEPS + 1 }, (_, step) => {
-            const value = (highest / Y_STEPS) * step
+            const value = (top / Y_STEPS) * step
             return (
               <g key={step}>
                 <line
@@ -54,7 +56,7 @@ export function SeriesChart({ title, points, series, emptyTitle }: SeriesChartPr
                   className="stroke-line"
                 />
                 <text x={PAD_LEFT - 8} y={yOf(value) + 4} textAnchor="end">
-                  {formatInt(Math.round(value))}
+                  {formatInt(value)}
                 </text>
               </g>
             )

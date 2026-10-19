@@ -14,7 +14,7 @@ import wandb
 import desearch
 from desearch import env
 from desearch.client import TaskApiClient
-from desearch.embedding import MODELS, OPENROUTER_EMBEDDINGS, EmbeddingClient
+from desearch.embedding import MODELS, EmbeddingClient
 from desearch.credit import SHARE_WINDOW_H
 from desearch.fetch import Fetcher, ScrapingDog
 from desearch.kinds import CRAWL, EMBED
@@ -23,7 +23,7 @@ from bittensor.wallets import Wallet
 
 from neurons.validators.config import ENV_FILE, config, flat, setup_logging
 from neurons.validators.crawl import CrawlValidator
-from neurons.validators.embed import EmbedValidator
+from neurons.validators.embed import ApiReference, EmbedValidator, ServerReference
 from neurons.validators.fetchers import (
     OWN_IP_SETTINGS,
     HourlyBudget,
@@ -45,8 +45,7 @@ SIGNER_RETRY_S = 30
 ACCOUNT_CHECK_S = 300
 VALIDATION_JOBS = 12
 EMBED_JOBS = 2
-# The engine pins the same hosts for its queries; SiliconFlow is left out as it runs fp8.
-EMBED_PROVIDERS = "DeepInfra,Nebius"
+EMBED_SERVER_WAIT_S = 30
 SCRAPINGDOG_CONCURRENCY = 50
 SCRAPINGDOG_DAILY_CREDITS = 100_000
 SCRAPINGDOG_TIMEOUT_S = 30.0
@@ -93,6 +92,7 @@ class Validator:
         background = [
             asyncio.create_task(self.sync_metagraph()),
             asyncio.create_task(self.sync_weights()),
+            asyncio.create_task(self.follow_upload_log()),
         ]
         try:
             await asyncio.gather(self.check_crawl_tasks(), self.check_embed_tasks())
@@ -138,7 +138,6 @@ class Validator:
             )
             account = ScrapingDogAccount(self.http, self.scrapingdog_key)
             await self.read_scrapingdog_account(validator, account)
-            following = asyncio.create_task(self.follow_upload_log(signer))
             watching = asyncio.create_task(
                 self.follow_scrapingdog_account(validator, account)
             )
@@ -147,7 +146,6 @@ class Validator:
                     *(validator.run(self.stopping) for _ in range(VALIDATION_JOBS))
                 )
             finally:
-                following.cancel()
                 watching.cancel()
                 await fetcher.aclose()
         log.info(
@@ -156,28 +154,20 @@ class Validator:
         )
 
     async def check_embed_tasks(self) -> None:
-        key = os.environ.get("EMBED_API_KEY", "")
-        if not key:
-            log.info(
-                f"Not checking embed tasks: EMBED_API_KEY is not set in {ENV_FILE}"
-            )
-            await self.stopping.wait()
-            return
-
-        url = os.environ.get("EMBED_API_URL", OPENROUTER_EMBEDDINGS)
-        providers = tuple(
-            p.strip()
-            for p in os.environ.get("EMBED_PROVIDERS", EMBED_PROVIDERS).split(",")
-            if p.strip()
-        )
-        references = {
-            name: EmbeddingClient(url, key, model, providers)
-            for name, model in MODELS.items()
-        }
+        url = os.environ.get("EMBED_API_URL", "")
         signer = await self.api_signer()
         async with TaskApiClient(
             self.config.neuron.task_api_url, self.wallet.hotkey
         ) as api:
+            if url:
+                references = await self.embed_references(url)
+                where = url
+            else:
+                references = {name: ApiReference(api, model) for name, model in MODELS.items()}
+                where = "Desearch's model server, through the task API"
+            if not references:
+                await self.stopping.wait()
+                return
             checker = EmbedValidator(
                 api,
                 self.http,
@@ -187,7 +177,7 @@ class Validator:
                 seeds=self.seed_for,
                 signer=signer,
             )
-            log.info(f"Validating embed tasks through {url}")
+            log.info(f"Checking embed tasks for {sorted(references)} on {where}")
             try:
                 await asyncio.gather(
                     *(checker.run(self.stopping) for _ in range(EMBED_JOBS))
@@ -195,6 +185,34 @@ class Validator:
             finally:
                 for reference in references.values():
                     await reference.aclose()
+
+    async def embed_references(self, url: str) -> dict[str, ServerReference]:
+        """A client for each model the validator's own server answers to, once the server is up."""
+        key = os.environ.get("EMBED_API_KEY", "")
+        clients = {
+            name: EmbeddingClient(url, model, key) for name, model in MODELS.items()
+        }
+        probe = next(iter(clients.values()))
+        served: list[str] = []
+        while not self.stopping.is_set():
+            try:
+                served = await probe.served_models()
+                break
+            except (aiohttp.ClientError, asyncio.TimeoutError) as error:
+                log.warning(f"Embedding server at {url} unavailable, retrying: {error!r}")
+                await asyncio.sleep(EMBED_SERVER_WAIT_S)
+        references = {
+            name: ServerReference(c) for name, c in clients.items() if name in served
+        }
+        for name, client in clients.items():
+            if name not in references:
+                await client.aclose()
+        if not references:
+            log.error(
+                f"Not checking embed tasks: {url} serves {served}, none of {sorted(MODELS)};"
+                f" start it with --served-model-name set to the model's name"
+            )
+        return references
 
     def init_wandb(self) -> None:
         if not self.config.wandb_on:
@@ -247,10 +265,13 @@ class Validator:
                 await asyncio.sleep(SIGNER_RETRY_S)
         return ""
 
-    async def follow_upload_log(self, signer: str) -> None:
-        """Every miner's uploads, from the log the task API signs into the uploads bucket."""
+    async def follow_upload_log(self) -> None:
+        """Every miner's uploads of both kinds, from the log the task API signs into the uploads bucket."""
         upload_log = UploadLog(
-            self.http, self.config.neuron.storage_url, signer, self.ledger
+            self.http,
+            self.config.neuron.storage_url,
+            await self.api_signer(),
+            self.ledger,
         )
         pruned_at = 0.0
         while not self.stopping.is_set():
@@ -291,12 +312,12 @@ class Validator:
         checker.provider_down = problem
 
     async def weights(self) -> np.ndarray | None:
-        """Crawl from every miner's logged uploads judged by this validator's own checks, embed from its own checks."""
-        paid = self.ledger.crawl_paid()
-        crawl = proportions({miner: found.rows for miner, found in paid.items()})
-        shares = {CRAWL: crawl} if crawl else {}
-        if embed := self.ledger.shares().get(EMBED):
-            shares[EMBED] = embed
+        """Each pool from every miner's logged uploads, judged by this validator's own checks."""
+        paid = {CRAWL: self.ledger.crawl_paid(), EMBED: self.ledger.embed_paid()}
+        shares = {}
+        for kind, found in paid.items():
+            if earned := proportions({m: f.amount for m, f in found.items()}):
+                shares[kind] = earned
         if not shares:
             log.warning(
                 "No paid work in the scoring window yet; all weight goes to burn"
@@ -308,15 +329,14 @@ class Validator:
     def report_window(self, shares: dict, paid: dict) -> None:
         """Each miner's share, its uploads, and what this validator's own checks of it found."""
         log.info(f"Scoring window, last {SHARE_WINDOW_H} h:")
-        for miner, found in sorted(paid.items(), key=lambda item: -item[1].rows):
-            share = shares.get(CRAWL, {}).get(miner, 0.0)
-            log.info(
-                f"  crawl {miner[:10]}: {found.uploads} uploads, checked {found.checked}"
-                f" ({found.failed} failed), paid at {found.rate:.2f},"
-                f" {found.rows:.0f} rows, share {share:.3f}"
-            )
-        for miner, share in sorted(shares.get(EMBED, {}).items(), key=lambda i: -i[1]):
-            log.info(f"  embed {miner[:10]}: share {share:.3f}")
+        for kind, unit in ((CRAWL, "rows"), (EMBED, "characters")):
+            for miner, found in sorted(paid[kind].items(), key=lambda i: -i[1].amount):
+                share = shares.get(kind, {}).get(miner, 0.0)
+                log.info(
+                    f"  {kind} {miner[:10]}: {found.uploads} uploads, checked {found.checked}"
+                    f" ({found.failed} failed), paid at {found.rate:.2f},"
+                    f" {found.amount:.0f} {unit}, share {share:.3f}"
+                )
 
     async def sync_weights(self) -> None:
         while True:

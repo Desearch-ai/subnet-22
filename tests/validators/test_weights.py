@@ -9,6 +9,7 @@ from neurons.validators.crawl import CrawlValidator
 from neurons.validators.ledger import Ledger
 from neurons.validators.validator import Validator
 from tests.validators.test_crawl_pay import logged
+from tests.validators.test_embed_pay import embedded
 from desearch.kinds import CRAWL as CRAWL_KIND
 from desearch.kinds import EMBED as EMBED_KIND
 from neurons.validators.weights import (
@@ -63,23 +64,29 @@ def test_a_pool_nobody_earned_goes_to_the_burn_hotkey():
     assert list(unknown_pool) == pytest.approx([0.0, 1.0])
 
 
-def test_the_burn_takes_its_part_and_crawling_all_of_the_rest():
-    assert (EMISSION_CONTROL_PERC, CRAWL_PERC, EMBED_PERC) == (0.7, 1.0, 0.0)
+def test_half_is_burned_and_the_rest_split_two_to_three_between_crawling_and_embedding():
+    assert (EMISSION_CONTROL_PERC, CRAWL_PERC, EMBED_PERC) == (0.5, 0.4, 0.6)
 
     weights = weights_from_shares(
         ["crawler", "embedder", BURN],
         {CRAWL_KIND: {"crawler": 1.0}, EMBED_KIND: {"embedder": 1.0}},
     )
 
-    assert list(weights) == pytest.approx([0.3, 0.0, 0.7])
+    assert list(weights) == pytest.approx([0.2, 0.3, 0.5])
+
+
+def test_an_embed_pool_nobody_earned_is_burned():
+    weights = weights_from_shares(["crawler", BURN], {CRAWL_KIND: {"crawler": 1.0}})
+
+    assert list(weights) == pytest.approx([0.2, 0.8])
 
 
 def test_changing_the_burn_alone_moves_the_miners_part(monkeypatch):
-    monkeypatch.setattr("neurons.validators.weights.EMISSION_CONTROL_PERC", 0.5)
+    monkeypatch.setattr("neurons.validators.weights.EMISSION_CONTROL_PERC", 0.2)
 
     weights = weights_from_shares(["crawler", BURN], {CRAWL_KIND: {"crawler": 1.0}})
 
-    assert list(weights) == pytest.approx([0.5, 0.5])
+    assert list(weights) == pytest.approx([0.8 * CRAWL_PERC, 1 - 0.8 * CRAWL_PERC])
 
 
 def test_every_pool_pays_its_part(monkeypatch):
@@ -225,7 +232,7 @@ def test_a_validator_whose_scrapingdog_will_not_serve_waits_until_it_does():
     assert made.should_set_weights()
 
 
-def test_crawl_weights_follow_logged_uploads_and_embed_this_validators_checks(
+def test_both_pools_follow_logged_uploads_judged_by_this_validators_checks(
     monkeypatch,
 ):
     monkeypatch.setattr("neurons.validators.weights.EMISSION_CONTROL_PERC", 0.5)
@@ -238,22 +245,29 @@ def test_crawl_weights_follow_logged_uploads_and_embed_this_validators_checks(
             [logged(f"{miner}-{n}", miner, now - 60, ok=100) for n in range(uploads)]
         )
         ledger.record_check(f"{miner}-0", miner, now - 60, "pass", 100, 100, 100, 100)
-    ledger.record("e1", "embed", "embedder", "pass", 500, 1, 1)
+    for miner, uploads in (("e1", 1), ("e2", 3), ("e3", 2)):
+        ledger.add_uploads(
+            [embedded(f"{miner}-{n}", miner, now - 60) for n in range(uploads)]
+        )
+    for miner, verdict in (("e1", "pass"), ("e2", "pass"), ("e3", "fail")):
+        credited = 1000 if verdict == "pass" else 0
+        ledger.record_check(
+            f"{miner}-0",
+            miner,
+            now - 60,
+            verdict,
+            credited,
+            1000,
+            1000,
+            1000,
+            kind=EMBED_KIND,
+        )
 
-    weights = weights_of(["m1", "m2", "embedder", BURN], ledger)
+    weights = weights_of(["m1", "m2", "e1", "e2", "e3", BURN], ledger)
 
-    assert list(weights) == pytest.approx([0.225, 0.075, 0.2, 0.5])
-
-
-def test_a_failed_task_takes_its_urls_back_but_never_below_nothing():
-    ledger = Ledger(":memory:")
-    ledger.record("old", "crawl", "m1", "pass", 100, 100, 100, at=1.0)
-    ledger.record("a", "crawl", "m1", "pass", 900, 1000, 1000)
-    ledger.record("b", "crawl", "m1", "fail", 0, 1000, 1000)
-    ledger.record("c", "crawl", "m2", "pass", 100, 100, 100)
-    ledger.record("d", "crawl", "m3", "fail", 0, 100, 100)
-
-    assert ledger.shares() == {"crawl": {"m2": 1.0}}
+    assert list(weights) == pytest.approx([0.225, 0.075, 0.05, 0.15, 0.0, 0.5]), (
+        "e2's unchecked uploads are paid like its checked one, e3's fail earns nothing"
+    )
 
 
 def test_the_window_report_lists_what_each_miner_did_inside_the_scoring_window():

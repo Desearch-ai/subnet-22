@@ -2,8 +2,9 @@ import { useParams } from 'react-router'
 import { ApiError } from '@/api/client'
 import { useTask } from '@/api/queries/tasks'
 import type { TaskDetail, TaskScore } from '@/api/types'
-import { CountedRowsPanel } from '@/components/tasks/CountedRowsPanel'
+import { CountedPanel } from '@/components/tasks/CountedPanel'
 import { TaskHeader } from '@/components/tasks/TaskHeader'
+import { TextTable } from '@/components/tasks/TextTable'
 import { UploadResult } from '@/components/tasks/UploadResult'
 import { UploadsTable } from '@/components/tasks/UploadsTable'
 import { UrlTable } from '@/components/tasks/UrlTable'
@@ -14,9 +15,47 @@ import { QueryState } from '@/components/ui/QueryState'
 import { EmptyState } from '@/components/ui/States'
 import { truncateMiddle } from '@/lib/format'
 
+const KEPT_FOR = 'They are kept for 2 days after a task is finalized'
+
 interface UploadSectionsProps {
   score: TaskScore
   task: TaskDetail
+}
+
+function UrlSection({ by, task }: { by: string; task: TaskDetail }) {
+  return (
+    <Card>
+      <CardHeader
+        title="URLs"
+        description={`What the ${by} returned for each URL and what the validator found`}
+      />
+      {task.urls.length === 0 ? (
+        <EmptyState title="No per-URL results to show.">
+          {KEPT_FOR} and are not stored for a void task.
+        </EmptyState>
+      ) : (
+        <UrlTable urls={task.urls} />
+      )}
+    </Card>
+  )
+}
+
+function TextSection({ task }: { task: TaskDetail }) {
+  return (
+    <Card>
+      <CardHeader
+        title="Texts checked"
+        description="The sampled texts the validator embedded again, failures first, then the lowest similarity"
+      />
+      {task.texts.length === 0 ? (
+        <EmptyState title="No per-text results to show.">
+          {KEPT_FOR}. An upload rejected before its sample was embedded has none.
+        </EmptyState>
+      ) : (
+        <TextTable texts={task.texts} />
+      )}
+    </Card>
+  )
 }
 
 function UploadSections({ score, task }: UploadSectionsProps) {
@@ -24,27 +63,15 @@ function UploadSections({ score, task }: UploadSectionsProps) {
   return (
     <>
       <UploadResult score={score} isLatestOfMany={task.uploads.length > 1} />
-      <CountedRowsPanel score={score} />
+      <CountedPanel score={score} texts={task.texts} />
       <Card>
         <CardHeader
           title="Validator votes"
           description={`Every validator checked the ${by} on its own and voted`}
         />
-        <VotesComparison votes={task.votes} />
+        <VotesComparison votes={task.votes} kind={score.kind} />
       </Card>
-      <Card>
-        <CardHeader
-          title="URLs"
-          description={`What the ${by} returned for each URL and what the validator found`}
-        />
-        {task.urls.length === 0 ? (
-          <EmptyState title="No per-URL results to show.">
-            They are kept for 7 days after a task is finalized and are not stored for a void task.
-          </EmptyState>
-        ) : (
-          <UrlTable urls={task.urls} />
-        )}
-      </Card>
+      {score.kind === 'embed' ? <TextSection task={task} /> : <UrlSection by={by} task={task} />}
     </>
   )
 }
@@ -70,13 +97,13 @@ export function TaskDetailPage() {
         {(task) => (
           <>
             <TaskHeader task={task} />
-            {task.uploads.length > 1 ? (
+            {task.score && task.uploads.length > 1 ? (
               <Card>
                 <CardHeader
                   title="All uploads of this task"
                   description="A failed or void upload sends the task back to the queue for another miner"
                 />
-                <UploadsTable uploads={task.uploads} />
+                <UploadsTable uploads={task.uploads} kind={task.score.kind} />
               </Card>
             ) : null}
             {task.score ? <UploadSections score={task.score} task={task} /> : null}

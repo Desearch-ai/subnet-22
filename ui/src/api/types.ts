@@ -11,6 +11,7 @@ export interface VerdictCounts {
 export interface Overview {
   as_of: number
   window_hours: number
+  kind: Kind
   queue: Record<Kind, number>
   claimed: number
   validating: number
@@ -47,6 +48,7 @@ export interface LiveClaim {
   miner: string
   miner_uid: number | null
   urls: number
+  texts: number | null
   expires_at: number
 }
 
@@ -61,6 +63,7 @@ export interface LiveUpload {
   miner: string
   miner_uid: number | null
   urls: number
+  texts: number | null
   completed_at: number
   deadline: number
   voters: Voter[]
@@ -70,6 +73,8 @@ export interface LiveUpload {
 export interface Live {
   claims: LiveClaim[]
   uploads: LiveUpload[]
+  claims_total: number
+  uploads_total: number
 }
 
 export interface MinerSummary extends VerdictCounts {
@@ -90,6 +95,7 @@ export interface MinerSummary extends VerdictCounts {
 
 export interface MinersResponse {
   window_hours: number
+  kind: Kind
   miners: MinerSummary[]
 }
 
@@ -105,6 +111,18 @@ export interface MinerCoverage {
   assigned: number
   returned: number
   coverage: number | null
+}
+
+export interface MinerWindow extends VerdictCounts {
+  tasks: number
+  returned: number
+  missing: number
+  credited: number
+}
+
+export interface MinerKind {
+  window: MinerWindow
+  share: number
 }
 
 export type BudgetCause = 'verified' | 'claim_expired' | 'abandoned' | 'verification_failed'
@@ -128,7 +146,8 @@ export interface MinerDetail {
   coverage: Partial<MinerCoverage>
   verdicts: Partial<VerdictCounts>
   share: number
-  window: VerdictCounts & { tasks: number; returned: number; credited: number }
+  window: MinerWindow
+  kinds: Record<Kind, MinerKind>
   transitions: BudgetTransition[]
 }
 
@@ -254,8 +273,20 @@ export interface TaskUrl {
   rejected: boolean
 }
 
+export type TextOutcome = 'matched' | 'mismatched' | 'malformed' | 'unverifiable'
+
+export interface TaskText {
+  text_id: string
+  kind: 'page' | 'passage'
+  index: number
+  url: string | null
+  outcome: TextOutcome
+  similarity: number | null
+}
+
 export interface TaskDetail {
   task_id: string
+  kind: Kind
   status: TaskStatus
   round_id: string | null
   miner: string | null
@@ -264,4 +295,5 @@ export interface TaskDetail {
   uploads: TaskScore[]
   votes: Vote[]
   urls: TaskUrl[]
+  texts: TaskText[]
 }
