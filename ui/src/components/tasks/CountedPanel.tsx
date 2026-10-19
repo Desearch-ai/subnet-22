@@ -81,9 +81,11 @@ function EmbedSteps({ score, texts }: { score: TaskScore; texts: readonly TaskTe
         <Step value={formatInt(score.credited)} label="characters counted" />
       </ol>
       <p className="text-ink-muted mt-3 text-sm">
-        {score.verdict === 'pass'
-          ? 'Every checked text reached the bar, so all characters of the task count. One checked text below it fails the whole upload.'
-          : 'No characters count for an upload that failed or ended void.'}
+        {score.verdict !== 'pass'
+          ? 'No characters count for an upload that failed or ended void.'
+          : score.sampled === 0
+            ? "Not drawn for a check, so all characters of the task count. A later failed check of this miner's embed uploads takes them back."
+            : 'Every checked text reached the bar, so all characters of the task count. One checked text below it fails the whole upload.'}
       </p>
     </>
   )

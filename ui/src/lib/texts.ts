@@ -13,7 +13,8 @@ export function isBelowBar(similarity: number | null): boolean {
 }
 
 export function sortTexts(texts: readonly TaskText[]): TaskText[] {
-  const failed = (text: TaskText) => Number(text.outcome === 'mismatched')
+  const failed = (text: TaskText) =>
+    Number(text.outcome === 'mismatched' || text.outcome === 'malformed')
   return texts.toSorted(
     (one, other) =>
       failed(other) - failed(one) ||

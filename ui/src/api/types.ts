@@ -273,7 +273,7 @@ export interface TaskUrl {
   rejected: boolean
 }
 
-export type TextOutcome = 'matched' | 'mismatched' | 'unverifiable'
+export type TextOutcome = 'matched' | 'mismatched' | 'malformed' | 'unverifiable'
 
 export interface TaskText {
   text_id: string
