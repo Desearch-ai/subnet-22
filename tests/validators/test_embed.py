@@ -13,6 +13,7 @@ from desearch.embedding import (
     encode_vector,
     write_parquet,
 )
+from neurons.validators import tasks
 from neurons.validators.embed import (
     EMBED_SAMPLES,
     LONG_CHARS,
@@ -23,6 +24,7 @@ from neurons.validators.embed import (
     pick_samples,
 )
 from neurons.validators.ledger import Ledger
+from neurons.validators.tasks import UPLOAD_CHANGED, UploadChanged
 from tests.local_http import serving
 
 DIMS = 8
@@ -65,6 +67,10 @@ def but(text_ids: set[str], raw: bytes):
 
 
 NAN = np.full(DIMS, np.nan).astype("<f2").tobytes()
+ETAG = '"0cc175b9c0f1b6a831c399e269772661"'
+PRECONDITION_PAGE = (
+    b"<!DOCTYPE html><html><body>412 Precondition Failed</body></html>" * 300
+)
 
 
 def test_the_sample_is_fixed_by_its_seed_and_capped():
@@ -112,14 +118,27 @@ class Api:
         return {}
 
 
-def stored(body: bytes | None, ranges: list, live: dict | None = None):
-    """Storage holding the input and the upload, answering range requests as R2 does."""
+def stored(
+    body: bytes | None,
+    ranges: list,
+    live: dict | None = None,
+    current: str = ETAG,
+    pins: list | None = None,
+):
+    """Storage holding the input and the upload, answering range and If-Match requests as R2 does."""
 
     async def handler(request: web.Request) -> web.Response:
+        pinned = request.headers.get("If-Match")
+        if pins is not None:
+            pins.append((request.path, pinned))
         if request.path == "/input":
             return web.Response(body=GIVEN)
         if body is None:
             return web.Response(status=404)
+        if pinned is not None and pinned != current:
+            return web.Response(
+                status=412, body=PRECONDITION_PAGE, content_type="text/html"
+            )
         asked = request.headers.get("Range")
         ranges.append(asked)
         if live is not None:
@@ -150,15 +169,18 @@ async def judged(
     given: bytes = GIVEN,
     ledger: Ledger | None = None,
     live: dict | None = None,
+    etag: str | None = ETAG,
+    current: str = ETAG,
+    pins: list | None = None,
 ):
     ranges: list = []
     async with (
-        serving(stored(body, ranges, live)) as base,
+        serving(stored(body, ranges, live, current, pins)) as base,
         aiohttp.ClientSession() as http,
     ):
         job = {
             "task_id": "t1",
-            "key": "submitted/dt=2026-09-25/task=t1/5Miner-1-abcd1234.bin",
+            "key": "uploads/dt=2026-09-25/task=t1/5Miner-1.f16",
             "kind": "embed",
             "miner": "5Miner",
             "model": "tiny",
@@ -172,6 +194,8 @@ async def judged(
                 "sha256": hashlib.sha256(given).hexdigest(),
             },
         }
+        if etag:
+            job["etag"] = etag
         api = Api()
         checker = EmbedValidator(api, http, {"tiny": reference}, ledger=ledger)
         await checker.check(job)
@@ -296,6 +320,75 @@ def test_a_lost_upload_is_handed_back_to_the_task_api():
 
     assert posts == [("/v1/validation/t1/release", {"reason": "missing"})]
     assert "t1" in checker.deferred
+
+
+def test_the_upload_is_read_only_in_the_version_its_completion_pinned():
+    pins: list = []
+
+    ((_, result),), _, _ = asyncio.run(judged(upload(), Reference(), pins=pins))
+
+    assert result["verdict"] == "pass"
+    assert {pin for path, pin in pins if path == "/upload"} == {ETAG}
+    assert [pin for path, pin in pins if path == "/input"] == [None], (
+        "the input is the task API's file, not the miner's upload"
+    )
+
+
+def test_a_manifest_without_an_etag_reads_without_if_match():
+    pins: list = []
+
+    ((_, result),), _, _ = asyncio.run(
+        judged(upload(), Reference(), etag=None, current='"rewritten"', pins=pins)
+    )
+
+    assert result["verdict"] == "pass"
+    assert {pin for _, pin in pins} == {None}
+
+
+def test_an_upload_changed_after_its_completion_fails_and_costs_its_characters():
+    reference = Reference()
+    ledger = Ledger(":memory:")
+
+    ((path, result),), _, ranges = asyncio.run(
+        judged(upload(), reference, ledger=ledger, current='"rewritten"')
+    )
+
+    assert path == "/v1/validation/t1/score"
+    assert result == {
+        "verdict": "fail",
+        "reason": UPLOAD_CHANGED,
+        "sampled": 0,
+        "matched": 0,
+        "mismatched": 0,
+        "malformed": 0,
+        "min_similarity": None,
+        "samples": [],
+    }
+    assert ranges == [] and reference.asked == [], "no 412 body is read as a vector"
+    check = ledger.db.execute(
+        "SELECT kind, verdict, credited, assigned FROM checks"
+    ).fetchone()
+    assert check == ("embed", "fail", 0, 1000)
+    assert ledger.embed_paid(200.0)["5Miner"].amount == -1000
+
+
+def test_a_read_that_failed_beside_a_changed_one_does_not_hide_the_change(
+    monkeypatch,
+):
+    monkeypatch.setattr(tasks, "RETRY_DELAY_S", 0)
+
+    async def handler(request: web.Request) -> web.Response:
+        if request.headers["Range"].startswith("bytes=0-"):
+            return web.Response(status=503)
+        return web.Response(status=412, body=PRECONDITION_PAGE)
+
+    async def read():
+        async with serving(handler) as base, aiohttp.ClientSession() as http:
+            job = {"task_id": "t1", "download_url": base + "upload", "etag": ETAG}
+            await EmbedValidator(Api(), http, {}).read_vectors(job, [0, 1, 2], SLICE)
+
+    with pytest.raises(UploadChanged):
+        asyncio.run(read())
 
 
 def test_the_sampled_slices_are_read_a_few_at_a_time():

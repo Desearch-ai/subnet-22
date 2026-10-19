@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use arrow_array::{ArrayRef, Int32Array, LargeStringArray, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema};
+use axum::http::StatusCode;
 use axum::routing::post;
 use axum::{Json, Router};
 use base64::Engine;
@@ -15,16 +16,34 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use task_api::lifecycle;
 use task_api::queues::EMBED_INPUTS;
+use task_api::reference::SERVERS;
+use tokio::net::TcpListener;
 
 use crate::harness::{task_id, vectors, Harness};
 
 /// A model server answering each text with a vector holding its length, counting the texts it was sent.
 async fn model_server(texts: Arc<AtomicUsize>) -> String {
-    slow_model_server(texts, Duration::ZERO).await
+    serve(embeddings(texts, Duration::ZERO)).await
 }
 
 async fn slow_model_server(texts: Arc<AtomicUsize>, delay: Duration) -> String {
-    let app = Router::new().route(
+    serve(embeddings(texts, delay)).await
+}
+
+/// A model server that fails every request, counting them.
+async fn broken_model_server(requests: Arc<AtomicUsize>) -> String {
+    serve(Router::new().route(
+        "/v1/embeddings",
+        post(move || {
+            requests.fetch_add(1, Ordering::SeqCst);
+            async { StatusCode::INTERNAL_SERVER_ERROR }
+        }),
+    ))
+    .await
+}
+
+fn embeddings(texts: Arc<AtomicUsize>, delay: Duration) -> Router {
+    Router::new().route(
         "/v1/embeddings",
         post(move |Json(body): Json<Value>| {
             let texts = texts.clone();
@@ -46,8 +65,11 @@ async fn slow_model_server(texts: Arc<AtomicUsize>, delay: Duration) -> String {
                 Json(json!({"data": data}))
             }
         }),
-    );
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    )
+}
+
+async fn serve(app: Router) -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move { axum::serve(listener, app).await });
     format!("http://{addr}/v1/embeddings")
@@ -81,6 +103,24 @@ fn input_file(texts: &[(&str, &str)]) -> Vec<u8> {
     out
 }
 
+/// A completed embed upload of these texts, opened to the validator; the path of its reference endpoint.
+async fn uploaded(h: &Harness, texts: &[(&str, &str)]) -> String {
+    let input = input_file(texts);
+    let input_key = "embed/inputs/dt=2026-10-19/a.parquet";
+    h.state.storage.put(input_key, Bytes::from(input.clone()), "application/vnd.apache.parquet", None).await.unwrap();
+    let chars: usize = texts.iter().map(|(_, text)| text.len()).sum();
+    let entry = json!({"input_key": input_key, "input_sha256": format!("{:x}", Sha256::digest(&input)), "texts": texts.len(), "chars": chars,
+                       "pages": [{"page_key": "pages/a.example/1", "content_sha1": "c".repeat(40), "url": "https://a.example/1", "host": "a.example"}]});
+    let _: i64 = h.redis.clone().rpush(EMBED_INPUTS, entry.to_string()).await.unwrap();
+    lifecycle::open_embed_rounds(&h.state).await.unwrap().expect("an embed round");
+    h.revealed().await;
+    let task = h.miner.post("/v1/tasks/claim", json!({"kind": "embed", "models": ["desearch-4b-v1"]})).await.unwrap()["tasks"][0].clone();
+    h.put(task["upload"]["url"].as_str().unwrap(), vectors(texts.len() as u64)).await;
+    h.miner.post(&format!("/v1/tasks/{}/complete", task_id(&task)), json!({"key": task["upload"]["key"], "bytes": 7})).await.unwrap();
+    h.opened(Some(&h.validator), Some(&task_id(&task))).await;
+    format!("/v1/embed/{}/reference", task_id(&task))
+}
+
 fn first_number(embedding: &Value) -> f32 {
     let raw = base64::engine::general_purpose::STANDARD.decode(embedding.as_str().unwrap()).unwrap();
     f32::from_le_bytes(raw[..4].try_into().unwrap())
@@ -92,23 +132,11 @@ async fn a_validator_without_a_model_server_gets_reference_vectors_from_the_uplo
     let url = model_server(sent.clone()).await;
     let h = Harness::with(|s| {
         s.embed_tasks = true;
-        s.embed_reference_url = url.clone();
+        s.embed_reference_urls = vec![url.clone()];
         s.embed_reference_key = "key".into();
     })
     .await;
-    let input = input_file(&[("t1", "one"), ("t2", "three"), ("t3", "seventeen letters")]);
-    let input_key = "embed/inputs/dt=2026-10-14/a.parquet";
-    h.state.storage.put(input_key, Bytes::from(input.clone()), "application/vnd.apache.parquet", None).await.unwrap();
-    let entry = json!({"input_key": input_key, "input_sha256": format!("{:x}", Sha256::digest(&input)), "texts": 3, "chars": 25,
-                       "pages": [{"page_key": "pages/a.example/1", "content_sha1": "c".repeat(40), "url": "https://a.example/1", "host": "a.example"}]});
-    let _: i64 = h.redis.clone().rpush(EMBED_INPUTS, entry.to_string()).await.unwrap();
-    lifecycle::open_embed_rounds(&h.state).await.unwrap().expect("an embed round");
-    h.revealed().await;
-    let task = h.miner.post("/v1/tasks/claim", json!({"kind": "embed", "models": ["desearch-4b-v1"]})).await.unwrap()["tasks"][0].clone();
-    h.put(task["upload"]["url"].as_str().unwrap(), vectors(3)).await;
-    h.miner.post(&format!("/v1/tasks/{}/complete", task_id(&task)), json!({"key": task["upload"]["key"], "bytes": 7})).await.unwrap();
-    h.opened(Some(&h.validator), Some(&task_id(&task))).await;
-    let path = format!("/v1/embed/{}/reference", task_id(&task));
+    let path = uploaded(&h, &[("t1", "one"), ("t2", "three"), ("t3", "seventeen letters")]).await;
 
     let answer = h.validator.post(&path, json!({"text_ids": ["t3", "t1"]})).await.unwrap();
     let vectors = answer["vectors"].as_array().unwrap();
@@ -132,23 +160,11 @@ async fn a_validator_that_gives_up_mid_call_still_leaves_the_vectors_for_its_ret
     let url = slow_model_server(sent.clone(), Duration::from_secs(1)).await;
     let h = Harness::with(|s| {
         s.embed_tasks = true;
-        s.embed_reference_url = url.clone();
+        s.embed_reference_urls = vec![url.clone()];
         s.embed_reference_key = "key".into();
     })
     .await;
-    let input = input_file(&[("t1", "one"), ("t2", "three")]);
-    let input_key = "embed/inputs/dt=2026-10-19/slow.parquet";
-    h.state.storage.put(input_key, Bytes::from(input.clone()), "application/vnd.apache.parquet", None).await.unwrap();
-    let entry = json!({"input_key": input_key, "input_sha256": format!("{:x}", Sha256::digest(&input)), "texts": 2, "chars": 8,
-                       "pages": [{"page_key": "pages/a.example/1", "content_sha1": "c".repeat(40), "url": "https://a.example/1", "host": "a.example"}]});
-    let _: i64 = h.redis.clone().rpush(EMBED_INPUTS, entry.to_string()).await.unwrap();
-    lifecycle::open_embed_rounds(&h.state).await.unwrap().expect("an embed round");
-    h.revealed().await;
-    let task = h.miner.post("/v1/tasks/claim", json!({"kind": "embed", "models": ["desearch-4b-v1"]})).await.unwrap()["tasks"][0].clone();
-    h.put(task["upload"]["url"].as_str().unwrap(), vectors(2)).await;
-    h.miner.post(&format!("/v1/tasks/{}/complete", task_id(&task)), json!({"key": task["upload"]["key"], "bytes": 7})).await.unwrap();
-    h.opened(Some(&h.validator), Some(&task_id(&task))).await;
-    let path = format!("/v1/embed/{}/reference", task_id(&task));
+    let path = uploaded(&h, &[("t1", "one"), ("t2", "three")]).await;
 
     assert!(tokio::time::timeout(Duration::from_millis(200), h.validator.post(&path, json!({"text_ids": ["t1", "t2"]}))).await.is_err());
     tokio::time::sleep(Duration::from_millis(1500)).await;
@@ -169,7 +185,7 @@ async fn a_task_handed_to_another_miner_is_sampled_afresh_from_the_same_input() 
     let url = model_server(sent.clone()).await;
     let h = Harness::with(|s| {
         s.embed_tasks = true;
-        s.embed_reference_url = url.clone();
+        s.embed_reference_urls = vec![url.clone()];
         s.embed_reference_key = "key".into();
     })
     .await;
@@ -203,4 +219,43 @@ async fn a_task_handed_to_another_miner_is_sampled_afresh_from_the_same_input() 
     h.validator.post(&path, ids(30..70)).await.expect("a new upload gets its own sample");
     assert_eq!(sent.load(Ordering::SeqCst), 70, "texts asked before are not embedded again");
     assert_eq!(h.validator.post(&path, ids(0..30)).await.unwrap_err().status, 429, "still at most 64 texts of one upload");
+}
+
+#[tokio::test]
+async fn a_failing_model_server_hands_over_to_the_next_and_waits_its_turn() {
+    let (failed, sent) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+    let (broken, working) = (broken_model_server(failed.clone()).await, model_server(sent.clone()).await);
+    let h = Harness::with(|s| {
+        s.embed_tasks = true;
+        s.embed_reference_urls = vec![broken.clone(), working.clone()];
+        s.embed_reference_key = "key".into();
+    })
+    .await;
+    let path = uploaded(&h, &[("t1", "one"), ("t2", "three")]).await;
+
+    let answer = h.validator.post(&path, json!({"text_ids": ["t1"]})).await.expect("the next server answers");
+    assert_eq!(first_number(&answer["vectors"][0]["embedding"]), 3.0);
+    h.validator.post(&path, json!({"text_ids": ["t2"]})).await.unwrap();
+    assert_eq!((failed.load(Ordering::SeqCst), sent.load(Ordering::SeqCst)), (1, 2), "a server that just failed is tried after the others");
+}
+
+#[tokio::test]
+async fn servers_set_in_redis_are_used_instead_of_the_configured_ones_until_removed() {
+    let (configured, set) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+    let (first, second) = (model_server(configured.clone()).await, model_server(set.clone()).await);
+    let h = Harness::with(|s| {
+        s.embed_tasks = true;
+        s.embed_reference_urls = vec![first.clone()];
+        s.embed_reference_key = "key".into();
+    })
+    .await;
+    let path = uploaded(&h, &[("t1", "one"), ("t2", "three")]).await;
+
+    let _: () = h.redis.clone().set(SERVERS, format!(" {second} ,")).await.unwrap();
+    h.validator.post(&path, json!({"text_ids": ["t1"]})).await.unwrap();
+    assert_eq!((configured.load(Ordering::SeqCst), set.load(Ordering::SeqCst)), (0, 1));
+
+    let _: () = h.redis.clone().del(SERVERS).await.unwrap();
+    h.validator.post(&path, json!({"text_ids": ["t2"]})).await.unwrap();
+    assert_eq!((configured.load(Ordering::SeqCst), set.load(Ordering::SeqCst)), (1, 1), "without the key, the configured servers");
 }

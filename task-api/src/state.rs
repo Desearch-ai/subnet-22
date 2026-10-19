@@ -1,7 +1,7 @@
 //! What every request and the janitor share: settings, Redis, SQLite, the buckets, the chain and the receipt key.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -64,6 +64,8 @@ pub struct State {
     pub started_at: f64,
     /// Set on shutdown so /v1/ping fails and the proxy stops routing here before the server stops.
     pub draining: AtomicBool,
+    /// Completions and reference calls running on after their caller may have stopped waiting.
+    pub detached: AtomicUsize,
 }
 
 pub async fn redis_from(url: &str) -> Result<Redis> {
@@ -132,8 +134,8 @@ impl State {
         let mut admins: HashSet<String> = settings.admin_hotkeys.iter().cloned().collect();
         admins.extend(addresses(&settings.admin_uris)?);
         let key = Hotkey::from_uri(if settings.key_uri.is_empty() { DEV_RECEIPT_KEY } else { &settings.key_uri }).context("TASK_API_KEY_URI")?;
-        let reference = (!settings.embed_reference_url.is_empty())
-            .then(|| Reference::new(&settings.embed_reference_url, &settings.embed_reference_key, settings.embed_reference_calls))
+        let reference = (!settings.embed_reference_urls.is_empty())
+            .then(|| Reference::new(&settings.embed_reference_urls, &settings.embed_reference_key, settings.embed_reference_calls))
             .transpose()?;
         Ok(State {
             reference,
@@ -159,6 +161,7 @@ impl State {
             open_listed: Mutex::default(),
             started_at: now(),
             draining: AtomicBool::new(false),
+            detached: AtomicUsize::new(0),
             settings,
         })
     }

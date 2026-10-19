@@ -1,7 +1,7 @@
 //! The few object-storage steps the task API takes beyond plain reads and writes.
 
 use bytes::Bytes;
-use desearch::r2::{Bucket, Error, JSON};
+use desearch::r2::{Bucket, Error, Head, JSON};
 use serde_json::Value;
 
 const PARQUET_MAGIC: &[u8; 4] = b"PAR1";
@@ -10,13 +10,14 @@ pub async fn put_json(bucket: &Bucket, key: &str, value: &Value, cache_control: 
     bucket.put(key, Bytes::from(value.to_string()), JSON, cache_control).await
 }
 
-/// Only the magic bytes at both ends are read; nothing of the miner's is parsed here.
-pub async fn is_parquet(bucket: &Bucket, key: &str, size: u64) -> Result<bool, Error> {
-    if size < 2 * PARQUET_MAGIC.len() as u64 {
+/// Only the magic bytes at both ends of the version `found` names are read; nothing of the miner's is parsed here.
+pub async fn is_parquet(bucket: &Bucket, key: &str, found: &Head) -> Result<bool, Error> {
+    let magic = PARQUET_MAGIC.len() as u64;
+    if found.size < 2 * magic {
         return Ok(false);
     }
-    let head = bucket.get_range(key, 0..PARQUET_MAGIC.len() as u64, None).await?;
-    let tail = bucket.get_tail(key, PARQUET_MAGIC.len() as u64).await?;
+    let head = bucket.get_range(key, 0..magic, Some(&found.etag)).await?;
+    let tail = bucket.get_range(key, found.size - magic..found.size, Some(&found.etag)).await?;
     Ok(head.as_ref() == PARQUET_MAGIC && tail.as_ref() == PARQUET_MAGIC)
 }
 

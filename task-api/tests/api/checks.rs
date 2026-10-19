@@ -8,6 +8,7 @@ use redis::AsyncCommands;
 use serde_json::{json, Value};
 use task_api::budgets::CRAWL;
 use task_api::manifest::{log_payload, upload_log_key, UPLOAD_LOG_LATEST};
+use task_api::verdicts::UPLOAD_CHANGED;
 use task_api::{budgets, checks, lifecycle, sampling, uploadlog};
 
 use crate::harness::{judged, parquet, score, task_id, urls, Harness, BUCKET, PAGES_PREFIX};
@@ -121,6 +122,39 @@ async fn a_failed_check_takes_back_what_passed_since_the_last_pass() {
         .unwrap();
     assert_eq!(recheck, sampling::RECHECK_UPLOADS, "its next uploads are checked");
     assert!(locked.is_none(), "one fail is not a penalty");
+}
+
+#[tokio::test]
+async fn an_upload_written_again_after_completion_fails_its_check_as_the_miners_fault() {
+    let h = started(2, 0.0).await;
+    let hotkey = h.miner.ss58();
+    established(&h, hotkey.clone()).await;
+    let unchecked = task_id(&h.mine(&h.miner, 0).await);
+    settled(&h, &unchecked).await;
+    start_recheck(&h, hotkey.clone()).await;
+    let checked = task_id(&h.mine(&h.miner, 0).await);
+    assert_eq!(settled(&h, &checked).await, sampling::RECHECK);
+    h.opened(Some(&h.validator), Some(&checked)).await;
+    let mut changed = json!({"verdict": "fail", "reason": UPLOAD_CHANGED, "samples": [], "urls": [], "rejected": []});
+    for count in ["returned", "missing", "duplicates", "error_rows", "sampled", "matched", "mismatched", "unverifiable", "not_fetched", "errors_confirmed"] {
+        changed[count] = 0.into();
+    }
+    let verdict = h.validator.post(&format!("/v1/validation/{checked}/score"), changed).await.unwrap();
+    assert_eq!(verdict["verdict"], "fail");
+    assert_eq!(h.view(&checked).await["score"]["reason"], UPLOAD_CHANGED);
+    assert_eq!(h.view(&unchecked).await["score"]["verdict"], "withdrawn");
+    assert_eq!(credits(&h, hotkey.clone()).await, -2, "its credit is taken back, and the failed upload costs its URLs");
+    let asked = hotkey.clone();
+    let (recheck, struck) = h
+        .state
+        .db
+        .run(move |conn| {
+            let struck: String = conn.query_row("SELECT reason FROM strikes WHERE hotkey = ?", [&asked], |row| row.get(0))?;
+            Ok((checks::recheck_left(conn, &asked, CRAWL)?, struck))
+        })
+        .await
+        .unwrap();
+    assert_eq!((recheck, struck.as_str()), (sampling::RECHECK_UPLOADS, UPLOAD_CHANGED));
 }
 
 #[tokio::test]

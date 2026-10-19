@@ -19,10 +19,11 @@ from aiohttp import web
 
 from desearch.embedding import INPUT_SCHEMA, EmbeddingModel, model_named, write_parquet
 from desearch.kinds import EMBED
+from neurons.validators.tasks import UPLOAD_CHANGED
 
 from sandbox import local
 from sandbox.local import PAGES_BUCKET, ROOT, UPLOADS_BUCKET, Ports
-from sandbox.run import Sandbox, get_json, where
+from sandbox.run import CHANGED_NOTE, Sandbox, get_json, where
 from sandbox.urls import host_of
 
 DATASET = "desearch/sn22-sandbox-embed"
@@ -256,6 +257,8 @@ def describe(
             head += f", lowest similarity {lowest}"
     elif task["reason"] == "wrong_size":
         head += ", the upload's size is not one vector for each text"
+    elif task["reason"] == UPLOAD_CHANGED:
+        head += f", {CHANGED_NOTE}"
     size = f"  {texts:,} texts" + (
         f", {chars:,} characters" if chars is not None else ""
     )

@@ -13,7 +13,7 @@ use arrow_array::types::{Int16Type, Int32Type, Int64Type, Int8Type, UInt16Type, 
 use arrow_array::{Array, ArrayRef, RecordBatch};
 use arrow_schema::{DataType, TimeUnit};
 use bytes::{Buf, Bytes};
-use desearch::r2::{Bucket, Head};
+use desearch::r2::{self, Bucket};
 use futures::{StreamExt, TryStreamExt};
 use parquet::arrow::arrow_reader::{ArrowReaderMetadata, ArrowReaderOptions, ParquetRecordBatchReaderBuilder};
 use parquet::arrow::ProjectionMask;
@@ -99,11 +99,12 @@ impl<R: RangeRead> RangeRead for Counted<R> {
     }
 }
 
-/// An upload read in ranges from R2, several ranges at once, each refused if the object changed since its HEAD.
+/// An upload read in ranges from R2, several ranges at once, each refused unless the object is still the version `etag` names.
 pub struct Remote {
     pub bucket: Bucket,
     pub key: String,
-    pub head: Head,
+    pub size: u64,
+    pub etag: Option<String>,
     pub handle: Handle,
     pub ranges_at_once: usize,
     pub traffic: Arc<Traffic>,
@@ -118,22 +119,26 @@ impl Remote {
 
 impl RangeRead for Remote {
     fn size(&self) -> u64 {
-        self.head.size
+        self.size
     }
 
     fn read(&self, range: Range<u64>) -> io::Result<Bytes> {
         self.count(std::slice::from_ref(&range));
-        let etag = Some(self.head.etag.as_str()).filter(|e| !e.is_empty());
-        self.handle.block_on(self.bucket.get_range(&self.key, range, etag)).map_err(io::Error::other)
+        self.handle.block_on(self.bucket.get_range(&self.key, range, self.etag.as_deref())).map_err(io::Error::other)
     }
 
     fn read_many(&self, ranges: &[Range<u64>]) -> io::Result<Vec<Bytes>> {
         self.count(ranges);
-        let etag = Some(self.head.etag.as_str()).filter(|e| !e.is_empty());
+        let etag = self.etag.as_deref();
         let reads =
             futures::stream::iter(ranges.iter().cloned()).map(|range| self.bucket.get_range(&self.key, range, etag)).buffered(self.ranges_at_once.max(1));
         self.handle.block_on(reads.try_collect()).map_err(io::Error::other)
     }
+}
+
+/// A read refused because the object is no longer the version it was read as.
+pub fn changed(error: &io::Error) -> bool {
+    matches!(error.get_ref().and_then(|e| e.downcast_ref::<r2::Error>()), Some(r2::Error::Changed))
 }
 
 /// The footer's length when both magic markers are present and the footer is small enough to parse.

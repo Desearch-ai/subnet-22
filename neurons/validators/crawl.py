@@ -24,8 +24,10 @@ from neurons.validators.scoring_process import (
 )
 from neurons.validators.tasks import (
     MAX_DOWNLOAD_BYTES,
+    UPLOAD_CHANGED,
     DownloadFailed,
     TaskChecker,
+    UploadChanged,
     UploadMissing,
 )
 
@@ -80,6 +82,9 @@ class CrawlValidator(TaskChecker):
             log.warning("task=%s upload is gone", job["task_id"])
             await self.hand_back(job["task_id"], "missing")
             return {}
+        except UploadChanged:
+            log.warning("task=%s upload changed after it was completed", job["task_id"])
+            result = empty_result(set(job["urls"]), UPLOAD_CHANGED)
         except DownloadFailed as exc:
             log.warning("%s, trying again later", exc)
             self.defer(job["task_id"])
@@ -136,7 +141,10 @@ class CrawlValidator(TaskChecker):
 
     async def score_task(self, job: dict) -> dict:
         started = time.monotonic()
-        data = await self.download(job["download_url"], job["task_id"]) or b""
+        data = (
+            await self.download(job["download_url"], job["task_id"], job.get("etag"))
+            or b""
+        )
         for attempt in range(CHECK_ATTEMPTS):
             try:
                 result = await self.run_check(job, data)

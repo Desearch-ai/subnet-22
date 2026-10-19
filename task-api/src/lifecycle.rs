@@ -92,8 +92,8 @@ pub fn open_round_key(round_id: &str) -> String {
     format!("round:{round_id}:open")
 }
 
-pub fn manifest_key(frozen_key: &str) -> String {
-    let stem = [".parquet", VECTORS_SUFFIX].into_iter().find_map(|suffix| frozen_key.strip_suffix(suffix)).unwrap_or(frozen_key);
+pub fn manifest_key(upload_key: &str) -> String {
+    let stem = [".parquet", VECTORS_SUFFIX].into_iter().find_map(|suffix| upload_key.strip_suffix(suffix)).unwrap_or(upload_key);
     format!("{stem}.manifest.json")
 }
 

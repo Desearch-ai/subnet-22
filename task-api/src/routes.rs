@@ -1,5 +1,6 @@
 //! Claims, completions and verdicts, the bot's enqueue and room, and the public round pages.
 
+use std::future::Future;
 use std::net::SocketAddr;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -12,7 +13,6 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use desearch::r2::{Error as StorageError, PARQUET};
 use desearch::time::{now, utc_day};
-use rand::Rng;
 use redis::AsyncCommands;
 use serde_json::{json, Map, Value};
 
@@ -39,11 +39,46 @@ const COMPLETE_WAIT: Duration = Duration::from_secs(20);
 const COMPLETE_POLL: Duration = Duration::from_millis(250);
 /// R2's clock and ours may differ by this much.
 const CLOCK_SLACK_S: f64 = 2.0;
-const SLOW_COMPLETE_S: f64 = 5.0;
+const SLOW_S: f64 = 5.0;
 const LINK_SLACK_S: u64 = 60;
 const TASKS_PAGE: i64 = 50;
 const MAX_TASKS_PAGE: i64 = 100;
 const ENQUEUED_TTL_S: u64 = 86_400;
+
+/// Seconds each step of a request took, for the log when the whole of it was slow.
+struct Steps {
+    last: f64,
+    done: Vec<(&'static str, f64)>,
+}
+
+impl Steps {
+    fn since(at: f64) -> Steps {
+        Steps { last: at, done: Vec::new() }
+    }
+
+    fn mark(&mut self, step: &'static str) {
+        let at = now();
+        self.done.push((step, at - self.last));
+        self.last = at;
+    }
+
+    fn slow(&self) -> Option<String> {
+        let total: f64 = self.done.iter().map(|(_, seconds)| seconds).sum();
+        let steps: Vec<String> = self.done.iter().map(|(step, seconds)| format!("{step} {seconds:.1}s")).collect();
+        (total > SLOW_S).then(|| format!("{total:.1}s ({})", steps.join(", ")))
+    }
+}
+
+/// Runs work a caller may stop waiting for, counted so a stopping copy can say what it cuts short.
+fn detach<T: Send + 'static>(state: &Arc<State>, work: impl Future<Output = T> + Send + 'static) -> tokio::task::JoinHandle<T> {
+    state.detached.fetch_add(1, Ordering::SeqCst);
+    let counted = state.clone();
+    tokio::spawn(async move {
+        let outcome = work.await;
+        counted.detached.fetch_sub(1, Ordering::SeqCst);
+        outcome
+    })
+}
 
 /// What a refused miner should wait, so idle polling does not fill the signed log.
 fn retry_after_for(code: &str) -> f64 {
@@ -90,7 +125,9 @@ pub async fn claim(Shared(state): Shared<Arc<State>>, ConnectInfo(peer): Connect
 }
 
 async fn claim_tasks(state: &State, signed: &Signed<'_>) -> Answer {
+    let mut steps = Steps::since(now());
     let who = signed.caller(state).await?;
+    steps.mark("caller");
     if who.is_validator || who.is_admin {
         return Err(ApiError::status(403, "validators may not claim tasks"));
     }
@@ -98,7 +135,9 @@ async fn claim_tasks(state: &State, signed: &Signed<'_>) -> Answer {
     let kind: &'static str = if body.kind == EMBED { EMBED } else { CRAWL };
     let round_id = state.current_round(kind);
 
-    if let Some(retry_after) = state.retry_after(&who.hotkey).await? {
+    let rated = state.retry_after(&who.hotkey).await?;
+    steps.mark("rate");
+    if let Some(retry_after) = rated {
         // Not logged: signing and storing every excess poll would let a flooder grow the log.
         let refusal = json!({"code": "RATE_LIMITED", "inputs": {"per_sec": state.settings.poll_rate, "retry_after": retry_after}});
         return Ok(Json(json!({"tasks": [], "refusal": refusal, "receipt": null})));
@@ -111,7 +150,9 @@ async fn claim_tasks(state: &State, signed: &Signed<'_>) -> Answer {
     }
     let at = now();
     let (hotkey, pool) = (who.hotkey.clone(), kind.to_string());
-    if let Some(until) = state.lookups.read(move |conn| budgets::locked_until(conn, &hotkey, &pool, at)).await? {
+    let locked = state.lookups.read(move |conn| budgets::locked_until(conn, &hotkey, &pool, at)).await?;
+    steps.mark("lockout");
+    if let Some(until) = locked {
         let inputs = json!({"until": round_to(until, 3), "retry_after": round_to(until - now(), 3)});
         return refused(state, &round_id, &who, Refusal::new("LOCKED_OUT", inputs)).await;
     }
@@ -119,6 +160,7 @@ async fn claim_tasks(state: &State, signed: &Signed<'_>) -> Answer {
     let validating = state.validation.oldest_age(&state.redis, at).await?.max(state.validation.oldest_seeding_age(&state.redis, at).await?);
     let publishing = state.publish.oldest_age(&state.redis, at).await?;
     let max_backlog = state.settings.max_backlog;
+    steps.mark("backlog");
     if max_backlog != 0.0 && validating.max(publishing) > max_backlog {
         let waiting = state.publish.waiting(&state.redis).await?;
         let inputs = json!({"validation_s": validating, "publish_s": publishing, "limit_s": max_backlog, "publish_waiting": waiting});
@@ -133,11 +175,13 @@ async fn claim_tasks(state: &State, signed: &Signed<'_>) -> Answer {
         Some(miner) => miner.budget,
         None => state.db.run(move |conn| budgets::get_or_create(conn, &hotkey, &pool)).await?.budget,
     };
+    steps.mark("budget");
     let tasks = state.tasks(kind);
     let claims = match tasks.claim(&state.redis, &who.hotkey, budget, WAITING_PER_BUDGET * budget, body.count, now()).await? {
         Ok(claims) => claims,
         Err(refusal) => return refused(state, &round_id, &who, refusal).await,
     };
+    steps.mark("queue");
     let mut issued = Vec::new();
     let mut receipts = Vec::new();
     for got in claims {
@@ -157,10 +201,16 @@ async fn claim_tasks(state: &State, signed: &Signed<'_>) -> Answer {
     if issued.is_empty() {
         return Err(ApiError::status(503, "upload signing is unavailable"));
     }
+    steps.mark("issue");
     let receipts = state.record(receipts).await?;
+    steps.mark("receipts");
     // The time spent signing and recording the claims is ours, not the miner's.
     let task_ids: Vec<String> = issued.iter().map(|task| text(task, "task_id").to_string()).collect();
     let expiry = tasks.start_clocks(&state.redis, &who.hotkey, &task_ids, now()).await?;
+    steps.mark("clocks");
+    if let Some(slow) = steps.slow() {
+        eprintln!("claiming {} tasks for {} took {slow}", task_ids.len(), who.hotkey);
+    }
     for task in &mut issued {
         task["expires_at"] = (expiry - UPLOAD_GRACE_S).into();
         task["upload"]["expires_at"] = (expiry - UPLOAD_GRACE_S).into();
@@ -268,7 +318,7 @@ pub async fn complete(
     }
     let lock = hold_completion(&state, &task_id, &who.hotkey).await?;
     // Detached so a miner that times out can't cancel it and leave the lock to block its retries.
-    let finishing = tokio::spawn(async move {
+    let finishing = detach(&state.clone(), async move {
         let outcome = finish_completion(&state, &task_id, &report, &who, arrived).await;
         state.delete(&lock).await?;
         outcome
@@ -331,37 +381,31 @@ async fn verify_completion(state: &State, task_id: &str, report: &CompleteBody, 
             return Err(ApiError::status(422, detail));
         }
     } else {
-        let framed =
-            is_parquet(&state.storage, &report.key, found.size).await.map_err(|e| storage_down(&format!("could not read the ends of {}", report.key), e))?;
+        let framed = match is_parquet(&state.storage, &report.key, &found).await {
+            Ok(framed) => framed,
+            Err(StorageError::Changed | StorageError::Missing) => return Err(ApiError::status(409, "the upload changed while completing, retry")),
+            Err(error) => return Err(storage_down(&format!("could not read the ends of {}", report.key), error)),
+        };
         if !framed {
             return Err(ApiError::status(422, "the upload is not a Parquet file"));
         }
     }
 
-    // The PUT URL outlives this call, so work on a copy the miner can't touch.
-    let attempt: String = (0..4).map(|_| format!("{:02x}", rand::thread_rng().gen::<u8>())).collect();
-    let name = text(&issued, "name");
-    let (stem, suffix) = name.rfind('.').map_or((name, ""), |at| name.split_at(at));
-    let frozen = format!("submitted/dt={}/{stem}-{attempt}{suffix}", utc_day(now()));
-    let stat_s = now() - arrived;
-    let frozen_etag = match state.storage.copy(&report.key, &frozen, Some(&found.etag)).await {
-        Ok(etag) => etag,
-        Err(StorageError::Changed) => return Err(ApiError::status(409, "the upload changed while completing, retry")),
-        Err(error) => return Err(storage_down(&format!("could not freeze {}", report.key), error)),
-    };
-
+    let mut steps = Steps::since(arrived);
+    steps.mark("checks");
     let round_id = Some(text(&payload, "round_id")).filter(|r| !r.is_empty()).map(String::from).unwrap_or_else(|| state.current_round(&kind));
-    // The sample seed is a block hash nobody knew when the upload was frozen.
+    // The sample seed is a block hash nobody knew when the upload was pinned.
     let frozen_block = state.seeds.current_block().await?;
     let completed_at = arrived;
     let position = payload.get("position").cloned().unwrap_or_else(|| 0.into());
+    // The PUT URL outlives this call, so every reader asks for the version checked here by its entity tag.
     let mut job = json!({
         "task_id": task_id,
         "kind": kind,
         "round_id": round_id,
         "miner": who.hotkey,
-        "key": frozen,
-        "etag": frozen_etag,
+        "key": report.key,
+        "etag": found.etag,
         "urls": payload.get("urls").cloned().unwrap_or_else(|| json!([])),
         "position": position,
         "rank": payload.get("rank").cloned().unwrap_or(position),
@@ -383,22 +427,18 @@ async fn verify_completion(state: &State, task_id: &str, report: &CompleteBody, 
         job["reported"] = report.reported.clone();
     }
     job["manifest"] = signed_manifest(state, &job);
-    if let Err(error) = put_json(&state.storage, &lifecycle::manifest_key(&frozen), &job["manifest"], None).await {
-        delete_quietly(&state.storage, &frozen).await;
-        return Err(storage_down(&format!("could not write the manifest for {frozen}"), error));
+    if let Err(error) = put_json(&state.storage, &lifecycle::manifest_key(&report.key), &job["manifest"], None).await {
+        return Err(storage_down(&format!("could not write the manifest for {}", report.key), error));
     }
+    steps.mark("manifest");
     let Some(seq) = state.tasks(&kind).complete(&state.redis, task_id, &who.hotkey, &job, &report.key, arrived).await? else {
-        delete_quietly(&state.storage, &frozen).await;
         return Err(ApiError::status(409, "you do not hold a live claim on this task"));
     };
-    delete_quietly(&state.storage, &report.key).await;
-    let took = now() - arrived;
-    if took > SLOW_COMPLETE_S {
-        eprintln!("completing {task_id} took {took:.1}s ({stat_s:.1}s before the copy)");
-    }
+    steps.mark("queues");
     sampling::note_upload(&state.redis, &kind, &who.hotkey, completed_at).await?;
     uploadlog::note(&state.redis, &job).await?;
-    state
+    steps.mark("logs");
+    let receipt = state
         .record_one(Receipt {
             round_id,
             hotkey: who.hotkey.clone(),
@@ -409,7 +449,12 @@ async fn verify_completion(state: &State, task_id: &str, report: &CompleteBody, 
             block: Some(frozen_block),
             ..Receipt::default()
         })
-        .await?;
+        .await;
+    steps.mark("receipt");
+    if let Some(slow) = steps.slow() {
+        eprintln!("completing {task_id} took {slow}");
+    }
+    receipt?;
     Ok(json!({"task_id": task_id, "status": "open_for_validation"}))
 }
 
@@ -510,7 +555,7 @@ pub async fn embed_reference(
     }
     // Detached so a validator that times out can't cancel it, leaving its lock and losing the vectors.
     let (asked, ids, model) = (task_id.clone(), text_ids.clone(), job["model"].clone());
-    let computing = tokio::spawn(async move {
+    let computing = detach(&state.clone(), async move {
         let Some(reference) = state.reference.as_ref() else {
             return Err(ApiError::status(503, "this task API has no reference model server"));
         };

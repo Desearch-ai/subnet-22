@@ -11,11 +11,13 @@ use serde_json::Value;
 
 use crate::blocked::looks_blocked;
 use crate::changes::{self, Body, Change, Kind};
-use crate::reading::{read_rows, RangeRead};
+use crate::reading::{changed, read_rows, RangeRead};
 use crate::records::{build_record, iso, publish_window, record_key, record_version, Context as RecordContext, Record, Row};
 
 pub const WITHDRAW: &str = "withdraw";
 pub const EMBED: &str = "embed";
+/// Why an upload whose version is not the one its completion named is lost.
+pub const CHANGED: &str = "changed after completion";
 
 /// A publish job as the task API queues it.
 #[derive(Clone, Debug, Deserialize)]
@@ -35,7 +37,7 @@ pub struct Job {
     /// The embedding model an embed job's vectors come from.
     #[serde(default)]
     pub model: Option<String>,
-    /// An embed job's pages, as the planner listed them, sent back to it when the task is taken back before publishing.
+    /// An embed job's pages, as the planner listed them, sent back to it when the task is taken back or lost before publishing.
     #[serde(default)]
     pub pages: Vec<Value>,
     #[serde(default)]
@@ -111,6 +113,7 @@ pub fn read_job(job: &Job, uploads: &dyn Uploads, now: i64) -> Result<(Vec<Page>
     let rows = match read_rows(&*source, assigned) {
         Ok(Some(rows)) => rows,
         Ok(None) => return Err(Fault::Gone("unreadable")),
+        Err(error) if changed(&error) => return Err(Fault::Gone(CHANGED)),
         Err(error) => return Err(Fault::Retry(format!("reading the upload: {error}"))),
     };
     collect(job, &rows, now).map_err(|error| Fault::Retry(format!("{error:#}")))

@@ -32,7 +32,7 @@ fn withdraw(task_ids: &[&str]) -> Job {
 
 fn job(task_id: &str, urls: &[&str], skip: &[&str]) -> Job {
     serde_json::from_value(json!({
-        "task_id": task_id, "kind": "crawl", "miner": "5Miner", "key": format!("submitted/{task_id}.parquet"),
+        "task_id": task_id, "kind": "crawl", "miner": "5Miner", "key": format!("uploads/{task_id}.parquet"),
         "urls": urls, "skip": skip, "completed_at": COMPLETED, "claim_ttl": 180, "validator": "", "validators": [],
     }))
     .unwrap()

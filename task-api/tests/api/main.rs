@@ -92,7 +92,8 @@ async fn a_crawl_task_goes_round_trip() {
     let done = h.miner.post(&complete, report.clone()).await.unwrap();
     assert_eq!(done, json!({"task_id": id, "status": "open_for_validation"}));
     assert_eq!(h.status(&id).await, "open");
-    assert!(h.object(key).is_none(), "the miner's upload is frozen into a copy");
+    assert_eq!(h.object(key), Some(body.clone()), "the upload stays where the miner put it");
+    let etag = h.state.storage.head(key).await.unwrap().unwrap().etag;
     assert_eq!(h.state.crawl.in_flight(&h.redis, &h.miner.ss58()).await.unwrap(), 0, "uploaded, so not crawling");
     assert_eq!(h.state.crawl.waiting(&h.redis, &h.miner.ss58()).await.unwrap(), 1, "but waiting for its verdict");
 
@@ -103,15 +104,13 @@ async fn a_crawl_task_goes_round_trip() {
     assert_eq!(job["task_id"], id.as_str());
     assert_eq!(job["miner"], h.miner.ss58().as_str());
     assert!(job["deadline"].as_f64() > job["completed_at"].as_f64());
-    let frozen = job["key"].as_str().unwrap();
-    assert!(frozen.starts_with("submitted/dt=") && frozen.contains(&format!("/task={id}/{}-", h.miner.ss58())), "{frozen}");
+    assert_eq!((job["key"].clone(), job["etag"].clone()), (json!(key), json!(etag)), "pinned by the entity tag it had at completion");
     assert_eq!(job["urls"], task["urls"]);
-    assert_eq!(h.object(frozen), Some(body.clone()));
     let listing = h.open_list().await;
     assert_eq!(listing["uploads"].as_array().unwrap().iter().map(|m| m["task_id"].clone()).collect::<Vec<_>>(), [json!(id)]);
     assert_eq!(listing["signer"], signer.as_str());
     assert!(manifest_verifies(&listing["uploads"][0], &signer));
-    assert_eq!(h.json_object(&lifecycle::manifest_key(frozen)), Some(listing["uploads"][0].clone()), "the same note sits next to the upload");
+    assert_eq!(h.json_object(&lifecycle::manifest_key(key)), Some(listing["uploads"][0].clone()), "the same note sits next to the upload");
 
     let mut wrong = score("pass", 3, "ok", None, &first_url(&task));
     wrong["matched"] = 0.into();
@@ -152,7 +151,8 @@ async fn a_crawl_task_goes_round_trip() {
         (publish["task_id"].clone(), publish["validator"].clone(), publish["validators"].clone()),
         (json!(id), json!(h.validator.ss58()), json!([h.validator.ss58()]))
     );
-    assert_eq!((publish["claim_ttl"].clone(), publish["skip"].clone(), publish["key"].clone()), (json!(180), json!([]), json!(frozen)));
+    assert_eq!((publish["claim_ttl"].clone(), publish["skip"].clone()), (json!(180), json!([])));
+    assert_eq!((publish["key"].clone(), publish["etag"].clone()), (json!(key), json!(etag)), "the publisher reads the version validators checked");
 
     let second = h.miner.claim().await["tasks"][0].clone();
     let second_id = task_id(&second);

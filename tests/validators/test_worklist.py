@@ -24,7 +24,7 @@ def manifest(task_id: str, seed_block: int = 5, kind: str = "crawl", **extra) ->
         "kind": kind,
         "round_id": "r",
         "miner": "m",
-        "key": f"submitted/dt=2026-09-25/task={task_id}/m-1-abcd1234.parquet",
+        "key": f"uploads/dt=2026-09-25/task={task_id}/m-1.parquet",
         "urls": ["https://a/1", "https://a/2"],
         "frozen_block": seed_block - 10,
         "seed_block": seed_block,
@@ -136,7 +136,7 @@ def test_a_task_back_from_the_queue_is_checked_again_under_its_new_upload():
     checker.reported[first["key"]] = 1e12
     assert asyncio.run(checker.next_job()) is None
 
-    again = manifest("t", key="submitted/dt=2026-09-25/task=t/n-2-ef567890.parquet")
+    again = manifest("t", key="uploads/dt=2026-09-25/task=t/n-2.parquet")
     checker.uploads[:] = [again]
     checker.listed_at = float("-inf")
     assert asyncio.run(checker.next_job())["key"] == again["key"]

@@ -83,7 +83,7 @@ for every URL of the task:
 ```
 task 249008e8de444962 miner 5FkPgJN9: PASS (ok), paid 88 of 100 rows, 7 matched / 1 mismatched / 0 unverifiable
   http://qctimes.com/ads/vehicle/car/pdfdisplayad_c1f5fefb.html: mismatched, the texts differ: score 0.00, under the 0.90 threshold
-  upload:  http://127.0.0.1:18082/sandbox-uploads/submitted/.../5FkPgJN9...-16-8c8f8a7a.parquet
+  upload:  http://127.0.0.1:18082/sandbox-uploads/uploads/.../5FkPgJN9...-16.parquet
   details: sandbox/runs/20260929-185547/tasks/249008e8de444962.json
 ```
 
@@ -165,7 +165,7 @@ text that did not reach 0.999, or whose vector is not finite with length 1, is l
 task 211008abb81642ea miner 5CkpVdiz: FAIL (vectors_mismatch), 14/15 sampled texts matched, lowest similarity 0.989792
   15 texts, 31,120 characters, uploaded 0.4s after the claim (limit 300s)
   https://docs.example.org/emission passage 4: similarity 0.989792
-  upload:  http://127.0.0.1:18082/sandbox-uploads/submitted/dt=2026-10-14/task=211008abb81642ea/...parquet
+  upload:  http://127.0.0.1:18082/sandbox-uploads/uploads/dt=2026-10-14/task=211008abb81642ea/...f16
   details: sandbox/runs/20261014-224232/tasks/211008abb81642ea.json
 ```
 

@@ -45,14 +45,15 @@ every page.
    never given a task it held before.
 3. **Crawl.** The miner fetches every URL, extracts the title, dates, headings and main text, and
    uploads one Parquet file with a row per URL, including the page's HTML. When it reports the task
-   complete, the task API checks the file is Parquet and within the size limit, copies it to a key
-   only the API can write, and removes the original. Validators check that frozen copy.
-4. **Draw.** The API writes a signed note next to the frozen copy (the task's URLs and the block it
-   was frozen at). The hash of the block ten blocks after the freeze, which nobody knew while
-   uploading, decides whether validators check it. Checked are every upload of a new hotkey until
-   it has passed 10 checks, the next 10 after a failed check, every upload while a hotkey is locked
-   out, and a share of each hotkey's other uploads, about one an hour at least. An upload not drawn
-   is finalized at once on the counts the miner reported, and published.
+   complete, the task API checks the file is Parquet and within the size limit, and records which
+   version of the file was completed. Validators and the publisher read only that version, so a file
+   changed after completion fails its check.
+4. **Draw.** The API writes a signed note next to the upload (the task's URLs, the file's version and
+   the block it was completed at). The hash of the block ten blocks after completion, which nobody
+   knew while uploading, decides whether validators check it. Checked are every upload of a new
+   hotkey until it has passed 10 checks, the next 10 after a failed check, every upload while a
+   hotkey is locked out, and a share of each hotkey's other uploads, about one an hour at least. An
+   upload not drawn is finalized at once on the counts the miner reported, and published.
 5. **Check.** A drawn upload is listed in `validation/open.json` in the same public bucket. Every
    validator reads that list and the upload from the bucket, and picks the rows to check with the
    same block hash. It then:
@@ -124,8 +125,8 @@ Embedding is switched off until its inputs and the publishing of vectors below a
 
 ```
 subnet-22 bucket (temporary, objects expire after a day, readable by anyone)
-  uploads/          where miners' upload links point, removed once the task is complete
-  submitted/        the frozen copies validators check, each with its signed note beside it
+  uploads/          where miners' upload links point; each completed upload is checked and published
+                    from here, with its signed note beside it
   validation/       open.json, the list of uploads waiting for validators
   log/uploads/      every completed upload with the counts its miner reported, signed, for validators to count
   outcomes/         what became of every URL, for the bot

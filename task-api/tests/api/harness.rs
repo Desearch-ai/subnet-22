@@ -175,7 +175,7 @@ pub fn settings(data: PathBuf, endpoint: &str) -> Settings {
         task_urls: 3,
         embed_tasks: false,
         embed_model: "desearch-4b-v1".into(),
-        embed_reference_url: String::new(),
+        embed_reference_urls: Vec::new(),
         embed_reference_key: String::new(),
         embed_reference_calls: 4,
         active_s: 3600.0,

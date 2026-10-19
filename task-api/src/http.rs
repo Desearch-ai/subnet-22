@@ -2,10 +2,11 @@
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock, Mutex};
+use std::time::Instant;
 
 use axum::body::{to_bytes, Body};
-use axum::extract::{ConnectInfo, DefaultBodyLimit, Request, State as Shared};
+use axum::extract::{ConnectInfo, DefaultBodyLimit, MatchedPath, Request, State as Shared};
 use axum::http::header::{CONNECTION, CONTENT_LENGTH, RETRY_AFTER};
 use axum::http::{HeaderName, HeaderValue, Method, StatusCode};
 use axum::middleware::{self, Next};
@@ -24,6 +25,10 @@ const BODY_BYTES: usize = 64_000;
 const LARGE_BODY_BYTES: usize = 16_000_000;
 const UNAVAILABLE_RETRY_S: i64 = 2;
 pub const CLAIM_PATH: &str = "/v1/tasks/claim";
+/// Requests that spent this long inside the API are counted in the minute's log line.
+const SLOW_INSIDE_S: f64 = 5.0;
+/// Requests signed this long before they arrived are counted too: they were slow on the way here.
+const LATE_ARRIVAL_S: f64 = 10.0;
 
 pub enum ApiError {
     Status {
@@ -192,6 +197,56 @@ async fn not_found() -> Response {
     detail(StatusCode::NOT_FOUND, "Not Found".into())
 }
 
+#[derive(Default)]
+struct Minute {
+    at: i64,
+    answered: u64,
+    slow: HashMap<String, (u64, f64)>,
+    late: (u64, f64),
+}
+
+static MINUTE: LazyLock<Mutex<Minute>> = LazyLock::new(Mutex::default);
+
+/// One log line a minute when requests were slow inside the API or on their way to it.
+async fn time_requests(request: Request, next: Next) -> Response {
+    let started = Instant::now();
+    let arrived = desearch::time::now();
+    let route = request.extensions().get::<MatchedPath>().map_or_else(|| "unrouted".to_string(), |path| path.as_str().to_string());
+    let route = format!("{} {route}", request.method());
+    let signed = request.headers().get("X-Timestamp").and_then(|v| v.to_str().ok()).and_then(|v| v.parse::<f64>().ok());
+    let response = next.run(request).await;
+    let took = started.elapsed().as_secs_f64();
+    let mut minute = MINUTE.lock().expect("request minute");
+    let now = (desearch::time::now() / 60.0) as i64;
+    if minute.at != now {
+        if minute.at != 0 && (!minute.slow.is_empty() || minute.late.0 > 0) {
+            let mut slow: Vec<_> = minute.slow.iter().collect();
+            slow.sort_by_key(|(_, (count, _))| std::cmp::Reverse(*count));
+            let slow: Vec<String> = slow.iter().map(|(route, (n, worst))| format!("{route} {n} (worst {worst:.1}s)")).collect();
+            eprintln!(
+                "requests in the last minute: {} answered; over {SLOW_INSIDE_S}s inside: {}; signed over {LATE_ARRIVAL_S}s before arriving: {} (worst {:.1}s)",
+                minute.answered,
+                if slow.is_empty() { "none".into() } else { slow.join(", ") },
+                minute.late.0,
+                minute.late.1
+            );
+        }
+        *minute = Minute { at: now, ..Minute::default() };
+    }
+    minute.answered += 1;
+    if took >= SLOW_INSIDE_S {
+        let (count, worst) = minute.slow.entry(route).or_default();
+        *count += 1;
+        *worst = worst.max(took);
+    }
+    if let Some(lag) = signed.map(|at| arrived - at).filter(|lag| *lag >= LATE_ARRIVAL_S) {
+        minute.late.0 += 1;
+        minute.late.1 = minute.late.1.max(lag);
+    }
+    drop(minute);
+    response
+}
+
 async fn method_not_allowed(request: Request, next: Next) -> Response {
     let response = next.run(request).await;
     if response.status() == StatusCode::METHOD_NOT_ALLOWED {
@@ -236,6 +291,7 @@ pub fn router(state: Arc<State>) -> Router {
         .layer(middleware::from_fn(limit_body))
         // `limit_body` sets each path's limit; axum's own 2 MB default would cut enqueues and verdicts short.
         .layer(DefaultBodyLimit::disable())
+        .layer(middleware::from_fn(time_requests))
         .with_state(state)
 }
 

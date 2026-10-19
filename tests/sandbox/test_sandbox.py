@@ -211,6 +211,25 @@ def test_a_verdict_names_where_the_upload_and_the_full_result_are():
     ]
 
 
+def test_a_verdict_on_an_upload_changed_after_its_completion_says_so():
+    task = {
+        "task_id": "t3",
+        "miner": "5GYoQ4rynWSzEBVTwKypeiK5AjhuB7KtSZwTbPgydvNqe8EY",
+        "verdict": "fail",
+        "reason": "upload_changed",
+        "credited": 0,
+        "returned": 0,
+        "matched": 0,
+        "mismatched": 0,
+        "unverifiable": 0,
+    }
+    lines = run.describe(task, []).splitlines()
+    assert lines == [
+        "task t3 miner 5GYoQ4ry: FAIL (upload_changed),"
+        " the upload changed after it was completed"
+    ]
+
+
 def test_new_log_lines_are_echoed_once_with_the_process_name(tmp_path, capsys):
     sandbox = run.Sandbox(Ports(19000), tmp_path, source=None, task_size=100)
     log = tmp_path / "logs" / "validator.log"
@@ -549,6 +568,12 @@ def test_an_embed_verdict_shows_the_sample_the_size_the_time_and_each_mismatch()
         "FAIL (wrong_size), the upload's size is not one vector for each text"
     )
     assert head[1].startswith("  1,043 texts, uploaded 41.2s")
+
+    changed = {**EMBED_TASK, "reason": "upload_changed", "sampled": 0, "matched": 0}
+    head = embed.describe(changed, {"sampled": 0, "samples": []}, 1043, None)
+    assert head.splitlines()[0].endswith(
+        "FAIL (upload_changed), the upload changed after it was completed"
+    )
 
 
 def test_a_sampled_text_keeps_its_row_in_the_upload_and_gains_its_place_in_the_page(

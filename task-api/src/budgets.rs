@@ -7,6 +7,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
 
 use crate::py::round_to;
+use crate::verdicts::UPLOAD_CHANGED;
 
 pub const START: i64 = 1;
 pub const CEILING: i64 = 100;
@@ -26,7 +27,7 @@ pub const REWARD: &str = "verified";
 pub const EXPIRY_REASONS: [&str; 2] = ["claim_expired", "abandoned"];
 pub const STRIKE_BURST_S: f64 = 300.0;
 /// Only fails the miner caused count; "unscorable" is the validator's own timeout or crash.
-pub const STRIKE_REASONS: [&str; 13] = [
+pub const STRIKE_REASONS: [&str; 14] = [
     "claim_expired",
     "abandoned",
     "extra_rows",
@@ -40,6 +41,7 @@ pub const STRIKE_REASONS: [&str; 13] = [
     "vectors_malformed",
     "vectors_mismatch",
     "wrong_size",
+    UPLOAD_CHANGED,
 ];
 pub const STRIKES_TO_LOCK: i64 = 2;
 pub const STRIKE_SHARE: f64 = 0.05;
