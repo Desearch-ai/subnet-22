@@ -10,7 +10,7 @@ use sha2::{Digest, Sha256};
 use crate::urls;
 
 pub const USER_AGENT: &str = "Mozilla/5.0 (compatible; DesearchBot/1.0; +https://www.desearch.ai/crawler)";
-pub const SIGNATURE_AGENT: &str = "https://www.desearch.ai/crawler";
+pub const SIGNATURE_AGENT: &str = "https://www.desearch.ai";
 const LABEL: &str = "sig1";
 const TAG: &str = "web-bot-auth";
 const LIFETIME: i64 = 300;
