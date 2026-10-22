@@ -157,7 +157,8 @@ def test_the_upload_log_is_read_from_storage_in_order_and_unsigned_files_hold_no
     assert second == 1 and cursor == "4", "a file not there yet is waited for"
 
 
-def test_a_log_file_lost_below_the_latest_is_skipped():
+@pytest.mark.parametrize("missing", [404, 403], ids=["not found", "access denied"])
+def test_a_log_file_lost_below_the_latest_is_skipped(missing):
     files = {
         upload_log_key(3): signed(3, [logged("c", "m", time.time())], time.time()),
         UPLOAD_LOG_LATEST: {"seq": 3},
@@ -165,7 +166,7 @@ def test_a_log_file_lost_below_the_latest_is_skipped():
 
     async def handle(request):
         found = files.get(request.match_info["path"])
-        return web.json_response(found) if found else web.Response(status=404)
+        return web.json_response(found) if found else web.Response(status=missing)
 
     async def scenario():
         ledger = Ledger(":memory:")

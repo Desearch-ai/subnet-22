@@ -81,7 +81,8 @@ class UploadLog:
         async with self.http.get(
             f"{self.storage_url}/{key}", timeout=READ_TIMEOUT
         ) as response:
-            if response.status == 404:
+            # A store that keeps its bucket private answers 403, not 404, for an object it does not have.
+            if response.status in (403, 404):
                 return None
             response.raise_for_status()
             return await response.json(content_type=None)
