@@ -9,7 +9,7 @@ use regex::bytes::{Regex, RegexBuilder};
 use rocksdb::{Direction, IteratorMode, ReadOptions, WriteBatch};
 use serde_json::{json, Value};
 
-use crate::buckets::{meta_key, BucketStore, URL};
+use crate::buckets::{meta_key, BucketStore, Changes, LISTED, URL};
 use crate::records;
 use crate::robots::Paths;
 use crate::schedule::DAY;
@@ -268,6 +268,14 @@ impl Yield {
         let word = |at: usize| raw.get(at..at + 4).and_then(|b| b.try_into().ok());
         Some(Yield { ok: f32::from_be_bytes(word(0)?).into(), failed: f32::from_be_bytes(word(4)?).into(), at: u32::from_be_bytes(word(8)?) })
     }
+}
+
+/// What a dropped domain held.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Dropped {
+    pub known: bool,
+    pub ready: u64,
+    pub urls: i64,
 }
 
 /// What a batch of outcomes did.
@@ -591,6 +599,40 @@ impl BucketStore {
         }
         self.db.write(batch)?;
         Ok(applied)
+    }
+
+    /// Deletes every page kept for `domain` and marks it excluded so no visit lists them again; with `delete` false only counts.
+    pub fn drop_domain(&self, domain: &str, reason: &str, delete: bool) -> Result<Dropped> {
+        let Some(mut record) = self.domain(domain)? else {
+            return Ok(Dropped::default());
+        };
+        let found = Dropped { known: true, ready: self.ready_count(domain)?, urls: records::int(record.get("urls")).unwrap_or(0) };
+        if !delete {
+            return Ok(found);
+        }
+        let ranges: Vec<(Vec<u8>, Vec<u8>)> = [URL, READY, SENT, LISTED]
+            .into_iter()
+            .map(|kind| ([&[kind], domain.as_bytes(), b"\0"].concat(), [&[kind], domain.as_bytes(), b"\x01"].concat()))
+            .collect();
+        let _guard = self.lock_ready();
+        let mut batch = WriteBatch::default();
+        for (from, to) in &ranges {
+            batch.delete_range(from, to);
+        }
+        batch.delete(count_key(domain));
+        batch.delete(yield_key(domain));
+        record.insert("state".into(), "excluded".into());
+        record.insert("reason".into(), reason.into());
+        record.insert("due".into(), Value::Null);
+        record.insert("urls".into(), 0.into());
+        self.db.write(batch)?;
+        let mut changes = Changes::default();
+        changes.domain(domain, &record);
+        self.write(changes)?;
+        for (from, to) in &ranges {
+            self.db.delete_file_in_range(from, to)?;
+        }
+        Ok(found)
     }
 
     /// The domain's outcomes as last counted, not yet decayed to now.

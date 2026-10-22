@@ -779,3 +779,34 @@ async fn a_batch_refused_as_too_large_or_invalid_goes_in_halves_and_only_the_pag
     assert_eq!(buckets.store(host).ready_count(host).unwrap(), 0, "the bad page left the ready list too");
     assert_eq!(dispatcher.pass(now + 15).await.unwrap(), 0);
 }
+
+#[test]
+fn dropping_a_domain_deletes_its_pages_and_leaves_its_neighbours_whole() {
+    let dir = Dir::new("ready-drop");
+    let owned = [bucket_of("junk.com")];
+    let buckets = Buckets::open(&dir.0, &owned, &resources()).unwrap();
+    let store = buckets.store("junk.com");
+    for host in ["junk.com", "junk.com.au"] {
+        let mut changes = Changes::default();
+        changes.domain(host, &records::new_domain(Some(5), Some("com"), &[], State::Active, None, None));
+        store.write(changes).unwrap();
+        let pages = (0..20).map(|i| (urls::parse(&format!("https://{host}/p{i}"), host).unwrap(), 100 + i, false)).collect();
+        store.record_listing(host, 1, pages, 100).unwrap();
+    }
+    let picks: Vec<Pick> = store.take_ready("junk.com", [0, 0, 5]).unwrap();
+    store.mark_sent(&picks, 1000).unwrap();
+    let page = |host: &str, i: u32| store.url(&urls::parse(&format!("https://{host}/p{i}"), host).unwrap()).unwrap();
+
+    let counted = store.drop_domain("junk.com", "junk", false).unwrap();
+    assert_eq!((counted.known, counted.ready), (true, 15));
+    assert!(page("junk.com", 0).is_some(), "counting deletes nothing");
+
+    store.drop_domain("junk.com", "hacked", true).unwrap();
+    assert!((0..20).all(|i| page("junk.com", i).is_none()));
+    assert_eq!(store.ready_count("junk.com").unwrap(), 0);
+    assert_eq!(store.ready_domains().unwrap(), [("junk.com.au".to_string(), 20)], "a domain that only starts with its name is untouched");
+    assert!((0..20).all(|i| page("junk.com.au", i).is_some()));
+    let record = store.domain("junk.com").unwrap().unwrap();
+    assert_eq!((record["state"].as_str(), record["reason"].as_str(), record["due"].is_null()), (Some("excluded"), Some("hacked"), true));
+    assert!(!store.drop_domain("unknown.com", "junk", true).unwrap().known);
+}

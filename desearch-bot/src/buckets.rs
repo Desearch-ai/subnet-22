@@ -23,7 +23,7 @@ use crate::urls::{Listing, Record, Url, TIMED};
 pub const BUCKETS: usize = 256;
 const DOMAIN: u8 = b'D';
 /// What each sitemap listed when last read, so unchanged entries skip their lookups.
-const LISTED: u8 = b'L';
+pub(crate) const LISTED: u8 = b'L';
 const SITEMAP: u8 = b'S';
 pub(crate) const URL: u8 = b'U';
 const META: u8 = b'M';
