@@ -15,6 +15,7 @@ use arrow_schema::{DataType, Field, Schema};
 use base64::Engine;
 use bytes::Bytes;
 use common::{page, parquet};
+use desearch::feeds::{CHANGES, PENDING_GRACE_S};
 use desearch::r2::{self, Bucket, Credentials, PARQUET};
 use desearch::stub;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
@@ -109,6 +110,32 @@ fn outcome_feed(state: &stub::State, first: u64, last: u64) -> Vec<(String, Stri
         found.extend(column(&batches, "outcome").into_iter().zip(column(&batches, "url")));
     }
     found
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_number_whose_writer_died_before_indexing_it_is_indexed_once_it_goes_stale() {
+    let Some((_turn, mut redis)) = redis_db().await else {
+        eprintln!("skipped: no Redis on {REDIS}");
+        return;
+    };
+    let dir = scratch("feed-pending");
+    let stub = stub::start(dir.join("r2"), "127.0.0.1:0").await.unwrap();
+    let pages = bucket(stub.addr, PAGES, "", Arc::default());
+    let numbered = CHANGES.number(&pages, &redis, "changes/dt=2026-10-22/a.parquet", 3).await.unwrap();
+    assert_eq!(numbered, 1);
+    assert!(!redis.exists::<_, bool>("changes:pending").await.unwrap(), "an indexed number is no longer pending");
+
+    let long_ago = desearch::time::now() - PENDING_GRACE_S - 1.0;
+    let () = redis.set("changes:seq", 3).await.unwrap();
+    let () = redis.hset("changes:pending", 2, format!("{long_ago}\tchanges/dt=2026-10-22/lost.parquet")).await.unwrap();
+    let () = redis.hset("changes:pending", 3, format!("{}\tchanges/dt=2026-10-22/writing.parquet", desearch::time::now())).await.unwrap();
+    assert_eq!(CHANGES.fill_holes(&pages, &redis).await.unwrap(), 1);
+
+    let index = json_object(&stub.state, PAGES, &CHANGES.seq_key(2)).unwrap();
+    assert_eq!(index["key"], "changes/dt=2026-10-22/lost.parquet");
+    assert_eq!(json_object(&stub.state, PAGES, &CHANGES.seq_key(3)), None, "a number still being written is left to its writer");
+    let left: Vec<String> = redis.hkeys("changes:pending").await.unwrap();
+    assert_eq!(left, ["3"]);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

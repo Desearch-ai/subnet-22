@@ -17,7 +17,7 @@ bytes = "1"
 futures = "0.3"
 hmac = "0.12"
 parquet = { version = "59", default-features = false, features = ["arrow", "zstd"] }
-redis = { version = "1", default-features = false, features = ["tokio-comp", "connection-manager"] }
+redis = { version = "1", default-features = false, features = ["tokio-comp", "connection-manager", "script"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 schnorrkel = "0.11"
 serde_json = { version = "1", features = ["float_roundtrip"] }
