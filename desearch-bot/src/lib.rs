@@ -2,6 +2,7 @@
 
 pub mod allowed;
 pub mod buckets;
+pub mod churn;
 pub mod crawl;
 pub mod dispatch;
 pub mod exclusions;

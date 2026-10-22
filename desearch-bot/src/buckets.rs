@@ -264,6 +264,20 @@ impl BucketStore {
     }
 
     /// Store what one sitemap lists now, looking up only entries it did not list the same way when last read, and put pages due a send on their ready lists.
+    /// The share of these URLs, keyed as `Url::key`, the store has never recorded.
+    pub fn new_share<'a>(&self, keys: impl Iterator<Item = &'a [u8]>) -> Result<f64> {
+        let keys: Vec<Vec<u8>> = keys.map(|key| [&[URL], key].concat()).collect();
+        if keys.is_empty() {
+            return Ok(0.0);
+        }
+        let cf = self.db.cf_handle("default").context("default column family")?;
+        let mut unknown = 0;
+        for found in self.db.batched_multi_get_cf(cf, &keys, false) {
+            unknown += usize::from(found?.is_none());
+        }
+        Ok(unknown as f64 / keys.len() as f64)
+    }
+
     pub fn record_listing(&self, host: &str, sitemap_id: i64, mut entries: Vec<(Url, u32, bool)>, now: u32) -> Result<Listing> {
         for entry in entries.iter_mut() {
             entry.0.key.insert(0, URL);
