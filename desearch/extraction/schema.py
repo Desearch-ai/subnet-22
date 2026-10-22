@@ -46,6 +46,25 @@ PAGE_SCHEMA = pa.schema(
 )
 
 
+PAGE_SCHEMA_V2 = pa.schema(
+    [
+        *PAGE_SCHEMA,
+        pa.field("extraction", pa.string(), nullable=False),
+        pa.field("text_mode", pa.string(), nullable=False),
+        pa.field("modified", pa.string(), nullable=False),
+        pa.field("site_name", pa.string(), nullable=False),
+        pa.field("image", pa.string(), nullable=False),
+        pa.field("section", pa.string(), nullable=False),
+        pa.field("tags", pa.list_(pa.string()), nullable=False),
+        pa.field("breadcrumbs", pa.list_(pa.string()), nullable=False),
+        pa.field("entity", pa.large_string(), nullable=False),
+        pa.field("ld", pa.large_string(), nullable=False),
+        pa.field("paywalled", pa.bool_(), nullable=True),
+        pa.field("robots", pa.list_(pa.string()), nullable=False),
+    ]
+)
+
+
 def sha256_hex(data: bytes | str | None) -> str:
     if data is None:
         return ""

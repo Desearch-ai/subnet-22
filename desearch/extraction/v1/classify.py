@@ -3,7 +3,7 @@ from urllib.parse import unquote, urlsplit
 
 from lxml import etree
 
-from desearch.extraction.structured import Structured, is_article_type
+from desearch.extraction.v1.structured import Structured, is_article_type
 
 LONG_PARAGRAPH = 120
 
