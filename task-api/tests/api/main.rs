@@ -73,7 +73,7 @@ async fn a_crawl_task_goes_round_trip() {
     assert_eq!(task["round_id"], round_id.as_str());
     assert_eq!(task["urls"].as_array().unwrap().len(), 3);
     let key = upload["key"].as_str().unwrap();
-    assert!(key.starts_with("uploads/dt=") && key.ends_with(".parquet") && key.contains(&format!("/task={id}/{}-", h.miner.ss58())), "{key}");
+    assert!(key.starts_with(&format!("uploads/task={id}/{}-", h.miner.ss58())) && key.ends_with(".parquet"), "{key}");
     assert_eq!(upload["content_type"], "application/vnd.apache.parquet");
     assert_eq!(upload["expires_at"], task["expires_at"]);
     let signer = h.public("/v1/key").await.1["signer"].as_str().unwrap().to_string();

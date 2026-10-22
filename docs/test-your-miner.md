@@ -165,7 +165,7 @@ text that did not reach 0.999, or whose vector is not finite with length 1, is l
 task 211008abb81642ea miner 5CkpVdiz: FAIL (vectors_mismatch), 14/15 sampled texts matched, lowest similarity 0.989792
   15 texts, 31,120 characters, uploaded 0.4s after the claim (limit 300s)
   https://docs.example.org/emission passage 4: similarity 0.989792
-  upload:  http://127.0.0.1:18082/sandbox-uploads/uploads/dt=2026-10-14/task=211008abb81642ea/...f16
+  upload:  http://127.0.0.1:18082/sandbox-uploads/uploads/task=211008abb81642ea/...f16
   details: sandbox/runs/20261014-224232/tasks/211008abb81642ea.json
 ```
 

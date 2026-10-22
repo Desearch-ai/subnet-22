@@ -323,6 +323,8 @@ class TaskChecker:
                 raise UploadMissing(task_id)
             if status == 412:
                 raise UploadChanged(task_id)
+            if status == 403 and etag:
+                raise await self.refused_pinned_read(task_id)
             problem = f"HTTP {status}"
             if status < 500:
                 break
@@ -362,10 +364,22 @@ class TaskChecker:
                 raise UploadMissing(task_id)
             if status == 412:
                 raise UploadChanged(task_id)
+            if status == 403 and etag:
+                raise await self.refused_pinned_read(task_id)
             problem = f"HTTP {status} to a range request"
             if status < 500:
                 break
         raise DownloadFailed(f"task={task_id} range read failed: {problem}")
+
+    async def refused_pinned_read(self, task_id: str) -> Exception:
+        """A 403 to a pinned read: rewritten while its task is still open, or deleted once it closed."""
+        try:
+            listed = await self.fetch_open_list()
+        except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as exc:
+            raise DownloadFailed(f"task={task_id} open list: {exc!r}") from exc
+        if any(upload.get("task_id") == task_id for upload in listed):
+            return UploadChanged(task_id)
+        return UploadMissing(task_id)
 
     async def _read_capped(self, response: aiohttp.ClientResponse) -> bytes | None:
         if (response.content_length or 0) > self.max_download:

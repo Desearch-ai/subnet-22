@@ -18,6 +18,7 @@ use crate::time::{parse_http_date, utc};
 
 pub const PARQUET: &str = "application/vnd.apache.parquet";
 pub const JSON: &str = "application/json";
+const PUBLIC_READ: &str = "public-read";
 const EMPTY_SHA256: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 const UNSIGNED: &str = "UNSIGNED-PAYLOAD";
 const ATTEMPTS: u32 = 5;
@@ -83,6 +84,8 @@ pub struct Bucket {
     credentials: Arc<Credentials>,
     /// Failed attempts, retried or not, for the minute summary.
     pub errors: Arc<AtomicU64>,
+    /// Objects it writes, and those passed to `make_public`, are readable by anyone.
+    public: bool,
 }
 
 pub fn client() -> Result<reqwest::Client> {
@@ -103,7 +106,13 @@ impl Bucket {
             (Some(host), None) => host.to_string(),
             (None, _) => return Err(anyhow!("CF_R2_ENDPOINT {endpoint:?} has no host")),
         };
-        Ok(Bucket { http, endpoint, host, bucket: bucket.into(), prefix: prefix.into(), credentials: Arc::new(credentials), errors })
+        Ok(Bucket { http, endpoint, host, bucket: bucket.into(), prefix: prefix.into(), credentials: Arc::new(credentials), errors, public: false })
+    }
+
+    /// For storage that keeps a bucket private and opens objects one by one, as OVH does.
+    pub fn public_objects(mut self, public: bool) -> Self {
+        self.public = public;
+        self
     }
 
     pub fn path(&self, key: &str) -> String {
@@ -213,9 +222,27 @@ impl Bucket {
         if let Some(cache_control) = cache_control {
             headers.insert(reqwest::header::CACHE_CONTROL, value(cache_control));
         }
+        self.mark_public(&mut headers);
         let timeout = sending(body.len());
         self.call(Method::PUT, Some(key), &[], headers, body, timeout).await?;
         Ok(())
+    }
+
+    /// Opens an object someone else wrote, such as a miner's upload; does nothing where the bucket itself is public.
+    pub async fn make_public(&self, key: &str) -> Result<(), Error> {
+        if !self.public {
+            return Ok(());
+        }
+        let mut headers = HeaderMap::new();
+        self.mark_public(&mut headers);
+        self.call(Method::PUT, Some(key), &[("acl", "")], headers, Bytes::new(), SHORT).await?;
+        Ok(())
+    }
+
+    fn mark_public(&self, headers: &mut HeaderMap) {
+        if self.public {
+            headers.insert("x-amz-acl", HeaderValue::from_static(PUBLIC_READ));
+        }
     }
 
     /// A large object as parts sent `at_once`, since one stream to R2 tops out far below the link.
@@ -253,6 +280,7 @@ impl Bucket {
     pub async fn start_multipart(&self, key: &str, content_type: &str) -> Result<String, Error> {
         let mut headers = HeaderMap::new();
         headers.insert(reqwest::header::CONTENT_TYPE, value(content_type));
+        self.mark_public(&mut headers);
         let (_, body) = self.call(Method::POST, Some(key), &[("uploads", "")], headers, Bytes::new(), SHORT).await?;
         xml_field(&body, "UploadId").ok_or_else(|| Error::Transport("a multipart upload without an UploadId".into()))
     }

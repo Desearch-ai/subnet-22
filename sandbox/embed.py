@@ -141,8 +141,8 @@ async def download(http: aiohttp.ClientSession, name: str, folder: Path) -> Path
     return target
 
 
-def input_key(now: float) -> str:
-    return f"embed/inputs/dt={time.strftime('%Y-%m-%d', time.gmtime(now))}/{uuid.uuid4().hex}.parquet"
+def input_key() -> str:
+    return f"embed/inputs/{uuid.uuid4().hex}.parquet"
 
 
 def input_body(given: Input) -> bytes:
@@ -384,7 +384,7 @@ class EmbedSandbox(Sandbox):
     def hand_over(self, given: Input) -> None:
         body = input_body(given)
         now = time.time()
-        key = input_key(now)
+        key = input_key()
         self.s3.put_object(
             Bucket=UPLOADS_BUCKET, Key=key, Body=body, ContentType=PARQUET
         )

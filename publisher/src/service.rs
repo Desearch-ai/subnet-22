@@ -99,7 +99,8 @@ pub fn buckets_from(var: impl Fn(&str) -> Option<String>, errors: Arc<AtomicU64>
         &var("TASK_API_R2_PREFIX").unwrap_or_default(),
         credentials.clone(),
         errors.clone(),
-    )?;
+    )?
+    .public_objects(var("CF_R2_PUBLIC_OBJECTS").as_deref() == Some("1"));
     let pages_bucket = var("CF_R2_PAGES_BUCKET").unwrap_or_else(|| "desearch-pages".into());
     let pages_prefix = var("CF_R2_PAGES_PREFIX").unwrap_or_default();
     let pages = match var("PAGES_S3_ENDPOINT") {

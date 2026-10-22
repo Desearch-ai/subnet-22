@@ -184,6 +184,8 @@ pub fn settings(data: PathBuf, endpoint: &str) -> Settings {
         r2_endpoint: endpoint.into(),
         r2_access_key: "test".into(),
         r2_secret_key: "test".into(),
+        r2_region: "auto".into(),
+        public_objects: false,
         bucket: BUCKET.into(),
         prefix: String::new(),
         pages_bucket: BUCKET.into(),
