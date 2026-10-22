@@ -26,7 +26,7 @@ jobs:
    - The vectors come from the validator's own model server. A validator without one falls back to
      Desearch's model server through the task API, which embeds each sampled text once.
 3. **Sets weights.**
-   - Each epoch, 50% of the emission goes to burn, 20% to crawl miners and 30% to embed miners; a part
+   - Each epoch, 30% of the emission goes to burn, 20% to crawl miners and 50% to embed miners; a part
      no miner earned is burned.
    - Crawl miners are paid from the log of every completed upload, at the rate the validator's own
      checks of each miner paid, less what its failed checks take back.

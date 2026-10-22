@@ -9,7 +9,7 @@ import pyarrow as pa
 import pytest
 from aiohttp import web
 
-from desearch.extraction import extract
+from desearch.extraction import EXTRACTION_V1, v1
 from desearch.extraction.schema import sha256_hex
 from desearch.fetch import ScrapingDog
 from desearch.manifest import OPEN_LIST_KEY
@@ -243,7 +243,7 @@ def test_text_not_from_html_above_20_percent_of_checked_rows(tampered, verdict):
 def test_fabricated_text_fails_as_text_not_from_html():
     rows, assigned, fetched = synthetic(10)
     for n, row in enumerate(rows[:3]):
-        row["text"] = extract(synthetic_html(100 + n), row["url"]).text
+        row["text"] = v1.extract(synthetic_html(100 + n), row["url"]).text
     result = run(rows, assigned, fetched)
 
     assert (result["verdict"], result["reason"]) == ("fail", "text_not_from_html")
@@ -334,7 +334,7 @@ def test_read_pages_rejects_garbage_and_wrong_schemas():
 
 def test_html_is_read_only_for_the_rows_that_need_it():
     rows, _, _ = synthetic(120)
-    upload = write_parquet(rows, "t", "h")
+    upload = write_parquet(rows, "t", "h", EXTRACTION_V1)
     read = read_pages(upload)
     wanted = [read[3], read[77]]
 
@@ -347,7 +347,7 @@ def test_html_is_read_only_for_the_rows_that_need_it():
 def test_a_row_group_too_big_to_decode_is_refused_unread(monkeypatch):
     rows, _, _ = synthetic(120)
     one_group = to_parquet(rows, task_id="t", hotkey="h")
-    small_groups = write_parquet(rows, "t", "h")
+    small_groups = write_parquet(rows, "t", "h", EXTRACTION_V1)
     monkeypatch.setattr(
         "neurons.validators.scoring.MAX_ROW_GROUP_BYTES", len(small_groups) * 3
     )

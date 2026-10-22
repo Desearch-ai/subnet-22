@@ -8,10 +8,10 @@ import numpy as np
 from desearch.kinds import CRAWL, EMBED
 
 EMISSION_CONTROL_HOTKEY = "5CUu1QhvrfyMDBELUPJLt4c7uJFbi7TKqDHkS1Zz41oD4dyP"
-EMISSION_CONTROL_PERC = 0.5
-CRAWL_PERC = 0.4
-EMBED_PERC = 0.6
-assert math.isclose(CRAWL_PERC + EMBED_PERC, 1.0)
+EMISSION_CONTROL_PERC = 0.3
+CRAWL_PERC = 0.2
+EMBED_PERC = 0.5
+assert math.isclose(EMISSION_CONTROL_PERC + CRAWL_PERC + EMBED_PERC, 1.0)
 SET_WEIGHTS_ATTEMPTS = 9
 SET_WEIGHTS_RETRY_S = 45
 VERSION_KEY = 2**64 - 9
@@ -23,12 +23,11 @@ log = logging.getLogger("validator")
 def weights_from_shares(
     hotkeys: list[str], shares: dict[str, dict[str, float]]
 ) -> np.ndarray:
-    """Each pool's part split by its miners' shares; a pool nobody earned is burned too."""
+    """Each pool's share of the emission split by its miners' shares; a pool nobody earned is burned too."""
     weights = np.zeros(len(hotkeys), dtype=np.float32)
     uid_of = {hotkey: uid for uid, hotkey in enumerate(hotkeys)}
-    for_miners = 1.0 - EMISSION_CONTROL_PERC
-    paid = pay_pool(weights, uid_of, shares.get(CRAWL, {}), for_miners * CRAWL_PERC)
-    paid += pay_pool(weights, uid_of, shares.get(EMBED, {}), for_miners * EMBED_PERC)
+    paid = pay_pool(weights, uid_of, shares.get(CRAWL, {}), CRAWL_PERC)
+    paid += pay_pool(weights, uid_of, shares.get(EMBED, {}), EMBED_PERC)
     burn = uid_of.get(EMISSION_CONTROL_HOTKEY)
     if burn is not None:
         weights[burn] += 1.0 - paid
@@ -38,7 +37,7 @@ def weights_from_shares(
 def pay_pool(
     weights: np.ndarray, uid_of: dict[str, int], shares: dict[str, float], perc: float
 ) -> float:
-    """Adds one pool's part of the emission to its miners' weights and returns what it paid."""
+    """Adds one pool's share of the emission to its miners' weights and returns what it paid."""
     earned = {
         uid_of[hotkey]: share
         for hotkey, share in shares.items()
