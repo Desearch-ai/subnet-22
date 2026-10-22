@@ -17,7 +17,6 @@ use serde_json::{json, Map, Value};
 
 use crate::budgets::{self, COVERAGE_GATE, CRAWL, EMBED, FULL_PENALTY_LOCKOUT_H, HOSTILE_LOCKOUT_H, HOUR, STRIKE_REASONS, STRIKE_WINDOW_H};
 use crate::credit::{self, FAILS_FOR_PENALTY, PENALTY_WINDOW_S};
-use crate::embedding::VECTORS_SUFFIX;
 use crate::manifest::{self, OPEN_LIST_KEY};
 use crate::queues::{self, Finalized, OPEN_SCAN};
 use crate::roundlog::{self, Receipt};
@@ -90,11 +89,6 @@ pub fn whole(x: f64) -> Value {
 
 pub fn open_round_key(round_id: &str) -> String {
     format!("round:{round_id}:open")
-}
-
-pub fn manifest_key(upload_key: &str) -> String {
-    let stem = [".parquet", VECTORS_SUFFIX].into_iter().find_map(|suffix| upload_key.strip_suffix(suffix)).unwrap_or(upload_key);
-    format!("{stem}.manifest.json")
 }
 
 pub fn lock_key(task_id: &str) -> String {
@@ -239,9 +233,17 @@ pub async fn reveal_pending(state: &State) -> Result<usize> {
         if round.seed_block >= missing_from {
             continue;
         }
-        let Some(seed) = state.seeds.seed_for(round.seed_block).await? else {
-            missing_from = round.seed_block;
-            continue;
+        let seed = match state.seeds.seed_for(round.seed_block).await {
+            Ok(Some(seed)) => seed,
+            Ok(None) => {
+                missing_from = round.seed_block;
+                continue;
+            }
+            Err(error) => {
+                eprintln!("round={} waits for its seed: {error:#}", round.round_id);
+                missing_from = round.seed_block;
+                continue;
+            }
         };
         rounds::reveal(&mut round, &seed);
         // Saved first, so a crash cannot queue the round twice.
@@ -274,7 +276,7 @@ pub async fn fill_round(state: &State, round: &Round) -> Result<usize> {
             })
             .collect();
         let _: i64 = state.redis.clone().sadd(open_round_key(&round.round_id), &round.order).await?;
-        state.tasks(&round.kind).fill(&state.redis, &round.round_id, &round.order, &payloads).await?;
+        state.tasks(&round.kind).fill(&state.redis, &round.round_id, &round.order, &payloads, now(), state.settings.release_spread).await?;
     }
     if !round.order.is_empty() {
         let (pages, key, lists) = (state.pages.clone(), round_urls_key(&round.round_id), round.url_lists());
@@ -1026,7 +1028,6 @@ async fn close_upload(state: &State, task_id: &str, job: &Value, verdict: &str, 
 pub async fn discard_upload(state: &State, job: &Value) {
     let key = text(job, "key");
     delete_quietly(&state.storage, key).await;
-    delete_quietly(&state.storage, &manifest_key(key)).await;
 }
 
 async fn finish_finalized(state: &State, task_id: &str, job: &Value, finalized: FinalVerdict, seeding: bool) -> Result<Option<Value>> {

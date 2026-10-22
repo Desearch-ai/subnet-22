@@ -126,7 +126,7 @@ Embedding is switched off until its inputs and the publishing of vectors below a
 ```
 subnet-22 bucket (temporary, objects expire after a day, readable by anyone)
   uploads/          where miners' upload links point; each completed upload is checked and published
-                    from here, with its signed note beside it
+                    from here
   validation/       open.json, the list of uploads waiting for validators
   log/uploads/      every completed upload with the counts its miner reported, signed, for validators to count
   outcomes/         what became of every URL, for the bot

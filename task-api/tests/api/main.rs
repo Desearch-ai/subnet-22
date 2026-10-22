@@ -110,14 +110,13 @@ async fn a_crawl_task_goes_round_trip() {
     assert_eq!(listing["uploads"].as_array().unwrap().iter().map(|m| m["task_id"].clone()).collect::<Vec<_>>(), [json!(id)]);
     assert_eq!(listing["signer"], signer.as_str());
     assert!(manifest_verifies(&listing["uploads"][0], &signer));
-    assert_eq!(h.json_object(&lifecycle::manifest_key(key)), Some(listing["uploads"][0].clone()), "the same note sits next to the upload");
 
     let mut wrong = score("pass", 3, "ok", None, &first_url(&task));
     wrong["matched"] = 0.into();
     assert_eq!(h.validator.post(&score_path, wrong).await.unwrap_err().status, 422);
-    let mut too_long = score("pass", 3, "ok", None, &first_url(&task));
-    too_long["urls"] = json!([{"url": "https://site0.example/page/0", "miner_snippet": "x".repeat(501)}]);
-    assert_eq!(h.validator.post(&score_path, too_long).await.unwrap_err().status, 422);
+    let mut mistyped = score("pass", 3, "ok", None, &first_url(&task));
+    mistyped["urls"] = json!([{"url": "https://site0.example/page/0", "miner_snippet": 7}]);
+    assert_eq!(h.validator.post(&score_path, mistyped).await.unwrap_err().status, 422);
     let mut detailed = score("pass", 3, "ok", None, &first_url(&task));
     detailed["credited"] = 999.into();
     detailed["urls"] = json!([

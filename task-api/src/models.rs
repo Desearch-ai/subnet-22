@@ -148,6 +148,17 @@ impl<'a> Fields<'a> {
         value
     }
 
+    /// A string kept for the logs only: one longer than `max` is cut to it, so one odd value never loses a whole report.
+    fn text_cut(&mut self, name: &str, nullable: bool, max: usize) -> Option<String> {
+        let value = self.text(name, None, nullable, None)?;
+        if value.chars().count() <= max {
+            return Some(value);
+        }
+        let cut: String = value.chars().take(max).collect();
+        self.out.insert(name.into(), Value::from(cut.as_str()));
+        Some(cut)
+    }
+
     fn literal(&mut self, name: &str, allowed: &[&str], default: Option<&str>) -> Option<String> {
         let loc = at(&self.loc, name);
         let value = match (self.input.get(name), default) {
@@ -407,23 +418,23 @@ fn url_detail(input: &Map<String, Value>, loc: Vec<Value>) -> (Value, Invalid) {
         "validator_window",
         "rejected",
     ]);
-    fields.text("url", None, false, Some(4096));
+    fields.text_cut("url", false, 4096);
     fields.int("status", Some(0), None);
-    fields.text("error", None, true, Some(64));
+    fields.text_cut("error", true, 64);
     fields.int("text_chars", Some(0), None);
     fields.boolean("sampled", false);
-    fields.text("outcome", None, true, Some(32));
-    fields.text("why", None, true, Some(500));
+    fields.text_cut("outcome", true, 32);
+    fields.text_cut("why", true, 500);
     for name in ["similarity", "precision", "recall", "growth"] {
         fields.float(name, None, true);
     }
-    fields.text("validator_error", None, true, Some(200));
+    fields.text_cut("validator_error", true, 200);
     fields.text("via", Some(""), false, Some(16));
     for name in ["miner_chars", "validator_chars", "diff_at"] {
         nullable_int(&mut fields, name);
     }
     for (name, max) in [("miner_snippet", 500), ("validator_snippet", 500), ("miner_window", 500), ("validator_window", 500)] {
-        fields.text(name, None, true, Some(max));
+        fields.text_cut(name, true, max);
     }
     fields.boolean("rejected", false);
     (Value::Object(fields.out), fields.invalid)
@@ -533,6 +544,17 @@ mod tests {
         assert_eq!(score(wrong.as_object().unwrap()).unwrap_err().0[0]["msg"], "Value error, the counts do not match the samples");
         let bad = json!({"verdict": "maybe", "returned": -1});
         assert_eq!(score(bad.as_object().unwrap()).unwrap_err().0.len(), 2);
+    }
+
+    #[test]
+    fn an_over_long_url_in_the_details_is_cut_rather_than_refusing_the_vote() {
+        let long = format!("https://example.com/{}", "a".repeat(5000));
+        let body = json!({"returned": 1, "verdict": "pass", "urls": [{"url": long, "status": 200, "why": "w".repeat(600)}]});
+        let dumped = score(body.as_object().unwrap()).unwrap();
+        assert_eq!(dumped["urls"][0]["url"].as_str().unwrap().chars().count(), 4096);
+        assert_eq!(dumped["urls"][0]["why"].as_str().unwrap().chars().count(), 500);
+        let wrong_type = json!({"returned": 1, "verdict": "pass", "urls": [{"url": 7}]});
+        assert_eq!(score(wrong_type.as_object().unwrap()).unwrap_err().0[0]["type"], "string_type", "only the length is forgiven");
     }
 
     #[test]
