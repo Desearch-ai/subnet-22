@@ -1,6 +1,6 @@
 //! The planner: follows the change log and turns published pages that need a vector into embed inputs for the task API, within an hourly page budget and the room the API gives.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
@@ -53,6 +53,7 @@ pub const EMBED_DROPPED: &str = "embed:dropped";
 const CURSOR: &[u8] = b"cursor";
 const ROOM_TIMEOUT: Duration = Duration::from_secs(20);
 const FILES_PER_PASS: usize = 20;
+const NOT_NUMBERED: &str = "not numbered yet";
 
 pub static INPUT_SCHEMA: LazyLock<SchemaRef> = LazyLock::new(|| {
     let text = |name: &str| Field::new(name, DataType::Utf8, false);
@@ -370,6 +371,7 @@ pub struct Settings {
     /// The change file to start after when nothing was planned before; the newest one when None.
     pub start_after: Option<i64>,
     pub poll: Duration,
+    /// How long a change file numbered but not readable is looked for again before its pages are given up.
     pub hole_wait: Duration,
 }
 
@@ -398,7 +400,7 @@ impl Settings {
             excluded,
             start_after: std::env::var("PLANNER_START_AFTER").ok().filter(|v| !v.is_empty()).map(|v| v.parse()).transpose()?,
             poll: Duration::from_secs_f64(number("PLANNER_POLL_S", 10.0)?),
-            hole_wait: Duration::from_secs_f64(number("PLANNER_HOLE_WAIT_S", 3600.0)?),
+            hole_wait: Duration::from_secs_f64(number("PLANNER_HOLE_WAIT_S", 600.0)?),
         })
     }
 }
@@ -452,7 +454,40 @@ impl State {
 
     /// The content hash of the version of `key` last planned with `recipe`.
     pub fn planned(&self, recipe: &str, key: &str) -> Result<Option<String>> {
-        Ok(self.db.get(planned_key(recipe, key))?.map(|raw| String::from_utf8_lossy(&raw).into_owned()))
+        Ok(self.planned_version(recipe, key)?.map(|(content_sha1, _)| content_sha1))
+    }
+
+    /// The content hash and fetch time of the version of `key` last planned with `recipe`; the time is empty for versions planned before it was kept.
+    pub fn planned_version(&self, recipe: &str, key: &str) -> Result<Option<(String, String)>> {
+        Ok(self.db.get(planned_key(recipe, key))?.map(|raw| {
+            let value = String::from_utf8_lossy(&raw);
+            let (content_sha1, fetched_at) = value.split_once('\t').unwrap_or((&value, ""));
+            (content_sha1.to_string(), fetched_at.to_string())
+        }))
+    }
+
+    /// Change files skipped because they could not be read yet, with the Unix time each was first missed.
+    pub fn missing(&self) -> Result<Vec<(i64, f64)>> {
+        let mut found = Vec::new();
+        for item in self.db.iterator(IteratorMode::From(b"missing/", rocksdb::Direction::Forward)) {
+            let (key, value) = item?;
+            let Some(seq) = key.strip_prefix(b"missing/") else { break };
+            let (Ok(seq), Ok(since)) = (String::from_utf8_lossy(seq).parse(), String::from_utf8_lossy(&value).parse()) else { continue };
+            found.push((seq, since));
+        }
+        Ok(found)
+    }
+
+    fn note_missing(&self, seq: i64, since: f64) -> Result<()> {
+        Ok(self.db.put(missing_key(seq), since.to_string())?)
+    }
+
+    fn settle_missing(&self, seqs: &[i64]) -> Result<()> {
+        let mut batch = WriteBatch::default();
+        for seq in seqs {
+            batch.delete(missing_key(*seq));
+        }
+        Ok(self.db.write(batch)?)
     }
 
     pub fn pending(&self) -> Result<Vec<(String, String)>> {
@@ -498,15 +533,18 @@ impl State {
         Ok(self.db.put(CURSOR, seq.to_string())?)
     }
 
-    /// One written input: its pages planned, the input pending, the cursor where the log is read up to, together.
-    fn commit(&self, pages: &[Planned], input_key: &str, entry: &str, cursor: Option<i64>) -> Result<()> {
+    /// One written input: its pages planned, the input pending, the cursor where the log is read up to and the late files read, together.
+    fn commit(&self, pages: &[Planned], input_key: &str, entry: &str, cursor: Option<i64>, settled: &[i64]) -> Result<()> {
         let mut batch = WriteBatch::default();
         for page in pages {
-            batch.put(planned_key(page.recipe, &page.key), &page.content_sha1);
+            batch.put(planned_key(page.recipe, &page.key), format!("{}\t{}", page.content_sha1, page.fetched_at));
         }
         batch.put(format!("pending/{input_key}"), entry);
         if let Some(seq) = cursor {
             batch.put(CURSOR, seq.to_string());
+        }
+        for seq in settled {
+            batch.delete(missing_key(*seq));
         }
         Ok(self.db.write(batch)?)
     }
@@ -514,6 +552,10 @@ impl State {
 
 fn planned_key(recipe: &str, key: &str) -> String {
     format!("planned/{recipe}/{key}")
+}
+
+fn missing_key(seq: i64) -> String {
+    format!("missing/{seq:020}")
 }
 
 /// One page waiting in the input being filled.
@@ -524,6 +566,7 @@ pub struct Planned {
     pub host: String,
     pub content_sha1: String,
     pub recipe: &'static str,
+    pub fetched_at: String,
     pub texts: Vec<Text>,
 }
 
@@ -536,6 +579,10 @@ pub struct Counts {
     pub other_recipe: u64,
     pub refused: u64,
     pub unchanged: u64,
+    /// Versions older than the one already planned, from change files read late.
+    pub older: u64,
+    /// Change files read after later ones, because they were numbered late.
+    pub late: u64,
     pub over_budget: u64,
     pub no_room: u64,
     pub inputs: u64,
@@ -560,7 +607,9 @@ pub struct Planner {
     tokens: f64,
     refilled: Instant,
     pending: usize,
-    missing_since: HashMap<i64, Instant>,
+    missing: BTreeMap<i64, Instant>,
+    /// Late files read or given up since the buffer was last empty; forgotten with the next commit.
+    settled: Vec<i64>,
 }
 
 impl Planner {
@@ -573,6 +622,11 @@ impl Planner {
         };
         state.keep_cursor(read_through)?;
         let pending = state.pending()?.len();
+        let missing = state
+            .missing()?
+            .into_iter()
+            .map(|(seq, since)| (seq, Instant::now().checked_sub(Duration::from_secs_f64((now_us() as f64 / 1e6 - since).max(0.0))).unwrap_or_else(Instant::now)))
+            .collect();
         let tokens = budget_cap(settings.pages_per_hour);
         Ok(Planner {
             settings,
@@ -590,7 +644,8 @@ impl Planner {
             tokens,
             refilled: Instant::now(),
             pending,
-            missing_since: HashMap::new(),
+            missing,
+            settled: Vec::new(),
         })
     }
 
@@ -598,42 +653,83 @@ impl Planner {
     pub async fn pass(&mut self) -> Result<bool> {
         self.forget_dropped().await?;
         let latest = latest(&self.pages).await?;
-        let mut read = 0;
+        let mut read = self.read_late().await?;
         while self.read_through < latest && read < FILES_PER_PASS {
             let seq = self.read_through + 1;
-            let Some(key) = change_key(&self.pages, seq).await? else {
-                let since = *self.missing_since.entry(seq).or_insert_with(Instant::now);
-                if since.elapsed() < self.settings.hole_wait {
-                    break;
-                }
-                eprintln!("change file {seq} was never numbered; going on without it");
-                self.advance(seq)?;
-                continue;
-            };
-            match self.pages.get(&key).await {
-                Ok(file) => {
-                    let rows = tokio::task::spawn_blocking(move || decode_changes(file, seq)).await??;
-                    for row in rows {
-                        if let ChangeRow::Page(page) = row {
-                            self.consider(*page);
-                            if self.buffer.len() >= self.settings.pages_per_input || self.buffer_chars >= self.settings.chars_per_input {
-                                self.flush().await?;
-                            }
-                        }
-                    }
-                }
-                Err(r2::Error::Missing) => eprintln!("change file {seq} ({key}) is gone; going on without it"),
-                Err(error) => return Err(anyhow!("reading change file {seq}: {error}")),
+            match self.read(seq).await? {
+                Ok(()) => read += 1,
+                Err(why) => self.note_missing(seq, &why)?,
             }
-            self.counts.files += 1;
             self.advance(seq)?;
-            read += 1;
         }
         if self.buffer_since.is_some_and(|since| since.elapsed() >= self.settings.flush_after) {
             self.flush().await?;
         }
         self.hand_over().await?;
         Ok(read > 0)
+    }
+
+    /// Change files missed on the way past: read once they can be, given up after `hole_wait`; none of them holds up the rest of the log.
+    async fn read_late(&mut self) -> Result<usize> {
+        let mut read = 0;
+        for (seq, since) in self.missing.clone() {
+            match self.read(seq).await? {
+                Ok(()) => {
+                    self.counts.late += 1;
+                    read += 1;
+                }
+                Err(why) if since.elapsed() >= self.settings.hole_wait => eprintln!("change file {seq} given up: {why}"),
+                Err(_) => continue,
+            }
+            self.missing.remove(&seq);
+            self.settled.push(seq);
+        }
+        if self.buffer.is_empty() && !self.settled.is_empty() {
+            self.state.settle_missing(&self.settled)?;
+            self.settled.clear();
+        }
+        Ok(read)
+    }
+
+    /// Considers every page of change file `seq`; the inner error says why the file cannot be read yet, the outer one fails the pass.
+    async fn read(&mut self, seq: i64) -> Result<std::result::Result<(), String>> {
+        let key = match change_key(&self.pages, seq).await {
+            Ok(Some(key)) => key,
+            Ok(None) => return Ok(Err(NOT_NUMBERED.into())),
+            Err(error) => return Ok(Err(format!("{error:#}"))),
+        };
+        let rows = match self.pages.get(&key).await {
+            Ok(file) => match tokio::task::spawn_blocking(move || decode_changes(file, seq)).await? {
+                Ok(rows) => rows,
+                Err(error) => return Ok(Err(format!("decoding {key}: {error:#}"))),
+            },
+            Err(r2::Error::Missing) => {
+                eprintln!("change file {seq} ({key}) is gone; going on without it");
+                Vec::new()
+            }
+            Err(error) => return Ok(Err(format!("reading {key}: {error}"))),
+        };
+        for row in rows {
+            if let ChangeRow::Page(page) = row {
+                self.consider(*page);
+                if self.buffer.len() >= self.settings.pages_per_input || self.buffer_chars >= self.settings.chars_per_input {
+                    self.flush().await?;
+                }
+            }
+        }
+        self.counts.files += 1;
+        Ok(Ok(()))
+    }
+
+    fn note_missing(&mut self, seq: i64, why: &str) -> Result<()> {
+        if why != NOT_NUMBERED {
+            eprintln!("change file {seq} skipped for now: {why}");
+        }
+        if !self.missing.contains_key(&seq) {
+            self.missing.insert(seq, Instant::now());
+            self.state.note_missing(seq, now_us() as f64 / 1e6)?;
+        }
+        Ok(())
     }
 
     /// Takes back the pages of inputs the task API dropped after their last attempt.
@@ -674,7 +770,6 @@ impl Planner {
     /// Marks change file `seq` read; the kept cursor moves only while nothing is buffered, so a restart reads the buffered pages' files again.
     fn advance(&mut self, seq: i64) -> Result<()> {
         self.read_through = seq;
-        self.missing_since.remove(&seq);
         if self.buffer.is_empty() {
             self.state.keep_cursor(seq)?;
         }
@@ -694,12 +789,19 @@ impl Planner {
             return;
         }
         let already = match self.buffered.get(&page.key) {
-            Some(&at) => Some(self.buffer[at].content_sha1.clone()),
-            None => self.state.planned(recipe, &page.key).ok().flatten(),
+            Some(&at) => Some((self.buffer[at].content_sha1.clone(), self.buffer[at].fetched_at.clone())),
+            None => self.state.planned_version(recipe, &page.key).ok().flatten(),
         };
-        if already.as_deref() == Some(record.content_sha1.as_str()) {
-            self.counts.unchanged += 1;
-            return;
+        if let Some((content_sha1, fetched_at)) = &already {
+            if *content_sha1 == record.content_sha1 {
+                self.counts.unchanged += 1;
+                return;
+            }
+            // Times are `iso` text of one width, so they order as text; a late file can hold an older version than the one planned.
+            if record.fetched_at < *fetched_at {
+                self.counts.older += 1;
+                return;
+            }
         }
         let planned = Planned {
             key: page.key.clone(),
@@ -707,6 +809,7 @@ impl Planner {
             host: record.domain.clone(),
             content_sha1: record.content_sha1.clone(),
             recipe,
+            fetched_at: record.fetched_at.clone(),
             texts: texts(&page.key, record),
         };
         if let Some(&at) = self.buffered.get(&page.key) {
@@ -779,7 +882,8 @@ impl Planner {
         });
         // Kept until the input is stored, so a failed write is tried again with the same pages.
         self.temp.put(&input_key, Bytes::from(file), PARQUET, None).await.map_err(|error| anyhow!("writing {input_key}: {error}"))?;
-        self.state.commit(&self.buffer, &input_key, &entry.to_string(), Some(self.read_through))?;
+        self.state.commit(&self.buffer, &input_key, &entry.to_string(), Some(self.read_through), &self.settled)?;
+        self.settled.clear();
         self.buffer.clear();
         self.buffered.clear();
         self.buffer_chars = 0;

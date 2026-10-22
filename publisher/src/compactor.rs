@@ -172,7 +172,7 @@ impl Default for Settings {
             spill_bytes: 1 << 30,
             threads: 8,
             merge_threads: 4,
-            hole_wait_s: 3_600.0,
+            hole_wait_s: 600.0,
         }
     }
 }

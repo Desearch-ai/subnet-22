@@ -275,6 +275,14 @@ async fn log(pages: &Bucket, seq: u64, records: Vec<Record>) {
     pages.put(&CHANGES.latest_key(), Bytes::from(json!({"seq": seq}).to_string()), JSON, None).await.unwrap();
 }
 
+/// Writes and indexes change file `seq` after later ones, leaving the newest number where it is.
+async fn number_late(pages: &Bucket, seq: u64, records: Vec<Record>) {
+    let file = changes::encode(&records.into_iter().map(change).collect::<Vec<_>>()).unwrap();
+    let key = format!("changes/dt=2026-10-14/{seq}.parquet");
+    pages.put(&key, Bytes::from(file), PARQUET, None).await.unwrap();
+    pages.put(&CHANGES.seq_key(seq), Bytes::from(json!({"key": key, "rows": 1}).to_string()), JSON, None).await.unwrap();
+}
+
 fn settings(dir: PathBuf, pages_per_hour: f64, start_after: i64) -> Settings {
     Settings {
         dir,
@@ -446,6 +454,46 @@ async fn each_page_is_planned_with_its_extraction_s_recipe_and_a_later_fetch_of_
     log(&pages, 2, vec![v2(record(&url(1), &format!("# {}", article(2)), "article", "en")), record(&url(2), &article(3), "article", "en")]).await;
     planner.pass().await.unwrap();
     assert_eq!((planner.counts.planned, planner.counts.unchanged), (4, 0), "a v2 fetch of a v1 page and a v1 fetch of a v2 page are planned again");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_change_file_numbered_late_holds_up_nothing_and_never_replaces_a_newer_version() {
+    let Some((_turn, redis)) = redis_db().await else {
+        eprintln!("skipped: no Redis on {REDIS}");
+        return;
+    };
+    let dir = scratch("late");
+    let stub = stub::start(dir.join("r2"), "127.0.0.1:0").await.unwrap();
+    let (pages, temp) = (bucket(stub.addr, "desearch-pages"), bucket(stub.addr, "subnet-22"));
+    let page = |n: usize, text: String, fetched_at: &str| {
+        let mut record = record(&format!("https://news.example/story/{n}"), &text, "article", "en");
+        record.fetched_at = fetched_at.into();
+        record
+    };
+    log(&pages, 1, vec![page(1, article(2), "2026-10-14T10:00:00+00:00")]).await;
+    log(&pages, 3, vec![page(2, article(3), "2026-10-14T12:00:00+00:00")]).await;
+    let mut planner = Planner::new(settings(dir.join("state"), 3600.0, 0), pages.clone(), temp.clone(), redis.clone(), Room::Fixed(0)).await.unwrap();
+    planner.pass().await.unwrap();
+    assert_eq!(planner.read_through(), 3, "the number not indexed yet does not stop the reading");
+    assert_eq!((planner.counts.files, planner.counts.planned), (2, 2));
+
+    let late = vec![page(3, article(4), "2026-10-14T10:30:00+00:00"), page(2, format!("{} before the edit", article(3)), "2026-10-14T11:00:00+00:00")];
+    number_late(&pages, 2, late).await;
+    planner.pass().await.unwrap();
+    assert_eq!((planner.counts.late, planner.counts.planned, planner.counts.older), (1, 3, 1), "the late file's new page is planned, its older version of story 2 is not");
+
+    log(&pages, 5, vec![page(4, article(5), "2026-10-14T13:00:00+00:00")]).await;
+    planner.pass().await.unwrap();
+    planner.flush().await.unwrap();
+    assert_eq!(planner.state.missing().unwrap().iter().map(|(seq, _)| *seq).collect::<Vec<_>>(), [4], "kept across restarts");
+    drop(planner);
+
+    let mut impatient = settings(dir.join("state"), 3600.0, 0);
+    impatient.hole_wait = Duration::ZERO;
+    let mut restarted = Planner::new(impatient, pages.clone(), temp.clone(), redis.clone(), Room::Fixed(0)).await.unwrap();
+    restarted.pass().await.unwrap();
+    assert!(restarted.state.missing().unwrap().is_empty(), "a number never indexed is given up after the wait");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
