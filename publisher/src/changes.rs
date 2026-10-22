@@ -3,7 +3,7 @@
 use std::sync::{Arc, LazyLock};
 
 use anyhow::Result;
-use arrow_array::builder::{Int32Builder, LargeStringBuilder, ListBuilder, StringBuilder};
+use arrow_array::builder::{BooleanBuilder, Int32Builder, LargeStringBuilder, ListBuilder, StringBuilder};
 use arrow_array::{ArrayRef, RecordBatch};
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use parquet::arrow::ArrowWriter;
@@ -50,6 +50,18 @@ pub static CHANGE_SCHEMA: LazyLock<SchemaRef> = LazyLock::new(|| {
         text("miner"),
         text("validator"),
         list("validators"),
+        text("extraction"),
+        text("text_mode"),
+        text("modified"),
+        text("site_name"),
+        text("image"),
+        text("section"),
+        list("tags"),
+        list("breadcrumbs"),
+        Field::new("entity", DataType::LargeUtf8, true),
+        Field::new("ld", DataType::LargeUtf8, true),
+        Field::new("paywalled", DataType::Boolean, true),
+        list("robots"),
     ]))
 });
 
@@ -175,11 +187,36 @@ fn columns(changes: &[Change]) -> Vec<ArrayRef> {
         }
         Arc::new(builder.finish())
     };
+    // A v1 page's v2 lists are null, as in files written before them.
+    let v2_list = |value: fn(&Record) -> &[Option<String>]| -> ArrayRef {
+        let mut builder = ListBuilder::new(StringBuilder::new());
+        for change in changes {
+            match change.record().filter(|r| !r.is_v1()) {
+                Some(record) => {
+                    for item in value(record) {
+                        builder.values().append_option(item.as_deref());
+                    }
+                    builder.append(true);
+                }
+                None => builder.append(false),
+            }
+        }
+        Arc::new(builder.finish())
+    };
+    let large = |value: fn(&Record) -> Option<&str>| -> ArrayRef {
+        let mut builder = LargeStringBuilder::new();
+        for change in changes {
+            builder.append_option(change.record().and_then(value));
+        }
+        Arc::new(builder.finish())
+    };
     let mut body = LargeStringBuilder::with_capacity(changes.len(), changes.iter().map(|c| c.record().map_or(0, |r| r.text.len())).sum());
     let mut status = Int32Builder::with_capacity(changes.len());
+    let mut paywalled = BooleanBuilder::with_capacity(changes.len());
     for change in changes {
         body.append_option(change.record().map(|r| r.text.as_str()));
         status.append_option(change.record().and_then(|r| r.status));
+        paywalled.append_option(change.record().and_then(|r| r.paywalled));
     }
     vec![
         text(|c| c.of_page().then_some(c.key.as_str())),
@@ -223,5 +260,17 @@ fn columns(changes: &[Change]) -> Vec<ArrayRef> {
         field(|r| Some(&r.miner)),
         field(|r| r.validator.as_deref()),
         list(|r| r.validators.iter().map(|v| Some(v.as_str())).collect()),
+        field(|r| r.extraction.as_deref()),
+        field(|r| r.text_mode.as_deref()),
+        field(|r| r.modified.as_deref()),
+        field(|r| r.site_name.as_deref()),
+        field(|r| r.image.as_deref()),
+        field(|r| r.section.as_deref()),
+        v2_list(|r| &r.tags),
+        v2_list(|r| &r.breadcrumbs),
+        large(|r| r.entity.as_deref()),
+        large(|r| r.ld.as_deref()),
+        Arc::new(paywalled.finish()),
+        v2_list(|r| &r.robots),
     ]
 }

@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use arrow_array::builder::{BinaryBuilder, Int32Builder, LargeStringBuilder, ListBuilder, StringBuilder, TimestampMicrosecondBuilder};
+use arrow_array::builder::{BinaryBuilder, BooleanBuilder, Int32Builder, LargeStringBuilder, ListBuilder, StringBuilder, TimestampMicrosecondBuilder};
 use arrow_array::{ArrayRef, RecordBatch};
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
 use parquet::arrow::ArrowWriter;
@@ -41,8 +41,74 @@ pub fn page(url: &str, text: &str, fetched_at: i64) -> Upload {
     }
 }
 
-/// An upload in the miners' schema; `fetched_at` overrides that column, `drop` leaves one out.
+/// A page as a miner on v2 extraction writes it.
+#[allow(dead_code)]
+pub fn page_v2(url: &str, text: &str, fetched_at: i64) -> Upload {
+    let mut upload = page(url, text, fetched_at);
+    upload.row = Row {
+        extraction: Some("v2".into()),
+        text_mode: Some("main".into()),
+        modified: Some("2026-10-06T09:00:00Z".into()),
+        site_name: Some("Example".into()),
+        image: Some(format!("{url}/cover.png")),
+        section: Some(String::new()),
+        tags: Some(vec![Some("one".into()), Some("two".into())]),
+        breadcrumbs: Some(vec![]),
+        entity: Some(String::new()),
+        ld: Some("{\"faq\": [[\"Q\", \"A\"]]}".into()),
+        paywalled: None,
+        robots: Some(vec![Some("max-snippet:-1".into())]),
+        ..upload.row
+    };
+    upload
+}
+
+/// An upload in the miners' v1 schema; `fetched_at` overrides that column, `drop` leaves one out.
 pub fn parquet(rows: &[Upload], fetched_at: Option<(DataType, ArrayRef)>, drop: Option<&str>) -> Vec<u8> {
+    write(v1_columns(rows, fetched_at), drop)
+}
+
+/// An upload in the miners' v2 schema: the v1 columns, then the v2 ones; `drop` leaves one out.
+#[allow(dead_code)]
+pub fn parquet_v2(rows: &[Upload], drop: Option<&str>) -> Vec<u8> {
+    let text = |value: &dyn Fn(&Row) -> Option<String>, kind: DataType| -> ArrayRef {
+        let mut b = StringBuilder::new();
+        rows.iter().for_each(|u| b.append_option(value(&u.row)));
+        arrow_cast::cast(&b.finish(), &kind).unwrap()
+    };
+    let list = |value: &dyn Fn(&Row) -> Option<Vec<Option<String>>>| -> ArrayRef {
+        let mut b = ListBuilder::new(StringBuilder::new());
+        for u in rows {
+            for item in value(&u.row).unwrap_or_default() {
+                b.values().append_option(item.as_deref());
+            }
+            b.append(true);
+        }
+        Arc::new(b.finish())
+    };
+    let mut paywalled = BooleanBuilder::new();
+    rows.iter().for_each(|u| paywalled.append_option(u.row.paywalled));
+    let (utf8, large) = (DataType::Utf8, DataType::LargeUtf8);
+    let strings = DataType::List(Arc::new(Field::new("item", DataType::Utf8, true)));
+    let mut columns = v1_columns(rows, None);
+    columns.extend([
+        ("extraction", utf8.clone(), text(&|r| r.extraction.clone(), utf8.clone())),
+        ("text_mode", utf8.clone(), text(&|r| r.text_mode.clone(), utf8.clone())),
+        ("modified", utf8.clone(), text(&|r| r.modified.clone(), utf8.clone())),
+        ("site_name", utf8.clone(), text(&|r| r.site_name.clone(), utf8.clone())),
+        ("image", utf8.clone(), text(&|r| r.image.clone(), utf8.clone())),
+        ("section", utf8.clone(), text(&|r| r.section.clone(), utf8.clone())),
+        ("tags", strings.clone(), list(&|r| r.tags.clone())),
+        ("breadcrumbs", strings.clone(), list(&|r| r.breadcrumbs.clone())),
+        ("entity", large.clone(), text(&|r| r.entity.clone(), large.clone())),
+        ("ld", large.clone(), text(&|r| r.ld.clone(), large)),
+        ("paywalled", DataType::Boolean, Arc::new(paywalled.finish()) as ArrayRef),
+        ("robots", strings, list(&|r| r.robots.clone())),
+    ]);
+    write(columns, drop)
+}
+
+fn v1_columns(rows: &[Upload], fetched_at: Option<(DataType, ArrayRef)>) -> Vec<(&'static str, DataType, ArrayRef)> {
     let text = |value: &dyn Fn(&Row) -> Option<String>| -> ArrayRef {
         let mut b = StringBuilder::new();
         rows.iter().for_each(|u| b.append_option(value(&u.row)));
@@ -78,7 +144,7 @@ pub fn parquet(rows: &[Upload], fetched_at: Option<(DataType, ArrayRef)>, drop: 
     let html: ArrayRef = Arc::new(arrow_cast::cast(&html.finish(), &DataType::LargeBinary).unwrap());
     let utf8 = DataType::Utf8;
     let strings = DataType::List(Arc::new(Field::new("item", DataType::Utf8, true)));
-    let columns: Vec<(&str, DataType, ArrayRef)> = vec![
+    vec![
         ("url", utf8.clone(), text(&|r| r.url.clone())),
         ("final_url", utf8.clone(), text(&|r| r.final_url.clone())),
         ("status", DataType::Int32, int(&|u| u.row.status)),
@@ -100,7 +166,10 @@ pub fn parquet(rows: &[Upload], fetched_at: Option<(DataType, ArrayRef)>, drop: 
         ("headings", strings, list(&|r| r.headings.clone())),
         ("text", DataType::LargeUtf8, Arc::new(body.finish())),
         ("text_sha256", utf8, text(&|r| r.text_sha256.clone())),
-    ];
+    ]
+}
+
+fn write(columns: Vec<(&'static str, DataType, ArrayRef)>, drop: Option<&str>) -> Vec<u8> {
     let kept: Vec<_> = columns.into_iter().filter(|(name, _, _)| Some(*name) != drop).collect();
     let schema = Arc::new(Schema::new(kept.iter().map(|(name, kind, _)| Field::new(*name, kind.clone(), true)).collect::<Vec<_>>()));
     let batch = RecordBatch::try_new(schema.clone(), kept.into_iter().map(|(_, _, array)| array).collect()).unwrap();

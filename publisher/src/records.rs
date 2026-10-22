@@ -26,6 +26,11 @@ pub const ROW_COLUMNS: [&str; 16] = [
     "text",
     "text_sha256",
 ];
+/// The columns a v2 upload holds after `ROW_COLUMNS`; a file with `extraction` is v2 and must hold them all.
+pub const ROW_COLUMNS_V2: [&str; 12] =
+    ["extraction", "text_mode", "modified", "site_name", "image", "section", "tags", "breadcrumbs", "entity", "ld", "paywalled", "robots"];
+/// The `extraction` of a v2 row; a record without one is v1.
+pub const EXTRACTION_V2: &str = "v2";
 pub const SECOND: i64 = 1_000_000;
 const CLOCK_SKEW: i64 = 300 * SECOND;
 const DEFAULT_CLAIM_S: f64 = 900.0;
@@ -54,6 +59,18 @@ pub struct Row {
     pub headings: Option<Vec<Option<String>>>,
     pub text: Option<String>,
     pub text_sha256: Option<String>,
+    pub extraction: Option<String>,
+    pub text_mode: Option<String>,
+    pub modified: Option<String>,
+    pub site_name: Option<String>,
+    pub image: Option<String>,
+    pub section: Option<String>,
+    pub tags: Option<Vec<Option<String>>>,
+    pub breadcrumbs: Option<Vec<Option<String>>>,
+    pub entity: Option<String>,
+    pub ld: Option<String>,
+    pub paywalled: Option<bool>,
+    pub robots: Option<Vec<Option<String>>>,
 }
 
 /// A page as published; Python's record also carries `html`, `lastmod` and `etag`, always empty.
@@ -83,6 +100,30 @@ pub struct Record {
     pub miner: String,
     pub validator: Option<String>,
     pub validators: Vec<String>,
+    /// None for a v1 page, whose v2 fields are all None or empty.
+    pub extraction: Option<String>,
+    pub text_mode: Option<String>,
+    pub modified: Option<String>,
+    pub site_name: Option<String>,
+    pub image: Option<String>,
+    pub section: Option<String>,
+    pub tags: Vec<Option<String>>,
+    pub breadcrumbs: Vec<Option<String>>,
+    pub entity: Option<String>,
+    pub ld: Option<String>,
+    pub paywalled: Option<bool>,
+    pub robots: Vec<Option<String>>,
+}
+
+impl Record {
+    pub fn is_v1(&self) -> bool {
+        self.extraction.is_none()
+    }
+
+    /// About the memory the record holds: its long texts and an allowance for the rest.
+    pub fn held_bytes(&self) -> usize {
+        self.text.len() + self.entity.as_ref().map_or(0, String::len) + self.ld.as_ref().map_or(0, String::len) + 512
+    }
 }
 
 /// The earliest and latest fetch time a task's rows may claim, in microseconds.
@@ -146,6 +187,18 @@ pub fn build_record(row: &Row, context: &Context) -> Result<Record> {
         miner: context.miner.to_string(),
         validator: context.validator.map(str::to_string),
         validators,
+        extraction: row.extraction.clone(),
+        text_mode: row.text_mode.clone(),
+        modified: row.modified.clone(),
+        site_name: row.site_name.clone(),
+        image: row.image.clone(),
+        section: row.section.clone(),
+        tags: row.tags.clone().unwrap_or_default(),
+        breadcrumbs: row.breadcrumbs.clone().unwrap_or_default(),
+        entity: row.entity.clone(),
+        ld: row.ld.clone(),
+        paywalled: row.paywalled,
+        robots: row.robots.clone().unwrap_or_default(),
         url,
         text,
     })
@@ -159,31 +212,61 @@ pub fn record_key(record: &Record) -> Result<String> {
     page_key(&record.url)
 }
 
-/// SHA-1 of Python's `json.dumps(stable, sort_keys=True, ensure_ascii=False)` over the content fields only.
+/// One value of the JSON a version hashes.
+enum Json<'a> {
+    Text(&'a str),
+    Optional(Option<&'a str>),
+    List(&'a [Option<String>]),
+    Flag(Option<bool>),
+}
+
+/// SHA-1 of Python's `json.dumps(stable, sort_keys=True, ensure_ascii=False)` over the content fields only; a v2 record's v2 fields are content too.
 pub fn record_version(record: &Record) -> String {
+    let r = record;
+    let mut fields = vec![
+        ("author", Json::Text(&r.author)),
+        ("canonical", Json::Optional(r.canonical.as_deref())),
+        ("description", Json::Optional(r.description.as_deref())),
+        ("headings", Json::List(&r.headings)),
+        ("json_ld_types", Json::List(&r.json_ld_types)),
+        ("lang", Json::Text(&r.lang)),
+        ("page_type", Json::Optional(r.page_type.as_deref())),
+        ("published", Json::Text(&r.published)),
+        ("text", Json::Text(&r.text)),
+        ("title", Json::Text(&r.title)),
+        ("url", Json::Text(&r.url)),
+    ];
+    if !r.is_v1() {
+        fields.extend([
+            ("extraction", Json::Optional(r.extraction.as_deref())),
+            ("text_mode", Json::Optional(r.text_mode.as_deref())),
+            ("modified", Json::Optional(r.modified.as_deref())),
+            ("site_name", Json::Optional(r.site_name.as_deref())),
+            ("image", Json::Optional(r.image.as_deref())),
+            ("section", Json::Optional(r.section.as_deref())),
+            ("tags", Json::List(&r.tags)),
+            ("breadcrumbs", Json::List(&r.breadcrumbs)),
+            ("entity", Json::Optional(r.entity.as_deref())),
+            ("ld", Json::Optional(r.ld.as_deref())),
+            ("paywalled", Json::Flag(r.paywalled)),
+            ("robots", Json::List(&r.robots)),
+        ]);
+    }
+    fields.sort_unstable_by_key(|(name, _)| *name);
     let mut json = JsonSha1::default();
-    json.raw("{\"author\": ");
-    json.string(&record.author);
-    json.raw(", \"canonical\": ");
-    json.optional(record.canonical.as_deref());
-    json.raw(", \"description\": ");
-    json.optional(record.description.as_deref());
-    json.raw(", \"headings\": ");
-    json.list(&record.headings);
-    json.raw(", \"json_ld_types\": ");
-    json.list(&record.json_ld_types);
-    json.raw(", \"lang\": ");
-    json.string(&record.lang);
-    json.raw(", \"page_type\": ");
-    json.optional(record.page_type.as_deref());
-    json.raw(", \"published\": ");
-    json.string(&record.published);
-    json.raw(", \"text\": ");
-    json.string(&record.text);
-    json.raw(", \"title\": ");
-    json.string(&record.title);
-    json.raw(", \"url\": ");
-    json.string(&record.url);
+    for (i, (name, value)) in fields.iter().enumerate() {
+        json.raw(if i == 0 { "{\"" } else { ", \"" });
+        json.raw(name);
+        json.raw("\": ");
+        match value {
+            Json::Text(value) => json.string(value),
+            Json::Optional(value) => json.optional(*value),
+            Json::List(values) => json.list(values),
+            Json::Flag(Some(true)) => json.raw("true"),
+            Json::Flag(Some(false)) => json.raw("false"),
+            Json::Flag(None) => json.raw("null"),
+        }
+    }
     json.raw("}");
     hex(&json.hasher.finalize())
 }
