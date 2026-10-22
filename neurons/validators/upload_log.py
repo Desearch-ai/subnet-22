@@ -40,6 +40,10 @@ class UploadLog:
         added = 0
         for seq in range(int(cursor), latest + 1):
             found = await self.read(seq)
+            if found is None and seq < latest:
+                # Files are written in order, so one missing below the latest was lost with its storage.
+                log.warning("upload log %d is missing while %d exists, skipped", seq, latest)
+                found = {"entries": []}
             if found is None:
                 break
             added += self.ledger.add_uploads(found["entries"])
@@ -77,7 +81,8 @@ class UploadLog:
         async with self.http.get(
             f"{self.storage_url}/{key}", timeout=READ_TIMEOUT
         ) as response:
-            if response.status == 404:
+            # A store that keeps its bucket private answers 403, not 404, for an object it does not have.
+            if response.status in (403, 404):
                 return None
             response.raise_for_status()
             return await response.json(content_type=None)

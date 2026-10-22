@@ -46,7 +46,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--neuron.storage_url",
         type=str,
         help="Public URL of the bucket uploads land in; the open list and the uploads are read from it.",
-        default="https://r2.desearch.ai",
+        default="https://subnet-22.s3.us-east-va.io.cloud.ovh.us",
     )
     return parser
 

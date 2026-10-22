@@ -82,6 +82,9 @@ pub struct Settings {
     pub r2_endpoint: String,
     pub r2_access_key: String,
     pub r2_secret_key: String,
+    pub r2_region: String,
+    /// The uploads bucket is private and validators read objects the API opens one by one.
+    pub public_objects: bool,
     pub bucket: String,
     pub prefix: String,
     pub pages_bucket: String,
@@ -186,6 +189,8 @@ impl Settings {
             r2_endpoint: text("CF_R2_ENDPOINT", ""),
             r2_access_key: text("CF_R2_ACCESS_KEY_ID", ""),
             r2_secret_key: text("CF_R2_SECRET_ACCESS_KEY", ""),
+            r2_region: text("CF_R2_REGION", "auto"),
+            public_objects: text("CF_R2_PUBLIC_OBJECTS", "0") == "1",
             bucket: text("CF_R2_BUCKET", "subnet-22"),
             prefix: text("TASK_API_R2_PREFIX", ""),
             pages_bucket: match pages_store {

@@ -226,24 +226,28 @@ docker run -d --env-file task-api/deploy/.env.example -e TASK_API_REGISTRY=chain
 curl -s localhost:8080/v1/ping
 ```
 
-Fill in the R2 credentials, admin hotkeys, signing key and Redis URL in the env file first. Behind a
+Fill in the storage credentials, admin hotkeys, signing key and Redis URL in the env file first. Behind a
 proxy that checks `/v1/ping`, a deploy can roll: the new copy serves next to the old one until the old
 one stops, and only one copy at a time runs the background work.
 
 It needs two buckets:
 
-- `subnet-22`, the temporary R2 bucket for uploads, with a lifecycle rule that deletes objects after one day;
+- `subnet-22`, the temporary bucket for uploads, with a lifecycle rule that deletes objects after one day.
+  `CF_R2_ENDPOINT`, `CF_R2_REGION` (`auto` by default, as R2 signs), `CF_R2_ACCESS_KEY_ID` and
+  `CF_R2_SECRET_ACCESS_KEY` reach it;
 - `desearch-pages`, the bucket for published work, with lifecycle rules that delete `changes/` and
-  `rounds/` after three days and `reports/` after 30 days; `current/` is kept by the compactor. It is reached with the same R2 token unless
+  `rounds/` after three days and `reports/` after 30 days; `current/` is kept by the compactor. It is reached with the uploads bucket's credentials unless
   `PAGES_S3_ENDPOINT`, `PAGES_S3_REGION`, `PAGES_S3_ACCESS_KEY_ID` and `PAGES_S3_SECRET_ACCESS_KEY`
   (and `PAGES_S3_BUCKET` when the name differs) put it on another S3 store; the publisher and the
   compactor read the same settings.
 
-Validators read `subnet-22` directly, so serve it publicly on a custom domain: R2 → the bucket →
-Settings → Public access → Custom Domains (or `wrangler r2 bucket domain add subnet-22 --domain
-<hostname>`), not the rate-limited `r2.dev` URL. Objects are readable but not listable, which is why
-the API keeps `validation/open.json`. Mainnet serves it at `https://r2.desearch.ai`, the validator's
-default `--neuron.storage_url`.
+Validators read `subnet-22` without credentials. On a store that keeps buckets private and opens
+objects one by one, as OVHcloud Object Storage does, set `CF_R2_PUBLIC_OBJECTS=1` for the API and the
+publisher: the API writes its own files readable by anyone and opens each upload once its completion
+is checked, and the planner writes embed inputs the same way. On R2, serve the bucket on a custom
+domain instead, not the rate-limited `r2.dev` URL. Objects are readable but not listable, which is
+why the API keeps `validation/open.json`. Mainnet serves it at
+`https://subnet-22.s3.us-east-va.io.cloud.ovh.us`, the validator's default `--neuron.storage_url`.
 
 The [bot](../desearch-bot/README.md) fills the queue with the admin hotkey (`--task-api`).
 
