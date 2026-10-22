@@ -410,9 +410,9 @@ def test_an_input_is_the_exact_input_columns_and_its_entry_is_the_planners(tmp_p
     assert pq.read_table(pa.BufferReader(body)).column_names == INPUT_SCHEMA.names
     assert read_parquet(body, INPUT_SCHEMA) == given.rows()
 
-    key = input_key(86_400.0 * 3)
-    assert re.fullmatch(r"embed/inputs/dt=1970-01-04/[0-9a-f]{32}\.parquet", key)
-    assert input_key(0.0) != input_key(0.0), "a new key each time"
+    key = input_key()
+    assert re.fullmatch(r"embed/inputs/[0-9a-f]{32}\.parquet", key)
+    assert input_key() != input_key(), "a new key each time"
     entry = input_entry(given, key, body, now=12.5)
     assert entry == {
         "input_key": key,

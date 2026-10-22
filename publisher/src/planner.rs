@@ -23,7 +23,7 @@ use tokio::sync::watch;
 
 use crate::current::{decode_changes, ChangeRow, PageRow};
 use crate::records::Record;
-use crate::service::{day, now_us};
+use crate::service::now_us;
 
 /// The text recipe below; any change to what a text holds is a new embedding version, so every page is embedded again.
 pub const RECIPE: &str = "page-v1";
@@ -597,7 +597,7 @@ impl Planner {
         }
         let rows: Vec<(&Planned, &Text)> = self.buffer.iter().flat_map(|page| page.texts.iter().map(move |text| (page, text))).collect();
         let file = encode_input(&rows)?;
-        let input_key = format!("embed/inputs/dt={}/{}.parquet", day(now_us()), uuid::Uuid::new_v4().simple());
+        let input_key = format!("embed/inputs/{}.parquet", uuid::Uuid::new_v4().simple());
         let entry = json!({
             "input_key": input_key,
             "input_sha256": hex(&Sha256::digest(&file)),

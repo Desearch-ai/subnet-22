@@ -12,7 +12,7 @@ use axum::http::{HeaderMap, Uri};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use desearch::r2::{Error as StorageError, PARQUET};
-use desearch::time::{now, utc_day};
+use desearch::time::now;
 use redis::AsyncCommands;
 use serde_json::{json, Map, Value};
 
@@ -244,7 +244,8 @@ async fn issue(state: &State, got: &Claim, kind: &str, who: &Caller) -> Result<O
     let task_id = &got.task_id;
     let (suffix, content_type) = if kind == EMBED { (VECTORS_SUFFIX, VECTORS_TYPE) } else { (".parquet", PARQUET) };
     let name = format!("task={task_id}/{}-{}{suffix}", who.hotkey, got.seq);
-    let upload_key = format!("uploads/dt={}/{name}", utc_day(now()));
+    // Random task ids lead the key so storage that shards by key range spreads the writes.
+    let upload_key = format!("uploads/{name}");
     let since_epoch = Duration::from_secs_f64(now());
     // It may outlive the claim; a late completion or a file written after it is refused.
     let claim_ttl = state.settings.claim_ttl_for(kind) as u64;
@@ -390,6 +391,7 @@ async fn verify_completion(state: &State, task_id: &str, report: &CompleteBody, 
             return Err(ApiError::status(422, "the upload is not a Parquet file"));
         }
     }
+    state.storage.make_public(&report.key).await.map_err(|e| storage_down(&format!("could not open {} to readers", report.key), e))?;
 
     let mut steps = Steps::since(arrived);
     steps.mark("checks");

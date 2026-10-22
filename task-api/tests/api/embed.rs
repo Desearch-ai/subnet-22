@@ -385,7 +385,7 @@ async fn an_embed_upload_is_one_float16_vector_per_text_and_its_size_is_checked_
     embed_round(&h, input()).await;
     let task = h.miner.post("/v1/tasks/claim", embed_claim()).await.unwrap()["tasks"][0].clone();
     let key = task["upload"]["key"].as_str().unwrap();
-    assert!(key.starts_with("uploads/dt=") && key.ends_with(".f16"), "{key}");
+    assert!(key.starts_with("uploads/task=") && key.ends_with(".f16"), "{key}");
     assert_eq!(task["upload"]["content_type"], "application/octet-stream");
     let url = task["upload"]["url"].as_str().unwrap();
     let complete = format!("/v1/tasks/{}/complete", task_id(&task));

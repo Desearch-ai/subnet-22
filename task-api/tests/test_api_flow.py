@@ -265,7 +265,7 @@ async def _scenario(h: Harness) -> None:
     assert task["round_id"] == round_id
     assert len(task["urls"]) == 3
     assert re.fullmatch(
-        rf"uploads/dt=[\d-]+/task={task_id}/{h.miner.hotkey}-\d+\.parquet",
+        rf"uploads/task={task_id}/{h.miner.hotkey}-\d+\.parquet",
         upload["key"],
     )
     assert upload["content_type"] == PARQUET
