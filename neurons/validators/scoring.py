@@ -6,15 +6,23 @@ import io
 import itertools
 import math
 from collections import Counter, defaultdict
-from collections.abc import Mapping
-from dataclasses import dataclass
-from urllib.parse import urlsplit
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, fields
 
+import pyarrow as pa
 import pyarrow.parquet as pq
 
-from desearch.extraction import Page, extract, looks_blocked
-from desearch.extraction.schema import PAGE_SCHEMA, sha256_hex
+from desearch.extraction import (
+    EXTRACTION_V2,
+    Page,
+    extract,
+    looks_blocked,
+    v1,
+)
+from desearch.extraction.schema import PAGE_SCHEMA, PAGE_SCHEMA_V2, sha256_hex
+from desearch.fetch import page_url
 from neurons.validators.compare import (
+    CHURN_TEXT_MODES,
     CHURN_TYPES,
     MATCH_THRESHOLD,
     MIN_PRECISION,
@@ -77,6 +85,28 @@ STRUCTURED = (
 CHECKED_FIELDS = ("title", "published", "canonical", "author")
 # These never change between two fetches of the same page, so a difference is a forgery.
 HARD_FIELDS = frozenset({"published", "canonical"})
+# A fetch served without the page's metadata leaves these empty, which proves nothing.
+UNVERIFIABLE_WHEN_EMPTY = frozenset({"published"})
+
+
+@dataclass(frozen=True)
+class Extraction:
+    """An upload's version: its schema, its extractor and the fields re-extraction compares exactly."""
+
+    schema: pa.Schema
+    extract: Callable
+    page: type
+    exact: tuple[str, ...]
+
+
+V1 = Extraction(PAGE_SCHEMA, v1.extract, v1.Page, STRUCTURED)
+V2 = Extraction(
+    PAGE_SCHEMA_V2,
+    extract,
+    Page,
+    tuple(field.name for field in fields(Page) if field.name != "text"),
+)
+EXTRACTIONS = (V1, V2)
 
 
 @dataclass
@@ -92,17 +122,32 @@ def read_pages(data: bytes | None, assigned: int | None = None) -> list[dict] | 
         return None
     try:
         parquet = pq.ParquetFile(io.BytesIO(data))
-        if not parquet.schema_arrow.equals(PAGE_SCHEMA):
+        extraction = schema_extraction(parquet.schema_arrow)
+        if extraction is None:
             return None
         if assigned is not None and upload_too_big(parquet.metadata, assigned):
             return None
-        table = parquet.read(columns=[n for n in PAGE_SCHEMA.names if n != "html"])
+        names = [name for name in extraction.schema.names if name != "html"]
+        table = parquet.read(columns=names)
         # The footer is the miner's word; the decoded columns are not.
         if assigned is not None and table.nbytes > max(assigned, 1) * MAX_ROW_BYTES:
             return None
-        return table.to_pylist()
+        rows = table.to_pylist()
+        if extraction is V2 and any(r["extraction"] != EXTRACTION_V2 for r in rows):
+            return None
+        return rows
     except Exception:
         return None
+
+
+def schema_extraction(schema: pa.Schema) -> Extraction | None:
+    """An upload's version is its schema."""
+    return next((e for e in EXTRACTIONS if schema.equals(e.schema)), None)
+
+
+def row_extraction(row: dict) -> Extraction:
+    """read_pages lets the extraction column through only in a file that is v2 throughout."""
+    return V2 if row.get("extraction") == EXTRACTION_V2 else V1
 
 
 class UploadTooLarge(Exception):
@@ -188,24 +233,8 @@ def rows_by_url(rows: list[dict], assigned: list[str]) -> tuple[dict[str, dict],
     return kept, duplicates
 
 
-def same_site(a: str, b: str) -> bool:
-    try:
-        host_a = (urlsplit(a).hostname or "").removeprefix("www.")
-        host_b = (urlsplit(b).hostname or "").removeprefix("www.")
-    except ValueError:
-        return False
-    if not host_a or not host_b:
-        return False
-    return (
-        host_a == host_b
-        or host_a.endswith("." + host_b)
-        or host_b.endswith("." + host_a)
-    )
-
-
 def extraction_url(row: dict) -> str:
-    final = row["final_url"]
-    return final if final and same_site(row["url"], final) else row["url"]
+    return page_url(row["url"], row["final_url"])
 
 
 def derived_from_html(row: dict) -> bool:
@@ -218,12 +247,12 @@ def derived_from_html(row: dict) -> bool:
         return False
     if sha256_hex(row["text"]) != row["text_sha256"]:
         return False
+    extraction = row_extraction(row)
     decoded = html.decode("utf-8", "replace")
     for url in dict.fromkeys((extraction_url(row), row["url"])):
-        page = extract(decoded, url)
-        if all(getattr(page, name) == row[name] for name in STRUCTURED) and is_match(
-            similarity(row["text"], page.text), REEXTRACT_THRESHOLD
-        ):
+        page = extraction.extract(decoded, url)
+        exact = all(getattr(page, name) == row[name] for name in extraction.exact)
+        if exact and is_match(similarity(row["text"], page.text), REEXTRACT_THRESHOLD):
             return True
     return False
 
@@ -302,30 +331,47 @@ def why_unverifiable(fetched: FetchedPage, page: Page) -> str:
     return ""
 
 
-def texts_match(sim: Similarity, miner: Page, validator: Page, assigned_type) -> bool:
+def text_mode(page) -> str:
+    """The page's text mode, or "" for a v1 page, which has none."""
+    return getattr(page, "text_mode", "")
+
+
+def churns(page) -> bool:
+    return page.page_type in CHURN_TYPES or text_mode(page) in CHURN_TEXT_MODES
+
+
+def texts_match(sim: Similarity, miner, validator, assigned) -> bool:
     short = (
         len(miner.text) < SHORT_TEXT_CHARS and len(validator.text) < SHORT_TEXT_CHARS
     )
     if short and (normalize(miner.title) or normalize(validator.title)):
         return sim.title_match
-    return is_match(sim) or is_match(sim, page_type=assigned_type())
+    return is_match(sim) or is_match(
+        sim, page_type=assigned.page_type, text_mode=text_mode(assigned)
+    )
 
 
 def judge_sample(row: dict, fetched: FetchedPage | None) -> dict:
+    extraction = row_extraction(row)
     fetched = fetched or FetchedPage(0, error="not_fetched")
     readable = fetched.html and len(fetched.html) <= TOO_LARGE_BYTES
-    page = extract(fetched.html, extraction_url(row)) if readable else Page()
+    page = (
+        extraction.extract(fetched.html, extraction_url(row))
+        if readable
+        else extraction.page()
+    )
 
-    def assigned_type() -> str:
+    def assigned_page():
         # Keyed on the assigned URL, not the miner's final_url.
         if extraction_url(row) == row["url"]:
-            return page.page_type
-        return extract(fetched.html, row["url"]).page_type
+            return page
+        return extraction.extract(fetched.html, row["url"])
 
     problem = why_unverifiable(fetched, page)
-    miner = Page(title=row["title"] or "", text=row["text"] or "")
+    miner = extraction.page(title=row["title"] or "", text=row["text"] or "")
     sim = None
     page_type = ""
+    churning = False
 
     if row["error"] and unreachable_both_ways(fetched):
         outcome = ERRORS_CONFIRMED
@@ -336,19 +382,19 @@ def judge_sample(row: dict, fetched: FetchedPage | None) -> dict:
             outcome = UNVERIFIABLE
         else:
             sim = similarity(miner.text, page.text, miner.title, page.title)
-            page_type = assigned_type()
-            outcome = (
-                MATCHED
-                if texts_match(sim, miner, page, lambda: page_type)
-                else MISMATCHED
-            )
+            assigned = assigned_page()
+            page_type, churning = assigned.page_type, churns(assigned)
+            outcome = MATCHED if texts_match(sim, miner, page, assigned) else MISMATCHED
     elif problem:
         outcome = ERRORS_CONFIRMED
     else:
         outcome = ERRORS_UNCONFIRMED
 
     differs = fields_differ(row, page) if outcome == MATCHED else []
-    if HARD_FIELDS & set(differs):
+    hard = HARD_FIELDS & set(differs)
+    if hard and hard <= empty_on_one_side(row, page):
+        outcome = UNVERIFIABLE
+    elif hard:
         outcome = MISMATCHED
     return {
         "url": row["url"],
@@ -367,17 +413,28 @@ def judge_sample(row: dict, fetched: FetchedPage | None) -> dict:
         "via": fetched.via,
         "fields_differ": differs,
         "why": mismatch_reason(
-            outcome, row, problem, sim, page_type, len(page.text), differs
+            outcome, row, problem, sim, page_type, len(page.text), differs, churning
         ),
     }
 
 
-def fields_differ(row: dict, page: Page) -> list[str]:
+def fields_differ(row: dict, page) -> list[str]:
     return [
         name
         for name in CHECKED_FIELDS
         if normalize(row.get(name) or "") != normalize(getattr(page, name))
     ]
+
+
+def empty_on_one_side(row: dict, page) -> set[str]:
+    """Fields the miner left empty, or the live page did while served without its head metadata."""
+    bare = not page.canonical and not page.json_ld_types
+    return {
+        name
+        for name in UNVERIFIABLE_WHEN_EMPTY
+        if not normalize(row.get(name) or "")
+        or (bare and not normalize(getattr(page, name)))
+    }
 
 
 def format_score(value: float) -> str:
@@ -393,10 +450,14 @@ def mismatch_reason(
     page_type: str,
     their_chars: int,
     differs: list[str] = (),
+    churning: bool = False,
 ) -> str:
     claimed = row["error"]
     if outcome == NOT_FETCHED:
         return f"the validator could not fetch the page ({problem}), so it is no evidence either way"
+    if outcome == UNVERIFIABLE and not problem:
+        empty = ", ".join(name for name in differs if name in UNVERIFIABLE_WHEN_EMPTY)
+        return f"the text matches but {empty} is empty on one side, so it cannot be compared"
     if outcome == UNVERIFIABLE:
         return f"the validator could not read the page either ({problem})"
     if outcome == ERRORS_CONFIRMED:
@@ -424,7 +485,7 @@ def mismatch_reason(
             f"score {format_score(sim.score)} is fine but only {format_score(sim.precision)} of the miner's text is"
             f" on the live page, under the {MIN_PRECISION:.2f} floor"
         )
-    if page_type in CHURN_TYPES:
+    if churning:
         return (
             f"a {page_type} page that changed too much: score {format_score(sim.score)},"
             f" kept {format_score(sim.recall)} of the live text, length {sim.growth:.2f}x"
