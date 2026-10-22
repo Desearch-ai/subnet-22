@@ -41,7 +41,7 @@ MALLOC_ARENA_MAX=2 desearch-bot run --buckets-dir /var/lib/desearch-bot/buckets 
 | `--discovery-share` | 30 | percent of the visit slots kept for domains never checked |
 | `--backlog-share` | 20 | percent kept for sitemaps found but not read yet; re-checks of known sites get the rest |
 | `--task-api` | none | the task API to fill, such as `https://api-22.desearch.ai` |
-| `--outcomes-url` | none | where the task API publishes what became of each URL, such as `https://r2.desearch.ai` |
+| `--outcomes-url` | none | where the task API publishes what became of each URL, such as `https://subnet-22.s3.us-east-va.io.cloud.ovh.us` |
 | `--per-domain-hourly` | 2000 | URLs one domain may send in an hour |
 | `--new-share` | 50 | percent of each domain's sends kept for pages never sent |
 | `--retry-share` | 10 | percent kept for retries and scheduled re-crawls; changed pages get the rest |
@@ -82,12 +82,16 @@ Each domain's queue has three lanes that send at the same time:
 Each lane gets its share of what the domain sends (`--new-share`, `--retry-share`, and the rest for
 changed pages), kept even across passes, and what one lane leaves unused goes to the others.
 
-Every 15 seconds the bot asks `GET /v1/room` how many tasks the API can take, and sends that many
-times 1,000 URLs, a few from each domain in turn, best ranked first, within `--per-domain-hourly`. A
-batch carries a hash of its content, so a batch sent again after a timeout is queued once, and a
-batch in flight survives a restart. It then reads `outcomes/seq/<n>.json` in order: a published or
-unchanged page waits for its next lastmod change, and a failed or dropped one becomes a retry. A
-status line every minute shows the queue, what was sent in each lane, the room and the outcome feed.
+Every 5 seconds the bot asks `GET /v1/room` how many tasks the API can take, and sends that many
+times 1,000 URLs, a few from each domain in turn, best ranked first, within `--per-domain-hourly` and
+`--urls-per-hour`. The hourly pace starts empty and saves at most two minutes of sends, so a restart
+or a stall is followed by no burst. A batch carries a hash of its content, so a batch sent again after
+a timeout is queued once, and a batch in flight survives a restart. URLs over 2,048 characters, the
+sitemap protocol's limit, are never sent. The outcome feed `outcomes/seq/<n>.json` is read up to 8
+files at a time and applied in order: a published or unchanged page waits for its next lastmod change,
+and a failed or dropped one becomes a retry; a number still missing after two minutes, or whose file
+expired, is skipped and its pages come back once overdue. A status line every minute shows the queue,
+what was sent in each lane, the room and the outcome feed.
 
 Pages found before the queue existed join it once through `--backfill-ready`. Pages the Python
 feeder already sent are marked first, from its state:
