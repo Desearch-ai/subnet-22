@@ -8,33 +8,41 @@ from dataclasses import asdict
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from desearch.extraction import Page, extract, looks_blocked
-from desearch.extraction.schema import PAGE_SCHEMA, sha256_hex
-from desearch.fetch import Fetched, decode_html
+from desearch.extraction import EXTRACTION_V1, Page, extract, looks_blocked, v1
+from desearch.extraction.schema import PAGE_SCHEMA, PAGE_SCHEMA_V2, sha256_hex
+from desearch.fetch import Fetched, decode_html, page_url
 
 ROW_GROUP_ROWS = 50
 
 
-def build_row(fetched: Fetched, max_bytes: int) -> dict:
+def build_row(fetched: Fetched, max_bytes: int, extraction: str) -> dict:
     if fetched.body is None:
-        return error_row(fetched, fetched.error or "other")
+        return error_row(fetched, fetched.error or "other", extraction)
 
     html = decode_html(fetched.body, fetched.charset)
-    page = extract(html, fetched.final_url)
+    page = extractor(extraction)(html, page_url(fetched.url, fetched.final_url))
     if looks_blocked(fetched.status, html, page.text):
-        return error_row(fetched, "blocked")
+        return error_row(fetched, "blocked", extraction)
     if fetched.error:
-        return error_row(fetched, fetched.error)
+        return error_row(fetched, fetched.error, extraction)
     if not page.text.strip():
-        return error_row(fetched, "empty")
+        return error_row(fetched, "empty", extraction)
 
     fields = page_fields(html, page)
     if fields["html_bytes"] > max_bytes:
-        return error_row(fetched, "too_large")
-    return {**fetch_fields(fetched), "error": None, **fields}
+        return error_row(fetched, "too_large", extraction)
+    return {**fetch_fields(fetched, extraction), "error": None, **fields}
 
 
-def page_fields(html: str, page: Page) -> dict:
+def extractor(extraction: str):
+    return v1.extract if extraction == EXTRACTION_V1 else extract
+
+
+def page_schema(extraction: str) -> pa.Schema:
+    return PAGE_SCHEMA if extraction == EXTRACTION_V1 else PAGE_SCHEMA_V2
+
+
+def page_fields(html: str, page) -> dict:
     raw = html.encode("utf-8", "replace")
     return {
         "html_bytes": len(raw),
@@ -45,20 +53,21 @@ def page_fields(html: str, page: Page) -> dict:
     }
 
 
-def error_row(fetched: Fetched, error: str) -> dict:
+def error_row(fetched: Fetched, error: str, extraction: str) -> dict:
+    empty = v1.Page(page_type="") if extraction == EXTRACTION_V1 else Page(page_type="")
     return {
-        **fetch_fields(fetched),
+        **fetch_fields(fetched, extraction),
         "error": error,
         "html_bytes": 0,
         "html": None,
         "html_sha256": "",
-        **asdict(Page(page_type="")),
+        **asdict(empty),
         "text_sha256": "",
     }
 
 
-def fetch_fields(fetched: Fetched) -> dict:
-    return {
+def fetch_fields(fetched: Fetched, extraction: str) -> dict:
+    fields = {
         "url": fetched.url,
         "final_url": fetched.final_url,
         "status": fetched.status,
@@ -66,18 +75,23 @@ def fetch_fields(fetched: Fetched) -> dict:
         "elapsed_ms": fetched.elapsed_ms,
         "content_type": fetched.content_type,
     }
+    if extraction == EXTRACTION_V1:
+        return fields
+    return {**fields, "extraction": extraction}
 
 
 class UploadWriter:
     """Rows go into the Parquet upload as they arrive, so a task never sits whole in memory."""
 
-    def __init__(self, task_id: str, hotkey: str):
+    def __init__(self, task_id: str, hotkey: str, extraction: str):
+        schema = page_schema(extraction)
         metadata = {
-            **(PAGE_SCHEMA.metadata or {}),
+            **(schema.metadata or {}),
             b"task_id": task_id.encode(),
             b"hotkey": hotkey.encode(),
         }
-        self.schema = PAGE_SCHEMA.with_metadata(metadata)
+        self.extraction = extraction
+        self.schema = schema.with_metadata(metadata)
         self.sink = io.BytesIO()
         self.writer = pq.ParquetWriter(self.sink, self.schema, compression="zstd")
         self.pending: list[dict] = []
@@ -114,8 +128,10 @@ class UploadWriter:
         return self.sink.getvalue()
 
 
-def write_parquet(rows: list[dict], task_id: str, hotkey: str) -> bytes:
-    upload = UploadWriter(task_id, hotkey)
+def write_parquet(
+    rows: list[dict], task_id: str, hotkey: str, extraction: str
+) -> bytes:
+    upload = UploadWriter(task_id, hotkey, extraction)
     for start in range(0, len(rows), ROW_GROUP_ROWS):
         upload.write_group(rows[start : start + ROW_GROUP_ROWS])
     return upload.close()

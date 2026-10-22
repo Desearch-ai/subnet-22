@@ -16,6 +16,7 @@ from yarl import URL
 
 from desearch import env
 from desearch.client import TaskApiClient, TaskApiError
+from desearch.extraction import EXTRACTION_V1
 from desearch.fetch import (
     Fetched,
     Fetcher,
@@ -40,6 +41,8 @@ HEADROOM = 0.7
 ROOM_CHECK_S = 1.0
 ATTEMPTS = 3
 SUMMARY_EVERY_S = 60.0
+# Validators before 0.0.241 cannot read v2 uploads.
+EXTRACTION = EXTRACTION_V1
 UPLOAD_TIMEOUT = aiohttp.ClientTimeout(total=120.0, sock_connect=15.0)
 
 
@@ -273,7 +276,7 @@ class Miner(TaskWorker):
             else None
         )
         # Extraction is CPU-bound and each parse holds a whole page tree in memory.
-        self.extraction = ThreadPoolExecutor(
+        self.extractors = ThreadPoolExecutor(
             settings.extraction_threads, thread_name_prefix="extract"
         )
         # A page holds its slot until it is in the upload, so pages never pile up.
@@ -339,7 +342,7 @@ class Miner(TaskWorker):
     async def process_task(self, task: dict) -> None:
         task_id, upload = task["task_id"], task["upload"]
         started = time.monotonic()
-        pages = UploadWriter(task_id, self.api.hotkey)
+        pages = UploadWriter(task_id, self.api.hotkey, EXTRACTION)
         progress = self.crawls.get(task_id)
         try:
             await self.crawl(task["urls"], task.get("expires_at"), pages, progress)
@@ -395,7 +398,7 @@ class Miner(TaskWorker):
                 if row is None:
                     return
                 # Off the crawl slot: ScrapingDog's latency would otherwise cap our own-IP rate.
-                row = await self.with_fallback(url, row, deadline)
+                row = await self.with_fallback(url, row, deadline, pages.extraction)
                 log_page(row)
                 await pages.add(row)
             finally:
@@ -429,7 +432,8 @@ class Miner(TaskWorker):
                 late = out_of_time(deadline)
                 started = time.monotonic()
                 row = await self.to_row(
-                    await self.fetcher.attempt(url, deadline, timeout)
+                    await self.fetcher.attempt(url, deadline, timeout),
+                    pages.extraction,
                 )
                 held += time.monotonic() - started
                 again = (
@@ -451,7 +455,9 @@ class Miner(TaskWorker):
                 await pages.add(row)
                 return None
 
-    async def with_fallback(self, url: str, row: dict, deadline: float | None) -> dict:
+    async def with_fallback(
+        self, url: str, row: dict, deadline: float | None, extraction: str
+    ) -> dict:
         """ScrapingDog's page if a fallback slot frees before the deadline, else our own row."""
         wait = None if deadline is None else max(0.0, deadline - time.time())
         acquiring = asyncio.ensure_future(self.falling_back.acquire())
@@ -469,30 +475,36 @@ class Miner(TaskWorker):
             acquiring.cancel()
             return row
         try:
-            return await self.fallback_row(url, row, deadline)
+            return await self.fallback_row(url, row, deadline, extraction)
         finally:
             self.falling_back.release()
 
-    async def fallback_row(self, url: str, row: dict, deadline: float | None) -> dict:
+    async def fallback_row(
+        self, url: str, row: dict, deadline: float | None, extraction: str
+    ) -> dict:
         fallback = await self.to_row(
-            await self.scrapingdog.fetch(url, deadline=deadline)
+            await self.scrapingdog.fetch(url, deadline=deadline), extraction
         )
         return fallback if fallback["error"] is None else row
 
-    async def to_row(self, fetched: Fetched) -> dict:
+    async def to_row(self, fetched: Fetched, extraction: str) -> dict:
         try:
             return await asyncio.get_running_loop().run_in_executor(
-                self.extraction, build_row, fetched, self.settings.max_bytes
+                self.extractors,
+                build_row,
+                fetched,
+                self.settings.max_bytes,
+                extraction,
             )
         except Exception as exc:
             log.warning(
                 "row for %s failed: %s: %s", fetched.url, type(exc).__name__, exc
             )
-            return error_row(fetched, "other")
+            return error_row(fetched, "other", extraction)
 
     async def aclose(self) -> None:
         await self.fetcher.aclose()
-        self.extraction.shutdown(wait=False, cancel_futures=True)
+        self.extractors.shutdown(wait=False, cancel_futures=True)
         if self.scrapingdog is not None:
             await self.scrapingdog.aclose()
         await super().aclose()

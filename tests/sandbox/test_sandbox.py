@@ -677,8 +677,6 @@ def test_paid_miners_join_the_pretend_chain_so_their_share_reaches_the_weights()
         "crawler",
         "embedder",
     ]
-    miners = 1.0 - EMISSION_CONTROL_PERC
     assert weights[0] == pytest.approx(EMISSION_CONTROL_PERC)
-    assert weights[2] == pytest.approx(miners * CRAWL_PERC) and weights[
-        3
-    ] == pytest.approx(miners * EMBED_PERC)
+    assert weights[2] == pytest.approx(CRAWL_PERC)
+    assert weights[3] == pytest.approx(EMBED_PERC)

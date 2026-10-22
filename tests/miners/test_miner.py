@@ -17,7 +17,8 @@ from urllib.parse import urlsplit
 import pyarrow.parquet as pq
 import pytest
 
-from desearch.extraction.schema import PAGE_SCHEMA
+from desearch.extraction import EXTRACTION_V1, EXTRACTION_V2
+from desearch.extraction.schema import PAGE_SCHEMA, PAGE_SCHEMA_V2
 from desearch.fetch import (
     MAX_REDIRECTS,
     Fetched,
@@ -231,13 +232,13 @@ def test_hostile_charset_in_header_or_meta_still_builds_a_row(charset):
         f'<head><meta http-equiv="Content-Type" content="text/html; charset={charset}">'.encode(),
     )
     for fetched in (page(HTML, charset), page(meta), page(equiv)):
-        row = build_row(fetched, CAP)
+        row = build_row(fetched, CAP, EXTRACTION_V1)
         assert row["error"] is None
         assert row["title"] == "Café au lait"
 
 
 async def crawled(miner: Miner, urls: list[str]) -> list[dict]:
-    pages = UploadWriter("t", "hk")
+    pages = UploadWriter("t", "hk", EXTRACTION_V1)
     await miner.crawl(urls, None, pages)
     return pq.read_table(io.BytesIO(await pages.finish())).to_pylist()
 
@@ -279,10 +280,10 @@ def test_a_row_that_fails_to_build_becomes_an_error_row(monkeypatch):
     pages = {url: page(HTML, url=url) for url in urls}
     real = miner_script.build_row
 
-    def build(fetched: Fetched, max_bytes: int) -> dict:
+    def build(fetched: Fetched, max_bytes: int, extraction: str) -> dict:
         if fetched.url.endswith("/poison"):
             raise UnicodeError("undefined encoding")
-        return real(fetched, max_bytes)
+        return real(fetched, max_bytes, extraction)
 
     monkeypatch.setattr(miner_script, "build_row", build)
     miner = Miner(Settings(), api=ClaimApi(), fetcher=StaticFetcher(pages))
@@ -298,7 +299,9 @@ def test_a_row_that_fails_to_build_becomes_an_error_row(monkeypatch):
     assert [row["url"] for row in rows] == urls
     assert [row["error"] for row in rows] == [None, "other"]
     assert rows[1]["html"] is None and rows[1]["status"] == 200
-    table = pq.read_table(io.BytesIO(write_parquet(rows, "t-poison", "hk")))
+    table = pq.read_table(
+        io.BytesIO(write_parquet(rows, "t-poison", "hk", EXTRACTION_V1))
+    )
     assert table.schema.equals(PAGE_SCHEMA) and table.num_rows == 2
 
 
@@ -1063,7 +1066,7 @@ def test_a_page_queued_for_scrapingdog_past_the_deadline_keeps_our_own_row():
             await miner.falling_back.acquire()
         started = time.monotonic()
         try:
-            writer = UploadWriter("t", "hk")
+            writer = UploadWriter("t", "hk", EXTRACTION_V1)
             await miner.crawl([refused_url], time.time() + 180, writer)
             rows = pq.read_table(io.BytesIO(await writer.finish())).to_pylist()
             return rows, time.monotonic() - started, miner.awaiting_fallback
@@ -1105,11 +1108,12 @@ def test_without_a_key_the_miner_never_calls_scrapingdog():
 
 def test_the_upload_is_written_in_small_row_groups_as_rows_arrive():
     rows = [
-        build_row(page(HTML, url=f"https://site.example/{n}"), CAP) for n in range(120)
+        build_row(page(HTML, url=f"https://site.example/{n}"), CAP, EXTRACTION_V1)
+        for n in range(120)
     ]
 
     async def write() -> bytes:
-        pages = UploadWriter("t-stream", "hk")
+        pages = UploadWriter("t-stream", "hk", EXTRACTION_V1)
         for row in rows:
             await pages.add(row)
             assert len(pages.pending) < ROW_GROUP_ROWS
@@ -1290,7 +1294,9 @@ def test_nothing_is_tried_again_once_the_deadline_has_passed():
 
     async def go() -> None:
         try:
-            await miner.crawl([slow], time.time() - 1, UploadWriter("t", "hk"))
+            await miner.crawl(
+                [slow], time.time() - 1, UploadWriter("t", "hk", EXTRACTION_V1)
+            )
         finally:
             await miner.aclose()
 
@@ -1369,3 +1375,98 @@ def test_a_claim_asks_for_as_many_tasks_as_the_pace_says_will_finish():
     miner.settings = Settings(max_tasks=3)
     assert miner.wanted() == 3, "never more than MAX_TASKS"
     asyncio.run(miner.aclose())
+
+
+def test_the_released_miner_writes_v1():
+    assert miner_script.EXTRACTION == EXTRACTION_V1
+
+
+@pytest.mark.parametrize(
+    "extraction, schema",
+    [(EXTRACTION_V1, PAGE_SCHEMA), (EXTRACTION_V2, PAGE_SCHEMA_V2)],
+)
+def test_the_miner_writes_its_uploads_with_its_extraction(
+    monkeypatch, extraction, schema
+):
+    urls = [f"https://site.example/{n}" for n in range(3)]
+    pages = {
+        url: Fetched(
+            url=url,
+            final_url=url,
+            fetched_at=datetime.now(timezone.utc),
+            status=200,
+            content_type="text/html",
+            body=HTML,
+        )
+        for url in urls
+    }
+
+    monkeypatch.setattr(miner_script, "EXTRACTION", extraction)
+    miner = Miner(Settings(), api=ClaimApi(), fetcher=StaticFetcher(pages))
+    uploaded: list[bytes] = []
+
+    async def upload(_, body: bytes) -> None:
+        uploaded.append(body)
+
+    miner.upload = upload
+    task = {"task_id": "t1", "urls": urls, "upload": {"key": "k"}}
+
+    async def go() -> None:
+        try:
+            await miner.process_task(task)
+        finally:
+            await miner.aclose()
+
+    asyncio.run(go())
+
+    upload = pq.ParquetFile(io.BytesIO(uploaded[0]))
+    assert upload.schema_arrow.equals(schema)
+    assert upload.metadata.num_rows == 3
+
+
+def test_v2_rows_name_their_extraction():
+    fetched = page(HTML)
+    refused = Fetched(
+        url="https://site.example/gone",
+        final_url="https://site.example/gone",
+        fetched_at=datetime.now(timezone.utc),
+        status=404,
+        error="http_4xx",
+    )
+
+    ok, error = (
+        build_row(fetched, CAP, EXTRACTION_V2),
+        build_row(refused, CAP, EXTRACTION_V2),
+    )
+    table = pq.read_table(
+        io.BytesIO(write_parquet([ok, error], "t", "hk", EXTRACTION_V2))
+    )
+
+    assert table.schema.equals(PAGE_SCHEMA_V2)
+    assert [(r["extraction"], r["error"]) for r in table.to_pylist()] == [
+        (EXTRACTION_V2, None),
+        (EXTRACTION_V2, "http_4xx"),
+    ]
+    assert ok["text_mode"] and ok["text"].startswith("Café au lait")
+    v1_row = build_row(fetched, CAP, EXTRACTION_V1)
+    assert "extraction" not in v1_row
+
+
+def test_a_scrapingdog_row_follows_the_tasks_extraction():
+    url = "https://a.example/refused"
+    miner = Miner(
+        Settings(), api=ClaimApi(), fetcher=StaticFetcher({url: refused(url, 403)})
+    )
+    miner.scrapingdog = FakeScrapingDog()
+
+    async def go() -> list[dict]:
+        try:
+            writer = UploadWriter("t", "hk", EXTRACTION_V2)
+            await miner.crawl([url], None, writer)
+            return pq.read_table(io.BytesIO(await writer.finish())).to_pylist()
+        finally:
+            await miner.aclose()
+
+    [row] = asyncio.run(go())
+    assert (row["error"], row["extraction"]) == (None, EXTRACTION_V2)
+    assert miner.scrapingdog.calls == [url]
