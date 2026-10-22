@@ -13,6 +13,7 @@ from desearch.embedding import (
     encode_vector,
     write_parquet,
 )
+from desearch.manifest import OPEN_LIST_KEY
 from neurons.validators import tasks
 from neurons.validators.embed import (
     EMBED_SAMPLES,
@@ -124,10 +125,14 @@ def stored(
     live: dict | None = None,
     current: str = ETAG,
     pins: list | None = None,
+    refused: int = 412,
+    listed=(),
 ):
-    """Storage holding the input and the upload, answering range and If-Match requests as R2 does."""
+    """Storage holding the input and the upload; a rewritten upload is refused with `refused`: 412 while it stays readable, 403 once storage closes it."""
 
     async def handler(request: web.Request) -> web.Response:
+        if request.path == f"/{OPEN_LIST_KEY}":
+            return web.json_response({"uploads": [{"task_id": t} for t in listed]})
         pinned = request.headers.get("If-Match")
         if pins is not None:
             pins.append((request.path, pinned))
@@ -137,7 +142,7 @@ def stored(
             return web.Response(status=404)
         if pinned is not None and pinned != current:
             return web.Response(
-                status=412, body=PRECONDITION_PAGE, content_type="text/html"
+                status=refused, body=PRECONDITION_PAGE, content_type="text/html"
             )
         asked = request.headers.get("Range")
         ranges.append(asked)
@@ -172,10 +177,12 @@ async def judged(
     etag: str | None = ETAG,
     current: str = ETAG,
     pins: list | None = None,
+    refused: int = 412,
+    listed=(),
 ):
     ranges: list = []
     async with (
-        serving(stored(body, ranges, live, current, pins)) as base,
+        serving(stored(body, ranges, live, current, pins, refused, listed)) as base,
         aiohttp.ClientSession() as http,
     ):
         job = {
@@ -197,7 +204,9 @@ async def judged(
         if etag:
             job["etag"] = etag
         api = Api()
-        checker = EmbedValidator(api, http, {"tiny": reference}, ledger=ledger)
+        checker = EmbedValidator(
+            api, http, {"tiny": reference}, ledger=ledger, storage_url=base
+        )
         await checker.check(job)
         return api.posts, checker, ranges
 
@@ -345,12 +354,24 @@ def test_a_manifest_without_an_etag_reads_without_if_match():
     assert {pin for _, pin in pins} == {None}
 
 
-def test_an_upload_changed_after_its_completion_fails_and_costs_its_characters():
+@pytest.mark.parametrize(
+    "refused", [412, 403], ids=["precondition failed", "closed when rewritten"]
+)
+def test_an_upload_changed_after_its_completion_fails_and_costs_its_characters(
+    refused,
+):
     reference = Reference()
     ledger = Ledger(":memory:")
 
     ((path, result),), _, ranges = asyncio.run(
-        judged(upload(), reference, ledger=ledger, current='"rewritten"')
+        judged(
+            upload(),
+            reference,
+            ledger=ledger,
+            current='"rewritten"',
+            refused=refused,
+            listed=("t1",),
+        )
     )
 
     assert path == "/v1/validation/t1/score"
@@ -370,6 +391,19 @@ def test_an_upload_changed_after_its_completion_fails_and_costs_its_characters()
     ).fetchone()
     assert check == ("embed", "fail", 0, 1000)
     assert ledger.embed_paid(200.0)["5Miner"].amount == -1000
+
+
+def test_a_pinned_read_refused_after_its_task_closed_is_missing_not_changed():
+    reference = Reference()
+    ledger = Ledger(":memory:")
+
+    ((path, body),), _, ranges = asyncio.run(
+        judged(upload(), reference, ledger=ledger, current='"gone"', refused=403)
+    )
+
+    assert (path, body) == ("/v1/validation/t1/release", {"reason": "missing"})
+    assert ranges == [] and reference.asked == []
+    assert ledger.db.execute("SELECT COUNT(*) FROM checks").fetchone() == (0,)
 
 
 def test_a_read_that_failed_beside_a_changed_one_does_not_hide_the_change(
