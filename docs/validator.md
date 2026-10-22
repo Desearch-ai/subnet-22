@@ -121,7 +121,7 @@ pm2 start run.sh --name desearch_autoupdate -- \
 | `--netuid` | `22` on mainnet, `41` on testnet |
 | `--subtensor.network` | `finney`, `test`, or a custom endpoint |
 | `--neuron.task_api_url` | the task API, `https://api-22.desearch.ai` by default |
-| `--neuron.storage_url` | the public URL of the uploads bucket, `https://r2.desearch.ai` by default |
+| `--neuron.storage_url` | the public URL of the uploads bucket, `https://subnet-22.s3.us-east-va.io.cloud.ovh.us` by default |
 | `--neuron.disable_set_weights` | check tasks without setting weights |
 | `--wandb.off` | do not log to Weights & Biases |
 | `--logging.info`, `--logging.debug` | without one, only warnings are printed |

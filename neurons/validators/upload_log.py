@@ -40,6 +40,10 @@ class UploadLog:
         added = 0
         for seq in range(int(cursor), latest + 1):
             found = await self.read(seq)
+            if found is None and seq < latest:
+                # Files are written in order, so one missing below the latest was lost with its storage.
+                log.warning("upload log %d is missing while %d exists, skipped", seq, latest)
+                found = {"entries": []}
             if found is None:
                 break
             added += self.ledger.add_uploads(found["entries"])

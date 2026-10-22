@@ -155,3 +155,23 @@ def test_the_upload_log_is_read_from_storage_in_order_and_unsigned_files_hold_no
     first, second, cursor = asyncio.run(scenario())
     assert first == 1, "a new validator reads back, and the unsigned file holds nothing"
     assert second == 1 and cursor == "4", "a file not there yet is waited for"
+
+
+def test_a_log_file_lost_below_the_latest_is_skipped():
+    files = {
+        upload_log_key(3): signed(3, [logged("c", "m", time.time())], time.time()),
+        UPLOAD_LOG_LATEST: {"seq": 3},
+    }
+
+    async def handle(request):
+        found = files.get(request.match_info["path"])
+        return web.json_response(found) if found else web.Response(status=404)
+
+    async def scenario():
+        ledger = Ledger(":memory:")
+        ledger.set_state(NEXT_SEQ, "2")
+        async with serving(handle) as base, aiohttp.ClientSession() as http:
+            added = await UploadLog(http, base, API_KEY.ss58_address, ledger).poll()
+            return added, ledger.state(NEXT_SEQ)
+
+    assert asyncio.run(scenario()) == (1, "4")

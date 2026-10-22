@@ -599,20 +599,23 @@ def test_a_manifest_without_an_etag_downloads_without_if_match():
 
 
 @pytest.mark.parametrize(
+    "status", [412, 403], ids=["precondition failed", "closed when rewritten"]
+)
+@pytest.mark.parametrize(
     "body",
     [PRECONDITION_PAGE, to_parquet(CHANGED_ROWS)],
-    ids=["r2 error page", "a readable upload"],
+    ids=["error page", "a readable upload"],
 )
 def test_an_upload_changed_after_its_completion_fails_and_costs_its_urls(
-    monkeypatch, body
+    monkeypatch, status, body
 ):
     async def never(*_):
-        raise AssertionError("a 412 answer was scored as the upload")
+        raise AssertionError("a refused pinned read was scored as the upload")
 
     monkeypatch.setattr(CrawlValidator, "run_check", never)
     ledger = Ledger(":memory:")
 
-    ((path, vote),), pins = _checked(412, body, ledger=ledger, etag=ETAG)
+    ((path, vote),), pins = _checked(status, body, ledger=ledger, etag=ETAG)
 
     assert path == "/v1/validation/t1/score" and pins == [ETAG]
     assert (vote["verdict"], vote["reason"]) == ("fail", tasks.UPLOAD_CHANGED)
@@ -623,6 +626,13 @@ def test_an_upload_changed_after_its_completion_fails_and_costs_its_urls(
     ).fetchone()
     assert check == ("crawl", "fail", 0, 0, len(CHANGED_URLS))
     assert ledger.crawl_paid(200.0)["m"].amount == -len(CHANGED_URLS)
+
+
+def test_a_refused_read_of_an_unpinned_upload_is_not_a_change():
+    posts, pins = _checked(403, b"")
+
+    assert pins == [None]
+    assert not any(path.endswith("/score") for path, _ in posts)
 
 
 @pytest.mark.parametrize(

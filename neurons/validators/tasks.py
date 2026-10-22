@@ -321,7 +321,7 @@ class TaskChecker:
                 continue
             if status == 404:
                 raise UploadMissing(task_id)
-            if status == 412:
+            if changed(status, etag):
                 raise UploadChanged(task_id)
             problem = f"HTTP {status}"
             if status < 500:
@@ -360,7 +360,7 @@ class TaskChecker:
                 continue
             if status == 404:
                 raise UploadMissing(task_id)
-            if status == 412:
+            if changed(status, etag):
                 raise UploadChanged(task_id)
             problem = f"HTTP {status} to a range request"
             if status < 500:
@@ -407,6 +407,11 @@ class TaskChecker:
                     raise
             await asyncio.sleep(RETRY_DELAY_S)
         return False
+
+
+def changed(status: int, etag: str | None) -> bool:
+    """The miner wrote a pinned upload again: 412, or 403 where storage closes a rewritten object."""
+    return status == 412 or (status == 403 and etag is not None)
 
 
 def pinned(etag: str | None) -> dict[str, str]:

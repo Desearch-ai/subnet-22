@@ -30,8 +30,8 @@ built from. This page explains how those parts fit together.
 
 The task API keeps its live queues in Redis and its records (rounds, the signed log, the validators'
 results, budgets and what each miner is owed) in SQLite. Files live in two buckets: uploads in
-`subnet-22`, a Cloudflare R2 bucket that is temporary and readable by anyone at
-`https://r2.desearch.ai`, and published pages in `desearch-pages`, which keeps the latest version of
+`subnet-22`, a temporary OVHcloud Object Storage bucket whose checked uploads anyone can read at
+`https://subnet-22.s3.us-east-va.io.cloud.ovh.us`, and published pages in `desearch-pages`, which keeps the latest version of
 every page.
 
 ## A crawl task, start to finish
