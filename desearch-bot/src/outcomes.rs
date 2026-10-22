@@ -120,13 +120,20 @@ pub fn save_cursor(buckets: &Buckets, next: u64) -> Result<()> {
     Ok(())
 }
 
-/// One numbered outcome file, nothing yet, or a number that is gone while later ones exist.
+/// One numbered outcome file, nothing yet, a number not indexed while later ones are, or an index whose file expired unread.
 pub enum Next {
     Wait,
     Missing,
+    Gone,
     File { rows: Vec<OutcomeRow>, published_at: Option<i64> },
 }
 
+/// A store that keeps its bucket private answers 403, not 404, for a key it does not have.
+fn absent(status: reqwest::StatusCode) -> bool {
+    status == reqwest::StatusCode::NOT_FOUND || status == reqwest::StatusCode::FORBIDDEN
+}
+
+#[derive(Clone)]
 pub struct OutcomeFeed {
     base: String,
     http: reqwest::Client,
@@ -136,7 +143,7 @@ impl OutcomeFeed {
     /// The newest number the task API has written, from `outcomes/latest.json`.
     pub async fn latest(&self) -> Result<Option<u64>> {
         let found = self.http.get(format!("{}/outcomes/latest.json", self.base)).send().await?;
-        if found.status() == reqwest::StatusCode::NOT_FOUND {
+        if absent(found.status()) {
             return Ok(None);
         }
         if !found.status().is_success() {
@@ -153,11 +160,20 @@ impl OutcomeFeed {
         Ok(OutcomeFeed { base: base.trim_end_matches('/').to_string(), http })
     }
 
-    /// File number `seq`; a number not published yet means wait, since files are read strictly in order.
+    /// File number `seq`; a number not published yet means wait, since files are applied in order.
     pub async fn fetch(&self, seq: u64) -> Result<Next> {
+        self.fetch_below(seq, None).await
+    }
+
+    /// As `fetch`, with the newest number already read when the caller has it.
+    pub async fn fetch_below(&self, seq: u64, latest: Option<u64>) -> Result<Next> {
         let index = self.http.get(format!("{}/outcomes/seq/{seq:012}.json", self.base)).send().await?;
-        if index.status() == reqwest::StatusCode::NOT_FOUND {
-            return Ok(if self.latest().await?.is_some_and(|latest| latest > seq) { Next::Missing } else { Next::Wait });
+        if absent(index.status()) {
+            let latest = match latest {
+                Some(latest) => Some(latest),
+                None => self.latest().await?,
+            };
+            return Ok(if latest.is_some_and(|latest| latest > seq) { Next::Missing } else { Next::Wait });
         }
         if !index.status().is_success() {
             bail!("outcome index {seq}: HTTP {}", index.status());
@@ -171,6 +187,9 @@ impl OutcomeFeed {
         let index: Value = serde_json::from_slice(&index.bytes().await?).context("an outcome index that is not JSON")?;
         let key = index.get("key").and_then(Value::as_str).context("an outcome index without a key")?;
         let file = self.http.get(format!("{}/{}", self.base, key.trim_start_matches('/'))).send().await?;
+        if absent(file.status()) {
+            return Ok(Next::Gone);
+        }
         if !file.status().is_success() {
             bail!("outcome file {key}: HTTP {}", file.status());
         }

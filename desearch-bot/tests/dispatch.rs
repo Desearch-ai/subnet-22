@@ -343,6 +343,8 @@ struct FakeApi {
     rooms: usize,
     enqueued: Vec<(HashMap<String, String>, Vec<u8>)>,
     files: HashMap<String, Vec<u8>>,
+    /// What a file not there is answered with: 404, or 403 as a store with a private bucket answers.
+    forbid_missing: bool,
 }
 
 /// One request per connection: the room, or an enqueue that fails while `fail_next` lasts.
@@ -404,6 +406,7 @@ async fn serve_api(listener: TcpListener, api: Arc<Mutex<FakeApi>>) {
                     }
                     _ => match api.files.get(path) {
                         Some(file) => (200, String::from_utf8_lossy(file).into_owned()),
+                        None if api.forbid_missing => (403, "<Error><Code>AccessDenied</Code></Error>".to_string()),
                         None => (404, r#"{"detail":"no such route"}"#.to_string()),
                     },
                 }
@@ -568,6 +571,12 @@ async fn the_outcome_feed_tells_a_number_not_written_yet_from_one_that_is_gone()
     assert_eq!(feed.latest().await.unwrap(), Some(7), "where a bot reading the feed for the first time starts");
     assert!(matches!(feed.fetch(5).await.unwrap(), Next::Missing), "later numbers exist, so 5 is gone or late");
     assert!(matches!(feed.fetch(8).await.unwrap(), Next::Wait), "8 is simply not written yet");
+
+    fake.lock().unwrap().forbid_missing = true;
+    assert!(matches!(feed.fetch(5).await.unwrap(), Next::Missing), "a 403 for a key the store does not have is a missing number too");
+    assert!(matches!(feed.fetch(8).await.unwrap(), Next::Wait));
+    fake.lock().unwrap().files.insert("/outcomes/seq/000000000006.json".into(), br#"{"key": "outcomes/dt=2026-10-22/a.parquet", "rows": 3}"#.to_vec());
+    assert!(matches!(feed.fetch(6).await.unwrap(), Next::Gone), "an index whose file expired is skipped, not waited on");
 }
 
 

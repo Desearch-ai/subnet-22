@@ -22,6 +22,8 @@ use crate::timetable::UNRANKED;
 pub const PASS_SECONDS: Duration = Duration::from_secs(15);
 /// How long a missing outcome number may stay missing, while later ones exist, before it is skipped.
 const MISSING_GRACE: Duration = Duration::from_secs(120);
+/// Outcome files fetched at once and applied as one batch, so the feed is read faster than it grows.
+const OUTCOMES_AHEAD: u64 = 8;
 /// URLs in one task, as the API counts its room.
 pub const TASK_URLS: u64 = 1000;
 pub const BATCH_URLS: usize = 10_000;
@@ -746,72 +748,115 @@ pub async fn follow_outcomes(buckets: Arc<Buckets>, feed: OutcomeFeed, recrawl_a
         None => feed.latest().await.ok().flatten().map_or(1, |latest| latest + 1),
     };
     progress.outcome_seq.store(next, Ordering::Relaxed);
-    let mut missing: Option<(u64, Instant)> = None;
-    let mut skipping = 0u64;
+    let mut follower = Follower { next, missing: None, skipping: 0 };
     while !*stop.borrow() {
-        let wait = match feed.fetch(next).await {
-            Ok(Next::Missing) => {
-                let since = missing.filter(|(seq, _)| *seq == next).map_or_else(Instant::now, |(_, at)| at);
-                missing = Some((next, since));
-                // A number written late is filled in within seconds; one still gone after that expired unread.
-                if skipping > 0 || since.elapsed() >= MISSING_GRACE {
-                    skipping += 1;
-                    next += 1;
-                    progress.outcome_seq.store(next, Ordering::Relaxed);
-                    progress.skipped.fetch_add(1, Ordering::Relaxed);
-                    false
-                } else {
-                    true
-                }
-            }
-            Ok(Next::File { rows, published_at }) => {
-                if skipping > 0 {
-                    eprintln!("[rs] skipped {skipping} outcome files gone before they were read; their pages come back once overdue");
-                    skipping = 0;
-                }
-                let lag = published_at.map_or(0, |at| (chrono::Utc::now().timestamp() - at).max(0));
-                progress.outcome_lag.store(lag, Ordering::Relaxed);
-                let applying = buckets.clone();
-                let count = rows.len() as u64;
-                let applied = tokio::task::spawn_blocking(move || -> Result<_> {
-                    let applied = outcomes::apply(&applying, &rows, recrawl_after)?;
-                    outcomes::save_cursor(&applying, next + 1)?;
-                    Ok(applied)
-                })
-                .await;
-                match applied {
-                    Ok(Ok(applied)) => {
-                        next += 1;
-                        progress.outcome_seq.store(next, Ordering::Relaxed);
-                        progress.outcomes.fetch_add(count, Ordering::Relaxed);
-                        progress.retried.fetch_add(applied.retried, Ordering::Relaxed);
-                        false
-                    }
-                    Ok(Err(error)) => {
-                        eprintln!("[rs] applying outcome file {next} failed: {error:#}");
-                        true
-                    }
-                    Err(error) => {
-                        eprintln!("[rs] applying outcome file {next} failed: {error}");
-                        true
-                    }
-                }
-            }
-            Ok(Next::Wait) => {
+        let wait = match feed.latest().await {
+            Ok(Some(latest)) if latest >= follower.next => follower.take(&feed, latest, &buckets, recrawl_after, &progress).await,
+            Ok(_) => {
                 progress.outcome_lag.store(0, Ordering::Relaxed);
                 true
             }
             Err(error) => {
-                eprintln!("[rs] reading outcome file {next} failed: {error:#}");
+                eprintln!("[rs] reading the newest outcome number failed: {error:#}");
                 true
             }
         };
+        next = follower.next;
+        progress.outcome_seq.store(next, Ordering::Relaxed);
         if wait {
             tokio::select! {
                 _ = stop.changed() => {}
                 _ = tokio::time::sleep(PASS_SECONDS) => {}
             }
         }
+    }
+}
+
+/// Where the outcome feed is read up to, and the number it is waiting on.
+struct Follower {
+    next: u64,
+    missing: Option<(u64, Instant)>,
+    skipping: u64,
+}
+
+impl Follower {
+    /// Fetches up to `OUTCOMES_AHEAD` files at once and applies the run that is ready as one batch; whether to wait before the next look.
+    async fn take(&mut self, feed: &OutcomeFeed, latest: u64, buckets: &Arc<Buckets>, recrawl_after: u32, progress: &Progress) -> bool {
+        let mut fetching = (self.next..=latest.min(self.next + OUTCOMES_AHEAD - 1)).map(|seq| {
+            let feed = feed.clone();
+            tokio::spawn(async move { feed.fetch_below(seq, Some(latest)).await })
+        });
+        let (mut rows, mut through, mut published, mut blocked) = (Vec::new(), self.next, None, false);
+        for handle in fetching.by_ref() {
+            let fetched = handle.await.map_err(anyhow::Error::from).and_then(|found| found);
+            match fetched {
+                Ok(Next::File { rows: found, published_at }) => {
+                    rows.extend(found);
+                    published = published_at.or(published);
+                }
+                Ok(Next::Gone) => self.skip(progress),
+                Ok(Next::Missing) => {
+                    let since = self.missing.filter(|(seq, _)| *seq == through).map_or_else(Instant::now, |(_, at)| at);
+                    self.missing = Some((through, since));
+                    // A number written late is indexed within seconds; one still missing after that was lost and is skipped.
+                    if self.skipping > 0 || since.elapsed() >= MISSING_GRACE {
+                        self.skip(progress);
+                    } else {
+                        blocked = true;
+                        break;
+                    }
+                }
+                Ok(Next::Wait) => {
+                    blocked = true;
+                    break;
+                }
+                Err(error) => {
+                    eprintln!("[rs] reading outcome file {through} failed: {error:#}");
+                    blocked = true;
+                    break;
+                }
+            }
+            through += 1;
+        }
+        for handle in fetching {
+            handle.abort();
+        }
+        if through == self.next {
+            return true;
+        }
+        if !rows.is_empty() && self.skipping > 0 {
+            eprintln!("[rs] skipped {} outcome files gone before they were read; their pages come back once overdue", self.skipping);
+            self.skipping = 0;
+        }
+        if let Some(at) = published {
+            progress.outcome_lag.store((chrono::Utc::now().timestamp() - at).max(0), Ordering::Relaxed);
+        }
+        let (applying, count) = (buckets.clone(), rows.len() as u64);
+        let applied = tokio::task::spawn_blocking(move || -> Result<_> {
+            let applied = outcomes::apply(&applying, &rows, recrawl_after)?;
+            outcomes::save_cursor(&applying, through)?;
+            Ok(applied)
+        })
+        .await
+        .map_err(anyhow::Error::from)
+        .and_then(|applied| applied);
+        match applied {
+            Ok(applied) => {
+                self.next = through;
+                progress.outcomes.fetch_add(count, Ordering::Relaxed);
+                progress.retried.fetch_add(applied.retried, Ordering::Relaxed);
+                blocked
+            }
+            Err(error) => {
+                eprintln!("[rs] applying outcome files {}..{} failed: {error:#}", self.next, through - 1);
+                true
+            }
+        }
+    }
+
+    fn skip(&mut self, progress: &Progress) {
+        self.skipping += 1;
+        progress.skipped.fetch_add(1, Ordering::Relaxed);
     }
 }
 
