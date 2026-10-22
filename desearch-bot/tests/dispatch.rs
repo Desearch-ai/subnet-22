@@ -693,12 +693,12 @@ async fn several_batches_go_out_together_and_only_a_failed_one_is_sent_again() {
 }
 
 #[test]
-fn the_pace_grows_steadily_and_saves_up_only_five_minutes() {
+fn the_pace_starts_empty_grows_steadily_and_saves_up_only_two_minutes() {
     let mut pace = Pace::new(3_600_000, 1000);
-    assert_eq!(pace.allowance(1000), 300_000, "five minutes' worth to start");
-    pace.spend(300_000);
+    assert_eq!(pace.allowance(1000), 0, "nothing saved at the start, so a restart sends no burst");
     assert_eq!(pace.allowance(1060), 60_000, "a minute later, a minute's worth");
-    assert_eq!(pace.allowance(1000 + 7200), 300_000, "an idle hour saves no more than five minutes");
+    pace.spend(60_000);
+    assert_eq!(pace.allowance(1000 + 7200), 120_000, "an idle hour saves no more than two minutes");
     assert_eq!(Pace::new(0, 1000).allowance(2000), u64::MAX, "no pace set sends whatever there is room for");
 }
 

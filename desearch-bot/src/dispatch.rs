@@ -16,10 +16,12 @@ use crate::buckets::{bucket_of, Buckets};
 use crate::outcomes::{self, Next, OutcomeFeed};
 use crate::ready::{Entry, Order, Pick, Reason, SentPage, CHANGED, FRESH, LANES, REQUEUED};
 use crate::records;
-use crate::taskapi::{ApiError, QueuedUrl, TaskApi};
+use crate::taskapi::{ApiError, QueuedUrl, TaskApi, MAX_URL_CHARS};
 use crate::timetable::UNRANKED;
 
-pub const PASS_SECONDS: Duration = Duration::from_secs(15);
+pub const PASS_SECONDS: Duration = Duration::from_secs(5);
+/// New pages, due retries and overdue sends are taken in at most this often; each look scans every store.
+const ABSORB_EVERY: Duration = Duration::from_secs(15);
 /// How long a missing outcome number may stay missing, while later ones exist, before it is skipped.
 const MISSING_GRACE: Duration = Duration::from_secs(120);
 /// Outcome files fetched at once and applied as one batch, so the feed is read faster than it grows.
@@ -28,7 +30,7 @@ const OUTCOMES_AHEAD: u64 = 8;
 pub const TASK_URLS: u64 = 1000;
 pub const BATCH_URLS: usize = 10_000;
 /// Batches in flight to the API at once; each waits there for seconds, so one at a time leaves its queue short.
-pub const SENDS_AT_ONCE: usize = 4;
+pub const SENDS_AT_ONCE: usize = 8;
 /// Threads reading the stores at once: a network disk answers many reads together far faster than one after another.
 const READERS: usize = 16;
 const HOUR: u32 = 3600;
@@ -144,12 +146,11 @@ pub struct Pace {
 }
 
 impl Pace {
-    const SAVED_SECONDS: f64 = 300.0;
+    /// Covers a slow pass; anything more would go out in one burst after a restart or a stall.
+    const SAVED_SECONDS: f64 = 120.0;
 
     pub fn new(per_hour: u64, now: u32) -> Self {
-        let mut pace = Pace { per_hour, saved: 0.0, at: now };
-        pace.saved = pace.most();
-        pace
+        Pace { per_hour, saved: 0.0, at: now }
     }
 
     fn most(&self) -> f64 {
@@ -378,6 +379,7 @@ pub struct Dispatcher {
     pending: Vec<Pending>,
     progress: Arc<Progress>,
     ranks_read: Instant,
+    absorbed: Option<Instant>,
     shares: [f64; LANES],
     credit: HashMap<String, [f64; LANES]>,
 }
@@ -423,6 +425,7 @@ impl Dispatcher {
             pending,
             progress,
             ranks_read: Instant::now(),
+            absorbed: None,
             shares,
             credit: HashMap::new(),
         };
@@ -462,9 +465,12 @@ impl Dispatcher {
     }
 
     async fn timed_pass(&mut self, now: u32, spent: &mut [Duration; 3]) -> Result<u64> {
-        let started = Instant::now();
-        self.absorb(now).await?;
-        spent[0] = started.elapsed();
+        if self.absorbed.is_none_or(|at| at.elapsed() >= ABSORB_EVERY) {
+            let started = Instant::now();
+            self.absorb(now).await?;
+            self.absorbed = Some(Instant::now());
+            spent[0] = started.elapsed();
+        }
         let started = Instant::now();
         let (mut sent, cleared) = self.send_pending().await?;
         spent[2] += started.elapsed();
@@ -486,8 +492,11 @@ impl Dispatcher {
         let mut budget = (room.room_tasks as u64 * TASK_URLS).min(self.pace.allowance(now));
         for _ in 0..ALLOT_TRIES {
             let started = Instant::now();
-            let picks = self.pick(budget, now).await?;
+            let (picks, too_long): (Vec<Pick>, Vec<Pick>) = self.pick(budget, now).await?.into_iter().partition(|pick| pick.url.len() <= MAX_URL_CHARS);
             spent[1] += started.elapsed();
+            if !too_long.is_empty() {
+                self.set_aside(Pending::of(&too_long, now)).await?;
+            }
             if picks.is_empty() {
                 break;
             }
