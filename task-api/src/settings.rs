@@ -69,6 +69,8 @@ pub struct Settings {
     pub embed_checks_per_hour: f64,
     pub queue_target: i64,
     pub embed_queue_target: i64,
+    /// Seconds a revealed round's tasks are released over, one by one, so miners see a steady supply rather than whole rounds at once.
+    pub release_spread: f64,
     pub task_urls: usize,
     pub embed_tasks: bool,
     pub embed_model: String,
@@ -177,6 +179,7 @@ impl Settings {
             embed_checks_per_hour: number("TASK_API_EMBED_CHECKS_PER_HOUR", EMBED_CHECKS_PER_HOUR)?,
             queue_target: number("TASK_API_QUEUE_TARGET", 1_200)?,
             embed_queue_target: number("TASK_API_EMBED_QUEUE_TARGET", 100)?,
+            release_spread: number("TASK_API_RELEASE_SPREAD_S", 60.0)?,
             task_urls: number("TASK_API_TASK_URLS", 1_000)?,
             embed_tasks,
             embed_model,

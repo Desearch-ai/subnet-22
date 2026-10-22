@@ -17,7 +17,7 @@ use crate::seeds::BLOCK_SECONDS;
 
 /// The best block is read this often; in between it is counted on the clock, at most a block behind.
 const BLOCK_REFRESH: Duration = Duration::from_secs(30);
-/// After a failed call every call waits this long, doubling up to `PAUSE_MAX`, so an unwell endpoint is not hammered.
+/// After a failed call an endpoint is skipped this long, doubling up to `PAUSE_MAX`, so an unwell one is not hammered while the next is asked.
 const PAUSE_FIRST: Duration = Duration::from_secs(5);
 const PAUSE_MAX: Duration = Duration::from_secs(30);
 const RPC_TIMEOUT: Duration = Duration::from_secs(8);
@@ -39,11 +39,12 @@ pub struct Neuron {
 
 pub struct Chain {
     http: reqwest::Client,
-    url: String,
+    /// Asked in this order; one failing is skipped for a while and the next asked.
+    urls: Vec<String>,
     best: std::sync::Mutex<Option<(i64, Instant)>>,
     reading: AtomicBool,
     first: Mutex<()>,
-    pause: std::sync::Mutex<Pause>,
+    pauses: std::sync::Mutex<Vec<Pause>>,
     hashes: Mutex<HashMap<i64, String>>,
     absent: std::sync::Mutex<Option<(i64, Instant)>>,
 }
@@ -66,48 +67,66 @@ pub fn endpoint(network: &str) -> String {
 }
 
 impl Chain {
+    /// One network, or several separated by commas to fall back on in order.
     pub fn new(network: &str) -> Result<Chain> {
         let http = reqwest::Client::builder().timeout(RPC_TIMEOUT).build()?;
+        let urls: Vec<String> = network.split(',').map(str::trim).filter(|name| !name.is_empty()).map(endpoint).collect();
+        if urls.is_empty() {
+            bail!("no chain endpoint in {network:?}");
+        }
         Ok(Chain {
             http,
-            url: endpoint(network),
             best: std::sync::Mutex::default(),
             reading: AtomicBool::new(false),
             first: Mutex::default(),
-            pause: std::sync::Mutex::default(),
+            pauses: std::sync::Mutex::new(urls.iter().map(|_| Pause::default()).collect()),
+            urls,
             hashes: Mutex::default(),
             absent: std::sync::Mutex::default(),
         })
     }
 
     async fn rpc(&self, method: &str, params: serde_json::Value) -> Result<serde_json::Value> {
-        if let Some(left) = self.paused_for() {
-            bail!("{method}: the chain is not called for {:.0}s after failing", left.as_secs_f64());
-        }
-        let reply = self.call(method, params).await;
-        let mut pause = self.pause.lock().expect("chain pause");
-        match &reply {
-            Ok(_) => *pause = Pause::default(),
-            Err(_) => {
-                pause.length = (pause.length * 2).clamp(PAUSE_FIRST, PAUSE_MAX);
-                pause.until = Some(Instant::now() + pause.length);
+        let mut failed = None;
+        for (at, url) in self.urls.iter().enumerate() {
+            if let Some(left) = self.paused_for(at) {
+                failed.get_or_insert_with(|| anyhow!("{method}: the chain is not called for {:.0}s after failing", left.as_secs_f64()));
+                continue;
+            }
+            let reply = self.call(url, method, params.clone()).await;
+            let mut pauses = self.pauses.lock().expect("chain pause");
+            match reply {
+                Ok(found) => {
+                    pauses[at] = Pause::default();
+                    return Ok(found);
+                }
+                Err(error) => {
+                    let pause = &mut pauses[at];
+                    pause.length = (pause.length * 2).clamp(PAUSE_FIRST, PAUSE_MAX);
+                    pause.until = Some(Instant::now() + pause.length);
+                    failed = Some(error);
+                }
             }
         }
-        reply
+        Err(failed.unwrap_or_else(|| anyhow!("{method}: no chain endpoint")))
     }
 
-    async fn call(&self, method: &str, params: serde_json::Value) -> Result<serde_json::Value> {
+    async fn call(&self, url: &str, method: &str, params: serde_json::Value) -> Result<serde_json::Value> {
         let request = json!({"id": 1, "jsonrpc": "2.0", "method": method, "params": params});
-        let reply: serde_json::Value = self.http.post(&self.url).json(&request).send().await?.error_for_status()?.json().await?;
+        let reply: serde_json::Value = self.http.post(url).json(&request).send().await?.error_for_status()?.json().await?;
         if let Some(error) = reply.get("error") {
             bail!("{method}: {error}");
         }
         reply.get("result").cloned().ok_or_else(|| anyhow!("{method} answered without a result"))
     }
 
-    fn paused_for(&self) -> Option<Duration> {
-        let until = self.pause.lock().expect("chain pause").until?;
+    fn paused_for(&self, at: usize) -> Option<Duration> {
+        let until = self.pauses.lock().expect("chain pause")[at].until?;
         until.checked_duration_since(Instant::now())
+    }
+
+    fn all_paused(&self) -> bool {
+        (0..self.urls.len()).all(|at| self.paused_for(at).is_some())
     }
 
     /// The best block, counted on from the last one read; only the very first call waits on the chain.
@@ -124,7 +143,7 @@ impl Chain {
 
     fn counted(self: &Arc<Self>) -> Option<i64> {
         let (block, at) = (*self.best.lock().expect("best block"))?;
-        if at.elapsed() >= BLOCK_REFRESH && self.paused_for().is_none() && !self.reading.swap(true, Ordering::AcqRel) {
+        if at.elapsed() >= BLOCK_REFRESH && !self.all_paused() && !self.reading.swap(true, Ordering::AcqRel) {
             let chain = self.clone();
             tokio::spawn(async move {
                 if let Err(error) = chain.read_best().await {

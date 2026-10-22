@@ -255,6 +255,7 @@ The [bot](../desearch-bot/README.md) fills the queue with the admin hotkey (`--t
 | --- | --- | --- |
 | `TASK_API_REGISTRY` | — | `chain` or `local` |
 | `TASK_API_SEEDS` | `local` | `chain` or `local`: where round seeds come from |
+| `TASK_API_NETWORK` | `finney` | the chain in `chain` mode: a network name or JSON-RPC URL, or several comma-separated to fall back on in order |
 | `TASK_API_REDIS` | `redis://localhost:6379/15` | the Redis URL |
 | `TASK_API_LISTEN` | `0.0.0.0:8080` | the address the API listens on |
 | `TASK_API_ADMIN_HOTKEYS` | — | hotkeys allowed to enqueue |
@@ -267,6 +268,7 @@ The [bot](../desearch-bot/README.md) fills the queue with the admin hotkey (`--t
 | `TASK_API_MAX_ATTEMPTS` | 3 | times a task is retried before it is dropped |
 | `TASK_API_CHECK_SHARE` | `SHARE` in [`app/sampling.py`](app/sampling.py) | share of an established hotkey's uploads drawn for a check; 1 checks every upload |
 | `TASK_API_QUEUE_TARGET` | 1200 | tasks the bot keeps queued and waiting for their round's reveal |
+| `TASK_API_RELEASE_SPREAD_S` | 60 | seconds a revealed round's tasks are released over, one by one in the round's order; 0 releases them all at once |
 | `TASK_API_READS_PER_MINUTE` | 120 | `GET` requests one IP may make in a minute, outside the log endpoints |
 | `TASK_API_LOG_READS_PER_MINUTE` | 60 | log requests (tasks, votes, miners, validators, overview) one IP may make in a minute |
 | `TASK_API_FAILED_WRITES_PER_MINUTE` | 30 | failed sign-ins after which one IP's writes are refused for the rest of the minute |
@@ -333,8 +335,7 @@ Lists return a page at a time (`limit`, at most 100) with a `next` value to pass
 
 ```
 subnet-22 bucket, temporary, emptied after a day, public
-  uploads/              miner uploads, each completed one with a signed .manifest.json beside it naming
-                        the version that was completed
+  uploads/              miner uploads
   validation/open.json  the uploads waiting for validators, with their manifests, rewritten as they change
   log/uploads/          every completed upload with its reported counts, numbered and signed
   outcomes/             what became of every URL, numbered under seq/, newest in latest.json

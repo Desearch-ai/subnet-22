@@ -16,7 +16,7 @@ async fn filled(redis: &Redis, kind: &'static str, count: usize, round_id: &str)
     let queue = TaskQueue::new(kind, 60.0);
     let order: Vec<String> = (0..count).map(|n| if kind == "crawl" { format!("{round_id}-t{n}") } else { format!("{kind}-{round_id}-t{n}") }).collect();
     let payloads: Map<String, Value> = order.iter().map(|t| (t.clone(), json!({"url_count": 1, "urls": [format!("https://x.example/{t}")]}))).collect();
-    queue.fill(redis, round_id, &order, &payloads).await.unwrap();
+    queue.fill(redis, round_id, &order, &payloads, desearch::time::now(), 0.0).await.unwrap();
     (queue, order)
 }
 
@@ -33,6 +33,29 @@ async fn claimed(queue: &TaskQueue, redis: &Redis, hotkey: &str, budget: i64) ->
 
 async fn complete(queue: &TaskQueue, redis: &Redis, got: &Claim, hotkey: &str, key: &str) -> Option<i64> {
     queue.complete(redis, &got.task_id, hotkey, &json!({"task_id": got.task_id, "miner": hotkey}), key, desearch::time::now()).await.unwrap()
+}
+
+#[tokio::test]
+async fn a_round_spread_over_time_is_released_in_its_order_as_each_task_comes_due() {
+    let h = Harness::start().await;
+    let queue = TaskQueue::new("crawl", 60.0);
+    let order: Vec<String> = (0..4).map(|n| format!("spread-t{n}")).collect();
+    let payloads: Map<String, Value> = order.iter().map(|t| (t.clone(), json!({"url_count": 1, "urls": [format!("https://x.example/{t}")]}))).collect();
+    let now = desearch::time::now();
+    queue.fill(&h.redis, "spread", &order, &payloads, now, 40.0).await.unwrap();
+    assert_eq!(queue.depth(&h.redis).await.unwrap(), 4, "held tasks count as queued, so the bot does not overfill");
+    assert!(one(&queue, &h.redis, "5Early", 10).await.is_err(), "none is claimable before its time");
+
+    assert_eq!(queue.release_due(&h.redis, now + 20.0, 100).await.unwrap(), 2, "a quarter of the spread each");
+    assert_eq!(one(&queue, &h.redis, "5Miner", 10).await.unwrap().task_id, "spread-t0");
+    let _: () = h.redis.clone().del("task:spread-t3").await.unwrap();
+    assert_eq!(queue.release_due(&h.redis, now + 40.0, 100).await.unwrap(), 2);
+    let rest: Vec<String> = [one(&queue, &h.redis, "5Miner", 10).await, one(&queue, &h.redis, "5Miner", 10).await]
+        .into_iter()
+        .map(|got| got.unwrap().task_id)
+        .collect();
+    assert_eq!(rest, ["spread-t1", "spread-t2"], "in the round's order");
+    assert_eq!(queue.depth(&h.redis).await.unwrap(), 0, "a task closed while held is dropped, not released");
 }
 
 #[tokio::test]

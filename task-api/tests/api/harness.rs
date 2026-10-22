@@ -172,6 +172,7 @@ pub fn settings(data: PathBuf, endpoint: &str) -> Settings {
         embed_checks_per_hour: 600.0,
         queue_target: 1200,
         embed_queue_target: 100,
+        release_spread: 0.0,
         task_urls: 3,
         embed_tasks: false,
         embed_model: "desearch-4b-v1".into(),
