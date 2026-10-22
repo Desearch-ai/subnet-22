@@ -109,6 +109,19 @@ impl PublishQueue {
         Ok(())
     }
 
+    /// Lets claims run out now, so the task API hands their jobs to the next pass at once rather than when the claims expire.
+    pub async fn give_back(&self, task_ids: &[String]) -> Result<()> {
+        if task_ids.is_empty() {
+            return Ok(());
+        }
+        let mut pipe = redis::pipe();
+        for task_id in task_ids {
+            pipe.cmd("ZADD").arg(PCLAIMS).arg("XX").arg(0).arg(task_id).ignore();
+        }
+        let () = pipe.query_async(&mut self.redis.clone()).await?;
+        Ok(())
+    }
+
     pub async fn mark_lost(&self, task_id: &str) -> Result<()> {
         let mut redis = self.redis.clone();
         let _: i64 = redis.incr(LOST, 1).await?;

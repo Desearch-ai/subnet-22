@@ -20,6 +20,7 @@ use desearch::r2::{self, Bucket, Credentials, PARQUET};
 use desearch::stub;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use publisher::index::{Current, VersionIndex};
+use publisher::queue::PublishQueue;
 use publisher::service::{self, Metrics, Settings, Shared};
 use publisher::snapshot::Multipart;
 use redis::aio::ConnectionManager;
@@ -110,6 +111,24 @@ fn outcome_feed(state: &stub::State, first: u64, last: u64) -> Vec<(String, Stri
         found.extend(column(&batches, "outcome").into_iter().zip(column(&batches, "url")));
     }
     found
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_failed_pass_gives_its_claims_back_at_once_but_never_an_acknowledged_one() {
+    let Some((_turn, mut redis)) = redis_db().await else {
+        eprintln!("skipped: no Redis on {REDIS}");
+        return;
+    };
+    let urls = vec!["https://ex.com/a".to_string()];
+    for task in ["g1", "g2"] {
+        enqueue(&mut redis, &crawl(task, &urls, 1.0, ""), false).await;
+    }
+    let queue = PublishQueue::new(redis.clone(), 600.0);
+    assert_eq!(queue.claim(10).await.unwrap().len(), 2);
+    queue.ack("g2").await.unwrap();
+    queue.give_back(&["g1".to_string(), "g2".to_string()]).await.unwrap();
+    let claims: Vec<(String, f64)> = redis.zrange_withscores("publish:claims", 0, -1).await.unwrap();
+    assert_eq!(claims, [("g1".to_string(), 0.0)], "g1's claim has run out, so the task API returns it within a second");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

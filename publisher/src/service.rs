@@ -503,8 +503,12 @@ pub async fn run(shared: Arc<Shared>, mut stop: watch::Receiver<bool>, idle_exit
         } else {
             idle = 0;
             let current = claimed.remove(first_read(&claimed).await);
+            let task_ids: Vec<String> = current.jobs.iter().chain(&current.embeds).map(|job| job.task_id.clone()).collect();
             if let Err(error) = write_batch(&shared, current).await {
-                eprintln!("publish pass failed: {error:#}");
+                eprintln!("publish pass failed, its {} tasks go back to be tried again: {error:#}", task_ids.len());
+                if let Err(error) = shared.queue.give_back(&task_ids).await {
+                    eprintln!("giving back the failed pass's tasks failed; they return when their claims expire: {error:#}");
+                }
                 pause(&mut stop, RETRY_DELAY).await;
             }
         }
