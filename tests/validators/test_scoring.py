@@ -12,6 +12,7 @@ from aiohttp import web
 from desearch.extraction import extract
 from desearch.extraction.schema import sha256_hex
 from desearch.fetch import ScrapingDog
+from desearch.manifest import OPEN_LIST_KEY
 from neurons.miners.rows import write_parquet
 from neurons.validators import crawl, tasks
 from neurons.validators.crawl import CrawlValidator, DownloadFailed
@@ -558,11 +559,15 @@ class Votes:
         return {}
 
 
-def _checked(status: int, body: bytes, ledger=None, **manifest) -> tuple[list, list]:
+def _checked(
+    status: int, body: bytes, ledger=None, listed=(), **manifest
+) -> tuple[list, list]:
     """The task API calls of one crawl check, and the If-Match header of each read of the upload."""
     pins = []
 
     async def upload(request) -> web.Response:
+        if request.path == f"/{OPEN_LIST_KEY}":
+            return web.json_response({"uploads": [{"task_id": t} for t in listed]})
         pins.append(request.headers.get("If-Match"))
         return web.Response(status=status, body=body)
 
@@ -615,7 +620,9 @@ def test_an_upload_changed_after_its_completion_fails_and_costs_its_urls(
     monkeypatch.setattr(CrawlValidator, "run_check", never)
     ledger = Ledger(":memory:")
 
-    ((path, vote),), pins = _checked(status, body, ledger=ledger, etag=ETAG)
+    ((path, vote),), pins = _checked(
+        status, body, ledger=ledger, listed=("t1",), etag=ETAG
+    )
 
     assert path == "/v1/validation/t1/score" and pins == [ETAG]
     assert (vote["verdict"], vote["reason"]) == ("fail", tasks.UPLOAD_CHANGED)
@@ -626,6 +633,16 @@ def test_an_upload_changed_after_its_completion_fails_and_costs_its_urls(
     ).fetchone()
     assert check == ("crawl", "fail", 0, 0, len(CHANGED_URLS))
     assert ledger.crawl_paid(200.0)["m"].amount == -len(CHANGED_URLS)
+
+
+def test_a_pinned_read_refused_after_its_task_closed_is_missing_not_changed():
+    ledger = Ledger(":memory:")
+
+    posts, pins = _checked(403, PRECONDITION_PAGE, ledger=ledger, etag=ETAG)
+
+    assert pins == [ETAG]
+    assert posts == [("/v1/validation/t1/release", {"reason": "missing"})]
+    assert ledger.db.execute("SELECT COUNT(*) FROM checks").fetchone() == (0,)
 
 
 def test_a_refused_read_of_an_unpinned_upload_is_not_a_change():
