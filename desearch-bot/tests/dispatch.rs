@@ -6,10 +6,12 @@ use std::sync::{Arc, Mutex};
 
 use desearch_bot::allowed::{self, Allowed};
 use desearch_bot::buckets::{bucket_of, BucketStore, Buckets, Changes, Resources};
-use desearch_bot::dispatch::{allot, batch_id, interleave, settle, shares, slots, split, Dispatcher, HourlyCap, Pace, Progress, Want};
+use desearch_bot::dispatch::{
+    allot, batch_id, interleave, settle, shares, slots, split, yield_share, Dispatcher, HourlyCap, Pace, Progress, Want, PROBE_PER_HOUR, YIELD_JUDGED,
+};
 use desearch_bot::hotkey::{self, Hotkey};
 use desearch_bot::outcomes::{self, Next, OutcomeFeed, OutcomeRow};
-use desearch_bot::ready::{Order, Outcome, PageOutcome, Pick, Reason, SentPage, BACKOFF, CHANGED, FRESH, LANES, NO_OUTCOME, REQUEUED};
+use desearch_bot::ready::{Order, Outcome, PageOutcome, Pick, Reason, SentPage, Yield, BACKOFF, CHANGED, FRESH, LANES, NO_OUTCOME, REQUEUED, YIELD_HALF_LIFE_S};
 use desearch_bot::records;
 use desearch_bot::states::State;
 use desearch_bot::taskapi::{QueuedUrl, TaskApi};
@@ -268,7 +270,7 @@ fn the_backfill_queues_old_pages_once_and_resumes_where_it_stopped() {
 #[test]
 fn turns_go_best_rank_first_with_more_slots_and_resume_where_they_stopped() {
     assert_eq!([1, 9, 10, 99, 100, 9_999, 10_000, 999_999, 1_000_000, UNRANKED].map(slots), [7, 7, 6, 6, 5, 4, 3, 2, 1, 1]);
-    let want = |rank: i64, ready: u64, allowance: u64| Want { rank, ready, allowance };
+    let want = |rank: i64, ready: u64, allowance: u64| Want { rank, ready, allowance, share: 1.0 };
     let wants = [want(1, 100, 100), want(500, 100, 100), want(2_000_000, 100, 100)];
     assert_eq!(allot(&wants, 13, 0), (vec![7, 5, 1], 0));
     let (given, next) = allot(&wants, 10, 0);
@@ -277,6 +279,40 @@ fn turns_go_best_rank_first_with_more_slots_and_resume_where_they_stopped() {
     assert_eq!(allot(&[want(1, 100, 3), want(500, 100, 100)], 20, 0).0, [3, 17], "the hourly allowance caps a domain");
     assert_eq!(allot(&[want(1, 4, 100)], 50, 0).0, [4]);
     assert_eq!(allot(&[], 50, 0).0, Vec::<u64>::new());
+}
+
+#[test]
+fn a_domain_whose_pages_do_not_come_back_gets_fewer_slots_and_then_only_probes() {
+    let counted = |ok: f64, failed: f64| Some(Yield { ok, failed, at: 1000 });
+    assert_eq!(yield_share(None, 1000), 1.0, "nothing judged yet");
+    assert_eq!(yield_share(counted(0.0, YIELD_JUDGED - 1.0), 1000), 1.0, "too few to judge");
+    assert_eq!(yield_share(counted(5.0, 995.0), 1000), 0.0, "half a percent: probes only");
+    assert_eq!(yield_share(counted(100.0, 900.0), 1000), 0.5, "a tenth comes back: half the slots");
+    assert_eq!(yield_share(counted(300.0, 700.0), 1000), 1.0);
+    let three_days = 1000 + (3.0 * YIELD_HALF_LIFE_S) as u32;
+    assert_eq!(yield_share(counted(5.0, 995.0), three_days), 1.0, "old outcomes fade until the domain is judged afresh");
+
+    let want = |share: f64, allowance: u64| Want { rank: 1, ready: 100, allowance, share };
+    assert_eq!(allot(&[want(1.0, 100), want(0.5, 100)], 22, 0).0, [14, 8], "seven slots a turn against half of seven, rounded up");
+    assert_eq!(allot(&[want(0.0, PROBE_PER_HOUR), want(1.0, 100)], 100, 0).0, [13, 87], "a probing domain takes one a turn");
+    assert_eq!(allot(&[want(0.0, PROBE_PER_HOUR), want(1.0, 100)], 500, 0).0, [PROBE_PER_HOUR, 100], "and never more than its probes");
+}
+
+#[test]
+fn outcomes_tally_each_domains_yield_and_a_dropped_task_counts_for_nothing() {
+    let dir = Dir::new("ready-yield");
+    let store = open(&dir);
+    store.record_listing("example.com", 7, vec![page("a", 10), page("b", 10), page("c", 10)], 100).unwrap();
+    let picks = take(&store, 10);
+    store.mark_sent(&picks, 1000).unwrap();
+    let row = |path: &str, outcome: Outcome| PageOutcome { domain: "example.com".into(), rest: rest(path), outcome, at: 2000 };
+    store.apply_outcomes(&[row("a", Outcome::Published), row("b", Outcome::Failed), row("c", Outcome::Dropped)], RECRAWL).unwrap();
+    assert_eq!(store.domain_yield("example.com").unwrap(), Some(Yield { ok: 1.0, failed: 1.0, at: 2000 }));
+    let unknown = PageOutcome { domain: "example.com".into(), rest: rest("never-sent"), outcome: Outcome::Failed, at: 2000 };
+    store.apply_outcomes(&[row("a", Outcome::Unchanged), unknown], RECRAWL).unwrap();
+    let tallied = store.domain_yield("example.com").unwrap().unwrap();
+    assert_eq!((tallied.ok, tallied.failed), (2.0, 1.0), "outcomes of one moment add up; a page the store does not know is not counted");
+    assert_eq!(store.domain_yield("other.com").unwrap(), None);
 }
 
 #[test]

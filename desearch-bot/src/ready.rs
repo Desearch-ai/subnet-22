@@ -25,6 +25,10 @@ pub(crate) const SENT: u8 = b'P';
 const WAITING: u8 = b'W';
 /// Sent pages by the time their outcome is overdue.
 const EXPECTING: u8 = b'X';
+/// Each domain's recent outcomes, so the dispatcher sends less where pages do not come back.
+const YIELD: u8 = b'Y';
+/// An outcome counts half as much a day later.
+pub const YIELD_HALF_LIFE_S: f64 = 86_400.0;
 const BACKFILL: &str = "backfill_ready";
 
 /// A sitemap read that moves more than this share of its pages, and more than RESTAMP_MIN, past what they were sent with is re-stamping dates, not changing pages.
@@ -235,6 +239,35 @@ pub struct SentPage {
     pub rest: Vec<u8>,
     pub lastmod: u32,
     pub at: u32,
+}
+
+/// A domain's published and failed outcomes, each decayed by its age.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Yield {
+    pub ok: f64,
+    pub failed: f64,
+    pub at: u32,
+}
+
+impl Yield {
+    /// The counts as they stand at `now`.
+    pub fn at(self, now: u32) -> Yield {
+        let kept = 0.5f64.powf(now.saturating_sub(self.at) as f64 / YIELD_HALF_LIFE_S);
+        Yield { ok: self.ok * kept, failed: self.failed * kept, at: self.at.max(now) }
+    }
+
+    pub fn judged(self) -> f64 {
+        self.ok + self.failed
+    }
+
+    fn pack(self) -> Vec<u8> {
+        [(self.ok as f32).to_be_bytes(), (self.failed as f32).to_be_bytes(), self.at.to_be_bytes()].concat()
+    }
+
+    fn unpack(raw: &[u8]) -> Option<Yield> {
+        let word = |at: usize| raw.get(at..at + 4).and_then(|b| b.try_into().ok());
+        Some(Yield { ok: f32::from_be_bytes(word(0)?).into(), failed: f32::from_be_bytes(word(4)?).into(), at: u32::from_be_bytes(word(8)?) })
+    }
 }
 
 /// What a batch of outcomes did.
@@ -497,6 +530,7 @@ impl BucketStore {
             sents.insert((*key).clone(), sent);
         }
         let mut batch = WriteBatch::default();
+        let mut tallies: HashMap<&str, Yield> = HashMap::new();
         for (PageOutcome { domain, rest, outcome, at }, key) in rows.iter().zip(&url_keys) {
             let Some(Some(record)) = records.get_mut(key) else {
                 applied.ignored += 1;
@@ -505,6 +539,14 @@ impl BucketStore {
             if record.pushed_at <= at.saturating_add(STALE_OUTCOME) {
                 batch.delete(timed_key(EXPECTING, record.pushed_at.saturating_add(NO_OUTCOME), domain.as_bytes(), rest));
             }
+            // A dropped task says nothing about the domain; only fetched or failed pages count.
+            let tally = tallies.entry(domain.as_str()).or_default();
+            match outcome {
+                Outcome::Published | Outcome::Unchanged => tally.ok += 1.0,
+                Outcome::Failed => tally.failed += 1.0,
+                Outcome::Dropped => {}
+            }
+            tally.at = tally.at.max(*at);
             let sent = sents.get_mut(key).expect("looked up with its record");
             match outcome {
                 Outcome::Published | Outcome::Unchanged => {
@@ -543,8 +585,17 @@ impl BucketStore {
                 batch.put([&[SENT], &key[1..]].concat(), sent.pack());
             }
         }
+        for (domain, tally) in tallies.into_iter().filter(|(_, tally)| tally.judged() > 0.0) {
+            let kept = self.domain_yield(domain)?.unwrap_or_default().at(tally.at);
+            batch.put(yield_key(domain), Yield { ok: kept.ok + tally.ok, failed: kept.failed + tally.failed, at: kept.at }.pack());
+        }
         self.db.write(batch)?;
         Ok(applied)
+    }
+
+    /// The domain's outcomes as last counted, not yet decayed to now.
+    pub fn domain_yield(&self, domain: &str) -> Result<Option<Yield>> {
+        Ok(self.db.get(yield_key(domain))?.as_deref().and_then(Yield::unpack))
     }
 
     /// Stamp pages another sender already sent; returns how many the store knows.
@@ -830,6 +881,10 @@ fn count_key(domain: &str) -> Vec<u8> {
 
 fn count_value(raw: Option<&[u8]>) -> u64 {
     raw.and_then(|r| r.try_into().ok()).map_or(0, u64::from_le_bytes)
+}
+
+fn yield_key(domain: &str) -> Vec<u8> {
+    [&[YIELD], domain.as_bytes()].concat()
 }
 
 fn timed_key(kind: u8, due: u32, domain: &[u8], rest: &[u8]) -> Vec<u8> {

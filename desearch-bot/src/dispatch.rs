@@ -14,7 +14,7 @@ use tokio::sync::watch;
 
 use crate::buckets::{bucket_of, Buckets};
 use crate::outcomes::{self, Next, OutcomeFeed};
-use crate::ready::{Entry, Order, Pick, Reason, SentPage, CHANGED, FRESH, LANES, REQUEUED};
+use crate::ready::{Entry, Order, Pick, Reason, SentPage, Yield, CHANGED, FRESH, LANES, REQUEUED};
 use crate::records;
 use crate::taskapi::{ApiError, QueuedUrl, TaskApi, MAX_URL_CHARS};
 use crate::timetable::UNRANKED;
@@ -48,11 +48,34 @@ pub fn slots(rank: i64) -> u64 {
 }
 
 /// What one domain could send this pass.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Want {
     pub rank: i64,
     pub ready: u64,
     pub allowance: u64,
+    /// The part of its slots the domain's yield earns it; a probing domain still takes one a turn, within its allowance.
+    pub share: f64,
+}
+
+/// Outcomes judged before a domain's yield counts; fewer say too little.
+pub const YIELD_JUDGED: f64 = 500.0;
+/// A domain publishing at least this part of what it is sent keeps all its slots; below, its slots shrink in proportion.
+pub const YIELD_FULL: f64 = 0.2;
+/// Below this a domain gets only probes, enough to notice when it recovers.
+pub const YIELD_PROBE: f64 = 0.02;
+pub const PROBE_PER_HOUR: u64 = 20;
+
+/// The part of its slots a domain gets from its recent outcomes: all of them until enough are judged, none (probes only) under `YIELD_PROBE`.
+pub fn yield_share(found: Option<Yield>, now: u32) -> f64 {
+    let Some(counted) = found.map(|y| y.at(now)).filter(|y| y.judged() >= YIELD_JUDGED) else {
+        return 1.0;
+    };
+    let rate = counted.ok / counted.judged();
+    if rate < YIELD_PROBE {
+        0.0
+    } else {
+        (rate / YIELD_FULL).min(1.0)
+    }
 }
 
 /// Each domain's share of one pass and where the next pass starts: turns go round the domains, sorted best first, from `start`, each taking its slots.
@@ -70,7 +93,8 @@ pub fn allot(wants: &[Want], budget: u64, start: usize) -> (Vec<u64>, usize) {
         let Some(i) = turns.pop_front() else {
             break;
         };
-        let take = slots(wants[i].rank).min(cap(i) - given[i]).min(left);
+        let earned = ((slots(wants[i].rank) as f64 * wants[i].share).ceil() as u64).max(1);
+        let take = earned.min(cap(i) - given[i]).min(left);
         given[i] += take;
         left -= take;
         next = (i + 1) % wants.len();
@@ -183,8 +207,13 @@ impl HourlyCap {
     }
 
     pub fn allowance(&mut self, domain: &str, now: u32) -> u64 {
+        self.allowance_under(domain, now, self.limit)
+    }
+
+    /// What is left of `limit` in the last hour, for a domain held to less than the usual cap.
+    pub fn allowance_under(&mut self, domain: &str, now: u32, limit: u64) -> u64 {
         let Some(sent) = self.sent.get_mut(domain) else {
-            return self.limit;
+            return limit;
         };
         while sent.front().is_some_and(|(at, _)| *at + HOUR <= now) {
             sent.pop_front();
@@ -193,7 +222,7 @@ impl HourlyCap {
         if sent.is_empty() {
             self.sent.remove(domain);
         }
-        self.limit.saturating_sub(total)
+        limit.saturating_sub(total)
     }
 
     pub fn record(&mut self, domain: &str, now: u32, count: u64) {
@@ -228,6 +257,9 @@ pub struct Progress {
     pub backfill_stores: AtomicU64,
     pub backfill_of: AtomicU64,
     pub backfill_scanned: AtomicU64,
+    /// Domains held to probes, and domains given part of their slots, by their yield.
+    pub probing: AtomicU64,
+    pub slowed: AtomicU64,
     /// The last pass's milliseconds in each step: absorbing, picking, sending.
     pub pass_ms: [AtomicU64; 3],
     pub backfill_added: AtomicU64,
@@ -239,7 +271,7 @@ impl Progress {
         let top = self.top.lock().unwrap_or_else(|e| e.into_inner());
         let top: Vec<String> = top.iter().map(|(domain, n)| format!("{domain} {}", thousands(*n))).collect();
         format!(
-            "[rs] dispatch ready {} in {} domains (top {})  sent {} ({:.0}/min, {} batches; new {} refresh {} retry {})  room {} tasks  requeued {} overdue {}  outcomes seq {} lag {}s applied {} retried {} skipped {}  backfill {}/{} stores {} read {} added",
+            "[rs] dispatch ready {} in {} domains (top {})  sent {} ({:.0}/min, {} batches; new {} refresh {} retry {})  room {} tasks  yield-limited {} probing {}  requeued {} overdue {}  outcomes seq {} lag {}s applied {} retried {} skipped {}  backfill {}/{} stores {} read {} added",
             thousands(self.ready.load(Ordering::Relaxed)),
             thousands(self.ready_domains.load(Ordering::Relaxed)),
             if top.is_empty() { "-".to_string() } else { top.join(", ") },
@@ -250,6 +282,8 @@ impl Progress {
             thousands(self.sent_refresh.load(Ordering::Relaxed)),
             thousands(self.sent_retry.load(Ordering::Relaxed)),
             self.room_tasks.load(Ordering::Relaxed),
+            self.slowed.load(Ordering::Relaxed),
+            self.probing.load(Ordering::Relaxed),
             thousands(self.requeued.load(Ordering::Relaxed)),
             thousands(self.overdue.load(Ordering::Relaxed)),
             self.outcome_seq.load(Ordering::Relaxed),
@@ -365,6 +399,7 @@ impl Sending {
 struct Domain {
     rank: i64,
     ready: u64,
+    share: f64,
 }
 
 pub struct Dispatcher {
@@ -403,8 +438,8 @@ impl Dispatcher {
                     if !reading.allows(&domain) {
                         continue;
                     }
-                    let rank = rank_of(&reading, &domain);
-                    domains.insert(domain, Domain { rank, ready });
+                    let (rank, share) = (rank_of(&reading, &domain), share_of(&reading, &domain, now()));
+                    domains.insert(domain, Domain { rank, ready, share });
                 }
             }
             let pending: Vec<Pending> = match reading.stores().next().map(|store| store.meta(PENDING)).transpose()?.flatten() {
@@ -541,23 +576,31 @@ impl Dispatcher {
                     *grown.entry(domain).or_default() += added;
                 }
             }
-            let ranks: Vec<(String, i64)> =
-                refresh.iter().chain(grown.keys()).map(|domain| (domain.clone(), rank_of(&buckets, domain))).collect();
+            let ranks: Vec<(String, i64, f64)> = refresh
+                .iter()
+                .chain(grown.keys())
+                .map(|domain| (domain.clone(), rank_of(&buckets, domain), share_of(&buckets, domain, now)))
+                .collect();
             Ok((grown, ranks, requeued, overdue))
         })
         .await??;
         self.progress.requeued.fetch_add(requeued as u64, Ordering::Relaxed);
         self.progress.overdue.fetch_add(overdue as u64, Ordering::Relaxed);
-        let ranks: HashMap<String, i64> = ranks.into_iter().collect();
+        let ranks: HashMap<String, (i64, f64)> = ranks.into_iter().map(|(domain, rank, share)| (domain, (rank, share))).collect();
         for (domain, added) in grown {
-            let rank = ranks.get(&domain).copied().unwrap_or(UNRANKED);
-            self.domains.entry(domain).or_insert(Domain { rank, ready: 0 }).ready += added;
+            let (rank, share) = ranks.get(&domain).copied().unwrap_or((UNRANKED, 1.0));
+            self.domains.entry(domain).or_insert(Domain { rank, ready: 0, share }).ready += added;
         }
-        for (domain, rank) in ranks {
+        for (domain, (rank, share)) in ranks {
             if let Some(known) = self.domains.get_mut(&domain) {
                 known.rank = rank;
+                known.share = share;
             }
         }
+        let shares = self.domains.values().map(|d| d.share);
+        let (probing, slowed) = shares.fold((0, 0), |(probing, slowed), share| (probing + u64::from(share == 0.0), slowed + u64::from(share > 0.0 && share < 1.0)));
+        self.progress.probing.store(probing, Ordering::Relaxed);
+        self.progress.slowed.store(slowed, Ordering::Relaxed);
         Ok(())
     }
 
@@ -573,7 +616,11 @@ impl Dispatcher {
         order.sort_unstable();
         let wants: Vec<Want> = order
             .iter()
-            .map(|(rank, name)| Want { rank: *rank, ready: self.domains[name].ready, allowance: self.cap.allowance(name, now) })
+            .map(|(rank, name)| {
+                let Domain { ready, share, .. } = self.domains[name];
+                let allowance = if share == 0.0 { self.cap.allowance_under(name, now, PROBE_PER_HOUR) } else { self.cap.allowance(name, now) };
+                Want { rank: *rank, ready, allowance, share }
+            })
             .collect();
         let start = self.resume.as_ref().map_or(0, |resume| order.partition_point(|key| key <= resume));
         let (given, next) = allot(&wants, budget, start);
@@ -727,7 +774,7 @@ impl Dispatcher {
         if ready == 0 {
             self.domains.remove(domain);
         } else {
-            let known = self.domains.entry(domain.to_string()).or_insert(Domain { rank, ready });
+            let known = self.domains.entry(domain.to_string()).or_insert(Domain { rank, ready, share: 1.0 });
             known.ready = ready;
         }
     }
@@ -952,6 +999,10 @@ pub fn on_readers<T: Send, R: Send>(items: Vec<T>, work: impl Fn(T) -> Result<R>
         }
     });
     done.into_iter().map(|slot| slot.into_inner().unwrap_or_else(|e| e.into_inner()).expect("every item ran")).collect()
+}
+
+fn share_of(buckets: &Buckets, domain: &str, now: u32) -> f64 {
+    yield_share(buckets.store_for(domain).and_then(|store| store.domain_yield(domain).ok().flatten()), now)
 }
 
 fn rank_of(buckets: &Buckets, domain: &str) -> i64 {
