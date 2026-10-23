@@ -15,8 +15,7 @@ use crate::time::now;
 /// A number taken but not indexed yet; one older than this was lost with its writer and gets indexed by `fill_holes`.
 pub const PENDING_GRACE_S: f64 = 60.0;
 
-static TAKE: LazyLock<Script> =
-    LazyLock::new(|| Script::new("local at = redis.call('INCR', KEYS[1]) redis.call('HSET', KEYS[2], at, ARGV[1]) return at"));
+static TAKE: LazyLock<Script> = LazyLock::new(|| Script::new("local at = redis.call('INCR', KEYS[1]) redis.call('HSET', KEYS[2], at, ARGV[1]) return at"));
 
 pub struct Feed {
     pub name: Cow<'static, str>,
@@ -52,17 +51,23 @@ impl Feed {
         format!("{}/seq/{seq:012}.json", self.name)
     }
 
-    /// Numbers a file already written; a number is only handed out for a file that exists.
+    /// Numbers a file already written; once a number is taken this never errs, since a caller trying again would number the file twice.
     pub async fn number(&self, storage: &Bucket, redis: &ConnectionManager, key: &str, rows: usize) -> Result<u64> {
         let mut redis = redis.clone();
         // Taken and noted pending in one step, so a writer that times out or is cancelled here still leaves its number repairable.
         let at: u64 = TAKE.key(self.counter()).key(self.pending()).arg(format!("{}\t{key}", now())).invoke_async(&mut redis).await?;
         if let Err(error) = storage.put(&self.seq_key(at), index_json(key, Some(rows)), JSON, None).await {
             eprintln!("could not index {key} as {at}: {error}");
-            let () = redis::pipe().atomic().hset(self.holes(), at, key).ignore().hdel(self.pending(), at).ignore().query_async(&mut redis).await?;
+            let moved: redis::RedisResult<()> =
+                redis::pipe().atomic().hset(self.holes(), at, key).ignore().hdel(self.pending(), at).ignore().query_async(&mut redis).await;
+            if let Err(error) = moved {
+                eprintln!("could not note {at} as a hole ({error}); it is indexed once its pending note goes stale");
+            }
             return Ok(at);
         }
-        let _: i64 = redis.hdel(self.pending(), at).await?;
+        if let Err(error) = redis.hdel::<_, _, i64>(self.pending(), at).await {
+            eprintln!("could not clear pending {at} ({error}); its index is written again once the note goes stale");
+        }
         if let Err(error) = storage.put(&self.latest_key(), Bytes::from(format!("{{\"seq\": {at}}}")), JSON, Some("no-store")).await {
             eprintln!("could not note {at} as the newest {} file: {error}", self.name);
         }
