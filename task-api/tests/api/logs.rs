@@ -93,7 +93,7 @@ async fn the_overview_and_the_miner_list_follow_the_work() {
         (window["tasks"].clone(), window["pass"].clone(), window["credited"].clone(), window["votes"].clone()),
         (json!(1), json!(1), json!(2), json!(1))
     );
-    assert_eq!(overview["validators"], json!({"active": 1, "known": 1}));
+    assert_eq!(overview["validators"], json!({"active": 1, "known": 1, "agreement": 1.0}));
     assert_eq!((overview["miners"].clone(), overview["total"]["pass"].clone()), (json!(1), json!(1)));
 
     let miners = read(&h, "/v1/miners").await["miners"].clone();
@@ -191,4 +191,61 @@ async fn the_miners_page_lists_only_hotkeys_on_the_subnet_once_the_metagraph_is_
     let hotkeys: Vec<&str> = listed["miners"].as_array().unwrap().iter().filter_map(|m| m["hotkey"].as_str()).collect();
     assert_eq!(hotkeys, ["5OnTheSubnet"]);
     assert_eq!(listed["miners"][0]["uid"], 4);
+}
+
+async fn tallied(h: &Harness) {
+    h.state
+        .db
+        .run(|conn| {
+            let at = desearch::time::now();
+            task_api::hours::roll_up_claims(conn, 1000, at)?;
+            task_api::hours::roll_up_checks(conn, 1000, at)
+        })
+        .await
+        .expect("the tallies are counted");
+}
+
+#[tokio::test]
+async fn each_hour_shows_the_work_handed_out_the_claims_refused_and_how_checks_went() {
+    let h = started(2).await;
+    let passed = task_id(&h.mine(&h.miner, 0).await);
+    vote(&h, &h.validator, "pass", Some(&passed)).await;
+    let failed = task_id(&h.mine(&h.miner, 0).await);
+    vote(&h, &h.validator, "fail", Some(&failed)).await;
+    h.mine(&h.rival, 0).await;
+    assert_eq!(h.miner.claim().await["tasks"].as_array().unwrap().len(), 1);
+    assert_eq!(h.rival.claim().await["refusal"]["code"], "QUEUE_EMPTY");
+    tallied(&h).await;
+
+    let hours = read(&h, "/v1/stats/hours?hours=3").await;
+    let points = hours["points"].as_array().unwrap();
+    assert_eq!((points.len(), hours["kind"].clone(), hours["miner"].clone()), (3, json!("crawl"), Value::Null));
+    let now = &points[2];
+    assert_eq!(
+        (now["issued"].clone(), now["completed"].clone(), now["requeued"].clone(), now["refused"].clone(), now["miners"].clone()),
+        (json!(4), json!(3), json!(1), json!({"QUEUE_EMPTY": 1}), json!(2))
+    );
+    assert_eq!((now["tasks"].clone(), now["pass"].clone(), now["fail"].clone(), now["checked"].clone()), (json!(2), json!(1), json!(1), json!(2)));
+    assert_eq!((now["verdict_s"]["checked"]["tasks"].clone(), now["verdict_s"]["unchecked"].clone()), (json!(2), Value::Null));
+    assert_eq!((points[0]["issued"].clone(), points[0]["refused"].clone(), points[0]["verdict_s"]["checked"].clone()), (json!(0), json!({}), Value::Null));
+
+    let rival = read(&h, &format!("/v1/stats/hours?hours=1&miner={}", h.rival.ss58())).await["points"][0].clone();
+    assert_eq!((rival["issued"].clone(), rival["refused"].clone(), rival["tasks"].clone()), (json!(1), json!({"QUEUE_EMPTY": 1}), json!(0)));
+    assert!(rival.get("checked").is_none() && rival.get("miners").is_none(), "the subnet's checks are not one miner's");
+
+    let overview = read(&h, "/v1/overview").await;
+    assert_eq!((overview["claims"]["issued"].clone(), overview["claims"]["refused"].clone()), (json!(4), json!({"QUEUE_EMPTY": 1})));
+    let checks = &overview["checks"];
+    assert_eq!((checks["checked"].clone(), checks["verdict_s"]["checked"]["tasks"].clone()), (json!(2), json!(2)));
+    assert!(checks["reasons"].as_array().unwrap().contains(&json!({"verdict": "fail", "reason": "content_mismatch", "checked": true, "tasks": 1})));
+    assert_eq!((overview["validators"]["agreement"].clone(), overview["locked_out"].clone()), (json!(1.0), json!(0)));
+    assert_eq!(overview["taken_back"], json!({"take_backs": 0, "tasks": 0, "miners": 0, "credited": 0}));
+
+    let miner = read(&h, &format!("/v1/miners/{}", h.miner.ss58())).await;
+    let claims = &miner["kinds"]["crawl"]["claims"];
+    assert_eq!((claims["issued"].clone(), claims["completed"].clone(), claims["refused"].clone()), (json!(3), json!(2), json!({})));
+    assert_eq!((miner["kinds"]["crawl"]["window"]["fail"].clone(), miner["take_backs"].clone()), (json!(1), json!([])));
+    let fails = read(&h, "/v1/tasks?verdict=fail").await["tasks"].clone();
+    assert_eq!(field(&fails, "task_id"), [json!(failed)]);
+    assert_eq!(read(&h, &format!("/v1/tasks?verdict=fail&miner={}", h.rival.ss58())).await["tasks"], json!([]));
 }
