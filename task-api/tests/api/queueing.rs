@@ -50,10 +50,8 @@ async fn a_round_spread_over_time_is_released_in_its_order_as_each_task_comes_du
     assert_eq!(one(&queue, &h.redis, "5Miner", 10).await.unwrap().task_id, "spread-t0");
     let _: () = h.redis.clone().del("task:spread-t3").await.unwrap();
     assert_eq!(queue.release_due(&h.redis, now + 40.0, 100).await.unwrap(), 2);
-    let rest: Vec<String> = [one(&queue, &h.redis, "5Miner", 10).await, one(&queue, &h.redis, "5Miner", 10).await]
-        .into_iter()
-        .map(|got| got.unwrap().task_id)
-        .collect();
+    let rest: Vec<String> =
+        [one(&queue, &h.redis, "5Miner", 10).await, one(&queue, &h.redis, "5Miner", 10).await].into_iter().map(|got| got.unwrap().task_id).collect();
     assert_eq!(rest, ["spread-t1", "spread-t2"], "in the round's order");
     assert_eq!(queue.depth(&h.redis).await.unwrap(), 0, "a task closed while held is dropped, not released");
 }
