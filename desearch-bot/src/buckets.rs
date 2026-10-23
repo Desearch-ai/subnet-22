@@ -140,8 +140,6 @@ impl Resources {
         options.set_level_compaction_dynamic_level_bytes(true);
         // Hundreds of stores share one memtable budget and flush small files; merging more of them at once rewrites less.
         options.set_level_zero_file_num_compaction_trigger(8);
-        // Ready, waiting and expecting entries are deleted as they go out; files thick with those deletions are compacted early, or every scan steps over them.
-        options.add_compact_on_deletion_collector_factory(128 << 10, 16 << 10, 0.3);
         options.set_max_background_jobs(self.background_jobs);
         options.set_max_subcompactions(2);
         options.set_max_open_files(self.open_files);
