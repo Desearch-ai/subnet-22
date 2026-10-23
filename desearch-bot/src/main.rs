@@ -16,8 +16,8 @@ use desearch_bot::dispatch::{self, Dispatcher, Progress};
 use desearch_bot::hotkey::Hotkey;
 use desearch_bot::langid::LangId;
 use desearch_bot::net::{self, PublicResolver};
-use desearch_bot::outcomes::OutcomeFeed;
-use desearch_bot::ready::DEFAULT_RECRAWL;
+use desearch_bot::outcomes::{OutcomeFeed, OutcomeReader};
+use desearch_bot::recrawl::{Recrawl, DAY, DEFAULT_EVERY, DEFAULT_GONE};
 use desearch_bot::registry::{self, Registry};
 use desearch_bot::signing::Signer;
 use desearch_bot::suffixes::PublicSuffixList;
@@ -143,9 +143,18 @@ struct RunArgs {
     /// Where the task API publishes what became of each URL, such as https://r2.desearch.ai.
     #[arg(long)]
     outcomes_url: Option<String>,
-    /// Days after a crawl that a page without a lastmod goes out again.
-    #[arg(long, default_value_t = DEFAULT_RECRAWL / 86_400)]
+    /// Days after a send that a page without a lastmod, or one that failed, goes out again.
+    #[arg(long, default_value_t = DEFAULT_EVERY / DAY)]
     recrawl_days: u32,
+    /// Re-crawl intervals for listed domains and their subdomains, as `domain days` lines such as `bbc.co.uk 1`.
+    #[arg(long)]
+    recrawl_overrides: Option<PathBuf>,
+    /// Days a page that failed on two sends in a row waits before it goes out again, unless its lastmod moves.
+    #[arg(long, default_value_t = DEFAULT_GONE / DAY)]
+    gone_days: u32,
+    /// Pages of lost or taken-back tasks put back each hour; a burst beyond it is spread over the following hours.
+    #[arg(long, default_value_t = 200_000)]
+    dropped_per_hour: u64,
     /// Walk every store once to put pages never sent, or changed since sent, on the ready lists; it resumes where it stopped.
     #[arg(long)]
     backfill_ready: bool,
@@ -178,6 +187,11 @@ async fn run(args: RunArgs) -> Result<()> {
     }
     if args.new_share + args.retry_share > 100 {
         bail!("--new-share and --retry-share add up to more than 100");
+    }
+    let mut recrawl = Recrawl::new(args.recrawl_days.saturating_mul(DAY), args.gone_days.saturating_mul(DAY));
+    if let Some(path) = &args.recrawl_overrides {
+        recrawl = recrawl.with_overrides_file(path)?;
+        println!("[rs] {} domains re-crawled on their own interval", recrawl.overridden());
     }
     let dsn = std::env::var("DESEARCH_DB").ok().filter(|d| !d.is_empty());
     let excluded = match &dsn {
@@ -267,6 +281,7 @@ async fn run(args: RunArgs) -> Result<()> {
             api,
             args.per_domain_hourly,
             dispatch::shares(args.new_share, args.retry_share),
+            recrawl.clone(),
             progress.clone(),
         ).await?
         .paced(args.urls_per_hour);
@@ -274,7 +289,8 @@ async fn run(args: RunArgs) -> Result<()> {
     }
     if let Some(base) = &args.outcomes_url {
         let feed = OutcomeFeed::new(base)?;
-        tokio::spawn(dispatch::follow_outcomes(buckets.clone(), feed, args.recrawl_days * 86_400, progress.clone(), stopped.clone()));
+        let reader = OutcomeReader::new(recrawl.clone(), args.dropped_per_hour);
+        tokio::spawn(dispatch::follow_outcomes(buckets.clone(), feed, reader, progress.clone(), stopped.clone()));
     }
     if args.task_api.is_some() || args.outcomes_url.is_some() || args.backfill_ready {
         let (progress, mut stopped) = (progress.clone(), stopped.clone());

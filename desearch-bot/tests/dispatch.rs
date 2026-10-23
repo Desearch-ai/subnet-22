@@ -10,8 +10,9 @@ use desearch_bot::dispatch::{
     allot, batch_id, interleave, settle, shares, slots, split, yield_share, Dispatcher, HourlyCap, Pace, Progress, Want, PROBE_PER_HOUR, YIELD_JUDGED,
 };
 use desearch_bot::hotkey::{self, Hotkey};
-use desearch_bot::outcomes::{self, Next, OutcomeFeed, OutcomeRow};
-use desearch_bot::ready::{Order, Outcome, PageOutcome, Pick, Reason, SentPage, Yield, BACKOFF, CHANGED, FRESH, LANES, NO_OUTCOME, REQUEUED, YIELD_HALF_LIFE_S};
+use desearch_bot::outcomes::{self, HourlySpread, Next, OutcomeFeed, OutcomeReader, OutcomeRow};
+use desearch_bot::ready::{Order, Outcome, Pick, Reason, Requeued, Scheduled, SentPage, Why, Yield, CHANGED, FRESH, LANES, REQUEUED, YIELD_HALF_LIFE_S};
+use desearch_bot::recrawl::{Recrawl, DAY};
 use desearch_bot::records;
 use desearch_bot::states::State;
 use desearch_bot::taskapi::{QueuedUrl, TaskApi};
@@ -22,6 +23,11 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
 const RECRAWL: u32 = 7 * 86_400;
+const GONE: u32 = 30 * 86_400;
+
+fn rules() -> Recrawl {
+    Recrawl::new(RECRAWL, GONE)
+}
 
 struct Dir(PathBuf);
 
@@ -79,6 +85,29 @@ fn orders(store: &BucketStore, domain: &str) -> Vec<Order> {
     store.ready_list(domain, 1000).unwrap().iter().map(|e| e.order).collect()
 }
 
+/// Stores holding these domains' records, as the outcome reader finds domains.
+fn known(dir: &Dir, hosts: &[&str]) -> Buckets {
+    let mut owned: Vec<usize> = hosts.iter().map(|h| bucket_of(h)).collect();
+    owned.sort_unstable();
+    owned.dedup();
+    let buckets = Buckets::open(&dir.0, &owned, &resources()).unwrap();
+    for host in hosts {
+        let mut changes = Changes::default();
+        changes.domain(host, &records::new_domain(Some(10), Some("com"), &[], State::Active, None, None));
+        buckets.store(host).write(changes).unwrap();
+    }
+    buckets
+}
+
+fn outcome(url: &str, outcome: Outcome, at: u32) -> OutcomeRow {
+    let host = url.split('/').nth(2).unwrap().trim_start_matches("www.").to_string();
+    OutcomeRow { url: url.into(), host, outcome, at: i64::from(at) * 1_000_000 }
+}
+
+fn requeue(store: &BucketStore, now: u32) -> Requeued {
+    store.requeue_due(now, 100, &rules()).unwrap()
+}
+
 #[test]
 fn new_pages_join_their_ready_list_newest_first_without_junk() {
     let dir = Dir::new("ready-order");
@@ -134,7 +163,7 @@ fn a_sent_page_returns_once_its_lastmod_moves_past_what_it_was_sent_with() {
     let picks = take(&store, 10);
     assert_eq!(picks.iter().map(|p| p.url.as_str()).collect::<Vec<_>>(), ["https://example.com/b", "https://example.com/a"]);
     assert!(picks.iter().all(|p| p.reason == Reason::Fresh));
-    store.mark_sent(&picks, 150).unwrap();
+    store.mark_sent(&picks, 150, &rules()).unwrap();
     assert_eq!(store.ready_count("example.com").unwrap(), 0);
     assert!(store.ready_domains().unwrap().is_empty());
     assert_eq!(record(&store, "a").pushed_at, 150);
@@ -146,7 +175,7 @@ fn a_sent_page_returns_once_its_lastmod_moves_past_what_it_was_sent_with() {
     let picks = take(&store, 10);
     assert_eq!(picks.len(), 1, "a page changed twice before it went goes once");
     assert_eq!((picks[0].reason, picks[0].lastmod), (Reason::Changed, 30));
-    store.mark_sent(&picks, 400).unwrap();
+    store.mark_sent(&picks, 400, &rules()).unwrap();
     assert_eq!(store.ready_count("example.com").unwrap(), 0);
 
     let listing = store.record_listing("example.com", 7, vec![page("a", 9), page("b", 30)], 500).unwrap();
@@ -161,7 +190,7 @@ fn a_sitemap_that_restamps_its_pages_queues_only_the_ten_newest() {
     store.record_listing("example.com", 7, listed(&|i| 1000 + i), 100).unwrap();
     let picks = take(&store, 1000);
     assert_eq!(picks.len(), 200);
-    store.mark_sent(&picks, 150).unwrap();
+    store.mark_sent(&picks, 150, &rules()).unwrap();
 
     let listing = store.record_listing("example.com", 7, listed(&|i| 5000 + i), 200).unwrap();
     assert_eq!((listing.moved, listing.ready), (200, 10));
@@ -173,48 +202,165 @@ fn a_sitemap_that_restamps_its_pages_queues_only_the_ten_newest() {
 }
 
 #[test]
-fn outcomes_stamp_crawls_and_bring_failures_back_after_a_backoff() {
-    let dir = Dir::new("ready-outcomes");
+fn a_page_without_a_lastmod_goes_again_on_its_domains_interval_counted_from_its_send() {
+    let dir = Dir::new("ready-recrawl");
     let store = open(&dir);
-    store.record_listing("example.com", 7, vec![page("a", 10), page("undated", 0)], 100).unwrap();
+    store.record_listing("example.com", 7, vec![page("dated", 10), page("undated", 0)], 100).unwrap();
     let picks = take(&store, 10);
-    store.mark_sent(&picks, 1000).unwrap();
-    let row = |path: &str, outcome: Outcome, at: u32| PageOutcome { domain: "example.com".into(), rest: rest(path), outcome, at };
+    store.mark_sent(&picks, 1000, &rules()).unwrap();
+    assert_eq!(store.waiting().unwrap(), [(1000 + RECRAWL, "example.com".to_string(), rest("undated"))], "a page with a lastmod waits for it to move");
+    assert_eq!(store.next_send("example.com", &rest("undated")).unwrap(), Some(Scheduled { why: Why::Recrawl, due: 1000 + RECRAWL, at: 1000 }));
 
-    let applied = store.apply_outcomes(&[row("a", Outcome::Published, 2000), row("undated", Outcome::Unchanged, 2000)], RECRAWL).unwrap();
-    assert_eq!(applied.crawled, 2);
-    assert_eq!(record(&store, "a").crawled_at, 2000);
-    assert_eq!(store.waiting().unwrap(), [(2000 + RECRAWL, "example.com".to_string(), rest("undated"))], "only a page without a lastmod is re-crawled on a schedule");
+    let undated: Vec<Pick> = picks.into_iter().filter(|p| p.url.ends_with("undated")).collect();
+    store.mark_sent(&undated, 1500, &rules()).unwrap();
+    assert_eq!(requeue(&store, 1000 + RECRAWL), Requeued::default(), "a send replaces the schedule an earlier send set");
+    assert_eq!(requeue(&store, 1500 + RECRAWL - 1), Requeued::default());
+    assert_eq!(requeue(&store, 1500 + RECRAWL), Requeued { moved: 1, gone: 0 });
+    assert_eq!(store.next_send("example.com", &rest("undated")).unwrap(), None, "a schedule that came due is spent");
+    let again = take(&store, 10);
+    assert_eq!(again.iter().map(|p| (p.url.as_str(), p.reason)).collect::<Vec<_>>(), [("https://example.com/undated", Reason::Requeued)]);
 
-    let mut at = 3000;
-    for (failures, wait) in BACKOFF.iter().enumerate() {
-        assert_eq!(store.apply_outcomes(&[row("a", Outcome::Failed, at)], RECRAWL).unwrap().retried, 1);
-        assert_eq!(store.requeue_due(at + wait - 1, 100).unwrap(), 0);
-        assert_eq!(store.requeue_due(at + wait, 100).unwrap(), 1);
-        let picks = take(&store, 10);
-        assert_eq!(picks.len(), 1);
-        assert_eq!((picks[0].reason, picks[0].retries), (Reason::Requeued, failures as u8 + 1));
-        at += wait + 10;
-        store.mark_sent(&picks, at).unwrap();
-        at += 100;
-    }
-    let applied = store.apply_outcomes(&[row("a", Outcome::Dropped, at)], RECRAWL).unwrap();
-    assert_eq!((applied.retried, applied.gave_up), (0, 1), "after three retries a page waits for a new lastmod");
-    assert_eq!(store.waiting().unwrap().len(), 1);
-    assert_eq!(store.apply_outcomes(&[row("a", Outcome::Failed, 500)], RECRAWL).unwrap().ignored, 1, "an outcome of an earlier send");
-    assert_eq!(store.apply_outcomes(&[row("gone", Outcome::Failed, at)], RECRAWL).unwrap().ignored, 1);
-
-    store.record_listing("example.com", 7, vec![page("a", 20), page("undated", 0)], at).unwrap();
-    let picks = take(&store, 10);
-    assert_eq!((picks.len(), picks[0].reason), (1, Reason::Changed));
-    store.mark_sent(&picks, at + 1).unwrap();
-    assert_eq!(store.sent("example.com", &rest("a")).unwrap().unwrap().retries, 0, "a new lastmod starts the retries over");
-
-    assert_eq!(store.requeue_due(2000 + RECRAWL, 100).unwrap(), 1);
-    let picks = take(&store, 10);
-    assert_eq!((picks.len(), picks[0].url.as_str(), picks[0].reason), (1, "https://example.com/undated", Reason::Requeued));
+    let daily = rules().with_overrides("example.com 1\n").unwrap();
+    store.mark_sent(&again, 2000 + RECRAWL, &daily).unwrap();
+    assert_eq!(store.waiting().unwrap(), [(2000 + RECRAWL + DAY, "example.com".to_string(), rest("undated"))], "a domain listed for daily re-crawls");
 }
 
+#[test]
+fn recrawl_overrides_cover_subdomains_and_refuse_lines_they_cannot_read() {
+    let recrawl = Recrawl::new(7 * DAY, 30 * DAY).with_overrides("# news, daily\nbbc.co.uk 1\nwww.Wikipedia.org 0.5  # twice a day\n\n").unwrap();
+    assert_eq!(recrawl.overridden(), 2);
+    assert_eq!(recrawl.interval("bbc.co.uk"), DAY);
+    assert_eq!(recrawl.interval("news.bbc.co.uk"), DAY);
+    assert_eq!(recrawl.interval("en.wikipedia.org"), DAY / 2);
+    assert_eq!(recrawl.interval("notbbc.co.uk"), 7 * DAY, "a parent counts only at a dot");
+    assert_eq!(recrawl.interval("example.com"), 7 * DAY);
+    for bad in ["bbc.co.uk", "bbc.co.uk soon", "bbc.co.uk 0", "bbc.co.uk 1 2"] {
+        assert!(Recrawl::default().with_overrides(bad).is_err(), "{bad}");
+    }
+}
+
+#[test]
+fn a_failed_page_waits_its_interval_and_after_two_failures_in_a_row_the_long_wait() {
+    let dir = Dir::new("ready-failed");
+    let buckets = known(&dir, &["example.com"]);
+    let store = buckets.store("example.com");
+    store.record_listing("example.com", 7, vec![page("a", 10)], 100).unwrap();
+    store.mark_sent(&take(store, 10), 1000, &rules()).unwrap();
+    let mut reader = OutcomeReader::new(rules(), 1000);
+
+    reader.apply(&buckets, &[outcome("https://example.com/a", Outcome::Failed, 1100)], 1100).unwrap();
+    assert_eq!(store.next_send("example.com", &rest("a")).unwrap(), Some(Scheduled { why: Why::Failed, due: 1100 + RECRAWL, at: 1100 }));
+    assert_eq!(requeue(store, 1100 + RECRAWL - 1), Requeued::default(), "a failure waits for the normal re-crawl");
+    assert_eq!(requeue(store, 1100 + RECRAWL), Requeued { moved: 1, gone: 0 });
+    let retry = take(store, 10);
+    assert_eq!((retry[0].reason, retry[0].retries), (Reason::Requeued, 1));
+
+    let sent = 1200 + RECRAWL;
+    store.mark_sent(&retry, sent, &rules()).unwrap();
+    reader.apply(&buckets, &[outcome("https://example.com/a", Outcome::Failed, sent + 100)], sent + 100).unwrap();
+    assert_eq!(requeue(store, sent + 100 + RECRAWL), Requeued { moved: 0, gone: 1 }, "the second failure in a row");
+    assert_eq!(store.next_send("example.com", &rest("a")).unwrap(), Some(Scheduled { why: Why::Gone, due: sent + 100 + GONE, at: sent }));
+    assert!(take(store, 10).is_empty());
+    assert_eq!(requeue(store, sent + 100 + GONE - 1), Requeued::default());
+    assert_eq!(requeue(store, sent + 100 + GONE), Requeued { moved: 1, gone: 0 }, "after the long wait it goes once more");
+    let last = take(store, 10);
+    assert_eq!((last[0].reason, last[0].retries), (Reason::Requeued, 2));
+    let weekly = Recrawl::new(RECRAWL, RECRAWL);
+    store.mark_sent(&last, sent + 200 + GONE, &weekly).unwrap();
+    let failed_at = sent + 300 + GONE;
+    OutcomeReader::new(weekly.clone(), 1000).apply(&buckets, &[outcome("https://example.com/a", Outcome::Failed, failed_at)], failed_at).unwrap();
+    assert_eq!(store.requeue_due(failed_at + RECRAWL, 100, &weekly).unwrap(), Requeued { moved: 0, gone: 1 });
+    assert_eq!(store.waiting().unwrap(), [(failed_at + RECRAWL, "example.com".to_string(), rest("a"))], "a long wait as long as the re-crawl lands on the entry it replaces");
+    assert_eq!(store.requeue_due(failed_at + RECRAWL, 100, &weekly).unwrap(), Requeued { moved: 1, gone: 0 });
+}
+
+#[test]
+fn a_page_set_to_the_long_wait_goes_earlier_when_its_lastmod_moves() {
+    let dir = Dir::new("ready-gone-changed");
+    let buckets = known(&dir, &["example.com"]);
+    let store = buckets.store("example.com");
+    store.record_listing("example.com", 7, vec![page("a", 10)], 100).unwrap();
+    let mut reader = OutcomeReader::new(rules(), 1000);
+    let mut at = 1000;
+    for _ in 0..2 {
+        store.mark_sent(&take(store, 10), at, &rules()).unwrap();
+        reader.apply(&buckets, &[outcome("https://example.com/a", Outcome::Failed, at + 100)], at + 100).unwrap();
+        requeue(store, at + 100 + RECRAWL);
+        at += 200 + RECRAWL;
+    }
+    assert_eq!(store.next_send("example.com", &rest("a")).unwrap().map(|n| n.why), Some(Why::Gone));
+
+    store.record_listing("example.com", 7, vec![page("a", 20)], at).unwrap();
+    let changed = take(store, 10);
+    assert_eq!((changed.len(), changed[0].reason), (1, Reason::Changed));
+    store.mark_sent(&changed, at + 10, &rules()).unwrap();
+    assert_eq!(store.sent("example.com", &rest("a")).unwrap().unwrap().retries, 0, "a new lastmod starts the failures over");
+    assert_eq!(requeue(store, at + GONE), Requeued::default(), "the long wait of the earlier send is spent");
+    assert_eq!(store.next_send("example.com", &rest("a")).unwrap(), None);
+}
+
+#[test]
+fn a_failure_replaces_the_recrawl_of_a_page_without_a_lastmod_and_a_clean_recrawl_clears_its_failures() {
+    let dir = Dir::new("ready-undated-failed");
+    let buckets = known(&dir, &["example.com"]);
+    let store = buckets.store("example.com");
+    store.record_listing("example.com", 7, vec![page("undated", 0)], 100).unwrap();
+    store.mark_sent(&take(store, 10), 1000, &rules()).unwrap();
+    let mut reader = OutcomeReader::new(rules(), 1000);
+    reader.apply(&buckets, &[outcome("https://example.com/undated", Outcome::Failed, 1100)], 1100).unwrap();
+    assert_eq!(requeue(store, 1000 + RECRAWL), Requeued::default(), "the re-crawl the send set is replaced");
+    assert_eq!(requeue(store, 1100 + RECRAWL), Requeued { moved: 1, gone: 0 });
+    let retry = take(store, 10);
+    assert_eq!(retry[0].retries, 1);
+
+    let sent = 1200 + RECRAWL;
+    store.mark_sent(&retry, sent, &rules()).unwrap();
+    reader.apply(&buckets, &[outcome("https://example.com/undated", Outcome::Published, sent + 100)], sent + 100).unwrap();
+    assert_eq!(requeue(store, sent + RECRAWL), Requeued { moved: 1, gone: 0 }, "a published page without a lastmod is re-crawled on its interval");
+    assert_eq!(store.sent("example.com", &rest("undated")).unwrap().unwrap().retries, 0);
+}
+
+#[test]
+fn an_outcome_of_an_earlier_send_brings_nothing_back_once_the_page_went_again() {
+    let dir = Dir::new("ready-stale-outcome");
+    let buckets = known(&dir, &["example.com"]);
+    let store = buckets.store("example.com");
+    store.record_listing("example.com", 7, vec![page("a", 10)], 100).unwrap();
+    store.mark_sent(&take(store, 10), 1000, &rules()).unwrap();
+    let mut reader = OutcomeReader::new(rules(), 1000);
+    reader.apply(&buckets, &[outcome("https://example.com/a", Outcome::Failed, 1100)], 1100).unwrap();
+    store.record_listing("example.com", 7, vec![page("a", 20)], 1500).unwrap();
+    store.mark_sent(&take(store, 10), 2000, &rules()).unwrap();
+    assert_eq!(requeue(store, 1100 + RECRAWL), Requeued::default());
+    assert!(take(store, 10).is_empty());
+    assert_eq!(store.next_send("example.com", &rest("a")).unwrap(), None);
+}
+
+#[test]
+fn dropped_pages_go_again_soon_and_a_burst_is_spread_over_the_following_hours() {
+    let hour = 3600 * 100;
+    let mut spread = HourlySpread::new(2);
+    assert_eq!([hour + 5, hour + 6, hour + 7, hour + 8, hour + 9].map(|now| spread.due(now)), [hour + 5, hour + 6, hour + 3600, hour + 3600, hour + 7200]);
+    assert_eq!(spread.due(hour + 3 * 3600 + 1), hour + 3 * 3600 + 1, "an hour with room takes pages at once again");
+    assert_eq!(HourlySpread::new(0).due(hour), u32::MAX, "no budget leaves them to their re-crawl");
+
+    let dir = Dir::new("ready-dropped");
+    let buckets = known(&dir, &["example.com"]);
+    let store = buckets.store("example.com");
+    store.record_listing("example.com", 7, vec![page("a", 10), page("b", 11), page("c", 12)], 100).unwrap();
+    store.mark_sent(&take(store, 10), hour, &rules()).unwrap();
+    let mut reader = OutcomeReader::new(rules(), 2);
+    let rows = ["a", "b", "c"].map(|path| outcome(&format!("https://example.com/{path}"), Outcome::Dropped, hour + 50));
+    let counted = reader.apply(&buckets, &rows, hour + 60).unwrap();
+    assert_eq!((counted.dropped, counted.dropped_now), (3, 2));
+    assert_eq!(store.domain_yield("example.com").unwrap(), None, "a dropped task says nothing about the domain");
+    assert_eq!(requeue(store, hour + 60), Requeued { moved: 2, gone: 0 });
+    assert_eq!(requeue(store, hour + 3599), Requeued::default());
+    assert_eq!(requeue(store, hour + 3600), Requeued { moved: 1, gone: 0 });
+    let again = take(store, 10);
+    assert_eq!(again.len(), 3);
+    assert!(again.iter().all(|p| p.reason == Reason::Requeued && p.retries == 0), "a dropped page is no failure");
+}
 #[test]
 fn the_backfill_queues_old_pages_once_and_resumes_where_it_stopped() {
     let dir = Dir::new("ready-backfill");
@@ -299,20 +445,29 @@ fn a_domain_whose_pages_do_not_come_back_gets_fewer_slots_and_then_only_probes()
 }
 
 #[test]
-fn outcomes_tally_each_domains_yield_and_a_dropped_task_counts_for_nothing() {
+fn outcomes_tally_each_domains_yield_once_per_file_under_the_domain_its_host_was_sent_under() {
     let dir = Dir::new("ready-yield");
-    let store = open(&dir);
-    store.record_listing("example.com", 7, vec![page("a", 10), page("b", 10), page("c", 10)], 100).unwrap();
-    let picks = take(&store, 10);
-    store.mark_sent(&picks, 1000).unwrap();
-    let row = |path: &str, outcome: Outcome| PageOutcome { domain: "example.com".into(), rest: rest(path), outcome, at: 2000 };
-    store.apply_outcomes(&[row("a", Outcome::Published), row("b", Outcome::Failed), row("c", Outcome::Dropped)], RECRAWL).unwrap();
-    assert_eq!(store.domain_yield("example.com").unwrap(), Some(Yield { ok: 1.0, failed: 1.0, at: 2000 }));
-    let unknown = PageOutcome { domain: "example.com".into(), rest: rest("never-sent"), outcome: Outcome::Failed, at: 2000 };
-    store.apply_outcomes(&[row("a", Outcome::Unchanged), unknown], RECRAWL).unwrap();
-    let tallied = store.domain_yield("example.com").unwrap().unwrap();
-    assert_eq!((tallied.ok, tallied.failed), (2.0, 1.0), "outcomes of one moment add up; a page the store does not know is not counted");
-    assert_eq!(store.domain_yield("other.com").unwrap(), None);
+    let buckets = known(&dir, &["example.com", "example.org", "shop.example.org"]);
+    buckets.allow(&Allowed::of(["example.com", "example.org"]));
+    let mut reader = OutcomeReader::new(rules(), 1000);
+    let rows = [
+        outcome("https://example.com/a", Outcome::Published, 2000),
+        outcome("https://www.example.com/b", Outcome::Failed, 2001),
+        outcome("http://blog.example.com/c", Outcome::Unchanged, 2002),
+        outcome("https://example.com/d", Outcome::Dropped, 2003),
+        outcome("https://shop.example.org/e", Outcome::Failed, 2004),
+        outcome("https://unknown.net/f", Outcome::Published, 2005),
+    ];
+    let counted = reader.apply(&buckets, &rows, 2010).unwrap();
+    assert_eq!((counted.published, counted.failed, counted.dropped, counted.unknown), (3, 2, 1, 1));
+    assert_eq!(buckets.store("example.com").domain_yield("example.com").unwrap(), Some(Yield { ok: 2.0, failed: 1.0, at: 2003 }));
+    assert_eq!(reader.domain_of(&buckets, "blog.example.com").as_deref(), Some("example.com"), "a host that is no domain of its own was listed under its parent");
+    assert_eq!(reader.domain_of(&buckets, "shop.example.org").as_deref(), Some("example.org"), "a domain the list does not queue sent nothing");
+    assert_eq!(buckets.store("example.org").domain_yield("example.org").unwrap(), Some(Yield { ok: 0.0, failed: 1.0, at: 2004 }));
+
+    reader.apply(&buckets, &[outcome("https://example.com/a", Outcome::Published, 2003 + YIELD_HALF_LIFE_S as u32)], 0).unwrap();
+    let tallied = buckets.store("example.com").domain_yield("example.com").unwrap().unwrap();
+    assert_eq!((tallied.ok, tallied.failed), (2.0, 0.5), "earlier outcomes count half a day later");
 }
 
 #[test]
@@ -337,36 +492,25 @@ fn a_batch_id_depends_only_on_the_batch() {
 }
 
 #[test]
-fn outcome_files_parse_and_land_on_their_pages() {
+fn outcome_files_parse_with_the_host_each_url_was_queued_under() {
     let data = std::fs::read(format!("{}/tests/data/outcomes.parquet", env!("CARGO_MANIFEST_DIR"))).unwrap();
     let rows = outcomes::read_parquet(data.into()).unwrap();
     assert_eq!(rows.len(), 4, "an outcome this bot does not know is skipped");
-    assert_eq!(rows[0], OutcomeRow { url: "https://example.com/news/a".into(), outcome: Outcome::Published, at: 1_759_400_000_500_000 });
+    assert_eq!(rows[0], OutcomeRow { url: "https://example.com/news/a".into(), host: "example.com".into(), outcome: Outcome::Published, at: 1_759_400_000_500_000 });
     assert_eq!(rows.iter().map(|r| r.outcome).collect::<Vec<_>>(), [Outcome::Published, Outcome::Unchanged, Outcome::Failed, Outcome::Dropped]);
+    assert_eq!(rows.iter().map(|r| r.host.as_str()).collect::<Vec<_>>(), ["example.com", "example.com", "blog.example.com", "example.com"]);
 
     let dir = Dir::new("outcome-files");
-    let buckets = Buckets::open(&dir.0, &[bucket_of("example.com")], &resources()).unwrap();
+    let buckets = known(&dir, &["example.com"]);
     let store = buckets.store("example.com");
     let listed = ["https://example.com/news/a", "https://www.example.com/news/b", "http://blog.example.com/c", "https://example.com/d"];
     store.record_listing("example.com", 7, listed.iter().map(|u| (urls::parse(u, "example.com").unwrap(), 10, false)).collect(), 100).unwrap();
-    let picks = take(store, 10);
-    let mut sent: Vec<&str> = picks.iter().map(|p| p.url.as_str()).collect();
-    sent.sort();
-    assert_eq!(sent, ["http://blog.example.com/c", "https://example.com/d", "https://example.com/news/a", "https://www.example.com/news/b"]);
-    store.mark_sent(&picks, 1_759_399_000).unwrap();
-    for url in listed {
-        assert_eq!(outcomes::locate(&buckets, url).map(|found| found.0).as_deref(), Some("example.com"), "{url}");
-    }
-    assert!(outcomes::locate(&buckets, "https://example.com/never-listed").is_none());
-
-    let applied = outcomes::apply(&buckets, &rows, RECRAWL).unwrap();
-    assert_eq!((applied.crawled, applied.retried, applied.ignored), (2, 2, 0));
-    assert_eq!(store.url(&urls::parse(listed[0], "example.com").unwrap()).unwrap().unwrap().crawled_at, 1_759_400_000);
-    assert_eq!(store.waiting().unwrap().len(), 2);
-
-    assert_eq!(outcomes::saved_cursor(&buckets).unwrap(), None);
-    outcomes::save_cursor(&buckets, 8).unwrap();
-    assert_eq!(outcomes::saved_cursor(&buckets).unwrap(), Some(8));
+    store.mark_sent(&take(store, 10), 1_759_399_000, &rules()).unwrap();
+    let counted = OutcomeReader::new(rules(), 1000).apply(&buckets, &rows, 1_759_400_100).unwrap();
+    assert_eq!((counted.published, counted.failed, counted.dropped, counted.dropped_now, counted.unknown), (2, 1, 1, 1, 0));
+    assert_eq!(store.next_send("example.com", b"blog.example.com/c").unwrap().map(|n| (n.why, n.due)), Some((Why::Failed, 1_759_400_002 + RECRAWL)));
+    assert_eq!(store.next_send("example.com", b"example.com/d").unwrap().map(|n| (n.why, n.due)), Some((Why::Dropped, 1_759_400_100)));
+    assert_eq!(store.url(&urls::parse(listed[0], "example.com").unwrap()).unwrap().unwrap().crawled_at, 0, "a published page is not looked up");
 }
 
 #[derive(Default)]
@@ -381,6 +525,8 @@ struct FakeApi {
     files: HashMap<String, Vec<u8>>,
     /// What a file not there is answered with: 404, or 403 as a store with a private bucket answers.
     forbid_missing: bool,
+    /// Paths of the files asked for, in order.
+    asked: Vec<String>,
 }
 
 /// One request per connection: the room, or an enqueue that fails while `fail_next` lasts.
@@ -421,34 +567,37 @@ async fn serve_api(listener: TcpListener, api: Arc<Mutex<FakeApi>>) {
                 match path {
                     "/v1/room" => {
                         api.rooms += 1;
-                        (200, format!(r#"{{"room_tasks":{},"queue":0,"unrevealed":0,"refusing":false}}"#, api.room))
+                        (200, format!(r#"{{"room_tasks":{},"queue":0,"unrevealed":0,"refusing":false}}"#, api.room).into_bytes())
                     }
                     "/v1/admin/enqueue" => {
                         let sent: Value = serde_json::from_slice(&body).unwrap_or_default();
                         let urls: Vec<&str> = sent["urls"].as_array().into_iter().flatten().filter_map(|u| u["url"].as_str()).collect();
                         if api.max_urls > 0 && urls.len() > api.max_urls {
-                            (413, r#"{"detail":"too large"}"#.to_string())
+                            (413, br#"{"detail":"too large"}"#.to_vec())
                         } else if api.refused.as_deref().is_some_and(|bad| urls.contains(&bad)) {
-                            (422, r#"{"detail":"not a URL"}"#.to_string())
+                            (422, br#"{"detail":"not a URL"}"#.to_vec())
                         } else {
                             api.enqueued.push((headers, body));
                             if api.fail_next > 0 {
                                 api.fail_next -= 1;
-                                (500, r#"{"detail":"try again"}"#.to_string())
+                                (500, br#"{"detail":"try again"}"#.to_vec())
                             } else {
-                                (200, r#"{"round_id":"r1","batches":1}"#.to_string())
+                                (200, br#"{"round_id":"r1","batches":1}"#.to_vec())
                             }
                         }
                     }
-                    _ => match api.files.get(path) {
-                        Some(file) => (200, String::from_utf8_lossy(file).into_owned()),
-                        None if api.forbid_missing => (403, "<Error><Code>AccessDenied</Code></Error>".to_string()),
-                        None => (404, r#"{"detail":"no such route"}"#.to_string()),
-                    },
+                    _ => {
+                        api.asked.push(path.to_string());
+                        match api.files.get(path) {
+                            Some(file) => (200, file.clone()),
+                            None if api.forbid_missing => (403, b"<Error><Code>AccessDenied</Code></Error>".to_vec()),
+                            None => (404, br#"{"detail":"no such route"}"#.to_vec()),
+                        }
+                    }
                 }
             };
-            let response = format!("HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}", reply.len());
-            let _ = socket.write_all(response.as_bytes()).await;
+            let head = format!("HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", reply.len());
+            let _ = socket.write_all(&[head.into_bytes(), reply].concat()).await;
         });
     }
 }
@@ -473,7 +622,7 @@ async fn the_dispatcher_fills_the_room_by_rank_within_the_hourly_cap_and_resends
     let fake = Arc::new(Mutex::new(FakeApi { room: 1, fail_next: 1, ..FakeApi::default() }));
     tokio::spawn(serve_api(listener, fake.clone()));
     let key = Hotkey::from_uri("//test").unwrap();
-    let dispatcher = |progress: Arc<Progress>| Dispatcher::load(buckets.clone(), TaskApi::new(&base, Hotkey::from_uri("//test").unwrap()).unwrap(), 20, shares(50, 10), progress);
+    let dispatcher = |progress: Arc<Progress>| Dispatcher::load(buckets.clone(), TaskApi::new(&base, Hotkey::from_uri("//test").unwrap()).unwrap(), 20, shares(50, 10), rules(), progress);
 
     let now = 1_759_400_000;
     let progress = Arc::new(Progress::default());
@@ -521,7 +670,7 @@ fn each_lane_takes_its_quota_and_an_empty_lane_leaves_its_part_to_the_others() {
     let store = open(&dir);
     store.record_listing("example.com", 7, (0..20).map(|i| page(&format!("old{i:02}"), 10)).collect(), 100).unwrap();
     let sent = take(&store, 20);
-    store.mark_sent(&sent, 150).unwrap();
+    store.mark_sent(&sent, 150, &rules()).unwrap();
     store.record_listing("example.com", 7, (0..20).map(|i| page(&format!("old{i:02}"), 50)).chain((0..20).map(|i| page(&format!("new{i:02}"), 60))).collect(), 200).unwrap();
 
     let mut quotas = [0; LANES];
@@ -532,7 +681,7 @@ fn each_lane_takes_its_quota_and_an_empty_lane_leaves_its_part_to_the_others() {
     let count = |reason| picks.iter().filter(|p| p.reason == reason).count();
     assert_eq!((count(Reason::Fresh), count(Reason::Changed)), (6, 4), "both lanes go at once; the empty retry lane's page goes to new pages");
 
-    store.mark_sent(&picks, 250).unwrap();
+    store.mark_sent(&picks, 250, &rules()).unwrap();
     let mut quotas = [0; LANES];
     quotas[CHANGED] = 40;
     let rest = store.take_ready("example.com", quotas).unwrap();
@@ -570,27 +719,15 @@ fn a_lane_that_came_up_short_is_not_owed_a_burst_later() {
 }
 
 #[test]
-fn a_sent_page_with_no_outcome_in_a_day_comes_back_as_a_retry() {
-    let dir = Dir::new("ready-overdue");
+fn a_sent_page_with_no_outcome_is_not_sent_again_a_day_later() {
+    let dir = Dir::new("ready-no-outcome");
     let store = open(&dir);
     store.record_listing("example.com", 7, vec![page("a", 10), page("b", 20)], 100).unwrap();
-    let picks = take(&store, 10);
-    store.mark_sent(&picks, 1000).unwrap();
-    let answered = PageOutcome { domain: "example.com".into(), rest: rest("b"), outcome: Outcome::Published, at: 2000 };
-    store.apply_outcomes(&[answered], RECRAWL).unwrap();
-
-    assert_eq!(store.expire_unanswered(1000 + NO_OUTCOME - 1, 100).unwrap(), 0);
-    assert_eq!(store.expire_unanswered(1000 + NO_OUTCOME, 100).unwrap(), 1, "b's outcome came, a's never did");
-    assert_eq!(store.requeue_due(1000 + NO_OUTCOME, 100).unwrap(), 1);
-    let again = take(&store, 10);
-    assert_eq!(again.iter().map(|p| (p.url.as_str(), p.reason, p.retries)).collect::<Vec<_>>(), [("https://example.com/a", Reason::Requeued, 1)]);
-
-    store.mark_sent(&again, 1000 + NO_OUTCOME + 10).unwrap();
-    store.record_listing("example.com", 7, vec![page("a", 30), page("b", 20)], 1000 + NO_OUTCOME + 20).unwrap();
-    let changed = take(&store, 10);
-    store.mark_sent(&changed, 1000 + NO_OUTCOME + 30).unwrap();
-    assert_eq!(store.expire_unanswered(1000 + 2 * NO_OUTCOME + 10, 100).unwrap(), 0, "a deadline left from an earlier send of a resent page");
-    assert_eq!(store.expire_unanswered(1000 + 2 * NO_OUTCOME + 30, 100).unwrap(), 1);
+    store.mark_sent(&take(&store, 10), 1000, &rules()).unwrap();
+    assert!(store.waiting().unwrap().is_empty());
+    assert_eq!(requeue(&store, 1000 + 2 * DAY), Requeued::default());
+    assert!(take(&store, 10).is_empty(), "a page with a lastmod goes again when it moves, not when an outcome is late");
+    assert!(!store.forget_expecting().unwrap(), "no deadline is kept for a send");
 }
 
 #[tokio::test]
@@ -615,6 +752,52 @@ async fn the_outcome_feed_tells_a_number_not_written_yet_from_one_that_is_gone()
     assert!(matches!(feed.fetch(6).await.unwrap(), Next::Gone), "an index whose file expired is skipped, not waited on");
 }
 
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_outcome_feed_is_read_from_its_newest_file_and_skips_ahead_when_an_hour_behind() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let fake = Arc::new(Mutex::new(FakeApi::default()));
+    tokio::spawn(serve_api(listener, fake.clone()));
+    // Its rows are from 2025, so every look at it is far more than an hour behind.
+    let file = std::fs::read(format!("{}/tests/data/outcomes.parquet", env!("CARGO_MANIFEST_DIR"))).unwrap();
+    let publish = |api: &mut FakeApi, seqs: std::ops::RangeInclusive<u64>| {
+        for seq in seqs.clone() {
+            api.files.insert(format!("/outcomes/seq/{seq:012}.json"), format!(r#"{{"key": "outcomes/f{seq}.parquet", "rows": 4}}"#).into_bytes());
+            api.files.insert(format!("/outcomes/f{seq}.parquet"), file.clone());
+        }
+        api.files.insert("/outcomes/latest.json".into(), format!(r#"{{"seq": {}}}"#, seqs.end()).into_bytes());
+    };
+    publish(&mut fake.lock().unwrap(), 1..=5);
+
+    let dir = Dir::new("outcome-follow");
+    let buckets = Arc::new(known(&dir, &["example.com"]));
+    let progress = Arc::new(Progress::default());
+    let (stop, stopped) = tokio::sync::watch::channel(false);
+    let feed = OutcomeFeed::new(&base).unwrap();
+    let following = tokio::spawn(desearch_bot::dispatch::follow_outcomes(buckets.clone(), feed, OutcomeReader::new(rules(), 1000), progress.clone(), stopped));
+    let seq = || progress.outcome_seq.load(std::sync::atomic::Ordering::Relaxed);
+    let wait_for = |want: u64| async move {
+        for _ in 0..200 {
+            if seq() == want {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        panic!("the feed reached {} and not {want}", seq());
+    };
+    wait_for(6).await;
+    publish(&mut fake.lock().unwrap(), 6..=40);
+    wait_for(41).await;
+    stop.send(true).unwrap();
+    following.await.unwrap();
+
+    let read: Vec<u64> = fake.lock().unwrap().asked.iter().filter_map(|p| p.strip_prefix("/outcomes/f")?.strip_suffix(".parquet")?.parse().ok()).collect();
+    assert_eq!(read, [5, 6, 7, 8, 9, 10, 11, 12, 13, 40], "the newest file first, one run of eight, then a jump to the newest");
+    assert_eq!(progress.skipped.load(std::sync::atomic::Ordering::Relaxed), 26);
+    assert_eq!(progress.outcomes.load(std::sync::atomic::Ordering::Relaxed), 40);
+    assert_eq!(buckets.store("example.com").domain_yield("example.com").unwrap().map(|y| y.judged()), Some(30.0), "three judged rows a file, ten files");
+}
 
 #[test]
 fn the_domain_list_takes_names_or_hosts_and_is_read_again_when_its_file_changes() {
@@ -689,7 +872,7 @@ async fn the_dispatcher_sends_only_listed_domains_even_with_pages_queued_before_
     let fake = Arc::new(Mutex::new(FakeApi { room: 1, ..FakeApi::default() }));
     tokio::spawn(serve_api(listener, fake.clone()));
     let api = TaskApi::new(&base, Hotkey::from_uri("//test").unwrap()).unwrap();
-    let mut dispatcher = Dispatcher::load(buckets.clone(), api, 100, shares(50, 10), Arc::new(Progress::default())).await.unwrap();
+    let mut dispatcher = Dispatcher::load(buckets.clone(), api, 100, shares(50, 10), rules(), Arc::new(Progress::default())).await.unwrap();
 
     assert_eq!(dispatcher.pass(1_759_400_000).await.unwrap(), 10);
     let body: Value = serde_json::from_slice(&fake.lock().unwrap().enqueued[0].1).unwrap();
@@ -712,7 +895,7 @@ async fn several_batches_go_out_together_and_only_a_failed_one_is_sent_again() {
     let base = format!("http://{}", listener.local_addr().unwrap());
     let fake = Arc::new(Mutex::new(FakeApi { room: 30, fail_next: 1, ..FakeApi::default() }));
     tokio::spawn(serve_api(listener, fake.clone()));
-    let dispatcher = |progress: Arc<Progress>| Dispatcher::load(buckets.clone(), TaskApi::new(&base, Hotkey::from_uri("//test").unwrap()).unwrap(), 1_000_000, shares(50, 10), progress);
+    let dispatcher = |progress: Arc<Progress>| Dispatcher::load(buckets.clone(), TaskApi::new(&base, Hotkey::from_uri("//test").unwrap()).unwrap(), 1_000_000, shares(50, 10), rules(), progress);
 
     let now = 1_759_400_000;
     let progress = Arc::new(Progress::default());
@@ -756,7 +939,7 @@ async fn a_batch_refused_as_too_large_or_invalid_goes_in_halves_and_only_the_pag
     tokio::spawn(serve_api(listener, fake.clone()));
     let progress = Arc::new(Progress::default());
     let api = TaskApi::new(&base, Hotkey::from_uri("//test").unwrap()).unwrap();
-    let mut dispatcher = Dispatcher::load(buckets.clone(), api, 1_000_000, shares(50, 10), progress.clone()).await.unwrap();
+    let mut dispatcher = Dispatcher::load(buckets.clone(), api, 1_000_000, shares(50, 10), rules(), progress.clone()).await.unwrap();
 
     let now = 1_759_400_000;
     assert_eq!(dispatcher.pass(now).await.unwrap(), 39, "everything but the bad page went in the same pass");
@@ -794,7 +977,7 @@ fn dropping_a_domain_deletes_its_pages_and_leaves_its_neighbours_whole() {
         store.record_listing(host, 1, pages, 100).unwrap();
     }
     let picks: Vec<Pick> = store.take_ready("junk.com", [0, 0, 5]).unwrap();
-    store.mark_sent(&picks, 1000).unwrap();
+    store.mark_sent(&picks, 1000, &rules()).unwrap();
     let page = |host: &str, i: u32| store.url(&urls::parse(&format!("https://{host}/p{i}"), host).unwrap()).unwrap();
 
     let counted = store.drop_domain("junk.com", "junk", false).unwrap();

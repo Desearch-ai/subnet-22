@@ -13,19 +13,22 @@ use sha2::{Digest, Sha256};
 use tokio::sync::watch;
 
 use crate::buckets::{bucket_of, Buckets};
-use crate::outcomes::{self, Next, OutcomeFeed};
+use crate::outcomes::{Next, OutcomeFeed, OutcomeReader};
 use crate::ready::{Entry, Order, Pick, Reason, SentPage, Yield, CHANGED, FRESH, LANES, REQUEUED};
+use crate::recrawl::Recrawl;
 use crate::records;
 use crate::taskapi::{ApiError, QueuedUrl, TaskApi, MAX_URL_CHARS};
 use crate::timetable::UNRANKED;
 
 pub const PASS_SECONDS: Duration = Duration::from_secs(5);
-/// New pages, due retries and overdue sends are taken in at most this often; each look scans every store.
+/// New pages and due schedules are taken in at most this often; each look scans every store.
 const ABSORB_EVERY: Duration = Duration::from_secs(15);
 /// How long a missing outcome number may stay missing, while later ones exist, before it is skipped.
 const MISSING_GRACE: Duration = Duration::from_secs(120);
 /// Outcome files fetched at once and applied as one batch, so the feed is read faster than it grows.
 const OUTCOMES_AHEAD: u64 = 8;
+/// An outcome feed read this many seconds behind skips to its newest file: yields want what happens now, and catching up would take the reader's time.
+const BEHIND_AT_MOST: i64 = 3600;
 /// URLs in one task, as the API counts its room.
 pub const TASK_URLS: u64 = 1000;
 pub const BATCH_URLS: usize = 10_000;
@@ -35,7 +38,7 @@ pub const SENDS_AT_ONCE: usize = 8;
 const READERS: usize = 16;
 const HOUR: u32 = 3600;
 const RANKS_SECONDS: Duration = Duration::from_secs(600);
-/// Retries, re-crawls and overdue sends moved back onto ready lists per store per pass; small so a pass on a cold cache still sends soon.
+/// Due schedules moved back onto ready lists per store per pass; small so a pass on a cold cache still sends soon.
 const REQUEUE_PER_PASS: usize = 5_000;
 /// A pass tries again with what is left when stale entries left the first allotment short.
 const ALLOT_TRIES: usize = 3;
@@ -246,14 +249,17 @@ pub struct Progress {
     pub set_aside: AtomicU64,
     pub room_tasks: AtomicI64,
     pub requeued: AtomicU64,
-    /// Sent pages retried because no outcome came within a day.
-    pub overdue: AtomicU64,
-    /// Outcome files gone before they were read.
+    /// Pages that failed on sends in a row, set to wait the long interval.
+    pub gone: AtomicU64,
+    /// Outcome files gone before they were read, or passed over to catch up.
     pub skipped: AtomicU64,
     pub outcome_seq: AtomicU64,
     pub outcome_lag: AtomicI64,
     pub outcomes: AtomicU64,
-    pub retried: AtomicU64,
+    pub outcome_failed: AtomicU64,
+    pub outcome_dropped: AtomicU64,
+    /// Dropped pages put back at once, within the hourly budget.
+    pub dropped_now: AtomicU64,
     pub backfill_stores: AtomicU64,
     pub backfill_of: AtomicU64,
     pub backfill_scanned: AtomicU64,
@@ -271,7 +277,7 @@ impl Progress {
         let top = self.top.lock().unwrap_or_else(|e| e.into_inner());
         let top: Vec<String> = top.iter().map(|(domain, n)| format!("{domain} {}", thousands(*n))).collect();
         format!(
-            "[rs] dispatch ready {} in {} domains (top {})  sent {} ({:.0}/min, {} batches; new {} refresh {} retry {})  room {} tasks  yield-limited {} probing {}  requeued {} overdue {}  outcomes seq {} lag {}s applied {} retried {} skipped {}  backfill {}/{} stores {} read {} added",
+            "[rs] dispatch ready {} in {} domains (top {})  sent {} ({:.0}/min, {} batches; new {} refresh {} retry {})  room {} tasks  yield-limited {} probing {}  requeued {} gone {}  outcomes seq {} lag {}s read {} failed {} dropped {} ({} now) skipped {}  backfill {}/{} stores {} read {} added",
             thousands(self.ready.load(Ordering::Relaxed)),
             thousands(self.ready_domains.load(Ordering::Relaxed)),
             if top.is_empty() { "-".to_string() } else { top.join(", ") },
@@ -285,11 +291,13 @@ impl Progress {
             self.slowed.load(Ordering::Relaxed),
             self.probing.load(Ordering::Relaxed),
             thousands(self.requeued.load(Ordering::Relaxed)),
-            thousands(self.overdue.load(Ordering::Relaxed)),
+            thousands(self.gone.load(Ordering::Relaxed)),
             self.outcome_seq.load(Ordering::Relaxed),
             self.outcome_lag.load(Ordering::Relaxed),
             thousands(self.outcomes.load(Ordering::Relaxed)),
-            thousands(self.retried.load(Ordering::Relaxed)),
+            thousands(self.outcome_failed.load(Ordering::Relaxed)),
+            thousands(self.outcome_dropped.load(Ordering::Relaxed)),
+            thousands(self.dropped_now.load(Ordering::Relaxed)),
             self.skipped.load(Ordering::Relaxed),
             self.backfill_stores.load(Ordering::Relaxed),
             self.backfill_of.load(Ordering::Relaxed),
@@ -417,6 +425,7 @@ pub struct Dispatcher {
     absorbed: Option<Instant>,
     shares: [f64; LANES],
     credit: HashMap<String, [f64; LANES]>,
+    recrawl: Arc<Recrawl>,
 }
 
 impl Dispatcher {
@@ -426,11 +435,16 @@ impl Dispatcher {
         api: TaskApi,
         per_domain_hourly: u64,
         shares: [f64; LANES],
+        recrawl: Recrawl,
         progress: Arc<Progress>,
     ) -> Result<Self> {
         let reading = buckets.clone();
         let (domains, pending) = tokio::task::spawn_blocking(move || -> Result<_> {
             let mut domains = HashMap::new();
+            let forgotten = on_readers(reading.stores().collect(), |store| store.forget_expecting())?;
+            if forgotten.iter().any(|&found| found) {
+                println!("[rs] deleted the overdue-send deadlines of earlier versions from {} stores", forgotten.iter().filter(|&&f| f).count());
+            }
             for store in reading.stores() {
                 // The counts already hold what grew before now.
                 store.take_noticed();
@@ -463,6 +477,7 @@ impl Dispatcher {
             absorbed: None,
             shares,
             credit: HashMap::new(),
+            recrawl: Arc::new(recrawl),
         };
         dispatcher.report();
         Ok(dispatcher)
@@ -557,21 +572,19 @@ impl Dispatcher {
 
     /// Take in what grew since the last pass: new pages on the lists, retries and re-crawls now due, and ranks now and then.
     async fn absorb(&mut self, now: u32) -> Result<()> {
-        let buckets = self.buckets.clone();
+        let (buckets, recrawl) = (self.buckets.clone(), self.recrawl.clone());
         let refresh: Vec<String> =
             if self.ranks_read.elapsed() >= RANKS_SECONDS { self.domains.keys().cloned().collect() } else { Vec::new() };
         if !refresh.is_empty() {
             self.ranks_read = Instant::now();
         }
-        let (grown, ranks, requeued, overdue) = tokio::task::spawn_blocking(move || -> Result<_> {
-            let (mut requeued, mut overdue) = (0, 0);
+        let (grown, ranks, requeued, gone) = tokio::task::spawn_blocking(move || -> Result<_> {
+            let (mut requeued, mut gone) = (0, 0);
             let mut grown: HashMap<String, u64> = HashMap::new();
-            let swept = on_readers(buckets.stores().collect(), |store| {
-                Ok((store.expire_unanswered(now, REQUEUE_PER_PASS)?, store.requeue_due(now, REQUEUE_PER_PASS)?, store.take_noticed()))
-            })?;
-            for (expired, due, noticed) in swept {
-                overdue += expired;
-                requeued += due;
+            let swept = on_readers(buckets.stores().collect(), |store| Ok((store.requeue_due(now, REQUEUE_PER_PASS, &recrawl)?, store.take_noticed())))?;
+            for (due, noticed) in swept {
+                requeued += due.moved;
+                gone += due.gone;
                 for (domain, added) in noticed {
                     *grown.entry(domain).or_default() += added;
                 }
@@ -581,11 +594,11 @@ impl Dispatcher {
                 .chain(grown.keys())
                 .map(|domain| (domain.clone(), rank_of(&buckets, domain), share_of(&buckets, domain, now)))
                 .collect();
-            Ok((grown, ranks, requeued, overdue))
+            Ok((grown, ranks, requeued, gone))
         })
         .await??;
         self.progress.requeued.fetch_add(requeued as u64, Ordering::Relaxed);
-        self.progress.overdue.fetch_add(overdue as u64, Ordering::Relaxed);
+        self.progress.gone.fetch_add(gone as u64, Ordering::Relaxed);
         let ranks: HashMap<String, (i64, f64)> = ranks.into_iter().map(|(domain, rank, share)| (domain, (rank, share))).collect();
         for (domain, added) in grown {
             let (rank, share) = ranks.get(&domain).copied().unwrap_or((UNRANKED, 1.0));
@@ -739,7 +752,7 @@ impl Dispatcher {
     }
 
     async fn mark_sent(&mut self, pending: &Pending) -> Result<()> {
-        let buckets = self.buckets.clone();
+        let (buckets, recrawl) = (self.buckets.clone(), self.recrawl.clone());
         let picks: Vec<Pick> = pending.picks.iter().map(Sending::pick).collect();
         let at = pending.at;
         let left = tokio::task::spawn_blocking(move || -> Result<Vec<(String, u64, i64)>> {
@@ -752,7 +765,7 @@ impl Dispatcher {
                 let Some(store) = buckets.store_for(&picks[0].entry.domain) else {
                     return Ok(left);
                 };
-                store.mark_sent(&picks, at)?;
+                store.mark_sent(&picks, at, &recrawl)?;
                 let mut domains: Vec<&str> = picks.iter().map(|p| p.entry.domain.as_str()).collect();
                 domains.sort_unstable();
                 domains.dedup();
@@ -794,21 +807,22 @@ impl Dispatcher {
     }
 }
 
-/// Read the outcome feed in order for as long as the process runs.
-pub async fn follow_outcomes(buckets: Arc<Buckets>, feed: OutcomeFeed, recrawl_after: u32, progress: Arc<Progress>, mut stop: watch::Receiver<bool>) {
-    let reading = buckets.clone();
-    let saved = tokio::task::spawn_blocking(move || outcomes::saved_cursor(&reading)).await.ok().and_then(Result::ok).flatten();
-    // A bot reading the feed for the first time has sent nothing the older files could be about.
-    let mut next = match saved {
-        Some(next) => next,
-        None => feed.latest().await.ok().flatten().map_or(1, |latest| latest + 1),
-    };
-    progress.outcome_seq.store(next, Ordering::Relaxed);
-    let mut follower = Follower { next, missing: None, skipping: 0 };
+/// Read the outcome feed in order, from its newest file on, for as long as the process runs.
+pub async fn follow_outcomes(buckets: Arc<Buckets>, feed: OutcomeFeed, reader: OutcomeReader, progress: Arc<Progress>, mut stop: watch::Receiver<bool>) {
+    let mut follower = Follower { next: None, missing: None, skipping: 0, reader: Arc::new(Mutex::new(reader)) };
     while !*stop.borrow() {
         let wait = match feed.latest().await {
-            Ok(Some(latest)) if latest >= follower.next => follower.take(&feed, latest, &buckets, recrawl_after, &progress).await,
-            Ok(_) => {
+            Ok(Some(latest)) => {
+                // Older files are about sends whose domains' yields have moved on since, and reading them would only delay the new ones.
+                let next = *follower.next.get_or_insert(latest);
+                if latest >= next {
+                    follower.take(&feed, latest, next, &buckets, &progress).await
+                } else {
+                    progress.outcome_lag.store(0, Ordering::Relaxed);
+                    true
+                }
+            }
+            Ok(None) => {
                 progress.outcome_lag.store(0, Ordering::Relaxed);
                 true
             }
@@ -817,8 +831,9 @@ pub async fn follow_outcomes(buckets: Arc<Buckets>, feed: OutcomeFeed, recrawl_a
                 true
             }
         };
-        next = follower.next;
-        progress.outcome_seq.store(next, Ordering::Relaxed);
+        if let Some(next) = follower.next {
+            progress.outcome_seq.store(next, Ordering::Relaxed);
+        }
         if wait {
             tokio::select! {
                 _ = stop.changed() => {}
@@ -830,20 +845,21 @@ pub async fn follow_outcomes(buckets: Arc<Buckets>, feed: OutcomeFeed, recrawl_a
 
 /// Where the outcome feed is read up to, and the number it is waiting on.
 struct Follower {
-    next: u64,
+    next: Option<u64>,
     missing: Option<(u64, Instant)>,
     /// Numbers in a row skipped as never indexed: once one of a run waited out its grace, the rest go without waiting.
     skipping: u64,
+    reader: Arc<Mutex<OutcomeReader>>,
 }
 
 impl Follower {
-    /// Fetches up to `OUTCOMES_AHEAD` files at once and applies the run that is ready as one batch; whether to wait before the next look.
-    async fn take(&mut self, feed: &OutcomeFeed, latest: u64, buckets: &Arc<Buckets>, recrawl_after: u32, progress: &Progress) -> bool {
-        let mut fetching = (self.next..=latest.min(self.next + OUTCOMES_AHEAD - 1)).map(|seq| {
+    /// Fetches up to `OUTCOMES_AHEAD` files from `next` at once and applies the run that is ready as one batch; whether to wait before the next look.
+    async fn take(&mut self, feed: &OutcomeFeed, latest: u64, next: u64, buckets: &Arc<Buckets>, progress: &Progress) -> bool {
+        let mut fetching = (next..=latest.min(next + OUTCOMES_AHEAD - 1)).map(|seq| {
             let feed = feed.clone();
             tokio::spawn(async move { feed.fetch_below(seq, Some(latest)).await })
         });
-        let (mut rows, mut through, mut published, mut blocked) = (Vec::new(), self.next, None, false);
+        let (mut rows, mut through, mut published, mut blocked) = (Vec::new(), next, None, false);
         let mut skipped: Vec<(u64, &str)> = Vec::new();
         for handle in fetching.by_ref() {
             let fetched = handle.await.map_err(anyhow::Error::from).and_then(|found| found);
@@ -883,42 +899,45 @@ impl Follower {
         for handle in fetching {
             handle.abort();
         }
-        if through == self.next {
+        if through == next {
             return true;
         }
         if !rows.is_empty() {
             self.skipping = 0;
         }
-        if let Some(at) = published {
-            progress.outcome_lag.store((chrono::Utc::now().timestamp() - at).max(0), Ordering::Relaxed);
+        let lag = published.map(|at| (chrono::Utc::now().timestamp() - at).max(0));
+        if let Some(lag) = lag {
+            progress.outcome_lag.store(lag, Ordering::Relaxed);
         }
-        let (applying, count) = (buckets.clone(), rows.len() as u64);
-        let applied = tokio::task::spawn_blocking(move || -> Result<_> {
-            let applied = outcomes::apply(&applying, &rows, recrawl_after)?;
-            outcomes::save_cursor(&applying, through)?;
-            Ok(applied)
-        })
-        .await
-        .map_err(anyhow::Error::from)
-        .and_then(|applied| applied);
-        match applied {
-            Ok(applied) => {
-                self.next = through;
+        let (reader, applying, count) = (self.reader.clone(), buckets.clone(), rows.len() as u64);
+        let counted = tokio::task::spawn_blocking(move || reader.lock().unwrap_or_else(|e| e.into_inner()).apply(&applying, &rows, now()))
+            .await
+            .map_err(anyhow::Error::from)
+            .and_then(|counted| counted);
+        match counted {
+            Ok(counted) => {
+                self.next = Some(through);
                 report_skipped(progress, &skipped);
                 progress.outcomes.fetch_add(count, Ordering::Relaxed);
-                progress.retried.fetch_add(applied.retried, Ordering::Relaxed);
+                progress.outcome_failed.fetch_add(counted.failed, Ordering::Relaxed);
+                progress.outcome_dropped.fetch_add(counted.dropped, Ordering::Relaxed);
+                progress.dropped_now.fetch_add(counted.dropped_now, Ordering::Relaxed);
+                if lag.is_some_and(|lag| lag > BEHIND_AT_MOST) && latest > through {
+                    eprintln!("[rs] the outcome feed is {}s behind: skipping {} files to the newest, {latest}", lag.unwrap_or(0), latest - through);
+                    progress.skipped.fetch_add(latest - through, Ordering::Relaxed);
+                    self.next = Some(latest);
+                }
                 blocked
             }
             Err(error) => {
-                eprintln!("[rs] applying outcome files {}..{} failed: {error:#}", self.next, through - 1);
+                eprintln!("[rs] applying outcome files {next}..{} failed: {error:#}", through - 1);
                 true
             }
         }
     }
-
 }
 
-/// One line for the files one look skipped; their pages come back once overdue, so a skip costs time, not pages.
+/// One line for the files one look skipped; their failed and dropped pages wait for their next scheduled send.
 fn report_skipped(progress: &Progress, skipped: &[(u64, &str)]) {
     let (Some((first, _)), Some((last, _))) = (skipped.first(), skipped.last()) else {
         return;

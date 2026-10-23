@@ -1,25 +1,30 @@
 //! What became of the URLs the bot queued, read in order from the task API's public outcome feed.
 
 use std::collections::HashMap;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 use bytes::Bytes;
 use parquet::file::reader::{FileReader, SerializedFileReader};
 use parquet::record::Field;
-use serde_json::{json, Value};
+use serde_json::Value;
 
 use crate::buckets::{bucket_of, Buckets};
 use crate::dispatch::on_readers;
-use crate::ready::{Applied, Outcome, PageOutcome};
-use crate::urls::{self, Normaliser, Url};
+use crate::ready::{Outcome, PageSchedule, Scheduled, Why, Yield};
+use crate::recrawl::Recrawl;
+use crate::urls::Normaliser;
 
-const CURSOR: &str = "outcomes_seq";
 const TIMEOUT: Duration = Duration::from_secs(60);
+/// Hosts whose domain is remembered; the memory starts over past this many, or an hour on, so domain list changes count.
+const HOSTS_KEPT: usize = 1_000_000;
+const HOSTS_FOR: Duration = Duration::from_secs(3600);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OutcomeRow {
     pub url: String,
+    /// The URL's host without `www.`, as the task API wrote it.
+    pub host: String,
     pub outcome: Outcome,
     /// Epoch microseconds.
     pub at: i64,
@@ -31,10 +36,11 @@ pub fn read_parquet(data: Bytes) -> Result<Vec<OutcomeRow>> {
     let mut rows = Vec::new();
     for row in reader.get_row_iter(None)? {
         let row = row?;
-        let (mut url, mut outcome, mut at) = (None, None, None);
+        let (mut url, mut host, mut outcome, mut at) = (None, None, None, None);
         for (name, field) in row.get_column_iter() {
             match (name.as_str(), field) {
                 ("url", Field::Str(value)) => url = Some(value.clone()),
+                ("host", Field::Str(value)) => host = Some(value.clone()),
                 ("outcome", Field::Str(value)) => outcome = Outcome::parse(value),
                 ("at", Field::TimestampMicros(us)) => at = Some(*us),
                 ("at", Field::TimestampMillis(ms)) => at = Some(ms * 1000),
@@ -42,82 +48,150 @@ pub fn read_parquet(data: Bytes) -> Result<Vec<OutcomeRow>> {
                 _ => {}
             }
         }
-        if let (Some(url), Some(outcome), Some(at)) = (url, outcome, at) {
-            rows.push(OutcomeRow { url, outcome, at });
+        if let (Some(url), Some(host), Some(outcome), Some(at)) = (url, host, outcome, at) {
+            rows.push(OutcomeRow { url, host, outcome, at });
         }
     }
     Ok(rows)
 }
 
-/// The domain a queued URL was sent under and its store key: its host, then each parent domain, whichever this process holds the page for.
-pub fn locate(buckets: &Buckets, url: &str) -> Option<(String, Url)> {
-    let parts = urls::split(url).ok()?;
-    let host = urls::ascii(&parts.hostname()?).ok()?;
-    let bare = host.strip_prefix("www.").unwrap_or(&host);
-    let mut candidates = vec![host.as_str()];
-    let mut parent = bare;
-    loop {
-        if candidates.last() != Some(&parent) {
-            candidates.push(parent);
+/// What one outcome file held, and what reading it did.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Counted {
+    pub published: u64,
+    pub failed: u64,
+    pub dropped: u64,
+    /// Dropped pages put back now, within this hour's budget; the rest follow in later hours.
+    pub dropped_now: u64,
+    /// Rows of hosts no domain here was sent under.
+    pub unknown: u64,
+}
+
+/// Spreads pages over the coming clock hours, at most `per_hour` in each.
+#[derive(Clone, Copy, Debug)]
+pub struct HourlySpread {
+    per_hour: u64,
+    hour: u32,
+    used: u64,
+}
+
+impl HourlySpread {
+    pub fn new(per_hour: u64) -> Self {
+        HourlySpread { per_hour, hour: 0, used: 0 }
+    }
+
+    /// When the next page goes: now while this hour has room, else the start of the first later hour that has.
+    pub fn due(&mut self, now: u32) -> u32 {
+        if self.per_hour == 0 {
+            return u32::MAX;
         }
-        match parent.split_once('.') {
-            Some((_, rest)) if rest.contains('.') => parent = rest,
-            _ => break,
+        if self.hour < now / 3600 {
+            (self.hour, self.used) = (now / 3600, 0);
+        }
+        if self.used >= self.per_hour {
+            (self.hour, self.used) = (self.hour + 1, 0);
+        }
+        self.used += 1;
+        if self.hour == now / 3600 {
+            now
+        } else {
+            self.hour.saturating_mul(3600)
         }
     }
-    for domain in candidates {
-        if !buckets.owns(domain) {
-            continue;
+}
+
+/// Reads outcome files into per-domain yields and schedules for failed and dropped pages, without looking up a single page.
+pub struct OutcomeReader {
+    recrawl: Recrawl,
+    dropped: HourlySpread,
+    domains: HashMap<String, Option<String>>,
+    domains_since: Instant,
+}
+
+impl OutcomeReader {
+    pub fn new(recrawl: Recrawl, dropped_per_hour: u64) -> Self {
+        OutcomeReader { recrawl, dropped: HourlySpread::new(dropped_per_hour), domains: HashMap::new(), domains_since: Instant::now() }
+    }
+
+    /// The domain a host's pages were sent under: the host itself or its nearest parent that this process holds and may queue.
+    pub fn domain_of(&mut self, buckets: &Buckets, host: &str) -> Option<String> {
+        let host = host.split_once(':').map_or(host, |(name, _)| name);
+        let host = host.strip_prefix("www.").unwrap_or(host);
+        if let Some(found) = self.domains.get(host) {
+            return found.clone();
         }
-        let Some(key) = Normaliser::new(domain).ok().and_then(|n| n.parse(url)) else {
-            continue;
+        if self.domains.len() >= HOSTS_KEPT || self.domains_since.elapsed() >= HOSTS_FOR {
+            self.domains.clear();
+            self.domains_since = Instant::now();
+        }
+        let mut name = host;
+        let found = loop {
+            let known = buckets.allows(name) && buckets.store_for(name).is_some_and(|store| store.has_domain(name).unwrap_or(false));
+            if known {
+                break Some(name.to_string());
+            }
+            match name.split_once('.') {
+                Some((_, parent)) if parent.contains('.') => name = parent,
+                _ => break None,
+            }
         };
-        if buckets.store(domain).url(&key).ok().flatten().is_some() {
-            return Some((domain.to_string(), key));
+        self.domains.insert(host.to_string(), found.clone());
+        found
+    }
+
+    /// Tally a file's rows per domain and schedule its failed and dropped pages, a few writes per store.
+    pub fn apply(&mut self, buckets: &Buckets, rows: &[OutcomeRow], now: u32) -> Result<Counted> {
+        let mut counted = Counted::default();
+        let mut tallies: HashMap<String, Yield> = HashMap::new();
+        let mut schedules: HashMap<usize, Vec<PageSchedule>> = HashMap::new();
+        for row in rows {
+            match row.outcome {
+                Outcome::Published | Outcome::Unchanged => counted.published += 1,
+                Outcome::Failed => counted.failed += 1,
+                Outcome::Dropped => counted.dropped += 1,
+            }
+            let Some(domain) = self.domain_of(buckets, &row.host) else {
+                counted.unknown += 1;
+                continue;
+            };
+            let at = row.at.div_euclid(1_000_000).clamp(0, u32::MAX.into()) as u32;
+            // A dropped task never reached the site, so it says nothing about the domain.
+            let tally = tallies.entry(domain.clone()).or_default();
+            match row.outcome {
+                Outcome::Published | Outcome::Unchanged => tally.ok += 1.0,
+                Outcome::Failed => tally.failed += 1.0,
+                Outcome::Dropped => {}
+            }
+            tally.at = tally.at.max(at);
+            let interval = self.recrawl.interval(&domain);
+            let next = match row.outcome {
+                Outcome::Published | Outcome::Unchanged => continue,
+                Outcome::Failed => Scheduled { why: Why::Failed, due: at.saturating_add(interval), at },
+                // A page whose task was lost goes again soon, but a burst of them is spread out, never later than its re-crawl.
+                Outcome::Dropped => {
+                    let due = self.dropped.due(now).min(at.saturating_add(interval));
+                    counted.dropped_now += u64::from(due <= now);
+                    Scheduled { why: Why::Dropped, due, at }
+                }
+            };
+            let Some(key) = Normaliser::new(&domain).ok().and_then(|n| n.parse(&row.url)) else {
+                continue;
+            };
+            let rest = key.key[domain.len() + 1..].to_vec();
+            schedules.entry(bucket_of(&domain)).or_default().push(PageSchedule { domain, rest, next });
         }
-    }
-    None
-}
-
-/// Keep a file's outcomes in the stores that hold their pages.
-pub fn apply(buckets: &Buckets, rows: &[OutcomeRow], recrawl_after: u32) -> Result<Applied> {
-    let mut by_bucket: HashMap<usize, Vec<PageOutcome>> = HashMap::new();
-    let mut total = Applied::default();
-    for row in rows {
-        let Some((domain, key)) = locate(buckets, &row.url) else {
-            total.ignored += 1;
-            continue;
-        };
-        let rest = key.key[domain.len() + 1..].to_vec();
-        let at = row.at.div_euclid(1_000_000).clamp(0, u32::MAX.into()) as u32;
-        by_bucket.entry(bucket_of(&domain)).or_default().push(PageOutcome { domain, rest, outcome: row.outcome, at });
-    }
-    let groups: Vec<Vec<PageOutcome>> = by_bucket.into_values().collect();
-    for applied in on_readers(groups, |rows| buckets.store(&rows[0].domain).apply_outcomes(&rows, recrawl_after))? {
-        total.crawled += applied.crawled;
-        total.retried += applied.retried;
-        total.gave_up += applied.gave_up;
-        total.ignored += applied.ignored;
-    }
-    Ok(total)
-}
-
-/// The next sequence number to read: the lowest any store has kept, so no store misses a file; None before the first read.
-pub fn saved_cursor(buckets: &Buckets) -> Result<Option<u64>> {
-    let mut lowest = None;
-    for store in buckets.stores() {
-        if let Some(next) = store.meta(CURSOR)?.as_ref().and_then(Value::as_u64) {
-            lowest = Some(lowest.map_or(next, |l: u64| l.min(next)));
+        let mut by_bucket: HashMap<usize, (Vec<PageSchedule>, Vec<(String, Yield)>)> = HashMap::new();
+        for (domain, tally) in tallies {
+            by_bucket.entry(bucket_of(&domain)).or_default().1.push((domain, tally));
         }
+        for (bucket, pages) in schedules {
+            by_bucket.entry(bucket).or_default().0 = pages;
+        }
+        let groups: Vec<(Vec<PageSchedule>, Vec<(String, Yield)>)> = by_bucket.into_values().collect();
+        // Every scheduled page's domain was tallied first, so each group has a domain to find its store by.
+        on_readers(groups, |(pages, tallies)| buckets.store(&tallies[0].0).note_outcomes(&pages, &tallies))?;
+        Ok(counted)
     }
-    Ok(lowest)
-}
-
-pub fn save_cursor(buckets: &Buckets, next: u64) -> Result<()> {
-    for store in buckets.stores() {
-        store.set_meta(CURSOR, &json!(next))?;
-    }
-    Ok(())
 }
 
 /// One numbered outcome file, nothing yet, a number not indexed while later ones are, or an index whose file expired unread.

@@ -235,6 +235,10 @@ impl BucketStore {
         self.json(&domain_key(host))
     }
 
+    pub fn has_domain(&self, host: &str) -> Result<bool> {
+        Ok(self.db.get_pinned(domain_key(host))?.is_some())
+    }
+
     /// Every domain's host and schedule, in key order.
     pub fn schedule(&self) -> Result<Vec<(String, Due)>> {
         self.scan(&[DOMAIN], |key, raw| Ok((String::from_utf8_lossy(&key[1..]).into_owned(), serde_json::from_slice(raw)?)))
