@@ -1,4 +1,4 @@
-import type { Kind } from '@/api/types'
+import type { Kind, Verdict } from '@/api/types'
 import { DEFAULT_KIND, KIND_PARAM } from './kinds'
 
 export const OVERVIEW_PATH = '/'
@@ -20,4 +20,8 @@ export function validatorPath(hotkey: string): string {
 
 export function withKind(path: string, kind: Kind): string {
   return kind === DEFAULT_KIND ? path : `${path}?${KIND_PARAM}=${kind}`
+}
+
+export function tasksPath(verdict: Verdict, kind: Kind): string {
+  return `${TASKS_PATH}?verdict=${verdict}&${KIND_PARAM}=${kind}`
 }

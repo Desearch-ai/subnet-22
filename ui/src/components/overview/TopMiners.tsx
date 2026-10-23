@@ -1,4 +1,3 @@
-import { useState } from 'react'
 import { Link } from 'react-router'
 import { useMiners } from '@/api/queries/miners'
 import type { Kind, MinerSummary } from '@/api/types'
@@ -7,8 +6,7 @@ import { Identifier } from '@/components/ui/Identifier'
 import { QueryState } from '@/components/ui/QueryState'
 import { EmptyState } from '@/components/ui/States'
 import { formatInt, formatPercent } from '@/lib/format'
-import { KindSwitch } from '@/components/ui/KindSwitch'
-import { DEFAULT_KIND, KIND_WORDS } from '@/lib/kinds'
+import { KIND_WORDS } from '@/lib/kinds'
 import { MINERS_PATH, minerPath, withKind } from '@/lib/paths'
 
 const TOP_MINERS = 8
@@ -28,7 +26,7 @@ function ShareRow({ miner, kind }: { miner: MinerSummary; kind: Kind }) {
         </span>
       </div>
       <div className="bg-raised mt-1.5 h-1 overflow-hidden rounded-sm">
-        <div className="bg-series-counted h-full" style={{ width: formatPercent(miner.share) }} />
+        <div className="bg-series-1 h-full" style={{ width: formatPercent(miner.share) }} />
       </div>
       <div className="text-ink-faint mt-1 text-xs">
         {formatInt(miner.credited)} {KIND_WORDS[kind].credited} counted
@@ -37,8 +35,7 @@ function ShareRow({ miner, kind }: { miner: MinerSummary; kind: Kind }) {
   )
 }
 
-export function TopMiners() {
-  const [kind, setKind] = useState<Kind>(DEFAULT_KIND)
+export function TopMiners({ kind }: { kind: Kind }) {
   const query = useMiners(kind)
   return (
     <Card>
@@ -46,12 +43,9 @@ export function TopMiners() {
         title="Top miners by share"
         description={`Each miner's part of the ${kind} pool, last 24 hours`}
         actions={
-          <>
-            <KindSwitch kind={kind} onChange={setKind} />
-            <Link to={withKind(MINERS_PATH, kind)} className="text-accent text-xs hover:underline">
-              All miners
-            </Link>
-          </>
+          <Link to={withKind(MINERS_PATH, kind)} className="text-accent text-xs hover:underline">
+            All miners
+          </Link>
         }
       />
       <QueryState query={query}>

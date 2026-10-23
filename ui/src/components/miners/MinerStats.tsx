@@ -4,6 +4,7 @@ import { Stat } from '@/components/ui/Stat'
 import { VerdictCounts } from '@/components/ui/VerdictBadge'
 import { formatInt, formatPercent, ratio } from '@/lib/format'
 import { countColumns, KIND_LABEL, KIND_SUMMARY, KINDS, KIND_WORDS } from '@/lib/kinds'
+import { NO_CAPACITY, QUEUE_EMPTY, refused, refusedOther } from '@/lib/work'
 import { Lockout } from './Lockout'
 
 function returnedDetail(kind: Kind, miner: MinerDetail): string {
@@ -24,7 +25,7 @@ function countedDetail(kind: Kind, miner: MinerDetail): string {
 
 function KindStats({ kind, miner }: { kind: Kind; miner: MinerDetail }) {
   const pool = miner.pools[kind]
-  const { window, share } = miner.kinds[kind]
+  const { window, share, claims } = miner.kinds[kind]
   const { returned, credited } = countColumns(kind)
   const hours = miner.window_hours
   return (
@@ -33,7 +34,7 @@ function KindStats({ kind, miner }: { kind: Kind; miner: MinerDetail }) {
         <KindBadge kind={kind} />
         {KIND_SUMMARY[kind]}
       </h2>
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         <Stat
           label="Share"
           value={formatPercent(share)}
@@ -63,6 +64,18 @@ function KindStats({ kind, miner }: { kind: Kind; miner: MinerDetail }) {
           label={credited.label}
           value={formatInt(window.credited)}
           detail={countedDetail(kind, miner)}
+        />
+        <Stat
+          label={`Handed out · ${hours} h`}
+          value={formatInt(claims.issued)}
+          detail={`${formatInt(claims.completed)} uploaded · ${formatInt(claims.lapsed)} claims ran out or given back`}
+        />
+        <Stat
+          label={`Refused · ${hours} h`}
+          value={formatInt(
+            refused(claims, QUEUE_EMPTY) + refused(claims, NO_CAPACITY) + refusedOther(claims),
+          )}
+          detail={`minutes: queue empty ${formatInt(refused(claims, QUEUE_EMPTY))} · no capacity ${formatInt(refused(claims, NO_CAPACITY))} · other ${formatInt(refusedOther(claims))}`}
         />
       </div>
     </section>

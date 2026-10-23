@@ -1,9 +1,10 @@
 import { useParams } from 'react-router'
 import { useMiner } from '@/api/queries/miners'
-import { SeriesPanel } from '@/components/charts/SeriesPanel'
+import { WorkPanel } from '@/components/charts/WorkPanel'
 import { BudgetHistory } from '@/components/miners/BudgetHistory'
 import { MinerNotice } from '@/components/miners/MinerNotice'
 import { MinerStats } from '@/components/miners/MinerStats'
+import { TakeBacks } from '@/components/miners/TakeBacks'
 import { TaskList } from '@/components/tasks/TaskList'
 import { Card, CardHeader } from '@/components/ui/Card'
 import { KindSwitch } from '@/components/ui/KindSwitch'
@@ -39,11 +40,18 @@ export function MinerDetailPage() {
                 <MinerNotice key={each} kind={each} pool={miner.pools[each]} />
               ))}
               <MinerStats miner={miner} />
-              <SeriesPanel
+              <WorkPanel
                 kind={kind}
                 miner={hotkey}
                 actions={<KindSwitch kind={kind} onChange={setKind} />}
               />
+              <Card>
+                <CardHeader
+                  title="Take-backs"
+                  description="Uploads that had passed and were taken back after a later check failed, newest first"
+                />
+                <TakeBacks takeBacks={miner.take_backs} />
+              </Card>
               <Card>
                 <CardHeader
                   title="Budget history"

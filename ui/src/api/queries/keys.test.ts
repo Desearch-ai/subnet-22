@@ -5,15 +5,17 @@ describe('queryKeys', () => {
   it('keeps each kind of the kind-specific views apart', () => {
     expect(queryKeys.overview('crawl')).not.toEqual(queryKeys.overview('embed'))
     expect(queryKeys.miners('crawl')).not.toEqual(queryKeys.miners('embed'))
-    expect(queryKeys.series({ kind: 'crawl' })).not.toEqual(queryKeys.series({ kind: 'embed' }))
+    expect(queryKeys.hours({ kind: 'crawl' })).not.toEqual(queryKeys.hours({ kind: 'embed' }))
     expect(queryKeys.tasks({ kind: 'crawl' }, 50)).not.toEqual(
       queryKeys.tasks({ kind: 'embed' }, 50),
     )
   })
 
-  it('gives the whole subnet and one miner different series', () => {
-    expect(queryKeys.series({ kind: 'embed' })).toEqual(['series', 'embed', null])
-    expect(queryKeys.series({ kind: 'embed', miner: '5F' })).toEqual(['series', 'embed', '5F'])
+  it('gives the whole subnet and one miner different hours', () => {
+    expect(queryKeys.hours({ kind: 'embed' })).not.toEqual(
+      queryKeys.hours({ kind: 'embed', miner: '5F' }),
+    )
+    expect(queryKeys.hours({ kind: 'embed', miner: '5F' })).toContain('5F')
   })
 })
 

@@ -8,6 +8,40 @@ export interface VerdictCounts {
   void: number
 }
 
+export interface ClaimCounts {
+  issued: number
+  completed: number
+  lapsed: number
+  requeued: number
+  dropped: number
+  refused: Partial<Record<string, number>>
+}
+
+export interface WaitSummary {
+  tasks: number
+  p50: number | null
+  p90: number | null
+}
+
+export interface VerdictWaits {
+  unchecked: WaitSummary | null
+  checked: WaitSummary | null
+}
+
+export interface ReasonCount {
+  verdict: Verdict
+  reason: string
+  checked: boolean
+  tasks: number
+}
+
+export interface TakenBack {
+  take_backs: number
+  tasks: number
+  miners: number
+  credited: number
+}
+
 export interface Overview {
   as_of: number
   window_hours: number
@@ -18,7 +52,8 @@ export interface Overview {
   oldest_validation_s: number | null
   publishing: number
   miners: number
-  validators: { active: number; known: number }
+  locked_out: number
+  validators: { active: number; known: number; agreement: number | null }
   window: VerdictCounts & {
     tasks: number
     returned: number
@@ -27,19 +62,28 @@ export interface Overview {
     votes: number
     disagreements: number
   }
+  claims: ClaimCounts
+  checks: { checked: number; verdict_s: VerdictWaits; reasons: ReasonCount[] }
+  taken_back: TakenBack
   total: VerdictCounts
 }
 
-export interface TaskSeriesPoint extends VerdictCounts {
+export interface HourPoint extends VerdictCounts, ClaimCounts {
   at: number
   tasks: number
   returned: number
   credited: number
+  miners?: number
+  checked?: number
+  verdict_s?: VerdictWaits | null
 }
 
-export interface Series {
-  bucket_s: number
-  points: TaskSeriesPoint[]
+export interface Hours {
+  kind: Kind
+  hours: number
+  miner: string | null
+  as_of: number
+  points: HourPoint[]
 }
 
 export interface LiveClaim {
@@ -123,6 +167,15 @@ export interface MinerWindow extends VerdictCounts {
 export interface MinerKind {
   window: MinerWindow
   share: number
+  claims: ClaimCounts
+}
+
+export interface TakeBack {
+  kind: Kind
+  reason: string
+  tasks: number
+  credited: number
+  at: number
 }
 
 export type BudgetCause = 'verified' | 'claim_expired' | 'abandoned' | 'verification_failed'
@@ -149,6 +202,7 @@ export interface MinerDetail {
   window: MinerWindow
   kinds: Record<Kind, MinerKind>
   transitions: BudgetTransition[]
+  take_backs: TakeBack[]
 }
 
 export interface ValidatorSummary extends VerdictCounts {

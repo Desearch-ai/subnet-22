@@ -7,7 +7,13 @@ const MINUS = '−'
 
 export const EMPTY_VALUE = '–'
 
+const NICE_STEPS = [1, 2, 2.5, 5, 10]
+
 const integerFormat = new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 })
+const compactFormat = new Intl.NumberFormat('en-US', {
+  notation: 'compact',
+  maximumFractionDigits: 1,
+})
 const absoluteFormat = new Intl.DateTimeFormat('en-GB', {
   year: 'numeric',
   month: 'short',
@@ -23,12 +29,27 @@ export function formatInt(value: number | null | undefined): string {
   return value === null || value === undefined ? EMPTY_VALUE : integerFormat.format(value)
 }
 
+export function formatCompact(value: number): string {
+  return compactFormat.format(value)
+}
+
+/** Ticks from zero at a round step, the top one at or above `highest`. */
+export function niceTicks(highest: number, steps = 4): number[] {
+  if (highest <= 0) return [0]
+  const rough = highest / steps
+  const power = 10 ** Math.floor(Math.log10(rough))
+  const step = (NICE_STEPS.find((nice) => nice * power >= rough) ?? 10) * power
+  return Array.from({ length: Math.ceil(highest / step - 1e-9) + 1 }, (_, i) => i * step)
+}
+
 export function ratio(part: number, whole: number): number | null {
   return whole > 0 ? part / whole : null
 }
 
 export function formatPercent(value: number | null | undefined, digits = 1): string {
   if (value === null || value === undefined) return EMPTY_VALUE
+  const smallest = 10 ** -digits
+  if (value > 0 && value * 100 < smallest) return `<${smallest.toFixed(digits)}%`
   return `${(value * 100).toFixed(digits)}%`
 }
 

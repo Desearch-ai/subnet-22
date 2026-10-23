@@ -5,6 +5,7 @@ import {
   formatDuration,
   formatInt,
   formatPercent,
+  niceTicks,
   formatRelative,
   formatSimilarity,
   formatSimilarityMargin,
@@ -32,6 +33,11 @@ describe('ratio and formatPercent', () => {
   it('formats a share as a percentage', () => {
     expect(formatPercent(ratio(35, 40))).toBe('87.5%')
     expect(formatPercent(0.41, 0)).toBe('41%')
+  })
+
+  it('says a share too small to show is above zero', () => {
+    expect(formatPercent(0.00001, 2)).toBe('<0.01%')
+    expect(formatPercent(0)).toBe('0.0%')
   })
 })
 
@@ -88,5 +94,14 @@ describe('formatWorkTime', () => {
   it('measures from claim to upload and shows a dash when either is missing', () => {
     expect(formatWorkTime({ claimed_at: NOW_S - 95, completed_at: NOW_S })).toBe('1 min 35 s')
     expect(formatWorkTime({ claimed_at: null, completed_at: NOW_S })).toBe(EMPTY_VALUE)
+  })
+})
+
+describe('niceTicks', () => {
+  it('steps from zero at a round size to the first tick at or above the highest value', () => {
+    expect(niceTicks(20_704)).toEqual([0, 10_000, 20_000, 30_000])
+    expect(niceTicks(211)).toEqual([0, 100, 200, 300])
+    expect(niceTicks(9.4)).toEqual([0, 2.5, 5, 7.5, 10])
+    expect(niceTicks(0)).toEqual([0])
   })
 })

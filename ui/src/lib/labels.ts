@@ -85,3 +85,45 @@ export const URL_OUTCOME_LABEL: Record<UrlOutcome, string> = {
 
 export const EXCLUDED_MEANING =
   'Excluded: disagreed with too many final results, no longer receives work'
+
+export interface RefusalText {
+  label: string
+  meaning: string
+}
+
+export const REFUSAL: Record<string, RefusalText> = {
+  QUEUE_EMPTY: { label: 'Queue empty', meaning: 'No task was waiting when the miner asked.' },
+  NO_CAPACITY: {
+    label: 'No capacity',
+    meaning: 'The miner already held as many tasks as its budget allows.',
+  },
+  WAITING_FOR_VERDICTS: {
+    label: 'Waiting for verdicts',
+    meaning: 'Too many of the miner’s uploads were still waiting for their verdict.',
+  },
+  ALREADY_HELD: {
+    label: 'Already held',
+    meaning: 'The only tasks waiting were ones this miner held before.',
+  },
+  LOCKED_OUT: { label: 'Locked out', meaning: 'The miner was locked out of this kind of task.' },
+  VALIDATION_BACKLOG: {
+    label: 'Checks behind',
+    meaning: 'Uploads were waiting too long for their verdict, so no new work was handed out.',
+  },
+  KIND_CLOSED: { label: 'Kind closed', meaning: 'This kind of task was not being handed out.' },
+  MODEL_MISMATCH: {
+    label: 'Wrong model',
+    meaning: 'The miner did not offer the embedding model the subnet uses.',
+  },
+}
+
+export function refusalText(code: string): RefusalText {
+  return REFUSAL[code] ?? { label: code, meaning: code }
+}
+
+export const TAKE_BACK_MEANING: Record<string, string> = {
+  check_failed:
+    'A checked upload failed, so the uploads that passed unchecked since its last checked pass were taken back.',
+  repeated_fails:
+    'Checks failed repeatedly, so every upload that passed in the last 24 hours was taken back, checked or not.',
+}
