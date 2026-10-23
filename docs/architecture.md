@@ -43,8 +43,8 @@ every page.
    upload link. The link accepts one file under one key and lasts as long as the claim: 3 minutes,
    plus 10 seconds of grace for the upload. Miners never hold storage credentials, and a miner is
    never given a task it held before.
-3. **Crawl.** The miner fetches every URL, extracts each page's text, and uploads one Parquet file
-   with a row per URL, including the page's HTML. When it reports the task
+3. **Crawl.** The miner fetches every URL, extracts each page's text in extraction v2, and uploads
+   one Parquet file with a row per URL, including the page's HTML. When it reports the task
    complete, the task API checks the file is Parquet and within the size limit, and records which
    version of the file was completed. Validators and the publisher read only that version, so a file
    changed after completion fails its check.

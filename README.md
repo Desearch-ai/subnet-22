@@ -73,9 +73,9 @@ starts with selected sources and grows as results prove useful.
 
 ## Mining and validating
 
-**Miners** crawl and embed: they take tasks, fetch the assigned pages and upload the extracted text,
-and turn that text into vectors on their own GPU. They are paid by their share of accepted work, and
-can test their miner locally before registering.
+**Miners** crawl and embed: they take tasks, fetch the assigned pages and upload their text in
+extraction v2, and turn that text into vectors on their own GPU. They are paid by their share of
+accepted work, and can test their miner locally before registering.
 [What a miner does →](./docs/miner.md#-what-a-miner-does) · [Miner setup →](./docs/miner.md#-setup) ·
 [Test locally →](./docs/test-your-miner.md) · [Emission →](./docs/emission.md)
 
