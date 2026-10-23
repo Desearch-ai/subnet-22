@@ -378,7 +378,7 @@ impl Sending {
             order,
             lastmod: pick.lastmod,
             reason,
-            retries: pick.retries,
+            retries: pick.failures,
             url: pick.url.clone(),
         }
     }
@@ -399,7 +399,7 @@ impl Sending {
             url: self.url.clone(),
             lastmod: self.lastmod,
             reason,
-            retries: self.retries,
+            failures: self.retries,
         }
     }
 }

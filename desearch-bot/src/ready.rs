@@ -151,23 +151,23 @@ impl Entry {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Sent {
     pub lastmod: u32,
-    /// Failures since it was last sent for a new lastmod.
-    pub retries: u8,
+    /// Sends in a row that failed, since it was last sent for a new lastmod.
+    pub failures: u8,
     /// Back on its ready list for a retry or a re-crawl.
     pub requeued: bool,
 }
 
 impl Sent {
+    /// Failures share the last byte with the requeued flag; the byte before held a count that also took in outcomes that never came, and is left at zero.
     fn pack(self) -> [u8; 6] {
         let mut out = [0u8; 6];
         out[..4].copy_from_slice(&self.lastmod.to_le_bytes());
-        out[4] = self.retries;
-        out[5] = self.requeued.into();
+        out[5] = u8::from(self.requeued) | self.failures.min(127) << 1;
         out
     }
 
     fn unpack(data: &[u8]) -> Option<Sent> {
-        (data.len() == 6).then(|| Sent { lastmod: u32::from_le_bytes(data[..4].try_into().unwrap()), retries: data[4], requeued: data[5] != 0 })
+        (data.len() == 6).then(|| Sent { lastmod: u32::from_le_bytes(data[..4].try_into().unwrap()), failures: data[5] >> 1, requeued: data[5] & 1 != 0 })
     }
 }
 
@@ -199,7 +199,7 @@ pub struct Pick {
     pub url: String,
     pub lastmod: u32,
     pub reason: Reason,
-    pub retries: u8,
+    pub failures: u8,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -455,8 +455,8 @@ impl BucketStore {
                     taking.stale.push(key);
                     continue;
                 };
-                let retries = sent.map_or(0, |s| s.retries);
-                taking.picks.push(Pick { url: fetchable(&entry.rest, record.flags), lastmod: record.lastmod, reason: why, retries, entry });
+                let failures = sent.map_or(0, |s| s.failures);
+                taking.picks.push(Pick { url: fetchable(&entry.rest, record.flags), lastmod: record.lastmod, reason: why, failures, entry });
             }
             // A read that moved nothing forward would only repeat itself.
             if (read < asked && !stopped_early) || taking.after[lane] == started {
@@ -491,8 +491,8 @@ impl BucketStore {
                     put_schedule(&mut batch, pick.entry.domain.as_bytes(), &pick.entry.rest, next);
                 }
             }
-            let retries = if pick.reason == Reason::Requeued { pick.retries } else { 0 };
-            batch.put(pick.entry.sent_key(), Sent { lastmod: pick.lastmod, retries, requeued: false }.pack());
+            let failures = if pick.reason == Reason::Requeued { pick.failures } else { 0 };
+            batch.put(pick.entry.sent_key(), Sent { lastmod: pick.lastmod, failures, requeued: false }.pack());
         }
         // A lastmod that moved while the page was in flight is a change the API has not seen.
         self.add_ready(&mut batch, moved, &mut counts)?;
@@ -552,10 +552,10 @@ impl BucketStore {
             // Entries without a schedule were written by earlier versions and go back as they are.
             match next {
                 Some(next) if next.outdated(record.pushed_at) => continue,
-                Some(Scheduled { why: Why::Recrawl, .. }) => sent.retries = 0,
+                Some(Scheduled { why: Why::Recrawl, .. }) => sent.failures = 0,
                 Some(Scheduled { why: Why::Failed, at, .. }) => {
-                    sent.retries = sent.retries.saturating_add(1);
-                    if sent.retries >= GONE_AFTER {
+                    sent.failures = sent.failures.saturating_add(1);
+                    if sent.failures >= GONE_AFTER {
                         put_schedule(&mut batch, domain, rest, Scheduled { why: Why::Gone, due: at.saturating_add(recrawl.gone), at: record.pushed_at });
                         batch.put(prefixed(SENT, domain, rest), sent.pack());
                         done.gone += 1;
@@ -1027,6 +1027,15 @@ mod tests {
         assert_eq!(again.iter().map(|p| (p.url.as_str(), p.reason)).collect::<Vec<_>>(), [("https://example.com/b", Reason::Requeued)]);
         drop(store);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn failures_share_the_requeued_byte_and_the_count_of_earlier_versions_is_not_read() {
+        let sent = Sent { lastmod: 7, failures: 2, requeued: false };
+        assert_eq!(Sent::unpack(&sent.pack()), Some(sent));
+        assert_eq!(sent.pack()[4..], [0, 4], "earlier versions read it as requeued, which only matters for a page on its list");
+        let earlier = [7, 0, 0, 0, 3, 1];
+        assert_eq!(Sent::unpack(&earlier), Some(Sent { lastmod: 7, failures: 0, requeued: true }), "three retries counted before, outcomes that never came among them");
     }
 
     #[test]

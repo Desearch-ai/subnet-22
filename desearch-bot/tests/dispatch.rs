@@ -253,7 +253,7 @@ fn a_failed_page_waits_its_interval_and_after_two_failures_in_a_row_the_long_wai
     assert_eq!(requeue(store, 1100 + RECRAWL - 1), Requeued::default(), "a failure waits for the normal re-crawl");
     assert_eq!(requeue(store, 1100 + RECRAWL), Requeued { moved: 1, gone: 0 });
     let retry = take(store, 10);
-    assert_eq!((retry[0].reason, retry[0].retries), (Reason::Requeued, 1));
+    assert_eq!((retry[0].reason, retry[0].failures), (Reason::Requeued, 1));
 
     let sent = 1200 + RECRAWL;
     store.mark_sent(&retry, sent, &rules()).unwrap();
@@ -264,7 +264,7 @@ fn a_failed_page_waits_its_interval_and_after_two_failures_in_a_row_the_long_wai
     assert_eq!(requeue(store, sent + 100 + GONE - 1), Requeued::default());
     assert_eq!(requeue(store, sent + 100 + GONE), Requeued { moved: 1, gone: 0 }, "after the long wait it goes once more");
     let last = take(store, 10);
-    assert_eq!((last[0].reason, last[0].retries), (Reason::Requeued, 2));
+    assert_eq!((last[0].reason, last[0].failures), (Reason::Requeued, 2));
     let weekly = Recrawl::new(RECRAWL, RECRAWL);
     store.mark_sent(&last, sent + 200 + GONE, &weekly).unwrap();
     let failed_at = sent + 300 + GONE;
@@ -294,7 +294,7 @@ fn a_page_set_to_the_long_wait_goes_earlier_when_its_lastmod_moves() {
     let changed = take(store, 10);
     assert_eq!((changed.len(), changed[0].reason), (1, Reason::Changed));
     store.mark_sent(&changed, at + 10, &rules()).unwrap();
-    assert_eq!(store.sent("example.com", &rest("a")).unwrap().unwrap().retries, 0, "a new lastmod starts the failures over");
+    assert_eq!(store.sent("example.com", &rest("a")).unwrap().unwrap().failures, 0, "a new lastmod starts the failures over");
     assert_eq!(requeue(store, at + GONE), Requeued::default(), "the long wait of the earlier send is spent");
     assert_eq!(store.next_send("example.com", &rest("a")).unwrap(), None);
 }
@@ -311,13 +311,13 @@ fn a_failure_replaces_the_recrawl_of_a_page_without_a_lastmod_and_a_clean_recraw
     assert_eq!(requeue(store, 1000 + RECRAWL), Requeued::default(), "the re-crawl the send set is replaced");
     assert_eq!(requeue(store, 1100 + RECRAWL), Requeued { moved: 1, gone: 0 });
     let retry = take(store, 10);
-    assert_eq!(retry[0].retries, 1);
+    assert_eq!(retry[0].failures, 1);
 
     let sent = 1200 + RECRAWL;
     store.mark_sent(&retry, sent, &rules()).unwrap();
     reader.apply(&buckets, &[outcome("https://example.com/undated", Outcome::Published, sent + 100)], sent + 100).unwrap();
     assert_eq!(requeue(store, sent + RECRAWL), Requeued { moved: 1, gone: 0 }, "a published page without a lastmod is re-crawled on its interval");
-    assert_eq!(store.sent("example.com", &rest("undated")).unwrap().unwrap().retries, 0);
+    assert_eq!(store.sent("example.com", &rest("undated")).unwrap().unwrap().failures, 0);
 }
 
 #[test]
@@ -359,7 +359,7 @@ fn dropped_pages_go_again_soon_and_a_burst_is_spread_over_the_following_hours() 
     assert_eq!(requeue(store, hour + 3600), Requeued { moved: 1, gone: 0 });
     let again = take(store, 10);
     assert_eq!(again.len(), 3);
-    assert!(again.iter().all(|p| p.reason == Reason::Requeued && p.retries == 0), "a dropped page is no failure");
+    assert!(again.iter().all(|p| p.reason == Reason::Requeued && p.failures == 0), "a dropped page is no failure");
 }
 #[test]
 fn the_backfill_queues_old_pages_once_and_resumes_where_it_stopped() {

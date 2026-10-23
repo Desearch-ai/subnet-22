@@ -42,6 +42,20 @@ fn lanes(dir: &Path) -> [u64; 3] {
     out
 }
 
+/// Waiting entries by the day they come due, the first holding every overdue one.
+fn waiting_days(dir: &Path, now: u32) -> Vec<u64> {
+    let db = DB::open_for_read_only(&Options::default(), dir, false).unwrap();
+    let mut options = ReadOptions::default();
+    options.set_iterate_upper_bound([b'W' + 1]);
+    let mut days = vec![0u64; 9];
+    for item in db.iterator_opt(IteratorMode::From(b"W", rocksdb::Direction::Forward), options) {
+        let (key, _) = item.unwrap();
+        let due = u32::from_be_bytes(key[1..5].try_into().unwrap());
+        days[(due.saturating_sub(now) / 86_400).min(8) as usize] += 1;
+    }
+    days
+}
+
 fn counts(root: &Path, owned: &[usize], now: u32, when: &str) {
     for &bucket in owned {
         let dir = root.join(format!("{bucket:03}"));
@@ -82,9 +96,9 @@ fn drain(buckets: &Buckets, now: u32, recrawl: &Recrawl) -> (Requeued, f64) {
 }
 
 /// Pages back on their ready lists as retries, with the failures counted so far.
-fn requeued(buckets: &Buckets, pages: &[&Pick], retries: u8) -> usize {
+fn requeued(buckets: &Buckets, pages: &[&Pick], failures: u8) -> usize {
     let sent = |p: &&&Pick| buckets.store(&p.entry.domain).sent(&p.entry.domain, &p.entry.rest).unwrap();
-    pages.iter().filter(|p| sent(p).is_some_and(|s| s.requeued && s.retries == retries)).count()
+    pages.iter().filter(|p| sent(p).is_some_and(|s| s.requeued && s.failures == failures)).count()
 }
 
 fn main() {
@@ -93,6 +107,9 @@ fn main() {
     owned.sort_unstable();
     let now = desearch_bot::dispatch::now();
     counts(&root, &owned, now, "before");
+    for &bucket in &owned {
+        println!("store {bucket:03} waiting entries by day from now: {:?}", waiting_days(&root.join(format!("{bucket:03}")), now));
+    }
 
     let resources = Resources::new(1 << 30, 256 << 20, owned.len());
     let buckets = Buckets::open(&root, &owned, &resources).unwrap();
