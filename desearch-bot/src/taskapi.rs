@@ -63,7 +63,8 @@ pub struct TaskApi {
 
 impl TaskApi {
     pub fn new(base: &str, hotkey: Hotkey) -> Result<Self> {
-        let http = reqwest::Client::builder().timeout(TIMEOUT).pool_idle_timeout(Duration::from_secs(30)).build()?;
+        // A fresh connection per request: batches sent together on one shared connection crawl through Cloudflare.
+        let http = reqwest::Client::builder().timeout(TIMEOUT).pool_max_idle_per_host(0).build()?;
         Ok(TaskApi { base: base.trim_end_matches('/').to_string(), http, hotkey })
     }
 
