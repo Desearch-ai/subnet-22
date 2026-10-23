@@ -50,27 +50,35 @@ def test_mediawiki_articles():
         "<h1 id='firstHeading'>Ada Lovelace</h1>"
         "<div class='shortdescription'>English mathematician (1815–1852)</div>"
         "<div id='mw-content-text'><div class='mw-parser-output'>"
-        "<table class='infobox'><tr><th>Born</th><td>10 December 1815<br>London</td></tr>"
+        "<table class='infobox'><tr><td class='infobox-image'><img src='a.jpg'>"
+        "<div class='infobox-caption'>Ada Lovelace in 1840</div></td></tr>"
+        "<tr><th>Born</th><td>10 December 1815<br>London</td></tr>"
         "<tr><th>Known for</th><td><ul><li>Analytical Engine</li><li>First program</li></ul></td></tr></table>"
         f"<p>Ada Lovelace was a mathematician.<sup class='reference'><a href='#cite_note-1'>[1]</a></sup> {PROSE}</p>"
         "<div class='mw-heading mw-heading2'><h2>Work</h2><span class='mw-editsection'>edit</span></div>"
         f"<p>{PROSE}</p>"
-        "<div class='mw-heading mw-heading2'><h2>References</h2></div><ol><li>A cited book</li></ol>"
+        "<div class='mw-heading mw-heading2'><h2>See also</h2></div><ul><li>Charles Babbage</li></ul>"
+        "<div class='mw-heading mw-heading2'><h2>References</h2></div><div class='reflist'><ol class='references'>"
+        "<li><span class='mw-cite-backlink'>↑ a b</span><span class='reference-text'>A cited book, 1953."
+        "<span class='error harv-error'>sfn error: no target</span></span></li></ol></div>"
+        "<div class='mw-heading mw-heading2'><h2>Further reading</h2></div><ul><li>Another book, 2001.</li></ul>"
+        "<div class='mw-heading mw-heading2'><h2>External links</h2></div><ul><li>Official site</li></ul>"
         "</div></div><div id='mw-normal-catlinks'><ul><li><a href='/c'>English mathematicians</a></li></ul></div>"
         "</body></html>"
     )
     got = extract(html, "https://en.wikipedia.org/wiki/Ada_Lovelace")
+    lines = got.text.splitlines()
     assert got.text_mode == MAIN and got.tags == ["English mathematicians"]
     assert (
         "English mathematician (1815–1852)" in got.text
         and "Known for: Analytical Engine, First program" in got.text
     )
     assert "Born: 10 December 1815 London" in got.text and "## Work" in got.text
-    assert (
-        "[1]" not in got.text
-        and "edit" not in got.text
-        and "A cited book" not in got.text
-    )
+    assert "Ada Lovelace in 1840" in lines
+    assert "## References" in lines and "1. A cited book, 1953." in lines
+    assert "- Another book, 2001." in lines
+    for gone in ("[1]", "edit", "↑", "sfn error", "Charles Babbage", "Official site"):
+        assert gone not in got.text, gone
 
 
 def test_mediawiki_infoboxes_drop_footnote_marks_but_keep_their_fields():

@@ -29,6 +29,7 @@ MW_MARKS = etree.XPath(
     ".//*[contains(concat(' ', normalize-space(@class), ' '), ' reference ')"
     " or contains(concat(' ', normalize-space(@class), ' '), ' Inline-Template ')]"
 )
+MW_CAPTIONS = etree.XPath(".//*[contains(@class, 'caption')]")
 MW_DROPPED_CLASSES = (
     "mw-editsection",
     "reference",
@@ -40,9 +41,6 @@ MW_DROPPED_CLASSES = (
     "hatnote",
     "noprint",
     "metadata",
-    "mw-references-wrap",
-    "reflist",
-    "references",
     "toc",
     "shortdescription",
     "mw-empty-elt",
@@ -50,6 +48,7 @@ MW_DROPPED_CLASSES = (
     "sistersitebox",
     "side-box",
     "mw-cite-backlink",
+    "error",
 )
 MW_DROPPED = etree.XPath(
     "//*["
@@ -59,26 +58,7 @@ MW_DROPPED = etree.XPath(
     )
     + " or @role='navigation' or @id='toc' or @role='note']"
 )
-MW_SKIPPED_SECTIONS = frozenset(
-    (
-        "references",
-        "notes",
-        "citations",
-        "footnotes",
-        "sources",
-        "external links",
-        "further reading",
-        "see also",
-        "notes and references",
-        "references and notes",
-        "works cited",
-        "general and cited sources",
-        "explanatory notes",
-        "cited sources",
-        "general sources",
-        "bibliography and further reading",
-    )
-)
+MW_SKIPPED_SECTIONS = frozenset(("see also", "external links"))
 
 
 def is_mediawiki(root: etree._Element, generator: str) -> bool:
@@ -144,17 +124,22 @@ def infobox_lines(box: etree._Element) -> list[Line]:
             text = ", ".join(t for t in (inline_text(c, ", ") for c in cells) if t)
             if name and text:
                 lines.append(Line(f"{name}: {text}"))
-        elif (
-            value is not None
-            and len([c for c in row if tag_of(c) == "td"]) == 1
-            and not value.findall(".//img")
-        ):
-            text = inline_text(value, ", ")
+        elif value is not None and len(cells) == 1:
+            if value.findall(".//img"):
+                text = " ".join(t for t in map(inline_text, captions(value)) if t)
+            else:
+                text = inline_text(value, ", ")
             if text:
                 lines.append(Line(text))
         elif label is not None and inline_text(label):
             lines.append(Line(inline_text(label)))
     return lines
+
+
+def captions(cell: etree._Element) -> list[etree._Element]:
+    """The outermost caption elements of an image cell, like "infobox-caption"."""
+    found = MW_CAPTIONS(cell)
+    return [c for c in found if not any(a in found for a in c.iterancestors())]
 
 
 def sections_of(node: etree._Element):
