@@ -140,7 +140,7 @@ struct RunArgs {
     /// Percent kept for retries and scheduled re-crawls; pages whose lastmod moved get the rest.
     #[arg(long, default_value_t = 10)]
     retry_share: usize,
-    /// Where the task API publishes what became of each URL, such as https://r2.desearch.ai.
+    /// The public URL of the S3 bucket where the task API publishes what became of each URL (its `outcomes/` feed).
     #[arg(long)]
     outcomes_url: Option<String>,
     /// Days after a send that a page without a lastmod, or one that failed, goes out again.
