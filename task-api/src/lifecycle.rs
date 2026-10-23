@@ -26,7 +26,7 @@ use crate::state::{Redis, State};
 use crate::storage::{delete_quietly, put_json};
 use crate::validations::{self, build_report, FinalVerdict};
 use crate::verdicts::{decide, Decision, ERROR_OUTCOMES, NO_MAJORITY};
-use crate::{checks, outcomes, py, roundstore};
+use crate::{checks, hours, outcomes, py, roundstore};
 
 pub const EMBED_FIELDS: [&str; 6] = ["model", "texts", "chars", "input_key", "input_sha256", "pages"];
 pub const EMBED_ROUND_INPUTS: isize = 200;
@@ -852,12 +852,16 @@ async fn account_check(state: &State, job: &Value, decision: &Decision) -> Resul
 
 /// Un-credits and unpublishes a hotkey's passed uploads of one kind completed after `since`: the unchecked ones, or every one.
 pub async fn take_back(state: &State, miner: &str, kind: &str, since: f64, reason: &str, checked_too: bool) -> Result<Vec<String>> {
-    let (asked, pool) = (miner.to_string(), kind.to_string());
+    let (asked, pool, cause) = (miner.to_string(), kind.to_string(), reason.to_string());
     let taken = state
         .db
         .run(move |conn| {
             let taken = validations::withdraw(conn, &asked, &pool, since, checked_too)?;
-            budgets::credit(conn, &asked, -taken.iter().map(|t| t.credited).sum::<i64>(), &pool, now())?;
+            let credited: i64 = taken.iter().map(|t| t.credited).sum();
+            budgets::credit(conn, &asked, -credited, &pool, now())?;
+            if !taken.is_empty() {
+                hours::record_take_back(conn, &asked, &pool, &cause, taken.len() as i64, credited, now())?;
+            }
             Ok(taken)
         })
         .await?;
