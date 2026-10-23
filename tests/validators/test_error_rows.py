@@ -3,8 +3,8 @@ from dataclasses import asdict
 
 import pytest
 
+from desearch.extraction import Page, extract
 from desearch.extraction.schema import sha256_hex
-from desearch.extraction.v1 import Page, extract
 from neurons.validators.scoring import (
     FetchedPage,
     pick_samples,
@@ -126,7 +126,7 @@ def test_a_miner_that_fetched_nothing_has_nothing_confirmed():
 
 def test_errors_on_a_thin_page_the_validator_loaded_are_unconfirmed():
     urls, rows = batch(20, errors=4)
-    thin = "<html><body><p>ok</p></body></html>"
+    thin = "<html><body><p>Back soon.</p></body></html>"
     fetched = live(urls[4:]) | {u: FetchedPage(200, thin) for u in urls[:4]}
     result = run(urls, rows, fetched)
     assert result["errors_confirmed"] == 0 and result["errors_unconfirmed"] == 2

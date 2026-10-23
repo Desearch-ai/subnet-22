@@ -8,7 +8,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from desearch.extraction import extract
-from desearch.extraction.schema import PAGE_SCHEMA, sha256_hex
+from desearch.extraction.schema import PAGE_SCHEMA_V1, sha256_hex
 
 VOCAB = (
     "river stone market garden window paper city harbor winter music signal forest"
@@ -81,7 +81,7 @@ def synthetic_url(n: int) -> str:
     return f"https://site{n}.example/news/story-{n}"
 
 
-def to_parquet(rows: list[dict], schema: pa.Schema = PAGE_SCHEMA, **metadata) -> bytes:
+def to_parquet(rows: list[dict], schema: pa.Schema = PAGE_SCHEMA_V1, **metadata) -> bytes:
     schema = schema.with_metadata({k.encode(): v.encode() for k, v in metadata.items()})
     sink = io.BytesIO()
     pq.write_table(pa.Table.from_pylist(rows, schema=schema), sink, compression="zstd")

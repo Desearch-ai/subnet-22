@@ -7,13 +7,15 @@ import time
 
 import pyarrow
 
+from desearch.extraction import extract
 from neurons.validators.confinement import confine
 from neurons.validators.scoring import (
     FetchedPage,
+    V1Upload,
+    empty_result,
     extraction_url,
     load_upload,
     pick_samples,
-    row_extraction,
     sample_count,
     score,
     url_log,
@@ -49,14 +51,10 @@ def live_texts(
     kept: dict[str, dict], fetched: dict[str, FetchedPage]
 ) -> dict[str, str]:
     return {
-        url: live_text(kept[url], page.html)
+        url: extract(page.html, extraction_url(kept[url])).text
         for url, page in fetched.items()
         if url in kept and page.html
     }
-
-
-def live_text(row: dict, html: str) -> str:
-    return row_extraction(row).extract(html, extraction_url(row)).text
 
 
 def answer(conn, kind: str, payload) -> None:
@@ -71,7 +69,13 @@ def _score_in_child(
         unconfined = confine()
         read_on_one_thread()
         cap_memory(memory_mb)
-        rows, kept = load_upload(data, assigned, seed)
+        try:
+            rows, kept = load_upload(data, assigned, seed)
+        except V1Upload:
+            answer(conn, "samples", {"urls": [], "unconfined": unconfined})
+            conn.recv()
+            answer(conn, "scored", empty_result(set(assigned), "extraction_v1"))
+            return
         del data
         planned = pick_samples(kept, seed, sample_count(len(kept), min_samples))
         answer(conn, "samples", {"urls": planned, "unconfined": unconfined})

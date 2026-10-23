@@ -12,7 +12,7 @@ import pyarrow.parquet as pq
 import pytest
 from aiohttp import web
 
-from desearch.extraction.schema import PAGE_SCHEMA
+from desearch.extraction.schema import PAGE_SCHEMA_V2
 from neurons.validators.crawl import CrawlValidator
 from neurons.validators.scoring import (
     FetchedPage,
@@ -84,8 +84,8 @@ def varint(n: int) -> bytes:
 def bomb(decoded: int, claimed: int) -> bytes:
     row = {
         name: ""
-        for name in PAGE_SCHEMA.names
-        if PAGE_SCHEMA.field(name).type == pa.string()
+        for name in PAGE_SCHEMA_V2.names
+        if PAGE_SCHEMA_V2.field(name).type in (pa.string(), pa.large_string())
     } | {
         "status": 200,
         "error": None,
@@ -95,12 +95,16 @@ def bomb(decoded: int, claimed: int) -> bytes:
         "html": b"<p>a</p>" * (decoded // 8),
         "json_ld_types": [],
         "headings": [],
-        "text": "",
+        "tags": [],
+        "breadcrumbs": [],
+        "robots": [],
+        "paywalled": None,
+        "extraction": "v2",
         "url": "https://a.example/",
     }
     sink = io.BytesIO()
     pq.write_table(
-        pa.Table.from_pylist([row], schema=PAGE_SCHEMA), sink, compression="zstd"
+        pa.Table.from_pylist([row], schema=PAGE_SCHEMA_V2), sink, compression="zstd"
     )
     data = bytearray(sink.getvalue())
     meta = pq.ParquetFile(io.BytesIO(bytes(data))).metadata

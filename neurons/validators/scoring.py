@@ -6,20 +6,13 @@ import io
 import itertools
 import math
 from collections import Counter, defaultdict
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass, fields
 
-import pyarrow as pa
 import pyarrow.parquet as pq
 
-from desearch.extraction import (
-    EXTRACTION_V2,
-    Page,
-    extract,
-    looks_blocked,
-    v1,
-)
-from desearch.extraction.schema import PAGE_SCHEMA, PAGE_SCHEMA_V2, sha256_hex
+from desearch.extraction import EXTRACTION_V2, Page, extract, looks_blocked
+from desearch.extraction.schema import PAGE_SCHEMA_V1, PAGE_SCHEMA_V2, sha256_hex
 from desearch.fetch import page_url
 from neurons.validators.compare import (
     CHURN_TEXT_MODES,
@@ -70,43 +63,13 @@ ERROR_SLOTS = 2
 ERROR_SHARE = 0.2
 SNIPPET_CHARS = 500
 WINDOW_CHARS = 250
-STRUCTURED = (
-    "page_type",
-    "title",
-    "description",
-    "lang",
-    "canonical",
-    "published",
-    "author",
-    "json_ld_types",
-    "headings",
-)
+EXACT_FIELDS = tuple(field.name for field in fields(Page) if field.name != "text")
 # A forged one of these would pass on the text alone; the live page must agree.
 CHECKED_FIELDS = ("title", "published", "canonical", "author")
 # These never change between two fetches of the same page, so a difference is a forgery.
 HARD_FIELDS = frozenset({"published", "canonical"})
 # A fetch served without the page's metadata leaves these empty, which proves nothing.
 UNVERIFIABLE_WHEN_EMPTY = frozenset({"published"})
-
-
-@dataclass(frozen=True)
-class Extraction:
-    """An upload's version: its schema, its extractor and the fields re-extraction compares exactly."""
-
-    schema: pa.Schema
-    extract: Callable
-    page: type
-    exact: tuple[str, ...]
-
-
-V1 = Extraction(PAGE_SCHEMA, v1.extract, v1.Page, STRUCTURED)
-V2 = Extraction(
-    PAGE_SCHEMA_V2,
-    extract,
-    Page,
-    tuple(field.name for field in fields(Page) if field.name != "text"),
-)
-EXTRACTIONS = (V1, V2)
 
 
 @dataclass
@@ -117,37 +80,33 @@ class FetchedPage:
     via: str = ""
 
 
+class V1Upload(Exception):
+    pass
+
+
 def read_pages(data: bytes | None, assigned: int | None = None) -> list[dict] | None:
     if not data:
         return None
     try:
         parquet = pq.ParquetFile(io.BytesIO(data))
-        extraction = schema_extraction(parquet.schema_arrow)
-        if extraction is None:
+        if parquet.schema_arrow.equals(PAGE_SCHEMA_V1):
+            raise V1Upload
+        if not parquet.schema_arrow.equals(PAGE_SCHEMA_V2):
             return None
         if assigned is not None and upload_too_big(parquet.metadata, assigned):
             return None
-        names = [name for name in extraction.schema.names if name != "html"]
-        table = parquet.read(columns=names)
+        table = parquet.read(columns=[n for n in PAGE_SCHEMA_V2.names if n != "html"])
         # The footer is the miner's word; the decoded columns are not.
         if assigned is not None and table.nbytes > max(assigned, 1) * MAX_ROW_BYTES:
             return None
         rows = table.to_pylist()
-        if extraction is V2 and any(r["extraction"] != EXTRACTION_V2 for r in rows):
+        if any(row["extraction"] != EXTRACTION_V2 for row in rows):
             return None
         return rows
+    except V1Upload:
+        raise
     except Exception:
         return None
-
-
-def schema_extraction(schema: pa.Schema) -> Extraction | None:
-    """An upload's version is its schema."""
-    return next((e for e in EXTRACTIONS if schema.equals(e.schema)), None)
-
-
-def row_extraction(row: dict) -> Extraction:
-    """read_pages lets the extraction column through only in a file that is v2 throughout."""
-    return V2 if row.get("extraction") == EXTRACTION_V2 else V1
 
 
 class UploadTooLarge(Exception):
@@ -247,11 +206,10 @@ def derived_from_html(row: dict) -> bool:
         return False
     if sha256_hex(row["text"]) != row["text_sha256"]:
         return False
-    extraction = row_extraction(row)
     decoded = html.decode("utf-8", "replace")
     for url in dict.fromkeys((extraction_url(row), row["url"])):
-        page = extraction.extract(decoded, url)
-        exact = all(getattr(page, name) == row[name] for name in extraction.exact)
+        page = extract(decoded, url)
+        exact = all(getattr(page, name) == row[name] for name in EXACT_FIELDS)
         if exact and is_match(similarity(row["text"], page.text), REEXTRACT_THRESHOLD):
             return True
     return False
@@ -331,44 +289,34 @@ def why_unverifiable(fetched: FetchedPage, page: Page) -> str:
     return ""
 
 
-def text_mode(page) -> str:
-    """The page's text mode, or "" for a v1 page, which has none."""
-    return getattr(page, "text_mode", "")
+def churns(page: Page) -> bool:
+    return page.page_type in CHURN_TYPES or page.text_mode in CHURN_TEXT_MODES
 
 
-def churns(page) -> bool:
-    return page.page_type in CHURN_TYPES or text_mode(page) in CHURN_TEXT_MODES
-
-
-def texts_match(sim: Similarity, miner, validator, assigned) -> bool:
+def texts_match(sim: Similarity, miner: Page, validator: Page, assigned: Page) -> bool:
     short = (
         len(miner.text) < SHORT_TEXT_CHARS and len(validator.text) < SHORT_TEXT_CHARS
     )
     if short and (normalize(miner.title) or normalize(validator.title)):
         return sim.title_match
     return is_match(sim) or is_match(
-        sim, page_type=assigned.page_type, text_mode=text_mode(assigned)
+        sim, page_type=assigned.page_type, text_mode=assigned.text_mode
     )
 
 
 def judge_sample(row: dict, fetched: FetchedPage | None) -> dict:
-    extraction = row_extraction(row)
     fetched = fetched or FetchedPage(0, error="not_fetched")
     readable = fetched.html and len(fetched.html) <= TOO_LARGE_BYTES
-    page = (
-        extraction.extract(fetched.html, extraction_url(row))
-        if readable
-        else extraction.page()
-    )
+    page = extract(fetched.html, extraction_url(row)) if readable else Page()
 
-    def assigned_page():
+    def assigned_page() -> Page:
         # Keyed on the assigned URL, not the miner's final_url.
         if extraction_url(row) == row["url"]:
             return page
-        return extraction.extract(fetched.html, row["url"])
+        return extract(fetched.html, row["url"])
 
     problem = why_unverifiable(fetched, page)
-    miner = extraction.page(title=row["title"] or "", text=row["text"] or "")
+    miner = Page(title=row["title"] or "", text=row["text"] or "")
     sim = None
     page_type = ""
     churning = False
@@ -418,7 +366,7 @@ def judge_sample(row: dict, fetched: FetchedPage | None) -> dict:
     }
 
 
-def fields_differ(row: dict, page) -> list[str]:
+def fields_differ(row: dict, page: Page) -> list[str]:
     return [
         name
         for name in CHECKED_FIELDS
@@ -426,7 +374,7 @@ def fields_differ(row: dict, page) -> list[str]:
     ]
 
 
-def empty_on_one_side(row: dict, page) -> set[str]:
+def empty_on_one_side(row: dict, page: Page) -> set[str]:
     """Fields the miner left empty, or the live page did while served without its head metadata."""
     bare = not page.canonical and not page.json_ld_types
     return {

@@ -5,7 +5,7 @@ from desearch.extraction import (
     extract,
     v1,
 )
-from desearch.extraction.schema import PAGE_SCHEMA, PAGE_SCHEMA_V2
+from desearch.extraction.schema import PAGE_SCHEMA_V1, PAGE_SCHEMA_V2
 from desearch.extraction.structured.dates import read_date
 
 HEAD = """<title>Pine shelf</title>
@@ -87,10 +87,10 @@ def test_dates():
 
 
 def test_v2_schema_extends_v1_and_carries_every_page_field():
-    assert list(PAGE_SCHEMA_V2)[: len(PAGE_SCHEMA)] == list(PAGE_SCHEMA)
+    assert list(PAGE_SCHEMA_V2)[: len(PAGE_SCHEMA_V1)] == list(PAGE_SCHEMA_V1)
     page_fields = set(Page.__dataclass_fields__)
     assert page_fields <= set(PAGE_SCHEMA_V2.names)
-    assert set(PAGE_SCHEMA_V2.names) - set(PAGE_SCHEMA.names) == {
+    assert set(PAGE_SCHEMA_V2.names) - set(PAGE_SCHEMA_V1.names) == {
         "extraction",
         "text_mode",
         "modified",

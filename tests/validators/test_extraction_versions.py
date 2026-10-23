@@ -4,19 +4,16 @@ from datetime import datetime, timezone
 import pyarrow as pa
 import pytest
 
-from desearch.extraction import EXTRACTION_V1, EXTRACTION_V2
-from desearch.extraction.schema import PAGE_SCHEMA, PAGE_SCHEMA_V2
+from desearch.extraction.schema import PAGE_SCHEMA_V1, PAGE_SCHEMA_V2
 from desearch.fetch import Fetched
 from neurons.miners.rows import build_row, write_parquet
 from neurons.validators.scoring import (
-    V1,
-    V2,
     FetchedPage,
+    V1Upload,
     derived_from_html,
     judge_sample,
     load_upload,
     read_pages,
-    row_extraction,
 )
 from tests.synthetic import SEED, page_row, run, synthetic, to_parquet
 
@@ -86,19 +83,18 @@ def test_a_v2_upload_written_by_the_miner_is_re_extracted_equal_and_passes():
         content_type="text/html",
         body=html.encode(),
     )
-    row = build_row(fetched, 5_000_000, EXTRACTION_V2)
-    upload = write_parquet([row], "t", "hk", EXTRACTION_V2)
+    row = build_row(fetched, 5_000_000)
+    upload = write_parquet([row], "t", "hk")
     rows, _ = load_upload(upload, [STORY_URL], SEED)
 
-    assert row_extraction(rows[0]) is V2
+    assert rows[0]["extraction"] == "v2"
     assert rows[0]["text_mode"] == "main" and rows[0]["paywalled"] is True
     assert derived_from_html(rows[0])
     result = run(rows, [STORY_URL], {STORY_URL: FetchedPage(200, html)})
     assert (result["verdict"], result["reason"]) == ("pass", "ok")
 
 
-@pytest.mark.parametrize("extraction", [EXTRACTION_V1, EXTRACTION_V2])
-def test_a_page_redirected_to_another_site_re_extracts_equal(extraction):
+def test_a_page_redirected_to_another_site_re_extracts_equal():
     html = story().replace(
         "<title>Story</title>",
         '<title>Story</title><link rel="canonical" href="/story">'
@@ -113,7 +109,7 @@ def test_a_page_redirected_to_another_site_re_extracts_equal(extraction):
         body=html.encode(),
     )
 
-    row = build_row(fetched, 5_000_000, extraction)
+    row = build_row(fetched, 5_000_000)
 
     assert row["canonical"] == "https://daily.example/story"
     assert derived_from_html(row)
@@ -134,43 +130,42 @@ def test_a_page_redirected_to_another_site_re_extracts_equal(extraction):
         ("published", "2026-09-22"),
     ],
 )
-def test_a_forged_v2_field_is_caught_by_re_extraction(field, value):
-    row = page_row(STORY_URL, story(), extraction=EXTRACTION_V2)
+def test_a_forged_page_field_is_caught_by_re_extraction(field, value):
+    row = page_row(STORY_URL, story())
     assert derived_from_html(row) and row[field] != value
 
     assert not derived_from_html(dict(row, **{field: value}))
 
 
-def test_a_v2_file_reads_as_v2_and_v2_rows_in_a_v1_file_are_checked_as_v1():
-    rows, assigned, fetched = synthetic(10, extraction=EXTRACTION_V2)
+def test_a_v2_file_passes_and_a_v1_file_is_told_apart_before_any_row_is_read():
+    rows, assigned, fetched = synthetic(10)
 
-    read, _ = load_upload(to_parquet(rows, PAGE_SCHEMA_V2), assigned, SEED)
-    assert [row_extraction(row) for row in read] == [V2] * 10
+    read, _ = load_upload(to_parquet(rows), assigned, SEED)
     assert run(read, assigned, fetched)["verdict"] == "pass"
 
-    v2_row = page_row(STORY_URL, story(), extraction=EXTRACTION_V2)
-    as_v1, _ = load_upload(to_parquet([v2_row], PAGE_SCHEMA), [STORY_URL], SEED)
-    assert row_extraction(as_v1[0]) is V1
-    result = run(as_v1, [STORY_URL], {STORY_URL: FetchedPage(200, story())})
-    assert (result["verdict"], result["reason"]) == ("fail", "text_not_from_html")
+    with pytest.raises(V1Upload):
+        load_upload(to_parquet(rows, PAGE_SCHEMA_V1), assigned, SEED)
 
 
 def test_a_file_mixing_the_two_schemas_is_unreadable():
-    rows, _, _ = synthetic(3, extraction=EXTRACTION_V2)
+    rows, _, _ = synthetic(3)
     v1_plus = pa.schema(
-        [*PAGE_SCHEMA, PAGE_SCHEMA_V2.field("extraction"), PAGE_SCHEMA_V2.field("ld")]
+        [
+            *PAGE_SCHEMA_V1,
+            PAGE_SCHEMA_V2.field("extraction"),
+            PAGE_SCHEMA_V2.field("ld"),
+        ]
     )
-    relabelled = [rows[0], dict(rows[1], extraction=EXTRACTION_V1), rows[2]]
+    relabelled = [rows[0], dict(rows[1], extraction="v1"), rows[2]]
 
     assert read_pages(to_parquet(rows, v1_plus)) is None
     assert read_pages(to_parquet(relabelled, PAGE_SCHEMA_V2)) is None
     assert read_pages(to_parquet(rows, PAGE_SCHEMA_V2)) is not None
 
 
-@pytest.mark.parametrize("extraction", [EXTRACTION_V1, EXTRACTION_V2])
-def test_an_empty_published_proves_nothing_only_where_it_cannot_be_forged(extraction):
-    dated = page_row(STORY_URL, story(), extraction=extraction)
-    undated = page_row(STORY_URL, story(published=""), extraction=extraction)
+def test_an_empty_published_proves_nothing_only_where_it_cannot_be_forged():
+    dated = page_row(STORY_URL, story())
+    undated = page_row(STORY_URL, story(published=""))
     bare = re.sub(r"<meta[^>]*>|<script.*?</script>", "", story(published=""))
 
     miner_undated = judge_sample(undated, FetchedPage(200, story()))
@@ -191,7 +186,7 @@ def test_an_empty_published_proves_nothing_only_where_it_cannot_be_forged(extrac
 
 
 def test_modified_image_ld_entity_and_robots_are_not_compared_live():
-    row = page_row(STORY_URL, story(), extraction=EXTRACTION_V2)
+    row = page_row(STORY_URL, story())
     changed = story(
         modified="2026-10-01T08:00:00+00:00",
         image="https://cdn.example/other.jpg",
@@ -204,15 +199,11 @@ def test_modified_image_ld_entity_and_robots_are_not_compared_live():
 
 
 @pytest.mark.parametrize(
-    "html, url, extraction, outcome",
-    [
-        (board, BOARD_URL, EXTRACTION_V2, "matched"),
-        (board, BOARD_URL, EXTRACTION_V1, "mismatched"),
-        (story, STORY_URL, EXTRACTION_V2, "mismatched"),
-    ],
+    "html, url, outcome",
+    [(board, BOARD_URL, "matched"), (story, STORY_URL, "mismatched")],
 )
-def test_full_text_v2_pages_get_the_churn_allowance(html, url, extraction, outcome):
-    row = page_row(url, html(), extraction=extraction)
+def test_full_text_pages_get_the_churn_allowance(html, url, outcome):
+    row = page_row(url, html())
     swapped = html(seeds=[*range(8), 20, 21])
 
     sample = judge_sample(row, FetchedPage(200, swapped))
