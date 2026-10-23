@@ -11,15 +11,15 @@ use crate::budgets::{hour_of, HOUR, SHARE_WINDOW_H};
 use crate::db::{optional_real, real};
 
 /// A week and a day, as the verdict totals keep.
-pub const HOURS_KEPT: i64 = 24 * 8;
+const HOURS_KEPT: i64 = 24 * 8;
 /// A first start counts back a day and an hour, so a day's view is whole within minutes; the rest of the week fills as it passes.
 const FIRST_COUNTED_H: i64 = SHARE_WINDOW_H + 1;
 /// Causes of a reclaim the miner let happen; the others are tasks sent back after a verdict.
-pub const LAPSED: [&str; 2] = ["expired", "abandoned"];
+const LAPSED: [&str; 2] = ["expired", "abandoned"];
 const CLAIMS_MARK: &str = "claim_hours";
 const CHECKS_MARK: &str = "check_hours";
 const LONGEST_WAIT_S: f64 = 86_400.0;
-pub const QUANTILES: [(&str, f64); 2] = [("p50", 0.5), ("p90", 0.9)];
+const QUANTILES: [(&str, f64); 2] = [("p50", 0.5), ("p90", 0.9)];
 
 pub fn create(conn: &Connection) -> Result<()> {
     conn.execute_batch(
@@ -139,7 +139,7 @@ pub fn roll_up_claims(conn: &Connection, limit: i64, now: f64) -> Result<i64> {
 }
 
 /// The upper end of the wait's bucket in seconds: 15 s steps to 5 min, then 1 min to 30, 10 min to 2 h, hours to a day.
-pub fn bucket(wait_s: f64) -> i64 {
+fn bucket(wait_s: f64) -> i64 {
     let wait = wait_s.clamp(0.0, LONGEST_WAIT_S);
     ((wait / step(wait)).ceil() * step(wait)) as i64
 }
@@ -304,7 +304,7 @@ pub fn checked(conn: &Connection, first: i64, last: i64, kind: &str) -> Result<B
 }
 
 /// The value below which a share `q` of the tallied waits fall, spread evenly within its bucket.
-pub fn quantile(buckets: &BTreeMap<i64, i64>, q: f64) -> Option<f64> {
+fn quantile(buckets: &BTreeMap<i64, i64>, q: f64) -> Option<f64> {
     let total: i64 = buckets.values().sum();
     if total == 0 {
         return None;
