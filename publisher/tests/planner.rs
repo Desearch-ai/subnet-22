@@ -481,7 +481,11 @@ async fn a_change_file_numbered_late_holds_up_nothing_and_never_replaces_a_newer
     let late = vec![page(3, article(4), "2026-10-14T10:30:00+00:00"), page(2, format!("{} before the edit", article(3)), "2026-10-14T11:00:00+00:00")];
     number_late(&pages, 2, late).await;
     planner.pass().await.unwrap();
-    assert_eq!((planner.counts.late, planner.counts.planned, planner.counts.older), (1, 3, 1), "the late file's new page is planned, its older version of story 2 is not");
+    assert_eq!(
+        (planner.counts.late, planner.counts.planned, planner.counts.older),
+        (1, 3, 1),
+        "the late file's new page is planned, its older version of story 2 is not"
+    );
 
     log(&pages, 5, vec![page(4, article(5), "2026-10-14T13:00:00+00:00")]).await;
     planner.pass().await.unwrap();
@@ -494,6 +498,35 @@ async fn a_change_file_numbered_late_holds_up_nothing_and_never_replaces_a_newer
     let mut restarted = Planner::new(impatient, pages.clone(), temp.clone(), redis.clone(), Room::Fixed(0)).await.unwrap();
     restarted.pass().await.unwrap();
     assert!(restarted.state.missing().unwrap().is_empty(), "a number never indexed is given up after the wait");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_numbered_change_file_that_cannot_be_read_is_tried_until_it_can_never_given_up() {
+    let Some((_turn, redis)) = redis_db().await else {
+        eprintln!("skipped: no Redis on {REDIS}");
+        return;
+    };
+    let dir = scratch("unreadable");
+    let stub = stub::start(dir.join("r2"), "127.0.0.1:0").await.unwrap();
+    let (pages, temp) = (bucket(stub.addr, "desearch-pages"), bucket(stub.addr, "subnet-22"));
+    let page = |n: usize| record(&format!("https://news.example/story/{n}"), &article(n + 1), "article", "en");
+    log(&pages, 1, vec![page(1)]).await;
+    let key = "changes/dt=2026-10-14/2.parquet";
+    pages.put(key, Bytes::from_static(b"not a parquet file"), PARQUET, None).await.unwrap();
+    pages.put(&CHANGES.seq_key(2), Bytes::from(json!({"key": key, "rows": 1}).to_string()), JSON, None).await.unwrap();
+    log(&pages, 3, vec![page(3)]).await;
+    let mut impatient = settings(dir.join("state"), 3600.0, 0);
+    impatient.hole_wait = Duration::ZERO;
+    let mut planner = Planner::new(impatient, pages.clone(), temp.clone(), redis.clone(), Room::Fixed(0)).await.unwrap();
+    planner.pass().await.unwrap();
+    planner.pass().await.unwrap();
+    assert_eq!((planner.read_through(), planner.counts.planned), (3, 2), "the unreadable file holds up nothing");
+    assert_eq!(planner.state.missing().unwrap().iter().map(|(seq, _)| *seq).collect::<Vec<_>>(), [2], "and is kept past the wait");
+
+    number_late(&pages, 2, vec![page(2)]).await;
+    planner.pass().await.unwrap();
+    assert_eq!((planner.counts.late, planner.counts.planned), (1, 3), "read once it can be");
     let _ = std::fs::remove_dir_all(&dir);
 }
 

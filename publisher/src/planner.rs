@@ -1,6 +1,6 @@
 //! The planner: follows the change log and turns published pages that need a vector into embed inputs for the task API, within an hourly page budget and the room the API gives.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{btree_map, BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
@@ -53,7 +53,6 @@ pub const EMBED_DROPPED: &str = "embed:dropped";
 const CURSOR: &[u8] = b"cursor";
 const ROOM_TIMEOUT: Duration = Duration::from_secs(20);
 const FILES_PER_PASS: usize = 20;
-const NOT_NUMBERED: &str = "not numbered yet";
 
 pub static INPUT_SCHEMA: LazyLock<SchemaRef> = LazyLock::new(|| {
     let text = |name: &str| Field::new(name, DataType::Utf8, false);
@@ -371,7 +370,7 @@ pub struct Settings {
     /// The change file to start after when nothing was planned before; the newest one when None.
     pub start_after: Option<i64>,
     pub poll: Duration,
-    /// How long a change file numbered but not readable is looked for again before its pages are given up.
+    /// How long a change file number not indexed yet is looked for again before it is given up.
     pub hole_wait: Duration,
 }
 
@@ -558,6 +557,12 @@ fn missing_key(seq: i64) -> String {
     format!("missing/{seq:020}")
 }
 
+/// Why a change file was passed by: its number is not indexed yet, or the file could not be read or decoded.
+enum Unread {
+    NotNumbered,
+    Failed(String),
+}
+
 /// One page waiting in the input being filled.
 #[derive(Clone, Debug)]
 pub struct Planned {
@@ -625,7 +630,9 @@ impl Planner {
         let missing = state
             .missing()?
             .into_iter()
-            .map(|(seq, since)| (seq, Instant::now().checked_sub(Duration::from_secs_f64((now_us() as f64 / 1e6 - since).max(0.0))).unwrap_or_else(Instant::now)))
+            .map(|(seq, since)| {
+                (seq, Instant::now().checked_sub(Duration::from_secs_f64((now_us() as f64 / 1e6 - since).max(0.0))).unwrap_or_else(Instant::now))
+            })
             .collect();
         let tokens = budget_cap(settings.pages_per_hour);
         Ok(Planner {
@@ -669,7 +676,7 @@ impl Planner {
         Ok(read > 0)
     }
 
-    /// Change files missed on the way past: read once they can be, given up after `hole_wait`; none of them holds up the rest of the log.
+    /// Change files missed on the way past: read once they can be; a number never indexed is given up after `hole_wait`, a file that cannot be read is tried until it can.
     async fn read_late(&mut self) -> Result<usize> {
         let mut read = 0;
         for (seq, since) in self.missing.clone() {
@@ -678,7 +685,9 @@ impl Planner {
                     self.counts.late += 1;
                     read += 1;
                 }
-                Err(why) if since.elapsed() >= self.settings.hole_wait => eprintln!("change file {seq} given up: {why}"),
+                Err(Unread::NotNumbered) if since.elapsed() >= self.settings.hole_wait => {
+                    eprintln!("change file {seq} was never numbered; going on without it")
+                }
                 Err(_) => continue,
             }
             self.missing.remove(&seq);
@@ -692,22 +701,22 @@ impl Planner {
     }
 
     /// Considers every page of change file `seq`; the inner error says why the file cannot be read yet, the outer one fails the pass.
-    async fn read(&mut self, seq: i64) -> Result<std::result::Result<(), String>> {
+    async fn read(&mut self, seq: i64) -> Result<std::result::Result<(), Unread>> {
         let key = match change_key(&self.pages, seq).await {
             Ok(Some(key)) => key,
-            Ok(None) => return Ok(Err(NOT_NUMBERED.into())),
-            Err(error) => return Ok(Err(format!("{error:#}"))),
+            Ok(None) => return Ok(Err(Unread::NotNumbered)),
+            Err(error) => return Ok(Err(Unread::Failed(format!("{error:#}")))),
         };
         let rows = match self.pages.get(&key).await {
             Ok(file) => match tokio::task::spawn_blocking(move || decode_changes(file, seq)).await? {
                 Ok(rows) => rows,
-                Err(error) => return Ok(Err(format!("decoding {key}: {error:#}"))),
+                Err(error) => return Ok(Err(Unread::Failed(format!("decoding {key}: {error:#}")))),
             },
             Err(r2::Error::Missing) => {
                 eprintln!("change file {seq} ({key}) is gone; going on without it");
                 Vec::new()
             }
-            Err(error) => return Ok(Err(format!("reading {key}: {error}"))),
+            Err(error) => return Ok(Err(Unread::Failed(format!("reading {key}: {error}")))),
         };
         for row in rows {
             if let ChangeRow::Page(page) = row {
@@ -721,12 +730,12 @@ impl Planner {
         Ok(Ok(()))
     }
 
-    fn note_missing(&mut self, seq: i64, why: &str) -> Result<()> {
-        if why != NOT_NUMBERED {
+    fn note_missing(&mut self, seq: i64, why: &Unread) -> Result<()> {
+        if let Unread::Failed(why) = why {
             eprintln!("change file {seq} skipped for now: {why}");
         }
-        if !self.missing.contains_key(&seq) {
-            self.missing.insert(seq, Instant::now());
+        if let btree_map::Entry::Vacant(slot) = self.missing.entry(seq) {
+            slot.insert(Instant::now());
             self.state.note_missing(seq, now_us() as f64 / 1e6)?;
         }
         Ok(())
