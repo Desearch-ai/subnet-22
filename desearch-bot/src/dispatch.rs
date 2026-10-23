@@ -832,6 +832,7 @@ pub async fn follow_outcomes(buckets: Arc<Buckets>, feed: OutcomeFeed, recrawl_a
 struct Follower {
     next: u64,
     missing: Option<(u64, Instant)>,
+    /// Numbers in a row skipped as never indexed: once one of a run waited out its grace, the rest go without waiting.
     skipping: u64,
 }
 
@@ -843,6 +844,7 @@ impl Follower {
             tokio::spawn(async move { feed.fetch_below(seq, Some(latest)).await })
         });
         let (mut rows, mut through, mut published, mut blocked) = (Vec::new(), self.next, None, false);
+        let mut skipped: Vec<(u64, &str)> = Vec::new();
         for handle in fetching.by_ref() {
             let fetched = handle.await.map_err(anyhow::Error::from).and_then(|found| found);
             match fetched {
@@ -850,13 +852,17 @@ impl Follower {
                     rows.extend(found);
                     published = published_at.or(published);
                 }
-                Ok(Next::Gone) => self.skip(progress),
+                Ok(Next::Gone) => {
+                    self.skipping = 0;
+                    skipped.push((through, "file gone or not readable"));
+                }
                 Ok(Next::Missing) => {
                     let since = self.missing.filter(|(seq, _)| *seq == through).map_or_else(Instant::now, |(_, at)| at);
                     self.missing = Some((through, since));
-                    // A number written late is indexed within seconds; one still missing after that was lost and is skipped.
+                    // A number written late is indexed within a minute or two; one still missing after that was lost and is skipped.
                     if self.skipping > 0 || since.elapsed() >= MISSING_GRACE {
-                        self.skip(progress);
+                        self.skipping += 1;
+                        skipped.push((through, "never indexed"));
                     } else {
                         blocked = true;
                         break;
@@ -880,8 +886,7 @@ impl Follower {
         if through == self.next {
             return true;
         }
-        if !rows.is_empty() && self.skipping > 0 {
-            eprintln!("[rs] skipped {} outcome files gone before they were read; their pages come back once overdue", self.skipping);
+        if !rows.is_empty() {
             self.skipping = 0;
         }
         if let Some(at) = published {
@@ -899,6 +904,7 @@ impl Follower {
         match applied {
             Ok(applied) => {
                 self.next = through;
+                report_skipped(progress, &skipped);
                 progress.outcomes.fetch_add(count, Ordering::Relaxed);
                 progress.retried.fetch_add(applied.retried, Ordering::Relaxed);
                 blocked
@@ -910,10 +916,17 @@ impl Follower {
         }
     }
 
-    fn skip(&mut self, progress: &Progress) {
-        self.skipping += 1;
-        progress.skipped.fetch_add(1, Ordering::Relaxed);
-    }
+}
+
+/// One line for the files one look skipped; their pages come back once overdue, so a skip costs time, not pages.
+fn report_skipped(progress: &Progress, skipped: &[(u64, &str)]) {
+    let (Some((first, _)), Some((last, _))) = (skipped.first(), skipped.last()) else {
+        return;
+    };
+    let mut why: Vec<&str> = skipped.iter().map(|(_, why)| *why).collect();
+    why.dedup();
+    eprintln!("[rs] skipped {} outcome files {first}..={last}: {}", skipped.len(), why.join(", "));
+    progress.skipped.fetch_add(skipped.len() as u64, Ordering::Relaxed);
 }
 
 /// Mark what an earlier sender already sent, from tab-separated host, path, lastmod and Unix time lines.
