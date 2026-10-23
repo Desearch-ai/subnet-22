@@ -1377,8 +1377,8 @@ def test_a_claim_asks_for_as_many_tasks_as_the_pace_says_will_finish():
     asyncio.run(miner.aclose())
 
 
-def test_the_released_miner_writes_v1():
-    assert miner_script.EXTRACTION == EXTRACTION_V1
+def test_the_released_miner_writes_v2():
+    assert miner_script.EXTRACTION == EXTRACTION_V2
 
 
 @pytest.mark.parametrize(

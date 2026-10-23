@@ -16,7 +16,7 @@ from yarl import URL
 
 from desearch import env
 from desearch.client import TaskApiClient, TaskApiError
-from desearch.extraction import EXTRACTION_V1
+from desearch.extraction import EXTRACTION_V2
 from desearch.fetch import (
     Fetched,
     Fetcher,
@@ -41,8 +41,7 @@ HEADROOM = 0.7
 ROOM_CHECK_S = 1.0
 ATTEMPTS = 3
 SUMMARY_EVERY_S = 60.0
-# Validators before 0.0.241 cannot read v2 uploads.
-EXTRACTION = EXTRACTION_V1
+EXTRACTION = EXTRACTION_V2
 UPLOAD_TIMEOUT = aiohttp.ClientTimeout(total=120.0, sock_connect=15.0)
 
 
