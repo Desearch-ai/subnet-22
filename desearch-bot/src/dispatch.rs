@@ -35,8 +35,8 @@ pub const SENDS_AT_ONCE: usize = 8;
 const READERS: usize = 16;
 const HOUR: u32 = 3600;
 const RANKS_SECONDS: Duration = Duration::from_secs(600);
-/// Retries and re-crawls moved back onto ready lists per store per pass.
-const REQUEUE_PER_PASS: usize = 50_000;
+/// Retries, re-crawls and overdue sends moved back onto ready lists per store per pass; small so a pass on a cold cache still sends soon.
+const REQUEUE_PER_PASS: usize = 5_000;
 /// A pass tries again with what is left when stale entries left the first allotment short.
 const ALLOT_TRIES: usize = 3;
 const PENDING: &str = "dispatch_pending";
