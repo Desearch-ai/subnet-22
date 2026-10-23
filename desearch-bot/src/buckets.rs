@@ -163,6 +163,14 @@ impl Changes {
     pub fn sitemap(&mut self, host: &str, url: &str, record: &Json) {
         self.batch.put(sitemap_key(host, url), encode(record));
     }
+
+    pub(crate) fn delete(&mut self, key: &[u8]) {
+        self.batch.delete(key);
+    }
+
+    pub(crate) fn delete_range(&mut self, from: &[u8], to: &[u8]) {
+        self.batch.delete_range(from, to);
+    }
 }
 
 /// What the timetable needs from a domain record.

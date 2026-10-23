@@ -615,18 +615,17 @@ impl BucketStore {
             .map(|kind| ([&[kind], domain.as_bytes(), b"\0"].concat(), [&[kind], domain.as_bytes(), b"\x01"].concat()))
             .collect();
         let _guard = self.lock_ready();
-        let mut batch = WriteBatch::default();
+        let mut changes = Changes::default();
         for (from, to) in &ranges {
-            batch.delete_range(from, to);
+            changes.delete_range(from, to);
         }
-        batch.delete(count_key(domain));
-        batch.delete(yield_key(domain));
+        changes.delete(&count_key(domain));
+        changes.delete(&yield_key(domain));
         record.insert("state".into(), "excluded".into());
         record.insert("reason".into(), reason.into());
         record.insert("due".into(), Value::Null);
         record.insert("urls".into(), 0.into());
-        self.db.write(batch)?;
-        let mut changes = Changes::default();
+        // The pages go and the domain is marked excluded in one write, so a crash never leaves it to be listed again.
         changes.domain(domain, &record);
         self.write(changes)?;
         for (from, to) in &ranges {
