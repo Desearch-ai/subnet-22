@@ -98,6 +98,25 @@ def test_mediawiki_infoboxes_drop_footnote_marks_but_keep_their_fields():
     assert "[" not in got.text and "verification" not in got.text
 
 
+def test_mediawiki_infobox_rows_keep_every_value_cell():
+    html = (
+        "<html><head><title>Lionel Messi - Wikipedia</title><meta name='generator' content='MediaWiki 1.47.0'></head><body>"
+        "<h1 id='firstHeading'>Lionel Messi</h1><div id='mw-content-text'><div class='mw-parser-output'>"
+        "<table class='infobox'>"
+        "<tr><th>Years</th><td>Team</td><td>Apps</td><td>(Gls)</td></tr>"
+        "<tr><th>2004–2021</th><td>Barcelona</td><td>520</td><td>(474)</td></tr>"
+        "<tr><th>2023–</th><td>Inter Miami</td><td></td><td></td></tr>"
+        f"</table><p>Lionel Messi is a footballer. {PROSE}</p>"
+        "</div></div></body></html>"
+    )
+    lines = extract(
+        html, "https://en.wikipedia.org/wiki/Lionel_Messi"
+    ).text.splitlines()
+    assert "Years: Team, Apps, (Gls)" in lines
+    assert "2004–2021: Barcelona, 520, (474)" in lines
+    assert "2023–: Inter Miami" in lines
+
+
 def test_link_boxes_and_tags_after_the_body_are_dropped():
     body = (
         f"<h1>Council approves transit plan</h1><p>{PROSE * 4}</p><p>The plan starts next year.</p>"

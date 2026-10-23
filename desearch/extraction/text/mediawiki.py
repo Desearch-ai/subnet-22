@@ -137,9 +137,11 @@ def infobox_lines(box: etree._Element) -> list[Line]:
     lines = []
     for row in box.iter("tr"):
         label = next((c for c in row if tag_of(c) == "th"), None)
-        value = next((c for c in row if tag_of(c) == "td"), None)
+        cells = [c for c in row if tag_of(c) == "td"]
+        value = cells[0] if cells else None
         if label is not None and value is not None:
-            name, text = inline_text(label), inline_text(value, ", ")
+            name = inline_text(label)
+            text = ", ".join(t for t in (inline_text(c, ", ") for c in cells) if t)
             if name and text:
                 lines.append(Line(f"{name}: {text}"))
         elif (
