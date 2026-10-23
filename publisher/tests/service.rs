@@ -114,7 +114,7 @@ fn outcome_feed(state: &stub::State, first: u64, last: u64) -> Vec<(String, Stri
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_failed_pass_gives_its_claims_back_at_once_but_never_an_acknowledged_one() {
+async fn a_failed_pass_puts_its_jobs_back_without_a_try_but_never_an_acknowledged_one() {
     let Some((_turn, mut redis)) = redis_db().await else {
         eprintln!("skipped: no Redis on {REDIS}");
         return;
@@ -126,9 +126,11 @@ async fn a_failed_pass_gives_its_claims_back_at_once_but_never_an_acknowledged_o
     let queue = PublishQueue::new(redis.clone(), 600.0);
     assert_eq!(queue.claim(10).await.unwrap().len(), 2);
     queue.ack("g2").await.unwrap();
-    queue.give_back(&["g1".to_string(), "g2".to_string()]).await.unwrap();
-    let claims: Vec<(String, f64)> = redis.zrange_withscores("publish:claims", 0, -1).await.unwrap();
-    assert_eq!(claims, [("g1".to_string(), 0.0)], "g1's claim has run out, so the task API returns it within a second");
+    assert_eq!(queue.give_back(&["g1".to_string(), "g2".to_string()]).await.unwrap(), 1);
+    let claims: Vec<String> = redis.zrange("publish:claims", 0, -1).await.unwrap();
+    let ready: Vec<String> = redis.lrange("publish:ready", 0, -1).await.unwrap();
+    let tries: Option<i64> = redis.get("ptries:g1").await.unwrap();
+    assert!(claims.is_empty() && ready == ["g1"] && tries.is_none(), "g1 is queued again with no try counted; the acknowledged g2 stays done");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

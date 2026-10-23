@@ -29,6 +29,8 @@ use desearch::outcomes::Outcome;
 use desearch::r2::{self, Bucket, Credentials, PARQUET};
 
 const RETRY_DELAY: Duration = Duration::from_secs(5);
+/// Failed passes in a row wait twice as long each time, up to this.
+const RETRY_DELAY_MAX: Duration = Duration::from_secs(120);
 const SUMMARY_EVERY: Duration = Duration::from_secs(60);
 const CHANGE_PART_BYTES: usize = 8 << 20;
 const CHANGE_PARTS_AT_ONCE: usize = 8;
@@ -482,6 +484,7 @@ pub async fn run(shared: Arc<Shared>, mut stop: watch::Receiver<bool>, idle_exit
     let mut idle = 0;
     let mut claimed: Vec<Claimed> = Vec::new();
     let mut forgot: Option<Instant> = None;
+    let mut failed_passes = 0u32;
     loop {
         let finishing = *stop.borrow() || (idle_exit > 0 && idle >= idle_exit);
         while !finishing && claimed.len() <= shared.settings.ahead {
@@ -505,11 +508,15 @@ pub async fn run(shared: Arc<Shared>, mut stop: watch::Receiver<bool>, idle_exit
             let current = claimed.remove(first_read(&claimed).await);
             let task_ids: Vec<String> = current.jobs.iter().chain(&current.embeds).map(|job| job.task_id.clone()).collect();
             if let Err(error) = write_batch(&shared, current).await {
-                eprintln!("publish pass failed, its {} tasks go back to be tried again: {error:#}", task_ids.len());
+                failed_passes += 1;
+                let delay = RETRY_DELAY.saturating_mul(1 << (failed_passes - 1).min(5)).min(RETRY_DELAY_MAX);
+                eprintln!("publish pass failed ({failed_passes} in a row), its tasks go back to be tried again in {}s: {error:#}", delay.as_secs());
+                pause(&mut stop, delay).await;
                 if let Err(error) = shared.queue.give_back(&task_ids).await {
                     eprintln!("giving back the failed pass's tasks failed; they return when their claims expire: {error:#}");
                 }
-                pause(&mut stop, RETRY_DELAY).await;
+            } else {
+                failed_passes = 0;
             }
         }
         if forgot.is_none_or(|at| at.elapsed() >= FORGET_WITHDRAWN_EVERY) {
