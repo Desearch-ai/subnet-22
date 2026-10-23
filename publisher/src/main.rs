@@ -216,7 +216,7 @@ fn local(args: LocalArgs) -> Result<()> {
         let now = now_us()?;
         let batch = worker::publish(jobs, &uploads, &refused, &feed, now, args.readers)?;
         refused.extend(batch.withdrawn.iter().cloned());
-        write_outcomes(&outcomes::rows(&batch.changes, &batch.failed), now)?;
+        write_outcomes(&outcomes::rows(&batch.changes, &batch.failed, &batch.dropped), now)?;
         println!(
             "published {} tasks, {} pages, {} tasks withdrawn, {} failed URLs, {} to retry in {:.2}s",
             batch.finalized.len(),

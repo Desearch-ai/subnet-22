@@ -70,15 +70,14 @@ fn a_batch_publishes_the_best_copy_of_each_page_and_publishing_again_logs_it_aga
     assert_eq!((change.kind, change.record().unwrap().task_id.as_str(), change.record().unwrap().text.as_str()), (Kind::Page, "t2", "second copy"));
     assert_eq!(change.previous_content_sha1, "");
     let failed: Vec<(&str, &str)> = batch.failed.iter().map(|f| (f.url.as_str(), f.task_id.as_str())).collect();
-    assert_eq!(
-        failed,
-        [("https://ex.com/b", "t1"), ("https://ex.com/c", "t1"), ("https://ex.com/e", "t1"), ("https://ex.com/x", "t1"), ("https://ex.com/gone", "t3")]
-    );
+    assert_eq!(failed, [("https://ex.com/b", "t1"), ("https://ex.com/c", "t1"), ("https://ex.com/e", "t1"), ("https://ex.com/x", "t1")]);
+    let dropped: Vec<(&str, &str)> = batch.dropped.iter().map(|f| (f.url.as_str(), f.task_id.as_str())).collect();
+    assert_eq!(dropped, [("https://ex.com/gone", "t3")], "a lost upload says nothing about its site");
     assert_eq!((batch.lost.as_slice(), batch.finalized.len(), batch.change_seq), (&["t3".to_string()][..], 3, Some(1)));
 
     let batch = publish(&[t1], &uploads, &none, &feed, NOW + 30 * SECOND, 2).unwrap();
     assert_eq!(batch.changes.len(), 1, "no version check: an older copy is logged too, and the compactor keeps the later fetch");
-    let rows = outcomes::rows(&batch.changes, &batch.failed);
+    let rows = outcomes::rows(&batch.changes, &batch.failed, &batch.dropped);
     assert_eq!(rows.iter().filter(|r| r.outcome == desearch::outcomes::PUBLISHED).count(), 1);
     assert!(!desearch::outcomes::encode(&rows, NOW).unwrap().is_empty());
     let _ = std::fs::remove_dir_all(&dir);
@@ -131,14 +130,14 @@ fn a_withdrawal_writes_one_row_per_task_whatever_its_pages_and_refuses_its_jobs_
     let rows: Vec<(Kind, Option<&str>)> = batch.changes.iter().map(|c| (c.kind, c.url())).collect();
     assert_eq!(rows, [(Kind::TaskWithdrawn, None); 3], "one row per task named, none per page");
     assert_eq!(batch.withdrawn, ["big", "small", "late"]);
-    let failed: Vec<(&str, &str)> = batch.failed.iter().map(|f| (f.url.as_str(), f.task_id.as_str())).collect();
-    assert_eq!(failed, [(A, "late")], "a job for a task taken back in the same batch is refused");
+    let dropped: Vec<(&str, &str)> = batch.dropped.iter().map(|f| (f.url.as_str(), f.task_id.as_str())).collect();
+    assert_eq!(dropped, [(A, "late")], "a job for a task taken back in the same batch is refused");
     assert!(batch.finalized.contains(&"late".to_string()));
 
     let refused: HashSet<String> = ["later".to_string()].into();
     let batch = publish(&[job("later", &[A], &[])], &uploads, &refused, &feed, NOW + 2 * SECOND, 2).unwrap();
     assert!(batch.changes.is_empty(), "a job for a task taken back earlier is refused");
-    assert_eq!(batch.failed.len(), 1);
+    assert_eq!((batch.failed.len(), batch.dropped.len()), (0, 1));
 
     let file = std::fs::read(dir.join("changes").join(format!("{:012}.parquet", 2))).unwrap();
     let read = ParquetRecordBatchReaderBuilder::try_new(bytes::Bytes::from(file)).unwrap().build().unwrap().next().unwrap().unwrap();

@@ -279,7 +279,7 @@ pub async fn write_batch(shared: &Shared, claimed: Claimed) -> Result<usize> {
     m.batches.fetch_add(1, Ordering::Relaxed);
     m.tasks.fetch_add(batch.finalized.len() as u64, Ordering::Relaxed);
     m.changed.fetch_add(published as u64, Ordering::Relaxed);
-    m.failed_urls.fetch_add(batch.failed.len() as u64, Ordering::Relaxed);
+    m.failed_urls.fetch_add((batch.failed.len() + batch.dropped.len()) as u64, Ordering::Relaxed);
     m.lost.fetch_add(batch.lost.len() as u64, Ordering::Relaxed);
     m.retried.fetch_add(batch.retry.len() as u64, Ordering::Relaxed);
     println!(
@@ -459,7 +459,7 @@ async fn read_whole(temp: &Bucket, key: &str, etag: Option<&str>) -> Result<Byte
 
 /// What became of every URL, for the bot; a failure here is logged and the batch still finishes.
 async fn report_outcomes(shared: &Shared, batch: &worker::Batch, now: i64) {
-    if let Err(error) = write_outcomes(shared, outcomes::rows(&batch.changes, &batch.failed), now).await {
+    if let Err(error) = write_outcomes(shared, outcomes::rows(&batch.changes, &batch.failed, &batch.dropped), now).await {
         eprintln!("could not write the batch's outcomes: {error:#}");
     }
 }

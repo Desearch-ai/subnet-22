@@ -216,7 +216,7 @@ async fn the_service_publishes_reports_and_takes_back() {
     assert_eq!(redis.get::<_, u64>("outcomes:seq").await.unwrap(), 2, "the two batches that finished tasks");
     let outcomes = outcome_feed(&state, 1, 2);
     let count = |kind: &str| outcomes.iter().filter(|(k, _)| k == kind).count();
-    assert_eq!((count("published"), count("failed"), outcomes.len()), (6, 6, 12));
+    assert_eq!((count("published"), count("dropped"), outcomes.len()), (6, 6, 12), "the lost t3 and t4 are dropped, not failed");
     assert_eq!(json_object(&state, TEMP, &format!("{PREFIX}outcomes/latest.json")).unwrap(), json!({"seq": 2}));
     assert_eq!(state.meta(TEMP, &format!("{PREFIX}outcomes/latest.json")).unwrap().1, "no-store");
 
@@ -251,7 +251,7 @@ async fn the_service_publishes_reports_and_takes_back() {
         urls.sort();
         urls
     };
-    assert_eq!((of("published"), of("failed"), outcomes.len()), (urls("t1"), urls("t2"), 6), "the late job for t2 is refused");
+    assert_eq!((of("published"), of("dropped"), outcomes.len()), (urls("t1"), urls("t2"), 6), "the late job for t2 is refused");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -506,8 +506,8 @@ async fn a_crawl_upload_is_published_only_in_the_version_its_completion_named() 
     let published: BTreeSet<String> = column(&rows(&state.object(PAGES, index["key"].as_str().unwrap()).unwrap()), "url").into_iter().collect();
     assert_eq!(published, urls("v1").into_iter().chain(urls("v2")).collect::<BTreeSet<_>>());
     let outcomes = outcome_feed(&state, 1, redis.get::<_, u64>("outcomes:seq").await.unwrap());
-    let failed: BTreeSet<String> = outcomes.into_iter().filter(|(kind, _)| kind == "failed").map(|(_, url)| url).collect();
-    assert_eq!(failed, urls("v3").into_iter().collect::<BTreeSet<_>>());
+    let dropped: BTreeSet<String> = outcomes.into_iter().filter(|(kind, _)| kind == "dropped").map(|(_, url)| url).collect();
+    assert_eq!(dropped, urls("v3").into_iter().collect::<BTreeSet<_>>(), "a rewritten upload is lost, which says nothing about its sites");
 
     enqueue(&mut redis, &crawl("v4", &urls("v4"), completed, &etag(&temp, &key("v4")).await), true).await;
     state.slow("GET", &format!("{TEMP}/{PREFIX}{}", key("v4")), 1, Duration::from_secs(1));
