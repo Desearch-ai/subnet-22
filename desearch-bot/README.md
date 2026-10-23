@@ -86,7 +86,7 @@ changed pages), kept even across passes, and what one lane leaves unused goes to
 
 Every 5 seconds the bot asks `GET /v1/room` how many tasks the API can take, and sends that many
 times 1,000 URLs, a few from each domain in turn, best ranked first, within `--per-domain-hourly` and
-`--urls-per-hour`. The hourly pace starts empty and saves at most two minutes of sends, so a restart
+`--urls-per-hour`. The hourly pace starts empty and saves at most five minutes of sends, so a restart
 or a stall is followed by no burst. A batch carries a hash of its content, so a batch sent again after
 a timeout is queued once, and a batch in flight survives a restart. URLs over 2,048 characters, the
 sitemap protocol's limit, are never sent.

@@ -173,8 +173,8 @@ pub struct Pace {
 }
 
 impl Pace {
-    /// Covers a slow pass; anything more would go out in one burst after a restart or a stall.
-    const SAVED_SECONDS: f64 = 120.0;
+    /// Covers the slow passes of a cold cache after a restart; more would go out in one burst after a stall.
+    const SAVED_SECONDS: f64 = 300.0;
 
     pub fn new(per_hour: u64, now: u32) -> Self {
         Pace { per_hour, saved: 0.0, at: now }
