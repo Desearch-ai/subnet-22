@@ -110,4 +110,3 @@ def setup_logging(made: SimpleNamespace) -> None:
         level = logging.WARNING
     logging.basicConfig(level=level, format=LOG_FORMAT)
     logging.getLogger("bittensor").setLevel(max(level, logging.INFO))
-    logging.getLogger("trafilatura").setLevel(logging.ERROR)

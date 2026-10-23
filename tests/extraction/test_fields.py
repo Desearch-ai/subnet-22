@@ -1,10 +1,6 @@
 import json
 
-from desearch.extraction import (
-    Page,
-    extract,
-    v1,
-)
+from desearch.extraction import Page, extract
 from desearch.extraction.schema import PAGE_SCHEMA_V1, PAGE_SCHEMA_V2
 from desearch.extraction.structured.dates import read_date
 
@@ -104,25 +100,6 @@ def test_v2_schema_extends_v1_and_carries_every_page_field():
         "paywalled",
         "robots",
     }
-
-
-def test_v1_is_unchanged():
-    assert list(v1.Page.__dataclass_fields__) == [
-        "page_type",
-        "title",
-        "description",
-        "lang",
-        "canonical",
-        "published",
-        "author",
-        "json_ld_types",
-        "headings",
-        "text",
-    ]
-    html = "<html><head><title>Acme</title></head><body><article><h2>Tools</h2><p>Hammers and saws for builders.</p></article></body></html>"
-    got = v1.extract(html, "https://acme.example/")
-    assert (got.page_type, got.title, got.headings) == ("home", "Acme", ["Tools"])
-    assert "Hammers and saws for builders." in got.text and "#" not in got.text
 
 
 def test_odd_json_ld_and_attributes_never_empty_the_page():

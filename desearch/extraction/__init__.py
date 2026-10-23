@@ -18,7 +18,6 @@ from desearch.extraction.text.mediawiki import is_mediawiki, mediawiki_text
 from desearch.extraction.text.page import MAX_LISTING_CHARS, full_text
 
 __all__ = [
-    "EXTRACTION_V1",
     "EXTRACTION_V2",
     "FULL",
     "MAIN",
@@ -27,7 +26,6 @@ __all__ = [
     "looks_blocked",
 ]
 
-EXTRACTION_V1 = "v1"
 EXTRACTION_V2 = "v2"
 
 MAIN = "main"
