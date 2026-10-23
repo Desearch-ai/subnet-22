@@ -73,6 +73,31 @@ def test_mediawiki_articles():
     )
 
 
+def test_mediawiki_infoboxes_drop_footnote_marks_but_keep_their_fields():
+    html = (
+        "<html><head><title>Tokyo - Wikipedia</title><meta name='generator' content='MediaWiki 1.47.0'></head><body>"
+        "<h1 id='firstHeading'>Tokyo</h1><div id='mw-content-text'><div class='mw-parser-output'>"
+        "<table class='infobox'>"
+        "<tr><th>Established<sup class='mw-ref reference'><a href='#cite_note-2'>[2]</a></sup></th><td>1457</td></tr>"
+        "<tr><th>Elevation</th><td>2,017 m<sup class='mw-ref reference'><a href='#n2'>[note 2]</a></sup></td></tr>"
+        "<tr><th>Area</th><td>2,194 km<sup>2</sup></td></tr>"
+        "<tr><th>Influenced by</th><td>ABC,<sup class='reference'><a href='#c18'>[18]</a></sup> Ada"
+        "<sup class='noprint Inline-Template'>[<i><a href='/wiki/V'>failed verification</a></i>]</sup></td></tr>"
+        f"</table><p>Tokyo is the capital of Japan. {PROSE}</p>"
+        "</div></div></body></html>"
+    )
+    got = extract(html, "https://en.wikipedia.org/wiki/Tokyo")
+    assert got.text_mode == MAIN
+    for field in (
+        "Established: 1457",
+        "Elevation: 2,017 m",
+        "Area: 2,194 km 2",
+        "Influenced by: ABC, Ada",
+    ):
+        assert field in got.text.splitlines(), field
+    assert "[" not in got.text and "verification" not in got.text
+
+
 def test_link_boxes_and_tags_after_the_body_are_dropped():
     body = (
         f"<h1>Council approves transit plan</h1><p>{PROSE * 4}</p><p>The plan starts next year.</p>"

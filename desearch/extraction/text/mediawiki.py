@@ -24,6 +24,11 @@ MW_SHORT = etree.XPath(
 MW_INFOBOXES = etree.XPath(
     ".//table[contains(concat(' ', normalize-space(@class), ' '), ' infobox ')]"
 )
+# Footnote marks and inline cleanup tags like "[citation needed]".
+MW_MARKS = etree.XPath(
+    ".//*[contains(concat(' ', normalize-space(@class), ' '), ' reference ')"
+    " or contains(concat(' ', normalize-space(@class), ' '), ' Inline-Template ')]"
+)
 MW_DROPPED_CLASSES = (
     "mw-editsection",
     "reference",
@@ -92,6 +97,9 @@ def mediawiki_text(
     etree.strip_elements(body, *MAIN_DROPPED, with_tail=False)
     infobox: list[Line] = []
     for box in MW_INFOBOXES(body):
+        for mark in MW_MARKS(box):
+            if mark.getparent() is not None:
+                mark.drop_tree()
         infobox += infobox_lines(box)
         box.drop_tree()
     for node in MW_DROPPED(body):
