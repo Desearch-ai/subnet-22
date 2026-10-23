@@ -492,6 +492,26 @@ def browser_headers(user_agent: str) -> dict[str, str]:
     }
 
 
+def same_site(a: str, b: str) -> bool:
+    try:
+        host_a = (urlsplit(a).hostname or "").removeprefix("www.")
+        host_b = (urlsplit(b).hostname or "").removeprefix("www.")
+    except ValueError:
+        return False
+    if not host_a or not host_b:
+        return False
+    return (
+        host_a == host_b
+        or host_a.endswith("." + host_b)
+        or host_b.endswith("." + host_a)
+    )
+
+
+def page_url(url: str, final_url: str) -> str:
+    """The URL a page is extracted with: where it redirected on the same site, else the URL asked for."""
+    return final_url if final_url and same_site(url, final_url) else url
+
+
 def needs_fallback(error: str | None, status: int) -> bool:
     """Only failures another address could fix; a 404 or a PDF stays what it is."""
     return status >= 500 or status in FALLBACK_STATUSES or error in FALLBACK_ERRORS

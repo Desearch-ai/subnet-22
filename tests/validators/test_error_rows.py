@@ -3,8 +3,8 @@ from dataclasses import asdict
 
 import pytest
 
-from desearch.extraction import Page, extract
 from desearch.extraction.schema import sha256_hex
+from desearch.extraction.v1 import Page, extract
 from neurons.validators.scoring import (
     FetchedPage,
     pick_samples,

@@ -172,7 +172,7 @@ impl Default for Settings {
             spill_bytes: 1 << 30,
             threads: 8,
             merge_threads: 4,
-            hole_wait_s: 3_600.0,
+            hole_wait_s: 600.0,
         }
     }
 }
@@ -399,7 +399,7 @@ impl Spill {
     }
 
     pub(crate) fn push(&mut self, shard: usize, row: PageRow) -> Result<()> {
-        self.held += row.record.text.len() + 512;
+        self.held += row.record.held_bytes();
         self.rows[shard].get_mut().unwrap().push(row);
         if self.held > self.budget {
             for shard in 0..SHARDS {

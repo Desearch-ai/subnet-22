@@ -3,6 +3,7 @@
 use serde_json::{json, Value};
 
 use crate::buckets::{sitemap_id, Json};
+use crate::churn;
 use crate::crawl::DomainWrite;
 use crate::robots::Paths;
 use crate::schedule::{Trust, DEFAULT_INTERVAL, SECOND};
@@ -103,6 +104,9 @@ fn known_sitemap(url: &str, record: &Json) -> Option<KnownSitemap> {
         index_lastmod: text(record.get("index_lastmod")),
         url_count: int(record.get("urls")).unwrap_or(0),
         ok: record.get("status").and_then(Value::as_str) == Some("ok"),
+        suspect_at: moment(record.get("suspect")),
+        sketch: record.get("sketch").and_then(Value::as_str).map(churn::decode).unwrap_or_default(),
+        generated_until: moment(record.get("generated")),
     })
 }
 
@@ -158,6 +162,17 @@ pub fn written_sitemap(previous: Option<&Json>, update: &SitemapUpdate, at: i64)
     record.insert("interval".into(), (update.interval / SECOND).into());
     record.insert("next".into(), seconds(update.next_check_at));
     record.insert("fetched".into(), seconds(Some(at)));
+    for (name, at) in [("suspect", update.suspect_at), ("generated", update.generated_until)] {
+        match at {
+            Some(at) => record.insert(name.into(), seconds(Some(at))),
+            None => record.remove(name),
+        };
+    }
+    if update.sketch.is_empty() {
+        record.remove("sketch");
+    } else {
+        record.insert("sketch".into(), churn::encode(&update.sketch).into());
+    }
     if let Some(kind) = &update.kind {
         record.insert("kind".into(), kind.clone().into());
     }

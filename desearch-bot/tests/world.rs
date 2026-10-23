@@ -226,3 +226,102 @@ async fn crawls_a_small_web() {
     drop(crawl);
     std::fs::remove_dir_all(&root).ok();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_sitemap_listing_new_urls_on_every_read_is_held_back_while_one_that_settles_is_recorded() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let web: Shared = Arc::default();
+    let listing = |host: &str, batch: &str| urlset(host, &(0..600).map(|i| format!("/{batch}/{i}")).collect::<Vec<_>>());
+    {
+        let mut w = web.lock().unwrap();
+        for host in ["hacked.test", "busy.test"] {
+            w.add(host, "/robots.txt", 200, None, format!("User-agent: *\nAllow: /\nSitemap: http://{host}/list.xml\n").as_bytes());
+            w.add(host, "/", 200, None, format!("<html lang=\"en\"><body><p>{ENGLISH}</p></body></html>").as_bytes());
+            w.add(host, "/list.xml", 200, None, listing(host, "first").as_bytes());
+        }
+    }
+    tokio::spawn(serve(listener, web.clone()));
+
+    let root = std::env::temp_dir().join(format!("desearch-bot-churn-{}", std::process::id()));
+    let hosts = ["hacked.test", "busy.test"];
+    let mut owned: Vec<usize> = hosts.iter().map(|h| bucket_of(h)).collect();
+    owned.sort_unstable();
+    owned.dedup();
+    let resources = Resources::new(8 << 20, 8 << 20, owned.len());
+    let buckets = Arc::new(Buckets::open(&root, &owned, &resources).unwrap());
+    for host in hosts {
+        let mut changes = Changes::default();
+        changes.domain(host, &records::new_domain(Some(1), Some("new_generic"), &[], State::New, None, Some(0)));
+        buckets.store(host).write(changes).unwrap();
+    }
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .dns_resolver(Arc::new(TestResolver { addr, known: hosts.into() }))
+        .timeout(Duration::from_secs(10))
+        .build()
+        .unwrap();
+    let visitor = Visitor {
+        client,
+        buckets: buckets.clone(),
+        suffixes: Arc::new(PublicSuffixList::parse("test\n")),
+        signer: None,
+        language: Arc::new(|text: &str| Some(if text.contains("the") { "en" } else { "fr" }.to_string())),
+        floor: 0.0,
+        connect_timeout: Duration::from_secs(10),
+        cpu: Slots::new(4),
+        bodies: Slots::new(2),
+        pause: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        heavy: Slots::new(1),
+    };
+    let mut crawl = Loop::new(buckets.clone(), Arc::new(visitor), 16, Registry::offline(), HashSet::new());
+    let stored = |host: &str, path: &str| buckets.store(host).url(&urls::parse(&format!("http://{host}{path}"), host).unwrap()).unwrap().is_some();
+    let sitemap = |host: &str| buckets.store(host).sitemaps(host).unwrap().into_iter().next().unwrap().1;
+    let read_again = |crawl: &mut Loop| {
+        for host in hosts {
+            let store = buckets.store(host);
+            let mut changes = Changes::default();
+            let mut record = store.domain(host).unwrap().unwrap();
+            record.insert("due".into(), 0.into());
+            changes.domain(host, &record);
+            for (url, mut listed) in store.sitemaps(host).unwrap() {
+                listed.insert("next".into(), 0.into());
+                changes.sitemap(host, &url, &listed);
+            }
+            store.write(changes).unwrap();
+        }
+        crawl.load().unwrap();
+    };
+
+    assert_eq!(crawl.load().unwrap(), 2);
+    assert_eq!(crawl.step().await.unwrap(), 2);
+    assert!(stored("hacked.test", "/first/0") && stored("busy.test", "/first/0"), "a first read is taken as it comes");
+
+    {
+        let mut w = web.lock().unwrap();
+        w.add("hacked.test", "/list.xml", 200, None, listing("hacked.test", "spam-a").as_bytes());
+        w.add("busy.test", "/list.xml", 200, None, listing("busy.test", "latest").as_bytes());
+    }
+    read_again(&mut crawl);
+    assert_eq!(crawl.step().await.unwrap(), 2);
+    for host in hosts {
+        let held = sitemap(host);
+        assert!(held["suspect"].as_i64().is_some() && held.contains_key("sketch"), "{host}: a re-read of nothing but new URLs is suspect");
+        assert!(!stored(host, "/spam-a/0") && !stored(host, "/latest/0"), "{host}: and its URLs wait for the second read");
+    }
+
+    web.lock().unwrap().add("hacked.test", "/list.xml", 200, None, listing("hacked.test", "spam-b").as_bytes());
+    read_again(&mut crawl);
+    assert_eq!(crawl.step().await.unwrap(), 2);
+    assert!(stored("busy.test", "/latest/599") && !sitemap("busy.test").contains_key("suspect"), "the same list again: a real one, recorded now");
+    let hacked = sitemap("hacked.test");
+    assert!(hacked["generated"].as_i64().is_some() && !hacked.contains_key("suspect"), "new URLs again: generated");
+    assert!(!stored("hacked.test", "/spam-a/0") && !stored("hacked.test", "/spam-b/0"));
+
+    web.lock().unwrap().add("hacked.test", "/list.xml", 200, None, listing("hacked.test", "spam-c").as_bytes());
+    read_again(&mut crawl);
+    crawl.step().await.unwrap();
+    assert!(!stored("hacked.test", "/spam-c/0"), "a generated sitemap's URLs stay out for the week");
+    drop(crawl);
+    std::fs::remove_dir_all(&root).ok();
+}

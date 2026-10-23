@@ -10,6 +10,8 @@ use serde_json::Value;
 use crate::hotkey::{auth_headers, Hotkey};
 
 const TIMEOUT: Duration = Duration::from_secs(60);
+/// The longest URL the task API takes; the sitemap protocol's own limit.
+pub const MAX_URL_CHARS: usize = 2048;
 
 /// How many tasks the queue can take now.
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
@@ -61,6 +63,7 @@ pub struct TaskApi {
 
 impl TaskApi {
     pub fn new(base: &str, hotkey: Hotkey) -> Result<Self> {
+        // A fresh connection per request: batches sent together on one shared connection crawl through Cloudflare.
         let http = reqwest::Client::builder().timeout(TIMEOUT).pool_max_idle_per_host(0).build()?;
         Ok(TaskApi { base: base.trim_end_matches('/').to_string(), http, hotkey })
     }

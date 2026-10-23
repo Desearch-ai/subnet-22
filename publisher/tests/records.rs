@@ -32,6 +32,25 @@ fn record(text: &str) -> Record {
         miner: String::new(),
         validator: None,
         validators: vec![],
+        ..Record::default()
+    }
+}
+
+fn v2(text: &str) -> Record {
+    Record {
+        extraction: Some("v2".into()),
+        text_mode: Some("main".into()),
+        modified: Some("2026-10-22T08:00:00Z".into()),
+        site_name: Some("Ex".into()),
+        image: Some("https://ex.com/i.png".into()),
+        section: Some("News".into()),
+        tags: vec![Some("a".into()), Some("b".into())],
+        breadcrumbs: vec![Some("Home".into()), None],
+        entity: Some("{\"@type\": \"Organization\", \"name\": \"Ex\u{e9}\"}".into()),
+        ld: Some(String::new()),
+        paywalled: Some(false),
+        robots: vec![Some("noindex".into())],
+        ..record(text)
     }
 }
 
@@ -68,6 +87,48 @@ fn versions_hash_python_json() {
     assert_eq!(record_version(&filled), "88525c60a78e697da2708c6238242e26168e2ec8");
     let controls = Record { author: "\u{0}\u{1}\u{1f}".into(), lang: String::new(), published: "2026-10-06T10:00:00Z".into(), ..record("hello") };
     assert_eq!(record_version(&controls), "f0de0565afbbebe70148f130e74ba9fdd4c18025");
+}
+
+#[test]
+fn a_v2_version_hashes_its_v2_fields_too_and_a_v1_version_none_of_them() {
+    assert_eq!(record_version(&v2("hello")), "be531f19113c877a2fcf69cc90cc782e31f9a7bc");
+    assert_eq!(record_version(&Record { paywalled: Some(true), ..v2("hello") }), "63feef2459aecd1830e0cf1075d13bb9af166ddf");
+    assert_eq!(record_version(&Record { paywalled: None, ..v2("hello") }), "6843f5c65cd3d1786346a2a01e2c45e0e6cb7894");
+    let other_section = Record { section: Some("Sport".into()), ..v2("hello") };
+    assert_ne!(record_version(&other_section), record_version(&v2("hello")));
+    let unread = Record { extraction: None, ..v2("hello") };
+    assert_eq!(record_version(&unread), "b9cac78089c4d748d7714c374e132e10d33e7f7e", "without an extraction the record is v1, hashed as before");
+}
+
+#[test]
+fn a_v2_row_builds_a_v2_record_and_a_v1_row_a_record_with_no_v2_fields() {
+    let window = publish_window(Some(COMPLETED), Some(180.0), 0).unwrap();
+    let context = Context { task_id: "t1", miner: "m1", window, captured_at: CAPTURED, validator: Some("v1"), validators: &[] };
+    let given = Row {
+        extraction: Some("v2".into()),
+        text_mode: Some("full".into()),
+        modified: Some("2026-10-05".into()),
+        site_name: Some("Example".into()),
+        image: Some("https://example.com/a.png".into()),
+        section: Some("World".into()),
+        tags: Some(vec![Some("t".into())]),
+        breadcrumbs: None,
+        entity: Some("{}".into()),
+        ld: Some("{\"faq\": []}".into()),
+        paywalled: Some(true),
+        robots: Some(vec![Some("noarchive".into())]),
+        ..row(Some(1_791_288_000 * SECOND))
+    };
+    let built = build_record(&given, &context).unwrap();
+    assert_eq!((built.extraction.as_deref(), built.text_mode.as_deref(), built.modified.as_deref()), (Some("v2"), Some("full"), Some("2026-10-05")));
+    assert_eq!(
+        (built.site_name.as_deref(), built.image.as_deref(), built.section.as_deref()),
+        (Some("Example"), Some("https://example.com/a.png"), Some("World"))
+    );
+    assert_eq!((built.tags, built.breadcrumbs, built.robots), (vec![Some("t".into())], vec![], vec![Some("noarchive".into())]));
+    assert_eq!((built.entity.as_deref(), built.ld.as_deref(), built.paywalled), (Some("{}"), Some("{\"faq\": []}"), Some(true)));
+    let v1 = build_record(&row(Some(1_791_288_000 * SECOND)), &context).unwrap();
+    assert!(v1.is_v1() && v1.tags.is_empty() && v1.paywalled.is_none());
 }
 
 #[test]

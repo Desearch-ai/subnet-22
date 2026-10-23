@@ -10,7 +10,7 @@ use clap::{Parser, Subcommand};
 use tokio::sync::watch;
 
 use desearch_bot::allowed::Allowed;
-use desearch_bot::buckets::{BucketStore, Buckets, Escaped, Resources, BUCKETS};
+use desearch_bot::buckets::{bucket_of, BucketStore, Buckets, Escaped, Resources, BUCKETS};
 use desearch_bot::crawl::Loop;
 use desearch_bot::dispatch::{self, Dispatcher, Progress};
 use desearch_bot::hotkey::Hotkey;
@@ -43,6 +43,21 @@ enum Command {
     RemoveEscaped(RemoveEscapedArgs),
     /// Put back what `remove-escaped` deleted, from its backup folder. Run it with the crawl loop stopped.
     RestoreEscaped(RestoreEscapedArgs),
+    /// Delete every page kept for these domains and mark them excluded; counts them unless given `--delete`. Run it with the crawl loop stopped.
+    DropDomains(DropDomainsArgs),
+}
+
+#[derive(clap::Args)]
+struct DropDomainsArgs {
+    #[arg(long, default_value = "/var/lib/desearch-bot/buckets")]
+    buckets_dir: PathBuf,
+    /// Comma-separated domains, as the store keys them.
+    #[arg(long)]
+    domains: String,
+    #[arg(long, default_value = "junk")]
+    reason: String,
+    #[arg(long)]
+    delete: bool,
 }
 
 #[derive(clap::Args)]
@@ -150,6 +165,7 @@ fn main() -> Result<()> {
         Command::Run(args) => *args,
         Command::RemoveEscaped(args) => return remove_escaped(args),
         Command::RestoreEscaped(args) => return restore_escaped(args),
+        Command::DropDomains(args) => return drop_domains(args),
     };
     // Parsing is capped by its own slots; more blocking threads would only hold more allocator caches.
     tokio::runtime::Builder::new_multi_thread().enable_all().max_blocking_threads(128).build()?.block_on(run(args))
@@ -330,6 +346,26 @@ fn remove_escaped(args: RemoveEscapedArgs) -> Result<()> {
     })?;
     let done = if backup_dir.is_some() { "deleted" } else { "found" };
     println!("{done} {} pages and {} sitemaps with escaped addresses in {} stores", found.pages, found.sitemaps, stores.len());
+    Ok(())
+}
+
+fn drop_domains(args: DropDomainsArgs) -> Result<()> {
+    let domains: Vec<String> = args.domains.split(',').map(|d| d.trim().to_lowercase()).filter(|d| !d.is_empty()).collect();
+    let mut owned: Vec<usize> = domains.iter().map(|d| bucket_of(d)).collect();
+    owned.sort_unstable();
+    owned.dedup();
+    let resources = Resources::new(1 << 30, 512 << 20, owned.len());
+    let buckets = Buckets::open(&args.buckets_dir, &owned, &resources)?;
+    for domain in &domains {
+        let started = std::time::Instant::now();
+        let found = buckets.store(domain).drop_domain(domain, &args.reason, args.delete)?;
+        if !found.known {
+            println!("{domain}: not kept in its store");
+            continue;
+        }
+        let done = if args.delete { format!("deleted in {:.0}s", started.elapsed().as_secs_f64()) } else { "nothing deleted without --delete".into() };
+        println!("{domain}: {} ready pages, {} URLs in its last sitemaps; {done}", found.ready, found.urls);
+    }
     Ok(())
 }
 

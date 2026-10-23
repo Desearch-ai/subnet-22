@@ -22,7 +22,7 @@ use parquet::file::metadata::{ParquetMetaData, ParquetMetaDataReader};
 use parquet::file::reader::{ChunkReader, Length};
 use tokio::runtime::Handle;
 
-use crate::records::{Row, MAX_US, MIN_US, ROW_COLUMNS};
+use crate::records::{Row, EXTRACTION_V2, MAX_US, MIN_US, ROW_COLUMNS, ROW_COLUMNS_V2};
 
 pub const MAGIC: &[u8; 4] = b"PAR1";
 pub const MAX_FOOTER_BYTES: u64 = 2_000_000;
@@ -151,12 +151,19 @@ pub fn footer_length(size: u64, head: &[u8], tail: &[u8]) -> Option<u64> {
     (length > 0 && length <= MAX_FOOTER_BYTES.min(size - 12)).then_some(length)
 }
 
+/// The columns read from a file: `ROW_COLUMNS`, and `ROW_COLUMNS_V2` too for a v2 upload, the one kind of file with `extraction`.
+pub fn published_columns(metadata: &ParquetMetaData) -> Vec<&'static str> {
+    let v2 = metadata.file_metadata().schema_descr().root_schema().get_fields().iter().any(|field| field.name() == "extraction");
+    ROW_COLUMNS.iter().chain(if v2 { &ROW_COLUMNS_V2[..] } else { &[] }).copied().collect()
+}
+
 /// Checked on the footer, before decompressing anything.
 pub fn too_big(metadata: &ParquetMetaData, assigned: usize) -> bool {
+    let columns = published_columns(metadata);
     let groups: Vec<i64> = metadata
         .row_groups()
         .iter()
-        .map(|group| group.columns().iter().filter(|c| wanted(&c.column_path().string())).map(|c| c.uncompressed_size()).sum())
+        .map(|group| group.columns().iter().filter(|c| wanted(&columns, &c.column_path().string())).map(|c| c.uncompressed_size()).sum())
         .collect();
     let rows = assigned.max(1) as i128;
     i128::from(metadata.file_metadata().num_rows()) > 2 * rows
@@ -164,8 +171,8 @@ pub fn too_big(metadata: &ParquetMetaData, assigned: usize) -> bool {
         || groups.iter().max().is_some_and(|&g| g > MAX_ROW_GROUP_BYTES)
 }
 
-fn wanted(path: &str) -> bool {
-    ROW_COLUMNS.contains(&path.split('.').next().unwrap_or(""))
+fn wanted(columns: &[&str], path: &str) -> bool {
+    columns.contains(&path.split('.').next().unwrap_or(""))
 }
 
 /// The published columns of every row; None when the file cannot be decoded safely, an error only when the source fails.
@@ -199,9 +206,10 @@ pub fn read_rows(source: &dyn RangeRead, assigned: usize) -> io::Result<Option<V
     if too_big(&metadata, assigned) {
         return Ok(None);
     }
+    let columns = published_columns(&metadata);
     let mut chunks = Vec::new();
     for group in metadata.row_groups() {
-        for column in group.columns().iter().filter(|c| wanted(&c.column_path().string())) {
+        for column in group.columns().iter().filter(|c| wanted(&columns, &c.column_path().string())) {
             let (Ok(start), Ok(length)) =
                 (u64::try_from(column.dictionary_page_offset().unwrap_or(column.data_page_offset())), u64::try_from(column.compressed_size()))
             else {
@@ -272,9 +280,10 @@ impl ChunkReader for Prefetched {
 fn decode(file: Prefetched, metadata: ParquetMetaData, assigned: usize) -> Option<Vec<Row>> {
     let metadata = ArrowReaderMetadata::try_new(Arc::new(metadata), ArrowReaderOptions::new()).ok()?;
     let roots = metadata.parquet_schema().root_schema().get_fields();
-    let mut indices = Vec::with_capacity(ROW_COLUMNS.len());
-    for name in ROW_COLUMNS {
-        indices.push(roots.iter().position(|field| field.name() == name)?);
+    let columns = published_columns(metadata.metadata());
+    let mut indices = Vec::with_capacity(columns.len());
+    for name in &columns {
+        indices.push(roots.iter().position(|field| field.name() == *name)?);
     }
     let mask = ProjectionMask::roots(metadata.parquet_schema(), indices);
     let reader = ParquetRecordBatchReaderBuilder::new_with_metadata(file, metadata).with_projection(mask).with_batch_size(BATCH_ROWS).build().ok()?;
@@ -312,9 +321,13 @@ fn batch_rows(batch: &RecordBatch) -> Option<Vec<Row>> {
     let mut headings = lists(column("headings")?)?.into_iter();
     let mut body = text("text")?.into_iter();
     let mut text_sha256 = text("text_sha256")?.into_iter();
+    let mut v2 = match column("extraction") {
+        Some(_) => Some(V2Columns::new(batch)?),
+        None => None,
+    };
     let mut rows = Vec::with_capacity(batch.num_rows());
     for _ in 0..batch.num_rows() {
-        rows.push(Row {
+        let mut row = Row {
             url: url.next()?,
             final_url: final_url.next()?,
             status: status.next()?,
@@ -331,9 +344,79 @@ fn batch_rows(batch: &RecordBatch) -> Option<Vec<Row>> {
             headings: headings.next()?,
             text: body.next()?,
             text_sha256: text_sha256.next()?,
-        });
+            ..Row::default()
+        };
+        if let Some(v2) = &mut v2 {
+            v2.fill(&mut row)?;
+        }
+        rows.push(row);
     }
     Some(rows)
+}
+
+/// A v2 batch's v2 columns, read row by row; a row whose `extraction` is not v2 makes the file unreadable.
+struct V2Columns {
+    extraction: std::vec::IntoIter<Option<String>>,
+    text_mode: std::vec::IntoIter<Option<String>>,
+    modified: std::vec::IntoIter<Option<String>>,
+    site_name: std::vec::IntoIter<Option<String>>,
+    image: std::vec::IntoIter<Option<String>>,
+    section: std::vec::IntoIter<Option<String>>,
+    tags: std::vec::IntoIter<Option<Vec<Option<String>>>>,
+    breadcrumbs: std::vec::IntoIter<Option<Vec<Option<String>>>>,
+    entity: std::vec::IntoIter<Option<String>>,
+    ld: std::vec::IntoIter<Option<String>>,
+    paywalled: std::vec::IntoIter<Option<bool>>,
+    robots: std::vec::IntoIter<Option<Vec<Option<String>>>>,
+}
+
+impl V2Columns {
+    fn new(batch: &RecordBatch) -> Option<V2Columns> {
+        let column = |name: &str| batch.column_by_name(name);
+        let text = |name: &str| Some(strings(column(name)?)?.into_iter());
+        let list = |name: &str| Some(lists(column(name)?)?.into_iter());
+        Some(V2Columns {
+            extraction: text("extraction")?,
+            text_mode: text("text_mode")?,
+            modified: text("modified")?,
+            site_name: text("site_name")?,
+            image: text("image")?,
+            section: text("section")?,
+            tags: list("tags")?,
+            breadcrumbs: list("breadcrumbs")?,
+            entity: text("entity")?,
+            ld: text("ld")?,
+            paywalled: flags(column("paywalled")?)?.into_iter(),
+            robots: list("robots")?,
+        })
+    }
+
+    fn fill(&mut self, row: &mut Row) -> Option<()> {
+        let extraction = self.extraction.next()??;
+        if extraction != EXTRACTION_V2 {
+            return None;
+        }
+        row.extraction = Some(extraction);
+        row.text_mode = self.text_mode.next()?;
+        row.modified = self.modified.next()?;
+        row.site_name = self.site_name.next()?;
+        row.image = self.image.next()?;
+        row.section = self.section.next()?;
+        row.tags = self.tags.next()?;
+        row.breadcrumbs = self.breadcrumbs.next()?;
+        row.entity = self.entity.next()?;
+        row.ld = self.ld.next()?;
+        row.paywalled = self.paywalled.next()?;
+        row.robots = self.robots.next()?;
+        Some(())
+    }
+}
+
+fn flags(array: &ArrayRef) -> Option<Vec<Option<bool>>> {
+    match array.data_type() {
+        DataType::Boolean => Some(array.as_boolean().iter().collect()),
+        _ => None,
+    }
 }
 
 /// A text column's values, None when the column holds something other than text.

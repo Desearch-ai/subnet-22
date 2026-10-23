@@ -3,7 +3,7 @@
 use std::ops::Range;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{anyhow, Context, Result};
 use bytes::Bytes;
@@ -29,6 +29,8 @@ const READ: Duration = Duration::from_secs(10);
 const LONG: Duration = Duration::from_secs(300);
 /// Most 8 MB parts land in about a second, but about one in eight stalls for several.
 const PART_RESEND_AFTER: Duration = Duration::from_secs(2);
+/// A call slower than this is logged with its retries, since a quiet retry is otherwise invisible.
+const SLOW_CALL: Duration = Duration::from_secs(2);
 
 /// Long enough to send `bytes` at 1 MB/s, so a stalled upload is retried rather than waited on for minutes.
 fn sending(bytes: usize) -> Duration {
@@ -352,7 +354,15 @@ impl Bucket {
         let query = pairs.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>().join("&");
         let url = if query.is_empty() { format!("{}{path}", self.endpoint) } else { format!("{}{path}?{query}", self.endpoint) };
         let payload = if body.is_empty() { EMPTY_SHA256 } else { UNSIGNED };
+        let started = Instant::now();
         let mut attempt = 0;
+        let mut failures: Vec<String> = Vec::new();
+        let slow = |attempt: u32, failures: &[String], outcome: &str| {
+            if started.elapsed() >= SLOW_CALL {
+                let retried = if failures.is_empty() { String::new() } else { format!(" after {attempt} failed attempts ({})", failures.join("; ")) };
+                eprintln!("storage {method} {path} took {:.1}s{retried}: {outcome}", started.elapsed().as_secs_f64());
+            }
+        };
         loop {
             let amz_date = amz_date(SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default());
             let amz: Vec<(&str, &str)> = headers
@@ -375,7 +385,10 @@ impl Bucket {
                     let status = response.status();
                     let headers = response.headers().clone();
                     match response.bytes().await {
-                        Ok(bytes) if status.is_success() => return Ok((headers, bytes)),
+                        Ok(bytes) if status.is_success() => {
+                            slow(attempt, &failures, "done");
+                            return Ok((headers, bytes));
+                        }
                         Ok(_) if status == StatusCode::NOT_FOUND => return Err(Error::Missing),
                         Ok(_) if status == StatusCode::PRECONDITION_FAILED => return Err(Error::Changed),
                         Ok(bytes) if status.is_server_error() || status == StatusCode::TOO_MANY_REQUESTS => {
@@ -383,6 +396,7 @@ impl Bucket {
                         }
                         Ok(bytes) => {
                             self.errors.fetch_add(1, Ordering::Relaxed);
+                            slow(attempt, &failures, &format!("HTTP {status}"));
                             return Err(Error::Status(status.as_u16(), String::from_utf8_lossy(&bytes).into_owned()));
                         }
                         Err(error) => Error::Transport(format!("{method} {path}: {error}")),
@@ -392,7 +406,9 @@ impl Bucket {
             };
             self.errors.fetch_add(1, Ordering::Relaxed);
             attempt += 1;
+            failures.push(format!("{} at {:.1}s", failure.to_string().chars().take(120).collect::<String>(), started.elapsed().as_secs_f64()));
             if attempt >= ATTEMPTS {
+                slow(attempt, &failures, "gave up");
                 return Err(failure);
             }
             tokio::time::sleep(backoff(attempt)).await;

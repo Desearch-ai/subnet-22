@@ -29,6 +29,8 @@ use desearch::outcomes::Outcome;
 use desearch::r2::{self, Bucket, Credentials, PARQUET};
 
 const RETRY_DELAY: Duration = Duration::from_secs(5);
+/// Failed passes in a row wait twice as long each time, up to this.
+const RETRY_DELAY_MAX: Duration = Duration::from_secs(120);
 const SUMMARY_EVERY: Duration = Duration::from_secs(60);
 const CHANGE_PART_BYTES: usize = 8 << 20;
 const CHANGE_PARTS_AT_ONCE: usize = 8;
@@ -279,7 +281,7 @@ pub async fn write_batch(shared: &Shared, claimed: Claimed) -> Result<usize> {
     m.batches.fetch_add(1, Ordering::Relaxed);
     m.tasks.fetch_add(batch.finalized.len() as u64, Ordering::Relaxed);
     m.changed.fetch_add(published as u64, Ordering::Relaxed);
-    m.failed_urls.fetch_add(batch.failed.len() as u64, Ordering::Relaxed);
+    m.failed_urls.fetch_add((batch.failed.len() + batch.dropped.len()) as u64, Ordering::Relaxed);
     m.lost.fetch_add(batch.lost.len() as u64, Ordering::Relaxed);
     m.retried.fetch_add(batch.retry.len() as u64, Ordering::Relaxed);
     println!(
@@ -459,7 +461,7 @@ async fn read_whole(temp: &Bucket, key: &str, etag: Option<&str>) -> Result<Byte
 
 /// What became of every URL, for the bot; a failure here is logged and the batch still finishes.
 async fn report_outcomes(shared: &Shared, batch: &worker::Batch, now: i64) {
-    if let Err(error) = write_outcomes(shared, outcomes::rows(&batch.changes, &batch.failed), now).await {
+    if let Err(error) = write_outcomes(shared, outcomes::rows(&batch.changes, &batch.failed, &batch.dropped), now).await {
         eprintln!("could not write the batch's outcomes: {error:#}");
     }
 }
@@ -482,6 +484,7 @@ pub async fn run(shared: Arc<Shared>, mut stop: watch::Receiver<bool>, idle_exit
     let mut idle = 0;
     let mut claimed: Vec<Claimed> = Vec::new();
     let mut forgot: Option<Instant> = None;
+    let mut failed_passes = 0u32;
     loop {
         let finishing = *stop.borrow() || (idle_exit > 0 && idle >= idle_exit);
         while !finishing && claimed.len() <= shared.settings.ahead {
@@ -503,9 +506,17 @@ pub async fn run(shared: Arc<Shared>, mut stop: watch::Receiver<bool>, idle_exit
         } else {
             idle = 0;
             let current = claimed.remove(first_read(&claimed).await);
+            let task_ids: Vec<String> = current.jobs.iter().chain(&current.embeds).map(|job| job.task_id.clone()).collect();
             if let Err(error) = write_batch(&shared, current).await {
-                eprintln!("publish pass failed: {error:#}");
-                pause(&mut stop, RETRY_DELAY).await;
+                failed_passes += 1;
+                let delay = RETRY_DELAY.saturating_mul(1 << (failed_passes - 1).min(5)).min(RETRY_DELAY_MAX);
+                eprintln!("publish pass failed ({failed_passes} in a row), its tasks go back to be tried again in {}s: {error:#}", delay.as_secs());
+                pause(&mut stop, delay).await;
+                if let Err(error) = shared.queue.give_back(&task_ids).await {
+                    eprintln!("giving back the failed pass's tasks failed; they return when their claims expire: {error:#}");
+                }
+            } else {
+                failed_passes = 0;
             }
         }
         if forgot.is_none_or(|at| at.elapsed() >= FORGET_WITHDRAWN_EVERY) {

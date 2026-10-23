@@ -62,6 +62,7 @@ static ABANDON: LazyLock<Script> =
 static COMPLETE: LazyLock<Script> = LazyLock::new(|| Script::new(concat!(include_str!("lua/inflight.lua"), include_str!("lua/complete.lua"))));
 static START: LazyLock<Script> = LazyLock::new(|| Script::new(include_str!("lua/start.lua")));
 static RESTORE: LazyLock<Script> = LazyLock::new(|| Script::new(include_str!("lua/restore.lua")));
+static RELEASE: LazyLock<Script> = LazyLock::new(|| Script::new(include_str!("lua/release.lua")));
 static VOPEN_PICKED: LazyLock<Script> = LazyLock::new(|| Script::new(include_str!("lua/vopen_picked.lua")));
 static VOPEN_COUNT: LazyLock<Script> = LazyLock::new(|| Script::new(include_str!("lua/vopen_count.lua")));
 static VVOTE: LazyLock<Script> = LazyLock::new(|| Script::new(include_str!("lua/vvote.lua")));
@@ -74,6 +75,11 @@ pub fn ready_key(kind: &str) -> String {
     } else {
         format!("{QUEUE}:{kind}")
     }
+}
+
+/// Revealed tasks not released yet, by the time each joins the ready queue.
+pub fn held_key(kind: &str) -> String {
+    format!("queue:held:{kind}")
 }
 
 /// Tasks a miner holds and has not uploaded yet.
@@ -184,14 +190,16 @@ pub struct TaskQueue {
     pub kind: &'static str,
     pub claim_ttl: f64,
     pub ready: String,
+    pub held: String,
 }
 
 impl TaskQueue {
     pub fn new(kind: &'static str, claim_ttl: f64) -> Self {
-        TaskQueue { kind, claim_ttl, ready: ready_key(kind) }
+        TaskQueue { kind, claim_ttl, ready: ready_key(kind), held: held_key(kind) }
     }
 
-    pub async fn fill(&self, redis: &Redis, round_id: &str, order: &[String], payloads: &Map<String, Value>) -> Result<usize> {
+    /// Queues a revealed round's tasks in its order, released one by one over `spread` seconds from `now`, or all at once when it is 0.
+    pub async fn fill(&self, redis: &Redis, round_id: &str, order: &[String], payloads: &Map<String, Value>, now: f64, spread: f64) -> Result<usize> {
         let mut redis = redis.clone();
         let base: i64 = redis.incr(ROUNDS, 1).await?;
         let base = base * ROUND_SPAN;
@@ -205,14 +213,25 @@ impl TaskQueue {
             payload.insert("position".into(), position.into());
             payload.insert("rank".into(), rank.into());
             pipe.set(format!("task:{task_id}"), Value::Object(payload).to_string()).ignore();
-            pipe.zadd(&self.ready, task_id, rank).ignore();
+            if spread > 0.0 {
+                pipe.zadd(&self.held, task_id, now + spread * (position + 1) as f64 / order.len() as f64).ignore();
+            } else {
+                pipe.zadd(&self.ready, task_id, rank).ignore();
+            }
         }
         let _: () = pipe.query_async(&mut redis).await?;
         Ok(order.len())
     }
 
+    /// Tasks queued, released or not yet.
     pub async fn depth(&self, redis: &Redis) -> Result<i64> {
-        Ok(redis.clone().zcard(&self.ready).await?)
+        let (ready, held): (i64, i64) = redis::pipe().zcard(&self.ready).zcard(&self.held).query_async(&mut redis.clone()).await?;
+        Ok(ready + held)
+    }
+
+    /// Moves held tasks whose time has come into the ready queue at their rank; how many.
+    pub async fn release_due(&self, redis: &Redis, now: f64, limit: usize) -> Result<usize> {
+        Ok(RELEASE.key(&self.held).key(&self.ready).arg(number(now)).arg(limit).invoke_async(&mut redis.clone()).await?)
     }
 
     pub async fn in_flight(&self, redis: &Redis, hotkey: &str) -> Result<i64> {

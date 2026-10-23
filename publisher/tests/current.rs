@@ -2,13 +2,17 @@
 
 use std::collections::HashSet;
 use std::path::PathBuf;
+use std::sync::Arc;
 
+use arrow_array::RecordBatch;
 use bytes::Bytes;
 use desearch::feeds::CHANGES;
+use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+use parquet::arrow::ArrowWriter;
 use publisher::changes::{self, Body, Change, Kind};
 use publisher::compactor::{self, LocalStore, Settings, Split, Store};
 use publisher::current::{self, shard_of, ChangeRow, PageRow, Withdrawals, SHARDS};
-use publisher::records::{page_key, record_version, Record};
+use publisher::records::{page_key, record_version, Record, ROW_COLUMNS_V2};
 
 fn scratch(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("publisher-current-{name}-{}", uuid::Uuid::new_v4().simple()));
@@ -34,10 +38,35 @@ fn record(url: &str, fetched_at: &str, task_id: &str, text: &str) -> Record {
     }
 }
 
+fn v2_record(url: &str, fetched_at: &str, task_id: &str, text: &str) -> Record {
+    Record {
+        extraction: Some("v2".into()),
+        text_mode: Some("main".into()),
+        modified: Some("2026-10-07".into()),
+        site_name: Some("News".into()),
+        image: Some(format!("{url}.png")),
+        section: Some("World".into()),
+        tags: vec![Some("a".into()), None],
+        breadcrumbs: vec![Some("Home".into())],
+        entity: Some("{\"name\": \"News\"}".into()),
+        ld: Some("{\"faq\": []}".into()),
+        paywalled: Some(true),
+        robots: vec![Some("noarchive".into())],
+        ..record(url, fetched_at, task_id, text)
+    }
+}
+
 fn page(url: &str, fetched_at: &str, task_id: &str, text: &str) -> Change {
-    let record = record(url, fetched_at, task_id, text);
+    change_of(record(url, fetched_at, task_id, text))
+}
+
+fn v2_page(url: &str, fetched_at: &str, task_id: &str, text: &str) -> Change {
+    change_of(v2_record(url, fetched_at, task_id, text))
+}
+
+fn change_of(record: Record) -> Change {
     Change {
-        key: page_key(url).unwrap(),
+        key: page_key(&record.url).unwrap(),
         kind: Kind::New,
         previous_content_sha1: String::new(),
         published_at: "2026-10-08T12:00:00+00:00".into(),
@@ -509,4 +538,83 @@ fn a_take_back_takes_down_only_the_version_that_stands() {
     let mut later = rows;
     later.push(row("t4", 7, "2026-10-08T09:00:00+00:00"));
     assert_eq!(current::merge(later, &withdrawn, false)[0].record.task_id, "t4", "a fetch logged after the take-back stands again");
+}
+
+fn record_of(store: &dyn Store, url: &str) -> Option<Record> {
+    compactor::lookup(store, "current/", &page_key(url).unwrap()).unwrap().map(|row| row.record)
+}
+
+/// A file as written before the v2 columns existed.
+fn without_v2_columns(file: Vec<u8>) -> Vec<u8> {
+    let batches: Vec<RecordBatch> = ParquetRecordBatchReaderBuilder::try_new(Bytes::from(file)).unwrap().build().unwrap().map(Result::unwrap).collect();
+    let schema = batches[0].schema();
+    let kept: Vec<usize> = (0..schema.fields().len()).filter(|&i| !ROW_COLUMNS_V2.contains(&schema.field(i).name().as_str())).collect();
+    assert_eq!(kept.len(), schema.fields().len() - ROW_COLUMNS_V2.len());
+    let mut out = Vec::new();
+    let mut writer = ArrowWriter::try_new(&mut out, Arc::new(schema.project(&kept).unwrap()), None).unwrap();
+    for batch in batches {
+        writer.write(&batch.project(&kept).unwrap()).unwrap();
+    }
+    writer.close().unwrap();
+    out
+}
+
+#[test]
+fn a_log_of_v1_and_v2_pages_folds_by_fetch_time_and_the_compactor_keeps_every_v2_field() {
+    let root = scratch("mixed");
+    let mut log = Log::new(root.join("bucket"));
+    let store = LocalStore { root: root.join("bucket") };
+    compactor::start_empty(&store, "current/", 0, 4).unwrap();
+    let (a, b, c, d) = ("https://news.example/a", "https://news.example/b", "https://news.example/c", "https://news.example/d");
+    let at = |hour: u32| format!("2026-10-23T{hour:02}:00:00+00:00");
+    log.append(&[page(a, &at(10), "t1", "v1 a"), v2_page(b, &at(10), "t1", "# v2 b"), page(c, &at(12), "t1", "v1 c")]);
+    log.append(&[v2_page(a, &at(11), "t2", "# v2 a"), page(b, &at(9), "t2", "older v1 b"), v2_page(c, &at(11), "t2", "# older v2 c")]);
+    let settings = settings(root.join("work"));
+    compactor::cycle(&store, &settings, 1_000.0).unwrap();
+    let manifests = compactor::load_manifests(&store, "current/", 4).unwrap();
+    assert!(manifests.iter().all(|m| m.deltas.is_empty()) && manifests.iter().any(|m| m.base.is_some()), "the first cycle writes bases only");
+    assert_eq!(record_of(&store, a), Some(v2_record(a, &at(11), "t2", "# v2 a")), "a later v2 fetch wins, with every v2 field");
+    assert_eq!(record_of(&store, b), Some(v2_record(b, &at(10), "t1", "# v2 b")), "an older v1 fetch logged later does not win");
+    assert_eq!(record_of(&store, c), Some(record(c, &at(12), "t1", "v1 c")), "a later v1 fetch wins over a v2 one");
+
+    log.append(&[v2_page(d, &at(13), "t3", "# v2 d"), page(a, &at(14), "t3", "v1 a again")]);
+    compactor::cycle(&store, &settings, 2_000.0).unwrap();
+    let manifests = compactor::load_manifests(&store, "current/", 4).unwrap();
+    assert!(manifests.iter().any(|m| !m.deltas.is_empty()), "the second cycle writes deltas");
+    assert_eq!(record_of(&store, d), Some(v2_record(d, &at(13), "t3", "# v2 d")), "a delta keeps every v2 field");
+    assert_eq!(record_of(&store, a), Some(record(a, &at(14), "t3", "v1 a again")), "a v1 page is v1 again, nothing of the v2 one left");
+    let compared = compactor::compare_log(&store, "current/", &(0..SHARDS), 4).unwrap();
+    assert_eq!((compared.index_pages, compared.missing, compared.extra, compared.other_version), (4, vec![], vec![], vec![]));
+}
+
+#[test]
+fn files_written_before_the_v2_columns_read_as_v1_and_merge_with_v2_rows() {
+    let v1 = page("https://news.example/old", "2026-10-08T10:00:00+00:00", "t1", "old");
+    let old_log = without_v2_columns(changes::encode(std::slice::from_ref(&v1)).unwrap());
+    let rows = current::decode_changes(Bytes::from(old_log), 4).unwrap();
+    let ChangeRow::Page(old) = &rows[0] else { panic!("a page") };
+    let Body::Page { record, version } = &v1.body else { panic!("a page") };
+    assert_eq!((&old.record, &old.version), (record.as_ref(), version), "an old change file reads as the v1 record it held");
+
+    let written = changes::encode(&[v1.clone(), v2_page("https://news.example/new", "2026-10-23T12:00:00+00:00", "t2", "# new")]).unwrap();
+    let batch = ParquetRecordBatchReaderBuilder::try_new(Bytes::from(written)).unwrap().build().unwrap().next().unwrap().unwrap();
+    for name in ROW_COLUMNS_V2 {
+        assert_eq!(batch.column_by_name(name).unwrap().null_count(), 1, "{name}: null for the v1 page only");
+    }
+
+    let base = without_v2_columns(current::encode(&[*old.clone()]).unwrap());
+    let ChangeRow::Page(new) =
+        current::decode_changes(Bytes::from(changes::encode(&[v2_page("https://news.example/new", "2026-10-23T12:00:00+00:00", "t2", "# new")]).unwrap()), 5)
+            .unwrap()
+            .remove(0)
+    else {
+        panic!("a page")
+    };
+    let delta = current::encode(&[*new.clone()]).unwrap();
+    let (merged, count) = current::merge_files(vec![Bytes::from(base), Bytes::from(delta)], &Withdrawals::new(), false).unwrap();
+    assert_eq!(count, 2);
+    let merged = current::decode(Bytes::from(merged)).unwrap();
+    let by_url = |url: &str| merged.iter().find(|row| row.record.url == url).unwrap().clone();
+    assert_eq!(by_url("https://news.example/old"), *old.clone());
+    assert_eq!(by_url("https://news.example/new"), *new);
 }

@@ -216,7 +216,7 @@ fn local(args: LocalArgs) -> Result<()> {
         let now = now_us()?;
         let batch = worker::publish(jobs, &uploads, &refused, &feed, now, args.readers)?;
         refused.extend(batch.withdrawn.iter().cloned());
-        write_outcomes(&outcomes::rows(&batch.changes, &batch.failed), now)?;
+        write_outcomes(&outcomes::rows(&batch.changes, &batch.failed, &batch.dropped), now)?;
         println!(
             "published {} tasks, {} pages, {} tasks withdrawn, {} failed URLs, {} to retry in {:.2}s",
             batch.finalized.len(),
@@ -282,7 +282,7 @@ async fn plan() -> Result<()> {
     let mut planner = planner::Planner::new(settings, pages, temp, redis, planner::Room::api(&task_api)?).await?;
     println!(
         "planning {} texts after change file {}, at most {} pages an hour, inputs of {} pages, room from {task_api}",
-        planner::RECIPE,
+        planner::PLANNED_RECIPES.join(", "),
         planner.read_through(),
         planner.settings.pages_per_hour,
         planner.settings.pages_per_input

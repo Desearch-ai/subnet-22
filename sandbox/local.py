@@ -312,6 +312,7 @@ def api_env(
         "TASK_API_REDIS": f"redis://127.0.0.1:{ports.redis}/0",
         "TASK_API_LISTEN": f"0.0.0.0:{ports.api}",
         "TASK_API_TASK_URLS": str(int(task_size)),
+        "TASK_API_RELEASE_SPREAD_S": "0",
         "TASK_API_READS_PER_MINUTE": "6000",
         "TASK_API_LOG_READS_PER_MINUTE": "6000",
         # Every upload of both kinds is checked, so a miner sees each verdict.

@@ -2,13 +2,20 @@
 
 use std::borrow::Cow;
 use std::collections::HashMap;
+use std::sync::LazyLock;
 
 use anyhow::Result;
 use bytes::Bytes;
 use redis::aio::ConnectionManager;
-use redis::AsyncCommands;
+use redis::{AsyncCommands, Script};
 
 use crate::r2::{Bucket, JSON};
+use crate::time::now;
+
+/// A number taken but not indexed yet; one older than this was lost with its writer and gets indexed by `fill_holes`.
+pub const PENDING_GRACE_S: f64 = 60.0;
+
+static TAKE: LazyLock<Script> = LazyLock::new(|| Script::new("local at = redis.call('INCR', KEYS[1]) redis.call('HSET', KEYS[2], at, ARGV[1]) return at"));
 
 pub struct Feed {
     pub name: Cow<'static, str>,
@@ -31,6 +38,11 @@ impl Feed {
         format!("{}:holes", self.name)
     }
 
+    /// Numbers taken and not indexed yet, as `<unix time>\t<key>`.
+    pub fn pending(&self) -> String {
+        format!("{}:pending", self.name)
+    }
+
     pub fn latest_key(&self) -> String {
         format!("{}/latest.json", self.name)
     }
@@ -39,14 +51,22 @@ impl Feed {
         format!("{}/seq/{seq:012}.json", self.name)
     }
 
-    /// Numbers a file already written; a number is only handed out for a file that exists.
+    /// Numbers a file already written; once a number is taken this never errs, since a caller trying again would number the file twice.
     pub async fn number(&self, storage: &Bucket, redis: &ConnectionManager, key: &str, rows: usize) -> Result<u64> {
         let mut redis = redis.clone();
-        let at: u64 = redis.incr(self.counter(), 1).await?;
+        // Taken and noted pending in one step, so a writer that times out or is cancelled here still leaves its number repairable.
+        let at: u64 = TAKE.key(self.counter()).key(self.pending()).arg(format!("{}\t{key}", now())).invoke_async(&mut redis).await?;
         if let Err(error) = storage.put(&self.seq_key(at), index_json(key, Some(rows)), JSON, None).await {
             eprintln!("could not index {key} as {at}: {error}");
-            let _: i64 = redis.hset(self.holes(), at, key).await?;
+            let moved: redis::RedisResult<()> =
+                redis::pipe().atomic().hset(self.holes(), at, key).ignore().hdel(self.pending(), at).ignore().query_async(&mut redis).await;
+            if let Err(error) = moved {
+                eprintln!("could not note {at} as a hole ({error}); it is indexed once its pending note goes stale");
+            }
             return Ok(at);
+        }
+        if let Err(error) = redis.hdel::<_, _, i64>(self.pending(), at).await {
+            eprintln!("could not clear pending {at} ({error}); its index is written again once the note goes stale");
         }
         if let Err(error) = storage.put(&self.latest_key(), Bytes::from(format!("{{\"seq\": {at}}}")), JSON, Some("no-store")).await {
             eprintln!("could not note {at} as the newest {} file: {error}", self.name);
@@ -54,17 +74,22 @@ impl Feed {
         Ok(at)
     }
 
-    /// A number whose index write failed still gets one, so readers never wait on it.
+    /// A number whose index write failed, or whose writer died before writing it, still gets one, so readers never wait on it.
     pub async fn fill_holes(&self, storage: &Bucket, redis: &ConnectionManager) -> Result<usize> {
         let mut redis = redis.clone();
         let holes: HashMap<String, String> = redis.hgetall(self.holes()).await?;
+        let pending: HashMap<String, String> = redis.hgetall(self.pending()).await?;
+        let stale = pending.into_iter().filter_map(|(at, noted)| {
+            let (since, key) = noted.split_once('\t')?;
+            (now() - since.parse::<f64>().ok()? >= PENDING_GRACE_S).then(|| (at, key.to_string(), self.pending()))
+        });
         let mut filled = 0;
-        for (at, key) in holes {
+        for (at, key, from) in holes.into_iter().map(|(at, key)| (at, key, self.holes())).chain(stale) {
             let Ok(seq) = at.parse::<u64>() else { continue };
             if storage.put(&self.seq_key(seq), index_json(&key, None), JSON, None).await.is_err() {
                 continue;
             }
-            let _: i64 = redis.hdel(self.holes(), &at).await?;
+            let _: i64 = redis.hdel(from, &at).await?;
             filled += 1;
         }
         Ok(filled)

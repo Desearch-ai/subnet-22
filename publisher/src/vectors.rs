@@ -18,6 +18,7 @@ use parquet::file::properties::WriterProperties;
 use serde::Serialize;
 
 use crate::changes::Kind;
+use crate::planner::RECIPE_V1;
 
 const ROW_GROUP: usize = 1000;
 const ZSTD_LEVEL: i32 = 1;
@@ -36,10 +37,11 @@ pub static VECTORS_SCHEMA: LazyLock<SchemaRef> = LazyLock::new(|| {
         text("task_id"),
         text("miner"),
         text("published_at"),
+        text("recipe"),
     ]))
 });
 
-/// One text's vector and the page version it was taken from.
+/// One text's vector, the page version it was taken from and the recipe that made the text.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct VectorRow {
     pub key: String,
@@ -48,6 +50,7 @@ pub struct VectorRow {
     pub kind: String,
     pub index: i32,
     pub vector: Vec<u8>,
+    pub recipe: String,
 }
 
 pub fn file_key(model: &str, day: &str, id: &str) -> String {
@@ -142,6 +145,7 @@ fn write(rows: &[VectorRow], task_ids: &[&str], miners: &[&str], published_at: &
     arrays.push(Arc::new(StringArray::from(task_ids.to_vec())));
     arrays.push(Arc::new(StringArray::from(miners.to_vec())));
     arrays.push(Arc::new(StringArray::from(vec![published_at; rows.len()])));
+    arrays.push(Arc::new(StringArray::from(rows.iter().map(|row| row.recipe.as_str()).collect::<Vec<_>>())));
     let batch = RecordBatch::try_new(VECTORS_SCHEMA.clone(), arrays)?;
     let properties =
         WriterProperties::builder().set_compression(Compression::ZSTD(ZstdLevel::try_new(ZSTD_LEVEL)?)).set_max_row_group_row_count(Some(ROW_GROUP)).build();
@@ -167,9 +171,9 @@ pub fn pages(file: Bytes) -> Result<Vec<DroppedPage>> {
         .collect())
 }
 
-/// The rows of a file whose `key_column` names the page; their vectors only when `with_vectors`.
+/// The rows of a file whose `key_column` names the page; their vectors only when `with_vectors`, and page-v1 for a file without recipes.
 fn read_rows(file: Bytes, key_column: &str, with_vectors: bool) -> Result<Vec<VectorRow>> {
-    let mut columns = vec![key_column, "url", "content_sha1", "kind", "index"];
+    let mut columns = vec![key_column, "url", "content_sha1", "kind", "index", "recipe"];
     if with_vectors {
         columns.push("vector");
     }
@@ -179,6 +183,7 @@ fn read_rows(file: Bytes, key_column: &str, with_vectors: bool) -> Result<Vec<Ve
         let index = cast(column(&batch, "index")?, &DataType::Int32)?;
         let index = index.as_primitive::<Int32Type>();
         let vectors = with_vectors.then(|| binaries(&batch, "vector")).transpose()?;
+        let recipes = batch.column_by_name("recipe").map(|_| strings(&batch, "recipe")).transpose()?;
         for row in 0..batch.num_rows() {
             rows.push(VectorRow {
                 key: keys.value(row).to_string(),
@@ -187,6 +192,7 @@ fn read_rows(file: Bytes, key_column: &str, with_vectors: bool) -> Result<Vec<Ve
                 kind: kinds.value(row).to_string(),
                 index: index.value(row),
                 vector: vectors.as_ref().map_or_else(Vec::new, |vectors| vectors.value(row).to_vec()),
+                recipe: recipes.as_ref().map_or(RECIPE_V1, |recipes| recipes.value(row)).to_string(),
             });
         }
     }
@@ -222,7 +228,8 @@ fn binaries(batch: &RecordBatch, name: &str) -> Result<BinaryArray> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::planner::{encode_input, Planned, Text};
+    use crate::planner::{encode_input, Planned, Text, RECIPE_V2};
+    use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 
     fn unit(dims: usize, axis: usize) -> Vec<u8> {
         (0..dims).flat_map(|i| half::f16::from_f32(if i == axis { 1.0 } else { 0.0 }).to_le_bytes()).collect()
@@ -234,6 +241,8 @@ mod tests {
             url: format!("https://example.com/{key}"),
             host: "example.com".into(),
             content_sha1: format!("sha-{key}"),
+            recipe: RECIPE_V2,
+            fetched_at: String::new(),
             texts: texts.iter().map(|&(kind, index)| Text { text_id: format!("{key}#{kind}{index}"), kind, index, text: format!("text {index}") }).collect(),
         }
     }
@@ -273,6 +282,32 @@ mod tests {
         let dropped: Vec<&str> = joined.dropped.iter().map(|d| d.page_key.as_str()).collect();
         assert_eq!(dropped, ["p1", "p3"]);
         assert_eq!(joined.dropped[0], DroppedPage { page_key: "p1".into(), content_sha1: "sha-p1".into(), url: "https://example.com/p1".into() });
+    }
+
+    /// A file as written before it had a recipe column.
+    fn without_recipes(file: Bytes) -> Bytes {
+        let full = ParquetRecordBatchReaderBuilder::try_new(file).unwrap().build().unwrap().next().unwrap().unwrap();
+        let kept: Vec<usize> = (0..full.num_columns()).filter(|&i| full.schema().field(i).name() != "recipe").collect();
+        assert_eq!(kept.len() + 1, full.num_columns());
+        let projected = full.project(&kept).unwrap();
+        let mut out = Vec::new();
+        let mut writer = ArrowWriter::try_new(&mut out, projected.schema(), None).unwrap();
+        writer.write(&projected).unwrap();
+        writer.close().unwrap();
+        Bytes::from(out)
+    }
+
+    #[test]
+    fn vectors_carry_their_input_s_recipe_and_files_without_one_are_page_v1() {
+        let pages = [page("p1", &[("page", 0), ("passage", 1)])];
+        let upload = [unit(8, 0), unit(8, 1)].concat();
+        let joined = join(input(&pages), &upload).unwrap();
+        assert!(joined.rows.iter().all(|row| row.recipe == RECIPE_V2));
+        let file = Bytes::from(encode(&joined.rows, "t1", "5A", "2026-10-23T12:00:00+00:00").unwrap());
+        assert_eq!(decode(file.clone()).unwrap(), joined.rows);
+        assert!(decode(without_recipes(file)).unwrap().iter().all(|row| row.recipe == RECIPE_V1));
+        let old_input = join(without_recipes(input(&pages)), &upload).unwrap();
+        assert!(old_input.rows.iter().all(|row| row.recipe == RECIPE_V1), "an input written before recipes holds page-v1 texts");
     }
 
     #[test]

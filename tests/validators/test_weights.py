@@ -23,7 +23,7 @@ from neurons.validators.weights import (
 )
 
 BURN = EMISSION_CONTROL_HOTKEY
-CRAWL = (1 - EMISSION_CONTROL_PERC) * CRAWL_PERC
+CRAWL = CRAWL_PERC
 
 
 def test_the_crawl_pool_is_split_by_share_and_the_rest_is_burned():
@@ -64,15 +64,15 @@ def test_a_pool_nobody_earned_goes_to_the_burn_hotkey():
     assert list(unknown_pool) == pytest.approx([0.0, 1.0])
 
 
-def test_half_is_burned_and_the_rest_split_two_to_three_between_crawling_and_embedding():
-    assert (EMISSION_CONTROL_PERC, CRAWL_PERC, EMBED_PERC) == (0.5, 0.4, 0.6)
+def test_thirty_percent_is_burned_twenty_pays_crawling_and_fifty_embedding():
+    assert (EMISSION_CONTROL_PERC, CRAWL_PERC, EMBED_PERC) == (0.3, 0.2, 0.5)
 
     weights = weights_from_shares(
         ["crawler", "embedder", BURN],
         {CRAWL_KIND: {"crawler": 1.0}, EMBED_KIND: {"embedder": 1.0}},
     )
 
-    assert list(weights) == pytest.approx([0.2, 0.3, 0.5])
+    assert list(weights) == pytest.approx([0.2, 0.5, 0.3])
 
 
 def test_an_embed_pool_nobody_earned_is_burned():
@@ -81,18 +81,18 @@ def test_an_embed_pool_nobody_earned_is_burned():
     assert list(weights) == pytest.approx([0.2, 0.8])
 
 
-def test_changing_the_burn_alone_moves_the_miners_part(monkeypatch):
-    monkeypatch.setattr("neurons.validators.weights.EMISSION_CONTROL_PERC", 0.2)
+def test_each_pool_pays_its_share_of_the_total_emission(monkeypatch):
+    monkeypatch.setattr("neurons.validators.weights.CRAWL_PERC", 0.35)
 
     weights = weights_from_shares(["crawler", BURN], {CRAWL_KIND: {"crawler": 1.0}})
 
-    assert list(weights) == pytest.approx([0.8 * CRAWL_PERC, 1 - 0.8 * CRAWL_PERC])
+    assert list(weights) == pytest.approx([0.35, 0.65])
 
 
 def test_every_pool_pays_its_part(monkeypatch):
     monkeypatch.setattr("neurons.validators.weights.EMISSION_CONTROL_PERC", 0.5)
-    monkeypatch.setattr("neurons.validators.weights.CRAWL_PERC", 0.6)
-    monkeypatch.setattr("neurons.validators.weights.EMBED_PERC", 0.4)
+    monkeypatch.setattr("neurons.validators.weights.CRAWL_PERC", 0.3)
+    monkeypatch.setattr("neurons.validators.weights.EMBED_PERC", 0.2)
 
     weights = weights_from_shares(
         ["crawler", "embedder", "both", BURN],
@@ -236,8 +236,8 @@ def test_both_pools_follow_logged_uploads_judged_by_this_validators_checks(
     monkeypatch,
 ):
     monkeypatch.setattr("neurons.validators.weights.EMISSION_CONTROL_PERC", 0.5)
-    monkeypatch.setattr("neurons.validators.weights.CRAWL_PERC", 0.6)
-    monkeypatch.setattr("neurons.validators.weights.EMBED_PERC", 0.4)
+    monkeypatch.setattr("neurons.validators.weights.CRAWL_PERC", 0.3)
+    monkeypatch.setattr("neurons.validators.weights.EMBED_PERC", 0.2)
     ledger = Ledger(":memory:")
     now = time.time()
     for miner, uploads in (("m1", 3), ("m2", 1)):

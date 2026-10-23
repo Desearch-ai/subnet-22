@@ -35,6 +35,17 @@ async fn a_refusing_chain_is_paused_instead_of_called_for_every_request() {
 }
 
 #[tokio::test]
+async fn a_refusing_endpoint_is_skipped_for_the_next_one_listed() {
+    let (down, up) = (FakeChain::start(5_000, 12.0).await, FakeChain::start(5_000, 12.0).await);
+    down.refuse(true);
+    let chain = Arc::new(Chain::new(&format!("{}, {}", down.url, up.url)).unwrap());
+    assert_eq!(chain.current_block().await.unwrap(), 5_000, "answered by the second endpoint");
+    assert!(chain.block_hash(4_990).await.unwrap().is_some());
+    assert_eq!((down.calls("chain_getHeader"), down.calls("chain_getBlockHash")), (1, 0), "the refusing one is paused, not asked again");
+    assert_eq!(up.calls("chain_getBlockHash"), 1);
+}
+
+#[tokio::test]
 async fn a_block_not_made_yet_is_asked_about_once_a_moment_not_once_per_round() {
     let fake = FakeChain::start(5_000, 12.0).await;
     let chain = Arc::new(Chain::new(&fake.url).unwrap());

@@ -16,8 +16,8 @@ pub async fn is_parquet(bucket: &Bucket, key: &str, found: &Head) -> Result<bool
     if found.size < 2 * magic {
         return Ok(false);
     }
-    let head = bucket.get_range(key, 0..magic, Some(&found.etag)).await?;
-    let tail = bucket.get_range(key, found.size - magic..found.size, Some(&found.etag)).await?;
+    let (head, tail) =
+        tokio::try_join!(bucket.get_range(key, 0..magic, Some(&found.etag)), bucket.get_range(key, found.size - magic..found.size, Some(&found.etag)))?;
     Ok(head.as_ref() == PARQUET_MAGIC && tail.as_ref() == PARQUET_MAGIC)
 }
 

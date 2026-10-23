@@ -13,6 +13,7 @@ use tokio::task::JoinSet;
 
 use crate::budgets::{self, hour_of, KEEP_H};
 use crate::http::ApiError;
+use crate::queues::KINDS;
 use crate::state::State;
 use crate::{checks, lifecycle, logs, roundstore, uploadlog, validations};
 
@@ -38,6 +39,8 @@ const LEASE_EVERY: Duration = Duration::from_secs(1);
 /// Every copy keeps the overview's pages this fresh, whoever holds the lease.
 const WARM_EVERY: Duration = Duration::from_secs(15);
 const SEAL_EVERY: Duration = Duration::from_secs(5);
+/// Held tasks moved to the ready queue in one step at most; a backlog drains over a few steps.
+const RELEASE_AT_ONCE: usize = 2_000;
 const UPLOAD_LOG_EVERY: Duration = Duration::from_secs(30);
 const BEST_BLOCK_EVERY: Duration = Duration::from_secs(30);
 /// The open list carries every open upload's URLs, so it is rewritten at most this often.
@@ -58,10 +61,11 @@ enum Duty {
     Finalize,
     Publish,
     Rounds,
+    Release,
     Upkeep,
 }
 
-const DUTIES: [Duty; 6] = [Duty::Reclaim, Duty::Settle, Duty::Finalize, Duty::Publish, Duty::Rounds, Duty::Upkeep];
+const DUTIES: [Duty; 7] = [Duty::Reclaim, Duty::Settle, Duty::Finalize, Duty::Publish, Duty::Rounds, Duty::Release, Duty::Upkeep];
 
 #[derive(Default)]
 struct Due {
@@ -101,10 +105,25 @@ impl Duty {
                 lifecycle::return_expired_publishes(state).await.map(drop)
             }
             Duty::Rounds => {
-                lifecycle::open_embed_rounds(state).await?;
-                lifecycle::fill_missing(state).await?;
-                lifecycle::reveal_pending(state).await?;
-                lifecycle::close_finished(state).await.map(drop)
+                // Each step runs whatever another one hit, so a chain error opening embed rounds holds up no reveal.
+                let steps = [
+                    ("opening embed rounds", lifecycle::open_embed_rounds(state).await.map(drop)),
+                    ("filling revealed rounds", lifecycle::fill_missing(state).await.map(drop)),
+                    ("revealing rounds", lifecycle::reveal_pending(state).await.map(drop)),
+                    ("closing rounds", lifecycle::close_finished(state).await.map(drop)),
+                ];
+                for (step, done) in steps {
+                    if let Err(error) = done {
+                        eprintln!("janitor Rounds: {step} failed: {error:#}");
+                    }
+                }
+                Ok(())
+            }
+            Duty::Release => {
+                for kind in KINDS {
+                    state.tasks(kind).release_due(&state.redis, now(), RELEASE_AT_ONCE).await?;
+                }
+                Ok(())
             }
             Duty::Upkeep => upkeep(state, due).await,
         }

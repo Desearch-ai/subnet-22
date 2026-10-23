@@ -28,7 +28,7 @@ use crate::queues::{self, Claim, Refusal, CLAIMS};
 use crate::roundlog::{self, Receipt};
 use crate::rounds::UPLOAD_GRACE_S;
 use crate::state::State;
-use crate::storage::{delete_quietly, is_parquet, put_json};
+use crate::storage::{delete_quietly, is_parquet};
 use crate::validations::{self, TaskFilter};
 use crate::verdicts::{build_embed_vote, build_vote};
 use crate::{roundstore, sampling, uploadlog};
@@ -44,6 +44,8 @@ const LINK_SLACK_S: u64 = 60;
 const TASKS_PAGE: i64 = 50;
 const MAX_TASKS_PAGE: i64 = 100;
 const ENQUEUED_TTL_S: u64 = 86_400;
+/// The sitemap protocol's limit; a longer URL is refused before it can reach a task.
+pub const MAX_URL_CHARS: usize = 2048;
 
 /// Seconds each step of a request took, for the log when the whole of it was slow.
 struct Steps {
@@ -429,9 +431,6 @@ async fn verify_completion(state: &State, task_id: &str, report: &CompleteBody, 
         job["reported"] = report.reported.clone();
     }
     job["manifest"] = signed_manifest(state, &job);
-    if let Err(error) = put_json(&state.storage, &lifecycle::manifest_key(&report.key), &job["manifest"], None).await {
-        return Err(storage_down(&format!("could not write the manifest for {}", report.key), error));
-    }
     steps.mark("manifest");
     let Some(seq) = state.tasks(&kind).complete(&state.redis, task_id, &who.hotkey, &job, &report.key, arrived).await? else {
         return Err(ApiError::status(409, "you do not hold a live claim on this task"));
@@ -690,6 +689,10 @@ pub async fn enqueue(Shared(state): Shared<Arc<State>>, ConnectInfo(peer): Conne
         return Err(ApiError::status(403, "only admins may do this"));
     }
     let request = Enqueue::parse(&json_body(&body)?)?;
+    if let Some(long) = request.urls.iter().find(|url| url.url.chars().count() > MAX_URL_CHARS) {
+        let start: String = long.url.chars().take(80).collect();
+        return Err(ApiError::status(422, format!("a URL longer than {MAX_URL_CHARS} characters: {start}...")));
+    }
     if !crate::janitor::stages_rounds(&state).await? {
         return Err(ApiError::retry(503, "an earlier version still leads; send the batch again shortly", "15"));
     }

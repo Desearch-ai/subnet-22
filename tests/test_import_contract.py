@@ -6,6 +6,7 @@ def test_setup_package_discovery_includes_the_miner_validator_and_shared_code():
     assert {
         "desearch",
         "desearch.extraction",
+        "desearch.extraction.v1",
         "neurons.miners",
         "neurons.validators",
     } <= packages

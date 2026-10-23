@@ -10,7 +10,7 @@ use std::sync::Arc;
 use arrow_array::{ArrayRef, Int64Array, TimestampMicrosecondArray, TimestampMillisecondArray, TimestampNanosecondArray};
 use arrow_schema::{DataType, TimeUnit};
 use bytes::Bytes;
-use common::{page, parquet, Upload};
+use common::{page, page_v2, parquet, parquet_v2, Upload};
 use publisher::reading::{read_rows, Counted, RangeRead, Traffic};
 use publisher::records::SECOND;
 
@@ -117,4 +117,42 @@ fn the_html_is_never_fetched() {
     assert_eq!(read_rows(&source, 3).unwrap().unwrap().len(), 3);
     let fetched = traffic.bytes.load(Ordering::Relaxed);
     assert!(fetched < 100_000 && file.len() > 3_000_000, "fetched {fetched} of {} bytes", file.len());
+}
+
+fn uploads_v2() -> Vec<Upload> {
+    let mut sparse = page_v2("https://ex.com/2", "", AT);
+    sparse.row.title = None;
+    sparse.row.paywalled = Some(false);
+    sparse.row.tags = Some(vec![Some("t".into()), None]);
+    sparse.row.entity = Some("{\"@type\": \"Organization\"}".into());
+    vec![page_v2("https://ex.com/1", "# caf\u{e9}\n\u{1f600}", AT + 1), sparse, page_v2("https://ex.com/3", "three", AT + 2)]
+}
+
+#[test]
+fn a_v2_upload_reads_its_v2_columns_and_a_v1_upload_has_none() {
+    let rows = read(parquet_v2(&uploads_v2(), None), 3).unwrap();
+    let expected: Vec<_> = uploads_v2().into_iter().map(|u| u.row).collect();
+    assert_eq!(rows, expected);
+    assert_eq!((rows[1].paywalled, rows[0].paywalled, rows[0].ld.as_deref()), (Some(false), None, Some("{\"faq\": [[\"Q\", \"A\"]]}")));
+    let v1 = read(parquet(&uploads(), None, None), 3).unwrap();
+    assert!(v1.iter().all(|r| r.extraction.is_none() && r.tags.is_none() && r.paywalled.is_none()));
+}
+
+#[test]
+fn a_v2_upload_missing_a_v2_column_is_refused_and_its_v2_columns_count_toward_its_size() {
+    assert!(read(parquet_v2(&uploads_v2(), Some("html")), 3).is_some(), "the HTML is never read");
+    for column in ["text_mode", "tags", "ld", "paywalled", "robots"] {
+        assert_eq!(read(parquet_v2(&uploads_v2(), Some(column)), 3), None, "{column} missing");
+    }
+    assert!(read(parquet_v2(&uploads_v2(), Some("extraction")), 3).is_some(), "without extraction it is a v1 file with extra columns");
+    for extraction in [None, Some("v3".to_string())] {
+        let mut odd = uploads_v2();
+        odd[1].row.extraction = extraction.clone();
+        assert_eq!(read(parquet_v2(&odd, None), 3), None, "a row of extraction {extraction:?} in a v2 file");
+    }
+    let mut heavy = page_v2("https://ex.com/big", &"a".repeat(3_500_000), AT);
+    heavy.row.ld = Some("l".repeat(3_000_000));
+    assert_eq!(read(parquet_v2(&[heavy.clone()], None), 1), None, "text and ld together are more than one row may hold");
+    assert!(read(parquet_v2(&[heavy.clone()], None), 2).is_some());
+    assert!(read(parquet(&[heavy], None, None), 1).is_some(), "the same text alone fits");
 }

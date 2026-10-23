@@ -3,7 +3,7 @@
 use std::io::{BufRead, BufWriter, Write};
 
 use desearch::canonical::{canonicalize, sha1_hex};
-use publisher::planner::texts;
+use publisher::planner::{recipe_of, texts};
 use publisher::records::{page_key, Record};
 use serde::Deserialize;
 use serde_json::json;
@@ -17,6 +17,11 @@ struct Page {
     lang: String,
     page_type: String,
     headings: Vec<String>,
+    #[serde(default)]
+    description: Option<String>,
+    /// Absent for a v1 text.
+    #[serde(default)]
+    extraction: Option<String>,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -32,6 +37,8 @@ fn main() -> anyhow::Result<()> {
             text: page.text,
             page_type: Some(page.page_type),
             headings: page.headings.into_iter().map(Some).collect(),
+            description: page.description,
+            extraction: page.extraction,
             ..Default::default()
         };
         let key = page_key(&record.url)?;
@@ -44,6 +51,7 @@ fn main() -> anyhow::Result<()> {
                 "kind": text.kind,
                 "index": text.index,
                 "text": text.text,
+                "recipe": recipe_of(&record),
             });
             serde_json::to_writer(&mut out, &row)?;
             out.write_all(b"\n")?;

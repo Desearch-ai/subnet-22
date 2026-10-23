@@ -177,6 +177,7 @@ fn page_object(doc: &Value) -> Record {
         miner: text("miner"),
         validator: optional("validator"),
         validators: list("validators").into_iter().flatten().collect(),
+        ..Record::default()
     }
 }
 

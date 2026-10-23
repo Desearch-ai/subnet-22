@@ -2,16 +2,17 @@
 
 mod common;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use arrow_array::cast::AsArray;
-use common::{page, parquet};
+use common::{page, page_v2, parquet, parquet_v2};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
-use publisher::changes::Kind;
+use publisher::changes::{Body, Kind};
+use publisher::current::{decode_changes, ChangeRow};
 use publisher::index::VersionIndex;
 use publisher::local::{LocalFeed, LocalUploads};
 use publisher::outcomes;
-use publisher::records::SECOND;
+use publisher::records::{record_version, Record, SECOND};
 use publisher::worker::{publish, Job};
 use serde_json::json;
 
@@ -69,17 +70,44 @@ fn a_batch_publishes_the_best_copy_of_each_page_and_publishing_again_logs_it_aga
     assert_eq!((change.kind, change.record().unwrap().task_id.as_str(), change.record().unwrap().text.as_str()), (Kind::Page, "t2", "second copy"));
     assert_eq!(change.previous_content_sha1, "");
     let failed: Vec<(&str, &str)> = batch.failed.iter().map(|f| (f.url.as_str(), f.task_id.as_str())).collect();
-    assert_eq!(
-        failed,
-        [("https://ex.com/b", "t1"), ("https://ex.com/c", "t1"), ("https://ex.com/e", "t1"), ("https://ex.com/x", "t1"), ("https://ex.com/gone", "t3")]
-    );
+    assert_eq!(failed, [("https://ex.com/b", "t1"), ("https://ex.com/c", "t1"), ("https://ex.com/e", "t1"), ("https://ex.com/x", "t1")]);
+    let dropped: Vec<(&str, &str)> = batch.dropped.iter().map(|f| (f.url.as_str(), f.task_id.as_str())).collect();
+    assert_eq!(dropped, [("https://ex.com/gone", "t3")], "a lost upload says nothing about its site");
     assert_eq!((batch.lost.as_slice(), batch.finalized.len(), batch.change_seq), (&["t3".to_string()][..], 3, Some(1)));
 
     let batch = publish(&[t1], &uploads, &none, &feed, NOW + 30 * SECOND, 2).unwrap();
     assert_eq!(batch.changes.len(), 1, "no version check: an older copy is logged too, and the compactor keeps the later fetch");
-    let rows = outcomes::rows(&batch.changes, &batch.failed);
+    let rows = outcomes::rows(&batch.changes, &batch.failed, &batch.dropped);
     assert_eq!(rows.iter().filter(|r| r.outcome == desearch::outcomes::PUBLISHED).count(), 1);
     assert!(!desearch::outcomes::encode(&rows, NOW).unwrap().is_empty());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_v2_upload_publishes_its_v2_fields_beside_v1_uploads_and_the_later_fetch_wins() {
+    let dir = scratch("v2");
+    let at = |seconds: i64| (COMPLETED - seconds) * SECOND;
+    let (b, c) = ("https://ex.com/b", "https://ex.com/c");
+    std::fs::write(dir.join("old.parquet"), parquet(&[page(A, "v1 copy", at(120)), page(b, "only v1", at(60)), page(c, "newer v1", at(10))], None, None))
+        .unwrap();
+    std::fs::write(dir.join("new.parquet"), parquet_v2(&[page_v2(A, "# v2 copy", at(30)), page_v2(c, "# older v2", at(90))], None)).unwrap();
+    let uploads = LocalUploads::new(&dir);
+    let feed = LocalFeed::new(dir.join("changes"), 1).unwrap();
+    let batch = publish(&[job("old", &[A, b, c], &[]), job("new", &[A, c], &[])], &uploads, &HashSet::new(), &feed, NOW, 2).unwrap();
+    let by_url: HashMap<&str, &Record> = batch.changes.iter().map(|change| (change.url().unwrap(), change.record().unwrap())).collect();
+    let v2 = by_url[A];
+    assert_eq!((v2.text.as_str(), v2.extraction.as_deref(), v2.text_mode.as_deref()), ("# v2 copy", Some("v2"), Some("main")));
+    assert_eq!((v2.tags.len(), v2.image.as_deref(), v2.ld.as_deref()), (2, Some("https://ex.com/a/cover.png"), Some("{\"faq\": [[\"Q\", \"A\"]]}")));
+    assert!(by_url[b].is_v1() && by_url[b].tags.is_empty());
+    assert_eq!((by_url[c].text.as_str(), by_url[c].is_v1()), ("newer v1", true), "a later v1 fetch wins over an earlier v2 one");
+
+    let file = std::fs::read(dir.join("changes").join(format!("{:012}.parquet", 1))).unwrap();
+    let logged = decode_changes(bytes::Bytes::from(file), 1).unwrap();
+    for (row, change) in logged.iter().zip(&batch.changes) {
+        let (ChangeRow::Page(row), Body::Page { record, version }) = (row, &change.body) else { panic!("pages only") };
+        assert_eq!((&row.record, &row.version), (record.as_ref(), version), "{} reads back as published", record.url);
+        assert_eq!(*version, record_version(record));
+    }
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -102,14 +130,14 @@ fn a_withdrawal_writes_one_row_per_task_whatever_its_pages_and_refuses_its_jobs_
     let rows: Vec<(Kind, Option<&str>)> = batch.changes.iter().map(|c| (c.kind, c.url())).collect();
     assert_eq!(rows, [(Kind::TaskWithdrawn, None); 3], "one row per task named, none per page");
     assert_eq!(batch.withdrawn, ["big", "small", "late"]);
-    let failed: Vec<(&str, &str)> = batch.failed.iter().map(|f| (f.url.as_str(), f.task_id.as_str())).collect();
-    assert_eq!(failed, [(A, "late")], "a job for a task taken back in the same batch is refused");
+    let dropped: Vec<(&str, &str)> = batch.dropped.iter().map(|f| (f.url.as_str(), f.task_id.as_str())).collect();
+    assert_eq!(dropped, [(A, "late")], "a job for a task taken back in the same batch is refused");
     assert!(batch.finalized.contains(&"late".to_string()));
 
     let refused: HashSet<String> = ["later".to_string()].into();
     let batch = publish(&[job("later", &[A], &[])], &uploads, &refused, &feed, NOW + 2 * SECOND, 2).unwrap();
     assert!(batch.changes.is_empty(), "a job for a task taken back earlier is refused");
-    assert_eq!(batch.failed.len(), 1);
+    assert_eq!((batch.failed.len(), batch.dropped.len()), (0, 1));
 
     let file = std::fs::read(dir.join("changes").join(format!("{:012}.parquet", 2))).unwrap();
     let read = ParquetRecordBatchReaderBuilder::try_new(bytes::Bytes::from(file)).unwrap().build().unwrap().next().unwrap().unwrap();

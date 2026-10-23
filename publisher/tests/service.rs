@@ -15,10 +15,12 @@ use arrow_schema::{DataType, Field, Schema};
 use base64::Engine;
 use bytes::Bytes;
 use common::{page, parquet};
+use desearch::feeds::{CHANGES, PENDING_GRACE_S};
 use desearch::r2::{self, Bucket, Credentials, PARQUET};
 use desearch::stub;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use publisher::index::{Current, VersionIndex};
+use publisher::queue::PublishQueue;
 use publisher::service::{self, Metrics, Settings, Shared};
 use publisher::snapshot::Multipart;
 use redis::aio::ConnectionManager;
@@ -112,6 +114,52 @@ fn outcome_feed(state: &stub::State, first: u64, last: u64) -> Vec<(String, Stri
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_failed_pass_puts_its_jobs_back_without_a_try_but_never_an_acknowledged_one() {
+    let Some((_turn, mut redis)) = redis_db().await else {
+        eprintln!("skipped: no Redis on {REDIS}");
+        return;
+    };
+    let urls = vec!["https://ex.com/a".to_string()];
+    for task in ["g1", "g2"] {
+        enqueue(&mut redis, &crawl(task, &urls, 1.0, ""), false).await;
+    }
+    let queue = PublishQueue::new(redis.clone(), 600.0);
+    assert_eq!(queue.claim(10).await.unwrap().len(), 2);
+    queue.ack("g2").await.unwrap();
+    assert_eq!(queue.give_back(&["g1".to_string(), "g2".to_string()]).await.unwrap(), 1);
+    let claims: Vec<String> = redis.zrange("publish:claims", 0, -1).await.unwrap();
+    let ready: Vec<String> = redis.lrange("publish:ready", 0, -1).await.unwrap();
+    let tries: Option<i64> = redis.get("ptries:g1").await.unwrap();
+    assert!(claims.is_empty() && ready == ["g1"] && tries.is_none(), "g1 is queued again with no try counted; the acknowledged g2 stays done");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_number_whose_writer_died_before_indexing_it_is_indexed_once_it_goes_stale() {
+    let Some((_turn, mut redis)) = redis_db().await else {
+        eprintln!("skipped: no Redis on {REDIS}");
+        return;
+    };
+    let dir = scratch("feed-pending");
+    let stub = stub::start(dir.join("r2"), "127.0.0.1:0").await.unwrap();
+    let pages = bucket(stub.addr, PAGES, "", Arc::default());
+    let numbered = CHANGES.number(&pages, &redis, "changes/dt=2026-10-22/a.parquet", 3).await.unwrap();
+    assert_eq!(numbered, 1);
+    assert!(!redis.exists::<_, bool>("changes:pending").await.unwrap(), "an indexed number is no longer pending");
+
+    let long_ago = desearch::time::now() - PENDING_GRACE_S - 1.0;
+    let () = redis.set("changes:seq", 3).await.unwrap();
+    let () = redis.hset("changes:pending", 2, format!("{long_ago}\tchanges/dt=2026-10-22/lost.parquet")).await.unwrap();
+    let () = redis.hset("changes:pending", 3, format!("{}\tchanges/dt=2026-10-22/writing.parquet", desearch::time::now())).await.unwrap();
+    assert_eq!(CHANGES.fill_holes(&pages, &redis).await.unwrap(), 1);
+
+    let index = json_object(&stub.state, PAGES, &CHANGES.seq_key(2)).unwrap();
+    assert_eq!(index["key"], "changes/dt=2026-10-22/lost.parquet");
+    assert_eq!(json_object(&stub.state, PAGES, &CHANGES.seq_key(3)), None, "a number still being written is left to its writer");
+    let left: Vec<String> = redis.hkeys("changes:pending").await.unwrap();
+    assert_eq!(left, ["3"]);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_service_publishes_reports_and_takes_back() {
     let Some((_turn, mut redis)) = redis_db().await else {
         eprintln!("skipped: no Redis on {REDIS}");
@@ -170,7 +218,7 @@ async fn the_service_publishes_reports_and_takes_back() {
     assert_eq!(redis.get::<_, u64>("outcomes:seq").await.unwrap(), 2, "the two batches that finished tasks");
     let outcomes = outcome_feed(&state, 1, 2);
     let count = |kind: &str| outcomes.iter().filter(|(k, _)| k == kind).count();
-    assert_eq!((count("published"), count("failed"), outcomes.len()), (6, 6, 12));
+    assert_eq!((count("published"), count("dropped"), outcomes.len()), (6, 6, 12), "the lost t3 and t4 are dropped, not failed");
     assert_eq!(json_object(&state, TEMP, &format!("{PREFIX}outcomes/latest.json")).unwrap(), json!({"seq": 2}));
     assert_eq!(state.meta(TEMP, &format!("{PREFIX}outcomes/latest.json")).unwrap().1, "no-store");
 
@@ -205,7 +253,7 @@ async fn the_service_publishes_reports_and_takes_back() {
         urls.sort();
         urls
     };
-    assert_eq!((of("published"), of("failed"), outcomes.len()), (urls("t1"), urls("t2"), 6), "the late job for t2 is refused");
+    assert_eq!((of("published"), of("dropped"), outcomes.len()), (urls("t1"), urls("t2"), 6), "the late job for t2 is refused");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -460,8 +508,8 @@ async fn a_crawl_upload_is_published_only_in_the_version_its_completion_named() 
     let published: BTreeSet<String> = column(&rows(&state.object(PAGES, index["key"].as_str().unwrap()).unwrap()), "url").into_iter().collect();
     assert_eq!(published, urls("v1").into_iter().chain(urls("v2")).collect::<BTreeSet<_>>());
     let outcomes = outcome_feed(&state, 1, redis.get::<_, u64>("outcomes:seq").await.unwrap());
-    let failed: BTreeSet<String> = outcomes.into_iter().filter(|(kind, _)| kind == "failed").map(|(_, url)| url).collect();
-    assert_eq!(failed, urls("v3").into_iter().collect::<BTreeSet<_>>());
+    let dropped: BTreeSet<String> = outcomes.into_iter().filter(|(kind, _)| kind == "dropped").map(|(_, url)| url).collect();
+    assert_eq!(dropped, urls("v3").into_iter().collect::<BTreeSet<_>>(), "a rewritten upload is lost, which says nothing about its sites");
 
     enqueue(&mut redis, &crawl("v4", &urls("v4"), completed, &etag(&temp, &key("v4")).await), true).await;
     state.slow("GET", &format!("{TEMP}/{PREFIX}{}", key("v4")), 1, Duration::from_secs(1));

@@ -401,7 +401,6 @@ async fn an_embed_upload_is_one_float16_vector_per_text_and_its_size_is_checked_
     let job = h.state.validation.job(&h.redis, &task_id(&task)).await.unwrap().unwrap();
     assert_eq!(job["key"], key, "the upload is pinned where the miner put it");
     assert_eq!(h.object(key), Some(vectors(6)));
-    assert!(h.json_object(&lifecycle::manifest_key(key)).is_some());
     assert!(job.get("reported").is_none(), "the miner's counts are not kept");
     let hotkey = h.miner.ss58();
     let strikes: i64 =

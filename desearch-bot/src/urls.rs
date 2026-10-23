@@ -6,6 +6,7 @@ use std::net::{Ipv4Addr, Ipv6Addr};
 use stringprep::tables;
 use unicode_normalization::UnicodeNormalization;
 
+use crate::taskapi::MAX_URL_CHARS;
 use crate::text;
 
 pub const HTTPS: u8 = 1;
@@ -487,6 +488,9 @@ impl Normaliser {
 
     /// A sitemap URL as its store key, or None when it is not a web page on this domain.
     pub fn parse(&self, url: &str) -> Option<Url> {
+        if url.len() > MAX_URL_CHARS {
+            return None;
+        }
         let parts = split(text::strip(url)).ok()?;
         let scheme = parts.scheme.as_deref().unwrap_or("");
         let default_port = match scheme {
@@ -623,6 +627,8 @@ mod tests {
         assert_eq!(parse("http://www.example.com/a", "example.com").unwrap().flags, WWW);
         assert_eq!(key("https://evil-example.com/a", "example.com"), None);
         assert_eq!(key("https://example.com:99999/", "example.com"), None);
+        let longest = format!("https://example.com/{}", "a".repeat(MAX_URL_CHARS - 20));
+        assert!(key(&longest, "example.com").is_some() && key(&format!("{longest}a"), "example.com").is_none(), "longer than the task API takes");
     }
 
     #[test]

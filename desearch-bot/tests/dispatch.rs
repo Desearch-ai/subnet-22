@@ -6,10 +6,12 @@ use std::sync::{Arc, Mutex};
 
 use desearch_bot::allowed::{self, Allowed};
 use desearch_bot::buckets::{bucket_of, BucketStore, Buckets, Changes, Resources};
-use desearch_bot::dispatch::{allot, batch_id, interleave, settle, shares, slots, split, Dispatcher, HourlyCap, Pace, Progress, Want};
+use desearch_bot::dispatch::{
+    allot, batch_id, interleave, settle, shares, slots, split, yield_share, Dispatcher, HourlyCap, Pace, Progress, Want, PROBE_PER_HOUR, YIELD_JUDGED,
+};
 use desearch_bot::hotkey::{self, Hotkey};
 use desearch_bot::outcomes::{self, Next, OutcomeFeed, OutcomeRow};
-use desearch_bot::ready::{Order, Outcome, PageOutcome, Pick, Reason, SentPage, BACKOFF, CHANGED, FRESH, LANES, NO_OUTCOME, REQUEUED};
+use desearch_bot::ready::{Order, Outcome, PageOutcome, Pick, Reason, SentPage, Yield, BACKOFF, CHANGED, FRESH, LANES, NO_OUTCOME, REQUEUED, YIELD_HALF_LIFE_S};
 use desearch_bot::records;
 use desearch_bot::states::State;
 use desearch_bot::taskapi::{QueuedUrl, TaskApi};
@@ -268,7 +270,7 @@ fn the_backfill_queues_old_pages_once_and_resumes_where_it_stopped() {
 #[test]
 fn turns_go_best_rank_first_with_more_slots_and_resume_where_they_stopped() {
     assert_eq!([1, 9, 10, 99, 100, 9_999, 10_000, 999_999, 1_000_000, UNRANKED].map(slots), [7, 7, 6, 6, 5, 4, 3, 2, 1, 1]);
-    let want = |rank: i64, ready: u64, allowance: u64| Want { rank, ready, allowance };
+    let want = |rank: i64, ready: u64, allowance: u64| Want { rank, ready, allowance, share: 1.0 };
     let wants = [want(1, 100, 100), want(500, 100, 100), want(2_000_000, 100, 100)];
     assert_eq!(allot(&wants, 13, 0), (vec![7, 5, 1], 0));
     let (given, next) = allot(&wants, 10, 0);
@@ -277,6 +279,40 @@ fn turns_go_best_rank_first_with_more_slots_and_resume_where_they_stopped() {
     assert_eq!(allot(&[want(1, 100, 3), want(500, 100, 100)], 20, 0).0, [3, 17], "the hourly allowance caps a domain");
     assert_eq!(allot(&[want(1, 4, 100)], 50, 0).0, [4]);
     assert_eq!(allot(&[], 50, 0).0, Vec::<u64>::new());
+}
+
+#[test]
+fn a_domain_whose_pages_do_not_come_back_gets_fewer_slots_and_then_only_probes() {
+    let counted = |ok: f64, failed: f64| Some(Yield { ok, failed, at: 1000 });
+    assert_eq!(yield_share(None, 1000), 1.0, "nothing judged yet");
+    assert_eq!(yield_share(counted(0.0, YIELD_JUDGED - 1.0), 1000), 1.0, "too few to judge");
+    assert_eq!(yield_share(counted(5.0, 995.0), 1000), 0.0, "half a percent: probes only");
+    assert_eq!(yield_share(counted(100.0, 900.0), 1000), 0.5, "a tenth comes back: half the slots");
+    assert_eq!(yield_share(counted(300.0, 700.0), 1000), 1.0);
+    let three_days = 1000 + (3.0 * YIELD_HALF_LIFE_S) as u32;
+    assert_eq!(yield_share(counted(5.0, 995.0), three_days), 1.0, "old outcomes fade until the domain is judged afresh");
+
+    let want = |share: f64, allowance: u64| Want { rank: 1, ready: 100, allowance, share };
+    assert_eq!(allot(&[want(1.0, 100), want(0.5, 100)], 22, 0).0, [14, 8], "seven slots a turn against half of seven, rounded up");
+    assert_eq!(allot(&[want(0.0, PROBE_PER_HOUR), want(1.0, 100)], 100, 0).0, [13, 87], "a probing domain takes one a turn");
+    assert_eq!(allot(&[want(0.0, PROBE_PER_HOUR), want(1.0, 100)], 500, 0).0, [PROBE_PER_HOUR, 100], "and never more than its probes");
+}
+
+#[test]
+fn outcomes_tally_each_domains_yield_and_a_dropped_task_counts_for_nothing() {
+    let dir = Dir::new("ready-yield");
+    let store = open(&dir);
+    store.record_listing("example.com", 7, vec![page("a", 10), page("b", 10), page("c", 10)], 100).unwrap();
+    let picks = take(&store, 10);
+    store.mark_sent(&picks, 1000).unwrap();
+    let row = |path: &str, outcome: Outcome| PageOutcome { domain: "example.com".into(), rest: rest(path), outcome, at: 2000 };
+    store.apply_outcomes(&[row("a", Outcome::Published), row("b", Outcome::Failed), row("c", Outcome::Dropped)], RECRAWL).unwrap();
+    assert_eq!(store.domain_yield("example.com").unwrap(), Some(Yield { ok: 1.0, failed: 1.0, at: 2000 }));
+    let unknown = PageOutcome { domain: "example.com".into(), rest: rest("never-sent"), outcome: Outcome::Failed, at: 2000 };
+    store.apply_outcomes(&[row("a", Outcome::Unchanged), unknown], RECRAWL).unwrap();
+    let tallied = store.domain_yield("example.com").unwrap().unwrap();
+    assert_eq!((tallied.ok, tallied.failed), (2.0, 1.0), "outcomes of one moment add up; a page the store does not know is not counted");
+    assert_eq!(store.domain_yield("other.com").unwrap(), None);
 }
 
 #[test]
@@ -343,6 +379,8 @@ struct FakeApi {
     rooms: usize,
     enqueued: Vec<(HashMap<String, String>, Vec<u8>)>,
     files: HashMap<String, Vec<u8>>,
+    /// What a file not there is answered with: 404, or 403 as a store with a private bucket answers.
+    forbid_missing: bool,
 }
 
 /// One request per connection: the room, or an enqueue that fails while `fail_next` lasts.
@@ -404,6 +442,7 @@ async fn serve_api(listener: TcpListener, api: Arc<Mutex<FakeApi>>) {
                     }
                     _ => match api.files.get(path) {
                         Some(file) => (200, String::from_utf8_lossy(file).into_owned()),
+                        None if api.forbid_missing => (403, "<Error><Code>AccessDenied</Code></Error>".to_string()),
                         None => (404, r#"{"detail":"no such route"}"#.to_string()),
                     },
                 }
@@ -568,6 +607,12 @@ async fn the_outcome_feed_tells_a_number_not_written_yet_from_one_that_is_gone()
     assert_eq!(feed.latest().await.unwrap(), Some(7), "where a bot reading the feed for the first time starts");
     assert!(matches!(feed.fetch(5).await.unwrap(), Next::Missing), "later numbers exist, so 5 is gone or late");
     assert!(matches!(feed.fetch(8).await.unwrap(), Next::Wait), "8 is simply not written yet");
+
+    fake.lock().unwrap().forbid_missing = true;
+    assert!(matches!(feed.fetch(5).await.unwrap(), Next::Missing), "a 403 for a key the store does not have is a missing number too");
+    assert!(matches!(feed.fetch(8).await.unwrap(), Next::Wait));
+    fake.lock().unwrap().files.insert("/outcomes/seq/000000000006.json".into(), br#"{"key": "outcomes/dt=2026-10-22/a.parquet", "rows": 3}"#.to_vec());
+    assert!(matches!(feed.fetch(6).await.unwrap(), Next::Gone), "an index whose file expired is skipped, not waited on");
 }
 
 
@@ -684,12 +729,12 @@ async fn several_batches_go_out_together_and_only_a_failed_one_is_sent_again() {
 }
 
 #[test]
-fn the_pace_grows_steadily_and_saves_up_only_five_minutes() {
+fn the_pace_starts_empty_grows_steadily_and_saves_up_only_two_minutes() {
     let mut pace = Pace::new(3_600_000, 1000);
-    assert_eq!(pace.allowance(1000), 300_000, "five minutes' worth to start");
-    pace.spend(300_000);
+    assert_eq!(pace.allowance(1000), 0, "nothing saved at the start, so a restart sends no burst");
     assert_eq!(pace.allowance(1060), 60_000, "a minute later, a minute's worth");
-    assert_eq!(pace.allowance(1000 + 7200), 300_000, "an idle hour saves no more than five minutes");
+    pace.spend(60_000);
+    assert_eq!(pace.allowance(1000 + 7200), 120_000, "an idle hour saves no more than two minutes");
     assert_eq!(Pace::new(0, 1000).allowance(2000), u64::MAX, "no pace set sends whatever there is room for");
 }
 
@@ -733,4 +778,35 @@ async fn a_batch_refused_as_too_large_or_invalid_goes_in_halves_and_only_the_pag
     assert_eq!(progress.set_aside.load(std::sync::atomic::Ordering::Relaxed), 1);
     assert_eq!(buckets.store(host).ready_count(host).unwrap(), 0, "the bad page left the ready list too");
     assert_eq!(dispatcher.pass(now + 15).await.unwrap(), 0);
+}
+
+#[test]
+fn dropping_a_domain_deletes_its_pages_and_leaves_its_neighbours_whole() {
+    let dir = Dir::new("ready-drop");
+    let owned = [bucket_of("junk.com")];
+    let buckets = Buckets::open(&dir.0, &owned, &resources()).unwrap();
+    let store = buckets.store("junk.com");
+    for host in ["junk.com", "junk.com.au"] {
+        let mut changes = Changes::default();
+        changes.domain(host, &records::new_domain(Some(5), Some("com"), &[], State::Active, None, None));
+        store.write(changes).unwrap();
+        let pages = (0..20).map(|i| (urls::parse(&format!("https://{host}/p{i}"), host).unwrap(), 100 + i, false)).collect();
+        store.record_listing(host, 1, pages, 100).unwrap();
+    }
+    let picks: Vec<Pick> = store.take_ready("junk.com", [0, 0, 5]).unwrap();
+    store.mark_sent(&picks, 1000).unwrap();
+    let page = |host: &str, i: u32| store.url(&urls::parse(&format!("https://{host}/p{i}"), host).unwrap()).unwrap();
+
+    let counted = store.drop_domain("junk.com", "junk", false).unwrap();
+    assert_eq!((counted.known, counted.ready), (true, 15));
+    assert!(page("junk.com", 0).is_some(), "counting deletes nothing");
+
+    store.drop_domain("junk.com", "hacked", true).unwrap();
+    assert!((0..20).all(|i| page("junk.com", i).is_none()));
+    assert_eq!(store.ready_count("junk.com").unwrap(), 0);
+    assert_eq!(store.ready_domains().unwrap(), [("junk.com.au".to_string(), 20)], "a domain that only starts with its name is untouched");
+    assert!((0..20).all(|i| page("junk.com.au", i).is_some()));
+    let record = store.domain("junk.com").unwrap().unwrap();
+    assert_eq!((record["state"].as_str(), record["reason"].as_str(), record["due"].is_null()), (Some("excluded"), Some("hacked"), true));
+    assert!(!store.drop_domain("unknown.com", "junk", true).unwrap().known);
 }

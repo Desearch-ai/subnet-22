@@ -23,7 +23,7 @@ use crate::urls::{Listing, Record, Url, TIMED};
 pub const BUCKETS: usize = 256;
 const DOMAIN: u8 = b'D';
 /// What each sitemap listed when last read, so unchanged entries skip their lookups.
-const LISTED: u8 = b'L';
+pub(crate) const LISTED: u8 = b'L';
 const SITEMAP: u8 = b'S';
 pub(crate) const URL: u8 = b'U';
 const META: u8 = b'M';
@@ -161,6 +161,14 @@ impl Changes {
     pub fn sitemap(&mut self, host: &str, url: &str, record: &Json) {
         self.batch.put(sitemap_key(host, url), encode(record));
     }
+
+    pub(crate) fn delete(&mut self, key: &[u8]) {
+        self.batch.delete(key);
+    }
+
+    pub(crate) fn delete_range(&mut self, from: &[u8], to: &[u8]) {
+        self.batch.delete_range(from, to);
+    }
 }
 
 /// What the timetable needs from a domain record.
@@ -262,6 +270,20 @@ impl BucketStore {
     }
 
     /// Store what one sitemap lists now, looking up only entries it did not list the same way when last read, and put pages due a send on their ready lists.
+    /// The share of these URLs, keyed as `Url::key`, the store has never recorded.
+    pub fn new_share<'a>(&self, keys: impl Iterator<Item = &'a [u8]>) -> Result<f64> {
+        let keys: Vec<Vec<u8>> = keys.map(|key| [&[URL], key].concat()).collect();
+        if keys.is_empty() {
+            return Ok(0.0);
+        }
+        let cf = self.db.cf_handle("default").context("default column family")?;
+        let mut unknown = 0;
+        for found in self.db.batched_multi_get_cf(cf, &keys, false) {
+            unknown += usize::from(found?.is_none());
+        }
+        Ok(unknown as f64 / keys.len() as f64)
+    }
+
     pub fn record_listing(&self, host: &str, sitemap_id: i64, mut entries: Vec<(Url, u32, bool)>, now: u32) -> Result<Listing> {
         for entry in entries.iter_mut() {
             entry.0.key.insert(0, URL);

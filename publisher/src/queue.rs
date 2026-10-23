@@ -47,12 +47,24 @@ redis.call('ZREM', KEYS[1], ARGV[1])
 if redis.call('ZREM', KEYS[2], ARGV[1]) == 1 then redis.call('INCR', KEYS[3]) end
 return redis.call('DEL', 'pjob:' .. ARGV[1], 'ptries:' .. ARGV[1])
 ";
+/// Back on the queue at once and without a try counted, since a failed pass is the publisher's fault, not the job's.
+const GIVE_BACK: &str = "
+local back = 0
+for _, task_id in ipairs(ARGV) do
+  if redis.call('ZREM', KEYS[1], task_id) == 1 and redis.call('EXISTS', 'pjob:' .. task_id) == 1 then
+    redis.call('RPUSH', KEYS[2], task_id)
+    back = back + 1
+  end
+end
+return back
+";
 
 pub struct PublishQueue {
     pub redis: ConnectionManager,
     claim_ttl: f64,
     claim: Script,
     ack: Script,
+    give_back: Script,
 }
 
 /// Where an embed task's vectors were published, so they can be withdrawn.
@@ -75,7 +87,7 @@ pub struct Backlog {
 
 impl PublishQueue {
     pub fn new(redis: ConnectionManager, claim_ttl: f64) -> Self {
-        PublishQueue { redis, claim_ttl, claim: Script::new(PCLAIM), ack: Script::new(PACK) }
+        PublishQueue { redis, claim_ttl, claim: Script::new(PCLAIM), ack: Script::new(PACK), give_back: Script::new(GIVE_BACK) }
     }
 
     /// Up to `count` jobs, each claimed until the claim expires; a job that does not parse stays claimed until the API gives it back.
@@ -107,6 +119,14 @@ impl PublishQueue {
         }
         let () = pipe.query_async(&mut self.redis.clone()).await?;
         Ok(())
+    }
+
+    /// Puts still-claimed jobs back on the queue for the next pass; how many went back.
+    pub async fn give_back(&self, task_ids: &[String]) -> Result<usize> {
+        if task_ids.is_empty() {
+            return Ok(0);
+        }
+        Ok(self.give_back.key(PCLAIMS).key(PUBLISH).arg(task_ids).invoke_async(&mut self.redis.clone()).await?)
     }
 
     pub async fn mark_lost(&self, task_id: &str) -> Result<()> {

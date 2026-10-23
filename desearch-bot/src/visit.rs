@@ -14,6 +14,8 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio::time::Instant;
 
 use crate::buckets::{sitemap_id, Buckets};
+use crate::churn;
+use crate::listed::fingerprint;
 use crate::robots::{self, Paths};
 use crate::schedule::{self, Trust, DAY, SECOND};
 use crate::signing::Signer;
@@ -68,6 +70,9 @@ pub struct KnownSitemap {
     pub url_count: i64,
     /// The file answered last time, so its URLs count toward the domain's total.
     pub ok: bool,
+    pub suspect_at: Option<i64>,
+    pub sketch: Vec<u64>,
+    pub generated_until: Option<i64>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -105,6 +110,9 @@ pub struct SitemapUpdate {
     pub next_check_at: Option<i64>,
     pub trust: Trust,
     pub index_lastmod: Option<String>,
+    pub suspect_at: Option<i64>,
+    pub sketch: Vec<u64>,
+    pub generated_until: Option<i64>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -475,9 +483,16 @@ impl Run<'_> {
         let update = &mut self.result.sitemaps[i];
         update.etag = header(&answer.headers, "etag");
         update.last_modified = header(&answer.headers, "last-modified");
+        let standing = stored.map_or_else(churn::Standing::default, |s| churn::Standing {
+            listed_before: s.url_count > 0,
+            suspect_at: s.suspect_at,
+            sketch: s.sketch.clone(),
+            generated_until: s.generated_until,
+        });
         let job = FileJob {
             _permit: answer.permit,
             body: answer.body,
+            standing,
             stored_hash: stored.and_then(|s| s.content_hash.clone()),
             now: self.now,
             trust: update.trust,
@@ -488,7 +503,7 @@ impl Run<'_> {
             robots: self.result.robots_paths.clone(),
             buckets: self.visitor.buckets.clone(),
         };
-        let read = match self.visitor.cpu(move || digest(job)).await?? {
+        let mut read = match self.visitor.cpu(move || digest(job)).await?? {
             Digested::Unchanged => {
                 self.unchanged(i, stored);
                 return Ok(Vec::new());
@@ -511,6 +526,31 @@ impl Run<'_> {
             None => schedule::first_interval(read.changefreq.as_deref(), news),
         };
         update.next_check_at = Some(self.now + update.interval);
+        match read.verdict.take() {
+            Some(churn::Verdict::Suspect { sketch }) => {
+                update.suspect_at = Some(self.now);
+                update.sketch = sketch;
+                update.next_check_at = Some(self.now + churn::CONFIRM_AFTER);
+                // Held back, so the next read must not pass as unchanged.
+                update.content_hash = stored.and_then(|s| s.content_hash.clone());
+                update.etag = stored.and_then(|s| s.etag.clone());
+                update.last_modified = stored.and_then(|s| s.last_modified.clone());
+            }
+            Some(churn::Verdict::Generated { until }) => {
+                if update.generated_until.is_none_or(|was| was <= self.now) {
+                    println!("[rs] {url} lists new URLs on every read; none of them is taken for a week");
+                }
+                update.generated_until = Some(until);
+                update.suspect_at = None;
+                update.sketch.clear();
+            }
+            Some(churn::Verdict::Clear) => {
+                update.suspect_at = None;
+                update.sketch.clear();
+                update.generated_until = None;
+            }
+            None => {}
+        }
         if read.kind == "index" {
             update.child_count = read.entries as i64;
             return Ok(read.children);
@@ -542,6 +582,9 @@ impl Run<'_> {
                 next_check_at: None,
                 trust: stored.trust,
                 index_lastmod: index_date.or_else(|| stored.index_lastmod.clone()),
+                suspect_at: stored.suspect_at,
+                sketch: stored.sketch.clone(),
+                generated_until: stored.generated_until,
             },
             None => SitemapUpdate {
                 id: sitemap_id(url),
@@ -561,6 +604,9 @@ impl Run<'_> {
                 next_check_at: None,
                 trust: Trust::Unknown,
                 index_lastmod: index_date,
+                suspect_at: None,
+                sketch: Vec::new(),
+                generated_until: None,
             },
         };
         self.result.sitemaps.push(update);
@@ -729,6 +775,7 @@ impl Run<'_> {
 }
 
 struct FileJob {
+    standing: churn::Standing,
     _permit: Option<OwnedSemaphorePermit>,
     body: Vec<u8>,
     stored_hash: Option<String>,
@@ -751,6 +798,7 @@ struct Read {
     entries: usize,
     children: Vec<Child>,
     listing: Listing,
+    verdict: Option<churn::Verdict>,
 }
 
 enum Digested {
@@ -784,6 +832,7 @@ fn digest(job: FileJob) -> Result<Digested, Crash> {
         entries: entries.len(),
         children: Vec::new(),
         listing: Listing::default(),
+        verdict: None,
     };
     if kind == "index" {
         if job.depth < MAX_DEPTH {
@@ -808,7 +857,18 @@ fn digest(job: FileJob) -> Result<Digested, Crash> {
         Err(_) => Vec::new(),
     };
     let store = job.buckets.store(&job.known.host);
-    read.listing = store.record_listing(&job.known.host, job.id, rows, epoch(Some(job.now)) as u32).map_err(|_| Crash::new("StoreError"))?;
+    let mut hashed: Vec<(u64, &[u8])> = rows.iter().map(|(url, _, _)| (fingerprint(&url.key, 0), url.key.as_slice())).collect();
+    hashed.sort_unstable();
+    hashed.dedup_by_key(|(hash, _)| *hash);
+    hashed.truncate(churn::SKETCH);
+    let sketch: Vec<u64> = hashed.iter().map(|(hash, _)| *hash).collect();
+    let new_share = || store.new_share(hashed.iter().map(|(_, key)| *key)).unwrap_or(0.0);
+    let verdict = churn::judge(&job.standing, rows.len(), sketch, new_share, job.now);
+    read.listing = match verdict {
+        churn::Verdict::Clear => store.record_listing(&job.known.host, job.id, rows, epoch(Some(job.now)) as u32).map_err(|_| Crash::new("StoreError"))?,
+        churn::Verdict::Suspect { .. } | churn::Verdict::Generated { .. } => Listing { listed: rows.len(), ..Listing::default() },
+    };
+    read.verdict = Some(verdict);
     Ok(Digested::Read(read))
 }
 

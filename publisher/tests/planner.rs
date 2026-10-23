@@ -14,7 +14,9 @@ use desearch::r2::{self, Bucket, Credentials, JSON, PARQUET};
 use desearch::stub;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use publisher::changes::{self, Body, Change, Kind};
-use publisher::planner::{page_text, passages, texts, Planner, Room, Settings, EMBED_DROPPED, EMBED_INPUTS, PAGE, PASSAGE};
+use publisher::planner::{
+    page_text, page_text_v2, passages, passages_v2, texts, Passage, Planner, Room, Settings, EMBED_DROPPED, EMBED_INPUTS, PAGE, PASSAGE, RECIPE_V1, RECIPE_V2,
+};
 use publisher::records::{page_key, record_version, Record};
 use redis::aio::ConnectionManager;
 use redis::AsyncCommands;
@@ -37,6 +39,10 @@ fn record(url: &str, text: &str, page_type: &str, lang: &str) -> Record {
         miner: "5Miner".into(),
         ..Record::default()
     }
+}
+
+fn v2(record: Record) -> Record {
+    Record { extraction: Some("v2".into()), ..record }
 }
 
 fn change(record: Record) -> Change {
@@ -111,6 +117,144 @@ fn passages_group_paragraphs_and_split_long_lines_at_sentences() {
     assert_eq!(page_text(&description), "A title\nOpening line. More.", "a description the text opens with is not repeated");
 }
 
+#[test]
+fn a_v2_page_text_holds_the_title_once_then_the_description_and_the_markdown() {
+    let mut page = v2(record("https://news.example/a", "A title\n## Heading\nBody line.", "article", "en"));
+    page.description = Some("What it is".into());
+    assert_eq!(page_text_v2(&page), "A title\nWhat it is\n## Heading\nBody line.");
+    assert_eq!(texts("k", &page)[0].text, page_text_v2(&page));
+    page.text = "# A title\nBody line.".into();
+    assert_eq!(page_text_v2(&page), "A title\nWhat it is\nBody line.", "the title as an h1 is the title line too");
+    for first in ["# A TITLE", "a title", "#A Title", "##  a tItLe  "] {
+        page.text = format!("{first}\nBody line.");
+        assert_eq!(page_text_v2(&page), "A title\nWhat it is\nBody line.", "{first:?} is the title in another case");
+    }
+    page.text = "Another opening\nBody line.".into();
+    assert_eq!(page_text_v2(&page), "A title\nWhat it is\nAnother opening\nBody line.");
+    page.text = "A title\nWhat it is, and more.".into();
+    assert_eq!(page_text_v2(&page), "A title\nWhat it is, and more.", "a description the text opens with is not repeated");
+    page.text = format!("A title\n{}", "y".repeat(20_000));
+    assert_eq!(page_text_v2(&page).chars().count(), 10_000, "cut to what the model reads");
+    assert!(texts("k", &Record { extraction: Some("v9".into()), ..page }).is_empty(), "no recipe reads an unknown extraction");
+}
+
+#[test]
+fn v2_passages_start_at_markdown_headings_with_v1_sizes_and_up_to_32() {
+    let text = ["x".repeat(700), "## Pricing".into(), "p".repeat(300), "q".repeat(400), "### FAQ".into(), "Short answer.".into()].join("\n");
+    let not_headings = ["#hashtag line", "####### seven"].join("\n");
+    let found = passages_v2(&format!("{text}\n{not_headings}"));
+    let shape: Vec<(Option<&str>, usize)> = found.iter().map(|p| (p.heading.as_deref(), p.body.chars().count())).collect();
+    assert_eq!(
+        shape,
+        [(None, 700), (Some("Pricing"), 701), (Some("FAQ"), 13 + 1 + not_headings.chars().count())],
+        "a heading line starts a section and names it"
+    );
+    assert!(found[2].body.contains("#hashtag line"), "a hashtag is not a heading");
+    assert!(passages(&text, &[]).iter().all(|p| p.heading.is_none()), "v1 passages split only at the headings list");
+
+    let sections: Vec<String> = (0..40).map(|i| format!("## Part {i}\n{}", "w".repeat(700))).collect();
+    let capped = passages_v2(&sections.join("\n"));
+    assert_eq!(capped.len(), 32, "no more than 32");
+    assert_eq!((capped[31].heading.as_deref(), capped[31].body.len()), (Some("Part 31"), 700));
+    let plain_sections: Vec<String> = (0..40).map(|i| format!("Part {i}\n{}", "w".repeat(700))).collect();
+    let headings: Vec<Option<String>> = (0..40).map(|i| Some(format!("Part {i}"))).collect();
+    assert_eq!(passages(&plain_sections.join("\n"), &headings).len(), 16, "v1 keeps its 16");
+    let sentence = format!("{}. ", "x".repeat(299));
+    let plain = [sentence.repeat(12), "a".repeat(400), "b".repeat(100)].join("\n");
+    assert_eq!(passages_v2(&plain), passages(&plain, &[]), "prose without headings splits as v1 does, at most 1,500 characters");
+}
+
+#[test]
+fn a_v2_table_row_is_never_split_and_a_passage_continuing_a_table_repeats_its_header() {
+    let header = "| Name | Value |\n|---|---|";
+    let rows: Vec<String> = (0..38).map(|i| format!("| row {i:02} | {} |", "v".repeat(90))).collect();
+    let found = passages_v2(&format!("Intro line.\n{header}\n{}", rows.join("\n")));
+    let bodies: Vec<&str> = found.iter().map(|p| p.body.as_str()).collect();
+    assert_eq!(bodies.len(), 7);
+    assert!(bodies[0].starts_with(&format!("Intro line.\n{header}\n| row 00 ")));
+    assert!(bodies[1..].iter().all(|b| b.starts_with(&format!("{header}\n| row "))), "each continuation opens with the header row and its separator");
+    assert!(bodies.iter().all(|b| b.matches("| Name | Value |").count() == 1), "one header a passage");
+    let placed: Vec<&str> = bodies.iter().flat_map(|b| b.lines()).filter(|l| l.starts_with("| row ")).collect();
+    assert_eq!(placed, rows.iter().map(String::as_str).collect::<Vec<_>>(), "every row once, whole and in order");
+    assert_eq!(bodies[6], format!("{header}\n{}\n{}", rows[36], rows[37]), "a short tail of a table stands alone under its header");
+
+    let unruled: Vec<String> = (0..30).map(|i| format!("| {} | winner {i} |", 1990 + i)).chain(["after".repeat(150)]).collect();
+    let found = passages_v2(&format!("| Year | Winner |\n{}", unruled.join("\n")));
+    assert!(found.len() > 1 && found[0].body.starts_with("| Year | Winner |\n| 1990 "));
+    assert!(found[1..].iter().all(|p| !p.body.contains("| Year | Winner |")), "without a separator the first row is data, never repeated");
+
+    let wide = format!("| {} |", "cell. ".repeat(400));
+    let found = passages_v2(&format!("| A |\n|---|\n{wide}\n| short |"));
+    assert!(found.iter().any(|p| p.body.lines().any(|l| l == wide)), "a row longer than a passage stays whole");
+}
+
+#[test]
+fn a_v2_list_item_keeps_its_sub_items_and_a_long_one_is_cut_between_lines_under_its_first_line() {
+    let sub = ["  - sub a", "    - deeper", "  - sub b"].join("\n");
+    let first = format!("- Item one {}", "word ".repeat(120).trim_end());
+    let long = format!("12. {}", "A sentence here. ".repeat(110).trim_end());
+    let text = ["Lead-in line:".to_string(), first.clone(), sub.clone(), "- Item two".into(), long.clone(), "Closing prose.".into()].join("\n");
+    let found = passages_v2(&text);
+    let item = format!("{first}\n{sub}");
+    assert!(found.iter().any(|p| p.body.contains(&item)), "an item and its indented sub-items stay together: {found:#?}");
+    assert!(found.iter().any(|p| p.body.lines().any(|l| l == long)), "a single line longer than a passage stays whole");
+    assert!(passages(&text, &[]).iter().all(|p| !p.body.lines().any(|l| l == long)), "v1 splits the same line at its sentences");
+
+    let entries: Vec<String> = (0..500).map(|i| format!("{}- entry {i:03} {}", if i % 5 == 0 { "  " } else { "    " }, "z".repeat(30))).collect();
+    let nested = format!("- Index of entries\n{}", entries.join("\n"));
+    let found = passages_v2(&nested);
+    assert!(found.len() > 10);
+    assert!(found.iter().all(|p| p.body.chars().count() <= 1_500), "{:?}", found.iter().map(|p| p.body.chars().count()).max());
+    assert!(found.iter().all(|p| p.body.starts_with("- Index of entries\n")), "each continuation opens with the parent's first line");
+    let placed: Vec<&str> = found.iter().flat_map(|p| p.body.lines().skip(1)).collect();
+    assert_eq!(placed, entries.iter().map(String::as_str).collect::<Vec<_>>(), "every sub-item line once, whole and in order");
+}
+
+#[test]
+fn a_v2_code_block_holds_no_headings_and_a_long_one_is_cut_between_lines_in_its_own_fences() {
+    let code: Vec<String> = (0..30).map(|i| format!("# comment {i}\nvalue_{i} = compute({})", "x".repeat(40))).collect();
+    let block = format!("```python\n{}\n```", code.join("\n"));
+    let found = passages_v2(&format!("Install it first.\n{block}\n## Next\nAfter the code."));
+    assert!(block.chars().count() > 1_500);
+    let pieces: Vec<&Passage> = found.iter().filter(|p| p.body.contains("value_")).collect();
+    assert!(pieces.len() > 1 && pieces.iter().all(|p| p.body.chars().count() <= 1_500));
+    for piece in &pieces {
+        let at = piece.body.find("```python\n").expect("each piece opens the fence with its info string");
+        assert!(piece.body.ends_with("\n```") && piece.body[at..].matches("```").count() == 2, "{:?}", piece.body);
+    }
+    let lines: Vec<&str> = pieces.iter().flat_map(|p| p.body.lines()).filter(|l| l.starts_with("# comment") || l.starts_with("value_")).collect();
+    assert_eq!(lines, code.iter().flat_map(|c| c.lines()).collect::<Vec<_>>(), "every code line once, whole and in order");
+    assert_eq!(found.iter().filter_map(|p| p.heading.as_deref()).collect::<Vec<_>>(), ["Next"], "a # line inside the block is code");
+
+    let short = format!("```\n# a comment\n{}\n```", "s".repeat(1_000));
+    assert!(passages_v2(&format!("Run:\n{short}")).iter().any(|p| p.body.contains(&short)), "a block that fits stays whole");
+    let wide = "w".repeat(2_000);
+    assert!(passages_v2(&format!("```\n{wide}\n```")).iter().any(|p| p.body == format!("```\n{wide}\n```")), "a line longer than a passage stays whole");
+    let unclosed = passages_v2(&format!("```\n{}\n## Real heading\nbody line", "y".repeat(700)));
+    assert_eq!(unclosed.last().unwrap().heading.as_deref(), Some("Real heading"), "a fence never closed is a plain line");
+}
+
+#[test]
+fn every_long_v2_page_gets_passages_led_by_the_title_and_its_heading() {
+    let long = format!("A title\n{}\n## How it works\n{}", article(4), article(4));
+    let docs = texts("k", &v2(record("https://news.example/docs", &long, "docs", "en")));
+    let led: Vec<String> = docs.iter().skip(1).map(|t| t.text.lines().take(2).collect::<Vec<_>>().join("\n")).collect();
+    assert_eq!(led.len(), 4);
+    assert!(led[0].starts_with("A title\nParagraph 0: "), "the title line is not repeated in the first passage: {:?}", led[0]);
+    assert!(led[3].starts_with("A title › How it works\nParagraph 2: "), "{:?}", led[3]);
+    assert!(docs.iter().skip(1).all(|t| t.kind == PASSAGE && t.text.chars().count() <= 1_500 + 40));
+    for page_type in ["article", "landing", "home", "product", "listing", "other"] {
+        assert_eq!(texts("k", &v2(record("https://news.example/l", &long, page_type, "en"))).len(), 5, "{page_type}");
+    }
+    let untyped = Record { page_type: None, ..v2(record("https://news.example/u", &long, "other", "en")) };
+    assert_eq!(texts("k", &untyped).len(), 5, "a page without a type too");
+    assert_eq!(texts("k", &record("https://news.example/d", &long, "docs", "en")).len(), 1, "v1 keeps passages for articles only");
+    let short = format!("A title\n{}", article(5));
+    assert_eq!(texts("k", &v2(record("https://news.example/s", &short, "article", "en"))).len(), 1, "2,000 characters or fewer is one text");
+    let sections: Vec<String> = (0..40).map(|i| format!("## Part {i}\n{}", "w".repeat(700))).collect();
+    assert_eq!(texts("k", &v2(record("https://news.example/c", &sections.join("\n"), "landing", "en"))).len(), 33, "the page text and 32 passages");
+}
+
 fn scratch(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("publisher-planner-{name}-{}", uuid::Uuid::new_v4().simple()));
     std::fs::create_dir_all(&dir).unwrap();
@@ -129,6 +273,14 @@ async fn log(pages: &Bucket, seq: u64, records: Vec<Record>) {
     pages.put(&key, Bytes::from(file), PARQUET, None).await.unwrap();
     pages.put(&CHANGES.seq_key(seq), Bytes::from(json!({"key": key, "rows": 1}).to_string()), JSON, None).await.unwrap();
     pages.put(&CHANGES.latest_key(), Bytes::from(json!({"seq": seq}).to_string()), JSON, None).await.unwrap();
+}
+
+/// Writes and indexes change file `seq` after later ones, leaving the newest number where it is.
+async fn number_late(pages: &Bucket, seq: u64, records: Vec<Record>) {
+    let file = changes::encode(&records.into_iter().map(change).collect::<Vec<_>>()).unwrap();
+    let key = format!("changes/dt=2026-10-14/{seq}.parquet");
+    pages.put(&key, Bytes::from(file), PARQUET, None).await.unwrap();
+    pages.put(&CHANGES.seq_key(seq), Bytes::from(json!({"key": key, "rows": 1}).to_string()), JSON, None).await.unwrap();
 }
 
 fn settings(dir: PathBuf, pages_per_hour: f64, start_after: i64) -> Settings {
@@ -160,6 +312,14 @@ async fn redis_db() -> Option<(tokio::sync::MutexGuard<'static, ()>, ConnectionM
     Some((turn, redis))
 }
 
+fn input_recipes(file: Bytes) -> HashSet<String> {
+    let mut recipes = HashSet::new();
+    for batch in ParquetRecordBatchReaderBuilder::try_new(file).unwrap().build().unwrap().map(Result::unwrap) {
+        recipes.extend(batch.column_by_name("recipe").unwrap().as_string::<i32>().iter().map(|r| r.unwrap().to_string()));
+    }
+    recipes
+}
+
 fn input_rows(file: Bytes) -> Vec<(String, String, i32)> {
     let mut rows = Vec::new();
     for batch in ParquetRecordBatchReaderBuilder::try_new(file).unwrap().build().unwrap().map(Result::unwrap) {
@@ -179,7 +339,7 @@ async fn published_pages_become_inputs_once_per_version_within_the_budget_and_th
     let dir = scratch("flow");
     let stub = stub::start(dir.join("r2"), "127.0.0.1:0").await.unwrap();
     let (pages, temp) = (bucket(stub.addr, "desearch-pages"), bucket(stub.addr, "subnet-22"));
-    let page = |n: usize, text: &str, kind: &str, lang: &str| record(&format!("https://news.example/story/{n}"), text, kind, lang);
+    let page = |n: usize, text: &str, kind: &str, lang: &str| v2(record(&format!("https://news.example/story/{n}"), text, kind, lang));
     let mut spam = page(9, &article(2), "article", "en");
     spam.domain = "www.spam.example".into();
     log(&pages, 1, vec![page(0, &article(2), "article", "en")]).await;
@@ -210,10 +370,11 @@ async fn published_pages_become_inputs_once_per_version_within_the_budget_and_th
     let entry: Value = serde_json::from_str(&redis.lpop::<_, String>(EMBED_INPUTS, None).await.unwrap()).unwrap();
     let file = temp.get(entry["input_key"].as_str().unwrap()).await.unwrap();
     assert_eq!(entry["input_sha256"], format!("{:x}", Sha256::digest(&file)));
+    assert_eq!(input_recipes(file.clone()), HashSet::from([RECIPE_V2.to_string()]));
     let rows = input_rows(file);
     assert_eq!(entry["texts"], rows.len());
     assert_eq!(rows.iter().filter(|(_, kind, _)| kind == "page").count(), 2);
-    assert_eq!(rows.iter().filter(|(_, kind, _)| kind == "passage").count(), 16, "the long article's passages");
+    assert_eq!(rows.iter().filter(|(_, kind, _)| kind == "passage").count(), 20, "the long article's 20 passages, under page-v2's cap of 32");
     let urls: HashSet<&str> = entry["pages"].as_array().unwrap().iter().map(|p| p["url"].as_str().unwrap()).collect();
     assert_eq!(urls, HashSet::from(["https://news.example/story/1", "https://news.example/story/2"]));
 
@@ -271,6 +432,105 @@ async fn published_pages_become_inputs_once_per_version_within_the_budget_and_th
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn each_page_is_planned_with_its_extraction_s_recipe_and_a_later_fetch_of_the_other_is_planned_again() {
+    let Some((_turn, redis)) = redis_db().await else {
+        eprintln!("skipped: no Redis on {REDIS}");
+        return;
+    };
+    let dir = scratch("recipes");
+    let stub = stub::start(dir.join("r2"), "127.0.0.1:0").await.unwrap();
+    let (pages, temp) = (bucket(stub.addr, "desearch-pages"), bucket(stub.addr, "subnet-22"));
+    let url = |n: usize| format!("https://news.example/story/{n}");
+    let unknown = Record { extraction: Some("v9".into()), ..record(&url(3), &article(2), "article", "en") };
+    log(&pages, 1, vec![record(&url(1), &article(2), "article", "en"), v2(record(&url(2), &format!("# {}", article(2)), "article", "en")), unknown]).await;
+    let mut planner = Planner::new(settings(dir.join("state"), 3600.0, 0), pages.clone(), temp.clone(), redis.clone(), Room::Fixed(0)).await.unwrap();
+    planner.pass().await.unwrap();
+    assert_eq!((planner.counts.planned, planner.counts.other_recipe), (2, 1), "v1 and v2 pages are planned; an unknown extraction is not");
+    planner.flush().await.unwrap();
+    let entry: Value = serde_json::from_str(&planner.state.pending().unwrap()[0].1).unwrap();
+    let file = temp.get(entry["input_key"].as_str().unwrap()).await.unwrap();
+    assert_eq!(input_recipes(file), HashSet::from([RECIPE_V1.to_string(), RECIPE_V2.to_string()]));
+
+    log(&pages, 2, vec![v2(record(&url(1), &format!("# {}", article(2)), "article", "en")), record(&url(2), &article(3), "article", "en")]).await;
+    planner.pass().await.unwrap();
+    assert_eq!((planner.counts.planned, planner.counts.unchanged), (4, 0), "a v2 fetch of a v1 page and a v1 fetch of a v2 page are planned again");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_change_file_numbered_late_holds_up_nothing_and_never_replaces_a_newer_version() {
+    let Some((_turn, redis)) = redis_db().await else {
+        eprintln!("skipped: no Redis on {REDIS}");
+        return;
+    };
+    let dir = scratch("late");
+    let stub = stub::start(dir.join("r2"), "127.0.0.1:0").await.unwrap();
+    let (pages, temp) = (bucket(stub.addr, "desearch-pages"), bucket(stub.addr, "subnet-22"));
+    let page = |n: usize, text: String, fetched_at: &str| {
+        let mut record = record(&format!("https://news.example/story/{n}"), &text, "article", "en");
+        record.fetched_at = fetched_at.into();
+        record
+    };
+    log(&pages, 1, vec![page(1, article(2), "2026-10-14T10:00:00+00:00")]).await;
+    log(&pages, 3, vec![page(2, article(3), "2026-10-14T12:00:00+00:00")]).await;
+    let mut planner = Planner::new(settings(dir.join("state"), 3600.0, 0), pages.clone(), temp.clone(), redis.clone(), Room::Fixed(0)).await.unwrap();
+    planner.pass().await.unwrap();
+    assert_eq!(planner.read_through(), 3, "the number not indexed yet does not stop the reading");
+    assert_eq!((planner.counts.files, planner.counts.planned), (2, 2));
+
+    let late = vec![page(3, article(4), "2026-10-14T10:30:00+00:00"), page(2, format!("{} before the edit", article(3)), "2026-10-14T11:00:00+00:00")];
+    number_late(&pages, 2, late).await;
+    planner.pass().await.unwrap();
+    assert_eq!(
+        (planner.counts.late, planner.counts.planned, planner.counts.older),
+        (1, 3, 1),
+        "the late file's new page is planned, its older version of story 2 is not"
+    );
+
+    log(&pages, 5, vec![page(4, article(5), "2026-10-14T13:00:00+00:00")]).await;
+    planner.pass().await.unwrap();
+    planner.flush().await.unwrap();
+    assert_eq!(planner.state.missing().unwrap().iter().map(|(seq, _)| *seq).collect::<Vec<_>>(), [4], "kept across restarts");
+    drop(planner);
+
+    let mut impatient = settings(dir.join("state"), 3600.0, 0);
+    impatient.hole_wait = Duration::ZERO;
+    let mut restarted = Planner::new(impatient, pages.clone(), temp.clone(), redis.clone(), Room::Fixed(0)).await.unwrap();
+    restarted.pass().await.unwrap();
+    assert!(restarted.state.missing().unwrap().is_empty(), "a number never indexed is given up after the wait");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_numbered_change_file_that_cannot_be_read_is_tried_until_it_can_never_given_up() {
+    let Some((_turn, redis)) = redis_db().await else {
+        eprintln!("skipped: no Redis on {REDIS}");
+        return;
+    };
+    let dir = scratch("unreadable");
+    let stub = stub::start(dir.join("r2"), "127.0.0.1:0").await.unwrap();
+    let (pages, temp) = (bucket(stub.addr, "desearch-pages"), bucket(stub.addr, "subnet-22"));
+    let page = |n: usize| record(&format!("https://news.example/story/{n}"), &article(n + 1), "article", "en");
+    log(&pages, 1, vec![page(1)]).await;
+    let key = "changes/dt=2026-10-14/2.parquet";
+    pages.put(key, Bytes::from_static(b"not a parquet file"), PARQUET, None).await.unwrap();
+    pages.put(&CHANGES.seq_key(2), Bytes::from(json!({"key": key, "rows": 1}).to_string()), JSON, None).await.unwrap();
+    log(&pages, 3, vec![page(3)]).await;
+    let mut impatient = settings(dir.join("state"), 3600.0, 0);
+    impatient.hole_wait = Duration::ZERO;
+    let mut planner = Planner::new(impatient, pages.clone(), temp.clone(), redis.clone(), Room::Fixed(0)).await.unwrap();
+    planner.pass().await.unwrap();
+    planner.pass().await.unwrap();
+    assert_eq!((planner.read_through(), planner.counts.planned), (3, 2), "the unreadable file holds up nothing");
+    assert_eq!(planner.state.missing().unwrap().iter().map(|(seq, _)| *seq).collect::<Vec<_>>(), [2], "and is kept past the wait");
+
+    number_late(&pages, 2, vec![page(2)]).await;
+    planner.pass().await.unwrap();
+    assert_eq!((planner.counts.late, planner.counts.planned), (1, 3), "read once it can be");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_page_the_publisher_sends_back_is_planned_again_alone() {
     let Some((_turn, mut redis)) = redis_db().await else {
         eprintln!("skipped: no Redis on {REDIS}");
@@ -279,7 +539,7 @@ async fn a_page_the_publisher_sends_back_is_planned_again_alone() {
     let dir = scratch("sent-back");
     let stub = stub::start(dir.join("r2"), "127.0.0.1:0").await.unwrap();
     let (pages, temp) = (bucket(stub.addr, "desearch-pages"), bucket(stub.addr, "subnet-22"));
-    let page = |n: usize| record(&format!("https://news.example/story/{n}"), &article(2), "article", "en");
+    let page = |n: usize| v2(record(&format!("https://news.example/story/{n}"), &article(2), "article", "en"));
     log(&pages, 1, vec![page(0), page(1)]).await;
     let mut planner = Planner::new(settings(dir.join("state"), 3600.0, 0), pages.clone(), temp.clone(), redis.clone(), Room::Fixed(5)).await.unwrap();
     planner.pass().await.unwrap();

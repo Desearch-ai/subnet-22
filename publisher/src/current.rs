@@ -61,6 +61,18 @@ pub static PAGES_SCHEMA: LazyLock<SchemaRef> = LazyLock::new(|| {
         text("miner"),
         text("validator"),
         list("validators"),
+        text("extraction"),
+        text("text_mode"),
+        text("modified"),
+        text("site_name"),
+        text("image"),
+        text("section"),
+        list("tags"),
+        list("breadcrumbs"),
+        Field::new("entity", DataType::LargeUtf8, true),
+        Field::new("ld", DataType::LargeUtf8, true),
+        Field::new("paywalled", DataType::Boolean, true),
+        list("robots"),
     ]))
 });
 
@@ -240,14 +252,38 @@ fn columns(rows: &[PageRow]) -> Vec<ArrayRef> {
         }
         Arc::new(builder.finish())
     };
+    // A v1 page's v2 lists are null, as in files written before them.
+    let v2_list = |value: fn(&Record) -> &[Option<String>]| -> ArrayRef {
+        let mut builder = ListBuilder::new(StringBuilder::new());
+        for row in rows {
+            if row.record.is_v1() {
+                builder.append(false);
+                continue;
+            }
+            for item in value(&row.record) {
+                builder.values().append_option(item.as_deref());
+            }
+            builder.append(true);
+        }
+        Arc::new(builder.finish())
+    };
+    let large = |value: fn(&Record) -> Option<&str>| -> ArrayRef {
+        let mut builder = LargeStringBuilder::new();
+        for row in rows {
+            builder.append_option(value(&row.record));
+        }
+        Arc::new(builder.finish())
+    };
     let mut removed = BooleanBuilder::with_capacity(rows.len());
     let mut seq = Int64Builder::with_capacity(rows.len());
     let mut status = Int32Builder::with_capacity(rows.len());
+    let mut paywalled = BooleanBuilder::with_capacity(rows.len());
     let mut body = LargeStringBuilder::with_capacity(rows.len(), rows.iter().map(|r| r.record.text.len()).sum());
     for row in rows {
         removed.append_value(row.removed);
         seq.append_value(row.change_seq);
         status.append_option(row.record.status);
+        paywalled.append_option(row.record.paywalled);
         body.append_value(&row.record.text);
     }
     vec![
@@ -281,6 +317,18 @@ fn columns(rows: &[PageRow]) -> Vec<ArrayRef> {
         text(|r| Some(&r.record.miner)),
         text(|r| r.record.validator.as_deref()),
         list(|r| r.validators.iter().map(|v| Some(v.as_str())).collect()),
+        text(|r| r.record.extraction.as_deref()),
+        text(|r| r.record.text_mode.as_deref()),
+        text(|r| r.record.modified.as_deref()),
+        text(|r| r.record.site_name.as_deref()),
+        text(|r| r.record.image.as_deref()),
+        text(|r| r.record.section.as_deref()),
+        v2_list(|r| &r.tags),
+        v2_list(|r| &r.breadcrumbs),
+        large(|r| r.entity.as_deref()),
+        large(|r| r.ld.as_deref()),
+        Arc::new(paywalled.finish()),
+        v2_list(|r| &r.robots),
     ]
 }
 
@@ -290,12 +338,12 @@ struct Columns {
     texts: HashMap<String, StringArray>,
     lists: HashMap<String, (Vec<usize>, StringArray, Option<NullBuffer>)>,
     ints: HashMap<String, Int64Array>,
-    removed: Option<BooleanArray>,
+    flags: HashMap<String, BooleanArray>,
 }
 
 impl Columns {
     fn new(batch: RecordBatch) -> Result<Columns> {
-        let mut columns = Columns { rows: batch.num_rows(), texts: HashMap::new(), lists: HashMap::new(), ints: HashMap::new(), removed: None };
+        let mut columns = Columns { rows: batch.num_rows(), texts: HashMap::new(), lists: HashMap::new(), ints: HashMap::new(), flags: HashMap::new() };
         for (field, column) in batch.schema().fields().iter().zip(batch.columns()) {
             let name = field.name().clone();
             match column.data_type() {
@@ -318,7 +366,9 @@ impl Columns {
                 DataType::Int32 | DataType::Int64 => {
                     columns.ints.insert(name, cast(column, &DataType::Int64)?.as_primitive::<Int64Type>().clone());
                 }
-                DataType::Boolean if name == "removed" => columns.removed = Some(column.as_boolean().clone()),
+                DataType::Boolean => {
+                    columns.flags.insert(name, column.as_boolean().clone());
+                }
                 _ => {}
             }
         }
@@ -343,8 +393,13 @@ impl Columns {
         column.is_valid(row).then(|| column.value(row))
     }
 
+    fn flag(&self, name: &str, row: usize) -> Option<bool> {
+        let column = self.flags.get(name)?;
+        column.is_valid(row).then(|| column.value(row))
+    }
+
     fn page_rows(&self, wanted: Option<&(dyn Fn(&str) -> bool + Send)>) -> Result<Vec<PageRow>> {
-        let removed = self.removed.as_ref().ok_or_else(|| anyhow!("a pages file without removed"))?;
+        let removed = self.flags.get("removed").ok_or_else(|| anyhow!("a pages file without removed"))?;
         let mut rows = Vec::new();
         for row in 0..self.rows {
             let key = self.text("key", row).unwrap_or_default();
@@ -390,6 +445,18 @@ impl Columns {
             miner: text("miner"),
             validator: self.text("validator", row),
             validators: self.texts("validators", row).into_iter().flatten().collect(),
+            extraction: self.text("extraction", row),
+            text_mode: self.text("text_mode", row),
+            modified: self.text("modified", row),
+            site_name: self.text("site_name", row),
+            image: self.text("image", row),
+            section: self.text("section", row),
+            tags: self.texts("tags", row),
+            breadcrumbs: self.texts("breadcrumbs", row),
+            entity: self.text("entity", row),
+            ld: self.text("ld", row),
+            paywalled: self.flag("paywalled", row),
+            robots: self.texts("robots", row),
         }
     }
 }

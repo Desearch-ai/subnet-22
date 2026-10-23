@@ -3,11 +3,14 @@ import unicodedata
 from collections import Counter
 from dataclasses import dataclass
 
+from desearch.extraction import FULL
+
 MATCH_THRESHOLD = 0.9
 MIN_PRECISION = 0.9
 SHINGLE_SIZE = 3
 
 CHURN_TYPES = frozenset({"home", "listing"})
+CHURN_TEXT_MODES = frozenset({FULL})
 CHURN_MIN_PRECISION = 0.7
 CHURN_MIN_RECALL = 0.7
 CHURN_MIN_GROWTH = 0.8
@@ -95,15 +98,18 @@ def similarity(a: str, b: str, title_a: str = "", title_b: str = "") -> Similari
 
 
 def is_match(
-    sim: Similarity, threshold: float = MATCH_THRESHOLD, page_type: str = ""
+    sim: Similarity,
+    threshold: float = MATCH_THRESHOLD,
+    page_type: str = "",
+    text_mode: str = "",
 ) -> bool:
     if sim.numbers < NUMBER_FLOOR:
         return False
     if sim.score >= threshold and sim.precision >= MIN_PRECISION:
         return True
-    # Listings swap teasers between fetches: allow a balanced swap.
+    # Listings swap teasers between fetches, and a whole page's chrome moves: allow a balanced swap.
     return (
-        page_type in CHURN_TYPES
+        (page_type in CHURN_TYPES or text_mode in CHURN_TEXT_MODES)
         and sim.precision >= CHURN_MIN_PRECISION
         and sim.recall >= CHURN_MIN_RECALL
         and CHURN_MIN_GROWTH <= sim.growth <= CHURN_MAX_GROWTH

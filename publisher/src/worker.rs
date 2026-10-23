@@ -226,6 +226,8 @@ pub struct Batch {
     /// The pages, then a row per task withdrawn, as the change file holds them.
     pub changes: Vec<Change>,
     pub failed: Vec<Failed>,
+    /// URLs of tasks taken back or lost: nothing about their sites, so the bot retries them without counting a failure.
+    pub dropped: Vec<Failed>,
     /// Tasks taken back in this batch.
     pub withdrawn: Vec<String>,
     /// Tasks done with: acknowledged and their uploads deleted.
@@ -264,7 +266,7 @@ pub fn write(jobs: &[Job], reads: Vec<Read>, refused: &HashSet<String>, feed: &d
             continue;
         };
         if refused.contains(&job.task_id) || taken_back.contains(job.task_id.as_str()) {
-            batch.failed.extend(failed(job, job.urls.iter().map(String::as_str)));
+            batch.dropped.extend(failed(job, job.urls.iter().map(String::as_str)));
             batch.finalized.push(job.task_id.clone());
             continue;
         }
@@ -280,7 +282,7 @@ pub fn write(jobs: &[Job], reads: Vec<Read>, refused: &HashSet<String>, feed: &d
                 eprintln!("task={} upload {why} before publishing", job.task_id);
                 batch.lost.push(job.task_id.clone());
                 if !job.is(EMBED) {
-                    batch.failed.extend(failed(job, job.urls.iter().map(String::as_str)));
+                    batch.dropped.extend(failed(job, job.urls.iter().map(String::as_str)));
                 }
                 batch.finalized.push(job.task_id.clone());
             }

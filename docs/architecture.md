@@ -43,8 +43,8 @@ every page.
    upload link. The link accepts one file under one key and lasts as long as the claim: 3 minutes,
    plus 10 seconds of grace for the upload. Miners never hold storage credentials, and a miner is
    never given a task it held before.
-3. **Crawl.** The miner fetches every URL, extracts the title, dates, headings and main text, and
-   uploads one Parquet file with a row per URL, including the page's HTML. When it reports the task
+3. **Crawl.** The miner fetches every URL, extracts each page's text, and uploads one Parquet file
+   with a row per URL, including the page's HTML. When it reports the task
    complete, the task API checks the file is Parquet and within the size limit, and records which
    version of the file was completed. Validators and the publisher read only that version, so a file
    changed after completion fails its check.
@@ -126,7 +126,7 @@ Embedding is switched off until its inputs and the publishing of vectors below a
 ```
 subnet-22 bucket (temporary, objects expire after a day, readable by anyone)
   uploads/          where miners' upload links point; each completed upload is checked and published
-                    from here, with its signed note beside it
+                    from here
   validation/       open.json, the list of uploads waiting for validators
   log/uploads/      every completed upload with the counts its miner reported, signed, for validators to count
   outcomes/         what became of every URL, for the bot
