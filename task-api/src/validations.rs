@@ -531,9 +531,15 @@ pub fn recent(conn: &Connection, filter: &TaskFilter) -> Result<Vec<Map<String, 
             args.push(Sql::Text(value.clone()));
         }
     }
+    // Fails and voids are rare: sought by miner and verdict, for the miners that have any, not read back through every pass.
+    let rare = filter.verdict.as_ref().filter(|v| !v.is_empty() && v.as_str() != "pass");
+    if let (None, Some(verdict)) = (&filter.miner, rare) {
+        clauses.push("miner IN (SELECT miner FROM verdict_counts WHERE verdict = ? AND n > 0)".into());
+        args.push(Sql::Text(verdict.clone()));
+    }
     args.push(Sql::Integer(filter.limit));
-    let mut statement =
-        conn.prepare(&format!("SELECT {} FROM validations WHERE {} ORDER BY scored_at DESC LIMIT ?", FIELDS.join(", "), clauses.join(" AND ")))?;
+    let source = if rare.is_some() { "validations INDEXED BY validations_miner" } else { "validations" };
+    let mut statement = conn.prepare(&format!("SELECT {} FROM {source} WHERE {} ORDER BY scored_at DESC LIMIT ?", FIELDS.join(", "), clauses.join(" AND ")))?;
     let rows = statement.query_map(params_from_iter(args), |row| object(row, &FIELDS, 0))?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
