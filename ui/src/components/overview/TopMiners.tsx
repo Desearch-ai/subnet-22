@@ -2,7 +2,7 @@ import { Link } from 'react-router'
 import { useMiners } from '@/api/queries/miners'
 import type { Kind, MinerSummary } from '@/api/types'
 import { Card, CardHeader } from '@/components/ui/Card'
-import { Identifier } from '@/components/ui/Identifier'
+import { Neuron } from '@/components/ui/Neuron'
 import { QueryState } from '@/components/ui/QueryState'
 import { EmptyState } from '@/components/ui/States'
 import { formatPercent } from '@/lib/format'
@@ -14,12 +14,13 @@ const TOP_MINERS = 8
 function ShareRow({ miner, kind, largest }: { miner: MinerSummary; kind: Kind; largest: number }) {
   return (
     <li className="flex items-center gap-3 px-4 py-2.5">
-      <Identifier
-        value={miner.hotkey}
+      <Neuron
+        hotkey={miner.hotkey}
         label="miner hotkey"
         uid={miner.uid}
+        coldkey={miner.coldkey}
         to={withKind(minerPath(miner.hotkey), kind)}
-        className="w-32 shrink-0"
+        className="w-48 shrink-0"
       />
       <div className="bg-raised h-1.5 min-w-0 flex-1 overflow-hidden rounded-sm">
         <div

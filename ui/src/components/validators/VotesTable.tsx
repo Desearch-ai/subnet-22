@@ -1,6 +1,7 @@
 import type { Vote } from '@/api/types'
 import { Badge } from '@/components/ui/Badge'
 import { Identifier } from '@/components/ui/Identifier'
+import { Neuron } from '@/components/ui/Neuron'
 import { KindBadge } from '@/components/ui/KindBadge'
 import { Table, Td, Th, Tr } from '@/components/ui/Table'
 import { TimeAgo } from '@/components/ui/TimeAgo'
@@ -52,10 +53,11 @@ export function VotesTable({ votes }: { votes: readonly Vote[] }) {
               <KindBadge kind={vote.kind} />
             </Td>
             <Td>
-              <Identifier
-                value={vote.miner}
+              <Neuron
+                hotkey={vote.miner}
                 label="miner hotkey"
                 uid={vote.miner_uid}
+                coldkey={vote.miner_coldkey}
                 to={minerPath(vote.miner)}
               />
             </Td>

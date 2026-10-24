@@ -1,5 +1,6 @@
 import type { Kind, TaskScore } from '@/api/types'
 import { Identifier } from '@/components/ui/Identifier'
+import { Neuron } from '@/components/ui/Neuron'
 import { KindBadge } from '@/components/ui/KindBadge'
 import { Table, Td, Th, Tr } from '@/components/ui/Table'
 import { TimeAgo } from '@/components/ui/TimeAgo'
@@ -65,19 +66,21 @@ export function TasksTable({ tasks, kind, showMiner = true }: TasksTableProps) {
             </Td>
             {showMiner ? (
               <Td>
-                <Identifier
-                  value={task.miner}
+                <Neuron
+                  hotkey={task.miner}
                   label="miner hotkey"
                   uid={task.miner_uid}
+                  coldkey={task.miner_coldkey}
                   to={minerPath(task.miner)}
                 />
               </Td>
             ) : null}
             <Td>
-              <Identifier
-                value={task.validator}
+              <Neuron
+                hotkey={task.validator}
                 label="validator hotkey"
                 uid={task.validator_uid}
+                coldkey={task.validator_coldkey}
                 to={validatorPath(task.validator)}
               />
             </Td>

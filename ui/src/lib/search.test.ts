@@ -6,6 +6,7 @@ function miner(hotkey: string, uid: number | null, share: number): MinerSummary 
   return {
     hotkey,
     uid,
+    coldkey: null,
     share,
     budget: 1,
     in_flight: 0,

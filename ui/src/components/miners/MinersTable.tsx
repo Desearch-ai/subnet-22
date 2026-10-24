@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import type { Kind, MinerSummary } from '@/api/types'
-import { Identifier } from '@/components/ui/Identifier'
+import { Neuron } from '@/components/ui/Neuron'
 import { SortTh } from '@/components/ui/SortTh'
 import { Table, Td, Tr } from '@/components/ui/Table'
 import { TimeAgo } from '@/components/ui/TimeAgo'
@@ -111,10 +111,11 @@ export function MinersTable({ miners, kind }: MinersTableProps) {
         {sortRows(miners, sort, sortValue).map((miner) => (
           <Tr key={miner.hotkey}>
             <Td>
-              <Identifier
-                value={miner.hotkey}
+              <Neuron
+                hotkey={miner.hotkey}
                 label="miner hotkey"
                 uid={miner.uid}
+                coldkey={miner.coldkey}
                 to={withKind(minerPath(miner.hotkey), kind)}
               />
             </Td>

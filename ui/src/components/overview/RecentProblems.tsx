@@ -2,7 +2,7 @@ import { Link } from 'react-router'
 import { useTasks } from '@/api/queries/tasks'
 import type { Kind, TaskScore } from '@/api/types'
 import { Card, CardHeader } from '@/components/ui/Card'
-import { Identifier } from '@/components/ui/Identifier'
+import { Neuron } from '@/components/ui/Neuron'
 import { EmptyState, ErrorState, LoadingState } from '@/components/ui/States'
 import { Table, Td, Th, Tr } from '@/components/ui/Table'
 import { TimeAgo } from '@/components/ui/TimeAgo'
@@ -38,10 +38,11 @@ function ProblemsTable({ tasks }: { tasks: readonly TaskScore[] }) {
               {explainReason(task.reason, task.kind) ?? task.reason}
             </Td>
             <Td>
-              <Identifier
-                value={task.miner}
+              <Neuron
+                hotkey={task.miner}
                 label="miner hotkey"
                 uid={task.miner_uid}
+                coldkey={task.miner_coldkey}
                 to={minerPath(task.miner)}
               />
             </Td>

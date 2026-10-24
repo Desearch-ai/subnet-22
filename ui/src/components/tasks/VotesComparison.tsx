@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react'
 import type { Kind, Vote } from '@/api/types'
 import { Badge } from '@/components/ui/Badge'
-import { Identifier } from '@/components/ui/Identifier'
+import { Neuron } from '@/components/ui/Neuron'
 import { EmptyState } from '@/components/ui/States'
 import { Table } from '@/components/ui/Table'
 import { TimeAgo } from '@/components/ui/TimeAgo'
@@ -79,10 +79,11 @@ function VoteHeading({ vote }: { vote: Vote }) {
         vote.decided ? 'bg-accent-wash' : null,
       )}
     >
-      <Identifier
-        value={vote.validator}
+      <Neuron
+        hotkey={vote.validator}
         label="validator hotkey"
         uid={vote.validator_uid}
+        coldkey={vote.validator_coldkey}
         to={validatorPath(vote.validator)}
       />
       <div className="mt-1.5 flex flex-wrap gap-1">

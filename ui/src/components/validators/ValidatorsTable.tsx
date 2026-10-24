@@ -1,5 +1,5 @@
 import type { ValidatorSummary } from '@/api/types'
-import { Identifier } from '@/components/ui/Identifier'
+import { Neuron } from '@/components/ui/Neuron'
 import { Table, Td, Th, Tr } from '@/components/ui/Table'
 import { TimeAgo } from '@/components/ui/TimeAgo'
 import { VerdictCounts } from '@/components/ui/VerdictBadge'
@@ -44,10 +44,11 @@ export function ValidatorsTable({ validators }: { validators: readonly Validator
         {validators.map((validator) => (
           <Tr key={validator.hotkey}>
             <Td>
-              <Identifier
-                value={validator.hotkey}
+              <Neuron
+                hotkey={validator.hotkey}
                 label="validator hotkey"
                 uid={validator.uid}
+                coldkey={validator.coldkey}
                 to={validatorPath(validator.hotkey)}
               />
             </Td>

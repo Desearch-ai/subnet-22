@@ -3,6 +3,7 @@ import { Badge, type Tone } from '@/components/ui/Badge'
 import { Card } from '@/components/ui/Card'
 import { Field, FieldList } from '@/components/ui/Field'
 import { Identifier } from '@/components/ui/Identifier'
+import { Neuron } from '@/components/ui/Neuron'
 import { KindBadge } from '@/components/ui/KindBadge'
 import { EMPTY_VALUE } from '@/lib/format'
 import { STATUS_MEANING } from '@/lib/labels'
@@ -83,10 +84,11 @@ export function TaskHeader({ task }: { task: TaskDetail }) {
             {task.miner === null ? (
               <span className="text-ink-faint">not recorded</span>
             ) : (
-              <Identifier
-                value={task.miner}
+              <Neuron
+                hotkey={task.miner}
                 label="miner hotkey"
                 uid={task.miner_uid}
+                coldkey={task.miner_coldkey}
                 to={minerPath(task.miner)}
                 full
               />

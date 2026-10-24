@@ -1,7 +1,7 @@
 import type { TaskScore } from '@/api/types'
 import { Card, CardHeader } from '@/components/ui/Card'
 import { Field, FieldList } from '@/components/ui/Field'
-import { Identifier } from '@/components/ui/Identifier'
+import { Neuron } from '@/components/ui/Neuron'
 import { TimeAgo } from '@/components/ui/TimeAgo'
 import { StatusBadge } from '@/components/ui/VerdictBadge'
 import { EMPTY_VALUE, formatWorkTime } from '@/lib/format'
@@ -33,19 +33,21 @@ export function UploadResult({ score, isLatestOfMany }: UploadResultProps) {
       </div>
       <FieldList>
         <Field label="Miner">
-          <Identifier
-            value={score.miner}
+          <Neuron
+            hotkey={score.miner}
             label="miner hotkey"
             uid={score.miner_uid}
+            coldkey={score.miner_coldkey}
             to={minerPath(score.miner)}
             full
           />
         </Field>
         <Field label="Validator" hint="The validator whose report became the final result">
-          <Identifier
-            value={score.validator}
+          <Neuron
+            hotkey={score.validator}
             label="validator hotkey"
             uid={score.validator_uid}
+            coldkey={score.validator_coldkey}
             to={validatorPath(score.validator)}
             full
           />

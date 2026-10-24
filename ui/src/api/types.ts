@@ -89,6 +89,7 @@ export interface Hours {
 export interface MinerSummary extends VerdictCounts {
   hotkey: string
   uid: number | null
+  coldkey: string | null
   budget: number
   in_flight: number
   waiting: number
@@ -173,6 +174,7 @@ export interface MinerDetail {
 export interface ValidatorSummary extends VerdictCounts {
   hotkey: string
   uid: number | null
+  coldkey: string | null
   active: boolean
   last_seen: number | null
   votes: number
@@ -188,7 +190,6 @@ export interface ValidatorSummary extends VerdictCounts {
 
 export interface ValidatorDetail extends ValidatorSummary {
   known: boolean
-  coldkey: string | null
 }
 
 export interface ValidatorsResponse {
@@ -201,8 +202,10 @@ export interface Vote {
   kind: Kind
   miner: string
   miner_uid: number | null
+  miner_coldkey: string | null
   validator: string
   validator_uid: number | null
+  validator_coldkey: string | null
   verdict: Verdict
   reason: string
   returned: number
@@ -232,8 +235,10 @@ export interface TaskScore {
   round_id: string
   miner: string
   miner_uid: number | null
+  miner_coldkey: string | null
   validator: string
   validator_uid: number | null
+  validator_coldkey: string | null
   verdict: Verdict
   reason: string
   returned: number
@@ -310,6 +315,7 @@ export interface TaskDetail {
   round_id: string | null
   miner: string | null
   miner_uid: number | null
+  miner_coldkey: string | null
   score: TaskScore | null
   uploads: TaskScore[]
   votes: Vote[]
