@@ -46,15 +46,15 @@ Copy `.env.example` to `.env.local` to change it. The value is read at build tim
 
 ## Pages
 
-| Path                  | Shows                                                                                                     |
-| --------------------- | --------------------------------------------------------------------------------------------------------- |
-| `/`                   | Tasks waiting and in progress, tasks done per hour, top miners, time to verdict, why uploads did not pass |
-| `/tasks`              | Finalized tasks, filtered by miner, validator, kind or result                                             |
-| `/tasks/:taskId`      | One task: result, every validator's vote, the checked URLs or texts                                       |
-| `/miners`             | Every miner for the chosen kind: share, budget, tasks in flight, results                                  |
-| `/miners/:hotkey`     | One miner: both kinds side by side, its claims and refusals per hour, take-backs, budget, its tasks       |
-| `/validators`         | Every validator: activity, votes, agreement with the final result                                         |
-| `/validators/:hotkey` | One validator: stats and its votes                                                                        |
+| Path                  | Shows                                                                                                                                     |
+| --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| `/`                   | Tasks waiting and in progress, tasks done per hour, top miners, time to verdict, why uploads did not pass                                 |
+| `/tasks`              | Finalized tasks, filtered by miner, validator, kind or result                                                                             |
+| `/tasks/:taskId`      | One task: result and why, miner, deciding validator, timeline, every validator's vote, the checked URLs or texts                          |
+| `/miners`             | Every miner for the chosen kind: share, budget, tasks in flight, results                                                                  |
+| `/miners/:hotkey`     | One miner, one kind at a time: share, tasks, pages, claims, budget, lockout, tasks per hour, its tasks by result, take-backs, budget cuts |
+| `/validators`         | Every validator: activity, votes, agreement with the final result                                                                         |
+| `/validators/:hotkey` | One validator: stats and its votes                                                                                                        |
 
 The Crawl / Embed switch on the overview, miners and miner pages is kept in the address as
 `?kind=embed`.
