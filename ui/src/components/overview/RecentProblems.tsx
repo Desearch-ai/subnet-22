@@ -1,12 +1,56 @@
 import { Link } from 'react-router'
 import { useTasks } from '@/api/queries/tasks'
-import type { Kind } from '@/api/types'
-import { TasksTable } from '@/components/tasks/TasksTable'
+import type { Kind, TaskScore } from '@/api/types'
 import { Card, CardHeader } from '@/components/ui/Card'
+import { Identifier } from '@/components/ui/Identifier'
 import { EmptyState, ErrorState, LoadingState } from '@/components/ui/States'
-import { tasksPath } from '@/lib/paths'
+import { Table, Td, Th, Tr } from '@/components/ui/Table'
+import { TimeAgo } from '@/components/ui/TimeAgo'
+import { StatusBadge } from '@/components/ui/VerdictBadge'
+import { explainReason } from '@/lib/labels'
+import { minerPath, taskPath, tasksPath } from '@/lib/paths'
 
 const SHOWN = 10
+
+function ProblemsTable({ tasks }: { tasks: readonly TaskScore[] }) {
+  return (
+    <Table>
+      <thead>
+        <tr>
+          <Th>When</Th>
+          <Th>Result</Th>
+          <Th>Why</Th>
+          <Th>Miner</Th>
+        </tr>
+      </thead>
+      <tbody>
+        {tasks.map((task) => (
+          <Tr key={`${task.task_id}:${task.scored_at}`}>
+            <Td className="text-xs">
+              <Link to={taskPath(task.task_id)} className="text-accent hover:underline">
+                <TimeAgo at={task.scored_at} />
+              </Link>
+            </Td>
+            <Td>
+              <StatusBadge status={task.verdict} />
+            </Td>
+            <Td className="min-w-64 whitespace-normal" title={task.reason}>
+              {explainReason(task.reason, task.kind) ?? task.reason}
+            </Td>
+            <Td>
+              <Identifier
+                value={task.miner}
+                label="miner hotkey"
+                uid={task.miner_uid}
+                to={minerPath(task.miner)}
+              />
+            </Td>
+          </Tr>
+        ))}
+      </tbody>
+    </Table>
+  )
+}
 
 export function RecentProblems({ kind }: { kind: Kind }) {
   const fails = useTasks({ verdict: 'fail', kind }, SHOWN)
@@ -20,8 +64,8 @@ export function RecentProblems({ kind }: { kind: Kind }) {
   return (
     <Card>
       <CardHeader
-        title="Latest fails and voids"
-        description={`The newest ${kind} uploads that did not pass, with the reason`}
+        title="Latest uploads that did not pass"
+        description="Newest first, with the reason"
         actions={
           <>
             <Link to={tasksPath('fail', kind)} className="text-accent text-xs hover:underline">
@@ -42,7 +86,7 @@ export function RecentProblems({ kind }: { kind: Kind }) {
       ) : tasks.length === 0 ? (
         <EmptyState title={`No ${kind} upload has failed or been voided.`} />
       ) : (
-        <TasksTable tasks={tasks} kind={kind} />
+        <ProblemsTable tasks={tasks} />
       )}
     </Card>
   )

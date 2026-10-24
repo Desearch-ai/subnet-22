@@ -5,14 +5,13 @@ import { Card, CardHeader } from '@/components/ui/Card'
 import { QueryState } from '@/components/ui/QueryState'
 import { SegmentedControl } from '@/components/ui/SegmentedControl'
 import { formatInt } from '@/lib/format'
-import { refusalText } from '@/lib/labels'
 import {
+  averagePerHour,
+  compareToAverage,
   minutesInto,
-  NO_CAPACITY,
   perMinute,
   QUEUE_EMPTY,
   refused,
-  refusedOther,
   splitHours,
 } from '@/lib/work'
 import { HourChart } from './HourChart'
@@ -26,99 +25,66 @@ const VIEWS = [
   { value: 'table', label: 'Table' },
 ] as const
 
-const OTHER_COLOR = 'var(--color-ink-faint)'
-
 function formatRate(value: number): string {
   return value >= 10 ? formatInt(value) : value.toFixed(1)
 }
 
-function issuedSeries(mine: boolean): HourSeries<HourPoint> {
-  return {
-    key: 'issued',
-    label: mine ? 'Handed to it' : 'Handed out',
-    color: SERIES_COLORS[0],
-    value: (point) => point.issued,
-  }
+const DONE: HourSeries<HourPoint> = {
+  key: 'tasks',
+  label: 'Tasks done',
+  color: SERIES_COLORS[0],
+  value: (point) => point.tasks,
 }
 
-function finalizedSeries(mine: boolean): HourSeries<HourPoint> {
-  return {
-    key: 'tasks',
-    label: mine ? 'Its verdicts' : 'Finalized',
-    color: SERIES_COLORS[1],
-    value: (point) => point.tasks,
-  }
-}
-
-/** For the subnet, miners turned away each minute; for one miner, the minutes it was. */
-function refusalSeries(mine: boolean, hours: Hours): HourSeries<HourPoint>[] {
+/** For the subnet, miners that found no task each minute; for one miner, the minutes it did. */
+function noTaskSeries(mine: boolean, hours: Hours): HourSeries<HourPoint> {
   const running = hours.points.at(-1)
-  const minutes = (point: HourPoint) =>
-    point === running ? minutesInto(point, hours.as_of) : undefined
-  return [
-    {
-      key: QUEUE_EMPTY,
-      label: refusalText(QUEUE_EMPTY).label,
-      color: SERIES_COLORS[2],
-      value: (point) =>
-        mine ? refused(point, QUEUE_EMPTY) : perMinute(refused(point, QUEUE_EMPTY), minutes(point)),
-    },
-    {
-      key: NO_CAPACITY,
-      label: refusalText(NO_CAPACITY).label,
-      color: SERIES_COLORS[1],
-      value: (point) =>
-        mine ? refused(point, NO_CAPACITY) : perMinute(refused(point, NO_CAPACITY), minutes(point)),
-    },
-    {
-      key: 'other',
-      label: 'Other reasons',
-      color: OTHER_COLOR,
-      value: (point) =>
-        mine ? refusedOther(point) : perMinute(refusedOther(point), minutes(point)),
-    },
-  ]
+  return {
+    key: QUEUE_EMPTY,
+    label: mine ? 'Minutes with no task' : 'Miners with no task, per minute',
+    color: SERIES_COLORS[2],
+    value: (point) =>
+      mine
+        ? refused(point, QUEUE_EMPTY)
+        : perMinute(
+            refused(point, QUEUE_EMPTY),
+            point === running ? minutesInto(point, hours.as_of) : undefined,
+          ),
+  }
 }
 
 function Figure({ label, value, detail }: { label: string; value: ReactNode; detail: ReactNode }) {
   return (
     <div className="min-w-0">
-      <div className="text-ink-faint text-label font-mono tracking-wider uppercase">{label}</div>
-      <div className="text-ink mt-0.5 text-lg font-medium">{value}</div>
+      <div className="text-ink-muted text-xs">{label}</div>
+      <div className="text-ink mt-0.5 text-2xl font-medium">{value}</div>
       <div className="text-ink-muted text-xs">{detail}</div>
     </div>
   )
 }
 
 function Summary({ hours, mine }: { hours: Hours; mine: boolean }) {
-  const { done, current } = splitHours(hours.points)
+  const { done } = splitHours(hours.points)
   const last = done.at(-1)
-  if (!last || !current) return null
-  const minutes = minutesInto(current, hours.as_of)
-  const turnedAway = (point: HourPoint, code: string, over?: number) =>
-    mine ? formatInt(refused(point, code)) : formatRate(perMinute(refused(point, code), over))
-  const refusedWord = mine ? 'minutes refused' : 'miners a minute'
+  if (!last) return null
+  const average = averagePerHour(done, (point) => point.tasks)
+  const noTask = refused(last, QUEUE_EMPTY)
   return (
-    <div className="grid grid-cols-2 gap-x-4 gap-y-3 sm:grid-cols-4">
+    <div className="grid gap-x-6 gap-y-4 sm:grid-cols-3">
       <Figure
-        label={mine ? 'Handed to it · last hour' : 'Handed out · last hour'}
-        value={formatInt(last.issued)}
-        detail={`${formatInt(current.issued)} so far this hour`}
-      />
-      <Figure
-        label={mine ? 'Its verdicts · last hour' : 'Finalized · last hour'}
+        label="Done in the last hour"
         value={formatInt(last.tasks)}
-        detail={`${formatInt(last.pass)} passed, ${formatInt(last.fail)} failed, ${formatInt(last.void)} void`}
+        detail={compareToAverage(last.tasks, average)}
       />
       <Figure
-        label={`Queue empty · last hour`}
-        value={turnedAway(last, QUEUE_EMPTY)}
-        detail={`${refusedWord} · ${turnedAway(current, QUEUE_EMPTY, minutes)} this hour`}
+        label="Done in the last 24 hours"
+        value={formatInt(done.reduce((sum, point) => sum + point.tasks, 0))}
+        detail={`about ${formatInt(average)} an hour`}
       />
       <Figure
-        label={`No capacity · last hour`}
-        value={turnedAway(last, NO_CAPACITY)}
-        detail={`${refusedWord} · ${turnedAway(current, NO_CAPACITY, minutes)} this hour`}
+        label={mine ? 'Minutes it found no task, last hour' : 'Miners with no task, last hour'}
+        value={mine ? `${formatInt(noTask)} of 60` : `${formatRate(perMinute(noTask))} a minute`}
+        detail="asked for a task when none was waiting"
       />
     </div>
   )
@@ -134,17 +100,11 @@ export function WorkPanel({ kind, miner, actions }: WorkPanelProps) {
   const query = useHours(miner === undefined ? { kind } : { kind, miner })
   const [view, setView] = useState<View>('chart')
   const mine = miner !== undefined
-  const issued = issuedSeries(mine)
-  const finalized = finalizedSeries(mine)
   return (
     <Card>
       <CardHeader
-        title={mine ? 'Its work per hour' : 'Is there work?'}
-        description={
-          mine
-            ? `Its ${kind} tasks each hour of the last 24, and the minutes its claims were turned away`
-            : `${kind === 'embed' ? 'Embed' : 'Crawl'} tasks handed out and finalized each hour of the last 24, and how many miners asked and got nothing`
-        }
+        title={mine ? 'Its tasks per hour' : 'Tasks per hour'}
+        description={`${kind === 'embed' ? 'Embed' : 'Crawl'} tasks done, last 24 hours`}
         actions={
           <>
             {actions}
@@ -154,29 +114,26 @@ export function WorkPanel({ kind, miner, actions }: WorkPanelProps) {
       />
       <QueryState query={query}>
         {(hours) => {
-          const refusals = refusalSeries(mine, hours)
+          const noTask = noTaskSeries(mine, hours)
           return (
-            <div className="space-y-5 p-4">
+            <div className="space-y-6 p-4">
               <Summary hours={hours} mine={mine} />
               {view === 'chart' ? (
-                <div className="grid gap-5 xl:grid-cols-2">
+                <div className="grid gap-6 xl:grid-cols-2">
                   <HourChart
-                    label="Tasks per hour"
+                    label="Tasks done"
                     points={hours.points}
-                    series={[issued]}
-                    line={finalized}
+                    series={[DONE]}
                     running
-                    emptyTitle={`No ${kind} task was handed out in the last 24 hours.`}
+                    emptyTitle={`No ${kind} task was done in the last 24 hours.`}
                   />
                   <HourChart
-                    label={
-                      mine ? 'Minutes its claims were refused' : 'Miners turned away, per minute'
-                    }
+                    label={noTask.label}
                     points={hours.points}
-                    series={refusals}
+                    series={[noTask]}
                     running
                     format={mine ? formatInt : formatRate}
-                    emptyTitle="No claim was refused in the last 24 hours."
+                    emptyTitle="Every miner that asked got a task."
                   />
                 </div>
               ) : (
@@ -184,16 +141,11 @@ export function WorkPanel({ kind, miner, actions }: WorkPanelProps) {
                   points={hours.points}
                   running
                   columns={[
-                    { series: [issued, finalized] },
-                    { series: refusals, format: mine ? formatInt : formatRate },
+                    { series: [DONE] },
+                    { series: [noTask], format: mine ? formatInt : formatRate },
                   ]}
                 />
               )}
-              <p className="text-ink-faint text-xs">
-                {mine
-                  ? 'A refused claim is counted once a minute per reason, so an hour holds at most 60 minutes of each.'
-                  : 'A refused claim is counted once a minute per miner and reason, so an hour’s refusals over 60 is how many miners were turned away each minute.'}
-              </p>
             </div>
           )
         }}

@@ -16,7 +16,6 @@ const LABEL_EVERY = 4
 const COLUMN_MAX = 24
 const GAP = 2
 const CAP = 4
-const DOT = 4
 const TOOLTIP_OFFSET = 10
 const RUNNING_OPACITY = 0.4
 
@@ -25,8 +24,6 @@ interface HourChartProps<P extends { at: number }> {
   points: readonly P[]
   /** Stacked as columns, the first at the bottom. */
   series: readonly HourSeries<P>[]
-  /** Drawn as a line over the columns, through the hours that are over. */
-  line?: HourSeries<P>
   /** The last point is the hour still running, drawn faded. */
   running?: boolean
   format?: (value: number) => string
@@ -55,19 +52,13 @@ export function HourChart<P extends { at: number }>({
   label,
   points,
   series,
-  line,
   running = false,
   format = formatInt,
   emptyTitle,
 }: HourChartProps<P>) {
   const [ref, width] = useWidth<HTMLDivElement>(FALLBACK_WIDTH)
   const [active, setActive] = useState<number | null>(null)
-  const heights = points.map((point) =>
-    Math.max(
-      series.reduce((sum, item) => sum + item.value(point), 0),
-      line ? line.value(point) : 0,
-    ),
-  )
+  const heights = points.map((point) => series.reduce((sum, item) => sum + item.value(point), 0))
   const ticks = niceTicks(Math.max(0, ...heights))
   const top = ticks[ticks.length - 1] ?? 0
   const plotWidth = Math.max(width - PAD_LEFT - PAD_RIGHT, 1)
@@ -77,11 +68,10 @@ export function HourChart<P extends { at: number }>({
   const yOf = (value: number) => PAD_TOP + PLOT_HEIGHT - (top > 0 ? (value / top) * PLOT_HEIGHT : 0)
   const last = points.length - 1
   const isRunning = (index: number) => running && index === last
-  const lineEnd = running ? last - 1 : last
-  const legend: (HourSeries<P> & LegendItem)[] = [
-    ...series.map((item) => ({ ...item, mark: 'column' as const })),
-    ...(line ? [{ ...line, mark: 'line' as const }] : []),
-  ]
+  const legend: (HourSeries<P> & LegendItem)[] = series.map((item) => ({
+    ...item,
+    mark: 'column' as const,
+  }))
 
   const pick = (event: PointerEvent<SVGRectElement>) => {
     const box = event.currentTarget.getBoundingClientRect()
@@ -99,8 +89,6 @@ export function HourChart<P extends { at: number }>({
   }
 
   const shown = active === null ? undefined : points[active]
-  const dotAt = active ?? (lineEnd >= 0 ? lineEnd : null)
-  const dotPoint = dotAt === null ? undefined : points[dotAt]
   return (
     <figure className="min-w-0">
       <figcaption className="mb-2 flex flex-wrap items-center justify-between gap-x-4 gap-y-1">
@@ -184,29 +172,6 @@ export function HourChart<P extends { at: number }>({
                 </g>
               )
             })}
-            {line && lineEnd > 0 ? (
-              <polyline
-                fill="none"
-                stroke={line.color}
-                strokeWidth={2}
-                strokeLinejoin="round"
-                strokeLinecap="round"
-                points={points
-                  .slice(0, lineEnd + 1)
-                  .map((point, index) => `${xOf(index)},${yOf(line.value(point))}`)
-                  .join(' ')}
-              />
-            ) : null}
-            {line && dotAt !== null && dotPoint ? (
-              <circle
-                cx={xOf(dotAt)}
-                cy={yOf(line.value(dotPoint))}
-                r={DOT}
-                fill={isRunning(dotAt) ? 'var(--color-surface)' : line.color}
-                stroke={isRunning(dotAt) ? line.color : 'var(--color-surface)'}
-                strokeWidth={2}
-              />
-            ) : null}
             <rect
               x={PAD_LEFT}
               y={0}

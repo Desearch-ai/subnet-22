@@ -20,10 +20,10 @@ function ByKind({ value }: { value: (kind: Kind) => ReactNode }) {
 
 function queueDetail(kind: Kind, waiting: number, hours: Hours | undefined): string {
   const lastHour = hours ? splitHours(hours.points).done.at(-1) : undefined
-  const minutes = lastHour ? queueMinutes(waiting, lastHour.issued) : null
+  const minutes = lastHour ? queueMinutes(waiting, lastHour.tasks) : null
   if (minutes === null) return 'ready for a miner to claim'
-  const lasts = minutes < 1 ? 'under a minute' : `about ${formatDuration(minutes * 60)}`
-  return `${kind}: ${lasts} of claims at last hour’s pace`
+  const lasts = minutes < 1 ? 'less than a minute' : `about ${formatDuration(minutes * 60)}`
+  return `${kind}: ${lasts} of work at the last hour’s pace`
 }
 
 interface LiveStatsProps {

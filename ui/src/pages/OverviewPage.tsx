@@ -25,7 +25,7 @@ export function OverviewPage() {
     <div className="space-y-4">
       <PageHeader
         title="Overview"
-        description="How much work there is, how fast uploads are checked and counted, and what fails and why. A crawl task is up to 1,000 URLs returned as one row each; an embed task is a batch of page texts returned as one vector each."
+        description="How much work there is right now, how fast uploads get their verdict, and why some do not pass."
       >
         {crawl.data ? (
           <span className="text-ink-faint text-xs">
@@ -49,13 +49,22 @@ export function OverviewPage() {
         </Card>
       )}
       <WorkPanel kind={kind} />
-      <QueryState query={chosen}>{(overview) => <ChecksPanel overview={overview} />}</QueryState>
-      <RecentProblems kind={kind} />
+      <div className="grid gap-4 xl:grid-cols-2">
+        <QueryState query={chosen}>{(overview) => <ChecksPanel overview={overview} />}</QueryState>
+        <RecentProblems kind={kind} />
+      </div>
       <div className="grid gap-4 xl:grid-cols-2">
         <TopMiners kind={kind} />
         <ValidatorsPanel />
       </div>
-      <LivePanel />
+      <details className="group">
+        <summary className="text-ink-muted hover:text-ink py-1 text-sm">
+          Every task claimed or being checked right now
+        </summary>
+        <div className="mt-3">
+          <LivePanel />
+        </div>
+      </details>
     </div>
   )
 }
