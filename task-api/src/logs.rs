@@ -182,20 +182,28 @@ fn uid_of(state: &State, hotkey: Option<&str>) -> Value {
     hotkey.and_then(|h| state.registry.registered(h)).and_then(|e| e.uid).map_or(Value::Null, Value::from)
 }
 
-/// The row with a uid beside each hotkey it names; null for one off the metagraph.
+/// The uid and coldkey the metagraph has for a hotkey; null for one off it.
+fn keys_of(state: &State, hotkey: Option<&str>) -> (Value, Value) {
+    let entry = hotkey.and_then(|h| state.registry.registered(h));
+    (entry.as_ref().and_then(|e| e.uid).map_or(Value::Null, Value::from), entry.and_then(|e| e.coldkey).map_or(Value::Null, Value::from))
+}
+
+/// The row with a uid and coldkey beside each hotkey it names.
 fn with_uids(state: &State, mut row: Map<String, Value>) -> Value {
     for name in ["miner", "validator"] {
         if let Some(hotkey) = row.get(name).cloned() {
-            row.insert(format!("{name}_uid"), uid_of(state, hotkey.as_str()));
+            let (uid, coldkey) = keys_of(state, hotkey.as_str());
+            row.insert(format!("{name}_uid"), uid);
+            row.insert(format!("{name}_coldkey"), coldkey);
         }
     }
     Value::Object(row)
 }
 
 fn with_keys(state: &State, mut row: Map<String, Value>, hotkey: &str) -> Value {
-    let entry = state.registry.registered(hotkey);
-    row.insert("uid".into(), entry.as_ref().and_then(|e| e.uid).map_or(Value::Null, Value::from));
-    row.insert("coldkey".into(), entry.and_then(|e| e.coldkey).map_or(Value::Null, Value::from));
+    let (uid, coldkey) = keys_of(state, Some(hotkey));
+    row.insert("uid".into(), uid);
+    row.insert("coldkey".into(), coldkey);
     Value::Object(row)
 }
 
@@ -288,10 +296,9 @@ async fn miner_rows(state: &Arc<State>, hours: i64, kind: &'static str) -> Resul
     let mut out = Vec::with_capacity(rows.len());
     for (mut row, pair) in rows.into_iter().zip(counts.chunks(2)) {
         let hotkey = text(&Value::Object(row.clone()), "hotkey").to_string();
-        row.insert("uid".into(), uid_of(state, Some(&hotkey)));
         row.insert("in_flight".into(), pair[0].into());
         row.insert("waiting".into(), pair[1].into());
-        out.push(Value::Object(row));
+        out.push(with_keys(state, row, &hotkey));
     }
     Ok(out.into())
 }
@@ -302,10 +309,9 @@ async fn validator_rows(state: &Arc<State>, hours: i64) -> Result<Value, ApiErro
     let rows = state.reader.read(move |conn| validator_rows_at(conn, until - hours as f64 * HOUR, until, &last_seen)).await?;
     Ok(rows
         .into_iter()
-        .map(|mut row| {
-            let uid = uid_of(state, row.get("hotkey").and_then(Value::as_str));
-            row.insert("uid".into(), uid);
-            Value::Object(row)
+        .map(|row| {
+            let hotkey = text(&Value::Object(row.clone()), "hotkey").to_string();
+            with_keys(state, row, &hotkey)
         })
         .collect::<Vec<_>>()
         .into())

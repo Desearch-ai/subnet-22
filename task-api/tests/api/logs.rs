@@ -153,7 +153,7 @@ fn neuron(client: &Client, uid: i64, coldkey: &str, validator: bool) -> Neuron {
 }
 
 #[tokio::test]
-async fn hotkeys_come_with_their_uids() {
+async fn hotkeys_come_with_their_uids_and_coldkeys() {
     let h = Harness::with(|s| s.registry = RegistryMode::Chain { netuid: 22, network: "finney".into() }).await;
     h.state.registry.load(vec![neuron(&h.miner, 7, "ck", false), neuron(&h.validator, 2, "cv", true)]);
     h.enqueue(urls(6)).await;
@@ -161,6 +161,11 @@ async fn hotkeys_come_with_their_uids() {
     vote(&h, &h.validator, "pass", None).await;
     let listed = read(&h, "/v1/tasks").await["tasks"][0].clone();
     assert_eq!((listed["miner_uid"].clone(), listed["validator_uid"].clone()), (json!(7), json!(2)));
+    assert_eq!((listed["miner_coldkey"].clone(), listed["validator_coldkey"].clone()), (json!("ck"), json!("cv")));
+    let miners = read(&h, "/v1/miners").await["miners"].clone();
+    assert_eq!((miners[0]["uid"].clone(), miners[0]["coldkey"].clone()), (json!(7), json!("ck")));
+    let validators = read(&h, "/v1/validators").await["validators"].clone();
+    assert_eq!((validators[0]["uid"].clone(), validators[0]["coldkey"].clone()), (json!(2), json!("cv")));
     let view = h.view(&task).await;
     assert_eq!((view["miner_uid"].clone(), view["score"]["validator_uid"].clone(), view["votes"][0]["validator_uid"].clone()), (json!(7), json!(2), json!(2)));
     let miner = read(&h, &format!("/v1/miners/{}", h.miner.ss58())).await;
@@ -169,6 +174,7 @@ async fn hotkeys_come_with_their_uids() {
     assert_eq!((validator["uid"].clone(), validator["coldkey"].clone()), (json!(2), json!("cv")));
     let first = read(&h, "/v1/votes").await["votes"][0].clone();
     assert_eq!((first["miner_uid"].clone(), first["validator_uid"].clone()), (json!(7), json!(2)));
+    assert_eq!(first["miner_coldkey"], "ck");
 }
 
 #[tokio::test]

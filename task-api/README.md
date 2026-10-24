@@ -319,8 +319,9 @@ Anyone can read these; the [UI](../ui/README.md) is built on them.
 A refused claim is logged once a minute per miner and reason, so an hour's refusals divided by 60 is
 how many miners were turned away each minute on average.
 
-Every miner and validator is named by hotkey, with its uid beside it (`miner_uid`, `validator_uid`,
-`uid`); the uid is null for a hotkey that is not on the metagraph.
+Every miner and validator is named by hotkey, with its uid and coldkey beside it (`miner_uid` and
+`miner_coldkey`, `validator_uid` and `validator_coldkey`, or `uid` and `coldkey`); both are null for a
+hotkey that is not on the metagraph.
 
 Lists return a page at a time (`limit`, at most 100) with a `next` value to pass back as `before`.
 
