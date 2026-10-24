@@ -4,11 +4,11 @@ import type { HourPoint, Hours, Kind } from '@/api/types'
 import { Card, CardHeader } from '@/components/ui/Card'
 import { QueryState } from '@/components/ui/QueryState'
 import { SegmentedControl } from '@/components/ui/SegmentedControl'
-import { formatInt } from '@/lib/format'
-import { averagePerHour, compareToAverage, splitHours } from '@/lib/work'
+import { formatClock, formatInt } from '@/lib/format'
+import { averagePerHour, splitHours } from '@/lib/work'
 import { HourChart } from './HourChart'
 import { HourTable } from './HourTable'
-import { SERIES_COLORS, type HourSeries } from './hourSeries'
+import { HOUR_S, SERIES_COLORS, type HourSeries } from './hourSeries'
 
 type View = 'chart' | 'table'
 
@@ -44,7 +44,7 @@ function Summary({ hours }: { hours: Hours }) {
       <Figure
         label="Done in the last hour"
         value={formatInt(last.tasks)}
-        detail={compareToAverage(last.tasks, average)}
+        detail={`${formatClock(last.at)}–${formatClock(last.at + HOUR_S)}`}
       />
       <Figure
         label="Done in the last 24 hours"

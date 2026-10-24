@@ -86,41 +86,6 @@ export interface Hours {
   points: HourPoint[]
 }
 
-export interface LiveClaim {
-  task_id: string
-  kind: Kind
-  miner: string
-  miner_uid: number | null
-  urls: number
-  texts: number | null
-  expires_at: number
-}
-
-export interface Voter {
-  hotkey: string
-  uid: number | null
-}
-
-export interface LiveUpload {
-  task_id: string
-  kind: Kind
-  miner: string
-  miner_uid: number | null
-  urls: number
-  texts: number | null
-  completed_at: number
-  deadline: number
-  voters: Voter[]
-  electorate: number
-}
-
-export interface Live {
-  claims: LiveClaim[]
-  uploads: LiveUpload[]
-  claims_total: number
-  uploads_total: number
-}
-
 export interface MinerSummary extends VerdictCounts {
   hotkey: string
   uid: number | null

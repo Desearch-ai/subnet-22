@@ -113,13 +113,6 @@ export function formatRelative(atSeconds: number, nowMs: number): string {
   return delta > 0 ? `${formatDuration(delta)} ago` : `in ${formatDuration(-delta)}`
 }
 
-export function formatCountdown(untilSeconds: number, nowMs: number): string {
-  const left = Math.max(0, Math.round(untilSeconds - nowMs / 1000))
-  const minutes = Math.floor(left / SECONDS_PER_MINUTE)
-  const seconds = left % SECONDS_PER_MINUTE
-  return `${minutes}:${String(seconds).padStart(2, '0')}`
-}
-
 export function formatAbsolute(atSeconds: number): string {
   return absoluteFormat.format(new Date(atSeconds * 1000))
 }

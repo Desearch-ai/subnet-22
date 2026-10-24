@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
   EMPTY_VALUE,
-  formatCountdown,
   formatDuration,
   formatInt,
   formatPercent,
@@ -56,13 +55,6 @@ describe('formatRelative', () => {
     expect(formatRelative(NOW_S - 3, NOW_MS)).toBe('just now')
     expect(formatRelative(NOW_S - 120, NOW_MS)).toBe('2 min ago')
     expect(formatRelative(NOW_S + 7200, NOW_MS)).toBe('in 2 h')
-  })
-})
-
-describe('formatCountdown', () => {
-  it('counts down in minutes and seconds and stops at zero', () => {
-    expect(formatCountdown(NOW_S + 412, NOW_MS)).toBe('6:52')
-    expect(formatCountdown(NOW_S - 5, NOW_MS)).toBe('0:00')
   })
 })
 

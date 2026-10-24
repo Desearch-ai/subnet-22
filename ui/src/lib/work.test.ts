@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { ClaimCounts, HourPoint } from '@/api/types'
-import { averagePerHour, compareToAverage, queueMinutes, refused, splitHours } from './work'
+import { averagePerHour, queueMinutes, refused, splitHours } from './work'
 
 const claims: ClaimCounts = {
   issued: 1200,
@@ -36,13 +36,9 @@ describe('hours', () => {
   })
 })
 
-describe('the last hour against the day', () => {
-  it('averages the hours and says how far an hour is from it', () => {
+describe('averagePerHour', () => {
+  it('averages the hours, zero when there are none', () => {
     expect(averagePerHour([10, 20, 30], (n) => n)).toBe(20)
     expect(averagePerHour([], (n: number) => n)).toBe(0)
-    expect(compareToAverage(20_400, 20_000)).toBe('about the same as the 24-hour average')
-    expect(compareToAverage(15_000, 20_000)).toBe('25% below the 24-hour average')
-    expect(compareToAverage(26_000, 20_000)).toBe('30% above the 24-hour average')
-    expect(compareToAverage(5, 0)).toBe('none earlier in the day')
   })
 })

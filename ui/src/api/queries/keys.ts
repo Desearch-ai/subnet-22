@@ -20,7 +20,6 @@ export interface HoursFilters {
 
 export const queryKeys = {
   overview: (kind: Kind) => ['overview', WINDOW_HOURS, kind] as const,
-  live: () => ['live'] as const,
   hours: ({ kind, miner }: HoursFilters) => ['hours', HOURS_SHOWN, kind, miner ?? null] as const,
   miners: (kind: Kind) => ['miners', WINDOW_HOURS, kind] as const,
   miner: (hotkey: string) => ['miner', hotkey] as const,

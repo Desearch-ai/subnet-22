@@ -2,7 +2,6 @@ import { useHours } from '@/api/queries/hours'
 import { useOverview } from '@/api/queries/overview'
 import { WorkPanel } from '@/components/charts/WorkPanel'
 import { ChecksPanel } from '@/components/overview/ChecksPanel'
-import { LivePanel } from '@/components/overview/LivePanel'
 import { LiveStats } from '@/components/overview/LiveStats'
 import { MinerLookup } from '@/components/overview/MinerLookup'
 import { RecentProblems } from '@/components/overview/RecentProblems'
@@ -57,14 +56,6 @@ export function OverviewPage() {
         <TopMiners kind={kind} />
         <ValidatorsPanel />
       </div>
-      <details className="group">
-        <summary className="text-ink-muted hover:text-ink py-1 text-sm">
-          Every task claimed or being checked right now
-        </summary>
-        <div className="mt-3">
-          <LivePanel />
-        </div>
-      </details>
     </div>
   )
 }

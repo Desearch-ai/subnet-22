@@ -25,13 +25,3 @@ export function averagePerHour<P>(points: readonly P[], value: (point: P) => num
     ? points.reduce((sum, point) => sum + value(point), 0) / points.length
     : 0
 }
-
-const SAME_WITHIN = 0.05
-
-/** The value against the day's hourly average, in words. */
-export function compareToAverage(value: number, average: number): string {
-  if (average <= 0) return 'none earlier in the day'
-  const change = value / average - 1
-  if (Math.abs(change) < SAME_WITHIN) return 'about the same as the 24-hour average'
-  return `${Math.round(Math.abs(change) * 100)}% ${change > 0 ? 'above' : 'below'} the 24-hour average`
-}
