@@ -15,7 +15,7 @@ export const KIND_LABEL: Record<Kind, string> = {
 }
 
 export const KIND_SUMMARY: Record<Kind, string> = {
-  crawl: 'up to 1,000 URLs a task, one row per URL',
+  crawl: 'up to 1,000 URLs a task, one page each',
   embed: 'page texts and passages, one vector per text',
 }
 
@@ -26,7 +26,7 @@ interface KindWords {
 }
 
 export const KIND_WORDS: Record<Kind, KindWords> = {
-  crawl: { working: 'crawling', returned: 'rows', credited: 'rows' },
+  crawl: { working: 'crawling', returned: 'pages', credited: 'pages' },
   embed: { working: 'embedding', returned: 'texts', credited: 'characters' },
 }
 
@@ -45,10 +45,10 @@ const UPLOAD_TIME_HINT = 'From the miner claiming the task to its upload being a
 
 const KIND_COLUMNS: Record<Kind, Record<CountColumn, ColumnText>> = {
   crawl: {
-    returned: { label: 'Rows returned', hint: 'Rows the miner uploaded, one per URL' },
-    missing: { label: 'Missing', hint: 'Assigned URLs with no row in the upload' },
+    returned: { label: 'Pages returned', hint: 'Pages the miner uploaded, one per URL' },
+    missing: { label: 'Missing', hint: 'Assigned URLs with no page in the upload' },
     checked: { label: 'Checked', hint: 'Pages the validator fetched again: matched / checked' },
-    credited: { label: 'Rows counted', hint: "Rows that count toward the miner's share" },
+    credited: { label: 'Pages counted', hint: "Pages that count toward the miner's share" },
     time: { label: 'Crawl time', hint: UPLOAD_TIME_HINT },
   },
   embed: {
@@ -69,11 +69,11 @@ const KIND_COLUMNS: Record<Kind, Record<CountColumn, ColumnText>> = {
 const ALL_KINDS_COLUMNS: Record<CountColumn, ColumnText> = {
   returned: {
     label: 'Returned',
-    hint: 'Crawl: rows the miner uploaded. Embed: texts it returned a vector for',
+    hint: 'Crawl: pages the miner uploaded. Embed: texts it returned a vector for',
   },
   missing: {
     label: 'Missing',
-    hint: 'Crawl: assigned URLs with no row. Embed: assigned texts with no vector',
+    hint: 'Crawl: assigned URLs with no page. Embed: assigned texts with no vector',
   },
   checked: {
     label: 'Checked',
@@ -81,7 +81,7 @@ const ALL_KINDS_COLUMNS: Record<CountColumn, ColumnText> = {
   },
   credited: {
     label: 'Counted',
-    hint: "What counts toward the miner's share. Crawl: rows. Embed: characters",
+    hint: "What counts toward the miner's share. Crawl: pages. Embed: characters",
   },
   time: { label: 'Work time', hint: UPLOAD_TIME_HINT },
 }

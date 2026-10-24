@@ -31,7 +31,7 @@ const SHARED_METRICS: readonly Metric[] = [
 const KIND_METRICS: Record<Kind, readonly Metric[]> = {
   crawl: [
     ...SHARED_METRICS,
-    { label: 'Rows returned', valueOf: (vote) => vote.returned },
+    { label: 'Pages returned', valueOf: (vote) => vote.returned },
     {
       label: 'Checked pages',
       hint: 'Pages this validator fetched again',
@@ -43,8 +43,8 @@ const KIND_METRICS: Record<Kind, readonly Metric[]> = {
     { label: 'Errors confirmed', valueOf: (vote) => vote.errors_confirmed },
     { label: 'Errors not confirmed', valueOf: (vote) => vote.errors_unconfirmed },
     {
-      label: 'Rows counted',
-      hint: 'Rows this validator would pay for',
+      label: 'Pages counted',
+      hint: 'Pages this validator would pay for',
       valueOf: (vote) => vote.credited,
     },
   ],

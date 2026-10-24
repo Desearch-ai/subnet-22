@@ -32,7 +32,7 @@ function sortValue(miner: MinerSummary, key: MinerSortKey): SortValue {
 }
 
 const VERIFIED_HINT: Record<Kind, string> = {
-  crawl: 'Rows counted since the start',
+  crawl: 'Pages counted since the start',
   embed: 'Characters counted since the start',
 }
 
@@ -85,7 +85,7 @@ export function MinersTable({ miners, kind }: MinersTableProps) {
               {...column}
               sortKey="coverage"
               label="Coverage"
-              hint="Rows returned out of URLs assigned"
+              hint="Pages returned out of URLs assigned"
             />
           ) : null}
           <SortTh {...column} sortKey="pass" label="Pass / fail / void" align="left" />

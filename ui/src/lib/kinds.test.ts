@@ -13,8 +13,8 @@ describe('readKind', () => {
 
 describe('countColumns', () => {
   it('names the units of one kind', () => {
-    expect(countColumns('crawl').returned.label).toBe('Rows returned')
-    expect(countColumns('crawl').credited.label).toBe('Rows counted')
+    expect(countColumns('crawl').returned.label).toBe('Pages returned')
+    expect(countColumns('crawl').credited.label).toBe('Pages counted')
     expect(countColumns('embed').returned.label).toBe('Texts returned')
     expect(countColumns('embed').credited.label).toBe('Chars counted')
     expect(countColumns('embed').checked.hint).toContain('0.999')
@@ -24,7 +24,7 @@ describe('countColumns', () => {
     const mixed = countColumns(undefined)
     expect(mixed.returned.label).toBe('Returned')
     expect(mixed.credited.label).toBe('Counted')
-    expect(mixed.credited.hint).toContain('Crawl: rows')
+    expect(mixed.credited.hint).toContain('Crawl: pages')
     expect(mixed.credited.hint).toContain('Embed: characters')
     expect(mixed.time.label).toBe('Work time')
   })

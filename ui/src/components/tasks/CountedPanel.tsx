@@ -28,30 +28,30 @@ function CrawlSteps({ score }: { score: TaskScore }) {
         <Step value={formatInt(assigned)} label="URLs assigned" />
         <Step
           value={formatInt(score.returned)}
-          label="rows returned"
+          label="pages returned"
           detail={`${formatPercent(ratio(score.returned, assigned))} of assigned`}
         />
         <Step value={formatInt(score.sampled)} label="pages checked" />
         <Step
           value={formatInt(score.matched)}
           label="checked pages matched"
-          detail="sets the share of content rows counted"
+          detail="sets the share of pages with content that count"
         />
         <Step
           value={`${formatInt(score.errors_confirmed)} / ${formatInt(checkedErrors)}`}
           label="checked errors confirmed"
-          detail="sets the share of error rows counted"
+          detail="sets the share of error pages that count"
         />
         <Step
           value={formatInt(score.credited)}
-          label="rows counted"
+          label="pages counted"
           detail={`${formatPercent(ratio(score.credited, score.returned))} of returned`}
         />
       </ol>
       <p className="text-ink-muted mt-3 text-sm">
         {score.verdict === 'pass'
-          ? 'Rows with page content count at the share of checked pages that matched. Rows that reported an error count at the share of checked errors the validator confirmed. A mismatch in the sample therefore lowers the counted rows for the whole upload, not just for that page.'
-          : 'No rows count for an upload that failed or ended void.'}
+          ? 'Pages with content count at the share of checked pages that matched. Pages that reported an error count at the share of checked errors the validator confirmed. A mismatch in the sample therefore lowers the counted pages for the whole upload, not just for that page.'
+          : 'No pages count for an upload that failed or ended void.'}
       </p>
     </>
   )
@@ -102,12 +102,12 @@ export function CountedPanel({ score, texts }: CountedPanelProps) {
     <Card>
       <CardHeader
         title={
-          embed ? 'From checked texts to characters counted' : 'From checked pages to rows counted'
+          embed ? 'From checked texts to characters counted' : 'From checked pages to pages counted'
         }
         description={
           embed
             ? `Validators embed ${EMBED_SAMPLES} sampled texts again; each must reach a similarity of ${MATCH_SIMILARITY} to the miner's vector.`
-            : "Validators fetch a sample of the pages again. What holds up in the sample decides how many of the returned rows count toward the miner's share."
+            : "Validators fetch a sample of the pages again. What holds up in the sample decides how many of the returned pages count toward the miner's share."
         }
       />
       <div className="p-4">
