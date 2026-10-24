@@ -144,7 +144,15 @@ def test_unlabelled_domains_take_their_type_from_wikidata_or_wait():
 )
 def test_caps_by_type_backing_and_confidence(site_type, rank, backing, confidence, cap):
     found = decide(row(site_type=site_type, rank=rank, confidence=confidence), backing)
-    assert (found.cap, found.send_cap) == (cap, cap * 3 // 2)
+    if site_type == "news":
+        assert (found.cap, found.send_cap, found.backlog) == (cap, None, 3 * cap)
+    else:
+        assert (found.cap, found.send_cap, found.backlog) == (cap, 3 * cap, None)
+
+
+def test_top_ranked_sites_take_more_an_hour():
+    hourly = [decide(row(rank=r), Backing()).hourly for r in (5_000, 50_000, None)]
+    assert hourly == [20_000, 5_000, 5_000]
 
 
 def test_weights_follow_tiers():
@@ -169,7 +177,18 @@ def test_the_list_holds_sending_domains_best_rank_first(tmp_path, monkeypatch):
         "host": "e.com",
         "type": "news",
         "weight": 4,
-        "send_cap": 1_500_000,
+        "hourly": 20_000,
+        "backlog": 3_000_000,
+    }
+    reference = crawl_list.build(
+        [row(host="r.com", site_type="reference")], {}, {}, Hand()
+    )[0][0]
+    assert reference == {
+        "host": "r.com",
+        "type": "reference",
+        "weight": 3,
+        "hourly": 5_000,
+        "send_cap": 300_000,
     }
     assert counts == {"news": 4, "out:shop": 1}
     monkeypatch.setattr(crawl_list, "MIN_DOMAINS", 2)

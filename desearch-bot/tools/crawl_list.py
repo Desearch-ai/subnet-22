@@ -4,7 +4,6 @@ import argparse
 import csv
 import gzip
 import json
-import math
 import os
 import subprocess
 import sys
@@ -56,8 +55,10 @@ RECHECKED = {"no_text", "homepage_error"}
 TOP_RANK = 10_000
 LOW_CAP = 10_000
 UNSURE_CAP = 100_000
-# Pages sent per page kept: some fail, some are thin.
-SEND_PER_PAGE = 1.5
+# The crawl takes three pages for each one the index may keep, so admission can choose.
+CRAWL_PER_INDEX = 3
+HOURLY_TOP = 20_000
+HOURLY = 5_000
 MIN_DOMAINS = 50_000
 
 
@@ -91,7 +92,9 @@ class Decision:
     tier: int = 0
     weight: int = 0
     cap: int = 0
-    send_cap: int = 0
+    send_cap: int | None = None
+    backlog: int | None = None
+    hourly: int = 0
 
 
 @dataclass
@@ -165,8 +168,20 @@ def decide(
         elif confidence < 0.8:
             cap = min(cap, UNSURE_CAP)
     tier = TIERS[site_type]
+    crawl = cap * CRAWL_PER_INDEX
+    top = row.rank is not None and row.rank <= TOP_RANK
+    # News keeps getting new articles, so only its first walk is bounded.
+    news = site_type == "news"
     return Decision(
-        True, "", site_type, tier, WEIGHTS[tier], cap, math.ceil(cap * SEND_PER_PAGE)
+        True,
+        "",
+        site_type,
+        tier,
+        WEIGHTS[tier],
+        cap,
+        send_cap=None if news else crawl,
+        backlog=crawl if news else None,
+        hourly=HOURLY_TOP if top else HOURLY,
     )
 
 
@@ -265,8 +280,12 @@ def build(
                 "host": row.host,
                 "type": decision.site_type,
                 "weight": decision.weight,
-                "send_cap": decision.send_cap,
+                "hourly": decision.hourly,
             }
+            if decision.send_cap is not None:
+                entry["send_cap"] = decision.send_cap
+            if decision.backlog is not None:
+                entry["backlog"] = decision.backlog
             ranked.append((row.rank is None, row.rank or 0, row.host, entry))
         if decisions is not None:
             decisions.writerow(
