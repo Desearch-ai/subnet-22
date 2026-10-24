@@ -7,7 +7,6 @@ import { EMPTY_VALUE } from '@/lib/format'
 import { BUDGET_CAUSE_MEANING } from '@/lib/labels'
 import { taskPath } from '@/lib/paths'
 
-/** Only the steps that lowered the budget: raises come one task at a time and say little. */
 export function BudgetCuts({
   transitions,
   kind,

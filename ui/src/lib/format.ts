@@ -1,5 +1,5 @@
 const SECONDS_PER_MINUTE = 60
-const SECONDS_PER_HOUR = 3600
+export const SECONDS_PER_HOUR = 3600
 const SECONDS_PER_DAY = 86400
 const JUST_NOW_S = 10
 const SIMILARITY_DIGITS = 6
@@ -33,7 +33,6 @@ export function formatCompact(value: number): string {
   return compactFormat.format(value)
 }
 
-/** Ticks from zero at a round step, the top one at or above `highest`. */
 export function niceTicks(highest: number, steps = 4): number[] {
   if (highest <= 0) return [0]
   const rough = highest / steps

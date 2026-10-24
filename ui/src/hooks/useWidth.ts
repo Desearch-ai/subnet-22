@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
 
-/** The element's width in pixels, kept current as it resizes. */
 export function useWidth<T extends HTMLElement>(fallback: number) {
   const ref = useRef<T>(null)
   const [width, setWidth] = useState(fallback)

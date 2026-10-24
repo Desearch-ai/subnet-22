@@ -1,19 +1,11 @@
 import type { ReactNode } from 'react'
 import { useHours } from '@/api/queries/hours'
-import type { HourPoint, Hours, Kind } from '@/api/types'
+import type { Hours, Kind } from '@/api/types'
 import { Card, CardHeader } from '@/components/ui/Card'
 import { QueryState } from '@/components/ui/QueryState'
-import { formatClock, formatInt } from '@/lib/format'
+import { formatClock, formatInt, SECONDS_PER_HOUR } from '@/lib/format'
 import { averagePerHour, splitHours } from '@/lib/work'
 import { HourChart } from './HourChart'
-import { HOUR_S, SERIES_COLORS, type HourSeries } from './hourSeries'
-
-const DONE: HourSeries<HourPoint> = {
-  key: 'tasks',
-  label: 'Tasks done',
-  color: SERIES_COLORS[0],
-  value: (point) => point.tasks,
-}
 
 function Figure({ label, value, detail }: { label: string; value: ReactNode; detail: ReactNode }) {
   return (
@@ -35,7 +27,7 @@ function Summary({ hours }: { hours: Hours }) {
       <Figure
         label="Done in the last hour"
         value={formatInt(last.tasks)}
-        detail={`${formatClock(last.at)}–${formatClock(last.at + HOUR_S)}`}
+        detail={`${formatClock(last.at)}–${formatClock(last.at + SECONDS_PER_HOUR)}`}
       />
       <Figure
         label="Done in the last 24 hours"
@@ -61,7 +53,7 @@ export function WorkPanel({ kind, miner }: { kind: Kind; miner?: string }) {
             <HourChart
               label="Tasks done"
               points={hours.points}
-              series={[DONE]}
+              value={(point) => point.tasks}
               running
               emptyTitle={`No ${kind} task was done in the last 24 hours.`}
             />

@@ -95,7 +95,6 @@ function Timeline({ score }: { score: TaskScore }) {
   )
 }
 
-/** What happened to the task, who did it, and when, from its last finalized upload. */
 export function TaskHeader({ task }: { task: TaskDetail }) {
   const { status, score } = task
   const final = isFinal(status)

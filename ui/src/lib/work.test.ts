@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { ClaimCounts, HourPoint } from '@/api/types'
-import { averagePerHour, queueMinutes, refused, splitHours } from './work'
+import { averagePerHour, queueMinutes, splitHours } from './work'
 
 const claims: ClaimCounts = {
   issued: 1200,
@@ -14,13 +14,6 @@ const claims: ClaimCounts = {
 function hour(at: number): HourPoint {
   return { ...claims, at, tasks: 0, pass: 0, fail: 0, void: 0, returned: 0, credited: 0 }
 }
-
-describe('refusals', () => {
-  it('reads one reason, zero for a reason never logged', () => {
-    expect(refused(claims, 'QUEUE_EMPTY')).toBe(6000)
-    expect(refused(claims, 'ALREADY_HELD')).toBe(0)
-  })
-})
 
 describe('hours', () => {
   it('keeps the running hour apart from the ones that are over', () => {

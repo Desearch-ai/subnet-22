@@ -1,9 +1,7 @@
 import { useState, type KeyboardEvent, type PointerEvent } from 'react'
 import { EmptyState } from '@/components/ui/States'
 import { useWidth } from '@/hooks/useWidth'
-import { formatClock, formatCompact, formatInt, niceTicks } from '@/lib/format'
-import { ChartLegend, SeriesKey, type LegendItem } from './ChartLegend'
-import { HOUR_S, type HourSeries } from './hourSeries'
+import { formatClock, formatCompact, formatInt, niceTicks, SECONDS_PER_HOUR } from '@/lib/format'
 
 const HEIGHT = 184
 const PAD_TOP = 10
@@ -22,22 +20,14 @@ const RUNNING_OPACITY = 0.4
 interface HourChartProps<P extends { at: number }> {
   label: string
   points: readonly P[]
-  /** Stacked as columns, the first at the bottom. */
-  series: readonly HourSeries<P>[]
+  value: (point: P) => number
   /** The last point is the hour still running, drawn faded. */
   running?: boolean
-  format?: (value: number) => string
   emptyTitle: string
 }
 
-function columnPath(
-  x: number,
-  top: number,
-  bottom: number,
-  width: number,
-  rounded: boolean,
-): string {
-  const radius = rounded ? Math.min(CAP, width / 2, bottom - top) : 0
+function columnPath(x: number, top: number, bottom: number, width: number): string {
+  const radius = Math.min(CAP, width / 2, bottom - top)
   return [
     `M${x},${bottom}`,
     `V${top + radius}`,
@@ -51,27 +41,22 @@ function columnPath(
 export function HourChart<P extends { at: number }>({
   label,
   points,
-  series,
+  value,
   running = false,
-  format = formatInt,
   emptyTitle,
 }: HourChartProps<P>) {
   const [ref, width] = useWidth<HTMLDivElement>(FALLBACK_WIDTH)
   const [active, setActive] = useState<number | null>(null)
-  const heights = points.map((point) => series.reduce((sum, item) => sum + item.value(point), 0))
-  const ticks = niceTicks(Math.max(0, ...heights))
+  const ticks = niceTicks(Math.max(0, ...points.map(value)))
   const top = ticks[ticks.length - 1] ?? 0
   const plotWidth = Math.max(width - PAD_LEFT - PAD_RIGHT, 1)
   const band = plotWidth / Math.max(points.length, 1)
   const columnWidth = Math.min(COLUMN_MAX, Math.max(band - GAP, 1))
   const xOf = (index: number) => PAD_LEFT + band * (index + 0.5)
-  const yOf = (value: number) => PAD_TOP + PLOT_HEIGHT - (top > 0 ? (value / top) * PLOT_HEIGHT : 0)
+  const yOf = (amount: number) =>
+    PAD_TOP + PLOT_HEIGHT - (top > 0 ? (amount / top) * PLOT_HEIGHT : 0)
   const last = points.length - 1
   const isRunning = (index: number) => running && index === last
-  const legend: (HourSeries<P> & LegendItem)[] = series.map((item) => ({
-    ...item,
-    mark: 'column' as const,
-  }))
 
   const pick = (event: PointerEvent<SVGRectElement>) => {
     const box = event.currentTarget.getBoundingClientRect()
@@ -91,10 +76,7 @@ export function HourChart<P extends { at: number }>({
   const shown = active === null ? undefined : points[active]
   return (
     <figure className="min-w-0">
-      <figcaption className="mb-2 flex flex-wrap items-center justify-between gap-x-4 gap-y-1">
-        <span className="text-ink text-xs font-medium">{label}</span>
-        {legend.length > 1 ? <ChartLegend items={legend} /> : null}
-      </figcaption>
+      <figcaption className="text-ink mb-2 text-xs font-medium">{label}</figcaption>
       <div ref={ref} className="relative">
         {top === 0 ? (
           <EmptyState title={emptyTitle} />
@@ -145,33 +127,21 @@ export function HourChart<P extends { at: number }>({
                 className="fill-raised"
               />
             ) : null}
-            {points.map((point, index) => {
-              let below = 0
-              const filled = series.filter((item) => item.value(point) > 0)
-              return (
-                <g key={point.at} opacity={isRunning(index) ? RUNNING_OPACITY : undefined}>
-                  {filled.map((item, position) => {
-                    const bottom = yOf(below) - (position > 0 ? GAP : 0)
-                    below += item.value(point)
-                    const segmentTop = yOf(below)
-                    if (bottom - segmentTop < 0.5) return null
-                    return (
-                      <path
-                        key={item.key}
-                        d={columnPath(
-                          xOf(index) - columnWidth / 2,
-                          segmentTop,
-                          bottom,
-                          columnWidth,
-                          position === filled.length - 1,
-                        )}
-                        fill={item.color}
-                      />
-                    )
-                  })}
-                </g>
-              )
-            })}
+            {points.map((point, index) =>
+              value(point) > 0 ? (
+                <path
+                  key={point.at}
+                  d={columnPath(
+                    xOf(index) - columnWidth / 2,
+                    yOf(value(point)),
+                    yOf(0),
+                    columnWidth,
+                  )}
+                  className="fill-series-1"
+                  opacity={isRunning(index) ? RUNNING_OPACITY : undefined}
+                />
+              ) : null,
+            )}
             <rect
               x={PAD_LEFT}
               y={0}
@@ -189,28 +159,20 @@ export function HourChart<P extends { at: number }>({
         {shown !== undefined && active !== null && top > 0 ? (
           <div
             role="status"
-            className="border-line-strong bg-ground pointer-events-none absolute z-10 min-w-36 rounded-md border px-2.5 py-1.5 text-xs shadow-lg"
+            className="border-line-strong bg-ground pointer-events-none absolute z-10 rounded-md border px-2.5 py-1.5 text-xs shadow-lg"
             style={
               xOf(active) > width / 2
                 ? { right: width - xOf(active) + TOOLTIP_OFFSET, top: PAD_TOP }
                 : { left: xOf(active) + TOOLTIP_OFFSET, top: PAD_TOP }
             }
           >
-            <div className="text-ink-muted mb-1 font-mono">
+            <div className="text-ink-muted font-mono">
               {formatClock(shown.at)}–
-              {isRunning(active) ? 'now, so far' : formatClock(shown.at + HOUR_S)}
+              {isRunning(active) ? 'now, so far' : formatClock(shown.at + SECONDS_PER_HOUR)}
             </div>
-            <ul className="space-y-0.5">
-              {legend.map((item) => (
-                <li key={item.key} className="flex items-center gap-2 whitespace-nowrap">
-                  <SeriesKey color={item.color} mark="line" />
-                  <span className="text-ink font-mono font-medium tabular-nums">
-                    {format(item.value(shown))}
-                  </span>
-                  <span className="text-ink-muted">{item.label}</span>
-                </li>
-              ))}
-            </ul>
+            <div className="text-ink font-mono font-medium tabular-nums">
+              {formatInt(value(shown))}
+            </div>
           </div>
         ) : null}
       </div>

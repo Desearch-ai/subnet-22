@@ -10,8 +10,9 @@ import { MINERS_PATH, minerPath, withKind } from '@/lib/paths'
 
 const TOP_MINERS = 8
 
-/** The bar is drawn against the largest share, so close shares still look apart. */
 function ShareRow({ miner, kind, largest }: { miner: MinerSummary; kind: Kind; largest: number }) {
+  // Against the largest share: against 100%, shares of a few percent would not show.
+  const bar = formatPercent(largest > 0 ? miner.share / largest : 0)
   return (
     <li className="flex items-center gap-3 px-4 py-2.5">
       <Neuron
@@ -23,10 +24,7 @@ function ShareRow({ miner, kind, largest }: { miner: MinerSummary; kind: Kind; l
         className="w-48 shrink-0"
       />
       <div className="bg-raised h-1.5 min-w-0 flex-1 overflow-hidden rounded-sm">
-        <div
-          className="bg-series-1 h-full rounded-sm"
-          style={{ width: formatPercent(largest > 0 ? miner.share / largest : 0) }}
-        />
+        <div className="bg-series-1 h-full rounded-sm" style={{ width: bar }} />
       </div>
       <span className="text-ink w-12 shrink-0 text-right font-mono text-xs tabular-nums">
         {formatPercent(miner.share)}

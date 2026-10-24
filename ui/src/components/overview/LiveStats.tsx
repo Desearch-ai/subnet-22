@@ -5,7 +5,6 @@ import { formatDuration, formatInt, formatPercent } from '@/lib/format'
 import { KINDS } from '@/lib/kinds'
 import { queueMinutes, splitHours } from '@/lib/work'
 
-/** A figure for both kinds takes the whole row where tiles sit two abreast. */
 const BOTH_KINDS = 'col-span-2 md:col-span-1'
 
 function ByKind({ value }: { value: (kind: Kind) => ReactNode }) {

@@ -2,12 +2,11 @@ import type { Kind, MinerDetail } from '@/api/types'
 import { Stat } from '@/components/ui/Stat'
 import { VerdictCounts } from '@/components/ui/VerdictBadge'
 import { useNow } from '@/hooks/useNow'
-import { formatInt, formatPercent, ratio } from '@/lib/format'
+import { formatInt, formatPercent, ratio, SECONDS_PER_HOUR } from '@/lib/format'
 import { countColumns, KIND_WORDS } from '@/lib/kinds'
 import { Lockout } from './Lockout'
 
 const BUDGET_CEILING = 100
-const SECONDS_PER_HOUR = 3600
 
 function returnedDetail(kind: Kind, miner: MinerDetail): string {
   const { missing } = miner.kinds[kind].window

@@ -7,7 +7,6 @@ export function looksLikeHotkey(text: string): boolean {
   return text.length === HOTKEY_CHARS && text.startsWith('5')
 }
 
-/** Miners whose UID starts with the digits typed, the exact one first, or whose hotkey holds the text; largest share first. */
 export function findMiners(
   miners: readonly MinerSummary[],
   typed: string,
