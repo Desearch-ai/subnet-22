@@ -86,7 +86,7 @@ function UrlRow({ row, open, onToggle }: UrlRowProps) {
         <Td numeric>{formatScore(row.similarity)}</Td>
         <Td>
           {row.rejected ? (
-            <Badge tone="warn" title="This row is left out of the published data">
+            <Badge tone="warn" title="This page is left out of the published data">
               Left out
             </Badge>
           ) : null}
@@ -105,7 +105,11 @@ function UrlRow({ row, open, onToggle }: UrlRowProps) {
 
 export function UrlTable({ urls }: { urls: readonly TaskUrl[] }) {
   const [filter, setFilter] = useState<UrlFilter>(
-    urls.some(FILTER_TEST.checked) ? 'checked' : 'all',
+    urls.some(FILTER_TEST.mismatched)
+      ? 'mismatched'
+      : urls.some(FILTER_TEST.checked)
+        ? 'checked'
+        : 'all',
   )
   const [openUrl, setOpenUrl] = useState<string | null>(null)
   const [shown, setShown] = useState(PAGE_ROWS)
@@ -131,7 +135,7 @@ export function UrlTable({ urls }: { urls: readonly TaskUrl[] }) {
           }}
         />
         <span className="text-ink-faint text-xs">
-          Open a checked row to see why and compare the texts
+          Open a checked page to see why and compare the texts
         </span>
       </div>
       {rows.length === 0 ? (
