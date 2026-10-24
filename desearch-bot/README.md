@@ -50,7 +50,8 @@ MALLOC_ARENA_MAX=2 desearch-bot run --buckets-dir /var/lib/desearch-bot/buckets 
 | `--gone-days` | 30 | days a page that failed on two sends in a row waits before it goes out again, unless its lastmod moves |
 | `--dropped-per-hour` | 200000 | pages of lost or taken-back tasks sent again each hour; more are spread over the following hours |
 | `--backfill-ready` | off | walk every store once to queue pages found before the queue existed |
-| `--domains` | none | a JSON list of the domains whose pages are queued, as names or `{host, rank}`, read again when it changes; others are crawled but not queued |
+| `--domains` | none | a JSON list of the domains whose pages are queued, as names or `{host, weight, send_cap}`, read again when it changes; others are crawled but not queued |
+| `--join-per-sec` | 100000 | stored URL records read per second while queuing the pages of domains new to `--domains`; 0 turns it off |
 | `--backfill-sent` | none | pages the Python feeder sent, as tab-separated host, path, lastmod and time, marked sent first |
 | `--duration` | none | stop after this many seconds |
 
@@ -100,6 +101,13 @@ probe. A failed page goes again after its domain's interval, and after two failu
 `--gone-days`; a dropped page, whose task never reached the site, goes again within the hourly budget.
 A number still missing after two minutes, or whose file expired, is skipped. A status line every minute shows the queue, what was
 sent in each lane, the room and the outcome feed.
+
+With `--domains`, each listed domain may carry a `weight` (1 to 4) and a `send_cap`. A domain's turn
+is worth its rank's slots times its weight. The bot counts the distinct pages it has sent for each
+domain; at its `send_cap` the domain sends no new pages, and only changed pages and re-crawls go on.
+A walker queues the pages each listed domain stored before it joined the list, newest first, as
+many as its cap leaves, and walks a domain again when its cap changes. It reads `--join-per-sec`
+records a second. A domain already sending is only counted, since its pages are queued already.
 
 Pages found before the queue existed join it once through `--backfill-ready`. Pages the Python
 feeder already sent are marked first, from its state:

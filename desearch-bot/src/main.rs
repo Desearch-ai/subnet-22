@@ -161,6 +161,9 @@ struct RunArgs {
     /// URL records the backfill reads per second.
     #[arg(long, default_value_t = 50_000)]
     backfill_per_sec: u64,
+    /// URL records read per second while queuing the stored pages of domains new to the --domains list; 0 turns the walk off.
+    #[arg(long, default_value_t = 100_000)]
+    join_per_sec: u64,
     /// Pages the Python feeder sent, as tab-separated host, path, lastmod and Unix time, marked sent before the backfill.
     #[arg(long)]
     backfill_sent: Option<PathBuf>,
@@ -201,8 +204,8 @@ async fn run(args: RunArgs) -> Result<()> {
     };
     let resources = Resources::new(args.cache_mb << 20, args.memtable_mb << 20, owned.len());
     let buckets = Arc::new(Buckets::open(&args.buckets_dir, &owned, &resources)?);
-    if let Some(path) = &args.domains {
-        let allowed = Allowed::from_file(path)?;
+    let listed = args.domains.as_ref().map(|path| Allowed::from_file(path)).transpose()?;
+    if let Some(allowed) = listed.clone() {
         buckets.allow(&allowed);
         println!("[rs] queueing pages of {} listed domains only", allowed.count().unwrap_or(0));
         std::thread::spawn(move || loop {
@@ -257,6 +260,13 @@ async fn run(args: RunArgs) -> Result<()> {
     let (stop, stopped) = watch::channel(false);
     let progress = Arc::new(Progress::default());
     let halt = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let joining = listed.filter(|_| args.join_per_sec > 0).map(|allowed| {
+        let (buckets, progress, halt, per_second) = (buckets.clone(), progress.clone(), halt.clone(), args.join_per_sec);
+        std::thread::spawn(move || match dispatch::join_listed(&buckets, &allowed, per_second, &progress, &halt) {
+            Ok(()) => println!("[rs] list walker stopped"),
+            Err(error) => eprintln!("[rs] list walker failed: {error:#}"),
+        })
+    });
     let backfill = args.backfill_ready.then(|| {
         let (buckets, progress, halt, sent) = (buckets.clone(), progress.clone(), halt.clone(), args.backfill_sent.clone());
         let per_second = args.backfill_per_sec;
@@ -327,6 +337,9 @@ async fn run(args: RunArgs) -> Result<()> {
     halt.store(true, std::sync::atomic::Ordering::Relaxed);
     if let Some(backfill) = backfill {
         let _ = tokio::task::spawn_blocking(move || backfill.join()).await;
+    }
+    if let Some(joining) = joining {
+        let _ = tokio::task::spawn_blocking(move || joining.join()).await;
     }
     println!("[rs] done {}", crawl.summary());
     Ok(())

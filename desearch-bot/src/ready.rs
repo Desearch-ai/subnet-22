@@ -1,7 +1,7 @@
 //! Pages waiting to go to the task API, a list per domain in the bucket store, and what became of the pages sent.
 
 use std::cmp::Reverse;
-use std::collections::HashMap;
+use std::collections::{BinaryHeap, HashMap};
 use std::sync::LazyLock;
 
 use anyhow::{Context, Result};
@@ -9,6 +9,7 @@ use regex::bytes::{Regex, RegexBuilder};
 use rocksdb::{Direction, IteratorMode, ReadOptions, WriteBatch};
 use serde_json::{json, Value};
 
+use crate::allowed::Terms;
 use crate::buckets::{meta_key, BucketStore, Changes, LISTED, URL};
 use crate::recrawl::Recrawl;
 use crate::records;
@@ -29,6 +30,14 @@ const NEXT: u8 = b'N';
 const EXPECTING: u8 = b'X';
 /// Each domain's recent outcomes, so the dispatcher sends less where pages do not come back.
 const YIELD: u8 = b'Y';
+/// How many distinct pages of each domain were ever sent, for its cap.
+const SENT_COUNT: u8 = b'C';
+/// The cap each listed domain's stored pages were last queued under; a domain is walked again only when it changes.
+const JOINED: u8 = b'J';
+/// Keys a domain's new-page lane loses per locked write when it is cleared.
+const TRIM_CHUNK: usize = 50_000;
+/// Pages queued per locked write while a domain is walked.
+const JOIN_CHUNK: usize = 20_000;
 /// An outcome counts half as much a day later.
 pub const YIELD_HALF_LIFE_S: f64 = 86_400.0;
 const BACKFILL: &str = "backfill_ready";
@@ -333,6 +342,17 @@ pub struct Dropped {
     pub urls: i64,
 }
 
+/// What walking one listed domain's stored pages found and queued.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Joined {
+    pub scanned: u64,
+    /// Pages of the domain sent at some point, which count against its cap.
+    pub sent: u64,
+    pub queued: u64,
+    /// New-page entries cleared first, for a domain with a cap.
+    pub cleared: u64,
+}
+
 /// What one look at the due schedules did.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Requeued {
@@ -400,10 +420,15 @@ impl BucketStore {
     }
 
     /// Pages of a domain that still need sending: each lane up to its quota, then lanes with pages left fill what the others could not; entries gone stale are dropped on the way.
-    pub fn take_ready(&self, domain: &str, quotas: [usize; LANES]) -> Result<Vec<Pick>> {
+    pub fn take_ready(&self, domain: &str, mut quotas: [usize; LANES]) -> Result<Vec<Pick>> {
         let want: usize = quotas.iter().sum();
         let robots = self.domain(domain)?.map(|record| records::robots_paths(&record)).unwrap_or_default();
         let mut taking = Taking { robots, ..Taking::default() };
+        // A domain at its cap sends no more new pages; refreshes and retries of pages it sent go on.
+        let room = self.fresh_room(domain)?.map(|room| room.min(usize::MAX as u64) as usize);
+        if let Some(room) = room {
+            quotas[FRESH] = quotas[FRESH].min(room);
+        }
         for (lane, quota) in quotas.into_iter().enumerate() {
             self.take_lane(domain, lane, quota, &mut taking)?;
         }
@@ -411,7 +436,11 @@ impl BucketStore {
             if taking.picks.len() >= want {
                 break;
             }
-            self.take_lane(domain, lane, want - taking.picks.len(), &mut taking)?;
+            let mut more = want - taking.picks.len();
+            if let (FRESH, Some(room)) = (lane, room) {
+                more = more.min(room.saturating_sub(taking.picks.iter().filter(|p| p.entry.order.lane() == FRESH).count()));
+            }
+            self.take_lane(domain, lane, more, &mut taking)?;
         }
         if !taking.stale.is_empty() {
             let _guard = self.lock_ready();
@@ -497,9 +526,186 @@ impl BucketStore {
         // A lastmod that moved while the page was in flight is a change the API has not seen.
         self.add_ready(&mut batch, moved, &mut counts)?;
         self.write_counts(&mut batch, &counts)?;
+        let mut first_sends: HashMap<&str, u64> = HashMap::new();
+        for pick in picks.iter().filter(|p| p.reason == Reason::Fresh) {
+            *first_sends.entry(pick.entry.domain.as_str()).or_default() += 1;
+        }
+        for (domain, more) in first_sends {
+            // A domain not counted yet is counted when the list walker reaches it.
+            let Some(sent) = self.sent_count(domain)? else {
+                continue;
+            };
+            batch.put(count_key_of(SENT_COUNT, domain), (sent + more).to_le_bytes());
+            if self.terms(domain).send_cap.is_some_and(|cap| sent < cap && sent + more >= cap) {
+                self.capped.lock().unwrap_or_else(|e| e.into_inner()).insert(domain.to_string());
+            }
+        }
         self.db.write(batch)?;
         self.notice(&counts);
         Ok(())
+    }
+
+    /// Distinct pages of the domain ever sent, once the list walker counted them.
+    pub fn sent_count(&self, domain: &str) -> Result<Option<u64>> {
+        Ok(self.db.get_pinned(count_key_of(SENT_COUNT, domain))?.and_then(|raw| raw.as_ref().try_into().ok().map(u64::from_le_bytes)))
+    }
+
+    /// New pages the domain may still send under its cap; None when it has no cap or was not counted yet.
+    pub fn fresh_room(&self, domain: &str) -> Result<Option<u64>> {
+        let Some(cap) = self.terms(domain).send_cap else {
+            return Ok(None);
+        };
+        Ok(self.sent_count(domain)?.map(|sent| cap.saturating_sub(sent)))
+    }
+
+    /// The cap the domain's stored pages were last queued under: None if never walked, Some(None) if walked without a cap.
+    pub fn joined(&self, domain: &str) -> Result<Option<Option<u64>>> {
+        let raw = self.db.get_pinned(count_key_of(JOINED, domain))?;
+        Ok(raw.and_then(|raw| raw.as_ref().try_into().ok().map(u64::from_le_bytes)).map(|cap| (cap != u64::MAX).then_some(cap)))
+    }
+
+    /// Domains that reached their cap since the last call.
+    pub fn take_capped(&self) -> Vec<String> {
+        self.capped.lock().unwrap_or_else(|e| e.into_inner()).drain().collect()
+    }
+
+    /// Empties the domain's new-page lane, a locked chunk at a time with exact counts; returns how many entries went.
+    pub fn clear_fresh(&self, domain: &str) -> Result<u64> {
+        let prefix = [&[READY], domain.as_bytes(), b"\0", &[FRESH as u8]].concat();
+        let mut cleared = 0;
+        loop {
+            let _guard = self.lock_ready();
+            let keys = self.keys_under(&prefix, None, TRIM_CHUNK)?;
+            let (Some(first), Some(last)) = (keys.first(), keys.last()) else {
+                break;
+            };
+            let mut batch = WriteBatch::default();
+            // Every key between the first and the last was just read under the lock, so the range holds exactly these.
+            batch.delete_range(first.as_slice(), [last.as_slice(), b"\0"].concat().as_slice());
+            self.write_counts(&mut batch, &HashMap::from([(domain.to_string(), -(keys.len() as i64))]))?;
+            self.db.write(batch)?;
+            cleared += keys.len() as u64;
+            if keys.len() < TRIM_CHUNK {
+                break;
+            }
+        }
+        Ok(cleared)
+    }
+
+    /// Queue the pages a listed domain stored but never sent, newest first, as many as its cap leaves; counts its sent pages for the cap.
+    pub fn join_domain(&self, domain: &str, terms: Terms, started: u32, pace: &mut dyn FnMut(u64)) -> Result<Joined> {
+        let robots = self.domain(domain)?.map(|record| records::robots_paths(&record)).unwrap_or_default();
+        let prefix = prefixed(URL, domain.as_bytes(), b"");
+        let mut joined = Joined::default();
+        let mut streamed: Vec<Entry> = Vec::new();
+        // With a cap only the newest pages go: a heap of the oldest kept, never more than the cap itself.
+        let mut newest: BinaryHeap<Reverse<(u32, u32, Vec<u8>)>> = BinaryHeap::new();
+        let mut since_pace = 0u64;
+        for item in self.db.iterator_opt(IteratorMode::From(&prefix, Direction::Forward), bounded(&prefix)) {
+            let (key, raw) = item?;
+            joined.scanned += 1;
+            since_pace += 1;
+            if since_pace >= 10_000 {
+                pace(since_pace);
+                since_pace = 0;
+            }
+            let Some(record) = Record::unpack(&raw) else {
+                continue;
+            };
+            if record.pushed_at != 0 {
+                joined.sent += 1;
+                continue;
+            }
+            let rest = &key[prefix.len()..];
+            // Pages first seen after the walk began went on their list when found.
+            if record.first_seen >= started || junk(rest) || !robots.allows_page(domain, rest) {
+                continue;
+            }
+            match terms.send_cap {
+                None => {
+                    let order = Order::Fresh { first_seen: record.first_seen, lastmod: record.lastmod };
+                    streamed.push(Entry { domain: domain.to_string(), rest: rest.to_vec(), order });
+                    if streamed.len() >= JOIN_CHUNK {
+                        joined.queued += self.queue_entries(std::mem::take(&mut streamed))? as u64;
+                    }
+                }
+                Some(cap) => {
+                    newest.push(Reverse((record.first_seen, record.lastmod, rest.to_vec())));
+                    if newest.len() as u64 > cap {
+                        newest.pop();
+                    }
+                }
+            }
+        }
+        pace(since_pace);
+        if let Some(cap) = terms.send_cap {
+            joined.cleared = self.clear_fresh(domain)?;
+            let room = cap.saturating_sub(joined.sent) as usize;
+            let mut kept: Vec<(u32, u32, Vec<u8>)> = newest.into_iter().map(|Reverse(page)| page).collect();
+            kept.sort_unstable_by(|a, b| b.cmp(a));
+            kept.truncate(room);
+            for chunk in kept.chunks(JOIN_CHUNK) {
+                let entries = chunk.iter().map(|(first_seen, lastmod, rest)| Entry { domain: domain.to_string(), rest: rest.clone(), order: Order::Fresh { first_seen: *first_seen, lastmod: *lastmod } });
+                joined.queued += self.queue_entries(entries.collect())? as u64;
+            }
+        } else {
+            joined.queued += self.queue_entries(streamed)? as u64;
+        }
+        let _guard = self.lock_ready();
+        let mut batch = WriteBatch::default();
+        batch.put(count_key_of(SENT_COUNT, domain), joined.sent.to_le_bytes());
+        batch.put(count_key_of(JOINED, domain), terms.send_cap.unwrap_or(u64::MAX).to_le_bytes());
+        self.db.write(batch)?;
+        Ok(joined)
+    }
+
+    /// Counts the pages of a domain already sending and applies its cap, without walking its stored pages: their stock is queued already.
+    pub fn cap_domain(&self, domain: &str, terms: Terms, pace: &mut dyn FnMut(u64)) -> Result<Joined> {
+        let mut joined = Joined::default();
+        // Without a cap there is nothing to apply; a cap given later walks the domain again, and counts it then.
+        if terms.send_cap.is_none() {
+            let _guard = self.lock_ready();
+            self.db.put(count_key_of(JOINED, domain), u64::MAX.to_le_bytes())?;
+            return Ok(joined);
+        }
+        let prefix = prefixed(SENT, domain.as_bytes(), b"");
+        let mut since_pace = 0u64;
+        for item in self.db.iterator_opt(IteratorMode::From(&prefix, Direction::Forward), bounded(&prefix)) {
+            item?;
+            joined.sent += 1;
+            since_pace += 1;
+            if since_pace >= 10_000 {
+                pace(since_pace);
+                since_pace = 0;
+            }
+        }
+        pace(since_pace);
+        joined.scanned = joined.sent;
+        {
+            let _guard = self.lock_ready();
+            let mut batch = WriteBatch::default();
+            batch.put(count_key_of(SENT_COUNT, domain), joined.sent.to_le_bytes());
+            batch.put(count_key_of(JOINED, domain), terms.send_cap.unwrap_or(u64::MAX).to_le_bytes());
+            self.db.write(batch)?;
+        }
+        if terms.send_cap.is_some_and(|cap| joined.sent >= cap) {
+            joined.cleared = self.clear_fresh(domain)?;
+        }
+        Ok(joined)
+    }
+
+    fn queue_entries(&self, entries: Vec<Entry>) -> Result<usize> {
+        if entries.is_empty() {
+            return Ok(0);
+        }
+        let _guard = self.lock_ready();
+        let mut batch = WriteBatch::default();
+        let mut counts = HashMap::new();
+        let added = self.add_ready(&mut batch, entries, &mut counts)?;
+        self.write_counts(&mut batch, &counts)?;
+        self.db.write(batch)?;
+        self.notice(&counts);
+        Ok(added)
     }
 
     /// Deletes the deadlines earlier versions kept for every sent page; whether there were any.
@@ -616,6 +822,8 @@ impl BucketStore {
         }
         changes.delete(&count_key(domain));
         changes.delete(&yield_key(domain));
+        changes.delete(&count_key_of(SENT_COUNT, domain));
+        changes.delete(&count_key_of(JOINED, domain));
         record.insert("state".into(), "excluded".into());
         record.insert("reason".into(), reason.into());
         record.insert("due".into(), Value::Null);
@@ -764,8 +972,21 @@ impl BucketStore {
         listed: usize,
     ) -> Result<(usize, HashMap<String, i64>)> {
         let mut entries = Vec::new();
+        let mut room: HashMap<Vec<u8>, bool> = HashMap::new();
         for (key, record) in fresh {
             if let Some((domain, rest)) = split_key(&key[1..]).filter(|(_, rest)| !junk(rest)) {
+                // A domain at its cap queues no more new pages.
+                let open = match room.get(domain) {
+                    Some(&open) => open,
+                    None => {
+                        let open = self.fresh_room(&String::from_utf8_lossy(domain))? != Some(0);
+                        room.insert(domain.to_vec(), open);
+                        open
+                    }
+                };
+                if !open {
+                    continue;
+                }
                 let order = Order::Fresh { first_seen: record.first_seen, lastmod: record.lastmod };
                 entries.push(Entry { domain: String::from_utf8_lossy(domain).into_owned(), rest: rest.to_vec(), order });
             }
@@ -918,7 +1139,11 @@ fn prefixed(kind: u8, domain: &[u8], rest: &[u8]) -> Vec<u8> {
 }
 
 fn count_key(domain: &str) -> Vec<u8> {
-    [&[READY_COUNT], domain.as_bytes()].concat()
+    count_key_of(READY_COUNT, domain)
+}
+
+fn count_key_of(kind: u8, domain: &str) -> Vec<u8> {
+    [&[kind], domain.as_bytes()].concat()
 }
 
 fn count_value(raw: Option<&[u8]>) -> u64 {

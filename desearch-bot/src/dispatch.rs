@@ -12,6 +12,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use tokio::sync::watch;
 
+use crate::allowed::Allowed;
 use crate::buckets::{bucket_of, Buckets};
 use crate::outcomes::{Next, OutcomeFeed, OutcomeReader};
 use crate::ready::{Entry, Order, Pick, Reason, SentPage, Yield, CHANGED, FRESH, LANES, REQUEUED};
@@ -58,6 +59,8 @@ pub struct Want {
     pub allowance: u64,
     /// The part of its slots the domain's yield earns it; a probing domain still takes one a turn, within its allowance.
     pub share: f64,
+    /// The list's weight for its kind of site, multiplying the slots its rank earns.
+    pub weight: u8,
 }
 
 /// Outcomes judged before a domain's yield counts; fewer say too little.
@@ -96,7 +99,7 @@ pub fn allot(wants: &[Want], budget: u64, start: usize) -> (Vec<u64>, usize) {
         let Some(i) = turns.pop_front() else {
             break;
         };
-        let earned = ((slots(wants[i].rank) as f64 * wants[i].share).ceil() as u64).max(1);
+        let earned = (((slots(wants[i].rank) * u64::from(wants[i].weight.max(1))) as f64 * wants[i].share).ceil() as u64).max(1);
         let take = earned.min(cap(i) - given[i]).min(left);
         given[i] += take;
         left -= take;
@@ -269,6 +272,12 @@ pub struct Progress {
     /// The last pass's milliseconds in each step: absorbing, picking, sending.
     pub pass_ms: [AtomicU64; 3],
     pub backfill_added: AtomicU64,
+    /// Listed domains whose stored pages this round of the list walker covers, and how far it got.
+    pub join_of: AtomicU64,
+    pub join_done: AtomicU64,
+    pub join_queued: AtomicU64,
+    /// New-page entries cleared from domains at their cap.
+    pub capped_cleared: AtomicU64,
 }
 
 impl Progress {
@@ -304,8 +313,12 @@ impl Progress {
             thousands(self.backfill_scanned.load(Ordering::Relaxed)),
             thousands(self.backfill_added.load(Ordering::Relaxed)),
         ) + &format!(
-            "  set aside {}  last pass absorb {:.1}s pick {:.1}s send {:.1}s",
+            "  set aside {}  joined {}/{} domains {} queued, {} cleared at caps  last pass absorb {:.1}s pick {:.1}s send {:.1}s",
             thousands(self.set_aside.load(Ordering::Relaxed)),
+            thousands(self.join_done.load(Ordering::Relaxed)),
+            thousands(self.join_of.load(Ordering::Relaxed)),
+            thousands(self.join_queued.load(Ordering::Relaxed)),
+            thousands(self.capped_cleared.load(Ordering::Relaxed)),
             self.pass_ms[0].load(Ordering::Relaxed) as f64 / 1000.0,
             self.pass_ms[1].load(Ordering::Relaxed) as f64 / 1000.0,
             self.pass_ms[2].load(Ordering::Relaxed) as f64 / 1000.0,
@@ -408,6 +421,7 @@ struct Domain {
     rank: i64,
     ready: u64,
     share: f64,
+    weight: u8,
 }
 
 pub struct Dispatcher {
@@ -452,8 +466,8 @@ impl Dispatcher {
                     if !reading.allows(&domain) {
                         continue;
                     }
-                    let (rank, share) = (rank_of(&reading, &domain), share_of(&reading, &domain, now()));
-                    domains.insert(domain, Domain { rank, ready, share });
+                    let (rank, share, weight) = (rank_of(&reading, &domain), share_of(&reading, &domain, now()), reading.terms(&domain).weight);
+                    domains.insert(domain, Domain { rank, ready, share, weight });
                 }
             }
             let pending: Vec<Pending> = match reading.stores().next().map(|store| store.meta(PENDING)).transpose()?.flatten() {
@@ -589,25 +603,26 @@ impl Dispatcher {
                     *grown.entry(domain).or_default() += added;
                 }
             }
-            let ranks: Vec<(String, i64, f64)> = refresh
+            let ranks: Vec<(String, i64, f64, u8)> = refresh
                 .iter()
                 .chain(grown.keys())
-                .map(|domain| (domain.clone(), rank_of(&buckets, domain), share_of(&buckets, domain, now)))
+                .map(|domain| (domain.clone(), rank_of(&buckets, domain), share_of(&buckets, domain, now), buckets.terms(domain).weight))
                 .collect();
             Ok((grown, ranks, requeued, gone))
         })
         .await??;
         self.progress.requeued.fetch_add(requeued as u64, Ordering::Relaxed);
         self.progress.gone.fetch_add(gone as u64, Ordering::Relaxed);
-        let ranks: HashMap<String, (i64, f64)> = ranks.into_iter().map(|(domain, rank, share)| (domain, (rank, share))).collect();
+        let ranks: HashMap<String, (i64, f64, u8)> = ranks.into_iter().map(|(domain, rank, share, weight)| (domain, (rank, share, weight))).collect();
         for (domain, added) in grown {
-            let (rank, share) = ranks.get(&domain).copied().unwrap_or((UNRANKED, 1.0));
-            self.domains.entry(domain).or_insert(Domain { rank, ready: 0, share }).ready += added;
+            let (rank, share, weight) = ranks.get(&domain).copied().unwrap_or((UNRANKED, 1.0, 1));
+            self.domains.entry(domain).or_insert(Domain { rank, ready: 0, share, weight }).ready += added;
         }
-        for (domain, (rank, share)) in ranks {
+        for (domain, (rank, share, weight)) in ranks {
             if let Some(known) = self.domains.get_mut(&domain) {
                 known.rank = rank;
                 known.share = share;
+                known.weight = weight;
             }
         }
         let shares = self.domains.values().map(|d| d.share);
@@ -630,9 +645,9 @@ impl Dispatcher {
         let wants: Vec<Want> = order
             .iter()
             .map(|(rank, name)| {
-                let Domain { ready, share, .. } = self.domains[name];
+                let Domain { ready, share, weight, .. } = self.domains[name];
                 let allowance = if share == 0.0 { self.cap.allowance_under(name, now, PROBE_PER_HOUR) } else { self.cap.allowance(name, now) };
-                Want { rank: *rank, ready, allowance, share }
+                Want { rank: *rank, ready, allowance, share, weight }
             })
             .collect();
         let start = self.resume.as_ref().map_or(0, |resume| order.partition_point(|key| key <= resume));
@@ -787,7 +802,8 @@ impl Dispatcher {
         if ready == 0 {
             self.domains.remove(domain);
         } else {
-            let known = self.domains.entry(domain.to_string()).or_insert(Domain { rank, ready, share: 1.0 });
+            let weight = self.buckets.terms(domain).weight;
+            let known = self.domains.entry(domain.to_string()).or_insert(Domain { rank, ready, share: 1.0, weight });
             known.ready = ready;
         }
     }
@@ -1010,6 +1026,81 @@ pub fn backfill(buckets: &Buckets, per_second: u64, progress: &Progress, stop: &
             }
         }
         progress.backfill_stores.fetch_add(1, Ordering::Relaxed);
+    }
+    Ok(())
+}
+
+/// How long the list walker rests when nothing in the list changed.
+const JOIN_IDLE: Duration = Duration::from_secs(5);
+
+/// Walk every listed domain's stored pages once, and again when its cap changes, so pages it listed before it joined the list go out too.
+pub fn join_listed(buckets: &Buckets, allowed: &Allowed, per_second: u64, progress: &Progress, stop: &AtomicBool) -> Result<()> {
+    let mut walked = None;
+    while !stop.load(Ordering::Relaxed) {
+        clear_capped(buckets, progress)?;
+        let version = allowed.version();
+        if walked == Some(version) {
+            std::thread::sleep(JOIN_IDLE);
+            continue;
+        }
+        join_round(buckets, allowed, per_second, progress, stop)?;
+        walked = Some(version);
+    }
+    Ok(())
+}
+
+/// One pass over the list, for domains not yet handled under their current cap; returns how many it handled.
+///
+/// Domains already sending only get counted, so their caps apply at once. The rest are walked for their stored pages, highest weight first and smallest first within a weight, so many domains start sending soon.
+pub fn join_round(buckets: &Buckets, allowed: &Allowed, per_second: u64, progress: &Progress, stop: &AtomicBool) -> Result<usize> {
+    let mut todo = Vec::new();
+    for (domain, terms) in allowed.entries() {
+        let Some(store) = buckets.store_for(&domain) else {
+            continue;
+        };
+        if store.joined(&domain)? == Some(terms.send_cap) {
+            continue;
+        }
+        let idle = store.ready_count(&domain)? == 0;
+        let urls = store.domain(&domain)?.and_then(|record| records::int(record.get("urls"))).unwrap_or(0);
+        todo.push((idle, std::cmp::Reverse(terms.weight), urls, domain, terms));
+    }
+    todo.sort_unstable_by(|a, b| (a.0, a.1, a.2, &a.3).cmp(&(b.0, b.1, b.2, &b.3)));
+    progress.join_of.store(todo.len() as u64, Ordering::Relaxed);
+    progress.join_done.store(0, Ordering::Relaxed);
+    let (started, began) = (now(), Instant::now());
+    let mut read = 0u64;
+    let mut pace = |scanned: u64| {
+        read += scanned;
+        let due = Duration::from_secs_f64(read as f64 / per_second.max(1) as f64);
+        if let Some(ahead) = due.checked_sub(began.elapsed()) {
+            std::thread::sleep(ahead);
+        }
+    };
+    let mut handled = 0;
+    for (idle, _, _, domain, terms) in todo {
+        if stop.load(Ordering::Relaxed) {
+            break;
+        }
+        if handled % 100 == 0 {
+            clear_capped(buckets, progress)?;
+        }
+        let store = buckets.store(&domain);
+        let joined = if idle { store.join_domain(&domain, terms, started, &mut pace)? } else { store.cap_domain(&domain, terms, &mut pace)? };
+        handled += 1;
+        progress.join_done.fetch_add(1, Ordering::Relaxed);
+        progress.join_queued.fetch_add(joined.queued, Ordering::Relaxed);
+        progress.capped_cleared.fetch_add(joined.cleared, Ordering::Relaxed);
+    }
+    Ok(handled)
+}
+
+/// Clear the new-page lanes of domains that reached their cap, so the dispatcher stops giving them turns.
+fn clear_capped(buckets: &Buckets, progress: &Progress) -> Result<()> {
+    for store in buckets.stores() {
+        for domain in store.take_capped() {
+            progress.capped_cleared.fetch_add(store.clear_fresh(&domain)?, Ordering::Relaxed);
+        }
     }
     Ok(())
 }

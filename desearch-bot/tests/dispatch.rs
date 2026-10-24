@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use desearch_bot::allowed::{self, Allowed};
+use desearch_bot::allowed::{self, Allowed, Terms};
 use desearch_bot::buckets::{bucket_of, BucketStore, Buckets, Changes, Resources};
 use desearch_bot::dispatch::{
     allot, batch_id, interleave, settle, shares, slots, split, yield_share, Dispatcher, HourlyCap, Pace, Progress, Want, PROBE_PER_HOUR, YIELD_JUDGED,
@@ -416,7 +416,7 @@ fn the_backfill_queues_old_pages_once_and_resumes_where_it_stopped() {
 #[test]
 fn turns_go_best_rank_first_with_more_slots_and_resume_where_they_stopped() {
     assert_eq!([1, 9, 10, 99, 100, 9_999, 10_000, 999_999, 1_000_000, UNRANKED].map(slots), [7, 7, 6, 6, 5, 4, 3, 2, 1, 1]);
-    let want = |rank: i64, ready: u64, allowance: u64| Want { rank, ready, allowance, share: 1.0 };
+    let want = |rank: i64, ready: u64, allowance: u64| Want { rank, ready, allowance, share: 1.0, weight: 1 };
     let wants = [want(1, 100, 100), want(500, 100, 100), want(2_000_000, 100, 100)];
     assert_eq!(allot(&wants, 13, 0), (vec![7, 5, 1], 0));
     let (given, next) = allot(&wants, 10, 0);
@@ -438,7 +438,7 @@ fn a_domain_whose_pages_do_not_come_back_gets_fewer_slots_and_then_only_probes()
     let three_days = 1000 + (3.0 * YIELD_HALF_LIFE_S) as u32;
     assert_eq!(yield_share(counted(5.0, 995.0), three_days), 1.0, "old outcomes fade until the domain is judged afresh");
 
-    let want = |share: f64, allowance: u64| Want { rank: 1, ready: 100, allowance, share };
+    let want = |share: f64, allowance: u64| Want { rank: 1, ready: 100, allowance, share, weight: 1 };
     assert_eq!(allot(&[want(1.0, 100), want(0.5, 100)], 22, 0).0, [14, 8], "seven slots a turn against half of seven, rounded up");
     assert_eq!(allot(&[want(0.0, PROBE_PER_HOUR), want(1.0, 100)], 100, 0).0, [13, 87], "a probing domain takes one a turn");
     assert_eq!(allot(&[want(0.0, PROBE_PER_HOUR), want(1.0, 100)], 500, 0).0, [PROBE_PER_HOUR, 100], "and never more than its probes");
@@ -799,10 +799,117 @@ async fn the_outcome_feed_is_read_from_its_newest_file_and_skips_ahead_when_an_h
     assert_eq!(buckets.store("example.com").domain_yield("example.com").unwrap().map(|y| y.judged()), Some(30.0), "three judged rows a file, ten files");
 }
 
+/// A list file the test rewrites, read again on demand.
+fn relist(path: &std::path::Path, list: &Allowed, json: &str) {
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    std::fs::write(path, json).unwrap();
+    assert!(list.reload().unwrap());
+}
+
+#[test]
+fn a_domain_joining_the_list_queues_its_stored_pages_never_sent_newest_first_up_to_its_cap() {
+    let dir = Dir::new("join");
+    std::fs::create_dir_all(&dir.0).unwrap();
+    let path = dir.0.join("domains.json");
+    std::fs::write(&path, r#"["other.com"]"#).unwrap();
+    let list = Allowed::from_file(&path).unwrap();
+    let store = BucketStore::open(&dir.0.join("store"), &resources()).unwrap();
+    store.allow(list.clone());
+    for (i, name) in ["a", "b", "c", "d", "e", "tag/x"].iter().enumerate() {
+        store.record_listing("example.com", 7, vec![page(name, 10)], 100 + 10 * i as u32).unwrap();
+    }
+    store.import_sent(&[SentPage { domain: "example.com".into(), rest: rest("a"), lastmod: 10, at: 150 }]).unwrap();
+    assert!(ready(&store).is_empty(), "pages of a domain not on the list wait in the store");
+
+    relist(&path, &list, r#"[{"host": "example.com", "weight": 4, "send_cap": 3}]"#);
+    let terms = list.get("example.com").unwrap();
+    let joined = store.join_domain("example.com", terms, 1000, &mut |_| {}).unwrap();
+    assert_eq!((joined.scanned, joined.sent, joined.queued), (6, 1, 2), "the cap of 3 leaves room for 2 beside the page already sent");
+    assert_eq!(ready(&store), ["e", "d"], "the newest found go, listing pages never");
+    assert_eq!(store.ready_count("example.com").unwrap(), 2);
+    assert_eq!((store.sent_count("example.com").unwrap(), store.joined("example.com").unwrap()), (Some(1), Some(Some(3))));
+
+    store.record_listing("example.com", 7, vec![page("f", 10)], 2000).unwrap();
+    assert_eq!(ready(&store), ["f", "e", "d"], "a page new to a domain still under its cap joins its list");
+    let picks = take(&store, 10);
+    assert_eq!(picks.len(), 2, "but only as many go as the cap leaves");
+    store.mark_sent(&picks, 2100, &rules()).unwrap();
+    assert_eq!(store.sent_count("example.com").unwrap(), Some(3));
+    assert_eq!(store.take_capped(), ["example.com".to_string()]);
+    assert_eq!(store.clear_fresh("example.com").unwrap(), 1);
+    assert!(ready(&store).is_empty());
+    assert_eq!(store.ready_count("example.com").unwrap(), 0, "the count follows the entries cleared");
+    store.record_listing("example.com", 7, vec![page("g", 10)], 2200).unwrap();
+    assert!(ready(&store).is_empty(), "a domain at its cap queues no new pages");
+    store.record_listing("example.com", 7, vec![page("e", 20)], 2300).unwrap();
+    assert_eq!(orders(&store, "example.com"), [Order::Changed { lastmod: 20 }], "while a sent page that changed still goes");
+    let spilled = take(&store, 10);
+    assert_eq!(spilled.iter().map(|p| p.reason).collect::<Vec<_>>(), [Reason::Changed], "the new-page lane gives nothing at the cap, and its share goes to the changed page");
+
+    relist(&path, &list, r#"[{"host": "example.com", "weight": 4}]"#);
+    let again = store.join_domain("example.com", list.get("example.com").unwrap(), 3000, &mut |_| {}).unwrap();
+    assert_eq!((again.sent, again.queued, again.cleared), (3, 4, 0), "without a cap every page never sent goes, b, c, f and g");
+    assert_eq!(store.joined("example.com").unwrap(), Some(None));
+}
+
+#[test]
+fn the_list_walker_walks_each_listed_domain_once_and_again_when_its_cap_changes() {
+    let dir = Dir::new("join-round");
+    std::fs::create_dir_all(&dir.0).unwrap();
+    let path = dir.0.join("domains.json");
+    std::fs::write(&path, r#"[{"host": "example.com", "send_cap": 10}, {"host": "example.org", "weight": 3}]"#).unwrap();
+    let list = Allowed::from_file(&path).unwrap();
+    let buckets = known(&dir, &["example.com", "example.org"]);
+    buckets.allow(&list);
+    let progress = Progress::default();
+    let stop = std::sync::atomic::AtomicBool::new(false);
+    assert_eq!(desearch_bot::dispatch::join_round(&buckets, &list, 1_000_000, &progress, &stop).unwrap(), 2);
+    assert_eq!(desearch_bot::dispatch::join_round(&buckets, &list, 1_000_000, &progress, &stop).unwrap(), 0, "a domain walked under its cap is not walked again");
+    relist(&path, &list, r#"[{"host": "example.com", "send_cap": 20}, {"host": "example.org", "weight": 3}, {"host": "example.net"}]"#);
+    assert_eq!(desearch_bot::dispatch::join_round(&buckets, &list, 1_000_000, &progress, &stop).unwrap(), 1, "a new cap walks it again; a domain no store here holds is passed over");
+    assert_eq!(buckets.terms("example.org"), Terms { weight: 3, send_cap: None });
+}
+
+#[test]
+fn a_domain_already_sending_is_only_counted_and_cleared_when_over_its_cap() {
+    let dir = Dir::new("join-capped");
+    std::fs::create_dir_all(&dir.0).unwrap();
+    let path = dir.0.join("domains.json");
+    std::fs::write(&path, r#"["example.com"]"#).unwrap();
+    let list = Allowed::from_file(&path).unwrap();
+    let buckets = known(&dir, &["example.com"]);
+    buckets.allow(&list);
+    let store = buckets.store("example.com");
+    store.record_listing("example.com", 7, (0..8).map(|i| page(&format!("p{i}"), 10)).collect(), 100).unwrap();
+    store.mark_sent(&take(store, 3), 200, &rules()).unwrap();
+    assert_eq!(store.ready_count("example.com").unwrap(), 5);
+
+    relist(&path, &list, r#"[{"host": "example.com", "send_cap": 2}]"#);
+    let progress = Progress::default();
+    let stop = std::sync::atomic::AtomicBool::new(false);
+    assert_eq!(desearch_bot::dispatch::join_round(&buckets, &list, 1_000_000, &progress, &stop).unwrap(), 1);
+    assert_eq!(store.sent_count("example.com").unwrap(), Some(3), "its sent pages are counted from their records");
+    assert_eq!(store.ready_count("example.com").unwrap(), 0, "past its cap, its waiting new pages are cleared");
+    assert_eq!(progress.capped_cleared.load(std::sync::atomic::Ordering::Relaxed), 5);
+}
+
+#[test]
+fn a_domains_weight_multiplies_the_slots_its_rank_earns() {
+    let want = |weight: u8| Want { rank: 1, ready: 1000, allowance: 1000, share: 1.0, weight };
+    assert_eq!(allot(&[want(4), want(1)], 70, 0).0, [56, 14], "news at weight 4 takes four turns' worth to the rest's one");
+    let slowed = Want { share: 0.5, ..want(2) };
+    assert_eq!(allot(&[slowed, want(1)], 14, 0).0, [7, 7], "the yield share applies on top of the weight");
+}
+
 #[test]
 fn the_domain_list_takes_names_or_hosts_and_is_read_again_when_its_file_changes() {
-    let names = allowed::parse(br#"["a.com", {"host": "b.org", "rank": 2}, 7]"#).unwrap();
-    assert_eq!(names, ["a.com".to_string(), "b.org".to_string()].into_iter().collect());
+    let names = allowed::parse(br#"["a.com", {"host": "b.org", "rank": 2}, 7, {"host": "c.net", "type": "news", "weight": 4, "send_cap": 1500}, {"host": "d.io", "weight": 9}]"#).unwrap();
+    let mut hosts: Vec<&str> = names.keys().map(String::as_str).collect();
+    hosts.sort_unstable();
+    assert_eq!(hosts, ["a.com", "b.org", "c.net", "d.io"]);
+    assert_eq!(names["a.com"], Terms { weight: 1, send_cap: None });
+    assert_eq!(names["c.net"], Terms { weight: 4, send_cap: Some(1500) }, "the crawl list's weight and cap");
+    assert_eq!(names["d.io"].weight, 4, "weights stay within 1 to 4");
     assert!(allowed::parse(b"{}").is_err());
     assert!(Allowed::all().allows("anything.net"));
 
@@ -993,3 +1100,41 @@ fn dropping_a_domain_deletes_its_pages_and_leaves_its_neighbours_whole() {
     assert_eq!((record["state"].as_str(), record["reason"].as_str(), record["due"].is_null()), (Some("excluded"), Some("hacked"), true));
     assert!(!store.drop_domain("unknown.com", "junk", true).unwrap().known);
 }
+
+/// Run with --ignored --nocapture: how long passes take when tens of thousands of domains have pages waiting.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore]
+async fn passes_stay_short_with_tens_of_thousands_of_domains_waiting() {
+    let domains: usize = std::env::var("DOMAINS").ok().and_then(|n| n.parse().ok()).unwrap_or(20_000);
+    let dir = Dir::new("many-domains");
+    let hosts: Vec<String> = (0..domains).map(|i| format!("site{i}.example")).collect();
+    let mut owned: Vec<usize> = hosts.iter().map(|h| bucket_of(h)).collect();
+    owned.sort_unstable();
+    owned.dedup();
+    let buckets = Arc::new(Buckets::open(&dir.0, &owned, &Resources::new(256 << 20, 4 << 30, owned.len())).unwrap());
+    let started = std::time::Instant::now();
+    for (i, host) in hosts.iter().enumerate() {
+        let store = buckets.store(host);
+        let mut changes = Changes::default();
+        changes.domain(host, &records::new_domain(Some(1000 + i as i64), Some("example"), &[], State::Active, None, None));
+        store.write(changes).unwrap();
+        let pages = (0..30).map(|p| (urls::parse(&format!("https://{host}/page{p}"), host).unwrap(), 100 + p, false)).collect();
+        store.record_listing(host, 1, pages, 100).unwrap();
+    }
+    println!("{domains} domains x 30 pages written in {:.1}s", started.elapsed().as_secs_f64());
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let fake = Arc::new(Mutex::new(FakeApi { room: 400, ..FakeApi::default() }));
+    tokio::spawn(serve_api(listener, fake.clone()));
+    let progress = Arc::new(Progress::default());
+    let api = TaskApi::new(&base, Hotkey::from_uri("//test").unwrap()).unwrap();
+    let mut dispatcher = Dispatcher::load(buckets.clone(), api, 1_000_000, shares(50, 10), rules(), progress.clone()).await.unwrap();
+    let now = 1_759_400_000;
+    for pass in 0..5 {
+        let started = std::time::Instant::now();
+        let sent = dispatcher.pass(now + 20 * pass).await.unwrap();
+        let ms: Vec<u64> = progress.pass_ms.iter().map(|m| m.load(std::sync::atomic::Ordering::Relaxed)).collect();
+        println!("pass {pass}: {sent} URLs in {:.2}s (absorb {} ms, pick {} ms, send {} ms)", started.elapsed().as_secs_f64(), ms[0], ms[1], ms[2]);
+    }
+}
+
