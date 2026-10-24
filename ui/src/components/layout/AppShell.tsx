@@ -3,6 +3,7 @@ import desearchLogo from '@/assets/desearch-logo.png'
 import { cn } from '@/lib/cn'
 import { MINERS_PATH, OVERVIEW_PATH, TASKS_PATH, VALIDATORS_PATH } from '@/lib/paths'
 import { BackoffNotice } from './BackoffNotice'
+import { MinerSearch } from './MinerSearch'
 
 const NAV_ITEMS = [
   { to: OVERVIEW_PATH, label: 'Overview' },
@@ -15,7 +16,7 @@ export function AppShell() {
   return (
     <div className="flex min-h-dvh flex-col">
       <header className="border-line bg-ground sticky top-0 z-30 border-b">
-        <div className="mx-auto flex max-w-[88rem] items-center gap-6 px-4 py-2.5">
+        <div className="mx-auto flex max-w-[88rem] flex-wrap items-center gap-x-6 gap-y-2 px-4 py-2.5 sm:flex-nowrap">
           <NavLink
             to={OVERVIEW_PATH}
             aria-label="Desearch Dashboard"
@@ -40,6 +41,7 @@ export function AppShell() {
               </NavLink>
             ))}
           </nav>
+          <MinerSearch />
         </div>
         <BackoffNotice />
       </header>

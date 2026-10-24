@@ -3,10 +3,8 @@ import { useOverview } from '@/api/queries/overview'
 import { WorkPanel } from '@/components/charts/WorkPanel'
 import { ChecksPanel } from '@/components/overview/ChecksPanel'
 import { LiveStats } from '@/components/overview/LiveStats'
-import { MinerLookup } from '@/components/overview/MinerLookup'
 import { RecentProblems } from '@/components/overview/RecentProblems'
 import { TopMiners } from '@/components/overview/TopMiners'
-import { ValidatorsPanel } from '@/components/overview/ValidatorsPanel'
 import { Card } from '@/components/ui/Card'
 import { KindSwitch } from '@/components/ui/KindSwitch'
 import { PageHeader } from '@/components/ui/PageHeader'
@@ -26,16 +24,15 @@ export function OverviewPage() {
         title="Overview"
         description="How much work there is right now, how fast uploads get their verdict, and why some do not pass."
       >
-        {crawl.data ? (
-          <span className="text-ink-faint text-xs">
-            updated <TimeAgo at={crawl.data.as_of} />
-          </span>
-        ) : null}
+        <div className="flex items-center gap-3">
+          {crawl.data ? (
+            <span className="text-ink-faint text-xs">
+              updated <TimeAgo at={crawl.data.as_of} />
+            </span>
+          ) : null}
+          <KindSwitch kind={kind} onChange={setKind} noun="tasks" />
+        </div>
       </PageHeader>
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <KindSwitch kind={kind} onChange={setKind} noun="tasks" />
-        <MinerLookup />
-      </div>
       {crawl.data && embed.data ? (
         <LiveStats
           overviews={{ crawl: crawl.data, embed: embed.data }}
@@ -47,14 +44,13 @@ export function OverviewPage() {
           <QueryState query={crawl.data ? embed : crawl}>{() => null}</QueryState>
         </Card>
       )}
-      <WorkPanel kind={kind} />
+      <div className="grid gap-4 xl:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
+        <WorkPanel kind={kind} />
+        <TopMiners kind={kind} />
+      </div>
       <div className="grid gap-4 xl:grid-cols-2">
         <QueryState query={chosen}>{(overview) => <ChecksPanel overview={overview} />}</QueryState>
         <RecentProblems kind={kind} />
-      </div>
-      <div className="grid gap-4 xl:grid-cols-2">
-        <TopMiners kind={kind} />
-        <ValidatorsPanel />
       </div>
     </div>
   )
