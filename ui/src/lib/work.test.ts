@@ -1,14 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { ClaimCounts, HourPoint } from '@/api/types'
-import {
-  averagePerHour,
-  compareToAverage,
-  minutesInto,
-  perMinute,
-  queueMinutes,
-  refused,
-  splitHours,
-} from './work'
+import { averagePerHour, compareToAverage, queueMinutes, refused, splitHours } from './work'
 
 const claims: ClaimCounts = {
   issued: 1200,
@@ -28,12 +20,6 @@ describe('refusals', () => {
     expect(refused(claims, 'QUEUE_EMPTY')).toBe(6000)
     expect(refused(claims, 'ALREADY_HELD')).toBe(0)
   })
-
-  it('turns an hour of refusals into miners turned away each minute', () => {
-    expect(perMinute(6000)).toBe(100)
-    expect(perMinute(300, 15)).toBe(20)
-    expect(perMinute(5, 0)).toBe(0)
-  })
 })
 
 describe('hours', () => {
@@ -42,12 +28,6 @@ describe('hours', () => {
     expect(done.map((point) => point.at)).toEqual([0, 3600])
     expect(current?.at).toBe(7200)
     expect(splitHours([]).current).toBeUndefined()
-  })
-
-  it('counts the minutes of the running hour, at least one and at most sixty', () => {
-    expect(minutesInto(hour(3600), 3600 + 900)).toBe(15)
-    expect(minutesInto(hour(3600), 3600)).toBe(1)
-    expect(minutesInto(hour(0), 99_999)).toBe(60)
   })
 
   it('says how long the waiting tasks last at the pace tasks were done', () => {
