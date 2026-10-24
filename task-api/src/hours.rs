@@ -1,4 +1,4 @@
-//! Hourly tallies the log pages read instead of rows: claims from the signed log, verdicts by reason and how long they took, and every take-back.
+//! Hourly tallies of claims, verdicts and waits, so the log pages read these instead of scanning the log.
 
 use std::collections::BTreeMap;
 
@@ -10,11 +10,9 @@ use serde_json::{json, Map, Value};
 use crate::budgets::{hour_of, HOUR, SHARE_WINDOW_H};
 use crate::db::{optional_real, real};
 
-/// A week and a day, as the verdict totals keep.
 const HOURS_KEPT: i64 = 24 * 8;
-/// A first start counts back a day and an hour, so a day's view is whole within minutes; the rest of the week fills as it passes.
+/// A first start counts back only a day, so the day's view fills within minutes.
 const FIRST_COUNTED_H: i64 = SHARE_WINDOW_H + 1;
-/// Causes of a reclaim the miner let happen; the others are tasks sent back after a verdict.
 const LAPSED: [&str; 2] = ["expired", "abandoned"];
 const CLAIMS_MARK: &str = "claim_hours";
 const CHECKS_MARK: &str = "check_hours";
@@ -81,9 +79,9 @@ fn first_counted(now: f64) -> f64 {
     (hour_of(now) - FIRST_COUNTED_H) as f64 * HOUR
 }
 
-/// The last entry served before `at`, found by halving: entries are written in the order they are served.
+/// Found by halving: entries are written in the order they are served.
 fn last_entry_before(conn: &Connection, at: f64) -> Result<i64> {
-    // Apart, so each is one step down the primary key; MIN and MAX in one SELECT read every row.
+    // MIN and MAX in one SELECT would read every row.
     let (mut low, mut high): (i64, i64) =
         conn.query_row("SELECT COALESCE((SELECT MIN(id) FROM entries), 1), COALESCE((SELECT MAX(id) FROM entries), 0)", [], |row| {
             Ok((row.get(0)?, row.get(1)?))
@@ -115,7 +113,6 @@ fn last_of(conn: &Connection, table: &str, after: i64, limit: i64) -> Result<Opt
     Ok(conn.query_row(&format!("SELECT MAX(id) FROM (SELECT id FROM {table} WHERE id > ? ORDER BY id LIMIT ?)"), params![after, limit], |row| row.get(0))?)
 }
 
-/// Counts up to `limit` more signed log entries into the claim tallies, in row order.
 pub fn roll_up_claims(conn: &Connection, limit: i64, now: f64) -> Result<i64> {
     let rolled = match mark(conn, CLAIMS_MARK)? {
         Some(rolled) => rolled,
@@ -138,7 +135,6 @@ pub fn roll_up_claims(conn: &Connection, limit: i64, now: f64) -> Result<i64> {
     Ok(last - rolled)
 }
 
-/// The upper end of the wait's bucket in seconds: 15 s steps to 5 min, then 1 min to 30, 10 min to 2 h, hours to a day.
 fn bucket(wait_s: f64) -> i64 {
     let wait = wait_s.clamp(0.0, LONGEST_WAIT_S);
     ((wait / step(wait)).ceil() * step(wait)) as i64
@@ -153,7 +149,6 @@ fn step(wait: f64) -> f64 {
     }
 }
 
-/// Counts up to `limit` more verdict rows into the reason and wait tallies, in row order.
 pub fn roll_up_checks(conn: &Connection, limit: i64, now: f64) -> Result<i64> {
     let rolled = match mark(conn, CHECKS_MARK)? {
         Some(rolled) => rolled,
@@ -227,7 +222,6 @@ pub fn no_claims() -> Map<String, Value> {
     counts
 }
 
-/// Each hour's claims of one kind from `first` to `last`, for every miner or one: issued, completed, lapsed, sent back, dropped, and refusals by code.
 pub fn claims(conn: &Connection, first: i64, last: i64, kind: &str, miner: Option<&str>) -> Result<BTreeMap<i64, Map<String, Value>>> {
     let mut args = hour_range(first, last, kind);
     let sql = match miner {
@@ -264,7 +258,6 @@ pub fn claims(conn: &Connection, first: i64, last: i64, kind: &str, miner: Optio
     Ok(hours)
 }
 
-/// Claims summed over the hours, refusals by code.
 pub fn total_claims(hours: &BTreeMap<i64, Map<String, Value>>) -> Map<String, Value> {
     let mut total = no_claims();
     for counts in hours.values() {
@@ -285,7 +278,6 @@ pub fn total_claims(hours: &BTreeMap<i64, Map<String, Value>>) -> Map<String, Va
     total
 }
 
-/// Verdicts of one kind scored from `first` to `last` by verdict, reason and whether a validator checked them, most first.
 pub fn reasons(conn: &Connection, first: i64, last: i64, kind: &str) -> Result<Vec<Value>> {
     let mut statement = conn.prepare(
         "SELECT verdict, reason, checked, SUM(n) FROM check_hours WHERE hour >= ? AND hour <= ? AND kind = ? GROUP BY verdict, reason, checked ORDER BY SUM(n) DESC, verdict, reason",
@@ -296,14 +288,12 @@ pub fn reasons(conn: &Connection, first: i64, last: i64, kind: &str) -> Result<V
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
-/// Uploads a validator checked, per hour.
 pub fn checked(conn: &Connection, first: i64, last: i64, kind: &str) -> Result<BTreeMap<i64, i64>> {
     let mut statement = conn.prepare("SELECT hour, SUM(n) FROM check_hours WHERE hour >= ? AND hour <= ? AND kind = ? AND checked = 1 GROUP BY hour")?;
     let rows = statement.query_map(params_from_iter(hour_range(first, last, kind)), |row| Ok((row.get(0)?, row.get(1)?)))?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
-/// The value below which a share `q` of the tallied waits fall, spread evenly within its bucket.
 fn quantile(buckets: &BTreeMap<i64, i64>, q: f64) -> Option<f64> {
     let total: i64 = buckets.values().sum();
     if total == 0 {
@@ -345,13 +335,11 @@ fn by_check(unchecked: Option<&BTreeMap<i64, i64>>, checked: Option<&BTreeMap<i6
     json!({"unchecked": summary(unchecked), "checked": summary(checked)})
 }
 
-/// Seconds from upload to final verdict per hour, apart for uploads a validator checked: how many, the median and the 90th percentile.
 pub fn waits(conn: &Connection, first: i64, last: i64, kind: &str) -> Result<BTreeMap<i64, Value>> {
     let found = waits_by(conn, first, last, kind)?;
     Ok((first..=last).map(|hour| (hour, by_check(found.get(&(hour, false)), found.get(&(hour, true))))).collect())
 }
 
-/// The same over all the hours together.
 pub fn total_waits(conn: &Connection, first: i64, last: i64, kind: &str) -> Result<Value> {
     let mut merged: BTreeMap<bool, BTreeMap<i64, i64>> = BTreeMap::new();
     for ((_, checked), buckets) in waits_by(conn, first, last, kind)? {
@@ -363,7 +351,6 @@ pub fn total_waits(conn: &Connection, first: i64, last: i64, kind: &str) -> Resu
     Ok(by_check(merged.get(&false), merged.get(&true)))
 }
 
-/// Passes of one kind taken back since `since`: how many, from how many miners, and the credit they had.
 pub fn taken_back(conn: &Connection, since: f64, kind: &str) -> Result<Value> {
     Ok(conn.query_row(
         "SELECT COUNT(*), COALESCE(SUM(tasks), 0), COUNT(DISTINCT miner), COALESCE(SUM(credited), 0) FROM take_backs WHERE at >= ? AND kind = ?",
@@ -374,7 +361,6 @@ pub fn taken_back(conn: &Connection, since: f64, kind: &str) -> Result<Value> {
     )?)
 }
 
-/// One miner's take-backs of both kinds, newest first.
 pub fn take_backs_of(conn: &Connection, miner: &str, limit: i64) -> Result<Vec<Value>> {
     let mut statement = conn.prepare("SELECT kind, reason, tasks, credited, at FROM take_backs WHERE miner = ? ORDER BY id DESC LIMIT ?")?;
     let rows = statement.query_map(params![miner, limit], |row| {

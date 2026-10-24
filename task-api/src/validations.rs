@@ -539,7 +539,7 @@ pub fn recent(conn: &Connection, filter: &TaskFilter) -> Result<Vec<Map<String, 
             args.push(Sql::Text(value.clone()));
         }
     }
-    // Fails and voids are rare: sought by miner and verdict, for the miners that have any, not read back through every pass.
+    // Fails and voids are rare: seek them by miner and verdict instead of reading back through the passes.
     let rare = filter.verdict.as_ref().filter(|v| !v.is_empty() && v.as_str() != "pass");
     if let (None, Some(verdict)) = (&filter.miner, rare) {
         clauses.push("miner IN (SELECT miner FROM verdict_counts WHERE verdict = ? AND n > 0)".into());

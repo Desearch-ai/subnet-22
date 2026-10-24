@@ -182,7 +182,6 @@ fn uid_of(state: &State, hotkey: Option<&str>) -> Value {
     hotkey.and_then(|h| state.registry.registered(h)).and_then(|e| e.uid).map_or(Value::Null, Value::from)
 }
 
-/// The uid and coldkey the metagraph has for a hotkey; null for one off it.
 fn keys_of(state: &State, hotkey: Option<&str>) -> (Value, Value) {
     let entry = hotkey.and_then(|h| state.registry.registered(h));
     (entry.as_ref().and_then(|e| e.uid).map_or(Value::Null, Value::from), entry.and_then(|e| e.coldkey).map_or(Value::Null, Value::from))
@@ -340,7 +339,6 @@ pub async fn overview(Shared(state): Shared<Arc<State>>, QueryParams(query): Que
     Ok(Json(state.cache.get_or(format!("overview:{hours}:{kind}"), || overview_of(&state, hours, kind)).await?))
 }
 
-/// The whole hours a window of `hours` covers, the current one last.
 fn hour_span(until: f64, hours: i64) -> (i64, i64) {
     let last = hour_of(until);
     (last - hours + 1, last)
@@ -404,7 +402,6 @@ async fn overview_of(state: &Arc<State>, hours: i64, kind: &'static str) -> Resu
     }))
 }
 
-/// Each hour's claims and verdicts of one kind, for the subnet or one miner, the current hour last.
 pub async fn stat_hours(Shared(state): Shared<Arc<State>>, QueryParams(query): QueryParams<Query>) -> Answer {
     let (hours, kind, miner) = (hours(&query)?, kind(&query)?, id_param(&query, "miner")?);
     let key = format!("hours:{hours}:{kind}:{miner:?}");

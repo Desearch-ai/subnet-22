@@ -53,7 +53,7 @@ const DROP_VERDICTS: i64 = 200;
 const PRUNE_DETAILS: i64 = 10;
 /// Verdict rows counted into the hourly totals per pass; a first start catches up on the kept week this way.
 const ROLL_UP_ROWS: i64 = 5000;
-/// Signed log entries counted into the claim tallies per pass, ~15 ms of writer time.
+/// Log entries tallied per pass, ~15 ms of writer time.
 const ROLL_UP_ENTRIES: i64 = 5000;
 
 #[derive(Clone, Copy, Debug)]

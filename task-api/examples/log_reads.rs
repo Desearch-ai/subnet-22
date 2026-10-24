@@ -1,4 +1,4 @@
-//! A log database at production rates, and what the log pages' reads cost on it: `cargo run --release --example log_reads -- build <dir> [days]`, `-- tally <dir>`, then `-- time <dir>`.
+//! A log database at production rates and the log pages' read times on it: `cargo run --release --example log_reads -- build <dir> [days]`, `-- tally <dir>` (`PASS_ROWS` per pass), then `-- time <dir>`.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -124,7 +124,6 @@ fn record_task(conn: &Connection, task: &Task, rng: &mut StdRng, last_pass: &mut
     Ok(())
 }
 
-/// A log entry to write: when, what, the task it is about by index, and a refusal or cause.
 type Event = (f64, &'static str, usize, Option<Value>, Option<&'static str>);
 
 fn build(dir: &Path, days: i64) -> Result<()> {
@@ -420,7 +419,6 @@ fn time(dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Counts the log into the tallies as a first start does, pass by pass at the janitor's size (`PASS_ROWS`).
 fn tally(dir: &Path) -> Result<()> {
     let mut conn = Connection::open(dir.join(db::FILE))?;
     conn.pragma_update(None, "journal_mode", "WAL")?;
