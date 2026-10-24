@@ -1,21 +1,12 @@
-import { useState, type ReactNode } from 'react'
+import type { ReactNode } from 'react'
 import { useHours } from '@/api/queries/hours'
 import type { HourPoint, Hours, Kind } from '@/api/types'
 import { Card, CardHeader } from '@/components/ui/Card'
 import { QueryState } from '@/components/ui/QueryState'
-import { SegmentedControl } from '@/components/ui/SegmentedControl'
 import { formatClock, formatInt } from '@/lib/format'
 import { averagePerHour, splitHours } from '@/lib/work'
 import { HourChart } from './HourChart'
-import { HourTable } from './HourTable'
 import { HOUR_S, SERIES_COLORS, type HourSeries } from './hourSeries'
-
-type View = 'chart' | 'table'
-
-const VIEWS = [
-  { value: 'chart', label: 'Chart' },
-  { value: 'table', label: 'Table' },
-] as const
 
 const DONE: HourSeries<HourPoint> = {
   key: 'tasks',
@@ -55,42 +46,25 @@ function Summary({ hours }: { hours: Hours }) {
   )
 }
 
-interface WorkPanelProps {
-  kind: Kind
-  miner?: string
-  actions?: ReactNode
-}
-
-export function WorkPanel({ kind, miner, actions }: WorkPanelProps) {
+export function WorkPanel({ kind, miner }: { kind: Kind; miner?: string }) {
   const query = useHours(miner === undefined ? { kind } : { kind, miner })
-  const [view, setView] = useState<View>('chart')
   return (
     <Card>
       <CardHeader
         title={miner === undefined ? 'Tasks per hour' : 'Its tasks per hour'}
         description={`${kind === 'embed' ? 'Embed' : 'Crawl'} tasks done, last 24 hours`}
-        actions={
-          <>
-            {actions}
-            <SegmentedControl label="Show as" segments={VIEWS} value={view} onChange={setView} />
-          </>
-        }
       />
       <QueryState query={query}>
         {(hours) => (
           <div className="space-y-6 p-4">
             <Summary hours={hours} />
-            {view === 'chart' ? (
-              <HourChart
-                label="Tasks done"
-                points={hours.points}
-                series={[DONE]}
-                running
-                emptyTitle={`No ${kind} task was done in the last 24 hours.`}
-              />
-            ) : (
-              <HourTable points={hours.points} running columns={[{ series: [DONE] }]} />
-            )}
+            <HourChart
+              label="Tasks done"
+              points={hours.points}
+              series={[DONE]}
+              running
+              emptyTitle={`No ${kind} task was done in the last 24 hours.`}
+            />
           </div>
         )}
       </QueryState>

@@ -73,7 +73,7 @@ src/
   components/
     ui/           primitives: card, table, badge, stat, states
     layout/       app shell, notices
-    charts/       the per-hour charts and their table view
+    charts/       the tasks-per-hour chart
     overview/     panels of the overview page
     tasks/        task table, votes comparison, per-URL and per-text tables
     miners/       miner table, stats, budget history
