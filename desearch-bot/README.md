@@ -109,7 +109,8 @@ and a `backlog`. A domain's turn is worth its rank's slots times its weight, and
 `--per-domain-hourly` for it. The bot counts the distinct pages it has sent for each domain; at its
 `send_cap` the domain sends no new pages, and only changed pages and re-crawls go on. A walker
 queues the pages each listed domain stored before it joined the list, newest first, as many as its
-cap leaves or, for a domain without a cap, up to its `backlog`. It walks a domain again when its cap
+cap leaves or, for a domain without a cap, up to its `backlog`, smallest domains first and the higher
+weight first among domains of a size. It walks a domain again when its cap
 changes, reads `--join-per-sec` records a second, and stops mid-domain when the bot stops. A domain
 already sending is only counted, since its pages are queued already, on a second walker beside the
 first, so counting and clearing never hold back new domains.

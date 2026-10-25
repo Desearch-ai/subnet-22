@@ -1076,7 +1076,7 @@ pub fn join_listed(buckets: &Buckets, allowed: &Allowed, per_second: u64, progre
 
 /// One pass over the list, for domains not yet handled under their current cap; returns how many it handled.
 ///
-/// Domains already sending only get counted, so their caps apply at once. The rest are walked for their stored pages beside them, highest weight first and smallest first within a weight, so many domains start sending soon.
+/// Domains already sending only get counted, so their caps apply at once. The rest are walked for their stored pages beside them, by size band smallest first and highest weight first within a band, so many domains start sending soon.
 pub fn join_round(buckets: &Buckets, allowed: &Allowed, per_second: u64, progress: &Progress, stop: &AtomicBool) -> Result<usize> {
     let mut todo = Vec::new();
     for (domain, terms) in allowed.entries() {
@@ -1090,7 +1090,9 @@ pub fn join_round(buckets: &Buckets, allowed: &Allowed, per_second: u64, progres
         let urls = store.domain(&domain)?.and_then(|record| records::int(record.get("urls"))).unwrap_or(0);
         todo.push((idle, std::cmp::Reverse(terms.weight), urls, domain, terms));
     }
-    todo.sort_unstable_by(|a, b| (a.0, a.1, a.2, &a.3).cmp(&(b.0, b.1, b.2, &b.3)));
+    // A tenfold size band before weight: the big domains of a heavy kind would hold back every small one, which sends at once.
+    let band = |urls: i64| urls.max(1).ilog10();
+    todo.sort_unstable_by(|a, b| (a.0, band(a.2), a.1, a.2, &a.3).cmp(&(b.0, band(b.2), b.1, b.2, &b.3)));
     progress.join_of.store(todo.len() as u64, Ordering::Relaxed);
     progress.join_done.store(0, Ordering::Relaxed);
     let started = now();
