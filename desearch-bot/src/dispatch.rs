@@ -1121,7 +1121,7 @@ pub fn join_round(buckets: &Buckets, allowed: &Allowed, per_second: u64, progres
 fn clear_capped(buckets: &Buckets, progress: &Progress) -> Result<()> {
     for store in buckets.stores() {
         for domain in store.take_capped() {
-            progress.capped_cleared.fetch_add(store.clear_fresh(&domain)?, Ordering::Relaxed);
+            progress.capped_cleared.fetch_add(store.clear_fresh(&domain, &mut |_| true)?.0, Ordering::Relaxed);
         }
     }
     Ok(())

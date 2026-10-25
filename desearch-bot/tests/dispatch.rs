@@ -837,7 +837,7 @@ fn a_domain_joining_the_list_queues_its_stored_pages_never_sent_newest_first_up_
     store.mark_sent(&picks, 2100, &rules()).unwrap();
     assert_eq!(store.sent_count("example.com").unwrap(), Some(3));
     assert_eq!(store.take_capped(), ["example.com".to_string()]);
-    assert_eq!(store.clear_fresh("example.com").unwrap(), 1);
+    assert_eq!(store.clear_fresh("example.com", &mut |_| true).unwrap(), (1, true));
     assert!(ready(&store).is_empty());
     assert_eq!(store.ready_count("example.com").unwrap(), 0, "the count follows the entries cleared");
     store.record_listing("example.com", 7, vec![page("g", 10)], 2200).unwrap();
@@ -932,6 +932,34 @@ fn a_walk_asked_to_stop_returns_without_marking_the_domain_walked() {
     assert!(joined.stopped);
     assert_eq!(joined.queued, 0);
     assert_eq!(store.joined("example.com").unwrap(), None, "the next round walks it again");
+}
+
+#[test]
+fn a_clear_asked_to_stop_leaves_the_domain_for_the_next_round_to_clear() {
+    let dir = Dir::new("join-clear-stop");
+    std::fs::create_dir_all(&dir.0).unwrap();
+    let path = dir.0.join("domains.json");
+    std::fs::write(&path, r#"["example.com"]"#).unwrap();
+    let list = Allowed::from_file(&path).unwrap();
+    let store = BucketStore::open(&dir.0.join("store"), &resources()).unwrap();
+    store.allow(list.clone());
+    store.record_listing("example.com", 7, (0..50_002).map(|i| page(&format!("p{i}"), 10)).collect(), 100).unwrap();
+    store.mark_sent(&take(&store, 1), 200, &rules()).unwrap();
+
+    relist(&path, &list, r#"[{"host": "example.com", "send_cap": 1}]"#);
+    let terms = list.get("example.com").unwrap();
+    let mut paced = 0;
+    let joined = store.cap_domain("example.com", terms, &mut |_| {
+        paced += 1;
+        paced < 2
+    }).unwrap();
+    assert!(joined.stopped);
+    assert_eq!((joined.cleared, store.ready_count("example.com").unwrap()), (50_000, 1), "one chunk went before the stop");
+    assert_eq!(store.joined("example.com").unwrap(), None, "the next round takes it again");
+
+    let again = store.cap_domain("example.com", terms, &mut |_| true).unwrap();
+    assert_eq!((again.stopped, again.cleared, store.ready_count("example.com").unwrap()), (false, 1, 0));
+    assert_eq!(store.joined("example.com").unwrap(), Some(Some(1)));
 }
 
 #[test]

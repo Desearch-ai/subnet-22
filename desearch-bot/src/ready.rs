@@ -3,6 +3,7 @@
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap};
 use std::sync::LazyLock;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use regex::bytes::{Regex, RegexBuilder};
@@ -38,6 +39,8 @@ const SENT_COUNT: u8 = b'C';
 const JOINED: u8 = b'J';
 /// Keys a domain's new-page lane loses per locked write when it is cleared.
 const TRIM_CHUNK: usize = 50_000;
+/// The pause between cleared chunks, so senders waiting on the lock get it.
+const TRIM_REST: Duration = Duration::from_millis(1);
 /// Pages queued per locked write while a domain is walked.
 const JOIN_CHUNK: usize = 20_000;
 /// An outcome counts half as much a day later.
@@ -584,27 +587,37 @@ impl BucketStore {
         self.capped.lock().unwrap_or_else(|e| e.into_inner()).drain().collect()
     }
 
-    /// Empties the domain's new-page lane, a locked chunk at a time with exact counts; returns how many entries went.
-    pub fn clear_fresh(&self, domain: &str) -> Result<u64> {
+    /// Empties the domain's new-page lane, a locked chunk at a time with exact counts; returns how many entries went, and false when `pace` stopped it first.
+    pub fn clear_fresh(&self, domain: &str, pace: &mut dyn FnMut(u64) -> bool) -> Result<(u64, bool)> {
         let prefix = [&[READY], domain.as_bytes(), b"\0", &[FRESH as u8]].concat();
         let mut cleared = 0;
+        let mut after: Option<Vec<u8>> = None;
         loop {
-            let _guard = self.lock_ready();
-            let keys = self.keys_under(&prefix, None, TRIM_CHUNK)?;
-            let (Some(first), Some(last)) = (keys.first(), keys.last()) else {
-                break;
+            let read = {
+                let _guard = self.lock_ready();
+                // Reading on from the last key cleared skips the range just deleted, which a read from the start would wade through.
+                let keys = self.keys_under(&prefix, after.as_deref(), TRIM_CHUNK)?;
+                let (Some(first), Some(last)) = (keys.first(), keys.last()) else {
+                    break;
+                };
+                let mut batch = WriteBatch::default();
+                // Every key between the first and the last was just read under the lock, so the range holds exactly these.
+                batch.delete_range(first.as_slice(), [last.as_slice(), b"\0"].concat().as_slice());
+                self.write_counts(&mut batch, &HashMap::from([(domain.to_string(), -(keys.len() as i64))]))?;
+                self.db.write(batch)?;
+                after = Some(last.clone());
+                keys.len()
             };
-            let mut batch = WriteBatch::default();
-            // Every key between the first and the last was just read under the lock, so the range holds exactly these.
-            batch.delete_range(first.as_slice(), [last.as_slice(), b"\0"].concat().as_slice());
-            self.write_counts(&mut batch, &HashMap::from([(domain.to_string(), -(keys.len() as i64))]))?;
-            self.db.write(batch)?;
-            cleared += keys.len() as u64;
-            if keys.len() < TRIM_CHUNK {
+            cleared += read as u64;
+            if read < TRIM_CHUNK {
                 break;
             }
+            std::thread::sleep(TRIM_REST);
+            if !pace(read as u64) {
+                return Ok((cleared, false));
+            }
         }
-        Ok(cleared)
+        Ok((cleared, true))
     }
 
     /// Queue the pages a listed domain stored but never sent, newest first, as many as its cap leaves; counts its sent pages for the cap.
@@ -663,7 +676,12 @@ impl BucketStore {
         if let Some(most) = bound {
             let room = match terms.send_cap {
                 Some(cap) => {
-                    joined.cleared = self.clear_fresh(domain)?;
+                    let (cleared, finished) = self.clear_fresh(domain, pace)?;
+                    joined.cleared = cleared;
+                    if !finished {
+                        joined.stopped = true;
+                        return Ok(joined);
+                    }
                     cap.saturating_sub(joined.sent)
                 }
                 None => most,
@@ -722,7 +740,14 @@ impl BucketStore {
             self.db.write(batch)?;
         }
         if terms.send_cap.is_some_and(|cap| joined.sent >= cap) {
-            joined.cleared = self.clear_fresh(domain)?;
+            let (cleared, finished) = self.clear_fresh(domain, pace)?;
+            joined.cleared = cleared;
+            if !finished {
+                // Unmarked, so the next round clears the rest.
+                let _guard = self.lock_ready();
+                self.db.delete(count_key_of(JOINED, domain))?;
+                joined.stopped = true;
+            }
         }
         Ok(joined)
     }
