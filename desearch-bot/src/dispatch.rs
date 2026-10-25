@@ -12,7 +12,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use tokio::sync::watch;
 
-use crate::allowed::Allowed;
+use crate::allowed::{Allowed, Terms};
 use crate::buckets::{bucket_of, Buckets};
 use crate::outcomes::{Next, OutcomeFeed, OutcomeReader};
 use crate::ready::{Entry, Order, Pick, Reason, SentPage, Yield, CHANGED, FRESH, LANES, REQUEUED};
@@ -214,6 +214,11 @@ impl Pace {
     }
 }
 
+/// The stretch of its hourly limit a domain may send at once, so a site sees a steady stream rather than its hour in one burst.
+const SPREAD_SECONDS: u32 = 120;
+/// Pages a domain may always send at once, so a small hourly limit is not cut to a page or two.
+const SPREAD_FLOOR: u64 = 100;
+
 pub struct HourlyCap {
     limit: u64,
     sent: HashMap<String, VecDeque<(u32, u64)>>,
@@ -233,19 +238,21 @@ impl HourlyCap {
         self.limit
     }
 
-    /// What is left of `limit` in the last hour, for a domain held to less than the usual cap.
+    /// What is left of `limit` in the last hour and of its share for the last two minutes, for a domain held to less than the usual cap.
     pub fn allowance_under(&mut self, domain: &str, now: u32, limit: u64) -> u64 {
+        let spread = (limit * u64::from(SPREAD_SECONDS) / u64::from(HOUR)).max(SPREAD_FLOOR);
         let Some(sent) = self.sent.get_mut(domain) else {
-            return limit;
+            return limit.min(spread);
         };
         while sent.front().is_some_and(|(at, _)| *at + HOUR <= now) {
             sent.pop_front();
         }
         let total: u64 = sent.iter().map(|(_, n)| n).sum();
+        let recent: u64 = sent.iter().filter(|(at, _)| *at + SPREAD_SECONDS > now).map(|(_, n)| n).sum();
         if sent.is_empty() {
             self.sent.remove(domain);
         }
-        limit.saturating_sub(total)
+        limit.saturating_sub(total).min(spread.saturating_sub(recent))
     }
 
     pub fn record(&mut self, domain: &str, now: u32, count: u64) {
@@ -1069,7 +1076,7 @@ pub fn join_listed(buckets: &Buckets, allowed: &Allowed, per_second: u64, progre
 
 /// One pass over the list, for domains not yet handled under their current cap; returns how many it handled.
 ///
-/// Domains already sending only get counted, so their caps apply at once. The rest are walked for their stored pages, highest weight first and smallest first within a weight, so many domains start sending soon.
+/// Domains already sending only get counted, so their caps apply at once. The rest are walked for their stored pages beside them, highest weight first and smallest first within a weight, so many domains start sending soon.
 pub fn join_round(buckets: &Buckets, allowed: &Allowed, per_second: u64, progress: &Progress, stop: &AtomicBool) -> Result<usize> {
     let mut todo = Vec::new();
     for (domain, terms) in allowed.entries() {
@@ -1086,35 +1093,45 @@ pub fn join_round(buckets: &Buckets, allowed: &Allowed, per_second: u64, progres
     todo.sort_unstable_by(|a, b| (a.0, a.1, a.2, &a.3).cmp(&(b.0, b.1, b.2, &b.3)));
     progress.join_of.store(todo.len() as u64, Ordering::Relaxed);
     progress.join_done.store(0, Ordering::Relaxed);
-    let (started, began) = (now(), Instant::now());
-    let mut read = 0u64;
-    let mut pace = |scanned: u64| {
-        read += scanned;
-        let due = Duration::from_secs_f64(read as f64 / per_second.max(1) as f64);
-        if let Some(ahead) = due.checked_sub(began.elapsed()) {
-            std::thread::sleep(ahead);
+    let started = now();
+    let walk = |todo: Vec<(bool, std::cmp::Reverse<u8>, i64, String, Terms)>| -> Result<usize> {
+        let began = Instant::now();
+        let mut read = 0u64;
+        let mut pace = |scanned: u64| {
+            read += scanned;
+            let due = Duration::from_secs_f64(read as f64 / per_second.max(1) as f64);
+            if let Some(ahead) = due.checked_sub(began.elapsed()) {
+                std::thread::sleep(ahead);
+            }
+            !stop.load(Ordering::Relaxed)
+        };
+        let mut handled = 0;
+        for (idle, _, _, domain, terms) in todo {
+            if stop.load(Ordering::Relaxed) {
+                break;
+            }
+            if !idle && handled % 100 == 0 {
+                clear_capped(buckets, progress)?;
+            }
+            let store = buckets.store(&domain);
+            let joined = if idle { store.join_domain(&domain, terms, started, &mut pace)? } else { store.cap_domain(&domain, terms, &mut pace)? };
+            if joined.stopped {
+                break;
+            }
+            handled += 1;
+            progress.join_done.fetch_add(1, Ordering::Relaxed);
+            progress.join_queued.fetch_add(joined.queued, Ordering::Relaxed);
+            progress.capped_cleared.fetch_add(joined.cleared, Ordering::Relaxed);
         }
-        !stop.load(Ordering::Relaxed)
+        Ok(handled)
     };
-    let mut handled = 0;
-    for (idle, _, _, domain, terms) in todo {
-        if stop.load(Ordering::Relaxed) {
-            break;
-        }
-        if handled % 100 == 0 {
-            clear_capped(buckets, progress)?;
-        }
-        let store = buckets.store(&domain);
-        let joined = if idle { store.join_domain(&domain, terms, started, &mut pace)? } else { store.cap_domain(&domain, terms, &mut pace)? };
-        if joined.stopped {
-            break;
-        }
-        handled += 1;
-        progress.join_done.fetch_add(1, Ordering::Relaxed);
-        progress.join_queued.fetch_add(joined.queued, Ordering::Relaxed);
-        progress.capped_cleared.fetch_add(joined.cleared, Ordering::Relaxed);
-    }
-    Ok(handled)
+    // Counting and clearing the domains already sending can take an hour; new domains must not wait behind it.
+    let (idle, sending): (Vec<_>, Vec<_>) = todo.into_iter().partition(|item| item.0);
+    std::thread::scope(|scope| {
+        let joining = scope.spawn(|| walk(idle));
+        let counted = walk(sending)?;
+        Ok(counted + joining.join().expect("the list walker panicked")?)
+    })
 }
 
 /// Clear the new-page lanes of domains that reached their cap, so the dispatcher stops giving them turns.

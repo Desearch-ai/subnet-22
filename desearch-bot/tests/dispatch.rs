@@ -472,14 +472,17 @@ fn outcomes_tally_each_domains_yield_once_per_file_under_the_domain_its_host_was
 }
 
 #[test]
-fn the_hourly_cap_forgets_sends_older_than_an_hour() {
-    let mut cap = HourlyCap::new(2000);
-    cap.record("a.com", 1000, 1500);
-    assert_eq!(cap.allowance("a.com", 1000), 500);
-    cap.record("a.com", 2000, 500);
-    assert_eq!(cap.allowance("a.com", 4599), 0);
-    assert_eq!(cap.allowance("a.com", 4600), 1500);
-    assert_eq!(cap.allowance("b.com", 4600), 2000);
+fn the_hourly_cap_spreads_a_domains_hour_and_forgets_sends_older_than_an_hour() {
+    let mut cap = HourlyCap::new(36_000);
+    assert_eq!(cap.allowance("a.com", 1000), 1200, "two minutes' worth goes at once, not the hour");
+    cap.record("a.com", 1000, 1200);
+    assert_eq!(cap.allowance("a.com", 1119), 0);
+    assert_eq!(cap.allowance("a.com", 1120), 1200, "then the next two minutes' worth");
+    cap.record("a.com", 1120, 34_000);
+    assert_eq!(cap.allowance("a.com", 1240), 800, "never more than the hour leaves");
+    assert_eq!(cap.allowance("a.com", 4600), 1200, "sends older than an hour are forgotten");
+    assert_eq!(cap.allowance("b.com", 1000), 1200);
+    assert_eq!(HourlyCap::new(20).allowance("c.com", 1000), 20, "a small hour goes whole");
 }
 
 #[test]

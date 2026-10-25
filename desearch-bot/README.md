@@ -87,7 +87,8 @@ changed pages), kept even across passes, and what one lane leaves unused goes to
 
 Every 5 seconds the bot asks `GET /v1/room` how many tasks the API can take, and sends that many
 times 1,000 URLs, a few from each domain in turn, best ranked first, within `--per-domain-hourly` and
-`--urls-per-hour`. The hourly pace starts empty and saves at most five minutes of sends, so a restart
+`--urls-per-hour`. A domain sends at most two minutes' worth of its hourly limit at once (100 pages at
+least), so a site sees a steady stream rather than its hour in one burst. The hourly pace starts empty and saves at most five minutes of sends, so a restart
 or a stall is followed by no burst. A batch carries a hash of its content, so a batch sent again after
 a timeout is queued once, and a batch in flight survives a restart. URLs over 2,048 characters, the
 sitemap protocol's limit, are never sent.
@@ -110,7 +111,8 @@ and a `backlog`. A domain's turn is worth its rank's slots times its weight, and
 queues the pages each listed domain stored before it joined the list, newest first, as many as its
 cap leaves or, for a domain without a cap, up to its `backlog`. It walks a domain again when its cap
 changes, reads `--join-per-sec` records a second, and stops mid-domain when the bot stops. A domain
-already sending is only counted, since its pages are queued already.
+already sending is only counted, since its pages are queued already, on a second walker beside the
+first, so counting and clearing never hold back new domains.
 
 Pages found before the queue existed join it once through `--backfill-ready`. Pages the Python
 feeder already sent are marked first, from its state:
