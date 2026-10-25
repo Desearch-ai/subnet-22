@@ -734,21 +734,19 @@ impl BucketStore {
         joined.scanned = joined.sent;
         {
             let _guard = self.lock_ready();
-            let mut batch = WriteBatch::default();
-            batch.put(count_key_of(SENT_COUNT, domain), joined.sent.to_le_bytes());
-            batch.put(count_key_of(JOINED, domain), terms.send_cap.unwrap_or(u64::MAX).to_le_bytes());
-            self.db.write(batch)?;
+            self.db.put(count_key_of(SENT_COUNT, domain), joined.sent.to_le_bytes())?;
         }
         if terms.send_cap.is_some_and(|cap| joined.sent >= cap) {
             let (cleared, finished) = self.clear_fresh(domain, pace)?;
             joined.cleared = cleared;
             if !finished {
-                // Unmarked, so the next round clears the rest.
-                let _guard = self.lock_ready();
-                self.db.delete(count_key_of(JOINED, domain))?;
                 joined.stopped = true;
+                return Ok(joined);
             }
         }
+        // Marked only once its lane is cleared, so a walk cut short, even by a crash, is taken again.
+        let _guard = self.lock_ready();
+        self.db.put(count_key_of(JOINED, domain), terms.send_cap.unwrap_or(u64::MAX).to_le_bytes())?;
         Ok(joined)
     }
 
