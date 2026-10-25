@@ -71,9 +71,21 @@ pub const YIELD_FULL: f64 = 0.2;
 pub const YIELD_PROBE: f64 = 0.02;
 pub const PROBE_PER_HOUR: u64 = 20;
 
+/// Outcomes judged in the recent count before it can lower a domain's share.
+pub const YIELD_RECENT_JUDGED: f64 = 200.0;
+
 /// The part of its slots a domain gets from its recent outcomes: all of them until enough are judged, none (probes only) under `YIELD_PROBE`.
 pub fn yield_share(found: Option<Yield>, now: u32) -> f64 {
-    let Some(counted) = found.map(|y| y.at(now)).filter(|y| y.judged() >= YIELD_JUDGED) else {
+    share_from(found.map(|y| y.at(now)), YIELD_JUDGED)
+}
+
+/// The same from the last hours alone, so a domain that starts refusing loses its slots within the hour.
+pub fn recent_share(found: Option<Yield>, now: u32) -> f64 {
+    share_from(found.map(|y| y.recent_at(now)), YIELD_RECENT_JUDGED)
+}
+
+fn share_from(counted: Option<Yield>, judged_at_least: f64) -> f64 {
+    let Some(counted) = counted.filter(|y| y.judged() >= judged_at_least) else {
         return 1.0;
     };
     let rate = counted.ok / counted.judged();
@@ -214,6 +226,11 @@ impl HourlyCap {
 
     pub fn allowance(&mut self, domain: &str, now: u32) -> u64 {
         self.allowance_under(domain, now, self.limit)
+    }
+
+    /// The hourly limit of a domain the list gives none.
+    pub fn limit(&self) -> u64 {
+        self.limit
     }
 
     /// What is left of `limit` in the last hour, for a domain held to less than the usual cap.
@@ -646,7 +663,8 @@ impl Dispatcher {
             .iter()
             .map(|(rank, name)| {
                 let Domain { ready, share, weight, .. } = self.domains[name];
-                let allowance = if share == 0.0 { self.cap.allowance_under(name, now, PROBE_PER_HOUR) } else { self.cap.allowance(name, now) };
+                let hourly = self.buckets.terms(name).hourly.unwrap_or(self.cap.limit());
+                let allowance = self.cap.allowance_under(name, now, if share == 0.0 { PROBE_PER_HOUR.min(hourly) } else { hourly });
                 Want { rank: *rank, ready, allowance, share, weight }
             })
             .collect();
@@ -1076,6 +1094,7 @@ pub fn join_round(buckets: &Buckets, allowed: &Allowed, per_second: u64, progres
         if let Some(ahead) = due.checked_sub(began.elapsed()) {
             std::thread::sleep(ahead);
         }
+        !stop.load(Ordering::Relaxed)
     };
     let mut handled = 0;
     for (idle, _, _, domain, terms) in todo {
@@ -1087,6 +1106,9 @@ pub fn join_round(buckets: &Buckets, allowed: &Allowed, per_second: u64, progres
         }
         let store = buckets.store(&domain);
         let joined = if idle { store.join_domain(&domain, terms, started, &mut pace)? } else { store.cap_domain(&domain, terms, &mut pace)? };
+        if joined.stopped {
+            break;
+        }
         handled += 1;
         progress.join_done.fetch_add(1, Ordering::Relaxed);
         progress.join_queued.fetch_add(joined.queued, Ordering::Relaxed);
@@ -1125,7 +1147,11 @@ pub fn on_readers<T: Send, R: Send>(items: Vec<T>, work: impl Fn(T) -> Result<R>
 }
 
 fn share_of(buckets: &Buckets, domain: &str, now: u32) -> f64 {
-    yield_share(buckets.store_for(domain).and_then(|store| store.domain_yield(domain).ok().flatten()), now)
+    let Some(store) = buckets.store_for(domain) else {
+        return 1.0;
+    };
+    let whole = yield_share(store.domain_yield(domain).ok().flatten(), now);
+    whole.min(recent_share(store.domain_yield_recent(domain).ok().flatten(), now))
 }
 
 fn rank_of(buckets: &Buckets, domain: &str) -> i64 {

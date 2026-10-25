@@ -30,6 +30,8 @@ const NEXT: u8 = b'N';
 const EXPECTING: u8 = b'X';
 /// Each domain's recent outcomes, so the dispatcher sends less where pages do not come back.
 const YIELD: u8 = b'Y';
+/// The same outcomes fading within hours, so a domain that starts refusing is slowed the same hour.
+const YIELD_RECENT: u8 = b'Z';
 /// How many distinct pages of each domain were ever sent, for its cap.
 const SENT_COUNT: u8 = b'C';
 /// The cap each listed domain's stored pages were last queued under; a domain is walked again only when it changes.
@@ -40,6 +42,8 @@ const TRIM_CHUNK: usize = 50_000;
 const JOIN_CHUNK: usize = 20_000;
 /// An outcome counts half as much a day later.
 pub const YIELD_HALF_LIFE_S: f64 = 86_400.0;
+/// In the recent count, half as much an hour later.
+pub const YIELD_RECENT_HALF_LIFE_S: f64 = 3_600.0;
 const BACKFILL: &str = "backfill_ready";
 
 /// A sitemap read that moves more than this share of its pages, and more than RESTAMP_MIN, past what they were sent with is re-stamping dates, not changing pages.
@@ -316,7 +320,16 @@ pub struct Yield {
 impl Yield {
     /// The counts as they stand at `now`.
     pub fn at(self, now: u32) -> Yield {
-        let kept = 0.5f64.powf(now.saturating_sub(self.at) as f64 / YIELD_HALF_LIFE_S);
+        self.faded(now, YIELD_HALF_LIFE_S)
+    }
+
+    /// The recent counts as they stand at `now`.
+    pub fn recent_at(self, now: u32) -> Yield {
+        self.faded(now, YIELD_RECENT_HALF_LIFE_S)
+    }
+
+    fn faded(self, now: u32, half_life: f64) -> Yield {
+        let kept = 0.5f64.powf(now.saturating_sub(self.at) as f64 / half_life);
         Yield { ok: self.ok * kept, failed: self.failed * kept, at: self.at.max(now) }
     }
 
@@ -351,6 +364,8 @@ pub struct Joined {
     pub queued: u64,
     /// New-page entries cleared first, for a domain with a cap.
     pub cleared: u64,
+    /// Stopped before the walk ended; the domain is walked again next time.
+    pub stopped: bool,
 }
 
 /// What one look at the due schedules did.
@@ -593,12 +608,13 @@ impl BucketStore {
     }
 
     /// Queue the pages a listed domain stored but never sent, newest first, as many as its cap leaves; counts its sent pages for the cap.
-    pub fn join_domain(&self, domain: &str, terms: Terms, started: u32, pace: &mut dyn FnMut(u64)) -> Result<Joined> {
+    pub fn join_domain(&self, domain: &str, terms: Terms, started: u32, pace: &mut dyn FnMut(u64) -> bool) -> Result<Joined> {
         let robots = self.domain(domain)?.map(|record| records::robots_paths(&record)).unwrap_or_default();
         let prefix = prefixed(URL, domain.as_bytes(), b"");
         let mut joined = Joined::default();
         let mut streamed: Vec<Entry> = Vec::new();
-        // With a cap only the newest pages go: a heap of the oldest kept, never more than the cap itself.
+        // With a cap or a backlog only the newest pages go: a heap of the oldest kept, never more than the bound itself.
+        let bound = terms.send_cap.or(terms.backlog);
         let mut newest: BinaryHeap<Reverse<(u32, u32, Vec<u8>)>> = BinaryHeap::new();
         let mut since_pace = 0u64;
         for item in self.db.iterator_opt(IteratorMode::From(&prefix, Direction::Forward), bounded(&prefix)) {
@@ -606,7 +622,10 @@ impl BucketStore {
             joined.scanned += 1;
             since_pace += 1;
             if since_pace >= 10_000 {
-                pace(since_pace);
+                if !pace(since_pace) {
+                    joined.stopped = true;
+                    return Ok(joined);
+                }
                 since_pace = 0;
             }
             let Some(record) = Record::unpack(&raw) else {
@@ -621,7 +640,7 @@ impl BucketStore {
             if record.first_seen >= started || junk(rest) || !robots.allows_page(domain, rest) {
                 continue;
             }
-            match terms.send_cap {
+            match bound {
                 None => {
                     let order = Order::Fresh { first_seen: record.first_seen, lastmod: record.lastmod };
                     streamed.push(Entry { domain: domain.to_string(), rest: rest.to_vec(), order });
@@ -629,21 +648,29 @@ impl BucketStore {
                         joined.queued += self.queue_entries(std::mem::take(&mut streamed))? as u64;
                     }
                 }
-                Some(cap) => {
+                Some(most) => {
                     newest.push(Reverse((record.first_seen, record.lastmod, rest.to_vec())));
-                    if newest.len() as u64 > cap {
+                    if newest.len() as u64 > most {
                         newest.pop();
                     }
                 }
             }
         }
-        pace(since_pace);
-        if let Some(cap) = terms.send_cap {
-            joined.cleared = self.clear_fresh(domain)?;
-            let room = cap.saturating_sub(joined.sent) as usize;
+        if !pace(since_pace) {
+            joined.stopped = true;
+            return Ok(joined);
+        }
+        if let Some(most) = bound {
+            let room = match terms.send_cap {
+                Some(cap) => {
+                    joined.cleared = self.clear_fresh(domain)?;
+                    cap.saturating_sub(joined.sent)
+                }
+                None => most,
+            };
             let mut kept: Vec<(u32, u32, Vec<u8>)> = newest.into_iter().map(|Reverse(page)| page).collect();
             kept.sort_unstable_by(|a, b| b.cmp(a));
-            kept.truncate(room);
+            kept.truncate(room as usize);
             for chunk in kept.chunks(JOIN_CHUNK) {
                 let entries = chunk.iter().map(|(first_seen, lastmod, rest)| Entry { domain: domain.to_string(), rest: rest.clone(), order: Order::Fresh { first_seen: *first_seen, lastmod: *lastmod } });
                 joined.queued += self.queue_entries(entries.collect())? as u64;
@@ -660,7 +687,7 @@ impl BucketStore {
     }
 
     /// Counts the pages of a domain already sending and applies its cap, without walking its stored pages: their stock is queued already.
-    pub fn cap_domain(&self, domain: &str, terms: Terms, pace: &mut dyn FnMut(u64)) -> Result<Joined> {
+    pub fn cap_domain(&self, domain: &str, terms: Terms, pace: &mut dyn FnMut(u64) -> bool) -> Result<Joined> {
         let mut joined = Joined::default();
         // Without a cap there is nothing to apply; a cap given later walks the domain again, and counts it then.
         if terms.send_cap.is_none() {
@@ -675,11 +702,17 @@ impl BucketStore {
             joined.sent += 1;
             since_pace += 1;
             if since_pace >= 10_000 {
-                pace(since_pace);
+                if !pace(since_pace) {
+                    joined.stopped = true;
+                    return Ok(joined);
+                }
                 since_pace = 0;
             }
         }
-        pace(since_pace);
+        if !pace(since_pace) {
+            joined.stopped = true;
+            return Ok(joined);
+        }
         joined.scanned = joined.sent;
         {
             let _guard = self.lock_ready();
@@ -788,6 +821,8 @@ impl BucketStore {
         for (domain, tally) in tallies.iter().filter(|(_, tally)| tally.judged() > 0.0) {
             let kept = self.domain_yield(domain)?.unwrap_or_default().at(tally.at);
             batch.put(yield_key(domain), Yield { ok: kept.ok + tally.ok, failed: kept.failed + tally.failed, at: kept.at }.pack());
+            let recent = self.domain_yield_recent(domain)?.unwrap_or_default().recent_at(tally.at);
+            batch.put(count_key_of(YIELD_RECENT, domain), Yield { ok: recent.ok + tally.ok, failed: recent.failed + tally.failed, at: recent.at }.pack());
         }
         for PageSchedule { domain, rest, next } in schedules {
             put_schedule(&mut batch, domain.as_bytes(), rest, *next);
@@ -822,6 +857,7 @@ impl BucketStore {
         }
         changes.delete(&count_key(domain));
         changes.delete(&yield_key(domain));
+        changes.delete(&count_key_of(YIELD_RECENT, domain));
         changes.delete(&count_key_of(SENT_COUNT, domain));
         changes.delete(&count_key_of(JOINED, domain));
         record.insert("state".into(), "excluded".into());
@@ -840,6 +876,10 @@ impl BucketStore {
     /// The domain's outcomes as last counted, not yet decayed to now.
     pub fn domain_yield(&self, domain: &str) -> Result<Option<Yield>> {
         Ok(self.db.get(yield_key(domain))?.as_deref().and_then(Yield::unpack))
+    }
+
+    pub fn domain_yield_recent(&self, domain: &str) -> Result<Option<Yield>> {
+        Ok(self.db.get(count_key_of(YIELD_RECENT, domain))?.as_deref().and_then(Yield::unpack))
     }
 
     /// Stamp pages another sender already sent; returns how many the store knows.

@@ -50,7 +50,7 @@ MALLOC_ARENA_MAX=2 desearch-bot run --buckets-dir /var/lib/desearch-bot/buckets 
 | `--gone-days` | 30 | days a page that failed on two sends in a row waits before it goes out again, unless its lastmod moves |
 | `--dropped-per-hour` | 200000 | pages of lost or taken-back tasks sent again each hour; more are spread over the following hours |
 | `--backfill-ready` | off | walk every store once to queue pages found before the queue existed |
-| `--domains` | none | a JSON list of the domains whose pages are queued, as names or `{host, weight, send_cap}`, read again when it changes; others are crawled but not queued |
+| `--domains` | none | a JSON list of the domains whose pages are queued, as names or `{host, weight, send_cap, hourly, backlog}`, read again when it changes; others are crawled but not queued |
 | `--join-per-sec` | 100000 | stored URL records read per second while queuing the pages of domains new to `--domains`; 0 turns it off |
 | `--backfill-sent` | none | pages the Python feeder sent, as tab-separated host, path, lastmod and time, marked sent first |
 | `--duration` | none | stop after this many seconds |
@@ -96,18 +96,21 @@ A sent page with a lastmod goes again when its sitemap lists a newer one. A page
 again `--recrawl-days` after it was sent, or after its domain's own interval. The outcome feed
 `outcomes/seq/<n>.json` is read from its newest file on, up to 8 files at a time, and skips to the
 newest when it falls an hour behind. Each file adds its published and failed pages to their domain's
-yield, and the dispatcher gives domains whose pages rarely come back fewer slots, down to an hourly
-probe. A failed page goes again after its domain's interval, and after two failures in a row waits
+yield, counted twice: fading over a day and over an hour. The dispatcher gives domains whose pages
+rarely come back fewer slots, down to an hourly probe, by the lower of the two, so a domain that
+starts refusing slows within hours. A failed page goes again after its domain's interval, and after two failures in a row waits
 `--gone-days`; a dropped page, whose task never reached the site, goes again within the hourly budget.
 A number still missing after two minutes, or whose file expired, is skipped. A status line every minute shows the queue, what was
 sent in each lane, the room and the outcome feed.
 
-With `--domains`, each listed domain may carry a `weight` (1 to 4) and a `send_cap`. A domain's turn
-is worth its rank's slots times its weight. The bot counts the distinct pages it has sent for each
-domain; at its `send_cap` the domain sends no new pages, and only changed pages and re-crawls go on.
-A walker queues the pages each listed domain stored before it joined the list, newest first, as
-many as its cap leaves, and walks a domain again when its cap changes. It reads `--join-per-sec`
-records a second. A domain already sending is only counted, since its pages are queued already.
+With `--domains`, each listed domain may carry a `weight` (1 to 4), a `send_cap`, an `hourly` limit
+and a `backlog`. A domain's turn is worth its rank's slots times its weight, and `hourly` replaces
+`--per-domain-hourly` for it. The bot counts the distinct pages it has sent for each domain; at its
+`send_cap` the domain sends no new pages, and only changed pages and re-crawls go on. A walker
+queues the pages each listed domain stored before it joined the list, newest first, as many as its
+cap leaves or, for a domain without a cap, up to its `backlog`. It walks a domain again when its cap
+changes, reads `--join-per-sec` records a second, and stops mid-domain when the bot stops. A domain
+already sending is only counted, since its pages are queued already.
 
 Pages found before the queue existed join it once through `--backfill-ready`. Pages the Python
 feeder already sent are marked first, from its state:

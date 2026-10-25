@@ -16,11 +16,15 @@ pub struct Terms {
     pub weight: u8,
     /// Pages of the domain the bot may ever send from its new-page lane; None for no cap.
     pub send_cap: Option<u64>,
+    /// Pages the domain may send in an hour; None for `--per-domain-hourly`.
+    pub hourly: Option<u64>,
+    /// For a domain without a cap, the most stored pages queued when it joins the list, newest first.
+    pub backlog: Option<u64>,
 }
 
 impl Default for Terms {
     fn default() -> Self {
-        Terms { weight: 1, send_cap: None }
+        Terms { weight: 1, send_cap: None, hourly: None, backlog: None }
     }
 }
 
@@ -93,16 +97,16 @@ impl Allowed {
     }
 }
 
-/// A JSON list of domain names, or of objects naming theirs under `host`, with an optional `weight` and `send_cap`.
+/// A JSON list of domain names, or of objects naming theirs under `host`, with an optional `weight`, `send_cap`, `hourly` and `backlog`.
 pub fn parse(raw: &[u8]) -> Result<HashMap<String, Terms>> {
     let listed: Vec<Value> = serde_json::from_slice(raw).context("not a JSON list of domains")?;
     Ok(listed
         .iter()
         .filter_map(|entry| {
             let host = entry.as_str().or_else(|| entry.get("host").and_then(Value::as_str))?;
-            let weight = entry.get("weight").and_then(Value::as_u64).map_or(1, |w| w.clamp(1, 4) as u8);
-            let send_cap = entry.get("send_cap").and_then(Value::as_u64);
-            Some((host.to_string(), Terms { weight, send_cap }))
+            let number = |name: &str| entry.get(name).and_then(Value::as_u64);
+            let weight = number("weight").map_or(1, |w| w.clamp(1, 4) as u8);
+            Some((host.to_string(), Terms { weight, send_cap: number("send_cap"), hourly: number("hourly"), backlog: number("backlog") }))
         })
         .collect())
 }
