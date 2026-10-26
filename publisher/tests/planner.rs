@@ -15,7 +15,8 @@ use desearch::stub;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use publisher::changes::{self, Body, Change, Kind};
 use publisher::planner::{
-    page_text, page_text_v2, passages, passages_v2, texts, Passage, Planner, Room, Settings, EMBED_DROPPED, EMBED_INPUTS, PAGE, PASSAGE, RECIPE_V1, RECIPE_V2,
+    page_text, page_text_v2, passages, passages_v2, texts, Listed, Passage, Planner, Room, Settings, EMBED_DROPPED, EMBED_INPUTS, PAGE, PASSAGE, RECIPE_V1,
+    RECIPE_V2,
 };
 use publisher::records::{page_key, record_version, Record};
 use redis::aio::ConnectionManager;
@@ -295,6 +296,7 @@ fn settings(dir: PathBuf, pages_per_hour: f64, start_after: i64) -> Settings {
         min_chars: 300,
         langs: vec!["en".into()],
         excluded: HashSet::from(["spam.example".to_string()]),
+        list_file: None,
         start_after: Some(start_after),
         poll: Duration::from_millis(10),
         hole_wait: Duration::from_secs(3600),
@@ -552,5 +554,83 @@ async fn a_page_the_publisher_sends_back_is_planned_again_alone() {
     log(&pages, 2, vec![page(0), page(1)]).await;
     planner.pass().await.unwrap();
     assert_eq!((planner.counts.dropped, planner.counts.planned, planner.counts.unchanged), (1, 3, 1), "only the page sent back is planned again");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_listed_site_takes_a_third_of_its_crawl_cap_for_itself_and_the_hosts_under_it() {
+    let list = json!([
+        {"host": "www.news.example", "type": "news", "backlog": 3_000_000},
+        {"host": "docs.example", "type": "docs", "send_cap": 600_000},
+        {"host": "open.example", "type": "media"}
+    ]);
+    let listed = Listed::parse(list.to_string().as_bytes()).unwrap();
+    assert_eq!(listed.len(), 3);
+    assert_eq!(listed.cap("news.example"), Some(1_000_000));
+    assert_eq!(listed.cap("WWW.News.Example"), Some(1_000_000));
+    assert_eq!(listed.cap("sport.news.example"), Some(1_000_000), "a host under a listed site takes its cap");
+    assert_eq!(listed.cap("docs.example"), Some(200_000));
+    assert_eq!(listed.cap("open.example"), Some(u64::MAX), "no crawl cap, no index cap");
+    assert_eq!((listed.cap("example"), listed.cap("other.example")), (None, None));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn only_listed_sites_are_planned_each_up_to_its_index_cap_and_a_page_given_back_frees_its_place() {
+    let Some((_turn, mut redis)) = redis_db().await else {
+        eprintln!("skipped: no Redis on {REDIS}");
+        return;
+    };
+    let dir = scratch("listed");
+    let stub = stub::start(dir.join("r2"), "127.0.0.1:0").await.unwrap();
+    let (pages, temp) = (bucket(stub.addr, "desearch-pages"), bucket(stub.addr, "subnet-22"));
+    let page = |n: usize| v2(record(&format!("https://news.example/story/{n}"), &article(2), "article", "en"));
+    let list = dir.join("domains.json");
+    std::fs::write(&list, json!([{"host": "www.news.example", "type": "news", "backlog": 6}]).to_string()).unwrap();
+    let mut other = v2(record("https://other.example/a", &article(2), "article", "en"));
+    other.domain = "other.example".into();
+    log(&pages, 1, vec![page(0), page(1), page(2), other]).await;
+
+    let mut listed = settings(dir.join("state"), 3600.0, 0);
+    listed.pages_per_input = 10;
+    listed.list_file = Some(list.clone());
+    let mut planner = Planner::new(listed, pages.clone(), temp.clone(), redis.clone(), Room::Fixed(0)).await.unwrap();
+    planner.pass().await.unwrap();
+    assert_eq!(
+        (planner.counts.planned, planner.counts.over_cap, planner.counts.unlisted),
+        (2, 1, 1),
+        "a crawl cap of 6 keeps 2 pages; other.example is not listed"
+    );
+    planner.flush().await.unwrap();
+    assert_eq!(planner.state.site_pages("news.example").unwrap(), 2);
+
+    log(&pages, 2, vec![v2(record("https://news.example/story/0", &format!("{} changed", article(2)), "article", "en"))]).await;
+    planner.pass().await.unwrap();
+    assert_eq!((planner.counts.planned, planner.counts.over_cap), (3, 1), "a new version of a page the index holds is planned at the cap");
+    planner.flush().await.unwrap();
+    assert_eq!(planner.state.site_pages("news.example").unwrap(), 2);
+
+    let mut entries = planner.state.pending().unwrap().into_iter().map(|(_, entry)| serde_json::from_str::<Value>(&entry).unwrap()).collect::<Vec<_>>();
+    entries.sort_by(|a, b| a["written_at"].as_f64().unwrap().total_cmp(&b["written_at"].as_f64().unwrap()));
+    let first = &entries[0];
+    let _: i64 = redis.rpush(EMBED_DROPPED, json!({"input_key": first["input_key"], "pages": first["pages"]}).to_string()).await.unwrap();
+    log(&pages, 3, vec![page(2)]).await;
+    planner.pass().await.unwrap();
+    assert_eq!(planner.state.site_pages("news.example").unwrap(), 1, "story 1 is given back; story 0 keeps its newer version");
+    assert_eq!((planner.counts.planned, planner.counts.over_cap), (4, 1), "the place story 1 left takes story 2");
+    planner.flush().await.unwrap();
+    assert_eq!(planner.state.site_pages("news.example").unwrap(), 2);
+
+    std::fs::write(&list, json!([{"host": "news.example", "type": "news", "backlog": 300}]).to_string()).unwrap();
+    std::fs::File::options().write(true).open(&list).unwrap().set_modified(std::time::SystemTime::now() + Duration::from_secs(60)).unwrap();
+    log(&pages, 4, vec![page(3)]).await;
+    planner.pass().await.unwrap();
+    assert_eq!((planner.counts.planned, planner.counts.over_cap), (5, 1), "a raised cap in a changed list is read without a restart");
+    planner.flush().await.unwrap();
+
+    let kept = planner.state.site_pages("news.example").unwrap();
+    assert_eq!(planner.state.sites_from_planned().unwrap().get("news.example").copied(), Some(kept), "the kept count equals one built from the planned pages");
+    drop(planner);
+    let restarted = Planner::new(settings(dir.join("state"), 3600.0, 0), pages.clone(), temp.clone(), redis.clone(), Room::Fixed(0)).await.unwrap();
+    assert_eq!(restarted.state.site_pages("news.example").unwrap(), 3);
     let _ = std::fs::remove_dir_all(&dir);
 }

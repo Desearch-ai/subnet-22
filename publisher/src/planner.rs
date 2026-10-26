@@ -51,6 +51,10 @@ pub const EMBED_INPUTS: &str = "embed:inputs";
 /// Inputs whose task the API dropped after its last attempt.
 pub const EMBED_DROPPED: &str = "embed:dropped";
 const CURSOR: &[u8] = b"cursor";
+/// Set once every domain's count of planned pages has been built from the planned keys.
+const SITES_COUNTED: &[u8] = b"sites-counted";
+/// The crawl list's caps are crawl caps, three pages crawled for each one the index keeps.
+const CRAWL_PER_INDEX: u64 = 3;
 const ROOM_TIMEOUT: Duration = Duration::from_secs(20);
 const FILES_PER_PASS: usize = 20;
 
@@ -367,6 +371,8 @@ pub struct Settings {
     pub min_chars: usize,
     pub langs: Vec<String>,
     pub excluded: HashSet<String>,
+    /// The bot's crawl list; when set, only its sites are planned, each up to its index cap. Read again when it changes.
+    pub list_file: Option<PathBuf>,
     /// The change file to start after when nothing was planned before; the newest one when None.
     pub start_after: Option<i64>,
     pub poll: Duration,
@@ -397,11 +403,63 @@ impl Settings {
             min_chars: number("PLANNER_MIN_CHARS", 300)?,
             langs: text("PLANNER_LANGS", "en").split(',').map(|lang| lang.trim().to_lowercase()).filter(|lang| !lang.is_empty()).collect(),
             excluded,
+            list_file: std::env::var("PLANNER_LIST_FILE").ok().filter(|v| !v.is_empty()).map(PathBuf::from),
             start_after: std::env::var("PLANNER_START_AFTER").ok().filter(|v| !v.is_empty()).map(|v| v.parse()).transpose()?,
             poll: Duration::from_secs_f64(number("PLANNER_POLL_S", 10.0)?),
             hole_wait: Duration::from_secs_f64(number("PLANNER_HOLE_WAIT_S", 600.0)?),
         })
     }
+}
+
+/// The sites of the bot's crawl list and how many pages of each the index keeps.
+#[derive(Debug, Default)]
+pub struct Listed {
+    caps: HashMap<String, u64>,
+}
+
+impl Listed {
+    /// The crawl list as the bot reads it: entries of `host` with a `send_cap` or a `backlog`, three times the index cap.
+    pub fn parse(raw: &[u8]) -> Result<Listed> {
+        let entries: Vec<Value> = serde_json::from_slice(raw)?;
+        let mut caps = HashMap::new();
+        for entry in entries {
+            let Some(host) = entry["host"].as_str() else { continue };
+            let cap = entry["send_cap"].as_u64().or_else(|| entry["backlog"].as_u64()).map_or(u64::MAX, |crawl| crawl / CRAWL_PER_INDEX);
+            caps.insert(site_of(host), cap);
+        }
+        Ok(Listed { caps })
+    }
+
+    /// The index cap of the listed site a page's domain is, or is under.
+    pub fn cap(&self, domain: &str) -> Option<u64> {
+        let site = site_of(domain);
+        let mut rest = site.as_str();
+        loop {
+            if let Some(&cap) = self.caps.get(rest) {
+                return Some(cap);
+            }
+            rest = rest.split_once('.')?.1;
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.caps.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.caps.is_empty()
+    }
+}
+
+/// A host as page keys name it: lowercase, without `www.`.
+fn site_of(host: &str) -> String {
+    let host = host.trim().to_lowercase();
+    host.strip_prefix("www.").map(str::to_string).unwrap_or(host)
+}
+
+/// The domain a page key names, `pages/<domain>/<sha1>`.
+fn domain_of_key(key: &str) -> &str {
+    key.split('/').nth(1).unwrap_or("")
 }
 
 fn number<T: std::str::FromStr>(name: &str, default: T) -> Result<T> {
@@ -465,6 +523,66 @@ impl State {
         }))
     }
 
+    /// Whether no recipe has planned any version of `key`.
+    pub fn unplanned(&self, key: &str) -> Result<bool> {
+        for recipe in RECIPES {
+            if self.db.get_pinned(planned_key(recipe, key))?.is_some() {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    /// How many pages of `domain` some recipe has planned.
+    pub fn site_pages(&self, domain: &str) -> Result<u64> {
+        Ok(self.db.get(site_key(domain))?.map(|raw| String::from_utf8_lossy(&raw).parse()).transpose()?.unwrap_or(0))
+    }
+
+    /// Builds every domain's count of planned pages from the planned keys, once; later the counts are kept as pages are planned and forgotten.
+    pub fn count_sites(&self) -> Result<()> {
+        if self.db.get_pinned(SITES_COUNTED)?.is_some() {
+            return Ok(());
+        }
+        let mut batch = WriteBatch::default();
+        for (domain, count) in &self.sites_from_planned()? {
+            batch.put(site_key(domain), count.to_string());
+        }
+        batch.put(SITES_COUNTED, "1");
+        Ok(self.db.write(batch)?)
+    }
+
+    /// Every domain's count of pages some recipe has planned, from the planned keys.
+    pub fn sites_from_planned(&self) -> Result<HashMap<String, u64>> {
+        let mut counts: HashMap<String, u64> = HashMap::new();
+        for (at, recipe) in RECIPES.iter().enumerate() {
+            let prefix = format!("planned/{recipe}/");
+            for item in self.db.iterator(IteratorMode::From(prefix.as_bytes(), rocksdb::Direction::Forward)) {
+                let (raw, _) = item?;
+                let Some(key) = raw.strip_prefix(prefix.as_bytes()) else { break };
+                let key = String::from_utf8_lossy(key);
+                let mut earlier = false;
+                for before in &RECIPES[..at] {
+                    if self.db.get_pinned(planned_key(before, &key))?.is_some() {
+                        earlier = true;
+                        break;
+                    }
+                }
+                if !earlier {
+                    *counts.entry(domain_of_key(&key).to_string()).or_default() += 1;
+                }
+            }
+        }
+        Ok(counts)
+    }
+
+    fn change_sites(&self, batch: &mut WriteBatch, changes: &HashMap<String, i64>) -> Result<()> {
+        for (domain, change) in changes {
+            let count = self.site_pages(domain)?.saturating_add_signed(*change);
+            batch.put(site_key(domain), count.to_string());
+        }
+        Ok(())
+    }
+
     /// Change files skipped because they could not be read yet, with the Unix time each was first missed.
     pub fn missing(&self) -> Result<Vec<(i64, f64)>> {
         let mut found = Vec::new();
@@ -517,14 +635,25 @@ impl State {
 
     fn forgetting(&self, pages: &Value) -> Result<WriteBatch> {
         let mut batch = WriteBatch::default();
+        let mut gone: HashMap<String, i64> = HashMap::new();
         for page in pages.as_array().into_iter().flatten() {
             let (Some(key), Some(content_sha1)) = (page["page_key"].as_str(), page["content_sha1"].as_str()) else { continue };
+            let (mut forgotten, mut kept) = (false, false);
             for recipe in RECIPES {
-                if self.planned(recipe, key)?.as_deref() == Some(content_sha1) {
-                    batch.delete(planned_key(recipe, key));
+                match self.planned(recipe, key)? {
+                    Some(planned) if planned == content_sha1 => {
+                        batch.delete(planned_key(recipe, key));
+                        forgotten = true;
+                    }
+                    Some(_) => kept = true,
+                    None => {}
                 }
             }
+            if forgotten && !kept {
+                *gone.entry(domain_of_key(key).to_string()).or_default() -= 1;
+            }
         }
+        self.change_sites(&mut batch, &gone)?;
         Ok(batch)
     }
 
@@ -535,9 +664,14 @@ impl State {
     /// One written input: its pages planned, the input pending, the cursor where the log is read up to and the late files read, together.
     fn commit(&self, pages: &[Planned], input_key: &str, entry: &str, cursor: Option<i64>, settled: &[i64]) -> Result<()> {
         let mut batch = WriteBatch::default();
+        let mut new: HashMap<String, i64> = HashMap::new();
         for page in pages {
+            if self.unplanned(&page.key)? {
+                *new.entry(domain_of_key(&page.key).to_string()).or_default() += 1;
+            }
             batch.put(planned_key(page.recipe, &page.key), format!("{}\t{}", page.content_sha1, page.fetched_at));
         }
+        self.change_sites(&mut batch, &new)?;
         batch.put(format!("pending/{input_key}"), entry);
         if let Some(seq) = cursor {
             batch.put(CURSOR, seq.to_string());
@@ -551,6 +685,10 @@ impl State {
 
 fn planned_key(recipe: &str, key: &str) -> String {
     format!("planned/{recipe}/{key}")
+}
+
+fn site_key(domain: &str) -> String {
+    format!("sites/{domain}")
 }
 
 fn missing_key(seq: i64) -> String {
@@ -583,6 +721,10 @@ pub struct Counts {
     /// Pages whose text no planned recipe reads; they keep the vectors they have.
     pub other_recipe: u64,
     pub refused: u64,
+    /// Pages of sites the crawl list does not hold.
+    pub unlisted: u64,
+    /// New pages of sites whose index cap is reached.
+    pub over_cap: u64,
     pub unchanged: u64,
     /// Versions older than the one already planned, from change files read late.
     pub older: u64,
@@ -604,8 +746,12 @@ pub struct Planner {
     pub redis: ConnectionManager,
     pub room: Room,
     pub counts: Counts,
+    listed: Option<Listed>,
+    listed_modified: Option<std::time::SystemTime>,
     buffer: Vec<Planned>,
     buffered: HashMap<String, usize>,
+    /// Pages in the buffer no recipe has planned before, by domain, so the buffer counts toward index caps.
+    buffered_new: HashMap<String, u64>,
     buffer_chars: usize,
     buffer_since: Option<Instant>,
     read_through: i64,
@@ -621,6 +767,11 @@ impl Planner {
     pub async fn new(settings: Settings, pages: Bucket, temp: Bucket, redis: ConnectionManager, room: Room) -> Result<Planner> {
         std::fs::create_dir_all(&settings.dir)?;
         let state = State::open(&settings.dir)?;
+        let started = Instant::now();
+        state.count_sites()?;
+        if started.elapsed() > Duration::from_secs(1) {
+            println!("planner: counted every domain's planned pages in {:?}", started.elapsed());
+        }
         let read_through = match (state.cursor()?, settings.start_after) {
             (Some(seq), _) | (None, Some(seq)) => seq,
             (None, None) => latest(&pages).await?,
@@ -635,7 +786,7 @@ impl Planner {
             })
             .collect();
         let tokens = budget_cap(settings.pages_per_hour);
-        Ok(Planner {
+        let mut planner = Planner {
             settings,
             state,
             pages,
@@ -643,8 +794,11 @@ impl Planner {
             redis,
             room,
             counts: Counts::default(),
+            listed: None,
+            listed_modified: None,
             buffer: Vec::new(),
             buffered: HashMap::new(),
+            buffered_new: HashMap::new(),
             buffer_chars: 0,
             buffer_since: None,
             read_through,
@@ -653,11 +807,37 @@ impl Planner {
             pending,
             missing,
             settled: Vec::new(),
-        })
+        };
+        if planner.settings.list_file.is_some() && !planner.reload_list()? {
+            return Err(anyhow!("the crawl list in PLANNER_LIST_FILE is empty"));
+        }
+        Ok(planner)
+    }
+
+    /// Reads the crawl list again when its file changed; whether a list is held. A list that cannot be read leaves the one held.
+    pub fn reload_list(&mut self) -> Result<bool> {
+        let Some(path) = self.settings.list_file.clone() else { return Ok(false) };
+        let modified = std::fs::metadata(&path).and_then(|meta| meta.modified()).with_context(|| format!("reading {}", path.display()))?;
+        if self.listed.is_some() && self.listed_modified == Some(modified) {
+            return Ok(true);
+        }
+        match std::fs::read(&path).map_err(anyhow::Error::from).and_then(|raw| Listed::parse(&raw)) {
+            Ok(listed) if !listed.is_empty() => {
+                println!("planner: crawl list of {} sites read from {}", listed.len(), path.display());
+                self.listed = Some(listed);
+                self.listed_modified = Some(modified);
+            }
+            Ok(_) => eprintln!("{} holds no sites; keeping the list held", path.display()),
+            Err(error) => eprintln!("reading the crawl list {}: {error:#}; keeping the list held", path.display()),
+        }
+        Ok(self.listed.is_some())
     }
 
     /// Reads what the log added since the last pass, writes the inputs that are due and hands over what the API has room for; whether it read anything.
     pub async fn pass(&mut self) -> Result<bool> {
+        if let Err(error) = self.reload_list() {
+            eprintln!("{error:#}");
+        }
         self.forget_dropped().await?;
         let latest = latest(&self.pages).await?;
         let mut read = self.read_late().await?;
@@ -797,6 +977,16 @@ impl Planner {
             self.counts.refused += 1;
             return;
         }
+        let cap = match &self.listed {
+            None => None,
+            Some(listed) => match listed.cap(&record.domain) {
+                Some(cap) => Some(cap),
+                None => {
+                    self.counts.unlisted += 1;
+                    return;
+                }
+            },
+        };
         let already = match self.buffered.get(&page.key) {
             Some(&at) => Some((self.buffer[at].content_sha1.clone(), self.buffer[at].fetched_at.clone())),
             None => self.state.planned_version(recipe, &page.key).ok().flatten(),
@@ -826,6 +1016,18 @@ impl Planner {
             self.buffer[at] = planned;
             return;
         }
+        let new_in = match cap {
+            Some(cap) if self.state.unplanned(&page.key).unwrap_or(false) => {
+                let domain = domain_of_key(&page.key).to_string();
+                let held = self.state.site_pages(&domain).unwrap_or(0) + self.buffered_new.get(&domain).copied().unwrap_or(0);
+                if held >= cap {
+                    self.counts.over_cap += 1;
+                    return;
+                }
+                Some(domain)
+            }
+            _ => None,
+        };
         if self.pending >= self.settings.max_pending {
             self.counts.no_room += 1;
             return;
@@ -833,6 +1035,9 @@ impl Planner {
         if !self.take_token() {
             self.counts.over_budget += 1;
             return;
+        }
+        if let Some(domain) = new_in {
+            *self.buffered_new.entry(domain).or_default() += 1;
         }
         self.buffered.insert(page.key, self.buffer.len());
         self.buffer_chars += chars_of(&planned);
@@ -895,6 +1100,7 @@ impl Planner {
         self.settled.clear();
         self.buffer.clear();
         self.buffered.clear();
+        self.buffered_new.clear();
         self.buffer_chars = 0;
         self.buffer_since = None;
         self.pending += 1;
