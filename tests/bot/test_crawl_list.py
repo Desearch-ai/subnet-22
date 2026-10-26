@@ -150,6 +150,30 @@ def test_caps_by_type_backing_and_confidence(site_type, rank, backing, confidenc
         assert (found.cap, found.send_cap, found.backlog) == (cap, 3 * cap, None)
 
 
+@pytest.mark.parametrize(
+    "site_type, judged, cap",
+    [
+        ("reference", None, 1_000_000),
+        ("reference", crawl_list.Judged(20, 17), 5_000_000),
+        ("reference", crawl_list.Judged(20, 12), 1_000_000),
+        ("reference", crawl_list.Judged(20, 8), 10_000),
+        ("reference", crawl_list.Judged(6, 6), 1_000_000),
+        ("news", crawl_list.Judged(12, 12), 5_000_000),
+        ("personal", crawl_list.Judged(20, 20), 10_000),
+        ("personal", crawl_list.Judged(20, 2), 10_000),
+        ("community", crawl_list.Judged(20, 0), 10_000),
+    ],
+)
+def test_judged_sites_earn_or_lose_cap(site_type, judged, cap):
+    found = decide(
+        row(site_type=site_type, rank=5_000),
+        Backing(news_list=True, benchmark_citations=1),
+        judged=judged,
+    )
+    assert found.cap == cap
+    assert (found.backlog if site_type == "news" else found.send_cap) == 3 * cap
+
+
 def test_top_ranked_sites_take_more_an_hour():
     hourly = [decide(row(rank=r), Backing()).hourly for r in (5_000, 50_000, None)]
     assert hourly == [20_000, 5_000, 5_000]
@@ -240,6 +264,13 @@ def test_files_are_read_as_written(tmp_path):
     }
     hand = crawl_list.read_hand(str(excluded))
     assert (hand.exact, hand.parts) == ({"shop.com"}, ["tgstat"])
+    judged = tmp_path / "judged.tsv"
+    judged.write_text(
+        "host\ttype\tjudged\tsubstantive\tthin\nuniprot.org\treference\t20\t19\t1\n"
+    )
+    assert crawl_list.read_judged(str(judged)) == {
+        "uniprot.org": crawl_list.Judged(20, 19)
+    }
     registry = tmp_path / "registry.csv"
     registry.write_text("bbc.com,93,active,,6723761,ok,news,0.99\nnew.com,,new,,0,,,\n")
     rows = [crawl_list.parse_row(f) for f in crawl_list.registry_rows(str(registry))]

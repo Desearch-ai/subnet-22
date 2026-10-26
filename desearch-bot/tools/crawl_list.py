@@ -62,6 +62,20 @@ HOURLY_TOP = 20_000
 RECRAWL_DAYS = {"news": 1, "reference": 3, "docs": 3, "academic": 3, "public": 3}
 HOURLY = 5_000
 MIN_DOMAINS = 50_000
+# A judged site with most sampled pages substantive earns a bigger cap; one with few is cut to the low cap.
+JUDGED_MIN = 10
+EARNED_SHARE = 0.8
+FAILED_SHARE = 0.4
+EARNED = 5
+EARNING_TYPES = {
+    "news",
+    "reference",
+    "media",
+    "community",
+    "academic",
+    "public",
+    "docs",
+}
 
 
 @dataclass
@@ -108,8 +122,25 @@ class Hand:
         return host in self.exact or any(part in host for part in self.parts)
 
 
+@dataclass
+class Judged:
+    pages: int
+    substantive: int
+
+
 def out(reason: str) -> Decision:
     return Decision(False, reason)
+
+
+def judged_cap(cap: int, site_type: str, judged: Judged | None) -> int:
+    if judged is None or judged.pages < JUDGED_MIN:
+        return cap
+    share = judged.substantive / judged.pages
+    if share >= EARNED_SHARE and site_type in EARNING_TYPES:
+        return cap * EARNED
+    if share <= FAILED_SHARE:
+        return min(cap, LOW_CAP)
+    return cap
 
 
 def type_cap(site_type: str, rank: int | None, backed: bool, sure: bool) -> int:
@@ -132,7 +163,11 @@ def type_cap(site_type: str, rank: int | None, backed: bool, sure: bool) -> int:
 
 
 def decide(
-    row: Row, backing: Backing, override: str = "", hand: Hand | None = None
+    row: Row,
+    backing: Backing,
+    override: str = "",
+    hand: Hand | None = None,
+    judged: Judged | None = None,
 ) -> Decision:
     if override.startswith("out:"):
         return out(override[4:])
@@ -169,6 +204,7 @@ def decide(
             cap = min(cap, LOW_CAP)
         elif confidence < 0.8:
             cap = min(cap, UNSURE_CAP)
+    cap = judged_cap(cap, site_type, judged)
     tier = TIERS[site_type]
     crawl = cap * CRAWL_PER_INDEX
     top = row.rank is not None and row.rank <= TOP_RANK
@@ -251,6 +287,16 @@ def read_overrides(path: str | None) -> dict[str, str]:
         }
 
 
+def read_judged(path: str | None) -> dict[str, Judged]:
+    if not path:
+        return {}
+    with open_text(path) as source:
+        return {
+            r["host"]: Judged(int(r["judged"]), int(r["substantive"]))
+            for r in csv.DictReader(source, delimiter="\t")
+        }
+
+
 def read_hand(path: str | None) -> Hand:
     hand = Hand()
     if not path:
@@ -270,11 +316,16 @@ def build(
     overrides: dict[str, str],
     hand: Hand,
     decisions=None,
+    judged: dict[str, Judged] | None = None,
 ) -> tuple[list[dict], Counter]:
     ranked, counts = [], Counter()
     for row in rows:
         decision = decide(
-            row, backing.get(row.host, Backing()), overrides.get(row.host, ""), hand
+            row,
+            backing.get(row.host, Backing()),
+            overrides.get(row.host, ""),
+            hand,
+            (judged or {}).get(row.host),
         )
         counts[decision.site_type if decision.listed else f"out:{decision.reason}"] += 1
         if decision.listed and row.state in SENDING_STATES:
@@ -349,6 +400,10 @@ def main(argv: list[str] | None = None) -> None:
         "--decisions", help="TSV (.gz allowed) of every domain's decision"
     )
     parser.add_argument(
+        "--judged",
+        help="TSV of host, judged, substantive: sampled pages a judge read, and how many had content of their own",
+    )
+    parser.add_argument(
         "--recrawl-out",
         help="the bot's --recrawl-overrides file: re-crawl days by site type",
     )
@@ -358,10 +413,11 @@ def main(argv: list[str] | None = None) -> None:
     )
     args = parser.parse_args(argv)
     rows = (parse_row(fields) for fields in registry_rows(args.registry_csv))
-    backing, overrides, hand = (
+    backing, overrides, hand, judged = (
         read_backing(args.backing),
         read_overrides(args.overrides),
         read_hand(args.excluded),
+        read_judged(args.judged),
     )
     if args.decisions:
         with open_text(args.decisions, "wt") as target:
@@ -369,9 +425,9 @@ def main(argv: list[str] | None = None) -> None:
             writer.writerow(
                 ["host", "rank", "state", "listed", "reason", "type", "cap"]
             )
-            entries, counts = build(rows, backing, overrides, hand, writer)
+            entries, counts = build(rows, backing, overrides, hand, writer, judged)
     else:
-        entries, counts = build(rows, backing, overrides, hand)
+        entries, counts = build(rows, backing, overrides, hand, judged=judged)
     write_list(entries, args.out)
     print(f"{len(entries)} domains listed in {args.out}")
     if args.recrawl_out:
