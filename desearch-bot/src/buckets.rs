@@ -551,6 +551,12 @@ impl Buckets {
         self.store_for(domain).map(|store| store.terms(domain)).unwrap_or_default()
     }
 
+    /// The listed domains this process owns; none with no list.
+    pub fn listed(&self) -> Vec<String> {
+        let entries = self.stores().next().and_then(|store| store.allowed.get()).map(|allowed| allowed.entries()).unwrap_or_default();
+        entries.into_iter().map(|(name, _)| name).filter(|name| self.owns(name)).collect()
+    }
+
     /// The store of a host named by data from outside, if this process owns it.
     pub fn store_for(&self, host: &str) -> Option<&BucketStore> {
         self.stores[bucket_of(host)].as_ref()
