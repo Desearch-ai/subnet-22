@@ -62,7 +62,7 @@ HOURLY_TOP = 20_000
 RECRAWL_DAYS = {"news": 1, "reference": 3, "docs": 3, "academic": 3, "public": 3}
 HOURLY = 5_000
 MIN_DOMAINS = 50_000
-# A judged site with most sampled pages substantive earns a bigger cap; one with few is cut to the low cap.
+# A judged site with most sampled pages substantive earns a bigger cap; one with few keeps that share of its cap, at least the low cap.
 JUDGED_MIN = 10
 EARNED_SHARE = 0.8
 FAILED_SHARE = 0.4
@@ -139,7 +139,7 @@ def judged_cap(cap: int, site_type: str, judged: Judged | None) -> int:
     if share >= EARNED_SHARE and site_type in EARNING_TYPES:
         return cap * EARNED
     if share <= FAILED_SHARE:
-        return min(cap, LOW_CAP)
+        return min(cap, max(LOW_CAP, int(cap * share)))
     return cap
 
 
