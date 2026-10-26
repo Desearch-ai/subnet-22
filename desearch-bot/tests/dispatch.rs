@@ -976,7 +976,7 @@ fn a_refresh_stock_holds_the_pages_sent_longest_ago_and_hands_them_out_oldest_fi
         store.mark_sent(&pick, 1000 + i as u32, &rules()).unwrap();
     }
     store.record_listing("example.com", 7, vec![page("d", 20)], 1500).unwrap();
-    assert_eq!(store.stock_refresh("example.com", 2, &mut |_| true).unwrap(), Some(2), "d changed, so it goes as a change");
+    assert_eq!(store.stock_refresh("example.com", 2, None, usize::MAX, &mut |_| true).unwrap().map(|s| s.count), Some(2), "d changed, so it goes as a change");
     let urls = |stock: &desearch_bot::ready::Stock| stock.picks.iter().map(|p| p.url.clone()).collect::<Vec<_>>();
 
     let young = store.take_stock("example.com", 10, 1500, 1000).unwrap();
@@ -991,7 +991,7 @@ fn a_refresh_stock_holds_the_pages_sent_longest_ago_and_hands_them_out_oldest_fi
     let rest = store.take_stock("example.com", 10, 4000, 1000).unwrap();
     assert_eq!(urls(&rest), ["https://example.com/a"], "the stock kept two, and c left it when taken");
     assert!(rest.empty, "the stock ran out");
-    assert_eq!(store.stock_refresh("example.com", 10, &mut |_| false).unwrap(), None, "a choice asked to stop writes nothing");
+    assert!(store.stock_refresh("example.com", 10, None, usize::MAX, &mut |_| false).unwrap().is_none(), "a choice asked to stop writes nothing");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1020,7 +1020,7 @@ async fn spare_room_goes_to_the_oldest_sent_pages_of_domains_whose_pages_come_ba
 
     assert_eq!(dispatcher.pass(later).await.unwrap(), 0, "no stock chosen yet");
     assert_eq!(wanted.waiting(), 1, "example.com waits for its stock; example.org's pages rarely come back");
-    assert_eq!(buckets.store("example.com").stock_refresh("example.com", 1000, &mut |_| true).unwrap(), Some(150));
+    assert_eq!(buckets.store("example.com").stock_refresh("example.com", 1000, None, usize::MAX, &mut |_| true).unwrap().map(|s| s.count), Some(150));
     assert_eq!(dispatcher.pass(later + 1).await.unwrap(), 0, "a domain found out of stock waits for it");
     let later = later + 600;
     assert_eq!(dispatcher.pass(later).await.unwrap(), 120, "two minutes of example.com's 3,600 an hour");
@@ -1343,7 +1343,7 @@ async fn fill_passes_stay_short_with_tens_of_thousands_of_domains_to_refresh() {
         quotas[FRESH] = 100;
         store.mark_sent(&store.take_ready(host, quotas).unwrap(), 1000, &rules()).unwrap();
         store.note_outcomes(&[], &[(host.clone(), Yield { ok: 1000.0, failed: 10.0, at: later })]).unwrap();
-        store.stock_refresh(host, 1000, &mut |_| true).unwrap();
+        store.stock_refresh(host, 1000, None, usize::MAX, &mut |_| true).unwrap();
     }
     println!("{domains} domains x 10 sent and stocked pages written in {:.1}s", started.elapsed().as_secs_f64());
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1366,5 +1366,27 @@ async fn fill_passes_stay_short_with_tens_of_thousands_of_domains_to_refresh() {
             ms[2],
             progress.fill_domains.load(std::sync::atomic::Ordering::Relaxed)
         );
+    }
+}
+
+#[test]
+#[ignore = "a rate check, run by hand: SENT=300000 cargo test --release --test dispatch stock_choice_rate -- --ignored --nocapture"]
+fn stock_choice_rate_on_a_big_domain() {
+    let sent: usize = std::env::var("SENT").ok().and_then(|n| n.parse().ok()).unwrap_or(100_000);
+    let dir = Dir::new("stock-rate");
+    let store = BucketStore::open(&dir.0.join("store"), &Resources::new(256 << 20, 1 << 30, 1)).unwrap();
+    let started = std::time::Instant::now();
+    for chunk in (0..sent).collect::<Vec<_>>().chunks(20_000) {
+        store.record_listing("example.com", 7, chunk.iter().map(|i| page(&format!("article/{i:08}"), 10)).collect(), 100).unwrap();
+        let mut quotas = [0; LANES];
+        quotas[FRESH] = chunk.len();
+        store.mark_sent(&store.take_ready("example.com", quotas).unwrap(), 1000 + chunk[0] as u32, &rules()).unwrap();
+    }
+    println!("{sent} sent pages written in {:.1}s", started.elapsed().as_secs_f64());
+    for most in [usize::MAX, 200_000, 20_000] {
+        let started = std::time::Instant::now();
+        let stocked = store.stock_refresh("example.com", 1250, None, most, &mut |_| true).unwrap().unwrap();
+        let took = started.elapsed().as_secs_f64();
+        println!("most {most}: {} stocked in {took:.2}s, {:.0} sent records a second", stocked.count, sent.min(most) as f64 / took);
     }
 }

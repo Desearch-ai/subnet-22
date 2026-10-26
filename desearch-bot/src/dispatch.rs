@@ -50,6 +50,10 @@ const STOCK_KEEP: usize = 1000;
 /// How long the stock keeper waits before choosing a domain's stock again: after a choice that came up short, and after one that found nothing.
 const STOCK_SHORT_WAIT: u32 = 3600;
 const STOCK_NONE_WAIT: u32 = 6 * 3600;
+/// Sent records one choice reads at most, going on from where the domain's last choice stopped, so a big domain holds back no small one.
+const STOCK_SCAN: usize = 200_000;
+/// Domains the keeper takes off the queue at once, in the order passes found them out of stock, best ranked first.
+const STOCK_BATCH: usize = 1000;
 /// Due schedules moved back onto ready lists per store per pass; small so a pass on a cold cache still sends soon.
 const REQUEUE_PER_PASS: usize = 5_000;
 /// A pass tries again with what is left when stale entries left the first allotment short.
@@ -1278,11 +1282,13 @@ impl StockWanted {
         }
     }
 
-    fn next(&self) -> Option<String> {
+    fn take(&self, most: usize) -> Vec<String> {
         let mut queue = self.queue.lock().unwrap_or_else(|e| e.into_inner());
-        let domain = queue.0.pop_front()?;
-        queue.1.remove(&domain);
-        Some(domain)
+        let taken: Vec<String> = (0..most).map_while(|_| queue.0.pop_front()).collect();
+        for domain in &taken {
+            queue.1.remove(domain);
+        }
+        taken
     }
 
     pub fn waiting(&self) -> usize {
@@ -1293,40 +1299,49 @@ impl StockWanted {
 /// Choose the refresh stock of each domain the dispatcher found out of it, reading `per_second` sent records a second, until stopped.
 pub fn keep_stocks(buckets: &Buckets, wanted: &StockWanted, per_second: u64, progress: &Progress, stop: &AtomicBool) -> Result<()> {
     let mut not_before: HashMap<String, u32> = HashMap::new();
+    let mut cursor: HashMap<String, Vec<u8>> = HashMap::new();
     let (mut began, mut read) = (Instant::now(), 0u64);
     while !stop.load(Ordering::Relaxed) {
         progress.stock_waiting.store(wanted.waiting() as u64, Ordering::Relaxed);
-        let Some(domain) = wanted.next() else {
+        let at = now();
+        let batch: Vec<String> = wanted.take(STOCK_BATCH).into_iter().filter(|domain| not_before.get(domain).is_none_or(|&until| until <= at)).collect();
+        if batch.is_empty() {
             // Idle time saves no reads for later, so the pace never bursts.
             (began, read) = (Instant::now(), 0);
             std::thread::sleep(JOIN_IDLE);
             continue;
-        };
-        let at = now();
-        if not_before.get(&domain).is_some_and(|&until| until > at) {
-            continue;
         }
-        let Some(store) = buckets.store_for(&domain) else {
-            continue;
-        };
-        let keep = (buckets.terms(&domain).hourly.unwrap_or(0) as usize / 4).max(STOCK_KEEP);
-        let mut pace = |scanned: u64| {
-            read += scanned;
-            let due = Duration::from_secs_f64(read as f64 / per_second.max(1) as f64);
-            if let Some(ahead) = due.checked_sub(began.elapsed()) {
-                std::thread::sleep(ahead);
-            }
-            !stop.load(Ordering::Relaxed)
-        };
-        let Some(stocked) = store.stock_refresh(&domain, keep, &mut pace)? else {
-            break;
-        };
-        progress.stocked.fetch_add(1, Ordering::Relaxed);
         not_before.retain(|_, until| *until > at);
-        if stocked == 0 {
-            not_before.insert(domain, at.saturating_add(STOCK_NONE_WAIT));
-        } else if stocked < keep {
-            not_before.insert(domain, at.saturating_add(STOCK_SHORT_WAIT));
+        for domain in batch {
+            let Some(store) = buckets.store_for(&domain) else {
+                continue;
+            };
+            let keep = (buckets.terms(&domain).hourly.unwrap_or(0) as usize / 4).max(STOCK_KEEP);
+            let mut pace = |scanned: u64| {
+                read += scanned;
+                let due = Duration::from_secs_f64(read as f64 / per_second.max(1) as f64);
+                if let Some(ahead) = due.checked_sub(began.elapsed()) {
+                    std::thread::sleep(ahead);
+                }
+                !stop.load(Ordering::Relaxed)
+            };
+            let Some(stocked) = store.stock_refresh(&domain, keep, cursor.get(&domain).map(Vec::as_slice), STOCK_SCAN, &mut pace)? else {
+                return Ok(());
+            };
+            progress.stocked.fetch_add(1, Ordering::Relaxed);
+            match stocked.next {
+                Some(key) => {
+                    cursor.insert(domain.clone(), key);
+                }
+                None => {
+                    cursor.remove(&domain);
+                }
+            }
+            if stocked.count == 0 {
+                not_before.insert(domain, at.saturating_add(STOCK_NONE_WAIT));
+            } else if stocked.count < keep {
+                not_before.insert(domain, at.saturating_add(STOCK_SHORT_WAIT));
+            }
         }
     }
     Ok(())

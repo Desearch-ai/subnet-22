@@ -109,7 +109,8 @@ Room the lists leave in a pass goes to refreshes: pages already sent, of listed 
 waiting whose pages come back (at least 200 outcomes judged, and no slowing for yield), oldest send
 first. A background keeper, paced like the walker, keeps a stock of each such domain's pages sent
 longest ago (a quarter of its hourly limit, 1,000 at least) and chooses it again when a pass finds it
-empty; a pass reads only the stock, never the sent records. A page sent within the last day stays, and
+empty, reading at most 200,000 sent records a choice from where the last one stopped; a pass reads
+only the stock, never the sent records. A page sent within the last day stays, and
 a stocked page that went out again or is now failing, requeued or changed leaves the stock unsent. A
 pass offers room to 2,000 domains in turn, and refreshes stay within each domain's hourly limit and
 its two-minute spread. `crawl_list.py --recrawl-out` writes the re-crawl intervals by site type (news

@@ -225,6 +225,13 @@ fn stock_key(domain: &str, pushed_at: u32, rest: &[u8]) -> Vec<u8> {
     [&[STOCK], domain.as_bytes(), b"\0", &pushed_at.to_be_bytes(), rest].concat()
 }
 
+/// A refresh stock chosen: how many pages it holds, and where the next choice reads on from, None once the domain was read through.
+#[derive(Debug)]
+pub struct Stocked {
+    pub count: usize,
+    pub next: Option<Vec<u8>>,
+}
+
 /// What a take from a domain's refresh stock found.
 #[derive(Debug, Default)]
 pub struct Stock {
@@ -540,12 +547,12 @@ impl BucketStore {
         Ok(())
     }
 
-    /// Replace the domain's refresh stock with its `keep` pages sent longest ago that could go again; None when `pace` stopped it first.
-    pub fn stock_refresh(&self, domain: &str, keep: usize, pace: &mut dyn FnMut(u64) -> bool) -> Result<Option<usize>> {
+    /// Replace the domain's refresh stock with the `keep` pages sent longest ago that could go again, of at most `most` sent records read on from `after`; None when `pace` stopped it first.
+    pub fn stock_refresh(&self, domain: &str, keep: usize, after: Option<&[u8]>, most: usize, pace: &mut dyn FnMut(u64) -> bool) -> Result<Option<Stocked>> {
         let prefix = prefixed(SENT, domain.as_bytes(), b"");
         let mut oldest: BinaryHeap<(u32, Vec<u8>)> = BinaryHeap::new();
-        let mut last: Option<Vec<u8>> = None;
-        loop {
+        let (mut last, mut scanned) = (after.map(<[u8]>::to_vec), 0);
+        let next = loop {
             let start = last.as_ref().map_or_else(|| prefix.clone(), |key| [key.as_slice(), b"\0"].concat());
             let mut chunk = Vec::with_capacity(STOCK_CHUNK);
             for item in self.db.iterator_opt(IteratorMode::From(&start, Direction::Forward), bounded(&prefix)).take(STOCK_CHUNK) {
@@ -569,10 +576,14 @@ impl BucketStore {
             if !pace(read as u64) {
                 return Ok(None);
             }
+            scanned += read;
             if read < STOCK_CHUNK {
-                break;
+                break None;
             }
-        }
+            if scanned >= most {
+                break last;
+            }
+        };
         let stocked = oldest.len();
         let _guard = self.lock_ready();
         let mut batch = WriteBatch::default();
@@ -581,7 +592,7 @@ impl BucketStore {
             batch.put(stock_key(domain, pushed_at, &rest), b"");
         }
         self.db.write(batch)?;
-        Ok(Some(stocked))
+        Ok(Some(Stocked { count: stocked, next }))
     }
 
     /// Up to `want` refreshes from the domain's stock, oldest send first, none sent within `floor` of `now`; stale entries go.
