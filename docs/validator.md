@@ -15,7 +15,6 @@ jobs:
      those in the public uploads bucket.
    - The validator reads each listed upload and re-fetches the pages the same hash picks; the picks are
      the same for every validator.
-   - It reads uploads in extraction v2 only. A v1 upload fails, and none of its pages is fetched.
    - It reports pass or fail to the task API, with what it found per URL. Every validator checks every
      listed upload.
 2. **Checks embed tasks.**

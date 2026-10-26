@@ -14,8 +14,6 @@ burned too.
   - The miner fetches every page through its own proxies, extracts the text with the shared
     [`desearch`](../desearch/) package and uploads the result within 3 minutes. Validators check pages
     with that same package.
-  - Uploads are in extraction v2, the format the miner writes. Validators accept only v2: a v1 upload
-    fails its check.
   - Validators re-fetch the pages of a drawn share of uploads and compare them with yours.
 - **Embed tasks:**
   - A task is a batch of page texts, the texts of up to 1,000 pages.
