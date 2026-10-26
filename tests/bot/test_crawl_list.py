@@ -201,6 +201,18 @@ def test_the_list_holds_sending_domains_best_rank_first(tmp_path, monkeypatch):
     ]
 
 
+def test_recrawl_days_follow_the_site_type(tmp_path):
+    entries = [
+        {"host": "n.com", "type": "news"},
+        {"host": "r.com", "type": "reference"},
+        {"host": "g.gov", "type": "public"},
+        {"host": "c.com", "type": "company"},
+    ]
+    target = tmp_path / "recrawl.txt"
+    crawl_list.write_recrawl(entries, str(target))
+    assert target.read_text() == "n.com 1\nr.com 3\ng.gov 3\n"
+
+
 def test_a_short_list_leaves_the_old_one(tmp_path):
     target = tmp_path / "domains.json"
     target.write_text('["kept.com"]')

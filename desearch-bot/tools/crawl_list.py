@@ -58,6 +58,8 @@ UNSURE_CAP = 100_000
 # The crawl takes three pages for each one the index may keep, so admission can choose.
 CRAWL_PER_INDEX = 3
 HOURLY_TOP = 20_000
+# Days before a sent page goes again when nothing says it changed; other types take the bot's default.
+RECRAWL_DAYS = {"news": 1, "reference": 3, "docs": 3, "academic": 3, "public": 3}
 HOURLY = 5_000
 MIN_DOMAINS = 50_000
 
@@ -313,6 +315,18 @@ def write_list(entries: list[dict], path: str) -> None:
     temporary.replace(path)
 
 
+def write_recrawl(entries: list[dict], path: str) -> None:
+    temporary = Path(f"{path}.new")
+    temporary.write_text(
+        "".join(
+            f"{entry['host']} {RECRAWL_DAYS[entry['type']]}\n"
+            for entry in entries
+            if entry["type"] in RECRAWL_DAYS
+        )
+    )
+    temporary.replace(path)
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -333,6 +347,10 @@ def main(argv: list[str] | None = None) -> None:
     )
     parser.add_argument(
         "--decisions", help="TSV (.gz allowed) of every domain's decision"
+    )
+    parser.add_argument(
+        "--recrawl-out",
+        help="the bot's --recrawl-overrides file: re-crawl days by site type",
     )
     parser.add_argument(
         "--registry-csv",
@@ -356,6 +374,8 @@ def main(argv: list[str] | None = None) -> None:
         entries, counts = build(rows, backing, overrides, hand)
     write_list(entries, args.out)
     print(f"{len(entries)} domains listed in {args.out}")
+    if args.recrawl_out:
+        write_recrawl(entries, args.recrawl_out)
     for name, count in sorted(counts.items(), key=lambda item: -item[1]):
         print(f"{count:>10}  {name}")
 
