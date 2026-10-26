@@ -37,8 +37,14 @@ const YIELD_RECENT: u8 = b'Z';
 const SENT_COUNT: u8 = b'C';
 /// The cap each listed domain's stored pages were last queued under; a domain is walked again only when it changes.
 const JOINED: u8 = b'J';
+/// Each domain's longest-unsent pages, oldest send first, kept ready for refreshes so a pass never reads the sent records.
+const STOCK: u8 = b'F';
 /// Keys a domain's new-page lane loses per locked write when it is cleared.
 const TRIM_CHUNK: usize = 50_000;
+/// Sent records read at a time while a domain's refresh stock is chosen.
+const STOCK_CHUNK: usize = 1024;
+/// Stock entries a take may pass over as stale beyond what it wants.
+const STOCK_SLACK: usize = 256;
 /// The pause between cleared chunks, so senders waiting on the lock get it.
 const TRIM_REST: Duration = Duration::from_millis(1);
 /// Pages queued per locked write while a domain is walked.
@@ -193,6 +199,8 @@ pub enum Reason {
     Fresh,
     Changed,
     Requeued,
+    /// Sent before with nothing new to say, going again to fill room the lists leave.
+    Refresh,
 }
 
 /// Whether a page on a ready list still needs sending, and why; None for an entry that went stale.
@@ -206,6 +214,25 @@ pub fn reason(record: &Record, sent: Option<&Sent>) -> Option<Reason> {
         Some(sent) if sent.requeued => Some(Reason::Requeued),
         Some(_) => None,
     }
+}
+
+/// A page with nothing pending: not failing, not requeued, and no newer lastmod to send as a change.
+fn refreshable(record: &Record, sent: &Sent) -> bool {
+    sent.failures == 0 && !sent.requeued && record.lastmod <= sent.lastmod
+}
+
+fn stock_key(domain: &str, pushed_at: u32, rest: &[u8]) -> Vec<u8> {
+    [&[STOCK], domain.as_bytes(), b"\0", &pushed_at.to_be_bytes(), rest].concat()
+}
+
+/// What a take from a domain's refresh stock found.
+#[derive(Debug, Default)]
+pub struct Stock {
+    pub picks: Vec<Pick>,
+    /// The stock ran out, so it wants choosing again.
+    pub empty: bool,
+    /// The oldest left was sent within the floor; it may go from this time.
+    pub young_until: Option<u32>,
 }
 
 /// A page taken off its ready list to be sent.
@@ -511,6 +538,103 @@ impl BucketStore {
             }
         }
         Ok(())
+    }
+
+    /// Replace the domain's refresh stock with its `keep` pages sent longest ago that could go again; None when `pace` stopped it first.
+    pub fn stock_refresh(&self, domain: &str, keep: usize, pace: &mut dyn FnMut(u64) -> bool) -> Result<Option<usize>> {
+        let prefix = prefixed(SENT, domain.as_bytes(), b"");
+        let mut oldest: BinaryHeap<(u32, Vec<u8>)> = BinaryHeap::new();
+        let mut last: Option<Vec<u8>> = None;
+        loop {
+            let start = last.as_ref().map_or_else(|| prefix.clone(), |key| [key.as_slice(), b"\0"].concat());
+            let mut chunk = Vec::with_capacity(STOCK_CHUNK);
+            for item in self.db.iterator_opt(IteratorMode::From(&start, Direction::Forward), bounded(&prefix)).take(STOCK_CHUNK) {
+                let (key, raw) = item?;
+                chunk.push((key.to_vec(), Sent::unpack(&raw)));
+            }
+            let read = chunk.len();
+            let records = self.records(chunk.iter().map(|(key, _)| prefixed(URL, domain.as_bytes(), &key[prefix.len()..])))?;
+            for ((key, sent), record) in chunk.into_iter().zip(records) {
+                let rest = &key[prefix.len()..];
+                if let (Some(record), Some(sent)) = (record, sent) {
+                    if record.pushed_at != 0 && refreshable(&record, &sent) && !junk(rest) {
+                        oldest.push((record.pushed_at, rest.to_vec()));
+                        if oldest.len() > keep {
+                            oldest.pop();
+                        }
+                    }
+                }
+                last = Some(key);
+            }
+            if !pace(read as u64) {
+                return Ok(None);
+            }
+            if read < STOCK_CHUNK {
+                break;
+            }
+        }
+        let stocked = oldest.len();
+        let _guard = self.lock_ready();
+        let mut batch = WriteBatch::default();
+        batch.delete_range(prefixed(STOCK, domain.as_bytes(), b""), [&[STOCK], domain.as_bytes(), b"\x01"].concat());
+        for (pushed_at, rest) in oldest {
+            batch.put(stock_key(domain, pushed_at, &rest), b"");
+        }
+        self.db.write(batch)?;
+        Ok(Some(stocked))
+    }
+
+    /// Up to `want` refreshes from the domain's stock, oldest send first, none sent within `floor` of `now`; stale entries go.
+    pub fn take_stock(&self, domain: &str, want: usize, now: u32, floor: u32) -> Result<Stock> {
+        let robots = self.domain(domain)?.map(|record| records::robots_paths(&record)).unwrap_or_default();
+        let prefix = prefixed(STOCK, domain.as_bytes(), b"");
+        let mut entries = Vec::new();
+        let mut taken = Stock::default();
+        let mut iter = self.db.iterator_opt(IteratorMode::From(&prefix, Direction::Forward), bounded(&prefix));
+        loop {
+            if entries.len() >= want + STOCK_SLACK {
+                break;
+            }
+            let Some(item) = iter.next() else {
+                taken.empty = true;
+                break;
+            };
+            let key = item?.0.to_vec();
+            let Some(pushed_at) = key.get(prefix.len()..prefix.len() + 4).map(|b| u32::from_be_bytes(b.try_into().unwrap())) else {
+                continue;
+            };
+            if now.saturating_sub(pushed_at) < floor {
+                taken.young_until = Some(pushed_at.saturating_add(floor));
+                break;
+            }
+            entries.push((key, pushed_at));
+        }
+        let rests: Vec<Vec<u8>> = entries.iter().map(|(key, _)| key[prefix.len() + 4..].to_vec()).collect();
+        let records = self.records(rests.iter().map(|rest| prefixed(URL, domain.as_bytes(), rest)))?;
+        let sents = self.sents(rests.iter().map(|rest| prefixed(SENT, domain.as_bytes(), rest)))?;
+        let mut gone = Vec::new();
+        for ((((key, pushed_at), rest), record), sent) in entries.into_iter().zip(rests).zip(records).zip(sents) {
+            if taken.picks.len() >= want {
+                taken.empty = false;
+                break;
+            }
+            // Sent again since it was stocked, or no longer one to refresh: it leaves the stock unsent.
+            let fresh = record.filter(|r| r.pushed_at == pushed_at).filter(|r| sent.is_some_and(|s| refreshable(r, &s)));
+            if let Some(record) = fresh.filter(|_| robots.allows_page(domain, &rest)) {
+                let entry = Entry { domain: domain.to_string(), rest: rest.clone(), order: Order::Requeued { due: pushed_at } };
+                taken.picks.push(Pick { url: fetchable(&rest, record.flags), lastmod: record.lastmod, reason: Reason::Refresh, failures: 0, entry });
+            }
+            gone.push(key);
+        }
+        if !gone.is_empty() {
+            let _guard = self.lock_ready();
+            let mut batch = WriteBatch::default();
+            for key in gone {
+                batch.delete(key);
+            }
+            self.db.write(batch)?;
+        }
+        Ok(taken)
     }
 
     /// The task API took these pages: stamp them sent, with the lastmod they went with, and take them off their lists.
@@ -869,7 +993,7 @@ impl BucketStore {
         if !delete {
             return Ok(found);
         }
-        let ranges: Vec<(Vec<u8>, Vec<u8>)> = [URL, READY, SENT, LISTED, NEXT]
+        let ranges: Vec<(Vec<u8>, Vec<u8>)> = [URL, READY, SENT, LISTED, NEXT, STOCK]
             .into_iter()
             .map(|kind| ([&[kind], domain.as_bytes(), b"\0"].concat(), [&[kind], domain.as_bytes(), b"\x01"].concat()))
             .collect();

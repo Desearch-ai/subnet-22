@@ -15,7 +15,7 @@ use tokio::sync::watch;
 use crate::allowed::{Allowed, Terms};
 use crate::buckets::{bucket_of, Buckets};
 use crate::outcomes::{Next, OutcomeFeed, OutcomeReader};
-use crate::ready::{Entry, Order, Pick, Reason, SentPage, Yield, CHANGED, FRESH, LANES, REQUEUED};
+use crate::ready::{Entry, Order, Pick, Reason, SentPage, Stock, Yield, CHANGED, FRESH, LANES, REQUEUED};
 use crate::recrawl::Recrawl;
 use crate::records;
 use crate::taskapi::{ApiError, QueuedUrl, TaskApi, MAX_URL_CHARS};
@@ -39,6 +39,17 @@ pub const SENDS_AT_ONCE: usize = 8;
 const READERS: usize = 16;
 const HOUR: u32 = 3600;
 const RANKS_SECONDS: Duration = Duration::from_secs(600);
+/// Domains a pass offers spare room to, going round the list from where the last pass stopped, so passes stay short.
+const FILL_WINDOW: usize = 2000;
+/// A page sent this recently does not go again to fill room.
+pub const FILL_FLOOR: u32 = 86_400;
+/// How long a domain whose refresh stock ran out waits for it to be chosen again.
+const STOCK_WAIT: u32 = 600;
+/// Pages kept in a domain's refresh stock: a quarter of its hourly limit, at least this many.
+const STOCK_KEEP: usize = 1000;
+/// How long the stock keeper waits before choosing a domain's stock again: after a choice that came up short, and after one that found nothing.
+const STOCK_SHORT_WAIT: u32 = 3600;
+const STOCK_NONE_WAIT: u32 = 6 * 3600;
 /// Due schedules moved back onto ready lists per store per pass; small so a pass on a cold cache still sends soon.
 const REQUEUE_PER_PASS: usize = 5_000;
 /// A pass tries again with what is left when stale entries left the first allotment short.
@@ -271,6 +282,12 @@ pub struct Progress {
     pub sent_new: AtomicU64,
     pub sent_refresh: AtomicU64,
     pub sent_retry: AtomicU64,
+    /// Sent pages that went again to fill room the lists left, and the domains they may come from.
+    pub sent_fill: AtomicU64,
+    pub fill_domains: AtomicU64,
+    /// Refresh stocks chosen since start, and domains waiting for one.
+    pub stocked: AtomicU64,
+    pub stock_waiting: AtomicU64,
     pub batches: AtomicU64,
     /// Pages the API refused on their own, kept off the ready lists like a page with no outcome yet.
     pub set_aside: AtomicU64,
@@ -310,7 +327,7 @@ impl Progress {
         let top = self.top.lock().unwrap_or_else(|e| e.into_inner());
         let top: Vec<String> = top.iter().map(|(domain, n)| format!("{domain} {}", thousands(*n))).collect();
         format!(
-            "[rs] dispatch ready {} in {} domains (top {})  sent {} ({:.0}/min, {} batches; new {} refresh {} retry {})  room {} tasks  yield-limited {} probing {}  requeued {} gone {}  outcomes seq {} lag {}s read {} failed {} dropped {} ({} now) skipped {}  backfill {}/{} stores {} read {} added",
+            "[rs] dispatch ready {} in {} domains (top {})  sent {} ({:.0}/min, {} batches; new {} refresh {} retry {} fill {})  room {} tasks  yield-limited {} probing {}  requeued {} gone {}  outcomes seq {} lag {}s read {} failed {} dropped {} ({} now) skipped {}  backfill {}/{} stores {} read {} added",
             thousands(self.ready.load(Ordering::Relaxed)),
             thousands(self.ready_domains.load(Ordering::Relaxed)),
             if top.is_empty() { "-".to_string() } else { top.join(", ") },
@@ -320,6 +337,7 @@ impl Progress {
             thousands(self.sent_new.load(Ordering::Relaxed)),
             thousands(self.sent_refresh.load(Ordering::Relaxed)),
             thousands(self.sent_retry.load(Ordering::Relaxed)),
+            thousands(self.sent_fill.load(Ordering::Relaxed)),
             self.room_tasks.load(Ordering::Relaxed),
             self.slowed.load(Ordering::Relaxed),
             self.probing.load(Ordering::Relaxed),
@@ -337,8 +355,11 @@ impl Progress {
             thousands(self.backfill_scanned.load(Ordering::Relaxed)),
             thousands(self.backfill_added.load(Ordering::Relaxed)),
         ) + &format!(
-            "  set aside {}  joined {}/{} domains {} queued, {} cleared at caps  last pass absorb {:.1}s pick {:.1}s send {:.1}s",
+            "  set aside {}  fill from {} domains, {} stocks chosen, {} waiting  joined {}/{} domains {} queued, {} cleared at caps  last pass absorb {:.1}s pick {:.1}s send {:.1}s",
             thousands(self.set_aside.load(Ordering::Relaxed)),
+            thousands(self.fill_domains.load(Ordering::Relaxed)),
+            thousands(self.stocked.load(Ordering::Relaxed)),
+            thousands(self.stock_waiting.load(Ordering::Relaxed)),
             thousands(self.join_done.load(Ordering::Relaxed)),
             thousands(self.join_of.load(Ordering::Relaxed)),
             thousands(self.join_queued.load(Ordering::Relaxed)),
@@ -408,6 +429,7 @@ impl Sending {
             Reason::Fresh => 0,
             Reason::Changed => 1,
             Reason::Requeued => 2,
+            Reason::Refresh => 3,
         };
         Sending {
             domain: pick.entry.domain.clone(),
@@ -429,6 +451,7 @@ impl Sending {
         let reason = match self.reason {
             0 => Reason::Fresh,
             1 => Reason::Changed,
+            3 => Reason::Refresh,
             _ => Reason::Requeued,
         };
         Pick {
@@ -464,6 +487,14 @@ pub struct Dispatcher {
     shares: [f64; LANES],
     credit: HashMap<String, [f64; LANES]>,
     recrawl: Arc<Recrawl>,
+    /// Domains whose sent pages may go again to fill spare room, as (rank, domain), and when they were last chosen.
+    fillers: Vec<(i64, String)>,
+    fillers_read: Option<Instant>,
+    fillers_job: Option<tokio::task::JoinHandle<Result<Vec<(i64, String)>>>>,
+    fill_resume: Option<(i64, String)>,
+    /// Domains with no refresh to send now, until when they rest, and the domains whose stock ran out, for the stock keeper.
+    fill_rest: HashMap<String, u32>,
+    stock_wanted: Option<Arc<StockWanted>>,
 }
 
 impl Dispatcher {
@@ -516,6 +547,12 @@ impl Dispatcher {
             shares,
             credit: HashMap::new(),
             recrawl: Arc::new(recrawl),
+            fillers: Vec::new(),
+            fillers_read: None,
+            fillers_job: None,
+            fill_resume: None,
+            fill_rest: HashMap::new(),
+            stock_wanted: None,
         };
         dispatcher.report();
         Ok(dispatcher)
@@ -524,6 +561,12 @@ impl Dispatcher {
     /// Send at most this many URLs an hour, at a steady pace; 0 sends as fast as the API has room.
     pub fn paced(mut self, per_hour: u64) -> Self {
         self.pace = Pace::new(per_hour, now());
+        self
+    }
+
+    /// Fill room the lists leave with refreshes from the stocks the keeper behind `wanted` chooses.
+    pub fn refreshing(mut self, wanted: Arc<StockWanted>) -> Self {
+        self.stock_wanted = Some(wanted);
         self
     }
 
@@ -616,6 +659,22 @@ impl Dispatcher {
         if !refresh.is_empty() {
             self.ranks_read = Instant::now();
         }
+        self.take_fillers().await;
+        if self.fillers_job.is_none() && self.fillers_read.is_none_or(|at| at.elapsed() >= RANKS_SECONDS) {
+            let first = self.fillers_read.is_none();
+            self.fillers_read = Some(Instant::now());
+            let buckets = self.buckets.clone();
+            self.fillers_job = Some(tokio::task::spawn_blocking(move || fillers(&buckets, now)));
+            // Only the first choice is waited for, so refreshes can start; later ones replace it when done.
+            if first {
+                if let Some(job) = self.fillers_job.as_mut() {
+                    while !job.is_finished() {
+                        tokio::time::sleep(Duration::from_millis(50)).await;
+                    }
+                }
+                self.take_fillers().await;
+            }
+        }
         let (grown, ranks, requeued, gone) = tokio::task::spawn_blocking(move || -> Result<_> {
             let (mut requeued, mut gone) = (0, 0);
             let mut grown: HashMap<String, u64> = HashMap::new();
@@ -684,9 +743,6 @@ impl Dispatcher {
             .filter(|(_, &n)| n > 0)
             .map(|((_, name), &n)| (name.clone(), split(self.credit.entry(name.clone()).or_default(), &self.shares, n as usize)))
             .collect();
-        if asks.is_empty() {
-            return Ok(Vec::new());
-        }
         let buckets = self.buckets.clone();
         let taken = tokio::task::spawn_blocking(move || -> Result<Vec<Taken>> {
             on_readers(asks, |(domain, quotas)| {
@@ -711,6 +767,77 @@ impl Dispatcher {
             let rank = self.domains.get(&domain).map_or(UNRANKED, |d| d.rank);
             self.set_ready(&domain, left, rank);
             lists.push(picks);
+        }
+        let mut picks = interleave(lists);
+        let spare = budget.saturating_sub(picks.len() as u64);
+        if spare > 0 && self.stock_wanted.is_some() {
+            picks.extend(self.fill(spare, now).await?);
+        }
+        Ok(picks)
+    }
+
+    /// The domains to refresh, once their background choice is done; it reads every listed domain's yield and rank, too slow for a pass.
+    async fn take_fillers(&mut self) {
+        if !self.fillers_job.as_ref().is_some_and(|job| job.is_finished()) {
+            return;
+        }
+        let Some(job) = self.fillers_job.take() else {
+            return;
+        };
+        match job.await {
+            Ok(Ok(fillers)) => {
+                self.progress.fill_domains.store(fillers.len() as u64, Ordering::Relaxed);
+                self.fillers = fillers;
+            }
+            Ok(Err(error)) => eprintln!("[rs] choosing the domains to refresh failed: {error:#}"),
+            Err(error) => eprintln!("[rs] choosing the domains to refresh stopped: {error}"),
+        }
+    }
+
+    /// Sent pages of good-yield domains with nothing waiting, oldest send first, for room the lists leave, within each domain's hourly limit.
+    async fn fill(&mut self, budget: u64, now: u32) -> Result<Vec<Pick>> {
+        let Some(wanted) = self.stock_wanted.clone() else {
+            return Ok(Vec::new());
+        };
+        self.take_fillers().await;
+        self.fill_rest.retain(|_, until| *until > now);
+        let eligible: Vec<&(i64, String)> =
+            self.fillers.iter().filter(|(_, name)| !self.domains.contains_key(name) && !self.fill_rest.contains_key(name)).collect();
+        let start = self.fill_resume.as_ref().map_or(0, |resume| eligible.partition_point(|key| *key <= resume));
+        let order: Vec<(i64, String)> = eligible.iter().cycle().skip(start).take(FILL_WINDOW.min(eligible.len())).map(|&key| key.clone()).collect();
+        let wants: Vec<Want> = order
+            .iter()
+            .map(|(rank, name)| {
+                let terms = self.buckets.terms(name);
+                let allowance = self.cap.allowance_under(name, now, terms.hourly.unwrap_or(self.cap.limit()));
+                Want { rank: *rank, ready: allowance, allowance, share: 1.0, weight: terms.weight }
+            })
+            .collect();
+        let (given, _) = allot(&wants, budget, 0);
+        self.fill_resume = order.last().cloned();
+        let asks: Vec<(String, usize)> = order.iter().zip(&given).filter(|(_, &n)| n > 0).map(|((_, name), &n)| (name.clone(), n as usize)).collect();
+        if asks.is_empty() {
+            return Ok(Vec::new());
+        }
+        let buckets = self.buckets.clone();
+        let taken = tokio::task::spawn_blocking(move || {
+            on_readers(asks, |(domain, want)| {
+                let Some(store) = buckets.store_for(&domain) else {
+                    return Ok((domain, Stock::default()));
+                };
+                Ok((domain.clone(), store.take_stock(&domain, want, now, FILL_FLOOR)?))
+            })
+        })
+        .await??;
+        let mut lists = Vec::with_capacity(taken.len());
+        for (domain, stock) in taken {
+            if let Some(until) = stock.young_until {
+                self.fill_rest.insert(domain.clone(), until.max(now.saturating_add(60)));
+            } else if stock.empty {
+                wanted.ask(&domain);
+                self.fill_rest.insert(domain.clone(), now.saturating_add(STOCK_WAIT));
+            }
+            lists.push(stock.picks);
         }
         Ok(interleave(lists))
     }
@@ -774,6 +901,7 @@ impl Dispatcher {
             let counter = match sending.reason {
                 0 => &self.progress.sent_new,
                 1 => &self.progress.sent_refresh,
+                3 => &self.progress.sent_fill,
                 _ => &self.progress.sent_retry,
             };
             counter.fetch_add(1, Ordering::Relaxed);
@@ -1136,6 +1264,74 @@ pub fn join_round(buckets: &Buckets, allowed: &Allowed, per_second: u64, progres
     })
 }
 
+/// Domains whose refresh stock ran out, in the order the dispatcher found them, each once.
+#[derive(Default)]
+pub struct StockWanted {
+    queue: Mutex<(VecDeque<String>, std::collections::HashSet<String>)>,
+}
+
+impl StockWanted {
+    pub fn ask(&self, domain: &str) {
+        let mut queue = self.queue.lock().unwrap_or_else(|e| e.into_inner());
+        if queue.1.insert(domain.to_string()) {
+            queue.0.push_back(domain.to_string());
+        }
+    }
+
+    fn next(&self) -> Option<String> {
+        let mut queue = self.queue.lock().unwrap_or_else(|e| e.into_inner());
+        let domain = queue.0.pop_front()?;
+        queue.1.remove(&domain);
+        Some(domain)
+    }
+
+    pub fn waiting(&self) -> usize {
+        self.queue.lock().unwrap_or_else(|e| e.into_inner()).0.len()
+    }
+}
+
+/// Choose the refresh stock of each domain the dispatcher found out of it, reading `per_second` sent records a second, until stopped.
+pub fn keep_stocks(buckets: &Buckets, wanted: &StockWanted, per_second: u64, progress: &Progress, stop: &AtomicBool) -> Result<()> {
+    let mut not_before: HashMap<String, u32> = HashMap::new();
+    let (mut began, mut read) = (Instant::now(), 0u64);
+    while !stop.load(Ordering::Relaxed) {
+        progress.stock_waiting.store(wanted.waiting() as u64, Ordering::Relaxed);
+        let Some(domain) = wanted.next() else {
+            // Idle time saves no reads for later, so the pace never bursts.
+            (began, read) = (Instant::now(), 0);
+            std::thread::sleep(JOIN_IDLE);
+            continue;
+        };
+        let at = now();
+        if not_before.get(&domain).is_some_and(|&until| until > at) {
+            continue;
+        }
+        let Some(store) = buckets.store_for(&domain) else {
+            continue;
+        };
+        let keep = (buckets.terms(&domain).hourly.unwrap_or(0) as usize / 4).max(STOCK_KEEP);
+        let mut pace = |scanned: u64| {
+            read += scanned;
+            let due = Duration::from_secs_f64(read as f64 / per_second.max(1) as f64);
+            if let Some(ahead) = due.checked_sub(began.elapsed()) {
+                std::thread::sleep(ahead);
+            }
+            !stop.load(Ordering::Relaxed)
+        };
+        let Some(stocked) = store.stock_refresh(&domain, keep, &mut pace)? else {
+            break;
+        };
+        progress.stocked.fetch_add(1, Ordering::Relaxed);
+        not_before.retain(|_, until| *until > at);
+        if stocked == 0 {
+            not_before.insert(domain, at.saturating_add(STOCK_NONE_WAIT));
+        } else if stocked < keep {
+            not_before.insert(domain, at.saturating_add(STOCK_SHORT_WAIT));
+        }
+    }
+    Ok(())
+}
+
 /// Clear the new-page lanes of domains that reached their cap, so the dispatcher stops giving them turns.
 fn clear_capped(buckets: &Buckets, progress: &Progress) -> Result<()> {
     for store in buckets.stores() {
@@ -1171,6 +1367,24 @@ fn share_of(buckets: &Buckets, domain: &str, now: u32) -> f64 {
     };
     let whole = yield_share(store.domain_yield(domain).ok().flatten(), now);
     whole.min(recent_share(store.domain_yield_recent(domain).ok().flatten(), now))
+}
+
+/// Listed domains whose pages come back well enough to send again, best ranked first.
+fn fillers(buckets: &Buckets, now: u32) -> Result<Vec<(i64, String)>> {
+    let chunks: Vec<Vec<String>> = buckets.listed().chunks(4096).map(<[String]>::to_vec).collect();
+    let found = on_readers(chunks, |names| {
+        Ok(names
+            .into_iter()
+            .filter(|name| {
+                let judged = buckets.store_for(name).and_then(|store| store.domain_yield(name).ok().flatten()).is_some_and(|y| y.at(now).judged() >= YIELD_RECENT_JUDGED);
+                judged && share_of(buckets, name, now) >= 1.0
+            })
+            .map(|name| (rank_of(buckets, &name), name))
+            .collect::<Vec<_>>())
+    })?;
+    let mut fillers: Vec<(i64, String)> = found.into_iter().flatten().collect();
+    fillers.sort_unstable();
+    Ok(fillers)
 }
 
 fn rank_of(buckets: &Buckets, domain: &str) -> i64 {

@@ -283,6 +283,14 @@ async fn run(args: RunArgs) -> Result<()> {
             }
         })
     });
+    let wanted = Arc::new(dispatch::StockWanted::default());
+    let stocking = args.task_api.as_ref().map(|_| {
+        let (buckets, progress, halt, wanted, per_second) = (buckets.clone(), progress.clone(), halt.clone(), wanted.clone(), args.join_per_sec.max(1));
+        std::thread::spawn(move || match dispatch::keep_stocks(&buckets, &wanted, per_second, &progress, &halt) {
+            Ok(()) => println!("[rs] refresh stock keeper stopped"),
+            Err(error) => eprintln!("[rs] refresh stock keeper failed: {error:#}"),
+        })
+    });
     if let Some(base) = &args.task_api {
         let uri = std::env::var("FEEDER_KEY_URI").ok().filter(|u| !u.is_empty()).context("FEEDER_KEY_URI is not set")?;
         let api = TaskApi::new(base, Hotkey::from_uri(&uri).context("FEEDER_KEY_URI")?)?;
@@ -294,7 +302,8 @@ async fn run(args: RunArgs) -> Result<()> {
             recrawl.clone(),
             progress.clone(),
         ).await?
-        .paced(args.urls_per_hour);
+        .paced(args.urls_per_hour)
+        .refreshing(wanted.clone());
         tokio::spawn(dispatcher.run(stopped.clone()));
     }
     if let Some(base) = &args.outcomes_url {
@@ -337,6 +346,9 @@ async fn run(args: RunArgs) -> Result<()> {
     halt.store(true, std::sync::atomic::Ordering::Relaxed);
     if let Some(backfill) = backfill {
         let _ = tokio::task::spawn_blocking(move || backfill.join()).await;
+    }
+    if let Some(stocking) = stocking {
+        let _ = tokio::task::spawn_blocking(move || stocking.join()).await;
     }
     if let Some(joining) = joining {
         let _ = tokio::task::spawn_blocking(move || joining.join()).await;

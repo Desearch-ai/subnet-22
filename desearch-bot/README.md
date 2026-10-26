@@ -28,7 +28,7 @@ RocksDB is compiled from source, which needs `clang` and a C++ toolchain.
 
 ```bash
 python tools/export_langid.py data/langid.bin   # once: the language model homepages are judged with
-python tools/crawl_list.py --out domains.json   # the --domains list, from the registry's states and site types
+python tools/crawl_list.py --out domains.json --recrawl-out recrawl.txt   # --domains and --recrawl-overrides, from the registry
 MALLOC_ARENA_MAX=2 desearch-bot run --buckets-dir /var/lib/desearch-bot/buckets --data-dir data
 ```
 
@@ -104,6 +104,16 @@ starts refusing slows within hours. A failed page goes again after its domain's 
 `--gone-days`; a dropped page, whose task never reached the site, goes again within the hourly budget.
 A number still missing after two minutes, or whose file expired, is skipped. A status line every minute shows the queue, what was
 sent in each lane, the room and the outcome feed.
+
+Room the lists leave in a pass goes to refreshes: pages already sent, of listed domains with nothing
+waiting whose pages come back (at least 200 outcomes judged, and no slowing for yield), oldest send
+first. A background keeper, paced like the walker, keeps a stock of each such domain's pages sent
+longest ago (a quarter of its hourly limit, 1,000 at least) and chooses it again when a pass finds it
+empty; a pass reads only the stock, never the sent records. A page sent within the last day stays, and
+a stocked page that went out again or is now failing, requeued or changed leaves the stock unsent. A
+pass offers room to 2,000 domains in turn, and refreshes stay within each domain's hourly limit and
+its two-minute spread. `crawl_list.py --recrawl-out` writes the re-crawl intervals by site type (news
+1 day; reference, docs, academic and public 3 days); the bot reads the file when it starts.
 
 With `--domains`, each listed domain may carry a `weight` (1 to 4), a `send_cap`, an `hourly` limit
 and a `backlog`. A domain's turn is worth its rank's slots times its weight, and `hourly` replaces
