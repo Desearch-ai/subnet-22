@@ -47,8 +47,18 @@ enum Command {
     DropDomains(DropDomainsArgs),
     /// Copy bucket stores key by key from the live ones, read-only beside the running bot, for a replay.
     CopyBuckets(CopyBucketsArgs),
-    /// Build the queues of copied stores and run a simulated day of passes against a fake task API, outcomes drawn from a real day's.
+    /// Run a simulated day of passes on copied stores against a fake task API while the list walker builds their queues, outcomes drawn from a real day's and sitemap reads simulated.
     Replay(ReplayArgs),
+    /// Undo every due queue for a rollback to a bot without them: schedules go back on the waiting and ready lists. Run it with the crawl loop stopped.
+    UnbuildQueues(UnbuildQueuesArgs),
+}
+
+#[derive(clap::Args)]
+struct UnbuildQueuesArgs {
+    #[arg(long, default_value = "/var/lib/desearch-bot/buckets")]
+    buckets_dir: PathBuf,
+    #[arg(long, default_value = "0-255")]
+    buckets: String,
 }
 
 #[derive(clap::Args)]
@@ -86,7 +96,13 @@ struct ReplayArgs {
     /// A site whose pages all fail from the middle of the replay on.
     #[arg(long)]
     refusing: Option<String>,
-    /// Where every send and outcome is written.
+    /// A site whose sitemap re-dates every page each hour; the listed site with most pages if not given.
+    #[arg(long)]
+    restamping: Option<String>,
+    /// Stored records the list walker reads per second as it builds the queues beside the passes.
+    #[arg(long, default_value_t = 1_000_000)]
+    join_per_sec: u64,
+    /// Where the hourly report goes.
     #[arg(long)]
     log: PathBuf,
 }
@@ -232,11 +248,14 @@ fn main() -> Result<()> {
                 hours: args.hours,
                 per_hour: args.per_hour,
                 refusing: args.refusing,
+                restamping: args.restamping,
+                join_per_sec: args.join_per_sec,
                 log: args.log,
             };
             return tokio::runtime::Builder::new_multi_thread().enable_all().build()?.block_on(desearch_bot::replay::replay(args));
         }
         Command::DropDomains(args) => return drop_domains(args),
+        Command::UnbuildQueues(args) => return unbuild_queues(args),
     };
     // Parsing is capped by its own slots; more blocking threads would only hold more allocator caches.
     tokio::runtime::Builder::new_multi_thread().enable_all().max_blocking_threads(128).build()?.block_on(run(args))
@@ -447,6 +466,20 @@ fn copy_buckets(args: CopyBucketsArgs) -> Result<()> {
         let copied = desearch_bot::replay::copy_bucket(&args.from.join(&name), &args.to.join(format!("{name}.secondary")), &args.to.join(&name), &resources)?;
         println!("bucket {name}: {copied} keys copied in {:.0}s", started.elapsed().as_secs_f64());
     }
+    Ok(())
+}
+
+fn unbuild_queues(args: UnbuildQueuesArgs) -> Result<()> {
+    let owned = parse_buckets(&args.buckets)?;
+    let resources = Resources::new(1 << 30, 512 << 20, owned.len());
+    let buckets = Buckets::open(&args.buckets_dir, &owned, &resources)?;
+    let undone = dispatch::on_readers(buckets.stores().collect(), |store| {
+        let domains = store.queued_domains()?;
+        let schedules = domains.iter().map(|domain| store.unbuild_queue(domain)).sum::<Result<u64>>()?;
+        Ok((domains.len(), schedules))
+    })?;
+    let (domains, schedules) = undone.iter().fold((0, 0), |sum, one| (sum.0 + one.0, sum.1 + one.1));
+    println!("undid {domains} queues in {} stores: {schedules} schedules back on the waiting and ready lists", owned.len());
     Ok(())
 }
 

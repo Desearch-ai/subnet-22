@@ -1141,6 +1141,107 @@ async fn a_built_domain_sends_what_is_due_within_its_hour_and_pulls_refreshes_fo
     assert_eq!(dispatcher.pass(t0 + 40 * 86_400).await.unwrap(), 0, "a domain the list dropped sends nothing, however due");
 }
 
+/// URLs the fake API took since the last look, by host.
+fn sent_by_host(fake: &Arc<Mutex<FakeApi>>) -> HashMap<String, usize> {
+    let mut sent = HashMap::new();
+    for (_, body) in std::mem::take(&mut fake.lock().unwrap().enqueued) {
+        let body: Value = serde_json::from_slice(&body).unwrap();
+        for url in body["urls"].as_array().unwrap() {
+            *sent.entry(url["host"].as_str().unwrap().to_string()).or_default() += 1;
+        }
+    }
+    sent
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_due_window_goes_to_sites_with_room_a_site_a_whole_interval_overdue_first_and_pulls_wait_for_every_due_site() {
+    let dir = Dir::new("dispatcher-windows");
+    let hosts = ["big1.com", "big2.com", "big3.com", "big4.com", "tail.com", "old.com"];
+    let buckets = Arc::new(known(&dir, &hosts));
+    let path = dir.0.join("domains.json");
+    let weights = [4, 3, 2, 1, 1, 1];
+    let list: Vec<String> = hosts.iter().zip(weights).map(|(host, weight)| format!(r#"{{"host": "{host}", "type": "company", "weight": {weight}, "hourly": 3600}}"#)).collect();
+    std::fs::write(&path, format!("[{}]", list.join(","))).unwrap();
+    let list = Allowed::from_file(&path).unwrap();
+    buckets.allow(&list);
+    let t0 = 1_759_400_000;
+    let listed = |host: &str, count: usize| {
+        let store = buckets.store(host);
+        let pages = (0..count).map(|i| (urls::parse(&format!("https://{host}/p{i:03}"), host).unwrap(), 100, false)).collect();
+        store.record_listing(host, 1, pages, 100).unwrap();
+        store
+    };
+    for host in &hosts[..4] {
+        listed(host, 200).build_queue(host, buckets.terms(host), &rules(), t0, &mut |_| true).unwrap();
+    }
+    // tail.com's first crawls have waited two of its 30-day intervals.
+    listed("tail.com", 50).build_queue("tail.com", buckets.terms("tail.com"), &rules(), t0 - 61 * DAY, &mut |_| true).unwrap();
+    // old.com's pages went two days ago and fall due in 28 days: refreshes a pull may bring forward.
+    let old = listed("old.com", 200);
+    let mut quotas = [0; LANES];
+    quotas[FRESH] = 200;
+    let picks = old.take_ready("old.com", quotas).unwrap();
+    old.mark_sent(&picks, t0 - 2 * DAY, &rules()).unwrap();
+    old.build_queue("old.com", buckets.terms("old.com"), &rules(), t0, &mut |_| true).unwrap();
+    let progress = Arc::new(Progress::default());
+    let (dispatcher, fake) = dispatcher_over(&buckets, &progress).await;
+    let mut dispatcher = dispatcher.windowed(1);
+
+    assert_eq!(dispatcher.pass(t0).await.unwrap(), 290, "three windows of one site: tail.com, two intervals overdue, then big1 and big2 by weight, each 120 in its two minutes");
+    let sent = sent_by_host(&fake);
+    assert_eq!((sent.get("tail.com"), sent.get("big1.com"), sent.get("big2.com")), (Some(&50), Some(&120), Some(&120)));
+    assert_eq!(progress.sent_pulled.load(std::sync::atomic::Ordering::Relaxed), 0, "big3 and big4 had no window yet, so nothing is pulled");
+
+    assert_eq!(dispatcher.pass(t0 + 5).await.unwrap(), 360, "big1 and big2 spent their two minutes and leave the windows to big3 and big4; then, every due site offered, old.com's refreshes are pulled");
+    let sent = sent_by_host(&fake);
+    assert_eq!((sent.get("big3.com"), sent.get("big4.com"), sent.get("old.com")), (Some(&120), Some(&120), Some(&120)));
+    assert_eq!(progress.sent_pulled.load(std::sync::atomic::Ordering::Relaxed), 120);
+}
+
+#[test]
+fn a_site_a_whole_interval_overdue_ranks_ahead_of_any_value_and_below_that_value_leads() {
+    use desearch_bot::dispatch::due_priority;
+    let now = 1_759_400_000;
+    let top = due_priority(1, 4, SiteType::Company, now, now);
+    assert!(due_priority(UNRANKED, 1, SiteType::Company, now - 31 * DAY, now) > top, "past one interval overdue beats the best site just due");
+    assert!(due_priority(UNRANKED, 1, SiteType::Company, now - 29 * DAY, now) < top, "under one interval value still leads");
+    assert!(due_priority(UNRANKED, 1, SiteType::Company, now - 60 * DAY, now) > due_priority(1, 4, SiteType::Company, now - 31 * DAY, now), "the more overdue goes first");
+}
+
+#[test]
+fn a_set_built_over_its_cap_shrinks_in_the_same_walk_and_its_cut_sent_pages_come_back_when_the_cap_rises() {
+    let dir = Dir::new("join-over-cap");
+    std::fs::create_dir_all(&dir.0).unwrap();
+    let path = dir.0.join("domains.json");
+    std::fs::write(&path, r#"[{"host": "example.com", "type": "reference"}]"#).unwrap();
+    let list = Allowed::from_file(&path).unwrap();
+    let buckets = known(&dir, &["example.com"]);
+    buckets.allow(&list);
+    let store = buckets.store("example.com");
+    let pages = (0..30).map(|i| (urls::parse(&format!("https://example.com/p{i:02}"), "example.com").unwrap(), 100, false)).collect();
+    store.record_listing("example.com", 1, pages, 100).unwrap();
+    let mut quotas = [0; LANES];
+    quotas[FRESH] = 30;
+    let picks = store.take_ready("example.com", quotas).unwrap();
+    store.mark_sent(&picks, 1000, &rules()).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    std::fs::write(&path, r#"[{"host": "example.com", "type": "reference", "send_cap": 10}]"#).unwrap();
+    assert!(list.reload().unwrap());
+    let progress = Progress::default();
+    let stop = std::sync::atomic::AtomicBool::new(false);
+    let walk = || desearch_bot::dispatch::join_round(&buckets, &list, &rules(), 1_000_000, &progress, &stop).unwrap();
+    assert_eq!(walk(), 1);
+    assert_eq!(store.set_size("example.com").unwrap(), Some(10), "thirty sent pages, a cap of ten");
+    assert_eq!(walk(), 0);
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    std::fs::write(&path, r#"[{"host": "example.com", "type": "reference", "send_cap": 25}]"#).unwrap();
+    assert!(list.reload().unwrap());
+    assert_eq!(walk(), 1);
+    assert_eq!(store.set_size("example.com").unwrap(), Some(25), "fifteen cut pages come back");
+    let overdue_spread = desearch_bot::dispatch::now() + 7 * DAY;
+    assert_eq!(store.take_due("example.com", 100, overdue_spread, None, &rules()).unwrap().picks.len(), 25, "all on their refresh schedule, overdue ones spread over the next week");
+}
+
 #[test]
 fn the_list_walker_builds_each_queue_once_and_admits_more_when_the_cap_rises() {
     let dir = Dir::new("join-round");

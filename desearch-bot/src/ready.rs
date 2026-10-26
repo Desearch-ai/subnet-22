@@ -11,6 +11,7 @@ use rocksdb::{Direction, IteratorMode, ReadOptions, WriteBatch};
 use serde_json::{json, Value};
 
 use crate::buckets::{meta_key, BucketStore, Changes, LISTED, URL};
+use crate::due::{Route, LEFT};
 use crate::recrawl::Recrawl;
 use crate::records;
 use crate::robots::Paths;
@@ -23,7 +24,7 @@ const READY_COUNT: u8 = b'Q';
 /// The lastmod each page was last sent with, and its failures since.
 pub(crate) const SENT: u8 = b'P';
 /// Retries and re-crawls by the time they join their ready list again.
-const WAITING: u8 = b'W';
+pub(crate) const WAITING: u8 = b'W';
 /// Each page's latest schedule; a waiting entry another schedule replaced is skipped when it comes due.
 pub(crate) const NEXT: u8 = b'N';
 /// Deadlines left by earlier versions, which resent every page with no outcome a day after it went.
@@ -261,13 +262,13 @@ pub enum Why {
     Gone,
     /// A page just admitted to its domain's set, due for its first crawl.
     Admit,
-    /// A page in the set whose sitemap lastmod moved, due at once.
+    /// A page in the set whose sitemap lastmod moved.
     Changed,
     /// A page the index does not take, leaving its domain's set.
     Leave,
 }
 
-/// When a page goes out again, and the send (re-crawl, gone) or outcome (failed, dropped) that set it.
+/// When a page goes out again, and the send it follows (re-crawl, gone, change; none for a first crawl) or the outcome that set it (failed, dropped, leave).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Scheduled {
     pub why: Why,
@@ -447,8 +448,16 @@ impl BucketStore {
         Ok(out)
     }
 
+    /// Whether the domain still sends from its ready lists: not once its queue is built or being built.
+    pub fn sends_by_lists(&self, domain: &str) -> Result<bool> {
+        Ok(self.route(domain)? == Route::Lists)
+    }
+
     /// Pages of a domain that still need sending: each lane up to its quota, then lanes with pages left fill what the others could not; entries gone stale are dropped on the way.
     pub fn take_ready(&self, domain: &str, mut quotas: [usize; LANES]) -> Result<Vec<Pick>> {
+        if !self.sends_by_lists(domain)? {
+            return Ok(Vec::new());
+        }
         let want: usize = quotas.iter().sum();
         let robots = self.domain(domain)?.map(|record| records::robots_paths(&record)).unwrap_or_default();
         let mut taking = Taking { robots, ..Taking::default() };
@@ -674,11 +683,11 @@ impl BucketStore {
             if next.is_some_and(|next| next.due != *due) {
                 continue;
             }
-            // A domain on due queues keeps its schedules there; its old waiting entries only go.
+            // A domain on due queues, or whose queue is being built, keeps its schedules there; its old waiting entries only go.
             let queued = match on_queues.get(domain) {
                 Some(&queued) => queued,
                 None => {
-                    let queued = self.set_size(&String::from_utf8_lossy(domain))?.is_some();
+                    let queued = self.route(&String::from_utf8_lossy(domain))? != Route::Lists;
                     on_queues.insert(domain, queued);
                     queued
                 }
@@ -707,7 +716,12 @@ impl BucketStore {
                     }
                 }
                 Some(Scheduled { why: Why::Dropped | Why::Gone, .. }) | None => {}
-                Some(Scheduled { why: Why::Admit | Why::Changed | Why::Leave, .. }) => continue,
+                Some(Scheduled { why: Why::Leave, .. }) => {
+                    // A page the index does not take stays out, and out of the queue its domain gets.
+                    batch.put(prefixed(SENT, domain, rest), Sent { failures: LEFT, ..sent }.pack());
+                    continue;
+                }
+                Some(Scheduled { why: Why::Admit | Why::Changed, .. }) => continue,
             }
             sent.requeued = true;
             batch.put(prefixed(SENT, domain, rest), sent.pack());
@@ -730,24 +744,24 @@ impl BucketStore {
             let recent = self.domain_yield_recent(domain)?.unwrap_or_default().recent_at(tally.at);
             batch.put(count_key_of(YIELD_RECENT, domain), Yield { ok: recent.ok + tally.ok, failed: recent.failed + tally.failed, at: recent.at }.pack());
         }
-        let mut queued: HashMap<&str, bool> = HashMap::new();
+        let _guard = self.lock_ready();
+        let mut routes: HashMap<&str, Route> = HashMap::new();
         let mut on_queues = Vec::new();
         for page in schedules {
-            let on_queue = match queued.get(page.domain.as_str()) {
-                Some(&on_queue) => on_queue,
+            let found = match routes.get(page.domain.as_str()) {
+                Some(&found) => found,
                 None => {
-                    let on_queue = self.set_size(&page.domain)?.is_some();
-                    queued.insert(&page.domain, on_queue);
-                    on_queue
+                    let found = self.route(&page.domain)?;
+                    routes.insert(&page.domain, found);
+                    found
                 }
             };
-            if on_queue {
-                on_queues.push(page);
-            } else {
-                put_schedule(&mut batch, page.domain.as_bytes(), &page.rest, page.next);
+            match found {
+                Route::Queue => on_queues.push(page),
+                Route::Held => self.hold_outcome(page),
+                Route::Lists => put_schedule(&mut batch, page.domain.as_bytes(), &page.rest, page.next),
             }
         }
-        let _guard = self.lock_ready();
         self.outcomes_into_queues(&mut batch, &on_queues)?;
         self.db.write(batch)?;
         Ok(())
@@ -934,43 +948,47 @@ impl BucketStore {
         listed: usize,
         now: u32,
     ) -> Result<(usize, HashMap<String, i64>)> {
-        // Pages of domains with a built queue go onto it; the rest onto ready lists.
-        let mut queued: HashMap<String, bool> = HashMap::new();
-        let mut on_queue = |domain: &[u8]| -> Result<Option<String>> {
+        // Pages of domains with a built queue go onto it, of a domain whose queue is being built wait for it, and the rest go onto ready lists.
+        let mut routes: HashMap<String, Route> = HashMap::new();
+        let mut route = |domain: &[u8]| -> Result<(String, Route)> {
             let domain = String::from_utf8_lossy(domain).into_owned();
-            let queue = match queued.get(&domain) {
-                Some(&queue) => queue,
+            let found = match routes.get(&domain) {
+                Some(&found) => found,
                 None => {
-                    let queue = self.allows(&domain) && self.set_size(&domain)?.is_some();
-                    queued.insert(domain.clone(), queue);
-                    queue
+                    let found = if self.allows(&domain) { self.route(&domain)? } else { Route::Lists };
+                    routes.insert(domain.clone(), found);
+                    found
                 }
             };
-            Ok(queue.then_some(domain))
+            Ok((domain, found))
         };
-        let mut to_queues: HashMap<String, (Vec<(&[u8], &Record)>, Vec<(&[u8], u32)>)> = HashMap::new();
+        let mut to_queues: HashMap<(String, Route), (Vec<&[u8]>, Vec<(&[u8], u32)>)> = HashMap::new();
         let (mut listed_fresh, mut listed_moved) = (Vec::new(), Vec::new());
         for (key, record) in fresh {
-            match split_key(&key[1..]) {
-                Some((domain, rest)) => match on_queue(domain)? {
-                    Some(domain) => to_queues.entry(domain).or_default().0.push((rest, record)),
-                    None => listed_fresh.push((key.clone(), *record)),
-                },
-                None => continue,
+            let Some((domain, rest)) = split_key(&key[1..]) else {
+                continue;
+            };
+            match route(domain)? {
+                (_, Route::Lists) => listed_fresh.push((key.clone(), *record)),
+                queued => to_queues.entry(queued).or_default().0.push(rest),
             }
         }
         for (key, lastmod) in moved {
-            match split_key(&key[1..]) {
-                Some((domain, rest)) => match on_queue(domain)? {
-                    Some(domain) => to_queues.entry(domain).or_default().1.push((rest, *lastmod)),
-                    None => listed_moved.push((key.clone(), *lastmod)),
-                },
-                None => continue,
+            let Some((domain, rest)) = split_key(&key[1..]) else {
+                continue;
+            };
+            match route(domain)? {
+                (_, Route::Lists) => listed_moved.push((key.clone(), *lastmod)),
+                queued => to_queues.entry(queued).or_default().1.push((rest, *lastmod)),
             }
         }
         let mut queued_added = 0;
-        for (domain, (fresh, moved)) in &to_queues {
-            queued_added += self.listing_into_queue(batch, domain, fresh, moved, now)?;
+        for ((domain, found), (fresh, moved)) in &to_queues {
+            if *found == Route::Held {
+                self.hold_listing(domain, fresh, moved, listed);
+            } else {
+                queued_added += self.listing_into_queue(batch, domain, fresh, moved, listed, now)?;
+            }
         }
         let (fresh, moved) = (listed_fresh.as_slice(), listed_moved.as_slice());
         let mut entries = Vec::new();
@@ -998,7 +1016,7 @@ impl BucketStore {
             let changed: Vec<(Vec<u8>, u32)> = moved
                 .iter()
                 .zip(sents)
-                .filter(|((_, lastmod), sent)| sent.is_none_or(|s| *lastmod > s.lastmod))
+                .filter(|((_, lastmod), sent)| sent.is_none_or(|s| *lastmod > s.lastmod && s.failures != LEFT))
                 .map(|((key, lastmod), _)| (key[1..].to_vec(), *lastmod))
                 .collect();
             if let Some((domain, _)) = changed.first().and_then(|(key, _)| split_key(key)) {
@@ -1024,6 +1042,19 @@ impl BucketStore {
     }
 
     /// Entries not on their lists yet go on; the caller holds the ready lock and writes the batch.
+    /// Drop the domain's ready lists in the caller's batch, under its lock: its queue sends from now on.
+    pub(crate) fn clear_ready(&self, batch: &mut WriteBatch, domain: &str) {
+        batch.delete_range(prefixed(READY, domain.as_bytes(), b""), [&[READY], domain.as_bytes(), b"\x01"].concat());
+        batch.delete(count_key(domain));
+    }
+
+    /// Put entries on their ready lists, with their counts, in the caller's batch and under its lock.
+    pub(crate) fn ready_back(&self, batch: &mut WriteBatch, entries: Vec<Entry>) -> Result<()> {
+        let mut counts = HashMap::new();
+        self.add_ready(batch, entries, &mut counts)?;
+        self.write_counts(batch, &counts)
+    }
+
     fn add_ready(&self, batch: &mut WriteBatch, mut entries: Vec<Entry>, counts: &mut HashMap<String, i64>) -> Result<usize> {
         entries.retain(|entry| self.allows(&entry.domain));
         let mut keys: Vec<(Vec<u8>, String)> = entries.drain(..).map(|e| (e.key(), e.domain)).collect();
@@ -1162,7 +1193,7 @@ fn put_schedule(batch: &mut WriteBatch, domain: &[u8], rest: &[u8], next: Schedu
     batch.put(timed_key(WAITING, next.due, domain, rest), []);
 }
 
-fn timed_key(kind: u8, due: u32, domain: &[u8], rest: &[u8]) -> Vec<u8> {
+pub(crate) fn timed_key(kind: u8, due: u32, domain: &[u8], rest: &[u8]) -> Vec<u8> {
     [&[kind], &due.to_be_bytes()[..], domain, b"\0", rest].concat()
 }
 

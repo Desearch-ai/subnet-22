@@ -1,28 +1,32 @@
-//! A day of the scheduler on copied stores: queues built, then passes on a simulated clock against an in-process task API, with outcomes drawn from a real day's.
+//! A day of the scheduler on copied stores: passes on a simulated clock against an in-process task API while the list walker builds queues, with outcomes drawn from a real day's and sitemap reads simulated.
 
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use anyhow::{Context, Result};
+use rand::seq::SliceRandom;
 use rand::{Rng, SeedableRng};
-use rocksdb::{IteratorMode, Options, WriteBatch, DB};
+use rocksdb::{Direction, IteratorMode, Options, WriteBatch, DB};
 use serde_json::Value;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
 use crate::allowed::Allowed;
-use crate::buckets::{BucketStore, Buckets, Resources};
+use crate::buckets::{BucketStore, Buckets, Resources, BUCKETS, URL};
 use crate::dispatch::{self, Dispatcher, Progress};
 use crate::hotkey::Hotkey;
 use crate::outcomes::{OutcomeReader, OutcomeRow};
-use crate::ready::Outcome;
+use crate::ready::{bounded, fetchable, prefixed, Outcome};
 use crate::recrawl::Recrawl;
+use crate::records;
 use crate::taskapi::TaskApi;
+use crate::urls::{self, Record};
 
 const PASS: u32 = 5;
 const HOUR: u32 = 3_600;
@@ -30,6 +34,13 @@ const FLOOR: u32 = 86_400;
 const SPREAD: u32 = 120;
 /// Seconds from a send to its outcome, as the miners, validators and publisher take.
 const OUTCOME_AFTER: u32 = 600;
+/// The sitemap every simulated read is filed under.
+const REPLAY_SITEMAP: i64 = 900_000_001;
+/// Pages one simulated sitemap read lists, and the part of them it re-dates.
+const LISTED_PER_READ: usize = 500;
+const REDATED: f64 = 0.05;
+/// Pages the re-stamping site's read lists, every one re-dated.
+const RESTAMP_LISTED: usize = 20_000;
 
 /// Keys read between two catch-ups with the live store: its compactions delete the files a long read still holds.
 const COPY_CHUNK: usize = 2_000_000;
@@ -93,17 +104,26 @@ pub struct ReplayArgs {
     pub per_hour: u64,
     /// A site whose pages all fail from the middle of the day on.
     pub refusing: Option<String>,
+    /// A site whose sitemap re-dates every page each hour; the listed site with most pages if none.
+    pub restamping: Option<String>,
+    /// Stored records the list walker reads per second, building queues beside the passes.
+    pub join_per_sec: u64,
     /// Where the hourly report goes.
     pub log: PathBuf,
 }
 
-/// The bars, counted as the replay goes: per page its last send and how that send ended, per site its sends of the last hour.
+/// The bars, counted as the replay goes: per page its last send, how that send ended and when a sitemap last re-dated it, per site its sends of the last hour.
 #[derive(Default)]
 struct Bars {
     last: HashMap<u64, (u32, u8)>,
+    redated: HashMap<u64, u32>,
     sites: HashMap<String, VecDeque<u32>>,
+    /// Sends within a day of the last that nothing explains: a refresh gone early.
     early: u64,
+    early_redated: u64,
     early_after_failure: u64,
+    early_after_drop: u64,
+    restamped_early: u64,
     over_hour: u64,
     over_spread: u64,
     refusing: HashMap<u32, u64>,
@@ -112,6 +132,7 @@ struct Bars {
 const PENDING: u8 = 0;
 const FAILED: u8 = 1;
 const DONE: u8 = 2;
+const DROPPED: u8 = 3;
 
 fn page_id(url: &str) -> u64 {
     let mut hasher = DefaultHasher::new();
@@ -120,13 +141,17 @@ fn page_id(url: &str) -> u64 {
 }
 
 impl Bars {
-    fn sent(&mut self, url: &str, host: &str, at: u32, limit: u64) {
-        if let Some((before, how)) = self.last.insert(page_id(url), (at, PENDING)) {
+    fn sent(&mut self, url: &str, host: &str, at: u32, limit: u64, restamping: bool) {
+        let id = page_id(url);
+        if let Some((before, how)) = self.last.insert(id, (at, PENDING)) {
+            let redated = self.redated.get(&id).is_some_and(|&when| when >= before);
             if at.saturating_sub(before) < FLOOR {
-                if how == FAILED {
-                    self.early_after_failure += 1;
-                } else {
-                    self.early += 1;
+                match how {
+                    FAILED => self.early_after_failure += 1,
+                    DROPPED => self.early_after_drop += 1,
+                    _ if redated && restamping => self.restamped_early += 1,
+                    _ if redated => self.early_redated += 1,
+                    _ => self.early += 1,
                 }
             }
         }
@@ -146,9 +171,72 @@ impl Bars {
 
     fn ended(&mut self, url: &str, sent_at: u32, outcome: Outcome) {
         if let Some(entry) = self.last.get_mut(&page_id(url)).filter(|entry| entry.0 == sent_at) {
-            entry.1 = if matches!(outcome, Outcome::Failed | Outcome::Dropped) { FAILED } else { DONE };
+            entry.1 = match outcome {
+                Outcome::Failed => FAILED,
+                Outcome::Dropped => DROPPED,
+                _ => DONE,
+            };
         }
     }
+}
+
+/// What one round of simulated sitemap reads did.
+#[derive(Default)]
+struct Read {
+    reads: usize,
+    new: usize,
+    redated: Vec<String>,
+}
+
+/// A sitemap read of each domain, from its stored pages: a few re-dated to now and a few new; the re-stamping site re-dates every page it lists.
+fn read_sitemaps(buckets: &Buckets, domains: Vec<String>, restamping: &str, now: u32, seed: u64) -> Result<Read> {
+    let rounds = dispatch::on_readers(domains, |domain| {
+        let store = buckets.store(&domain);
+        let restamps = domain == restamping;
+        let mut rng = rand::rngs::StdRng::seed_from_u64(seed ^ page_id(&domain));
+        let stored = stored_pages(store, &domain, if restamps { RESTAMP_LISTED } else { LISTED_PER_READ })?;
+        let mut entries = Vec::with_capacity(stored.len() + 8);
+        let mut redated = Vec::new();
+        for (i, (rest, record)) in stored.iter().enumerate() {
+            let url = fetchable(rest, record.flags);
+            let Some(parsed) = urls::parse(&url, &domain) else {
+                continue;
+            };
+            let lastmod = if restamps || rng.gen_bool(REDATED) {
+                redated.push(url);
+                now.saturating_sub(i as u32)
+            } else {
+                record.lastmod
+            };
+            entries.push((parsed, lastmod, false));
+        }
+        let new = (stored.len() / 100).max(1);
+        for n in 0..new {
+            if let Some(url) = urls::parse(&format!("https://{domain}/replay-{now}-{n}"), &domain) {
+                entries.push((url, now, false));
+            }
+        }
+        store.record_listing(&domain, REPLAY_SITEMAP, entries, now)?;
+        Ok(Read { reads: 1, new, redated })
+    })?;
+    Ok(rounds.into_iter().fold(Read::default(), |mut sum, one| {
+        sum.reads += one.reads;
+        sum.new += one.new;
+        sum.redated.extend(one.redated);
+        sum
+    }))
+}
+
+fn stored_pages(store: &BucketStore, domain: &str, most: usize) -> Result<Vec<(Vec<u8>, Record)>> {
+    let prefix = prefixed(URL, domain.as_bytes(), b"");
+    let mut pages = Vec::new();
+    for item in store.db.iterator_opt(IteratorMode::From(&prefix, Direction::Forward), bounded(&prefix)).take(most) {
+        let (key, raw) = item?;
+        if let Some(record) = Record::unpack(&raw) {
+            pages.push((key[prefix.len()..].to_vec(), record));
+        }
+    }
+    Ok(pages)
 }
 
 /// What became of one sent page in the replay.
@@ -173,29 +261,30 @@ pub async fn replay(args: ReplayArgs) -> Result<()> {
     let recrawl = Recrawl::default();
     let mut log = std::io::BufWriter::new(std::fs::File::create(&args.log)?);
     let mut bars = Bars::default();
-
     let listed: Vec<String> = buckets.listed();
-    let building = Instant::now();
-    let built: Vec<(u64, u64, u64)> = dispatch::on_readers(listed.clone(), |domain| {
-        let store = buckets.store(&domain);
-        let built = store.build_queue(&domain, store.terms(&domain), &recrawl, args.start, &mut |_| true)?;
-        Ok((built.scanned, built.members, built.admitted))
-    })?;
-    let (scanned, members, admitted) = built.iter().fold((0, 0, 0), |sum, b| (sum.0 + b.0, sum.1 + b.1, sum.2 + b.2));
-    println!(
-        "[replay] built {} queues in {:.0}s: {scanned} stored pages read, {members} sent pages kept, {admitted} admitted",
-        listed.len(),
-        building.elapsed().as_secs_f64()
-    );
+    let urls_of = |domain: &String| buckets.store(domain).domain(domain).ok().flatten().and_then(|record| records::int(record.get("urls"))).unwrap_or(0);
+    let restamping = args.restamping.clone().or_else(|| listed.iter().max_by_key(|domain| urls_of(domain)).cloned()).unwrap_or_default();
+    println!("[replay] {} listed domains; {restamping} re-stamps its sitemap every hour", listed.len());
+
+    let progress = Arc::new(Progress::default());
+    let stop = Arc::new(AtomicBool::new(false));
+    let walking = Instant::now();
+    let walker = {
+        let (buckets, list, recrawl, progress, stop) = (buckets.clone(), list.clone(), recrawl.clone(), progress.clone(), stop.clone());
+        let per_second = args.join_per_sec;
+        std::thread::spawn(move || dispatch::join_listed(&buckets, &list, &recrawl, per_second, &progress, &stop))
+    };
 
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let base = format!("http://{}", listener.local_addr()?);
     let taken = Arc::new(Mutex::new(Taken::default()));
     tokio::spawn(serve(listener, taken.clone()));
-    let progress = Arc::new(Progress::default());
     let api = TaskApi::new(&base, Hotkey::from_uri("//replay")?)?;
-    let mut dispatcher =
-        Dispatcher::load(buckets.clone(), api, 1_000_000, dispatch::shares(50, 10), recrawl.clone(), progress.clone()).await?.paced_from(args.per_hour, args.start);
+    let window = (dispatch::DUE_WINDOW * args.buckets.len() / BUCKETS).max(1);
+    let mut dispatcher = Dispatcher::load(buckets.clone(), api, 1_000_000, dispatch::shares(50, 10), recrawl.clone(), progress.clone())
+        .await?
+        .paced_from(args.per_hour, args.start)
+        .windowed(window);
     let mut reader = OutcomeReader::new(recrawl, 200_000);
     let mut rng = rand::rngs::StdRng::seed_from_u64(2026);
     let mut waiting: VecDeque<Sent> = VecDeque::new();
@@ -204,13 +293,28 @@ pub async fn replay(args: ReplayArgs) -> Result<()> {
     let mut pass_ms: Vec<u64> = Vec::new();
     let mut hour_sent = 0u64;
     let mut last = Counts::of(&progress);
+    let mut walked: Option<f64> = None;
+    let mut listings = (0, 0, 0);
     while now < end {
+        if (now - args.start) % HOUR == 0 {
+            // Each listed domain's sitemap is read about once a day, the re-stamping site's every hour.
+            let mut domains: Vec<String> = listed.choose_multiple(&mut rng, listed.len() / 24).cloned().collect();
+            domains.retain(|domain| *domain != restamping);
+            domains.push(restamping.clone());
+            let (reading, seed) = (buckets.clone(), u64::from(now));
+            let restamps = restamping.clone();
+            let read = tokio::task::spawn_blocking(move || read_sitemaps(&reading, domains, &restamps, now, seed)).await??;
+            for url in &read.redated {
+                bars.redated.insert(page_id(url), now);
+            }
+            listings = (read.reads, read.new, read.redated.len());
+        }
         let started = Instant::now();
         dispatcher.pass(now).await?;
         pass_ms.push(started.elapsed().as_millis() as u64);
         for (host, url) in std::mem::take(&mut taken.lock().unwrap_or_else(|e| e.into_inner()).urls) {
             let limit = buckets.terms(&host).hourly.unwrap_or(1_000_000);
-            bars.sent(&url, &host, now, limit);
+            bars.sent(&url, &host, now, limit, host == restamping);
             if args.refusing.as_deref() == Some(host.as_str()) {
                 *bars.refusing.entry((now - args.start) / HOUR).or_default() += 1;
             }
@@ -234,6 +338,19 @@ pub async fn replay(args: ReplayArgs) -> Result<()> {
             })
             .await??;
         }
+        let (done, of) = (progress.join_done.load(Ordering::Relaxed), progress.join_of.load(Ordering::Relaxed));
+        if walked.is_none() && of > 0 && done >= of {
+            let seconds = walking.elapsed().as_secs_f64();
+            walked = Some(seconds);
+            let read = progress.join_read.load(Ordering::Relaxed);
+            let line = format!(
+                "[replay] the list walker built {done} queues from {read} stored records in {seconds:.0}s of wall time, {:.0} records/s, by simulated hour {:.1}",
+                read as f64 / seconds,
+                f64::from(now - args.start) / f64::from(HOUR)
+            );
+            println!("{line}");
+            writeln!(log, "{line}")?;
+        }
         now += PASS;
         if (now - args.start) % HOUR == 0 {
             let counts = Counts::of(&progress);
@@ -241,7 +358,7 @@ pub async fn replay(args: ReplayArgs) -> Result<()> {
             sorted.sort_unstable();
             let p = |q: f64| sorted.get(((sorted.len() as f64 * q) as usize).min(sorted.len().saturating_sub(1))).copied().unwrap_or(0);
             let line = format!(
-                "[replay] hour {:>2}: {hour_sent} sent (new {} changed {} retry {} due {} pulled {}), pass p50 {} ms p99 {} ms max {} ms, {} queues {} due, rss {} MiB; over hour {} over spread {} early {} early after a failure {}",
+                "[replay] hour {:>2}: {hour_sent} sent (new {} changed {} retry {} due {} pulled {}), pass p50 {} ms p99 {} ms max {} ms, {} queues {} due, walker {done}/{of} read {}, sitemaps {} read {} new {} re-dated, rss {} MiB; over hour {} over spread {} early {} early re-dated {} re-stamped early {} early after a failure {} after a drop {}",
                 (now - args.start) / HOUR,
                 counts.new - last.new,
                 counts.changed - last.changed,
@@ -251,13 +368,20 @@ pub async fn replay(args: ReplayArgs) -> Result<()> {
                 p(0.5),
                 p(0.99),
                 sorted.last().copied().unwrap_or(0),
-                progress.queued_sites.load(std::sync::atomic::Ordering::Relaxed),
-                progress.due_sites.load(std::sync::atomic::Ordering::Relaxed),
+                progress.queued_sites.load(Ordering::Relaxed),
+                progress.due_sites.load(Ordering::Relaxed),
+                progress.join_read.load(Ordering::Relaxed),
+                listings.0,
+                listings.1,
+                listings.2,
                 rss_mib(),
                 bars.over_hour,
                 bars.over_spread,
                 bars.early,
-                bars.early_after_failure
+                bars.early_redated,
+                bars.restamped_early,
+                bars.early_after_failure,
+                bars.early_after_drop
             );
             println!("{line}");
             writeln!(log, "{line}")?;
@@ -267,6 +391,8 @@ pub async fn replay(args: ReplayArgs) -> Result<()> {
             pass_ms.clear();
         }
     }
+    stop.store(true, Ordering::Relaxed);
+    walker.join().map_err(|_| anyhow::anyhow!("the list walker panicked"))??;
     if let Some(host) = &args.refusing {
         let mut hours: Vec<(u32, u64)> = bars.refusing.into_iter().collect();
         hours.sort_unstable();

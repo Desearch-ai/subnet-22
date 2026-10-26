@@ -16,6 +16,7 @@ use serde::Deserialize;
 use serde_json::{Map, Value};
 
 use crate::allowed::{Allowed, Terms};
+use crate::due::Held;
 use crate::listed::{self, ListedSet};
 use crate::ready::SENT;
 use crate::urls::{Listing, Record, Url, TIMED};
@@ -193,6 +194,8 @@ pub struct BucketStore {
     pub(crate) capped: Mutex<HashSet<String>>,
     /// Domains whose due queue fronts may have moved since the dispatcher last looked.
     pub(crate) due_noticed: Mutex<HashSet<String>>,
+    /// Domains whose queue is being built, with the outcomes and sitemap changes that reached them meanwhile.
+    pub(crate) held: Mutex<HashMap<String, Held>>,
 }
 
 impl BucketStore {
@@ -209,6 +212,7 @@ impl BucketStore {
             allowed: OnceLock::new(),
             capped: Mutex::new(HashSet::new()),
             due_noticed: Mutex::new(HashSet::new()),
+            held: Mutex::new(HashMap::new()),
         })
     }
 

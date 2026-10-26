@@ -14,7 +14,7 @@ use tokio::sync::watch;
 
 use crate::allowed::{Allowed, SiteType, Terms};
 use crate::buckets::{bucket_of, Buckets};
-use crate::due::{interval_for, set_cap, DueTake};
+use crate::due::{interval_for, set_cap, Built, DueTake};
 use crate::outcomes::{Next, OutcomeFeed, OutcomeReader};
 use crate::ready::{Entry, Order, Pick, Reason, SentPage, Yield, CHANGED, FRESH, LANES, REQUEUED};
 use crate::recrawl::Recrawl;
@@ -41,7 +41,9 @@ const READERS: usize = 16;
 const HOUR: u32 = 3600;
 const RANKS_SECONDS: u32 = 600;
 /// Sites a pass offers its budget to in each step at most, so a pass reads little whatever the number of sites.
-const DUE_WINDOW: usize = 5000;
+pub const DUE_WINDOW: usize = 5000;
+/// Above any site's slots times its weight, so a site a whole interval overdue goes ahead of every site less overdue.
+const TOP_VALUE: f64 = 7.0 * 255.0;
 /// A page sent this recently goes again early only as a change, a retry or a dropped send.
 pub const PULL_FLOOR: u32 = 86_400;
 /// Due schedules moved back onto ready lists per store per pass; small so a pass on a cold cache still sends soon.
@@ -54,6 +56,17 @@ const TOP_DOMAINS: usize = 5;
 /// Slots a domain gets at each turn: 7 for the ten best ranks, one fewer for each tenfold, 1 from a million on and for unranked domains.
 pub fn slots(rank: i64) -> u64 {
     7u64.saturating_sub(u64::from(rank.max(1).ilog10())).max(1)
+}
+
+/// A due site's place in the pass: its value, raised by how many intervals its front is overdue; past one whole interval, overdue goes first whatever the value.
+pub fn due_priority(rank: i64, weight: u8, site: SiteType, head: u32, now: u32) -> f64 {
+    let value = (slots(rank) * u64::from(weight.max(1))) as f64;
+    let overdue = f64::from(now.saturating_sub(head)) / f64::from(interval_for(site, now, now));
+    if overdue >= 1.0 {
+        TOP_VALUE * (1.0 + overdue) + value
+    } else {
+        value * (1.0 + overdue)
+    }
 }
 
 /// What one domain could send this pass.
@@ -311,6 +324,8 @@ pub struct Progress {
     pub join_of: AtomicU64,
     pub join_done: AtomicU64,
     pub join_queued: AtomicU64,
+    /// Stored records the list walker read, every round together.
+    pub join_read: AtomicU64,
     /// New-page entries cleared from domains at their cap.
     pub capped_cleared: AtomicU64,
 }
@@ -352,12 +367,13 @@ impl Progress {
             thousands(self.backfill_scanned.load(Ordering::Relaxed)),
             thousands(self.backfill_added.load(Ordering::Relaxed)),
         ) + &format!(
-            "  set aside {}  joined {}/{} domains {} queued, {} cleared at caps  last pass absorb {:.1}s pick {:.1}s send {:.1}s",
+            "  set aside {}  joined {}/{} domains {} queued from {} records read, {} cleared at caps  last pass absorb {:.1}s pick {:.1}s send {:.1}s",
             thousands(self.set_aside.load(Ordering::Relaxed)),
 
             thousands(self.join_done.load(Ordering::Relaxed)),
             thousands(self.join_of.load(Ordering::Relaxed)),
             thousands(self.join_queued.load(Ordering::Relaxed)),
+            thousands(self.join_read.load(Ordering::Relaxed)),
             thousands(self.capped_cleared.load(Ordering::Relaxed)),
             self.pass_ms[0].load(Ordering::Relaxed) as f64 / 1000.0,
             self.pass_ms[1].load(Ordering::Relaxed) as f64 / 1000.0,
@@ -497,7 +513,15 @@ pub struct Dispatcher {
     /// Domains a pull found at the floor, and until when they wait.
     pull_rest: HashMap<String, u32>,
     /// The pass's due sites ranked once, at the pass's time: each try of the pass takes the next window of them.
-    ranked: Option<(u32, VecDeque<(f64, String)>)>,
+    ranked: Option<Ranked>,
+    due_window: usize,
+}
+
+/// Due sites with room in their hour, best first, as ranked at `at`, each with its allowance; `beyond` more were due than were kept.
+struct Ranked {
+    at: u32,
+    sites: VecDeque<(String, u64)>,
+    beyond: usize,
 }
 
 /// What the dispatcher keeps of a listed domain between its background reads.
@@ -507,6 +531,7 @@ struct Site {
     weight: u8,
     share: f64,
     site: SiteType,
+    hourly: Option<u64>,
 }
 
 impl Dispatcher {
@@ -575,6 +600,7 @@ impl Dispatcher {
             sites_job: None,
             pull_rest: HashMap::new(),
             ranked: None,
+            due_window: DUE_WINDOW,
         };
         let mut dispatcher = dispatcher;
         for (domain, head) in queues {
@@ -592,6 +618,12 @@ impl Dispatcher {
     /// The pace with its clock starting at `start`, for passes on a clock of their own.
     pub fn paced_from(mut self, per_hour: u64, start: u32) -> Self {
         self.pace = Pace::new(per_hour, start);
+        self
+    }
+
+    /// Offer the pass's budget to this many due sites at each step instead.
+    pub fn windowed(mut self, sites: usize) -> Self {
+        self.due_window = sites.max(1);
         self
     }
 
@@ -733,15 +765,17 @@ impl Dispatcher {
         Ok(())
     }
 
-    /// Pages for one pass: what the ready lists of domains without a queue hold, then what the due queues hold, then refreshes pulled forward.
+    /// Pages for one pass: what the ready lists of domains without a queue hold, then the next window of due sites, and once every due site had its window, refreshes pulled forward.
     async fn pick(&mut self, budget: u64, now: u32) -> Result<Vec<Pick>> {
         let mut picks = self.pick_ready(budget, now).await?;
-        for pull in [false, true] {
-            let spare = budget.saturating_sub(picks.len() as u64);
-            if spare == 0 {
-                break;
-            }
-            picks.extend(self.pick_due(spare, now, pull).await?);
+        let spare = budget.saturating_sub(picks.len() as u64);
+        if spare > 0 {
+            picks.extend(self.pick_due(spare, now, false).await?);
+        }
+        let spare = budget.saturating_sub(picks.len() as u64);
+        let every_due_offered = self.ranked.as_ref().is_some_and(|ranked| ranked.at == now && ranked.sites.is_empty() && ranked.beyond == 0);
+        if spare > 0 && every_due_offered {
+            picks.extend(self.pick_due(spare, now, true).await?);
         }
         Ok(picks)
     }
@@ -781,7 +815,8 @@ impl Dispatcher {
                     return Ok(Taken { domain, quotas, picks: Vec::new(), left: 0 });
                 };
                 let picks = store.take_ready(&domain, quotas)?;
-                let left = store.ready_count(&domain)?;
+                // A domain whose queue is built or being built leaves the lists' turns.
+                let left = if picks.is_empty() && !store.sends_by_lists(&domain)? { 0 } else { store.ready_count(&domain)? };
                 Ok(Taken { domain, quotas, picks, left })
             })
         })
@@ -802,65 +837,77 @@ impl Dispatcher {
         Ok(interleave(lists))
     }
 
-    /// Pages from due queues: the sites whose fronts are most overdue for their kind, by value; or, with `pull`, the soonest due of full-share sites, none sent within the floor.
+    /// Pages from due queues: the next window of due sites, each offering what is due within its allowance; or, with `pull`, the soonest due of full-share sites, none sent within the floor.
     async fn pick_due(&mut self, budget: u64, now: u32, pull: bool) -> Result<Vec<Pick>> {
         self.pull_rest.retain(|_, until| *until > now);
-        let mut window: Vec<(f64, String)> = if pull {
-            self.by_head
-                .range((now.saturating_add(1), String::new())..)
-                .filter(|(_, name)| self.site(name).share >= 1.0 && !self.pull_rest.contains_key(name) && self.buckets.allows(name))
-                .take(DUE_WINDOW)
-                .map(|(head, name)| (-f64::from(*head), name.clone()))
-                .collect()
-        } else if let Some((_, ranked)) = self.ranked.as_mut().filter(|(at, _)| *at == now) {
-            ranked.drain(..DUE_WINDOW.min(ranked.len())).collect()
-        } else {
-            // Every due site is weighed, but only the window's names are copied: there can be a million due at once.
-            let mut due: Vec<(f64, &String)> = self
-                .by_head
-                .range(..(now.saturating_add(1), String::new()))
-                .filter(|(_, name)| self.buckets.allows(name))
-                .map(|(head, name)| {
-                    let site = self.site(name);
-                    let overdue = f64::from(now - head) / f64::from(interval_for(site.site, now, now));
-                    ((slots(site.rank) * u64::from(site.weight.max(1))) as f64 * (1.0 + overdue), name)
-                })
-                .collect();
-            self.progress.due_sites.store(due.len() as u64, Ordering::Relaxed);
-            let kept = DUE_WINDOW * ALLOT_TRIES;
-            if due.len() > kept {
-                due.select_nth_unstable_by(kept, |a, b| b.0.total_cmp(&a.0));
-                due.truncate(kept);
+        let size = self.due_window;
+        let window: Vec<(String, u64)> = if pull {
+            let mut window = Vec::new();
+            for (_, name) in self.by_head.range((now.saturating_add(1), String::new())..) {
+                if window.len() >= size {
+                    break;
+                }
+                let site = site_of(&self.sites, &self.buckets, name);
+                if site.share < 1.0 || self.pull_rest.contains_key(name) || !self.buckets.allows(name) {
+                    continue;
+                }
+                let allowance = allowance_of(&mut self.cap, name, &site, now);
+                if allowance > 0 {
+                    window.push((name.clone(), allowance));
+                }
             }
-            due.sort_unstable_by(|a, b| b.0.total_cmp(&a.0));
-            let mut ranked: VecDeque<(f64, String)> = due.into_iter().map(|(priority, name)| (priority, name.clone())).collect();
-            let window = ranked.drain(..DUE_WINDOW.min(ranked.len())).collect();
-            self.ranked = Some((now, ranked));
             window
+        } else {
+            if self.ranked.as_ref().is_none_or(|ranked| ranked.at != now) {
+                self.rank_due(now);
+            }
+            let ranked = &mut self.ranked.as_mut().expect("ranked at this pass").sites;
+            ranked.drain(..size.min(ranked.len())).collect()
         };
-        window.sort_unstable_by(|a, b| b.0.total_cmp(&a.0));
-        let wants: Vec<Want> = window
-            .iter()
-            .map(|(_, name)| {
-                let site = self.site(name);
-                let hourly = self.buckets.terms(name).hourly.unwrap_or(self.cap.limit());
-                let allowance = self.cap.allowance_under(name, now, if site.share == 0.0 { PROBE_PER_HOUR.min(hourly) } else { hourly });
-                Want { rank: site.rank, ready: allowance, allowance, share: site.share, weight: site.weight }
-            })
-            .collect();
-        let (given, _) = allot(&wants, budget, 0);
-        let asks: Vec<(String, usize)> = window.iter().zip(&given).filter(|(_, &n)| n > 0).map(|((_, name), &n)| (name.clone(), n as usize)).collect();
-        if asks.is_empty() {
+        if window.is_empty() {
             return Ok(Vec::new());
         }
         let buckets = self.buckets.clone();
+        let readies: Vec<(u64, Option<Option<u32>>)> = if pull {
+            window.iter().map(|(_, allowance)| (*allowance, None)).collect()
+        } else {
+            let asks = window.clone();
+            tokio::task::spawn_blocking(move || {
+                on_readers(asks, |(domain, allowance)| {
+                    let Some(store) = buckets.store_for(&domain) else {
+                        return Ok((0, Some(None)));
+                    };
+                    let count = store.due_count(&domain, now, allowance as usize)? as u64;
+                    // A front read as due with nothing due behind it moved: its new place is read instead.
+                    Ok((count, if count == 0 { Some(store.due_head(&domain)?) } else { None }))
+                })
+            })
+            .await??
+        };
+        let mut wants = Vec::with_capacity(window.len());
+        let mut names = Vec::with_capacity(window.len());
+        for ((name, allowance), (ready, moved)) in window.into_iter().zip(readies) {
+            if let Some(head) = moved {
+                self.set_head(&name, head);
+                continue;
+            }
+            let site = self.site(&name);
+            wants.push(Want { rank: site.rank, ready, allowance, share: site.share, weight: site.weight });
+            names.push(name);
+        }
+        let (given, _) = allot(&wants, budget, 0);
+        let asks: Vec<(String, usize)> = names.into_iter().zip(given).filter(|(_, n)| *n > 0).map(|(name, n)| (name, n as usize)).collect();
+        if asks.is_empty() {
+            return Ok(Vec::new());
+        }
+        let (buckets, recrawl) = (self.buckets.clone(), self.recrawl.clone());
         let floor = pull.then_some(PULL_FLOOR);
         let taken = tokio::task::spawn_blocking(move || {
             on_readers(asks, |(domain, want)| {
                 let Some(store) = buckets.store_for(&domain) else {
                     return Ok((domain, DueTake::default()));
                 };
-                Ok((domain.clone(), store.take_due(&domain, want, now, floor)?))
+                Ok((domain.clone(), store.take_due(&domain, want, now, floor, &recrawl)?))
             })
         })
         .await??;
@@ -878,11 +925,36 @@ impl Dispatcher {
         Ok(interleave(lists))
     }
 
+    /// Weigh every due site with room left in its hour, best first, keeping the windows a pass can try; there can be a million due at once.
+    fn rank_due(&mut self, now: u32) {
+        let (sites, buckets, cap) = (&self.sites, &self.buckets, &mut self.cap);
+        let mut due: Vec<(f64, &String, u64)> = Vec::new();
+        let mut all = 0;
+        for (head, name) in self.by_head.range(..(now.saturating_add(1), String::new())) {
+            if !buckets.allows(name) {
+                continue;
+            }
+            all += 1;
+            let site = site_of(sites, buckets, name);
+            let allowance = allowance_of(cap, name, &site, now);
+            if allowance > 0 {
+                due.push((due_priority(site.rank, site.weight, site.site, *head, now), name, allowance));
+            }
+        }
+        self.progress.due_sites.store(all, Ordering::Relaxed);
+        let kept = self.due_window * ALLOT_TRIES;
+        let beyond = due.len().saturating_sub(kept);
+        if beyond > 0 {
+            due.select_nth_unstable_by(kept, |a, b| b.0.total_cmp(&a.0));
+            due.truncate(kept);
+        }
+        due.sort_unstable_by(|a, b| b.0.total_cmp(&a.0));
+        let sites = due.into_iter().map(|(_, name, allowance)| (name.clone(), allowance)).collect();
+        self.ranked = Some(Ranked { at: now, sites, beyond });
+    }
+
     fn site(&self, domain: &str) -> Site {
-        self.sites.get(domain).copied().unwrap_or_else(|| {
-            let terms = self.buckets.terms(domain);
-            Site { rank: UNRANKED, weight: terms.weight, share: 1.0, site: terms.site }
-        })
+        site_of(&self.sites, &self.buckets, domain)
     }
 
     /// The domain's queue front as it now stands; None for an empty queue.
@@ -1277,6 +1349,8 @@ pub fn backfill(buckets: &Buckets, per_second: u64, progress: &Progress, stop: &
 const JOIN_IDLE: Duration = Duration::from_secs(5);
 /// Free slots in a domain's set worth reading its stored pages again for, beside one percent of its cap.
 const ROOM_WORTH_A_WALK: u64 = 100;
+/// Domains whose queues are built at once; the pace holds them all to `per_second` together.
+const BUILD_THREADS: usize = 8;
 
 /// Walk every listed domain's stored pages once, and again when its cap changes, so pages it listed before it joined the list go out too.
 pub fn join_listed(buckets: &Buckets, allowed: &Allowed, recrawl: &Recrawl, per_second: u64, progress: &Progress, stop: &AtomicBool) -> Result<()> {
@@ -1294,9 +1368,9 @@ pub fn join_listed(buckets: &Buckets, allowed: &Allowed, recrawl: &Recrawl, per_
     Ok(())
 }
 
-/// One pass over the list: build the due queue of each domain that has none, and admit more pages where the cap changed or gone pages freed real room; returns how many domains it handled.
+/// One pass over the list: build the due queue of each domain that has none, shrink sets over their cap, and admit more pages where the cap changed or gone pages freed real room; returns how many domains it handled.
 ///
-/// Building runs beside admitting, each by size band smallest first and highest weight first within a band, so many domains move to their queue soon.
+/// Building runs beside the rest, on several threads, each by size band smallest first and highest weight first within a band, so many domains move to their queue soon.
 pub fn join_round(buckets: &Buckets, allowed: &Allowed, recrawl: &Recrawl, per_second: u64, progress: &Progress, stop: &AtomicBool) -> Result<usize> {
     let mut todo = Vec::new();
     for (domain, terms) in allowed.entries() {
@@ -1310,7 +1384,8 @@ pub fn join_round(buckets: &Buckets, allowed: &Allowed, recrawl: &Recrawl, per_s
             // A handful of slots freed by gone pages waits for the next round; new pages from sitemaps take them meanwhile.
             let room = cap.map_or(0, |cap| cap.saturating_sub(size));
             let roomy = room >= cap.map_or(0, |cap| cap / 100).max(ROOM_WORTH_A_WALK) && urls.max(0) as u64 > size;
-            if store.joined(&domain)? == Some(cap) && !roomy {
+            let over = cap.is_some_and(|cap| size > cap);
+            if store.joined(&domain)? == Some(cap) && !roomy && !over {
                 continue;
             }
         }
@@ -1321,42 +1396,62 @@ pub fn join_round(buckets: &Buckets, allowed: &Allowed, recrawl: &Recrawl, per_s
     todo.sort_unstable_by(|a, b| (band(a.2), a.1, a.2, &a.3).cmp(&(band(b.2), b.1, b.2, &b.3)));
     progress.join_of.store(todo.len() as u64, Ordering::Relaxed);
     progress.join_done.store(0, Ordering::Relaxed);
-    let walk = |todo: Vec<(bool, std::cmp::Reverse<u8>, i64, String, Terms)>| -> Result<usize> {
-        let began = Instant::now();
-        let mut read = 0u64;
-        let mut pace = |scanned: u64| {
-            read += scanned;
-            let due = Duration::from_secs_f64(read as f64 / per_second.max(1) as f64);
-            if let Some(ahead) = due.checked_sub(began.elapsed()) {
-                std::thread::sleep(ahead);
-            }
-            !stop.load(Ordering::Relaxed)
-        };
-        let mut handled = 0;
-        for (unbuilt, _, _, domain, terms) in todo {
-            if stop.load(Ordering::Relaxed) {
-                break;
-            }
-            let store = buckets.store(&domain);
-            let over = set_cap(terms).zip(store.set_size(&domain)?).is_some_and(|(cap, size)| size > cap);
-            let built = match (unbuilt, over) {
-                (true, _) => store.build_queue(&domain, terms, recrawl, now(), &mut pace)?,
-                (false, true) => store.shrink_set(&domain, terms, &mut pace)?,
-                (false, false) => store.admit_more(&domain, terms, now(), &mut pace)?,
-            };
-            if built.stopped {
-                break;
-            }
-            handled += 1;
-            progress.join_done.fetch_add(1, Ordering::Relaxed);
-            progress.join_queued.fetch_add(built.members + built.admitted, Ordering::Relaxed);
+    let began = Instant::now();
+    let read = AtomicU64::new(0);
+    let pace = |scanned: u64| {
+        progress.join_read.fetch_add(scanned, Ordering::Relaxed);
+        let read = read.fetch_add(scanned, Ordering::Relaxed) + scanned;
+        let due = Duration::from_secs_f64(read as f64 / per_second.max(1) as f64);
+        if let Some(ahead) = due.checked_sub(began.elapsed()) {
+            std::thread::sleep(ahead);
         }
-        Ok(handled)
+        !stop.load(Ordering::Relaxed)
+    };
+    let handle = |unbuilt: bool, domain: &str, terms: Terms| -> Result<Built> {
+        let store = buckets.store(domain);
+        let mut paced = |scanned: u64| pace(scanned);
+        if unbuilt {
+            return store.build_queue(domain, terms, recrawl, now(), &mut paced);
+        }
+        match set_cap(terms).zip(store.set_size(domain)?) {
+            Some((cap, size)) if size > cap => store.shrink_set(domain, terms, &mut paced),
+            _ => store.admit_more(domain, terms, recrawl, now(), &mut paced),
+        }
+    };
+    let walk = |todo: &[(bool, std::cmp::Reverse<u8>, i64, String, Terms)], threads: usize| -> Result<usize> {
+        let next = AtomicUsize::new(0);
+        let handled = AtomicUsize::new(0);
+        std::thread::scope(|scope| -> Result<()> {
+            let workers: Vec<_> = (0..threads.min(todo.len()))
+                .map(|_| {
+                    scope.spawn(|| -> Result<()> {
+                        while let Some((unbuilt, _, _, domain, terms)) = todo.get(next.fetch_add(1, Ordering::Relaxed)) {
+                            if stop.load(Ordering::Relaxed) {
+                                break;
+                            }
+                            let built = handle(*unbuilt, domain, *terms)?;
+                            if built.stopped {
+                                break;
+                            }
+                            handled.fetch_add(1, Ordering::Relaxed);
+                            progress.join_done.fetch_add(1, Ordering::Relaxed);
+                            progress.join_queued.fetch_add(built.members + built.admitted, Ordering::Relaxed);
+                        }
+                        Ok(())
+                    })
+                })
+                .collect();
+            for worker in workers {
+                worker.join().expect("the list walker panicked")?;
+            }
+            Ok(())
+        })?;
+        Ok(handled.load(Ordering::Relaxed))
     };
     let (building, admitting): (Vec<_>, Vec<_>) = todo.into_iter().partition(|item| item.0);
     std::thread::scope(|scope| {
-        let built = scope.spawn(|| walk(building));
-        let admitted = walk(admitting)?;
+        let built = scope.spawn(|| walk(&building, BUILD_THREADS));
+        let admitted = walk(&admitting, 1)?;
         Ok(admitted + built.join().expect("the list walker panicked")?)
     })
 }
@@ -1390,6 +1485,19 @@ pub fn on_readers<T: Send, R: Send>(items: Vec<T>, work: impl Fn(T) -> Result<R>
     done.into_iter().map(|slot| slot.into_inner().unwrap_or_else(|e| e.into_inner()).expect("every item ran")).collect()
 }
 
+fn site_of(sites: &HashMap<String, Site>, buckets: &Buckets, domain: &str) -> Site {
+    sites.get(domain).copied().unwrap_or_else(|| {
+        let terms = buckets.terms(domain);
+        Site { rank: UNRANKED, weight: terms.weight, share: 1.0, site: terms.site, hourly: terms.hourly }
+    })
+}
+
+/// What the site may send now: its hour's limit, probes only at no share, less what went in the last hour and its spread.
+fn allowance_of(cap: &mut HourlyCap, domain: &str, site: &Site, now: u32) -> u64 {
+    let hourly = site.hourly.unwrap_or(cap.limit());
+    cap.allowance_under(domain, now, if site.share == 0.0 { PROBE_PER_HOUR.min(hourly) } else { hourly })
+}
+
 fn share_of(buckets: &Buckets, domain: &str, now: u32) -> f64 {
     let Some(store) = buckets.store_for(domain) else {
         return 1.0;
@@ -1406,7 +1514,7 @@ fn sites(buckets: &Buckets, now: u32) -> Result<HashMap<String, Site>> {
             .into_iter()
             .map(|name| {
                 let terms = buckets.terms(&name);
-                let site = Site { rank: rank_of(buckets, &name), weight: terms.weight, share: share_of(buckets, &name, now), site: terms.site };
+                let site = Site { rank: rank_of(buckets, &name), weight: terms.weight, share: share_of(buckets, &name, now), site: terms.site, hourly: terms.hourly };
                 (name, site)
             })
             .collect::<Vec<_>>())
