@@ -1,7 +1,7 @@
 import { useHours } from '@/api/queries/hours'
 import { useOverview } from '@/api/queries/overview'
 import { WorkPanel } from '@/components/charts/WorkPanel'
-import { ChecksPanel } from '@/components/overview/ChecksPanel'
+import { FailReasons } from '@/components/overview/FailReasons'
 import { LiveStats } from '@/components/overview/LiveStats'
 import { RecentProblems } from '@/components/overview/RecentProblems'
 import { TopMiners } from '@/components/overview/TopMiners'
@@ -49,7 +49,7 @@ export function OverviewPage() {
         <TopMiners kind={kind} />
       </div>
       <div className="grid gap-4 xl:grid-cols-2">
-        <QueryState query={chosen}>{(overview) => <ChecksPanel overview={overview} />}</QueryState>
+        <QueryState query={chosen}>{(overview) => <FailReasons overview={overview} />}</QueryState>
         <RecentProblems kind={kind} />
       </div>
     </div>
