@@ -9,7 +9,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from desearch.extraction import EXTRACTION_V2, Page, extract, looks_blocked
-from desearch.extraction.schema import PAGE_SCHEMA_V2, sha256_hex
+from desearch.extraction.schema import PAGE_SCHEMA, sha256_hex
 from desearch.fetch import Fetched, decode_html, page_url
 
 ROW_GROUP_ROWS = 50
@@ -74,11 +74,11 @@ class UploadWriter:
 
     def __init__(self, task_id: str, hotkey: str):
         metadata = {
-            **(PAGE_SCHEMA_V2.metadata or {}),
+            **(PAGE_SCHEMA.metadata or {}),
             b"task_id": task_id.encode(),
             b"hotkey": hotkey.encode(),
         }
-        self.schema = PAGE_SCHEMA_V2.with_metadata(metadata)
+        self.schema = PAGE_SCHEMA.with_metadata(metadata)
         self.sink = io.BytesIO()
         self.writer = pq.ParquetWriter(self.sink, self.schema, compression="zstd")
         self.pending: list[dict] = []

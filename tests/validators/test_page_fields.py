@@ -4,12 +4,11 @@ from datetime import datetime, timezone
 import pyarrow as pa
 import pytest
 
-from desearch.extraction.schema import PAGE_SCHEMA_V1, PAGE_SCHEMA_V2
+from desearch.extraction.schema import PAGE_SCHEMA
 from desearch.fetch import Fetched
 from neurons.miners.rows import build_row, write_parquet
 from neurons.validators.scoring import (
     FetchedPage,
-    V1Upload,
     derived_from_html,
     judge_sample,
     load_upload,
@@ -73,7 +72,7 @@ def board(seeds=range(10)) -> str:
     )
 
 
-def test_a_v2_upload_written_by_the_miner_is_re_extracted_equal_and_passes():
+def test_an_upload_written_by_the_miner_is_re_extracted_equal_and_passes():
     html = story()
     fetched = Fetched(
         url=STORY_URL,
@@ -137,30 +136,14 @@ def test_a_forged_page_field_is_caught_by_re_extraction(field, value):
     assert not derived_from_html(dict(row, **{field: value}))
 
 
-def test_a_v2_file_passes_and_a_v1_file_is_told_apart_before_any_row_is_read():
-    rows, assigned, fetched = synthetic(10)
-
-    read, _ = load_upload(to_parquet(rows), assigned, SEED)
-    assert run(read, assigned, fetched)["verdict"] == "pass"
-
-    with pytest.raises(V1Upload):
-        load_upload(to_parquet(rows, PAGE_SCHEMA_V1), assigned, SEED)
-
-
-def test_a_file_mixing_the_two_schemas_is_unreadable():
+def test_a_file_missing_a_column_or_naming_another_extraction_is_unreadable():
     rows, _, _ = synthetic(3)
-    v1_plus = pa.schema(
-        [
-            *PAGE_SCHEMA_V1,
-            PAGE_SCHEMA_V2.field("extraction"),
-            PAGE_SCHEMA_V2.field("ld"),
-        ]
-    )
-    relabelled = [rows[0], dict(rows[1], extraction="v1"), rows[2]]
+    no_ld = pa.schema([field for field in PAGE_SCHEMA if field.name != "ld"])
+    relabelled = [rows[0], dict(rows[1], extraction="other"), rows[2]]
 
-    assert read_pages(to_parquet(rows, v1_plus)) is None
-    assert read_pages(to_parquet(relabelled, PAGE_SCHEMA_V2)) is None
-    assert read_pages(to_parquet(rows, PAGE_SCHEMA_V2)) is not None
+    assert read_pages(to_parquet(rows, no_ld)) is None
+    assert read_pages(to_parquet(relabelled)) is None
+    assert read_pages(to_parquet(rows)) is not None
 
 
 def test_an_empty_published_proves_nothing_only_where_it_cannot_be_forged():

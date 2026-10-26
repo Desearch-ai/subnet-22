@@ -44,7 +44,6 @@ const REASON_MEANING: Record<string, string> = {
   reported_rows: 'The upload held fewer good pages than the miner reported for it.',
   unreadable: 'The uploaded file could not be read.',
   upload_changed: 'The miner changed the uploaded file after reporting the task done.',
-  extraction_v1: 'The upload was written in extraction v1. Validators accept only v2.',
   unscorable: 'The validator could not finish its check. This does not count against the miner.',
   no_quorum: 'Not enough validators voted before the deadline.',
   validators_disagree: 'Validators reached different results and no majority formed.',

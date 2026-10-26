@@ -9,7 +9,9 @@ import aiohttp
 import pytest
 from aiohttp import web
 
-from desearch.extraction.schema import PAGE_SCHEMA_V1, PAGE_SCHEMA_V2
+import pyarrow as pa
+
+from desearch.extraction.schema import PAGE_SCHEMA
 from neurons.validators.crawl import CrawlValidator, ProviderRefused
 from neurons.validators.scoring import FetchedPage
 from neurons.validators.scoring_process import ScoringProcess, Unscorable
@@ -18,7 +20,7 @@ from tests.synthetic import SEED, synthetic, synthetic_html, to_parquet
 
 
 def check(
-    rows, assigned, fetched, schema=PAGE_SCHEMA_V2, **options
+    rows, assigned, fetched, schema=PAGE_SCHEMA, **options
 ) -> tuple[dict, list[str]]:
     """The validator's result for an upload, and every sample page it fetched."""
     parquet = to_parquet(rows, schema, task_id="t1", hotkey="m")
@@ -60,12 +62,13 @@ def test_a_fabricated_task_fails_on_the_full_sample():
     assert result["sampled"] == len(asked) == 10
 
 
-def test_a_v1_upload_fails_and_no_page_is_fetched_for_it():
+def test_an_upload_without_every_column_fails_unread_and_no_page_is_fetched():
     rows, assigned, fetched = synthetic(100)
+    fewer = pa.schema(list(PAGE_SCHEMA)[: PAGE_SCHEMA.get_field_index("extraction")])
 
-    result, asked = check(rows, assigned, fetched, PAGE_SCHEMA_V1)
+    result, asked = check(rows, assigned, fetched, fewer)
 
-    assert (result["verdict"], result["reason"]) == ("fail", "extraction_v1")
+    assert (result["verdict"], result["reason"]) == ("fail", "unreadable")
     assert asked == []
 
 

@@ -9,7 +9,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from desearch.extraction import EXTRACTION_V2, extract
-from desearch.extraction.schema import PAGE_SCHEMA_V2, sha256_hex
+from desearch.extraction.schema import PAGE_SCHEMA, sha256_hex
 from neurons.validators.scoring import FetchedPage, sample_seed, score
 
 SEED = sample_seed("task-1", "validator-hotkey")
@@ -87,9 +87,7 @@ def synthetic(count: int, errors: int = 0):
     return rows, urls, fetched
 
 
-def to_parquet(
-    rows: list[dict], schema: pa.Schema = PAGE_SCHEMA_V2, **metadata
-) -> bytes:
+def to_parquet(rows: list[dict], schema: pa.Schema = PAGE_SCHEMA, **metadata) -> bytes:
     schema = schema.with_metadata({k.encode(): v.encode() for k, v in metadata.items()})
     sink = io.BytesIO()
     pq.write_table(pa.Table.from_pylist(rows, schema=schema), sink, compression="zstd")

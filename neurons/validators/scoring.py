@@ -12,7 +12,7 @@ from dataclasses import dataclass, fields
 import pyarrow.parquet as pq
 
 from desearch.extraction import EXTRACTION_V2, Page, extract, looks_blocked
-from desearch.extraction.schema import PAGE_SCHEMA_V1, PAGE_SCHEMA_V2, sha256_hex
+from desearch.extraction.schema import PAGE_SCHEMA, sha256_hex
 from desearch.fetch import page_url
 from neurons.validators.compare import (
     CHURN_TEXT_MODES,
@@ -80,22 +80,16 @@ class FetchedPage:
     via: str = ""
 
 
-class V1Upload(Exception):
-    pass
-
-
 def read_pages(data: bytes | None, assigned: int | None = None) -> list[dict] | None:
     if not data:
         return None
     try:
         parquet = pq.ParquetFile(io.BytesIO(data))
-        if parquet.schema_arrow.equals(PAGE_SCHEMA_V1):
-            raise V1Upload
-        if not parquet.schema_arrow.equals(PAGE_SCHEMA_V2):
+        if not parquet.schema_arrow.equals(PAGE_SCHEMA):
             return None
         if assigned is not None and upload_too_big(parquet.metadata, assigned):
             return None
-        table = parquet.read(columns=[n for n in PAGE_SCHEMA_V2.names if n != "html"])
+        table = parquet.read(columns=[n for n in PAGE_SCHEMA.names if n != "html"])
         # The footer is the miner's word; the decoded columns are not.
         if assigned is not None and table.nbytes > max(assigned, 1) * MAX_ROW_BYTES:
             return None
@@ -103,8 +97,6 @@ def read_pages(data: bytes | None, assigned: int | None = None) -> list[dict] | 
         if any(row["extraction"] != EXTRACTION_V2 for row in rows):
             return None
         return rows
-    except V1Upload:
-        raise
     except Exception:
         return None
 

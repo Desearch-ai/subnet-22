@@ -541,7 +541,7 @@ def _score(
 
 
 def _parquet(task: dict, hotkey: str) -> bytes:
-    from desearch.extraction.schema import PAGE_SCHEMA_V1
+    from desearch.extraction.schema import PAGE_SCHEMA
 
     fetched_at = datetime.now(timezone.utc)
     rows = []
@@ -573,15 +573,27 @@ def _parquet(task: dict, hotkey: str) -> bytes:
                 "headings": [],
                 "text": text,
                 "text_sha256": hashlib.sha256(text.encode()).hexdigest(),
+                "extraction": "v2",
+                "text_mode": "full",
+                "modified": "",
+                "site_name": "",
+                "image": "",
+                "section": "",
+                "tags": [],
+                "breadcrumbs": [],
+                "entity": "",
+                "ld": "",
+                "paywalled": None,
+                "robots": [],
             }
         )
 
     metadata = {
-        **(PAGE_SCHEMA_V1.metadata or {}),
+        **(PAGE_SCHEMA.metadata or {}),
         b"task_id": task["task_id"].encode(),
         b"hotkey": hotkey.encode(),
     }
-    table = pa.Table.from_pylist(rows, schema=PAGE_SCHEMA_V1.with_metadata(metadata))
+    table = pa.Table.from_pylist(rows, schema=PAGE_SCHEMA.with_metadata(metadata))
     sink = io.BytesIO()
     pq.write_table(table, sink, compression="zstd")
     return sink.getvalue()

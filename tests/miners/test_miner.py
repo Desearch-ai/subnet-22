@@ -18,7 +18,7 @@ import pyarrow.parquet as pq
 import pytest
 
 from desearch.extraction import EXTRACTION_V2
-from desearch.extraction.schema import PAGE_SCHEMA_V2
+from desearch.extraction.schema import PAGE_SCHEMA
 from desearch.fetch import (
     MAX_REDIRECTS,
     Fetched,
@@ -300,7 +300,7 @@ def test_a_row_that_fails_to_build_becomes_an_error_row(monkeypatch):
     assert [row["error"] for row in rows] == [None, "other"]
     assert rows[1]["html"] is None and rows[1]["status"] == 200
     table = pq.read_table(io.BytesIO(write_parquet(rows, "t-poison", "hk")))
-    assert table.schema.equals(PAGE_SCHEMA_V2) and table.num_rows == 2
+    assert table.schema.equals(PAGE_SCHEMA) and table.num_rows == 2
 
 
 def test_a_receipt_that_cannot_be_written_does_not_drop_the_claim(tmp_path, caplog):
@@ -1119,7 +1119,7 @@ def test_the_upload_is_written_in_small_row_groups_as_rows_arrive():
     upload = pq.ParquetFile(io.BytesIO(asyncio.run(write())))
 
     assert upload.num_row_groups == 3
-    assert upload.schema_arrow.equals(PAGE_SCHEMA_V2)
+    assert upload.schema_arrow.equals(PAGE_SCHEMA)
     assert [r["url"] for r in upload.read().to_pylist()] == [r["url"] for r in rows]
 
 
@@ -1404,7 +1404,7 @@ def test_the_miner_uploads_v2():
     asyncio.run(go())
 
     upload = pq.ParquetFile(io.BytesIO(uploaded[0]))
-    assert upload.schema_arrow.equals(PAGE_SCHEMA_V2)
+    assert upload.schema_arrow.equals(PAGE_SCHEMA)
     assert upload.metadata.num_rows == 3
 
 
@@ -1424,7 +1424,7 @@ def test_v2_rows_name_their_extraction():
     )
     table = pq.read_table(io.BytesIO(write_parquet([ok, error], "t", "hk")))
 
-    assert table.schema.equals(PAGE_SCHEMA_V2)
+    assert table.schema.equals(PAGE_SCHEMA)
     assert [(r["extraction"], r["error"]) for r in table.to_pylist()] == [
         (EXTRACTION_V2, None),
         (EXTRACTION_V2, "http_4xx"),

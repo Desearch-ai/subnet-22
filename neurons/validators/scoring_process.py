@@ -11,8 +11,6 @@ from desearch.extraction import extract
 from neurons.validators.confinement import confine
 from neurons.validators.scoring import (
     FetchedPage,
-    V1Upload,
-    empty_result,
     extraction_url,
     load_upload,
     pick_samples,
@@ -69,13 +67,7 @@ def _score_in_child(
         unconfined = confine()
         read_on_one_thread()
         cap_memory(memory_mb)
-        try:
-            rows, kept = load_upload(data, assigned, seed)
-        except V1Upload:
-            answer(conn, "samples", {"urls": [], "unconfined": unconfined})
-            conn.recv()
-            answer(conn, "scored", empty_result(set(assigned), "extraction_v1"))
-            return
+        rows, kept = load_upload(data, assigned, seed)
         del data
         planned = pick_samples(kept, seed, sample_count(len(kept), min_samples))
         answer(conn, "samples", {"urls": planned, "unconfined": unconfined})
