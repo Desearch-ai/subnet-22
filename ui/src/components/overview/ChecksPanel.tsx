@@ -1,15 +1,11 @@
-import type { Overview, WaitSummary } from '@/api/types'
+import type { Overview } from '@/api/types'
 import { Card, CardHeader } from '@/components/ui/Card'
 import { Stat } from '@/components/ui/Stat'
 import { EmptyState } from '@/components/ui/States'
 import { Table, Td, Th, Tr } from '@/components/ui/Table'
 import { StatusBadge } from '@/components/ui/VerdictBadge'
-import { EMPTY_VALUE, formatElapsed, formatInt, formatPercent, ratio } from '@/lib/format'
+import { formatInt, formatPercent, ratio } from '@/lib/format'
 import { explainReason } from '@/lib/labels'
-
-function median(summary: WaitSummary | null): string {
-  return summary?.p50 == null ? EMPTY_VALUE : formatElapsed(summary.p50)
-}
 
 export function ChecksPanel({ overview }: { overview: Overview }) {
   const { window, checks, taken_back: takenBack, window_hours: hours, kind } = overview
@@ -17,23 +13,13 @@ export function ChecksPanel({ overview }: { overview: Overview }) {
   const notPassed = checks.reasons
     .filter((reason) => reason.verdict !== 'pass')
     .sort((a, b) => b.tasks - a.tasks)
-  const checked = checks.verdict_s.checked
   return (
     <Card>
       <CardHeader
         title="Verdicts"
         description={`${kind === 'embed' ? 'Embed' : 'Crawl'} uploads, last ${hours} hours. What passes counts toward the miner’s share as soon as its verdict is in.`}
       />
-      <div className="grid gap-3 p-4 sm:grid-cols-3">
-        <Stat
-          label="Time to verdict"
-          value={median(checks.verdict_s.unchecked ?? checked)}
-          detail={
-            checked?.p50 == null
-              ? 'from upload, typical'
-              : `from upload, typical · ${formatElapsed(checked.p50)} when a validator checks it`
-          }
-        />
+      <div className="grid gap-3 p-4 sm:grid-cols-2">
         <Stat
           label="Passed"
           value={formatPercent(ratio(window.pass, finalized), 2)}

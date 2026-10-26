@@ -49,6 +49,7 @@ export function formatPercent(value: number | null | undefined, digits = 1): str
   if (value === null || value === undefined) return EMPTY_VALUE
   const smallest = 10 ** -digits
   if (value > 0 && value * 100 < smallest) return `<${smallest.toFixed(digits)}%`
+  if (value < 1 && 100 - value * 100 < smallest) return `>${(100 - smallest).toFixed(digits)}%`
   return `${(value * 100).toFixed(digits)}%`
 }
 

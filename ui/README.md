@@ -48,7 +48,7 @@ Copy `.env.example` to `.env.local` to change it. The value is read at build tim
 
 | Path                  | Shows                                                                                                                                     |
 | --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
-| `/`                   | Tasks waiting and in progress, tasks done per hour, top miners, time to verdict, why uploads did not pass                                 |
+| `/`                   | Tasks waiting and in progress, tasks done per hour, top miners, pass rate, take-backs, why uploads did not pass                           |
 | `/tasks`              | Finalized tasks, filtered by miner, validator, kind or result                                                                             |
 | `/tasks/:taskId`      | One task: result and why, miner, deciding validator, timeline, every validator's vote, the checked URLs or texts                          |
 | `/miners`             | Every miner for the chosen kind: share, budget, tasks in flight, results                                                                  |

@@ -38,6 +38,11 @@ describe('ratio and formatPercent', () => {
     expect(formatPercent(0.00001, 2)).toBe('<0.01%')
     expect(formatPercent(0)).toBe('0.0%')
   })
+
+  it('never rounds a share short of all up to 100%', () => {
+    expect(formatPercent(478_241 / 478_260, 2)).toBe('>99.99%')
+    expect(formatPercent(1, 2)).toBe('100.00%')
+  })
 })
 
 describe('formatDuration', () => {
