@@ -817,8 +817,9 @@ impl Dispatcher {
                 Want { rank: *rank, ready: allowance, allowance, share: 1.0, weight: terms.weight }
             })
             .collect();
-        let (given, _) = allot(&wants, budget, 0);
-        self.fill_resume = order.last().cloned();
+        let (given, next) = allot(&wants, budget, 0);
+        // The next pass goes on after the last domain that had a turn, not past the whole window.
+        self.fill_resume = order.get(next.checked_sub(1).unwrap_or(order.len().saturating_sub(1))).cloned();
         let asks: Vec<(String, usize)> = order.iter().zip(&given).filter(|(_, &n)| n > 0).map(|((_, name), &n)| (name.clone(), n as usize)).collect();
         if asks.is_empty() {
             return Ok(Vec::new());
