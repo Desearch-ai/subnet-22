@@ -15,7 +15,7 @@ use crate::budgets::{self, hour_of, KEEP_H};
 use crate::http::ApiError;
 use crate::queues::KINDS;
 use crate::state::State;
-use crate::{checks, lifecycle, logs, roundstore, uploadlog, validations};
+use crate::{checks, hours, lifecycle, logs, roundstore, uploadlog, validations};
 
 /// The copy of the API that runs the passes; a rolling deploy briefly runs two copies.
 pub const LEASE_KEY: &str = "janitor:leader";
@@ -53,6 +53,8 @@ const DROP_VERDICTS: i64 = 200;
 const PRUNE_DETAILS: i64 = 10;
 /// Verdict rows counted into the hourly totals per pass; a first start catches up on the kept week this way.
 const ROLL_UP_ROWS: i64 = 5000;
+/// Log entries tallied per pass, ~15 ms of writer time.
+const ROLL_UP_ENTRIES: i64 = 5000;
 
 #[derive(Clone, Copy, Debug)]
 enum Duty {
@@ -133,6 +135,8 @@ impl Duty {
 async fn upkeep(state: &Arc<State>, due: &mut Due) -> Result<()> {
     state.db.run(|conn| validations::prune_urls(conn, now(), PRUNE_DETAILS)).await?;
     state.db.run(|conn| validations::roll_up(conn, ROLL_UP_ROWS)).await?;
+    state.db.run(|conn| hours::roll_up_claims(conn, ROLL_UP_ENTRIES, now())).await?;
+    state.db.run(|conn| hours::roll_up_checks(conn, ROLL_UP_ROWS, now())).await?;
     if elapsed(due.sealed_at, SEAL_EVERY) {
         due.sealed_at = Some(Instant::now());
         OUTCOMES.fill_holes(&state.storage, &state.redis).await?;
@@ -160,6 +164,7 @@ async fn upkeep(state: &Arc<State>, due: &mut Due) -> Result<()> {
                 let at = now();
                 budgets::prune(conn, KEEP_H, at)?;
                 validations::prune_hours(conn, at)?;
+                hours::prune(conn, at)?;
                 checks::prune(conn, at)
             })
             .await?;

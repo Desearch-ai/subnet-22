@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import {
   EMPTY_VALUE,
-  formatCountdown,
   formatDuration,
   formatInt,
   formatPercent,
+  niceTicks,
   formatRelative,
   formatSimilarity,
   formatSimilarityMargin,
@@ -33,6 +33,16 @@ describe('ratio and formatPercent', () => {
     expect(formatPercent(ratio(35, 40))).toBe('87.5%')
     expect(formatPercent(0.41, 0)).toBe('41%')
   })
+
+  it('says a share too small to show is above zero', () => {
+    expect(formatPercent(0.00001, 2)).toBe('<0.01%')
+    expect(formatPercent(0)).toBe('0.0%')
+  })
+
+  it('never rounds a share short of all up to 100%', () => {
+    expect(formatPercent(478_241 / 478_260, 2)).toBe('>99.99%')
+    expect(formatPercent(1, 2)).toBe('100.00%')
+  })
 })
 
 describe('formatDuration', () => {
@@ -50,13 +60,6 @@ describe('formatRelative', () => {
     expect(formatRelative(NOW_S - 3, NOW_MS)).toBe('just now')
     expect(formatRelative(NOW_S - 120, NOW_MS)).toBe('2 min ago')
     expect(formatRelative(NOW_S + 7200, NOW_MS)).toBe('in 2 h')
-  })
-})
-
-describe('formatCountdown', () => {
-  it('counts down in minutes and seconds and stops at zero', () => {
-    expect(formatCountdown(NOW_S + 412, NOW_MS)).toBe('6:52')
-    expect(formatCountdown(NOW_S - 5, NOW_MS)).toBe('0:00')
   })
 })
 
@@ -88,5 +91,14 @@ describe('formatWorkTime', () => {
   it('measures from claim to upload and shows a dash when either is missing', () => {
     expect(formatWorkTime({ claimed_at: NOW_S - 95, completed_at: NOW_S })).toBe('1 min 35 s')
     expect(formatWorkTime({ claimed_at: null, completed_at: NOW_S })).toBe(EMPTY_VALUE)
+  })
+})
+
+describe('niceTicks', () => {
+  it('steps from zero at a round size to the first tick at or above the highest value', () => {
+    expect(niceTicks(20_704)).toEqual([0, 10_000, 20_000, 30_000])
+    expect(niceTicks(211)).toEqual([0, 100, 200, 300])
+    expect(niceTicks(9.4)).toEqual([0, 2.5, 5, 7.5, 10])
+    expect(niceTicks(0)).toEqual([0])
   })
 })

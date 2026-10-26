@@ -16,7 +16,6 @@ from yarl import URL
 
 from desearch import env
 from desearch.client import TaskApiClient, TaskApiError
-from desearch.extraction import EXTRACTION_V2
 from desearch.fetch import (
     Fetched,
     Fetcher,
@@ -41,7 +40,6 @@ HEADROOM = 0.7
 ROOM_CHECK_S = 1.0
 ATTEMPTS = 3
 SUMMARY_EVERY_S = 60.0
-EXTRACTION = EXTRACTION_V2
 UPLOAD_TIMEOUT = aiohttp.ClientTimeout(total=120.0, sock_connect=15.0)
 
 
@@ -341,7 +339,7 @@ class Miner(TaskWorker):
     async def process_task(self, task: dict) -> None:
         task_id, upload = task["task_id"], task["upload"]
         started = time.monotonic()
-        pages = UploadWriter(task_id, self.api.hotkey, EXTRACTION)
+        pages = UploadWriter(task_id, self.api.hotkey)
         progress = self.crawls.get(task_id)
         try:
             await self.crawl(task["urls"], task.get("expires_at"), pages, progress)
@@ -397,7 +395,7 @@ class Miner(TaskWorker):
                 if row is None:
                     return
                 # Off the crawl slot: ScrapingDog's latency would otherwise cap our own-IP rate.
-                row = await self.with_fallback(url, row, deadline, pages.extraction)
+                row = await self.with_fallback(url, row, deadline)
                 log_page(row)
                 await pages.add(row)
             finally:
@@ -431,8 +429,7 @@ class Miner(TaskWorker):
                 late = out_of_time(deadline)
                 started = time.monotonic()
                 row = await self.to_row(
-                    await self.fetcher.attempt(url, deadline, timeout),
-                    pages.extraction,
+                    await self.fetcher.attempt(url, deadline, timeout)
                 )
                 held += time.monotonic() - started
                 again = (
@@ -454,9 +451,7 @@ class Miner(TaskWorker):
                 await pages.add(row)
                 return None
 
-    async def with_fallback(
-        self, url: str, row: dict, deadline: float | None, extraction: str
-    ) -> dict:
+    async def with_fallback(self, url: str, row: dict, deadline: float | None) -> dict:
         """ScrapingDog's page if a fallback slot frees before the deadline, else our own row."""
         wait = None if deadline is None else max(0.0, deadline - time.time())
         acquiring = asyncio.ensure_future(self.falling_back.acquire())
@@ -474,32 +469,26 @@ class Miner(TaskWorker):
             acquiring.cancel()
             return row
         try:
-            return await self.fallback_row(url, row, deadline, extraction)
+            return await self.fallback_row(url, row, deadline)
         finally:
             self.falling_back.release()
 
-    async def fallback_row(
-        self, url: str, row: dict, deadline: float | None, extraction: str
-    ) -> dict:
+    async def fallback_row(self, url: str, row: dict, deadline: float | None) -> dict:
         fallback = await self.to_row(
-            await self.scrapingdog.fetch(url, deadline=deadline), extraction
+            await self.scrapingdog.fetch(url, deadline=deadline)
         )
         return fallback if fallback["error"] is None else row
 
-    async def to_row(self, fetched: Fetched, extraction: str) -> dict:
+    async def to_row(self, fetched: Fetched) -> dict:
         try:
             return await asyncio.get_running_loop().run_in_executor(
-                self.extractors,
-                build_row,
-                fetched,
-                self.settings.max_bytes,
-                extraction,
+                self.extractors, build_row, fetched, self.settings.max_bytes
             )
         except Exception as exc:
             log.warning(
                 "row for %s failed: %s: %s", fetched.url, type(exc).__name__, exc
             )
-            return error_row(fetched, "other", extraction)
+            return error_row(fetched, "other")
 
     async def aclose(self) -> None:
         await self.fetcher.aclose()
@@ -555,7 +544,6 @@ def main() -> None:
         level=os.environ.get("LOG_LEVEL", "INFO").upper(),
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
-    logging.getLogger("trafilatura").setLevel(logging.ERROR)
     asyncio.run(serve())
 
 

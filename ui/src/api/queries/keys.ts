@@ -1,4 +1,4 @@
-import { WINDOW_HOURS } from '../config'
+import { HOURS_SHOWN, WINDOW_HOURS } from '../config'
 import type { Kind, Verdict } from '../types'
 
 export interface TaskFilters {
@@ -13,15 +13,14 @@ export interface VoteFilters {
   agreed?: boolean
 }
 
-export interface SeriesFilters {
+export interface HoursFilters {
   kind: Kind
   miner?: string
 }
 
 export const queryKeys = {
   overview: (kind: Kind) => ['overview', WINDOW_HOURS, kind] as const,
-  live: () => ['live'] as const,
-  series: ({ kind, miner }: SeriesFilters) => ['series', kind, miner ?? null] as const,
+  hours: ({ kind, miner }: HoursFilters) => ['hours', HOURS_SHOWN, kind, miner ?? null] as const,
   miners: (kind: Kind) => ['miners', WINDOW_HOURS, kind] as const,
   miner: (hotkey: string) => ['miner', hotkey] as const,
   tasks: (filters: TaskFilters, limit: number) => ['tasks', filters, limit] as const,

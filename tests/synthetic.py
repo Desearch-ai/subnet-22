@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from desearch.extraction import EXTRACTION_V1, extract, v1
+from desearch.extraction import EXTRACTION_V2, extract
 from desearch.extraction.schema import PAGE_SCHEMA, sha256_hex
 from neurons.validators.scoring import FetchedPage, sample_seed, score
 
@@ -35,19 +35,12 @@ def synthetic_html(n: int, title: str | None = None) -> str:
     )
 
 
-def page_row(
-    url: str,
-    html: str,
-    final_url: str = "",
-    text: str | None = None,
-    extraction: str = EXTRACTION_V1,
-) -> dict:
+def page_row(url: str, html: str, final_url: str = "", text: str | None = None) -> dict:
     final_url = final_url or url
-    v1_row = extraction == EXTRACTION_V1
-    page = (v1.extract if v1_row else extract)(html, final_url)
+    page = extract(html, final_url)
     raw = html.encode()
     text = page.text if text is None else text
-    row = {
+    return {
         "url": url,
         "final_url": final_url,
         "status": 200,
@@ -61,20 +54,13 @@ def page_row(
         **asdict(page),
         "text": text,
         "text_sha256": sha256_hex(text),
+        "extraction": EXTRACTION_V2,
     }
-    if v1_row:
-        return row
-    return {**row, "extraction": extraction}
 
 
-def error_row(
-    url: str,
-    error: str = "http_4xx",
-    status: int = 404,
-    extraction: str = EXTRACTION_V1,
-) -> dict:
+def error_row(url: str, error: str = "http_4xx", status: int = 404) -> dict:
     return {
-        **page_row(url, "", extraction=extraction),
+        **page_row(url, ""),
         "status": status,
         "error": error,
         "content_type": "",
@@ -91,12 +77,10 @@ def synthetic_url(n: int) -> str:
     return f"https://site{n}.example/news/story-{n}"
 
 
-def synthetic(count: int, errors: int = 0, extraction: str = EXTRACTION_V1):
+def synthetic(count: int, errors: int = 0):
     urls = [synthetic_url(n) for n in range(count)]
     rows = [
-        error_row(url, extraction=extraction)
-        if n < errors
-        else page_row(url, synthetic_html(n), extraction=extraction)
+        error_row(url) if n < errors else page_row(url, synthetic_html(n))
         for n, url in enumerate(urls)
     ]
     fetched = {url: FetchedPage(200, synthetic_html(n)) for n, url in enumerate(urls)}

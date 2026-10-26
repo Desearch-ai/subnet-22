@@ -8,6 +8,7 @@ pub mod credit;
 pub mod db;
 pub mod embedding;
 pub mod flow;
+pub mod hours;
 pub mod http;
 pub mod janitor;
 pub mod lifecycle;

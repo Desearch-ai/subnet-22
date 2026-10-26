@@ -1,11 +1,7 @@
 import json
 
-from desearch.extraction import (
-    Page,
-    extract,
-    v1,
-)
-from desearch.extraction.schema import PAGE_SCHEMA, PAGE_SCHEMA_V2
+from desearch.extraction import Page, extract
+from desearch.extraction.schema import PAGE_SCHEMA
 from desearch.extraction.structured.dates import read_date
 
 HEAD = """<title>Pine shelf</title>
@@ -86,11 +82,30 @@ def test_dates():
     assert extract(html, "https://a.example/x").modified == ""
 
 
-def test_v2_schema_extends_v1_and_carries_every_page_field():
-    assert list(PAGE_SCHEMA_V2)[: len(PAGE_SCHEMA)] == list(PAGE_SCHEMA)
-    page_fields = set(Page.__dataclass_fields__)
-    assert page_fields <= set(PAGE_SCHEMA_V2.names)
-    assert set(PAGE_SCHEMA_V2.names) - set(PAGE_SCHEMA.names) == {
+def test_the_upload_columns_hold_every_page_field_in_the_order_miners_write():
+    assert set(Page.__dataclass_fields__) <= set(PAGE_SCHEMA.names)
+    assert PAGE_SCHEMA.names == [
+        "url",
+        "final_url",
+        "status",
+        "error",
+        "fetched_at",
+        "elapsed_ms",
+        "content_type",
+        "html_bytes",
+        "html",
+        "html_sha256",
+        "page_type",
+        "title",
+        "description",
+        "lang",
+        "canonical",
+        "published",
+        "author",
+        "json_ld_types",
+        "headings",
+        "text",
+        "text_sha256",
         "extraction",
         "text_mode",
         "modified",
@@ -103,26 +118,7 @@ def test_v2_schema_extends_v1_and_carries_every_page_field():
         "ld",
         "paywalled",
         "robots",
-    }
-
-
-def test_v1_is_unchanged():
-    assert list(v1.Page.__dataclass_fields__) == [
-        "page_type",
-        "title",
-        "description",
-        "lang",
-        "canonical",
-        "published",
-        "author",
-        "json_ld_types",
-        "headings",
-        "text",
     ]
-    html = "<html><head><title>Acme</title></head><body><article><h2>Tools</h2><p>Hammers and saws for builders.</p></article></body></html>"
-    got = v1.extract(html, "https://acme.example/")
-    assert (got.page_type, got.title, got.headings) == ("home", "Acme", ["Tools"])
-    assert "Hammers and saws for builders." in got.text and "#" not in got.text
 
 
 def test_odd_json_ld_and_attributes_never_empty_the_page():

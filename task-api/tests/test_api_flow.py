@@ -573,6 +573,18 @@ def _parquet(task: dict, hotkey: str) -> bytes:
                 "headings": [],
                 "text": text,
                 "text_sha256": hashlib.sha256(text.encode()).hexdigest(),
+                "extraction": "v2",
+                "text_mode": "full",
+                "modified": "",
+                "site_name": "",
+                "image": "",
+                "section": "",
+                "tags": [],
+                "breadcrumbs": [],
+                "entity": "",
+                "ld": "",
+                "paywalled": None,
+                "robots": [],
             }
         )
 

@@ -28,6 +28,7 @@ RocksDB is compiled from source, which needs `clang` and a C++ toolchain.
 
 ```bash
 python tools/export_langid.py data/langid.bin   # once: the language model homepages are judged with
+python tools/crawl_list.py --out domains.json   # the --domains list, from the registry's states and site types
 MALLOC_ARENA_MAX=2 desearch-bot run --buckets-dir /var/lib/desearch-bot/buckets --data-dir data
 ```
 
@@ -45,9 +46,13 @@ MALLOC_ARENA_MAX=2 desearch-bot run --buckets-dir /var/lib/desearch-bot/buckets 
 | `--per-domain-hourly` | 2000 | URLs one domain may send in an hour |
 | `--new-share` | 50 | percent of each domain's sends kept for pages never sent |
 | `--retry-share` | 10 | percent kept for retries and scheduled re-crawls; changed pages get the rest |
-| `--recrawl-days` | 7 | days after a crawl that a page without a lastmod goes out again |
+| `--recrawl-days` | 7 | days after a send that a page without a lastmod, or a page that failed, goes out again |
+| `--recrawl-overrides` | none | a file of `domain days` lines, such as `bbc.co.uk 1`, giving listed domains and their subdomains their own interval |
+| `--gone-days` | 30 | days a page that failed on two sends in a row waits before it goes out again, unless its lastmod moves |
+| `--dropped-per-hour` | 200000 | pages of lost or taken-back tasks sent again each hour; more are spread over the following hours |
 | `--backfill-ready` | off | walk every store once to queue pages found before the queue existed |
-| `--domains` | none | a JSON list of the domains whose pages are queued, as names or `{host, rank}`, read again when it changes; others are crawled but not queued |
+| `--domains` | none | a JSON list of the domains whose pages are queued, as names or `{host, weight, send_cap, hourly, backlog}`, read again when it changes; others are crawled but not queued |
+| `--join-per-sec` | 100000 | stored URL records read per second while queuing the pages of domains new to `--domains`; 0 turns it off |
 | `--backfill-sent` | none | pages the Python feeder sent, as tab-separated host, path, lastmod and time, marked sent first |
 | `--duration` | none | stop after this many seconds |
 
@@ -76,22 +81,40 @@ Each domain's queue has three lanes that send at the same time:
 
 - **new**: pages never sent, newest found first, so a post published today goes on the next pass;
 - **changed**: pages whose lastmod moved, newest change first;
-- **retries**: failed pages coming back after 1, 6 and 24 hours, and pages without a lastmod due for
-  a re-crawl.
+- **retries**: pages without a lastmod due for a re-crawl, and failed or dropped pages going again.
 
 Each lane gets its share of what the domain sends (`--new-share`, `--retry-share`, and the rest for
 changed pages), kept even across passes, and what one lane leaves unused goes to the others.
 
 Every 5 seconds the bot asks `GET /v1/room` how many tasks the API can take, and sends that many
 times 1,000 URLs, a few from each domain in turn, best ranked first, within `--per-domain-hourly` and
-`--urls-per-hour`. The hourly pace starts empty and saves at most two minutes of sends, so a restart
+`--urls-per-hour`. A domain sends at most two minutes' worth of its hourly limit at once (100 pages at
+least), so a site sees a steady stream rather than its hour in one burst. The hourly pace starts empty and saves at most five minutes of sends, so a restart
 or a stall is followed by no burst. A batch carries a hash of its content, so a batch sent again after
 a timeout is queued once, and a batch in flight survives a restart. URLs over 2,048 characters, the
-sitemap protocol's limit, are never sent. The outcome feed `outcomes/seq/<n>.json` is read up to 8
-files at a time and applied in order: a published or unchanged page waits for its next lastmod change,
-and a failed or dropped one becomes a retry; a number still missing after two minutes, or whose file
-expired, is skipped and its pages come back once overdue. A status line every minute shows the queue,
-what was sent in each lane, the room and the outcome feed.
+sitemap protocol's limit, are never sent.
+
+A sent page with a lastmod goes again when its sitemap lists a newer one. A page without one goes
+again `--recrawl-days` after it was sent, or after its domain's own interval. The outcome feed
+`outcomes/seq/<n>.json` is read from its newest file on, up to 8 files at a time, and skips to the
+newest when it falls an hour behind. Each file adds its published and failed pages to their domain's
+yield, counted twice: fading over a day and over an hour. The dispatcher gives domains whose pages
+rarely come back fewer slots, down to an hourly probe, by the lower of the two, so a domain that
+starts refusing slows within hours. A failed page goes again after its domain's interval, and after two failures in a row waits
+`--gone-days`; a dropped page, whose task never reached the site, goes again within the hourly budget.
+A number still missing after two minutes, or whose file expired, is skipped. A status line every minute shows the queue, what was
+sent in each lane, the room and the outcome feed.
+
+With `--domains`, each listed domain may carry a `weight` (1 to 4), a `send_cap`, an `hourly` limit
+and a `backlog`. A domain's turn is worth its rank's slots times its weight, and `hourly` replaces
+`--per-domain-hourly` for it. The bot counts the distinct pages it has sent for each domain; at its
+`send_cap` the domain sends no new pages, and only changed pages and re-crawls go on. A walker
+queues the pages each listed domain stored before it joined the list, newest first, as many as its
+cap leaves or, for a domain without a cap, up to its `backlog`, smallest domains first and the higher
+weight first among domains of a size. It walks a domain again when its cap
+changes, reads `--join-per-sec` records a second, and stops mid-domain when the bot stops. A domain
+already sending is only counted, since its pages are queued already, on a second walker beside the
+first, so counting and clearing never hold back new domains.
 
 Pages found before the queue existed join it once through `--backfill-ready`. Pages the Python
 feeder already sent are marked first, from its state:

@@ -50,7 +50,7 @@ export function TasksPage() {
     <>
       <PageHeader
         title="Tasks"
-        description="Finalized uploads of both kinds, newest first: crawl tasks return one row per URL, embed tasks one vector per text. A task that failed or ended void is queued again for another miner, so it can appear once per upload."
+        description="Finalized uploads of both kinds, newest first: crawl tasks return one page per URL, embed tasks one vector per text. A task that failed or ended void is queued again for another miner, so it can appear once per upload."
       />
       <Card>
         <TaskFilterBar

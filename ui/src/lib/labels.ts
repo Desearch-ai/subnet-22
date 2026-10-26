@@ -40,9 +40,10 @@ const REASON_MEANING: Record<string, string> = {
   content_mismatch: 'Too many checked pages had different text from what the validator fetched.',
   text_not_from_html: 'The uploaded text could not be reproduced from the uploaded HTML.',
   errors_not_reproducible: 'Pages the miner reported as errors loaded fine for the validator.',
-  extra_rows: 'The upload contained rows for URLs that were not part of the task.',
-  reported_rows: 'The upload held fewer good rows than the miner reported for it.',
+  extra_rows: 'The upload contained pages for URLs that were not part of the task.',
+  reported_rows: 'The upload held fewer good pages than the miner reported for it.',
   unreadable: 'The uploaded file could not be read.',
+  upload_changed: 'The miner changed the uploaded file after reporting the task done.',
   unscorable: 'The validator could not finish its check. This does not count against the miner.',
   no_quorum: 'Not enough validators voted before the deadline.',
   validators_disagree: 'Validators reached different results and no majority formed.',
@@ -85,3 +86,10 @@ export const URL_OUTCOME_LABEL: Record<UrlOutcome, string> = {
 
 export const EXCLUDED_MEANING =
   'Excluded: disagreed with too many final results, no longer receives work'
+
+export const TAKE_BACK_MEANING: Record<string, string> = {
+  check_failed:
+    'A checked upload failed, so the uploads that passed unchecked since its last checked pass were taken back.',
+  repeated_fails:
+    'Checks failed repeatedly, so every upload that passed in the last 24 hours was taken back, checked or not.',
+}

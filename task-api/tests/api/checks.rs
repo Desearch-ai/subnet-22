@@ -112,6 +112,9 @@ async fn a_failed_check_takes_back_what_passed_since_the_last_pass() {
     assert_eq!(verdict["verdict"], "fail");
     assert_eq!(h.view(&unchecked).await["score"]["verdict"], "withdrawn");
     assert_eq!(credits(&h, hotkey.clone()).await, -2, "its credit is taken back, and the failed upload costs its URLs");
+    let taken = h.public(&format!("/v1/miners/{hotkey}")).await.1["take_backs"].clone();
+    assert_eq!((taken[0]["kind"].clone(), taken[0]["reason"].clone(), taken[0]["tasks"].clone()), (json!("crawl"), json!("check_failed"), json!(1)));
+    assert_eq!(h.public("/v1/overview").await.1["taken_back"]["tasks"], 1);
     assert_eq!(h.state.publish.depth(&h.redis).await.unwrap(), 2, "its publish job and the withdrawal");
     let asked = hotkey.clone();
     let (recheck, locked) = h

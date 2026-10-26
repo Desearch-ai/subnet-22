@@ -46,18 +46,20 @@ Copy `.env.example` to `.env.local` to change it. The value is read at build tim
 
 ## Pages
 
-| Path                  | Shows                                                                        |
-| --------------------- | ---------------------------------------------------------------------------- |
-| `/`                   | Tasks waiting and in progress, the chosen kind's last 24 hours, recent tasks |
-| `/tasks`              | Finalized tasks, filtered by miner, validator, kind or result                |
-| `/tasks/:taskId`      | One task: result, every validator's vote, the checked URLs or texts          |
-| `/miners`             | Every miner for the chosen kind: share, budget, tasks in flight, results     |
-| `/miners/:hotkey`     | One miner: both kinds side by side, activity over time, budget, its tasks    |
-| `/validators`         | Every validator: activity, votes, agreement with the final result            |
-| `/validators/:hotkey` | One validator: stats and its votes                                           |
+| Path                  | Shows                                                                                                                                     |
+| --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| `/`                   | Tasks waiting and in progress, tasks done per hour, top miners, why uploads did not pass and the latest ones                              |
+| `/tasks`              | Finalized tasks, filtered by miner, validator, kind or result                                                                             |
+| `/tasks/:taskId`      | One task: result and why, miner, deciding validator, timeline, every validator's vote, the checked URLs or texts                          |
+| `/miners`             | Every miner for the chosen kind: share, budget, tasks in flight, results                                                                  |
+| `/miners/:hotkey`     | One miner, one kind at a time: share, tasks, pages, claims, budget, lockout, tasks per hour, its tasks by result, take-backs, budget cuts |
+| `/validators`         | Every validator: activity, votes, agreement with the final result                                                                         |
+| `/validators/:hotkey` | One validator: stats and its votes                                                                                                        |
 
 The Crawl / Embed switch on the overview, miners and miner pages is kept in the address as
 `?kind=embed`.
+
+The search box in the top bar finds a miner by UID or by any part of its hotkey.
 
 Live views refresh every minute while the tab is visible. When the API answers `429` or `503`
 the page waits for the `Retry-After` time before it asks again.
@@ -71,7 +73,7 @@ src/
   components/
     ui/           primitives: card, table, badge, stat, states
     layout/       app shell, notices
-    charts/       the activity-over-time chart
+    charts/       the tasks-per-hour chart
     overview/     panels of the overview page
     tasks/        task table, votes comparison, per-URL and per-text tables
     miners/       miner table, stats, budget history

@@ -5,7 +5,6 @@ import type { TaskDetail, TaskScore } from '@/api/types'
 import { CountedPanel } from '@/components/tasks/CountedPanel'
 import { TaskHeader } from '@/components/tasks/TaskHeader'
 import { TextTable } from '@/components/tasks/TextTable'
-import { UploadResult } from '@/components/tasks/UploadResult'
 import { UploadsTable } from '@/components/tasks/UploadsTable'
 import { UrlTable } from '@/components/tasks/UrlTable'
 import { VotesComparison } from '@/components/tasks/VotesComparison'
@@ -62,7 +61,6 @@ function UploadSections({ score, task }: UploadSectionsProps) {
   const by = `upload by ${truncateMiddle(score.miner)}`
   return (
     <>
-      <UploadResult score={score} isLatestOfMany={task.uploads.length > 1} />
       <CountedPanel score={score} texts={task.texts} />
       <Card>
         <CardHeader

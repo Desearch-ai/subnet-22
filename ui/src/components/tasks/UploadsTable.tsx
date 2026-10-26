@@ -1,6 +1,6 @@
 import type { Kind, TaskScore } from '@/api/types'
 import { Badge } from '@/components/ui/Badge'
-import { Identifier } from '@/components/ui/Identifier'
+import { Neuron } from '@/components/ui/Neuron'
 import { Table, Td, Th, Tr } from '@/components/ui/Table'
 import { TimeAgo } from '@/components/ui/TimeAgo'
 import { StatusBadge } from '@/components/ui/VerdictBadge'
@@ -37,10 +37,11 @@ export function UploadsTable({ uploads, kind }: UploadsTableProps) {
               <TimeAgo at={upload.scored_at} />
             </Td>
             <Td>
-              <Identifier
-                value={upload.miner}
+              <Neuron
+                hotkey={upload.miner}
                 label="miner hotkey"
                 uid={upload.miner_uid}
+                coldkey={upload.miner_coldkey}
                 to={minerPath(upload.miner)}
               />
             </Td>

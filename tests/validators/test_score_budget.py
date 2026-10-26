@@ -85,7 +85,7 @@ def bomb(decoded: int, claimed: int) -> bytes:
     row = {
         name: ""
         for name in PAGE_SCHEMA.names
-        if PAGE_SCHEMA.field(name).type == pa.string()
+        if PAGE_SCHEMA.field(name).type in (pa.string(), pa.large_string())
     } | {
         "status": 200,
         "error": None,
@@ -95,7 +95,11 @@ def bomb(decoded: int, claimed: int) -> bytes:
         "html": b"<p>a</p>" * (decoded // 8),
         "json_ld_types": [],
         "headings": [],
-        "text": "",
+        "tags": [],
+        "breadcrumbs": [],
+        "robots": [],
+        "paywalled": None,
+        "extraction": "v2",
         "url": "https://a.example/",
     }
     sink = io.BytesIO()

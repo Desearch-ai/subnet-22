@@ -1,6 +1,6 @@
 //! Domains split into fixed buckets, each bucket in its own RocksDB store.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock, Mutex, MutexGuard, OnceLock};
 
@@ -15,7 +15,7 @@ use regex::bytes::Regex;
 use serde::Deserialize;
 use serde_json::{Map, Value};
 
-use crate::allowed::Allowed;
+use crate::allowed::{Allowed, Terms};
 use crate::listed::{self, ListedSet};
 use crate::ready::SENT;
 use crate::urls::{Listing, Record, Url, TIMED};
@@ -189,6 +189,8 @@ pub struct BucketStore {
     pub(crate) noticed: Mutex<Option<HashMap<String, u64>>>,
     /// The domains whose pages may go on ready lists; every domain until set.
     allowed: OnceLock<Arc<Allowed>>,
+    /// Domains whose sends reached their cap since the list walker last looked, so it clears their new-page lanes.
+    pub(crate) capped: Mutex<HashSet<String>>,
 }
 
 impl BucketStore {
@@ -203,6 +205,7 @@ impl BucketStore {
             ready_lock: Mutex::new(()),
             noticed: Mutex::new(None),
             allowed: OnceLock::new(),
+            capped: Mutex::new(HashSet::new()),
         })
     }
 
@@ -213,6 +216,11 @@ impl BucketStore {
 
     pub(crate) fn allows(&self, domain: &str) -> bool {
         self.allowed.get().is_none_or(|allowed| allowed.allows(domain))
+    }
+
+    /// What the list says about the domain; the defaults when it is not listed or there is no list.
+    pub fn terms(&self, domain: &str) -> Terms {
+        self.allowed.get().and_then(|allowed| allowed.get(domain)).unwrap_or_default()
     }
 
     pub fn write(&self, changes: Changes) -> Result<()> {
@@ -233,6 +241,10 @@ impl BucketStore {
 
     pub fn domain(&self, host: &str) -> Result<Option<Json>> {
         self.json(&domain_key(host))
+    }
+
+    pub fn has_domain(&self, host: &str) -> Result<bool> {
+        Ok(self.db.get_pinned(domain_key(host))?.is_some())
     }
 
     /// Every domain's host and schedule, in key order.
@@ -533,6 +545,10 @@ impl Buckets {
 
     pub fn allows(&self, domain: &str) -> bool {
         self.store_for(domain).is_some_and(|store| store.allows(domain))
+    }
+
+    pub fn terms(&self, domain: &str) -> Terms {
+        self.store_for(domain).map(|store| store.terms(domain)).unwrap_or_default()
     }
 
     /// The store of a host named by data from outside, if this process owns it.

@@ -7,21 +7,13 @@ interface IdentifierProps {
   value: string | null
   label: string
   to?: string
-  uid?: number | null
   full?: boolean
   className?: string
 }
 
-export function Identifier({
-  value,
-  label,
-  to,
-  uid = null,
-  full = false,
-  className,
-}: IdentifierProps) {
+export function Identifier({ value, label, to, full = false, className }: IdentifierProps) {
   if (value === null) return <span className="text-ink-faint font-mono text-xs">—</span>
-  const text = full ? value : uid === null ? truncateMiddle(value) : `UID ${uid}`
+  const text = full ? value : truncateMiddle(value)
   return (
     <span
       className={cn(

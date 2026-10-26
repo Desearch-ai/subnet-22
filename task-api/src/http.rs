@@ -275,6 +275,7 @@ pub fn router(state: Arc<State>) -> Router {
         .route("/v1/health", get(routes::health))
         .route("/v1/overview", get(logs::overview))
         .route("/v1/stats/series", get(logs::series))
+        .route("/v1/stats/hours", get(logs::stat_hours))
         .route("/v1/live", get(logs::live))
         .route("/v1/miners", get(logs::miners))
         .route("/v1/miners/{hotkey}", get(logs::miner))

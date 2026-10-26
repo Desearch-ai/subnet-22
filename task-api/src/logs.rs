@@ -13,7 +13,8 @@ use redis::AsyncCommands;
 use rusqlite::Connection;
 use serde_json::{json, Map, Value};
 
-use crate::budgets::{self, CRAWL, EMBED, HOUR, SHARE_WINDOW_H};
+use crate::budgets::{self, hour_of, CRAWL, EMBED, HOUR, SHARE_WINDOW_H};
+use crate::hours;
 use crate::http::{Answer, ApiError, Query};
 use crate::lifecycle::{kind_of, text};
 use crate::models::Invalid;
@@ -34,8 +35,10 @@ const LIVE_ROWS: isize = 50;
 const BUCKET_MINUTES: [i64; 3] = [5, 15, 60];
 const MAX_BUCKETS: i64 = 168;
 const ID_CHARS: usize = 64;
+const MINER_TAKE_BACKS: i64 = 20;
 pub const PATHS: [&str; 8] = ["/v1/overview", "/v1/live", "/v1/stats", "/v1/tasks", "/v1/votes", "/v1/events", "/v1/miners", "/v1/validators"];
 const MINER_TOTALS: [&str; 7] = ["tasks", "pass", "fail", "void", "returned", "missing", "credited"];
+const HOUR_VERDICTS: [&str; 6] = ["tasks", "pass", "fail", "void", "returned", "credited"];
 const VALIDATOR_TOTALS: [&str; 7] = ["votes", "pass", "fail", "void", "agreed", "disagreed", "decided"];
 
 /// Log pages kept briefly in memory: one computation per page at a time, the last copy served while the next is made.
@@ -179,20 +182,27 @@ fn uid_of(state: &State, hotkey: Option<&str>) -> Value {
     hotkey.and_then(|h| state.registry.registered(h)).and_then(|e| e.uid).map_or(Value::Null, Value::from)
 }
 
-/// The row with a uid beside each hotkey it names; null for one off the metagraph.
+fn keys_of(state: &State, hotkey: Option<&str>) -> (Value, Value) {
+    let entry = hotkey.and_then(|h| state.registry.registered(h));
+    (entry.as_ref().and_then(|e| e.uid).map_or(Value::Null, Value::from), entry.and_then(|e| e.coldkey).map_or(Value::Null, Value::from))
+}
+
+/// The row with a uid and coldkey beside each hotkey it names.
 fn with_uids(state: &State, mut row: Map<String, Value>) -> Value {
     for name in ["miner", "validator"] {
         if let Some(hotkey) = row.get(name).cloned() {
-            row.insert(format!("{name}_uid"), uid_of(state, hotkey.as_str()));
+            let (uid, coldkey) = keys_of(state, hotkey.as_str());
+            row.insert(format!("{name}_uid"), uid);
+            row.insert(format!("{name}_coldkey"), coldkey);
         }
     }
     Value::Object(row)
 }
 
 fn with_keys(state: &State, mut row: Map<String, Value>, hotkey: &str) -> Value {
-    let entry = state.registry.registered(hotkey);
-    row.insert("uid".into(), entry.as_ref().and_then(|e| e.uid).map_or(Value::Null, Value::from));
-    row.insert("coldkey".into(), entry.and_then(|e| e.coldkey).map_or(Value::Null, Value::from));
+    let (uid, coldkey) = keys_of(state, Some(hotkey));
+    row.insert("uid".into(), uid);
+    row.insert("coldkey".into(), coldkey);
     Value::Object(row)
 }
 
@@ -201,7 +211,7 @@ fn number(value: &Value) -> f64 {
 }
 
 fn miner_rows_at(conn: &Connection, since: f64, until: f64, kind: &str) -> Result<Vec<Map<String, Value>>> {
-    let totals = validations::miner_totals(conn, since, until, kind)?;
+    let totals = validations::miner_totals(conn, since, until, kind, None)?;
     let budgets: BTreeMap<String, budgets::MinerBudget> = budgets::all(conn, kind)?.into_iter().map(|b| (b.hotkey.clone(), b)).collect();
     let locked = budgets::lockouts(conn, kind, now())?;
     // Coverage counts assigned URLs, so only crawl has one.
@@ -285,10 +295,9 @@ async fn miner_rows(state: &Arc<State>, hours: i64, kind: &'static str) -> Resul
     let mut out = Vec::with_capacity(rows.len());
     for (mut row, pair) in rows.into_iter().zip(counts.chunks(2)) {
         let hotkey = text(&Value::Object(row.clone()), "hotkey").to_string();
-        row.insert("uid".into(), uid_of(state, Some(&hotkey)));
         row.insert("in_flight".into(), pair[0].into());
         row.insert("waiting".into(), pair[1].into());
-        out.push(Value::Object(row));
+        out.push(with_keys(state, row, &hotkey));
     }
     Ok(out.into())
 }
@@ -299,10 +308,9 @@ async fn validator_rows(state: &Arc<State>, hours: i64) -> Result<Value, ApiErro
     let rows = state.reader.read(move |conn| validator_rows_at(conn, until - hours as f64 * HOUR, until, &last_seen)).await?;
     Ok(rows
         .into_iter()
-        .map(|mut row| {
-            let uid = uid_of(state, row.get("hotkey").and_then(Value::as_str));
-            row.insert("uid".into(), uid);
-            Value::Object(row)
+        .map(|row| {
+            let hotkey = text(&Value::Object(row.clone()), "hotkey").to_string();
+            with_keys(state, row, &hotkey)
         })
         .collect::<Vec<_>>()
         .into())
@@ -331,18 +339,42 @@ pub async fn overview(Shared(state): Shared<Arc<State>>, QueryParams(query): Que
     Ok(Json(state.cache.get_or(format!("overview:{hours}:{kind}"), || overview_of(&state, hours, kind)).await?))
 }
 
+fn hour_span(until: f64, hours: i64) -> (i64, i64) {
+    let last = hour_of(until);
+    (last - hours + 1, last)
+}
+
+fn sum(rows: &[&Value], name: &str) -> i64 {
+    rows.iter().map(|row| row[name].as_i64().unwrap_or(0)).sum()
+}
+
 async fn overview_of(state: &Arc<State>, hours: i64, kind: &'static str) -> Result<Value, ApiError> {
     let miners = cached_miners(state, hours, kind).await?;
     let validators = cached_validators(state, hours).await?;
-    let worked: Vec<&Value> = miners.as_array().into_iter().flatten().filter(|m| number(&m["tasks"]) != 0.0).collect();
+    let miners: Vec<&Value> = miners.as_array().into_iter().flatten().collect();
+    let worked: Vec<&Value> = miners.iter().copied().filter(|m| number(&m["tasks"]) != 0.0).collect();
     let validators: Vec<&Value> = validators.as_array().into_iter().flatten().collect();
-    let mut window: Map<String, Value> =
-        MINER_TOTALS.iter().map(|name| (name.to_string(), Value::from(worked.iter().map(|m| m[*name].as_i64().unwrap_or(0)).sum::<i64>()))).collect();
-    window.insert("votes".into(), validators.iter().map(|v| v["votes"].as_i64().unwrap_or(0)).sum::<i64>().into());
-    window.insert("disagreements".into(), validators.iter().map(|v| v["disagreed"].as_i64().unwrap_or(0)).sum::<i64>().into());
-    let mut total = Map::new();
-    total.insert("void".into(), 0.into());
-    total.extend(state.reader.read(|conn| validations::verdicts(conn, None)).await?);
+    let mut window: Map<String, Value> = MINER_TOTALS.iter().map(|name| (name.to_string(), Value::from(sum(&worked, name)))).collect();
+    window.insert("votes".into(), sum(&validators, "votes").into());
+    window.insert("disagreements".into(), sum(&validators, "disagreed").into());
+    let judged = sum(&validators, "agreed") + sum(&validators, "disagreed");
+    let agreement = if judged > 0 { round_to(sum(&validators, "agreed") as f64 / judged as f64, 4).into() } else { Value::Null };
+    let until = visible(state);
+    let (first, last) = hour_span(until, hours);
+    let (mut total, claims, reasons, verdict_s, taken_back) = state
+        .reader
+        .read(move |conn| {
+            Ok((
+                validations::verdicts(conn, None)?,
+                hours::total_claims(&hours::claims(conn, first, last, kind, None)?),
+                hours::reasons(conn, first, last, kind)?,
+                hours::total_waits(conn, first, last, kind)?,
+                hours::taken_back(conn, until - hours as f64 * HOUR, kind)?,
+            ))
+        })
+        .await?;
+    total.entry("void").or_insert(0.into());
+    let checked: i64 = reasons.iter().filter(|r| r["checked"] == true).map(|r| r["tasks"].as_i64().unwrap_or(0)).sum();
     let redis = &state.redis;
     let at = now();
     let mut queue = Map::new();
@@ -360,10 +392,56 @@ async fn overview_of(state: &Arc<State>, hours: i64, kind: &'static str) -> Resu
         "oldest_validation_s": state.validation.oldest_age(redis, at).await?,
         "publishing": state.publish.depth(redis).await?,
         "miners": worked.len(),
-        "validators": {"active": validators.iter().filter(|v| v["active"] == true).count(), "known": validators.len()},
+        "locked_out": miners.iter().filter(|m| !m["locked_until"].is_null()).count(),
+        "validators": {"active": validators.iter().filter(|v| v["active"] == true).count(), "known": validators.len(), "agreement": agreement},
         "window": window,
+        "claims": claims,
+        "checks": {"checked": checked, "verdict_s": verdict_s, "reasons": reasons},
+        "taken_back": taken_back,
         "total": total,
     }))
+}
+
+pub async fn stat_hours(Shared(state): Shared<Arc<State>>, QueryParams(query): QueryParams<Query>) -> Answer {
+    let (hours, kind, miner) = (hours(&query)?, kind(&query)?, id_param(&query, "miner")?);
+    let key = format!("hours:{hours}:{kind}:{miner:?}");
+    Ok(Json(state.cache.get_or(key, || hourly(&state, hours, kind, miner)).await?))
+}
+
+async fn hourly(state: &Arc<State>, hours: i64, kind: &'static str, miner: Option<String>) -> Result<Value, ApiError> {
+    let until = visible(state);
+    let (first, last) = hour_span(until, hours);
+    let asked = miner.clone();
+    let points = state
+        .reader
+        .read(move |conn| {
+            let miner = asked.as_deref();
+            let verdicts = validations::hour_series(conn, first as f64 * HOUR, until, kind, miner)?;
+            let mut claims = hours::claims(conn, first, last, kind, miner)?;
+            let (checked, waits) = match miner {
+                Some(_) => (BTreeMap::new(), BTreeMap::new()),
+                None => (hours::checked(conn, first, last, kind)?, hours::waits(conn, first, last, kind)?),
+            };
+            Ok((first..=last)
+                .map(|hour| {
+                    let mut point = Map::new();
+                    point.insert("at".into(), (hour * HOUR as i64).into());
+                    match verdicts.get(&hour) {
+                        Some(Value::Object(counts)) => point.extend(counts.clone()),
+                        _ => point.extend(HOUR_VERDICTS.iter().map(|n| (n.to_string(), Value::from(0)))),
+                    }
+                    point.extend(claims.remove(&hour).unwrap_or_else(hours::no_claims));
+                    if miner.is_none() {
+                        point.entry("miners").or_insert(0.into());
+                        point.insert("checked".into(), checked.get(&hour).copied().unwrap_or(0).into());
+                        point.insert("verdict_s".into(), waits.get(&hour).cloned().unwrap_or(Value::Null));
+                    }
+                    Value::Object(point)
+                })
+                .collect::<Vec<_>>())
+        })
+        .await?;
+    Ok(json!({"kind": kind, "hours": hours, "miner": miner, "as_of": until, "points": points}))
 }
 
 pub async fn series(Shared(state): Shared<Arc<State>>, QueryParams(query): QueryParams<Query>) -> Answer {
@@ -514,19 +592,26 @@ pub async fn miner(Shared(state): Shared<Arc<State>>, Path(hotkey): Path<String>
         );
     }
     let asked = hotkey.clone();
-    let (totals, shares, verdicts, pools_of, coverage, transitions) = state
+    let (totals, claims, shares, verdicts, pools_of, coverage, transitions, take_backs) = state
         .reader
         .read(move |conn| {
             let since = until - SHARE_WINDOW_H as f64 * HOUR;
-            let totals: BTreeMap<&str, BTreeMap<String, Value>> =
-                KINDS.into_iter().map(|kind| Ok((kind, validations::miner_totals(conn, since, until, kind)?))).collect::<Result<_>>()?;
+            let (first, last) = hour_span(until, SHARE_WINDOW_H);
+            let mut totals = BTreeMap::new();
+            let mut claims = BTreeMap::new();
+            for kind in KINDS {
+                totals.insert(kind, validations::miner_totals(conn, since, until, kind, Some(&asked))?);
+                claims.insert(kind, hours::total_claims(&hours::claims(conn, first, last, kind, Some(&asked))?));
+            }
             Ok((
                 totals,
+                claims,
                 budgets::shares(conn, SHARE_WINDOW_H, until)?,
                 validations::verdicts(conn, Some(&asked))?,
                 budgets::pools_of(conn, &asked)?,
                 budgets::coverage_report(conn, SHARE_WINDOW_H, until)?,
                 budgets::history(conn, &asked, 100)?,
+                hours::take_backs_of(conn, &asked, MINER_TAKE_BACKS)?,
             ))
         })
         .await?;
@@ -539,7 +624,8 @@ pub async fn miner(Shared(state): Shared<Arc<State>>, Path(hotkey): Path<String>
         Value::Object(window)
     };
     let share_of = |kind: &str| shares.get(kind).and_then(|s| s.get(&hotkey)).copied().unwrap_or(0.0);
-    let kinds: Map<String, Value> = KINDS.into_iter().map(|kind| (kind.to_string(), json!({"window": window_of(kind), "share": share_of(kind)}))).collect();
+    let kinds: Map<String, Value> =
+        KINDS.into_iter().map(|kind| (kind.to_string(), json!({"window": window_of(kind), "share": share_of(kind), "claims": claims[kind]}))).collect();
     let known = verdicts.values().map(|v| v.as_i64().unwrap_or(0)).sum::<i64>() != 0 || !pools_of.is_empty();
     let mut page = json!({
         "known": known,
@@ -551,6 +637,7 @@ pub async fn miner(Shared(state): Shared<Arc<State>>, Path(hotkey): Path<String>
         "window": window_of(CRAWL),
         "kinds": kinds,
         "transitions": transitions,
+        "take_backs": take_backs,
     });
     let mut keys = with_keys(&state, Map::from_iter([("hotkey".to_string(), Value::from(hotkey.as_str()))]), &hotkey).as_object().cloned().unwrap_or_default();
     keys.extend(page.as_object_mut().map(std::mem::take).unwrap_or_default());
@@ -684,6 +771,7 @@ pub async fn warm(state: &Arc<State>) -> Result<(), ApiError> {
     state.cache.refresh(format!("validators:{hours}"), || validator_rows(state, hours)).await?;
     for kind in KINDS {
         state.cache.refresh(format!("overview:{hours}:{kind}"), || overview_of(state, hours, kind)).await?;
+        state.cache.refresh(format!("hours:{hours}:{kind}:None"), || hourly(state, hours, kind, None)).await?;
     }
     state.cache.refresh("live".into(), || in_progress(state)).await
 }

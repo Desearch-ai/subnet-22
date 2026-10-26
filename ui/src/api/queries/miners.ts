@@ -8,12 +8,13 @@ export function fetchMiner(hotkey: string, signal?: AbortSignal): Promise<MinerD
   return apiGet<MinerDetail>(`/v1/miners/${encodeURIComponent(hotkey)}`, {}, signal)
 }
 
-export function useMiners(kind: Kind) {
+export function useMiners(kind: Kind, enabled = true) {
   return useQuery({
     queryKey: queryKeys.miners(kind),
     queryFn: ({ signal }) =>
       apiGet<MinersResponse>('/v1/miners', { hours: WINDOW_HOURS, kind }, signal),
     refetchInterval: POLL_INTERVAL_MS,
+    enabled,
   })
 }
 

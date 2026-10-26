@@ -8,6 +8,40 @@ export interface VerdictCounts {
   void: number
 }
 
+export interface ClaimCounts {
+  issued: number
+  completed: number
+  lapsed: number
+  requeued: number
+  dropped: number
+  refused: Partial<Record<string, number>>
+}
+
+export interface WaitSummary {
+  tasks: number
+  p50: number | null
+  p90: number | null
+}
+
+export interface VerdictWaits {
+  unchecked: WaitSummary | null
+  checked: WaitSummary | null
+}
+
+export interface ReasonCount {
+  verdict: Verdict
+  reason: string
+  checked: boolean
+  tasks: number
+}
+
+export interface TakenBack {
+  take_backs: number
+  tasks: number
+  miners: number
+  credited: number
+}
+
 export interface Overview {
   as_of: number
   window_hours: number
@@ -18,7 +52,8 @@ export interface Overview {
   oldest_validation_s: number | null
   publishing: number
   miners: number
-  validators: { active: number; known: number }
+  locked_out: number
+  validators: { active: number; known: number; agreement: number | null }
   window: VerdictCounts & {
     tasks: number
     returned: number
@@ -27,59 +62,34 @@ export interface Overview {
     votes: number
     disagreements: number
   }
+  claims: ClaimCounts
+  checks: { checked: number; verdict_s: VerdictWaits; reasons: ReasonCount[] }
+  taken_back: TakenBack
   total: VerdictCounts
 }
 
-export interface TaskSeriesPoint extends VerdictCounts {
+export interface HourPoint extends VerdictCounts, ClaimCounts {
   at: number
   tasks: number
   returned: number
   credited: number
+  miners?: number
+  checked?: number
+  verdict_s?: VerdictWaits | null
 }
 
-export interface Series {
-  bucket_s: number
-  points: TaskSeriesPoint[]
-}
-
-export interface LiveClaim {
-  task_id: string
+export interface Hours {
   kind: Kind
-  miner: string
-  miner_uid: number | null
-  urls: number
-  texts: number | null
-  expires_at: number
-}
-
-export interface Voter {
-  hotkey: string
-  uid: number | null
-}
-
-export interface LiveUpload {
-  task_id: string
-  kind: Kind
-  miner: string
-  miner_uid: number | null
-  urls: number
-  texts: number | null
-  completed_at: number
-  deadline: number
-  voters: Voter[]
-  electorate: number
-}
-
-export interface Live {
-  claims: LiveClaim[]
-  uploads: LiveUpload[]
-  claims_total: number
-  uploads_total: number
+  hours: number
+  miner: string | null
+  as_of: number
+  points: HourPoint[]
 }
 
 export interface MinerSummary extends VerdictCounts {
   hotkey: string
   uid: number | null
+  coldkey: string | null
   budget: number
   in_flight: number
   waiting: number
@@ -123,6 +133,15 @@ export interface MinerWindow extends VerdictCounts {
 export interface MinerKind {
   window: MinerWindow
   share: number
+  claims: ClaimCounts
+}
+
+export interface TakeBack {
+  kind: Kind
+  reason: string
+  tasks: number
+  credited: number
+  at: number
 }
 
 export type BudgetCause = 'verified' | 'claim_expired' | 'abandoned' | 'verification_failed'
@@ -149,11 +168,13 @@ export interface MinerDetail {
   window: MinerWindow
   kinds: Record<Kind, MinerKind>
   transitions: BudgetTransition[]
+  take_backs: TakeBack[]
 }
 
 export interface ValidatorSummary extends VerdictCounts {
   hotkey: string
   uid: number | null
+  coldkey: string | null
   active: boolean
   last_seen: number | null
   votes: number
@@ -169,7 +190,6 @@ export interface ValidatorSummary extends VerdictCounts {
 
 export interface ValidatorDetail extends ValidatorSummary {
   known: boolean
-  coldkey: string | null
 }
 
 export interface ValidatorsResponse {
@@ -182,8 +202,10 @@ export interface Vote {
   kind: Kind
   miner: string
   miner_uid: number | null
+  miner_coldkey: string | null
   validator: string
   validator_uid: number | null
+  validator_coldkey: string | null
   verdict: Verdict
   reason: string
   returned: number
@@ -213,8 +235,10 @@ export interface TaskScore {
   round_id: string
   miner: string
   miner_uid: number | null
+  miner_coldkey: string | null
   validator: string
   validator_uid: number | null
+  validator_coldkey: string | null
   verdict: Verdict
   reason: string
   returned: number
@@ -291,6 +315,7 @@ export interface TaskDetail {
   round_id: string | null
   miner: string | null
   miner_uid: number | null
+  miner_coldkey: string | null
   score: TaskScore | null
   uploads: TaskScore[]
   votes: Vote[]

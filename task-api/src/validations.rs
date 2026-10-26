@@ -363,33 +363,41 @@ pub fn validator_totals(conn: &Connection, since: f64, until: f64) -> Result<BTr
 
 const MINER_TOTAL_NAMES: [&str; 8] = ["tasks", "pass", "fail", "void", "returned", "missing", "credited", "last_scored_at"];
 
-/// Each miner's verdicts scored in `since..=until`: whole hours from the hourly totals, the part hours at either end from the rows.
-pub fn miner_totals(conn: &Connection, since: f64, until: f64, kind: &str) -> Result<BTreeMap<String, Value>> {
+/// Each miner's verdicts scored in `since..=until`, or one miner's: whole hours from the hourly totals, the part hours at either end from the rows.
+pub fn miner_totals(conn: &Connection, since: f64, until: f64, kind: &str, miner: Option<&str>) -> Result<BTreeMap<String, Value>> {
     let (first, last) = (hour_of(since), hour_of(until));
     let mut totals = BTreeMap::new();
     if first < last {
+        let mut args = vec![Sql::Integer(first), Sql::Integer(last), Sql::Text(kind.into())];
+        args.extend(miner.map(|m| Sql::Text(m.into())));
         add_totals(
             &mut totals,
             conn,
-            "SELECT miner, SUM(tasks), SUM(pass), SUM(fail), SUM(void), SUM(returned), SUM(missing), SUM(credited), MAX(last_scored_at) FROM miner_hours
-             WHERE hour > ? AND hour < ? AND kind = ? GROUP BY miner",
-            params![first, last, kind],
+            &format!(
+                "SELECT miner, SUM(tasks), SUM(pass), SUM(fail), SUM(void), SUM(returned), SUM(missing), SUM(credited), MAX(last_scored_at) FROM miner_hours
+                 WHERE hour > ? AND hour < ? AND kind = ?{} GROUP BY miner",
+                if miner.is_some() { " AND miner = ?" } else { "" }
+            ),
+            params_from_iter(args),
         )?;
-        add_scored(&mut totals, conn, since, (first + 1) as f64 * 3600.0, false, kind)?;
-        add_scored(&mut totals, conn, last as f64 * 3600.0, until, true, kind)?;
+        add_scored(&mut totals, conn, since, (first + 1) as f64 * 3600.0, false, kind, miner)?;
+        add_scored(&mut totals, conn, last as f64 * 3600.0, until, true, kind, miner)?;
     } else {
-        add_scored(&mut totals, conn, since, until, true, kind)?;
+        add_scored(&mut totals, conn, since, until, true, kind, miner)?;
     }
     Ok(totals)
 }
 
-fn add_scored(totals: &mut BTreeMap<String, Value>, conn: &Connection, since: f64, until: f64, inclusive: bool, kind: &str) -> Result<()> {
+fn add_scored(totals: &mut BTreeMap<String, Value>, conn: &Connection, since: f64, until: f64, inclusive: bool, kind: &str, miner: Option<&str>) -> Result<()> {
     let sql = format!(
         "SELECT miner, COUNT(*), {VERDICT_SUMS}, SUM(returned), SUM(missing), SUM(credited), MAX(scored_at) FROM validations
-         WHERE scored_at >= ? AND scored_at {} ? AND kind = ? GROUP BY miner",
-        if inclusive { "<=" } else { "<" }
+         WHERE scored_at >= ? AND scored_at {} ? AND kind = ?{} GROUP BY miner",
+        if inclusive { "<=" } else { "<" },
+        if miner.is_some() { " AND miner = ?" } else { "" }
     );
-    add_totals(totals, conn, &sql, params![since, until, kind])
+    let mut args = vec![Sql::Real(since), Sql::Real(until), Sql::Text(kind.into())];
+    args.extend(miner.map(|m| Sql::Text(m.into())));
+    add_totals(totals, conn, &sql, params_from_iter(args))
 }
 
 fn add_totals(totals: &mut BTreeMap<String, Value>, conn: &Connection, sql: &str, args: impl rusqlite::Params) -> Result<()> {
@@ -531,9 +539,15 @@ pub fn recent(conn: &Connection, filter: &TaskFilter) -> Result<Vec<Map<String, 
             args.push(Sql::Text(value.clone()));
         }
     }
+    // Fails and voids are rare: seek them by miner and verdict instead of reading back through the passes.
+    let rare = filter.verdict.as_ref().filter(|v| !v.is_empty() && v.as_str() != "pass");
+    if let (None, Some(verdict)) = (&filter.miner, rare) {
+        clauses.push("miner IN (SELECT miner FROM verdict_counts WHERE verdict = ? AND n > 0)".into());
+        args.push(Sql::Text(verdict.clone()));
+    }
     args.push(Sql::Integer(filter.limit));
-    let mut statement =
-        conn.prepare(&format!("SELECT {} FROM validations WHERE {} ORDER BY scored_at DESC LIMIT ?", FIELDS.join(", "), clauses.join(" AND ")))?;
+    let source = if rare.is_some() { "validations INDEXED BY validations_miner" } else { "validations" };
+    let mut statement = conn.prepare(&format!("SELECT {} FROM {source} WHERE {} ORDER BY scored_at DESC LIMIT ?", FIELDS.join(", "), clauses.join(" AND ")))?;
     let rows = statement.query_map(params_from_iter(args), |row| object(row, &FIELDS, 0))?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
@@ -776,7 +790,7 @@ mod tests {
             report.insert("credited".into(), 2.into());
             record(&conn, &report, None).unwrap();
         }
-        let totals = miner_totals(&conn, base - 1.0, base + 7_200.0, "crawl").unwrap();
+        let totals = miner_totals(&conn, base - 1.0, base + 7_200.0, "crawl", None).unwrap();
         assert_eq!(
             (totals["m"]["tasks"].clone(), totals["m"]["pass"].clone(), totals["m"]["returned"].clone(), totals["m"]["credited"].clone()),
             (json!(3), json!(3), json!(9), json!(6))
@@ -789,7 +803,7 @@ mod tests {
         .unwrap();
         assert_eq!(roll_up(&conn, 100).unwrap(), 1, "a row an older copy wrote is counted later");
         withdraw(&conn, "m", "crawl", 0.0, true).unwrap();
-        let totals = miner_totals(&conn, base - 1.0, base + 7_200.0, "crawl").unwrap();
+        let totals = miner_totals(&conn, base - 1.0, base + 7_200.0, "crawl", None).unwrap();
         assert_eq!((totals["m"]["tasks"].clone(), totals["m"]["pass"].clone(), totals["m"]["fail"].clone()), (json!(4), json!(0), json!(1)));
         let hours = hour_series(&conn, base, base + 7_199.0, "crawl", None).unwrap();
         assert_eq!((hours[&hour_of(base)]["tasks"].clone(), hours[&(hour_of(base) + 1)]["tasks"].clone()), (json!(3), json!(1)));
@@ -802,9 +816,9 @@ mod tests {
         for (i, at) in [base + 10.0, base + 30.0, base + 3_700.0, base + 7_210.0, base + 7_300.0].into_iter().enumerate() {
             record(&conn, &verdict(&format!("t{i}"), at), None).unwrap();
         }
-        let totals = miner_totals(&conn, base + 20.0, base + 7_250.0, "crawl").unwrap();
+        let totals = miner_totals(&conn, base + 20.0, base + 7_250.0, "crawl", None).unwrap();
         assert_eq!((totals["m"]["tasks"].clone(), totals["m"]["last_scored_at"].clone()), (json!(3), json!(base + 7_210.0)));
-        assert_eq!(miner_totals(&conn, base + 20.0, base + 40.0, "crawl").unwrap()["m"]["tasks"], json!(1), "inside one hour");
+        assert_eq!(miner_totals(&conn, base + 20.0, base + 40.0, "crawl", None).unwrap()["m"]["tasks"], json!(1), "inside one hour");
         let hours = hour_series(&conn, base, base + 7_250.0, "crawl", Some("m")).unwrap();
         assert_eq!(
             (hours[&hour_of(base)]["tasks"].clone(), hours[&(hour_of(base) + 1)]["tasks"].clone(), hours[&(hour_of(base) + 2)]["tasks"].clone()),

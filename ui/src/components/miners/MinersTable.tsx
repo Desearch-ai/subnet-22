@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import type { Kind, MinerSummary } from '@/api/types'
-import { Identifier } from '@/components/ui/Identifier'
+import { Neuron } from '@/components/ui/Neuron'
 import { SortTh } from '@/components/ui/SortTh'
 import { Table, Td, Tr } from '@/components/ui/Table'
 import { TimeAgo } from '@/components/ui/TimeAgo'
@@ -32,7 +32,7 @@ function sortValue(miner: MinerSummary, key: MinerSortKey): SortValue {
 }
 
 const VERIFIED_HINT: Record<Kind, string> = {
-  crawl: 'Rows counted since the start',
+  crawl: 'Pages counted since the start',
   embed: 'Characters counted since the start',
 }
 
@@ -85,7 +85,7 @@ export function MinersTable({ miners, kind }: MinersTableProps) {
               {...column}
               sortKey="coverage"
               label="Coverage"
-              hint="Rows returned out of URLs assigned"
+              hint="Pages returned out of URLs assigned"
             />
           ) : null}
           <SortTh {...column} sortKey="pass" label="Pass / fail / void" align="left" />
@@ -111,10 +111,11 @@ export function MinersTable({ miners, kind }: MinersTableProps) {
         {sortRows(miners, sort, sortValue).map((miner) => (
           <Tr key={miner.hotkey}>
             <Td>
-              <Identifier
-                value={miner.hotkey}
+              <Neuron
+                hotkey={miner.hotkey}
                 label="miner hotkey"
                 uid={miner.uid}
+                coldkey={miner.coldkey}
                 to={withKind(minerPath(miner.hotkey), kind)}
               />
             </Td>

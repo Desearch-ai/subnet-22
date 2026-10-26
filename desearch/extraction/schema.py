@@ -42,13 +42,6 @@ PAGE_SCHEMA = pa.schema(
         pa.field("headings", pa.list_(pa.string()), nullable=False),
         pa.field("text", pa.large_string(), nullable=False),
         pa.field("text_sha256", pa.string(), nullable=False),
-    ]
-)
-
-
-PAGE_SCHEMA_V2 = pa.schema(
-    [
-        *PAGE_SCHEMA,
         pa.field("extraction", pa.string(), nullable=False),
         pa.field("text_mode", pa.string(), nullable=False),
         pa.field("modified", pa.string(), nullable=False),

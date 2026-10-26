@@ -1,71 +1,69 @@
-import { useState } from 'react'
 import { Link } from 'react-router'
 import { useMiners } from '@/api/queries/miners'
 import type { Kind, MinerSummary } from '@/api/types'
 import { Card, CardHeader } from '@/components/ui/Card'
-import { Identifier } from '@/components/ui/Identifier'
+import { Neuron } from '@/components/ui/Neuron'
 import { QueryState } from '@/components/ui/QueryState'
 import { EmptyState } from '@/components/ui/States'
-import { formatInt, formatPercent } from '@/lib/format'
-import { KindSwitch } from '@/components/ui/KindSwitch'
-import { DEFAULT_KIND, KIND_WORDS } from '@/lib/kinds'
+import { formatPercent } from '@/lib/format'
 import { MINERS_PATH, minerPath, withKind } from '@/lib/paths'
 
 const TOP_MINERS = 8
 
-function ShareRow({ miner, kind }: { miner: MinerSummary; kind: Kind }) {
+function ShareRow({ miner, kind, largest }: { miner: MinerSummary; kind: Kind; largest: number }) {
+  // Against the largest share: against 100%, shares of a few percent would not show.
+  const bar = formatPercent(largest > 0 ? miner.share / largest : 0)
   return (
-    <li className="px-4 py-2">
-      <div className="flex items-center justify-between gap-3">
-        <Identifier
-          value={miner.hotkey}
-          label="miner hotkey"
-          uid={miner.uid}
-          to={withKind(minerPath(miner.hotkey), kind)}
-        />
-        <span className="text-ink font-mono text-xs tabular-nums">
-          {formatPercent(miner.share)}
-        </span>
+    <li className="flex items-center gap-3 px-4 py-2.5">
+      <Neuron
+        hotkey={miner.hotkey}
+        label="miner hotkey"
+        uid={miner.uid}
+        coldkey={miner.coldkey}
+        to={withKind(minerPath(miner.hotkey), kind)}
+        className="w-48 shrink-0"
+      />
+      <div className="bg-raised h-1.5 min-w-0 flex-1 overflow-hidden rounded-sm">
+        <div className="bg-series-1 h-full rounded-sm" style={{ width: bar }} />
       </div>
-      <div className="bg-raised mt-1.5 h-1 overflow-hidden rounded-sm">
-        <div className="bg-series-counted h-full" style={{ width: formatPercent(miner.share) }} />
-      </div>
-      <div className="text-ink-faint mt-1 text-xs">
-        {formatInt(miner.credited)} {KIND_WORDS[kind].credited} counted
-      </div>
+      <span className="text-ink w-12 shrink-0 text-right font-mono text-xs tabular-nums">
+        {formatPercent(miner.share)}
+      </span>
     </li>
   )
 }
 
-export function TopMiners() {
-  const [kind, setKind] = useState<Kind>(DEFAULT_KIND)
+export function TopMiners({ kind }: { kind: Kind }) {
   const query = useMiners(kind)
   return (
     <Card>
       <CardHeader
-        title="Top miners by share"
-        description={`Each miner's part of the ${kind} pool, last 24 hours`}
+        title="Top miners"
+        description={`Share of the ${kind} pool, last 24 hours`}
         actions={
-          <>
-            <KindSwitch kind={kind} onChange={setKind} />
-            <Link to={withKind(MINERS_PATH, kind)} className="text-accent text-xs hover:underline">
-              All miners
-            </Link>
-          </>
+          <Link to={withKind(MINERS_PATH, kind)} className="text-accent text-xs hover:underline">
+            All miners
+          </Link>
         }
       />
       <QueryState query={query}>
-        {({ miners }) =>
-          miners.length === 0 ? (
+        {({ miners }) => {
+          const top = miners.slice(0, TOP_MINERS)
+          return top.length === 0 ? (
             <EmptyState title={`No miner has a finalized ${kind} task yet.`} />
           ) : (
             <ul className="divide-line divide-y">
-              {miners.slice(0, TOP_MINERS).map((miner) => (
-                <ShareRow key={miner.hotkey} miner={miner} kind={kind} />
+              {top.map((miner) => (
+                <ShareRow
+                  key={miner.hotkey}
+                  miner={miner}
+                  kind={kind}
+                  largest={top[0]?.share ?? 0}
+                />
               ))}
             </ul>
           )
-        }
+        }}
       </QueryState>
     </Card>
   )

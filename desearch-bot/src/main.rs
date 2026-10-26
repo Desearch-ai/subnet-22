@@ -16,8 +16,8 @@ use desearch_bot::dispatch::{self, Dispatcher, Progress};
 use desearch_bot::hotkey::Hotkey;
 use desearch_bot::langid::LangId;
 use desearch_bot::net::{self, PublicResolver};
-use desearch_bot::outcomes::OutcomeFeed;
-use desearch_bot::ready::DEFAULT_RECRAWL;
+use desearch_bot::outcomes::{OutcomeFeed, OutcomeReader};
+use desearch_bot::recrawl::{Recrawl, DAY, DEFAULT_EVERY, DEFAULT_GONE};
 use desearch_bot::registry::{self, Registry};
 use desearch_bot::signing::Signer;
 use desearch_bot::suffixes::PublicSuffixList;
@@ -140,18 +140,30 @@ struct RunArgs {
     /// Percent kept for retries and scheduled re-crawls; pages whose lastmod moved get the rest.
     #[arg(long, default_value_t = 10)]
     retry_share: usize,
-    /// Where the task API publishes what became of each URL, such as https://r2.desearch.ai.
+    /// The public URL of the S3 bucket where the task API publishes what became of each URL (its `outcomes/` feed).
     #[arg(long)]
     outcomes_url: Option<String>,
-    /// Days after a crawl that a page without a lastmod goes out again.
-    #[arg(long, default_value_t = DEFAULT_RECRAWL / 86_400)]
+    /// Days after a send that a page without a lastmod, or one that failed, goes out again.
+    #[arg(long, default_value_t = DEFAULT_EVERY / DAY)]
     recrawl_days: u32,
+    /// Re-crawl intervals for listed domains and their subdomains, as `domain days` lines such as `bbc.co.uk 1`.
+    #[arg(long)]
+    recrawl_overrides: Option<PathBuf>,
+    /// Days a page that failed on two sends in a row waits before it goes out again, unless its lastmod moves.
+    #[arg(long, default_value_t = DEFAULT_GONE / DAY)]
+    gone_days: u32,
+    /// Pages of lost or taken-back tasks put back each hour; a burst beyond it is spread over the following hours.
+    #[arg(long, default_value_t = 200_000)]
+    dropped_per_hour: u64,
     /// Walk every store once to put pages never sent, or changed since sent, on the ready lists; it resumes where it stopped.
     #[arg(long)]
     backfill_ready: bool,
     /// URL records the backfill reads per second.
     #[arg(long, default_value_t = 50_000)]
     backfill_per_sec: u64,
+    /// URL records read per second while queuing the stored pages of domains new to the --domains list; 0 turns the walk off.
+    #[arg(long, default_value_t = 100_000)]
+    join_per_sec: u64,
     /// Pages the Python feeder sent, as tab-separated host, path, lastmod and Unix time, marked sent before the backfill.
     #[arg(long)]
     backfill_sent: Option<PathBuf>,
@@ -179,6 +191,11 @@ async fn run(args: RunArgs) -> Result<()> {
     if args.new_share + args.retry_share > 100 {
         bail!("--new-share and --retry-share add up to more than 100");
     }
+    let mut recrawl = Recrawl::new(args.recrawl_days.saturating_mul(DAY), args.gone_days.saturating_mul(DAY));
+    if let Some(path) = &args.recrawl_overrides {
+        recrawl = recrawl.with_overrides_file(path)?;
+        println!("[rs] {} domains re-crawled on their own interval", recrawl.overridden());
+    }
     let dsn = std::env::var("DESEARCH_DB").ok().filter(|d| !d.is_empty());
     let excluded = match &dsn {
         Some(dsn) => registry::excluded_categories(dsn).await?,
@@ -187,8 +204,8 @@ async fn run(args: RunArgs) -> Result<()> {
     };
     let resources = Resources::new(args.cache_mb << 20, args.memtable_mb << 20, owned.len());
     let buckets = Arc::new(Buckets::open(&args.buckets_dir, &owned, &resources)?);
-    if let Some(path) = &args.domains {
-        let allowed = Allowed::from_file(path)?;
+    let listed = args.domains.as_ref().map(|path| Allowed::from_file(path)).transpose()?;
+    if let Some(allowed) = listed.clone() {
         buckets.allow(&allowed);
         println!("[rs] queueing pages of {} listed domains only", allowed.count().unwrap_or(0));
         std::thread::spawn(move || loop {
@@ -243,6 +260,13 @@ async fn run(args: RunArgs) -> Result<()> {
     let (stop, stopped) = watch::channel(false);
     let progress = Arc::new(Progress::default());
     let halt = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let joining = listed.filter(|_| args.join_per_sec > 0).map(|allowed| {
+        let (buckets, progress, halt, per_second) = (buckets.clone(), progress.clone(), halt.clone(), args.join_per_sec);
+        std::thread::spawn(move || match dispatch::join_listed(&buckets, &allowed, per_second, &progress, &halt) {
+            Ok(()) => println!("[rs] list walker stopped"),
+            Err(error) => eprintln!("[rs] list walker failed: {error:#}"),
+        })
+    });
     let backfill = args.backfill_ready.then(|| {
         let (buckets, progress, halt, sent) = (buckets.clone(), progress.clone(), halt.clone(), args.backfill_sent.clone());
         let per_second = args.backfill_per_sec;
@@ -267,6 +291,7 @@ async fn run(args: RunArgs) -> Result<()> {
             api,
             args.per_domain_hourly,
             dispatch::shares(args.new_share, args.retry_share),
+            recrawl.clone(),
             progress.clone(),
         ).await?
         .paced(args.urls_per_hour);
@@ -274,7 +299,8 @@ async fn run(args: RunArgs) -> Result<()> {
     }
     if let Some(base) = &args.outcomes_url {
         let feed = OutcomeFeed::new(base)?;
-        tokio::spawn(dispatch::follow_outcomes(buckets.clone(), feed, args.recrawl_days * 86_400, progress.clone(), stopped.clone()));
+        let reader = OutcomeReader::new(recrawl.clone(), args.dropped_per_hour);
+        tokio::spawn(dispatch::follow_outcomes(buckets.clone(), feed, reader, progress.clone(), stopped.clone()));
     }
     if args.task_api.is_some() || args.outcomes_url.is_some() || args.backfill_ready {
         let (progress, mut stopped) = (progress.clone(), stopped.clone());
@@ -311,6 +337,9 @@ async fn run(args: RunArgs) -> Result<()> {
     halt.store(true, std::sync::atomic::Ordering::Relaxed);
     if let Some(backfill) = backfill {
         let _ = tokio::task::spawn_blocking(move || backfill.join()).await;
+    }
+    if let Some(joining) = joining {
+        let _ = tokio::task::spawn_blocking(move || joining.join()).await;
     }
     println!("[rs] done {}", crawl.summary());
     Ok(())

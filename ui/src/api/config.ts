@@ -7,6 +7,7 @@ export const API_BASE_URL = (
 ).replace(/\/+$/, '')
 
 export const WINDOW_HOURS = 24
+export const HOURS_SHOWN = WINDOW_HOURS + 1
 export const POLL_INTERVAL_MS = 60_000
 export const PAGE_SIZE = 50
 export const DEFAULT_RETRY_AFTER_S = 10
