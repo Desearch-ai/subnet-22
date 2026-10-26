@@ -39,9 +39,6 @@ const SENT_COUNT: u8 = b'C';
 const JOINED: u8 = b'J';
 /// Keys a domain's new-page lane loses per locked write when it is cleared.
 const TRIM_CHUNK: usize = 50_000;
-/// The most sent pages read at a time for refreshes, and in one call, so a domain sent only lately costs a pass little.
-const REFRESH_CHUNK: usize = 1024;
-const REFRESH_SCAN: usize = 4096;
 /// The pause between cleared chunks, so senders waiting on the lock get it.
 const TRIM_REST: Duration = Duration::from_millis(1);
 /// Pages queued per locked write while a domain is walked.
@@ -196,8 +193,6 @@ pub enum Reason {
     Fresh,
     Changed,
     Requeued,
-    /// Sent before with nothing new to say, going again to fill room the lists leave.
-    Refresh,
 }
 
 /// Whether a page on a ready list still needs sending, and why; None for an entry that went stale.
@@ -516,49 +511,6 @@ impl BucketStore {
             }
         }
         Ok(())
-    }
-
-    /// Up to `want` of the domain's sent pages last sent at least `min_age` ago, read on from `after` in address order; also where to read on next, None once the domain was read through.
-    pub fn take_refresh(&self, domain: &str, want: usize, now: u32, min_age: u32, after: Option<&[u8]>) -> Result<(Vec<Pick>, Option<Vec<u8>>)> {
-        let robots = self.domain(domain)?.map(|record| records::robots_paths(&record)).unwrap_or_default();
-        let prefix = prefixed(SENT, domain.as_bytes(), b"");
-        let (mut picks, mut scanned, mut last) = (Vec::new(), 0, after.map(<[u8]>::to_vec));
-        // A read sized to the want, doubling while too few pages are due.
-        let mut size = (want * 2).clamp(64, REFRESH_CHUNK);
-        while picks.len() < want && scanned < REFRESH_SCAN {
-            let start = last.as_ref().map_or_else(|| prefix.clone(), |key| [key.as_slice(), b"\0"].concat());
-            let mut chunk = Vec::with_capacity(size);
-            for item in self.db.iterator_opt(IteratorMode::From(&start, Direction::Forward), bounded(&prefix)).take(size) {
-                let (key, raw) = item?;
-                chunk.push((key.to_vec(), Sent::unpack(&raw)));
-            }
-            let read = chunk.len();
-            scanned += read;
-            let records = self.records(chunk.iter().map(|(key, _)| prefixed(URL, domain.as_bytes(), &key[prefix.len()..])))?;
-            for ((key, sent), record) in chunk.into_iter().zip(records) {
-                if picks.len() >= want {
-                    return Ok((picks, last));
-                }
-                let rest = &key[prefix.len()..];
-                // A failing page waits for its retry or the long wait, a requeued one is on its list, a changed one goes as a change.
-                let due = match (record, sent) {
-                    (Some(record), Some(sent)) if record.pushed_at != 0 && sent.failures == 0 && !sent.requeued && record.lastmod <= sent.lastmod => {
-                        (now.saturating_sub(record.pushed_at) >= min_age && !junk(rest) && robots.allows_page(domain, rest)).then_some(record)
-                    }
-                    _ => None,
-                };
-                if let Some(record) = due {
-                    let entry = Entry { domain: domain.to_string(), rest: rest.to_vec(), order: Order::Requeued { due: record.pushed_at } };
-                    picks.push(Pick { url: fetchable(rest, record.flags), lastmod: record.lastmod, reason: Reason::Refresh, failures: 0, entry });
-                }
-                last = Some(key);
-            }
-            if read < size {
-                return Ok((picks, None));
-            }
-            size = (size * 2).min(REFRESH_CHUNK);
-        }
-        Ok((picks, last))
     }
 
     /// The task API took these pages: stamp them sent, with the lastmod they went with, and take them off their lists.

@@ -966,64 +966,6 @@ fn a_clear_asked_to_stop_leaves_the_domain_for_the_next_round_to_clear() {
 }
 
 #[test]
-fn sent_pages_go_again_to_fill_once_their_interval_has_passed_read_on_in_address_order() {
-    let dir = Dir::new("refresh");
-    let store = open(&dir);
-    store.record_listing("example.com", 7, vec![page("a", 10), page("b", 10), page("c", 10)], 100).unwrap();
-    store.mark_sent(&take(&store, 10), 1000, &rules()).unwrap();
-    assert!(store.take_refresh("example.com", 10, 1999, 1000, None).unwrap().0.is_empty(), "sent too lately");
-
-    store.record_listing("example.com", 7, vec![page("b", 20)], 1500).unwrap();
-    let paths = |picks: &[Pick]| picks.iter().map(|p| p.url.clone()).collect::<Vec<_>>();
-    let (picks, next) = store.take_refresh("example.com", 1, 2000, 1000, None).unwrap();
-    assert_eq!(paths(&picks), ["https://example.com/a"]);
-    assert!(next.is_some(), "more to read");
-    let (picks, next) = store.take_refresh("example.com", 10, 2000, 1000, next.as_deref()).unwrap();
-    assert_eq!(paths(&picks), ["https://example.com/c"], "b changed, so it goes as a change");
-    assert_eq!(next, None, "read through");
-    assert!(picks.iter().all(|p| p.reason == Reason::Refresh && p.failures == 0));
-
-    store.mark_sent(&picks, 2000, &rules()).unwrap();
-    assert_eq!(record(&store, "c").pushed_at, 2000);
-    assert_eq!(ready(&store), ["b"], "a refresh takes nothing off the lists");
-    assert!(store.take_refresh("example.com", 10, 2500, 1000, None).unwrap().0.iter().all(|p| p.url != "https://example.com/c"), "c waits its interval again");
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn spare_room_goes_to_sent_pages_of_domains_whose_pages_come_back() {
-    let dir = Dir::new("dispatcher-fill");
-    let buckets = Arc::new(known(&dir, &["example.com", "example.org"]));
-    buckets.allow(&Allowed::with_terms([("example.com", Terms { hourly: Some(3600), ..Terms::default() }), ("example.org", Terms::default())]));
-    let later = 1000 + RECRAWL;
-    for (host, ok, failed) in [("example.com", 1000.0, 10.0), ("example.org", 5.0, 1000.0)] {
-        let store = buckets.store(host);
-        let pages = (0..150).map(|i| (urls::parse(&format!("https://{host}/p{i:03}"), host).unwrap(), 100, false)).collect();
-        store.record_listing(host, 1, pages, 100).unwrap();
-        let mut quotas = [0; LANES];
-        quotas[FRESH] = 1000;
-        store.mark_sent(&store.take_ready(host, quotas).unwrap(), 1000, &rules()).unwrap();
-        store.note_outcomes(&[], &[(host.to_string(), Yield { ok, failed, at: later })]).unwrap();
-    }
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let base = format!("http://{}", listener.local_addr().unwrap());
-    let fake = Arc::new(Mutex::new(FakeApi { room: 1, ..FakeApi::default() }));
-    tokio::spawn(serve_api(listener, fake.clone()));
-    let api = TaskApi::new(&base, Hotkey::from_uri("//test").unwrap()).unwrap();
-    let progress = Arc::new(Progress::default());
-    let mut dispatcher = Dispatcher::load(buckets.clone(), api, 1_000_000, shares(50, 10), rules(), progress.clone()).await.unwrap();
-
-    assert_eq!(dispatcher.pass(later - 1).await.unwrap(), 0, "nothing waits, and nothing was sent long enough ago");
-    assert_eq!(dispatcher.pass(later).await.unwrap(), 0, "a domain read through with nothing due rests an hour");
-    let later = later + 3600;
-    assert_eq!(dispatcher.pass(later).await.unwrap(), 120, "two minutes of example.com's 3,600 an hour; example.org's pages rarely come back");
-    let body: Value = serde_json::from_slice(&fake.lock().unwrap().enqueued[0].1).unwrap();
-    assert!(body["urls"].as_array().unwrap().iter().all(|u| u["host"] == "example.com"));
-    assert_eq!(progress.sent_fill.load(std::sync::atomic::Ordering::Relaxed), 120);
-    assert_eq!(progress.fill_domains.load(std::sync::atomic::Ordering::Relaxed), 1);
-    assert_eq!(dispatcher.pass(later + 120).await.unwrap(), 30, "the rest after the next two minutes");
-}
-
-#[test]
 fn a_domain_that_starts_refusing_loses_its_slots_long_before_its_day_long_yield_notices() {
     let dir = Dir::new("ready-recent");
     std::fs::create_dir_all(&dir.0).unwrap();

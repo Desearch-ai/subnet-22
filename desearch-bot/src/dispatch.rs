@@ -39,8 +39,6 @@ pub const SENDS_AT_ONCE: usize = 8;
 const READERS: usize = 16;
 const HOUR: u32 = 3600;
 const RANKS_SECONDS: Duration = Duration::from_secs(600);
-/// How long a domain read through with nothing due to send again waits before it is read again.
-const FILL_REST: u32 = 3600;
 /// Due schedules moved back onto ready lists per store per pass; small so a pass on a cold cache still sends soon.
 const REQUEUE_PER_PASS: usize = 5_000;
 /// A pass tries again with what is left when stale entries left the first allotment short.
@@ -273,9 +271,6 @@ pub struct Progress {
     pub sent_new: AtomicU64,
     pub sent_refresh: AtomicU64,
     pub sent_retry: AtomicU64,
-    /// Sent pages that went again to fill room the lists left, and the domains they may come from.
-    pub sent_fill: AtomicU64,
-    pub fill_domains: AtomicU64,
     pub batches: AtomicU64,
     /// Pages the API refused on their own, kept off the ready lists like a page with no outcome yet.
     pub set_aside: AtomicU64,
@@ -315,7 +310,7 @@ impl Progress {
         let top = self.top.lock().unwrap_or_else(|e| e.into_inner());
         let top: Vec<String> = top.iter().map(|(domain, n)| format!("{domain} {}", thousands(*n))).collect();
         format!(
-            "[rs] dispatch ready {} in {} domains (top {})  sent {} ({:.0}/min, {} batches; new {} refresh {} retry {} fill {})  room {} tasks  yield-limited {} probing {}  requeued {} gone {}  outcomes seq {} lag {}s read {} failed {} dropped {} ({} now) skipped {}  backfill {}/{} stores {} read {} added",
+            "[rs] dispatch ready {} in {} domains (top {})  sent {} ({:.0}/min, {} batches; new {} refresh {} retry {})  room {} tasks  yield-limited {} probing {}  requeued {} gone {}  outcomes seq {} lag {}s read {} failed {} dropped {} ({} now) skipped {}  backfill {}/{} stores {} read {} added",
             thousands(self.ready.load(Ordering::Relaxed)),
             thousands(self.ready_domains.load(Ordering::Relaxed)),
             if top.is_empty() { "-".to_string() } else { top.join(", ") },
@@ -325,7 +320,6 @@ impl Progress {
             thousands(self.sent_new.load(Ordering::Relaxed)),
             thousands(self.sent_refresh.load(Ordering::Relaxed)),
             thousands(self.sent_retry.load(Ordering::Relaxed)),
-            thousands(self.sent_fill.load(Ordering::Relaxed)),
             self.room_tasks.load(Ordering::Relaxed),
             self.slowed.load(Ordering::Relaxed),
             self.probing.load(Ordering::Relaxed),
@@ -343,9 +337,8 @@ impl Progress {
             thousands(self.backfill_scanned.load(Ordering::Relaxed)),
             thousands(self.backfill_added.load(Ordering::Relaxed)),
         ) + &format!(
-            "  set aside {}  fill from {} domains  joined {}/{} domains {} queued, {} cleared at caps  last pass absorb {:.1}s pick {:.1}s send {:.1}s",
+            "  set aside {}  joined {}/{} domains {} queued, {} cleared at caps  last pass absorb {:.1}s pick {:.1}s send {:.1}s",
             thousands(self.set_aside.load(Ordering::Relaxed)),
-            thousands(self.fill_domains.load(Ordering::Relaxed)),
             thousands(self.join_done.load(Ordering::Relaxed)),
             thousands(self.join_of.load(Ordering::Relaxed)),
             thousands(self.join_queued.load(Ordering::Relaxed)),
@@ -415,7 +408,6 @@ impl Sending {
             Reason::Fresh => 0,
             Reason::Changed => 1,
             Reason::Requeued => 2,
-            Reason::Refresh => 3,
         };
         Sending {
             domain: pick.entry.domain.clone(),
@@ -437,7 +429,6 @@ impl Sending {
         let reason = match self.reason {
             0 => Reason::Fresh,
             1 => Reason::Changed,
-            3 => Reason::Refresh,
             _ => Reason::Requeued,
         };
         Pick {
@@ -473,13 +464,6 @@ pub struct Dispatcher {
     shares: [f64; LANES],
     credit: HashMap<String, [f64; LANES]>,
     recrawl: Arc<Recrawl>,
-    /// Domains whose sent pages may go again to fill spare room, as (rank, domain), and when they were last chosen.
-    fillers: Vec<(i64, String)>,
-    fillers_read: Option<Instant>,
-    fill_resume: Option<(i64, String)>,
-    /// Where each domain's sent pages were last read to, and domains read through with nothing due, until when they rest.
-    fill_cursor: HashMap<String, Vec<u8>>,
-    fill_rest: HashMap<String, u32>,
 }
 
 impl Dispatcher {
@@ -532,11 +516,6 @@ impl Dispatcher {
             shares,
             credit: HashMap::new(),
             recrawl: Arc::new(recrawl),
-            fillers: Vec::new(),
-            fillers_read: None,
-            fill_resume: None,
-            fill_cursor: HashMap::new(),
-            fill_rest: HashMap::new(),
         };
         dispatcher.report();
         Ok(dispatcher)
@@ -637,11 +616,7 @@ impl Dispatcher {
         if !refresh.is_empty() {
             self.ranks_read = Instant::now();
         }
-        let choose_fillers = self.fillers_read.is_none_or(|at| at.elapsed() >= RANKS_SECONDS);
-        if choose_fillers {
-            self.fillers_read = Some(Instant::now());
-        }
-        let (grown, ranks, requeued, gone, fillers) = tokio::task::spawn_blocking(move || -> Result<_> {
+        let (grown, ranks, requeued, gone) = tokio::task::spawn_blocking(move || -> Result<_> {
             let (mut requeued, mut gone) = (0, 0);
             let mut grown: HashMap<String, u64> = HashMap::new();
             let swept = on_readers(buckets.stores().collect(), |store| Ok((store.requeue_due(now, REQUEUE_PER_PASS, &recrawl)?, store.take_noticed())))?;
@@ -657,14 +632,9 @@ impl Dispatcher {
                 .chain(grown.keys())
                 .map(|domain| (domain.clone(), rank_of(&buckets, domain), share_of(&buckets, domain, now), buckets.terms(domain).weight))
                 .collect();
-            let fillers = if choose_fillers { Some(fillers(&buckets, now)?) } else { None };
-            Ok((grown, ranks, requeued, gone, fillers))
+            Ok((grown, ranks, requeued, gone))
         })
         .await??;
-        if let Some(fillers) = fillers {
-            self.progress.fill_domains.store(fillers.len() as u64, Ordering::Relaxed);
-            self.fillers = fillers;
-        }
         self.progress.requeued.fetch_add(requeued as u64, Ordering::Relaxed);
         self.progress.gone.fetch_add(gone as u64, Ordering::Relaxed);
         let ranks: HashMap<String, (i64, f64, u8)> = ranks.into_iter().map(|(domain, rank, share, weight)| (domain, (rank, share, weight))).collect();
@@ -714,6 +684,9 @@ impl Dispatcher {
             .filter(|(_, &n)| n > 0)
             .map(|((_, name), &n)| (name.clone(), split(self.credit.entry(name.clone()).or_default(), &self.shares, n as usize)))
             .collect();
+        if asks.is_empty() {
+            return Ok(Vec::new());
+        }
         let buckets = self.buckets.clone();
         let taken = tokio::task::spawn_blocking(move || -> Result<Vec<Taken>> {
             on_readers(asks, |(domain, quotas)| {
@@ -737,65 +710,6 @@ impl Dispatcher {
             }
             let rank = self.domains.get(&domain).map_or(UNRANKED, |d| d.rank);
             self.set_ready(&domain, left, rank);
-            lists.push(picks);
-        }
-        let mut picks = interleave(lists);
-        let spare = budget.saturating_sub(picks.len() as u64);
-        if spare > 0 {
-            picks.extend(self.fill(spare, now).await?);
-        }
-        Ok(picks)
-    }
-
-    /// Sent pages of good-yield domains with nothing waiting, for room the lists leave, within each domain's hourly limit.
-    async fn fill(&mut self, budget: u64, now: u32) -> Result<Vec<Pick>> {
-        self.fill_rest.retain(|_, until| *until > now);
-        let order: Vec<(i64, String)> =
-            self.fillers.iter().filter(|(_, name)| !self.domains.contains_key(name) && !self.fill_rest.contains_key(name)).cloned().collect();
-        let wants: Vec<Want> = order
-            .iter()
-            .map(|(rank, name)| {
-                let terms = self.buckets.terms(name);
-                let allowance = self.cap.allowance_under(name, now, terms.hourly.unwrap_or(self.cap.limit()));
-                Want { rank: *rank, ready: allowance, allowance, share: 1.0, weight: terms.weight }
-            })
-            .collect();
-        let start = self.fill_resume.as_ref().map_or(0, |resume| order.partition_point(|key| key <= resume));
-        let (given, next) = allot(&wants, budget, start);
-        self.fill_resume = order.get(next.checked_sub(1).unwrap_or(order.len().saturating_sub(1))).cloned();
-        let asks: Vec<(String, usize, Option<Vec<u8>>, u32)> = order
-            .iter()
-            .zip(&given)
-            .filter(|(_, &n)| n > 0)
-            .map(|((_, name), &n)| (name.clone(), n as usize, self.fill_cursor.get(name).cloned(), self.recrawl.interval(name)))
-            .collect();
-        if asks.is_empty() {
-            return Ok(Vec::new());
-        }
-        let buckets = self.buckets.clone();
-        let taken = tokio::task::spawn_blocking(move || {
-            on_readers(asks, |(domain, want, after, min_age)| {
-                let Some(store) = buckets.store_for(&domain) else {
-                    return Ok((domain, want, Vec::new(), None));
-                };
-                let (picks, next) = store.take_refresh(&domain, want, now, min_age, after.as_deref())?;
-                Ok((domain, want, picks, next))
-            })
-        })
-        .await??;
-        let mut lists = Vec::with_capacity(taken.len());
-        for (domain, want, picks, next) in taken {
-            match next {
-                Some(key) => {
-                    self.fill_cursor.insert(domain, key);
-                }
-                None => {
-                    self.fill_cursor.remove(&domain);
-                    if picks.len() < want {
-                        self.fill_rest.insert(domain, now.saturating_add(FILL_REST));
-                    }
-                }
-            }
             lists.push(picks);
         }
         Ok(interleave(lists))
@@ -860,7 +774,6 @@ impl Dispatcher {
             let counter = match sending.reason {
                 0 => &self.progress.sent_new,
                 1 => &self.progress.sent_refresh,
-                3 => &self.progress.sent_fill,
                 _ => &self.progress.sent_retry,
             };
             counter.fetch_add(1, Ordering::Relaxed);
@@ -1258,24 +1171,6 @@ fn share_of(buckets: &Buckets, domain: &str, now: u32) -> f64 {
     };
     let whole = yield_share(store.domain_yield(domain).ok().flatten(), now);
     whole.min(recent_share(store.domain_yield_recent(domain).ok().flatten(), now))
-}
-
-/// Listed domains whose pages come back well enough to send again, best ranked first.
-fn fillers(buckets: &Buckets, now: u32) -> Result<Vec<(i64, String)>> {
-    let chunks: Vec<Vec<String>> = buckets.listed().chunks(4096).map(<[String]>::to_vec).collect();
-    let found = on_readers(chunks, |names| {
-        Ok(names
-            .into_iter()
-            .filter(|name| {
-                let judged = buckets.store_for(name).and_then(|store| store.domain_yield(name).ok().flatten()).is_some_and(|y| y.at(now).judged() >= YIELD_RECENT_JUDGED);
-                judged && share_of(buckets, name, now) >= 1.0
-            })
-            .map(|name| (rank_of(buckets, &name), name))
-            .collect::<Vec<_>>())
-    })?;
-    let mut fillers: Vec<(i64, String)> = found.into_iter().flatten().collect();
-    fillers.sort_unstable();
-    Ok(fillers)
 }
 
 fn rank_of(buckets: &Buckets, domain: &str) -> i64 {
