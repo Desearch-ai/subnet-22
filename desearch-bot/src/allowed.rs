@@ -9,6 +9,41 @@ use std::time::SystemTime;
 use anyhow::{Context, Result};
 use serde_json::Value;
 
+/// A listed domain's kind of site, which sets how often its pages are crawled again.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SiteType {
+    News,
+    Reference,
+    Docs,
+    Academic,
+    Public,
+    Media,
+    Community,
+    Company,
+    Organization,
+    Personal,
+    #[default]
+    Other,
+}
+
+impl SiteType {
+    pub fn parse(name: &str) -> SiteType {
+        match name {
+            "news" => SiteType::News,
+            "reference" => SiteType::Reference,
+            "docs" => SiteType::Docs,
+            "academic" => SiteType::Academic,
+            "public" => SiteType::Public,
+            "media" => SiteType::Media,
+            "community" => SiteType::Community,
+            "company" => SiteType::Company,
+            "organization" => SiteType::Organization,
+            "personal" => SiteType::Personal,
+            _ => SiteType::Other,
+        }
+    }
+}
+
 /// What the list says about one domain.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Terms {
@@ -20,11 +55,12 @@ pub struct Terms {
     pub hourly: Option<u64>,
     /// For a domain without a cap, the most stored pages queued when it joins the list, newest first.
     pub backlog: Option<u64>,
+    pub site: SiteType,
 }
 
 impl Default for Terms {
     fn default() -> Self {
-        Terms { weight: 1, send_cap: None, hourly: None, backlog: None }
+        Terms { weight: 1, send_cap: None, hourly: None, backlog: None, site: SiteType::Other }
     }
 }
 
@@ -97,7 +133,7 @@ impl Allowed {
     }
 }
 
-/// A JSON list of domain names, or of objects naming theirs under `host`, with an optional `weight`, `send_cap`, `hourly` and `backlog`.
+/// A JSON list of domain names, or of objects naming theirs under `host`, with an optional `type`, `weight`, `send_cap`, `hourly` and `backlog`.
 pub fn parse(raw: &[u8]) -> Result<HashMap<String, Terms>> {
     let listed: Vec<Value> = serde_json::from_slice(raw).context("not a JSON list of domains")?;
     Ok(listed
@@ -106,7 +142,8 @@ pub fn parse(raw: &[u8]) -> Result<HashMap<String, Terms>> {
             let host = entry.as_str().or_else(|| entry.get("host").and_then(Value::as_str))?;
             let number = |name: &str| entry.get(name).and_then(Value::as_u64);
             let weight = number("weight").map_or(1, |w| w.clamp(1, 4) as u8);
-            Some((host.to_string(), Terms { weight, send_cap: number("send_cap"), hourly: number("hourly"), backlog: number("backlog") }))
+            let site = entry.get("type").and_then(Value::as_str).map_or(SiteType::Other, SiteType::parse);
+            Some((host.to_string(), Terms { weight, send_cap: number("send_cap"), hourly: number("hourly"), backlog: number("backlog"), site }))
         })
         .collect())
 }

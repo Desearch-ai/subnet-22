@@ -191,6 +191,8 @@ pub struct BucketStore {
     allowed: OnceLock<Arc<Allowed>>,
     /// Domains whose sends reached their cap since the list walker last looked, so it clears their new-page lanes.
     pub(crate) capped: Mutex<HashSet<String>>,
+    /// Domains whose due queue fronts may have moved since the dispatcher last looked.
+    pub(crate) due_noticed: Mutex<HashSet<String>>,
 }
 
 impl BucketStore {
@@ -206,6 +208,7 @@ impl BucketStore {
             noticed: Mutex::new(None),
             allowed: OnceLock::new(),
             capped: Mutex::new(HashSet::new()),
+            due_noticed: Mutex::new(HashSet::new()),
         })
     }
 
@@ -352,7 +355,7 @@ impl BucketStore {
             };
             batch.put(&url.key, record.pack());
         }
-        let (ready, counts) = self.ready_from_listing(&mut batch, &fresh, &moved, listing.listed)?;
+        let (ready, counts) = self.ready_from_listing(&mut batch, &fresh, &moved, listing.listed, now)?;
         listing.ready = ready;
         self.db.write(batch)?;
         drop(guard);

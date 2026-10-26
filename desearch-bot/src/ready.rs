@@ -1,7 +1,7 @@
 //! Pages waiting to go to the task API, a list per domain in the bucket store, and what became of the pages sent.
 
 use std::cmp::Reverse;
-use std::collections::{BinaryHeap, HashMap};
+use std::collections::HashMap;
 use std::sync::LazyLock;
 use std::time::Duration;
 
@@ -10,7 +10,6 @@ use regex::bytes::{Regex, RegexBuilder};
 use rocksdb::{Direction, IteratorMode, ReadOptions, WriteBatch};
 use serde_json::{json, Value};
 
-use crate::allowed::Terms;
 use crate::buckets::{meta_key, BucketStore, Changes, LISTED, URL};
 use crate::recrawl::Recrawl;
 use crate::records;
@@ -26,7 +25,7 @@ pub(crate) const SENT: u8 = b'P';
 /// Retries and re-crawls by the time they join their ready list again.
 const WAITING: u8 = b'W';
 /// Each page's latest schedule; a waiting entry another schedule replaced is skipped when it comes due.
-const NEXT: u8 = b'N';
+pub(crate) const NEXT: u8 = b'N';
 /// Deadlines left by earlier versions, which resent every page with no outcome a day after it went.
 const EXPECTING: u8 = b'X';
 /// Each domain's recent outcomes, so the dispatcher sends less where pages do not come back.
@@ -34,21 +33,15 @@ const YIELD: u8 = b'Y';
 /// The same outcomes fading within hours, so a domain that starts refusing is slowed the same hour.
 const YIELD_RECENT: u8 = b'Z';
 /// How many distinct pages of each domain were ever sent, for its cap.
-const SENT_COUNT: u8 = b'C';
+pub(crate) const SENT_COUNT: u8 = b'C';
 /// The cap each listed domain's stored pages were last queued under; a domain is walked again only when it changes.
-const JOINED: u8 = b'J';
-/// Each domain's longest-unsent pages, oldest send first, kept ready for refreshes so a pass never reads the sent records.
-const STOCK: u8 = b'F';
+pub(crate) const JOINED: u8 = b'J';
+/// Refresh stocks of an earlier version, deleted as each domain's due queue is built.
+pub(crate) const STOCK: u8 = b'F';
 /// Keys a domain's new-page lane loses per locked write when it is cleared.
 const TRIM_CHUNK: usize = 50_000;
-/// Sent records read at a time while a domain's refresh stock is chosen.
-const STOCK_CHUNK: usize = 1024;
-/// Stock entries a take may pass over as stale beyond what it wants.
-const STOCK_SLACK: usize = 256;
 /// The pause between cleared chunks, so senders waiting on the lock get it.
 const TRIM_REST: Duration = Duration::from_millis(1);
-/// Pages queued per locked write while a domain is walked.
-const JOIN_CHUNK: usize = 20_000;
 /// An outcome counts half as much a day later.
 pub const YIELD_HALF_LIFE_S: f64 = 86_400.0;
 /// In the recent count, half as much an hour later.
@@ -60,7 +53,7 @@ pub const RESTAMP_SHARE: f64 = 0.02;
 pub const RESTAMP_MIN: usize = 50;
 pub const RESTAMP_KEEP: usize = 10;
 /// An outcome this much older than the latest send of its page belongs to an earlier send.
-const STALE_OUTCOME: u32 = 60;
+pub(crate) const STALE_OUTCOME: u32 = 60;
 /// Failed sends in a row after which a page waits the long `Recrawl::gone` interval.
 pub const GONE_AFTER: u8 = 2;
 
@@ -107,13 +100,15 @@ pub enum Order {
     Requeued { due: u32 },
     /// Never sent: newest found first, then newest lastmod.
     Fresh { first_seen: u32, lastmod: u32 },
+    /// A page of a domain's set taken from its due queue, never written to a ready list.
+    Due { due: u32, first: bool },
 }
 
 impl Order {
     pub fn lane(self) -> usize {
         match self {
             Order::Changed { .. } => CHANGED,
-            Order::Requeued { .. } => REQUEUED,
+            Order::Requeued { .. } | Order::Due { .. } => REQUEUED,
             Order::Fresh { .. } => FRESH,
         }
     }
@@ -123,6 +118,7 @@ impl Order {
             Order::Changed { lastmod } => (0, !lastmod, 0),
             Order::Requeued { due } => (1, due, 0),
             Order::Fresh { first_seen, lastmod } => (2, !first_seen, !lastmod),
+            Order::Due { due, first } => (3, due, u32::from(first)),
         };
         let mut out = [class; 9];
         out[1..5].copy_from_slice(&first.to_be_bytes());
@@ -137,6 +133,7 @@ impl Order {
             0 => Some(Order::Changed { lastmod: !word(1) }),
             1 => Some(Order::Requeued { due: word(1) }),
             2 => Some(Order::Fresh { first_seen: !word(1), lastmod: !word(5) }),
+            3 => Some(Order::Due { due: word(1), first: word(5) != 0 }),
             _ => None,
         }
     }
@@ -181,14 +178,14 @@ pub struct Sent {
 
 impl Sent {
     /// Failures share the last byte with the requeued flag; the byte before held a count that also took in outcomes that never came, and is left at zero.
-    fn pack(self) -> [u8; 6] {
+    pub(crate) fn pack(self) -> [u8; 6] {
         let mut out = [0u8; 6];
         out[..4].copy_from_slice(&self.lastmod.to_le_bytes());
         out[5] = u8::from(self.requeued) | self.failures.min(127) << 1;
         out
     }
 
-    fn unpack(data: &[u8]) -> Option<Sent> {
+    pub(crate) fn unpack(data: &[u8]) -> Option<Sent> {
         (data.len() == 6).then(|| Sent { lastmod: u32::from_le_bytes(data[..4].try_into().unwrap()), failures: data[5] >> 1, requeued: data[5] & 1 != 0 })
     }
 }
@@ -201,6 +198,8 @@ pub enum Reason {
     Requeued,
     /// Sent before with nothing new to say, going again to fill room the lists leave.
     Refresh,
+    /// Due later, pulled forward because the pass had room left after everything due.
+    Pulled,
 }
 
 /// Whether a page on a ready list still needs sending, and why; None for an entry that went stale.
@@ -214,32 +213,6 @@ pub fn reason(record: &Record, sent: Option<&Sent>) -> Option<Reason> {
         Some(sent) if sent.requeued => Some(Reason::Requeued),
         Some(_) => None,
     }
-}
-
-/// A page with nothing pending: not failing, not requeued, and no newer lastmod to send as a change.
-fn refreshable(record: &Record, sent: &Sent) -> bool {
-    sent.failures == 0 && !sent.requeued && record.lastmod <= sent.lastmod
-}
-
-fn stock_key(domain: &str, pushed_at: u32, rest: &[u8]) -> Vec<u8> {
-    [&[STOCK], domain.as_bytes(), b"\0", &pushed_at.to_be_bytes(), rest].concat()
-}
-
-/// A refresh stock chosen: how many pages it holds, and where the next choice reads on from, None once the domain was read through.
-#[derive(Debug)]
-pub struct Stocked {
-    pub count: usize,
-    pub next: Option<Vec<u8>>,
-}
-
-/// What a take from a domain's refresh stock found.
-#[derive(Debug, Default)]
-pub struct Stock {
-    pub picks: Vec<Pick>,
-    /// The stock ran out, so it wants choosing again.
-    pub empty: bool,
-    /// The oldest left was sent within the floor; it may go from this time.
-    pub young_until: Option<u32>,
 }
 
 /// A page taken off its ready list to be sent.
@@ -258,6 +231,8 @@ pub enum Outcome {
     Unchanged,
     Failed,
     Dropped,
+    /// Crawled, but not a page the index takes, such as one not in English or with too little text.
+    Unindexable,
 }
 
 impl Outcome {
@@ -267,6 +242,7 @@ impl Outcome {
             "unchanged" => Some(Outcome::Unchanged),
             "failed" => Some(Outcome::Failed),
             "dropped" => Some(Outcome::Dropped),
+            "unindexable" => Some(Outcome::Unindexable),
             _ => None,
         }
     }
@@ -283,6 +259,12 @@ pub enum Why {
     Dropped,
     /// A page that failed on sends in a row, after the long wait.
     Gone,
+    /// A page just admitted to its domain's set, due for its first crawl.
+    Admit,
+    /// A page in the set whose sitemap lastmod moved, due at once.
+    Changed,
+    /// A page the index does not take, leaving its domain's set.
+    Leave,
 }
 
 /// When a page goes out again, and the send (re-crawl, gone) or outcome (failed, dropped) that set it.
@@ -294,20 +276,23 @@ pub struct Scheduled {
 }
 
 impl Scheduled {
-    fn pack(self) -> [u8; 9] {
+    pub(crate) fn pack(self) -> [u8; 9] {
         let mut out = [0u8; 9];
         out[0] = match self.why {
             Why::Recrawl => b'r',
             Why::Failed => b'f',
             Why::Dropped => b'd',
             Why::Gone => b'g',
+            Why::Admit => b'a',
+            Why::Changed => b'c',
+            Why::Leave => b'l',
         };
         out[1..5].copy_from_slice(&self.due.to_be_bytes());
         out[5..].copy_from_slice(&self.at.to_be_bytes());
         out
     }
 
-    fn unpack(raw: &[u8]) -> Option<Scheduled> {
+    pub(crate) fn unpack(raw: &[u8]) -> Option<Scheduled> {
         let word = |at: usize| u32::from_be_bytes(raw[at..at + 4].try_into().unwrap());
         let why = match raw.first()? {
             _ if raw.len() != 9 => return None,
@@ -315,16 +300,20 @@ impl Scheduled {
             b'f' => Why::Failed,
             b'd' => Why::Dropped,
             b'g' => Why::Gone,
+            b'a' => Why::Admit,
+            b'c' => Why::Changed,
+            b'l' => Why::Leave,
             _ => return None,
         };
         Some(Scheduled { why, due: word(1), at: word(5) })
     }
 
     /// Whether the page went out again after what set this schedule, which then says nothing about it.
-    fn outdated(self, pushed_at: u32) -> bool {
+    pub(crate) fn outdated(self, pushed_at: u32) -> bool {
         match self.why {
             Why::Recrawl | Why::Gone => pushed_at != self.at,
             Why::Failed | Why::Dropped => pushed_at > self.at.saturating_add(STALE_OUTCOME),
+            Why::Admit | Why::Changed | Why::Leave => pushed_at > self.at,
         }
     }
 }
@@ -390,19 +379,6 @@ pub struct Dropped {
     pub known: bool,
     pub ready: u64,
     pub urls: i64,
-}
-
-/// What walking one listed domain's stored pages found and queued.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Joined {
-    pub scanned: u64,
-    /// Pages of the domain sent at some point, which count against its cap.
-    pub sent: u64,
-    pub queued: u64,
-    /// New-page entries cleared first, for a domain with a cap.
-    pub cleared: u64,
-    /// Stopped before the walk ended; the domain is walked again next time.
-    pub stopped: bool,
 }
 
 /// What one look at the due schedules did.
@@ -547,107 +523,6 @@ impl BucketStore {
         Ok(())
     }
 
-    /// Replace the domain's refresh stock with the `keep` pages sent longest ago that could go again, of at most `most` sent records read on from `after`; None when `pace` stopped it first.
-    pub fn stock_refresh(&self, domain: &str, keep: usize, after: Option<&[u8]>, most: usize, pace: &mut dyn FnMut(u64) -> bool) -> Result<Option<Stocked>> {
-        let prefix = prefixed(SENT, domain.as_bytes(), b"");
-        let mut oldest: BinaryHeap<(u32, Vec<u8>)> = BinaryHeap::new();
-        let (mut last, mut scanned) = (after.map(<[u8]>::to_vec), 0);
-        let next = loop {
-            let start = last.as_ref().map_or_else(|| prefix.clone(), |key| [key.as_slice(), b"\0"].concat());
-            let mut chunk = Vec::with_capacity(STOCK_CHUNK);
-            for item in self.db.iterator_opt(IteratorMode::From(&start, Direction::Forward), bounded(&prefix)).take(STOCK_CHUNK) {
-                let (key, raw) = item?;
-                chunk.push((key.to_vec(), Sent::unpack(&raw)));
-            }
-            let read = chunk.len();
-            let records = self.records(chunk.iter().map(|(key, _)| prefixed(URL, domain.as_bytes(), &key[prefix.len()..])))?;
-            for ((key, sent), record) in chunk.into_iter().zip(records) {
-                let rest = &key[prefix.len()..];
-                if let (Some(record), Some(sent)) = (record, sent) {
-                    if record.pushed_at != 0 && refreshable(&record, &sent) && !junk(rest) {
-                        oldest.push((record.pushed_at, rest.to_vec()));
-                        if oldest.len() > keep {
-                            oldest.pop();
-                        }
-                    }
-                }
-                last = Some(key);
-            }
-            if !pace(read as u64) {
-                return Ok(None);
-            }
-            scanned += read;
-            if read < STOCK_CHUNK {
-                break None;
-            }
-            if scanned >= most {
-                break last;
-            }
-        };
-        let stocked = oldest.len();
-        let _guard = self.lock_ready();
-        let mut batch = WriteBatch::default();
-        batch.delete_range(prefixed(STOCK, domain.as_bytes(), b""), [&[STOCK], domain.as_bytes(), b"\x01"].concat());
-        for (pushed_at, rest) in oldest {
-            batch.put(stock_key(domain, pushed_at, &rest), b"");
-        }
-        self.db.write(batch)?;
-        Ok(Some(Stocked { count: stocked, next }))
-    }
-
-    /// Up to `want` refreshes from the domain's stock, oldest send first, none sent within `floor` of `now`; stale entries go.
-    pub fn take_stock(&self, domain: &str, want: usize, now: u32, floor: u32) -> Result<Stock> {
-        let robots = self.domain(domain)?.map(|record| records::robots_paths(&record)).unwrap_or_default();
-        let prefix = prefixed(STOCK, domain.as_bytes(), b"");
-        let mut entries = Vec::new();
-        let mut taken = Stock::default();
-        let mut iter = self.db.iterator_opt(IteratorMode::From(&prefix, Direction::Forward), bounded(&prefix));
-        loop {
-            if entries.len() >= want + STOCK_SLACK {
-                break;
-            }
-            let Some(item) = iter.next() else {
-                taken.empty = true;
-                break;
-            };
-            let key = item?.0.to_vec();
-            let Some(pushed_at) = key.get(prefix.len()..prefix.len() + 4).map(|b| u32::from_be_bytes(b.try_into().unwrap())) else {
-                continue;
-            };
-            if now.saturating_sub(pushed_at) < floor {
-                taken.young_until = Some(pushed_at.saturating_add(floor));
-                break;
-            }
-            entries.push((key, pushed_at));
-        }
-        let rests: Vec<Vec<u8>> = entries.iter().map(|(key, _)| key[prefix.len() + 4..].to_vec()).collect();
-        let records = self.records(rests.iter().map(|rest| prefixed(URL, domain.as_bytes(), rest)))?;
-        let sents = self.sents(rests.iter().map(|rest| prefixed(SENT, domain.as_bytes(), rest)))?;
-        let mut gone = Vec::new();
-        for ((((key, pushed_at), rest), record), sent) in entries.into_iter().zip(rests).zip(records).zip(sents) {
-            if taken.picks.len() >= want {
-                taken.empty = false;
-                break;
-            }
-            // Sent again since it was stocked, or no longer one to refresh: it leaves the stock unsent.
-            let fresh = record.filter(|r| r.pushed_at == pushed_at).filter(|r| sent.is_some_and(|s| refreshable(r, &s)));
-            if let Some(record) = fresh.filter(|_| robots.allows_page(domain, &rest)) {
-                let entry = Entry { domain: domain.to_string(), rest: rest.clone(), order: Order::Requeued { due: pushed_at } };
-                taken.picks.push(Pick { url: fetchable(&rest, record.flags), lastmod: record.lastmod, reason: Reason::Refresh, failures: 0, entry });
-            }
-            gone.push(key);
-        }
-        if !gone.is_empty() {
-            let _guard = self.lock_ready();
-            let mut batch = WriteBatch::default();
-            for key in gone {
-                batch.delete(key);
-            }
-            self.db.write(batch)?;
-        }
-        Ok(taken)
-    }
-
     /// The task API took these pages: stamp them sent, with the lastmod they went with, and take them off their lists.
     pub fn mark_sent(&self, picks: &[Pick], at: u32, recrawl: &Recrawl) -> Result<()> {
         if picks.is_empty() {
@@ -656,7 +531,7 @@ impl BucketStore {
         let _guard = self.lock_ready();
         let mut batch = WriteBatch::default();
         let mut counts = HashMap::new();
-        let keys: Vec<Vec<u8>> = picks.iter().map(|p| p.entry.key()).collect();
+        let keys: Vec<Vec<u8>> = picks.iter().filter(|p| !matches!(p.entry.order, Order::Due { .. })).map(|p| p.entry.key()).collect();
         self.remove_ready(&mut batch, &keys, &mut counts)?;
         let records = self.records(picks.iter().map(|p| p.entry.url_key()))?;
         let mut moved = Vec::new();
@@ -664,15 +539,18 @@ impl BucketStore {
             if let Some(mut record) = record {
                 record.pushed_at = at;
                 batch.put(pick.entry.url_key(), record.pack());
-                if record.lastmod > pick.lastmod {
+                if matches!(pick.entry.order, Order::Due { .. }) {
+                    self.sent_from_queue(&mut batch, pick, &record, at, recrawl);
+                } else if record.lastmod > pick.lastmod {
                     moved.push(Entry { order: Order::Changed { lastmod: record.lastmod }, ..pick.entry.clone() });
                 }
                 // No lastmod will ever say such a page changed, so it goes again on its domain's interval.
-                if record.lastmod == 0 {
+                if record.lastmod == 0 && !matches!(pick.entry.order, Order::Due { .. }) {
                     let next = Scheduled { why: Why::Recrawl, due: at.saturating_add(recrawl.interval(&pick.entry.domain)), at };
                     put_schedule(&mut batch, pick.entry.domain.as_bytes(), &pick.entry.rest, next);
                 }
             }
+            // A retry keeps its count of failures in a row; any other send starts it again.
             let failures = if pick.reason == Reason::Requeued { pick.failures } else { 0 };
             batch.put(pick.entry.sent_key(), Sent { lastmod: pick.lastmod, failures, requeued: false }.pack());
         }
@@ -755,150 +633,6 @@ impl BucketStore {
         Ok((cleared, true))
     }
 
-    /// Queue the pages a listed domain stored but never sent, newest first, as many as its cap leaves; counts its sent pages for the cap.
-    pub fn join_domain(&self, domain: &str, terms: Terms, started: u32, pace: &mut dyn FnMut(u64) -> bool) -> Result<Joined> {
-        let robots = self.domain(domain)?.map(|record| records::robots_paths(&record)).unwrap_or_default();
-        let prefix = prefixed(URL, domain.as_bytes(), b"");
-        let mut joined = Joined::default();
-        let mut streamed: Vec<Entry> = Vec::new();
-        // With a cap or a backlog only the newest pages go: a heap of the oldest kept, never more than the bound itself.
-        let bound = terms.send_cap.or(terms.backlog);
-        let mut newest: BinaryHeap<Reverse<(u32, u32, Vec<u8>)>> = BinaryHeap::new();
-        let mut since_pace = 0u64;
-        for item in self.db.iterator_opt(IteratorMode::From(&prefix, Direction::Forward), bounded(&prefix)) {
-            let (key, raw) = item?;
-            joined.scanned += 1;
-            since_pace += 1;
-            if since_pace >= 10_000 {
-                if !pace(since_pace) {
-                    joined.stopped = true;
-                    return Ok(joined);
-                }
-                since_pace = 0;
-            }
-            let Some(record) = Record::unpack(&raw) else {
-                continue;
-            };
-            if record.pushed_at != 0 {
-                joined.sent += 1;
-                continue;
-            }
-            let rest = &key[prefix.len()..];
-            // Pages first seen after the walk began went on their list when found.
-            if record.first_seen >= started || junk(rest) || !robots.allows_page(domain, rest) {
-                continue;
-            }
-            match bound {
-                None => {
-                    let order = Order::Fresh { first_seen: record.first_seen, lastmod: record.lastmod };
-                    streamed.push(Entry { domain: domain.to_string(), rest: rest.to_vec(), order });
-                    if streamed.len() >= JOIN_CHUNK {
-                        joined.queued += self.queue_entries(std::mem::take(&mut streamed))? as u64;
-                    }
-                }
-                Some(most) => {
-                    newest.push(Reverse((record.first_seen, record.lastmod, rest.to_vec())));
-                    if newest.len() as u64 > most {
-                        newest.pop();
-                    }
-                }
-            }
-        }
-        if !pace(since_pace) {
-            joined.stopped = true;
-            return Ok(joined);
-        }
-        if let Some(most) = bound {
-            let room = match terms.send_cap {
-                Some(cap) => {
-                    let (cleared, finished) = self.clear_fresh(domain, pace)?;
-                    joined.cleared = cleared;
-                    if !finished {
-                        joined.stopped = true;
-                        return Ok(joined);
-                    }
-                    cap.saturating_sub(joined.sent)
-                }
-                None => most,
-            };
-            let mut kept: Vec<(u32, u32, Vec<u8>)> = newest.into_iter().map(|Reverse(page)| page).collect();
-            kept.sort_unstable_by(|a, b| b.cmp(a));
-            kept.truncate(room as usize);
-            for chunk in kept.chunks(JOIN_CHUNK) {
-                let entries = chunk.iter().map(|(first_seen, lastmod, rest)| Entry { domain: domain.to_string(), rest: rest.clone(), order: Order::Fresh { first_seen: *first_seen, lastmod: *lastmod } });
-                joined.queued += self.queue_entries(entries.collect())? as u64;
-            }
-        } else {
-            joined.queued += self.queue_entries(streamed)? as u64;
-        }
-        let _guard = self.lock_ready();
-        let mut batch = WriteBatch::default();
-        batch.put(count_key_of(SENT_COUNT, domain), joined.sent.to_le_bytes());
-        batch.put(count_key_of(JOINED, domain), terms.send_cap.unwrap_or(u64::MAX).to_le_bytes());
-        self.db.write(batch)?;
-        Ok(joined)
-    }
-
-    /// Counts the pages of a domain already sending and applies its cap, without walking its stored pages: their stock is queued already.
-    pub fn cap_domain(&self, domain: &str, terms: Terms, pace: &mut dyn FnMut(u64) -> bool) -> Result<Joined> {
-        let mut joined = Joined::default();
-        // Without a cap there is nothing to apply; a cap given later walks the domain again, and counts it then.
-        if terms.send_cap.is_none() {
-            let _guard = self.lock_ready();
-            self.db.put(count_key_of(JOINED, domain), u64::MAX.to_le_bytes())?;
-            return Ok(joined);
-        }
-        let prefix = prefixed(SENT, domain.as_bytes(), b"");
-        let mut since_pace = 0u64;
-        for item in self.db.iterator_opt(IteratorMode::From(&prefix, Direction::Forward), bounded(&prefix)) {
-            item?;
-            joined.sent += 1;
-            since_pace += 1;
-            if since_pace >= 10_000 {
-                if !pace(since_pace) {
-                    joined.stopped = true;
-                    return Ok(joined);
-                }
-                since_pace = 0;
-            }
-        }
-        if !pace(since_pace) {
-            joined.stopped = true;
-            return Ok(joined);
-        }
-        joined.scanned = joined.sent;
-        {
-            let _guard = self.lock_ready();
-            self.db.put(count_key_of(SENT_COUNT, domain), joined.sent.to_le_bytes())?;
-        }
-        if terms.send_cap.is_some_and(|cap| joined.sent >= cap) {
-            let (cleared, finished) = self.clear_fresh(domain, pace)?;
-            joined.cleared = cleared;
-            if !finished {
-                joined.stopped = true;
-                return Ok(joined);
-            }
-        }
-        // Marked only once its lane is cleared, so a walk cut short, even by a crash, is taken again.
-        let _guard = self.lock_ready();
-        self.db.put(count_key_of(JOINED, domain), terms.send_cap.unwrap_or(u64::MAX).to_le_bytes())?;
-        Ok(joined)
-    }
-
-    fn queue_entries(&self, entries: Vec<Entry>) -> Result<usize> {
-        if entries.is_empty() {
-            return Ok(0);
-        }
-        let _guard = self.lock_ready();
-        let mut batch = WriteBatch::default();
-        let mut counts = HashMap::new();
-        let added = self.add_ready(&mut batch, entries, &mut counts)?;
-        self.write_counts(&mut batch, &counts)?;
-        self.db.write(batch)?;
-        self.notice(&counts);
-        Ok(added)
-    }
-
     /// Deletes the deadlines earlier versions kept for every sent page; whether there were any.
     pub fn forget_expecting(&self) -> Result<bool> {
         let (from, to) = ([EXPECTING], [EXPECTING + 1]);
@@ -935,8 +669,21 @@ impl BucketStore {
             batch.delete(key);
         }
         let mut entries = Vec::new();
+        let mut on_queues: HashMap<&[u8], bool> = HashMap::new();
         for ((((due, domain, rest), record), sent), next) in parsed.iter().zip(records).zip(sents).zip(schedules) {
             if next.is_some_and(|next| next.due != *due) {
+                continue;
+            }
+            // A domain on due queues keeps its schedules there; its old waiting entries only go.
+            let queued = match on_queues.get(domain) {
+                Some(&queued) => queued,
+                None => {
+                    let queued = self.set_size(&String::from_utf8_lossy(domain))?.is_some();
+                    on_queues.insert(domain, queued);
+                    queued
+                }
+            };
+            if queued {
                 continue;
             }
             if next.is_some() {
@@ -960,6 +707,7 @@ impl BucketStore {
                     }
                 }
                 Some(Scheduled { why: Why::Dropped | Why::Gone, .. }) | None => {}
+                Some(Scheduled { why: Why::Admit | Why::Changed | Why::Leave, .. }) => continue,
             }
             sent.requeued = true;
             batch.put(prefixed(SENT, domain, rest), sent.pack());
@@ -982,10 +730,25 @@ impl BucketStore {
             let recent = self.domain_yield_recent(domain)?.unwrap_or_default().recent_at(tally.at);
             batch.put(count_key_of(YIELD_RECENT, domain), Yield { ok: recent.ok + tally.ok, failed: recent.failed + tally.failed, at: recent.at }.pack());
         }
-        for PageSchedule { domain, rest, next } in schedules {
-            put_schedule(&mut batch, domain.as_bytes(), rest, *next);
+        let mut queued: HashMap<&str, bool> = HashMap::new();
+        let mut on_queues = Vec::new();
+        for page in schedules {
+            let on_queue = match queued.get(page.domain.as_str()) {
+                Some(&on_queue) => on_queue,
+                None => {
+                    let on_queue = self.set_size(&page.domain)?.is_some();
+                    queued.insert(&page.domain, on_queue);
+                    on_queue
+                }
+            };
+            if on_queue {
+                on_queues.push(page);
+            } else {
+                put_schedule(&mut batch, page.domain.as_bytes(), &page.rest, page.next);
+            }
         }
         let _guard = self.lock_ready();
+        self.outcomes_into_queues(&mut batch, &on_queues)?;
         self.db.write(batch)?;
         Ok(())
     }
@@ -1004,7 +767,7 @@ impl BucketStore {
         if !delete {
             return Ok(found);
         }
-        let ranges: Vec<(Vec<u8>, Vec<u8>)> = [URL, READY, SENT, LISTED, NEXT, STOCK]
+        let ranges: Vec<(Vec<u8>, Vec<u8>)> = [URL, READY, SENT, LISTED, NEXT, STOCK, crate::due::DUE]
             .into_iter()
             .map(|kind| ([&[kind], domain.as_bytes(), b"\0"].concat(), [&[kind], domain.as_bytes(), b"\x01"].concat()))
             .collect();
@@ -1018,6 +781,7 @@ impl BucketStore {
         changes.delete(&count_key_of(YIELD_RECENT, domain));
         changes.delete(&count_key_of(SENT_COUNT, domain));
         changes.delete(&count_key_of(JOINED, domain));
+        changes.delete(&count_key_of(crate::due::SET_SIZE, domain));
         record.insert("state".into(), "excluded".into());
         record.insert("reason".into(), reason.into());
         record.insert("due".into(), Value::Null);
@@ -1168,7 +932,47 @@ impl BucketStore {
         fresh: &[(Vec<u8>, Record)],
         moved: &[(Vec<u8>, u32)],
         listed: usize,
+        now: u32,
     ) -> Result<(usize, HashMap<String, i64>)> {
+        // Pages of domains with a built queue go onto it; the rest onto ready lists.
+        let mut queued: HashMap<String, bool> = HashMap::new();
+        let mut on_queue = |domain: &[u8]| -> Result<Option<String>> {
+            let domain = String::from_utf8_lossy(domain).into_owned();
+            let queue = match queued.get(&domain) {
+                Some(&queue) => queue,
+                None => {
+                    let queue = self.allows(&domain) && self.set_size(&domain)?.is_some();
+                    queued.insert(domain.clone(), queue);
+                    queue
+                }
+            };
+            Ok(queue.then_some(domain))
+        };
+        let mut to_queues: HashMap<String, (Vec<(&[u8], &Record)>, Vec<(&[u8], u32)>)> = HashMap::new();
+        let (mut listed_fresh, mut listed_moved) = (Vec::new(), Vec::new());
+        for (key, record) in fresh {
+            match split_key(&key[1..]) {
+                Some((domain, rest)) => match on_queue(domain)? {
+                    Some(domain) => to_queues.entry(domain).or_default().0.push((rest, record)),
+                    None => listed_fresh.push((key.clone(), *record)),
+                },
+                None => continue,
+            }
+        }
+        for (key, lastmod) in moved {
+            match split_key(&key[1..]) {
+                Some((domain, rest)) => match on_queue(domain)? {
+                    Some(domain) => to_queues.entry(domain).or_default().1.push((rest, *lastmod)),
+                    None => listed_moved.push((key.clone(), *lastmod)),
+                },
+                None => continue,
+            }
+        }
+        let mut queued_added = 0;
+        for (domain, (fresh, moved)) in &to_queues {
+            queued_added += self.listing_into_queue(batch, domain, fresh, moved, now)?;
+        }
+        let (fresh, moved) = (listed_fresh.as_slice(), listed_moved.as_slice());
         let mut entries = Vec::new();
         let mut room: HashMap<Vec<u8>, bool> = HashMap::new();
         for (key, record) in fresh {
@@ -1206,7 +1010,7 @@ impl BucketStore {
         let mut counts = HashMap::new();
         let added = self.add_ready(batch, entries, &mut counts)?;
         self.write_counts(batch, &counts)?;
-        Ok((added, counts))
+        Ok((added + queued_added, counts))
     }
 
     pub(crate) fn notice(&self, counts: &HashMap<String, i64>) {
@@ -1285,19 +1089,19 @@ impl BucketStore {
         Ok(keys)
     }
 
-    fn records(&self, keys: impl Iterator<Item = Vec<u8>>) -> Result<Vec<Option<Record>>> {
+    pub(crate) fn records(&self, keys: impl Iterator<Item = Vec<u8>>) -> Result<Vec<Option<Record>>> {
         let keys: Vec<Vec<u8>> = keys.collect();
         let cf = self.db.cf_handle("default").context("default column family")?;
         self.db.batched_multi_get_cf(cf, &keys, false).into_iter().map(|raw| Ok(raw?.as_deref().and_then(Record::unpack))).collect()
     }
 
-    fn sents(&self, keys: impl Iterator<Item = Vec<u8>>) -> Result<Vec<Option<Sent>>> {
+    pub(crate) fn sents(&self, keys: impl Iterator<Item = Vec<u8>>) -> Result<Vec<Option<Sent>>> {
         let keys: Vec<Vec<u8>> = keys.collect();
         let cf = self.db.cf_handle("default").context("default column family")?;
         self.db.batched_multi_get_cf(cf, &keys, false).into_iter().map(|raw| Ok(raw?.as_deref().and_then(Sent::unpack))).collect()
     }
 
-    fn schedules(&self, keys: impl Iterator<Item = Vec<u8>>) -> Result<Vec<Option<Scheduled>>> {
+    pub(crate) fn schedules(&self, keys: impl Iterator<Item = Vec<u8>>) -> Result<Vec<Option<Scheduled>>> {
         let keys: Vec<Vec<u8>> = keys.collect();
         let cf = self.db.cf_handle("default").context("default column family")?;
         self.db.batched_multi_get_cf(cf, &keys, false).into_iter().map(|raw| Ok(raw?.as_deref().and_then(Scheduled::unpack))).collect()
@@ -1327,12 +1131,12 @@ fn changed_entries(scan: DomainScan) -> Vec<Entry> {
 }
 
 /// A URL key without its type byte, split into domain and the rest.
-fn split_key(key: &[u8]) -> Option<(&[u8], &[u8])> {
+pub(crate) fn split_key(key: &[u8]) -> Option<(&[u8], &[u8])> {
     let at = memchr::memchr(0, key)?;
     Some((&key[..at], &key[at + 1..]))
 }
 
-fn prefixed(kind: u8, domain: &[u8], rest: &[u8]) -> Vec<u8> {
+pub(crate) fn prefixed(kind: u8, domain: &[u8], rest: &[u8]) -> Vec<u8> {
     [&[kind], domain, b"\0", rest].concat()
 }
 
@@ -1340,7 +1144,7 @@ fn count_key(domain: &str) -> Vec<u8> {
     count_key_of(READY_COUNT, domain)
 }
 
-fn count_key_of(kind: u8, domain: &str) -> Vec<u8> {
+pub(crate) fn count_key_of(kind: u8, domain: &str) -> Vec<u8> {
     [&[kind], domain.as_bytes()].concat()
 }
 
@@ -1368,7 +1172,7 @@ fn timed_entry(key: &[u8]) -> Option<(u32, &[u8], &[u8])> {
     Some((due, domain, rest))
 }
 
-fn bounded(prefix: &[u8]) -> ReadOptions {
+pub(crate) fn bounded(prefix: &[u8]) -> ReadOptions {
     let mut upper = prefix.to_vec();
     *upper.last_mut().expect("a prefix") += 1;
     let mut options = ReadOptions::default();

@@ -146,7 +146,7 @@ impl OutcomeReader {
         let mut schedules: HashMap<usize, Vec<PageSchedule>> = HashMap::new();
         for row in rows {
             match row.outcome {
-                Outcome::Published | Outcome::Unchanged => counted.published += 1,
+                Outcome::Published | Outcome::Unchanged | Outcome::Unindexable => counted.published += 1,
                 Outcome::Failed => counted.failed += 1,
                 Outcome::Dropped => counted.dropped += 1,
             }
@@ -158,7 +158,7 @@ impl OutcomeReader {
             // A dropped task never reached the site, so it says nothing about the domain.
             let tally = tallies.entry(domain.clone()).or_default();
             match row.outcome {
-                Outcome::Published | Outcome::Unchanged => tally.ok += 1.0,
+                Outcome::Published | Outcome::Unchanged | Outcome::Unindexable => tally.ok += 1.0,
                 Outcome::Failed => tally.failed += 1.0,
                 Outcome::Dropped => {}
             }
@@ -166,6 +166,7 @@ impl OutcomeReader {
             let interval = self.recrawl.interval(&domain);
             let next = match row.outcome {
                 Outcome::Published | Outcome::Unchanged => continue,
+                Outcome::Unindexable => Scheduled { why: Why::Leave, due: at, at },
                 Outcome::Failed => Scheduled { why: Why::Failed, due: at.saturating_add(interval), at },
                 // A page whose task was lost goes again soon, but a burst of them is spread out, never later than its re-crawl.
                 Outcome::Dropped => {
