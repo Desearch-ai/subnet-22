@@ -1091,9 +1091,9 @@ fn the_domain_list_takes_names_or_hosts_and_is_read_again_when_its_file_changes(
     hosts.sort_unstable();
     assert_eq!(hosts, ["a.com", "b.org", "c.net", "d.io"]);
     assert_eq!(names["a.com"], Terms::default());
-    assert_eq!(names["c.net"], Terms { weight: 4, send_cap: Some(1500), ..Terms::default() }, "the crawl list's weight and cap");
+    assert_eq!(names["c.net"], Terms { weight: 4, send_cap: Some(1500), news: true, ..Terms::default() }, "the crawl list's type, weight and cap");
     let news = allowed::parse(br#"[{"host": "e.com", "type": "news", "weight": 4, "hourly": 20000, "backlog": 3000000}]"#).unwrap();
-    assert_eq!(news["e.com"], Terms { weight: 4, send_cap: None, hourly: Some(20_000), backlog: Some(3_000_000), since: None }, "an hourly limit and a backlog bound");
+    assert_eq!(news["e.com"], Terms { weight: 4, send_cap: None, hourly: Some(20_000), backlog: Some(3_000_000), since: None, news: true }, "an hourly limit and a backlog bound");
     let floored = allowed::parse(br#"[{"host": "f.com", "type": "news", "since": "2020-01-01"}, {"host": "g.com", "since": "soon"}]"#).unwrap();
     assert_eq!((floored["f.com"].since, floored["g.com"].since), (Some(FLOOR), None), "a date floor as an ISO date; one that doesn't read is none");
     assert_eq!(names["d.io"].weight, 4, "weights stay within 1 to 4");

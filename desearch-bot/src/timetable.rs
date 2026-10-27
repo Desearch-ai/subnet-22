@@ -1,12 +1,53 @@
-//! When each domain the process owns is next due, and which due domain goes first: the best ranked. Times are Unix seconds.
+//! When each domain the process owns is next due, and which due domain goes first: the best placed. Times are Unix seconds.
 
 use std::cmp::Reverse;
-use std::collections::{BinaryHeap, HashMap};
+use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::sync::Arc;
 
 use crate::states::State;
 
 pub const UNRANKED: i64 = (1 << 31) - 1;
+/// Ranks within one class of domains; every listed news site goes before any other listed site, and those before unlisted ones.
+const CLASS_STEP: i64 = 1 << 32;
+
+/// A domain's place among due domains: listed news sites first, then the rest of the list, then the unlisted, by rank within each.
+pub fn placed(listed: bool, news: bool, rank: Option<i64>) -> i64 {
+    let class = match (listed, news) {
+        (true, true) => 0,
+        (true, false) => 1,
+        (false, _) => 2,
+    };
+    class * CLASS_STEP + rank.unwrap_or(UNRANKED)
+}
+
+/// Heavy domains waiting for a heavy slot, handed out best placed first; a domain waits once.
+#[derive(Default)]
+pub struct HeavyQueue {
+    waiting: BinaryHeap<Reverse<(i64, Arc<str>, Lane)>>,
+    queued: HashSet<Arc<str>>,
+}
+
+impl HeavyQueue {
+    pub fn push(&mut self, host: Arc<str>, lane: Lane, place: i64) {
+        if self.queued.insert(host.clone()) {
+            self.waiting.push(Reverse((place, host, lane)));
+        }
+    }
+
+    pub fn pop(&mut self) -> Option<(Arc<str>, Lane)> {
+        let Reverse((_, host, lane)) = self.waiting.pop()?;
+        self.queued.remove(&host);
+        Some((host, lane))
+    }
+
+    pub fn len(&self) -> usize {
+        self.waiting.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.waiting.is_empty()
+    }
+}
 
 /// The three kinds of work that share the visit slots.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -118,6 +159,30 @@ impl Timetable {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn listed_news_sites_go_first_then_the_rest_of_the_list_then_the_unlisted() {
+        let mut table = Timetable::default();
+        table.set("unlisted-top.com", Lane::Refresh, Some(10), Some(placed(false, false, Some(1))));
+        table.set("listed.com", Lane::Refresh, Some(10), Some(placed(true, false, Some(500))));
+        table.set("news-late.com", Lane::Refresh, Some(10), Some(placed(true, true, None)));
+        table.set("news.com", Lane::Refresh, Some(10), Some(placed(true, true, Some(900))));
+        assert_eq!(names(table.take(Lane::Refresh, 10, 50)), ["news.com", "news-late.com", "listed.com", "unlisted-top.com"]);
+    }
+
+    #[test]
+    fn heavy_slots_go_to_the_best_placed_waiting_domain_and_each_waits_once() {
+        let mut queue = HeavyQueue::default();
+        queue.push(Arc::from("unlisted.com"), Lane::Refresh, placed(false, false, Some(2)));
+        queue.push(Arc::from("news.com"), Lane::Backlog, placed(true, true, Some(700)));
+        queue.push(Arc::from("listed.com"), Lane::Refresh, placed(true, false, Some(3)));
+        queue.push(Arc::from("news.com"), Lane::Refresh, placed(true, true, Some(700)));
+        assert_eq!(queue.len(), 3);
+        let order: Vec<(String, Lane)> = std::iter::from_fn(|| queue.pop()).map(|(host, lane)| (host.to_string(), lane)).collect();
+        assert_eq!(order, [("news.com".into(), Lane::Backlog), ("listed.com".into(), Lane::Refresh), ("unlisted.com".into(), Lane::Refresh)]);
+        queue.push(Arc::from("news.com"), Lane::Refresh, 0);
+        assert_eq!(queue.len(), 1, "a domain handed out can wait again");
+    }
 
     fn names(hosts: Vec<Arc<str>>) -> Vec<String> {
         hosts.iter().map(|h| h.to_string()).collect()
