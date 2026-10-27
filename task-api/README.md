@@ -230,6 +230,29 @@ Fill in the storage credentials, admin hotkeys, signing key and Redis URL in the
 proxy that checks `/v1/ping`, a deploy can roll: the new copy serves next to the old one until the old
 one stops, and only one copy at a time runs the background work.
 
+**Database size.** Once a round's tasks are queued, SQLite keeps only each batch's count, hash and
+input; the URLs and an embed input's page list live in the task payloads. A round is deleted a week after
+it closes. SQLite reuses the space this frees, but the file never shrinks. To shrink it, stop the API
+(no copy may run) and write a compact copy next to it, on the host that holds the volume:
+
+```bash
+set -e
+cd /var/lib/docker/volumes/task-api-data/_data
+sqlite3 task_api.db "PRAGMA wal_checkpoint(TRUNCATE)"
+sqlite3 task_api.db "PRAGMA cache_size = -4000000; VACUUM INTO 'task_api.compact.db'"
+test "$(sqlite3 task_api.compact.db 'PRAGMA quick_check')" = ok
+sqlite3 task_api.compact.db "PRAGMA journal_mode = WAL"
+mkdir before-compact
+mv task_api.db before-compact/
+mv task_api.db-wal task_api.db-shm before-compact/ 2>/dev/null || true
+mv task_api.compact.db task_api.db
+chown 10001:10001 task_api.db*
+```
+
+Then start the API. To go back, stop it, move the files in `before-compact/` back and `chown` them the
+same way; delete them once the API serves. The copy needs free disk for the live data, not the whole
+file, and is written at a few hundred MB a second.
+
 It needs two buckets:
 
 - `subnet-22`, the temporary bucket for uploads, with a lifecycle rule that deletes objects after one day.
@@ -312,7 +335,7 @@ Anyone can read these; the [UI](../ui/README.md) is built on them.
 | `GET /v1/health` | queue depths, backlog, the active validators and every validator's standing |
 | `GET /v1/room` | how many tasks the queue can take now, for the bot |
 | `GET /v1/shares` | every miner's share of the paid work as the API counts it, per pool |
-| `GET /v1/rounds`, `GET /v1/rounds/{id}` | round commitments |
+| `GET /v1/rounds`, `GET /v1/rounds/{id}` | round commitments, kept a week after a round closes |
 | `GET /v1/rounds/{id}/log` | a round's signed log |
 | `GET /v1/key` | the key that signs the log and the notes next to uploads |
 

@@ -131,6 +131,11 @@ async fn a_published_page_is_embedded_credited_and_recorded() {
     let round_id = embed_round(&h, input()).await;
     assert_eq!(h.miner.claim().await["refusal"]["code"], "QUEUE_EMPTY", "crawl sees no embed work");
 
+    let asked = round_id.clone();
+    let stored: String =
+        h.state.db.run(move |conn| Ok(conn.query_row("SELECT batches FROM rounds WHERE round_id = ?", [asked], |row| row.get(0))?)).await.unwrap();
+    assert!(!stored.contains("page_key") && stored.contains("input_sha256"), "a queued round keeps its input but no page list");
+
     let task = embed_task(&h, &h.miner).await;
     assert_eq!((task["kind"].clone(), task["round_id"].clone()), (json!("embed"), json!(round_id)));
     assert_eq!((task["model"].clone(), task["texts"].clone()), (json!(h.state.settings.embed_model), json!(6)));
