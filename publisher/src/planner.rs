@@ -418,13 +418,14 @@ pub struct Listed {
 }
 
 impl Listed {
-    /// The crawl list as the bot reads it: entries of `host` with a `send_cap` or a `backlog`, three times the index cap.
+    /// The crawl list as the bot reads it: entries of `host` with a `send_cap`, three times the index cap, or the `backlog` of a news set.
     pub fn parse(raw: &[u8]) -> Result<Listed> {
         let entries: Vec<Value> = serde_json::from_slice(raw)?;
         let mut caps = HashMap::new();
         for entry in entries {
             let Some(host) = entry["host"].as_str() else { continue };
-            let cap = entry["send_cap"].as_u64().or_else(|| entry["backlog"].as_u64()).map_or(u64::MAX, |crawl| crawl / CRAWL_PER_INDEX);
+            // A news set rolls to its newest articles, so a cap on what the index holds would shut out fresh news.
+            let cap = entry["send_cap"].as_u64().map_or(u64::MAX, |crawl| crawl / CRAWL_PER_INDEX);
             caps.insert(site_of(host), cap);
         }
         Ok(Listed { caps })

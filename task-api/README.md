@@ -213,7 +213,7 @@ The planner keeps its place in the log and the version of every page it planned 
 | `PLANNER_MIN_CHARS` | 300 | characters of text a page needs |
 | `PLANNER_LANGS` | `en` | languages planned |
 | `PLANNER_EXCLUDE_FILE` | — | a file of domains, one a line, never planned, with their subdomains |
-| `PLANNER_LIST_FILE` | — | the bot's crawl list (`domains.json`); when set, only its sites and the hosts under them are planned, each up to a third of its crawl cap, and the file is read again when it changes |
+| `PLANNER_LIST_FILE` | — | the bot's crawl list (`domains.json`); when set, only its sites and the hosts under them are planned, each up to a third of its crawl cap and a news site without a cap, and the file is read again when it changes |
 | `PLANNER_START_AFTER` | the newest change file | where a planner without state starts |
 
 ## Run
