@@ -34,6 +34,19 @@ PEOPLE_SEARCH = re.compile(r"peoplesearch|people-search|peoplefinder|personsearc
 NETWORK_MIN = 1_000_000
 NETWORK_MIN_THREE = 500_000
 DOCS_HOST = re.compile(r"^(docs|developer|developers|learn)\.")
+# What an `out` row's `why` may say; a row giving only benchmark names takes its reason from its note.
+OUT_REASONS = {
+    "mirror", "benchmark-copy", "people-search", "template", "spam", "aggregator", "judge", "terms", "not-english",
+    "simple-english-copy", "dictionary", "data-not-pages", "project-infrastructure", "taxonomy-stubs", "media-files",
+    "piracy", "no-dump", "shop", "platform", "too-big", "low-value",
+}
+NOTE_REASONS = (
+    ("terms", "terms"), ("web archive", "mirror"), ("same database", "mirror"), ("private people", "people-search"),
+    ("registration records", "people-search"), ("no dump", "no-dump"), ("only part worth", "too-big"),
+    ("shop", "shop"), ("stock photos", "shop"), ("exchange", "shop"), ("platform", "platform"),
+    ("presentations", "platform"), ("generated", "template"), ("listings", "template"), ("catalog", "template"),
+    ("statistics", "template"), ("profiles", "template"),
+)
 
 
 def open_text(path: str):
@@ -52,11 +65,21 @@ def bare(host: str) -> str:
     return host[4:] if host.startswith("www.") else host
 
 
+def out_reason(why: list[str], note: str) -> list[str]:
+    reasons = [word for word in why if word in OUT_REASONS]
+    if reasons:
+        return reasons
+    note = note.lower()
+    return [next((reason for words, reason in NOTE_REASONS if words in note), "low-value")]
+
+
 def row_entry(row: dict) -> dict:
     entry = {field: row[field] for field in FIELDS if row.get(field) not in (None, "", [])}
     entry["host"] = bare(entry["host"])
     if DOCS_HOST.match(entry["host"]) and entry.get("type") in ("company", "organization", "reference"):
         entry["type"] = "docs"
+    if entry["rule"] == "out":
+        entry = {"host": entry["host"], "rule": "out", "why": out_reason(entry.get("why", []), row.get("note", ""))}
     return entry
 
 
@@ -67,7 +90,7 @@ def read_rows(path: str) -> list[dict]:
 
 
 def hand_entries(rows: list[dict]) -> list[dict]:
-    return [row_entry({**row, "why": row.get("why", "").split()}) for row in rows]
+    return [row_entry({**row, "why": row.get("why", "").split(), "paths": (row.get("paths") or "").split()}) for row in rows]
 
 
 def share(judged: dict | None) -> float | None:
@@ -91,22 +114,40 @@ def networks(counts: dict[str, dict]) -> set[str]:
     return found
 
 
-def backed_news(host: str, backing: dict[str, dict], news_sources: dict[str, str]) -> list[str]:
-    """What backs a news site as an established outlet: Wikidata, the 897 list or a benchmark citation."""
+def outlet(host: str, outlets: dict[str, str]) -> str | None:
+    """The outlet list's word for a host: its own entry, a parent's (africa.espn.com is ESPN), or a news. subdomain's."""
+    if host in outlets:
+        return outlets[host]
+    labels = host.split(".")
+    for at in range(1, len(labels) - 1):
+        parent = ".".join(labels[at:])
+        if parent in outlets:
+            return outlets[parent]
+    return outlets.get(f"news.{host}")
+
+
+def backed_news(host: str, backing: dict[str, dict], news_sources: dict[str, str], outlets: dict[str, str]) -> list[str]:
+    """What makes a news site an established outlet: Wikidata, the 897 list, the major-news list or a name added by hand."""
     back, sources = backing.get(host, {}), news_sources.get(host, "")
     why = []
     if "wikidata" in sources or back.get("wikidata_type") == "News":
         why.append("wikidata")
     if "list897" in sources or back.get("news_list") == "1":
         why.append("news-list")
-    if int(back.get("benchmark_citations") or 0) > 0:
-        why.append("benchmark")
+    listed = outlet(host, outlets)
+    if listed and listed not in why:
+        why.append(listed)
     return why
 
 
-def listed_entries(decisions, backing, news_sources, judged, counts, news_counts, news: str, today: date) -> tuple[list[dict], list[dict]]:
+def news_since(backed: bool, news: str, recent: str) -> str | None:
+    if news == "B":
+        return SINCE_B
+    return None if backed else recent
+
+
+def listed_entries(decisions, backing, news_sources, outlets, judged, counts, news_counts, news: str, recent: str) -> tuple[list[dict], list[dict]]:
     """The judged list's v1 types as set entries, and the sites too big to take whole, which wait for named paths."""
-    recent = (today - timedelta(days=RECENT_DAYS)).isoformat()
     spam = networks(counts)
     entries, too_big = [], []
     for row in decisions:
@@ -123,11 +164,11 @@ def listed_entries(decisions, backing, news_sources, judged, counts, news_counts
             entries.append({"host": host, "rule": "out", "why": ["people-search"]})
             continue
         stored = int(counts.get(host, {}).get("stored") or 0)
-        if site_type in WEATHER_TYPES and WEATHER.search(host) and stored >= WEATHER_MIN and not backed_news(host, backing, news_sources):
+        if site_type in WEATHER_TYPES and WEATHER.search(host) and stored >= WEATHER_MIN and not backed_news(host, backing, news_sources, outlets):
             entries.append({"host": host, "rule": "out", "why": ["template"]})
             continue
         if site_type == "news":
-            why = backed_news(host, backing, news_sources)
+            why = backed_news(host, backing, news_sources, outlets)
             if not why and verdict is not None and verdict <= FAILED_SHARE:
                 entries.append({"host": host, "rule": "out", "why": ["judge"]})
                 continue
@@ -135,10 +176,8 @@ def listed_entries(decisions, backing, news_sources, judged, counts, news_counts
                 entries.append({"host": host, "rule": "out", "why": ["spam"]})
                 continue
             entry = {"host": host, "rule": "news", "type": "news", "why": why or ["news"]}
-            if news == "B":
-                entry["since"] = SINCE_B
-            elif not why:
-                entry["since"] = recent
+            if since := news_since(bool(why), news, recent):
+                entry["since"] = since
         elif site_type in WHOLE_TYPES or (verdict is not None and verdict >= PASSED_SHARE):
             if stored > int(row["cap"]) * CRAWL_PER_INDEX:
                 too_big.append({"host": host, "type": site_type, "stored": stored, "cap": int(row["cap"])})
@@ -152,11 +191,21 @@ def listed_entries(decisions, backing, news_sources, judged, counts, news_counts
     return entries, too_big
 
 
-def build(row_files, hand, decisions, backing, news_sources, judged, counts, news_counts=None, news: str = "A", today: date | None = None) -> tuple[list[dict], list[dict]]:
+def build(row_files, hand, decisions, backing, news_sources, judged, counts, news_counts=None, news: str = "A", today: date | None = None, outlets=None) -> tuple[list[dict], list[dict]]:
     """Hand entries first (the lead's outs), then the teammates' rows in order, then the judged list; the first to name a host wins."""
-    listed, too_big = listed_entries(decisions, backing, news_sources, judged, counts, news_counts or {}, news, today or datetime.now(timezone.utc).date())
+    outlets = outlets or {}
+    recent = ((today or datetime.now(timezone.utc).date()) - timedelta(days=RECENT_DAYS)).isoformat()
+    listed, too_big = listed_entries(decisions, backing, news_sources, outlets, judged, counts, news_counts or {}, news, recent)
+    rows = []
+    # Every news site takes its window from the same outlet test, the teammates' rows too.
+    for entry in (row_entry(row) for row_file in row_files for row in row_file):
+        if entry["rule"] == "news":
+            entry.pop("since", None)
+            if since := news_since(bool(backed_news(entry["host"], backing, news_sources, outlets)), news, recent):
+                entry["since"] = since
+        rows.append(entry)
     sites: dict[str, dict] = {}
-    for entry in hand + [row_entry(row) for rows in row_files for row in rows] + listed:
+    for entry in hand + rows + listed:
         sites.setdefault(entry["host"], entry)
     return [sites[host] for host in sorted(sites)], too_big
 
@@ -238,9 +287,10 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--decisions", required=True, help="the crawl list builder's decisions TSV (.gz allowed)")
     parser.add_argument("--news", choices=("A", "B"), default="A", help="A: established outlets all years, other news sites their last year; B: every news site from 2020")
     parser.add_argument("--rows", action="append", default=[], help="a set rows file (JSON with sites); earlier files win a host")
-    parser.add_argument("--hand", help="TSV of host, rule, type, why: the lead's entries, which win over every other source")
+    parser.add_argument("--hand", help="TSV of host, rule, type, why, paths, source (why and paths space-separated): the lead's entries, which win over every other source")
     parser.add_argument("--backing", help="TSV of host, wikidata_type, benchmark_citations, news_list")
     parser.add_argument("--news-domains", help="TSV (.gz allowed) of news hosts and their sources (wikidata, list897, jev, ut1)")
+    parser.add_argument("--outlets", help="TSV of host and why: news outlets by Wikidata class and official website, the major-news list and names added by hand")
     parser.add_argument("--judged", help="TSV of host, judged, substantive")
     parser.add_argument("--counts", help="store counts TSV (.gz allowed) with host and stored")
     parser.add_argument("--news-counts", help="news store counts TSV (.gz allowed) with host and dated_last_year")
@@ -251,9 +301,12 @@ def main(argv: list[str] | None = None) -> None:
     judged = {r["host"]: r for r in tsv(args.judged)}
     counts = {r["host"]: r for r in tsv(args.counts)}
     news_counts = {r["host"]: r for r in tsv(args.news_counts)}
+    outlets = {}
+    for row in tsv(args.outlets):
+        outlets.setdefault(row["host"], row["why"])
     with open_text(args.decisions) as source:
         decisions = csv.DictReader(source, delimiter="\t")
-        sites, too_big = build([read_rows(path) for path in args.rows], hand_entries(tsv(args.hand)), decisions, backing, news_sources, judged, counts, news_counts, args.news)
+        sites, too_big = build([read_rows(path) for path in args.rows], hand_entries(tsv(args.hand)), decisions, backing, news_sources, judged, counts, news_counts, args.news, outlets=outlets)
     if not sites:
         sys.exit(f"no sites; {args.out} left as it was")
     built = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")

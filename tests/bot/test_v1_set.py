@@ -21,19 +21,36 @@ def decision(host, site_type, cap=1_000_000, listed="1"):
     return {"host": host, "rank": "100", "state": "active", "listed": listed, "reason": "", "type": site_type, "cap": str(cap)}
 
 
-def build(decisions=(), rows=(), hand=(), backing=None, news_sources=None, judged=None, counts=None, news="A", news_counts=None):
-    sites, too_big = v1_set.build([list(r) for r in rows], list(hand), list(decisions), backing or {}, news_sources or {}, judged or {}, counts or {}, news_counts or {}, news, TODAY)
+def build(decisions=(), rows=(), hand=(), backing=None, news_sources=None, judged=None, counts=None, news="A", news_counts=None, outlets=None):
+    sites, too_big = v1_set.build([list(r) for r in rows], list(hand), list(decisions), backing or {}, news_sources or {}, judged or {}, counts or {}, news_counts or {}, news, TODAY, outlets)
     return {site["host"]: site for site in sites}, too_big
 
 
 def test_option_a_takes_established_outlets_for_all_years_and_other_news_sites_for_a_year():
     news_sources = {"outlet.example": "jev+wikidata", "listed.example": "jev+list897", "label.example": "jev+ut1"}
     backing = {"cited.example": {"benchmark_citations": "2", "news_list": "0", "wikidata_type": ""}}
-    hosts = ["outlet.example", "listed.example", "cited.example", "label.example"]
-    sites, _ = build([decision(h, "news") for h in hosts], backing=backing, news_sources=news_sources)
+    outlets = {"espn.example": "wikidata", "abcnews.example": "named", "news.portal.example": "wikidata"}
+    hosts = ["outlet.example", "listed.example", "africa.espn.example", "abcnews.example", "portal.example", "cited.example", "label.example"]
+    sites, _ = build([decision(h, "news") for h in hosts], backing=backing, news_sources=news_sources, outlets=outlets)
     assert sites["outlet.example"] == {"host": "outlet.example", "rule": "news", "type": "news", "why": ["wikidata"]}
-    assert [sites[h].get("since") for h in hosts] == [None, None, None, "2025-10-28"]
+    assert [sites[h].get("since") for h in hosts] == [None, None, None, None, None, "2025-10-28", "2025-10-28"], "a citation is no backing"
+    assert (sites["africa.espn.example"]["why"], sites["abcnews.example"]["why"]) == (["wikidata"], ["named"])
     assert sites["label.example"]["why"] == ["news"]
+
+
+def test_a_rows_news_window_comes_from_the_outlet_test_and_its_outs_give_reasons():
+    benchmark = [
+        {"host": "unbacked.example", "rule": "news", "type": "news", "why": ["simpleqa"]},
+        {"host": "floored.example", "rule": "news", "since": "2025-10-28", "type": "news", "why": ["simpleqa"]},
+        {"host": "mapcarta.example", "rule": "out", "why": ["simpleqa"], "note": "pages generated from OpenStreetMap and Wikidata"},
+        {"host": "trove.example", "rule": "out", "why": ["simpleqa"], "note": "Trove's terms bar bulk and commercial use"},
+        {"host": "odd.example", "rule": "out", "why": ["freshqa"], "note": "investor-relations pages"},
+        {"host": "copy.example", "rule": "out", "why": ["mirror"]},
+    ]
+    sites, _ = build(rows=[benchmark], outlets={"floored.example": "wikidata"})
+    assert sites["unbacked.example"]["since"] == "2025-10-28"
+    assert "since" not in sites["floored.example"], "an outlet takes all years whatever the row said"
+    assert [sites[h]["why"] for h in ("mapcarta.example", "trove.example", "odd.example", "copy.example")] == [["template"], ["terms"], ["low-value"], ["mirror"]]
 
 
 def test_option_b_takes_every_news_site_from_2020():
@@ -106,8 +123,8 @@ def test_hand_entries_win_then_row_files_in_order_and_docs_hosts_are_docs():
     ]
     bulk = [{"host": "paper.example", "rule": "bulk", "source": "dump", "type": "news", "why": ["judge"]}, {"host": "wikipedia.org", "rule": "out", "why": ["not-english"]}]
     hand = [{"host": "handwiki.org", "rule": "out", "why": ["mirror"]}]
-    sites, _ = build([decision("paper.example", "news")], [benchmark, bulk], hand)
-    assert sites["paper.example"] == {"host": "paper.example", "rule": "news", "type": "news", "why": ["simpleqa"]}
+    sites, _ = build([decision("paper.example", "news")], [benchmark, bulk], hand, outlets={"paper.example": "wikidata"})
+    assert sites["paper.example"] == {"host": "paper.example", "rule": "news", "type": "news", "why": ["simpleqa"]}, "an outlet in a row takes all years under A"
     assert sites["handwiki.org"] == {"host": "handwiki.org", "rule": "out", "why": ["mirror"]}
     assert sites["docs.vendor.example"]["type"] == "docs"
     assert sites["wikipedia.org"]["rule"] == "out"
