@@ -379,8 +379,10 @@ pub struct Settings {
     pub flush_after: Duration,
     /// Inputs of one lane written but not yet handed over; past this, new pages of the lane are left out.
     pub max_pending: usize,
-    /// Pages dated within this long before now go in the fresh lane, which is handed over first and spends no budget; None for no fresh lane.
+    /// New pages dated within this long before now go in the fresh lane, which is handed over first and spends no budget; None for no fresh lane.
     pub fresh: Option<Duration>,
+    /// Pages the fresh lane takes an hour at most; the rest go with the other pages.
+    pub fresh_per_hour: f64,
     /// The temporary bucket keeps an input a day; one waiting longer than this is dropped, so no miner is sent a file already gone.
     pub pending_max_age: Duration,
     pub min_chars: usize,
@@ -426,6 +428,7 @@ impl Settings {
             flush_after: Duration::from_secs_f64(number("PLANNER_FLUSH_S", 600.0)?),
             max_pending: number("PLANNER_MAX_PENDING", 50)?,
             fresh: Some(Duration::from_secs_f64(number("PLANNER_FRESH_S", 48.0 * 3600.0)?)).filter(|window| !window.is_zero()),
+            fresh_per_hour: number("PLANNER_FRESH_PER_HOUR", 300_000.0)?,
             pending_max_age: Duration::from_secs_f64(number("PLANNER_PENDING_MAX_AGE_S", 12.0 * 3600.0)?),
             min_chars: number("PLANNER_MIN_CHARS", 300)?,
             langs: text("PLANNER_LANGS", "en").split(',').map(|lang| lang.trim().to_lowercase()).filter(|lang| !lang.is_empty()).collect(),
@@ -884,8 +887,8 @@ pub struct Planner {
     fresh: Buffer,
     rest: Buffer,
     read_through: i64,
-    tokens: f64,
-    refilled: Instant,
+    budget: Budget,
+    fresh_budget: Budget,
     /// Inputs waiting for room, by lane.
     pending: [usize; 2],
     missing: BTreeMap<i64, Instant>,
@@ -915,7 +918,7 @@ impl Planner {
                 (seq, Instant::now().checked_sub(Duration::from_secs_f64((now_us() as f64 / 1e6 - since).max(0.0))).unwrap_or_else(Instant::now))
             })
             .collect();
-        let tokens = budget_cap(settings.pages_per_hour);
+        let (budget, fresh_budget) = (Budget::new(settings.pages_per_hour), Budget::new(settings.fresh_per_hour));
         let mut planner = Planner {
             settings,
             state,
@@ -933,8 +936,8 @@ impl Planner {
             fresh: Buffer::default(),
             rest: Buffer::default(),
             read_through,
-            tokens,
-            refilled: Instant::now(),
+            budget,
+            fresh_budget,
             pending,
             missing,
             settled: Vec::new(),
@@ -1274,12 +1277,15 @@ impl Planner {
             }
             _ => None,
         };
-        let lane = if self.is_fresh(record) { Lane::Fresh } else { Lane::Rest };
+        // Only a page never planned before is fresh, within its lane's own budget, so pages re-dated by their site cannot flood it.
+        let fresh = self.is_fresh(record) && self.state.unplanned(&page.key).unwrap_or(false);
+        let fresh = fresh && self.pending[Lane::Fresh as usize] < self.settings.max_pending && self.fresh_budget.take();
+        let lane = if fresh { Lane::Fresh } else { Lane::Rest };
         if self.pending[lane as usize] >= self.settings.max_pending {
             self.counts.no_room += 1;
             return None;
         }
-        if lane == Lane::Rest && !self.take_token() {
+        if lane == Lane::Rest && !self.budget.take() {
             self.counts.over_budget += 1;
             return None;
         }
@@ -1348,19 +1354,8 @@ impl Planner {
         }
     }
 
-    fn take_token(&mut self) -> bool {
-        if !self.has_token() {
-            return false;
-        }
-        self.tokens -= 1.0;
-        true
-    }
-
     fn has_token(&mut self) -> bool {
-        let cap = budget_cap(self.settings.pages_per_hour);
-        self.tokens = (self.tokens + self.refilled.elapsed().as_secs_f64() * self.settings.pages_per_hour / 3600.0).min(cap);
-        self.refilled = Instant::now();
-        self.tokens >= 1.0
+        self.budget.has()
     }
 
     /// Writes every lane's buffer.
@@ -1517,8 +1512,35 @@ fn chars_of(page: &Planned) -> usize {
     page.texts.iter().map(|text| text.text.chars().count()).sum()
 }
 
-fn budget_cap(pages_per_hour: f64) -> f64 {
-    (pages_per_hour / 4.0).max(1.0)
+/// Pages an hour, of which a quarter hour's worth can be spent at once.
+struct Budget {
+    per_hour: f64,
+    tokens: f64,
+    refilled: Instant,
+}
+
+impl Budget {
+    fn new(per_hour: f64) -> Budget {
+        Budget { per_hour, tokens: Budget::cap(per_hour), refilled: Instant::now() }
+    }
+
+    fn cap(per_hour: f64) -> f64 {
+        (per_hour / 4.0).max(1.0)
+    }
+
+    fn has(&mut self) -> bool {
+        self.tokens = (self.tokens + self.refilled.elapsed().as_secs_f64() * self.per_hour / 3600.0).min(Budget::cap(self.per_hour));
+        self.refilled = Instant::now();
+        self.tokens >= 1.0
+    }
+
+    fn take(&mut self) -> bool {
+        if !self.has() {
+            return false;
+        }
+        self.tokens -= 1.0;
+        true
+    }
 }
 
 async fn latest(pages: &Bucket) -> Result<i64> {

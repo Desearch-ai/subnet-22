@@ -294,6 +294,7 @@ fn settings(dir: PathBuf, pages_per_hour: f64, start_after: i64) -> Settings {
         flush_after: Duration::from_secs(3600),
         max_pending: 10,
         fresh: Some(Duration::from_secs(48 * 3600)),
+        fresh_per_hour: 3600.0,
         pending_max_age: Duration::from_secs(3600),
         min_chars: 300,
         langs: vec!["en".into()],
@@ -977,5 +978,30 @@ async fn a_page_removed_and_back_with_the_same_text_is_planned_again() {
     assert_eq!((planner.counts.removed, planner.counts.planned, planner.counts.unchanged), (1, 2, 0));
     planner.flush().await.unwrap();
     assert_eq!(planner.state.site_pages("news.example").unwrap(), 1, "the site's count fell with the removal and rose with the return");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_page_its_site_re_dates_goes_with_the_rest_and_the_fresh_lane_keeps_to_its_own_budget() {
+    let Some((_turn, redis)) = redis_db().await else {
+        eprintln!("skipped: no Redis on {REDIS}");
+        return;
+    };
+    let dir = scratch("redated");
+    let stub = stub::start(dir.join("r2"), "127.0.0.1:0").await.unwrap();
+    let (pages, temp) = (bucket(stub.addr, "desearch-pages"), bucket(stub.addr, "subnet-22"));
+    let today = iso(publisher::service::now_us());
+    let page = |name: &str, text: &str, published: &str| {
+        let mut page = v2(record(&format!("https://news.example/story/{name}"), &format!("{name} {text} {}", article(2)), "article", "en"));
+        page.published = published.into();
+        page
+    };
+    log(&pages, 1, vec![page("old", "", "2020-05-01")]).await;
+    log(&pages, 2, vec![page("old", "edited", &today), page("n1", "", &today), page("n2", "", &today)]).await;
+    let mut one_fresh = settings(dir.join("state"), 3600.0, 0);
+    one_fresh.fresh_per_hour = 4.0;
+    let mut planner = Planner::new(one_fresh, pages.clone(), temp.clone(), redis.clone(), Room::Fixed(0)).await.unwrap();
+    planner.pass().await.unwrap();
+    assert_eq!((planner.counts.planned, planner.counts.fresh), (3, 1), "the re-dated page and the second new one go with the rest");
     let _ = std::fs::remove_dir_all(&dir);
 }
