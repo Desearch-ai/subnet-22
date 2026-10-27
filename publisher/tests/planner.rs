@@ -17,7 +17,7 @@ use publisher::changes::{self, Body, Change, Kind};
 use publisher::planner::{
     page_text, page_text_v2, passages, passages_v2, texts, Listed, Passage, Planner, Room, Settings, EMBED_DROPPED, EMBED_INPUTS, PAGE, PASSAGE, RECIPE_V2,
 };
-use publisher::records::{page_key, record_version, Record};
+use publisher::records::{iso, page_key, record_version, Record};
 use publisher::set::Set;
 use redis::aio::ConnectionManager;
 use redis::AsyncCommands;
@@ -292,6 +292,7 @@ fn settings(dir: PathBuf, pages_per_hour: f64, start_after: i64) -> Settings {
         chars_per_input: 3_000_000,
         flush_after: Duration::from_secs(3600),
         max_pending: 10,
+        fresh: Some(Duration::from_secs(48 * 3600)),
         pending_max_age: Duration::from_secs(3600),
         min_chars: 300,
         langs: vec!["en".into()],
@@ -742,5 +743,49 @@ async fn change_files_read_at_once_are_planned_in_log_order() {
     planner.flush().await.unwrap();
     let entry: Value = serde_json::from_str(&planner.state.pending().unwrap()[0].1).unwrap();
     assert_eq!(entry["pages"][0]["content_sha1"], version(30).content_sha1, "the last file's version is the one planned");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pages_dated_in_the_last_two_days_go_first_outside_the_budget_and_a_restart_reads_a_buffered_lane_again() {
+    let Some((_turn, mut redis)) = redis_db().await else {
+        eprintln!("skipped: no Redis on {REDIS}");
+        return;
+    };
+    let dir = scratch("fresh");
+    let stub = stub::start(dir.join("r2"), "127.0.0.1:0").await.unwrap();
+    let (pages, temp) = (bucket(stub.addr, "desearch-pages"), bucket(stub.addr, "subnet-22"));
+    let today = iso(publisher::service::now_us());
+    let page = |name: &str, published: &str| {
+        let mut page = v2(record(&format!("https://news.example/story/{name}"), &format!("{name} {}", article(2)), "article", "en"));
+        page.published = published.into();
+        page
+    };
+    log(&pages, 1, vec![page("a", "2020-05-01"), page("b", "2021-05-01"), page("f1", &today), page("f2", &today)]).await;
+
+    let mut one = settings(dir.join("state"), 4.0, 0);
+    one.pages_per_input = 1;
+    let mut planner = Planner::new(one, pages.clone(), temp.clone(), redis.clone(), Room::Fixed(2)).await.unwrap();
+    planner.pass().await.unwrap();
+    let counts = &planner.counts;
+    assert_eq!((counts.planned, counts.fresh, counts.over_budget, counts.inputs), (3, 2, 1, 3), "the budget takes one old page; fresh pages spend none");
+    let handed: Vec<Value> = redis.lrange::<_, Vec<String>>(EMBED_INPUTS, 0, -1).await.unwrap().iter().map(|raw| serde_json::from_str(raw).unwrap()).collect();
+    let urls: Vec<&str> = handed.iter().map(|entry| entry["pages"][0]["url"].as_str().unwrap()).collect();
+    assert_eq!(urls, ["https://news.example/story/f1", "https://news.example/story/f2"], "fresh inputs go first though the old one was written before them");
+    assert!(handed.iter().all(|entry| entry["lane"] == "fresh"));
+    assert_eq!(planner.state.pending().unwrap().len(), 1);
+    drop(planner);
+
+    log(&pages, 2, vec![page("c", "2022-05-01"), page("f3", &today), page("d", "2022-06-01")]).await;
+    let mut two = settings(dir.join("state"), 3600.0, 1);
+    two.pages_per_input = 2;
+    let mut planner = Planner::new(two, pages.clone(), temp.clone(), redis.clone(), Room::Fixed(0)).await.unwrap();
+    planner.pass().await.unwrap();
+    assert_eq!((planner.counts.inputs, planner.counts.fresh), (1, 1), "c and d fill an input while f3 waits in the fresh lane");
+    drop(planner);
+    let mut restarted = Planner::new(settings(dir.join("state"), 3600.0, 0), pages.clone(), temp.clone(), redis.clone(), Room::Fixed(0)).await.unwrap();
+    assert_eq!(restarted.read_through(), 1, "the cursor stayed before the file whose fresh page was never written");
+    restarted.pass().await.unwrap();
+    assert_eq!((restarted.counts.planned, restarted.counts.fresh, restarted.counts.unchanged), (1, 1, 2));
     let _ = std::fs::remove_dir_all(&dir);
 }
