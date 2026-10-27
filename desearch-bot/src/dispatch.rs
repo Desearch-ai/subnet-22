@@ -776,12 +776,17 @@ impl Dispatcher {
             if spare == 0 || !windows_left {
                 break;
             }
-            picks.extend(self.pick_due(spare, now, false).await?);
+            picks.extend(self.pick_due(spare, now, false, &HashMap::new()).await?);
         }
         let spare = budget.saturating_sub(picks.len() as u64);
         let every_due_offered = self.ranked.as_ref().is_some_and(|ranked| ranked.at == now && ranked.sites.is_empty() && ranked.beyond == 0);
         if spare > 0 && every_due_offered {
-            picks.extend(self.pick_due(spare, now, true).await?);
+            // Due pages just taken count against a site's hour only once they land.
+            let mut taken: HashMap<String, u64> = HashMap::new();
+            for pick in &picks {
+                *taken.entry(pick.entry.domain.clone()).or_default() += 1;
+            }
+            picks.extend(self.pick_due(spare, now, true, &taken).await?);
         }
         Ok(picks)
     }
@@ -843,13 +848,14 @@ impl Dispatcher {
         Ok(interleave(lists))
     }
 
-    /// Pages from due queues: the next window of due sites, each offering what is due within its allowance; or, with `pull`, the soonest due of full-share sites, none sent within the floor.
-    async fn pick_due(&mut self, budget: u64, now: u32, pull: bool) -> Result<Vec<Pick>> {
+    /// Pages from due queues: the next window of due sites, each offering what is due within its allowance; or, with `pull`, refreshes of the full-share sites whose fronts come soonest, due or not, none sent within the floor.
+    async fn pick_due(&mut self, budget: u64, now: u32, pull: bool, taken: &HashMap<String, u64>) -> Result<Vec<Pick>> {
         self.pull_rest.retain(|_, until| *until > now);
         let size = self.due_window;
         let window: Vec<(String, u64)> = if pull {
             let mut window = Vec::new();
-            for (_, name) in self.by_head.range((now.saturating_add(1), String::new())..) {
+            // Sites with due pages had their windows; any room left in their hour goes to refreshes too.
+            for (_, name) in &self.by_head {
                 if window.len() >= size {
                     break;
                 }
@@ -857,7 +863,7 @@ impl Dispatcher {
                 if site.share < 1.0 || self.pull_rest.contains_key(name) || !self.buckets.allows(name) {
                     continue;
                 }
-                let allowance = allowance_of(&mut self.cap, name, &site, now);
+                let allowance = allowance_of(&mut self.cap, name, &site, now).saturating_sub(taken.get(name).copied().unwrap_or(0));
                 if allowance > 0 {
                     window.push((name.clone(), allowance));
                 }

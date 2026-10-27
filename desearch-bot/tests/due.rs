@@ -566,3 +566,21 @@ fn a_queue_found_empty_holds_no_pages_whatever_its_size_said() {
     assert!(store.take_due("example.com", 10, 400 * DAY, None, &rules()).unwrap().picks.is_empty());
     assert_eq!(store.set_size("example.com").unwrap(), Some(0));
 }
+
+#[test]
+fn a_pull_reaches_old_articles_behind_a_front_of_fresh_ones_sent_within_the_day() {
+    let dir = Dir::new("pull-past-fresh");
+    let store = listed_store(&dir, Terms { site: SiteType::News, backlog: Some(1000), ..Terms::default() });
+    let now = 400 * DAY;
+    let old: Vec<String> = (0..50).map(|i| format!("2025/old-story-{i:02}")).collect();
+    let fresh: Vec<String> = (0..100).map(|i| format!("2026/fresh-story-{i:03}")).collect();
+    store.record_listing("example.com", 7, old.iter().map(|path| page(path, 10)).collect(), 100).unwrap();
+    send(&store, &old.iter().map(String::as_str).collect::<Vec<_>>(), now - 3 * DAY);
+    store.record_listing("example.com", 7, fresh.iter().map(|path| page(path, 10)).collect(), now - 2 * HOUR).unwrap();
+    send(&store, &fresh.iter().map(String::as_str).collect::<Vec<_>>(), now - HOUR);
+    store.build_queue("example.com", store.terms("example.com"), &rules(), now, &mut |_| true).unwrap();
+    assert_eq!(store.due_head("example.com").unwrap(), Some(now - HOUR + 12 * HOUR), "fresh articles, refreshed every 12 hours, hold the front");
+    let pulled = store.take_due("example.com", 10, now, Some(DAY), &rules()).unwrap();
+    assert_eq!(pulled.picks.len(), 10, "the pull reads on past them to the old articles, last sent three days ago");
+    assert!(pulled.picks.iter().all(|p| p.url.contains("old-story") && p.reason == Reason::Pulled));
+}

@@ -1201,6 +1201,37 @@ async fn due_windows_go_to_sites_with_room_a_whole_interval_overdue_first_and_pu
     assert_eq!(progress.sent_pulled.load(std::sync::atomic::Ordering::Relaxed), 120);
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sites_with_a_trickle_of_due_pages_fill_their_hour_from_stock_past_the_floor() {
+    let dir = Dir::new("dispatcher-stock");
+    let hosts = ["a.com", "b.com", "c.com"];
+    let buckets = Arc::new(known(&dir, &hosts));
+    let path = dir.0.join("domains.json");
+    let list: Vec<String> = hosts.iter().map(|host| format!(r#"{{"host": "{host}", "type": "reference", "hourly": 3600}}"#)).collect();
+    std::fs::write(&path, format!("[{}]", list.join(","))).unwrap();
+    let list = Allowed::from_file(&path).unwrap();
+    buckets.allow(&list);
+    let t0 = 1_759_400_000;
+    for host in hosts {
+        let store = buckets.store(host);
+        let pages = (0..500).map(|i| (urls::parse(&format!("https://{host}/p{i:03}"), host).unwrap(), 100, false)).collect();
+        store.record_listing(host, 1, pages, 100).unwrap();
+        let mut quotas = [0; LANES];
+        quotas[FRESH] = 500;
+        let picks = store.take_ready(host, quotas).unwrap();
+        store.mark_sent(&picks, t0 - 3 * DAY, &rules()).unwrap();
+        // One new page each: the site always has something due.
+        store.record_listing(host, 1, vec![(urls::parse(&format!("https://{host}/new"), host).unwrap(), 100, false)], t0 - DAY).unwrap();
+        store.build_queue(host, buckets.terms(host), &rules(), t0, &mut |_| true).unwrap();
+    }
+    let progress = Arc::new(Progress::default());
+    let (mut dispatcher, _fake) = dispatcher_over(&buckets, &progress).await;
+    assert_eq!(dispatcher.pass(t0).await.unwrap(), 3 * 120, "each site's new page, then 119 refreshes last sent three days ago fill its two minutes");
+    assert_eq!(progress.sent_new.load(std::sync::atomic::Ordering::Relaxed), 3);
+    assert_eq!(progress.sent_pulled.load(std::sync::atomic::Ordering::Relaxed), 3 * 119);
+    assert_eq!(dispatcher.pass(t0 + 120).await.unwrap(), 3 * 120, "and every two minutes after");
+}
+
 #[test]
 fn a_site_a_whole_interval_overdue_ranks_ahead_of_any_value_and_below_that_value_leads() {
     use desearch_bot::dispatch::due_priority;

@@ -493,98 +493,111 @@ impl BucketStore {
         Ok(())
     }
 
-    /// Up to `want` pages from the front of the domain's queue due by `now`; with a `floor`, the soonest due whatever their time, passing over pages sent within `floor`. A key out of step with its page moves to where the page stands, and a page gone from the store or marked gone leaves the set.
+    /// Up to `want` pages from the front of the domain's queue due by `now`; with a `floor`, the soonest due after `now`, which due windows leave, passing over pages sent within `floor`, and when those hold the front, the pages due from `now + floor` on. A key out of step with its page moves to where the page stands, and a page gone from the store or marked gone leaves the set.
     pub fn take_due(&self, domain: &str, want: usize, now: u32, floor: Option<u32>, recrawl: &Recrawl) -> Result<DueTake> {
         let site = self.terms(domain).site;
         let robots = self.domain(domain)?.map(|record| records::robots_paths(&record)).unwrap_or_default();
         let prefix = prefixed(DUE, domain.as_bytes(), b"");
         let mut taken = DueTake::default();
-        let mut keys: Vec<(Vec<u8>, u32, bool)> = Vec::new();
-        // A pull may pass over as many pages sent within the floor as it wants.
-        let slack = if floor.is_some() { want.max(TAKE_SLACK) } else { TAKE_SLACK };
-        for item in self.db.iterator_opt(IteratorMode::From(&prefix, Direction::Forward), bounded(&prefix)) {
-            let key = item?.0.to_vec();
-            let Some((due, first, _)) = due_parts(&key, prefix.len()) else {
-                continue;
-            };
-            if (floor.is_none() && due > now) || keys.len() >= want + slack {
-                taken.head = Some(due);
-                break;
-            }
-            keys.push((key, due, first));
-        }
-        let rests: Vec<Vec<u8>> = keys.iter().map(|(key, _, _)| key[prefix.len() + 5..].to_vec()).collect();
-        let records = self.records(rests.iter().map(|rest| prefixed(URL, domain.as_bytes(), rest)))?;
-        let sents = self.sents(rests.iter().map(|rest| prefixed(SENT, domain.as_bytes(), rest)))?;
-        let nexts = self.schedules(rests.iter().map(|rest| prefixed(NEXT, domain.as_bytes(), rest)))?;
         let mut fixes = WriteBatch::default();
         let mut left: HashSet<Vec<u8>> = HashSet::new();
         let later = |head: &mut Option<u32>, due: u32| *head = Some(head.map_or(due, |head| head.min(due)));
-        for ((((key, due, first), rest), record), (sent, next)) in keys.into_iter().zip(rests).zip(records).zip(sents.into_iter().zip(nexts)) {
-            if taken.picks.len() >= want {
-                later(&mut taken.head, due);
+        // A pull may pass over as many pages sent within the floor as it wants.
+        let slack = if floor.is_some() { want.max(TAKE_SLACK) } else { TAKE_SLACK };
+        // Pages sent within the floor fall due within it too, short intervals and retries alike; past it lie the pages last sent before it.
+        let from = |due: u32| [prefix.as_slice(), &due.to_be_bytes()].concat();
+        let starts = match floor {
+            Some(floor) => vec![from(now.saturating_add(1)), from(now.saturating_add(floor))],
+            None => vec![prefix.clone()],
+        };
+        let mut read_to: Option<Vec<u8>> = None;
+        for start in starts {
+            if taken.picks.len() >= want || read_to.as_ref().is_some_and(|read_to| taken.floor_until.is_none() || start <= *read_to) {
                 break;
             }
-            let Some(record) = record else {
-                fixes.delete(&key);
-                fixes.delete(prefixed(NEXT, domain.as_bytes(), &rest));
-                left.insert(rest);
-                continue;
-            };
-            let sent = sent.unwrap_or(Sent { lastmod: record.lastmod, ..Sent::default() });
-            // A schedule set before the page's latest send says nothing of it: the page went out by its ready list while its queue was built.
-            let current = next.filter(|next| !next.outdated(record.pushed_at));
-            let schedule = match (next, current) {
-                _ if sent.failures == LEFT => None,
-                // A key without a schedule is what is left of a page taken out of the set.
-                (None, _) => None,
-                (_, Some(next)) if matches!(next.why, Why::Gone | Why::Leave) => None,
-                (_, Some(next)) => Some(next),
-                (Some(_), None) if sent.failures >= GONE_AFTER => None,
-                (Some(_), None) => Some(standing(recrawl, site, domain, &rest, &record, &sent, now)),
-            };
-            let Some(schedule) = schedule else {
-                if current.is_some_and(|next| next.why == Why::Leave) {
-                    fixes.put(prefixed(SENT, domain.as_bytes(), &rest), Sent { failures: LEFT, ..sent }.pack());
-                }
-                fixes.delete(&key);
-                fixes.delete(prefixed(NEXT, domain.as_bytes(), &rest));
-                left.insert(rest);
-                continue;
-            };
-            if schedule.due != due || (schedule.why == Why::Admit) != first || next != Some(schedule) {
-                fixes.delete(&key);
-                fixes.put(due_key(domain, schedule.due, schedule.why == Why::Admit, &rest), []);
-                fixes.put(prefixed(NEXT, domain.as_bytes(), &rest), schedule.pack());
-                later(&mut taken.head, schedule.due);
-                continue;
-            }
-            // A page sent within the floor, such as a failure waiting its retry, waits; pages behind it may go.
-            if let Some(floor) = floor {
-                if record.pushed_at != 0 && now.saturating_sub(record.pushed_at) < floor {
-                    later(&mut taken.floor_until, record.pushed_at.saturating_add(floor));
+            let mut keys: Vec<(Vec<u8>, u32, bool)> = Vec::new();
+            for item in self.db.iterator_opt(IteratorMode::From(&start, Direction::Forward), bounded(&prefix)) {
+                let key = item?.0.to_vec();
+                let Some((due, first, _)) = due_parts(&key, prefix.len()) else {
+                    continue;
+                };
+                if (floor.is_none() && due > now) || keys.len() >= want - taken.picks.len() + slack {
                     later(&mut taken.head, due);
+                    break;
+                }
+                keys.push((key, due, first));
+            }
+            read_to = keys.last().map(|(key, _, _)| key.clone());
+            let rests: Vec<Vec<u8>> = keys.iter().map(|(key, _, _)| key[prefix.len() + 5..].to_vec()).collect();
+            let records = self.records(rests.iter().map(|rest| prefixed(URL, domain.as_bytes(), rest)))?;
+            let sents = self.sents(rests.iter().map(|rest| prefixed(SENT, domain.as_bytes(), rest)))?;
+            let nexts = self.schedules(rests.iter().map(|rest| prefixed(NEXT, domain.as_bytes(), rest)))?;
+            for ((((key, due, first), rest), record), (sent, next)) in keys.into_iter().zip(rests).zip(records).zip(sents.into_iter().zip(nexts)) {
+                if taken.picks.len() >= want {
+                    later(&mut taken.head, due);
+                    break;
+                }
+                let Some(record) = record else {
+                    fixes.delete(&key);
+                    fixes.delete(prefixed(NEXT, domain.as_bytes(), &rest));
+                    left.insert(rest);
+                    continue;
+                };
+                let sent = sent.unwrap_or(Sent { lastmod: record.lastmod, ..Sent::default() });
+                // A schedule set before the page's latest send says nothing of it: the page went out by its ready list while its queue was built.
+                let current = next.filter(|next| !next.outdated(record.pushed_at));
+                let schedule = match (next, current) {
+                    _ if sent.failures == LEFT => None,
+                    // A key without a schedule is what is left of a page taken out of the set.
+                    (None, _) => None,
+                    (_, Some(next)) if matches!(next.why, Why::Gone | Why::Leave) => None,
+                    (_, Some(next)) => Some(next),
+                    (Some(_), None) if sent.failures >= GONE_AFTER => None,
+                    (Some(_), None) => Some(standing(recrawl, site, domain, &rest, &record, &sent, now)),
+                };
+                let Some(schedule) = schedule else {
+                    if current.is_some_and(|next| next.why == Why::Leave) {
+                        fixes.put(prefixed(SENT, domain.as_bytes(), &rest), Sent { failures: LEFT, ..sent }.pack());
+                    }
+                    fixes.delete(&key);
+                    fixes.delete(prefixed(NEXT, domain.as_bytes(), &rest));
+                    left.insert(rest);
+                    continue;
+                };
+                if schedule.due != due || (schedule.why == Why::Admit) != first || next != Some(schedule) {
+                    fixes.delete(&key);
+                    fixes.put(due_key(domain, schedule.due, schedule.why == Why::Admit, &rest), []);
+                    fixes.put(prefixed(NEXT, domain.as_bytes(), &rest), schedule.pack());
+                    later(&mut taken.head, schedule.due);
                     continue;
                 }
+                // A page sent within the floor, such as a failure waiting its retry, waits; pages behind it may go.
+                if let Some(floor) = floor {
+                    if record.pushed_at != 0 && now.saturating_sub(record.pushed_at) < floor {
+                        later(&mut taken.floor_until, record.pushed_at.saturating_add(floor));
+                        later(&mut taken.head, due);
+                        continue;
+                    }
+                }
+                // A page robots now disallows moves back a day, so it does not hold the front.
+                if !robots.allows_page(domain, &rest) {
+                    let moved = Scheduled { due: now.saturating_add(DAY), ..schedule };
+                    fixes.delete(&key);
+                    fixes.put(due_key(domain, moved.due, moved.why == Why::Admit, &rest), []);
+                    fixes.put(prefixed(NEXT, domain.as_bytes(), &rest), moved.pack());
+                    later(&mut taken.head, moved.due);
+                    continue;
+                }
+                let reason = match (floor, schedule.why) {
+                    (Some(_), _) => Reason::Pulled,
+                    (None, Why::Admit) => Reason::Fresh,
+                    (None, Why::Changed) => Reason::Changed,
+                    (None, Why::Failed | Why::Dropped) => Reason::Requeued,
+                    (None, _) => Reason::Refresh,
+                };
+                let entry = Entry { domain: domain.to_string(), rest: rest.clone(), order: Order::Due { due, first } };
+                taken.picks.push(Pick { url: fetchable(&rest, record.flags), lastmod: record.lastmod, reason, failures: sent.failures, entry });
             }
-            // A page robots now disallows moves back a day, so it does not hold the front.
-            if !robots.allows_page(domain, &rest) {
-                let moved = Scheduled { due: now.saturating_add(DAY), ..schedule };
-                fixes.delete(&key);
-                fixes.put(due_key(domain, moved.due, moved.why == Why::Admit, &rest), []);
-                fixes.put(prefixed(NEXT, domain.as_bytes(), &rest), moved.pack());
-                later(&mut taken.head, moved.due);
-                continue;
-            }
-            let reason = match (floor, schedule.why) {
-                (Some(_), _) => Reason::Pulled,
-                (None, Why::Admit) => Reason::Fresh,
-                (None, Why::Changed) => Reason::Changed,
-                (None, Why::Failed | Why::Dropped) => Reason::Requeued,
-                (None, _) => Reason::Refresh,
-            };
-            let entry = Entry { domain: domain.to_string(), rest: rest.clone(), order: Order::Due { due, first } };
-            taken.picks.push(Pick { url: fetchable(&rest, record.flags), lastmod: record.lastmod, reason, failures: sent.failures, entry });
         }
         if !taken.picks.is_empty() {
             taken.floor_until = None;

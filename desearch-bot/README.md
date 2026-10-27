@@ -97,8 +97,8 @@ Every 5 seconds the bot asks `GET /v1/room` how many tasks the API can take, and
 times while room is left, most valuable first: rank and the list's weight, raised by how overdue the queue front is for its kind, and
 a front a whole interval overdue goes ahead of any value. Each site offers what is due within what its
 hour allows, a site with nothing left of its hour waits, and a pass reads only the front of each
-queue. Once every due site had its turn, room left pulls refreshes forward: the pages due soonest of
-sites with a full yield share, never a page sent within the last day. `hourly` (or `--per-domain-hourly`) caps every domain's
+queue. Once every due site had its turn, room left in the hour of any site with a full yield share
+pulls its refreshes forward, those due soonest first, passing over pages sent within the last day. `hourly` (or `--per-domain-hourly`) caps every domain's
 sends in any hour, at most two minutes' worth at once (100 pages at least), so a site sees a steady
 stream. The hourly pace starts empty and saves at most five minutes of sends, so a restart or a stall
 is followed by no burst. A batch carries a hash of its content, so a batch sent again after a timeout
