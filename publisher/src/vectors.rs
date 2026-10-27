@@ -244,6 +244,7 @@ mod tests {
             recipe: RECIPE_V2,
             fetched_at: String::new(),
             texts: texts.iter().map(|&(kind, index)| Text { text_id: format!("{key}#{kind}{index}"), kind, index, text: format!("text {index}") }).collect(),
+            page_only: false,
         }
     }
 

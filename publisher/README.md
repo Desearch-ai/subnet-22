@@ -29,6 +29,8 @@ pages or 3M characters for the task API, handing them over as the API has room.
 - **Backfill** (`PLANNER_BACKFILL=1`): with what budget and room the log leaves, it reads `current/` shard
   by shard (`PLANNER_BACKFILL_SHARDS`) and plans each page's standing version that the set takes and was
   never embedded at that text. It keeps its place across restarts.
+- **Page vectors first** (`PLANNER_PAGE_FIRST=1`, off by default): pages outside the fresh lane get their
+  page text alone; a page's passages are planned the next time it is seen with the setting off.
 
 ## Vectors
 

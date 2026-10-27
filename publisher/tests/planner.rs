@@ -302,6 +302,7 @@ fn settings(dir: PathBuf, pages_per_hour: f64, start_after: i64) -> Settings {
         set_file: None,
         start_after: Some(start_after),
         reads: 4,
+        page_first: false,
         backfill: false,
         backfill_shards: 0..1024,
         current_prefix: "current/".into(),
@@ -889,5 +890,64 @@ async fn the_backfill_plans_each_set_page_s_standing_v2_version_as_the_budget_al
         "removed, v1, German, undated and unlisted pages are left out"
     );
     assert_eq!(planned["https://news.example/story/b"], newer.record.content_sha1, "the later fetch in the delta stands");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn with_page_vectors_first_a_page_gets_its_page_text_now_and_its_passages_once_that_is_off() {
+    let Some((_turn, redis)) = redis_db().await else {
+        eprintln!("skipped: no Redis on {REDIS}");
+        return;
+    };
+    let dir = scratch("page-first");
+    let stub = stub::start(dir.join("r2"), "127.0.0.1:0").await.unwrap();
+    let (pages, temp) = (bucket(stub.addr, "desearch-pages"), bucket(stub.addr, "subnet-22"));
+    let today = iso(publisher::service::now_us());
+    let long = v2(record("https://news.example/story/long", &article(40), "article", "en"));
+    let short = v2(record("https://news.example/story/short", &article(2), "article", "en"));
+    let mut fresh = v2(record("https://news.example/story/fresh", &format!("fresh {}", article(40)), "article", "en"));
+    fresh.published = today;
+    log(&pages, 1, vec![long.clone(), short.clone(), fresh.clone()]).await;
+    let rows_of = |entry: String| {
+        let temp = temp.clone();
+        async move {
+            let entry: Value = serde_json::from_str(&entry).unwrap();
+            input_rows(temp.get(entry["input_key"].as_str().unwrap()).await.unwrap())
+        }
+    };
+
+    let mut first = settings(dir.join("state"), 3600.0, 0);
+    (first.page_first, first.pages_per_input) = (true, 10);
+    let mut planner = Planner::new(first, pages.clone(), temp.clone(), redis.clone(), Room::Fixed(0)).await.unwrap();
+    planner.pass().await.unwrap();
+    planner.flush().await.unwrap();
+    assert_eq!((planner.counts.planned, planner.counts.page_only, planner.counts.fresh), (3, 1, 1), "a short page has nothing more to wait for");
+    let mut texts_by_page: HashMap<String, Vec<i32>> = HashMap::new();
+    for (_, entry) in planner.state.pending().unwrap() {
+        for (text_id, _, index) in rows_of(entry).await {
+            texts_by_page.entry(text_id.split('#').next().unwrap().to_string()).or_default().push(index);
+        }
+    }
+    let key = |record: &Record| page_key(&record.url).unwrap();
+    assert_eq!(texts_by_page[&key(&long)], [0], "the long page's page text alone");
+    assert!(texts_by_page[&key(&fresh)].len() > 1, "a fresh page gets every text");
+    assert!(planner.state.planned_version(RECIPE_V2, &key(&long)).unwrap().unwrap().2);
+    log(&pages, 2, vec![long.clone()]).await;
+    planner.pass().await.unwrap();
+    assert_eq!(planner.counts.unchanged, 1, "its passages wait while page vectors go first");
+    drop(planner);
+
+    let mut then = settings(dir.join("state"), 3600.0, 0);
+    then.pages_per_input = 10;
+    let mut planner = Planner::new(then, pages.clone(), temp.clone(), redis.clone(), Room::Fixed(0)).await.unwrap();
+    let before: HashSet<String> = planner.state.pending().unwrap().into_iter().map(|(key, _)| key).collect();
+    log(&pages, 3, vec![long.clone(), short.clone()]).await;
+    planner.pass().await.unwrap();
+    planner.flush().await.unwrap();
+    assert_eq!((planner.counts.parts, planner.counts.unchanged), (1, 1), "the long page is planned again for its passages; the short one is done");
+    let (_, entry) = planner.state.pending().unwrap().into_iter().find(|(key, _)| !before.contains(key)).unwrap();
+    let indexes: Vec<i32> = rows_of(entry).await.into_iter().map(|(_, _, index)| index).collect();
+    assert_eq!(indexes, (1..=indexes.len() as i32).collect::<Vec<_>>(), "its passages alone, without the page text again");
+    assert!(!planner.state.planned_version(RECIPE_V2, &key(&long)).unwrap().unwrap().2);
     let _ = std::fs::remove_dir_all(&dir);
 }

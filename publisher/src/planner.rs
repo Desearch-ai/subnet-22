@@ -394,6 +394,8 @@ pub struct Settings {
     pub start_after: Option<i64>,
     /// Change files fetched and decoded at once, ahead of the one being planned.
     pub reads: usize,
+    /// Pages outside the fresh lane are planned with their page text alone; their passages wait until this is off.
+    pub page_first: bool,
     /// Read `current/` for pages to embed, with what budget and room the log leaves.
     pub backfill: bool,
     /// The shards the backfill reads, in order.
@@ -432,6 +434,7 @@ impl Settings {
             set_file: std::env::var("PLANNER_SET_FILE").ok().filter(|v| !v.is_empty()).map(PathBuf::from),
             start_after: std::env::var("PLANNER_START_AFTER").ok().filter(|v| !v.is_empty()).map(|v| v.parse()).transpose()?,
             reads: number("PLANNER_READS", 8)?,
+            page_first: text("PLANNER_PAGE_FIRST", "0") == "1",
             backfill: text("PLANNER_BACKFILL", "0") == "1",
             backfill_shards: match std::env::var("PLANNER_BACKFILL_SHARDS").ok().filter(|v| !v.is_empty()) {
                 Some(range) => {
@@ -548,15 +551,16 @@ impl State {
 
     /// The content hash of the version of `key` last planned with `recipe`.
     pub fn planned(&self, recipe: &str, key: &str) -> Result<Option<String>> {
-        Ok(self.planned_version(recipe, key)?.map(|(content_sha1, _)| content_sha1))
+        Ok(self.planned_version(recipe, key)?.map(|(content_sha1, ..)| content_sha1))
     }
 
-    /// The content hash and fetch time of the version of `key` last planned with `recipe`; the time is empty for versions planned before it was kept.
-    pub fn planned_version(&self, recipe: &str, key: &str) -> Result<Option<(String, String)>> {
+    /// The content hash and fetch time of the version of `key` last planned with `recipe`, and whether only its page text was; the time is empty for versions planned before it was kept.
+    pub fn planned_version(&self, recipe: &str, key: &str) -> Result<Option<(String, String, bool)>> {
         Ok(self.db.get(planned_key(recipe, key))?.map(|raw| {
             let value = String::from_utf8_lossy(&raw);
-            let (content_sha1, fetched_at) = value.split_once('\t').unwrap_or((&value, ""));
-            (content_sha1.to_string(), fetched_at.to_string())
+            let mut fields = value.split('\t');
+            let (content_sha1, fetched_at) = (fields.next().unwrap_or_default(), fields.next().unwrap_or_default());
+            (content_sha1.to_string(), fetched_at.to_string(), fields.next() == Some(PAGE))
         }))
     }
 
@@ -718,7 +722,8 @@ impl State {
             if self.unplanned(&page.key)? {
                 *new.entry(domain_of_key(&page.key).to_string()).or_default() += 1;
             }
-            batch.put(planned_key(page.recipe, &page.key), format!("{}\t{}", page.content_sha1, page.fetched_at));
+            let page_only = if page.page_only { "\tpage" } else { "" };
+            batch.put(planned_key(page.recipe, &page.key), format!("{}\t{}{page_only}", page.content_sha1, page.fetched_at));
         }
         self.change_sites(&mut batch, &new)?;
         batch.put(format!("pending/{input_key}"), entry);
@@ -760,6 +765,8 @@ pub struct Planned {
     pub recipe: &'static str,
     pub fetched_at: String,
     pub texts: Vec<Text>,
+    /// Only the page text of a page that has passages; they are planned when the page is next seen with `page_first` off.
+    pub page_only: bool,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -789,6 +796,10 @@ pub struct Counts {
     pub no_room: u64,
     /// Pages planned in the fresh lane, of `planned`.
     pub fresh: u64,
+    /// Pages planned with their page text alone, of `planned`.
+    pub page_only: u64,
+    /// Pages planned for their passages alone, their page text planned before, of `planned`.
+    pub parts: u64,
     /// Pages read from `current/` by the backfill, of `pages`.
     pub backfill: u64,
     pub shards: u64,
@@ -1197,13 +1208,20 @@ impl Planner {
         };
         let buffered = Lane::ALL.into_iter().find_map(|lane| self.buffer(lane).at.get(&page.key).map(|&at| (lane, at)));
         let already = match buffered {
-            Some((lane, at)) => Some((self.buffer(lane).pages[at].content_sha1.clone(), self.buffer(lane).pages[at].fetched_at.clone())),
+            Some((lane, at)) => {
+                let held = &self.buffer(lane).pages[at];
+                Some((held.content_sha1.clone(), held.fetched_at.clone(), held.page_only))
+            }
             None => self.state.planned_version(recipe, &page.key).ok().flatten(),
         };
-        if let Some((content_sha1, fetched_at)) = &already {
+        let mut parts_only = false;
+        if let Some((content_sha1, fetched_at, page_only)) = &already {
             if *content_sha1 == record.content_sha1 {
-                self.counts.unchanged += 1;
-                return None;
+                if !page_only || self.settings.page_first || buffered.is_some() {
+                    self.counts.unchanged += 1;
+                    return None;
+                }
+                parts_only = true;
             }
             // Times are `iso` text of one width, so they order as text; a late file can hold an older version than the one planned.
             if record.fetched_at < *fetched_at {
@@ -1212,7 +1230,7 @@ impl Planner {
             }
         }
         if let Some((lane, at)) = buffered {
-            let planned = planned_of(&page, recipe);
+            let planned = planned_of(&page, recipe, self.settings.page_first && lane == Lane::Rest, false);
             let buffer = self.buffer_mut(lane);
             buffer.chars = buffer.chars - chars_of(&buffer.pages[at]) + chars_of(&planned);
             buffer.pages[at] = planned;
@@ -1240,7 +1258,13 @@ impl Planner {
             self.counts.over_budget += 1;
             return None;
         }
-        let planned = planned_of(&page, recipe);
+        let planned = planned_of(&page, recipe, self.settings.page_first && lane == Lane::Rest, parts_only);
+        if planned.texts.is_empty() {
+            self.counts.unchanged += 1;
+            return None;
+        }
+        self.counts.page_only += u64::from(planned.page_only);
+        self.counts.parts += u64::from(parts_only);
         let buffer = self.buffer_mut(lane);
         if let Some(domain) = new_in {
             *buffer.new.entry(domain).or_default() += 1;
@@ -1409,9 +1433,16 @@ impl Planner {
     }
 }
 
-/// The page as the buffer holds it, its texts made only once it is taken.
-fn planned_of(page: &PageRow, recipe: &'static str) -> Planned {
+/// The page as the buffer holds it, its texts made only once it is taken: all of them, its page text alone, or its passages alone.
+fn planned_of(page: &PageRow, recipe: &'static str, page_first: bool, parts_only: bool) -> Planned {
     let record = &page.record;
+    let mut texts = texts(&page.key, record);
+    let page_only = page_first && !parts_only && texts.len() > 1;
+    if page_only {
+        texts.truncate(1);
+    } else if parts_only {
+        texts.remove(0);
+    }
     Planned {
         key: page.key.clone(),
         url: record.url.clone(),
@@ -1419,7 +1450,8 @@ fn planned_of(page: &PageRow, recipe: &'static str) -> Planned {
         content_sha1: record.content_sha1.clone(),
         recipe,
         fetched_at: record.fetched_at.clone(),
-        texts: texts(&page.key, record),
+        texts,
+        page_only,
     }
 }
 
