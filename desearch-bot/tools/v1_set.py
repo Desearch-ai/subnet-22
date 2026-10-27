@@ -14,6 +14,8 @@ from urllib.parse import urlsplit
 SINCE_B = "2020-01-01"
 # Option A takes an unbacked news site's last year only.
 RECENT_DAYS = 365
+# More pages dated in a year than an unbacked outlet writes: a generated or re-stamped sitemap.
+NEWS_YEAR_MAX = 100_000
 JUDGED_MIN = 10
 PASSED_SHARE = 0.8
 FAILED_SHARE = 0.4
@@ -102,7 +104,7 @@ def backed_news(host: str, backing: dict[str, dict], news_sources: dict[str, str
     return why
 
 
-def listed_entries(decisions, backing, news_sources, judged, counts, news: str, today: date) -> tuple[list[dict], list[dict]]:
+def listed_entries(decisions, backing, news_sources, judged, counts, news_counts, news: str, today: date) -> tuple[list[dict], list[dict]]:
     """The judged list's v1 types as set entries, and the sites too big to take whole, which wait for named paths."""
     recent = (today - timedelta(days=RECENT_DAYS)).isoformat()
     spam = networks(counts)
@@ -129,6 +131,9 @@ def listed_entries(decisions, backing, news_sources, judged, counts, news: str, 
             if not why and verdict is not None and verdict <= FAILED_SHARE:
                 entries.append({"host": host, "rule": "out", "why": ["judge"]})
                 continue
+            if not why and int(news_counts.get(host, {}).get("dated_last_year") or 0) > NEWS_YEAR_MAX:
+                entries.append({"host": host, "rule": "out", "why": ["spam"]})
+                continue
             entry = {"host": host, "rule": "news", "type": "news", "why": why or ["news"]}
             if news == "B":
                 entry["since"] = SINCE_B
@@ -147,9 +152,9 @@ def listed_entries(decisions, backing, news_sources, judged, counts, news: str, 
     return entries, too_big
 
 
-def build(row_files, hand, decisions, backing, news_sources, judged, counts, news: str = "A", today: date | None = None) -> tuple[list[dict], list[dict]]:
+def build(row_files, hand, decisions, backing, news_sources, judged, counts, news_counts=None, news: str = "A", today: date | None = None) -> tuple[list[dict], list[dict]]:
     """Hand entries first (the lead's outs), then the teammates' rows in order, then the judged list; the first to name a host wins."""
-    listed, too_big = listed_entries(decisions, backing, news_sources, judged, counts, news, today or datetime.now(timezone.utc).date())
+    listed, too_big = listed_entries(decisions, backing, news_sources, judged, counts, news_counts or {}, news, today or datetime.now(timezone.utc).date())
     sites: dict[str, dict] = {}
     for entry in hand + [row_entry(row) for rows in row_files for row in rows] + listed:
         sites.setdefault(entry["host"], entry)
@@ -232,15 +237,17 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--news-domains", help="TSV (.gz allowed) of news hosts and their sources (wikidata, list897, jev, ut1)")
     parser.add_argument("--judged", help="TSV of host, judged, substantive")
     parser.add_argument("--counts", help="store counts TSV (.gz allowed) with host and stored")
+    parser.add_argument("--news-counts", help="news store counts TSV (.gz allowed) with host and dated_last_year")
     parser.add_argument("--too-big", help="TSV to write the judged-list sites too big to take whole")
     args = parser.parse_args(argv)
     backing = {r["host"]: r for r in tsv(args.backing)}
     news_sources = {r["host"]: r["sources"] for r in tsv(args.news_domains)}
     judged = {r["host"]: r for r in tsv(args.judged)}
     counts = {r["host"]: r for r in tsv(args.counts)}
+    news_counts = {r["host"]: r for r in tsv(args.news_counts)}
     with open_text(args.decisions) as source:
         decisions = csv.DictReader(source, delimiter="\t")
-        sites, too_big = build([read_rows(path) for path in args.rows], hand_entries(tsv(args.hand)), decisions, backing, news_sources, judged, counts, args.news)
+        sites, too_big = build([read_rows(path) for path in args.rows], hand_entries(tsv(args.hand)), decisions, backing, news_sources, judged, counts, news_counts, args.news)
     if not sites:
         sys.exit(f"no sites; {args.out} left as it was")
     built = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")

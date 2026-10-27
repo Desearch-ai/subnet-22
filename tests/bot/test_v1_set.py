@@ -21,8 +21,8 @@ def decision(host, site_type, cap=1_000_000, listed="1"):
     return {"host": host, "rank": "100", "state": "active", "listed": listed, "reason": "", "type": site_type, "cap": str(cap)}
 
 
-def build(decisions=(), rows=(), hand=(), backing=None, news_sources=None, judged=None, counts=None, news="A"):
-    sites, too_big = v1_set.build([list(r) for r in rows], list(hand), list(decisions), backing or {}, news_sources or {}, judged or {}, counts or {}, news, TODAY)
+def build(decisions=(), rows=(), hand=(), backing=None, news_sources=None, judged=None, counts=None, news="A", news_counts=None):
+    sites, too_big = v1_set.build([list(r) for r in rows], list(hand), list(decisions), backing or {}, news_sources or {}, judged or {}, counts or {}, news_counts or {}, news, TODAY)
     return {site["host"]: site for site in sites}, too_big
 
 
@@ -46,6 +46,13 @@ def test_an_unbacked_news_site_the_judge_failed_is_out():
     sites, _ = build([decision("thin.example", "news"), decision("outlet.example", "news")], news_sources={"outlet.example": "wikidata"}, judged=judged)
     assert sites["thin.example"] == {"host": "thin.example", "rule": "out", "why": ["judge"]}
     assert sites["outlet.example"]["rule"] == "news", "an established outlet stands whatever a sample says"
+
+
+def test_an_unbacked_news_site_dating_more_pages_in_a_year_than_an_outlet_writes_is_out():
+    news_counts = {"generated.example": {"dated_last_year": "900000"}, "busy.example": {"dated_last_year": "900000"}, "local.example": {"dated_last_year": "9000"}}
+    sites, _ = build([decision(h, "news") for h in news_counts], news_sources={"busy.example": "wikidata"}, news_counts=news_counts, news="B")
+    assert sites["generated.example"] == {"host": "generated.example", "rule": "out", "why": ["spam"]}
+    assert sites["busy.example"]["rule"] == sites["local.example"]["rule"] == "news"
 
 
 def test_spam_networks_are_sites_storing_exactly_as_many_urls_as_unrelated_ones():
