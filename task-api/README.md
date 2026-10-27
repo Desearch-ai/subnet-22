@@ -261,8 +261,8 @@ It needs two buckets:
 - `subnet-22`, the temporary bucket for uploads, with a lifecycle rule that deletes objects after one day.
   `CF_R2_ENDPOINT`, `CF_R2_REGION` (`auto` by default, as R2 signs), `CF_R2_ACCESS_KEY_ID` and
   `CF_R2_SECRET_ACCESS_KEY` reach it;
-- `desearch-pages`, the bucket for published work, with lifecycle rules that delete `changes/` and
-  `rounds/` after three days and `reports/` after 30 days; `current/` is kept by the compactor. It is reached with the uploads bucket's credentials unless
+- `desearch-pages`, the bucket for published work, with lifecycle rules that delete `changes/` after ten
+  days, `rounds/` after three days and `reports/` after 30 days; `current/` is kept by the compactor. It is reached with the uploads bucket's credentials unless
   `PAGES_S3_ENDPOINT`, `PAGES_S3_REGION`, `PAGES_S3_ACCESS_KEY_ID` and `PAGES_S3_SECRET_ACCESS_KEY`
   (and `PAGES_S3_BUCKET` when the name differs) put it on another S3 store; the publisher and the
   compactor read the same settings.
@@ -376,7 +376,7 @@ subnet-22 bucket, temporary, emptied after a day, public
 desearch-pages bucket
   changes/                every new, changed or removed page with its full record, naming the miner
                           that crawled it and the validator that checked it; numbered under seq/,
-                          newest in latest.json; kept three days
+                          newest in latest.json; kept ten days
   current/                the latest version of every page, compacted from changes/: 1,024 shards by
                           URL hash, each a sorted base file plus delta files and a manifest naming them
   rounds/                 each round's URL lists, so the URLs of uploads taken back go to the bot again;

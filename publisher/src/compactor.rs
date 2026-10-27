@@ -146,18 +146,19 @@ pub struct Settings {
     pub merge_ratio: f64,
     /// Deltas of one size combined into one of the next size, so a reader opens few files and a base is not rewritten for them.
     pub fanout: usize,
-    /// Base rewrites per cycle.
+    /// Base rewrites per cycle; with no combine budget, combinings share it.
     pub merges_per_cycle: usize,
-    /// Combinings per cycle, apart from base rewrites so these never crowd them out; they run first, one shard at a time per merge thread.
+    /// Combinings per cycle, run before base rewrites so these never crowd them out; 0 leaves them the slots base rewrites leave.
     pub combines_per_cycle: usize,
-    /// The oldest change file not read yet is reported once it is this old.
+    /// The oldest change file not read yet is warned about once it is this old.
     pub lag_warn_s: f64,
     /// Replaced files stay this long, so a reader mid-read is not cut off.
     pub retire_after_s: f64,
     /// Rows held in memory before they are written to the shard's spill files.
     pub spill_bytes: usize,
+    /// Change files read and deltas written at once, and a merge's files fetched and retired files deleted at once.
     pub threads: usize,
-    /// Shards merged at once; each holds about a row group of every file it merges plus the new base.
+    /// Shards merged at once; each holds every file it merges and the file it writes in memory.
     pub merge_threads: usize,
     /// A number still unwritten this long after a later one was written was never going to be, and is skipped.
     pub hole_wait_s: f64,
@@ -173,12 +174,12 @@ impl Default for Settings {
             every_s: 900.0,
             fanout: 12,
             merges_per_cycle: 64,
-            combines_per_cycle: 256,
-            lag_warn_s: 3.0 * 86_400.0,
+            combines_per_cycle: 0,
+            lag_warn_s: 5.0 * 86_400.0,
             retire_after_s: 86_400.0,
             spill_bytes: 1 << 30,
             threads: 8,
-            merge_threads: 4,
+            merge_threads: 1,
             hole_wait_s: 600.0,
         }
     }
@@ -194,12 +195,27 @@ pub struct Report {
     pub merged: usize,
     pub combined: usize,
     pub deleted: usize,
+    /// Retired files whose delete failed, kept in their manifest to try again.
+    pub delete_failed: usize,
+    /// Rewrites that failed, each naming its shard; those shards stay as they were.
+    pub failed: Vec<String>,
     /// Numbers never written, passed over.
     pub skipped: Vec<i64>,
     /// The cycle stopped at a number not written yet.
     pub waiting: bool,
-    /// How long ago the oldest change file not read yet was written, after the cycle; None when every one is read.
-    pub lag_s: Option<f64>,
+    pub lag: Lag,
+}
+
+/// How far behind the change log the cycle left the current state.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub enum Lag {
+    /// Every change file numbered when the cycle started is read.
+    #[default]
+    CaughtUp,
+    /// Seconds since the oldest change file not read yet was written.
+    Behind(f64),
+    /// Behind by an amount that could not be read, and why.
+    Unknown(String),
 }
 
 /// Tasks taken back; their rows count as removals until every shard's base is rewritten past the last row of theirs read.
@@ -449,17 +465,29 @@ fn never_written(store: &dyn Store, seq: i64, latest: i64, wait_s: f64, now: f64
     Ok(false)
 }
 
-/// How long ago the first change file after `through` was written; None when none is written yet.
-fn unread_age(store: &dyn Store, through: i64, latest: i64, now: f64) -> Result<Option<f64>> {
-    for seq in through + 1..=latest.min(through + HOLE_LOOKAHEAD) {
+/// How long ago the first change file numbered after `through` was written, `latest` being the newest number.
+fn unread_age(store: &dyn Store, through: i64, latest: i64, now: f64) -> Result<Lag> {
+    if through >= latest {
+        return Ok(Lag::CaughtUp);
+    }
+    let last = latest.min(through + HOLE_LOOKAHEAD);
+    for seq in through + 1..=last {
         if let Some(at) = store.modified(&CHANGES.seq_key(seq as u64))? {
-            return Ok(Some((now - at).max(0.0)));
+            return Ok(Lag::Behind((now - at).max(0.0)));
         }
     }
-    Ok(None)
+    Ok(Lag::Unknown(format!("none of change files {}..={last} is numbered, the newest is {latest}", through + 1)))
 }
 
-/// Writes this cycle's deltas, combined deltas and merged bases and notes them in `manifests`, which are not saved yet; returns how many of each.
+/// What `write_files` wrote.
+struct Written {
+    deltas: usize,
+    merged: usize,
+    combined: usize,
+    failed: Vec<String>,
+}
+
+/// Writes this cycle's deltas, combined deltas and merged bases and notes them in `manifests`, which are not saved yet; a failed rewrite leaves its shard as it was.
 fn write_files(
     store: &dyn Store,
     settings: &Settings,
@@ -468,7 +496,7 @@ fn write_files(
     gone: &Withdrawals,
     (from, through, now): (i64, i64, f64),
     written: &Mutex<Vec<String>>,
-) -> Result<(usize, usize, usize)> {
+) -> Result<Written> {
     let prefix = settings.prefix.as_str();
     let shards: Vec<usize> = (0..SHARDS).collect();
     let deltas = each(&shards, settings.threads, |&shard| -> Result<Option<FileRef>> {
@@ -492,22 +520,32 @@ fn write_files(
     }
 
     let due = due_rewrites(manifests, settings);
-    let made = each(&due, settings.merge_threads, |rewrite| -> Result<FileRef> {
+    let made = each(&due, settings.merge_threads, |rewrite| -> Result<Result<FileRef>> {
         let manifest = &manifests[rewrite.shard];
-        let inputs = rewrite.inputs(manifest);
-        let files = each(&inputs, settings.threads, |file| store.get(&file.key)?.ok_or_else(|| anyhow!("{} is in a manifest but missing", file.key)))?;
-        let (file, rows) = current::merge_files(files, gone, rewrite.level.is_some())?;
-        let (key, level) = match rewrite.level {
-            None => (file_key(prefix, rewrite.shard, "base", manifest.through_seq), 0),
-            Some(level) => (file_key(prefix, rewrite.shard, &format!("delta{}", level + 1), manifest.through_seq), level + 1),
-        };
-        let bytes = file.len() as u64;
-        store.put(&key, Bytes::from(file))?;
-        written.lock().unwrap().push(key.clone());
-        Ok(FileRef { key, rows, bytes, through_seq: inputs.iter().map(|f| f.through_seq).max().unwrap_or(manifest.through_seq), level })
+        Ok((|| -> Result<FileRef> {
+            let inputs = rewrite.inputs(manifest);
+            let files = each(&inputs, settings.threads, |file| store.get(&file.key)?.ok_or_else(|| anyhow!("{} is in a manifest but missing", file.key)))?;
+            let (file, rows) = current::merge_files(files, gone, rewrite.level.is_some())?;
+            let (key, level) = match rewrite.level {
+                None => (file_key(prefix, rewrite.shard, "base", manifest.through_seq), 0),
+                Some(level) => (file_key(prefix, rewrite.shard, &format!("delta{}", level + 1), manifest.through_seq), level + 1),
+            };
+            let bytes = file.len() as u64;
+            store.put(&key, Bytes::from(file))?;
+            written.lock().unwrap().push(key.clone());
+            Ok(FileRef { key, rows, bytes, through_seq: inputs.iter().map(|f| f.through_seq).max().unwrap_or(manifest.through_seq), level })
+        })())
     })?;
-    let (mut merged, mut combined) = (0, 0);
+    let (mut merged, mut combined, mut failed) = (0, 0, Vec::new());
     for (rewrite, made) in due.iter().zip(made) {
+        let made = match made {
+            Ok(made) => made,
+            Err(error) => {
+                let what = rewrite.level.map_or("base rewrite".to_string(), |level| format!("combining of level {level}"));
+                failed.push(format!("shard {} {what}: {error:#}", rewrite.shard));
+                continue;
+            }
+        };
         let manifest = &mut manifests[rewrite.shard];
         match rewrite.level {
             None => {
@@ -527,7 +565,7 @@ fn write_files(
             }
         }
     }
-    Ok((wrote_deltas, merged, combined))
+    Ok(Written { deltas: wrote_deltas, merged, combined, failed })
 }
 
 /// A base rewrite (`level` None) or a combining of one size of deltas.
@@ -554,10 +592,16 @@ pub fn due_rewrites(manifests: &[Manifest], settings: &Settings) -> Vec<Rewrite>
         .enumerate()
         .filter_map(|(shard, manifest)| rewrite_due(manifest, settings).map(|level| Rewrite { shard, level }))
         .partition(|rewrite| rewrite.level.is_some());
-    combines.sort_by_key(|rewrite| std::cmp::Reverse(rewrite.inputs(&manifests[rewrite.shard]).len()));
-    combines.truncate(settings.combines_per_cycle);
     bases.sort_by_key(|rewrite| std::cmp::Reverse(manifests[rewrite.shard].delta_rows()));
     bases.truncate(settings.merges_per_cycle);
+    if settings.combines_per_cycle == 0 {
+        // Without a budget of their own, combinings take the slots base rewrites leave, after them.
+        combines.sort_by_key(|rewrite| std::cmp::Reverse(manifests[rewrite.shard].delta_rows()));
+        combines.truncate(settings.merges_per_cycle - bases.len());
+        return bases.into_iter().chain(combines).collect();
+    }
+    combines.sort_by_key(|rewrite| std::cmp::Reverse(rewrite.inputs(&manifests[rewrite.shard]).len()));
+    combines.truncate(settings.combines_per_cycle);
     combines.into_iter().chain(bases).collect()
 }
 
@@ -639,7 +683,12 @@ pub fn cycle(store: &dyn Store, settings: &Settings, now: f64) -> Result<Report>
     let referenced: HashSet<String> = manifests.iter().flat_map(|m| m.files().map(|f| f.key.clone())).collect();
     let written = Mutex::new(Vec::new());
     match write_files(store, settings, &mut manifests, &spill, &gone, (from, through, now), &written) {
-        Ok((deltas, merged, combined)) => (report.deltas, report.merged, report.combined) = (deltas, merged, combined),
+        Ok(done) => {
+            for failure in &done.failed {
+                eprintln!("{failure}; the shard stays as it was");
+            }
+            (report.deltas, report.merged, report.combined, report.failed) = (done.deltas, done.merged, done.combined, done.failed);
+        }
         Err(error) => {
             for key in written.into_inner().unwrap().iter().filter(|key| !referenced.contains(*key)) {
                 let _ = store.delete(key);
@@ -648,7 +697,7 @@ pub fn cycle(store: &dyn Store, settings: &Settings, now: f64) -> Result<Report>
         }
     }
 
-    let mut expired = Vec::new();
+    let mut expired: Vec<(usize, Retired)> = Vec::new();
     for manifest in &mut manifests {
         // With no files a shard holds nothing a withdrawal could still need dropped.
         if manifest.base.is_none() && manifest.deltas.is_empty() {
@@ -656,12 +705,26 @@ pub fn cycle(store: &dyn Store, settings: &Settings, now: f64) -> Result<Report>
         }
         let (old, keep): (Vec<Retired>, Vec<Retired>) = manifest.retired.drain(..).partition(|r| now - r.at >= settings.retire_after_s);
         manifest.retired = keep;
-        expired.extend(old.into_iter().map(|r| r.key));
+        expired.extend(old.into_iter().map(|r| (manifest.shard, r)));
+    }
+    // Deleted before the manifests are saved, so a file whose delete fails stays listed and is tried again.
+    let deletes = each(&expired, settings.threads, |(_, retired)| Ok(store.delete(&retired.key)))?;
+    let mut first_failure = None;
+    for ((shard, retired), deleted) in expired.into_iter().zip(deletes) {
+        match deleted {
+            Ok(()) => report.deleted += 1,
+            Err(error) => {
+                first_failure.get_or_insert_with(|| format!("{}: {error:#}", retired.key));
+                report.delete_failed += 1;
+                manifests[shard].retired.push(retired);
+            }
+        }
+    }
+    if let Some(failure) = first_failure {
+        eprintln!("{} retired files not deleted, kept to try again; the first: {failure}", report.delete_failed);
     }
     each(&manifests, settings.threads, |manifest| store.put(&manifest_key(prefix, manifest.shard), Bytes::from(serde_json::to_vec(manifest)?)))?;
-    each(&expired, settings.threads, |key| store.delete(key))?;
-    report.deleted = expired.len();
-    report.lag_s = unread_age(store, through, latest, now)?;
+    report.lag = unread_age(store, through, latest, now).unwrap_or_else(|error| Lag::Unknown(format!("{error:#}")));
 
     let merged_everywhere = manifests.iter().map(|m| m.merged_through).min().unwrap_or(0);
     let before = withdrawn.tasks.len();
