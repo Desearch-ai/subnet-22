@@ -16,7 +16,8 @@ use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use publisher::changes::{self, Body, Change, Kind};
 use publisher::current::{self, FileRef, Manifest, PageRow};
 use publisher::planner::{
-    page_text, page_text_v2, passages, passages_v2, texts, Listed, Passage, Planner, Room, Settings, EMBED_DROPPED, EMBED_INPUTS, PAGE, PASSAGE, RECIPE_V2,
+    page_text, page_text_v2, passages, passages_v2, push_input, texts, Listed, Passage, Planner, Room, Settings, EMBED_DROPPED, EMBED_INPUTS, PAGE, PASSAGE,
+    RECIPE_V2,
 };
 use publisher::records::{iso, page_key, record_version, Record};
 use publisher::set::Set;
@@ -1142,4 +1143,16 @@ async fn a_fresh_input_is_written_within_its_own_short_wait() {
     assert_eq!(pending.len(), 1, "the other lane keeps filling");
     assert!(pending[0].1.contains("\"lane\":\"fresh\""));
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_input_pushed_again_after_a_crash_reaches_the_task_api_once() {
+    let Some((_turn, mut redis)) = redis_db().await else {
+        eprintln!("skipped: no Redis on {REDIS}");
+        return;
+    };
+    let entry = json!({"input_key": "embed/inputs/a.parquet", "pages": []}).to_string();
+    assert!(push_input(&mut redis, "embed/inputs/a.parquet", &entry).await.unwrap());
+    assert!(!push_input(&mut redis, "embed/inputs/a.parquet", &entry).await.unwrap());
+    assert_eq!(redis.llen::<_, i64>(EMBED_INPUTS).await.unwrap(), 1);
 }

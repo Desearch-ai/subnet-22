@@ -18,7 +18,7 @@ use parquet::arrow::ArrowWriter;
 use parquet::basic::{Compression, ZstdLevel};
 use parquet::file::properties::WriterProperties;
 use redis::aio::ConnectionManager;
-use redis::AsyncCommands;
+use redis::Script;
 use rocksdb::{DBCompressionType, IteratorMode, Options, WriteBatch, DB};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -64,6 +64,12 @@ const BACKFILL_AHEAD: usize = 4_096;
 /// How long a pass waits for the backfill's reader before going on.
 const BACKFILL_WAIT: Duration = Duration::from_millis(500);
 const RANGES_AT_ONCE: usize = 16;
+/// Kept past any input's wait for room, so a push tried again after a crash is not pushed twice.
+const PUSHED_TTL_S: u64 = 2 * 86_400;
+
+/// Pushes an input once, however often it is tried.
+static PUSH: LazyLock<Script> =
+    LazyLock::new(|| Script::new("if redis.call('SET', KEYS[2], '1', 'NX', 'EX', ARGV[2]) then redis.call('RPUSH', KEYS[1], ARGV[1]) return 1 end return 0"));
 /// Set once every domain's count of planned pages has been built from the planned keys.
 const SITES_COUNTED: &[u8] = b"sites-counted";
 /// The crawl list's caps are crawl caps, three pages crawled for each one the index keeps.
@@ -1619,7 +1625,7 @@ impl Planner {
             if handed == room {
                 break;
             }
-            let _: i64 = self.redis.rpush(EMBED_INPUTS, &entry).await?;
+            push_input(&mut self.redis, &input_key, &entry).await?;
             self.state.handed_over(&input_key)?;
             self.pending[lane] -= 1;
             handed += 1;
@@ -1675,6 +1681,12 @@ async fn fetch(pages: Bucket, seq: i64) -> Result<std::result::Result<Vec<Change
         }
         Err(error) => Ok(Err(Unread::Failed(format!("reading {key}: {error}")))),
     }
+}
+
+/// Pushes an input for the task API once: a push tried again after a crash, before its pending entry was cleared, does nothing; whether it pushed.
+pub async fn push_input(redis: &mut ConnectionManager, input_key: &str, entry: &str) -> Result<bool> {
+    let pushed: i64 = PUSH.key(EMBED_INPUTS).key(format!("embed:pushed:{input_key}")).arg(entry).arg(PUSHED_TTL_S).invoke_async(redis).await?;
+    Ok(pushed == 1)
 }
 
 fn lang_wanted(langs: &[String], lang: &str) -> bool {
