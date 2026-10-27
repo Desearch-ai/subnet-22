@@ -308,6 +308,8 @@ fn compact(once: bool, start_empty_at: Option<i64>) -> Result<()> {
         every_s: env_number("COMPACTOR_EVERY_S", defaults.every_s)?,
         fanout: env_number("COMPACTOR_FANOUT", defaults.fanout)?,
         merges_per_cycle: env_number("COMPACTOR_MERGES", defaults.merges_per_cycle)?,
+        combines_per_cycle: env_number("COMPACTOR_COMBINES", defaults.combines_per_cycle)?,
+        lag_warn_s: env_number("COMPACTOR_LAG_WARN_S", defaults.lag_warn_s)?,
         retire_after_s: env_number("COMPACTOR_RETIRE_S", defaults.retire_after_s)?,
         spill_bytes: env_number::<usize>("COMPACTOR_SPILL_MB", defaults.spill_bytes >> 20)? << 20,
         threads: env_number("COMPACTOR_THREADS", defaults.threads)?,
@@ -351,7 +353,7 @@ fn compact(once: bool, start_empty_at: Option<i64>) -> Result<()> {
             Err(error) => return Err(error),
         };
         println!(
-            "cycle: change files {}..{} of {latest}, {} rows into {} deltas, {} withdrawn, {} bases rewritten, {} deltas combined, {} files deleted in {:.1}s{}{}",
+            "cycle: change files {}..{} of {latest}, {} rows into {} deltas, {} withdrawn, {} bases rewritten, {} deltas combined, {} files deleted in {:.1}s{}{}{}",
             report.from,
             report.through,
             report.rows,
@@ -362,8 +364,17 @@ fn compact(once: bool, start_empty_at: Option<i64>) -> Result<()> {
             report.deleted,
             started.elapsed().as_secs_f64(),
             if report.skipped.is_empty() { String::new() } else { format!(", numbers never written skipped: {:?}", report.skipped) },
-            if report.waiting { format!(", waiting for change file {}", report.through + 1) } else { String::new() }
+            if report.waiting { format!(", waiting for change file {}", report.through + 1) } else { String::new() },
+            report.lag_s.map(|lag| format!(", oldest unread change file {:.1} h old", lag / 3600.0)).unwrap_or_default()
         );
+        if let Some(lag) = report.lag_s.filter(|&lag| lag > settings.lag_warn_s) {
+            eprintln!(
+                "warning: the compactor is behind: change file {}, the oldest not read, was written {:.1} h ago (limit {:.0} h); the change log expires its files after a set number of days",
+                report.through + 1,
+                lag / 3600.0,
+                settings.lag_warn_s / 3600.0
+            );
+        }
         if once || stopped() {
             return Ok(());
         }

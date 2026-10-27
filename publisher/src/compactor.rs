@@ -146,7 +146,12 @@ pub struct Settings {
     pub merge_ratio: f64,
     /// Deltas of one size combined into one of the next size, so a reader opens few files and a base is not rewritten for them.
     pub fanout: usize,
+    /// Base rewrites per cycle.
     pub merges_per_cycle: usize,
+    /// Combinings per cycle, apart from base rewrites so these never crowd them out; they run first, one shard at a time per merge thread.
+    pub combines_per_cycle: usize,
+    /// The oldest change file not read yet is reported once it is this old.
+    pub lag_warn_s: f64,
     /// Replaced files stay this long, so a reader mid-read is not cut off.
     pub retire_after_s: f64,
     /// Rows held in memory before they are written to the shard's spill files.
@@ -168,6 +173,8 @@ impl Default for Settings {
             every_s: 900.0,
             fanout: 12,
             merges_per_cycle: 64,
+            combines_per_cycle: 256,
+            lag_warn_s: 3.0 * 86_400.0,
             retire_after_s: 86_400.0,
             spill_bytes: 1 << 30,
             threads: 8,
@@ -191,6 +198,8 @@ pub struct Report {
     pub skipped: Vec<i64>,
     /// The cycle stopped at a number not written yet.
     pub waiting: bool,
+    /// How long ago the oldest change file not read yet was written, after the cycle; None when every one is read.
+    pub lag_s: Option<f64>,
 }
 
 /// Tasks taken back; their rows count as removals until every shard's base is rewritten past the last row of theirs read.
@@ -440,6 +449,16 @@ fn never_written(store: &dyn Store, seq: i64, latest: i64, wait_s: f64, now: f64
     Ok(false)
 }
 
+/// How long ago the first change file after `through` was written; None when none is written yet.
+fn unread_age(store: &dyn Store, through: i64, latest: i64, now: f64) -> Result<Option<f64>> {
+    for seq in through + 1..=latest.min(through + HOLE_LOOKAHEAD) {
+        if let Some(at) = store.modified(&CHANGES.seq_key(seq as u64))? {
+            return Ok(Some((now - at).max(0.0)));
+        }
+    }
+    Ok(None)
+}
+
 /// Writes this cycle's deltas, combined deltas and merged bases and notes them in `manifests`, which are not saved yet; returns how many of each.
 fn write_files(
     store: &dyn Store,
@@ -472,17 +491,11 @@ fn write_files(
         manifest.through_seq = manifest.through_seq.max(through);
     }
 
-    let mut due: Vec<Rewrite> = (0..SHARDS).filter_map(|shard| rewrite_due(&manifests[shard], settings).map(|level| Rewrite { shard, level })).collect();
-    due.sort_by_key(|rewrite| (rewrite.level.is_some(), std::cmp::Reverse(manifests[rewrite.shard].delta_rows())));
-    due.truncate(settings.merges_per_cycle);
+    let due = due_rewrites(manifests, settings);
     let made = each(&due, settings.merge_threads, |rewrite| -> Result<FileRef> {
         let manifest = &manifests[rewrite.shard];
-        let inputs: Vec<&FileRef> = match rewrite.level {
-            None => manifest.files().collect(),
-            Some(level) => manifest.deltas.iter().filter(|delta| delta.level == level).collect(),
-        };
-        let files =
-            inputs.iter().map(|file| store.get(&file.key)?.ok_or_else(|| anyhow!("{} is in a manifest but missing", file.key))).collect::<Result<Vec<_>>>()?;
+        let inputs = rewrite.inputs(manifest);
+        let files = each(&inputs, settings.threads, |file| store.get(&file.key)?.ok_or_else(|| anyhow!("{} is in a manifest but missing", file.key)))?;
         let (file, rows) = current::merge_files(files, gone, rewrite.level.is_some())?;
         let (key, level) = match rewrite.level {
             None => (file_key(prefix, rewrite.shard, "base", manifest.through_seq), 0),
@@ -518,9 +531,34 @@ fn write_files(
 }
 
 /// A base rewrite (`level` None) or a combining of one size of deltas.
-struct Rewrite {
-    shard: usize,
-    level: Option<u32>,
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Rewrite {
+    pub shard: usize,
+    pub level: Option<u32>,
+}
+
+impl Rewrite {
+    /// The files it merges, oldest first.
+    fn inputs<'a>(&self, manifest: &'a Manifest) -> Vec<&'a FileRef> {
+        match self.level {
+            None => manifest.files().collect(),
+            Some(level) => manifest.deltas.iter().filter(|delta| delta.level == level).collect(),
+        }
+    }
+}
+
+/// This cycle's rewrites in the order they run: combinings first, the shards with the most files to combine ahead, then base rewrites, the most delta rows ahead; each kind within its own budget.
+pub fn due_rewrites(manifests: &[Manifest], settings: &Settings) -> Vec<Rewrite> {
+    let (mut combines, mut bases): (Vec<Rewrite>, Vec<Rewrite>) = manifests
+        .iter()
+        .enumerate()
+        .filter_map(|(shard, manifest)| rewrite_due(manifest, settings).map(|level| Rewrite { shard, level }))
+        .partition(|rewrite| rewrite.level.is_some());
+    combines.sort_by_key(|rewrite| std::cmp::Reverse(rewrite.inputs(&manifests[rewrite.shard]).len()));
+    combines.truncate(settings.combines_per_cycle);
+    bases.sort_by_key(|rewrite| std::cmp::Reverse(manifests[rewrite.shard].delta_rows()));
+    bases.truncate(settings.merges_per_cycle);
+    combines.into_iter().chain(bases).collect()
 }
 
 /// What a shard's files are due: its base rewritten once its deltas reach `merge_ratio` of it, else the smallest size of delta with `fanout` files combined.
@@ -621,10 +659,9 @@ pub fn cycle(store: &dyn Store, settings: &Settings, now: f64) -> Result<Report>
         expired.extend(old.into_iter().map(|r| r.key));
     }
     each(&manifests, settings.threads, |manifest| store.put(&manifest_key(prefix, manifest.shard), Bytes::from(serde_json::to_vec(manifest)?)))?;
-    for key in &expired {
-        store.delete(key)?;
-    }
+    each(&expired, settings.threads, |key| store.delete(key))?;
     report.deleted = expired.len();
+    report.lag_s = unread_age(store, through, latest, now)?;
 
     let merged_everywhere = manifests.iter().map(|m| m.merged_through).min().unwrap_or(0);
     let before = withdrawn.tasks.len();
