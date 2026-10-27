@@ -406,6 +406,22 @@ async fn an_embed_task_handed_back_too_often_is_dropped_at_its_next_claim_and_st
 }
 
 #[tokio::test]
+async fn inputs_read_again_after_their_round_was_saved_are_not_opened_twice() {
+    let h = embedding().await;
+    let (first, second) = (inputs(2).remove(0), inputs(2).remove(1));
+    embed_round(&h, first.clone()).await;
+    for entry in [&first, &second] {
+        let _: i64 = h.redis.clone().rpush(EMBED_INPUTS, entry.to_string()).await.unwrap();
+    }
+
+    let round = lifecycle::open_embed_rounds(&h.state).await.unwrap().expect("a round for the input not opened before");
+    assert_eq!(round.batches.len(), 1);
+    assert_eq!(round.batches[0].extra["input_key"], second["input_key"]);
+    let left: i64 = h.redis.clone().llen(EMBED_INPUTS).await.unwrap();
+    assert_eq!(left, 0, "the input already opened is trimmed with the rest");
+}
+
+#[tokio::test]
 async fn the_explorer_shows_an_embed_task_s_checked_texts_and_counts_each_kind_apart() {
     let h = embedding().await;
     embed_round(&h, input()).await;
