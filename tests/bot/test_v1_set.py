@@ -121,6 +121,7 @@ def test_dates_come_from_published_or_the_url_path_as_the_planner_reads_them():
     assert page_date("https://a.example/a/story-2022-05-09-slug", None).isoformat() == "2022-05-09"
     assert page_date("https://a.example/20190412/slug.html", None).isoformat() == "2019-04-12"
     assert page_date("https://a.example/2023/11/02/story", "2024-02-30").isoformat() == "2023-11-02", "a published day that doesn't exist falls back to the URL"
+    assert page_date("https://a.example/x", "1985-06-01").isoformat() == "1985-06-01", "a published date of any year"
     assert page_date("https://a.example/a/20190412-2020-05-06", None).isoformat() == "2019-04-12", "left to right within a segment, as set.rs reads"
     assert page_date("https://a.example/2024/02/30/x", None).isoformat() == "2024-02-01", "a URL day that doesn't exist falls back to its month"
     for undated in ("https://a.example/a/123456789/slug", "https://a.example/p/2024", "https://a.example/x?d=2024-01-01", "https://a.example/2024/13/x", "https://2024-01-01.example/a"):

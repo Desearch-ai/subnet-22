@@ -161,12 +161,17 @@ def build(row_files, hand, decisions, backing, news_sources, judged, counts, new
     return [sites[host] for host in sorted(sites)], too_big
 
 
-def calendar_date(year: str, month: str, day: str) -> date | None:
+def real_date(year: str, month: str, day: str) -> date | None:
     try:
-        found = date(int(year), int(month), int(day))
+        return date(int(year), int(month), int(day))
     except ValueError:
         return None
-    return found if 1990 <= found.year <= 2099 else None
+
+
+def calendar_date(year: str, month: str, day: str) -> date | None:
+    """A date in a URL path: 1990-2099 only, so a numeric ID doesn't read as one."""
+    found = real_date(year, month, day)
+    return found if found and 1990 <= found.year <= 2099 else None
 
 
 def path_date(path: str) -> date | None:
@@ -190,7 +195,7 @@ def path_date(path: str) -> date | None:
 
 def page_date(url: str, published: str | None) -> date | None:
     found = re.match(r"([0-9]{4})-([0-9]{2})-([0-9]{2})", (published or "").strip())
-    return (found and calendar_date(*found.groups())) or path_date(urlsplit(url).path)
+    return (found and real_date(*found.groups())) or path_date(urlsplit(url).path)
 
 
 def entry_for(sites: dict[str, dict], host: str) -> dict | None:
