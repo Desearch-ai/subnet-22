@@ -538,6 +538,31 @@ impl Room {
     }
 }
 
+/// A version of a page: its text, when it was fetched, and the change file that holds its row.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Version {
+    pub content_sha1: String,
+    pub fetched_at: String,
+    /// Only its page text was planned.
+    pub page_only: bool,
+    pub seq: Option<i64>,
+}
+
+impl Version {
+    fn parse(raw: &[u8]) -> Version {
+        let value = String::from_utf8_lossy(raw);
+        let mut fields = value.split('\t');
+        let (content_sha1, fetched_at) = (fields.next().unwrap_or_default().to_string(), fields.next().unwrap_or_default().to_string());
+        let page_only = fields.next() == Some(PAGE);
+        Version { content_sha1, fetched_at, page_only, seq: fields.next().and_then(|seq| seq.parse().ok()) }
+    }
+
+    fn value(&self) -> String {
+        let page_only = if self.page_only { PAGE } else { "" };
+        format!("{}\t{}\t{page_only}\t{}", self.content_sha1, self.fetched_at, self.seq.map(|seq| seq.to_string()).unwrap_or_default())
+    }
+}
+
 /// What the planner has planned, its place in the log and the inputs not yet handed over, kept on local disk.
 pub struct State {
     db: DB,
@@ -557,17 +582,79 @@ impl State {
 
     /// The content hash of the version of `key` last planned with `recipe`.
     pub fn planned(&self, recipe: &str, key: &str) -> Result<Option<String>> {
-        Ok(self.planned_version(recipe, key)?.map(|(content_sha1, ..)| content_sha1))
+        Ok(self.planned_version(recipe, key)?.map(|version| version.content_sha1))
     }
 
-    /// The content hash and fetch time of the version of `key` last planned with `recipe`, and whether only its page text was; the time is empty for versions planned before it was kept.
-    pub fn planned_version(&self, recipe: &str, key: &str) -> Result<Option<(String, String, bool)>> {
-        Ok(self.db.get(planned_key(recipe, key))?.map(|raw| {
-            let value = String::from_utf8_lossy(&raw);
-            let mut fields = value.split('\t');
-            let (content_sha1, fetched_at) = (fields.next().unwrap_or_default(), fields.next().unwrap_or_default());
-            (content_sha1.to_string(), fetched_at.to_string(), fields.next() == Some(PAGE))
-        }))
+    /// The version of `key` last planned with `recipe`; its time is empty for versions planned before it was kept.
+    pub fn planned_version(&self, recipe: &str, key: &str) -> Result<Option<Version>> {
+        Ok(self.db.get(planned_key(recipe, key))?.map(|raw| Version::parse(&raw)))
+    }
+
+    /// The newest version of `key` seen but not planned, waiting for budget or room or forgotten after it was planned.
+    pub fn waiting(&self, key: &str) -> Result<Option<Version>> {
+        Ok(self.db.get(waiting_key(key))?.map(|raw| Version::parse(&raw)))
+    }
+
+    /// Keeps `version` waiting unless a newer one of the page already is.
+    fn wait(&self, key: &str, version: &Version) -> Result<()> {
+        let mut batch = WriteBatch::default();
+        self.waiting_into(&mut batch, key, version)?;
+        Ok(self.db.write(batch)?)
+    }
+
+    fn waiting_into(&self, batch: &mut WriteBatch, key: &str, version: &Version) -> Result<()> {
+        let held = self.waiting(key)?;
+        if held.as_ref().is_some_and(|held| (held.fetched_at.as_str(), held.seq) >= (version.fetched_at.as_str(), version.seq)) {
+            return Ok(());
+        }
+        if let Some(seq) = held.and_then(|held| held.seq) {
+            batch.delete(replan_key(seq, key));
+        }
+        batch.put(waiting_key(key), version.value());
+        if let Some(seq) = version.seq {
+            batch.put(replan_key(seq, key), "");
+        }
+        Ok(())
+    }
+
+    /// Stops `key` waiting, once a version as new is planned or its change file is gone.
+    fn unwait_into(&self, batch: &mut WriteBatch, key: &str, planned_at: Option<&str>) -> Result<()> {
+        let Some(held) = self.waiting(key)? else { return Ok(()) };
+        if planned_at.is_some_and(|planned_at| held.fetched_at.as_str() > planned_at) {
+            return Ok(());
+        }
+        batch.delete(waiting_key(key));
+        if let Some(seq) = held.seq {
+            batch.delete(replan_key(seq, key));
+        }
+        Ok(())
+    }
+
+    fn unwait(&self, key: &str) -> Result<()> {
+        let mut batch = WriteBatch::default();
+        self.unwait_into(&mut batch, key, None)?;
+        Ok(self.db.write(batch)?)
+    }
+
+    /// The first change file after `after` that holds waiting pages, and their keys.
+    pub fn replan_group(&self, after: i64) -> Result<Option<(i64, HashSet<String>)>> {
+        let start = format!("replan/{:020}/", after + 1);
+        let mut group: Option<(i64, HashSet<String>)> = None;
+        for item in self.db.iterator(IteratorMode::From(start.as_bytes(), rocksdb::Direction::Forward)) {
+            let (raw, _) = item?;
+            let Some(rest) = raw.strip_prefix(b"replan/") else { break };
+            let rest = String::from_utf8_lossy(rest);
+            let Some((seq, key)) = rest.split_once('/') else { continue };
+            let seq: i64 = seq.parse()?;
+            match &mut group {
+                Some((held, keys)) if *held == seq => {
+                    keys.insert(key.to_string());
+                }
+                Some(_) => break,
+                None => group = Some((seq, HashSet::from([key.to_string()]))),
+            }
+        }
+        Ok(group)
     }
 
     /// Whether no recipe has planned any version of `key`.
@@ -688,6 +775,7 @@ impl State {
         if planned {
             self.change_sites(&mut batch, &HashMap::from([(domain_of_key(key).to_string(), -1)]))?;
         }
+        self.unwait_into(&mut batch, key, None)?;
         Ok(self.db.write(batch)?)
     }
 
@@ -703,9 +791,11 @@ impl State {
             let (Some(key), Some(content_sha1)) = (page["page_key"].as_str(), page["content_sha1"].as_str()) else { continue };
             let (mut forgotten, mut kept) = (false, false);
             for recipe in RECIPES {
-                match self.planned(recipe, key)? {
-                    Some(planned) if planned == content_sha1 => {
+                match self.planned_version(recipe, key)? {
+                    Some(planned) if planned.content_sha1 == content_sha1 => {
                         batch.delete(planned_key(recipe, key));
+                        // Planned again from its change file, not left for a re-crawl that may never come.
+                        self.waiting_into(&mut batch, key, &Version { page_only: false, ..planned })?;
                         forgotten = true;
                     }
                     Some(_) => kept = true,
@@ -744,8 +834,10 @@ impl State {
             if self.unplanned(&page.key)? {
                 *new.entry(domain_of_key(&page.key).to_string()).or_default() += 1;
             }
-            let page_only = if page.page_only { "\tpage" } else { "" };
-            batch.put(planned_key(page.recipe, &page.key), format!("{}\t{}{page_only}", page.content_sha1, page.fetched_at));
+            let version =
+                Version { content_sha1: page.content_sha1.clone(), fetched_at: page.fetched_at.clone(), page_only: page.page_only, seq: Some(page.seq) };
+            batch.put(planned_key(page.recipe, &page.key), version.value());
+            self.unwait_into(&mut batch, &page.key, Some(&page.fetched_at))?;
         }
         self.change_sites(&mut batch, &new)?;
         batch.put(format!("pending/{input_key}"), entry);
@@ -761,6 +853,14 @@ impl State {
 
 fn planned_key(recipe: &str, key: &str) -> String {
     format!("planned/{recipe}/{key}")
+}
+
+fn waiting_key(key: &str) -> String {
+    format!("waiting/{key}")
+}
+
+fn replan_key(seq: i64, key: &str) -> String {
+    format!("replan/{seq:020}/{key}")
 }
 
 fn site_key(domain: &str) -> String {
@@ -789,6 +889,8 @@ pub struct Planned {
     pub texts: Vec<Text>,
     /// Only the page text of a page that has passages; they are planned when the page is next seen with `page_first` off.
     pub page_only: bool,
+    /// The change file that holds the version's row.
+    pub seq: i64,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -824,6 +926,10 @@ pub struct Counts {
     pub page_only: u64,
     /// Pages planned for their passages alone, their page text planned before, of `planned`.
     pub parts: u64,
+    /// Pages left for budget or room, kept waiting to be planned from their change file.
+    pub waiting: u64,
+    /// Waiting pages read again from their change file, of `pages`.
+    pub replanned: u64,
     /// Pages read from `current/` by the backfill, of `pages`.
     pub backfill: u64,
     pub shards: u64,
@@ -888,6 +994,8 @@ pub struct Planner {
     reading: Option<Reading>,
     /// When the backfill sweeps `current/` again, once it has read every shard.
     next_sweep: Option<Instant>,
+    /// The last change file the re-plan pass read this sweep.
+    replan_after: i64,
     set_modified: Option<std::time::SystemTime>,
     fresh: Buffer,
     rest: Buffer,
@@ -938,6 +1046,7 @@ impl Planner {
             set: None,
             reading: None,
             next_sweep: None,
+            replan_after: 0,
             set_modified: None,
             fresh: Buffer::default(),
             rest: Buffer::default(),
@@ -1018,6 +1127,7 @@ impl Planner {
             }
             self.advance(seq)?;
         }
+        let replanned = self.replan().await?;
         let backfilled = self.backfill().await?;
         for lane in Lane::ALL {
             if self.buffer(lane).since.is_some_and(|since| since.elapsed() >= self.settings.flush_after) {
@@ -1025,7 +1135,43 @@ impl Planner {
             }
         }
         self.hand_over().await?;
-        Ok(read > 0 || backfilled)
+        Ok(read > 0 || replanned || backfilled)
+    }
+
+    /// Plans waiting pages from the change files that hold them, oldest first, while the budget and the rest lane's room last; whether it took any.
+    async fn replan(&mut self) -> Result<bool> {
+        let mut took = false;
+        while self.pending[Lane::Rest as usize] < self.settings.max_pending && self.budget.has() {
+            let Some((seq, keys)) = self.state.replan_group(self.replan_after)? else {
+                self.replan_after = 0;
+                break;
+            };
+            self.replan_after = seq;
+            let Ok(rows) = fetch(self.pages.clone(), seq).await? else { continue };
+            let mut found = HashSet::new();
+            for row in rows {
+                let ChangeRow::Page(page) = row else { continue };
+                if !keys.contains(&page.key) || self.state.waiting(&page.key)?.is_none_or(|held| held.content_sha1 != page.record.content_sha1) {
+                    continue;
+                }
+                found.insert(page.key.clone());
+                // Waits again only if budget or room refuse it again.
+                self.state.unwait(&page.key)?;
+                took = true;
+                self.counts.replanned += 1;
+                if let Some(lane) = self.consider(*page) {
+                    let buffer = self.buffer(lane);
+                    if buffer.pages.len() >= self.settings.pages_per_input || buffer.chars >= self.settings.chars_per_input {
+                        self.flush_lane(lane).await?;
+                    }
+                }
+            }
+            // A change file gone from the log leaves its pages to the backfill.
+            for key in keys.iter().filter(|key| !found.contains(*key)) {
+                self.state.unwait(key)?;
+            }
+        }
+        Ok(took)
     }
 
     /// Plans pages of `current/` while the budget and the rest lane's room last; whether it took any.
@@ -1100,9 +1246,11 @@ impl Planner {
                     && lang_wanted(&langs, &record.lang)
                     && set.as_ref().is_none_or(|set| set.admit(&record.url, &record.published).is_ok())
                     && match state.planned_version(RECIPE_V2, &row.key) {
-                        Ok(Some((content_sha1, _, page_only))) if content_sha1 == record.content_sha1 => page_only && !page_first,
+                        Ok(Some(planned)) if planned.content_sha1 == record.content_sha1 => planned.page_only && !page_first,
                         _ => true,
                     }
+                    // A version as new waits in the log, which is read for it instead.
+                    && state.waiting(&row.key).ok().flatten().is_none_or(|held| held.fetched_at < record.fetched_at)
             };
             reader.read(shard, from.as_deref(), keep, |page| send.blocking_send(page).is_ok())
         });
@@ -1254,12 +1402,12 @@ impl Planner {
         let already = match buffered {
             Some((lane, at)) => {
                 let held = &self.buffer(lane).pages[at];
-                Some((held.content_sha1.clone(), held.fetched_at.clone(), held.page_only))
+                Some(Version { content_sha1: held.content_sha1.clone(), fetched_at: held.fetched_at.clone(), page_only: held.page_only, seq: Some(held.seq) })
             }
             None => self.state.planned_version(recipe, &page.key).ok().flatten(),
         };
         let mut parts_only = false;
-        if let Some((content_sha1, fetched_at, page_only)) = &already {
+        if let Some(Version { content_sha1, fetched_at, page_only, .. }) = &already {
             if *content_sha1 == record.content_sha1 {
                 if !page_only || self.settings.page_first || buffered.is_some() {
                     self.counts.unchanged += 1;
@@ -1299,10 +1447,12 @@ impl Planner {
         let lane = if fresh { Lane::Fresh } else { Lane::Rest };
         if self.pending[lane as usize] >= self.settings.max_pending {
             self.counts.no_room += 1;
+            self.keep_waiting(&page);
             return None;
         }
         if lane == Lane::Rest && !self.budget.take() {
             self.counts.over_budget += 1;
+            self.keep_waiting(&page);
             return None;
         }
         let planned = planned_of(&page, recipe, self.settings.page_first && lane == Lane::Rest, parts_only);
@@ -1323,6 +1473,16 @@ impl Planner {
         self.counts.planned += 1;
         self.counts.fresh += u64::from(lane == Lane::Fresh);
         Some(lane)
+    }
+
+    fn keep_waiting(&mut self, page: &PageRow) {
+        let record = &page.record;
+        let version =
+            Version { content_sha1: record.content_sha1.clone(), fetched_at: record.fetched_at.clone(), page_only: false, seq: Some(page.change_seq) };
+        match self.state.wait(&page.key, &version) {
+            Ok(()) => self.counts.waiting += 1,
+            Err(error) => eprintln!("keeping {} waiting: {error:#}", page.key),
+        }
     }
 
     /// Whether the page is dated within the fresh window, by `published` or its URL, and not past tomorrow.
@@ -1488,6 +1648,7 @@ fn planned_of(page: &PageRow, recipe: &'static str, page_first: bool, parts_only
         fetched_at: record.fetched_at.clone(),
         texts,
         page_only,
+        seq: page.change_seq,
     }
 }
 
