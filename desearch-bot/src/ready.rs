@@ -82,18 +82,57 @@ pub fn junk(rest: &[u8]) -> bool {
     JUNK.is_match(rest)
 }
 
-/// A year and month in the path, as in `/2019/05/` or `/2019-05-03-story`.
-static PATH_DATE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"/((?:19|20)[0-9]{2})[/-](0[1-9]|1[0-2])(?:[/-]|$)").expect("a valid pattern"));
-
-/// A page's date: its lastmod, else the first of the month its path names.
+/// A page's date: its lastmod, else a date in its path, read as the planner reads it.
 pub fn page_date(lastmod: u32, rest: &[u8]) -> Option<u32> {
     if lastmod != 0 {
         return Some(lastmod);
     }
-    let found = PATH_DATE.captures(rest)?;
-    let number = |at: usize| std::str::from_utf8(&found[at]).ok()?.parse::<u32>().ok();
-    let day = chrono::NaiveDate::from_ymd_opt(number(1)? as i32, number(2)?, 1)?;
+    let rest = std::str::from_utf8(rest).ok()?;
+    let path = &rest[rest.find('/')?..];
+    let path = &path[..path.find(['?', '#']).unwrap_or(path.len())];
+    let day = path_date(path)?;
     day.and_hms_opt(0, 0, 0)?.and_utc().timestamp().try_into().ok()
+}
+
+/// `/YYYY/MM/DD/`, `/YYYY/MM/` (the first of the month), or `YYYY-MM-DD` or `YYYYMMDD` standing apart from other digits.
+fn path_date(path: &str) -> Option<chrono::NaiveDate> {
+    let parts: Vec<&str> = path.split('/').collect();
+    for (at, part) in parts.iter().enumerate() {
+        if part.len() == 4 {
+            if let Some(month) = parts.get(at + 1).filter(|month| (1..=2).contains(&month.len())) {
+                let day = parts.get(at + 2).filter(|day| (1..=2).contains(&day.len())).copied().unwrap_or("1");
+                if let Some(found) = calendar_date(part, month, day).or_else(|| calendar_date(part, month, "1")) {
+                    return Some(found);
+                }
+            }
+        }
+        if let Some(found) = digits_date(part) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+fn digits_date(part: &str) -> Option<chrono::NaiveDate> {
+    let b = part.as_bytes();
+    let digit = |at: usize| b.get(at).is_some_and(u8::is_ascii_digit);
+    for at in (0..b.len()).filter(|&at| digit(at) && (at == 0 || !digit(at - 1))) {
+        let piece = |from: usize, to: usize| part.get(at + from..at + to).unwrap_or("");
+        let dashed = b.get(at + 4) == Some(&b'-') && b.get(at + 7) == Some(&b'-') && !digit(at + 10);
+        if let Some(found) = dashed.then(|| calendar_date(piece(0, 4), piece(5, 7), piece(8, 10))).flatten() {
+            return Some(found);
+        }
+        let compact = (at..at + 8).all(digit) && !digit(at + 8);
+        if let Some(found) = compact.then(|| calendar_date(piece(0, 4), piece(4, 6), piece(6, 8))).flatten() {
+            return Some(found);
+        }
+    }
+    None
+}
+
+fn calendar_date(year: &str, month: &str, day: &str) -> Option<chrono::NaiveDate> {
+    let (year, month, day): (i32, u32, u32) = (year.parse().ok()?, month.parse().ok()?, day.parse().ok()?);
+    (1990..=2099).contains(&year).then(|| chrono::NaiveDate::from_ymd_opt(year, month, day)).flatten()
 }
 
 /// Whether a page is dated before its domain's floor; an undated page never is.
@@ -1466,12 +1505,16 @@ mod tests {
     }
 
     #[test]
-    fn a_page_is_dated_by_its_lastmod_else_by_a_month_in_its_path() {
+    fn a_page_is_dated_by_its_lastmod_else_by_a_date_in_its_path_as_the_planner_reads_it() {
         let may_2019 = 1_556_668_800;
+        let day = |date: &str| chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d").unwrap().and_hms_opt(0, 0, 0).unwrap().and_utc().timestamp() as u32;
         assert_eq!(page_date(42, b"example.com/2019/05/story"), Some(42));
         assert_eq!(page_date(0, b"example.com/news/2019/05/story"), Some(may_2019));
-        assert_eq!(page_date(0, b"example.com/2019-05-03-story"), Some(may_2019));
-        for undated in [&b"example.com/story"[..], b"example.com/2019/story", b"example.com/item/201905", b"example.com/2019/13/x"] {
+        assert_eq!(page_date(0, b"example.com/2023/11/02/story"), Some(day("2023-11-02")));
+        assert_eq!(page_date(0, b"example.com/news/2021/7/slug"), Some(day("2021-07-01")));
+        assert_eq!(page_date(0, b"example.com/a/story-2022-05-09-slug"), Some(day("2022-05-09")));
+        assert_eq!(page_date(0, b"example.com/20190412/slug.html"), Some(day("2019-04-12")));
+        for undated in [&b"example.com/story"[..], b"example.com/2019/story", b"example.com/a/123456789/slug", b"example.com/2019/13/x", b"example.com/x?d=2024-01-01", b"example.com/1950/03/x"] {
             assert_eq!(page_date(0, undated), None, "{}", String::from_utf8_lossy(undated));
         }
         assert!(before_floor(Some(may_2019 + 1), 0, b"example.com/2019/05/story"));
