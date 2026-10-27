@@ -299,6 +299,7 @@ fn settings(dir: PathBuf, pages_per_hour: f64, start_after: i64) -> Settings {
         list_file: None,
         set_file: None,
         start_after: Some(start_after),
+        reads: 4,
         poll: Duration::from_millis(10),
         hole_wait: Duration::from_secs(3600),
     }
@@ -715,5 +716,31 @@ async fn with_a_set_only_pages_its_rules_take_are_planned_and_the_crawl_list_is_
             "https://www.api.ref.example/x"
         ])
     );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn change_files_read_at_once_are_planned_in_log_order() {
+    let Some((_turn, redis)) = redis_db().await else {
+        eprintln!("skipped: no Redis on {REDIS}");
+        return;
+    };
+    let dir = scratch("order");
+    let stub = stub::start(dir.join("r2"), "127.0.0.1:0").await.unwrap();
+    let (pages, temp) = (bucket(stub.addr, "desearch-pages"), bucket(stub.addr, "subnet-22"));
+    let version = |n: usize| {
+        let mut page = v2(record("https://news.example/story/1", &format!("version {n}\n{}", article(2 + n % 3)), "article", "en"));
+        page.fetched_at = format!("2026-10-14T10:{n:02}:00+00:00");
+        page
+    };
+    for n in 1..=30 {
+        log(&pages, n as u64, vec![version(n)]).await;
+    }
+    let mut planner = Planner::new(settings(dir.join("state"), 3600.0, 0), pages.clone(), temp.clone(), redis.clone(), Room::Fixed(0)).await.unwrap();
+    planner.pass().await.unwrap();
+    assert_eq!((planner.read_through(), planner.counts.files, planner.counts.older), (30, 30, 0), "no version is seen after a newer one");
+    planner.flush().await.unwrap();
+    let entry: Value = serde_json::from_str(&planner.state.pending().unwrap()[0].1).unwrap();
+    assert_eq!(entry["pages"][0]["content_sha1"], version(30).content_sha1, "the last file's version is the one planned");
     let _ = std::fs::remove_dir_all(&dir);
 }

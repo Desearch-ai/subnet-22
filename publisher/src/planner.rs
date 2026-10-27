@@ -11,6 +11,7 @@ use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use bytes::Bytes;
 use desearch::feeds::CHANGES;
 use desearch::r2::{self, Bucket, PARQUET};
+use futures::{stream, FutureExt, StreamExt};
 use parquet::arrow::ArrowWriter;
 use parquet::basic::{Compression, ZstdLevel};
 use parquet::file::properties::WriterProperties;
@@ -57,7 +58,7 @@ const SITES_COUNTED: &[u8] = b"sites-counted";
 /// The crawl list's caps are crawl caps, three pages crawled for each one the index keeps.
 const CRAWL_PER_INDEX: u64 = 3;
 const ROOM_TIMEOUT: Duration = Duration::from_secs(20);
-const FILES_PER_PASS: usize = 20;
+const FILES_PER_PASS: usize = 64;
 
 pub static INPUT_SCHEMA: LazyLock<SchemaRef> = LazyLock::new(|| {
     let text = |name: &str| Field::new(name, DataType::Utf8, false);
@@ -378,6 +379,8 @@ pub struct Settings {
     pub set_file: Option<PathBuf>,
     /// The change file to start after when nothing was planned before; the newest one when None.
     pub start_after: Option<i64>,
+    /// Change files fetched and decoded at once, ahead of the one being planned.
+    pub reads: usize,
     pub poll: Duration,
     /// How long a change file number not indexed yet is looked for again before it is given up.
     pub hole_wait: Duration,
@@ -409,6 +412,7 @@ impl Settings {
             list_file: std::env::var("PLANNER_LIST_FILE").ok().filter(|v| !v.is_empty()).map(PathBuf::from),
             set_file: std::env::var("PLANNER_SET_FILE").ok().filter(|v| !v.is_empty()).map(PathBuf::from),
             start_after: std::env::var("PLANNER_START_AFTER").ok().filter(|v| !v.is_empty()).map(|v| v.parse()).transpose()?,
+            reads: number("PLANNER_READS", 8)?,
             poll: Duration::from_secs_f64(number("PLANNER_POLL_S", 10.0)?),
             hole_wait: Duration::from_secs_f64(number("PLANNER_HOLE_WAIT_S", 600.0)?),
         })
@@ -880,10 +884,15 @@ impl Planner {
         self.forget_dropped().await?;
         let latest = latest(&self.pages).await?;
         let mut read = self.read_late().await?;
-        while self.read_through < latest && read < FILES_PER_PASS {
-            let seq = self.read_through + 1;
-            match self.read(seq).await? {
-                Ok(()) => read += 1,
+        let ahead: Vec<i64> = (self.read_through + 1..=latest).take(FILES_PER_PASS.saturating_sub(read)).collect();
+        let pages = self.pages.clone();
+        let mut fetched = stream::iter(ahead).map(|seq| fetch(pages.clone(), seq).map(move |rows| (seq, rows))).buffered(self.settings.reads.max(1));
+        while let Some((seq, rows)) = fetched.next().await {
+            match rows? {
+                Ok(rows) => {
+                    self.take(rows).await?;
+                    read += 1;
+                }
                 Err(why) => self.note_missing(seq, &why)?,
             }
             self.advance(seq)?;
@@ -921,22 +930,14 @@ impl Planner {
 
     /// Considers every page of change file `seq`; the inner error says why the file cannot be read yet, the outer one fails the pass.
     async fn read(&mut self, seq: i64) -> Result<std::result::Result<(), Unread>> {
-        let key = match change_key(&self.pages, seq).await {
-            Ok(Some(key)) => key,
-            Ok(None) => return Ok(Err(Unread::NotNumbered)),
-            Err(error) => return Ok(Err(Unread::Failed(format!("{error:#}")))),
-        };
-        let rows = match self.pages.get(&key).await {
-            Ok(file) => match tokio::task::spawn_blocking(move || decode_changes(file, seq)).await? {
-                Ok(rows) => rows,
-                Err(error) => return Ok(Err(Unread::Failed(format!("decoding {key}: {error:#}")))),
-            },
-            Err(r2::Error::Missing) => {
-                eprintln!("change file {seq} ({key}) is gone; going on without it");
-                Vec::new()
-            }
-            Err(error) => return Ok(Err(Unread::Failed(format!("reading {key}: {error}")))),
-        };
+        match fetch(self.pages.clone(), seq).await? {
+            Ok(rows) => self.take(rows).await.map(Ok),
+            Err(why) => Ok(Err(why)),
+        }
+    }
+
+    /// Considers every page of one change file, in file order.
+    async fn take(&mut self, rows: Vec<ChangeRow>) -> Result<()> {
         for row in rows {
             if let ChangeRow::Page(page) = row {
                 self.consider(*page);
@@ -946,7 +947,7 @@ impl Planner {
             }
         }
         self.counts.files += 1;
-        Ok(Ok(()))
+        Ok(())
     }
 
     fn note_missing(&mut self, seq: i64, why: &Unread) -> Result<()> {
@@ -1049,16 +1050,8 @@ impl Planner {
                 return;
             }
         }
-        let planned = Planned {
-            key: page.key.clone(),
-            url: record.url.clone(),
-            host: record.domain.clone(),
-            content_sha1: record.content_sha1.clone(),
-            recipe,
-            fetched_at: record.fetched_at.clone(),
-            texts: texts(&page.key, record),
-        };
         if let Some(&at) = self.buffered.get(&page.key) {
+            let planned = planned_of(&page, recipe);
             self.buffer_chars = self.buffer_chars - chars_of(&self.buffer[at]) + chars_of(&planned);
             self.buffer[at] = planned;
             return;
@@ -1086,6 +1079,7 @@ impl Planner {
         if let Some(domain) = new_in {
             *self.buffered_new.entry(domain).or_default() += 1;
         }
+        let planned = planned_of(&page, recipe);
         self.buffered.insert(page.key, self.buffer.len());
         self.buffer_chars += chars_of(&planned);
         self.buffer.push(planned);
@@ -1201,6 +1195,40 @@ impl Planner {
 
     pub fn read_through(&self) -> i64 {
         self.read_through
+    }
+}
+
+/// The page as the buffer holds it, its texts made only once it is taken.
+fn planned_of(page: &PageRow, recipe: &'static str) -> Planned {
+    let record = &page.record;
+    Planned {
+        key: page.key.clone(),
+        url: record.url.clone(),
+        host: record.domain.clone(),
+        content_sha1: record.content_sha1.clone(),
+        recipe,
+        fetched_at: record.fetched_at.clone(),
+        texts: texts(&page.key, record),
+    }
+}
+
+/// Change file `seq`'s rows, fetched and decoded; the inner error says why the file cannot be read yet.
+async fn fetch(pages: Bucket, seq: i64) -> Result<std::result::Result<Vec<ChangeRow>, Unread>> {
+    let key = match change_key(&pages, seq).await {
+        Ok(Some(key)) => key,
+        Ok(None) => return Ok(Err(Unread::NotNumbered)),
+        Err(error) => return Ok(Err(Unread::Failed(format!("{error:#}")))),
+    };
+    match pages.get(&key).await {
+        Ok(file) => match tokio::task::spawn_blocking(move || decode_changes(file, seq)).await? {
+            Ok(rows) => Ok(Ok(rows)),
+            Err(error) => Ok(Err(Unread::Failed(format!("decoding {key}: {error:#}")))),
+        },
+        Err(r2::Error::Missing) => {
+            eprintln!("change file {seq} ({key}) is gone; going on without it");
+            Ok(Ok(Vec::new()))
+        }
+        Err(error) => Ok(Err(Unread::Failed(format!("reading {key}: {error}")))),
     }
 }
 
