@@ -879,22 +879,23 @@ fn the_list_walker_walks_each_listed_domain_once_and_again_when_its_cap_changes(
 }
 
 #[test]
-fn a_domain_already_sending_is_only_counted_and_cleared_when_over_its_cap() {
+fn a_domain_already_sending_is_only_counted_and_cleared_when_its_cap_falls_below_its_sends() {
     let dir = Dir::new("join-capped");
     std::fs::create_dir_all(&dir.0).unwrap();
     let path = dir.0.join("domains.json");
-    std::fs::write(&path, r#"["example.com"]"#).unwrap();
+    std::fs::write(&path, r#"[{"host": "example.com", "send_cap": 10}]"#).unwrap();
     let list = Allowed::from_file(&path).unwrap();
     let buckets = known(&dir, &["example.com"]);
     buckets.allow(&list);
     let store = buckets.store("example.com");
     store.record_listing("example.com", 7, (0..8).map(|i| page(&format!("p{i}"), 10)).collect(), 100).unwrap();
     store.mark_sent(&take(store, 3), 200, &rules()).unwrap();
-    assert_eq!(store.ready_count("example.com").unwrap(), 5);
+    let stop = std::sync::atomic::AtomicBool::new(false);
+    assert_eq!(desearch_bot::dispatch::join_round(&buckets, &list, 1_000_000, &Progress::default(), &stop).unwrap(), 1);
+    assert_eq!((store.ready_count("example.com").unwrap(), store.joined("example.com").unwrap()), (5, Some(Some(10))));
 
     relist(&path, &list, r#"[{"host": "example.com", "send_cap": 2}]"#);
     let progress = Progress::default();
-    let stop = std::sync::atomic::AtomicBool::new(false);
     assert_eq!(desearch_bot::dispatch::join_round(&buckets, &list, 1_000_000, &progress, &stop).unwrap(), 1);
     assert_eq!(store.sent_count("example.com").unwrap(), Some(3), "its sent pages are counted from their records");
     assert_eq!(store.ready_count("example.com").unwrap(), 0, "past its cap, its waiting new pages are cleared");
@@ -1450,4 +1451,33 @@ fn a_new_floor_builds_the_lane_of_a_domain_already_sending_again() {
     assert_eq!(desearch_bot::dispatch::join_round(&buckets, &list, 1_000_000, &progress, &stop).unwrap(), 1);
     assert_eq!(store.ready_count("example.com").unwrap(), 3, "a floor taken off brings the older page back");
     assert_eq!(store.joined_since("example.com").unwrap(), None);
+}
+
+#[test]
+fn a_domain_already_sending_whose_cap_rises_queues_the_stored_pages_its_old_cap_left_out() {
+    let dir = Dir::new("join-cap-rise");
+    std::fs::create_dir_all(&dir.0).unwrap();
+    let path = dir.0.join("domains.json");
+    std::fs::write(&path, r#"["other.com"]"#).unwrap();
+    let list = Allowed::from_file(&path).unwrap();
+    let buckets = known(&dir, &["example.com"]);
+    buckets.allow(&list);
+    let store = buckets.store("example.com");
+    for (i, name) in ["a", "b", "c", "d", "e", "f"].iter().enumerate() {
+        store.record_listing("example.com", 7, vec![page(name, 10)], 100 + 10 * i as u32).unwrap();
+    }
+    relist(&path, &list, r#"[{"host": "example.com", "send_cap": 3}]"#);
+    let progress = Progress::default();
+    let stop = std::sync::atomic::AtomicBool::new(false);
+    assert_eq!(desearch_bot::dispatch::join_round(&buckets, &list, 1_000_000, &progress, &stop).unwrap(), 1);
+    assert_eq!(ready(store), ["f", "e", "d"]);
+    store.mark_sent(&take(store, 1), 2000, &rules()).unwrap();
+    assert_eq!(store.ready_count("example.com").unwrap(), 2, "still sending when its cap rises");
+
+    relist(&path, &list, r#"[{"host": "example.com", "send_cap": 10}]"#);
+    assert_eq!(desearch_bot::dispatch::join_round(&buckets, &list, 1_000_000, &progress, &stop).unwrap(), 1);
+    assert_eq!(ready(store), ["e", "d", "c", "b", "a"], "every page never sent is queued, the ones the old cap left out too");
+    assert_eq!(store.ready_count("example.com").unwrap(), 5);
+    assert_eq!(store.joined("example.com").unwrap(), Some(Some(10)));
+    assert_eq!(desearch_bot::dispatch::join_round(&buckets, &list, 1_000_000, &progress, &stop).unwrap(), 0);
 }

@@ -1211,7 +1211,7 @@ pub fn join_listed(buckets: &Buckets, allowed: &Allowed, per_second: u64, progre
 
 /// One pass over the list, for domains not yet handled under their current cap; returns how many it handled.
 ///
-/// Domains already sending only get counted, so their caps apply at once. The rest are walked for their stored pages beside them, by size band smallest first and highest weight first within a band, so many domains start sending soon.
+/// A domain already sending is counted when its cap falls, so the cap applies at once, and walked again when its cap rises or its floor changes. The rest are walked for their stored pages beside them, by size band smallest first and highest weight first within a band, so many domains start sending soon.
 pub fn join_round(buckets: &Buckets, allowed: &Allowed, per_second: u64, progress: &Progress, stop: &AtomicBool) -> Result<usize> {
     let mut todo = Vec::new();
     for (domain, terms) in allowed.entries() {
@@ -1219,12 +1219,13 @@ pub fn join_round(buckets: &Buckets, allowed: &Allowed, per_second: u64, progres
             continue;
         };
         let floor_kept = store.joined_since(&domain)? == terms.since;
-        if floor_kept && store.joined(&domain)? == Some(terms.send_cap) {
+        let joined = store.joined(&domain)?;
+        if floor_kept && joined == Some(terms.send_cap) {
             continue;
         }
         let idle = store.ready_count(&domain)? == 0;
-        // A new date floor applies to the pages a domain already has waiting, so its lane is built again.
-        let rewalk = !idle && !floor_kept;
+        // A new date floor, a higher cap or a first walk all leave stored pages the waiting lane lacks, so it is built again; a lower cap is only counted.
+        let rewalk = !idle && (!floor_kept || cap_rose(joined, terms.send_cap));
         let urls = store.domain(&domain)?.and_then(|record| records::int(record.get("urls"))).unwrap_or(0);
         todo.push((idle, std::cmp::Reverse(terms.weight), urls, domain, terms, rewalk));
     }
@@ -1279,6 +1280,15 @@ pub fn join_round(buckets: &Buckets, allowed: &Allowed, per_second: u64, progres
         let counted = walk(sending)?;
         Ok(counted + joining.join().expect("the list walker panicked")?)
     })
+}
+
+/// Whether a domain's cap is above the one its stored pages were last queued under, or it was never walked.
+fn cap_rose(joined: Option<Option<u64>>, cap: Option<u64>) -> bool {
+    match joined {
+        None => true,
+        Some(None) => false,
+        Some(Some(before)) => cap.is_none_or(|now| now > before),
+    }
 }
 
 /// Domains whose refresh stock ran out, in the order the dispatcher found them, each once.
