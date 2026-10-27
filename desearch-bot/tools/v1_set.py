@@ -23,8 +23,8 @@ WHOLE_TYPES = {"academic", "public", "docs"}
 # A site fits whole when its stored pages fit under three times its judged cap, the crawl's share.
 CRAWL_PER_INDEX = 3
 FIELDS = ("host", "rule", "since", "paths", "source", "type", "why")
-DASHED = re.compile(r"(?<![0-9])([0-9]{4})-([0-9]{2})-([0-9]{2})(?![0-9])")
-COMPACT = re.compile(r"(?<![0-9])([0-9]{4})([0-9]{2})([0-9]{2})(?![0-9])")
+# At each run of digits, left to right: YYYY-MM-DD, then YYYYMMDD, each standing apart from other digits.
+DIGITS_DATE = re.compile(r"(?<![0-9])(?:([0-9]{4})-([0-9]{2})-([0-9]{2})(?![0-9])|([0-9]{4})([0-9]{2})([0-9]{2})(?![0-9]))?")
 # Forecast sites are one template per place, so they are big; a small weather blog or a backed outlet is not one.
 WEATHER = re.compile(r"weather|forecast")
 WEATHER_TYPES = {"news", "reference"}
@@ -179,17 +179,18 @@ def path_date(path: str) -> date | None:
             found = calendar_date(part, month, day) or calendar_date(part, month, "1")
             if found:
                 return found
-        for pattern in (DASHED, COMPACT):
-            for match in pattern.finditer(part):
-                if found := calendar_date(*match.groups()):
-                    return found
+        for at in range(len(part)):
+            match = DIGITS_DATE.match(part, at)
+            groups = match.groups() if match else (None,) * 6
+            dashed, compact = groups[:3], groups[3:]
+            if (dashed[0] and (found := calendar_date(*dashed))) or (compact[0] and (found := calendar_date(*compact))):
+                return found
     return None
 
 
 def page_date(url: str, published: str | None) -> date | None:
-    if published and re.match(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", published):
-        return date.fromisoformat(published[:10])
-    return path_date(urlsplit(url).path)
+    found = re.match(r"([0-9]{4})-([0-9]{2})-([0-9]{2})", (published or "").strip())
+    return (found and calendar_date(*found.groups())) or path_date(urlsplit(url).path)
 
 
 def entry_for(sites: dict[str, dict], host: str) -> dict | None:
