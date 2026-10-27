@@ -31,7 +31,7 @@ pub const RECIPE_V1: &str = "page-v1";
 pub const RECIPE_V2: &str = "page-v2";
 pub const RECIPES: [&str; 2] = [RECIPE_V1, RECIPE_V2];
 /// The recipes planned; pages of any other keep the vectors they have.
-pub const PLANNED_RECIPES: [&str; 2] = [RECIPE_V1, RECIPE_V2];
+pub const PLANNED_RECIPES: [&str; 1] = [RECIPE_V2];
 pub const PAGE: &str = "page";
 pub const PASSAGE: &str = "passage";
 /// Enough for the model's 2,048 tokens; the model server cuts the rest.

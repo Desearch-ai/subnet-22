@@ -11,9 +11,9 @@ record does not have are null. Of two rows for one page, the later fetch stands.
 
 ## Embed texts
 
-The planner embeds each published page as one page text, its title, description and the start of its text,
-and a long page also as up to 32 passages split at its headings, never inside a table row, a list item or a
-code block.
+The planner embeds each published page of v2 extraction (recipe `page-v2`) as one page text, its title,
+description and the start of its text, and a long page also as up to 32 passages split at its headings,
+never inside a table row, a list item or a code block. A v1 page keeps the vectors it has.
 
 ## Vectors
 

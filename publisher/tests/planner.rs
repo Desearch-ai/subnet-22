@@ -15,8 +15,7 @@ use desearch::stub;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use publisher::changes::{self, Body, Change, Kind};
 use publisher::planner::{
-    page_text, page_text_v2, passages, passages_v2, texts, Listed, Passage, Planner, Room, Settings, EMBED_DROPPED, EMBED_INPUTS, PAGE, PASSAGE, RECIPE_V1,
-    RECIPE_V2,
+    page_text, page_text_v2, passages, passages_v2, texts, Listed, Passage, Planner, Room, Settings, EMBED_DROPPED, EMBED_INPUTS, PAGE, PASSAGE, RECIPE_V2,
 };
 use publisher::records::{page_key, record_version, Record};
 use redis::aio::ConnectionManager;
@@ -434,7 +433,7 @@ async fn published_pages_become_inputs_once_per_version_within_the_budget_and_th
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn each_page_is_planned_with_its_extraction_s_recipe_and_a_later_fetch_of_the_other_is_planned_again() {
+async fn only_v2_pages_are_planned_and_a_v2_fetch_of_a_v1_page_is_planned() {
     let Some((_turn, redis)) = redis_db().await else {
         eprintln!("skipped: no Redis on {REDIS}");
         return;
@@ -447,15 +446,15 @@ async fn each_page_is_planned_with_its_extraction_s_recipe_and_a_later_fetch_of_
     log(&pages, 1, vec![record(&url(1), &article(2), "article", "en"), v2(record(&url(2), &format!("# {}", article(2)), "article", "en")), unknown]).await;
     let mut planner = Planner::new(settings(dir.join("state"), 3600.0, 0), pages.clone(), temp.clone(), redis.clone(), Room::Fixed(0)).await.unwrap();
     planner.pass().await.unwrap();
-    assert_eq!((planner.counts.planned, planner.counts.other_recipe), (2, 1), "v1 and v2 pages are planned; an unknown extraction is not");
+    assert_eq!((planner.counts.planned, planner.counts.other_recipe), (1, 2), "the v2 page is planned; v1 and an unknown extraction are not");
     planner.flush().await.unwrap();
     let entry: Value = serde_json::from_str(&planner.state.pending().unwrap()[0].1).unwrap();
     let file = temp.get(entry["input_key"].as_str().unwrap()).await.unwrap();
-    assert_eq!(input_recipes(file), HashSet::from([RECIPE_V1.to_string(), RECIPE_V2.to_string()]));
+    assert_eq!(input_recipes(file), HashSet::from([RECIPE_V2.to_string()]));
 
     log(&pages, 2, vec![v2(record(&url(1), &format!("# {}", article(2)), "article", "en")), record(&url(2), &article(3), "article", "en")]).await;
     planner.pass().await.unwrap();
-    assert_eq!((planner.counts.planned, planner.counts.unchanged), (4, 0), "a v2 fetch of a v1 page and a v1 fetch of a v2 page are planned again");
+    assert_eq!((planner.counts.planned, planner.counts.other_recipe), (2, 3), "a v2 fetch of a v1 page is planned; a v1 fetch of a v2 page is not");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -469,7 +468,7 @@ async fn a_change_file_numbered_late_holds_up_nothing_and_never_replaces_a_newer
     let stub = stub::start(dir.join("r2"), "127.0.0.1:0").await.unwrap();
     let (pages, temp) = (bucket(stub.addr, "desearch-pages"), bucket(stub.addr, "subnet-22"));
     let page = |n: usize, text: String, fetched_at: &str| {
-        let mut record = record(&format!("https://news.example/story/{n}"), &text, "article", "en");
+        let mut record = v2(record(&format!("https://news.example/story/{n}"), &text, "article", "en"));
         record.fetched_at = fetched_at.into();
         record
     };
@@ -512,7 +511,7 @@ async fn a_numbered_change_file_that_cannot_be_read_is_tried_until_it_can_never_
     let dir = scratch("unreadable");
     let stub = stub::start(dir.join("r2"), "127.0.0.1:0").await.unwrap();
     let (pages, temp) = (bucket(stub.addr, "desearch-pages"), bucket(stub.addr, "subnet-22"));
-    let page = |n: usize| record(&format!("https://news.example/story/{n}"), &article(n + 1), "article", "en");
+    let page = |n: usize| v2(record(&format!("https://news.example/story/{n}"), &article(n + 1), "article", "en"));
     log(&pages, 1, vec![page(1)]).await;
     let key = "changes/dt=2026-10-14/2.parquet";
     pages.put(key, Bytes::from_static(b"not a parquet file"), PARQUET, None).await.unwrap();
