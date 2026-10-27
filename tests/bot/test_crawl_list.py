@@ -283,7 +283,7 @@ def test_v1_sites_send_first_and_the_rest_fill_at_lower_weights():
         row(host="corp.com", site_type="company"),
     ]
     v1 = {
-        "news.com": V1("news", "news"),
+        "news.com": V1("news", "news", since="2020-01-01"),
         "uni.com": V1("whole", "academic", 200_000),
     }
     listed, _ = v1_list(rows, v1)
@@ -293,6 +293,7 @@ def test_v1_sites_send_first_and_the_rest_fill_at_lower_weights():
         "weight": 4,
         "hourly": 5_000,
         "backlog": 1_500_000,
+        "since": "2020-01-01",
     }
     assert (listed["uni.com"]["weight"], listed["uni.com"]["send_cap"]) == (3, 600_000)
     assert [listed[h]["weight"] for h in ("ref.com", "mag.com", "corp.com")] == [2, 2, 1]
@@ -315,6 +316,7 @@ def test_v1_caps_hold_big_news_and_widen_cited_sites():
     listed, _ = v1_list(rows, v1)
     assert listed["huge.com"]["send_cap"] == 1_000_000
     assert "send_cap" not in listed["paper.com"] and listed["paper.com"]["hourly"] == 20_000
+    assert "since" not in listed["paper.com"], "a benchmark news site taken whole has no date floor"
     assert (listed["corp.com"]["weight"], listed["corp.com"]["send_cap"]) == (3, 60_000)
     assert listed["db.com"]["send_cap"] == crawl_list.V1_WHOLE_CAP * 3
 
@@ -350,7 +352,7 @@ def test_the_v1_set_is_read_from_its_file(tmp_path):
         )
     )
     assert crawl_list.read_v1_set(str(path)) == {
-        "a.com": crawl_list.V1("news", "news"),
+        "a.com": crawl_list.V1("news", "news", since="2020-01-01"),
         "b.com": crawl_list.V1("whole", "docs", 5),
         "c.com": crawl_list.V1("out"),
     }

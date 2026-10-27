@@ -117,6 +117,7 @@ class Decision:
     send_cap: int | None = None
     backlog: int | None = None
     hourly: int = 0
+    since: str | None = None
 
 
 @dataclass
@@ -139,6 +140,7 @@ class V1:
     rule: str
     site_type: str = ""
     cap: int | None = None
+    since: str | None = None
 
 
 def out(reason: str) -> Decision:
@@ -273,6 +275,7 @@ def apply_v1(row: Row, base: Decision, v1: V1 | None, forced_out: bool) -> Decis
             send_cap=guard,
             backlog=cap * CRAWL_PER_INDEX,
             hourly=hourly,
+            since=v1.since if v1.rule == "news" else None,
         )
     cap = v1.cap or V1_WHOLE_CAP
     return Decision(
@@ -367,7 +370,9 @@ def read_v1_set(path: str | None) -> dict[str, V1] | None:
     with open_text(path) as source:
         sites = json.load(source)["sites"]
     return {
-        site["host"]: V1(site["rule"], site.get("type", ""), site.get("cap"))
+        site["host"]: V1(
+            site["rule"], site.get("type", ""), site.get("cap"), site.get("since")
+        )
         for site in sites
     }
 
@@ -422,6 +427,8 @@ def build(
                 entry["send_cap"] = decision.send_cap
             if decision.backlog is not None:
                 entry["backlog"] = decision.backlog
+            if decision.since is not None:
+                entry["since"] = decision.since
             ranked.append((row.rank is None, row.rank or 0, row.host, entry))
         # The decisions file keeps the decision before the v1 set, which the set itself is built from.
         if decisions is not None:
