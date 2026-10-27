@@ -4,6 +4,7 @@ import argparse
 import csv
 import gzip
 import json
+import re
 import sys
 from collections import Counter
 from datetime import datetime, timezone
@@ -32,10 +33,8 @@ EVERGREEN_TYPES = {
     "reference database": "reference",
     "dictionary": "reference",
 }
-TAKE_CAPS = {
-    "relevant sections, up to 20,000 pages": 20_000,
-    "template database: judge first, up to 1,000,000 pages": 1_000_000,
-}
+# "up to 20,000 pages", "a 10,000-page sample": a take that names a page count caps the site at it.
+TAKE_CAP = re.compile(r"(\d[\d,]*)[ -]pages?\b")
 CITED_HOSTS = "cited hosts:"
 BULK_FIX = "use a bulk source"
 FANDOM = "Fandom wiki XML dumps"
@@ -120,8 +119,8 @@ def benchmark_entries(
                 )
                 continue
             entry = {"host": host, "rule": "whole", "type": site_type, "why": why}
-            if row["take"] in TAKE_CAPS:
-                entry["cap"] = TAKE_CAPS[row["take"]]
+            if found := TAKE_CAP.search(row["take"]):
+                entry["cap"] = int(found.group(1).replace(",", ""))
             entries.append(entry)
     return entries
 

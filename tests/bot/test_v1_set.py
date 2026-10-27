@@ -131,7 +131,7 @@ def test_benchmark_sites_go_whole_with_the_take_caps_and_their_hosts():
         ),
         bench(
             "db.example",
-            take="template database: judge first, up to 1,000,000 pages",
+            take="database: the cited pages plus a 10,000-page sample",
             site_type="reference",
         ),
         bench(
@@ -149,7 +149,7 @@ def test_benchmark_sites_go_whole_with_the_take_caps_and_their_hosts():
         "why": ["simpleqa", "browsecomp-plus"],
     }
     assert sites["corp.example"]["cap"] == 20_000
-    assert sites["db.example"]["cap"] == 1_000_000
+    assert sites["db.example"]["cap"] == 10_000
     assert {"a.portal.example", "b.portal.example"} <= set(
         sites
     ) and "portal.example" not in sites
