@@ -29,7 +29,7 @@ use crate::backfill::ShardReader;
 use crate::current::{decode_changes, ChangeRow, PageRow, SHARDS};
 use crate::records::{Record, EXTRACTION_V2};
 use crate::service::now_us;
-use crate::set::{iso_date, url_day, Refusal, Set};
+use crate::set::{page_date, Refusal, Set};
 
 /// How a page becomes texts; any change to what a recipe's texts hold is a new recipe, so every page is embedded again.
 pub const RECIPE_V1: &str = "page-v1";
@@ -1500,8 +1500,7 @@ impl Planner {
     fn is_fresh(&self, record: &Record) -> bool {
         let Some(window) = self.settings.fresh else { return false };
         let now = now_us() as f64 / 1e6;
-        let day = iso_date(&record.published).or_else(|| url_day(&record.url));
-        day.is_some_and(|day| day >= utc_day(now - window.as_secs_f64()) && day <= utc_day(now + 86_400.0))
+        page_date(&record.published, &record.url).is_some_and(|date| date >= utc_day(now - window.as_secs_f64()) && date <= utc_day(now + 86_400.0))
     }
 
     fn buffer(&self, lane: Lane) -> &Buffer {
