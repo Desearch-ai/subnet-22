@@ -24,10 +24,13 @@ pages or 3M characters for the task API, handing them over as the API has room.
   after its `since`, by `published` or a date in the URL path; a whole site's pages, or those under its
   `paths`; a bulk source's crawled pages. Pages are also English, at least `PLANNER_MIN_CHARS` long and off
   the exclusion list.
-- **Fresh lane:** pages never planned before and dated within `PLANNER_FRESH_S` (48 h) get their own inputs,
-  handed over first, outside the hourly budget (`PLANNER_PAGES_PER_HOUR`) and within their own
-  (`PLANNER_FRESH_PER_HOUR`). Every other page shares the budget. A page the log removes is forgotten, so it is
-  embedded again if it comes back.
+- **Fresh lane:** pages seen for the first time and dated within `PLANNER_FRESH_S` (48 h) get their own inputs,
+  written within `PLANNER_FRESH_FLUSH_S` (60 s), handed over first, outside the hourly budget
+  (`PLANNER_PAGES_PER_HOUR`) and within their own (`PLANNER_FRESH_PER_HOUR`). Every other page shares the budget. A
+  page the log removes is forgotten, so it is embedded again if it comes back.
+- **Waiting pages:** a page refused for budget or room, or given back after it was planned, waits with the change file
+  that holds it and is planned from that file once there is budget and room. An input is pushed to the task API once,
+  however often a restart tries it.
 - **Backfill** (`PLANNER_BACKFILL=1`): with what budget and room the log leaves, it reads `current/` shard
   by shard (`PLANNER_BACKFILL_SHARDS`) and plans each page's standing version that the set takes and was
   never embedded at that text. It keeps its place across restarts, and sweeps again `PLANNER_BACKFILL_EVERY_S`
