@@ -53,6 +53,21 @@ pub fn new_domain(
     record.as_object().cloned().unwrap_or_default()
 }
 
+/// A registry row set back to `new` while the store holds another state: someone asked for the domain to be checked afresh.
+pub fn wants_recheck(registry_state: &str, record: &Json) -> bool {
+    let stored = record.get("state").and_then(Value::as_str);
+    registry_state == State::New.as_str() && stored.is_some_and(|state| state != State::New.as_str() && state != State::Excluded.as_str())
+}
+
+/// A domain to check afresh: new and due now, through the discovery lane, with its homepage read again.
+pub fn reset_for_recheck(record: &mut Json, now_micros: i64) {
+    record.insert("state".into(), State::New.as_str().into());
+    record.insert("reason".into(), Value::Null);
+    record.insert("failures".into(), 0.into());
+    record.insert("due".into(), seconds(Some(now_micros)));
+    record.remove("lang");
+}
+
 /// What a visit needs to know about a domain before it starts.
 pub fn known(host: &str, domain: &Json, sitemaps: &[(String, Json)]) -> Option<Known> {
     Some(Known {
@@ -203,4 +218,24 @@ pub fn unread_sitemap(url: &str, depth: i64, parent: Option<i64>) -> Json {
 /// URLs a domain lists across the sitemaps that last answered.
 pub fn url_count<'a>(sitemaps: impl Iterator<Item = &'a Json>) -> i64 {
     sitemaps.filter(|s| s.get("status").and_then(Value::as_str) == Some("ok")).map(|s| int(s.get("urls")).unwrap_or(0)).sum()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_row_set_back_to_new_checks_the_domain_afresh_with_its_homepage_read_again() {
+        let mut record = new_domain(Some(5), Some("big_generic"), &[], State::Ineligible, Some("not_english"), None);
+        record.insert("lang".into(), "fr".into());
+        record.insert("failures".into(), 2.into());
+        assert!(wants_recheck("new", &record));
+        assert!(!wants_recheck("ineligible", &record), "the bot's own state coming back is no request");
+        reset_for_recheck(&mut record, 1_700_000_000 * SECOND);
+        assert_eq!((record["state"].as_str(), record["reason"].is_null(), record["failures"].as_i64(), record["due"].as_i64()), (Some("new"), true, Some(0), Some(1_700_000_000)));
+        assert!(!record.contains_key("lang"));
+        assert!(!wants_recheck("new", &record), "already new");
+        let excluded = new_domain(None, None, &[], State::Excluded, Some("hand"), None);
+        assert!(!wants_recheck("new", &excluded), "an excluded domain stays out");
+    }
 }

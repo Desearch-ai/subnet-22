@@ -8,6 +8,8 @@ use crate::text;
 
 const MIN_CHARS: usize = 200;
 const SAMPLE: usize = 2000;
+/// The language model reads this much: headline-heavy homepages need more than the bot-wall check does.
+const LANGUAGE_SAMPLE: usize = 8000;
 
 static HTML_LANG: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?i)<html[^>]*\blang=["']?([a-zA-Z-]{2,8})"#).unwrap());
 static SCRIPT_OR_STYLE: LazyLock<Regex> = LazyLock::new(|| {
@@ -50,9 +52,10 @@ pub fn read(body: &[u8], detect_language: &dyn Fn(&str) -> Option<String>) -> Ho
     if chars < MIN_CHARS {
         return judged(None, Some("no_text"));
     }
-    let language = detect_language(sample);
-    let problem = if language.as_deref() == Some("en") { None } else { Some("not_english") };
-    judged(language, problem)
+    let language = detect_language(text::head(&page, LANGUAGE_SAMPLE));
+    // A page that says it is English is taken at its word.
+    let english = declared.as_deref() == Some("en") || language.as_deref() == Some("en");
+    judged(language, if english { None } else { Some("not_english") })
 }
 
 /// The body as text in its declared charset, falling back to UTF-8.
@@ -88,5 +91,18 @@ mod tests {
         assert_eq!((page.declared.as_deref(), page.problem, page.chars), (Some("en"), None, 299));
         assert_eq!(read(b"<p>Please enable JavaScript</p>", &english).problem, Some("bot_wall"));
         assert_eq!(read(b"<p>short</p>", &english).problem, Some("no_text"));
+    }
+
+    #[test]
+    fn a_declared_english_page_passes_and_the_model_reads_a_longer_sample() {
+        let french = |_: &str| Some("fr".to_string());
+        let headlines = format!("<p>{}</p>", "Headline ".repeat(500));
+        let declared = format!("<html lang=\"en-US\">{headlines}</html>");
+        assert_eq!(read(declared.as_bytes(), &french).problem, None, "lang=en counts whatever the model says");
+        assert_eq!(read(headlines.as_bytes(), &french).problem, Some("not_english"));
+        let long_only = |sample: &str| Some(if sample.len() > SAMPLE { "en" } else { "fr" }.to_string());
+        assert_eq!(read(headlines.as_bytes(), &long_only).problem, None, "the model sees more than the first 2,000 characters");
+        let walled = format!("<p>{}Access denied</p>", "word ".repeat(1000));
+        assert_eq!(read(walled.as_bytes(), &english).problem, None, "a wall phrase past the first 2,000 characters is page text");
     }
 }

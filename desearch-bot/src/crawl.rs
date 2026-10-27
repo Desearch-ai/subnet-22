@@ -479,6 +479,8 @@ impl Loop {
                     record.insert("state".into(), State::Excluded.as_str().into());
                     record.insert("reason".into(), change.state_reason.clone().into());
                     record.insert("due".into(), Value::Null);
+                } else if records::wants_recheck(&change.state, &record) {
+                    records::reset_for_recheck(&mut record, now_micros());
                 }
                 record
             }
