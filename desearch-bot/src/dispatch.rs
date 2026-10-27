@@ -42,6 +42,8 @@ const HOUR: u32 = 3600;
 const RANKS_SECONDS: u32 = 600;
 /// Sites a pass offers its budget to in each step at most, so a pass reads little whatever the number of sites.
 pub const DUE_WINDOW: usize = 5000;
+/// Steps of due sites a pass may take while it has budget; refreshes are pulled forward only once every due site had a step.
+const MAX_WINDOWS: usize = 10;
 /// Above any site's slots times its weight, so a site a whole interval overdue goes ahead of every site less overdue.
 const TOP_VALUE: f64 = 7.0 * 255.0;
 /// A page sent this recently goes again early only as a change, a retry or a dropped send.
@@ -765,11 +767,15 @@ impl Dispatcher {
         Ok(())
     }
 
-    /// Pages for one pass: what the ready lists of domains without a queue hold, then the next window of due sites, and once every due site had its window, refreshes pulled forward.
+    /// Pages for one pass: what the ready lists of domains without a queue hold, then windows of due sites while budget is left, and once every due site had its window, refreshes pulled forward.
     async fn pick(&mut self, budget: u64, now: u32) -> Result<Vec<Pick>> {
         let mut picks = self.pick_ready(budget, now).await?;
-        let spare = budget.saturating_sub(picks.len() as u64);
-        if spare > 0 {
+        loop {
+            let spare = budget.saturating_sub(picks.len() as u64);
+            let windows_left = self.ranked.as_ref().is_none_or(|ranked| ranked.at != now || !ranked.sites.is_empty());
+            if spare == 0 || !windows_left {
+                break;
+            }
             picks.extend(self.pick_due(spare, now, false).await?);
         }
         let spare = budget.saturating_sub(picks.len() as u64);
@@ -942,7 +948,7 @@ impl Dispatcher {
             }
         }
         self.progress.due_sites.store(all, Ordering::Relaxed);
-        let kept = self.due_window * ALLOT_TRIES;
+        let kept = self.due_window * MAX_WINDOWS;
         let beyond = due.len().saturating_sub(kept);
         if beyond > 0 {
             due.select_nth_unstable_by(kept, |a, b| b.0.total_cmp(&a.0));
@@ -1351,27 +1357,40 @@ const JOIN_IDLE: Duration = Duration::from_secs(5);
 const ROOM_WORTH_A_WALK: u64 = 100;
 /// Domains whose queues are built at once; the pace holds them all to `per_second` together.
 const BUILD_THREADS: usize = 8;
+/// How often every built domain's set is counted again from its queue, whether the list changed or not.
+const RECOUNT_EVERY: Duration = Duration::from_secs(86_400);
 
 /// Walk every listed domain's stored pages once, and again when its cap changes, so pages it listed before it joined the list go out too.
 pub fn join_listed(buckets: &Buckets, allowed: &Allowed, recrawl: &Recrawl, per_second: u64, progress: &Progress, stop: &AtomicBool) -> Result<()> {
     let mut walked = None;
+    let mut recounted = Instant::now();
     while !stop.load(Ordering::Relaxed) {
         clear_capped(buckets, progress)?;
         let version = allowed.version();
-        if walked == Some(version) {
+        let recount = recounted.elapsed() >= RECOUNT_EVERY;
+        if walked == Some(version) && !recount {
             std::thread::sleep(JOIN_IDLE);
             continue;
         }
-        join_round(buckets, allowed, recrawl, per_second, progress, stop)?;
+        join_round(buckets, allowed, recrawl, per_second, progress, stop, recount)?;
         walked = Some(version);
+        if recount {
+            recounted = Instant::now();
+        }
     }
     Ok(())
 }
 
-/// One pass over the list: build the due queue of each domain that has none, shrink sets over their cap, and admit more pages where the cap changed or gone pages freed real room; returns how many domains it handled.
+/// Whether a set has room worth reading its domain's stored pages for: a handful of slots freed by gone pages waits, since new pages from sitemaps take them meanwhile.
+fn roomy(cap: Option<u64>, size: u64, urls: i64) -> bool {
+    let room = cap.map_or(0, |cap| cap.saturating_sub(size));
+    room >= cap.map_or(0, |cap| cap / 100).max(ROOM_WORTH_A_WALK) && urls.max(0) as u64 > size
+}
+
+/// One pass over the list: build the due queue of each domain that has none, shrink sets over their cap, and admit more pages where the cap changed or gone pages freed real room; with `recount`, every built set is counted again from its queue first. Returns how many domains it handled.
 ///
 /// Building runs beside the rest, on several threads, each by size band smallest first and highest weight first within a band, so many domains move to their queue soon.
-pub fn join_round(buckets: &Buckets, allowed: &Allowed, recrawl: &Recrawl, per_second: u64, progress: &Progress, stop: &AtomicBool) -> Result<usize> {
+pub fn join_round(buckets: &Buckets, allowed: &Allowed, recrawl: &Recrawl, per_second: u64, progress: &Progress, stop: &AtomicBool, recount: bool) -> Result<usize> {
     let mut todo = Vec::new();
     for (domain, terms) in allowed.entries() {
         let Some(store) = buckets.store_for(&domain) else {
@@ -1381,11 +1400,8 @@ pub fn join_round(buckets: &Buckets, allowed: &Allowed, recrawl: &Recrawl, per_s
         let urls = store.domain(&domain)?.and_then(|record| records::int(record.get("urls"))).unwrap_or(0);
         if let Some(size) = size {
             let cap = set_cap(terms);
-            // A handful of slots freed by gone pages waits for the next round; new pages from sitemaps take them meanwhile.
-            let room = cap.map_or(0, |cap| cap.saturating_sub(size));
-            let roomy = room >= cap.map_or(0, |cap| cap / 100).max(ROOM_WORTH_A_WALK) && urls.max(0) as u64 > size;
             let over = cap.is_some_and(|cap| size > cap);
-            if store.joined(&domain)? == Some(cap) && !roomy && !over {
+            if !recount && store.joined(&domain)? == Some(cap) && !roomy(cap, size, urls) && !over {
                 continue;
             }
         }
@@ -1407,15 +1423,22 @@ pub fn join_round(buckets: &Buckets, allowed: &Allowed, recrawl: &Recrawl, per_s
         }
         !stop.load(Ordering::Relaxed)
     };
-    let handle = |unbuilt: bool, domain: &str, terms: Terms| -> Result<Built> {
+    let handle = |unbuilt: bool, urls: i64, domain: &str, terms: Terms| -> Result<Built> {
         let store = buckets.store(domain);
         let mut paced = |scanned: u64| pace(scanned);
         if unbuilt {
             return store.build_queue(domain, terms, recrawl, now(), &mut paced);
         }
-        match set_cap(terms).zip(store.set_size(domain)?) {
-            Some((cap, size)) if size > cap => store.shrink_set(domain, terms, &mut paced),
-            _ => store.admit_more(domain, terms, recrawl, now(), &mut paced),
+        let cap = set_cap(terms);
+        let Some(size) = store.recount_set(domain, &mut paced)? else {
+            return Ok(Built::default());
+        };
+        if cap.is_some_and(|cap| size > cap) {
+            store.shrink_set(domain, terms, &mut paced)
+        } else if store.joined(domain)? != Some(cap) || roomy(cap, size, urls) {
+            store.admit_more(domain, terms, recrawl, now(), &mut paced)
+        } else {
+            Ok(Built::default())
         }
     };
     let walk = |todo: &[(bool, std::cmp::Reverse<u8>, i64, String, Terms)], threads: usize| -> Result<usize> {
@@ -1425,11 +1448,11 @@ pub fn join_round(buckets: &Buckets, allowed: &Allowed, recrawl: &Recrawl, per_s
             let workers: Vec<_> = (0..threads.min(todo.len()))
                 .map(|_| {
                     scope.spawn(|| -> Result<()> {
-                        while let Some((unbuilt, _, _, domain, terms)) = todo.get(next.fetch_add(1, Ordering::Relaxed)) {
+                        while let Some((unbuilt, _, urls, domain, terms)) = todo.get(next.fetch_add(1, Ordering::Relaxed)) {
                             if stop.load(Ordering::Relaxed) {
                                 break;
                             }
-                            let built = handle(*unbuilt, domain, *terms)?;
+                            let built = handle(*unbuilt, *urls, domain, *terms)?;
                             if built.stopped {
                                 break;
                             }

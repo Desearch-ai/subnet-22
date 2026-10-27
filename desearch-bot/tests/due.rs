@@ -467,3 +467,102 @@ fn undoing_a_queue_puts_refreshes_and_retries_back_on_the_waiting_list_and_chang
     assert_eq!(store.sent("example.com", b"example.com/b").unwrap().map(|s| s.failures), Some(1), "its failure counted once");
     assert_eq!(store.requeue_due(1000 + 7 * DAY, 100, &rules()).unwrap().moved, 1, "a's refresh");
 }
+
+#[test]
+fn a_stale_outcome_in_a_batch_leaves_the_other_outcomes_to_their_own_pages() {
+    let dir = Dir::new("stale-in-batch");
+    let store = listed_store(&dir, Terms { site: SiteType::Reference, ..Terms::default() });
+    store.record_listing("example.com", 7, vec![page("a", 10), page("b", 10), page("x", 10)], 100).unwrap();
+    send(&store, &["a", "b", "x"], 1000);
+    // x failed twice in a row by the ready lists: gone, its schedule kept.
+    let failed = |path: &str, at: u32| PageSchedule { domain: "example.com".into(), rest: format!("example.com/{path}").into_bytes(), next: Scheduled { why: Why::Failed, due: at + 100, at } };
+    store.note_outcomes(&[failed("x", 1000)], &[]).unwrap();
+    store.requeue_due(1100, 100, &rules()).unwrap();
+    let mut quotas = [0; LANES];
+    quotas[1] = 10;
+    let retry: Vec<Pick> = store.take_ready("example.com", quotas).unwrap().into_iter().filter(|p| p.url.ends_with("/x")).collect();
+    store.mark_sent(&retry, 1200, &rules()).unwrap();
+    store.note_outcomes(&[failed("x", 1200)], &[]).unwrap();
+    store.requeue_due(1300, 100, &rules()).unwrap();
+    store.build_queue("example.com", store.terms("example.com"), &rules(), 2000, &mut |_| true).unwrap();
+    let picks = store.take_due("example.com", 10, 2000 + 7 * DAY, None, &rules()).unwrap().picks;
+    assert_eq!(picks.len(), 2, "a and b; x is gone");
+    store.mark_sent(&picks, 2000 + 7 * DAY, &rules()).unwrap();
+    let at = 2000 + 7 * DAY;
+    store.note_outcomes(&[failed("a", 500), failed("x", 1200), failed("b", at)], &[]).unwrap();
+    assert_eq!(store.set_size("example.com").unwrap(), Some(2));
+    assert_eq!(
+        queue(&store, at + 7 * DAY),
+        [("b".to_string(), at + DAY, Reason::Requeued), ("a".to_string(), at + 7 * DAY, Reason::Refresh)],
+        "a's outcome is of an older send, x stays out, and b's failure sets its retry"
+    );
+}
+
+#[test]
+fn a_page_sent_while_its_set_is_cut_still_leaves_by_the_key_its_send_moved_it_to() {
+    let dir = Dir::new("shrink-race");
+    let store = listed_store(&dir, Terms { site: SiteType::Reference, ..Terms::default() });
+    for (i, path) in ["a", "b", "c", "d", "e", "f"].iter().enumerate() {
+        store.record_listing("example.com", 7, vec![page(path, 10)], 100 + 10 * i as u32).unwrap();
+    }
+    store.build_queue("example.com", store.terms("example.com"), &rules(), 1000, &mut |_| true).unwrap();
+    let cut = Terms { send_cap: Some(3), site: SiteType::Reference, ..Terms::default() };
+    let mut once = true;
+    store
+        .shrink_set("example.com", cut, &mut |_| {
+            if std::mem::take(&mut once) {
+                let picks = store.take_due("example.com", 1, 1000, None, &rules()).unwrap().picks;
+                assert_eq!(picks[0].url, "https://example.com/a");
+                store.mark_sent(&picks, 1001, &rules()).unwrap();
+            }
+            true
+        })
+        .unwrap();
+    assert_eq!(store.set_size("example.com").unwrap(), Some(3));
+    let mut left: Vec<String> = queue(&store, 400 * DAY).into_iter().map(|(path, _, _)| path).collect();
+    left.sort();
+    assert_eq!(left, ["d", "e", "f"], "a went out during the cut and left with it");
+    assert!(store.next_send("example.com", b"example.com/a").unwrap().is_none());
+    assert_eq!(store.set_size("example.com").unwrap(), Some(3), "no key of a was left for a take to count out again");
+}
+
+#[test]
+fn a_cut_counts_a_page_with_two_queue_keys_once() {
+    let dir = Dir::new("shrink-duplicates");
+    let store = listed_store(&dir, Terms { site: SiteType::Reference, ..Terms::default() });
+    store.record_listing("example.com", 7, vec![page("a", 0)], 100).unwrap();
+    store.record_listing("example.com", 7, vec![page("b", 10)], 200).unwrap();
+    store.record_listing("example.com", 7, vec![page("c", 10)], 300).unwrap();
+    let mut quotas = [0; LANES];
+    quotas[FRESH] = 10;
+    let in_flight: Vec<Pick> = store.take_ready("example.com", quotas).unwrap().into_iter().filter(|p| p.url.ends_with("/a")).collect();
+    store.build_queue("example.com", store.terms("example.com"), &rules(), 1000, &mut |_| true).unwrap();
+    // a lands after the build by its ready list, then its sitemap re-dates it: a second queue key beside the one the build gave it.
+    store.mark_sent(&in_flight, 1010, &rules()).unwrap();
+    store.record_listing("example.com", 7, vec![page("a", 5000)], 2000).unwrap();
+    let cut = Terms { send_cap: Some(2), site: SiteType::Reference, ..Terms::default() };
+    store.shrink_set("example.com", cut, &mut |_| true).unwrap();
+    assert_eq!(store.set_size("example.com").unwrap(), Some(2));
+    let mut left: Vec<String> = queue(&store, 400 * DAY).into_iter().map(|(path, _, _)| path).collect();
+    left.sort();
+    assert_eq!(left, ["b", "c"], "a, seen first, leaves with both its keys");
+}
+
+#[test]
+fn a_queue_found_empty_holds_no_pages_whatever_its_size_said() {
+    let dir = Dir::new("empty-queue");
+    let store = listed_store(&dir, Terms { site: SiteType::News, backlog: Some(100), ..Terms::default() });
+    store.record_listing("example.com", 7, vec![page("2026/a-story", 0)], 100).unwrap();
+    let mut quotas = [0; LANES];
+    quotas[FRESH] = 10;
+    let in_flight = store.take_ready("example.com", quotas).unwrap();
+    store.build_queue("example.com", store.terms("example.com"), &rules(), 1000, &mut |_| true).unwrap();
+    store.mark_sent(&in_flight, 1010, &rules()).unwrap();
+    store.record_listing("example.com", 7, vec![page("2026/a-story", 5000)], 2000).unwrap();
+    assert_eq!(store.set_size("example.com").unwrap(), Some(2), "one page counted twice");
+    let picks = store.take_due("example.com", 10, 2000, None, &rules()).unwrap().picks;
+    store.mark_sent(&picks, 2000, &rules()).unwrap();
+    store.note_outcomes(&[PageSchedule { domain: "example.com".into(), rest: b"example.com/2026/a-story".to_vec(), next: Scheduled { why: Why::Leave, due: 2000, at: 2000 } }], &[]).unwrap();
+    assert!(store.take_due("example.com", 10, 400 * DAY, None, &rules()).unwrap().picks.is_empty());
+    assert_eq!(store.set_size("example.com").unwrap(), Some(0));
+}

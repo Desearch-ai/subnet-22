@@ -93,8 +93,8 @@ refreshes are all due pages; there are no fixed shares between them.
   `--dropped-per-hour`. A page the index does not take leaves the set for good.
 
 Every 5 seconds the bot asks `GET /v1/room` how many tasks the API can take, and sends that many times
-1,000 URLs within `--urls-per-hour`. A pass offers its room to due sites 5,000 at a time, most
-valuable first: rank and the list's weight, raised by how overdue the queue front is for its kind, and
+1,000 URLs within `--urls-per-hour`. A pass offers its room to due sites 5,000 at a time, up to ten
+times while room is left, most valuable first: rank and the list's weight, raised by how overdue the queue front is for its kind, and
 a front a whole interval overdue goes ahead of any value. Each site offers what is due within what its
 hour allows, a site with nothing left of its hour waits, and a pass reads only the front of each
 queue. Once every due site had its turn, room left pulls refreshes forward: the pages due soonest of
@@ -122,13 +122,15 @@ stop sending, and its outcomes and sitemap changes wait for the queue and then g
 lists are dropped once the queue holds the domain. The walker admits more when a domain's cap rises,
 sent pages a cut left out coming back on their refresh schedule, or when gone pages freed real room,
 shrinks a set whose cap was cut, counts a set's size again from its queue whenever it walks the
-domain, and stops mid-domain when the bot stops. Until its queue is built, a domain sends from its
+domain and every day for every domain, and stops mid-domain when the bot stops. Until its queue is built, a domain sends from its
 ready lists: pages a sitemap listed first or with a newer lastmod, failed or dropped pages going
 again, and pages without a lastmod on their re-crawl interval, by `--new-share` and `--retry-share`.
 
 To go back to a release without due queues, stop the bot and put every queue's schedules back on the
-waiting and ready lists before starting the earlier release; its walker then walks every listed
-domain again and queues the pages it never sent:
+waiting and ready lists before starting the earlier release. The crawl loop stays stopped while that
+runs, tens of minutes for a billion schedules. The earlier release then sends what comes due from its
+waiting and ready lists at once, and its walker reads every listed domain's stored pages again to queue
+the pages never sent, which takes about a day:
 
 ```bash
 sudo systemctl stop desearch-bot

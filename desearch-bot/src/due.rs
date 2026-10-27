@@ -534,12 +534,14 @@ impl BucketStore {
             let sent = sent.unwrap_or(Sent { lastmod: record.lastmod, ..Sent::default() });
             // A schedule set before the page's latest send says nothing of it: the page went out by its ready list while its queue was built.
             let current = next.filter(|next| !next.outdated(record.pushed_at));
-            let schedule = match current {
+            let schedule = match (next, current) {
                 _ if sent.failures == LEFT => None,
-                Some(next) if matches!(next.why, Why::Gone | Why::Leave) => None,
-                Some(next) => Some(next),
-                None if sent.failures >= GONE_AFTER => None,
-                None => Some(standing(recrawl, site, domain, &rest, &record, &sent, now)),
+                // A key without a schedule is what is left of a page taken out of the set.
+                (None, _) => None,
+                (_, Some(next)) if matches!(next.why, Why::Gone | Why::Leave) => None,
+                (_, Some(next)) => Some(next),
+                (Some(_), None) if sent.failures >= GONE_AFTER => None,
+                (Some(_), None) => Some(standing(recrawl, site, domain, &rest, &record, &sent, now)),
             };
             let Some(schedule) = schedule else {
                 if current.is_some_and(|next| next.why == Why::Leave) {
@@ -587,6 +589,9 @@ impl BucketStore {
         if !taken.picks.is_empty() {
             taken.floor_until = None;
         }
+        if taken.picks.is_empty() && taken.head.is_none() && fixes.is_empty() {
+            self.empty_queue_holds_nothing(domain)?;
+        }
         if !fixes.is_empty() {
             let _guard = self.lock_ready();
             if !left.is_empty() {
@@ -596,6 +601,15 @@ impl BucketStore {
             self.db.write(fixes)?;
         }
         Ok(taken)
+    }
+
+    /// An empty queue holds no pages, whatever its stored size says.
+    fn empty_queue_holds_nothing(&self, domain: &str) -> Result<()> {
+        let _guard = self.lock_ready();
+        if self.set_size(domain)?.is_some_and(|size| size > 0) && self.due_head(domain)?.is_none() {
+            self.db.put(count_key_of(SET_SIZE, domain), 0u64.to_le_bytes())?;
+        }
+        Ok(())
     }
 
     /// Pages due by `now` at the front of the domain's queue, counted up to `most`.
@@ -637,6 +651,8 @@ impl BucketStore {
         let mut members = self.present(keys.iter().flatten())?.into_iter();
         let mut left: HashMap<&str, u64> = HashMap::new();
         for (((page, record), sent), key) in pages.iter().zip(records).zip(sents).zip(keys) {
+            // Each named key has its flag, read before any page is passed over.
+            let member = key.filter(|_| members.next().unwrap_or(false));
             let Some(record) = record else {
                 continue;
             };
@@ -645,7 +661,7 @@ impl BucketStore {
                 continue;
             }
             let (domain, rest) = (page.domain.as_str(), page.rest.as_slice());
-            let Some(key) = key.filter(|_| members.next().unwrap_or(false)) else {
+            let Some(key) = member else {
                 // A page outside the set stays out, and one the index does not take never joins; a take that meets an old key of it lets it go.
                 if page.next.why == Why::Leave {
                     batch.put(prefixed(SENT, domain.as_bytes(), rest), Sent { failures: LEFT, ..sent.unwrap_or(Sent { lastmod: record.lastmod, ..Sent::default() }) }.pack());
@@ -687,7 +703,7 @@ impl BucketStore {
         Ok(())
     }
 
-    /// A cap cut below the set: the pages seen longest ago leave until the set fits, their stored records kept but no longer crawled.
+    /// A cap cut below the set: the pages seen longest ago leave until the set fits, their stored records kept but no longer crawled. A page counts once whatever keys it has, and leaves by the key its schedule names when the cut is written.
     pub fn shrink_set(&self, domain: &str, terms: Terms, pace: &mut dyn FnMut(u64) -> bool) -> Result<Built> {
         let mut built = Built::default();
         let (Some(size), Some(cap)) = (self.recount_set(domain, pace)?, set_cap(terms)) else {
@@ -695,8 +711,10 @@ impl BucketStore {
         };
         let prefix = prefixed(DUE, domain.as_bytes(), b"");
         // The newest `cap` pages stay: a heap of the newest kept, holding at most the cap.
-        let mut newest: BinaryHeap<Reverse<(u32, Vec<u8>)>> = BinaryHeap::new();
-        let mut leaving: Vec<Vec<u8>> = Vec::new();
+        let mut newest: BinaryHeap<Reverse<(u32, Vec<u8>, Vec<u8>)>> = BinaryHeap::new();
+        let mut leaving: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
+        let mut duplicates: Vec<Vec<u8>> = Vec::new();
+        let mut unnamed: HashSet<Vec<u8>> = HashSet::new();
         let mut last: Option<Vec<u8>> = None;
         while size > cap {
             let start = last.as_ref().map_or_else(|| prefix.clone(), |key| [key.as_slice(), b"\0"].concat());
@@ -709,13 +727,28 @@ impl BucketStore {
             let read = keys.len();
             last = keys.last().cloned();
             built.scanned += read as u64;
-            let records = self.records(keys.iter().filter_map(|key| due_parts(key, prefix.len())).map(|(_, _, rest)| prefixed(URL, domain.as_bytes(), rest)))?;
-            for (key, record) in keys.into_iter().zip(records) {
-                let first_seen = record.map_or(0, |record| record.first_seen);
-                newest.push(Reverse((first_seen, key)));
+            let pages: Vec<(Vec<u8>, &[u8])> = keys.iter().filter_map(|key| due_parts(key, prefix.len()).map(|(due, first, rest)| (due_key(domain, due, first, rest), rest))).collect();
+            let records = self.records(pages.iter().map(|(_, rest)| prefixed(URL, domain.as_bytes(), rest)))?;
+            let nexts = self.schedules(pages.iter().map(|(_, rest)| prefixed(NEXT, domain.as_bytes(), rest)))?;
+            let named: Vec<Option<Vec<u8>>> = pages.iter().zip(&nexts).map(|((key, rest), next)| next.map(|next| due_key(domain, next.due, next.why == Why::Admit, rest)).filter(|named| named != key)).collect();
+            let mut found = self.present(named.iter().flatten())?.into_iter();
+            for ((((key, rest), record), next), named) in pages.into_iter().zip(records).zip(nexts).zip(named) {
+                match (next, named) {
+                    (None, _) => {
+                        leaving.push((rest.to_vec(), key));
+                        continue;
+                    }
+                    (Some(_), Some(_)) if found.next().unwrap_or(false) => {
+                        duplicates.push(key);
+                        continue;
+                    }
+                    (Some(_), Some(_)) if !unnamed.insert(rest.to_vec()) => continue,
+                    _ => {}
+                }
+                newest.push(Reverse((record.map_or(0, |record| record.first_seen), rest.to_vec(), key)));
                 if newest.len() as u64 > cap {
-                    if let Some(Reverse((_, key))) = newest.pop() {
-                        leaving.push(key);
+                    if let Some(Reverse((_, rest, key))) = newest.pop() {
+                        leaving.push((rest, key));
                     }
                 }
             }
@@ -727,15 +760,24 @@ impl BucketStore {
                 break;
             }
         }
-        for chunk in leaving.chunks(ADMIT_CHUNK) {
+        for key in duplicates.chunks(ADMIT_CHUNK) {
             let mut batch = WriteBatch::default();
-            for key in chunk {
-                if let Some((_, _, rest)) = due_parts(key, prefix.len()) {
-                    batch.delete(prefixed(NEXT, domain.as_bytes(), rest));
-                }
-                batch.delete(key);
-            }
+            key.iter().for_each(|key| batch.delete(key));
             let _guard = self.lock_ready();
+            self.db.write(batch)?;
+        }
+        for chunk in leaving.chunks(ADMIT_CHUNK) {
+            let _guard = self.lock_ready();
+            // Read under the lock: a send that landed since the scan moved the page's key.
+            let nexts = self.schedules(chunk.iter().map(|(rest, _)| prefixed(NEXT, domain.as_bytes(), rest)))?;
+            let mut batch = WriteBatch::default();
+            for ((rest, key), next) in chunk.iter().zip(nexts) {
+                batch.delete(key);
+                if let Some(next) = next {
+                    batch.delete(due_key(domain, next.due, next.why == Why::Admit, rest));
+                }
+                batch.delete(prefixed(NEXT, domain.as_bytes(), rest));
+            }
             let size = self.set_size(domain)?.unwrap_or(0).saturating_sub(chunk.len() as u64);
             batch.put(count_key_of(SET_SIZE, domain), size.to_le_bytes());
             self.db.write(batch)?;
