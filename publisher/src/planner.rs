@@ -24,6 +24,7 @@ use tokio::sync::watch;
 use crate::current::{decode_changes, ChangeRow, PageRow};
 use crate::records::{Record, EXTRACTION_V2};
 use crate::service::now_us;
+use crate::set::{Refusal, Set};
 
 /// How a page becomes texts; any change to what a recipe's texts hold is a new recipe, so every page is embedded again.
 pub const RECIPE_V1: &str = "page-v1";
@@ -373,6 +374,8 @@ pub struct Settings {
     pub excluded: HashSet<String>,
     /// The bot's crawl list; when set, only its sites are planned, each up to its index cap. Read again when it changes.
     pub list_file: Option<PathBuf>,
+    /// The v1 set; when set, only pages its rules take are planned, and the crawl list is not read. Read again when it changes.
+    pub set_file: Option<PathBuf>,
     /// The change file to start after when nothing was planned before; the newest one when None.
     pub start_after: Option<i64>,
     pub poll: Duration,
@@ -404,6 +407,7 @@ impl Settings {
             langs: text("PLANNER_LANGS", "en").split(',').map(|lang| lang.trim().to_lowercase()).filter(|lang| !lang.is_empty()).collect(),
             excluded,
             list_file: std::env::var("PLANNER_LIST_FILE").ok().filter(|v| !v.is_empty()).map(PathBuf::from),
+            set_file: std::env::var("PLANNER_SET_FILE").ok().filter(|v| !v.is_empty()).map(PathBuf::from),
             start_after: std::env::var("PLANNER_START_AFTER").ok().filter(|v| !v.is_empty()).map(|v| v.parse()).transpose()?,
             poll: Duration::from_secs_f64(number("PLANNER_POLL_S", 10.0)?),
             hole_wait: Duration::from_secs_f64(number("PLANNER_HOLE_WAIT_S", 600.0)?),
@@ -724,6 +728,12 @@ pub struct Counts {
     pub refused: u64,
     /// Pages of sites the crawl list does not hold.
     pub unlisted: u64,
+    /// Pages the set has no rule taking: an unlisted or shut host, or off a whole site's paths.
+    pub outside_set: u64,
+    /// Pages of a news site with no date in `published` or the URL path.
+    pub undated: u64,
+    /// Pages of a news site dated before its `since`.
+    pub before_since: u64,
     /// New pages of sites whose index cap is reached.
     pub over_cap: u64,
     pub unchanged: u64,
@@ -749,6 +759,8 @@ pub struct Planner {
     pub counts: Counts,
     listed: Option<Listed>,
     listed_modified: Option<std::time::SystemTime>,
+    set: Option<Set>,
+    set_modified: Option<std::time::SystemTime>,
     buffer: Vec<Planned>,
     buffered: HashMap<String, usize>,
     /// Pages in the buffer no recipe has planned before, by domain, so the buffer counts toward index caps.
@@ -797,6 +809,8 @@ impl Planner {
             counts: Counts::default(),
             listed: None,
             listed_modified: None,
+            set: None,
+            set_modified: None,
             buffer: Vec::new(),
             buffered: HashMap::new(),
             buffered_new: HashMap::new(),
@@ -809,10 +823,33 @@ impl Planner {
             missing,
             settled: Vec::new(),
         };
-        if planner.settings.list_file.is_some() && !planner.reload_list()? {
+        if planner.settings.set_file.is_some() {
+            if !planner.reload_set()? {
+                return Err(anyhow!("the set in PLANNER_SET_FILE is empty"));
+            }
+        } else if planner.settings.list_file.is_some() && !planner.reload_list()? {
             return Err(anyhow!("the crawl list in PLANNER_LIST_FILE is empty"));
         }
         Ok(planner)
+    }
+
+    /// Reads the set again when its file changed; whether a set is held. A set that cannot be read leaves the one held.
+    pub fn reload_set(&mut self) -> Result<bool> {
+        let Some(path) = self.settings.set_file.clone() else { return Ok(false) };
+        let modified = std::fs::metadata(&path).and_then(|meta| meta.modified()).with_context(|| format!("reading {}", path.display()))?;
+        if self.set.is_some() && self.set_modified == Some(modified) {
+            return Ok(true);
+        }
+        match std::fs::read(&path).map_err(anyhow::Error::from).and_then(|raw| Set::parse(&raw)) {
+            Ok(set) if !set.is_empty() => {
+                println!("planner: set of {} sites read from {}", set.len(), path.display());
+                self.set = Some(set);
+                self.set_modified = Some(modified);
+            }
+            Ok(_) => eprintln!("{} holds no sites; keeping the set held", path.display()),
+            Err(error) => eprintln!("reading the set {}: {error:#}; keeping the set held", path.display()),
+        }
+        Ok(self.set.is_some())
     }
 
     /// Reads the crawl list again when its file changed; whether a list is held. A list that cannot be read leaves the one held.
@@ -836,7 +873,8 @@ impl Planner {
 
     /// Reads what the log added since the last pass, writes the inputs that are due and hands over what the API has room for; whether it read anything.
     pub async fn pass(&mut self) -> Result<bool> {
-        if let Err(error) = self.reload_list() {
+        let reloaded = if self.settings.set_file.is_some() { self.reload_set() } else { self.reload_list() };
+        if let Err(error) = reloaded {
             eprintln!("{error:#}");
         }
         self.forget_dropped().await?;
@@ -978,7 +1016,15 @@ impl Planner {
             self.counts.refused += 1;
             return;
         }
-        let cap = match &self.listed {
+        if let Some(Err(refusal)) = self.set.as_ref().map(|set| set.admit(&record.url, &record.published)) {
+            match refusal {
+                Refusal::Undated => self.counts.undated += 1,
+                Refusal::BeforeSince => self.counts.before_since += 1,
+                Refusal::Unlisted | Refusal::OffPaths => self.counts.outside_set += 1,
+            }
+            return;
+        }
+        let cap = match self.listed.as_ref().filter(|_| self.set.is_none()) {
             None => None,
             Some(listed) => match listed.cap(&record.domain) {
                 Some(cap) => Some(cap),

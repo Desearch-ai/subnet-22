@@ -18,6 +18,7 @@ use publisher::planner::{
     page_text, page_text_v2, passages, passages_v2, texts, Listed, Passage, Planner, Room, Settings, EMBED_DROPPED, EMBED_INPUTS, PAGE, PASSAGE, RECIPE_V2,
 };
 use publisher::records::{page_key, record_version, Record};
+use publisher::set::Set;
 use redis::aio::ConnectionManager;
 use redis::AsyncCommands;
 use serde_json::{json, Value};
@@ -296,6 +297,7 @@ fn settings(dir: PathBuf, pages_per_hour: f64, start_after: i64) -> Settings {
         langs: vec!["en".into()],
         excluded: HashSet::from(["spam.example".to_string()]),
         list_file: None,
+        set_file: None,
         start_after: Some(start_after),
         poll: Duration::from_millis(10),
         hole_wait: Duration::from_secs(3600),
@@ -636,5 +638,82 @@ async fn only_listed_sites_are_planned_each_up_to_its_index_cap_and_a_page_given
     drop(planner);
     let restarted = Planner::new(settings(dir.join("state"), 3600.0, 0), pages.clone(), temp.clone(), redis.clone(), Room::Fixed(0)).await.unwrap();
     assert_eq!(restarted.state.site_pages("docs.example").unwrap(), 3);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn the_set_takes_every_golden_case_as_the_other_readers_do() {
+    let golden: Value = serde_json::from_str(include_str!("v1-set-golden.json")).unwrap();
+    let set = Set::parse(golden.to_string().as_bytes()).unwrap();
+    for case in golden["cases"].as_array().unwrap() {
+        let (url, published) = (case["url"].as_str().unwrap(), case["published"].as_str().unwrap_or(""));
+        assert_eq!(set.admit(url, published).is_ok(), case["in"].as_bool().unwrap(), "{url} published {published:?}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn with_a_set_only_pages_its_rules_take_are_planned_and_the_crawl_list_is_not_read() {
+    let Some((_turn, redis)) = redis_db().await else {
+        eprintln!("skipped: no Redis on {REDIS}");
+        return;
+    };
+    let dir = scratch("set");
+    let stub = stub::start(dir.join("r2"), "127.0.0.1:0").await.unwrap();
+    let (pages, temp) = (bucket(stub.addr, "desearch-pages"), bucket(stub.addr, "subnet-22"));
+    let page = |url: &str, published: &str| {
+        let mut page = v2(record(url, &format!("{url} {}", article(2)), "article", "en"));
+        page.published = published.into();
+        page
+    };
+    let set = dir.join("v1-set.json");
+    std::fs::write(
+        &set,
+        json!({"sites": [
+            {"host": "news.example", "rule": "news", "since": "2020-01-01"},
+            {"host": "docs.example", "rule": "whole", "paths": ["/guide/"]},
+            {"host": "ref.example", "rule": "whole"},
+            {"host": "old.ref.example", "rule": "out"}
+        ]})
+        .to_string(),
+    )
+    .unwrap();
+    let list = dir.join("domains.json");
+    std::fs::write(&list, json!([{"host": "other.example", "type": "docs", "send_cap": 3}]).to_string()).unwrap();
+    log(
+        &pages,
+        1,
+        vec![
+            page("https://news.example/story/a", "2024-02-01T08:00:00Z"),
+            page("https://news.example/2021/03/04/b", ""),
+            page("https://news.example/story/c", ""),
+            page("https://news.example/2019/12/31/d", ""),
+            page("https://docs.example/guide/start", ""),
+            page("https://docs.example/blog/post", ""),
+            page("https://www.api.ref.example/x", ""),
+            page("https://old.ref.example/y", ""),
+            page("https://other.example/z", ""),
+        ],
+    )
+    .await;
+
+    let mut with_set = settings(dir.join("state"), 3600.0, 0);
+    with_set.pages_per_input = 10;
+    (with_set.set_file, with_set.list_file) = (Some(set), Some(list));
+    let mut planner = Planner::new(with_set, pages.clone(), temp.clone(), redis.clone(), Room::Fixed(0)).await.unwrap();
+    planner.pass().await.unwrap();
+    let counts = &planner.counts;
+    assert_eq!((counts.planned, counts.undated, counts.before_since, counts.outside_set, counts.unlisted), (4, 1, 1, 3, 0));
+    planner.flush().await.unwrap();
+    let entry: Value = serde_json::from_str(&planner.state.pending().unwrap()[0].1).unwrap();
+    let urls: HashSet<&str> = entry["pages"].as_array().unwrap().iter().map(|p| p["url"].as_str().unwrap()).collect();
+    assert_eq!(
+        urls,
+        HashSet::from([
+            "https://news.example/story/a",
+            "https://news.example/2021/03/04/b",
+            "https://docs.example/guide/start",
+            "https://www.api.ref.example/x"
+        ])
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }

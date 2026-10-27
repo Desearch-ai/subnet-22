@@ -13,6 +13,7 @@ pub mod queue;
 pub mod reading;
 pub mod records;
 pub mod service;
+pub mod set;
 pub mod snapshot;
 pub mod vectors;
 pub mod worker;
