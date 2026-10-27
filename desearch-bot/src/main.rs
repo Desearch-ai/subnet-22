@@ -14,6 +14,7 @@ use desearch_bot::buckets::{bucket_of, BucketStore, Buckets, Escaped, Resources,
 use desearch_bot::crawl::Loop;
 use desearch_bot::dispatch::{self, Dispatcher, Progress};
 use desearch_bot::hotkey::Hotkey;
+use desearch_bot::inbox;
 use desearch_bot::langid::LangId;
 use desearch_bot::net::{self, PublicResolver};
 use desearch_bot::outcomes::{OutcomeFeed, OutcomeReader};
@@ -170,6 +171,9 @@ struct RunArgs {
     /// Only these domains' pages are queued for the task API: a JSON list of names or of {host, rank}, read again when it changes.
     #[arg(long)]
     domains: Option<PathBuf>,
+    /// A directory of URL lists, `<host>.txt` with a URL and optionally a tab and its date a line, taken in as the host's listing.
+    #[arg(long)]
+    inbox: Option<PathBuf>,
 }
 
 fn main() -> Result<()> {
@@ -283,6 +287,10 @@ async fn run(args: RunArgs) -> Result<()> {
             }
         })
     });
+    let inbox = args.inbox.clone().map(|dir| {
+        let (buckets, halt) = (buckets.clone(), halt.clone());
+        std::thread::spawn(move || inbox::keep_taking(&buckets, &dir, &halt))
+    });
     let wanted = Arc::new(dispatch::StockWanted::default());
     let stocking = args.task_api.as_ref().map(|_| {
         let (buckets, progress, halt, wanted, per_second) = (buckets.clone(), progress.clone(), halt.clone(), wanted.clone(), args.join_per_sec.max(1));
@@ -352,6 +360,9 @@ async fn run(args: RunArgs) -> Result<()> {
     }
     if let Some(joining) = joining {
         let _ = tokio::task::spawn_blocking(move || joining.join()).await;
+    }
+    if let Some(inbox) = inbox {
+        let _ = tokio::task::spawn_blocking(move || inbox.join()).await;
     }
     println!("[rs] done {}", crawl.summary());
     Ok(())

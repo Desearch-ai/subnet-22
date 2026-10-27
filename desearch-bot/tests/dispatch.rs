@@ -1555,3 +1555,28 @@ async fn a_site_asking_for_a_delay_between_requests_gets_no_more_than_the_delay_
     dispatcher.pass(now + 121).await.unwrap();
     assert_eq!(sent_by(&fake, "example.com"), 4);
 }
+
+#[test]
+fn an_inbox_file_lists_its_hosts_pages_like_a_sitemap_and_is_read_again_only_when_it_changes() {
+    let dir = Dir::new("inbox");
+    std::fs::create_dir_all(dir.0.join("inbox")).unwrap();
+    let buckets = known(&dir, &["example.com"]);
+    buckets.allow(&Allowed::with_terms([("example.com", Terms { since: Some(FLOOR), ..Terms::default() })]));
+    let inbox = dir.0.join("inbox");
+    std::fs::write(inbox.join("www.example.com.txt"), "https://example.com/a\t2021-03-04\nhttps://example.com/old\t2019-05-06\nhttps://example.com/undated\nhttps://elsewhere.org/x\nnot a url\n").unwrap();
+    std::fs::write(inbox.join("unknown.net.txt"), "https://unknown.net/a\n").unwrap();
+    let mut seen = HashMap::new();
+    let taken = desearch_bot::inbox::take_in(&buckets, &inbox, &mut seen, 5000).unwrap();
+    assert_eq!((taken.files, taken.urls, taken.queued), (1, 3, 2), "the host's own URLs, the one before its floor stored but not queued");
+    let store = buckets.store("example.com");
+    let mut queued = ready(store);
+    queued.sort();
+    assert_eq!(queued, ["a", "undated"]);
+    assert_eq!(record(store, "a").lastmod, 1_614_816_000);
+    assert_eq!(desearch_bot::inbox::take_in(&buckets, &inbox, &mut seen, 6000).unwrap().files, 0, "an unchanged file is not read again");
+
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    std::fs::write(inbox.join("www.example.com.txt"), "https://example.com/a\t2021-03-04\nhttps://example.com/b\t2022-01-01\n").unwrap();
+    let again = desearch_bot::inbox::take_in(&buckets, &inbox, &mut seen, 7000).unwrap();
+    assert_eq!((again.files, again.queued), (1, 1), "only the new page joins the list");
+}
