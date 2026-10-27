@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 
 use anyhow::{anyhow, bail, Result};
+use desearch::time::{civil_from_days, days_from_civil};
 use serde_json::Value;
 
 /// What the set takes of one site.
@@ -118,11 +119,12 @@ pub fn page_date(published: &str, url: &str) -> Option<String> {
     iso_date(published).or_else(|| url_date(url))
 }
 
-/// `YYYY-MM-DD` when `text` opens with a valid one.
+/// `YYYY-MM-DD` when `text` opens with a real calendar date, of any year.
 pub fn iso_date(text: &str) -> Option<String> {
     let head = text.trim().get(..10)?;
     let b = head.as_bytes();
-    (b[4] == b'-' && b[7] == b'-').then(|| date(&head[..4], &head[5..7], &head[8..10])).flatten()
+    let shaped = b[4] == b'-' && b[7] == b'-' && b.iter().enumerate().all(|(at, c)| at == 4 || at == 7 || c.is_ascii_digit());
+    shaped.then(|| calendar(&head[..4], &head[5..7], &head[8..10])).flatten().map(|_| head.to_string())
 }
 
 /// A date in a URL's path: `/YYYY/MM/DD/`, `/YYYY/MM/` (the first of the month), or `YYYY-MM-DD` or `YYYYMMDD` standing apart from other digits.
@@ -161,9 +163,16 @@ fn digits_date(part: &str) -> Option<String> {
     None
 }
 
+/// A URL's date: a real calendar date from 1990 to 2099.
 fn date(year: &str, month: &str, day: &str) -> Option<String> {
-    let (year, month, day): (u32, u32, u32) = (year.parse().ok()?, month.parse().ok()?, day.parse().ok()?);
-    ((1990..=2099).contains(&year) && (1..=12).contains(&month) && (1..=31).contains(&day)).then(|| format!("{year:04}-{month:02}-{day:02}"))
+    let (year, month, day) = calendar(year, month, day)?;
+    (1990..=2099).contains(&year).then(|| format!("{year:04}-{month:02}-{day:02}"))
+}
+
+/// Year, month and day when they name a day that exists.
+fn calendar(year: &str, month: &str, day: &str) -> Option<(i64, i64, i64)> {
+    let found: (i64, i64, i64) = (year.parse().ok()?, month.parse().ok()?, day.parse().ok()?);
+    ((1..=12).contains(&found.1) && civil_from_days(days_from_civil(found.0, found.1, found.2)) == found).then_some(found)
 }
 
 #[cfg(test)]
@@ -184,6 +193,11 @@ mod tests {
         assert_eq!(url_date("https://a.example/2024/13/x"), None);
         assert_eq!(url_date("https://a.example/a/2022-05-0\u{e9}"), None);
         assert_eq!(url_date("https://2024-01-01.example/a"), None, "the host is not the path");
+        assert_eq!(url_date("https://a.example/2023/02/30/x"), Some("2023-02-01".into()), "a day that does not exist falls back to the month");
+        assert_eq!(url_date("https://a.example/a/20230230/x"), None);
+        assert_eq!(url_date("https://a.example/2024/02/29/x"), Some("2024-02-29".into()));
+        assert_eq!(page_date("1985-06-01", "https://a.example/x"), Some("1985-06-01".into()), "a published date of any year");
+        assert_eq!(page_date("2024-02-30", "https://a.example/2023/05/x"), Some("2023-05-01".into()));
     }
 
     #[test]
