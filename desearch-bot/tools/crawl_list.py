@@ -78,7 +78,7 @@ EARNING_TYPES = {
 V1_NEWS_WEIGHT = 4
 V1_WEIGHT = 3
 NODE2_WEIGHT = 2
-# A v1 site taken whole with no cap of its own.
+# A v1 site taken whole: every stored page may go, up to this many.
 V1_WHOLE_CAP = 5_000_000
 # Outs a v1 site lifts: the type model's labels, never a refusal, a registry state or a hand decision.
 SOFT_OUTS = {"unlabelled", "shop", "junk"}
@@ -141,7 +141,6 @@ class Judged:
 class V1:
     rule: str
     site_type: str = ""
-    cap: int | None = None
     since: str | None = None
 
 
@@ -266,28 +265,25 @@ def apply_v1(row: Row, base: Decision, v1: V1 | None, forced_out: bool) -> Decis
             if base.listed and base.site_type == "news"
             else type_cap("news", row.rank, True, True)
         )
-        guard = v1.cap if v1.rule == "news" else None
         return Decision(
             True,
             "",
             "news",
             TIERS["news"],
             V1_NEWS_WEIGHT,
-            guard or cap,
-            send_cap=guard,
+            cap,
             backlog=cap * CRAWL_PER_INDEX,
             hourly=hourly,
             since=v1.since if v1.rule == "news" else None,
         )
-    cap = v1.cap or V1_WHOLE_CAP
     return Decision(
         True,
         "",
         site_type,
         TIERS[site_type],
         V1_WEIGHT,
-        cap,
-        send_cap=cap * CRAWL_PER_INDEX,
+        V1_WHOLE_CAP,
+        send_cap=V1_WHOLE_CAP * CRAWL_PER_INDEX,
         hourly=hourly,
     )
 
@@ -372,9 +368,7 @@ def read_v1_set(path: str | None) -> dict[str, V1] | None:
     with open_text(path) as source:
         sites = json.load(source)["sites"]
     return {
-        site["host"]: V1(
-            site["rule"], site.get("type", ""), site.get("cap"), site.get("since")
-        )
+        site["host"]: V1(site["rule"], site.get("type", ""), site.get("since"))
         for site in sites
     }
 

@@ -284,7 +284,7 @@ def test_v1_sites_send_first_and_the_rest_fill_at_lower_weights():
     ]
     v1 = {
         "news.com": V1("news", "news", since="2020-01-01"),
-        "uni.com": V1("whole", "academic", 200_000),
+        "uni.com": V1("whole", "academic"),
     }
     listed, _ = v1_list(rows, v1)
     assert listed["news.com"] == {
@@ -295,30 +295,27 @@ def test_v1_sites_send_first_and_the_rest_fill_at_lower_weights():
         "backlog": 1_500_000,
         "since": "2020-01-01",
     }
-    assert (listed["uni.com"]["weight"], listed["uni.com"]["send_cap"]) == (3, 600_000)
+    assert (listed["uni.com"]["weight"], listed["uni.com"]["send_cap"]) == (3, crawl_list.V1_WHOLE_CAP * 3)
     assert [listed[h]["weight"] for h in ("ref.com", "mag.com", "corp.com")] == [2, 2, 1]
 
 
-def test_v1_caps_hold_big_news_and_widen_cited_sites():
+def test_v1_takes_cited_sites_whole_and_drops_its_outs():
     V1 = crawl_list.V1
     rows = [
         row(host="huge.com", site_type="news"),
         row(host="paper.com", site_type="news", rank=500),
         row(host="corp.com", site_type="company"),
-        row(host="db.com", site_type="reference"),
     ]
     v1 = {
-        "huge.com": V1("news", "news", 1_000_000),
-        "paper.com": V1("whole", "news"),
-        "corp.com": V1("whole", "company", 20_000),
-        "db.com": V1("whole", "reference"),
+        "huge.com": V1("out"),
+        "paper.com": V1("news", "news"),
+        "corp.com": V1("whole", "company"),
     }
     listed, _ = v1_list(rows, v1)
-    assert listed["huge.com"]["send_cap"] == 1_000_000
+    assert "huge.com" not in listed, "a site the set holds out stops sending"
     assert "send_cap" not in listed["paper.com"] and listed["paper.com"]["hourly"] == 20_000
-    assert "since" not in listed["paper.com"], "a benchmark news site taken whole has no date floor"
-    assert (listed["corp.com"]["weight"], listed["corp.com"]["send_cap"]) == (3, 60_000)
-    assert listed["db.com"]["send_cap"] == crawl_list.V1_WHOLE_CAP * 3
+    assert "since" not in listed["paper.com"], "a news site taken for all years has no date floor"
+    assert (listed["corp.com"]["weight"], listed["corp.com"]["send_cap"]) == (3, crawl_list.V1_WHOLE_CAP * 3)
 
 
 def test_v1_sites_without_a_sitemap_are_listed_for_their_feed():
@@ -327,7 +324,7 @@ def test_v1_sites_without_a_sitemap_are_listed_for_their_feed():
         row(host="feedless.com", state="no_sitemap", site_type="academic"),
         row(host="plain.com", state="no_sitemap", site_type="academic"),
     ]
-    listed, _ = v1_list(rows, {"feedless.com": V1("whole", "academic", 1000)})
+    listed, _ = v1_list(rows, {"feedless.com": V1("whole", "academic")})
     assert set(listed) == {"feedless.com"}
 
 
@@ -355,7 +352,7 @@ def test_the_v1_set_is_read_from_its_file(tmp_path):
                 "built": "2026-10-28T06:00:00Z",
                 "sites": [
                     {"host": "a.com", "rule": "news", "since": "2020-01-01", "type": "news", "why": ["news"]},
-                    {"host": "b.com", "rule": "whole", "cap": 5, "type": "docs", "why": ["docs"]},
+                    {"host": "b.com", "rule": "whole", "paths": ["/guide/"], "type": "docs", "why": ["docs"]},
                     {"host": "c.com", "rule": "out"},
                 ],
             }
@@ -363,7 +360,7 @@ def test_the_v1_set_is_read_from_its_file(tmp_path):
     )
     assert crawl_list.read_v1_set(str(path)) == {
         "a.com": crawl_list.V1("news", "news", since="2020-01-01"),
-        "b.com": crawl_list.V1("whole", "docs", 5),
+        "b.com": crawl_list.V1("whole", "docs"),
         "c.com": crawl_list.V1("out"),
     }
     assert crawl_list.read_v1_set(None) is None

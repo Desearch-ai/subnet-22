@@ -7,40 +7,20 @@ import json
 import re
 import sys
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
+from urllib.parse import urlsplit
 
 SINCE = "2020-01-01"
-# A news site this big with no benchmark citation and off the news list waits for the judge, held at this many pages.
+# A news site this big with no benchmark citation and off the news list stays out until the judge reads it.
 NEWS_GUARD = 1_000_000
-EXTRA_MIN_QUESTIONS = 3
 JUDGED_MIN = 10
 PASSED_SHARE = 0.8
 WHOLE_TYPES = {"academic", "public", "docs"}
-BENCHMARKS = {
-    "Ours": "ours",
-    "SQA": "simpleqa",
-    "SQAV": "simpleqa-verified",
-    "Seal": "sealqa",
-    "Fresh": "freshqa",
-    "WW": "webwalkerqa",
-    "BCP": "browsecomp-plus",
-}
-EVERGREEN_TYPES = {
-    "technical docs": "docs",
-    "government and statistics": "public",
-    "encyclopedia": "reference",
-    "reference database": "reference",
-    "dictionary": "reference",
-}
-# "up to 20,000 pages", "a 10,000-page sample": a take that names a page count caps the site at it.
-TAKE_CAP = re.compile(r"(\d[\d,]*)[ -]pages?\b")
-CITED_HOSTS = "cited hosts:"
-BULK_FIX = "use a bulk source"
-FANDOM = "Fandom wiki XML dumps"
-GAP_FIX = "accept the gap"
-# A hand row that only names the bulk source of a benchmark site.
-SOURCE = "source"
+# A site fits whole when its stored pages fit under three times its judged cap, the crawl's share.
+CRAWL_PER_INDEX = 3
+FIELDS = ("host", "rule", "since", "paths", "source", "type", "why")
+PATH_DATE = re.compile(r"/((?:19|20)[0-9]{2})[/-](0[1-9]|1[0-2])(?:[/-]|$)")
 
 
 def open_text(path: str):
@@ -59,69 +39,27 @@ def bare(host: str) -> str:
     return host[4:] if host.startswith("www.") else host
 
 
-def why_benchmarks(unlocks: str) -> list[str]:
-    names = []
-    for part in unlocks.split(";"):
-        label = part.strip().rsplit(" ", 1)[0]
-        if label in BENCHMARKS:
-            names.append(BENCHMARKS[label])
-    return names
+def row_entry(row: dict) -> dict:
+    entry = {
+        field: row[field] for field in FIELDS if row.get(field) not in (None, "", [])
+    }
+    entry["host"] = bare(entry["host"])
+    return entry
 
 
-def benchmark_type(row: dict) -> str:
-    return EVERGREEN_TYPES.get(row["type"], row["type"])
+def read_rows(path: str) -> list[dict]:
+    with open(path) as source:
+        found = json.load(source)
+    return [
+        row_entry(row) for row in found.get("sites", []) + found.get("dump_sites", [])
+    ]
 
 
-def benchmark_hosts(row: dict) -> list[str]:
-    take = row["take"]
-    if take.startswith(CITED_HOSTS):
-        return [bare(h) for h in take[len(CITED_HOSTS) :].split()]
-    return [bare(h) for h in (row["hosts"] or row["site"]).split()]
-
-
-def chosen(row: dict, extra_min: int) -> bool:
-    if row["fix"] == GAP_FIX:
-        return False
-    if row["tier"] == "benchmark":
-        return True
-    if row["tier"] == "benchmark (extra)":
-        return int(row["questions"] or 0) >= extra_min
-    return row["tier"] == "evergreen"
-
-
-def benchmark_entries(
-    rows: list[dict], sources: dict[str, str], extra_min: int
-) -> list[dict]:
+def hand_entries(rows: list[dict]) -> list[dict]:
     entries = []
     for row in rows:
-        if not chosen(row, extra_min):
-            continue
-        if row["tier"] == "evergreen":
-            why = ["evergreen"]
-        elif row["tier"] == "benchmark (extra)":
-            why = ["benchmark-extra"]
-        else:
-            why = why_benchmarks(row["unlocks"]) or ["benchmark"]
-        site_type = benchmark_type(row)
-        for host in benchmark_hosts(row):
-            if row["fix"] == BULK_FIX:
-                source = sources.get(row["site"]) or (
-                    "fandom" if FANDOM in row["why"] else row["site"]
-                )
-                entries.append(
-                    {
-                        "host": host,
-                        "rule": "bulk",
-                        "source": source,
-                        "type": site_type,
-                        "why": why,
-                    }
-                )
-                continue
-            entry = {"host": host, "rule": "whole", "type": site_type, "why": why}
-            if found := TAKE_CAP.search(row["take"]):
-                entry["cap"] = int(found.group(1).replace(",", ""))
-            entries.append(entry)
+        row = {**row, "why": row.get("why", "").split()}
+        entries.append(row_entry(row))
     return entries
 
 
@@ -135,10 +73,11 @@ def listed_entries(
     decisions,
     backing: dict[str, dict],
     judged: dict[str, dict],
-    dated: dict[str, int],
+    counts: dict[str, dict],
     since: str,
-) -> list[dict]:
-    entries = []
+) -> tuple[list[dict], list[dict]]:
+    """The judged list's v1 types as set entries, and the sites too big to take whole, which wait for named paths."""
+    entries, too_big = [], []
     for row in decisions:
         if row["listed"] != "1":
             continue
@@ -146,7 +85,15 @@ def listed_entries(
         back = backing.get(host, {})
         cited = int(back.get("benchmark_citations") or 0) > 0
         news_list = back.get("news_list") == "1"
+        count = counts.get(host, {})
+        stored = int(count.get("stored") or 0)
         if site_type == "news":
+            if (
+                not (cited or news_list)
+                and int(count.get("dated_2020_on") or 0) > NEWS_GUARD
+            ):
+                entries.append({"host": host, "rule": "out", "why": ["size-guard"]})
+                continue
             entry = {
                 "host": host,
                 "rule": "news",
@@ -154,24 +101,24 @@ def listed_entries(
                 "type": "news",
                 "why": ["news-list" if news_list else "news"],
             }
-            if not (cited or news_list) and dated.get(host, 0) > NEWS_GUARD:
-                entry["cap"] = NEWS_GUARD
-                entry["why"].append("guard")
-        elif site_type in WHOLE_TYPES:
+        elif site_type in WHOLE_TYPES or (
+            site_type == "reference" and passed(judged.get(host))
+        ):
+            if stored > int(row["cap"]) * CRAWL_PER_INDEX:
+                too_big.append(
+                    {
+                        "host": host,
+                        "type": site_type,
+                        "stored": stored,
+                        "cap": int(row["cap"]),
+                    }
+                )
+                continue
             entry = {
                 "host": host,
                 "rule": "whole",
-                "cap": int(row["cap"]),
                 "type": site_type,
-                "why": [site_type],
-            }
-        elif site_type == "reference" and passed(judged.get(host)):
-            entry = {
-                "host": host,
-                "rule": "whole",
-                "cap": int(row["cap"]),
-                "type": "reference",
-                "why": ["judge"],
+                "why": [site_type if site_type != "reference" else "judge"],
             }
         else:
             continue
@@ -180,53 +127,62 @@ def listed_entries(
         if back.get("wikidata_type"):
             entry["why"].append("wikidata")
         entries.append(entry)
-    return entries
-
-
-def hand_entry(row: dict) -> dict:
-    entry = {"host": bare(row["host"]), "rule": row["rule"]}
-    if row["rule"] == "out":
-        return entry
-    if row["rule"] == "news":
-        entry["since"] = row.get("since") or SINCE
-    if row.get("cap"):
-        entry["cap"] = int(row["cap"])
-    if row["rule"] == "bulk":
-        entry["source"] = row["source"]
-    entry.update(type=row["type"], why=row["why"].split())
-    return entry
+    return entries, too_big
 
 
 def build(
+    row_files: list[list[dict]],
     hand: list[dict],
-    benchmark_rows: list[dict],
     decisions,
     backing,
     judged,
-    dated,
+    counts,
     since: str = SINCE,
-    extra_min: int = EXTRA_MIN_QUESTIONS,
-) -> list[dict]:
-    sources = {
-        bare(r["host"]): r["source"]
-        for r in hand
-        if r["rule"] in ("bulk", SOURCE) and r.get("source")
-    }
-    hand_entries = [hand_entry(r) for r in hand if r["rule"] != SOURCE]
+) -> tuple[list[dict], list[dict]]:
+    listed, too_big = listed_entries(decisions, backing, judged, counts, since)
     sites: dict[str, dict] = {}
-    for entry in (
-        hand_entries
-        + benchmark_entries(benchmark_rows, sources, extra_min)
-        + listed_entries(decisions, backing, judged, dated, since)
-    ):
+    for entry in [row_entry(row) for rows in row_files for row in rows] + hand + listed:
         sites.setdefault(entry["host"], entry)
-    return [sites[host] for host in sorted(sites)]
+    return [sites[host] for host in sorted(sites)], too_big
+
+
+def page_date(url: str, published: str | None) -> date | None:
+    if published:
+        return date.fromisoformat(published[:10])
+    found = PATH_DATE.search(urlsplit(url).path)
+    return date(int(found.group(1)), int(found.group(2)), 1) if found else None
+
+
+def entry_for(sites: dict[str, dict], host: str) -> dict | None:
+    # A mobile host (en.m.wikipedia.org) is its site's host.
+    host = re.sub(r"^([^.]+)\.m\.", r"\1.", bare(host))
+    while host:
+        if host in sites:
+            return sites[host]
+        host = host.partition(".")[2]
+    return None
+
+
+def matches(sites: dict[str, dict], url: str, published: str | None) -> bool:
+    """Whether a page belongs to v1: the entry for its host or the nearest listed host above it decides."""
+    parts = urlsplit(url)
+    entry = entry_for(sites, parts.hostname or "")
+    if entry is None or entry["rule"] == "out":
+        return False
+    if entry["rule"] == "bulk":
+        return True
+    if entry["rule"] == "whole":
+        return not entry.get("paths") or any(
+            parts.path.startswith(path) for path in entry["paths"]
+        )
+    dated = page_date(url, published)
+    return dated is not None and (
+        not entry.get("since") or dated >= date.fromisoformat(entry["since"])
+    )
 
 
 def summary(sites: list[dict]) -> Counter:
-    return Counter(
-        (site["rule"], site.get("type", ""), "cap" in site) for site in sites
-    )
+    return Counter((site["rule"], site.get("type", "")) for site in sites)
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -240,42 +196,41 @@ def main(argv: list[str] | None = None) -> None:
         help="the crawl list builder's decisions TSV (.gz allowed)",
     )
     parser.add_argument(
-        "--benchmarks",
-        required=True,
-        help="benchmark-sites.csv: benchmark sites, extras and evergreen additions",
+        "--rows",
+        action="append",
+        default=[],
+        help="a set rows file (JSON with sites); earlier files win a host",
     )
     parser.add_argument(
-        "--hand",
-        required=True,
-        help="TSV of host, rule, source, type, why, cap, since: hosts set by hand, and rule 'source' to name a benchmark site's bulk source",
+        "--hand", help="TSV of host, rule, source, type, why: hosts set by hand"
     )
     parser.add_argument(
         "--backing", help="TSV of host, wikidata_type, benchmark_citations, news_list"
     )
     parser.add_argument("--judged", help="TSV of host, judged, substantive")
     parser.add_argument(
-        "--dated",
-        help="store counts TSV (.gz allowed) with host and dated_2020_on, for the news size guard",
+        "--counts",
+        help="store counts TSV (.gz allowed) with host, stored and dated_2020_on",
     )
-    parser.add_argument("--since", default=SINCE, help="the news date floor")
-    parser.add_argument("--extra-min-questions", type=int, default=EXTRA_MIN_QUESTIONS)
+    parser.add_argument(
+        "--too-big", help="TSV to write the judged-list sites too big to take whole"
+    )
+    parser.add_argument(
+        "--since", default=SINCE, help="the date floor of the judged list's news sites"
+    )
     args = parser.parse_args(argv)
-    with open(args.benchmarks, newline="") as source:
-        benchmark_rows = list(csv.DictReader(source))
     backing = {r["host"]: r for r in tsv(args.backing)}
     judged = {r["host"]: r for r in tsv(args.judged)}
-    dated = {r["host"]: int(r["dated_2020_on"]) for r in tsv(args.dated)}
+    counts = {r["host"]: r for r in tsv(args.counts)}
     with open_text(args.decisions) as source:
-        decisions = csv.DictReader(source, delimiter="\t")
-        sites = build(
-            tsv(args.hand),
-            benchmark_rows,
-            decisions,
+        sites, too_big = build(
+            [read_rows(path) for path in args.rows],
+            hand_entries(tsv(args.hand)),
+            csv.DictReader(source, delimiter="\t"),
             backing,
             judged,
-            dated,
+            counts,
             args.since,
-            args.extra_min_questions,
         )
     if not sites:
         sys.exit(f"no sites; {args.out} left as it was")
@@ -285,9 +240,21 @@ def main(argv: list[str] | None = None) -> None:
         json.dumps({"built": built, "sites": sites}, separators=(",", ":"))
     )
     temporary.replace(args.out)
-    print(f"{len(sites)} sites in {args.out}")
-    for (rule, site_type, capped), count in sorted(summary(sites).items()):
-        print(f"{count:>8}  {rule:6} {site_type:13} {'capped' if capped else ''}")
+    if args.too_big:
+        with open(args.too_big, "w", newline="") as target:
+            writer = csv.DictWriter(
+                target,
+                fieldnames=["host", "type", "stored", "cap"],
+                delimiter="\t",
+                lineterminator="\n",
+            )
+            writer.writeheader()
+            writer.writerows(sorted(too_big, key=lambda site: -site["stored"]))
+    print(
+        f"{len(sites)} sites in {args.out}; {len(too_big)} judged-list sites too big to take whole"
+    )
+    for (rule, site_type), count in sorted(summary(sites).items()):
+        print(f"{count:>8}  {rule:6} {site_type}")
 
 
 if __name__ == "__main__":
