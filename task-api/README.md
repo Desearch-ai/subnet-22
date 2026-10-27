@@ -185,7 +185,10 @@ Embed tasks are off until `TASK_API_EMBED_TASKS=1`. The flow:
    handed to another miner, at no cost. A pass pays the characters embedded. Embed uploads awaiting a
    verdict count against the planner's room. A task that fails `TASK_API_MAX_ATTEMPTS` times is
    dropped and its pages go back to the planner (`embed:dropped`), which plans them again the next
-   time the log shows them.
+   time the log shows them. A task is also dropped when it is next claimed, at no cost to that
+   miner, once its input is older than `TASK_API_EMBED_INPUT_MAX_AGE_S` (inputs are kept a day) or
+   miners have handed it back `TASK_API_MAX_HANDBACKS` times by abandoning it or letting the claim
+   expire; the miner draws another task instead.
 5. **Publisher:** writes the vectors of every finalized embed task that passed or was not picked, each
    with its page key, URL, text hash, kind and index, to `vectors/<model>/log/` in the pages bucket,
    numbered under `vectors/<model>/seq/`, and deletes the upload and the input. A vector that is not
@@ -277,6 +280,8 @@ The [bot](../desearch-bot/README.md) fills the queue with the admin hotkey (`--t
 | `TASK_API_EMBED_MODEL` | `desearch-4b-v1` | the model embed tasks name, from [`desearch/embedding.py`](../desearch/embedding.py) |
 | `TASK_API_EMBED_CLAIM_TTL` | 300 | seconds a miner is given to upload an embed task after claiming it |
 | `TASK_API_EMBED_QUEUE_TARGET` | 100 | embed tasks the planner keeps queued and waiting for their round's reveal |
+| `TASK_API_EMBED_INPUT_MAX_AGE_S` | 72000 | seconds after the planner wrote an input that its task is dropped at its next claim |
+| `TASK_API_MAX_HANDBACKS` | 5 | hand-backs (abandons and expired claims) after which an embed task is dropped at its next claim |
 | `TASK_API_EMBED_CHECK_SHARE` | 0.05 | share of an established hotkey's embed uploads drawn for a check; 1 checks every upload |
 | `TASK_API_EMBED_CHECKS_PER_HOUR` | 600 | drawn embed checks an hour across all miners; the share is lowered to stay within it |
 | `TASK_API_EMBED_REFERENCE_URL` | — | Desearch's model servers (each an OpenAI-compatible `/v1/embeddings` serving the model under its name) for validators without their own, comma-separated and tried in order; without one, the reference endpoint answers 503 |

@@ -34,6 +34,7 @@ use crate::verdicts::{build_embed_vote, build_vote};
 use crate::{roundstore, sampling, uploadlog};
 
 const COMPLETE_LOCK_S: i64 = 300;
+const CLAIM_DRAWS: usize = 4;
 const COMPLETED_TTL_S: u64 = 900;
 const COMPLETE_WAIT: Duration = Duration::from_secs(20);
 const COMPLETE_POLL: Duration = Duration::from_millis(250);
@@ -179,26 +180,48 @@ async fn claim_tasks(state: &State, signed: &Signed<'_>) -> Answer {
     };
     steps.mark("budget");
     let tasks = state.tasks(kind);
-    let claims = match tasks.claim(&state.redis, &who.hotkey, budget, WAITING_PER_BUDGET * budget, body.count, now()).await? {
-        Ok(claims) => claims,
-        Err(refusal) => return refused(state, &round_id, &who, refusal).await,
-    };
-    steps.mark("queue");
     let mut issued = Vec::new();
     let mut receipts = Vec::new();
-    for got in claims {
-        if let Some(task) = issue(state, &got, kind, &who).await? {
-            receipts.push(Receipt {
-                round_id: text(&task, "round_id").into(),
-                hotkey: who.hotkey.clone(),
-                requested_at: who.requested_at,
-                outcome: "issued",
-                seq: got.seq,
-                task_id: Some(got.task_id.clone()),
-                ..Receipt::default()
-            });
-            issued.push(task);
+    let mut dropped = 0;
+    // A draw that was all dropped tasks leaves the miner nothing, so it draws again rather than wait out a refusal.
+    for _ in 0..CLAIM_DRAWS {
+        let claims = match tasks.claim(&state.redis, &who.hotkey, budget, WAITING_PER_BUDGET * budget, body.count, now()).await? {
+            Ok(claims) => claims,
+            Err(refusal) => return refused(state, &round_id, &who, refusal).await,
+        };
+        steps.mark("queue");
+        let drawn = claims.len();
+        let mut dropped_now = 0;
+        for got in claims {
+            if kind == EMBED {
+                let handbacks = queues::handbacks(&state.redis, &got.task_id).await?;
+                if let Some(cause) = lifecycle::spent(&state.settings, &got.payload, handbacks, now()) {
+                    lifecycle::drop_claimed(state, &got.task_id, &got.payload, &who.hotkey, cause, got.seq).await?;
+                    dropped_now += 1;
+                    continue;
+                }
+            }
+            if let Some(task) = issue(state, &got, kind, &who).await? {
+                receipts.push(Receipt {
+                    round_id: text(&task, "round_id").into(),
+                    hotkey: who.hotkey.clone(),
+                    requested_at: who.requested_at,
+                    outcome: "issued",
+                    seq: got.seq,
+                    task_id: Some(got.task_id.clone()),
+                    ..Receipt::default()
+                });
+                issued.push(task);
+            }
         }
+        dropped += dropped_now;
+        if dropped_now < drawn {
+            break;
+        }
+    }
+    if issued.is_empty() && dropped > 0 {
+        let refusal = Refusal::new("QUEUE_EMPTY", json!({"depth": tasks.depth(&state.redis).await?}));
+        return refused(state, &round_id, &who, refusal).await;
     }
     if issued.is_empty() {
         return Err(ApiError::status(503, "upload signing is unavailable"));

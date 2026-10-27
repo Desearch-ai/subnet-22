@@ -22,13 +22,14 @@ use crate::queues::{self, Finalized, OPEN_SCAN};
 use crate::roundlog::{self, Receipt};
 use crate::rounds::{self, Batch, Round, Url};
 use crate::sampling;
+use crate::settings::Settings;
 use crate::state::{Redis, State};
 use crate::storage::{delete_quietly, put_json};
 use crate::validations::{self, build_report, FinalVerdict};
 use crate::verdicts::{decide, Decision, ERROR_OUTCOMES, NO_MAJORITY};
 use crate::{checks, hours, outcomes, py, roundstore};
 
-pub const EMBED_FIELDS: [&str; 6] = ["model", "texts", "chars", "input_key", "input_sha256", "pages"];
+pub const EMBED_FIELDS: [&str; 7] = ["model", "texts", "chars", "input_key", "input_sha256", "pages", "written_at"];
 pub const EMBED_ROUND_INPUTS: isize = 200;
 pub const FINALIZE_LOCK_S: i64 = 300;
 /// Rounds revealed per pass, so a backlog cannot hold the janitor for minutes.
@@ -406,6 +407,52 @@ pub fn crashed_on_most(votes: &[Value]) -> bool {
     crashed * 2 > votes.len()
 }
 
+/// A task that goes no further: its receipt, and its URLs or pages handed back.
+pub async fn drop_task(state: &State, task_id: &str, job: &Value, hotkey: &str, cause: &str, seq: i64) -> Result<()> {
+    let round_id = text(job, "round_id").to_string();
+    state
+        .record_one(Receipt {
+            round_id: round_id.clone(),
+            hotkey: hotkey.into(),
+            outcome: "dropped",
+            seq,
+            task_id: Some(task_id.into()),
+            cause: Some(cause.into()),
+            ..Receipt::default()
+        })
+        .await?;
+    finish_task(state, &round_id, task_id).await?;
+    if kind_of(job) == CRAWL {
+        report_outcomes(state, &urls_of(job), OUTCOME_DROPPED, task_id).await;
+    } else {
+        let dropped = json!({"input_key": job["input_key"], "pages": job["pages"]});
+        let _: i64 = state.redis.clone().rpush(queues::EMBED_DROPPED, dropped.to_string()).await?;
+    }
+    Ok(())
+}
+
+/// Why an embed task just claimed goes no further: its input is near the end of its day in storage, or miners handed it back too often.
+pub fn spent(settings: &Settings, payload: &Value, handbacks: i64, at: f64) -> Option<&'static str> {
+    let written_at = payload.get("written_at").and_then(Value::as_f64);
+    if written_at.is_some_and(|written_at| at - written_at > settings.embed_input_max_age) {
+        Some("input_expired")
+    } else if handbacks >= settings.max_handbacks {
+        Some("handed_back")
+    } else {
+        None
+    }
+}
+
+/// Drops a task its claimer has not been given yet, at no cost to that miner; false when the claim is no longer theirs.
+pub async fn drop_claimed(state: &State, task_id: &str, payload: &Value, hotkey: &str, cause: &str, seq: i64) -> Result<bool> {
+    if !state.tasks(kind_of(payload)).discard(&state.redis, task_id, hotkey).await? {
+        return Ok(false);
+    }
+    eprintln!("dropped {task_id} at its claim: {cause}");
+    drop_task(state, task_id, payload, "", cause, seq).await?;
+    Ok(true)
+}
+
 pub async fn requeue(state: &State, task_id: &str, job: &Value, cause: &str) -> Result<()> {
     let kind = kind_of(job).to_string();
     let attempts = number(job, "attempts") + 1;
@@ -413,25 +460,7 @@ pub async fn requeue(state: &State, task_id: &str, job: &Value, cause: &str) -> 
     let miner = text(job, "miner").to_string();
     if attempts >= state.settings.max_attempts {
         let seq = state.next_seq().await?;
-        state
-            .record_one(Receipt {
-                round_id: round_id.clone(),
-                hotkey: miner,
-                outcome: "dropped",
-                seq,
-                task_id: Some(task_id.into()),
-                cause: Some(cause.into()),
-                ..Receipt::default()
-            })
-            .await?;
-        finish_task(state, &round_id, task_id).await?;
-        if kind == CRAWL {
-            report_outcomes(state, &urls_of(job), OUTCOME_DROPPED, task_id).await;
-        } else {
-            let dropped = json!({"input_key": job["input_key"], "pages": job["pages"]});
-            let _: i64 = state.redis.clone().rpush(queues::EMBED_DROPPED, dropped.to_string()).await?;
-        }
-        return Ok(());
+        return drop_task(state, task_id, job, &miner, cause, seq).await;
     }
     let mut payload: Map<String, Value> = EMBED_FIELDS.iter().filter_map(|name| job.get(*name).map(|v| (name.to_string(), v.clone()))).collect();
     payload.insert("kind".into(), kind.clone().into());
