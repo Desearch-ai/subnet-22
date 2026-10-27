@@ -142,14 +142,13 @@ async fn upkeep(state: &Arc<State>, due: &mut Due) -> Result<()> {
     if elapsed(due.sealed_at, SEAL_EVERY) {
         due.sealed_at = Some(Instant::now());
         OUTCOMES.fill_holes(&state.storage, &state.redis).await?;
-        state
-            .db
-            .run(move |conn| {
-                let at = now();
-                roundstore::seal_closed(conn, at, SEAL_ROUNDS, SEAL_BYTES)?;
-                validations::drop_publish_copies(conn, at - PUBLISH_COPY_KEEP_S, DROP_VERDICTS)
-            })
-            .await?;
+        // Each step is its own transaction, so claims and verdicts get the writer between them.
+        state.db.run(|conn| roundstore::delete_expired(conn, now(), SEAL_ROUNDS, SEAL_BYTES)).await?;
+        let (_, walked) = state.db.run(|conn| roundstore::seal_closed(conn, now(), SEAL_ROUNDS, SEAL_BYTES)).await?;
+        if let Some(closed_at) = walked {
+            state.db.run(move |conn| roundstore::mark_sealed(conn, closed_at)).await?;
+        }
+        state.db.run(|conn| validations::drop_publish_copies(conn, now() - PUBLISH_COPY_KEEP_S, DROP_VERDICTS)).await?;
     }
     if elapsed(due.logged_at, UPLOAD_LOG_EVERY) {
         due.logged_at = Some(Instant::now());
