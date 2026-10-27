@@ -28,7 +28,7 @@ RocksDB is compiled from source, which needs `clang` and a C++ toolchain.
 
 ```bash
 python tools/export_langid.py data/langid.bin   # once: the language model homepages are judged with
-python tools/crawl_list.py --out domains.json --recrawl-out recrawl.txt   # --domains and --recrawl-overrides, from the registry
+python tools/crawl_list.py --out domains.json   # --domains, from the registry
 MALLOC_ARENA_MAX=2 desearch-bot run --buckets-dir /var/lib/desearch-bot/buckets --data-dir data
 ```
 
