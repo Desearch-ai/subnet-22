@@ -20,6 +20,7 @@ use tokio::net::TcpListener;
 use crate::allowed::Allowed;
 use crate::buckets::{BucketStore, Buckets, Resources, BUCKETS, URL};
 use crate::dispatch::{self, Dispatcher, Progress};
+use crate::due::page_interval;
 use crate::hotkey::Hotkey;
 use crate::outcomes::{OutcomeReader, OutcomeRow};
 use crate::ready::{bounded, fetchable, prefixed, Outcome};
@@ -108,6 +109,8 @@ pub struct ReplayArgs {
     pub restamping: Option<String>,
     /// Stored records the list walker reads per second, building queues beside the passes.
     pub join_per_sec: u64,
+    /// Domains re-crawled on their own interval, as the bot's `--recrawl-overrides`.
+    pub recrawl_overrides: Option<PathBuf>,
     /// Where the hourly report goes.
     pub log: PathBuf,
 }
@@ -120,6 +123,8 @@ struct Bars {
     sites: HashMap<String, VecDeque<u32>>,
     /// Sends within a day of the last that nothing explains: a refresh gone early.
     early: u64,
+    /// Refreshes on an interval under a day, such as a news article under two days old.
+    due_within_day: u64,
     early_redated: u64,
     early_after_failure: u64,
     early_after_drop: u64,
@@ -141,7 +146,8 @@ fn page_id(url: &str) -> u64 {
 }
 
 impl Bars {
-    fn sent(&mut self, url: &str, host: &str, at: u32, limit: u64, restamping: bool) {
+    /// A send of `url`; `interval` gives the page's refresh interval as of a send at the time it is given.
+    fn sent(&mut self, url: &str, host: &str, at: u32, limit: u64, restamping: bool, interval: impl FnOnce(u32) -> u32) {
         let id = page_id(url);
         if let Some((before, how)) = self.last.insert(id, (at, PENDING)) {
             let redated = self.redated.get(&id).is_some_and(|&when| when >= before);
@@ -151,6 +157,7 @@ impl Bars {
                     DROPPED => self.early_after_drop += 1,
                     _ if redated && restamping => self.restamped_early += 1,
                     _ if redated => self.early_redated += 1,
+                    _ if at.saturating_sub(before) >= interval(before) => self.due_within_day += 1,
                     _ => self.early += 1,
                 }
             }
@@ -258,7 +265,10 @@ pub async fn replay(args: ReplayArgs) -> Result<()> {
     let list = Allowed::from_file(&args.domains)?;
     buckets.allow(&list);
     let rates = read_rates(&args.outcomes)?;
-    let recrawl = Recrawl::default();
+    let recrawl = match &args.recrawl_overrides {
+        Some(path) => Recrawl::default().with_overrides_file(path)?,
+        None => Recrawl::default(),
+    };
     let mut log = std::io::BufWriter::new(std::fs::File::create(&args.log)?);
     let mut bars = Bars::default();
     let listed: Vec<String> = buckets.listed();
@@ -285,7 +295,7 @@ pub async fn replay(args: ReplayArgs) -> Result<()> {
         .await?
         .paced_from(args.per_hour, args.start)
         .windowed(window);
-    let mut reader = OutcomeReader::new(recrawl, 200_000);
+    let mut reader = OutcomeReader::new(recrawl.clone(), 200_000);
     let mut rng = rand::rngs::StdRng::seed_from_u64(2026);
     let mut waiting: VecDeque<Sent> = VecDeque::new();
     let end = args.start + args.hours * HOUR;
@@ -313,8 +323,12 @@ pub async fn replay(args: ReplayArgs) -> Result<()> {
         dispatcher.pass(now).await?;
         pass_ms.push(started.elapsed().as_millis() as u64);
         for (host, url) in std::mem::take(&mut taken.lock().unwrap_or_else(|e| e.into_inner()).urls) {
-            let limit = buckets.terms(&host).hourly.unwrap_or(1_000_000);
-            bars.sent(&url, &host, now, limit, host == restamping);
+            let terms = buckets.terms(&host);
+            let interval = |before: u32| {
+                let first_seen = urls::parse(&url, &host).and_then(|parsed| buckets.store(&host).url(&parsed).ok().flatten()).map_or(0, |record| record.first_seen);
+                page_interval(&recrawl, terms.site, &host, first_seen, before)
+            };
+            bars.sent(&url, &host, now, terms.hourly.unwrap_or(1_000_000), host == restamping, interval);
             if args.refusing.as_deref() == Some(host.as_str()) {
                 *bars.refusing.entry((now - args.start) / HOUR).or_default() += 1;
             }
@@ -358,7 +372,7 @@ pub async fn replay(args: ReplayArgs) -> Result<()> {
             sorted.sort_unstable();
             let p = |q: f64| sorted.get(((sorted.len() as f64 * q) as usize).min(sorted.len().saturating_sub(1))).copied().unwrap_or(0);
             let line = format!(
-                "[replay] hour {:>2}: {hour_sent} sent (new {} changed {} retry {} due {} pulled {}), pass p50 {} ms p99 {} ms max {} ms, {} queues {} due, walker {done}/{of} read {}, sitemaps {} read {} new {} re-dated, rss {} MiB; over hour {} over spread {} early {} early re-dated {} re-stamped early {} early after a failure {} after a drop {}",
+                "[replay] hour {:>2}: {hour_sent} sent (new {} changed {} retry {} due {} pulled {}), pass p50 {} ms p99 {} ms max {} ms, {} queues {} due, walker {done}/{of} read {}, sitemaps {} read {} new {} re-dated, rss {} MiB; over hour {} over spread {} early {} due within a day {} early re-dated {} re-stamped early {} early after a failure {} after a drop {}",
                 (now - args.start) / HOUR,
                 counts.new - last.new,
                 counts.changed - last.changed,
@@ -378,6 +392,7 @@ pub async fn replay(args: ReplayArgs) -> Result<()> {
                 bars.over_hour,
                 bars.over_spread,
                 bars.early,
+                bars.due_within_day,
                 bars.early_redated,
                 bars.restamped_early,
                 bars.early_after_failure,

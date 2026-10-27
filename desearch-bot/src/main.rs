@@ -102,6 +102,9 @@ struct ReplayArgs {
     /// Stored records the list walker reads per second as it builds the queues beside the passes.
     #[arg(long, default_value_t = 1_000_000)]
     join_per_sec: u64,
+    /// Domains re-crawled on their own interval, as `run` takes them.
+    #[arg(long)]
+    recrawl_overrides: Option<PathBuf>,
     /// Where the hourly report goes.
     #[arg(long)]
     log: PathBuf,
@@ -250,6 +253,7 @@ fn main() -> Result<()> {
                 refusing: args.refusing,
                 restamping: args.restamping,
                 join_per_sec: args.join_per_sec,
+                recrawl_overrides: args.recrawl_overrides,
                 log: args.log,
             };
             return tokio::runtime::Builder::new_multi_thread().enable_all().build()?.block_on(desearch_bot::replay::replay(args));
