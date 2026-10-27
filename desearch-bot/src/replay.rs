@@ -152,11 +152,12 @@ impl Bars {
         if let Some((before, how)) = self.last.insert(id, (at, PENDING)) {
             let redated = self.redated.get(&id).is_some_and(|&when| when >= before);
             if at.saturating_sub(before) < FLOOR {
+                // A sitemap date newer than the last send sends the page at once, whatever that send's outcome.
                 match how {
-                    FAILED => self.early_after_failure += 1,
-                    DROPPED => self.early_after_drop += 1,
                     _ if redated && restamping => self.restamped_early += 1,
                     _ if redated => self.early_redated += 1,
+                    FAILED => self.early_after_failure += 1,
+                    DROPPED => self.early_after_drop += 1,
                     _ if at.saturating_sub(before) >= interval(before) => self.due_within_day += 1,
                     _ => self.early += 1,
                 }
@@ -321,7 +322,14 @@ pub async fn replay(args: ReplayArgs) -> Result<()> {
         }
         let started = Instant::now();
         dispatcher.pass(now).await?;
-        pass_ms.push(started.elapsed().as_millis() as u64);
+        let took = started.elapsed().as_millis() as u64;
+        pass_ms.push(took);
+        if took > 2_000 {
+            let ms: Vec<u64> = progress.pass_ms.iter().map(|ms| ms.load(Ordering::Relaxed)).collect();
+            let line = format!("[replay] slow pass at hour {:.2}: {took} ms (absorb {} ms, pick {} ms, send {} ms)", f64::from(now - args.start) / f64::from(HOUR), ms[0], ms[1], ms[2]);
+            println!("{line}");
+            writeln!(log, "{line}")?;
+        }
         for (host, url) in std::mem::take(&mut taken.lock().unwrap_or_else(|e| e.into_inner()).urls) {
             let terms = buckets.terms(&host);
             let interval = |before: u32| {
