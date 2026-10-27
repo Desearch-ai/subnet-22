@@ -20,7 +20,8 @@ WHOLE_TYPES = {"academic", "public", "docs"}
 # A site fits whole when its stored pages fit under three times its judged cap, the crawl's share.
 CRAWL_PER_INDEX = 3
 FIELDS = ("host", "rule", "since", "paths", "source", "type", "why")
-PATH_DATE = re.compile(r"/((?:19|20)[0-9]{2})[/-](0[1-9]|1[0-2])(?:[/-]|$)")
+DASHED = re.compile(r"(?<![0-9])([0-9]{4})-([0-9]{2})-([0-9]{2})(?![0-9])")
+COMPACT = re.compile(r"(?<![0-9])([0-9]{4})([0-9]{2})([0-9]{2})(?![0-9])")
 
 
 def open_text(path: str):
@@ -146,11 +147,35 @@ def build(
     return [sites[host] for host in sorted(sites)], too_big
 
 
+def calendar_date(year: str, month: str, day: str) -> date | None:
+    try:
+        found = date(int(year), int(month), int(day))
+    except ValueError:
+        return None
+    return found if 1990 <= found.year <= 2099 else None
+
+
+def path_date(path: str) -> date | None:
+    """`/YYYY/MM/DD/`, `/YYYY/MM/` (the first of the month), or `YYYY-MM-DD` or `YYYYMMDD` standing apart, as the planner reads them."""
+    parts = path.split("/")
+    for at, part in enumerate(parts):
+        month = parts[at + 1] if at + 1 < len(parts) else ""
+        if len(part) == 4 and 1 <= len(month) <= 2:
+            day = parts[at + 2] if at + 2 < len(parts) and 1 <= len(parts[at + 2]) <= 2 else "1"
+            found = calendar_date(part, month, day) or calendar_date(part, month, "1")
+            if found:
+                return found
+        for pattern in (DASHED, COMPACT):
+            for match in pattern.finditer(part):
+                if found := calendar_date(*match.groups()):
+                    return found
+    return None
+
+
 def page_date(url: str, published: str | None) -> date | None:
-    if published:
+    if published and re.match(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", published):
         return date.fromisoformat(published[:10])
-    found = PATH_DATE.search(urlsplit(url).path)
-    return date(int(found.group(1)), int(found.group(2)), 1) if found else None
+    return path_date(urlsplit(url).path)
 
 
 def entry_for(sites: dict[str, dict], host: str) -> dict | None:
