@@ -13,7 +13,7 @@ use sha2::{Digest, Sha256};
 use tokio::sync::watch;
 
 use crate::allowed::{Allowed, Terms};
-use crate::buckets::{bucket_of, Buckets};
+use crate::buckets::{bucket_of, Buckets, Json};
 use crate::outcomes::{Next, OutcomeFeed, OutcomeReader};
 use crate::ready::{Entry, Order, Pick, Reason, SentPage, Stock, Yield, CHANGED, FRESH, LANES, REQUEUED};
 use crate::recrawl::Recrawl;
@@ -255,7 +255,12 @@ impl HourlyCap {
 
     /// What is left of `limit` in the last hour and of its share for the last two minutes, for a domain held to less than the usual cap.
     pub fn allowance_under(&mut self, domain: &str, now: u32, limit: u64) -> u64 {
-        let spread = (limit * u64::from(SPREAD_SECONDS) / u64::from(HOUR)).max(SPREAD_FLOOR);
+        self.allowance_within(domain, now, limit, SPREAD_FLOOR)
+    }
+
+    /// As `allowance_under`, with the pages the domain may always send at once given: one for a site that asks for a delay between requests.
+    pub fn allowance_within(&mut self, domain: &str, now: u32, limit: u64, floor: u64) -> u64 {
+        let spread = (limit * u64::from(SPREAD_SECONDS) / u64::from(HOUR)).max(floor);
         let Some(sent) = self.sent.get_mut(domain) else {
             return limit.min(spread);
         };
@@ -497,7 +502,9 @@ pub struct Dispatcher {
     /// Domains whose sent pages may go again to fill spare room, as (rank, domain), and when they were last chosen.
     fillers: Vec<(i64, String)>,
     fillers_read: Option<Instant>,
-    fillers_job: Option<tokio::task::JoinHandle<Result<Vec<(i64, String)>>>>,
+    fillers_job: Option<tokio::task::JoinHandle<Result<Fillers>>>,
+    /// The hourly rate each domain's Crawl-delay allows, for the domains whose robots.txt names one.
+    paced: HashMap<String, u64>,
     fill_resume: Option<(i64, String)>,
     /// Domains with no refresh to send now, until when they rest, and the domains whose stock ran out, for the stock keeper.
     fill_rest: HashMap<String, u32>,
@@ -515,8 +522,8 @@ impl Dispatcher {
         progress: Arc<Progress>,
     ) -> Result<Self> {
         let reading = buckets.clone();
-        let (domains, pending) = tokio::task::spawn_blocking(move || -> Result<_> {
-            let mut domains = HashMap::new();
+        let (domains, paced, pending) = tokio::task::spawn_blocking(move || -> Result<_> {
+            let (mut domains, mut paced) = (HashMap::new(), HashMap::new());
             let forgotten = on_readers(reading.stores().collect(), |store| store.forget_expecting())?;
             if forgotten.iter().any(|&found| found) {
                 println!("[rs] deleted the overdue-send deadlines of earlier versions from {} stores", forgotten.iter().filter(|&&f| f).count());
@@ -528,7 +535,11 @@ impl Dispatcher {
                     if !reading.allows(&domain) {
                         continue;
                     }
-                    let (rank, share, weight) = (rank_of(&reading, &domain), share_of(&reading, &domain, now()), reading.terms(&domain).weight);
+                    let (rank, per_hour) = placing_of(&reading, &domain);
+                    let (share, weight) = (share_of(&reading, &domain, now()), reading.terms(&domain).weight);
+                    if let Some(per_hour) = per_hour {
+                        paced.insert(domain.clone(), per_hour);
+                    }
                     domains.insert(domain, Domain { rank, ready, share, weight });
                 }
             }
@@ -537,7 +548,7 @@ impl Dispatcher {
                 Some(Value::Null) | None => Vec::new(),
                 Some(one) => vec![serde_json::from_value(one)?],
             };
-            Ok((domains, pending))
+            Ok((domains, paced, pending))
         })
         .await??;
         let dispatcher = Dispatcher {
@@ -557,6 +568,7 @@ impl Dispatcher {
             fillers: Vec::new(),
             fillers_read: None,
             fillers_job: None,
+            paced,
             fill_resume: None,
             fill_rest: HashMap::new(),
             stock_wanted: None,
@@ -693,17 +705,23 @@ impl Dispatcher {
                     *grown.entry(domain).or_default() += added;
                 }
             }
-            let ranks: Vec<(String, i64, f64, u8)> = refresh
+            let ranks: Vec<(String, i64, f64, u8, Option<u64>)> = refresh
                 .iter()
                 .chain(grown.keys())
-                .map(|domain| (domain.clone(), rank_of(&buckets, domain), share_of(&buckets, domain, now), buckets.terms(domain).weight))
+                .map(|domain| {
+                    let (rank, paced) = placing_of(&buckets, domain);
+                    (domain.clone(), rank, share_of(&buckets, domain, now), buckets.terms(domain).weight, paced)
+                })
                 .collect();
             Ok((grown, ranks, requeued, gone))
         })
         .await??;
         self.progress.requeued.fetch_add(requeued as u64, Ordering::Relaxed);
         self.progress.gone.fetch_add(gone as u64, Ordering::Relaxed);
-        let ranks: HashMap<String, (i64, f64, u8)> = ranks.into_iter().map(|(domain, rank, share, weight)| (domain, (rank, share, weight))).collect();
+        for (domain, _, _, _, paced) in &ranks {
+            self.pace_by_delay(domain, *paced);
+        }
+        let ranks: HashMap<String, (i64, f64, u8)> = ranks.into_iter().map(|(domain, rank, share, weight, _)| (domain, (rank, share, weight))).collect();
         for (domain, added) in grown {
             let (rank, share, weight) = ranks.get(&domain).copied().unwrap_or((UNRANKED, 1.0, 1));
             self.domains.entry(domain).or_insert(Domain { rank, ready: 0, share, weight }).ready += added;
@@ -736,8 +754,8 @@ impl Dispatcher {
             .iter()
             .map(|(rank, name)| {
                 let Domain { ready, share, weight, .. } = self.domains[name];
-                let hourly = self.buckets.terms(name).hourly.unwrap_or(self.cap.limit());
-                let allowance = self.cap.allowance_under(name, now, if share == 0.0 { PROBE_PER_HOUR.min(hourly) } else { hourly });
+                let (hourly, floor) = hourly_of(&self.buckets, &self.paced, self.cap.limit(), name);
+                let allowance = self.cap.allowance_within(name, now, if share == 0.0 { PROBE_PER_HOUR.min(hourly) } else { hourly }, floor);
                 Want { rank: *rank, ready, allowance, share, weight }
             })
             .collect();
@@ -783,6 +801,13 @@ impl Dispatcher {
         Ok(picks)
     }
 
+    fn pace_by_delay(&mut self, domain: &str, paced: Option<u64>) {
+        match paced {
+            Some(per_hour) => self.paced.insert(domain.to_string(), per_hour),
+            None => self.paced.remove(domain),
+        };
+    }
+
     /// The domains to refresh, once their background choice is done; it reads every listed domain's yield and rank, too slow for a pass.
     async fn take_fillers(&mut self) {
         if !self.fillers_job.as_ref().is_some_and(|job| job.is_finished()) {
@@ -792,9 +817,12 @@ impl Dispatcher {
             return;
         };
         match job.await {
-            Ok(Ok(fillers)) => {
-                self.progress.fill_domains.store(fillers.len() as u64, Ordering::Relaxed);
-                self.fillers = fillers;
+            Ok(Ok(Fillers { domains, paced })) => {
+                self.progress.fill_domains.store(domains.len() as u64, Ordering::Relaxed);
+                self.fillers = domains;
+                for (domain, paced) in paced {
+                    self.pace_by_delay(&domain, paced);
+                }
             }
             Ok(Err(error)) => eprintln!("[rs] choosing the domains to refresh failed: {error:#}"),
             Err(error) => eprintln!("[rs] choosing the domains to refresh stopped: {error}"),
@@ -816,7 +844,8 @@ impl Dispatcher {
             .iter()
             .map(|(rank, name)| {
                 let terms = self.buckets.terms(name);
-                let allowance = self.cap.allowance_under(name, now, terms.hourly.unwrap_or(self.cap.limit()));
+                let (hourly, floor) = hourly_of(&self.buckets, &self.paced, self.cap.limit(), name);
+                let allowance = self.cap.allowance_within(name, now, hourly, floor);
                 Want { rank: *rank, ready: allowance, allowance, share: 1.0, weight: terms.weight }
             })
             .collect();
@@ -1408,7 +1437,13 @@ fn share_of(buckets: &Buckets, domain: &str, now: u32) -> f64 {
 }
 
 /// Listed domains whose pages come back well enough to send again, best ranked first.
-fn fillers(buckets: &Buckets, now: u32) -> Result<Vec<(i64, String)>> {
+/// The domains whose sent pages may go again, by rank, with what their Crawl-delay allows an hour.
+struct Fillers {
+    domains: Vec<(i64, String)>,
+    paced: Vec<(String, Option<u64>)>,
+}
+
+fn fillers(buckets: &Buckets, now: u32) -> Result<Fillers> {
     let chunks: Vec<Vec<String>> = buckets.listed().chunks(4096).map(<[String]>::to_vec).collect();
     let found = on_readers(chunks, |names| {
         Ok(names
@@ -1417,17 +1452,45 @@ fn fillers(buckets: &Buckets, now: u32) -> Result<Vec<(i64, String)>> {
                 let judged = buckets.store_for(name).and_then(|store| store.domain_yield(name).ok().flatten()).is_some_and(|y| y.at(now).judged() >= YIELD_RECENT_JUDGED);
                 judged && share_of(buckets, name, now) >= 1.0
             })
-            .map(|name| (rank_of(buckets, &name), name))
+            .map(|name| {
+                let (rank, paced) = placing_of(buckets, &name);
+                (rank, name, paced)
+            })
             .collect::<Vec<_>>())
     })?;
-    let mut fillers: Vec<(i64, String)> = found.into_iter().flatten().collect();
-    fillers.sort_unstable();
-    Ok(fillers)
+    let (mut domains, mut paced) = (Vec::new(), Vec::new());
+    for (rank, name, per_hour) in found.into_iter().flatten() {
+        paced.push((name.clone(), per_hour));
+        domains.push((rank, name));
+    }
+    domains.sort_unstable();
+    Ok(Fillers { domains, paced })
 }
 
 fn rank_of(buckets: &Buckets, domain: &str) -> i64 {
+    placing_of(buckets, domain).0
+}
+
+/// A domain's rank, and the hourly rate its Crawl-delay allows when its robots.txt names one.
+fn placing_of(buckets: &Buckets, domain: &str) -> (i64, Option<u64>) {
     let record = buckets.store_for(domain).and_then(|store| store.domain(domain).ok().flatten());
-    record.and_then(|d| records::int(d.get("rank"))).unwrap_or(UNRANKED)
+    let rank = record.as_ref().and_then(|d| records::int(d.get("rank"))).unwrap_or(UNRANKED);
+    (rank, record.as_ref().and_then(delay_hourly))
+}
+
+/// Pages an hour a site that asks for a delay between requests can take: one per delay, at most a minute apart.
+pub fn delay_hourly(record: &Json) -> Option<u64> {
+    let delay = record.get("delay").and_then(Value::as_f64).filter(|delay| delay.is_finite() && *delay > 0.0)?;
+    Some(((3600.0 / delay.min(60.0)) as u64).max(1))
+}
+
+/// A domain's hourly limit, held to what its Crawl-delay allows, and the pages it may send at once.
+fn hourly_of(buckets: &Buckets, paced: &HashMap<String, u64>, limit: u64, domain: &str) -> (u64, u64) {
+    let listed = buckets.terms(domain).hourly.unwrap_or(limit);
+    match paced.get(domain) {
+        Some(&per_hour) if per_hour < listed => (per_hour, 1),
+        _ => (listed, SPREAD_FLOOR),
+    }
 }
 
 pub fn now() -> u32 {

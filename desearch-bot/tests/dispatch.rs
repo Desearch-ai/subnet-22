@@ -1503,3 +1503,55 @@ fn a_page_on_a_subdomain_listed_on_its_own_goes_only_under_that_subdomain() {
     assert_eq!(picks.iter().map(|p| p.url.as_str()).collect::<Vec<_>>(), ["https://example.com/a"], "and one already waiting drops as it would go");
     assert_eq!(queued(&store), ["example.com/a"], "the subdomain's page left the list; the page taken waits to be marked sent");
 }
+
+#[test]
+fn a_crawl_delay_sets_the_pages_an_hour_a_site_can_take() {
+    let record = |delay: Value| {
+        let mut record = records::new_domain(None, None, &[], State::Active, None, None);
+        record.insert("delay".into(), delay);
+        record
+    };
+    assert_eq!(desearch_bot::dispatch::delay_hourly(&record(Value::from(15.0))), Some(240));
+    assert_eq!(desearch_bot::dispatch::delay_hourly(&record(Value::from(1))), Some(3600));
+    assert_eq!(desearch_bot::dispatch::delay_hourly(&record(Value::from(600))), Some(60), "at most a minute apart, as the bot reads them");
+    assert_eq!(desearch_bot::dispatch::delay_hourly(&record(Value::from(0))), None);
+    assert_eq!(desearch_bot::dispatch::delay_hourly(&record(Value::Null)), None);
+    let mut cap = HourlyCap::new(36_000);
+    assert_eq!(cap.allowance_within("arxiv.org", 1000, 240, 1), 8, "two minutes of 240 an hour, with no floor of a hundred");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_site_asking_for_a_delay_between_requests_gets_no_more_than_the_delay_allows() {
+    let dir = Dir::new("crawl-delay");
+    let mut owned = vec![bucket_of("example.com"), bucket_of("example.org")];
+    owned.sort_unstable();
+    owned.dedup();
+    let buckets = Arc::new(Buckets::open(&dir.0, &owned, &resources()).unwrap());
+    for (host, delay) in [("example.com", Some(60.0)), ("example.org", None)] {
+        let store = buckets.store(host);
+        let mut record = records::new_domain(Some(5), Some("com"), &[], State::Active, None, None);
+        if let Some(delay) = delay {
+            record.insert("delay".into(), delay.into());
+        }
+        let mut changes = Changes::default();
+        changes.domain(host, &record);
+        store.write(changes).unwrap();
+        let pages = (0..30).map(|i| (urls::parse(&format!("https://{host}/p{i:02}"), host).unwrap(), 100 + i, false)).collect();
+        store.record_listing(host, 1, pages, 100).unwrap();
+    }
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let fake = Arc::new(Mutex::new(FakeApi { room: 1, ..FakeApi::default() }));
+    tokio::spawn(serve_api(listener, fake.clone()));
+    let mut dispatcher = Dispatcher::load(buckets.clone(), TaskApi::new(&base, Hotkey::from_uri("//test").unwrap()).unwrap(), 1000, shares(50, 10), rules(), Arc::new(Progress::default())).await.unwrap();
+    let sent_by = |fake: &Arc<Mutex<FakeApi>>, host: &str| {
+        fake.lock().unwrap().enqueued.iter().map(|(_, body)| serde_json::from_slice::<Value>(body).unwrap()["urls"].as_array().unwrap().iter().filter(|u| u["host"] == host).count()).sum::<usize>()
+    };
+    let now = 1_759_400_000;
+    dispatcher.pass(now).await.unwrap();
+    assert_eq!((sent_by(&fake, "example.com"), sent_by(&fake, "example.org")), (2, 30), "a minute between requests is 60 an hour, two minutes' worth at once");
+    dispatcher.pass(now + 60).await.unwrap();
+    assert_eq!(sent_by(&fake, "example.com"), 2);
+    dispatcher.pass(now + 121).await.unwrap();
+    assert_eq!(sent_by(&fake, "example.com"), 4);
+}
