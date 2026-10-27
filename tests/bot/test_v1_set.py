@@ -1,5 +1,6 @@
 import gzip
 import importlib.util
+from datetime import date
 import json
 import sys
 from pathlib import Path
@@ -13,43 +14,71 @@ SPEC.loader.exec_module(v1_set)
 GOLDEN = Path(__file__).resolve().parent / "v1_set_golden.json"
 
 
+TODAY = date(2026, 10, 28)
+
+
 def decision(host, site_type, cap=1_000_000, listed="1"):
     return {"host": host, "rank": "100", "state": "active", "listed": listed, "reason": "", "type": site_type, "cap": str(cap)}
 
 
-def build(decisions=(), rows=(), hand=(), backing=None, judged=None, counts=None):
-    sites, too_big = v1_set.build([list(r) for r in rows], list(hand), list(decisions), backing or {}, judged or {}, counts or {})
+def build(decisions=(), rows=(), hand=(), backing=None, news_sources=None, judged=None, counts=None, news="A"):
+    sites, too_big = v1_set.build([list(r) for r in rows], list(hand), list(decisions), backing or {}, news_sources or {}, judged or {}, counts or {}, news, TODAY)
     return {site["host"]: site for site in sites}, too_big
 
 
-def test_listed_news_sites_take_the_date_floor():
-    sites, _ = build([decision("news.example", "news")])
-    assert sites["news.example"] == {"host": "news.example", "rule": "news", "since": "2020-01-01", "type": "news", "why": ["news"]}
+def test_option_a_takes_established_outlets_for_all_years_and_other_news_sites_for_a_year():
+    news_sources = {"outlet.example": "jev+wikidata", "listed.example": "jev+list897", "label.example": "jev+ut1"}
+    backing = {"cited.example": {"benchmark_citations": "2", "news_list": "0", "wikidata_type": ""}}
+    hosts = ["outlet.example", "listed.example", "cited.example", "label.example"]
+    sites, _ = build([decision(h, "news") for h in hosts], backing=backing, news_sources=news_sources)
+    assert sites["outlet.example"] == {"host": "outlet.example", "rule": "news", "type": "news", "why": ["wikidata"]}
+    assert [sites[h].get("since") for h in hosts] == [None, None, None, "2025-10-28"]
+    assert sites["label.example"]["why"] == ["news"]
 
 
-def test_a_big_unbacked_news_site_stays_out_until_judged():
-    counts = {h: {"stored": "9000000", "dated_2020_on": "5000000"} for h in ("big.example", "listed.example")}
-    counts["small.example"] = {"stored": "900000", "dated_2020_on": "900000"}
-    backing = {"listed.example": {"news_list": "1", "benchmark_citations": "0", "wikidata_type": ""}}
-    sites, _ = build([decision(h, "news") for h in counts], backing=backing, counts=counts)
-    assert sites["big.example"] == {"host": "big.example", "rule": "out", "why": ["size-guard"]}
-    assert sites["listed.example"]["rule"] == sites["small.example"]["rule"] == "news"
+def test_option_b_takes_every_news_site_from_2020():
+    sites, _ = build([decision("outlet.example", "news"), decision("label.example", "news")], news_sources={"outlet.example": "wikidata"}, news="B")
+    assert {site["since"] for site in sites.values()} == {"2020-01-01"}
+
+
+def test_an_unbacked_news_site_the_judge_failed_is_out():
+    judged = {"thin.example": {"judged": "20", "substantive": "6"}, "outlet.example": {"judged": "20", "substantive": "6"}}
+    sites, _ = build([decision("thin.example", "news"), decision("outlet.example", "news")], news_sources={"outlet.example": "wikidata"}, judged=judged)
+    assert sites["thin.example"] == {"host": "thin.example", "rule": "out", "why": ["judge"]}
+    assert sites["outlet.example"]["rule"] == "news", "an established outlet stands whatever a sample says"
+
+
+def test_spam_networks_are_sites_storing_exactly_as_many_urls_as_unrelated_ones():
+    counts = {
+        "craftingfiction.com": 4_459_629, "filmfeels.co.uk": 4_459_629, "fitclubcolumbus.com": 4_459_629,
+        "ukcom.biz": 2_211_162, "ypage.uk": 2_211_162,
+        "oxfordlearners.com": 1_235_050, "oxfordlearners.co.uk": 1_235_050,
+        "gostickers.us": 730_038, "eatsauca.com": 730_038, "daim.co": 730_038,
+        "pair-a.com": 730_038 + 1, "pair-b.com": 730_038 + 1,
+        "cms-a.com": 2_000_000, "cms-b.com": 2_000_000, "cms-c.com": 2_000_000,
+    }
+    found = v1_set.networks({host: {"stored": str(n)} for host, n in counts.items()})
+    assert found == {"craftingfiction.com", "filmfeels.co.uk", "fitclubcolumbus.com", "ukcom.biz", "ypage.uk", "gostickers.us", "eatsauca.com", "daim.co"}
+
+
+def test_people_search_and_forecast_sites_are_out_by_rule():
+    decisions = [decision("fastpeoplesearch.example", "reference"), decision("localweather.example", "news"), decision("weather.gov", "public")]
+    sites, _ = build(decisions, judged={"fastpeoplesearch.example": {"judged": "20", "substantive": "20"}})
+    assert sites["fastpeoplesearch.example"]["why"] == ["people-search"]
+    assert sites["localweather.example"] == {"host": "localweather.example", "rule": "out", "why": ["template"]}
+    assert sites["weather.gov"]["rule"] == "whole", "a public site is not a forecast template by its name"
 
 
 def test_evergreen_sites_go_whole_only_when_they_fit_and_reference_needs_the_judge():
-    judged = {
-        "passed.example": {"judged": "20", "substantive": "17"},
-        "thin.example": {"judged": "20", "substantive": "9"},
-        "few.example": {"judged": "5", "substantive": "5"},
-    }
+    judged = {"passed.example": {"judged": "20", "substantive": "17"}, "few.example": {"judged": "5", "substantive": "5"}}
     counts = {"uni.example": {"stored": "500000"}, "huge.example": {"stored": "700000"}}
     decisions = [decision("uni.example", "academic", 200_000), decision("huge.example", "public", 200_000)]
-    decisions += [decision(h, "reference", 500_000) for h in ("passed.example", "thin.example", "few.example", "unread.example")]
+    decisions += [decision(h, "reference", 500_000) for h in ("passed.example", "few.example", "unread.example")]
     sites, too_big = build(decisions, judged=judged, counts=counts)
     assert sites["uni.example"] == {"host": "uni.example", "rule": "whole", "type": "academic", "why": ["academic"]}
     assert "huge.example" not in sites and too_big == [{"host": "huge.example", "type": "public", "stored": 700_000, "cap": 200_000}]
     assert sites["passed.example"]["why"] == ["judge"]
-    assert {"thin.example", "few.example", "unread.example"}.isdisjoint(sites)
+    assert {"few.example", "unread.example"}.isdisjoint(sites)
 
 
 def test_other_types_and_unlisted_sites_stay_out():
@@ -57,14 +86,19 @@ def test_other_types_and_unlisted_sites_stay_out():
     assert sites == {}
 
 
-def test_row_files_win_in_order_and_keep_only_the_set_fields():
-    benchmark = [{"host": "www.Paper.example", "rule": "news", "type": "news", "why": ["simpleqa"], "questions": 9, "tier": "benchmark", "note": "x"}]
+def test_hand_entries_win_then_row_files_in_order_and_docs_hosts_are_docs():
+    benchmark = [
+        {"host": "www.Paper.example", "rule": "news", "type": "news", "why": ["simpleqa"], "questions": 9, "tier": "benchmark", "note": "x"},
+        {"host": "handwiki.org", "rule": "whole", "type": "reference", "why": ["benchmark-extra"]},
+        {"host": "docs.vendor.example", "rule": "whole", "type": "company", "why": ["exa-webcode"]},
+    ]
     bulk = [{"host": "paper.example", "rule": "bulk", "source": "dump", "type": "news", "why": ["judge"]}, {"host": "wikipedia.org", "rule": "out", "why": ["not-english"]}]
-    hand = [{"host": "mirror.example", "rule": "out", "why": ["mirror"]}]
-    sites, _ = build([decision("paper.example", "news"), decision("mirror.example", "academic")], [benchmark, bulk], hand)
-    assert sites["paper.example"] == {"host": "paper.example", "rule": "news", "type": "news", "why": ["simpleqa"]}, "all years, as the benchmark row says"
-    assert sites["wikipedia.org"] == {"host": "wikipedia.org", "rule": "out", "why": ["not-english"]}
-    assert sites["mirror.example"] == {"host": "mirror.example", "rule": "out", "why": ["mirror"]}
+    hand = [{"host": "handwiki.org", "rule": "out", "why": ["mirror"]}]
+    sites, _ = build([decision("paper.example", "news")], [benchmark, bulk], hand)
+    assert sites["paper.example"] == {"host": "paper.example", "rule": "news", "type": "news", "why": ["simpleqa"]}
+    assert sites["handwiki.org"] == {"host": "handwiki.org", "rule": "out", "why": ["mirror"]}
+    assert sites["docs.vendor.example"]["type"] == "docs"
+    assert sites["wikipedia.org"]["rule"] == "out"
 
 
 def test_dates_come_from_published_or_the_url_path_as_the_planner_reads_them():
@@ -95,9 +129,11 @@ def test_the_set_file_is_written_from_the_inputs(tmp_path):
     rows.write_text(json.dumps({"built": "2026-10-28", "sites": [{"host": "docs.example", "rule": "whole", "paths": ["/guide/"], "type": "docs", "why": ["exa-webcode"]}], "dump_sites": [{"host": "dump.example", "rule": "bulk", "source": "dump", "type": "reference", "why": ["benchmark"]}]}))
     hand = tmp_path / "hand.tsv"
     hand.write_text("host\trule\ttype\twhy\nwiki.example\tout\t\tmirror\n")
+    news_domains = tmp_path / "news-domains.tsv"
+    news_domains.write_text("host\tsources\nnews.example\tjev+wikidata\n")
     out = tmp_path / "v1-set.json"
-    v1_set.main(["--out", str(out), "--decisions", str(decisions), "--rows", str(rows), "--hand", str(hand), "--too-big", str(tmp_path / "too-big.tsv")])
+    v1_set.main(["--out", str(out), "--decisions", str(decisions), "--rows", str(rows), "--hand", str(hand), "--news-domains", str(news_domains), "--news", "B", "--too-big", str(tmp_path / "too-big.tsv")])
     written = json.loads(out.read_text())
     assert [site["host"] for site in written["sites"]] == ["docs.example", "dump.example", "news.example", "wiki.example"]
-    assert written["sites"][0]["paths"] == ["/guide/"]
+    assert written["news"] == "B" and written["sites"][2]["since"] == "2020-01-01"
     assert written["built"].endswith("Z")
