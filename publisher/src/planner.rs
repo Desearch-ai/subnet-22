@@ -402,6 +402,8 @@ pub struct Settings {
     pub backfill: bool,
     /// The shards the backfill reads, in order.
     pub backfill_shards: Range<usize>,
+    /// How long after reading its last shard the backfill sweeps `current/` again.
+    pub backfill_every: Duration,
     pub current_prefix: String,
     pub poll: Duration,
     /// How long a change file number not indexed yet is looked for again before it is given up.
@@ -446,6 +448,7 @@ impl Settings {
                 }
                 None => 0..SHARDS,
             },
+            backfill_every: Duration::from_secs_f64(number("PLANNER_BACKFILL_EVERY_S", 86_400.0)?),
             current_prefix: text("PLANNER_CURRENT_PREFIX", "current/"),
             poll: Duration::from_secs_f64(number("PLANNER_POLL_S", 10.0)?),
             hole_wait: Duration::from_secs_f64(number("PLANNER_HOLE_WAIT_S", 600.0)?),
@@ -871,7 +874,7 @@ struct Buffer {
 
 pub struct Planner {
     pub settings: Settings,
-    pub state: State,
+    pub state: Arc<State>,
     pub pages: Bucket,
     pub temp: Bucket,
     pub redis: ConnectionManager,
@@ -883,6 +886,8 @@ pub struct Planner {
     listed_modified: Option<std::time::SystemTime>,
     set: Option<Arc<Set>>,
     reading: Option<Reading>,
+    /// When the backfill sweeps `current/` again, once it has read every shard.
+    next_sweep: Option<Instant>,
     set_modified: Option<std::time::SystemTime>,
     fresh: Buffer,
     rest: Buffer,
@@ -899,7 +904,7 @@ pub struct Planner {
 impl Planner {
     pub async fn new(settings: Settings, pages: Bucket, temp: Bucket, redis: ConnectionManager, room: Room) -> Result<Planner> {
         std::fs::create_dir_all(&settings.dir)?;
-        let state = State::open(&settings.dir)?;
+        let state = Arc::new(State::open(&settings.dir)?);
         let started = Instant::now();
         state.count_sites()?;
         if started.elapsed() > Duration::from_secs(1) {
@@ -932,6 +937,7 @@ impl Planner {
             listed_modified: None,
             set: None,
             reading: None,
+            next_sweep: None,
             set_modified: None,
             fresh: Buffer::default(),
             rest: Buffer::default(),
@@ -1055,24 +1061,29 @@ impl Planner {
                     // A shard that failed is read again from the last place kept.
                     reading.done.await?.with_context(|| format!("reading shard {shard} of {}", self.settings.current_prefix))?;
                     self.flush().await?;
-                    self.state.keep_backfill(shard + 1, None)?;
                     self.counts.shards += 1;
-                    if shard + 1 == self.settings.backfill_shards.end {
-                        println!("planner: the backfill read its last shard, {shard}");
+                    if shard + 1 < self.settings.backfill_shards.end {
+                        self.state.keep_backfill(shard + 1, None)?;
+                    } else {
+                        // Pages the log passed by, or that came in since, are planned on the next sweep.
+                        self.state.keep_backfill(self.settings.backfill_shards.start, None)?;
+                        self.next_sweep = Some(Instant::now() + self.settings.backfill_every);
+                        println!("planner: the backfill read its last shard, {shard}; it sweeps again in {:?}", self.settings.backfill_every);
+                        return Ok(took);
                     }
                 }
             }
         }
     }
 
-    /// Starts reading the backfill's next shard from where it was left; false once every shard is read.
+    /// Starts reading the backfill's next shard from where it was left; false while a finished sweep waits for the next.
     fn start_reading(&mut self) -> Result<bool> {
-        let shards = self.settings.backfill_shards.clone();
-        let (shard, after) = self.state.backfill()?.unwrap_or((shards.start, None));
-        let (shard, after) = if shard < shards.start { (shards.start, None) } else { (shard, after) };
-        if shard >= shards.end {
+        if self.next_sweep.is_some_and(|next| Instant::now() < next) {
             return Ok(false);
         }
+        let shards = self.settings.backfill_shards.clone();
+        let (shard, after) = self.state.backfill()?.unwrap_or((shards.start, None));
+        let (shard, after) = if shards.contains(&shard) { (shard, after) } else { (shards.start, None) };
         let reader = ShardReader {
             bucket: self.current.clone().expect("a current/ bucket"),
             prefix: self.settings.current_prefix.clone(),
@@ -1081,12 +1092,17 @@ impl Planner {
         };
         let (send, pages) = mpsc::channel(BACKFILL_AHEAD);
         let (set, langs, from) = (self.set.clone(), self.settings.langs.clone(), after.clone());
+        let (state, page_first) = (self.state.clone(), self.settings.page_first);
         let done = tokio::task::spawn_blocking(move || {
             let keep = |row: &PageRow| {
                 let record = &row.record;
                 recipe_of(record).is_some_and(|recipe| PLANNED_RECIPES.contains(&recipe))
                     && lang_wanted(&langs, &record.lang)
                     && set.as_ref().is_none_or(|set| set.admit(&record.url, &record.published).is_ok())
+                    && match state.planned_version(RECIPE_V2, &row.key) {
+                        Ok(Some((content_sha1, _, page_only))) if content_sha1 == record.content_sha1 => page_only && !page_first,
+                        _ => true,
+                    }
             };
             reader.read(shard, from.as_deref(), keep, |page| send.blocking_send(page).is_ok())
         });

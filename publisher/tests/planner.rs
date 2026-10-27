@@ -306,6 +306,7 @@ fn settings(dir: PathBuf, pages_per_hour: f64, start_after: i64) -> Settings {
         page_first: false,
         backfill: false,
         backfill_shards: 0..1024,
+        backfill_every: Duration::from_secs(3600),
         current_prefix: "current/".into(),
         poll: Duration::from_millis(10),
         hole_wait: Duration::from_secs(3600),
@@ -866,15 +867,21 @@ async fn the_backfill_plans_each_set_page_s_standing_v2_version_as_the_budget_al
     assert_eq!((planner.counts.backfill, planner.counts.planned), (1, 1), "the budget's one page is taken, and the reading waits for more");
     drop(planner);
 
-    let mut restarted = Planner::new(backfilling(3600.0), pages.clone(), temp.clone(), redis.clone(), Room::Fixed(0)).await.unwrap();
+    let mut again = backfilling(3600.0);
+    again.backfill_every = Duration::ZERO;
+    let mut restarted = Planner::new(again, pages.clone(), temp.clone(), redis.clone(), Room::Fixed(0)).await.unwrap();
     restarted.current = Some(current.clone());
     for _ in 0..50 {
         restarted.pass().await.unwrap();
-        if restarted.state.backfill().unwrap() == Some((8, None)) {
+        if restarted.counts.shards == 1 {
             break;
         }
     }
-    assert_eq!(restarted.state.backfill().unwrap(), Some((8, None)), "the shard is read through");
+    assert_eq!(
+        (restarted.counts.shards, restarted.state.backfill().unwrap()),
+        (1, Some((7, None))),
+        "the shard is read through, and the next sweep starts over"
+    );
     assert_eq!((restarted.counts.planned, restarted.counts.unchanged), (3, 0), "it goes on after the page planned before the restart");
     let planned: HashMap<String, String> = restarted
         .state
@@ -891,6 +898,14 @@ async fn the_backfill_plans_each_set_page_s_standing_v2_version_as_the_budget_al
         "removed, v1, German, undated and unlisted pages are left out"
     );
     assert_eq!(planned["https://news.example/story/b"], newer.record.content_sha1, "the later fetch in the delta stands");
+    let read = restarted.counts.backfill;
+    for _ in 0..50 {
+        restarted.pass().await.unwrap();
+        if restarted.counts.shards == 2 {
+            break;
+        }
+    }
+    assert_eq!((restarted.counts.shards, restarted.counts.backfill), (2, read), "a second sweep sends nothing already planned at its text");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
