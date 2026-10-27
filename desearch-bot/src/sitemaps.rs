@@ -7,6 +7,15 @@ use regex::bytes::Regex;
 
 static SITEMAP_INDEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i-u)<sitemapindex").unwrap());
 static NEWS_NAMESPACE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i-u)sitemap-news/0\.9").unwrap());
+/// RSS 2.0, RSS 1.0 and Atom, which the sitemap protocol takes as sitemaps.
+static FEED_ROOT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i-u)<(rss|rdf:RDF|feed)\b").unwrap());
+static FEED_ITEM: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?is-u)<item\b[^>]*>(.*?)</item>|<entry\b[^>]*>(.*?)</entry>").unwrap());
+static RSS_LINK: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?is-u)<link>\s*(?:<!\[CDATA\[)?\s*([^<\s\]]+)").unwrap());
+static RSS_GUID_LINK: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?is-u)<guid[^>]*isPermaLink=["']true["'][^>]*>\s*([^<\s]+)"#).unwrap());
+static RSS_DATE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?is-u)<(pubDate|dc:date)>\s*([^<]+?)\s*</").unwrap());
+static ATOM_LINK: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?is-u)<link\b([^>]*)>").unwrap());
+static ATOM_ATTR: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?is-u)\b(rel|href)\s*=\s*["']([^"']*)["']"#).unwrap());
+static ATOM_DATE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?is-u)<(updated|published)>\s*([^<\s]+)\s*</").unwrap());
 
 const FIELDS: [&[u8]; 4] = [b"loc", b"lastmod", b"changefreq", b"news:publication_date"];
 
@@ -54,7 +63,8 @@ pub fn parse_entries(body: &[u8]) -> (&'static str, Vec<Entry>) {
     }
     let locations = bare_locations(body);
     if locations.is_empty() {
-        return ("invalid", Vec::new());
+        let items = feed_entries(body);
+        return if items.is_empty() { ("invalid", Vec::new()) } else { ("urlset", items) };
     }
     let kind = if SITEMAP_INDEX.is_match(&body[..body.len().min(4096)]) { "index" } else { "urlset" };
     (kind, locations)
@@ -86,6 +96,48 @@ fn entry(inner: &[u8]) -> Option<Entry> {
         changefreq: fields[2].map(ascii_lower),
         published: fields[3].map(lossy),
     })
+}
+
+/// The items of an RSS or Atom feed: each one's page and date, as a sitemap would list them.
+fn feed_entries(body: &[u8]) -> Vec<Entry> {
+    if !FEED_ROOT.is_match(&body[..body.len().min(4096)]) {
+        return Vec::new();
+    }
+    let mut entries = Vec::new();
+    for item in FEED_ITEM.captures_iter(body) {
+        let (url, date) = match (item.get(1), item.get(2)) {
+            (Some(rss), _) => {
+                let rss = rss.as_bytes();
+                let link = RSS_LINK.captures(rss).or_else(|| RSS_GUID_LINK.captures(rss)).map(|c| location(&c[1]));
+                let date = RSS_DATE.captures(rss).and_then(|c| feed_date(&lossy(&c[2])));
+                (link, date)
+            }
+            (None, Some(atom)) => {
+                let atom = atom.as_bytes();
+                let link = ATOM_LINK.captures_iter(atom).find_map(|tag| {
+                    let attrs: Vec<(String, Vec<u8>)> = ATOM_ATTR.captures_iter(&tag[1]).map(|a| (ascii_lower(&a[1]), a[2].to_vec())).collect();
+                    let alternate = attrs.iter().all(|(name, value)| name != "rel" || value.eq_ignore_ascii_case(b"alternate"));
+                    attrs.iter().find(|(name, _)| name == "href").filter(|_| alternate).map(|(_, href)| location(href))
+                });
+                let date = ATOM_DATE.captures(atom).and_then(|c| feed_date(&lossy(&c[2])));
+                (link, date)
+            }
+            (None, None) => continue,
+        };
+        if let Some(url) = url.filter(|url| !url.is_empty()) {
+            entries.push(Entry { url, lastmod: date, ..Entry::default() });
+        }
+    }
+    entries
+}
+
+/// A feed's date as ISO 8601: RSS dates are RFC 2822, Atom's and Dublin Core's are ISO already.
+fn feed_date(text: &str) -> Option<String> {
+    let text = text.trim();
+    match chrono::DateTime::parse_from_rfc2822(text) {
+        Ok(date) => Some(date.to_rfc3339()),
+        Err(_) => text.starts_with(|c: char| c.is_ascii_digit()).then(|| text.to_string()),
+    }
 }
 
 /// Python's `<loc>\s*([^<\s]+)\s*</loc>` over the whole file, for files without entries.
@@ -282,6 +334,32 @@ mod tests {
         let (_, entries) = parse_entries(body);
         assert_eq!(entries[0].url, "https://a.com/?post_type=product&p=2669");
         assert_eq!(entries[1].url, "https://a.com/Q&A's/&amp;&nbsp;&#0;&region=en&amp");
+    }
+
+    #[test]
+    fn reads_rss_and_atom_feeds_as_lists_of_pages() {
+        let rss = b"<?xml version=\"1.0\"?><rss version=\"2.0\"><channel><link>https://a.com/</link>\
+            <item><title>One</title><link>https://a.com/2026/10/one?x=1&amp;y=2</link><pubDate>Tue, 27 Oct 2026 10:00:00 GMT</pubDate></item>\
+            <item><link><![CDATA[ https://a.com/two ]]></link><dc:date>2026-10-26T08:00:00Z</dc:date></item>\
+            <item><guid isPermaLink=\"true\">https://a.com/three</guid></item><item><title>no link</title></item></channel></rss>";
+        let (kind, entries) = parse_entries(rss);
+        assert_eq!(kind, "urlset");
+        let found: Vec<(&str, Option<&str>)> = entries.iter().map(|e| (e.url.as_str(), e.lastmod.as_deref())).collect();
+        assert_eq!(found, [
+            ("https://a.com/2026/10/one?x=1&y=2", Some("2026-10-27T10:00:00+00:00")),
+            ("https://a.com/two", Some("2026-10-26T08:00:00Z")),
+            ("https://a.com/three", None),
+        ]);
+        let atom = b"<feed xmlns=\"http://www.w3.org/2005/Atom\"><link href=\"https://a.com/\"/>\
+            <entry><link rel=\"edit\" href=\"https://a.com/edit/1\"/><link rel=\"alternate\" type=\"text/html\" href=\"https://a.com/post-1\"/><updated>2026-10-27T09:00:00Z</updated></entry>\
+            <entry><link href='https://a.com/post-2'/><published>2026-10-25</published></entry></feed>";
+        let (kind, entries) = parse_entries(atom);
+        assert_eq!(kind, "urlset");
+        assert_eq!(entries.iter().map(|e| (e.url.as_str(), e.lastmod.as_deref())).collect::<Vec<_>>(), [
+            ("https://a.com/post-1", Some("2026-10-27T09:00:00Z")),
+            ("https://a.com/post-2", Some("2026-10-25")),
+        ]);
+        assert_eq!(parse_entries(b"<html><item><link>https://a.com/x</link></item></html>").0, "invalid", "items outside a feed are no feed");
     }
 
     #[test]

@@ -556,6 +556,11 @@ impl Buckets {
         self.store_for(domain).map(|store| store.terms(domain)).unwrap_or_default()
     }
 
+    /// Whether a list names the domain; false with no list.
+    pub fn lists(&self, domain: &str) -> bool {
+        self.store_for(domain).is_some_and(|store| store.lists(domain))
+    }
+
     /// The listed domains this process owns; none with no list.
     pub fn listed(&self) -> Vec<String> {
         let entries = self.stores().next().and_then(|store| store.allowed.get()).map(|allowed| allowed.entries()).unwrap_or_default();

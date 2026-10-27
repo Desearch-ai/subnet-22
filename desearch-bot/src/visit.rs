@@ -30,6 +30,8 @@ pub const MIN_HOST_INTERVAL: f64 = 1.0;
 const MAX_CRAWL_DELAY: f64 = 60.0;
 const MAX_REDIRECTS: usize = 5;
 const SITEMAP_GUESSES: [&str; 2] = ["/sitemap.xml", "/sitemap_index.xml"];
+/// Tried after the sitemap guesses, on listed domains only: a feed names a site's newest pages when it lists no sitemap.
+const FEED_GUESSES: [&str; 2] = ["/feed", "/rss.xml"];
 const MAX_DEPTH: i64 = 3;
 const MAX_FILES: usize = 40;
 /// The most unread sitemap files one visit records for the visits after it.
@@ -343,7 +345,7 @@ impl Run<'_> {
         if !roots.is_empty() {
             return Ok(roots);
         }
-        let guesses = SITEMAP_GUESSES.iter().map(|path| urls::join(&base, path)).collect::<Result<Vec<_>, _>>().map_err(|_| Crash::new("ValueError"))?;
+        let guesses = guess_paths(self.visitor.buckets.lists(&self.known.host)).map(|path| urls::join(&base, path)).collect::<Result<Vec<_>, _>>().map_err(|_| Crash::new("ValueError"))?;
         self.guesses = guesses.iter().cloned().collect();
         Ok(guesses)
     }
@@ -917,6 +919,11 @@ pub fn epoch(micros: Option<i64>) -> i64 {
     micros.map_or(0, |us| us.div_euclid(SECOND))
 }
 
+/// Where to look for a sitemap no robots.txt names: the usual files, then on a listed domain its feed.
+fn guess_paths(listed: bool) -> impl Iterator<Item = &'static str> {
+    SITEMAP_GUESSES.into_iter().chain(FEED_GUESSES.into_iter().filter(move |_| listed))
+}
+
 fn crawl_delay(value: Option<f64>) -> f64 {
     match value {
         Some(delay) if delay.is_finite() && delay >= 0.0 => delay.min(MAX_CRAWL_DELAY),
@@ -957,6 +964,12 @@ pub fn gunzip(body: &[u8]) -> Cow<'_, [u8]> {
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn a_listed_domain_with_no_sitemap_named_is_also_looked_at_for_a_feed() {
+        assert_eq!(guess_paths(false).collect::<Vec<_>>(), ["/sitemap.xml", "/sitemap_index.xml"]);
+        assert_eq!(guess_paths(true).collect::<Vec<_>>(), ["/sitemap.xml", "/sitemap_index.xml", "/feed", "/rss.xml"], "after the sitemaps, which go first");
+    }
 
     #[test]
     fn gunzip_keeps_what_decoded_before_a_cut() {
