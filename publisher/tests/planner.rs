@@ -951,3 +951,31 @@ async fn with_page_vectors_first_a_page_gets_its_page_text_now_and_its_passages_
     assert!(!planner.state.planned_version(RECIPE_V2, &key(&long)).unwrap().unwrap().2);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_page_removed_and_back_with_the_same_text_is_planned_again() {
+    let Some((_turn, redis)) = redis_db().await else {
+        eprintln!("skipped: no Redis on {REDIS}");
+        return;
+    };
+    let dir = scratch("removed");
+    let stub = stub::start(dir.join("r2"), "127.0.0.1:0").await.unwrap();
+    let (pages, temp) = (bucket(stub.addr, "desearch-pages"), bucket(stub.addr, "subnet-22"));
+    let story = v2(record("https://news.example/story/1", &article(2), "article", "en"));
+    log(&pages, 1, vec![story.clone()]).await;
+    let mut planner = Planner::new(settings(dir.join("state"), 3600.0, 0), pages.clone(), temp.clone(), redis.clone(), Room::Fixed(0)).await.unwrap();
+    planner.pass().await.unwrap();
+    planner.flush().await.unwrap();
+    assert_eq!(planner.state.site_pages("news.example").unwrap(), 1);
+
+    let removal = Change { kind: Kind::Removed, body: Body::Removed { url: story.url.clone(), domain: story.domain.clone() }, ..change(story.clone()) };
+    let key = format!("changes/dt=2026-10-14/{}.parquet", 2);
+    pages.put(&key, Bytes::from(changes::encode(&[removal]).unwrap()), PARQUET, None).await.unwrap();
+    pages.put(&CHANGES.seq_key(2), Bytes::from(json!({"key": key, "rows": 1}).to_string()), JSON, None).await.unwrap();
+    log(&pages, 3, vec![story.clone()]).await;
+    planner.pass().await.unwrap();
+    assert_eq!((planner.counts.removed, planner.counts.planned, planner.counts.unchanged), (1, 2, 0));
+    planner.flush().await.unwrap();
+    assert_eq!(planner.state.site_pages("news.example").unwrap(), 1, "the site's count fell with the removal and rose with the return");
+    let _ = std::fs::remove_dir_all(&dir);
+}

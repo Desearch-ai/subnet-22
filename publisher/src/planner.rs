@@ -669,6 +669,22 @@ impl State {
         Ok(self.db.write(batch)?)
     }
 
+    /// Forgets every planned version of a page gone from its site, so a page that comes back is planned again whatever its text.
+    fn forget_key(&self, key: &str) -> Result<()> {
+        let mut batch = WriteBatch::default();
+        let mut planned = false;
+        for recipe in RECIPES {
+            if self.db.get_pinned(planned_key(recipe, key))?.is_some() {
+                batch.delete(planned_key(recipe, key));
+                planned = true;
+            }
+        }
+        if planned {
+            self.change_sites(&mut batch, &HashMap::from([(domain_of_key(key).to_string(), -1)]))?;
+        }
+        Ok(self.db.write(batch)?)
+    }
+
     /// Forgets the versions of an input's pages that never got vectors, so the log's next showing plans them again.
     fn forget(&self, pages: &Value) -> Result<()> {
         Ok(self.db.write(self.forgetting(pages)?)?)
@@ -790,6 +806,8 @@ pub struct Counts {
     pub unchanged: u64,
     /// Versions older than the one already planned, from change files read late.
     pub older: u64,
+    /// Pages the log removed, whose planned versions are forgotten.
+    pub removed: u64,
     /// Change files read after later ones, because they were numbered late.
     pub late: u64,
     pub over_budget: u64,
@@ -1108,13 +1126,20 @@ impl Planner {
     /// Considers every page of one change file, in file order.
     async fn take(&mut self, rows: Vec<ChangeRow>) -> Result<()> {
         for row in rows {
-            if let ChangeRow::Page(page) = row {
-                if let Some(lane) = self.consider(*page) {
-                    let buffer = self.buffer(lane);
-                    if buffer.pages.len() >= self.settings.pages_per_input || buffer.chars >= self.settings.chars_per_input {
-                        self.flush_lane(lane).await?;
+            match row {
+                ChangeRow::Page(page) => {
+                    if let Some(lane) = self.consider(*page) {
+                        let buffer = self.buffer(lane);
+                        if buffer.pages.len() >= self.settings.pages_per_input || buffer.chars >= self.settings.chars_per_input {
+                            self.flush_lane(lane).await?;
+                        }
                     }
                 }
+                ChangeRow::Removed(key) => {
+                    self.state.forget_key(&key)?;
+                    self.counts.removed += 1;
+                }
+                ChangeRow::TaskWithdrawn(_) => {}
             }
         }
         self.counts.files += 1;
