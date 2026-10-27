@@ -82,6 +82,8 @@ NODE2_WEIGHT = 2
 V1_WHOLE_CAP = 5_000_000
 # Outs a v1 site lifts: the type model's labels, never a refusal, a registry state or a hand decision.
 SOFT_OUTS = {"unlabelled", "shop", "junk"}
+# A v1 site that names no sitemap is listed too, so the bot looks for its feed; it sends nothing until it lists pages.
+FEED_STATES = {"no_sitemap"}
 
 
 @dataclass
@@ -416,7 +418,8 @@ def build(
             else apply_v1(row, base, entry_v1, override.startswith("out:"))
         )
         counts[decision.site_type if decision.listed else f"out:{decision.reason}"] += 1
-        if decision.listed and row.state in SENDING_STATES:
+        feed = entry_v1 is not None and entry_v1.rule in ("news", "whole") and row.state in FEED_STATES
+        if decision.listed and (row.state in SENDING_STATES or feed):
             entry = {
                 "host": row.host,
                 "type": decision.site_type,

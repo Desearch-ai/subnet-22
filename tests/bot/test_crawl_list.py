@@ -321,6 +321,16 @@ def test_v1_caps_hold_big_news_and_widen_cited_sites():
     assert listed["db.com"]["send_cap"] == crawl_list.V1_WHOLE_CAP * 3
 
 
+def test_v1_sites_without_a_sitemap_are_listed_for_their_feed():
+    V1 = crawl_list.V1
+    rows = [
+        row(host="feedless.com", state="no_sitemap", site_type="academic"),
+        row(host="plain.com", state="no_sitemap", site_type="academic"),
+    ]
+    listed, _ = v1_list(rows, {"feedless.com": V1("whole", "academic", 1000)})
+    assert set(listed) == {"feedless.com"}
+
+
 def test_v1_lifts_only_label_outs():
     V1 = crawl_list.V1
     rows = [
