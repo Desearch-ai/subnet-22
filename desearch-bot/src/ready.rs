@@ -458,6 +458,13 @@ struct DomainScan {
 
 impl BucketStore {
     /// Domains with pages waiting, and how many each has.
+    /// A page on a subdomain the list names as a domain of its own goes under that domain, never under the one whose sitemap listed it.
+    pub(crate) fn listed_apart(&self, domain: &str, rest: &[u8]) -> bool {
+        let host = rest.split(|&byte| byte == b'/').next().unwrap_or_default();
+        let host = host.strip_prefix(b"www.").unwrap_or(host);
+        host != domain.as_bytes() && std::str::from_utf8(host).is_ok_and(|host| self.lists(host))
+    }
+
     pub fn ready_domains(&self) -> Result<Vec<(String, u64)>> {
         let mut out = Vec::new();
         for item in self.db.iterator_opt(IteratorMode::From(&[READY_COUNT], Direction::Forward), bounded(&[READY_COUNT])) {
@@ -553,7 +560,7 @@ impl BucketStore {
                     break;
                 }
                 taking.after[lane] = Some(key.clone());
-                let allowed = taking.robots.allows_page(domain, &entry.rest);
+                let allowed = taking.robots.allows_page(domain, &entry.rest) && !self.listed_apart(domain, &entry.rest);
                 let due = record.filter(|_| allowed).and_then(|r| reason(&r, sent.as_ref()).map(|why| (r, why)));
                 // A page listed twice, under an older and a newer lastmod, goes once.
                 let Some((record, why)) = due.filter(|_| taking.picked.insert(entry.rest.clone())) else {
@@ -655,7 +662,7 @@ impl BucketStore {
             }
             // Sent again since it was stocked, or no longer one to refresh: it leaves the stock unsent.
             let fresh = record.filter(|r| r.pushed_at == pushed_at).filter(|r| sent.is_some_and(|s| refreshable(r, &s)));
-            if let Some(record) = fresh.filter(|_| robots.allows_page(domain, &rest)) {
+            if let Some(record) = fresh.filter(|_| robots.allows_page(domain, &rest) && !self.listed_apart(domain, &rest)) {
                 let entry = Entry { domain: domain.to_string(), rest: rest.clone(), order: Order::Requeued { due: pushed_at } };
                 taken.picks.push(Pick { url: fetchable(&rest, record.flags), lastmod: record.lastmod, reason: Reason::Refresh, failures: 0, entry });
             }
@@ -814,7 +821,7 @@ impl BucketStore {
             }
             let rest = &key[prefix.len()..];
             // Pages first seen after the walk began went on their list when found.
-            if record.first_seen >= started || junk(rest) || !robots.allows_page(domain, rest) {
+            if record.first_seen >= started || junk(rest) || !robots.allows_page(domain, rest) || self.listed_apart(domain, rest) {
                 continue;
             }
             if before_floor(terms.since, record.lastmod, rest) {
@@ -1233,7 +1240,7 @@ impl BucketStore {
                         known
                     }
                 };
-                if !open || before_floor(since, record.lastmod, rest) {
+                if !open || before_floor(since, record.lastmod, rest) || self.listed_apart(&String::from_utf8_lossy(domain), rest) {
                     continue;
                 }
                 let order = Order::Fresh { first_seen: record.first_seen, lastmod: record.lastmod };

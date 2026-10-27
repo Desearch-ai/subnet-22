@@ -698,7 +698,16 @@ impl Run<'_> {
 
     fn moved_away(&mut self, answer: &Answer) -> bool {
         let host = urls::split(&answer.url).ok().and_then(|parts| parts.hostname()).unwrap_or_default();
-        let Some(target) = self.visitor.suffixes.registrable(&host).filter(|target| *target != self.known.host) else {
+        let target = self.visitor.suffixes.registrable(&host);
+        let home = self.visitor.suffixes.registrable(&self.known.host);
+        // A subdomain kept as a domain of its own stays itself only on its own host; a registrable domain anywhere under its name.
+        let target = if home.as_deref() == Some(self.known.host.as_str()) || host.is_empty() {
+            target.filter(|target| *target != self.known.host)
+        } else {
+            let bare = host.strip_prefix("www.").unwrap_or(&host).to_string();
+            (bare != self.known.host).then(|| if target == home { bare } else { target.unwrap_or(bare) })
+        };
+        let Some(target) = target else {
             return false;
         };
         self.result.canonical_host = Some(target);

@@ -218,6 +218,11 @@ impl BucketStore {
         self.allowed.get().is_none_or(|allowed| allowed.allows(domain))
     }
 
+    /// Whether the list names this host as a domain of its own.
+    pub(crate) fn lists(&self, host: &str) -> bool {
+        self.allowed.get().is_some_and(|allowed| allowed.get(host).is_some())
+    }
+
     /// What the list says about the domain; the defaults when it is not listed or there is no list.
     pub fn terms(&self, domain: &str) -> Terms {
         self.allowed.get().and_then(|allowed| allowed.get(domain)).unwrap_or_default()

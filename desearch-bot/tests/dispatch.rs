@@ -1481,3 +1481,25 @@ fn a_domain_already_sending_whose_cap_rises_queues_the_stored_pages_its_old_cap_
     assert_eq!(store.joined("example.com").unwrap(), Some(Some(10)));
     assert_eq!(desearch_bot::dispatch::join_round(&buckets, &list, 1_000_000, &progress, &stop).unwrap(), 0);
 }
+
+#[test]
+fn a_page_on_a_subdomain_listed_on_its_own_goes_only_under_that_subdomain() {
+    let dir = Dir::new("listed-apart");
+    std::fs::create_dir_all(&dir.0).unwrap();
+    let path = dir.0.join("domains.json");
+    std::fs::write(&path, r#"["example.com"]"#).unwrap();
+    let list = Allowed::from_file(&path).unwrap();
+    let store = BucketStore::open(&dir.0.join("store"), &resources()).unwrap();
+    store.allow(list.clone());
+    let on_sub = |name: &str| (urls::parse(&format!("https://news.example.com/{name}"), "example.com").unwrap(), 10, false);
+    let queued = |store: &BucketStore| store.ready_list("example.com", 100).unwrap().iter().map(|e| String::from_utf8(e.rest.clone()).unwrap()).collect::<Vec<_>>();
+    store.record_listing("example.com", 7, vec![page("a", 10), on_sub("s1")], 100).unwrap();
+    assert_eq!(queued(&store).len(), 2, "an unlisted subdomain's pages go under the domain whose sitemap listed them");
+
+    relist(&path, &list, r#"["example.com", "news.example.com"]"#);
+    store.record_listing("example.com", 7, vec![on_sub("s2")], 200).unwrap();
+    assert!(!queued(&store).contains(&"news.example.com/s2".to_string()), "once the subdomain is listed itself, a sitemap read leaves its pages to it");
+    let picks = take(&store, 10);
+    assert_eq!(picks.iter().map(|p| p.url.as_str()).collect::<Vec<_>>(), ["https://example.com/a"], "and one already waiting drops as it would go");
+    assert_eq!(queued(&store), ["example.com/a"], "the subdomain's page left the list; the page taken waits to be marked sent");
+}
