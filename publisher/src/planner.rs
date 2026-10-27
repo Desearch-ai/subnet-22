@@ -383,6 +383,8 @@ pub struct Settings {
     pub fresh: Option<Duration>,
     /// Pages the fresh lane takes an hour at most; the rest go with the other pages.
     pub fresh_per_hour: f64,
+    /// A part-filled fresh input is written once its first page waited this long.
+    pub fresh_flush_after: Duration,
     /// The temporary bucket keeps an input a day; one waiting longer than this is dropped, so no miner is sent a file already gone.
     pub pending_max_age: Duration,
     pub min_chars: usize,
@@ -431,6 +433,7 @@ impl Settings {
             max_pending: number("PLANNER_MAX_PENDING", 50)?,
             fresh: Some(Duration::from_secs_f64(number("PLANNER_FRESH_S", 48.0 * 3600.0)?)).filter(|window| !window.is_zero()),
             fresh_per_hour: number("PLANNER_FRESH_PER_HOUR", 300_000.0)?,
+            fresh_flush_after: Duration::from_secs_f64(number("PLANNER_FRESH_FLUSH_S", 60.0)?),
             pending_max_age: Duration::from_secs_f64(number("PLANNER_PENDING_MAX_AGE_S", 12.0 * 3600.0)?),
             min_chars: number("PLANNER_MIN_CHARS", 300)?,
             langs: text("PLANNER_LANGS", "en").split(',').map(|lang| lang.trim().to_lowercase()).filter(|lang| !lang.is_empty()).collect(),
@@ -1130,7 +1133,8 @@ impl Planner {
         let replanned = self.replan().await?;
         let backfilled = self.backfill().await?;
         for lane in Lane::ALL {
-            if self.buffer(lane).since.is_some_and(|since| since.elapsed() >= self.settings.flush_after) {
+            let after = if lane == Lane::Fresh { self.settings.fresh_flush_after } else { self.settings.flush_after };
+            if self.buffer(lane).since.is_some_and(|since| since.elapsed() >= after) {
                 self.flush_lane(lane).await?;
             }
         }
@@ -1442,7 +1446,8 @@ impl Planner {
             _ => None,
         };
         // Only a page never planned before is fresh, within its lane's own budget, so pages re-dated by their site cannot flood it.
-        let fresh = self.is_fresh(record) && self.state.unplanned(&page.key).unwrap_or(false);
+        let seen = !self.state.unplanned(&page.key).unwrap_or(false) || self.state.waiting(&page.key).ok().flatten().is_some();
+        let fresh = self.is_fresh(record) && !seen;
         let fresh = fresh && self.pending[Lane::Fresh as usize] < self.settings.max_pending && self.fresh_budget.take();
         let lane = if fresh { Lane::Fresh } else { Lane::Rest };
         if self.pending[lane as usize] >= self.settings.max_pending {

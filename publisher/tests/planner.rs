@@ -295,6 +295,7 @@ fn settings(dir: PathBuf, pages_per_hour: f64, start_after: i64) -> Settings {
         max_pending: 10,
         fresh: Some(Duration::from_secs(48 * 3600)),
         fresh_per_hour: 3600.0,
+        fresh_flush_after: Duration::from_secs(3600),
         pending_max_age: Duration::from_secs(3600),
         min_chars: 300,
         langs: vec!["en".into()],
@@ -1118,5 +1119,27 @@ async fn the_backfill_does_not_plan_a_version_older_than_one_the_log_showed() {
     let planned = planner.state.planned_version(publisher::planner::RECIPE_V2, &page_key(&newer.url).unwrap()).unwrap().unwrap();
     assert_eq!(planned.content_sha1, newer.content_sha1, "the log's newer version is planned, current/'s older one is not");
     assert_eq!(planner.counts.planned, 1);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_fresh_input_is_written_within_its_own_short_wait() {
+    let Some((_turn, redis)) = redis_db().await else {
+        eprintln!("skipped: no Redis on {REDIS}");
+        return;
+    };
+    let dir = scratch("fresh-flush");
+    let stub = stub::start(dir.join("r2"), "127.0.0.1:0").await.unwrap();
+    let (pages, temp) = (bucket(stub.addr, "desearch-pages"), bucket(stub.addr, "subnet-22"));
+    let mut fresh = v2(record("https://news.example/story/new", &article(2), "article", "en"));
+    fresh.published = iso(publisher::service::now_us());
+    log(&pages, 1, vec![fresh, v2(record("https://news.example/story/old", &article(3), "article", "en"))]).await;
+    let mut quick = settings(dir.join("state"), 3600.0, 0);
+    (quick.pages_per_input, quick.fresh_flush_after) = (10, Duration::ZERO);
+    let mut planner = Planner::new(quick, pages.clone(), temp.clone(), redis.clone(), Room::Fixed(0)).await.unwrap();
+    planner.pass().await.unwrap();
+    let pending = planner.state.pending().unwrap();
+    assert_eq!(pending.len(), 1, "the other lane keeps filling");
+    assert!(pending[0].1.contains("\"lane\":\"fresh\""));
     let _ = std::fs::remove_dir_all(&dir);
 }
