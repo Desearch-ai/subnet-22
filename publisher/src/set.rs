@@ -1,6 +1,7 @@
 //! The v1 set: which pages belong in the index, site by site, as `v1-set.json` lists them for the crawl list builder, the planner and the indexer.
 
 use std::collections::HashMap;
+use std::ops::Range;
 
 use anyhow::{anyhow, bail, Result};
 use serde_json::Value;
@@ -122,48 +123,36 @@ pub fn page_date(published: &str, url: &str) -> Option<String> {
 pub fn iso_date(text: &str) -> Option<String> {
     let head = text.trim().get(..10)?;
     let b = head.as_bytes();
-    (b[4] == b'-' && b[7] == b'-').then(|| date(&head[..4], &head[5..7], &head[8..10])).flatten()
+    let digits = |range: Range<usize>| b[range].iter().all(u8::is_ascii_digit);
+    let shaped = digits(0..4) && b[4] == b'-' && digits(5..7) && b[7] == b'-' && digits(8..10);
+    (shaped && ("01"..="12").contains(&&head[5..7]) && ("01"..="31").contains(&&head[8..10])).then(|| head.to_string())
 }
 
-/// A date in a URL's path: `/YYYY/MM/DD/`, `/YYYY/MM/` (the first of the month), or `YYYY-MM-DD` or `YYYYMMDD` standing apart from other digits.
+/// The first of the month a URL's path names as `/YYYY/MM` or `/YYYY-MM`, followed by `/`, `-` or its end; the list builder's rule.
 pub fn url_date(url: &str) -> Option<String> {
-    let parts: Vec<&str> = split_url(url).1.split('/').collect();
-    for (at, part) in parts.iter().enumerate() {
-        if part.len() == 4 {
-            if let Some(month) = parts.get(at + 1).filter(|m| (1..=2).contains(&m.len())) {
-                let day = parts.get(at + 2).filter(|d| (1..=2).contains(&d.len())).copied().unwrap_or("1");
-                if let Some(found) = date(part, month, day).or_else(|| date(part, month, "1")) {
-                    return Some(found);
-                }
-            }
-        }
-        if let Some(found) = digits_date(part) {
-            return Some(found);
-        }
-    }
-    None
+    url_month(url).map(|(year, month, _)| format!("{year}-{month}-01"))
 }
 
-fn digits_date(part: &str) -> Option<String> {
-    let b = part.as_bytes();
-    let digit = |at: usize| b.get(at).is_some_and(u8::is_ascii_digit);
-    for at in (0..b.len()).filter(|&at| digit(at) && (at == 0 || !digit(at - 1))) {
-        let piece = |from: usize, to: usize| part.get(at + from..at + to).unwrap_or("");
-        let dashed = b.get(at + 4) == Some(&b'-') && b.get(at + 7) == Some(&b'-') && !digit(at + 10);
-        if let Some(found) = dashed.then(|| date(piece(0, 4), piece(5, 7), piece(8, 10))).flatten() {
-            return Some(found);
-        }
-        let compact = (at..at + 8).all(digit) && !digit(at + 8);
-        if let Some(found) = compact.then(|| date(piece(0, 4), piece(4, 6), piece(6, 8))).flatten() {
-            return Some(found);
-        }
-    }
-    None
+/// `url_date` to the day when a two-digit day follows the month, for telling how new a page is.
+pub fn url_day(url: &str) -> Option<String> {
+    url_month(url).map(|(year, month, day)| format!("{year}-{month}-{}", day.unwrap_or("01")))
 }
 
-fn date(year: &str, month: &str, day: &str) -> Option<String> {
-    let (year, month, day): (u32, u32, u32) = (year.parse().ok()?, month.parse().ok()?, day.parse().ok()?);
-    ((1990..=2099).contains(&year) && (1..=12).contains(&month) && (1..=31).contains(&day)).then(|| format!("{year:04}-{month:02}-{day:02}"))
+/// Year, month and any day of the first `/YYYY[/-]MM` date in a URL's path, years 1900-2099.
+fn url_month(url: &str) -> Option<(&str, &str, Option<&str>)> {
+    let path = split_url(url).1;
+    let b = path.as_bytes();
+    let digits = |from: usize, to: usize| to <= b.len() && b[from..to].iter().all(u8::is_ascii_digit);
+    let mark = |at: usize| matches!(b.get(at), Some(b'/' | b'-'));
+    (0..b.len()).filter(|&at| b[at] == b'/').find_map(|at| {
+        let (y, m) = (at + 1, at + 6);
+        let century = matches!(b.get(y..y + 2), Some(b"19" | b"20"));
+        let month = digits(m, m + 2).then(|| &path[m..m + 2]).filter(|month| ("01"..="12").contains(month));
+        let found = century && digits(y, y + 4) && mark(y + 4) && month.is_some() && (m + 2 == b.len() || mark(m + 2));
+        let day =
+            (mark(m + 2) && digits(m + 3, m + 5) && (m + 5 == b.len() || mark(m + 5))).then(|| &path[m + 3..m + 5]).filter(|day| ("01"..="31").contains(day));
+        found.then(|| (&path[y..y + 4], month.expect("checked"), day))
+    })
 }
 
 #[cfg(test)]
@@ -171,19 +160,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn dates_come_from_published_or_the_url_path() {
+    fn dates_come_from_published_or_a_month_in_the_url_path_as_the_list_builder_reads_them() {
         assert_eq!(page_date("2024-03-15T10:00:00+00:00", "https://a.example/x"), Some("2024-03-15".into()));
-        assert_eq!(page_date("March 15, 2024", "https://a.example/2023/11/02/story"), Some("2023-11-02".into()));
-        assert_eq!(url_date("https://a.example/news/2021/7/slug"), Some("2021-07-01".into()));
-        assert_eq!(url_date("https://a.example/a/story-2022-05-09-slug"), Some("2022-05-09".into()));
-        assert_eq!(url_date("https://a.example/a/2022-05-09-123"), Some("2022-05-09".into()));
-        assert_eq!(url_date("https://a.example/20190412/slug.html"), Some("2019-04-12".into()));
-        assert_eq!(url_date("https://a.example/a/123456789/slug"), None, "a long number is not a date");
-        assert_eq!(url_date("https://a.example/p/2024"), None, "a year alone is not a date");
-        assert_eq!(url_date("https://a.example/x?d=2024-01-01"), None, "only the path counts");
-        assert_eq!(url_date("https://a.example/2024/13/x"), None);
-        assert_eq!(url_date("https://a.example/a/2022-05-0\u{e9}"), None);
-        assert_eq!(url_date("https://2024-01-01.example/a"), None, "the host is not the path");
+        assert_eq!(page_date("March 15, 2024", "https://a.example/2023/11/02/story"), Some("2023-11-01".into()));
+        assert_eq!(url_day("https://a.example/2023/11/02/story"), Some("2023-11-02".into()));
+        assert_eq!(url_date("https://a.example/a/2022-05-09-123"), Some("2022-05-01".into()));
+        assert_eq!(url_date("https://a.example/news/1998/03"), Some("1998-03-01".into()));
+        for undated in [
+            "https://a.example/news/2021/7/slug",
+            "https://a.example/a/story-2022-05-09-slug",
+            "https://a.example/20190412/slug.html",
+            "https://a.example/a/123456789/slug",
+            "https://a.example/p/2024",
+            "https://a.example/x?d=2024-01-01",
+            "https://a.example/2024/13/x",
+            "https://a.example/2024/051/x",
+            "https://2024-01-01.example/a",
+        ] {
+            assert_eq!(url_date(undated), None, "{undated}");
+        }
     }
 
     #[test]
