@@ -1,5 +1,6 @@
 //! The SN22 publisher: uploads that passed validation into the numbered change feed, and the current state of every page compacted from it.
 
+pub mod backfill;
 pub mod blocked;
 pub mod build;
 pub mod changes;

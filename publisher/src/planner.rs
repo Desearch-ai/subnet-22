@@ -1,6 +1,7 @@
 //! The planner: follows the change log and turns published pages that need a vector into embed inputs for the task API, within an hourly page budget and the room the API gives.
 
 use std::collections::{btree_map, BTreeMap, HashMap, HashSet};
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
@@ -21,9 +22,11 @@ use redis::AsyncCommands;
 use rocksdb::{DBCompressionType, IteratorMode, Options, WriteBatch, DB};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use tokio::sync::watch;
+use tokio::runtime::Handle;
+use tokio::sync::{mpsc, watch};
 
-use crate::current::{decode_changes, ChangeRow, PageRow};
+use crate::backfill::ShardReader;
+use crate::current::{decode_changes, ChangeRow, PageRow, SHARDS};
 use crate::records::{Record, EXTRACTION_V2};
 use crate::service::now_us;
 use crate::set::{page_date, Refusal, Set};
@@ -54,6 +57,13 @@ pub const EMBED_INPUTS: &str = "embed:inputs";
 /// Inputs whose task the API dropped after its last attempt.
 pub const EMBED_DROPPED: &str = "embed:dropped";
 const CURSOR: &[u8] = b"cursor";
+/// The backfill's shard and the last key of it planned or passed by, `<shard>\t<key>`.
+const BACKFILL: &[u8] = b"backfill";
+/// Pages read ahead from `current/` waiting for budget and room.
+const BACKFILL_AHEAD: usize = 4_096;
+/// How long a pass waits for the backfill's reader before going on.
+const BACKFILL_WAIT: Duration = Duration::from_millis(500);
+const RANGES_AT_ONCE: usize = 16;
 /// Set once every domain's count of planned pages has been built from the planned keys.
 const SITES_COUNTED: &[u8] = b"sites-counted";
 /// The crawl list's caps are crawl caps, three pages crawled for each one the index keeps.
@@ -384,6 +394,11 @@ pub struct Settings {
     pub start_after: Option<i64>,
     /// Change files fetched and decoded at once, ahead of the one being planned.
     pub reads: usize,
+    /// Read `current/` for pages to embed, with what budget and room the log leaves.
+    pub backfill: bool,
+    /// The shards the backfill reads, in order.
+    pub backfill_shards: Range<usize>,
+    pub current_prefix: String,
     pub poll: Duration,
     /// How long a change file number not indexed yet is looked for again before it is given up.
     pub hole_wait: Duration,
@@ -417,6 +432,15 @@ impl Settings {
             set_file: std::env::var("PLANNER_SET_FILE").ok().filter(|v| !v.is_empty()).map(PathBuf::from),
             start_after: std::env::var("PLANNER_START_AFTER").ok().filter(|v| !v.is_empty()).map(|v| v.parse()).transpose()?,
             reads: number("PLANNER_READS", 8)?,
+            backfill: text("PLANNER_BACKFILL", "0") == "1",
+            backfill_shards: match std::env::var("PLANNER_BACKFILL_SHARDS").ok().filter(|v| !v.is_empty()) {
+                Some(range) => {
+                    let (start, end) = range.split_once("..").ok_or_else(|| anyhow!("PLANNER_BACKFILL_SHARDS={range:?} is not a range a..b"))?;
+                    start.trim().parse()?..end.trim().parse::<usize>()?.min(SHARDS)
+                }
+                None => 0..SHARDS,
+            },
+            current_prefix: text("PLANNER_CURRENT_PREFIX", "current/"),
             poll: Duration::from_secs_f64(number("PLANNER_POLL_S", 10.0)?),
             hole_wait: Duration::from_secs_f64(number("PLANNER_HOLE_WAIT_S", 600.0)?),
         })
@@ -670,6 +694,18 @@ impl State {
         Ok(batch)
     }
 
+    /// The shard the backfill reads and the last key of it planned or passed by; None before it starts.
+    pub fn backfill(&self) -> Result<Option<(usize, Option<String>)>> {
+        let Some(raw) = self.db.get(BACKFILL)? else { return Ok(None) };
+        let raw = String::from_utf8_lossy(&raw).into_owned();
+        let (shard, after) = raw.split_once('\t').unwrap_or((&raw, ""));
+        Ok(Some((shard.parse()?, Some(after.to_string()).filter(|after| !after.is_empty()))))
+    }
+
+    fn keep_backfill(&self, shard: usize, after: Option<&str>) -> Result<()> {
+        Ok(self.db.put(BACKFILL, format!("{shard}\t{}", after.unwrap_or("")))?)
+    }
+
     fn keep_cursor(&self, seq: i64) -> Result<()> {
         Ok(self.db.put(CURSOR, seq.to_string())?)
     }
@@ -753,6 +789,9 @@ pub struct Counts {
     pub no_room: u64,
     /// Pages planned in the fresh lane, of `planned`.
     pub fresh: u64,
+    /// Pages read from `current/` by the backfill, of `pages`.
+    pub backfill: u64,
+    pub shards: u64,
     pub inputs: u64,
     pub handed_over: u64,
     pub expired: u64,
@@ -778,6 +817,15 @@ impl Lane {
     }
 }
 
+/// A shard of `current/` being read for the backfill, its pages arriving as they are read.
+struct Reading {
+    shard: usize,
+    pages: mpsc::Receiver<PageRow>,
+    done: tokio::task::JoinHandle<Result<usize>>,
+    /// The last key taken from it.
+    last: Option<String>,
+}
+
 /// The pages of one lane waiting to be written as an input.
 #[derive(Default)]
 struct Buffer {
@@ -796,10 +844,13 @@ pub struct Planner {
     pub temp: Bucket,
     pub redis: ConnectionManager,
     pub room: Room,
+    /// Where the backfill reads `current/`.
+    pub current: Option<Bucket>,
     pub counts: Counts,
     listed: Option<Listed>,
     listed_modified: Option<std::time::SystemTime>,
-    set: Option<Set>,
+    set: Option<Arc<Set>>,
+    reading: Option<Reading>,
     set_modified: Option<std::time::SystemTime>,
     fresh: Buffer,
     rest: Buffer,
@@ -843,10 +894,12 @@ impl Planner {
             temp,
             redis,
             room,
+            current: None,
             counts: Counts::default(),
             listed: None,
             listed_modified: None,
             set: None,
+            reading: None,
             set_modified: None,
             fresh: Buffer::default(),
             rest: Buffer::default(),
@@ -877,7 +930,7 @@ impl Planner {
         match std::fs::read(&path).map_err(anyhow::Error::from).and_then(|raw| Set::parse(&raw)) {
             Ok(set) if !set.is_empty() => {
                 println!("planner: set of {} sites read from {}", set.len(), path.display());
-                self.set = Some(set);
+                self.set = Some(Arc::new(set));
                 self.set_modified = Some(modified);
             }
             Ok(_) => eprintln!("{} holds no sites; keeping the set held", path.display()),
@@ -927,13 +980,86 @@ impl Planner {
             }
             self.advance(seq)?;
         }
+        let backfilled = self.backfill().await?;
         for lane in Lane::ALL {
             if self.buffer(lane).since.is_some_and(|since| since.elapsed() >= self.settings.flush_after) {
                 self.flush_lane(lane).await?;
             }
         }
         self.hand_over().await?;
-        Ok(read > 0)
+        Ok(read > 0 || backfilled)
+    }
+
+    /// Plans pages of `current/` while the budget and the rest lane's room last; whether it took any.
+    async fn backfill(&mut self) -> Result<bool> {
+        if !self.settings.backfill || self.current.is_none() {
+            return Ok(false);
+        }
+        let mut took = false;
+        loop {
+            if self.pending[Lane::Rest as usize] >= self.settings.max_pending || !self.has_token() {
+                return Ok(took);
+            }
+            if self.reading.is_none() && !self.start_reading()? {
+                return Ok(took);
+            }
+            let reading = self.reading.as_mut().expect("a shard being read");
+            match tokio::time::timeout(BACKFILL_WAIT, reading.pages.recv()).await {
+                Err(_) => return Ok(took),
+                Ok(Some(page)) => {
+                    reading.last = Some(page.key.clone());
+                    took = true;
+                    self.counts.backfill += 1;
+                    if let Some(lane) = self.consider(page) {
+                        let buffer = self.buffer(lane);
+                        if buffer.pages.len() >= self.settings.pages_per_input || buffer.chars >= self.settings.chars_per_input {
+                            self.flush_lane(lane).await?;
+                        }
+                    }
+                }
+                Ok(None) => {
+                    let reading = self.reading.take().expect("a shard being read");
+                    let shard = reading.shard;
+                    // A shard that failed is read again from the last place kept.
+                    reading.done.await?.with_context(|| format!("reading shard {shard} of {}", self.settings.current_prefix))?;
+                    self.flush().await?;
+                    self.state.keep_backfill(shard + 1, None)?;
+                    self.counts.shards += 1;
+                    if shard + 1 == self.settings.backfill_shards.end {
+                        println!("planner: the backfill read its last shard, {shard}");
+                    }
+                }
+            }
+        }
+    }
+
+    /// Starts reading the backfill's next shard from where it was left; false once every shard is read.
+    fn start_reading(&mut self) -> Result<bool> {
+        let shards = self.settings.backfill_shards.clone();
+        let (shard, after) = self.state.backfill()?.unwrap_or((shards.start, None));
+        let (shard, after) = if shard < shards.start { (shards.start, None) } else { (shard, after) };
+        if shard >= shards.end {
+            return Ok(false);
+        }
+        let reader = ShardReader {
+            bucket: self.current.clone().expect("a current/ bucket"),
+            prefix: self.settings.current_prefix.clone(),
+            handle: Handle::current(),
+            ranges_at_once: RANGES_AT_ONCE,
+        };
+        let (send, pages) = mpsc::channel(BACKFILL_AHEAD);
+        let (set, langs, from) = (self.set.clone(), self.settings.langs.clone(), after.clone());
+        let done = tokio::task::spawn_blocking(move || {
+            let keep = |row: &PageRow| {
+                let record = &row.record;
+                recipe_of(record).is_some_and(|recipe| PLANNED_RECIPES.contains(&recipe))
+                    && lang_wanted(&langs, &record.lang)
+                    && set.as_ref().is_none_or(|set| set.admit(&record.url, &record.published).is_ok())
+            };
+            reader.read(shard, from.as_deref(), keep, |page| send.blocking_send(page).is_ok())
+        });
+        self.reading = Some(Reading { shard, pages, done, last: after });
+        Ok(true)
     }
 
     /// Change files missed on the way past: read once they can be; a number never indexed is given up after `hole_wait`, a file that cannot be read is tried until it can.
@@ -1154,8 +1280,7 @@ impl Planner {
     }
 
     fn admitted(&self, record: &Record) -> bool {
-        let lang = record.lang.to_lowercase();
-        self.settings.langs.iter().any(|want| lang == *want || lang.starts_with(&format!("{want}-")) || lang.starts_with(&format!("{want}_")))
+        lang_wanted(&self.settings.langs, &record.lang)
             && record.text.chars().count() >= self.settings.min_chars
             && !self.excluded(&record.domain.to_lowercase())
     }
@@ -1175,14 +1300,18 @@ impl Planner {
     }
 
     fn take_token(&mut self) -> bool {
-        let cap = budget_cap(self.settings.pages_per_hour);
-        self.tokens = (self.tokens + self.refilled.elapsed().as_secs_f64() * self.settings.pages_per_hour / 3600.0).min(cap);
-        self.refilled = Instant::now();
-        if self.tokens < 1.0 {
+        if !self.has_token() {
             return false;
         }
         self.tokens -= 1.0;
         true
+    }
+
+    fn has_token(&mut self) -> bool {
+        let cap = budget_cap(self.settings.pages_per_hour);
+        self.tokens = (self.tokens + self.refilled.elapsed().as_secs_f64() * self.settings.pages_per_hour / 3600.0).min(cap);
+        self.refilled = Instant::now();
+        self.tokens >= 1.0
     }
 
     /// Writes every lane's buffer.
@@ -1219,6 +1348,9 @@ impl Planner {
         let alone = Lane::ALL.into_iter().all(|other| other == lane || self.buffer(other).pages.is_empty());
         let (cursor, settled) = if alone { (Some(self.read_through), std::mem::take(&mut self.settled)) } else { (None, Vec::new()) };
         self.state.commit(&self.buffer(lane).pages, &input_key, &entry.to_string(), cursor, &settled)?;
+        if let Some(reading) = self.reading.as_ref().filter(|_| alone) {
+            self.state.keep_backfill(reading.shard, reading.last.as_deref())?;
+        }
         *self.buffer_mut(lane) = Buffer::default();
         self.pending[lane as usize] += 1;
         self.counts.inputs += 1;
@@ -1309,6 +1441,11 @@ async fn fetch(pages: Bucket, seq: i64) -> Result<std::result::Result<Vec<Change
         }
         Err(error) => Ok(Err(Unread::Failed(format!("reading {key}: {error}")))),
     }
+}
+
+fn lang_wanted(langs: &[String], lang: &str) -> bool {
+    let lang = lang.to_lowercase();
+    langs.iter().any(|want| lang == *want || lang.starts_with(&format!("{want}-")) || lang.starts_with(&format!("{want}_")))
 }
 
 fn pending_by_lane(pending: &[(String, String)]) -> [usize; 2] {

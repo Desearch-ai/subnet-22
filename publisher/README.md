@@ -15,6 +15,21 @@ The planner embeds each published page of v2 extraction (recipe `page-v2`) as on
 description and the start of its text, and a long page also as up to 32 passages split at its headings,
 never inside a table row, a list item or a code block. A v1 page keeps the vectors it has.
 
+## Planner
+
+The planner reads the change log, a few files at once and in log order, and writes inputs of up to 1,000
+pages or 3M characters for the task API, handing them over as the API has room.
+
+- **What it plans** (`PLANNER_SET_FILE`): only pages the v1 set takes: a news site's pages dated on or
+  after its `since`, by `published` or a date in the URL path; a whole site's pages, or those under its
+  `paths`; a bulk source's crawled pages. Pages are also English, at least `PLANNER_MIN_CHARS` long and off
+  the exclusion list.
+- **Fresh lane:** pages dated within `PLANNER_FRESH_S` (48 h) get their own inputs, handed over first and
+  outside the hourly budget (`PLANNER_PAGES_PER_HOUR`). Every other page shares the budget.
+- **Backfill** (`PLANNER_BACKFILL=1`): with what budget and room the log leaves, it reads `current/` shard
+  by shard (`PLANNER_BACKFILL_SHARDS`) and plans each page's standing version that the set takes and was
+  never embedded at that text. It keeps its place across restarts.
+
 ## Vectors
 
 ```

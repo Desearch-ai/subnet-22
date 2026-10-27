@@ -271,6 +271,20 @@ fn current_store(runtime: &tokio::runtime::Runtime, prefix: &str, log: R2Store) 
     Ok(Split { prefix: prefix.to_string(), current: Box::new(current), log: Box::new(log) })
 }
 
+/// `CURRENT_S3_BUCKET` when it is set, else the pages bucket, where the backfill reads `current/`.
+async fn current_bucket(pages: &Bucket) -> Result<Bucket> {
+    let Some(endpoint) = std::env::var("CURRENT_S3_ENDPOINT").ok().filter(|e| !e.is_empty()) else { return Ok(pages.clone()) };
+    let credentials = Credentials {
+        access_key: std::env::var("CURRENT_S3_ACCESS_KEY_ID").context("CURRENT_S3_ACCESS_KEY_ID is not set")?,
+        secret_key: std::env::var("CURRENT_S3_SECRET_ACCESS_KEY").context("CURRENT_S3_SECRET_ACCESS_KEY is not set")?,
+        region: std::env::var("CURRENT_S3_REGION").context("CURRENT_S3_REGION is not set")?,
+    };
+    let bucket = std::env::var("CURRENT_S3_BUCKET").context("CURRENT_S3_BUCKET is not set")?;
+    let bucket = Bucket::new(r2::client()?, &endpoint, &bucket, "", credentials, Default::default())?;
+    bucket.check().await?;
+    Ok(bucket)
+}
+
 const COMPACT_RETRY_S: u64 = 30;
 
 async fn plan() -> Result<()> {
@@ -279,7 +293,9 @@ async fn plan() -> Result<()> {
     let redis_url = std::env::var("TASK_API_REDIS").ok().filter(|v| !v.is_empty()).unwrap_or_else(|| "redis://localhost:6379/15".into());
     let redis = redis::Client::open(redis_url.as_str())?.get_connection_manager().await.context("connecting to TASK_API_REDIS")?;
     let task_api = std::env::var("TASK_API_URL").ok().filter(|v| !v.is_empty()).unwrap_or_else(|| "https://api-22.desearch.ai".into());
+    let current = if settings.backfill { Some(current_bucket(&pages).await?) } else { None };
     let mut planner = planner::Planner::new(settings, pages, temp, redis, planner::Room::api(&task_api)?).await?;
+    planner.current = current;
     println!(
         "planning {} texts after change file {}, at most {} pages an hour, inputs of {} pages, room from {task_api}",
         planner::PLANNED_RECIPES.join(", "),

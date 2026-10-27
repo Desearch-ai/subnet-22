@@ -12,10 +12,11 @@ use arrow_buffer::NullBuffer;
 use arrow_cast::cast;
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use bytes::Bytes;
-use parquet::arrow::arrow_reader::{ParquetRecordBatchReader, ParquetRecordBatchReaderBuilder};
-use parquet::arrow::ArrowWriter;
+use parquet::arrow::arrow_reader::{ArrowReaderMetadata, ParquetRecordBatchReader, ParquetRecordBatchReaderBuilder};
+use parquet::arrow::{ArrowWriter, ProjectionMask};
 use parquet::basic::{Compression, ZstdLevel};
 use parquet::file::properties::WriterProperties;
+use parquet::file::reader::ChunkReader;
 use serde::{Deserialize, Serialize};
 
 use crate::records::{record_version, Record, SOURCE};
@@ -510,6 +511,26 @@ pub fn decode(file: Bytes) -> Result<Vec<PageRow>> {
 }
 
 pub type Wanted = Box<dyn Fn(&str) -> bool + Send>;
+
+/// The rows of some row groups of a pages file, with only the projected columns set in each record; `wanted` picks keys before the rest of a row is decoded.
+pub fn rows_in<R: ChunkReader + 'static>(
+    reader: R,
+    metadata: ArrowReaderMetadata,
+    groups: Vec<usize>,
+    projection: ProjectionMask,
+    wanted: Option<&(dyn Fn(&str) -> bool + Send)>,
+) -> Result<Vec<PageRow>> {
+    let reader = ParquetRecordBatchReaderBuilder::new_with_metadata(reader, metadata)
+        .with_row_groups(groups)
+        .with_projection(projection)
+        .with_batch_size(READ_BATCH)
+        .build()?;
+    let mut rows = Vec::new();
+    for batch in reader {
+        rows.extend(Columns::new(batch?)?.page_rows(wanted)?);
+    }
+    Ok(rows)
+}
 
 /// The rows of a pages file in file order, decoded a row group at a time; `wanted` picks keys before the rest of a row is decoded.
 pub fn rows(file: Bytes, wanted: Option<Wanted>) -> Result<Rows> {

@@ -227,7 +227,7 @@ pub fn read_rows(source: &dyn RangeRead, assigned: usize) -> io::Result<Option<V
     Ok(decode(Prefetched { size, ranges }, metadata, assigned))
 }
 
-fn coalesce(mut chunks: Vec<Range<u64>>) -> Vec<Range<u64>> {
+pub(crate) fn coalesce(mut chunks: Vec<Range<u64>>) -> Vec<Range<u64>> {
     chunks.sort_by_key(|r| r.start);
     let mut merged: Vec<Range<u64>> = Vec::new();
     for chunk in chunks.into_iter().filter(|c| !c.is_empty()) {
@@ -242,12 +242,18 @@ fn coalesce(mut chunks: Vec<Range<u64>>) -> Vec<Range<u64>> {
 }
 
 /// The byte ranges fetched for one file, served to the Parquet decoder.
-struct Prefetched {
+#[derive(Clone)]
+pub(crate) struct Prefetched {
     size: u64,
     ranges: Vec<(u64, Bytes)>,
 }
 
 impl Prefetched {
+    /// Ranges of a file of `size` bytes, each given by its start.
+    pub(crate) fn new(size: u64, ranges: Vec<(u64, Bytes)>) -> Prefetched {
+        Prefetched { size, ranges }
+    }
+
     fn find(&self, start: u64, length: usize) -> parquet::errors::Result<Bytes> {
         let i = self.ranges.partition_point(|(s, _)| *s <= start);
         let (s, data) = i.checked_sub(1).map(|i| &self.ranges[i]).ok_or_else(|| ParquetError::EOF("outside the fetched ranges".into()))?;

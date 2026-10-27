@@ -1,6 +1,6 @@
 //! The planner: the texts a page gives, and the change log turned into embed inputs within the budget and the task API's room.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
@@ -14,6 +14,7 @@ use desearch::r2::{self, Bucket, Credentials, JSON, PARQUET};
 use desearch::stub;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use publisher::changes::{self, Body, Change, Kind};
+use publisher::current::{self, FileRef, Manifest, PageRow};
 use publisher::planner::{
     page_text, page_text_v2, passages, passages_v2, texts, Listed, Passage, Planner, Room, Settings, EMBED_DROPPED, EMBED_INPUTS, PAGE, PASSAGE, RECIPE_V2,
 };
@@ -301,6 +302,9 @@ fn settings(dir: PathBuf, pages_per_hour: f64, start_after: i64) -> Settings {
         set_file: None,
         start_after: Some(start_after),
         reads: 4,
+        backfill: false,
+        backfill_shards: 0..1024,
+        current_prefix: "current/".into(),
         poll: Duration::from_millis(10),
         hole_wait: Duration::from_secs(3600),
     }
@@ -787,5 +791,103 @@ async fn pages_dated_in_the_last_two_days_go_first_outside_the_budget_and_a_rest
     assert_eq!(restarted.read_through(), 1, "the cursor stayed before the file whose fresh page was never written");
     restarted.pass().await.unwrap();
     assert_eq!((restarted.counts.planned, restarted.counts.fresh, restarted.counts.unchanged), (1, 1, 2));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Writes shard `shard` of `current/` as `files`, the base first, each sorted by key.
+async fn shard(current: &Bucket, shard: usize, files: Vec<Vec<PageRow>>) {
+    let mut refs = Vec::new();
+    for (at, mut rows) in files.into_iter().enumerate() {
+        rows.sort_by(|a, b| a.key.cmp(&b.key));
+        let body = current::encode(&rows).unwrap();
+        let key = format!("current/shard={shard:04}/{}-{at:012}.parquet", if at == 0 { "base" } else { "delta" });
+        refs.push(FileRef { key: key.clone(), rows: rows.len() as u64, bytes: body.len() as u64, through_seq: at as i64, level: 0 });
+        current.put(&key, Bytes::from(body), PARQUET, None).await.unwrap();
+    }
+    let manifest = Manifest { shard, through_seq: 10, merged_through: 0, base: Some(refs.remove(0)), deltas: refs, retired: Vec::new() };
+    current.put(&format!("current/shard={shard:04}/manifest.json"), Bytes::from(serde_json::to_vec(&manifest).unwrap()), JSON, None).await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_backfill_plans_each_set_page_s_standing_v2_version_as_the_budget_allows_and_goes_on_where_it_stopped() {
+    let Some((_turn, redis)) = redis_db().await else {
+        eprintln!("skipped: no Redis on {REDIS}");
+        return;
+    };
+    let dir = scratch("backfill");
+    let stub = stub::start(dir.join("r2"), "127.0.0.1:0").await.unwrap();
+    let (pages, temp, current) = (bucket(stub.addr, "desearch-pages"), bucket(stub.addr, "subnet-22"), bucket(stub.addr, "desearch-current"));
+    let row = |url: &str, text: &str, published: &str, fetched_at: &str, change_seq: i64| {
+        let mut record = v2(record(url, &format!("{url} {text} {}", article(2)), "article", "en"));
+        (record.published, record.fetched_at) = (published.into(), fetched_at.into());
+        PageRow { key: page_key(url).unwrap(), removed: false, change_seq, version: record_version(&record), published_at: fetched_at.into(), record }
+    };
+    let at = |hour: u32| format!("2026-10-20T{hour:02}:00:00+00:00");
+    let old = row("https://news.example/story/b", "first", "2024-01-02", &at(1), 1);
+    let newer = row("https://news.example/story/b", "second", "2024-01-02", &at(2), 5);
+    let mut v1 = row("https://news.example/story/d", "", "2024-01-04", &at(1), 1);
+    v1.record.extraction = None;
+    let mut german = row("https://news.example/story/e", "", "2024-01-05", &at(1), 1);
+    german.record.lang = "de".into();
+    let mut base = vec![
+        row("https://news.example/story/a", "", "2024-01-01", &at(1), 1),
+        old,
+        row("https://news.example/story/c", "", "2024-01-03", &at(1), 1),
+        v1,
+        german,
+        row("https://news.example/story/f", "", "", &at(1), 1),
+        row("https://docs.example/guide/g", "", "", &at(1), 1),
+    ];
+    base.extend((0..2_500).map(|n| row(&format!("https://other.example/{n}"), "", "", &at(1), 1)));
+    let delta = vec![
+        newer.clone(),
+        PageRow::removal(page_key("https://news.example/story/c").unwrap(), 6),
+        row("https://news.example/2025/02/01/h", "", "", &at(3), 6),
+    ];
+    shard(&current, 7, vec![base, delta]).await;
+    log(&pages, 1, vec![v2(record("https://other.example/log", &article(2), "article", "en"))]).await;
+    let set = dir.join("v1-set.json");
+    std::fs::write(
+        &set,
+        json!({"sites": [{"host": "news.example", "rule": "news", "since": "2020-01-01"}, {"host": "docs.example", "rule": "whole"}]}).to_string(),
+    )
+    .unwrap();
+    let backfilling = |pages_per_hour: f64| {
+        let mut backfilling = settings(dir.join("state"), pages_per_hour, 0);
+        (backfilling.backfill, backfilling.backfill_shards, backfilling.set_file, backfilling.pages_per_input) = (true, 7..8, Some(set.clone()), 1);
+        backfilling
+    };
+
+    let mut planner = Planner::new(backfilling(4.0), pages.clone(), temp.clone(), redis.clone(), Room::Fixed(0)).await.unwrap();
+    planner.current = Some(current.clone());
+    planner.pass().await.unwrap();
+    assert_eq!((planner.counts.backfill, planner.counts.planned), (1, 1), "the budget's one page is taken, and the reading waits for more");
+    drop(planner);
+
+    let mut restarted = Planner::new(backfilling(3600.0), pages.clone(), temp.clone(), redis.clone(), Room::Fixed(0)).await.unwrap();
+    restarted.current = Some(current.clone());
+    for _ in 0..50 {
+        restarted.pass().await.unwrap();
+        if restarted.state.backfill().unwrap() == Some((8, None)) {
+            break;
+        }
+    }
+    assert_eq!(restarted.state.backfill().unwrap(), Some((8, None)), "the shard is read through");
+    assert_eq!((restarted.counts.planned, restarted.counts.unchanged), (3, 0), "it goes on after the page planned before the restart");
+    let planned: HashMap<String, String> = restarted
+        .state
+        .pending()
+        .unwrap()
+        .iter()
+        .map(|(_, entry)| serde_json::from_str::<Value>(entry).unwrap())
+        .map(|entry| (entry["pages"][0]["url"].as_str().unwrap().to_string(), entry["pages"][0]["content_sha1"].as_str().unwrap().to_string()))
+        .collect();
+    let urls: HashSet<&str> = planned.keys().map(String::as_str).collect();
+    assert_eq!(
+        urls,
+        HashSet::from(["https://news.example/story/a", "https://news.example/story/b", "https://docs.example/guide/g", "https://news.example/2025/02/01/h"]),
+        "removed, v1, German, undated and unlisted pages are left out"
+    );
+    assert_eq!(planned["https://news.example/story/b"], newer.record.content_sha1, "the later fetch in the delta stands");
     let _ = std::fs::remove_dir_all(&dir);
 }
