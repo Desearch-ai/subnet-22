@@ -37,6 +37,8 @@ const YIELD_RECENT: u8 = b'Z';
 const SENT_COUNT: u8 = b'C';
 /// The cap each listed domain's stored pages were last queued under; a domain is walked again only when it changes.
 const JOINED: u8 = b'J';
+/// The date floor a domain's stored pages were last queued under, when it had one.
+const JOINED_SINCE: u8 = b'V';
 /// Each domain's longest-unsent pages, oldest send first, kept ready for refreshes so a pass never reads the sent records.
 const STOCK: u8 = b'F';
 /// Keys a domain's new-page lane loses per locked write when it is cleared.
@@ -78,6 +80,25 @@ static JUNK: LazyLock<Regex> = LazyLock::new(|| {
 
 pub fn junk(rest: &[u8]) -> bool {
     JUNK.is_match(rest)
+}
+
+/// A year and month in the path, as in `/2019/05/` or `/2019-05-03-story`.
+static PATH_DATE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"/((?:19|20)[0-9]{2})[/-](0[1-9]|1[0-2])(?:[/-]|$)").expect("a valid pattern"));
+
+/// A page's date: its lastmod, else the first of the month its path names.
+pub fn page_date(lastmod: u32, rest: &[u8]) -> Option<u32> {
+    if lastmod != 0 {
+        return Some(lastmod);
+    }
+    let found = PATH_DATE.captures(rest)?;
+    let number = |at: usize| std::str::from_utf8(&found[at]).ok()?.parse::<u32>().ok();
+    let day = chrono::NaiveDate::from_ymd_opt(number(1)? as i32, number(2)?, 1)?;
+    day.and_hms_opt(0, 0, 0)?.and_utc().timestamp().try_into().ok()
+}
+
+/// Whether a page is dated before its domain's floor; an undated page never is.
+pub fn before_floor(since: Option<u32>, lastmod: u32, rest: &[u8]) -> bool {
+    since.is_some_and(|floor| page_date(lastmod, rest).is_some_and(|date| date < floor))
 }
 
 pub fn restamped(changed: usize, listed: usize) -> bool {
@@ -401,6 +422,8 @@ pub struct Joined {
     pub queued: u64,
     /// New-page entries cleared first, for a domain with a cap.
     pub cleared: u64,
+    /// Pages never sent left unqueued, dated before the domain's floor.
+    pub before_floor: u64,
     /// Stopped before the walk ended; the domain is walked again next time.
     pub stopped: bool,
 }
@@ -430,6 +453,7 @@ struct DomainScan {
     domain: Vec<u8>,
     listed: usize,
     changed: Vec<(Vec<u8>, u32)>,
+    since: Option<u32>,
 }
 
 impl BucketStore {
@@ -717,6 +741,11 @@ impl BucketStore {
         Ok(raw.and_then(|raw| raw.as_ref().try_into().ok().map(u64::from_le_bytes)).map(|cap| (cap != u64::MAX).then_some(cap)))
     }
 
+    /// The date floor the domain's stored pages were last queued under.
+    pub fn joined_since(&self, domain: &str) -> Result<Option<u32>> {
+        Ok(self.db.get_pinned(count_key_of(JOINED_SINCE, domain))?.and_then(|raw| raw.as_ref().try_into().ok().map(u32::from_le_bytes)))
+    }
+
     /// Domains that reached their cap since the last call.
     pub fn take_capped(&self) -> Vec<String> {
         self.capped.lock().unwrap_or_else(|e| e.into_inner()).drain().collect()
@@ -788,6 +817,10 @@ impl BucketStore {
             if record.first_seen >= started || junk(rest) || !robots.allows_page(domain, rest) {
                 continue;
             }
+            if before_floor(terms.since, record.lastmod, rest) {
+                joined.before_floor += 1;
+                continue;
+            }
             match bound {
                 None => {
                     let order = Order::Fresh { first_seen: record.first_seen, lastmod: record.lastmod };
@@ -834,8 +867,20 @@ impl BucketStore {
         let _guard = self.lock_ready();
         let mut batch = WriteBatch::default();
         batch.put(count_key_of(SENT_COUNT, domain), joined.sent.to_le_bytes());
-        batch.put(count_key_of(JOINED, domain), terms.send_cap.unwrap_or(u64::MAX).to_le_bytes());
+        mark_joined(&mut batch, domain, terms);
         self.db.write(batch)?;
+        Ok(joined)
+    }
+
+    /// Walks a domain already sending as if it joined anew: its new-page lane is cleared, then its stored pages never sent are queued under its terms.
+    pub fn rewalk_domain(&self, domain: &str, terms: Terms, now: &dyn Fn() -> u32, pace: &mut dyn FnMut(u64) -> bool) -> Result<Joined> {
+        let (cleared, finished) = self.clear_fresh(domain, pace)?;
+        if !finished {
+            return Ok(Joined { cleared, stopped: true, ..Joined::default() });
+        }
+        // Taken after the clear: pages found since went on the list when found, and the walk leaves them be.
+        let mut joined = self.join_domain(domain, terms, now(), pace)?;
+        joined.cleared += cleared;
         Ok(joined)
     }
 
@@ -845,7 +890,9 @@ impl BucketStore {
         // Without a cap there is nothing to apply; a cap given later walks the domain again, and counts it then.
         if terms.send_cap.is_none() {
             let _guard = self.lock_ready();
-            self.db.put(count_key_of(JOINED, domain), u64::MAX.to_le_bytes())?;
+            let mut batch = WriteBatch::default();
+            mark_joined(&mut batch, domain, terms);
+            self.db.write(batch)?;
             return Ok(joined);
         }
         let prefix = prefixed(SENT, domain.as_bytes(), b"");
@@ -881,7 +928,9 @@ impl BucketStore {
         }
         // Marked only once its lane is cleared, so a walk cut short, even by a crash, is taken again.
         let _guard = self.lock_ready();
-        self.db.put(count_key_of(JOINED, domain), terms.send_cap.unwrap_or(u64::MAX).to_le_bytes())?;
+        let mut batch = WriteBatch::default();
+        mark_joined(&mut batch, domain, terms);
+        self.db.write(batch)?;
         Ok(joined)
     }
 
@@ -1113,7 +1162,8 @@ impl BucketStore {
                 if let Some(done) = state.domain.take() {
                     entries.extend(changed_entries(done));
                 }
-                state.domain = Some(DomainScan { domain: domain.to_vec(), listed: 0, changed: Vec::new() });
+                let since = self.terms(&String::from_utf8_lossy(domain)).since;
+                state.domain = Some(DomainScan { domain: domain.to_vec(), listed: 0, changed: Vec::new(), since });
             }
             let scan = state.domain.as_mut().expect("set above");
             scan.listed += 1;
@@ -1123,7 +1173,7 @@ impl BucketStore {
             };
             if record.pushed_at == 0 {
                 // Pages first seen since the walk began went on their lists when they were found.
-                if record.first_seen < state.started && !junk(rest) {
+                if record.first_seen < state.started && !junk(rest) && !before_floor(scan.since, record.lastmod, rest) {
                     let order = Order::Fresh { first_seen: record.first_seen, lastmod: record.lastmod };
                     entries.push(Entry { domain: String::from_utf8_lossy(domain).into_owned(), rest: rest.to_vec(), order });
                 }
@@ -1170,19 +1220,20 @@ impl BucketStore {
         listed: usize,
     ) -> Result<(usize, HashMap<String, i64>)> {
         let mut entries = Vec::new();
-        let mut room: HashMap<Vec<u8>, bool> = HashMap::new();
+        let mut room: HashMap<Vec<u8>, (bool, Option<u32>)> = HashMap::new();
         for (key, record) in fresh {
             if let Some((domain, rest)) = split_key(&key[1..]).filter(|(_, rest)| !junk(rest)) {
-                // A domain at its cap queues no more new pages.
-                let open = match room.get(domain) {
-                    Some(&open) => open,
+                // A domain at its cap queues no more new pages, and none dated before its floor.
+                let (open, since) = match room.get(domain) {
+                    Some(&known) => known,
                     None => {
-                        let open = self.fresh_room(&String::from_utf8_lossy(domain))? != Some(0);
-                        room.insert(domain.to_vec(), open);
-                        open
+                        let name = String::from_utf8_lossy(domain);
+                        let known = (self.fresh_room(&name)? != Some(0), self.terms(&name).since);
+                        room.insert(domain.to_vec(), known);
+                        known
                     }
                 };
-                if !open {
+                if !open || before_floor(since, record.lastmod, rest) {
                     continue;
                 }
                 let order = Order::Fresh { first_seen: record.first_seen, lastmod: record.lastmod };
@@ -1200,7 +1251,7 @@ impl BucketStore {
             if let Some((domain, _)) = changed.first().and_then(|(key, _)| split_key(key)) {
                 let domain = domain.to_vec();
                 let changed = changed.iter().filter_map(|(key, lastmod)| Some((split_key(key)?.1.to_vec(), *lastmod))).collect();
-                entries.extend(changed_entries(DomainScan { domain, listed, changed }));
+                entries.extend(changed_entries(DomainScan { domain, listed, changed, since: None }));
             }
         }
         let mut counts = HashMap::new();
@@ -1340,6 +1391,15 @@ fn count_key(domain: &str) -> Vec<u8> {
     count_key_of(READY_COUNT, domain)
 }
 
+/// Records the terms a domain's stored pages were queued under, so the walker comes back when they change.
+fn mark_joined(batch: &mut WriteBatch, domain: &str, terms: Terms) {
+    batch.put(count_key_of(JOINED, domain), terms.send_cap.unwrap_or(u64::MAX).to_le_bytes());
+    match terms.since {
+        Some(since) => batch.put(count_key_of(JOINED_SINCE, domain), since.to_le_bytes()),
+        None => batch.delete(count_key_of(JOINED_SINCE, domain)),
+    }
+}
+
 fn count_key_of(kind: u8, domain: &str) -> Vec<u8> {
     [&[kind], domain.as_bytes()].concat()
 }
@@ -1396,6 +1456,21 @@ mod tests {
         for path in ["example.com/2026/10/story", "example.com/tagline", "example.com/a.pdf?x=1", "example.com/?id=3"] {
             assert!(!junk(path.as_bytes()), "{path}");
         }
+    }
+
+    #[test]
+    fn a_page_is_dated_by_its_lastmod_else_by_a_month_in_its_path() {
+        let may_2019 = 1_556_668_800;
+        assert_eq!(page_date(42, b"example.com/2019/05/story"), Some(42));
+        assert_eq!(page_date(0, b"example.com/news/2019/05/story"), Some(may_2019));
+        assert_eq!(page_date(0, b"example.com/2019-05-03-story"), Some(may_2019));
+        for undated in [&b"example.com/story"[..], b"example.com/2019/story", b"example.com/item/201905", b"example.com/2019/13/x"] {
+            assert_eq!(page_date(0, undated), None, "{}", String::from_utf8_lossy(undated));
+        }
+        assert!(before_floor(Some(may_2019 + 1), 0, b"example.com/2019/05/story"));
+        assert!(!before_floor(Some(may_2019), 0, b"example.com/2019/05/story"));
+        assert!(!before_floor(Some(may_2019), 0, b"example.com/story"), "an undated page goes");
+        assert!(!before_floor(None, 1, b"example.com/story"));
     }
 
     #[test]

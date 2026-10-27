@@ -24,6 +24,10 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
 const RECRAWL: u32 = 7 * 86_400;
+/// 2020-01-01, with a page from before it and one after.
+const FLOOR: u32 = 1_577_836_800;
+const EARLY: u32 = 1_559_347_200;
+const LATE: u32 = 1_609_459_200;
 const GONE: u32 = 30 * 86_400;
 
 fn rules() -> Recrawl {
@@ -1088,7 +1092,9 @@ fn the_domain_list_takes_names_or_hosts_and_is_read_again_when_its_file_changes(
     assert_eq!(names["a.com"], Terms::default());
     assert_eq!(names["c.net"], Terms { weight: 4, send_cap: Some(1500), ..Terms::default() }, "the crawl list's weight and cap");
     let news = allowed::parse(br#"[{"host": "e.com", "type": "news", "weight": 4, "hourly": 20000, "backlog": 3000000}]"#).unwrap();
-    assert_eq!(news["e.com"], Terms { weight: 4, send_cap: None, hourly: Some(20_000), backlog: Some(3_000_000) }, "an hourly limit and a backlog bound");
+    assert_eq!(news["e.com"], Terms { weight: 4, send_cap: None, hourly: Some(20_000), backlog: Some(3_000_000), since: None }, "an hourly limit and a backlog bound");
+    let floored = allowed::parse(br#"[{"host": "f.com", "type": "news", "since": "2020-01-01"}, {"host": "g.com", "since": "soon"}]"#).unwrap();
+    assert_eq!((floored["f.com"].since, floored["g.com"].since), (Some(FLOOR), None), "a date floor as an ISO date; one that doesn't read is none");
     assert_eq!(names["d.io"].weight, 4, "weights stay within 1 to 4");
     assert!(allowed::parse(b"{}").is_err());
     assert!(Allowed::all().allows("anything.net"));
@@ -1389,4 +1395,59 @@ fn stock_choice_rate_on_a_big_domain() {
         let took = started.elapsed().as_secs_f64();
         println!("most {most}: {} stocked in {took:.2}s, {:.0} sent records a second", stocked.count, sent.min(most) as f64 / took);
     }
+}
+
+#[test]
+fn a_date_floor_leaves_older_pages_unsent_wherever_they_would_queue() {
+    let dir = Dir::new("join-floor");
+    std::fs::create_dir_all(&dir.0).unwrap();
+    let path = dir.0.join("domains.json");
+    std::fs::write(&path, r#"["other.com"]"#).unwrap();
+    let list = Allowed::from_file(&path).unwrap();
+    let store = BucketStore::open(&dir.0.join("store"), &resources()).unwrap();
+    store.allow(list.clone());
+    let stored = [page("old", EARLY), page("new", LATE), page("2018/03/dated", 0), page("2021-02-04-dated", 0), page("undated", 0)];
+    store.record_listing("example.com", 7, stored.to_vec(), 100).unwrap();
+
+    relist(&path, &list, r#"[{"host": "example.com", "type": "news", "backlog": 100, "since": "2020-01-01"}]"#);
+    let joined = store.join_domain("example.com", list.get("example.com").unwrap(), 1000, &mut |_| true).unwrap();
+    assert_eq!((joined.queued, joined.before_floor), (3, 2), "a lastmod before the floor, or a month in the path before it, stays");
+    let mut queued = ready(&store);
+    queued.sort();
+    assert_eq!(queued, ["2021-02-04-dated", "new", "undated"]);
+    assert_eq!(store.joined_since("example.com").unwrap(), Some(FLOOR));
+
+    store.record_listing("example.com", 7, vec![page("found-old", EARLY), page("found-new", LATE)], 2000).unwrap();
+    assert!(ready(&store).contains(&"found-new".to_string()) && !ready(&store).contains(&"found-old".to_string()), "a sitemap read queues no page dated before the floor");
+}
+
+#[test]
+fn a_new_floor_builds_the_lane_of_a_domain_already_sending_again() {
+    let dir = Dir::new("join-floor-round");
+    std::fs::create_dir_all(&dir.0).unwrap();
+    let path = dir.0.join("domains.json");
+    std::fs::write(&path, r#"[{"host": "example.com", "type": "news", "backlog": 100}]"#).unwrap();
+    let list = Allowed::from_file(&path).unwrap();
+    let buckets = known(&dir, &["example.com"]);
+    buckets.allow(&list);
+    let store = buckets.store("example.com");
+    store.record_listing("example.com", 7, vec![page("old", EARLY), page("new", LATE), page("undated", 0)], 100).unwrap();
+    let progress = Progress::default();
+    let stop = std::sync::atomic::AtomicBool::new(false);
+    assert_eq!(desearch_bot::dispatch::join_round(&buckets, &list, 1_000_000, &progress, &stop).unwrap(), 1);
+    assert_eq!(store.ready_count("example.com").unwrap(), 3, "with no floor every page goes");
+
+    relist(&path, &list, r#"[{"host": "example.com", "type": "news", "backlog": 100, "since": "2020-01-01"}]"#);
+    assert_eq!(desearch_bot::dispatch::join_round(&buckets, &list, 1_000_000, &progress, &stop).unwrap(), 1);
+    let mut queued = ready(store);
+    queued.sort();
+    assert_eq!(queued, ["new", "undated"], "the page dated before the new floor leaves the waiting lane");
+    assert_eq!(store.ready_count("example.com").unwrap(), 2);
+    assert_eq!(progress.join_before_floor.load(std::sync::atomic::Ordering::Relaxed), 1);
+    assert_eq!(desearch_bot::dispatch::join_round(&buckets, &list, 1_000_000, &progress, &stop).unwrap(), 0, "the same floor walks it no more");
+
+    relist(&path, &list, r#"[{"host": "example.com", "type": "news", "backlog": 100}]"#);
+    assert_eq!(desearch_bot::dispatch::join_round(&buckets, &list, 1_000_000, &progress, &stop).unwrap(), 1);
+    assert_eq!(store.ready_count("example.com").unwrap(), 3, "a floor taken off brings the older page back");
+    assert_eq!(store.joined_since("example.com").unwrap(), None);
 }
