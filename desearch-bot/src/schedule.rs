@@ -11,6 +11,17 @@ pub const MIN_INTERVAL: i64 = 10 * MINUTE;
 pub const MAX_INTERVAL: i64 = 7 * DAY;
 pub const DEFAULT_INTERVAL: i64 = DAY;
 pub const NEWS_INTERVAL: i64 = HOUR;
+/// A listed news site's root and news sitemaps are read again at least this often: ~1 h of fixed waits follow a find, against a 2-hour target.
+pub const NEWS_REREAD: i64 = 30 * MINUTE;
+
+/// The interval a sitemap keeps: a listed news site's roots and news files never wait longer than `NEWS_REREAD`.
+pub fn reread_within(interval: i64, listed_news: bool, depth: i64, url: &str) -> i64 {
+    if listed_news && (depth == 0 || url.to_lowercase().contains("news")) {
+        interval.min(NEWS_REREAD)
+    } else {
+        interval
+    }
+}
 
 const MIN_DATED: usize = 20;
 const AGREEMENT: f64 = 0.9;
@@ -110,6 +121,15 @@ pub fn round_half_even(numerator: i64, denominator: i64) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_listed_news_sites_roots_and_news_files_are_read_within_half_an_hour() {
+        assert_eq!(reread_within(DAY, true, 0, "https://a.com/sitemap.xml"), NEWS_REREAD);
+        assert_eq!(reread_within(DAY, true, 2, "https://a.com/news-sitemap.xml"), NEWS_REREAD);
+        assert_eq!(reread_within(DAY, true, 1, "https://a.com/sitemap-2019-04.xml"), DAY, "an archive file keeps its pace");
+        assert_eq!(reread_within(DAY, false, 0, "https://a.com/sitemap.xml"), DAY, "so does any site off the news list");
+        assert_eq!(reread_within(MIN_INTERVAL, true, 0, "https://a.com/sitemap.xml"), MIN_INTERVAL);
+    }
 
     #[test]
     fn intervals_move_within_bounds() {

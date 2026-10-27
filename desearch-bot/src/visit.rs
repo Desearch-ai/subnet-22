@@ -518,15 +518,17 @@ impl Run<'_> {
         };
         self.found = true;
         let news = read.news || url.to_lowercase().contains("news") || self.known.categories.iter().any(|c| c == "news");
+        let listed_news = self.listed_news();
         let update = &mut self.result.sitemaps[i];
         update.kind = Some(read.kind.to_string());
         update.content_hash = Some(read.hash);
         update.changed = true;
         update.trust = read.trust;
-        update.interval = match stored {
+        let interval = match stored {
             Some(_) => schedule::next_interval(update.interval, true),
             None => schedule::first_interval(read.changefreq.as_deref(), news),
         };
+        update.interval = schedule::reread_within(interval, listed_news, update.depth, &update.url);
         update.next_check_at = Some(self.now + update.interval);
         match read.verdict.take() {
             Some(churn::Verdict::Suspect { sketch }) => {
@@ -618,9 +620,14 @@ impl Run<'_> {
     fn unchanged(&mut self, i: usize, stored: Option<&KnownSitemap>) {
         self.found = true;
         self.kept += stored.map_or(0, |s| s.url_count);
+        let listed_news = self.listed_news();
         let update = &mut self.result.sitemaps[i];
-        update.interval = schedule::next_interval(update.interval, false);
+        update.interval = schedule::reread_within(schedule::next_interval(update.interval, false), listed_news, update.depth, &update.url);
         update.next_check_at = Some(self.now + update.interval);
+    }
+
+    fn listed_news(&self) -> bool {
+        self.visitor.buckets.terms(&self.known.host).news
     }
 
     fn failed(&mut self, i: usize, error: Option<String>) {
