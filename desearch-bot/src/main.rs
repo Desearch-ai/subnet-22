@@ -46,6 +46,64 @@ enum Command {
     RestoreEscaped(RestoreEscapedArgs),
     /// Delete every page kept for these domains and mark them excluded; counts them unless given `--delete`. Run it with the crawl loop stopped.
     DropDomains(DropDomainsArgs),
+    /// Copy bucket stores key by key from the live ones, read-only beside the running bot, for a replay.
+    CopyBuckets(CopyBucketsArgs),
+    /// Run simulated hours of passes on copied stores against a fake task API, outcomes drawn from a real day's and sitemap reads simulated.
+    Replay(ReplayArgs),
+}
+
+#[derive(clap::Args)]
+struct CopyBucketsArgs {
+    #[arg(long, default_value = "/var/lib/desearch-bot/buckets")]
+    from: PathBuf,
+    #[arg(long)]
+    to: PathBuf,
+    /// Buckets to copy, as ranges such as `0-13,20`.
+    #[arg(long)]
+    buckets: String,
+}
+
+#[derive(clap::Args)]
+struct ReplayArgs {
+    /// The copied stores.
+    #[arg(long)]
+    buckets_dir: PathBuf,
+    #[arg(long)]
+    buckets: String,
+    /// The crawl list, as `--domains` takes it; the replay works on a copy of it beside its log.
+    #[arg(long)]
+    domains: PathBuf,
+    /// A real day's outcomes: host, hour, published, failed and dropped, tab-separated with a header.
+    #[arg(long)]
+    outcomes: PathBuf,
+    /// Where the simulated clock starts, in Unix seconds.
+    #[arg(long)]
+    start: u32,
+    #[arg(long, default_value_t = 24)]
+    hours: u32,
+    /// URLs an hour the replay may send: the full rate times the share of buckets copied.
+    #[arg(long)]
+    per_hour: u64,
+    /// A site whose pages all fail from the middle of the replay on.
+    #[arg(long)]
+    refusing: Option<String>,
+    /// A site whose sitemap re-dates every page each hour; the listed site with most pages if not given.
+    #[arg(long)]
+    restamping: Option<String>,
+    /// Stored records the list walker and the stock keeper each read per second.
+    #[arg(long, default_value_t = 1_000_000)]
+    join_per_sec: u64,
+    /// Domains re-crawled on their own interval, as `run` takes them.
+    #[arg(long)]
+    recrawl_overrides: Option<PathBuf>,
+    /// Hours into the replay at which the crawl list becomes `--switch-domains`.
+    #[arg(long, requires = "switch_domains")]
+    switch_at: Option<u32>,
+    #[arg(long)]
+    switch_domains: Option<PathBuf>,
+    /// Where the hourly report goes.
+    #[arg(long)]
+    log: PathBuf,
 }
 
 #[derive(clap::Args)]
@@ -182,6 +240,26 @@ fn main() -> Result<()> {
         Command::RemoveEscaped(args) => return remove_escaped(args),
         Command::RestoreEscaped(args) => return restore_escaped(args),
         Command::DropDomains(args) => return drop_domains(args),
+        Command::CopyBuckets(args) => return copy_buckets(args),
+        Command::Replay(args) => {
+            let args = desearch_bot::replay::ReplayArgs {
+                buckets_dir: args.buckets_dir,
+                buckets: parse_buckets(&args.buckets)?,
+                domains: args.domains,
+                outcomes: args.outcomes,
+                start: args.start,
+                hours: args.hours,
+                per_hour: args.per_hour,
+                refusing: args.refusing,
+                restamping: args.restamping,
+                join_per_sec: args.join_per_sec,
+                switch_at: args.switch_at,
+                switch_domains: args.switch_domains,
+                recrawl_overrides: args.recrawl_overrides,
+                log: args.log,
+            };
+            return tokio::runtime::Builder::new_multi_thread().enable_all().build()?.block_on(desearch_bot::replay::replay(args));
+        }
     };
     // Parsing is capped by its own slots; more blocking threads would only hold more allocator caches.
     tokio::runtime::Builder::new_multi_thread().enable_all().max_blocking_threads(128).build()?.block_on(run(args))
@@ -433,6 +511,19 @@ fn restore_escaped(args: RestoreEscapedArgs) -> Result<()> {
         }
     }
     println!("restored {restored} entries");
+    Ok(())
+}
+
+fn copy_buckets(args: CopyBucketsArgs) -> Result<()> {
+    let buckets = parse_buckets(&args.buckets)?;
+    let resources = Resources::new(256 << 20, 512 << 20, 1);
+    std::fs::create_dir_all(&args.to)?;
+    for bucket in buckets {
+        let started = std::time::Instant::now();
+        let name = format!("{bucket:03}");
+        let copied = desearch_bot::replay::copy_bucket(&args.from.join(&name), &args.to.join(format!("{name}.secondary")), &args.to.join(&name), &resources)?;
+        println!("bucket {name}: {copied} keys copied in {:.0}s", started.elapsed().as_secs_f64());
+    }
     Ok(())
 }
 

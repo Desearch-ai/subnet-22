@@ -583,6 +583,12 @@ impl Dispatcher {
         self
     }
 
+    /// As `paced`, with the pace starting at `start` rather than now, for a replay on a simulated clock.
+    pub fn paced_from(mut self, per_hour: u64, start: u32) -> Self {
+        self.pace = Pace::new(per_hour, start);
+        self
+    }
+
     /// Fill room the lists leave with refreshes from the stocks the keeper behind `wanted` chooses.
     pub fn refreshing(mut self, wanted: Arc<StockWanted>) -> Self {
         self.stock_wanted = Some(wanted);
@@ -1350,12 +1356,17 @@ impl StockWanted {
 
 /// Choose the refresh stock of each domain the dispatcher found out of it, reading `per_second` sent records a second, until stopped.
 pub fn keep_stocks(buckets: &Buckets, wanted: &StockWanted, per_second: u64, progress: &Progress, stop: &AtomicBool) -> Result<()> {
+    keep_stocks_on(buckets, wanted, per_second, progress, stop, &now)
+}
+
+/// As `keep_stocks`, telling the time by `clock`, as a replay's simulated one.
+pub fn keep_stocks_on(buckets: &Buckets, wanted: &StockWanted, per_second: u64, progress: &Progress, stop: &AtomicBool, clock: &dyn Fn() -> u32) -> Result<()> {
     let mut not_before: HashMap<String, u32> = HashMap::new();
     let mut cursor: HashMap<String, Vec<u8>> = HashMap::new();
     let (mut began, mut read) = (Instant::now(), 0u64);
     while !stop.load(Ordering::Relaxed) {
         progress.stock_waiting.store(wanted.waiting() as u64, Ordering::Relaxed);
-        let at = now();
+        let at = clock();
         let batch: Vec<String> = wanted.take(STOCK_BATCH).into_iter().filter(|domain| not_before.get(domain).is_none_or(|&until| until <= at)).collect();
         if batch.is_empty() {
             // Idle time saves no reads for later, so the pace never bursts.

@@ -18,6 +18,7 @@ pub mod ready;
 pub mod recrawl;
 pub mod records;
 pub mod registry;
+pub mod replay;
 pub mod robots;
 pub mod schedule;
 pub mod signing;

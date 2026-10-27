@@ -1429,7 +1429,7 @@ fn split_key(key: &[u8]) -> Option<(&[u8], &[u8])> {
     Some((&key[..at], &key[at + 1..]))
 }
 
-fn prefixed(kind: u8, domain: &[u8], rest: &[u8]) -> Vec<u8> {
+pub(crate) fn prefixed(kind: u8, domain: &[u8], rest: &[u8]) -> Vec<u8> {
     [&[kind], domain, b"\0", rest].concat()
 }
 
@@ -1474,7 +1474,7 @@ fn timed_entry(key: &[u8]) -> Option<(u32, &[u8], &[u8])> {
     Some((due, domain, rest))
 }
 
-fn bounded(prefix: &[u8]) -> ReadOptions {
+pub(crate) fn bounded(prefix: &[u8]) -> ReadOptions {
     let mut upper = prefix.to_vec();
     *upper.last_mut().expect("a prefix") += 1;
     let mut options = ReadOptions::default();
