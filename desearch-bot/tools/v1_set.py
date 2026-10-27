@@ -23,9 +23,10 @@ CRAWL_PER_INDEX = 3
 FIELDS = ("host", "rule", "since", "paths", "source", "type", "why")
 DASHED = re.compile(r"(?<![0-9])([0-9]{4})-([0-9]{2})-([0-9]{2})(?![0-9])")
 COMPACT = re.compile(r"(?<![0-9])([0-9]{4})([0-9]{2})([0-9]{2})(?![0-9])")
-# Forecast pages are one template per place.
+# Forecast sites are one template per place, so they are big; a small weather blog or a backed outlet is not one.
 WEATHER = re.compile(r"weather|forecast")
 WEATHER_TYPES = {"news", "reference"}
+WEATHER_MIN = 50_000
 PEOPLE_SEARCH = re.compile(r"peoplesearch|people-search|peoplefinder|personsearch|whitepages|truepeople|fastpeople|electoralroll|backgroundcheck|publicrecord|salaries|sponsordata|callsignlookup")
 # Unrelated sites that store exactly as many URLs come from one generator; small or round counts collide by chance.
 NETWORK_MIN = 1_000_000
@@ -116,13 +117,13 @@ def listed_entries(decisions, backing, news_sources, judged, counts, news: str, 
         if host in spam:
             entries.append({"host": host, "rule": "out", "why": ["spam"]})
             continue
-        if PEOPLE_SEARCH.search(host):
+        if site_type != "news" and PEOPLE_SEARCH.search(host):
             entries.append({"host": host, "rule": "out", "why": ["people-search"]})
             continue
-        if site_type in WEATHER_TYPES and WEATHER.search(host):
+        stored = int(counts.get(host, {}).get("stored") or 0)
+        if site_type in WEATHER_TYPES and WEATHER.search(host) and stored >= WEATHER_MIN and not backed_news(host, backing, news_sources):
             entries.append({"host": host, "rule": "out", "why": ["template"]})
             continue
-        stored = int(counts.get(host, {}).get("stored") or 0)
         if site_type == "news":
             why = backed_news(host, backing, news_sources)
             if not why and verdict is not None and verdict <= FAILED_SHARE:
