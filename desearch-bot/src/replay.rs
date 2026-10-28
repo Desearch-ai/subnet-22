@@ -295,7 +295,7 @@ pub async fn replay(args: ReplayArgs) -> Result<()> {
     };
     let resender = {
         let (buckets, list, progress, stop) = (buckets.clone(), list.clone(), progress.clone(), stop.clone());
-        let (read_per_sec, write_per_sec) = (args.join_per_sec, args.resend_per_sec);
+        let (read_per_sec, write_per_sec) = (dispatch::resend_reads(args.join_per_sec), args.resend_per_sec);
         std::thread::spawn(move || dispatch::resend_listed(&buckets, &list, read_per_sec, write_per_sec, &progress, &stop))
     };
     let resent = Arc::new(ResentPages::default());

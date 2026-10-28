@@ -1480,6 +1480,11 @@ struct Walk {
     settled: bool,
 }
 
+/// Records the resend walk reads a second: the list walker's rate, or 1M with the walker off, since reads are cheap beside the writes `--resend-per-sec` holds.
+pub fn resend_reads(join_per_sec: u64) -> u64 {
+    if join_per_sec > 0 { join_per_sec } else { 1_000_000 }
+}
+
 /// Walk the listed domains whose `resend_before` changed, in a thread of its own so list changes and new domains don't wait behind it.
 pub fn resend_listed(buckets: &Buckets, allowed: &Allowed, read_per_sec: u64, write_per_sec: u64, progress: &Progress, stop: &AtomicBool) -> Result<()> {
     let mut walked = None;

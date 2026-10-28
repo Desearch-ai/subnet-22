@@ -2047,3 +2047,9 @@ fn a_capped_walk_keeps_the_pages_found_while_it_ran() {
     queued.sort();
     assert_eq!(queued, ["a", "b", "found-during"], "the walk's clear leaves what was found since it began");
 }
+
+#[test]
+fn the_resend_walk_reads_at_the_walkers_rate_or_freely_with_the_walker_off() {
+    assert_eq!(desearch_bot::dispatch::resend_reads(100_000), 100_000);
+    assert_eq!(desearch_bot::dispatch::resend_reads(0), 1_000_000, "the bot and the replay alike, not one record a second");
+}

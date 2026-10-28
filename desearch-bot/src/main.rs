@@ -376,8 +376,7 @@ async fn run(args: RunArgs) -> Result<()> {
     }
     let resending = listed.clone().filter(|_| args.resend_per_sec > 0).map(|allowed| {
         let (buckets, progress, halt) = (buckets.clone(), progress.clone(), halt.clone());
-        // Reads are cheap beside the writes the resend pace holds; with the list walker off they go at its usual rate.
-        let read_per_sec = if args.join_per_sec > 0 { args.join_per_sec } else { 1_000_000 };
+        let read_per_sec = dispatch::resend_reads(args.join_per_sec);
         let write_per_sec = args.resend_per_sec;
         std::thread::spawn(move || match dispatch::resend_listed(&buckets, &allowed, read_per_sec, write_per_sec, &progress, &halt) {
             Ok(()) => println!("[rs] resend walker stopped"),
