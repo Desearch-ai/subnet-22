@@ -671,6 +671,7 @@ impl BucketStore {
     /// Up to `want` refreshes from the domain's stock, oldest send first, none sent within `floor` of `now`; stale entries go.
     pub fn take_stock(&self, domain: &str, want: usize, now: u32, floor: u32) -> Result<Stock> {
         let robots = self.domain(domain)?.map(|record| records::robots_paths(&record)).unwrap_or_default();
+        let since = self.terms(domain).since;
         let prefix = prefixed(STOCK, domain.as_bytes(), b"");
         let mut entries = Vec::new();
         let mut taken = Stock::default();
@@ -702,8 +703,8 @@ impl BucketStore {
                 taken.empty = false;
                 break;
             }
-            // Sent again since it was stocked, or no longer one to refresh: it leaves the stock unsent.
-            let fresh = record.filter(|r| r.pushed_at == pushed_at).filter(|r| sent.is_some_and(|s| refreshable(r, &s)));
+            // Sent again since it was stocked, no longer one to refresh, or dated before the floor: it leaves the stock unsent.
+            let fresh = record.filter(|r| r.pushed_at == pushed_at && !before_floor(since, r.lastmod, &rest)).filter(|r| sent.is_some_and(|s| refreshable(r, &s)));
             if let Some(record) = fresh.filter(|_| robots.allows_page(domain, &rest) && !self.listed_apart(domain, &rest)) {
                 let entry = Entry { domain: domain.to_string(), rest: rest.clone(), order: Order::Requeued { due: pushed_at } };
                 taken.picks.push(Pick { url: fetchable(&rest, record.flags), lastmod: record.lastmod, reason: Reason::Refresh, failures: 0, entry });

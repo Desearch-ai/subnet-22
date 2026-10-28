@@ -999,6 +999,21 @@ fn a_refresh_stock_holds_the_pages_sent_longest_ago_and_hands_them_out_oldest_fi
     assert!(store.stock_refresh("example.com", 10, None, usize::MAX, &mut |_| false).unwrap().is_none(), "a choice asked to stop writes nothing");
 }
 
+#[test]
+fn a_refresh_stock_passes_over_pages_dated_before_the_floor() {
+    let dir = Dir::new("refresh-stock-floor");
+    let buckets = known(&dir, &["example.com"]);
+    let store = buckets.store("example.com");
+    store.record_listing("example.com", 7, vec![page("old", FLOOR - 86_400 * 30), page("new", FLOOR + 10), page("undated", 0)], 100).unwrap();
+    store.mark_sent(&take(store, 10), 1000, &rules()).unwrap();
+    buckets.allow(&Allowed::with_terms([("example.com", Terms { since: Some(FLOOR), ..Terms::default() })]));
+    store.stock_refresh("example.com", 10, None, usize::MAX, &mut |_| true).unwrap();
+    let stock = store.take_stock("example.com", 10, 3000, 1000).unwrap();
+    let mut urls: Vec<String> = stock.picks.iter().map(|p| p.url.clone()).collect();
+    urls.sort();
+    assert_eq!(urls, ["https://example.com/new", "https://example.com/undated"], "a page dated before the floor isn't sent again");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn spare_room_goes_to_the_oldest_sent_pages_of_domains_whose_pages_come_back() {
     let dir = Dir::new("dispatcher-fill");
