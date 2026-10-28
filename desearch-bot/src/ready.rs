@@ -135,9 +135,10 @@ fn calendar_date(year: &str, month: &str, day: &str) -> Option<chrono::NaiveDate
     (1990..=2099).contains(&year).then(|| chrono::NaiveDate::from_ymd_opt(year, month, day)).flatten()
 }
 
-/// Whether a page is dated before its domain's floor; an undated page never is.
+/// Whether a page is dated before its domain's floor; an undated page never is, and a lastmod has a day's grace for its time zone, since the planner compares calendar dates.
 pub fn before_floor(since: Option<u32>, lastmod: u32, rest: &[u8]) -> bool {
-    since.is_some_and(|floor| page_date(lastmod, rest).is_some_and(|date| date < floor))
+    let grace = if lastmod != 0 { 86_400 } else { 0 };
+    since.is_some_and(|floor| page_date(lastmod, rest).is_some_and(|date| date.saturating_add(grace) < floor))
 }
 
 pub fn restamped(changed: usize, listed: usize) -> bool {
@@ -832,14 +833,49 @@ impl BucketStore {
         Ok((cleared, true))
     }
 
+    /// Empties the domain's new-page lane of pages first seen before `started`, leaving the ones found since; how many went, and false when `pace` stopped it first.
+    pub fn clear_fresh_before(&self, domain: &str, started: u32, pace: &mut dyn FnMut(u64) -> bool) -> Result<(u64, bool)> {
+        let prefix = [&[READY], domain.as_bytes(), b"\0", &[FRESH as u8]].concat();
+        let (mut cleared, mut after): (u64, Option<Vec<u8>>) = (0, None);
+        loop {
+            let read = {
+                let _guard = self.lock_ready();
+                let keys = self.keys_under(&prefix, after.as_deref(), TRIM_CHUNK)?;
+                let Some(last) = keys.last().cloned() else {
+                    break;
+                };
+                let found_before = |key: &&Vec<u8>| matches!(Entry::parse(key).map(|entry| entry.order), Some(Order::Fresh { first_seen, .. }) if first_seen < started);
+                let doomed: Vec<&Vec<u8>> = keys.iter().filter(found_before).collect();
+                let mut batch = WriteBatch::default();
+                for key in &doomed {
+                    batch.delete(key);
+                }
+                self.write_counts(&mut batch, &HashMap::from([(domain.to_string(), -(doomed.len() as i64))]))?;
+                self.db.write(batch)?;
+                cleared += doomed.len() as u64;
+                after = Some(last);
+                keys.len()
+            };
+            if read < TRIM_CHUNK {
+                break;
+            }
+            std::thread::sleep(TRIM_REST);
+            if !pace(read as u64) {
+                return Ok((cleared, false));
+            }
+        }
+        Ok((cleared, true))
+    }
+
     /// Queue the pages a listed domain stored but never sent, newest first, as many as its cap leaves; counts its sent pages for the cap.
     pub fn join_domain(&self, domain: &str, terms: Terms, started: u32, pace: &mut dyn FnMut(u64) -> bool) -> Result<Joined> {
         let robots = self.domain(domain)?.map(|record| records::robots_paths(&record)).unwrap_or_default();
         let prefix = prefixed(URL, domain.as_bytes(), b"");
         let mut joined = Joined::default();
         let mut streamed: Vec<Entry> = Vec::new();
-        // With a cap or a backlog only the newest pages go: a heap of the oldest kept, never more than the bound itself.
-        let bound = terms.send_cap.or(terms.backlog);
+        // With a cap or a backlog only the newest pages go: a heap of the oldest kept, never more than the bound itself. A bound above all the domain lists cuts nothing, so its pages stream instead.
+        let listed = self.domain(domain)?.and_then(|record| records::int(record.get("urls"))).unwrap_or(0).max(0) as u64;
+        let bound = terms.send_cap.or(terms.backlog).filter(|&most| listed == 0 || most < listed);
         let mut newest: BinaryHeap<Reverse<(u32, u32, Vec<u8>)>> = BinaryHeap::new();
         let mut since_pace = 0u64;
         for item in self.db.iterator_opt(IteratorMode::From(&prefix, Direction::Forward), bounded(&prefix)) {
@@ -892,7 +928,8 @@ impl BucketStore {
         if let Some(most) = bound {
             let room = match terms.send_cap {
                 Some(cap) => {
-                    let (cleared, finished) = self.clear_fresh(domain, pace)?;
+                    // Pages found during the walk went on the list when found; only the ones the walk read are cleared, to be queued again in order.
+                    let (cleared, finished) = self.clear_fresh_before(domain, started, pace)?;
                     joined.cleared = cleared;
                     if !finished {
                         joined.stopped = true;

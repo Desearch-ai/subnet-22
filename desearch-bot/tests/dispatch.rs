@@ -1407,15 +1407,15 @@ fn a_date_floor_leaves_older_pages_unsent_wherever_they_would_queue() {
     let list = Allowed::from_file(&path).unwrap();
     let store = BucketStore::open(&dir.0.join("store"), &resources()).unwrap();
     store.allow(list.clone());
-    let stored = [page("old", EARLY), page("new", LATE), page("2018/03/dated", 0), page("2021-02-04-dated", 0), page("undated", 0)];
+    let stored = [page("old", EARLY), page("new", LATE), page("2018/03/dated", 0), page("2021-02-04-dated", 0), page("undated", 0), page("floor-day-east", FLOOR - 4 * 3_600)];
     store.record_listing("example.com", 7, stored.to_vec(), 100).unwrap();
 
     relist(&path, &list, r#"[{"host": "example.com", "type": "news", "backlog": 100, "since": "2020-01-01"}]"#);
     let joined = store.join_domain("example.com", list.get("example.com").unwrap(), 1000, &mut |_| true).unwrap();
-    assert_eq!((joined.queued, joined.before_floor), (3, 2), "a lastmod before the floor, or a month in the path before it, stays");
+    assert_eq!((joined.queued, joined.before_floor), (4, 2), "a lastmod before the floor, or a month in the path before it, stays");
     let mut queued = ready(&store);
     queued.sort();
-    assert_eq!(queued, ["2021-02-04-dated", "new", "undated"]);
+    assert_eq!(queued, ["2021-02-04-dated", "floor-day-east", "new", "undated"], "a lastmod hours before the floor in UTC may be the floor's day where it was written");
     assert_eq!(store.joined_since("example.com").unwrap(), Some(FLOOR));
 
     store.record_listing("example.com", 7, vec![page("found-old", EARLY), page("found-new", LATE)], 2000).unwrap();
@@ -1584,4 +1584,23 @@ fn an_inbox_file_lists_its_hosts_pages_like_a_sitemap_and_is_read_again_only_whe
     std::fs::write(inbox.join("www.example.com.txt"), "https://example.com/a\t2021-03-04\nhttps://example.com/b\t2022-01-01\n").unwrap();
     let again = desearch_bot::inbox::take_in(&buckets, &inbox, 7000, &stop).unwrap();
     assert_eq!((again.files, again.queued), (1, 1), "only the new page joins the list");
+}
+
+#[test]
+fn a_capped_walk_keeps_the_pages_found_while_it_ran() {
+    let dir = Dir::new("join-found-during");
+    std::fs::create_dir_all(&dir.0).unwrap();
+    let path = dir.0.join("domains.json");
+    std::fs::write(&path, r#"["other.com"]"#).unwrap();
+    let list = Allowed::from_file(&path).unwrap();
+    let store = BucketStore::open(&dir.0.join("store"), &resources()).unwrap();
+    store.allow(list.clone());
+    store.record_listing("example.com", 7, vec![page("a", 10), page("b", 10)], 100).unwrap();
+    relist(&path, &list, r#"[{"host": "example.com", "send_cap": 10}]"#);
+    store.record_listing("example.com", 7, vec![page("found-during", 10)], 2000).unwrap();
+    assert_eq!(ready(&store), ["found-during"], "found after the walk began, it went on the list when found");
+    store.join_domain("example.com", list.get("example.com").unwrap(), 1500, &mut |_| true).unwrap();
+    let mut queued = ready(&store);
+    queued.sort();
+    assert_eq!(queued, ["a", "b", "found-during"], "the walk's clear leaves what was found since it began");
 }
