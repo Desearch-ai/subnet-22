@@ -2,6 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, LazyLock, Mutex, MutexGuard, OnceLock};
 
 use anyhow::{Context, Result};
@@ -18,6 +19,7 @@ use serde_json::{Map, Value};
 use crate::allowed::{Allowed, Terms};
 use crate::listed::{self, ListedSet};
 use crate::ready::SENT;
+use crate::states::State;
 use crate::urls::{Listing, Record, Url, TIMED};
 
 pub const BUCKETS: usize = 256;
@@ -191,6 +193,8 @@ pub struct BucketStore {
     allowed: OnceLock<Arc<Allowed>>,
     /// Domains whose sends reached their cap since the list walker last looked, so it clears their new-page lanes.
     pub(crate) capped: Mutex<HashSet<String>>,
+    /// Waiting pages dropped as they would go, dated before their domain's floor.
+    pub floor_dropped: AtomicU64,
 }
 
 impl BucketStore {
@@ -206,6 +210,7 @@ impl BucketStore {
             noticed: Mutex::new(None),
             allowed: OnceLock::new(),
             capped: Mutex::new(HashSet::new()),
+            floor_dropped: AtomicU64::new(0),
         })
     }
 
@@ -216,6 +221,16 @@ impl BucketStore {
 
     pub(crate) fn allows(&self, domain: &str) -> bool {
         self.allowed.get().is_none_or(|allowed| allowed.allows(domain))
+    }
+
+    /// Whether the list names this host as a domain of its own.
+    pub(crate) fn lists(&self, host: &str) -> bool {
+        self.allowed.get().is_some_and(|allowed| allowed.get(host).is_some())
+    }
+
+    /// Whether this host is a listed subdomain whose own record works.
+    pub(crate) fn apart(&self, host: &str) -> bool {
+        self.allowed.get().is_some_and(|allowed| allowed.apart(host))
     }
 
     /// What the list says about the domain; the defaults when it is not listed or there is no list.
@@ -549,6 +564,32 @@ impl Buckets {
 
     pub fn terms(&self, domain: &str) -> Terms {
         self.store_for(domain).map(|store| store.terms(domain)).unwrap_or_default()
+    }
+
+    /// Marks the listed subdomains of listed domains whose own record speaks for them: active or failing, so they send their own pages, or blocked, excluded or ineligible, so their pages never go. A subdomain still new, down or unreachable, or ineligible only because it has no homepage (404 or 410), leaves its pages under its parent.
+    pub fn note_apart(&self, allowed: &Allowed) {
+        let entries = allowed.entries();
+        let names: HashSet<&str> = entries.iter().map(|(name, _)| name.as_str()).collect();
+        let under_listed = |name: &str| {
+            let labels: Vec<&str> = name.split('.').collect();
+            (1..labels.len().saturating_sub(1)).any(|at| names.contains(labels[at..].join(".").as_str()))
+        };
+        let works = |name: &str| {
+            let record = self.store_for(name).and_then(|store| store.domain(name).ok().flatten());
+            let state = record.as_ref().and_then(|record| record.get("state")).and_then(Value::as_str).and_then(State::parse);
+            let reason = record.as_ref().and_then(|record| record.get("reason")).and_then(Value::as_str);
+            let home = record.as_ref().and_then(|record| record.get("home_status")).and_then(Value::as_u64);
+            match state {
+                Some(State::Ineligible) => !(reason == Some("homepage_error") && matches!(home, Some(404 | 410))),
+                state => matches!(state, Some(State::Active | State::Failing | State::Blocked | State::Excluded)),
+            }
+        };
+        allowed.set_apart(entries.iter().filter(|(name, _)| under_listed(name) && works(name)).map(|(name, _)| name.clone()).collect());
+    }
+
+    /// Whether a list names the domain; false with no list.
+    pub fn lists(&self, domain: &str) -> bool {
+        self.store_for(domain).is_some_and(|store| store.lists(domain))
     }
 
     /// The listed domains this process owns; none with no list.

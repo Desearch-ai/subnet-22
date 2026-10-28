@@ -30,6 +30,8 @@ pub const MIN_HOST_INTERVAL: f64 = 1.0;
 const MAX_CRAWL_DELAY: f64 = 60.0;
 const MAX_REDIRECTS: usize = 5;
 const SITEMAP_GUESSES: [&str; 2] = ["/sitemap.xml", "/sitemap_index.xml"];
+/// Tried after the sitemap guesses, on listed domains only: a feed names a site's newest pages when it lists no sitemap.
+const FEED_GUESSES: [&str; 2] = ["/feed", "/rss.xml"];
 const MAX_DEPTH: i64 = 3;
 const MAX_FILES: usize = 40;
 /// The most unread sitemap files one visit records for the visits after it.
@@ -73,6 +75,8 @@ pub struct KnownSitemap {
     pub suspect_at: Option<i64>,
     pub sketch: Vec<u64>,
     pub generated_until: Option<i64>,
+    /// A Google News sitemap when last read, so a quiet read keeps its news pace.
+    pub google_news: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -113,6 +117,7 @@ pub struct SitemapUpdate {
     pub suspect_at: Option<i64>,
     pub sketch: Vec<u64>,
     pub generated_until: Option<i64>,
+    pub google_news: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -129,6 +134,7 @@ pub struct Visit {
     pub language: Option<String>,
     pub declared_lang: Option<String>,
     pub home_chars: Option<i64>,
+    pub home_status: Option<u16>,
     pub sitemaps: Vec<SitemapUpdate>,
     pub listed: i64,
     pub new: i64,
@@ -153,6 +159,7 @@ impl Visit {
             language: None,
             declared_lang: None,
             home_chars: None,
+            home_status: None,
             sitemaps: Vec::new(),
             listed: 0,
             new: 0,
@@ -343,7 +350,7 @@ impl Run<'_> {
         if !roots.is_empty() {
             return Ok(roots);
         }
-        let guesses = SITEMAP_GUESSES.iter().map(|path| urls::join(&base, path)).collect::<Result<Vec<_>, _>>().map_err(|_| Crash::new("ValueError"))?;
+        let guesses = guess_paths(self.visitor.buckets.lists(&self.known.host)).map(|path| urls::join(&base, path)).collect::<Result<Vec<_>, _>>().map_err(|_| Crash::new("ValueError"))?;
         self.guesses = guesses.iter().cloned().collect();
         Ok(guesses)
     }
@@ -508,6 +515,11 @@ impl Run<'_> {
                 self.unchanged(i, stored);
                 return Ok(Vec::new());
             }
+            Digested::Invalid if stored.is_none() && self.guesses.contains(&url) => {
+                // A guess answered with a page that isn't a sitemap is no root, so the next visit guesses again.
+                self.result.sitemaps.remove(i);
+                return Ok(Vec::new());
+            }
             Digested::Invalid => {
                 self.failed(i, Some("invalid".into()));
                 return Ok(Vec::new());
@@ -516,15 +528,18 @@ impl Run<'_> {
         };
         self.found = true;
         let news = read.news || url.to_lowercase().contains("news") || self.known.categories.iter().any(|c| c == "news");
+        let listed_news = self.listed_news();
         let update = &mut self.result.sitemaps[i];
         update.kind = Some(read.kind.to_string());
         update.content_hash = Some(read.hash);
         update.changed = true;
         update.trust = read.trust;
-        update.interval = match stored {
+        update.google_news = read.news;
+        let interval = match stored {
             Some(_) => schedule::next_interval(update.interval, true),
             None => schedule::first_interval(read.changefreq.as_deref(), news),
         };
+        update.interval = schedule::reread_within(interval, listed_news, update.depth, read.kind == "index", read.news);
         update.next_check_at = Some(self.now + update.interval);
         match read.verdict.take() {
             Some(churn::Verdict::Suspect { sketch }) => {
@@ -585,6 +600,7 @@ impl Run<'_> {
                 suspect_at: stored.suspect_at,
                 sketch: stored.sketch.clone(),
                 generated_until: stored.generated_until,
+                google_news: stored.google_news,
             },
             None => SitemapUpdate {
                 id: sitemap_id(url),
@@ -607,6 +623,7 @@ impl Run<'_> {
                 suspect_at: None,
                 sketch: Vec::new(),
                 generated_until: None,
+                google_news: false,
             },
         };
         self.result.sitemaps.push(update);
@@ -616,9 +633,15 @@ impl Run<'_> {
     fn unchanged(&mut self, i: usize, stored: Option<&KnownSitemap>) {
         self.found = true;
         self.kept += stored.map_or(0, |s| s.url_count);
+        let listed_news = self.listed_news();
         let update = &mut self.result.sitemaps[i];
-        update.interval = schedule::next_interval(update.interval, false);
+        let index = update.kind.as_deref() == Some("index");
+        update.interval = schedule::reread_within(schedule::next_interval(update.interval, false), listed_news, update.depth, index, update.google_news);
         update.next_check_at = Some(self.now + update.interval);
+    }
+
+    fn listed_news(&self) -> bool {
+        self.visitor.buckets.terms(&self.known.host).news
     }
 
     fn failed(&mut self, i: usize, error: Option<String>) {
@@ -660,6 +683,7 @@ impl Run<'_> {
         if self.moved_away(&answer) {
             return Ok(());
         }
+        self.result.home_status = Some(answer.status);
         if answer.status >= 500 {
             self.stop(Outcome::Unreachable, Some(format!("homepage_{}", answer.status)));
             return Ok(());
@@ -698,7 +722,16 @@ impl Run<'_> {
 
     fn moved_away(&mut self, answer: &Answer) -> bool {
         let host = urls::split(&answer.url).ok().and_then(|parts| parts.hostname()).unwrap_or_default();
-        let Some(target) = self.visitor.suffixes.registrable(&host).filter(|target| *target != self.known.host) else {
+        let target = self.visitor.suffixes.registrable(&host);
+        let home = self.visitor.suffixes.registrable(&self.known.host);
+        // A subdomain kept as a domain of its own stays itself only on its own host; a registrable domain anywhere under its name.
+        let target = if home.as_deref() == Some(self.known.host.as_str()) || host.is_empty() {
+            target.filter(|target| *target != self.known.host)
+        } else {
+            let bare = host.strip_prefix("www.").unwrap_or(&host).to_string();
+            (bare != self.known.host).then(|| if target == home { bare } else { target.unwrap_or(bare) })
+        };
+        let Some(target) = target else {
             return false;
         };
         self.result.canonical_host = Some(target);
@@ -908,6 +941,11 @@ pub fn epoch(micros: Option<i64>) -> i64 {
     micros.map_or(0, |us| us.div_euclid(SECOND))
 }
 
+/// Where to look for a sitemap no robots.txt names: the usual files, then on a listed domain its feed.
+fn guess_paths(listed: bool) -> impl Iterator<Item = &'static str> {
+    SITEMAP_GUESSES.into_iter().chain(FEED_GUESSES.into_iter().filter(move |_| listed))
+}
+
 fn crawl_delay(value: Option<f64>) -> f64 {
     match value {
         Some(delay) if delay.is_finite() && delay >= 0.0 => delay.min(MAX_CRAWL_DELAY),
@@ -948,6 +986,12 @@ pub fn gunzip(body: &[u8]) -> Cow<'_, [u8]> {
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn a_listed_domain_with_no_sitemap_named_is_also_looked_at_for_a_feed() {
+        assert_eq!(guess_paths(false).collect::<Vec<_>>(), ["/sitemap.xml", "/sitemap_index.xml"]);
+        assert_eq!(guess_paths(true).collect::<Vec<_>>(), ["/sitemap.xml", "/sitemap_index.xml", "/feed", "/rss.xml"], "after the sitemaps, which go first");
+    }
 
     #[test]
     fn gunzip_keeps_what_decoded_before_a_cut() {

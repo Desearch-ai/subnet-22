@@ -53,6 +53,21 @@ pub fn new_domain(
     record.as_object().cloned().unwrap_or_default()
 }
 
+/// A registry row set back to `new` while the store holds another state: someone asked for the domain to be checked afresh.
+pub fn wants_recheck(registry_state: &str, record: &Json) -> bool {
+    let stored = record.get("state").and_then(Value::as_str);
+    registry_state == State::New.as_str() && stored.is_some_and(|state| state != State::New.as_str() && state != State::Excluded.as_str())
+}
+
+/// A domain to check afresh: new and due now, through the discovery lane, with its homepage read again.
+pub fn reset_for_recheck(record: &mut Json, now_micros: i64) {
+    record.insert("state".into(), State::New.as_str().into());
+    record.insert("reason".into(), Value::Null);
+    record.insert("failures".into(), 0.into());
+    record.insert("due".into(), seconds(Some(now_micros)));
+    record.remove("lang");
+}
+
 /// What a visit needs to know about a domain before it starts.
 pub fn known(host: &str, domain: &Json, sitemaps: &[(String, Json)]) -> Option<Known> {
     Some(Known {
@@ -107,6 +122,7 @@ fn known_sitemap(url: &str, record: &Json) -> Option<KnownSitemap> {
         suspect_at: moment(record.get("suspect")),
         sketch: record.get("sketch").and_then(Value::as_str).map(churn::decode).unwrap_or_default(),
         generated_until: moment(record.get("generated")),
+        google_news: record.get("gnews").and_then(Value::as_bool).unwrap_or(false),
     })
 }
 
@@ -143,6 +159,9 @@ pub fn written_domain(previous: &Json, write: &DomainWrite, url_count: i64) -> J
     if let Some(chars) = visit.home_chars {
         record.insert("chars".into(), chars.into());
     }
+    if let Some(status) = visit.home_status {
+        record.insert("home_status".into(), status.into());
+    }
     record
 }
 
@@ -176,6 +195,11 @@ pub fn written_sitemap(previous: Option<&Json>, update: &SitemapUpdate, at: i64)
     if let Some(kind) = &update.kind {
         record.insert("kind".into(), kind.clone().into());
     }
+    if update.google_news {
+        record.insert("gnews".into(), true.into());
+    } else if update.changed {
+        record.remove("gnews");
+    }
     if update.changed {
         record.insert("urls".into(), update.url_count.into());
         record.insert("children".into(), update.child_count.into());
@@ -203,4 +227,59 @@ pub fn unread_sitemap(url: &str, depth: i64, parent: Option<i64>) -> Json {
 /// URLs a domain lists across the sitemaps that last answered.
 pub fn url_count<'a>(sitemaps: impl Iterator<Item = &'a Json>) -> i64 {
     sitemaps.filter(|s| s.get("status").and_then(Value::as_str) == Some("ok")).map(|s| int(s.get("urls")).unwrap_or(0)).sum()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_google_news_sitemap_keeps_its_flag_through_quiet_reads() {
+        let read = SitemapUpdate {
+            id: 1,
+            url: "https://example.com/news.xml".into(),
+            kind: Some("urlset".into()),
+            depth: 1,
+            parent_id: None,
+            status: "ok",
+            error: None,
+            etag: None,
+            last_modified: None,
+            content_hash: Some("h".into()),
+            changed: true,
+            url_count: 10,
+            child_count: 0,
+            interval: DEFAULT_INTERVAL,
+            next_check_at: None,
+            trust: Trust::Unknown,
+            index_lastmod: None,
+            suspect_at: None,
+            sketch: Vec::new(),
+            generated_until: None,
+            google_news: true,
+        };
+        let first = written_sitemap(None, &read, 1_000 * SECOND);
+        let known = known_sitemap(&read.url, &first).unwrap();
+        assert!(known.google_news);
+        let quiet = SitemapUpdate { changed: false, google_news: known.google_news, ..read.clone() };
+        let second = written_sitemap(Some(&first), &quiet, 2_000 * SECOND);
+        assert!(known_sitemap(&read.url, &second).unwrap().google_news, "a 304 or an unchanged hash keeps it");
+        let plain = SitemapUpdate { google_news: false, ..read.clone() };
+        assert!(!known_sitemap(&read.url, &written_sitemap(Some(&second), &plain, 3_000 * SECOND)).unwrap().google_news, "a read that finds no Google News markup clears it");
+    }
+
+    #[test]
+    fn a_row_set_back_to_new_checks_the_domain_afresh_with_its_homepage_read_again() {
+        let mut record = new_domain(Some(5), Some("big_generic"), &[], State::Ineligible, Some("not_english"), None);
+        record.insert("lang".into(), "fr".into());
+        record.insert("failures".into(), 2.into());
+        assert!(wants_recheck("new", &record));
+        assert!(!wants_recheck("ineligible", &record), "the bot's own state coming back is no request");
+        reset_for_recheck(&mut record, 1_700_000_000 * SECOND);
+        assert_eq!((record["state"].as_str(), record["reason"].is_null(), record["failures"].as_i64(), record["due"].as_i64()), (Some("new"), true, Some(0), Some(1_700_000_000)));
+        assert!(!record.contains_key("lang"));
+        assert!(!wants_recheck("new", &record), "already new");
+        let excluded = new_domain(None, None, &[], State::Excluded, Some("hand"), None);
+        assert!(!wants_recheck("new", &excluded), "an excluded domain stays out");
+    }
 }

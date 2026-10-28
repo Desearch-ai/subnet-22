@@ -14,9 +14,10 @@ use desearch_bot::buckets::{bucket_of, BucketStore, Buckets, Escaped, Resources,
 use desearch_bot::crawl::Loop;
 use desearch_bot::dispatch::{self, Dispatcher, Progress};
 use desearch_bot::hotkey::Hotkey;
+use desearch_bot::inbox;
 use desearch_bot::langid::LangId;
 use desearch_bot::net::{self, PublicResolver};
-use desearch_bot::outcomes::{OutcomeFeed, OutcomeReader};
+use desearch_bot::outcomes::{OutcomeFeed, OutcomeReader, ResentPages};
 use desearch_bot::recrawl::{Recrawl, DAY, DEFAULT_EVERY, DEFAULT_GONE};
 use desearch_bot::registry::{self, Registry};
 use desearch_bot::signing::Signer;
@@ -45,6 +46,77 @@ enum Command {
     RestoreEscaped(RestoreEscapedArgs),
     /// Delete every page kept for these domains and mark them excluded; counts them unless given `--delete`. Run it with the crawl loop stopped.
     DropDomains(DropDomainsArgs),
+    /// Copy bucket stores key by key from the live ones, read-only beside the running bot, for a replay.
+    CopyBuckets(CopyBucketsArgs),
+    /// Take every page waiting to go once more for a `resend_before` off its list and clear its mark, the rollback for resends. Run it with the crawl loop stopped.
+    Unresend(UnresendArgs),
+    /// Run simulated hours of passes on copied stores against a fake task API, outcomes drawn from a real day's and sitemap reads simulated.
+    Replay(ReplayArgs),
+}
+
+#[derive(clap::Args)]
+struct CopyBucketsArgs {
+    #[arg(long, default_value = "/var/lib/desearch-bot/buckets")]
+    from: PathBuf,
+    #[arg(long)]
+    to: PathBuf,
+    /// Buckets to copy, as ranges such as `0-13,20`.
+    #[arg(long)]
+    buckets: String,
+}
+
+#[derive(clap::Args)]
+struct ReplayArgs {
+    /// The copied stores.
+    #[arg(long)]
+    buckets_dir: PathBuf,
+    #[arg(long)]
+    buckets: String,
+    /// The crawl list, as `--domains` takes it; the replay works on a copy of it beside its log.
+    #[arg(long)]
+    domains: PathBuf,
+    /// A real day's outcomes: host, hour, published, failed and dropped, tab-separated with a header.
+    #[arg(long)]
+    outcomes: PathBuf,
+    /// Where the simulated clock starts, in Unix seconds.
+    #[arg(long)]
+    start: u32,
+    #[arg(long, default_value_t = 24)]
+    hours: u32,
+    /// URLs an hour the replay may send: the full rate times the share of buckets copied.
+    #[arg(long)]
+    per_hour: u64,
+    /// A site whose pages all fail from the middle of the replay on.
+    #[arg(long)]
+    refusing: Option<String>,
+    /// A site whose sitemap re-dates every page each hour; the listed site with most pages if not given.
+    #[arg(long)]
+    restamping: Option<String>,
+    /// Stored records the list walker and the stock keeper each read per second.
+    #[arg(long, default_value_t = 1_000_000)]
+    join_per_sec: u64,
+    /// Pages the resend walk lists per second for domains whose `resend_before` changed.
+    #[arg(long, default_value_t = 20_000)]
+    resend_per_sec: u64,
+    /// Domains re-crawled on their own interval, as `run` takes them.
+    #[arg(long)]
+    recrawl_overrides: Option<PathBuf>,
+    /// Hours into the replay at which the crawl list becomes `--switch-domains`.
+    #[arg(long, requires = "switch_domains")]
+    switch_at: Option<u32>,
+    #[arg(long)]
+    switch_domains: Option<PathBuf>,
+    /// Where the hourly report goes.
+    #[arg(long)]
+    log: PathBuf,
+}
+
+#[derive(clap::Args)]
+struct UnresendArgs {
+    #[arg(long, default_value = "/var/lib/desearch-bot/buckets")]
+    buckets_dir: PathBuf,
+    #[arg(long, default_value = "0-255")]
+    buckets: String,
 }
 
 #[derive(clap::Args)]
@@ -164,12 +236,18 @@ struct RunArgs {
     /// URL records read per second while queuing the stored pages of domains new to the --domains list; 0 turns the walk off.
     #[arg(long, default_value_t = 100_000)]
     join_per_sec: u64,
+    /// Pages listed per second to go once more for listed domains whose `resend_before` changed; 0 turns resend walks off.
+    #[arg(long, default_value_t = 20_000)]
+    resend_per_sec: u64,
     /// Pages the Python feeder sent, as tab-separated host, path, lastmod and Unix time, marked sent before the backfill.
     #[arg(long)]
     backfill_sent: Option<PathBuf>,
     /// Only these domains' pages are queued for the task API: a JSON list of names or of {host, rank}, read again when it changes.
     #[arg(long)]
     domains: Option<PathBuf>,
+    /// A directory of URL lists, `<host>.txt` with a URL and optionally a tab and its date a line, taken in as the host's listing.
+    #[arg(long)]
+    inbox: Option<PathBuf>,
 }
 
 fn main() -> Result<()> {
@@ -178,6 +256,28 @@ fn main() -> Result<()> {
         Command::RemoveEscaped(args) => return remove_escaped(args),
         Command::RestoreEscaped(args) => return restore_escaped(args),
         Command::DropDomains(args) => return drop_domains(args),
+        Command::CopyBuckets(args) => return copy_buckets(args),
+        Command::Unresend(args) => return unresend(args),
+        Command::Replay(args) => {
+            let args = desearch_bot::replay::ReplayArgs {
+                buckets_dir: args.buckets_dir,
+                buckets: parse_buckets(&args.buckets)?,
+                domains: args.domains,
+                outcomes: args.outcomes,
+                start: args.start,
+                hours: args.hours,
+                per_hour: args.per_hour,
+                refusing: args.refusing,
+                restamping: args.restamping,
+                join_per_sec: args.join_per_sec,
+                resend_per_sec: args.resend_per_sec,
+                switch_at: args.switch_at,
+                switch_domains: args.switch_domains,
+                recrawl_overrides: args.recrawl_overrides,
+                log: args.log,
+            };
+            return tokio::runtime::Builder::new_multi_thread().enable_all().build()?.block_on(desearch_bot::replay::replay(args));
+        }
     };
     // Parsing is capped by its own slots; more blocking threads would only hold more allocator caches.
     tokio::runtime::Builder::new_multi_thread().enable_all().max_blocking_threads(128).build()?.block_on(run(args))
@@ -260,6 +360,29 @@ async fn run(args: RunArgs) -> Result<()> {
     let (stop, stopped) = watch::channel(false);
     let progress = Arc::new(Progress::default());
     let halt = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    if let Some(allowed) = listed.clone() {
+        buckets.note_apart(&allowed);
+        let (buckets, halt) = (buckets.clone(), halt.clone());
+        std::thread::spawn(move || {
+            let mut noted = (std::time::Instant::now(), allowed.version());
+            while !halt.load(std::sync::atomic::Ordering::Relaxed) {
+                std::thread::sleep(Duration::from_secs(5));
+                if noted.0.elapsed() >= dispatch::APART_EVERY || noted.1 != allowed.version() {
+                    buckets.note_apart(&allowed);
+                    noted = (std::time::Instant::now(), allowed.version());
+                }
+            }
+        });
+    }
+    let resending = listed.clone().filter(|_| args.resend_per_sec > 0).map(|allowed| {
+        let (buckets, progress, halt) = (buckets.clone(), progress.clone(), halt.clone());
+        let read_per_sec = dispatch::resend_reads(args.join_per_sec);
+        let write_per_sec = args.resend_per_sec;
+        std::thread::spawn(move || match dispatch::resend_listed(&buckets, &allowed, read_per_sec, write_per_sec, &progress, &halt) {
+            Ok(()) => println!("[rs] resend walker stopped"),
+            Err(error) => eprintln!("[rs] resend walker failed: {error:#}"),
+        })
+    });
     let joining = listed.filter(|_| args.join_per_sec > 0).map(|allowed| {
         let (buckets, progress, halt, per_second) = (buckets.clone(), progress.clone(), halt.clone(), args.join_per_sec);
         std::thread::spawn(move || match dispatch::join_listed(&buckets, &allowed, per_second, &progress, &halt) {
@@ -283,6 +406,10 @@ async fn run(args: RunArgs) -> Result<()> {
             }
         })
     });
+    let inbox = args.inbox.clone().map(|dir| {
+        let (buckets, halt) = (buckets.clone(), halt.clone());
+        std::thread::spawn(move || inbox::keep_taking(&buckets, &dir, &halt))
+    });
     let wanted = Arc::new(dispatch::StockWanted::default());
     let stocking = args.task_api.as_ref().map(|_| {
         let (buckets, progress, halt, wanted, per_second) = (buckets.clone(), progress.clone(), halt.clone(), wanted.clone(), args.join_per_sec.max(1));
@@ -291,6 +418,24 @@ async fn run(args: RunArgs) -> Result<()> {
             Err(error) => eprintln!("[rs] refresh stock keeper failed: {error:#}"),
         })
     });
+    // The pages lately sent once more outlive a restart, so their outcomes still stay out of the yields.
+    let resent_path = args.buckets_dir.join("resent-pages.bin");
+    let resent = Arc::new(ResentPages::load(&resent_path));
+    let saving = {
+        let (resent, halt, path) = (resent.clone(), halt.clone(), resent_path.clone());
+        std::thread::spawn(move || {
+            let mut saved = std::time::Instant::now();
+            while !halt.load(std::sync::atomic::Ordering::Relaxed) {
+                std::thread::sleep(Duration::from_secs(1));
+                if saved.elapsed() >= Duration::from_secs(3600) {
+                    if let Err(error) = resent.save(&path) {
+                        eprintln!("[rs] saving the pages sent once more failed: {error:#}");
+                    }
+                    saved = std::time::Instant::now();
+                }
+            }
+        })
+    };
     if let Some(base) = &args.task_api {
         let uri = std::env::var("FEEDER_KEY_URI").ok().filter(|u| !u.is_empty()).context("FEEDER_KEY_URI is not set")?;
         let api = TaskApi::new(base, Hotkey::from_uri(&uri).context("FEEDER_KEY_URI")?)?;
@@ -303,12 +448,13 @@ async fn run(args: RunArgs) -> Result<()> {
             progress.clone(),
         ).await?
         .paced(args.urls_per_hour)
-        .refreshing(wanted.clone());
+        .refreshing(wanted.clone())
+        .resent_into(resent.clone());
         tokio::spawn(dispatcher.run(stopped.clone()));
     }
     if let Some(base) = &args.outcomes_url {
         let feed = OutcomeFeed::new(base)?;
-        let reader = OutcomeReader::new(recrawl.clone(), args.dropped_per_hour);
+        let reader = OutcomeReader::new(recrawl.clone(), args.dropped_per_hour).with_resent(resent.clone());
         tokio::spawn(dispatch::follow_outcomes(buckets.clone(), feed, reader, progress.clone(), stopped.clone()));
     }
     if args.task_api.is_some() || args.outcomes_url.is_some() || args.backfill_ready {
@@ -353,6 +499,16 @@ async fn run(args: RunArgs) -> Result<()> {
     if let Some(joining) = joining {
         let _ = tokio::task::spawn_blocking(move || joining.join()).await;
     }
+    if let Some(resending) = resending {
+        let _ = tokio::task::spawn_blocking(move || resending.join()).await;
+    }
+    let _ = tokio::task::spawn_blocking(move || saving.join()).await;
+    if let Err(error) = resent.save(&resent_path) {
+        eprintln!("[rs] saving the pages sent once more failed: {error:#}");
+    }
+    if let Some(inbox) = inbox {
+        let _ = tokio::task::spawn_blocking(move || inbox.join()).await;
+    }
     println!("[rs] done {}", crawl.summary());
     Ok(())
 }
@@ -390,6 +546,16 @@ fn remove_escaped(args: RemoveEscapedArgs) -> Result<()> {
     Ok(())
 }
 
+fn unresend(args: UnresendArgs) -> Result<()> {
+    let owned = parse_buckets(&args.buckets)?;
+    let resources = Resources::new(1 << 30, 512 << 20, owned.len());
+    let buckets = Buckets::open(&args.buckets_dir, &owned, &resources)?;
+    let started = std::time::Instant::now();
+    let taken: u64 = dispatch::on_readers(buckets.stores().collect(), |store| store.unresend())?.into_iter().sum();
+    println!("{taken} pages waiting to go once more taken off their lists, their marks cleared, in {} stores, in {:.0}s", owned.len(), started.elapsed().as_secs_f64());
+    Ok(())
+}
+
 fn drop_domains(args: DropDomainsArgs) -> Result<()> {
     let domains: Vec<String> = args.domains.split(',').map(|d| d.trim().to_lowercase()).filter(|d| !d.is_empty()).collect();
     let mut owned: Vec<usize> = domains.iter().map(|d| bucket_of(d)).collect();
@@ -422,6 +588,19 @@ fn restore_escaped(args: RestoreEscapedArgs) -> Result<()> {
         }
     }
     println!("restored {restored} entries");
+    Ok(())
+}
+
+fn copy_buckets(args: CopyBucketsArgs) -> Result<()> {
+    let buckets = parse_buckets(&args.buckets)?;
+    let resources = Resources::new(256 << 20, 512 << 20, 1);
+    std::fs::create_dir_all(&args.to)?;
+    for bucket in buckets {
+        let started = std::time::Instant::now();
+        let name = format!("{bucket:03}");
+        let copied = desearch_bot::replay::copy_bucket(&args.from.join(&name), &args.to.join(format!("{name}.secondary")), &args.to.join(&name), &resources)?;
+        println!("bucket {name}: {copied} keys copied in {:.0}s", started.elapsed().as_secs_f64());
+    }
     Ok(())
 }
 

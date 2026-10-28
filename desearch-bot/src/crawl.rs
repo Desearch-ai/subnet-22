@@ -7,7 +7,7 @@ use std::time::Duration;
 use anyhow::Result;
 use rand::Rng;
 use serde_json::Value;
-use tokio::sync::watch;
+use tokio::sync::{watch, OwnedSemaphorePermit};
 use tokio::task::{Id, JoinError, JoinSet};
 use tokio::time::Instant;
 
@@ -16,7 +16,7 @@ use crate::registry::{Change, Registry, Report};
 use crate::schedule::{HOUR, SECOND};
 use crate::states::{self, Outcome, State};
 use crate::suffixes::tld_group;
-use crate::timetable::{Lane, Timetable};
+use crate::timetable::{placed, HeavyQueue, Lane, Timetable};
 use crate::visit::{Crash, Known, Visit, Visitor};
 use crate::{exclusions, records};
 
@@ -33,8 +33,6 @@ const STOP_GRACE: Duration = Duration::from_secs(30);
 const CUT_SHORT_WAIT: i64 = HOUR;
 /// A domain with more sitemap records than this needs a heavy slot to be visited.
 const HEAVY_RECORDS: usize = 2_000;
-/// A heavy domain that finds every heavy slot taken comes back this much later.
-const HEAVY_RETRY: i64 = 300;
 /// New visits wait while the disk is this close to full; they resume with 5 GB more to spare.
 const RESUME_MARGIN: u64 = 5 << 30;
 const DISK_CHECK: Duration = Duration::from_secs(10);
@@ -142,7 +140,7 @@ pub async fn once(known: Arc<Known>, visitor: &Visitor, excluded: &HashSet<Strin
 
 enum Finished {
     Skipped,
-    /// A heavy domain with no heavy slot free; it waits in the timetable, not in a visit slot.
+    /// A heavy domain visited without a heavy slot; it waits in the heavy queue for one, not in a visit slot.
     Busy,
     Visited(Box<DomainWrite>, Arc<Known>),
 }
@@ -166,6 +164,7 @@ pub struct Loop {
     registry: Registry,
     excluded: Arc<HashSet<String>>,
     timetable: Timetable,
+    heavy: HeavyQueue,
     shares: [usize; 3],
     running: [usize; 3],
     visits: JoinSet<Finished>,
@@ -190,6 +189,7 @@ impl Loop {
             registry,
             excluded: Arc::new(excluded),
             timetable: Timetable::default(),
+            heavy: HeavyQueue::default(),
             shares: SHARES,
             running: [0; 3],
             visits: JoinSet::new(),
@@ -232,7 +232,8 @@ impl Loop {
         for schedule in schedules {
             for (host, due) in schedule? {
                 if let Some(state) = State::parse(&due.state) {
-                    self.timetable.set(&host, Lane::of(state, false), due.due, due.rank);
+                    let place = self.place(&host, due.rank);
+                    self.timetable.set(&host, Lane::of(state, false), due.due, Some(place));
                 }
             }
         }
@@ -308,6 +309,16 @@ impl Loop {
         if self.disk_low {
             return;
         }
+        // Heavy slots go to the best placed heavy domains waiting, never by luck of timing.
+        while self.visits.len() < self.concurrency && !self.heavy.is_empty() {
+            let Some(permit) = self.visitor.heavy.try_take() else {
+                break;
+            };
+            let Some((host, lane)) = self.heavy.pop(now_micros() / SECOND) else {
+                break;
+            };
+            self.start_with(host, lane, Some(permit));
+        }
         let mut free = self.concurrency.saturating_sub(self.visits.len());
         let now = now_micros() / SECOND;
         // Each lane first fills its own share; slots a lane cannot use go to the lanes that can.
@@ -331,10 +342,14 @@ impl Loop {
     }
 
     fn start(&mut self, host: Arc<str>, lane: Lane) -> bool {
+        self.start_with(host, lane, None)
+    }
+
+    fn start_with(&mut self, host: Arc<str>, lane: Lane, heavy: Option<OwnedSemaphorePermit>) -> bool {
         if !self.busy.insert(host.clone()) {
             return false;
         }
-        let job = visit_one(host.clone(), self.buckets.clone(), self.visitor.clone(), self.excluded.clone());
+        let job = visit_one(host.clone(), self.buckets.clone(), self.visitor.clone(), self.excluded.clone(), heavy);
         let handle = self.visits.spawn(job);
         self.tasks.insert(handle.id(), (host, lane));
         self.running[lane.index()] += 1;
@@ -357,7 +372,8 @@ impl Loop {
             Ok((_, Finished::Busy)) => {
                 self.busy.remove(&host);
                 if let Ok(Some(record)) = self.buckets.store(&host).domain(&host) {
-                    self.timetable.set(&host, lane, Some(now_micros() / SECOND + HEAVY_RETRY), records::int(record.get("rank")));
+                    let place = self.place(&host, records::int(record.get("rank")));
+                    self.heavy.push(host, lane, place, now_micros() / SECOND);
                 }
             }
             Ok((_, Finished::Visited(write, known))) => {
@@ -463,6 +479,8 @@ impl Loop {
                     record.insert("state".into(), State::Excluded.as_str().into());
                     record.insert("reason".into(), change.state_reason.clone().into());
                     record.insert("due".into(), Value::Null);
+                } else if records::wants_recheck(&change.state, &record) {
+                    records::reset_for_recheck(&mut record, now_micros());
                 }
                 record
             }
@@ -478,8 +496,13 @@ impl Loop {
 
     fn schedule(&mut self, host: &str, record: &Json, backlog: bool) {
         if let Some(state) = record.get("state").and_then(Value::as_str).and_then(State::parse) {
-            self.timetable.set(host, Lane::of(state, backlog), records::int(record.get("due")), records::int(record.get("rank")));
+            let place = self.place(host, records::int(record.get("rank")));
+            self.timetable.set(host, Lane::of(state, backlog), records::int(record.get("due")), Some(place));
         }
+    }
+
+    fn place(&self, host: &str, rank: Option<i64>) -> i64 {
+        placed(self.buckets.allows(host), self.buckets.terms(host).news, rank)
     }
 
     fn print(&mut self) {
@@ -493,7 +516,7 @@ impl Loop {
             .map(|&lane| format!("{} {}/{} ({} due)", lane.as_str(), self.running[lane.index()], self.share(lane), thousands(self.timetable.queued(lane) as i64)))
             .collect();
         println!(
-            "[rs] {} visited  {:.1}/s  {:.1} req/s  in flight {}  lanes {}  new urls {}  scheduled {}  sitemap slots {}/{} parsing {}/{} heavy {}/{}  rocksdb readers {} MB memtables {} MB cache {} MB  heap {} MB in use {} MB resident  disk free {} GB",
+            "[rs] {} visited  {:.1}/s  {:.1} req/s  in flight {}  lanes {}  new urls {}  scheduled {}  sitemap slots {}/{} parsing {}/{} heavy {}/{} ({} waiting)  rocksdb readers {} MB memtables {} MB cache {} MB  heap {} MB in use {} MB resident  disk free {} GB",
             thousands(self.stats.visited as i64),
             self.stats.visited as f64 / elapsed,
             self.stats.requests as f64 / elapsed,
@@ -507,6 +530,7 @@ impl Loop {
             self.visitor.cpu.size(),
             self.visitor.heavy.busy(),
             self.visitor.heavy.size(),
+            thousands(self.heavy.len() as i64),
             memory.table_readers >> 20,
             memory.memtables >> 20,
             memory.block_cache >> 20,
@@ -530,17 +554,16 @@ impl Loop {
     }
 }
 
-async fn visit_one(host: Arc<str>, buckets: Arc<Buckets>, visitor: Arc<Visitor>, excluded: Arc<HashSet<String>>) -> Finished {
-    let (counting, counted) = (buckets.clone(), host.clone());
-    let records = tokio::task::spawn_blocking(move || counting.store(&counted).sitemap_count(&counted).unwrap_or(0)).await.unwrap_or(0);
-    let _heavy = if records > HEAVY_RECORDS {
-        match visitor.heavy.try_take() {
-            Some(permit) => Some(permit),
-            None => return Finished::Busy,
+/// A heavy domain started without a heavy slot comes back Busy, for the loop to hand it one in its turn.
+async fn visit_one(host: Arc<str>, buckets: Arc<Buckets>, visitor: Arc<Visitor>, excluded: Arc<HashSet<String>>, heavy: Option<OwnedSemaphorePermit>) -> Finished {
+    if heavy.is_none() {
+        let (counting, counted) = (buckets.clone(), host.clone());
+        let records = tokio::task::spawn_blocking(move || counting.store(&counted).sitemap_count(&counted).unwrap_or(0)).await.unwrap_or(0);
+        if records > HEAVY_RECORDS {
+            return Finished::Busy;
         }
-    } else {
-        None
-    };
+    }
+    let _heavy = heavy;
     let reading = host.clone();
     let loaded = tokio::task::spawn_blocking(move || load_known(&buckets, &reading)).await;
     let Ok(Some(known)) = loaded else {

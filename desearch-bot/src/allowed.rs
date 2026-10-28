@@ -1,6 +1,6 @@
 //! The domains the bot may queue for the task API, from a JSON list read again when it changes; with no list, every domain.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
@@ -8,6 +8,8 @@ use std::time::SystemTime;
 
 use anyhow::{Context, Result};
 use serde_json::Value;
+
+use crate::isodate;
 
 /// What the list says about one domain.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -20,11 +22,17 @@ pub struct Terms {
     pub hourly: Option<u64>,
     /// For a domain without a cap, the most stored pages queued when it joins the list, newest first.
     pub backlog: Option<u64>,
+    /// The oldest page date the domain queues, as Unix seconds: a page dated earlier stays unsent, an undated one goes.
+    pub since: Option<u32>,
+    /// A news site, whose sitemaps are read again before other sites'.
+    pub news: bool,
+    /// Pages last sent before this time, as Unix seconds, go once more, as retries; a site is walked for them once per value.
+    pub resend_before: Option<u32>,
 }
 
 impl Default for Terms {
     fn default() -> Self {
-        Terms { weight: 1, send_cap: None, hourly: None, backlog: None }
+        Terms { weight: 1, send_cap: None, hourly: None, backlog: None, since: None, news: false, resend_before: None }
     }
 }
 
@@ -34,25 +42,27 @@ pub struct Allowed {
     read: RwLock<Option<SystemTime>>,
     /// Bumped on each change, so a reader knows to look again.
     version: AtomicU64,
+    /// Listed subdomains of listed domains whose own record speaks for them; only they take their pages from the parent.
+    apart: RwLock<HashSet<String>>,
 }
 
 impl Allowed {
     pub fn all() -> Arc<Self> {
-        Arc::new(Allowed { path: None, domains: RwLock::new(None), read: RwLock::new(None), version: AtomicU64::new(0) })
+        Arc::new(Allowed { path: None, domains: RwLock::new(None), read: RwLock::new(None), version: AtomicU64::new(0), apart: RwLock::default() })
     }
 
     pub fn of<S: Into<String>>(domains: impl IntoIterator<Item = S>) -> Arc<Self> {
         let domains = domains.into_iter().map(|d| (d.into(), Terms::default())).collect();
-        Arc::new(Allowed { path: None, domains: RwLock::new(Some(domains)), read: RwLock::new(None), version: AtomicU64::new(1) })
+        Arc::new(Allowed { path: None, domains: RwLock::new(Some(domains)), read: RwLock::new(None), version: AtomicU64::new(1), apart: RwLock::default() })
     }
 
     pub fn with_terms<S: Into<String>>(domains: impl IntoIterator<Item = (S, Terms)>) -> Arc<Self> {
         let domains = domains.into_iter().map(|(d, l)| (d.into(), l)).collect();
-        Arc::new(Allowed { path: None, domains: RwLock::new(Some(domains)), read: RwLock::new(None), version: AtomicU64::new(1) })
+        Arc::new(Allowed { path: None, domains: RwLock::new(Some(domains)), read: RwLock::new(None), version: AtomicU64::new(1), apart: RwLock::default() })
     }
 
     pub fn from_file(path: &Path) -> Result<Arc<Self>> {
-        let allowed = Allowed { path: Some(path.to_path_buf()), domains: RwLock::new(None), read: RwLock::new(None), version: AtomicU64::new(0) };
+        let allowed = Allowed { path: Some(path.to_path_buf()), domains: RwLock::new(None), read: RwLock::new(None), version: AtomicU64::new(0), apart: RwLock::default() };
         allowed.reload()?;
         Ok(Arc::new(allowed))
     }
@@ -76,6 +86,15 @@ impl Allowed {
         domains.as_ref().map_or_else(Vec::new, |d| d.iter().map(|(name, listing)| (name.clone(), *listing)).collect())
     }
 
+    /// Whether the host is a listed subdomain whose own record speaks for it, so its pages go under it or not at all, never under its parent.
+    pub fn apart(&self, host: &str) -> bool {
+        self.get(host).is_some() && self.apart.read().unwrap_or_else(|e| e.into_inner()).contains(host)
+    }
+
+    pub fn set_apart(&self, hosts: HashSet<String>) {
+        *self.apart.write().unwrap_or_else(|e| e.into_inner()) = hosts;
+    }
+
     pub fn version(&self) -> u64 {
         self.version.load(Ordering::Relaxed)
     }
@@ -97,7 +116,7 @@ impl Allowed {
     }
 }
 
-/// A JSON list of domain names, or of objects naming theirs under `host`, with an optional `weight`, `send_cap`, `hourly` and `backlog`.
+/// A JSON list of domain names, or of objects naming theirs under `host`, with an optional `type`, `weight`, `send_cap`, `hourly`, `backlog`, `since` and `resend_before` (ISO dates).
 pub fn parse(raw: &[u8]) -> Result<HashMap<String, Terms>> {
     let listed: Vec<Value> = serde_json::from_slice(raw).context("not a JSON list of domains")?;
     Ok(listed
@@ -106,7 +125,9 @@ pub fn parse(raw: &[u8]) -> Result<HashMap<String, Terms>> {
             let host = entry.as_str().or_else(|| entry.get("host").and_then(Value::as_str))?;
             let number = |name: &str| entry.get(name).and_then(Value::as_u64);
             let weight = number("weight").map_or(1, |w| w.clamp(1, 4) as u8);
-            Some((host.to_string(), Terms { weight, send_cap: number("send_cap"), hourly: number("hourly"), backlog: number("backlog") }))
+            let date = |name: &str| entry.get(name).and_then(Value::as_str).and_then(isodate::fromisoformat).map(|micros| (micros / 1_000_000).clamp(0, i64::from(u32::MAX)) as u32);
+            let news = entry.get("type").and_then(Value::as_str) == Some("news");
+            Some((host.to_string(), Terms { weight, send_cap: number("send_cap"), hourly: number("hourly"), backlog: number("backlog"), since: date("since"), news, resend_before: date("resend_before") }))
         })
         .collect())
 }

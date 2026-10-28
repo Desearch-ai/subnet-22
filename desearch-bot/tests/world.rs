@@ -325,3 +325,163 @@ async fn a_sitemap_listing_new_urls_on_every_read_is_held_back_while_one_that_se
     drop(crawl);
     std::fs::remove_dir_all(&root).ok();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_subdomain_kept_as_a_domain_of_its_own_is_crawled_on_its_own_host_with_its_own_robots_txt() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let web: Shared = Arc::default();
+    let host = "news.site.test";
+    {
+        let mut w = web.lock().unwrap();
+        w.add(host, "/robots.txt", 200, None, format!("User-agent: *\nDisallow: /drafts/\nSitemap: http://{host}/list.xml\n").as_bytes());
+        w.add(host, "/", 200, None, format!("<html lang=\"en\"><body><p>{ENGLISH}</p></body></html>").as_bytes());
+        w.add(host, "/list.xml", 200, None, urlset(host, &(0..600).map(|i| format!("/story/{i}")).collect::<Vec<_>>()).as_bytes());
+        w.add("site.test", "/robots.txt", 200, None, b"User-agent: *\nDisallow: /\n");
+    }
+    tokio::spawn(serve(listener, web.clone()));
+
+    let root = std::env::temp_dir().join(format!("desearch-bot-subdomain-{}", std::process::id()));
+    let owned = vec![bucket_of(host)];
+    let buckets = Arc::new(Buckets::open(&root, &owned, &Resources::new(8 << 20, 8 << 20, 1)).unwrap());
+    let mut changes = Changes::default();
+    changes.domain(host, &records::new_domain(Some(1), Some("new_generic"), &[], State::New, None, Some(0)));
+    buckets.store(host).write(changes).unwrap();
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .dns_resolver(Arc::new(TestResolver { addr, known: [host, "site.test"].into() }))
+        .timeout(Duration::from_secs(10))
+        .build()
+        .unwrap();
+    let visitor = Visitor {
+        client,
+        buckets: buckets.clone(),
+        suffixes: Arc::new(PublicSuffixList::parse("test\n")),
+        signer: None,
+        language: Arc::new(|text: &str| Some(if text.contains("the") { "en" } else { "fr" }.to_string())),
+        floor: 0.0,
+        connect_timeout: Duration::from_secs(10),
+        cpu: Slots::new(4),
+        bodies: Slots::new(2),
+        pause: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        heavy: Slots::new(1),
+    };
+    let mut crawl = Loop::new(buckets.clone(), Arc::new(visitor), 16, Registry::offline(), HashSet::new());
+    assert_eq!(crawl.load().unwrap(), 1);
+    assert_eq!(crawl.step().await.unwrap(), 1);
+    let record = buckets.store(host).domain(host).unwrap().unwrap();
+    assert_eq!((record["state"].as_str(), record["canonical"].as_str()), (Some("active"), None), "its own host is no redirect to the parent");
+    assert_eq!(record["rules"]["disallow"], serde_json::json!(["/drafts/"]), "the rules are its own host's");
+    let hits = web.lock().unwrap().hits.clone();
+    assert!(hits.iter().any(|(h, path, _)| h == host && path == "/robots.txt") && !hits.iter().any(|(h, _, _)| h == "site.test"));
+    assert!(buckets.store(host).url(&urls::parse(&format!("http://{host}/story/599"), host).unwrap()).unwrap().is_some());
+    drop(crawl);
+    std::fs::remove_dir_all(&root).ok();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_homepage_that_answers_with_an_error_keeps_its_status_on_the_record() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let web: Shared = Arc::default();
+    let hosts: [(&str, u16); 5] = [("missing.test", 404), ("gone-home.test", 410), ("closed.test", 401), ("denied.test", 403), ("busy.test", 429)];
+    {
+        let mut w = web.lock().unwrap();
+        for (host, status) in hosts {
+            w.add(host, "/robots.txt", 200, None, format!("User-agent: *\nSitemap: http://{host}/list.xml\n").as_bytes());
+            w.add(host, "/list.xml", 200, None, urlset(host, &(0..600).map(|i| format!("/story/{i}")).collect::<Vec<_>>()).as_bytes());
+            w.add(host, "/", status, None, b"no");
+        }
+    }
+    tokio::spawn(serve(listener, web.clone()));
+
+    let root = std::env::temp_dir().join(format!("desearch-bot-home-status-{}", std::process::id()));
+    let mut owned: Vec<usize> = hosts.iter().map(|(h, _)| bucket_of(h)).collect();
+    owned.sort_unstable();
+    owned.dedup();
+    let buckets = Arc::new(Buckets::open(&root, &owned, &Resources::new(8 << 20, 8 << 20, owned.len())).unwrap());
+    for (host, _) in hosts {
+        let mut changes = Changes::default();
+        changes.domain(host, &records::new_domain(Some(1), Some("new_generic"), &[], State::New, None, Some(0)));
+        buckets.store(host).write(changes).unwrap();
+    }
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .dns_resolver(Arc::new(TestResolver { addr, known: hosts.iter().map(|(h, _)| *h).collect() }))
+        .timeout(Duration::from_secs(10))
+        .build()
+        .unwrap();
+    let visitor = Visitor {
+        client,
+        buckets: buckets.clone(),
+        suffixes: Arc::new(PublicSuffixList::parse("test\n")),
+        signer: None,
+        language: Arc::new(|text: &str| Some(if text.contains("the") { "en" } else { "fr" }.to_string())),
+        floor: 0.0,
+        connect_timeout: Duration::from_secs(10),
+        cpu: Slots::new(4),
+        bodies: Slots::new(2),
+        pause: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        heavy: Slots::new(1),
+    };
+    let mut crawl = Loop::new(buckets.clone(), Arc::new(visitor), 16, Registry::offline(), HashSet::new());
+    assert_eq!(crawl.load().unwrap(), hosts.len());
+    assert_eq!(crawl.step().await.unwrap(), hosts.len());
+    for (host, status) in hosts {
+        let record = buckets.store(host).domain(host).unwrap().unwrap();
+        assert_eq!((record["state"].as_str(), record["reason"].as_str()), (Some("ineligible"), Some("homepage_error")), "{host}");
+        assert_eq!(record["home_status"].as_u64(), Some(u64::from(status)), "{host}");
+    }
+    drop(crawl);
+    std::fs::remove_dir_all(&root).ok();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_feed_named_as_a_sitemap_is_read_as_one() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let web: Shared = Arc::default();
+    let host = "feed.test";
+    {
+        let mut w = web.lock().unwrap();
+        let items: String = (1..=12).map(|i| format!("<item><link>http://{host}/2026/10/story-{i}</link><pubDate>Tue, 27 Oct 2026 10:{i:02}:00 GMT</pubDate></item>")).collect();
+        w.add(host, "/robots.txt", 200, None, format!("User-agent: *\nAllow: /\nSitemap: http://{host}/feed\n").as_bytes());
+        w.add(host, "/", 200, None, format!("<html lang=\"en\"><body><p>{ENGLISH}</p></body></html>").as_bytes());
+        w.add(host, "/feed", 200, None, format!("<?xml version=\"1.0\"?><rss version=\"2.0\"><channel>{items}</channel></rss>").as_bytes());
+    }
+    tokio::spawn(serve(listener, web.clone()));
+
+    let root = std::env::temp_dir().join(format!("desearch-bot-feed-{}", std::process::id()));
+    let buckets = Arc::new(Buckets::open(&root, &[bucket_of(host)], &Resources::new(8 << 20, 8 << 20, 1)).unwrap());
+    let mut changes = Changes::default();
+    changes.domain(host, &records::new_domain(Some(1), Some("new_generic"), &[], State::New, None, Some(0)));
+    buckets.store(host).write(changes).unwrap();
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .dns_resolver(Arc::new(TestResolver { addr, known: [host].into() }))
+        .timeout(Duration::from_secs(10))
+        .build()
+        .unwrap();
+    let visitor = Visitor {
+        client,
+        buckets: buckets.clone(),
+        suffixes: Arc::new(PublicSuffixList::parse("test\n")),
+        signer: None,
+        language: Arc::new(|text: &str| Some(if text.contains("the") { "en" } else { "fr" }.to_string())),
+        floor: 0.0,
+        connect_timeout: Duration::from_secs(10),
+        cpu: Slots::new(4),
+        bodies: Slots::new(2),
+        pause: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        heavy: Slots::new(1),
+    };
+    let mut crawl = Loop::new(buckets.clone(), Arc::new(visitor), 16, Registry::offline(), HashSet::new());
+    assert_eq!(crawl.load().unwrap(), 1);
+    assert_eq!(crawl.step().await.unwrap(), 1);
+    let record = buckets.store(host).domain(host).unwrap().unwrap();
+    assert_eq!((record["state"].as_str(), record["urls"].as_i64()), (Some("active"), Some(12)), "the feed's items are the site's listed pages");
+    let story = buckets.store(host).url(&urls::parse(&format!("http://{host}/2026/10/story-12"), host).unwrap()).unwrap().unwrap();
+    assert_eq!(story.lastmod, 1_793_095_920, "dated by the item's pubDate");
+    drop(crawl);
+    std::fs::remove_dir_all(&root).ok();
+}
