@@ -417,7 +417,12 @@ def build(
             if v1 is None
             else apply_v1(row, base, entry_v1, override.startswith("out:"))
         )
-        if v1 is not None and entry_v1 is None and decision.listed and decision.weight < node2_min_weight:
+        if (
+            v1 is not None
+            and entry_v1 is None
+            and decision.listed
+            and decision.weight < node2_min_weight
+        ):
             decision = out("node2")
         counts[decision.site_type if decision.listed else f"out:{decision.reason}"] += 1
         feed = (
@@ -440,7 +445,9 @@ def build(
                 )
             if decision.send_cap is not None:
                 # A cap that changes makes the list walker walk the site again, queuing pages an earlier walk left out.
-                entry["send_cap"] = decision.send_cap + (row.host in (rejoin_hosts or set()))
+                entry["send_cap"] = decision.send_cap + (
+                    row.host in (rejoin_hosts or set())
+                )
             if decision.backlog is not None:
                 entry["backlog"] = decision.backlog
             if decision.since is not None:
@@ -487,6 +494,42 @@ def build(
 def parent_listed(host: str, hosts: set[str]) -> bool:
     labels = host.split(".")
     return any(".".join(labels[at:]) in hosts for at in range(1, len(labels) - 1))
+
+
+def read_hosts(paths: list[str]) -> dict[str, set[str]]:
+    files = {
+        path: {
+            line.strip() for line in Path(path).read_text().splitlines() if line.strip()
+        }
+        for path in paths
+    }
+    for path, hosts in files.items():
+        if not hosts:
+            sys.exit(f"{path} lists no hosts; nothing written")
+    return files
+
+
+def matched(
+    entries: list[dict],
+    resend_files: dict[str, set[str]],
+    rejoin_files: dict[str, set[str]],
+    out: str,
+) -> tuple[set[str], set[str]]:
+    """The listed hosts that took resend_before and the rejoin bump; exits when a host file matches none."""
+    rejoin_hosts = set().union(*rejoin_files.values())
+    resent = {e["host"] for e in entries if "resend_before" in e}
+    rejoined = {
+        e["host"] for e in entries if e["host"] in rejoin_hosts and "send_cap" in e
+    }
+    for path, hosts in resend_files.items():
+        if not hosts & resent:
+            sys.exit(
+                f"no listed v1 site in {path} took resend_before; {out} left as it was"
+            )
+    for path, hosts in rejoin_files.items():
+        if not hosts & rejoined:
+            sys.exit(f"no listed site with a send_cap in {path}; {out} left as it was")
+    return resent, rejoined
 
 
 def write_list(entries: list[dict], path: str) -> None:
@@ -568,13 +611,12 @@ def main(argv: list[str] | None = None) -> None:
         read_judged(args.judged),
         read_v1_set(args.v1_set),
     )
-    resend_hosts = {
-        line.strip()
-        for path in args.resend_hosts
-        for line in Path(path).read_text().splitlines()
-        if line.strip()
-    }
-    rejoin_hosts = {line.strip() for path in args.rejoin_hosts for line in Path(path).read_text().splitlines() if line.strip()}
+    resend_files, rejoin_files = (
+        read_hosts(args.resend_hosts),
+        read_hosts(args.rejoin_hosts),
+    )
+    resend_hosts = set().union(*resend_files.values())
+    rejoin_hosts = set().union(*rejoin_files.values())
     if args.decisions:
         with open_text(args.decisions, "wt") as target:
             writer = csv.writer(target, delimiter="\t", lineterminator="\n")
@@ -609,8 +651,12 @@ def main(argv: list[str] | None = None) -> None:
             node2_min_weight=args.node2_min_weight,
             rejoin_hosts=rejoin_hosts,
         )
+    resent, rejoined = matched(entries, resend_files, rejoin_files, args.out)
     write_list(entries, args.out)
     print(f"{len(entries)} domains listed in {args.out}")
+    print(
+        f"{len(resent)} with resend_before, {sum('since' in e for e in entries)} with since, {len(rejoined)} with send_cap one up to rejoin"
+    )
     for name, count in sorted(counts.items(), key=lambda item: -item[1]):
         print(f"{count:>10}  {name}")
 

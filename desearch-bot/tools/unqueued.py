@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 import sys
+from pathlib import Path
 
 from rocksdict import AccessType, Options, Rdict
 
@@ -33,7 +34,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument(
         "--secondary-dir",
         required=True,
-        help="an empty directory for the read-only instances",
+        help="a directory for the read-only instances, one folder a store",
     )
     parser.add_argument(
         "--list", required=True, help="a crawl list; its hosts are checked"
@@ -60,14 +61,17 @@ def main(argv: list[str] | None = None) -> None:
         ):
             by_bucket.setdefault(bucket_of(entry["host"]), []).append(entry["host"])
     found = checked = 0
-    with open(args.out, "w") as out:
+    temporary = Path(f"{args.out}.new")
+    with open(temporary, "w") as out:
         for bucket in sorted(by_bucket):
+            secondary = Path(args.secondary_dir) / f"{bucket:03d}"
+            secondary.mkdir(parents=True, exist_ok=True)
             options = Options(raw_mode=True)
-            options.set_max_open_files(256)
+            options.set_max_open_files(-1)
             db = Rdict(
                 f"{args.buckets_dir}/{bucket:03d}",
                 options=options,
-                access_type=AccessType.secondary(f"{args.secondary_dir}/{bucket:03d}"),
+                access_type=AccessType.secondary(str(secondary)),
             )
             for host in by_bucket[bucket]:
                 checked += 1
@@ -75,6 +79,10 @@ def main(argv: list[str] | None = None) -> None:
                     found += 1
                     out.write(host + "\n")
             db.close()
+    if not checked:
+        temporary.unlink()
+        sys.exit(f"no host in {args.list} to check; {args.out} left as it was")
+    temporary.replace(args.out)
     print(
         f"{found} of {checked} hosts joined with nothing queued or sent",
         file=sys.stderr,
