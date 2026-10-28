@@ -42,7 +42,7 @@ pub struct Allowed {
     read: RwLock<Option<SystemTime>>,
     /// Bumped on each change, so a reader knows to look again.
     version: AtomicU64,
-    /// Listed subdomains of listed domains whose own record works; only they take their pages from the parent.
+    /// Listed subdomains of listed domains whose own record speaks for them; only they take their pages from the parent.
     apart: RwLock<HashSet<String>>,
 }
 
@@ -86,7 +86,7 @@ impl Allowed {
         domains.as_ref().map_or_else(Vec::new, |d| d.iter().map(|(name, listing)| (name.clone(), *listing)).collect())
     }
 
-    /// Whether the host is a listed subdomain whose own record works, so its pages go under it, not under its parent.
+    /// Whether the host is a listed subdomain whose own record speaks for it, so its pages go under it or not at all, never under its parent.
     pub fn apart(&self, host: &str) -> bool {
         self.get(host).is_some() && self.apart.read().unwrap_or_else(|e| e.into_inner()).contains(host)
     }

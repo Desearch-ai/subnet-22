@@ -1,6 +1,8 @@
 //! What became of the URLs the bot queued, read in order from the task API's public outcome feed.
 
 use std::collections::HashMap;
+use std::hash::{DefaultHasher, Hash, Hasher};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
@@ -19,6 +21,61 @@ const TIMEOUT: Duration = Duration::from_secs(60);
 /// Hosts whose domain is remembered; the memory starts over past this many, or an hour on, so domain list changes count.
 const HOSTS_KEPT: usize = 1_000_000;
 const HOSTS_FOR: Duration = Duration::from_secs(3600);
+/// Bits in each of the two sets of pages sent to go once more: 64 MiB, a few percent false positives at a day's resends.
+const RESENT_BITS: usize = 1 << 29;
+/// How long each set takes inserts before the older one is dropped; outcomes come back well within it.
+const RESENT_ROTATE: Duration = Duration::from_secs(6 * 3600);
+const RESENT_HASHES: u64 = 3;
+
+/// Pages lately sent to go once more, so their outcomes stay out of the yields that pace new pages: two sets of bits, the older dropped every `RESENT_ROTATE`, allocated on the first insert. A false positive only leaves one outcome out of a yield.
+#[derive(Default)]
+pub struct ResentPages {
+    sets: Mutex<Option<Resent>>,
+}
+
+struct Resent {
+    current: Vec<u64>,
+    older: Vec<u64>,
+    since: Instant,
+}
+
+impl ResentPages {
+    pub fn insert(&self, domain: &str, rest: &[u8]) {
+        let mut sets = self.sets.lock().unwrap_or_else(|e| e.into_inner());
+        let sets = sets.get_or_insert_with(|| Resent { current: vec![0; RESENT_BITS / 64], older: vec![0; RESENT_BITS / 64], since: Instant::now() });
+        if sets.since.elapsed() >= RESENT_ROTATE {
+            sets.older = std::mem::replace(&mut sets.current, vec![0; RESENT_BITS / 64]);
+            sets.since = Instant::now();
+        }
+        for bit in bits(domain, rest) {
+            sets.current[bit / 64] |= 1 << (bit % 64);
+        }
+    }
+
+    pub fn contains(&self, domain: &str, rest: &[u8]) -> bool {
+        let sets = self.sets.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(sets) = sets.as_ref() else {
+            return false;
+        };
+        let has = |set: &[u64]| bits(domain, rest).iter().all(|&bit| set[bit / 64] & (1 << (bit % 64)) != 0);
+        has(&sets.current) || has(&sets.older)
+    }
+
+    /// Whether anything was inserted yet; until then outcomes need no page key.
+    pub fn active(&self) -> bool {
+        self.sets.lock().unwrap_or_else(|e| e.into_inner()).is_some()
+    }
+}
+
+fn bits(domain: &str, rest: &[u8]) -> [usize; RESENT_HASHES as usize] {
+    let hash = |seed: u64| {
+        let mut hasher = DefaultHasher::new();
+        (seed, domain, rest).hash(&mut hasher);
+        hasher.finish()
+    };
+    let (first, step) = (hash(1), hash(2) | 1);
+    std::array::from_fn(|i| (first.wrapping_add(step.wrapping_mul(i as u64)) % RESENT_BITS as u64) as usize)
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OutcomeRow {
@@ -100,17 +157,24 @@ impl HourlySpread {
     }
 }
 
-/// Reads outcome files into per-domain yields and schedules for failed and dropped pages, without looking up a single page.
+/// Reads outcome files into per-domain yields and schedules for failed and dropped pages, without looking up a single page; pages sent once more for a `resend_before` stay out of the yields.
 pub struct OutcomeReader {
     recrawl: Recrawl,
     dropped: HourlySpread,
     domains: HashMap<String, Option<String>>,
     domains_since: Instant,
+    resent: Option<Arc<ResentPages>>,
 }
 
 impl OutcomeReader {
     pub fn new(recrawl: Recrawl, dropped_per_hour: u64) -> Self {
-        OutcomeReader { recrawl, dropped: HourlySpread::new(dropped_per_hour), domains: HashMap::new(), domains_since: Instant::now() }
+        OutcomeReader { recrawl, dropped: HourlySpread::new(dropped_per_hour), domains: HashMap::new(), domains_since: Instant::now(), resent: None }
+    }
+
+    /// Leave the outcomes of pages in `resent`, sent to go once more, out of the yields.
+    pub fn with_resent(mut self, resent: Arc<ResentPages>) -> Self {
+        self.resent = Some(resent);
+        self
     }
 
     /// The domain a host's pages were sent under: the host itself or its nearest parent that this process holds and may queue.
@@ -155,12 +219,17 @@ impl OutcomeReader {
                 continue;
             };
             let at = row.at.div_euclid(1_000_000).clamp(0, u32::MAX.into()) as u32;
-            // A dropped task never reached the site, so it says nothing about the domain.
+            let resent = self.resent.as_ref().filter(|resent| resent.active());
+            let published = matches!(row.outcome, Outcome::Published | Outcome::Unchanged);
+            let rest = (resent.is_some() || !published).then(|| Normaliser::new(&domain).ok().and_then(|n| n.parse(&row.url)).map(|key| key.key[domain.len() + 1..].to_vec())).flatten();
+            // A dropped task never reached the site, so it says nothing about the domain; a page sent once more for its domain's resend_before says little about its new pages.
             let tally = tallies.entry(domain.clone()).or_default();
-            match row.outcome {
-                Outcome::Published | Outcome::Unchanged => tally.ok += 1.0,
-                Outcome::Failed => tally.failed += 1.0,
-                Outcome::Dropped => {}
+            if !resent.zip(rest.as_ref()).is_some_and(|(resent, rest)| resent.contains(&domain, rest)) {
+                match row.outcome {
+                    Outcome::Published | Outcome::Unchanged => tally.ok += 1.0,
+                    Outcome::Failed => tally.failed += 1.0,
+                    Outcome::Dropped => {}
+                }
             }
             tally.at = tally.at.max(at);
             let interval = self.recrawl.interval(&domain);
@@ -174,10 +243,9 @@ impl OutcomeReader {
                     Scheduled { why: Why::Dropped, due, at }
                 }
             };
-            let Some(key) = Normaliser::new(&domain).ok().and_then(|n| n.parse(&row.url)) else {
+            let Some(rest) = rest else {
                 continue;
             };
-            let rest = key.key[domain.len() + 1..].to_vec();
             schedules.entry(bucket_of(&domain)).or_default().push(PageSchedule { domain, rest, next });
         }
         let mut by_bucket: HashMap<usize, (Vec<PageSchedule>, Vec<(String, Yield)>)> = HashMap::new();

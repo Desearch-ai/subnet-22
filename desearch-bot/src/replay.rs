@@ -21,7 +21,7 @@ use crate::allowed::Allowed;
 use crate::buckets::{BucketStore, Buckets, Resources, URL};
 use crate::dispatch::{self, Dispatcher, Progress, StockWanted};
 use crate::hotkey::Hotkey;
-use crate::outcomes::{OutcomeReader, OutcomeRow};
+use crate::outcomes::{OutcomeReader, OutcomeRow, ResentPages};
 use crate::ready::{bounded, fetchable, prefixed, Outcome};
 use crate::recrawl::Recrawl;
 use crate::records;
@@ -108,6 +108,8 @@ pub struct ReplayArgs {
     pub restamping: Option<String>,
     /// Stored records the list walker and the stock keeper each read per second, beside the passes.
     pub join_per_sec: u64,
+    /// Pages the resend walk lists per second for domains whose `resend_before` changed.
+    pub resend_per_sec: u64,
     /// Hours into the replay at which the crawl list becomes `switch_domains`.
     pub switch_at: Option<u32>,
     pub switch_domains: Option<PathBuf>,
@@ -291,6 +293,12 @@ pub async fn replay(args: ReplayArgs) -> Result<()> {
         let per_second = args.join_per_sec;
         std::thread::spawn(move || dispatch::join_listed(&buckets, &list, per_second, &progress, &stop))
     };
+    let resender = {
+        let (buckets, list, progress, stop) = (buckets.clone(), list.clone(), progress.clone(), stop.clone());
+        let (read_per_sec, write_per_sec) = (args.join_per_sec, args.resend_per_sec);
+        std::thread::spawn(move || dispatch::resend_listed(&buckets, &list, read_per_sec, write_per_sec, &progress, &stop))
+    };
+    let resent = Arc::new(ResentPages::default());
     let wanted = Arc::new(StockWanted::default());
     let keeper = {
         let (buckets, wanted, progress, stop, clock) = (buckets.clone(), wanted.clone(), progress.clone(), stop.clone(), clock.clone());
@@ -306,8 +314,9 @@ pub async fn replay(args: ReplayArgs) -> Result<()> {
     let mut dispatcher = Dispatcher::load(buckets.clone(), api, 1_000_000, dispatch::shares(50, 10), recrawl.clone(), progress.clone())
         .await?
         .paced_from(args.per_hour, args.start)
-        .refreshing(wanted.clone());
-    let mut reader = OutcomeReader::new(recrawl.clone(), 200_000);
+        .refreshing(wanted.clone())
+        .resent_into(resent.clone());
+    let mut reader = OutcomeReader::new(recrawl.clone(), 200_000).with_resent(resent.clone());
     let mut rng = rand::rngs::StdRng::seed_from_u64(2026);
     let mut waiting: VecDeque<Sent> = VecDeque::new();
     let end = args.start + args.hours * HOUR;
@@ -399,12 +408,15 @@ pub async fn replay(args: ReplayArgs) -> Result<()> {
             sorted.sort_unstable();
             let p = |q: f64| sorted.get(((sorted.len() as f64 * q) as usize).min(sorted.len().saturating_sub(1))).copied().unwrap_or(0);
             let line = format!(
-                "[replay] hour {:>2}: {hour_sent} sent (new {} refresh {} retry {} fill {}), pass p50 {} ms p99 {} ms max {} ms, {} ready in {} domains, walker {done}/{of} queued {} before the floor {} cleared at caps {}, stocks chosen {} fill domains {}, sitemaps {} read {} new {} re-dated, rss {} MiB; over hour {} over spread {} early {} due within a day {} early re-dated {} re-stamped early {} early after a failure {} after a drop {}",
+                "[replay] hour {:>2}: {hour_sent} sent (new {} refresh {} retry {} resend {} fill {}), resend walk listed {} waiting {}, pass p50 {} ms p99 {} ms max {} ms, {} ready in {} domains, walker {done}/{of} queued {} before the floor {} cleared at caps {}, stocks chosen {} fill domains {}, sitemaps {} read {} new {} re-dated, rss {} MiB; over hour {} over spread {} early {} due within a day {} early re-dated {} re-stamped early {} early after a failure {} after a drop {}",
                 (now - args.start) / HOUR,
                 counts.new - last.new,
                 counts.refresh - last.refresh,
                 counts.retry - last.retry,
+                counts.resend - last.resend,
                 counts.fill - last.fill,
+                progress.join_resent.load(Ordering::Relaxed),
+                progress.resend_waiting.load(Ordering::Relaxed),
                 p(0.5),
                 p(0.99),
                 sorted.last().copied().unwrap_or(0),
@@ -438,6 +450,7 @@ pub async fn replay(args: ReplayArgs) -> Result<()> {
     }
     stop.store(true, Ordering::Relaxed);
     walker.join().map_err(|_| anyhow::anyhow!("the list walker panicked"))??;
+    resender.join().map_err(|_| anyhow::anyhow!("the resend walker panicked"))??;
     keeper.join().map_err(|_| anyhow::anyhow!("the stock keeper panicked"))??;
     if let Some(host) = &args.refusing {
         let mut hours: Vec<(u32, u64)> = bars.refusing.into_iter().collect();
@@ -455,13 +468,14 @@ struct Counts {
     new: u64,
     refresh: u64,
     retry: u64,
+    resend: u64,
     fill: u64,
 }
 
 impl Counts {
     fn of(progress: &Progress) -> Counts {
         let get = |counter: &std::sync::atomic::AtomicU64| counter.load(std::sync::atomic::Ordering::Relaxed);
-        Counts { new: get(&progress.sent_new), refresh: get(&progress.sent_refresh), retry: get(&progress.sent_retry), fill: get(&progress.sent_fill) }
+        Counts { new: get(&progress.sent_new), refresh: get(&progress.sent_refresh), retry: get(&progress.sent_retry), resend: get(&progress.sent_resend), fill: get(&progress.sent_fill) }
     }
 }
 
