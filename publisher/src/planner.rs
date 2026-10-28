@@ -1387,7 +1387,7 @@ impl Planner {
             self.advance(seq)?;
         }
         let (replanned, waiting_for_budget) = self.replan().await?;
-        // Waiting pages get the budget first: the backfill waits while any is held back for it.
+        // The backfill never takes budget the re-plan stopped short of; past the re-plan's file cap or sweep, they share it.
         let backfilled = if waiting_for_budget { false } else { self.backfill().await? };
         for lane in Lane::ALL {
             let after = if lane == Lane::Fresh { self.settings.fresh_flush_after } else { self.settings.flush_after };
@@ -1445,14 +1445,15 @@ impl Planner {
         Ok((took, false))
     }
 
-    /// Plans pages of `current/` while the budget and the rest lane's room last, starting only once the budget holds an input's worth and reading at most `max_pending` inputs' worth a pass, so the log is read between; whether it read any.
+    /// Plans pages of `current/` while the budget and the rest lane's room last, starting only once the budget holds an input's worth and reading at most `max_pending` inputs' worth a pass for at most the fresh lane's flush wait, so the log is read between; whether it read any.
     async fn backfill(&mut self) -> Result<bool> {
         if !self.settings.backfill || self.current.is_none() || !self.budget.holds(self.settings.pages_per_input) {
             return Ok(false);
         }
-        let (most, mut read) = (self.settings.max_pending * self.settings.pages_per_input, 0);
+        let (most, mut read, started) = (self.settings.max_pending * self.settings.pages_per_input, 0, Instant::now());
         loop {
-            if read >= most || self.pending[Lane::Rest as usize] >= self.settings.max_pending || !self.has_token() {
+            let slice_over = read > 0 && started.elapsed() >= self.settings.fresh_flush_after;
+            if read >= most || slice_over || self.pending[Lane::Rest as usize] >= self.settings.max_pending || !self.has_token() {
                 return Ok(read > 0);
             }
             if self.reading.is_none() && !self.start_reading()? {

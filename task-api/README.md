@@ -207,11 +207,11 @@ The planner keeps its place in the log and the version of every page it planned 
 | `TASK_API_URL` | `https://api-22.desearch.ai` | where it asks for room |
 | `TASK_API_REDIS` | `redis://localhost:6379/15` | where it hands inputs over |
 | `PLANNER_DIR` | `/home/publisher/planner` | its state |
-| `PLANNER_PAGES_PER_HOUR` | 100000 | pages planned an hour at most; the rest of the log's pages wait for a backfill |
+| `PLANNER_PAGES_PER_HOUR` | 100000 | pages planned an hour at most; the log's pages past it wait and are planned later |
 | `PLANNER_PAGES_PER_INPUT` | 1000 | pages per input file at most |
 | `PLANNER_CHARS_PER_INPUT` | 3000000 | characters of text per input file at most |
 | `PLANNER_FLUSH_S` | 600 | a part-filled input is written once its first page waited this long |
-| `PLANNER_MAX_PENDING` | 50 | input files waiting for room; past this, pages are left out |
+| `PLANNER_MAX_PENDING` | 50 | input files waiting for room; past this, pages wait and are planned later |
 | `PLANNER_PENDING_MAX_AGE_S` | 43200 | an input waiting longer is dropped before the temporary bucket deletes its file; its pages are planned again when the log shows them next |
 | `PLANNER_MIN_CHARS` | 300 | characters of text a page needs |
 | `PLANNER_LANGS` | `en` | languages planned |

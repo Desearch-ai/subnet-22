@@ -1745,7 +1745,7 @@ async fn the_set_s_age_is_from_when_it_was_built_or_else_when_its_file_was_writt
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn waiting_pages_get_the_budget_before_the_backfill_which_also_waits_for_an_input_s_worth() {
+async fn the_backfill_shares_the_budget_with_waiting_pages_but_never_takes_what_the_re_plan_stopped_short_of() {
     let Some((_turn, redis)) = redis_db().await else {
         eprintln!("skipped: no Redis on {REDIS}");
         return;
@@ -1788,7 +1788,10 @@ async fn waiting_pages_get_the_budget_before_the_backfill_which_also_waits_for_a
         }
     }
     planner.pass().await.unwrap();
-    assert!(planner.counts.backfill >= 895, "the backfill spent the budget while the waiting pages' change file could not be read");
+    assert!(
+        planner.counts.backfill >= 895,
+        "with the re-plan at its sweep's end, as the waiting pages' change file cannot be read, the backfill takes the budget"
+    );
 
     pages.put(file_key, file, PARQUET, None).await.unwrap();
     let backfilled = planner.counts.backfill;
@@ -1800,7 +1803,7 @@ async fn waiting_pages_get_the_budget_before_the_backfill_which_also_waits_for_a
     assert_eq!(
         (planner.counts.replanned, planner.state.waiting_count(), planner.counts.backfill),
         (2, 0, backfilled),
-        "the backfill waits while pages wait for the budget, so the re-plan takes it once it holds an input's worth"
+        "the backfill never takes budget the re-plan stopped short of, so the re-plan takes it once it holds an input's worth"
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -1850,6 +1853,44 @@ async fn a_backfill_pass_reads_at_most_max_pending_inputs_worth_so_the_log_is_re
         }
     }
     assert_eq!((planner.counts.planned, planner.counts.backfill), (302, 300));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_backfill_pass_also_ends_once_it_has_run_the_fresh_lane_s_flush_wait() {
+    let Some((_turn, redis)) = redis_db().await else {
+        eprintln!("skipped: no Redis on {REDIS}");
+        return;
+    };
+    let dir = scratch("backfill-slice");
+    let stub = stub::start(dir.join("r2"), "127.0.0.1:0").await.unwrap();
+    let (pages, temp, current) = (bucket(stub.addr, "desearch-pages"), bucket(stub.addr, "subnet-22"), bucket(stub.addr, "desearch-current"));
+    let row = |n: usize| {
+        let record = v2(record(&format!("https://news.example/archive/{n}"), &format!("{n} {}", article(2)), "article", "en"));
+        PageRow {
+            key: page_key(&record.url).unwrap(),
+            removed: false,
+            change_seq: 1,
+            version: record_version(&record),
+            published_at: record.fetched_at.clone(),
+            record,
+        }
+    };
+    shard(&current, 7, vec![(0..20).map(row).collect()]).await;
+    log(&pages, 1, vec![v2(record("https://news.example/story/first", &article(2), "article", "en"))]).await;
+    let mut sliced = settings(dir.join("state"), 3_600_000.0, 0);
+    (sliced.backfill, sliced.backfill_shards, sliced.fresh_flush_after) = (true, 7..8, Duration::ZERO);
+    let mut planner = Planner::new(sliced, pages.clone(), temp.clone(), redis.clone(), Room::Fixed(1_000)).await.unwrap();
+    planner.current = Some(current.clone());
+    for _ in 0..20 {
+        planner.pass().await.unwrap();
+        if planner.counts.backfill > 0 {
+            break;
+        }
+    }
+    assert_eq!(planner.counts.backfill, 1, "with no wait left, a pass reads one page, though ten inputs' worth would fit");
+    planner.pass().await.unwrap();
+    assert_eq!(planner.counts.backfill, 2);
     let _ = std::fs::remove_dir_all(&dir);
 }
 

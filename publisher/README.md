@@ -56,9 +56,9 @@ the log.
   its pages with no date typed `article`; a whole site's pages, or those under its `paths`; a bulk source's
   crawled pages. Pages are also English, at least `PLANNER_MIN_CHARS` long and off
   the exclusion list. With `PLANNER_SET_FILE` set, the planner does not start without the set. Each time it reads
-  the set it logs the set's `built` time, or the time its file was written when the set has none or it cannot be
-  read, and it warns then and hourly while the set is more than two days old; the same build read again keeps the
-  hourly timer.
+  the set it logs the set's `built` time, or the time its file was written when the set has none or its `built`
+  cannot be parsed, and it warns then and hourly while the set is more than two days old; the same build read again
+  keeps the hourly timer.
 - **Fresh lane:** pages seen for the first time and dated within `PLANNER_FRESH_S` (48 h) get their own inputs,
   written within `PLANNER_FRESH_FLUSH_S` (60 s), handed over ahead of other waiting inputs, outside the hourly
   budget (`PLANNER_PAGES_PER_HOUR`) and within their own (`PLANNER_FRESH_PER_HOUR`). Every other page shares the
@@ -69,11 +69,14 @@ the log.
   version planned without its change file number is left to the backfill or a re-crawl. An input is pushed to the
   task API once, however often a restart tries it.
 - **Backfill** (`PLANNER_BACKFILL=1`): with what budget and room the log and waiting pages leave, it reads
-  `current/` shard by shard (`PLANNER_BACKFILL_SHARDS`). It waits while waiting pages are held back for the
-  budget, starts only once the budget holds an input's worth, and reads at most `PLANNER_MAX_PENDING` inputs'
-  worth a pass, so the log is read between. It plans each page's standing version that the set takes and was
-  never embedded at that text. It keeps its place across restarts, and sweeps again `PLANNER_BACKFILL_EVERY_S`
-  (24 h) after its last shard, so a page the log passed by is planned once `current/` holds it.
+  `current/` shard by shard (`PLANNER_BACKFILL_SHARDS`). Each pass re-plans waiting pages first. The backfill
+  starts once the budget holds an input's worth, but not in a pass where the re-plan stopped for budget; when the
+  re-plan stops at its 64 change files a pass or the end of its sweep, the backfill takes what is left, so the two
+  share the budget while pages wait. A backfill pass reads at most `PLANNER_MAX_PENDING` ×
+  `PLANNER_PAGES_PER_INPUT` pages, for at most `PLANNER_FRESH_FLUSH_S`, so the log is read between. It plans each
+  page's standing version that the set takes and was never embedded at that text. It keeps its place across
+  restarts, and sweeps again `PLANNER_BACKFILL_EVERY_S` (24 h) after its last shard, so a page the log passed by
+  is planned once `current/` holds it.
 - **Page vectors first** (`PLANNER_PAGE_FIRST=1`, off by default): pages outside the fresh lane get their
   page text alone; a page's passages are planned the next time it is seen with the setting off.
 
