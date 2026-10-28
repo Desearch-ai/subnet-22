@@ -1560,6 +1560,115 @@ fn the_list_walker_walks_a_domain_once_per_resend_before() {
 }
 
 #[test]
+fn only_a_listed_subdomain_whose_record_works_takes_its_pages_from_the_parent() {
+    let dir = Dir::new("apart");
+    let buckets = known(&dir, &["example.com", "news.example.com", "blog.other.org"]);
+    let list = Allowed::of(["example.com", "news.example.com", "blog.other.org"]);
+    buckets.allow(&list);
+    buckets.note_apart(&list);
+    assert!(list.apart("news.example.com"));
+    assert!(!list.apart("blog.other.org"), "no listed parent");
+    assert!(!list.apart("example.com"));
+    let mut changes = Changes::default();
+    changes.domain("news.example.com", &records::new_domain(Some(10), Some("com"), &[], State::Down, None, None));
+    buckets.store("news.example.com").write(changes).unwrap();
+    buckets.note_apart(&list);
+    assert!(!list.apart("news.example.com"), "a subdomain that is down leaves its pages under its parent");
+}
+
+#[test]
+fn a_refresh_stock_on_a_floored_site_keeps_its_pages_inside_the_floor_coming() {
+    let dir = Dir::new("stock-floor-rounds");
+    let buckets = known(&dir, &["example.com"]);
+    let store = buckets.store("example.com");
+    let mut pages: Vec<_> = (0..1500).map(|i| page(&format!("old{i:04}"), EARLY)).collect();
+    pages.extend((0..500).map(|i| page(&format!("new{i:04}"), LATE)));
+    store.record_listing("example.com", 7, pages, 100).unwrap();
+    let (old, new): (Vec<Pick>, Vec<Pick>) = take(store, 2000).into_iter().partition(|p| p.url.contains("/old"));
+    store.mark_sent(&old, 1000, &rules()).unwrap();
+    store.mark_sent(&new, 2000, &rules()).unwrap();
+    buckets.allow(&Allowed::with_terms([("example.com", Terms { since: Some(FLOOR), ..Terms::default() })]));
+    for round in 0..3 {
+        store.stock_refresh("example.com", 100, None, usize::MAX, &mut |_| true).unwrap();
+        let stock = store.take_stock("example.com", 100, 100_000, 1000).unwrap();
+        assert_eq!(stock.picks.len(), 100, "round {round}: the pages sent longest ago are dated before the floor and never go, so they don't hold the stock");
+        assert!(stock.picks.iter().all(|p| p.url.contains("/new")));
+        store.mark_sent(&stock.picks, 50_000 + round, &rules()).unwrap();
+    }
+}
+
+#[test]
+fn a_floor_that_only_rises_is_recorded_without_walking_the_domain() {
+    let dir = Dir::new("floor-rise-idle");
+    std::fs::create_dir_all(&dir.0).unwrap();
+    let path = dir.0.join("domains.json");
+    std::fs::write(&path, r#"[{"host": "example.com", "type": "news"}]"#).unwrap();
+    let list = Allowed::from_file(&path).unwrap();
+    let buckets = known(&dir, &["example.com"]);
+    buckets.allow(&list);
+    let store = buckets.store("example.com");
+    store.record_listing("example.com", 7, (0..30).map(|i| page(&format!("p{i}"), LATE)).collect(), 100).unwrap();
+    store.mark_sent(&take(store, 100), 200, &rules()).unwrap();
+    let progress = Progress::default();
+    let stop = std::sync::atomic::AtomicBool::new(false);
+    assert_eq!(desearch_bot::dispatch::join_round(&buckets, &list, 1_000_000, &progress, &stop).unwrap(), 1);
+    relist(&path, &list, r#"[{"host": "example.com", "type": "news", "since": "2020-01-01"}]"#);
+    let started = std::time::Instant::now();
+    assert_eq!(desearch_bot::dispatch::join_round(&buckets, &list, 1, &progress, &stop).unwrap(), 1);
+    assert!(started.elapsed() < std::time::Duration::from_secs(5), "an idle domain whose floor rose isn't walked: at a record a second, a walk of its 30 pages would take 30 s");
+    assert_eq!(store.joined_since("example.com").unwrap(), Some(FLOOR));
+    relist(&path, &list, r#"[{"host": "example.com", "type": "news"}]"#);
+    assert_eq!(desearch_bot::dispatch::join_round(&buckets, &list, 1_000_000, &progress, &stop).unwrap(), 1, "a floor taken off walks it");
+    assert_eq!(store.joined_since("example.com").unwrap(), None);
+}
+
+#[test]
+fn a_backlog_cuts_by_the_pages_stored_not_the_urls_its_sitemaps_last_listed() {
+    let dir = Dir::new("join-stored-bound");
+    let buckets = known(&dir, &["example.com"]);
+    let store = buckets.store("example.com");
+    let mut record = records::new_domain(Some(10), Some("com"), &[], State::Active, None, None);
+    record.insert("urls".into(), 5.into());
+    let mut changes = Changes::default();
+    changes.domain("example.com", &record);
+    store.write(changes).unwrap();
+    store.record_listing("example.com", 7, (0..50).map(|i| page(&format!("p{i:02}"), LATE + i)).collect(), 100).unwrap();
+    store.clear_fresh_before("example.com", u32::MAX, &mut |_| true).unwrap();
+    let joined = store.join_domain("example.com", Terms { backlog: Some(10), ..Terms::default() }, 5000, &mut |_| true).unwrap();
+    assert_eq!(joined.queued, 10, "a news feed listing 5 URLs over 50 stored pages still takes only its 10 newest");
+}
+
+#[test]
+fn a_retry_dated_before_the_floor_drops_as_it_would_go_and_is_counted() {
+    let dir = Dir::new("retry-floor");
+    let store = open(&dir);
+    store.record_listing("example.com", 7, vec![page("2019/05/01/story", 0)], 100).unwrap();
+    store.mark_sent(&take(&store, 10), 1000, &rules()).unwrap();
+    assert_eq!(requeue(&store, 1000 + RECRAWL).moved, 1, "an undated page goes again on its re-crawl interval");
+    store.allow(Allowed::with_terms([("example.com", Terms { since: Some(FLOOR), ..Terms::default() })]));
+    let mut quotas = [0; LANES];
+    quotas[REQUEUED] = 10;
+    assert!(store.take_ready("example.com", quotas).unwrap().is_empty(), "its URL dates it before the floor, so the re-crawl stops");
+    assert_eq!(store.floor_dropped.load(std::sync::atomic::Ordering::Relaxed), 1);
+    assert_eq!(store.ready_count("example.com").unwrap(), 0);
+}
+
+#[test]
+fn a_take_passes_over_a_bounded_run_of_pages_before_the_floor_and_leaves_the_rest_for_later() {
+    let dir = Dir::new("stale-run");
+    let store = open(&dir);
+    store.record_listing("example.com", 7, vec![page("inside", LATE)], 100).unwrap();
+    store.record_listing("example.com", 8, (0..25_000).map(|i| page(&format!("old{i:05}"), EARLY)).collect(), 200).unwrap();
+    store.allow(Allowed::with_terms([("example.com", Terms { since: Some(FLOOR), ..Terms::default() })]));
+    assert!(take(&store, 10).is_empty(), "the newest-found run is all before the floor, and one take passes over only so many");
+    let dropped = || store.floor_dropped.load(std::sync::atomic::Ordering::Relaxed);
+    assert!((20_000..25_000).contains(&dropped()), "{} dropped in the first take", dropped());
+    let picks = take(&store, 10);
+    assert_eq!(picks.iter().map(|p| p.url.as_str()).collect::<Vec<_>>(), ["https://example.com/inside"], "the next take finishes the run and reaches it");
+    assert_eq!(dropped(), 25_000);
+}
+
+#[test]
 fn a_domain_already_sending_whose_cap_rises_queues_the_stored_pages_its_old_cap_left_out() {
     let dir = Dir::new("join-cap-rise");
     std::fs::create_dir_all(&dir.0).unwrap();
@@ -1604,9 +1713,12 @@ fn a_page_on_a_subdomain_listed_on_its_own_goes_only_under_that_subdomain() {
 
     relist(&path, &list, r#"["example.com", "news.example.com"]"#);
     store.record_listing("example.com", 7, vec![on_sub("s2")], 200).unwrap();
-    assert!(!queued(&store).contains(&"news.example.com/s2".to_string()), "once the subdomain is listed itself, a sitemap read leaves its pages to it");
+    assert!(queued(&store).contains(&"news.example.com/s2".to_string()), "a listed subdomain whose own record doesn't work leaves its pages under the parent");
+    list.set_apart(["news.example.com".to_string()].into());
+    store.record_listing("example.com", 7, vec![on_sub("s3")], 300).unwrap();
+    assert!(!queued(&store).contains(&"news.example.com/s3".to_string()), "once its record works, a sitemap read leaves its pages to it");
     let picks = take(&store, 10);
-    assert_eq!(picks.iter().map(|p| p.url.as_str()).collect::<Vec<_>>(), ["https://example.com/a"], "and one already waiting drops as it would go");
+    assert_eq!(picks.iter().map(|p| p.url.as_str()).collect::<Vec<_>>(), ["https://example.com/a"], "and those already waiting drop as they would go");
     assert_eq!(queued(&store), ["example.com/a"], "the subdomain's page left the list; the page taken waits to be marked sent");
 }
 

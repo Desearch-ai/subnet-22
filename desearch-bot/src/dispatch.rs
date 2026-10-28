@@ -330,6 +330,8 @@ pub struct Progress {
     pub join_before_floor: AtomicU64,
     /// Pages last sent before their domain's `resend_before`, put back on the lists to go once more.
     pub join_resent: AtomicU64,
+    /// Waiting pages dropped as they would go, dated before their domain's floor.
+    pub taken_before_floor: AtomicU64,
     /// New-page entries cleared from domains at their cap.
     pub capped_cleared: AtomicU64,
 }
@@ -368,7 +370,7 @@ impl Progress {
             thousands(self.backfill_scanned.load(Ordering::Relaxed)),
             thousands(self.backfill_added.load(Ordering::Relaxed)),
         ) + &format!(
-            "  set aside {}  fill from {} domains, {} stocks chosen, {} waiting  joined {}/{} domains {} queued, {} cleared at caps, {} before the date floor, {} to send again  last pass absorb {:.1}s pick {:.1}s send {:.1}s",
+            "  set aside {}  fill from {} domains, {} stocks chosen, {} waiting  joined {}/{} domains {} queued, {} cleared at caps, {} before the date floor ({} more dropped as taken), {} to send again  last pass absorb {:.1}s pick {:.1}s send {:.1}s",
             thousands(self.set_aside.load(Ordering::Relaxed)),
             thousands(self.fill_domains.load(Ordering::Relaxed)),
             thousands(self.stocked.load(Ordering::Relaxed)),
@@ -378,6 +380,7 @@ impl Progress {
             thousands(self.join_queued.load(Ordering::Relaxed)),
             thousands(self.capped_cleared.load(Ordering::Relaxed)),
             thousands(self.join_before_floor.load(Ordering::Relaxed)),
+            thousands(self.taken_before_floor.load(Ordering::Relaxed)),
             thousands(self.join_resent.load(Ordering::Relaxed)),
             self.pass_ms[0].load(Ordering::Relaxed) as f64 / 1000.0,
             self.pass_ms[1].load(Ordering::Relaxed) as f64 / 1000.0,
@@ -1017,6 +1020,7 @@ impl Dispatcher {
         }
         self.progress.ready.store(total, Ordering::Relaxed);
         self.progress.ready_domains.store(self.domains.len() as u64, Ordering::Relaxed);
+        self.progress.taken_before_floor.store(self.buckets.stores().map(|store| store.floor_dropped.load(Ordering::Relaxed)).sum(), Ordering::Relaxed);
         *self.progress.top.lock().unwrap_or_else(|e| e.into_inner()) = top;
     }
 }
@@ -1230,17 +1234,25 @@ pub fn backfill(buckets: &Buckets, per_second: u64, progress: &Progress, stop: &
 
 /// How long the list walker rests when nothing in the list changed.
 const JOIN_IDLE: Duration = Duration::from_secs(5);
+/// How often the listed subdomains whose records work are looked up again, as visits change their states.
+const APART_EVERY: Duration = Duration::from_secs(600);
 
 /// Walk every listed domain's stored pages once, and again when its cap changes, so pages it listed before it joined the list go out too.
 pub fn join_listed(buckets: &Buckets, allowed: &Allowed, per_second: u64, progress: &Progress, stop: &AtomicBool) -> Result<()> {
     let mut walked = None;
+    let mut noted = Instant::now();
     while !stop.load(Ordering::Relaxed) {
         clear_capped(buckets, progress)?;
         let version = allowed.version();
         if walked == Some(version) {
+            if noted.elapsed() >= APART_EVERY {
+                buckets.note_apart(allowed);
+                noted = Instant::now();
+            }
             std::thread::sleep(JOIN_IDLE);
             continue;
         }
+        noted = Instant::now();
         join_round(buckets, allowed, per_second, progress, stop)?;
         walked = Some(version);
     }
@@ -1251,6 +1263,7 @@ pub fn join_listed(buckets: &Buckets, allowed: &Allowed, per_second: u64, progre
 ///
 /// A domain already sending is counted when its cap falls, so the cap applies at once, and walked again when its cap rises or its floor changes. The rest are walked for their stored pages beside them, by size band smallest first and highest weight first within a band, so many domains start sending soon. A domain whose `resend_before` changed is walked once more for the pages to send again.
 pub fn join_round(buckets: &Buckets, allowed: &Allowed, per_second: u64, progress: &Progress, stop: &AtomicBool) -> Result<usize> {
+    buckets.note_apart(allowed);
     let mut todo = Vec::new();
     for (domain, terms) in allowed.entries() {
         let Some(store) = buckets.store_for(&domain) else {
@@ -1264,8 +1277,10 @@ pub fn join_round(buckets: &Buckets, allowed: &Allowed, per_second: u64, progres
             continue;
         }
         let idle = store.ready_count(&domain)? == 0;
-        // A lower floor, a higher cap or a first walk leave stored pages the waiting lane lacks, so it is built again; a higher floor or a lower cap only needs counting.
+        // A lower floor, a higher cap or a first walk leave stored pages the waiting lane lacks, so it is built again; a lower cap only needs counting.
         let rewalk = !idle && (floor_fell(walked_since, terms.since) || cap_rose(joined, terms.send_cap));
+        // A floor that only rose needs neither: pages before it drop as they would go, and later reads leave them out.
+        let settled = settled || (joined == Some(terms.send_cap) && !floor_fell(walked_since, terms.since));
         let urls = store.domain(&domain)?.and_then(|record| records::int(record.get("urls"))).unwrap_or(0);
         todo.push((idle, std::cmp::Reverse(terms.weight), urls, domain, Walk { terms, rewalk, settled, resend }));
     }
@@ -1296,6 +1311,7 @@ pub fn join_round(buckets: &Buckets, allowed: &Allowed, per_second: u64, progres
             }
             let store = buckets.store(&domain);
             let joined = if settled {
+                store.note_walked(&domain, terms)?;
                 Joined::default()
             } else if idle {
                 store.join_domain(&domain, terms, started, &mut pace)?

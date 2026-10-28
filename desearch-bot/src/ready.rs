@@ -53,6 +53,10 @@ const STOCK_SLACK: usize = 256;
 const TRIM_REST: Duration = Duration::from_millis(1);
 /// Pages queued per locked write while a domain is walked.
 const JOIN_CHUNK: usize = 20_000;
+/// A bound above this many pages counts a domain's stored pages before its walk, so a heap that size is built only when it cuts.
+const HEAP_MOST: u64 = 1_000_000;
+/// Stale entries one take passes over in a lane before it leaves the rest for later passes.
+const STALE_PER_TAKE: usize = 20_000;
 /// An outcome counts half as much a day later.
 pub const YIELD_HALF_LIFE_S: f64 = 86_400.0;
 /// In the recent count, half as much an hour later.
@@ -500,11 +504,11 @@ struct DomainScan {
 
 impl BucketStore {
     /// Domains with pages waiting, and how many each has.
-    /// A page on a subdomain the list names as a domain of its own goes under that domain, never under the one whose sitemap listed it.
+    /// A page on a subdomain the list names as a domain of its own, and whose record works, goes under that domain, never under the one whose sitemap listed it.
     pub(crate) fn listed_apart(&self, domain: &str, rest: &[u8]) -> bool {
         let host = rest.split(|&byte| byte == b'/').next().unwrap_or_default();
         let host = host.strip_prefix(b"www.").unwrap_or(host);
-        host != domain.as_bytes() && std::str::from_utf8(host).is_ok_and(|host| self.lists(host))
+        host != domain.as_bytes() && std::str::from_utf8(host).is_ok_and(|host| self.apart(host))
     }
 
     pub fn ready_domains(&self) -> Result<Vec<(String, u64)>> {
@@ -581,7 +585,9 @@ impl BucketStore {
     /// Up to `want` more pages from one lane, best first, carrying on from where the lane was last read.
     fn take_lane(&self, domain: &str, lane: usize, want: usize, taking: &mut Taking) -> Result<()> {
         let goal = taking.picks.len() + want;
-        while taking.picks.len() < goal && !taking.drained[lane] {
+        // A lane built before its floor can open on a long run of pages that now drop; the rest of the run waits for later passes.
+        while taking.picks.len() < goal && !taking.drained[lane] && taking.passed[lane] < STALE_PER_TAKE {
+            let stale_before = taking.stale.len();
             let asked = (goal - taking.picks.len()).clamp(64, 4096);
             let started = taking.after[lane].clone();
             let keys = self.lane_keys(domain, lane, started.as_deref(), asked)?;
@@ -603,9 +609,12 @@ impl BucketStore {
                 }
                 taking.after[lane] = Some(key.clone());
                 let allowed = taking.robots.allows_page(domain, &entry.rest) && !self.listed_apart(domain, &entry.rest);
-                // A floor raised since the page was queued drops it as it would go, so a moving floor never needs a walk.
-                let dated_in = |r: &Record| lane != FRESH || !before_floor(taking.since, r.lastmod, &entry.rest);
-                let due = record.filter(|r| allowed && dated_in(r)).and_then(|r| reason(&r, sent.as_ref()).map(|why| (r, why)));
+                // A floor raised since the page was queued drops it as it would go, in every lane, so a moving floor never needs a walk.
+                let dated_in = record.as_ref().is_none_or(|r| !before_floor(taking.since, r.lastmod, &entry.rest));
+                if !dated_in {
+                    self.floor_dropped.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
+                let due = record.filter(|_| allowed && dated_in).and_then(|r| reason(&r, sent.as_ref()).map(|why| (r, why)));
                 // A page listed twice, under an older and a newer lastmod, goes once.
                 let Some((record, why)) = due.filter(|_| taking.picked.insert(entry.rest.clone())) else {
                     taking.stale.push(key);
@@ -614,6 +623,7 @@ impl BucketStore {
                 let failures = sent.map_or(0, |s| s.failures);
                 taking.picks.push(Pick { url: fetchable(&entry.rest, record.flags), lastmod: record.lastmod, reason: why, failures, entry });
             }
+            taking.passed[lane] += taking.stale.len() - stale_before;
             // A read that moved nothing forward would only repeat itself.
             if (read < asked && !stopped_early) || taking.after[lane] == started {
                 taking.drained[lane] = true;
@@ -625,6 +635,7 @@ impl BucketStore {
     /// Replace the domain's refresh stock with the `keep` pages sent longest ago that could go again, of at most `most` sent records read on from `after`; None when `pace` stopped it first.
     pub fn stock_refresh(&self, domain: &str, keep: usize, after: Option<&[u8]>, most: usize, pace: &mut dyn FnMut(u64) -> bool) -> Result<Option<Stocked>> {
         let prefix = prefixed(SENT, domain.as_bytes(), b"");
+        let since = self.terms(domain).since;
         let mut oldest: BinaryHeap<(u32, Vec<u8>)> = BinaryHeap::new();
         let (mut last, mut scanned) = (after.map(<[u8]>::to_vec), 0);
         let next = loop {
@@ -639,7 +650,8 @@ impl BucketStore {
             for ((key, sent), record) in chunk.into_iter().zip(records) {
                 let rest = &key[prefix.len()..];
                 if let (Some(record), Some(sent)) = (record, sent) {
-                    if record.pushed_at != 0 && refreshable(&record, &sent) && !junk(rest) {
+                    // A page dated before the floor never goes, so as the oldest send it would hold every place in the stock.
+                    if record.pushed_at != 0 && refreshable(&record, &sent) && !junk(rest) && !before_floor(since, record.lastmod, rest) {
                         oldest.push((record.pushed_at, rest.to_vec()));
                         if oldest.len() > keep {
                             oldest.pop();
@@ -798,6 +810,14 @@ impl BucketStore {
         Ok(self.db.get_pinned(count_key_of(JOINED_SINCE, domain))?.and_then(|raw| raw.as_ref().try_into().ok().map(u32::from_le_bytes)))
     }
 
+    /// Records the cap and floor a domain's stored pages stand under, for a change that needs no walk.
+    pub fn note_walked(&self, domain: &str, terms: Terms) -> Result<()> {
+        let _guard = self.lock_ready();
+        let mut batch = WriteBatch::default();
+        mark_joined(&mut batch, domain, terms);
+        Ok(self.db.write(batch)?)
+    }
+
     /// The `resend_before` the domain was last walked under.
     pub fn resent_before(&self, domain: &str) -> Result<Option<u32>> {
         Ok(self.db.get_pinned(count_key_of(RESENT_BEFORE, domain))?.and_then(|raw| raw.as_ref().try_into().ok().map(u32::from_le_bytes)))
@@ -881,9 +901,17 @@ impl BucketStore {
         let prefix = prefixed(URL, domain.as_bytes(), b"");
         let mut joined = Joined::default();
         let mut streamed: Vec<Entry> = Vec::new();
-        // With a cap or a backlog only the newest pages go: a heap of the oldest kept, never more than the bound itself. A bound above all the domain lists cuts nothing, so its pages stream instead.
-        let listed = self.domain(domain)?.and_then(|record| records::int(record.get("urls"))).unwrap_or(0).max(0) as u64;
-        let bound = terms.send_cap.or(terms.backlog).filter(|&most| listed == 0 || most < listed);
+        // With a cap or a backlog only the newest pages go, from a heap never bigger than the bound. A big bound first counts the pages stored: when it holds them all it cuts nothing, and they stream instead.
+        let bound = match terms.send_cap.or(terms.backlog) {
+            Some(most) if most > HEAP_MOST => match self.stored_pages(domain, most, pace)? {
+                Some(stored) => (stored > most).then_some(most),
+                None => {
+                    joined.stopped = true;
+                    return Ok(joined);
+                }
+            },
+            bound => bound,
+        };
         let mut newest: BinaryHeap<Reverse<(u32, u32, Vec<u8>)>> = BinaryHeap::new();
         let mut since_pace = 0u64;
         for item in self.db.iterator_opt(IteratorMode::From(&prefix, Direction::Forward), bounded(&prefix)) {
@@ -1025,6 +1053,27 @@ impl BucketStore {
         mark_joined(&mut batch, domain, terms);
         self.db.write(batch)?;
         Ok(joined)
+    }
+
+    /// How many pages the domain stores, counted up to one past `most`; None when `pace` stopped it.
+    fn stored_pages(&self, domain: &str, most: u64, pace: &mut dyn FnMut(u64) -> bool) -> Result<Option<u64>> {
+        let prefix = prefixed(URL, domain.as_bytes(), b"");
+        let (mut stored, mut since_pace) = (0u64, 0u64);
+        for item in self.db.iterator_opt(IteratorMode::From(&prefix, Direction::Forward), bounded(&prefix)) {
+            item?;
+            stored += 1;
+            since_pace += 1;
+            if since_pace >= 10_000 {
+                if !pace(since_pace) {
+                    return Ok(None);
+                }
+                since_pace = 0;
+            }
+            if stored > most {
+                break;
+            }
+        }
+        Ok(pace(since_pace).then_some(stored))
     }
 
     /// Puts the domain's pages last sent before its `resend_before` back on its ready list as retries, newest lastmod first and behind its real retries; failing pages, pages already back and pages dated before its floor stay off.
@@ -1549,6 +1598,8 @@ struct Taking {
     picked: std::collections::HashSet<Vec<u8>>,
     after: [Option<Vec<u8>>; LANES],
     drained: [bool; LANES],
+    /// Stale entries each lane passed over in this take.
+    passed: [usize; LANES],
 }
 
 /// A domain's changed pages once all of it was read, cut to the newest few when it re-stamps.
