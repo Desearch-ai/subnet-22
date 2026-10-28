@@ -1289,3 +1289,44 @@ async fn the_backfill_plans_current_s_copy_of_a_waiting_version_whose_change_fil
     assert!(planner.state.waiting(&page_key(&b.url).unwrap()).unwrap().is_none());
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_newer_row_lets_go_of_an_older_waiting_version_and_an_older_row_never_passes_one() {
+    let Some((_turn, redis)) = redis_db().await else {
+        eprintln!("skipped: no Redis on {REDIS}");
+        return;
+    };
+    let dir = scratch("newer-waiting");
+    let stub = stub::start(dir.join("r2"), "127.0.0.1:0").await.unwrap();
+    let (pages, temp) = (bucket(stub.addr, "desearch-pages"), bucket(stub.addr, "subnet-22"));
+    let version = |name: &str, text: &str, hour: u32| {
+        let mut page = v2(record(&format!("https://news.example/story/{name}"), &format!("{name} {text} {}", article(2)), "article", "en"));
+        page.fetched_at = format!("2026-10-20T{hour:02}:00:00+00:00");
+        page
+    };
+    let key = |name: &str| page_key(&format!("https://news.example/story/{name}")).unwrap();
+    log(&pages, 1, vec![version("p", "a", 1)]).await;
+    log(&pages, 2, vec![version("p", "b", 2), version("q", "y", 5)]).await;
+    log(&pages, 3, vec![version("p", "a", 3)]).await;
+    let mut tight = settings(dir.join("state"), 4.0, 0);
+    tight.pages_per_input = 1;
+    let mut planner = Planner::new(tight, pages.clone(), temp.clone(), redis.clone(), Room::Fixed(0)).await.unwrap();
+    planner.pass().await.unwrap();
+    assert_eq!((planner.counts.planned, planner.counts.waiting, planner.counts.unchanged), (1, 2, 1));
+    assert!(planner.state.waiting(&key("p")).unwrap().is_none(), "p's text went back to the planned one, so b no longer waits");
+    assert!(planner.state.waiting(&key("q")).unwrap().is_some());
+    drop(planner);
+
+    log(&pages, 5, vec![version("r", "", 1)]).await;
+    number_late(&pages, 4, vec![version("q", "x", 4)]).await;
+    let mut roomy = settings(dir.join("state"), 3600.0, 0);
+    roomy.pages_per_input = 1;
+    let mut planner = Planner::new(roomy, pages.clone(), temp.clone(), redis.clone(), Room::Fixed(0)).await.unwrap();
+    planner.pass().await.unwrap();
+    planner.pass().await.unwrap();
+    assert_eq!(planner.counts.older, 1, "q's late older row is passed over");
+    let planned = planner.state.planned_version(publisher::planner::RECIPE_V2, &key("q")).unwrap().unwrap();
+    assert_eq!(planned.content_sha1, version("q", "y", 5).content_sha1, "the waiting newer version is the one planned");
+    assert_eq!(planner.state.planned_version(publisher::planner::RECIPE_V2, &key("p")).unwrap().unwrap().content_sha1, version("p", "a", 1).content_sha1);
+    let _ = std::fs::remove_dir_all(&dir);
+}

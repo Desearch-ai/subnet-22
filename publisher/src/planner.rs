@@ -1475,6 +1475,14 @@ impl Planner {
     pub fn consider(&mut self, page: PageRow, from: Source) -> Considered {
         self.counts.pages += 1;
         let record = &page.record;
+        // A newer row lets go of an older waiting version, whatever becomes of the row.
+        let mut waiting = self.state.waiting(&page.key).ok().flatten();
+        if waiting.as_ref().is_some_and(|held| held.fetched_at < record.fetched_at) {
+            if let Err(error) = self.state.unwait(&page.key) {
+                eprintln!("letting {} stop waiting: {error:#}", page.key);
+            }
+            waiting = None;
+        }
         let Some(recipe) = recipe_of(record).filter(|recipe| PLANNED_RECIPES.contains(recipe)) else {
             self.counts.other_recipe += 1;
             return Considered::Passed;
@@ -1509,6 +1517,10 @@ impl Planner {
             }
             None => self.state.planned_version(recipe, &page.key).ok().flatten(),
         };
+        if waiting.as_ref().is_some_and(|held| record.fetched_at < held.fetched_at) {
+            self.counts.older += 1;
+            return Considered::Passed;
+        }
         let mut parts_only = false;
         if let Some(Version { content_sha1, fetched_at, page_only, .. }) = &already {
             if *content_sha1 == record.content_sha1 {
@@ -1543,7 +1555,7 @@ impl Planner {
             _ => None,
         };
         // Only a page never planned before is fresh, within its lane's own budget, so pages re-dated by their site cannot flood it.
-        let seen = !self.state.unplanned(&page.key).unwrap_or(false) || self.state.waiting(&page.key).ok().flatten().is_some();
+        let seen = !self.state.unplanned(&page.key).unwrap_or(false) || waiting.is_some();
         let fresh = self.is_fresh(record) && !seen;
         let fresh = fresh && self.pending[Lane::Fresh as usize] < self.settings.max_pending && self.fresh_budget.take();
         let lane = if fresh { Lane::Fresh } else { Lane::Rest };
