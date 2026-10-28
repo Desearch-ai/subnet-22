@@ -257,8 +257,8 @@ def entry_for(sites: dict[str, dict], host: str) -> dict | None:
     return None
 
 
-def matches(sites: dict[str, dict], url: str, published: str | None) -> bool:
-    """Whether a page belongs to v1: the entry for its host or the nearest listed host above it decides."""
+def matches(sites: dict[str, dict], url: str, published: str | None, page_type: str | None = None, undated: str = "out") -> bool:
+    """Whether a page belongs to v1: the entry for its host or the nearest listed host above it decides; with `undated` article, an undated news article is in."""
     parts = urlsplit(url)
     entry = entry_for(sites, parts.hostname or "")
     if entry is None or entry["rule"] == "out":
@@ -270,7 +270,9 @@ def matches(sites: dict[str, dict], url: str, published: str | None) -> bool:
             parts.path.startswith(path) for path in entry["paths"]
         )
     dated = page_date(url, published)
-    return dated is not None and (
+    if dated is None:
+        return undated == "article" and page_type == "article"
+    return (
         not entry.get("since") or dated >= date.fromisoformat(entry["since"])
     )
 
@@ -293,6 +295,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--out", required=True, help="the set file to write, such as v1-set.json")
     parser.add_argument("--decisions", required=True, help="the crawl list builder's decisions TSV (.gz allowed)")
     parser.add_argument("--news", choices=("A", "B"), default="A", help="A: established outlets all years, other news sites their last year; B: every news site from 2020")
+    parser.add_argument("--undated", choices=("out", "article"), default="out", help="article: a news page with no date is in when its page_type is article")
     parser.add_argument("--rows", action="append", default=[], help="a set rows file (JSON with sites); earlier files win a host")
     parser.add_argument("--hand", help="TSV of host, rule, type, why, paths, source (why and paths space-separated): the lead's entries, which win over every other source")
     parser.add_argument("--backing", help="TSV of host, wikidata_type, benchmark_citations, news_list")
@@ -318,7 +321,7 @@ def main(argv: list[str] | None = None) -> None:
         sys.exit(f"no sites; {args.out} left as it was")
     built = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     temporary = Path(f"{args.out}.new")
-    temporary.write_text(json.dumps({"built": built, "news": args.news, "sites": sites}, separators=(",", ":")))
+    temporary.write_text(json.dumps({"built": built, "news": args.news, "undated": args.undated, "sites": sites}, separators=(",", ":")))
     temporary.replace(args.out)
     if args.too_big:
         with open(args.too_big, "w", newline="") as target:

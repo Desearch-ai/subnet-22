@@ -12,6 +12,7 @@ sys.modules["v1_set"] = v1_set
 SPEC.loader.exec_module(v1_set)
 
 GOLDEN = Path(__file__).resolve().parent / "v1_set_golden.json"
+GOLDEN_UNDATED = Path(__file__).resolve().parent / "v1_set_golden_undated.json"
 
 
 TODAY = date(2026, 10, 28)
@@ -160,6 +161,14 @@ def test_the_matcher_answers_the_golden_cases():
         assert v1_set.matches(sites, case["url"], case["published"]) == case["in"], case
 
 
+def test_undated_news_articles_are_in_only_when_the_set_says_so():
+    golden = json.loads(GOLDEN_UNDATED.read_text())
+    sites = {site["host"]: site for site in golden["sites"]}
+    for case in golden["cases"]:
+        assert v1_set.matches(sites, case["url"], case["published"], case["page_type"], golden["undated"]) == case["in"], case
+    assert not v1_set.matches(sites, "https://www.latimes.com/california/story/council-vote", None, "article"), "undated pages stay out by default"
+
+
 def test_the_set_file_is_written_from_the_inputs(tmp_path):
     decisions = tmp_path / "decisions.tsv.gz"
     with gzip.open(decisions, "wt") as out:
@@ -177,4 +186,5 @@ def test_the_set_file_is_written_from_the_inputs(tmp_path):
     written = json.loads(out.read_text())
     assert [site["host"] for site in written["sites"]] == ["docs.example", "dump.example", "news.example", "wiki.example"]
     assert written["news"] == "B" and written["sites"][2]["since"] == "2020-01-01"
+    assert written["undated"] == "out"
     assert written["built"].endswith("Z")

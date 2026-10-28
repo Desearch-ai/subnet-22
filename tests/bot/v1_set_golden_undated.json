@@ -1,0 +1,21 @@
+{
+  "undated": "article",
+  "sites": [
+    {"host": "latimes.com", "rule": "news", "type": "news"},
+    {"host": "smalltownnews.example", "rule": "news", "since": "2025-10-28", "type": "news"},
+    {"host": "nature.com", "rule": "whole", "type": "academic"},
+    {"host": "wikipedia.org", "rule": "out"}
+  ],
+  "cases": [
+    {"url": "https://www.latimes.com/california/story/council-vote", "published": null, "page_type": "article", "in": true},
+    {"url": "https://www.latimes.com/about/", "published": null, "page_type": "other", "in": false},
+    {"url": "https://www.latimes.com/topic/weather", "published": null, "page_type": "listing", "in": false},
+    {"url": "https://www.latimes.com/news/story", "published": null, "page_type": null, "in": false},
+    {"url": "https://smalltownnews.example/council-vote", "published": null, "page_type": "article", "in": true},
+    {"url": "https://smalltownnews.example/2023/06/01/fair", "published": null, "page_type": "article", "in": false},
+    {"url": "https://smalltownnews.example/2025/11/02/fair", "published": null, "page_type": "article", "in": true},
+    {"url": "https://smalltownnews.example/old-fair", "published": "2023-06-01", "page_type": "article", "in": false},
+    {"url": "https://www.nature.com/articles/s41586-020-2649-2", "published": null, "page_type": "other", "in": true},
+    {"url": "https://de.wikipedia.org/wiki/Ada_Lovelace", "published": null, "page_type": "article", "in": false}
+  ]
+}
