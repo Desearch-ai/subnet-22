@@ -474,7 +474,7 @@ impl Settings {
             list_file: std::env::var("PLANNER_LIST_FILE").ok().filter(|v| !v.is_empty()).map(PathBuf::from),
             set_file: std::env::var("PLANNER_SET_FILE").ok().filter(|v| !v.is_empty()).map(PathBuf::from),
             start_after: std::env::var("PLANNER_START_AFTER").ok().filter(|v| !v.is_empty()).map(|v| v.parse()).transpose()?,
-            reads: number("PLANNER_READS", 8)?,
+            reads: number("PLANNER_READS", 16)?,
             writes: number("PLANNER_WRITES", 8)?,
             page_first: text("PLANNER_PAGE_FIRST", "0") == "1",
             backfill: text("PLANNER_BACKFILL", "0") == "1",
@@ -1846,6 +1846,32 @@ impl Planner {
     pub fn consider(&mut self, page: PageRow, from: Source) -> Considered {
         self.counts.pages += 1;
         let record = &page.record;
+        // Its URL refuses every version of the page alike, so nothing is read: a version still waiting is refused the same way when it is planned again.
+        if self.excluded(&record.domain.to_lowercase()) {
+            self.counts.refused += 1;
+            return Considered::Passed;
+        }
+        let admission = self.set.as_ref().map(|set| set.admit(&record.url, &record.published, record.page_type.as_deref()));
+        if let Some(Err(Refusal::Unlisted | Refusal::OffPaths)) = admission {
+            self.counts.outside_set += 1;
+            return Considered::Passed;
+        }
+        let (recipe, readable) = (recipe_of(record).filter(|recipe| PLANNED_RECIPES.contains(recipe)), self.admitted(record));
+        let Some(recipe) = recipe.filter(|_| readable && !matches!(admission, Some(Err(_)))) else {
+            if self.withdrawn.contains_key(&record.task_id) {
+                self.counts.withdrawn += 1;
+                return Considered::Passed;
+            }
+            // A page waits again only after a row that clears its removal, so a refused row need not read that.
+            self.still_waiting(&page);
+            match admission {
+                _ if recipe.is_none() => self.counts.other_recipe += 1,
+                _ if !readable => self.counts.refused += 1,
+                Some(Err(Refusal::Undated)) => self.counts.undated += 1,
+                _ => self.counts.before_since += 1,
+            }
+            return Considered::Passed;
+        };
         match self.state.removed(&page.key).ok().flatten() {
             Some(removed) if page.change_seq < removed => {
                 self.counts.older += 1;
@@ -1862,33 +1888,9 @@ impl Planner {
             self.counts.withdrawn += 1;
             return Considered::Passed;
         }
-        // A newer row lets go of an older waiting version, whatever becomes of the row.
-        let mut waiting = self.state.waiting(&page.key).ok().flatten().filter(|held| !self.withdrawn.contains_key(&held.task_id));
-        if waiting.as_ref().is_some_and(|held| held.fetched_at < record.fetched_at) {
-            if let Err(error) = self.state.unwait(&page.key) {
-                eprintln!("letting {} stop waiting: {error:#}", page.key);
-            }
-            waiting = None;
-        }
-        let Some(recipe) = recipe_of(record).filter(|recipe| PLANNED_RECIPES.contains(recipe)) else {
-            self.counts.other_recipe += 1;
-            return Considered::Passed;
-        };
-        if !self.admitted(record) {
-            self.counts.refused += 1;
-            return Considered::Passed;
-        }
-        match self.set.as_ref().map(|set| set.admit(&record.url, &record.published, record.page_type.as_deref())) {
-            Some(Err(refusal)) => {
-                match refusal {
-                    Refusal::Undated => self.counts.undated += 1,
-                    Refusal::BeforeSince => self.counts.before_since += 1,
-                    Refusal::Unlisted | Refusal::OffPaths => self.counts.outside_set += 1,
-                }
-                return Considered::Passed;
-            }
-            Some(Ok(Admitted::UndatedArticle)) => self.counts.undated_article_in += 1,
-            Some(Ok(Admitted::ByRule)) | None => {}
+        let waiting = self.still_waiting(&page);
+        if let Some(Ok(Admitted::UndatedArticle)) = admission {
+            self.counts.undated_article_in += 1;
         }
         let cap = match self.listed.as_ref().filter(|_| self.set.is_none()) {
             None => None,
@@ -1948,13 +1950,14 @@ impl Planner {
             _ => None,
         };
         // Only a page never planned before is fresh, within its lane's own budget, so pages re-dated by their site cannot flood it.
-        let seen = !self.unplanned(&page.key) || waiting.is_some();
-        let fresh = self.is_fresh(record) && !seen && self.inputs_held(Lane::Fresh) < self.settings.max_pending;
-        let site = self.set.as_ref().and_then(|set| set.site(&record.domain).map(|(host, _)| host.to_string()));
-        let site = site.unwrap_or_else(|| domain_of_key(&page.key).to_string());
-        let fresh = fresh && self.fresh_site_room(&site) && self.fresh_budget.take();
+        let mut fresh = self.is_fresh(record) && waiting.is_none() && self.inputs_held(Lane::Fresh) < self.settings.max_pending && self.unplanned(&page.key);
         if fresh {
-            *self.fresh_sites.1.entry(site).or_default() += 1;
+            let site = self.set.as_ref().and_then(|set| set.site(&record.domain).map(|(host, _)| host.to_string()));
+            let site = site.unwrap_or_else(|| domain_of_key(&page.key).to_string());
+            fresh = self.fresh_site_room(&site) && self.fresh_budget.take();
+            if fresh {
+                *self.fresh_sites.1.entry(site).or_default() += 1;
+            }
         }
         let lane = if fresh { Lane::Fresh } else { Lane::Rest };
         if self.inputs_held(lane) >= self.settings.max_pending {
@@ -1982,6 +1985,18 @@ impl Planner {
         self.counts.planned += 1;
         self.counts.fresh += u64::from(lane == Lane::Fresh);
         Considered::Taken(lane)
+    }
+
+    /// The version of the page still waiting: a newer row lets go of an older one, whatever becomes of the row.
+    fn still_waiting(&self, page: &PageRow) -> Option<Version> {
+        let held = self.state.waiting(&page.key).ok().flatten().filter(|held| !self.withdrawn.contains_key(&held.task_id))?;
+        if held.fetched_at < page.record.fetched_at {
+            if let Err(error) = self.state.unwait(&page.key) {
+                eprintln!("letting {} stop waiting: {error:#}", page.key);
+            }
+            return None;
+        }
+        Some(held)
     }
 
     fn keep_waiting(&mut self, page: &PageRow) {
@@ -2035,9 +2050,7 @@ impl Planner {
     }
 
     fn admitted(&self, record: &Record) -> bool {
-        lang_wanted(&self.settings.langs, &record.lang)
-            && record.text.chars().count() >= self.settings.min_chars
-            && !self.excluded(&record.domain.to_lowercase())
+        lang_wanted(&self.settings.langs, &record.lang) && record.text.chars().count() >= self.settings.min_chars
     }
 
     /// Whether the host or a domain it is under is on the exclusion list.

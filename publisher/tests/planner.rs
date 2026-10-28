@@ -1488,6 +1488,45 @@ async fn a_newer_row_lets_go_of_an_older_waiting_version_and_an_older_row_never_
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_refused_newer_row_lets_go_of_an_older_waiting_version_at_once_or_by_its_url_when_the_re_plan_meets_it() {
+    let Some((_turn, redis)) = redis_db().await else {
+        eprintln!("skipped: no Redis on {REDIS}");
+        return;
+    };
+    let dir = scratch("refused-newer");
+    let stub = stub::start(dir.join("r2"), "127.0.0.1:0").await.unwrap();
+    let (pages, temp) = (bucket(stub.addr, "desearch-pages"), bucket(stub.addr, "subnet-22"));
+    let version = |url: &str, text: &str, hour: u32| {
+        let mut page = v2(record(url, text, "article", "en"));
+        (page.domain, page.fetched_at) = (url.split('/').nth(2).unwrap().into(), format!("2026-10-20T{hour:02}:00:00+00:00"));
+        page
+    };
+    let (p, q) = ("https://news.example/story/p", "https://q.example/story/q");
+    log(&pages, 1, vec![version("https://news.example/story/a", &article(2), 1), version(p, &article(3), 1), version(q, &article(4), 1)]).await;
+    let mut tight = settings(dir.join("state"), 4.0, 0);
+    tight.pages_per_input = 1;
+    let mut planner = Planner::new(tight, pages.clone(), temp.clone(), redis.clone(), Room::Fixed(0)).await.unwrap();
+    planner.pass().await.unwrap();
+    assert_eq!((planner.counts.planned, planner.counts.waiting), (1, 2));
+    drop(planner);
+
+    log(&pages, 2, vec![version(p, "too short now", 2), version(q, &article(5), 2)]).await;
+    let mut excluding = settings(dir.join("state"), 3600.0, 0);
+    excluding.excluded.insert("q.example".into());
+    let mut planner = Planner::new(excluding, pages.clone(), temp.clone(), redis.clone(), Room::Fixed(0)).await.unwrap();
+    planner.pass().await.unwrap();
+    assert_eq!(
+        (planner.counts.refused, planner.counts.replanned, planner.counts.planned),
+        (3, 1, 0),
+        "p and q refused, and q's waiting row too when planned again"
+    );
+    for url in [p, q] {
+        assert!(planner.state.waiting(&page_key(url).unwrap()).unwrap().is_none(), "{url} no longer waits");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// Writes change file `seq` holding one removal of `page`, numbered now.
 async fn log_removal(pages: &Bucket, seq: u64, page: &Record) {
     let removal = Change { kind: Kind::Removed, body: Body::Removed { url: page.url.clone(), domain: page.domain.clone() }, ..change(page.clone()) };

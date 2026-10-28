@@ -213,7 +213,7 @@ The planner keeps its place in the log and the version of every page it planned 
 | `PLANNER_CHARS_PER_INPUT` | 3000000 | characters of text per input file at most |
 | `PLANNER_FLUSH_S` | 600 | a part-filled input is written once its first page waited this long |
 | `PLANNER_MAX_PENDING` | 50 | input files not yet handed over; past this, pages wait and are planned later |
-| `PLANNER_READS` | 8 | change files fetched ahead while the planner plans, from the log and for waiting pages; they are planned in log order |
+| `PLANNER_READS` | 16 | change files fetched ahead while the planner plans, from the log and for waiting pages; they are planned in log order |
 | `PLANNER_WRITES` | 8 | input files written to the temporary bucket at once; they are saved in the order cut and handed over fresh lane first, then oldest first |
 | `PLANNER_PENDING_MAX_AGE_S` | 43200 | an input waiting longer is dropped before the temporary bucket deletes its file; its pages are planned again when the log shows them next |
 | `PLANNER_MIN_CHARS` | 300 | characters of text a page needs |

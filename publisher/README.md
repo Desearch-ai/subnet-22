@@ -45,7 +45,7 @@ never inside a table row, a list item or a code block. A v1 page keeps the vecto
 
 ## Planner
 
-The planner reads the change log in log order, fetching `PLANNER_READS` (8) change files ahead while it plans,
+The planner reads the change log in log order, fetching `PLANNER_READS` (16) change files ahead while it plans,
 and cuts inputs of up to 1,000 pages or 3M characters for the task API, writing up to `PLANNER_WRITES` (8) of
 them at once to the temporary bucket. Inputs are saved in the order cut, each once written: the oldest when
 `PLANNER_WRITES` are unsaved and another is cut, and all of them when a lane holds `PLANNER_MAX_PENDING` inputs
@@ -75,7 +75,7 @@ on input writes and writing its state.
 - **Waiting pages:** a page refused for budget or room, or given back after it was planned, waits with the change
   file that holds it. It is planned from that file once there is room and the budget holds an input's worth of
   pages: `PLANNER_PAGES_PER_INPUT`, or a quarter hour of budget when that is less, as the budget holds no more. A
-  pass reads up to 64 such change files, oldest first, fetching up to `PLANNER_READS` (8) of them ahead while the
+  pass reads up to 64 such change files, oldest first, fetching up to `PLANNER_READS` (16) of them ahead while the
   budget and room would still hold an input's worth once the pages waiting in those already fetched were taken. A
   page taken from them waits until its input is saved. A version planned without its change file number is left to
   the backfill or a re-crawl. An input is pushed to the task API once, however often a restart tries it.
