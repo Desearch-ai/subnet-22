@@ -53,9 +53,8 @@ pub fn read(body: &[u8], detect_language: &dyn Fn(&str) -> Option<String>) -> Ho
         return judged(None, Some("no_text"));
     }
     let language = detect_language(text::head(&page, LANGUAGE_SAMPLE));
-    // A page that says it is English is believed only where the model is unsure: its two samples disagree and one reads English.
-    let unsure = || detect_language(sample) != language && detect_language(sample).as_deref() == Some("en");
-    let english = language.as_deref() == Some("en") || (declared.as_deref() == Some("en") && unsure());
+    // A page that says it is English is believed only where the model gives no verdict: an English template over another language stays out.
+    let english = language.as_deref() == Some("en") || (declared.as_deref() == Some("en") && language.is_none());
     judged(language, if english { None } else { Some("not_english") })
 }
 
@@ -95,14 +94,16 @@ mod tests {
     }
 
     #[test]
-    fn a_declared_english_page_passes_only_where_the_model_is_unsure_and_the_model_reads_a_longer_sample() {
+    fn a_declared_english_page_passes_only_where_the_model_gives_no_verdict_and_the_model_reads_a_longer_sample() {
         let french = |_: &str| Some("fr".to_string());
         let headlines = format!("<p>{}</p>", "Headline ".repeat(500));
         let declared = format!("<html lang=\"en-US\">{headlines}</html>");
         assert_eq!(read(declared.as_bytes(), &french).problem, Some("not_english"), "an English template on a page the model reads as French throughout");
-        let short_english = |sample: &str| Some(if sample.len() <= SAMPLE { "en" } else { "fr" }.to_string());
-        assert_eq!(read(declared.as_bytes(), &short_english).problem, None, "lang=en settles it where the two samples disagree");
-        assert_eq!(read(headlines.as_bytes(), &short_english).problem, Some("not_english"), "without lang=en the longer sample's verdict stands");
+        let short_english = |sample: &str| Some(if sample.len() <= SAMPLE { "en" } else { "es" }.to_string());
+        assert_eq!(read(declared.as_bytes(), &short_english).problem, Some("not_english"), "English menus over a Spanish page, under lang=en, stay out: the longer sample decides");
+        let unsure = |_: &str| None;
+        assert_eq!(read(declared.as_bytes(), &unsure).problem, None, "lang=en settles a page the model gives no verdict on");
+        assert_eq!(read(headlines.as_bytes(), &unsure).problem, Some("not_english"), "without lang=en a page with no verdict stays out");
         assert_eq!(read(headlines.as_bytes(), &french).problem, Some("not_english"));
         let long_only = |sample: &str| Some(if sample.len() > SAMPLE { "en" } else { "fr" }.to_string());
         assert_eq!(read(headlines.as_bytes(), &long_only).problem, None, "the model sees more than the first 2,000 characters");
