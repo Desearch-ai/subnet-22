@@ -934,15 +934,23 @@ impl State {
     }
 
     fn keep_backfill(&self, shard: usize, after: Option<&str>) -> Result<()> {
-        Ok(self.db.put(BACKFILL, format!("{shard}\t{}", after.unwrap_or("")))?)
+        Ok(self.db.put(BACKFILL, backfill_value(shard, after))?)
     }
 
     fn keep_cursor(&self, seq: i64) -> Result<()> {
         Ok(self.db.put(CURSOR, seq.to_string())?)
     }
 
-    /// One written input: its pages planned, the input pending, the cursor where the log is read up to and the late files read, together.
-    fn commit(&self, pages: &[Planned], input_key: &str, entry: &str, cursor: Option<i64>, settled: &[i64]) -> Result<()> {
+    /// One written input: its pages planned, the input pending, the cursor where the log is read up to, the late files read and the backfill's place, together.
+    fn commit(
+        &self,
+        pages: &[Planned],
+        input_key: &str,
+        entry: &str,
+        cursor: Option<i64>,
+        settled: &[i64],
+        backfill: Option<(usize, Option<&str>)>,
+    ) -> Result<()> {
         let mut batch = WriteBatch::default();
         let mut new: HashMap<String, i64> = HashMap::new();
         for page in pages {
@@ -960,8 +968,15 @@ impl State {
         for seq in settled {
             batch.delete(missing_key(*seq));
         }
+        if let Some((shard, after)) = backfill {
+            batch.put(BACKFILL, backfill_value(shard, after));
+        }
         Ok(self.db.write(batch)?)
     }
+}
+
+fn backfill_value(shard: usize, after: Option<&str>) -> String {
+    format!("{shard}\t{}", after.unwrap_or(""))
 }
 
 fn planned_key(recipe: &str, key: &str) -> String {
@@ -1201,7 +1216,18 @@ struct Writing {
     file: Bytes,
     /// The backfill's place, kept once the input is saved.
     backfill: Option<(usize, Option<String>)>,
-    written: JoinHandle<Result<()>>,
+    /// The write under way; None once the input is written.
+    write: Option<JoinHandle<Result<()>>>,
+}
+
+impl Writing {
+    /// Waits for the input to be written; a failed write is started again and its error returned.
+    async fn written(&mut self, temp: &Bucket) -> Result<()> {
+        let Some(write) = self.write.as_mut() else { return Ok(()) };
+        let outcome = write.await.map_err(anyhow::Error::from).and_then(|written| written);
+        self.write = outcome.is_err().then(|| write_input(temp.clone(), self.input_key.clone(), self.file.clone()));
+        outcome
+    }
 }
 
 pub struct Planner {
@@ -1572,8 +1598,9 @@ impl Planner {
             self.missing.remove(&seq);
             self.settled.push(seq);
         }
-        let settled = self.settle();
+        let settled = self.late_settled(false);
         self.state.settle_missing(&settled)?;
+        self.settled.retain(|seq| !settled.contains(seq));
         Ok(read)
     }
 
@@ -1677,7 +1704,7 @@ impl Planner {
     /// Marks change file `seq` read and keeps the cursor just before the first change file a buffered page was read from, so a restart reads only those again.
     fn advance(&mut self, seq: i64) -> Result<()> {
         self.read_through = seq;
-        let cursor = self.cursor_after();
+        let cursor = self.cursor_after(false);
         if cursor > self.kept_cursor {
             self.state.keep_cursor(cursor)?;
             self.kept_cursor = cursor;
@@ -1685,22 +1712,20 @@ impl Planner {
         Ok(())
     }
 
-    /// The lanes' buffers and those of inputs cut but not yet saved.
-    fn held(&self) -> impl Iterator<Item = &Buffer> {
-        [&self.fresh, &self.rest].into_iter().chain(self.writing.iter().map(|writing| &writing.buffer))
+    /// The lanes' buffers and those of inputs cut but not yet saved, past the first in line while it is being saved.
+    fn held(&self, saving: bool) -> impl Iterator<Item = &Buffer> {
+        [&self.fresh, &self.rest].into_iter().chain(self.writing.iter().skip(usize::from(saving)).map(|writing| &writing.buffer))
     }
 
     /// Where a restart may start reading the log, given the pages buffered or in inputs not yet saved.
-    fn cursor_after(&self) -> i64 {
-        self.held().filter_map(|buffer| buffer.log.keys().next().copied()).min().map_or(self.read_through, |first| first - 1)
+    fn cursor_after(&self, saving: bool) -> i64 {
+        self.held(saving).filter_map(|buffer| buffer.log.keys().next().copied()).min().map_or(self.read_through, |first| first - 1)
     }
 
-    /// The late files read whose pages are neither buffered nor in inputs not yet saved, taken off the list of those still settling.
-    fn settle(&mut self) -> Vec<i64> {
-        let held: HashSet<i64> = self.held().flat_map(|buffer| buffer.late.keys().copied()).collect();
-        let (kept, settled): (Vec<i64>, Vec<i64>) = std::mem::take(&mut self.settled).into_iter().partition(|seq| held.contains(seq));
-        self.settled = kept;
-        settled
+    /// The late files read whose pages are neither buffered nor in inputs not yet saved.
+    fn late_settled(&self, saving: bool) -> Vec<i64> {
+        let held: HashSet<i64> = self.held(saving).flat_map(|buffer| buffer.late.keys().copied()).collect();
+        self.settled.iter().copied().filter(|seq| !held.contains(seq)).collect()
     }
 
     /// Takes the page into its lane's buffer if a planned recipe reads it, it is wanted, changed, and the budget and the API's room allow it; the lane it went in.
@@ -1798,7 +1823,7 @@ impl Planner {
         let new_in = match cap {
             Some(cap) if self.unplanned(&page.key) => {
                 let domain = domain_of_key(&page.key).to_string();
-                let buffered: u64 = self.held().map(|buffer| buffer.new.get(&domain).copied().unwrap_or(0)).sum();
+                let buffered: u64 = self.held(false).map(|buffer| buffer.new.get(&domain).copied().unwrap_or(0)).sum();
                 let held = self.state.site_pages(&domain).unwrap_or(0) + buffered;
                 if held >= cap {
                     self.counts.over_cap += 1;
@@ -1975,38 +2000,38 @@ impl Planner {
         let backfill = self.reading.as_ref().filter(|_| self.buffer(other).backfill == 0).map(|reading| (reading.shard, reading.last.clone()));
         let mut buffer = std::mem::take(self.buffer_mut(lane));
         buffer.pages.iter_mut().for_each(|page| page.texts = Vec::new());
-        let written = write_input(self.temp.clone(), input_key.clone(), file.clone());
-        self.writing.push_back(Writing { lane, buffer, input_key, entry: entry.to_string(), file, backfill, written });
+        let write = Some(write_input(self.temp.clone(), input_key.clone(), file.clone()));
+        self.writing.push_back(Writing { lane, buffer, input_key, entry: entry.to_string(), file, backfill, write });
         Ok(())
     }
 
-    /// Saves inputs in the order cut, each once written, until at most `left` are unsaved; a failed write fails the pass.
+    /// Saves inputs in the order cut, each once written, until at most `left` are unsaved; a failed write or save fails the pass, the input staying first in line.
     async fn save_written(&mut self, left: usize) -> Result<()> {
+        let temp = self.temp.clone();
         while self.writing.len() > left {
-            let front = self.writing.front_mut().expect("an input cut");
-            if let Err(error) = (&mut front.written).await.map_err(anyhow::Error::from).and_then(|written| written) {
-                // Writes that failed together are tried again together; rewriting one that finished is harmless.
-                for writing in self.writing.iter_mut().filter(|writing| writing.written.is_finished()) {
-                    writing.written = write_input(self.temp.clone(), writing.input_key.clone(), writing.file.clone());
+            if let Err(error) = self.writing.front_mut().expect("an input cut").written(&temp).await {
+                // Writes that failed together are tried again together.
+                for writing in self.writing.iter_mut().filter(|writing| writing.write.as_ref().is_some_and(JoinHandle::is_finished)) {
+                    let _ = writing.written(&temp).await;
                 }
                 return Err(error);
             }
-            let writing = self.writing.pop_front().expect("an input cut");
-            self.save(writing)?;
+            self.save_first()?;
         }
         Ok(())
     }
 
-    /// Plans a written input's pages and keeps it pending, with the cursor and late files moved only past what is still buffered or unsaved.
-    fn save(&mut self, writing: Writing) -> Result<()> {
-        let cursor = Some(self.cursor_after()).filter(|&cursor| cursor > self.kept_cursor);
-        let settled = self.settle();
-        self.state.commit(&writing.buffer.pages, &writing.input_key, &writing.entry, cursor, &settled)?;
+    /// Saves the written input first in line, with the cursor, late files and the backfill's place moved only past what is still buffered or unsaved, and only then takes it out of the line.
+    fn save_first(&mut self) -> Result<()> {
+        let cursor = Some(self.cursor_after(true)).filter(|&cursor| cursor > self.kept_cursor);
+        let settled = self.late_settled(true);
+        let writing = self.writing.front().expect("an input cut");
+        let backfill = writing.backfill.as_ref().map(|(shard, last)| (*shard, last.as_deref()));
+        self.state.commit(&writing.buffer.pages, &writing.input_key, &writing.entry, cursor, &settled, backfill)?;
         self.kept_cursor = cursor.unwrap_or(self.kept_cursor);
-        if let Some((shard, last)) = &writing.backfill {
-            self.state.keep_backfill(*shard, last.as_deref())?;
-        }
-        self.pending[writing.lane as usize] += 1;
+        self.settled.retain(|seq| !settled.contains(seq));
+        let lane = self.writing.pop_front().expect("an input cut").lane;
+        self.pending[lane as usize] += 1;
         self.counts.inputs += 1;
         Ok(())
     }

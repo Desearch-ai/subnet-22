@@ -158,13 +158,14 @@ validator (`EMISSION_CONTROL_PERC`, `CRAWL_PERC` and `EMBED_PERC` in
 
 Embed tasks are off until `TASK_API_EMBED_TASKS=1`. The flow:
 
-1. **Planner** (`publisher plan`): follows the change log, keeps English pages with enough text whose
-   text has no vector yet, and writes their texts to input files in the temporary bucket
-   (`embed/inputs/`), up to 1,000 pages and 3 million characters a file. Every page gives a page text
-   (title, description, text); an article over 2,000 characters also gives up to 16 passages of its
-   paragraphs, split at its section headings, each starting with the title and the section's heading.
-   It hands an input to the API (`embed:inputs` in Redis) only while
-   `GET /v1/room?kind=embed` has room, and plans at most `PLANNER_PAGES_PER_HOUR` pages an hour.
+1. **Planner** (`publisher plan`): follows the change log, keeps English pages of v2 extraction with
+   enough text whose text has no vector yet, and writes their texts to input files in the temporary
+   bucket (`embed/inputs/`), up to 1,000 pages and 3 million characters a file. Every page gives a page
+   text (title, description, the start of its text); a page over 2,000 characters also gives up to 32
+   passages split at its markdown headings, never inside a table row, a list item or a code block, each
+   starting with the title and the section's heading. With `PLANNER_PAGE_FIRST=1`, pages outside the
+   fresh lane give their page text alone. It hands an input to the API (`embed:inputs` in Redis) only
+   while `GET /v1/room?kind=embed` has room, and plans at most `PLANNER_PAGES_PER_HOUR` pages an hour.
 2. **Task API:** each input becomes one task naming the model (`TASK_API_EMBED_MODEL`). A claim must
    list that model in `models` or is refused with `MODEL_MISMATCH`, at no cost. The miner uploads one
    vector per text, as raw float16 in the input's order, within `TASK_API_EMBED_CLAIM_TTL`; a
@@ -212,7 +213,7 @@ The planner keeps its place in the log and the version of every page it planned 
 | `PLANNER_CHARS_PER_INPUT` | 3000000 | characters of text per input file at most |
 | `PLANNER_FLUSH_S` | 600 | a part-filled input is written once its first page waited this long |
 | `PLANNER_MAX_PENDING` | 50 | input files not yet handed over; past this, pages wait and are planned later |
-| `PLANNER_WRITES` | 8 | input files written to the temporary bucket at once; they are saved and handed over in the order cut |
+| `PLANNER_WRITES` | 8 | input files written to the temporary bucket at once; they are saved in the order cut and handed over fresh lane first, then oldest first |
 | `PLANNER_PENDING_MAX_AGE_S` | 43200 | an input waiting longer is dropped before the temporary bucket deletes its file; its pages are planned again when the log shows them next |
 | `PLANNER_MIN_CHARS` | 300 | characters of text a page needs |
 | `PLANNER_LANGS` | `en` | languages planned |

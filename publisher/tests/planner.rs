@@ -307,7 +307,7 @@ fn settings(dir: PathBuf, pages_per_hour: f64, start_after: i64) -> Settings {
         set_file: None,
         start_after: Some(start_after),
         reads: 4,
-        writes: 1,
+        writes: 8,
         page_first: false,
         backfill: false,
         backfill_shards: 0..1024,
@@ -790,23 +790,25 @@ async fn pages_dated_in_the_last_two_days_get_their_own_inputs_outside_the_budge
         page.published = published.into();
         page
     };
-    log(&pages, 1, vec![page("a", "2020-05-01"), page("b", "2021-05-01"), page("f1", &today), page("f2", &today)]).await;
+    let mut first = vec![page("a", "2020-05-01"), page("b", "2021-05-01"), page("f1", &today), page("f2", &today)];
+    first.extend((1..=6).map(|n| page(&format!("g{n}"), &today)));
+    log(&pages, 1, first).await;
 
     let mut one = settings(dir.join("state"), 4.0, 0);
     one.pages_per_input = 1;
     let mut planner = Planner::new(one, pages.clone(), temp.clone(), redis.clone(), Room::Fixed(2)).await.unwrap();
     planner.pass().await.unwrap();
     let counts = &planner.counts;
-    assert_eq!((counts.planned, counts.fresh, counts.over_budget, counts.inputs), (3, 2, 1, 3), "the budget takes one old page; fresh pages spend none");
+    assert_eq!((counts.planned, counts.fresh, counts.over_budget, counts.inputs), (9, 8, 1, 9), "the budget takes one old page; fresh pages spend none");
     let handed: Vec<Value> = redis.lrange::<_, Vec<String>>(EMBED_INPUTS, 0, -1).await.unwrap().iter().map(|raw| serde_json::from_str(raw).unwrap()).collect();
     let urls: Vec<&str> = handed.iter().map(|entry| entry["pages"][0]["url"].as_str().unwrap()).collect();
     assert_eq!(
         urls,
         ["https://news.example/story/a", "https://news.example/story/f1", "https://news.example/story/f2"],
-        "with room, each input goes as it is written; fresh ones go first only among inputs held for room"
+        "a goes as soon as it is saved, when the ninth input is cut; the fresh ones saved at the pass end go as the room of 2 allows"
     );
     assert_eq!(handed.iter().map(|entry| entry["lane"].as_str()).collect::<Vec<_>>(), [None, Some("fresh"), Some("fresh")]);
-    assert!(planner.state.pending().unwrap().is_empty());
+    assert_eq!(planner.state.pending().unwrap().len(), 6);
     drop(planner);
 
     log(&pages, 2, vec![page("c", "2022-05-01"), page("f3", &today), page("d", "2022-06-01")]).await;
@@ -1939,47 +1941,48 @@ async fn while_the_task_api_is_full_slow_or_down_inputs_are_held_without_asking_
         page.published = published.into();
         page
     };
-    log(&pages, 1, vec![page("r1", "2020-05-01"), page("f1", &today), page("r2", "2020-06-01")]).await;
+    let old = |name: &str, n: usize| (1..=n).map(|i| page(&format!("{name}{i}"), "2020-05-01")).collect::<Vec<_>>();
+    log(&pages, 1, [vec![page("r0", "2020-05-01"), page("f1", &today)], old("r", 8)].concat()).await;
     let (room, slow, asked) = (Arc::new(std::sync::atomic::AtomicI64::new(0)), Arc::new(AtomicU64::new(0)), Arc::new(AtomicU64::new(0)));
     let api = room_api(room.clone(), slow.clone(), asked.clone()).await;
     let one = || {
         let mut one = settings(dir.join("state"), 3600.0, 0);
-        one.pages_per_input = 1;
+        (one.pages_per_input, one.max_pending) = (1, 50);
         one
     };
     let mut planner = Planner::new(one(), pages.clone(), temp.clone(), redis.clone(), Room::api(&api).unwrap()).await.unwrap();
     planner.pass().await.unwrap();
     assert_eq!(
         (planner.counts.inputs, asked.load(SeqCst)),
-        (3, 2),
-        "asked when the first input was written and at the pass end, not for the two written between"
+        (10, 2),
+        "asked when the first input was saved, as the ninth was cut, and at the pass end, not for the one saved between"
     );
 
     room.store(1, SeqCst);
     planner.pass().await.unwrap();
     let handed: Vec<Value> = redis.lrange::<_, Vec<String>>(EMBED_INPUTS, 0, -1).await.unwrap().iter().map(|raw| serde_json::from_str(raw).unwrap()).collect();
     let urls: Vec<&str> = handed.iter().map(|entry| entry["pages"][0]["url"].as_str().unwrap()).collect();
-    assert_eq!(urls, ["https://news.example/story/f1"], "the fresh input goes ahead of the one written before it");
+    assert_eq!(urls, ["https://news.example/story/f1"], "the fresh input goes ahead of the one cut before it");
     assert_eq!(asked.load(SeqCst), 3, "the next pass asks only at its end");
     drop(planner);
 
     room.store(-1, SeqCst);
-    log(&pages, 2, vec![page("r3", "2020-07-01"), page("r4", "2020-08-01")]).await;
+    log(&pages, 2, old("s", 10)).await;
     let mut planner = Planner::new(one(), pages.clone(), temp.clone(), redis.clone(), Room::api(&api).unwrap()).await.unwrap();
     planner.pass().await.unwrap();
-    assert_eq!((planner.counts.inputs, asked.load(SeqCst)), (2, 5), "a failed answer holds inputs too: asked at the start and the end");
-    assert_eq!(planner.state.pending().unwrap().len(), 4);
+    assert_eq!((planner.counts.inputs, asked.load(SeqCst)), (10, 5), "a failed answer holds inputs too: asked at the start and the end");
+    assert_eq!(planner.state.pending().unwrap().len(), 19);
     drop(planner);
 
-    room.store(10, SeqCst);
+    room.store(100, SeqCst);
     slow.store(1, SeqCst);
-    log(&pages, 3, vec![page("r5", "2020-09-01"), page("r6", "2020-10-01")]).await;
+    log(&pages, 3, old("t", 10)).await;
     let mut planner = Planner::new(one(), pages.clone(), temp.clone(), redis.clone(), Room::api(&api).unwrap()).await.unwrap();
     planner.pass().await.unwrap();
     assert_eq!(
         (planner.counts.handed_over, asked.load(SeqCst)),
-        (6, 7),
-        "a slow answer with room holds inputs too: the four held go at the start, the two written after at the end"
+        (29, 7),
+        "a slow answer with room holds inputs too: the 19 held go at the start, the 10 cut after at the end"
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -2124,5 +2127,34 @@ async fn a_removal_of_a_page_whose_input_is_being_written_forgets_it_once_the_in
         (2, 1, 2),
         "a came back with the same text after the removal, so it is planned again"
     );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_input_whose_save_fails_stays_first_in_line_so_the_log_is_not_read_past_its_pages() {
+    let Some((_turn, redis)) = redis_db().await else {
+        eprintln!("skipped: no Redis on {REDIS}");
+        return;
+    };
+    let dir = scratch("save-failed");
+    let stub = stub::start(dir.join("r2"), "127.0.0.1:0").await.unwrap();
+    let (pages, temp) = (bucket(stub.addr, "desearch-pages"), bucket(stub.addr, "subnet-22"));
+    let a = v2(record("https://a.example/story", &format!("a {}", article(2)), "article", "en"));
+    let b = v2(record("https://news.example/story/b", &format!("b {}", article(2)), "article", "en"));
+    log(&pages, 1, vec![a]).await;
+    // An unreadable page count for a's site fails the save of any input holding a new page of it.
+    let site_count = |count: &str| rocksdb::DB::open_default(dir.join("state")).unwrap().put("sites/a.example", count).unwrap();
+    site_count("x");
+    let mut planner = Planner::new(three_at_once(dir.join("state")), pages.clone(), temp.clone(), redis.clone(), Room::Fixed(0)).await.unwrap();
+    assert!(planner.pass().await.is_err());
+    log(&pages, 2, vec![b]).await;
+    assert!(planner.pass().await.is_err(), "the next pass tries the same input again before reading on");
+    assert_eq!((planner.state.cursor().unwrap(), planner.state.pending().unwrap().len()), (Some(0), 0), "nothing saved, and the log kept before a");
+    drop(planner);
+
+    site_count("0");
+    let mut restarted = Planner::new(three_at_once(dir.join("state")), pages.clone(), temp.clone(), redis.clone(), Room::Fixed(0)).await.unwrap();
+    restarted.pass().await.unwrap();
+    assert_eq!(saved_urls(&restarted), ["https://a.example/story", "https://news.example/story/b"]);
     let _ = std::fs::remove_dir_all(&dir);
 }
