@@ -743,6 +743,22 @@ impl State {
         Ok(dropped)
     }
 
+    /// Up to `most` change files after `after` that hold waiting pages, oldest first.
+    fn replan_files(&self, mut after: i64, most: usize) -> Result<Vec<i64>> {
+        let mut files = Vec::new();
+        while files.len() < most {
+            let start = format!("replan/{:020}/", after + 1);
+            let Some(item) = self.db.iterator(IteratorMode::From(start.as_bytes(), rocksdb::Direction::Forward)).next() else { break };
+            let (raw, _) = item?;
+            let Some(rest) = raw.strip_prefix(b"replan/") else { break };
+            let rest = String::from_utf8_lossy(rest);
+            let Some((seq, _)) = rest.split_once('/') else { break };
+            after = seq.parse()?;
+            files.push(after);
+        }
+        Ok(files)
+    }
+
     /// The first change file after `after` that holds waiting pages, and their keys.
     pub fn replan_group(&self, after: i64) -> Result<Option<(i64, HashSet<String>)>> {
         let start = format!("replan/{:020}/", after + 1);
@@ -1472,22 +1488,33 @@ impl Planner {
         Ok(read > 0 || replanned || backfilled)
     }
 
-    /// Plans waiting pages from the change files that hold them, oldest first, while the budget holds an input's worth and the rest lane has room; whether it took any, and whether pages still wait for the budget.
+    /// Plans waiting pages from the change files that hold them, oldest first and up to `reads` files fetched ahead, while the budget holds an input's worth and the rest lane has room; whether it took any, and whether pages still wait for the budget.
     async fn replan(&mut self) -> Result<(bool, bool)> {
         let mut took = false;
-        for _ in 0..REPLAN_FILES_PER_PASS {
+        let files = self.state.replan_files(self.replan_after, REPLAN_FILES_PER_PASS)?;
+        let swept = files.len() < REPLAN_FILES_PER_PASS;
+        let pages = self.pages.clone();
+        let mut fetched =
+            stream::iter(files).map(|seq| Ahead(tokio::spawn(fetch(pages.clone(), seq))).map(move |rows| (seq, rows))).buffered(self.settings.reads.max(1));
+        loop {
             if self.inputs_held(Lane::Rest) >= self.settings.max_pending {
-                break;
+                return Ok((took, false));
             }
             if !self.budget.holds(self.settings.pages_per_input) {
                 return Ok((took, self.state.waiting_count() > 0));
             }
-            let Some((seq, keys)) = self.state.replan_group(self.replan_after)? else {
-                self.replan_after = 0;
-                break;
+            let Some((seq, rows)) = fetched.next().await else {
+                if swept {
+                    self.replan_after = 0;
+                }
+                return Ok((took, false));
             };
             self.replan_after = seq;
-            let rows = match fetch(self.pages.clone(), seq).await? {
+            let keys = match self.state.replan_group(seq - 1)? {
+                Some((at, keys)) if at == seq => keys,
+                _ => continue,
+            };
+            let rows = match rows?? {
                 Ok(rows) => rows,
                 // Past the cursor an unnumbered file is one the log expired, index and all.
                 Err(Unread::NotNumbered) if seq <= self.read_through => Vec::new(),
@@ -1515,7 +1542,6 @@ impl Planner {
                 self.state.unwait(key)?;
             }
         }
-        Ok((took, false))
     }
 
     /// Plans pages of `current/` while the budget and the rest lane's room last, starting only once the budget holds an input's worth and reading at most `max_pending` inputs' worth a pass for at most the fresh lane's flush wait, so the log is read between; whether it read any.
@@ -2151,6 +2177,23 @@ fn planned_of(page: &PageRow, recipe: &'static str, page_first: bool, parts_only
         seq: page.change_seq,
         task_id: record.task_id.clone(),
         source,
+    }
+}
+
+/// A task reading ahead, stopped once its result is no longer wanted.
+struct Ahead<T>(JoinHandle<T>);
+
+impl<T> Drop for Ahead<T> {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+impl<T> std::future::Future for Ahead<T> {
+    type Output = std::result::Result<T, tokio::task::JoinError>;
+
+    fn poll(mut self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<Self::Output> {
+        std::pin::Pin::new(&mut self.0).poll(cx)
     }
 }
 

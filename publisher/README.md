@@ -69,7 +69,8 @@ and at most every 30 s in between; after a restart it asks before reading the lo
   budget. A page the log removes is forgotten, so it is embedded again if it comes back.
 - **Waiting pages:** a page refused for budget or room, or given back after it was planned, waits with the change file
   that holds it. It is planned from that file once there is room and the budget holds an input's worth of pages:
-  `PLANNER_PAGES_PER_INPUT`, or a quarter hour of budget when that is less, as the budget holds no more. A
+  `PLANNER_PAGES_PER_INPUT`, or a quarter hour of budget when that is less, as the budget holds no more. A pass
+  reads up to 64 such change files, oldest first, fetching `PLANNER_READS` (8) of them at once. A
   version planned without its change file number is left to the backfill or a re-crawl. An input is pushed to the
   task API once, however often a restart tries it.
 - **Backfill** (`PLANNER_BACKFILL=1`): with what budget and room the log and waiting pages leave, it reads

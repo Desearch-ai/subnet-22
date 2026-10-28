@@ -2163,3 +2163,33 @@ async fn an_input_whose_save_fails_stays_first_in_line_so_the_log_is_not_read_pa
     assert_eq!(restarted.counts.inputs, 2);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn waiting_pages_are_read_again_from_several_change_files_at_once() {
+    let Some((_turn, redis)) = redis_db().await else {
+        eprintln!("skipped: no Redis on {REDIS}");
+        return;
+    };
+    let dir = scratch("replan-reads");
+    let stub = stub::start(dir.join("r2"), "127.0.0.1:0").await.unwrap();
+    let (pages, temp) = (bucket(stub.addr, "desearch-pages"), bucket(stub.addr, "subnet-22"));
+    for seq in 1..=8u64 {
+        log(&pages, seq, vec![v2(record(&format!("https://news.example/story/{seq}"), &format!("{seq} {}", article(2)), "article", "en"))]).await;
+    }
+    let mut tight = settings(dir.join("state"), 4.0, 0);
+    tight.pages_per_input = 1;
+    let mut planner = Planner::new(tight, pages.clone(), temp.clone(), redis.clone(), Room::Fixed(0)).await.unwrap();
+    planner.pass().await.unwrap();
+    assert_eq!((planner.counts.planned, planner.counts.waiting), (1, 7));
+    drop(planner);
+
+    stub.state.slow("GET", "desearch-pages/changes/dt=", 7, Duration::from_secs(1));
+    let mut ample = settings(dir.join("state"), 3600.0, 0);
+    (ample.pages_per_input, ample.reads) = (1, 4);
+    let mut planner = Planner::new(ample, pages.clone(), temp.clone(), redis.clone(), Room::Fixed(0)).await.unwrap();
+    let started = std::time::Instant::now();
+    planner.pass().await.unwrap();
+    assert_eq!((planner.counts.replanned, planner.counts.planned), (7, 7));
+    assert!(started.elapsed() < Duration::from_secs(4), "seven files a second late each, four at once: {:?}", started.elapsed());
+    let _ = std::fs::remove_dir_all(&dir);
+}
