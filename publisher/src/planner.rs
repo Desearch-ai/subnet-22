@@ -92,8 +92,9 @@ const SET_WARN_EVERY: Duration = Duration::from_secs(3600);
 /// Change files of waiting pages read a pass, so a backlog of them cannot hold up the log.
 const REPLAN_FILES_PER_PASS: usize = 64;
 /// How long a starting planner waits for the one it replaces to let go of the state; a deploy may start it first.
-const LOCK_WAIT: Duration = Duration::from_secs(120);
-const LOCK_RETRY: Duration = Duration::from_secs(1);
+const LOCK_WAIT: Duration = Duration::from_secs(180);
+/// Each failed open starts a new RocksDB info log, so tries are kept few.
+const LOCK_RETRY: Duration = Duration::from_secs(5);
 
 pub static INPUT_SCHEMA: LazyLock<SchemaRef> = LazyLock::new(|| {
     let text = |name: &str| Field::new(name, DataType::Utf8, false);
@@ -639,7 +640,7 @@ impl State {
                         eprintln!("{error:#}; trying again for up to {wait:?}");
                         told = true;
                     }
-                    tokio::time::sleep(LOCK_RETRY).await;
+                    tokio::time::sleep(LOCK_RETRY.min(wait.saturating_sub(started.elapsed()))).await;
                 }
                 opened => return opened,
             }
@@ -650,6 +651,8 @@ impl State {
         let mut options = Options::default();
         options.create_if_missing(true);
         options.set_compression_type(DBCompressionType::Zstd);
+        // Every open, failed ones too, starts a new info log; older ones past this are deleted once open.
+        options.set_keep_log_file_num(10);
         let db = DB::open(&options, dir).with_context(|| format!("opening the planner state at {}", dir.display()))?;
         let waiting = match db.get(WAITING_COUNT)? {
             Some(raw) => String::from_utf8_lossy(&raw).parse()?,
@@ -770,22 +773,6 @@ impl State {
         batch.put(WAITING_NUMBERED, "1");
         self.write(batch)?;
         Ok(dropped)
-    }
-
-    /// Up to `most` change files after `after` that hold waiting pages, oldest first.
-    fn replan_files(&self, mut after: i64, most: usize) -> Result<Vec<i64>> {
-        let mut files = Vec::new();
-        while files.len() < most {
-            let start = format!("replan/{:020}/", after + 1);
-            let Some(item) = self.db.iterator(IteratorMode::From(start.as_bytes(), rocksdb::Direction::Forward)).next() else { break };
-            let (raw, _) = item?;
-            let Some(rest) = raw.strip_prefix(b"replan/") else { break };
-            let rest = String::from_utf8_lossy(rest);
-            let Some((seq, _)) = rest.split_once('/') else { break };
-            after = seq.parse()?;
-            files.push(after);
-        }
-        Ok(files)
     }
 
     /// The first change file after `after` that holds waiting pages, and their keys.
@@ -1537,14 +1524,10 @@ impl Planner {
         Ok(read > 0 || replanned || backfilled)
     }
 
-    /// Plans waiting pages from the change files that hold them, oldest first and up to `reads` files fetched ahead, while the budget holds an input's worth and the rest lane has room; whether it took any, and whether pages still wait for the budget.
+    /// Plans waiting pages from the change files that hold them, oldest first, while the budget holds an input's worth and the rest lane has room; whether it took any, and whether pages still wait for the budget. Up to `reads` files are fetched ahead, each only while the budget and room would still hold an input's worth once the waiting pages of the files before it were taken, so a pass stopping for either leaves no fetched file unread.
     async fn replan(&mut self) -> Result<(bool, bool)> {
-        let mut took = false;
-        let files = self.state.replan_files(self.replan_after, REPLAN_FILES_PER_PASS)?;
-        let swept = files.len() < REPLAN_FILES_PER_PASS;
-        let pages = self.pages.clone();
-        let mut fetched =
-            stream::iter(files).map(|seq| Ahead(tokio::spawn(fetch(pages.clone(), seq))).map(move |rows| (seq, rows))).buffered(self.settings.reads.max(1));
+        let (mut took, mut listed, mut swept, mut after) = (false, 0, false, self.replan_after);
+        let mut ahead: VecDeque<(i64, usize, Ahead<Fetched>)> = VecDeque::new();
         loop {
             if self.inputs_held(Lane::Rest) >= self.settings.max_pending {
                 return Ok((took, false));
@@ -1552,13 +1535,27 @@ impl Planner {
             if !self.budget.holds(self.settings.pages_per_input) {
                 return Ok((took, self.state.waiting_count() > 0));
             }
+            while ahead.len() < self.settings.reads.max(1) && listed < REPLAN_FILES_PER_PASS && !swept {
+                let expected = ahead.iter().map(|(_, waiting, _)| waiting).sum();
+                if !self.budget.holds_after(expected, self.settings.pages_per_input) || !self.has_room_after(expected) {
+                    break;
+                }
+                match self.state.replan_group(after)? {
+                    Some((seq, keys)) => {
+                        (after, listed) = (seq, listed + 1);
+                        ahead.push_back((seq, keys.len(), Ahead(tokio::spawn(fetch(self.pages.clone(), seq)))));
+                    }
+                    None => swept = true,
+                }
+            }
             let waited = Instant::now();
-            let Some((seq, rows)) = fetched.next().await else {
+            let Some((seq, _, fetching)) = ahead.pop_front() else {
                 if swept {
                     self.replan_after = 0;
                 }
                 return Ok((took, false));
             };
+            let rows = fetching.await;
             self.spent.replan_reads += waited.elapsed();
             self.replan_after = seq;
             let keys = match self.state.replan_group(seq - 1)? {
@@ -1581,18 +1578,29 @@ impl Planner {
                 found.insert(key.clone());
                 took = true;
                 self.counts.replanned += 1;
-                // A page taken stops waiting when its input is written, so a crash before that loses nothing.
+                // A page taken stops waiting when its input is saved, so a crash before that loses nothing.
                 match self.consider(*page, Source::Replan) {
                     Considered::Taken(lane) => self.write_when_full(lane).await?,
-                    Considered::Waiting => {}
-                    Considered::Passed => self.state.unwait(&key)?,
+                    Considered::Passed if !self.unsaved_anywhere(&key) => self.state.unwait(&key)?,
+                    Considered::Passed | Considered::Waiting => {}
                 }
             }
             // A change file gone from the log leaves its pages to the backfill.
-            for key in keys.iter().filter(|key| !found.contains(*key)) {
+            for key in keys.iter().filter(|key| !found.contains(*key) && !self.unsaved_anywhere(key)) {
                 self.state.unwait(key)?;
             }
         }
+    }
+
+    /// Whether the rest lane would still have room for another input once `pages` more were buffered in it.
+    fn has_room_after(&self, pages: usize) -> bool {
+        let room = self.settings.max_pending.saturating_sub(self.inputs_held(Lane::Rest)) * self.settings.pages_per_input;
+        self.rest.pages.len() + pages < room
+    }
+
+    /// Whether a version of `key` is buffered or in an input not yet saved; saving it stops the page waiting.
+    fn unsaved_anywhere(&self, key: &str) -> bool {
+        self.held(false).any(|buffer| buffer.at.contains_key(key))
     }
 
     /// Plans pages of `current/` while the budget and the rest lane's room last, starting only once the budget holds an input's worth and reading at most `max_pending` inputs' worth a pass for at most the fresh lane's flush wait, so the log is read between; whether it read any.
@@ -2244,9 +2252,9 @@ fn planned_of(page: &PageRow, recipe: &'static str, page_first: bool, parts_only
     }
 }
 
-/// Whether opening the state failed on its lock, which RocksDB reports as an I/O error naming the `LOCK` file.
+/// Whether opening the state failed because another process holds its lock.
 fn locked(error: &rocksdb::Error) -> bool {
-    error.kind() == rocksdb::ErrorKind::IOError && error.as_ref().contains("/LOCK")
+    error.kind() == rocksdb::ErrorKind::IOError && error.as_ref().contains("While lock file")
 }
 
 /// A task reading ahead, stopped once its result is no longer wanted.
@@ -2266,8 +2274,11 @@ impl<T> std::future::Future for Ahead<T> {
     }
 }
 
-/// Change file `seq`'s rows, fetched and decoded; the inner error says why the file cannot be read yet.
-async fn fetch(pages: Bucket, seq: i64) -> Result<std::result::Result<Vec<ChangeRow>, Unread>> {
+/// A change file's rows; the inner error says why the file cannot be read yet.
+type Fetched = Result<std::result::Result<Vec<ChangeRow>, Unread>>;
+
+/// Change file `seq`'s rows, fetched and decoded.
+async fn fetch(pages: Bucket, seq: i64) -> Fetched {
     let key = match change_key(&pages, seq).await {
         Ok(Some(key)) => key,
         Ok(None) => return Ok(Err(Unread::NotNumbered)),
@@ -2335,9 +2346,14 @@ impl Budget {
 
     /// Whether `pages` can be spent now, or the most the budget ever holds when that is fewer.
     fn holds(&mut self, pages: usize) -> bool {
+        self.holds_after(0, pages)
+    }
+
+    /// Whether `pages` could still be spent once `spent` more are.
+    fn holds_after(&mut self, spent: usize, pages: usize) -> bool {
         self.tokens = (self.tokens + self.refilled.elapsed().as_secs_f64() * self.per_hour / 3600.0).min(Budget::cap(self.per_hour));
         self.refilled = Instant::now();
-        self.tokens >= (pages as f64).min(Budget::cap(self.per_hour))
+        self.tokens - spent as f64 >= (pages as f64).min(Budget::cap(self.per_hour))
     }
 
     fn take(&mut self) -> bool {
@@ -2430,16 +2446,38 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Holds the state at `PLANNER_HOLD_STATE` for a minute, as a planner still stopping would; run as its own process by the test below.
+    #[test]
+    #[ignore]
+    fn hold_the_state() {
+        let Ok(dir) = std::env::var("PLANNER_HOLD_STATE") else { return };
+        let _held = State::open(Path::new(&dir)).unwrap();
+        std::fs::write(format!("{dir}.held"), "").unwrap();
+        std::thread::sleep(Duration::from_secs(60));
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn a_state_still_held_by_a_stopping_planner_is_opened_once_let_go_and_any_other_failure_fails_at_once() {
+    async fn a_state_another_planner_still_holds_is_opened_once_let_go_and_any_other_failure_fails_at_once() {
         let dir = std::env::temp_dir().join(format!("planner-lock-{}", uuid::Uuid::new_v4().simple()));
-        let held = State::open(&dir).unwrap();
+        let mut holder = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--ignored", "--exact", "planner::tests::hold_the_state"])
+            .env("PLANNER_HOLD_STATE", &dir)
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let held = format!("{}.held", dir.display());
+        let started = Instant::now();
+        while !Path::new(&held).exists() {
+            assert!(started.elapsed() < Duration::from_secs(30), "the other process never held the state");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
         let still = State::open_when_free(&dir, Duration::from_millis(1500)).await.err().expect("held past the wait");
-        assert!(format!("{still:#}").contains("/LOCK"), "{still:#}");
+        assert!(format!("{still:#}").contains("While lock file"), "{still:#}");
 
         let stopping = tokio::spawn(async move {
             tokio::time::sleep(Duration::from_secs(2)).await;
-            drop(held);
+            holder.kill().unwrap();
+            holder.wait().unwrap();
         });
         let started = Instant::now();
         State::open_when_free(&dir, Duration::from_secs(30)).await.unwrap();
@@ -2451,6 +2489,19 @@ mod tests {
         let started = Instant::now();
         assert!(State::open_when_free(&file, Duration::from_secs(30)).await.is_err());
         assert!(started.elapsed() < LOCK_RETRY, "{:?}", started.elapsed());
+
+        use std::os::unix::fs::PermissionsExt;
+        let unwritable = dir.join("unwritable");
+        std::fs::create_dir(&unwritable).unwrap();
+        std::fs::write(unwritable.join("LOCK"), "").unwrap();
+        std::fs::set_permissions(unwritable.join("LOCK"), std::fs::Permissions::from_mode(0o444)).unwrap();
+        let started = Instant::now();
+        // Root opens it anyway, and then there is nothing to check.
+        if let Err(error) = State::open_when_free(&unwritable, Duration::from_secs(30)).await {
+            assert!(format!("{error:#}").contains("/LOCK: Permission denied"), "{error:#}");
+            assert!(started.elapsed() < LOCK_RETRY, "{:?}", started.elapsed());
+        }
         let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_file(&held);
     }
 }

@@ -52,7 +52,7 @@ them at once to the temporary bucket. Inputs are saved in the order cut, each on
 or the pass ends. A failed write or save fails the pass, and the same input is tried again before any later one
 is saved. Saved inputs go to the API while it has room, the fresh lane's first, then oldest first. A restart
 reads the log again from before the oldest page not in a saved input, and plans again only pages no saved input
-holds. A starting planner waits up to two minutes for the one it replaces to let go of its state. When the API
+holds. A starting planner waits up to three minutes for the one it replaces to let go of its state. When the API
 is full, slow to answer (2 s or more) or does not answer, inputs wait, and the planner asks for room at the end
 of each pass and at most every 30 s in between; after a restart it asks before reading the log.
 
@@ -72,12 +72,13 @@ on input writes and writing its state.
   written within `PLANNER_FRESH_FLUSH_S` (60 s), handed over ahead of other waiting inputs, outside the hourly
   budget (`PLANNER_PAGES_PER_HOUR`) and within their own (`PLANNER_FRESH_PER_HOUR`). Every other page shares the
   budget. A page the log removes is forgotten, so it is embedded again if it comes back.
-- **Waiting pages:** a page refused for budget or room, or given back after it was planned, waits with the change file
-  that holds it. It is planned from that file once there is room and the budget holds an input's worth of pages:
-  `PLANNER_PAGES_PER_INPUT`, or a quarter hour of budget when that is less, as the budget holds no more. A pass
-  reads up to 64 such change files, oldest first, fetching `PLANNER_READS` (8) of them at once. A
-  version planned without its change file number is left to the backfill or a re-crawl. An input is pushed to the
-  task API once, however often a restart tries it.
+- **Waiting pages:** a page refused for budget or room, or given back after it was planned, waits with the change
+  file that holds it. It is planned from that file once there is room and the budget holds an input's worth of
+  pages: `PLANNER_PAGES_PER_INPUT`, or a quarter hour of budget when that is less, as the budget holds no more. A
+  pass reads up to 64 such change files, oldest first, fetching up to `PLANNER_READS` (8) of them ahead while the
+  budget and room would still hold an input's worth once the pages waiting in those already fetched were taken. A
+  page taken from them waits until its input is saved. A version planned without its change file number is left to
+  the backfill or a re-crawl. An input is pushed to the task API once, however often a restart tries it.
 - **Backfill** (`PLANNER_BACKFILL=1`): with what budget and room the log and waiting pages leave, it reads
   `current/` shard by shard (`PLANNER_BACKFILL_SHARDS`). Each pass re-plans waiting pages first. The backfill
   starts once the budget holds an input's worth, but not in a pass where the re-plan stopped for budget; when the

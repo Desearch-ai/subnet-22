@@ -1357,6 +1357,66 @@ async fn a_waiting_page_the_re_plan_buffered_still_waits_after_a_crash() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_waiting_page_the_re_plan_buffered_still_waits_after_a_crash_when_a_later_sweep_met_it_in_the_buffer() {
+    let Some((_turn, redis)) = redis_db().await else {
+        eprintln!("skipped: no Redis on {REDIS}");
+        return;
+    };
+    let dir = scratch("replan-crash-twice");
+    let stub = stub::start(dir.join("r2"), "127.0.0.1:0").await.unwrap();
+    let (pages, temp) = (bucket(stub.addr, "desearch-pages"), bucket(stub.addr, "subnet-22"));
+    let b = v2(record("https://news.example/story/b", &format!("b {}", article(2)), "article", "en"));
+    one_planned_one_waiting(&dir, &pages, &temp, &redis, b.clone()).await;
+    let roomy = |pages_per_input: usize| {
+        let mut roomy = settings(dir.join("state"), 3600.0, 0);
+        roomy.pages_per_input = pages_per_input;
+        roomy
+    };
+
+    let mut planner = Planner::new(roomy(10), pages.clone(), temp.clone(), redis.clone(), Room::Fixed(0)).await.unwrap();
+    planner.pass().await.unwrap();
+    planner.pass().await.unwrap();
+    assert_eq!((planner.counts.replanned, planner.counts.unchanged, planner.counts.inputs), (2, 1, 0), "the second sweep met b in its buffer");
+    drop(planner);
+    let mut restarted = Planner::new(roomy(1), pages.clone(), temp.clone(), redis.clone(), Room::Fixed(0)).await.unwrap();
+    assert!(restarted.state.waiting(&page_key(&b.url).unwrap()).unwrap().is_some(), "the crash lost nothing");
+    restarted.pass().await.unwrap();
+    assert_eq!((restarted.counts.replanned, restarted.counts.inputs), (1, 1));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_re_plan_fetches_only_the_change_files_its_budget_will_plan() {
+    let Some((_turn, redis)) = redis_db().await else {
+        eprintln!("skipped: no Redis on {REDIS}");
+        return;
+    };
+    let dir = scratch("replan-budget-reads");
+    let stub = stub::start(dir.join("r2"), "127.0.0.1:0").await.unwrap();
+    let (pages, temp) = (bucket(stub.addr, "desearch-pages"), bucket(stub.addr, "subnet-22"));
+    for seq in 1..=8u64 {
+        log(&pages, seq, vec![v2(record(&format!("https://news.example/story/{seq}"), &format!("{seq} {}", article(2)), "article", "en"))]).await;
+    }
+    let tight = |pages_per_hour: f64| {
+        let mut tight = settings(dir.join("state"), pages_per_hour, 0);
+        tight.pages_per_input = 1;
+        tight
+    };
+    let mut planner = Planner::new(tight(4.0), pages.clone(), temp.clone(), redis.clone(), Room::Fixed(0)).await.unwrap();
+    planner.pass().await.unwrap();
+    assert_eq!((planner.counts.planned, planner.counts.waiting), (1, 7));
+    drop(planner);
+
+    // A budget of two pages, with reads 4: two change files are worth fetching, not four.
+    let mut planner = Planner::new(tight(8.0), pages.clone(), temp.clone(), redis.clone(), Room::Fixed(0)).await.unwrap();
+    let before = stub.state.count("GET");
+    planner.pass().await.unwrap();
+    assert_eq!(planner.counts.replanned, 2);
+    assert_eq!(stub.state.count("GET") - before, 1 + 2 * 2, "the newest number, then an index and a file for each of the two");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_backfill_plans_current_s_copy_of_a_waiting_version_whose_change_file_cannot_be_read() {
     let Some((_turn, redis)) = redis_db().await else {
         eprintln!("skipped: no Redis on {REDIS}");
