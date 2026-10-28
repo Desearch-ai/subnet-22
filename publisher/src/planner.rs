@@ -76,6 +76,8 @@ const SITES_COUNTED: &[u8] = b"sites-counted";
 const CRAWL_PER_INDEX: u64 = 3;
 const ROOM_TIMEOUT: Duration = Duration::from_secs(20);
 const FILES_PER_PASS: usize = 64;
+/// Change files of waiting pages read a pass, so a backlog of them cannot hold up the log.
+const REPLAN_FILES_PER_PASS: usize = 64;
 
 pub static INPUT_SCHEMA: LazyLock<SchemaRef> = LazyLock::new(|| {
     let text = |name: &str| Field::new(name, DataType::Utf8, false);
@@ -962,6 +964,16 @@ pub struct Counts {
     pub dropped: u64,
 }
 
+/// What became of a page the planner considered.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Considered {
+    Taken(Lane),
+    /// Refused for budget or room, and kept waiting.
+    Waiting,
+    /// Not to be planned at this version.
+    Passed,
+}
+
 /// Pages dated within `Settings::fresh` go ahead of the rest and outside the budget.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Lane {
@@ -1206,29 +1218,41 @@ impl Planner {
     /// Plans waiting pages from the change files that hold them, oldest first, while the budget and the rest lane's room last; whether it took any.
     async fn replan(&mut self) -> Result<bool> {
         let mut took = false;
-        while self.pending[Lane::Rest as usize] < self.settings.max_pending && self.budget.has() {
+        for _ in 0..REPLAN_FILES_PER_PASS {
+            if self.pending[Lane::Rest as usize] >= self.settings.max_pending || !self.budget.has() {
+                break;
+            }
             let Some((seq, keys)) = self.state.replan_group(self.replan_after)? else {
                 self.replan_after = 0;
                 break;
             };
             self.replan_after = seq;
-            let Ok(rows) = fetch(self.pages.clone(), seq).await? else { continue };
+            let rows = match fetch(self.pages.clone(), seq).await? {
+                Ok(rows) => rows,
+                // Past the cursor an unnumbered file is one the log expired, index and all.
+                Err(Unread::NotNumbered) if seq <= self.read_through => Vec::new(),
+                Err(_) => continue,
+            };
             let mut found = HashSet::new();
             for row in rows {
                 let ChangeRow::Page(page) = row else { continue };
                 if !keys.contains(&page.key) || self.state.waiting(&page.key)?.is_none_or(|held| held.content_sha1 != page.record.content_sha1) {
                     continue;
                 }
-                found.insert(page.key.clone());
-                // Waits again only if budget or room refuse it again.
-                self.state.unwait(&page.key)?;
+                let key = page.key.clone();
+                found.insert(key.clone());
                 took = true;
                 self.counts.replanned += 1;
-                if let Some(lane) = self.consider(*page, Source::Replan) {
-                    let buffer = self.buffer(lane);
-                    if buffer.pages.len() >= self.settings.pages_per_input || buffer.chars >= self.settings.chars_per_input {
-                        self.flush_lane(lane).await?;
+                // A page taken stops waiting when its input is written, so a crash before that loses nothing.
+                match self.consider(*page, Source::Replan) {
+                    Considered::Taken(lane) => {
+                        let buffer = self.buffer(lane);
+                        if buffer.pages.len() >= self.settings.pages_per_input || buffer.chars >= self.settings.chars_per_input {
+                            self.flush_lane(lane).await?;
+                        }
                     }
+                    Considered::Waiting => {}
+                    Considered::Passed => self.state.unwait(&key)?,
                 }
             }
             // A change file gone from the log leaves its pages to the backfill.
@@ -1259,7 +1283,7 @@ impl Planner {
                     reading.last = Some(page.key.clone());
                     took = true;
                     self.counts.backfill += 1;
-                    if let Some(lane) = self.consider(page, Source::Backfill) {
+                    if let Considered::Taken(lane) = self.consider(page, Source::Backfill) {
                         let buffer = self.buffer(lane);
                         if buffer.pages.len() >= self.settings.pages_per_input || buffer.chars >= self.settings.chars_per_input {
                             self.flush_lane(lane).await?;
@@ -1315,7 +1339,7 @@ impl Planner {
                         _ => true,
                     }
                     // A version as new waits in the log, which is read for it instead.
-                    && state.waiting(&row.key).ok().flatten().is_none_or(|held| held.fetched_at < record.fetched_at)
+                    && state.waiting(&row.key).ok().flatten().is_none_or(|held| held.fetched_at <= record.fetched_at)
             };
             reader.read(shard, from.as_deref(), keep, |page| send.blocking_send(page).is_ok())
         });
@@ -1359,7 +1383,7 @@ impl Planner {
             match row {
                 ChangeRow::Page(page) => {
                     let from = if late { Source::Late(page.change_seq) } else { Source::Log(page.change_seq) };
-                    if let Some(lane) = self.consider(*page, from) {
+                    if let Considered::Taken(lane) = self.consider(*page, from) {
                         let buffer = self.buffer(lane);
                         if buffer.pages.len() >= self.settings.pages_per_input || buffer.chars >= self.settings.chars_per_input {
                             self.flush_lane(lane).await?;
@@ -1448,16 +1472,16 @@ impl Planner {
     }
 
     /// Takes the page into its lane's buffer if a planned recipe reads it, it is wanted, changed, and the budget and the API's room allow it; the lane it went in.
-    pub fn consider(&mut self, page: PageRow, from: Source) -> Option<Lane> {
+    pub fn consider(&mut self, page: PageRow, from: Source) -> Considered {
         self.counts.pages += 1;
         let record = &page.record;
         let Some(recipe) = recipe_of(record).filter(|recipe| PLANNED_RECIPES.contains(recipe)) else {
             self.counts.other_recipe += 1;
-            return None;
+            return Considered::Passed;
         };
         if !self.admitted(record) {
             self.counts.refused += 1;
-            return None;
+            return Considered::Passed;
         }
         if let Some(Err(refusal)) = self.set.as_ref().map(|set| set.admit(&record.url, &record.published)) {
             match refusal {
@@ -1465,7 +1489,7 @@ impl Planner {
                 Refusal::BeforeSince => self.counts.before_since += 1,
                 Refusal::Unlisted | Refusal::OffPaths => self.counts.outside_set += 1,
             }
-            return None;
+            return Considered::Passed;
         }
         let cap = match self.listed.as_ref().filter(|_| self.set.is_none()) {
             None => None,
@@ -1473,7 +1497,7 @@ impl Planner {
                 Some(cap) => Some(cap),
                 None => {
                     self.counts.unlisted += 1;
-                    return None;
+                    return Considered::Passed;
                 }
             },
         };
@@ -1490,20 +1514,20 @@ impl Planner {
             if *content_sha1 == record.content_sha1 {
                 if !page_only || self.settings.page_first || buffered.is_some() {
                     self.counts.unchanged += 1;
-                    return None;
+                    return Considered::Passed;
                 }
                 parts_only = true;
             }
             // Times are `iso` text of one width, so they order as text; a late file can hold an older version than the one planned.
             if record.fetched_at < *fetched_at {
                 self.counts.older += 1;
-                return None;
+                return Considered::Passed;
             }
         }
         if let Some((lane, at)) = buffered {
             let planned = planned_of(&page, recipe, self.settings.page_first && lane == Lane::Rest, false, from);
             self.buffer_mut(lane).replace(at, planned);
-            return Some(lane);
+            return Considered::Taken(lane);
         }
         let new_in = match cap {
             Some(cap) if self.state.unplanned(&page.key).unwrap_or(false) => {
@@ -1512,7 +1536,7 @@ impl Planner {
                 let held = self.state.site_pages(&domain).unwrap_or(0) + buffered;
                 if held >= cap {
                     self.counts.over_cap += 1;
-                    return None;
+                    return Considered::Passed;
                 }
                 Some(domain)
             }
@@ -1526,17 +1550,17 @@ impl Planner {
         if self.pending[lane as usize] >= self.settings.max_pending {
             self.counts.no_room += 1;
             self.keep_waiting(&page);
-            return None;
+            return Considered::Waiting;
         }
         if lane == Lane::Rest && !self.budget.take() {
             self.counts.over_budget += 1;
             self.keep_waiting(&page);
-            return None;
+            return Considered::Waiting;
         }
         let planned = planned_of(&page, recipe, self.settings.page_first && lane == Lane::Rest, parts_only, from);
         if planned.texts.is_empty() {
             self.counts.unchanged += 1;
-            return None;
+            return Considered::Passed;
         }
         self.counts.page_only += u64::from(planned.page_only);
         self.counts.parts += u64::from(parts_only);
@@ -1547,7 +1571,7 @@ impl Planner {
         buffer.push(planned);
         self.counts.planned += 1;
         self.counts.fresh += u64::from(lane == Lane::Fresh);
-        Some(lane)
+        Considered::Taken(lane)
     }
 
     fn keep_waiting(&mut self, page: &PageRow) {

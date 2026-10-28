@@ -803,7 +803,11 @@ async fn pages_dated_in_the_last_two_days_go_first_outside_the_budget_and_a_rest
     let mut restarted = Planner::new(settings(dir.join("state"), 3600.0, 0), pages.clone(), temp.clone(), redis.clone(), Room::Fixed(0)).await.unwrap();
     assert_eq!(restarted.read_through(), 1, "the cursor stayed before the file whose fresh page was never written");
     restarted.pass().await.unwrap();
-    assert_eq!((restarted.counts.planned, restarted.counts.fresh, restarted.counts.unchanged), (1, 1, 2));
+    assert_eq!(
+        (restarted.counts.planned, restarted.counts.fresh, restarted.counts.unchanged),
+        (2, 1, 2),
+        "f3 again, and b, which still waits though the planner stopped with it buffered"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -1191,5 +1195,97 @@ async fn with_both_lanes_busy_a_restart_reads_again_only_the_files_still_buffere
         "each page of a file read again is planned again or unchanged"
     );
     assert!(restarted.counts.files <= 2, "only the files of pages never written are read again: {}", restarted.counts.files);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Plans `a` and leaves `b` waiting, from change file 1, in a fresh state under `dir`.
+async fn one_planned_one_waiting(dir: &std::path::Path, pages: &Bucket, temp: &Bucket, redis: &ConnectionManager, b: Record) {
+    let a = v2(record("https://news.example/story/a", &format!("a {}", article(2)), "article", "en"));
+    log(pages, 1, vec![a, b]).await;
+    let mut tight = settings(dir.join("state"), 4.0, 0);
+    tight.pages_per_input = 1;
+    let mut planner = Planner::new(tight, pages.clone(), temp.clone(), redis.clone(), Room::Fixed(0)).await.unwrap();
+    planner.pass().await.unwrap();
+    assert_eq!((planner.counts.planned, planner.counts.waiting), (1, 1));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_waiting_page_whose_change_file_the_log_expired_index_and_all_stops_waiting() {
+    let Some((_turn, redis)) = redis_db().await else {
+        eprintln!("skipped: no Redis on {REDIS}");
+        return;
+    };
+    let dir = scratch("expired");
+    let stub = stub::start(dir.join("r2"), "127.0.0.1:0").await.unwrap();
+    let (pages, temp) = (bucket(stub.addr, "desearch-pages"), bucket(stub.addr, "subnet-22"));
+    let b = v2(record("https://news.example/story/b", &format!("b {}", article(2)), "article", "en"));
+    one_planned_one_waiting(&dir, &pages, &temp, &redis, b.clone()).await;
+    pages.delete("changes/dt=2026-10-14/1.parquet").await.unwrap();
+    pages.delete(&CHANGES.seq_key(1)).await.unwrap();
+
+    let mut planner = Planner::new(settings(dir.join("state"), 3600.0, 0), pages.clone(), temp.clone(), redis.clone(), Room::Fixed(0)).await.unwrap();
+    planner.pass().await.unwrap();
+    assert!(planner.state.waiting(&page_key(&b.url).unwrap()).unwrap().is_none(), "left to the backfill");
+    assert!(planner.state.replan_group(0).unwrap().is_none(), "nothing is read for it again");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_waiting_page_the_re_plan_buffered_still_waits_after_a_crash() {
+    let Some((_turn, redis)) = redis_db().await else {
+        eprintln!("skipped: no Redis on {REDIS}");
+        return;
+    };
+    let dir = scratch("replan-crash");
+    let stub = stub::start(dir.join("r2"), "127.0.0.1:0").await.unwrap();
+    let (pages, temp) = (bucket(stub.addr, "desearch-pages"), bucket(stub.addr, "subnet-22"));
+    let b = v2(record("https://news.example/story/b", &format!("b {}", article(2)), "article", "en"));
+    one_planned_one_waiting(&dir, &pages, &temp, &redis, b.clone()).await;
+    let roomy = |pages_per_input: usize| {
+        let mut roomy = settings(dir.join("state"), 3600.0, 0);
+        roomy.pages_per_input = pages_per_input;
+        roomy
+    };
+
+    let mut planner = Planner::new(roomy(10), pages.clone(), temp.clone(), redis.clone(), Room::Fixed(0)).await.unwrap();
+    planner.pass().await.unwrap();
+    assert_eq!((planner.counts.replanned, planner.counts.inputs), (1, 0), "b is buffered, not written");
+    drop(planner);
+    let mut restarted = Planner::new(roomy(1), pages.clone(), temp.clone(), redis.clone(), Room::Fixed(0)).await.unwrap();
+    assert!(restarted.state.waiting(&page_key(&b.url).unwrap()).unwrap().is_some(), "the crash lost nothing");
+    restarted.pass().await.unwrap();
+    assert_eq!((restarted.counts.replanned, restarted.counts.inputs), (1, 1));
+    assert!(restarted.state.waiting(&page_key(&b.url).unwrap()).unwrap().is_none(), "written, so no longer waiting");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_backfill_plans_current_s_copy_of_a_waiting_version_whose_change_file_cannot_be_read() {
+    let Some((_turn, redis)) = redis_db().await else {
+        eprintln!("skipped: no Redis on {REDIS}");
+        return;
+    };
+    let dir = scratch("same-version");
+    let stub = stub::start(dir.join("r2"), "127.0.0.1:0").await.unwrap();
+    let (pages, temp, current) = (bucket(stub.addr, "desearch-pages"), bucket(stub.addr, "subnet-22"), bucket(stub.addr, "desearch-current"));
+    let b = v2(record("https://news.example/story/b", &format!("b {}", article(2)), "article", "en"));
+    one_planned_one_waiting(&dir, &pages, &temp, &redis, b.clone()).await;
+    pages.put("changes/dt=2026-10-14/1.parquet", Bytes::from_static(b"not a parquet file"), PARQUET, None).await.unwrap();
+    let row =
+        PageRow { key: page_key(&b.url).unwrap(), removed: false, change_seq: 1, version: record_version(&b), published_at: String::new(), record: b.clone() };
+    shard(&current, 5, vec![vec![row]]).await;
+
+    let mut backfilling = settings(dir.join("state"), 3600.0, 0);
+    (backfilling.backfill, backfilling.backfill_shards, backfilling.pages_per_input) = (true, 5..6, 1);
+    let mut planner = Planner::new(backfilling, pages.clone(), temp.clone(), redis.clone(), Room::Fixed(0)).await.unwrap();
+    planner.current = Some(current.clone());
+    for _ in 0..50 {
+        planner.pass().await.unwrap();
+        if planner.counts.shards == 1 {
+            break;
+        }
+    }
+    assert_eq!((planner.counts.backfill, planner.counts.planned), (1, 1), "the same version, from current/");
+    assert!(planner.state.waiting(&page_key(&b.url).unwrap()).unwrap().is_none());
     let _ = std::fs::remove_dir_all(&dir);
 }
