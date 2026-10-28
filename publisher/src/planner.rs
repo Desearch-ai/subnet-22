@@ -28,7 +28,7 @@ use tokio::sync::{mpsc, watch};
 
 use crate::backfill::ShardReader;
 use crate::current::{decode_changes, ChangeRow, PageRow, SHARDS};
-use crate::records::{Record, EXTRACTION_V2};
+use crate::records::{iso, parse_iso, Record, EXTRACTION_V2};
 use crate::service::now_us;
 use crate::set::{iso_date, url_date, Admitted, Refusal, Set};
 
@@ -79,6 +79,11 @@ const SITES_COUNTED: &[u8] = b"sites-counted";
 const CRAWL_PER_INDEX: u64 = 3;
 const ROOM_TIMEOUT: Duration = Duration::from_secs(20);
 const FILES_PER_PASS: usize = 64;
+/// Set when no page waits without a change file to plan it from.
+const WAITING_NUMBERED: &[u8] = b"waiting-numbered";
+const UNWAIT_BATCH: i64 = 100_000;
+/// A set older than this is warned about, as its pull may have stopped.
+const SET_STALE: Duration = Duration::from_secs(2 * 86_400);
 /// Change files of waiting pages read a pass, so a backlog of them cannot hold up the log.
 const REPLAN_FILES_PER_PASS: usize = 64;
 
@@ -683,6 +688,34 @@ impl State {
         Ok(self.db.write(batch)?)
     }
 
+    /// Stops every page waiting without a change file, once; nothing re-plans such a page, so it is left to the backfill. How many stopped.
+    pub fn drop_unnumbered(&self) -> Result<i64> {
+        if self.db.get_pinned(WAITING_NUMBERED)?.is_some() {
+            return Ok(0);
+        }
+        let (mut batch, mut held, mut dropped) = (WriteBatch::default(), 0, 0);
+        for item in self.db.iterator(IteratorMode::From(b"waiting/", rocksdb::Direction::Forward)) {
+            let (key, value) = item?;
+            if !key.starts_with(b"waiting/") {
+                break;
+            }
+            if Version::parse(&value).seq.is_none() {
+                batch.delete(&key);
+                held += 1;
+                dropped += 1;
+            }
+            if held == UNWAIT_BATCH {
+                self.count_waiting(&mut batch, -held);
+                self.db.write(std::mem::take(&mut batch))?;
+                held = 0;
+            }
+        }
+        self.count_waiting(&mut batch, -held);
+        batch.put(WAITING_NUMBERED, "1");
+        self.db.write(batch)?;
+        Ok(dropped)
+    }
+
     /// The first change file after `after` that holds waiting pages, and their keys.
     pub fn replan_group(&self, after: i64) -> Result<Option<(i64, HashSet<String>)>> {
         let start = format!("replan/{:020}/", after + 1);
@@ -866,8 +899,10 @@ impl State {
                 match self.planned_version(recipe, key)? {
                     Some(planned) if planned.content_sha1 == content_sha1 => {
                         batch.delete(planned_key(recipe, key));
-                        // Planned again from its change file, not left for a re-crawl that may never come.
-                        self.waiting_into(&mut batch, key, &Version { page_only: false, ..planned })?;
+                        // Planned again from its change file, not left for a re-crawl that may never come; one planned before files were kept is the backfill's.
+                        if planned.seq.is_some() {
+                            self.waiting_into(&mut batch, key, &Version { page_only: false, ..planned })?;
+                        }
                         forgotten = true;
                     }
                     Some(_) => kept = true,
@@ -1162,6 +1197,8 @@ pub struct Planner {
     /// The last change file the re-plan pass read this sweep.
     replan_after: i64,
     set_modified: Option<std::time::SystemTime>,
+    /// The Unix time the held set was built, or its file written when it does not say.
+    set_built: Option<f64>,
     fresh: Buffer,
     rest: Buffer,
     read_through: i64,
@@ -1188,6 +1225,10 @@ impl Planner {
         state.count_sites()?;
         if started.elapsed() > Duration::from_secs(1) {
             println!("planner: counted every domain's planned pages in {:?}", started.elapsed());
+        }
+        let dropped = state.drop_unnumbered()?;
+        if dropped > 0 {
+            println!("planner: {dropped} pages waiting without a change file are left to the backfill");
         }
         let read_through = match (state.cursor()?, settings.start_after) {
             (Some(seq), _) | (None, Some(seq)) => seq,
@@ -1220,6 +1261,7 @@ impl Planner {
             next_sweep: None,
             replan_after: 0,
             set_modified: None,
+            set_built: None,
             fresh: Buffer::default(),
             rest: Buffer::default(),
             read_through,
@@ -1251,14 +1293,29 @@ impl Planner {
         }
         match std::fs::read(&path).map_err(anyhow::Error::from).and_then(|raw| Set::parse(&raw)) {
             Ok(set) if !set.is_empty() => {
-                println!("planner: set of {} sites read from {}", set.len(), path.display());
+                let written = modified.duration_since(std::time::UNIX_EPOCH).map_or(0.0, |since| since.as_secs_f64());
+                let built = set.built.as_deref().and_then(|built| parse_iso(&built.replace('Z', "+00:00"))).map_or(written, |built| built as f64);
+                println!("planner: set of {} sites built {} read from {}", set.len(), iso((built * 1e6) as i64), path.display());
                 self.set = Some(Arc::new(set));
                 self.set_modified = Some(modified);
+                self.set_built = Some(built);
+                self.warn_stale_set();
             }
             Ok(_) => eprintln!("{} holds no sites; keeping the set held", path.display()),
             Err(error) => eprintln!("reading the set {}: {error:#}; keeping the set held", path.display()),
         }
         Ok(self.set.is_some())
+    }
+
+    /// How long ago the held set was built.
+    pub fn set_age(&self) -> Option<Duration> {
+        self.set_built.map(|built| Duration::from_secs_f64((now_us() as f64 / 1e6 - built).max(0.0)))
+    }
+
+    fn warn_stale_set(&self) {
+        if let Some(age) = self.set_age().filter(|age| *age > SET_STALE) {
+            eprintln!("planner: the set was built {:.1} days ago; check that it is still pulled", age.as_secs_f64() / 86_400.0);
+        }
     }
 
     /// Reads the crawl list again when its file changed; whether a list is held. A list that cannot be read leaves the one held.
@@ -1286,6 +1343,8 @@ impl Planner {
         if let Err(error) = reloaded {
             eprintln!("{error:#}");
         }
+        // Inputs written before a restart go out before the log is read.
+        self.hand_over().await?;
         self.forget_dropped().await?;
         let latest = latest(&self.pages).await?;
         let mut read = self.read_late().await?;
@@ -1314,11 +1373,11 @@ impl Planner {
         Ok(read > 0 || replanned || backfilled)
     }
 
-    /// Plans waiting pages from the change files that hold them, oldest first, while the budget and the rest lane's room last; whether it took any.
+    /// Plans waiting pages from the change files that hold them, oldest first, while the budget holds an input's worth and the rest lane has room; whether it took any.
     async fn replan(&mut self) -> Result<bool> {
         let mut took = false;
         for _ in 0..REPLAN_FILES_PER_PASS {
-            if self.pending[Lane::Rest as usize] >= self.settings.max_pending || !self.budget.has() {
+            if self.pending[Lane::Rest as usize] >= self.settings.max_pending || !self.budget.holds(self.settings.pages_per_input) {
                 break;
             }
             let Some((seq, keys)) = self.state.replan_group(self.replan_after)? else {
@@ -1344,12 +1403,7 @@ impl Planner {
                 self.counts.replanned += 1;
                 // A page taken stops waiting when its input is written, so a crash before that loses nothing.
                 match self.consider(*page, Source::Replan) {
-                    Considered::Taken(lane) => {
-                        let buffer = self.buffer(lane);
-                        if buffer.pages.len() >= self.settings.pages_per_input || buffer.chars >= self.settings.chars_per_input {
-                            self.flush_lane(lane).await?;
-                        }
-                    }
+                    Considered::Taken(lane) => self.write_when_full(lane).await?,
                     Considered::Waiting => {}
                     Considered::Passed => self.state.unwait(&key)?,
                 }
@@ -1383,10 +1437,7 @@ impl Planner {
                     took = true;
                     self.counts.backfill += 1;
                     if let Considered::Taken(lane) = self.consider(page, Source::Backfill) {
-                        let buffer = self.buffer(lane);
-                        if buffer.pages.len() >= self.settings.pages_per_input || buffer.chars >= self.settings.chars_per_input {
-                            self.flush_lane(lane).await?;
-                        }
+                        self.write_when_full(lane).await?;
                     }
                 }
                 Ok(None) => {
@@ -1483,10 +1534,7 @@ impl Planner {
                 ChangeRow::Page(page) => {
                     let from = if late { Source::Late(page.change_seq) } else { Source::Log(page.change_seq) };
                     if let Considered::Taken(lane) = self.consider(*page, from) {
-                        let buffer = self.buffer(lane);
-                        if buffer.pages.len() >= self.settings.pages_per_input || buffer.chars >= self.settings.chars_per_input {
-                            self.flush_lane(lane).await?;
-                        }
+                        self.write_when_full(lane).await?;
                     }
                 }
                 ChangeRow::Removed(key) => {
@@ -1540,7 +1588,7 @@ impl Planner {
 
     /// Plans until `stop` turns true, writing what is buffered first.
     pub async fn run(&mut self, mut stop: watch::Receiver<bool>) -> Result<()> {
-        let mut reported = Instant::now();
+        let (mut reported, mut set_checked) = (Instant::now(), Instant::now());
         while !*stop.borrow() {
             let busy = match self.pass().await {
                 Ok(busy) => busy,
@@ -1552,6 +1600,10 @@ impl Planner {
             if reported.elapsed() >= Duration::from_secs(60) {
                 println!("planner: through change file {}, {:?}", self.read_through, self.counts);
                 reported = Instant::now();
+            }
+            if set_checked.elapsed() >= Duration::from_secs(3600) {
+                self.warn_stale_set();
+                set_checked = Instant::now();
             }
             if !busy {
                 let _ = tokio::time::timeout(self.settings.poll, stop.changed()).await;
@@ -1814,6 +1866,16 @@ impl Planner {
         Ok(())
     }
 
+    /// Writes a lane's full buffer and hands it over at once, so the API's queue is fed while a pass goes on.
+    async fn write_when_full(&mut self, lane: Lane) -> Result<()> {
+        let buffer = self.buffer(lane);
+        if buffer.pages.len() >= self.settings.pages_per_input || buffer.chars >= self.settings.chars_per_input {
+            self.flush_lane(lane).await?;
+            self.hand_over().await?;
+        }
+        Ok(())
+    }
+
     /// Writes a lane's buffer as one input in the temp bucket and keeps it pending until the API has room.
     async fn flush_lane(&mut self, lane: Lane) -> Result<()> {
         let buffer = self.buffer(lane);
@@ -1988,9 +2050,14 @@ impl Budget {
     }
 
     fn has(&mut self) -> bool {
+        self.holds(1)
+    }
+
+    /// Whether `pages` can be spent now, or the most the budget ever holds when that is fewer.
+    fn holds(&mut self, pages: usize) -> bool {
         self.tokens = (self.tokens + self.refilled.elapsed().as_secs_f64() * self.per_hour / 3600.0).min(Budget::cap(self.per_hour));
         self.refilled = Instant::now();
-        self.tokens >= 1.0
+        self.tokens >= (pages as f64).min(Budget::cap(self.per_hour))
     }
 
     fn take(&mut self) -> bool {

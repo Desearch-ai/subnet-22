@@ -46,19 +46,22 @@ never inside a table row, a list item or a code block. A v1 page keeps the vecto
 ## Planner
 
 The planner reads the change log, a few files at once and in log order, and writes inputs of up to 1,000
-pages or 3M characters for the task API, handing them over as the API has room.
+pages or 3M characters for the task API. Each input goes to the API as soon as it is written, while the API
+has room; inputs held back for room go first at the start of the next pass.
 
 - **What it plans** (`PLANNER_SET_FILE`): only pages the v1 set takes: a news site's pages dated on or
   after its `since`, by `published` or a date in the URL path, and, when the file's `undated` is `article`,
   its pages with no date typed `article`; a whole site's pages, or those under its `paths`; a bulk source's
   crawled pages. Pages are also English, at least `PLANNER_MIN_CHARS` long and off
-  the exclusion list.
+  the exclusion list. The planner does not start without the set. It logs the set's `built` time when it reads it,
+  and warns hourly while the set is more than two days old.
 - **Fresh lane:** pages seen for the first time and dated within `PLANNER_FRESH_S` (48 h) get their own inputs,
   written within `PLANNER_FRESH_FLUSH_S` (60 s), handed over first, outside the hourly budget
   (`PLANNER_PAGES_PER_HOUR`) and within their own (`PLANNER_FRESH_PER_HOUR`). Every other page shares the budget. A
   page the log removes is forgotten, so it is embedded again if it comes back.
 - **Waiting pages:** a page refused for budget or room, or given back after it was planned, waits with the change file
-  that holds it and is planned from that file once there is budget and room. An input is pushed to the task API once,
+  that holds it. It is planned from that file once there is room and the budget holds an input's worth of pages. A
+  version planned without its change file number is left to the backfill. An input is pushed to the task API once,
   however often a restart tries it.
 - **Backfill** (`PLANNER_BACKFILL=1`): with what budget and room the log leaves, it reads `current/` shard
   by shard (`PLANNER_BACKFILL_SHARDS`) and plans each page's standing version that the set takes and was

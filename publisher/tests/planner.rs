@@ -793,10 +793,12 @@ async fn pages_dated_in_the_last_two_days_go_first_outside_the_budget_and_a_rest
 
     let mut one = settings(dir.join("state"), 4.0, 0);
     one.pages_per_input = 1;
-    let mut planner = Planner::new(one, pages.clone(), temp.clone(), redis.clone(), Room::Fixed(2)).await.unwrap();
+    let mut planner = Planner::new(one, pages.clone(), temp.clone(), redis.clone(), Room::Fixed(0)).await.unwrap();
     planner.pass().await.unwrap();
     let counts = &planner.counts;
     assert_eq!((counts.planned, counts.fresh, counts.over_budget, counts.inputs), (3, 2, 1, 3), "the budget takes one old page; fresh pages spend none");
+    planner.room = Room::Fixed(2);
+    planner.hand_over().await.unwrap();
     let handed: Vec<Value> = redis.lrange::<_, Vec<String>>(EMBED_INPUTS, 0, -1).await.unwrap().iter().map(|raw| serde_json::from_str(raw).unwrap()).collect();
     let urls: Vec<&str> = handed.iter().map(|entry| entry["pages"][0]["url"].as_str().unwrap()).collect();
     assert_eq!(urls, ["https://news.example/story/f1", "https://news.example/story/f2"], "fresh inputs go first though the old one was written before them");
@@ -1577,6 +1579,128 @@ async fn with_undated_articles_on_an_undated_news_article_is_planned_and_counted
         planner.pass().await.unwrap();
         let counts = &planner.counts;
         assert_eq!((counts.planned, counts.undated, counts.undated_article_in, counts.before_since), want, "undated {undated}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn each_input_goes_to_the_task_api_as_it_is_written_and_inputs_left_from_before_a_restart_go_first() {
+    let Some((_turn, mut redis)) = redis_db().await else {
+        eprintln!("skipped: no Redis on {REDIS}");
+        return;
+    };
+    let dir = scratch("hand-over");
+    let stub = stub::start(dir.join("r2"), "127.0.0.1:0").await.unwrap();
+    let (pages, temp) = (bucket(stub.addr, "desearch-pages"), bucket(stub.addr, "subnet-22"));
+    let page = |n: usize| v2(record(&format!("https://news.example/story/{n}"), &format!("{n} {}", article(2)), "article", "en"));
+    log(&pages, 1, (0..3).map(page).collect()).await;
+    let mut one_pending = settings(dir.join("state"), 3600.0, 0);
+    (one_pending.pages_per_input, one_pending.max_pending) = (1, 1);
+    let mut planner = Planner::new(one_pending, pages.clone(), temp.clone(), redis.clone(), Room::Fixed(10)).await.unwrap();
+    planner.pass().await.unwrap();
+    assert_eq!((planner.counts.planned, planner.counts.no_room, planner.counts.handed_over), (3, 0, 3), "one input pending at most holds up no page");
+    assert_eq!(redis.llen::<_, i64>(EMBED_INPUTS).await.unwrap(), 3);
+
+    let () = redis.del(EMBED_INPUTS).await.unwrap();
+    log(&pages, 2, vec![page(3)]).await;
+    planner.room = Room::Fixed(0);
+    planner.pass().await.unwrap();
+    assert_eq!(planner.state.pending().unwrap().len(), 1);
+    drop(planner);
+    let unreadable = bucket(stub.addr, "no-log");
+    let mut restarted = Planner::new(settings(dir.join("state"), 3600.0, 0), unreadable, temp.clone(), redis.clone(), Room::Fixed(10)).await.unwrap();
+    assert!(restarted.pass().await.is_err(), "the log cannot be read");
+    assert_eq!(redis.llen::<_, i64>(EMBED_INPUTS).await.unwrap(), 1, "the input written before the restart went out first");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn waiting_pages_are_read_again_only_once_the_budget_holds_an_input_s_worth() {
+    let Some((_turn, redis)) = redis_db().await else {
+        eprintln!("skipped: no Redis on {REDIS}");
+        return;
+    };
+    let dir = scratch("replan-budget");
+    let stub = stub::start(dir.join("r2"), "127.0.0.1:0").await.unwrap();
+    let (pages, temp) = (bucket(stub.addr, "desearch-pages"), bucket(stub.addr, "subnet-22"));
+    let page = |n: usize| v2(record(&format!("https://news.example/story/{n}"), &format!("{n} {}", article(2)), "article", "en"));
+    log(&pages, 1, (0..5).map(page).collect()).await;
+    let mut five = settings(dir.join("state"), 20.0, 0);
+    five.max_pending = 1;
+    let mut planner = Planner::new(five, pages.clone(), temp.clone(), redis.clone(), Room::Fixed(0)).await.unwrap();
+    planner.pass().await.unwrap();
+    assert_eq!((planner.counts.planned, planner.counts.no_room), (3, 2), "five pages of budget; the first input fills the room");
+
+    planner.room = Room::Fixed(5);
+    planner.pass().await.unwrap();
+    assert_eq!((planner.counts.handed_over, planner.counts.replanned), (1, 0), "two pages of budget left, less than an input of three");
+    assert_eq!(planner.state.waiting_count(), 2);
+    drop(planner);
+
+    let mut planner = Planner::new(settings(dir.join("state"), 3600.0, 0), pages.clone(), temp.clone(), redis.clone(), Room::Fixed(5)).await.unwrap();
+    planner.pass().await.unwrap();
+    planner.flush().await.unwrap();
+    assert_eq!((planner.counts.replanned, planner.counts.planned, planner.state.waiting_count()), (2, 2, 0));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_dropped_version_planned_before_change_files_were_kept_is_left_to_the_backfill_not_kept_waiting() {
+    let Some((_turn, mut redis)) = redis_db().await else {
+        eprintln!("skipped: no Redis on {REDIS}");
+        return;
+    };
+    let dir = scratch("unnumbered");
+    let stub = stub::start(dir.join("r2"), "127.0.0.1:0").await.unwrap();
+    let (pages, temp) = (bucket(stub.addr, "desearch-pages"), bucket(stub.addr, "subnet-22"));
+    let page = |name: &str| v2(record(&format!("https://news.example/story/{name}"), &format!("{name} {}", article(2)), "article", "en"));
+    let (old, stuck) = (page("old"), page("stuck"));
+    let (old_key, stuck_key) = (page_key(&old.url).unwrap(), page_key(&stuck.url).unwrap());
+    {
+        let mut options = rocksdb::Options::default();
+        options.create_if_missing(true);
+        options.set_compression_type(rocksdb::DBCompressionType::Zstd);
+        let db = rocksdb::DB::open(&options, dir.join("state")).unwrap();
+        db.put(format!("planned/{RECIPE_V2}/{old_key}"), &old.content_sha1).unwrap();
+        db.put(format!("waiting/{stuck_key}"), format!("{}\t\t\t\t", stuck.content_sha1)).unwrap();
+        db.put("waiting-count", "1").unwrap();
+    }
+    log(&pages, 1, vec![page("other")]).await;
+    let mut planner = Planner::new(settings(dir.join("state"), 3600.0, 1), pages.clone(), temp.clone(), redis.clone(), Room::Fixed(5)).await.unwrap();
+    assert_eq!(planner.state.waiting_count(), 0, "a page waiting with no change file is let go at start");
+    assert!(planner.state.waiting(&stuck_key).unwrap().is_none());
+
+    let dropped = json!({"input_key": "embed/inputs/old.parquet", "pages": [{"page_key": old_key, "content_sha1": old.content_sha1}]});
+    let _: i64 = redis.rpush(EMBED_DROPPED, dropped.to_string()).await.unwrap();
+    planner.pass().await.unwrap();
+    assert_eq!((planner.counts.dropped, planner.state.waiting_count()), (1, 0), "nothing would plan it from a change file");
+    assert!(planner.state.planned(RECIPE_V2, &old_key).unwrap().is_none(), "forgotten, so the backfill or the log plans it again");
+    log(&pages, 2, vec![old]).await;
+    planner.pass().await.unwrap();
+    assert_eq!(planner.counts.planned, 1);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_set_s_age_is_from_when_it_was_built_or_else_when_its_file_was_written() {
+    let Some((_turn, redis)) = redis_db().await else {
+        eprintln!("skipped: no Redis on {REDIS}");
+        return;
+    };
+    let dir = scratch("set-age");
+    let stub = stub::start(dir.join("r2"), "127.0.0.1:0").await.unwrap();
+    let (pages, temp) = (bucket(stub.addr, "desearch-pages"), bucket(stub.addr, "subnet-22"));
+    log(&pages, 1, vec![v2(record("https://news.example/story/a", &article(2), "article", "en"))]).await;
+    let set = dir.join("v1-set.json");
+    let sites = json!([{"host": "news.example", "rule": "news"}]);
+    let three_days_ago = iso(publisher::service::now_us() - 3 * 86_400_000_000).replace("+00:00", "Z");
+    for (file, state, days) in [(json!({"built": three_days_ago, "sites": sites}), "built", 3.0), (json!({"sites": sites}), "written", 0.0)] {
+        std::fs::write(&set, file.to_string()).unwrap();
+        let mut with_set = settings(dir.join(state), 3600.0, 0);
+        with_set.set_file = Some(set.clone());
+        let planner = Planner::new(with_set, pages.clone(), temp.clone(), redis.clone(), Room::Fixed(0)).await.unwrap();
+        let age = planner.set_age().unwrap().as_secs_f64() / 86_400.0;
+        assert!((age - days).abs() < 0.01, "{state}: {age} days");
     }
     let _ = std::fs::remove_dir_all(&dir);
 }

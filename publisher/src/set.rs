@@ -41,6 +41,8 @@ pub enum Admitted {
 
 #[derive(Debug, Default)]
 pub struct Set {
+    /// When the set was built, as its file says.
+    pub built: Option<String>,
     sites: HashMap<String, Rule>,
     /// Undated news pages typed `article` are in.
     undated_articles: bool,
@@ -70,7 +72,7 @@ impl Set {
             Some("article") => true,
             Some(other) => bail!("undated {other:?} is not article or out"),
         };
-        Ok(Set { sites, undated_articles })
+        Ok(Set { built: file["built"].as_str().map(String::from), sites, undated_articles })
     }
 
     /// The listed host a host is, or is nearest under, and its rule.
