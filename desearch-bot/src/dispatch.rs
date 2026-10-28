@@ -234,13 +234,9 @@ pub const SPREAD_SECONDS: u32 = 300;
 /// Pages a domain may always send at once, so a small hourly limit is not cut to a page or two.
 pub const SPREAD_FLOOR: u64 = 100;
 
-/// Pages a domain may save up and send at once: one for a site that asks for a delay between requests, so it never gets two within its delay.
-pub fn most_at_once(limit: u64, delayed: bool) -> u64 {
-    if delayed {
-        1
-    } else {
-        (limit * u64::from(SPREAD_SECONDS) / u64::from(HOUR)).max(SPREAD_FLOOR)
-    }
+/// Pages a domain may save up and send at once, unless it asks for a delay between requests.
+pub fn most_at_once(limit: u64) -> u64 {
+    (limit * u64::from(SPREAD_SECONDS) / u64::from(HOUR)).max(SPREAD_FLOOR)
 }
 
 pub struct HourlyCap {
@@ -248,11 +244,29 @@ pub struct HourlyCap {
     sent: HashMap<String, VecDeque<(u32, u64)>>,
     /// When every domain's saved share was empty, so a restart adds no burst to the hour before it; none starts them full.
     emptied: Option<u32>,
+    /// When the last pass started, and the seconds since the one before it.
+    last_pass: Option<u32>,
+    gap: Option<u32>,
 }
 
 impl HourlyCap {
     pub fn new(limit: u64) -> Self {
-        HourlyCap { limit, sent: HashMap::new(), emptied: None }
+        HourlyCap { limit, sent: HashMap::new(), emptied: None, last_pass: None, gap: None }
+    }
+
+    /// A pass starts: a site that asks for a delay may send what the delay allows since the last one.
+    pub fn pass_at(&mut self, now: u32) {
+        self.gap = self.last_pass.map(|at| now.saturating_sub(at));
+        self.last_pass = Some(now);
+    }
+
+    /// What a domain may save up, in hour-parts; for a site that asks for a delay, what it allows since the last pass rounded up to a page, one page before a second pass.
+    fn saved_most(&self, limit: u64, delayed: bool) -> u64 {
+        let hour = u64::from(HOUR);
+        if !delayed {
+            return most_at_once(limit) * hour;
+        }
+        self.gap.map_or(hour, |gap| (u64::from(gap) * limit + hour - 1).max(hour))
     }
 
     /// As `new`, with every domain's saved share empty at `now`, refilling from there.
@@ -274,9 +288,9 @@ impl HourlyCap {
         self.allowance_within(domain, now, limit, false)
     }
 
-    /// As `allowance_under`, saving up only one page for a site that asks for a delay between requests.
+    /// As `allowance_under`, saving up for a site that asks for a delay between requests only what the delay allows since the last pass.
     pub fn allowance_within(&mut self, domain: &str, now: u32, limit: u64, delayed: bool) -> u64 {
-        let most = most_at_once(limit, delayed);
+        let most = self.saved_most(limit, delayed);
         let empty = VecDeque::new();
         let sent = match self.sent.get_mut(domain) {
             Some(sent) => {
@@ -290,7 +304,7 @@ impl HourlyCap {
         let total: u64 = sent.iter().map(|(_, n)| n).sum();
         // Owed pages are counted in hour-parts, so a share of one page a delay apart refills exactly on time.
         let (mut owed, mut last) = match self.emptied {
-            Some(at) => (most * u64::from(HOUR), at),
+            Some(at) => (most, at),
             None => (0, now),
         };
         for &(at, n) in sent.iter() {
@@ -301,7 +315,7 @@ impl HourlyCap {
         if sent.is_empty() {
             self.sent.remove(domain);
         }
-        limit.saturating_sub(total).min(most.saturating_sub(owed.div_ceil(u64::from(HOUR))))
+        limit.saturating_sub(total).min(most.saturating_sub(owed) / u64::from(HOUR))
     }
 
     pub fn record(&mut self, domain: &str, now: u32, count: u64) {
@@ -692,6 +706,7 @@ impl Dispatcher {
     }
 
     async fn timed_pass(&mut self, now: u32, spent: &mut [Duration; 3]) -> Result<u64> {
+        self.cap.pass_at(now);
         if self.absorbed.is_none_or(|at| at.elapsed() >= ABSORB_EVERY) {
             let started = Instant::now();
             self.absorb(now).await?;

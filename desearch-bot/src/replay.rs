@@ -1,7 +1,7 @@
 //! Hours of the dispatcher on copied stores: passes on a simulated clock against an in-process task API while the list walker joins listed domains and the stock keeper chooses refresh stocks, with outcomes drawn from a real day's and sitemap reads simulated.
 
 use std::collections::hash_map::DefaultHasher;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -134,6 +134,9 @@ struct Bars {
     restamped_early: u64,
     over_hour: u64,
     over_spread: u64,
+    /// Sends this hour to sites that ask for a delay between requests, and those sites.
+    delayed_sent: u64,
+    delayed_sites: HashSet<String>,
     refusing: HashMap<u32, u64>,
 }
 
@@ -178,12 +181,15 @@ impl Bars {
         if times.len() as u64 > limit {
             self.over_hour += 1;
         }
-        // The share saved up and what refills while it goes, or for a delayed site one page a delay apart.
+        // A delayed site gets what its delay allows over a pass, rounded up; any other the share saved up and what refills while it goes.
         let (within, most) = if delayed {
-            (HOUR / limit.max(1) as u32, 1)
+            self.delayed_sent += 1;
+            self.delayed_sites.insert(host.to_string());
+            (1, (u64::from(PASS) * limit).div_ceil(u64::from(HOUR)))
         } else {
-            (dispatch::SPREAD_SECONDS, dispatch::most_at_once(limit, false) + limit * u64::from(dispatch::SPREAD_SECONDS) / u64::from(HOUR))
+            (dispatch::SPREAD_SECONDS, dispatch::most_at_once(limit) + limit * u64::from(dispatch::SPREAD_SECONDS) / u64::from(HOUR))
         };
+        let times = &self.sites[host];
         if times.iter().rev().take_while(|&&t| t + within > at).count() as u64 > most {
             self.over_spread += 1;
         }
@@ -419,7 +425,7 @@ pub async fn replay(args: ReplayArgs) -> Result<()> {
             sorted.sort_unstable();
             let p = |q: f64| sorted.get(((sorted.len() as f64 * q) as usize).min(sorted.len().saturating_sub(1))).copied().unwrap_or(0);
             let line = format!(
-                "[replay] hour {:>2}: {hour_sent} sent (new {} refresh {} retry {} resend {} fill {}), resend walk listed {} waiting {}, pass p50 {} ms p99 {} ms max {} ms, {} ready in {} domains, walker {done}/{of} queued {} before the floor {} cleared at caps {}, stocks chosen {} fill domains {}, sitemaps {} read {} new {} re-dated, rss {} MiB; over hour {} over spread {} early {} due within a day {} early re-dated {} re-stamped early {} early after a failure {} after a drop {}",
+                "[replay] hour {:>2}: {hour_sent} sent (new {} refresh {} retry {} resend {} fill {}), resend walk listed {} waiting {}, pass p50 {} ms p99 {} ms max {} ms, {} ready in {} domains, walker {done}/{of} queued {} before the floor {} cleared at caps {}, stocks chosen {} fill domains {}, sitemaps {} read {} new {} re-dated, rss {} MiB; over hour {} over spread {} early {} due within a day {} early re-dated {} re-stamped early {} early after a failure {} after a drop {}, sites with a delay {} sent to {}",
                 (now - args.start) / HOUR,
                 counts.new - last.new,
                 counts.refresh - last.refresh,
@@ -449,13 +455,17 @@ pub async fn replay(args: ReplayArgs) -> Result<()> {
                 bars.early_redated,
                 bars.restamped_early,
                 bars.early_after_failure,
-                bars.early_after_drop
+                bars.early_after_drop,
+                bars.delayed_sent,
+                bars.delayed_sites.len()
             );
             println!("{line}");
             writeln!(log, "{line}")?;
             log.flush()?;
             last = counts;
             hour_sent = 0;
+            bars.delayed_sent = 0;
+            bars.delayed_sites.clear();
             pass_ms.clear();
         }
     }

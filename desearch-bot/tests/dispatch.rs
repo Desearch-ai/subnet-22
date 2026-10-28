@@ -563,10 +563,14 @@ fn the_cap_never_passes_the_hour_or_the_saved_share_whatever_is_sent() {
         let mut cap = if draw(2) == 0 { HourlyCap::new(2000) } else { HourlyCap::empty_at(2000, 1_000_000) };
         let mut sends: Vec<(u32, u64)> = Vec::new();
         let mut at = 1_000_000;
+        let mut last_pass: Option<u32> = None;
         for _ in 0..300 {
             let gap = if draw(10) == 0 { 2000 } else { 400 };
             at += 1 + draw(gap) as u32;
+            cap.pass_at(at);
             let allowed = cap.allowance_within("x.com", at, limit, delayed);
+            let most_this_pass = last_pass.map_or(1, |before| (u64::from(at - before) * limit).div_ceil(3600).max(1));
+            last_pass = Some(at);
             let n = if draw(4) == 0 { draw(allowed + 1) } else { allowed };
             if n == 0 {
                 continue;
@@ -576,9 +580,9 @@ fn the_cap_never_passes_the_hour_or_the_saved_share_whatever_is_sent() {
             let within = |seconds: u32| sends.iter().filter(|(sent, _)| sent + seconds > at).map(|(_, n)| n).sum::<u64>();
             assert!(within(3600) <= limit, "{} in the hour to {at} under {limit}", within(3600));
             if delayed {
-                assert!(within(3600 / limit as u32) <= 1, "two within {} s under {limit} an hour", 3600 / limit);
+                assert!(n <= most_this_pass, "{n} at once under {limit} an hour, at most {most_this_pass} for the time since the last pass");
             } else {
-                assert!(within(300) <= most_at_once(limit, false) + limit * 300 / 3600, "{} in five minutes under {limit}", within(300));
+                assert!(within(300) <= most_at_once(limit) + limit * 300 / 3600, "{} in five minutes under {limit}", within(300));
             }
         }
     }
@@ -2053,7 +2057,7 @@ fn a_crawl_delay_sets_the_pages_an_hour_a_site_can_take() {
     assert_eq!(desearch_bot::dispatch::delay_hourly(&record(Value::from(0))), None);
     assert_eq!(desearch_bot::dispatch::delay_hourly(&record(Value::Null)), None);
     let mut cap = HourlyCap::new(36_000);
-    assert_eq!(cap.allowance_within("arxiv.org", 1000, 240, true), 1, "one page at a time, however many an hour");
+    assert_eq!(cap.allowance_within("arxiv.org", 1000, 240, true), 1, "one page before a second pass, however many an hour");
     assert_eq!(cap.allowance_within("arxiv.org", 1000, 240, false), 100, "five minutes of 240 an hour is 20, held up to the floor of a hundred");
 }
 
@@ -2233,8 +2237,67 @@ async fn fake_api(room: i64, fail_next: usize) -> (TaskApi, Arc<Mutex<FakeApi>>)
     (TaskApi::new(&base, Hotkey::from_uri("//test").unwrap()).unwrap(), fake)
 }
 
+#[test]
+fn a_site_asking_for_a_delay_gets_what_it_allows_since_the_last_pass_and_saves_nothing_past_it() {
+    let mut cap = HourlyCap::new(36_000);
+    let mut sends: Vec<(u32, u64)> = Vec::new();
+    let mut pass = |cap: &mut HourlyCap, at: u32, sending: bool| {
+        cap.pass_at(at);
+        let allowed = cap.allowance_within("slow.com", at, 360, true);
+        if sending && allowed > 0 {
+            cap.record("slow.com", at, allowed);
+            sends.push((at, allowed));
+        }
+        allowed
+    };
+    assert_eq!(pass(&mut cap, 1000, true), 1, "a 10 s delay sends one page before a second pass");
+    for at in (1030..1300).step_by(30) {
+        assert_eq!(pass(&mut cap, at, true), 3, "three pages for each 30 s between passes");
+    }
+    let mut at = 1270;
+    let mut sent = 0;
+    for _ in 0..8 {
+        at += 45;
+        let allowed = pass(&mut cap, at, true);
+        assert!((4..=5).contains(&allowed), "four or five for 45 s, the half page carried, not {allowed}");
+        sent += allowed;
+    }
+    assert_eq!(sent, 36, "4.5 a pass, its full 360 an hour");
+    for idle in (at + 30..at + 3600).step_by(30) {
+        pass(&mut cap, idle, false);
+    }
+    assert_eq!(pass(&mut cap, at + 3600, true), 3, "an idle hour saves nothing past the last pass");
+    for at in (at + 3610..at + 7200).step_by(10) {
+        pass(&mut cap, at, true);
+    }
+    let busiest = sends.iter().map(|(at, _)| sends.iter().filter(|(sent, _)| (*at..*at + 3600).contains(sent)).map(|(_, n)| n).sum::<u64>()).max().unwrap();
+    assert!(busiest <= 360, "{busiest} in an hour under a 10 s delay");
+
+    let mut restarted = HourlyCap::empty_at(36_000, 1000);
+    restarted.pass_at(1030);
+    assert_eq!(restarted.allowance_within("slow.com", 1030, 360, true), 1, "the first pass after a restart sends at most one page");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_site_asking_for_a_delay_never_gets_two_requests_within_it() {
+async fn a_site_asking_for_a_delay_sends_one_page_for_each_delay_since_the_last_pass() {
+    let dir = Dir::new("delay-gap");
+    let buckets = Arc::new(known(&dir, &["example.com"]));
+    ask_for_a_delay(&buckets, "example.com", 10.0);
+    queue_pages(&buckets, "example.com", 100);
+    let (api, fake) = fake_api(1, 0).await;
+    let mut dispatcher = Dispatcher::load(buckets.clone(), api, 1000, shares(50, 10), rules(), Arc::new(Progress::default())).await.unwrap();
+    let start = 1_759_400_000;
+    let mut by_pass = Vec::new();
+    for at in (start..start + 300).step_by(30) {
+        let before = sent_to(&fake, "example.com");
+        dispatcher.pass(at).await.unwrap();
+        by_pass.push(sent_to(&fake, "example.com") - before);
+    }
+    assert_eq!(by_pass, [1, 3, 3, 3, 3, 3, 3, 3, 3, 3], "one at the first pass, then three for each 30 s at a 10 s delay");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_site_asking_for_a_delay_gets_one_request_a_delay_apart_while_passes_are_shorter() {
     let dir = Dir::new("delay-spacing");
     let buckets = Arc::new(known(&dir, &["example.com", "example.org"]));
     buckets.allow(&Allowed::with_terms([("example.com", Terms::default()), ("example.org", Terms { hourly: Some(30), ..Terms::default() })]));
