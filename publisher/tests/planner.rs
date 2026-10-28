@@ -2149,12 +2149,17 @@ async fn an_input_whose_save_fails_stays_first_in_line_so_the_log_is_not_read_pa
     assert!(planner.pass().await.is_err());
     log(&pages, 2, vec![b]).await;
     assert!(planner.pass().await.is_err(), "the next pass tries the same input again before reading on");
-    assert_eq!((planner.state.cursor().unwrap(), planner.state.pending().unwrap().len()), (Some(0), 0), "nothing saved, and the log kept before a");
+    assert_eq!(
+        (planner.state.cursor().unwrap(), planner.state.pending().unwrap().len(), planner.counts.inputs),
+        (Some(0), 0, 0),
+        "nothing saved, and the log kept before a"
+    );
     drop(planner);
 
     site_count("0");
     let mut restarted = Planner::new(three_at_once(dir.join("state")), pages.clone(), temp.clone(), redis.clone(), Room::Fixed(0)).await.unwrap();
     restarted.pass().await.unwrap();
     assert_eq!(saved_urls(&restarted), ["https://a.example/story", "https://news.example/story/b"]);
+    assert_eq!(restarted.counts.inputs, 2);
     let _ = std::fs::remove_dir_all(&dir);
 }

@@ -600,6 +600,23 @@ impl Version {
     }
 }
 
+/// Writes to the state and the change they make to the count of waiting pages, counted once written.
+#[derive(Default)]
+struct Batch {
+    writes: WriteBatch,
+    waiting: i64,
+}
+
+impl Batch {
+    fn put(&mut self, key: impl AsRef<[u8]>, value: impl AsRef<[u8]>) {
+        self.writes.put(key, value);
+    }
+
+    fn delete(&mut self, key: impl AsRef<[u8]>) {
+        self.writes.delete(key);
+    }
+}
+
 /// What the planner has planned, its place in the log and the inputs not yet handed over, kept on local disk.
 pub struct State {
     db: DB,
@@ -624,9 +641,14 @@ impl State {
         self.waiting.load(Ordering::Relaxed)
     }
 
-    fn count_waiting(&self, batch: &mut WriteBatch, change: i64) {
-        let count = self.waiting.fetch_add(change, Ordering::Relaxed) + change;
-        batch.put(WAITING_COUNT, count.max(0).to_string());
+    /// Writes `batch`, counting the pages it starts or stops waiting only once it is written.
+    fn write(&self, mut batch: Batch) -> Result<()> {
+        if batch.waiting != 0 {
+            batch.put(WAITING_COUNT, (self.waiting_count() + batch.waiting).max(0).to_string());
+        }
+        self.db.write(batch.writes)?;
+        self.waiting.fetch_add(batch.waiting, Ordering::Relaxed);
+        Ok(())
     }
 
     pub fn cursor(&self) -> Result<Option<i64>> {
@@ -653,13 +675,13 @@ impl State {
         if self.waiting_count() >= most && self.db.get_pinned(waiting_key(key))?.is_none() {
             return Ok(false);
         }
-        let mut batch = WriteBatch::default();
+        let mut batch = Batch::default();
         self.waiting_into(&mut batch, key, version)?;
-        self.db.write(batch)?;
+        self.write(batch)?;
         Ok(true)
     }
 
-    fn waiting_into(&self, batch: &mut WriteBatch, key: &str, version: &Version) -> Result<()> {
+    fn waiting_into(&self, batch: &mut Batch, key: &str, version: &Version) -> Result<()> {
         let held = self.waiting(key)?;
         if held.as_ref().is_some_and(|held| (held.fetched_at.as_str(), held.seq) >= (version.fetched_at.as_str(), version.seq)) {
             return Ok(());
@@ -667,7 +689,7 @@ impl State {
         match held.map(|held| held.seq) {
             Some(Some(seq)) => batch.delete(replan_key(seq, key)),
             Some(None) => {}
-            None => self.count_waiting(batch, 1),
+            None => batch.waiting += 1,
         }
         batch.put(waiting_key(key), version.value());
         if let Some(seq) = version.seq {
@@ -677,7 +699,7 @@ impl State {
     }
 
     /// Stops `key` waiting, once a version as new is planned or its change file is gone.
-    fn unwait_into(&self, batch: &mut WriteBatch, key: &str, planned_at: Option<&str>) -> Result<()> {
+    fn unwait_into(&self, batch: &mut Batch, key: &str, planned_at: Option<&str>) -> Result<()> {
         let Some(held) = self.waiting(key)? else { return Ok(()) };
         if planned_at.is_some_and(|planned_at| held.fetched_at.as_str() > planned_at) {
             return Ok(());
@@ -686,14 +708,14 @@ impl State {
         if let Some(seq) = held.seq {
             batch.delete(replan_key(seq, key));
         }
-        self.count_waiting(batch, -1);
+        batch.waiting -= 1;
         Ok(())
     }
 
     fn unwait(&self, key: &str) -> Result<()> {
-        let mut batch = WriteBatch::default();
+        let mut batch = Batch::default();
         self.unwait_into(&mut batch, key, None)?;
-        Ok(self.db.write(batch)?)
+        self.write(batch)
     }
 
     /// Stops every page waiting without a change file, once; nothing re-plans such a page, so it is left to the backfill. How many stopped.
@@ -701,7 +723,7 @@ impl State {
         if self.db.get_pinned(WAITING_NUMBERED)?.is_some() {
             return Ok(0);
         }
-        let (mut batch, mut held, mut dropped) = (WriteBatch::default(), 0, 0);
+        let (mut batch, mut dropped) = (Batch::default(), 0);
         for item in self.db.iterator(IteratorMode::From(b"waiting/", rocksdb::Direction::Forward)) {
             let (key, value) = item?;
             if !key.starts_with(b"waiting/") {
@@ -709,18 +731,15 @@ impl State {
             }
             if Version::parse(&value).seq.is_none() {
                 batch.delete(&key);
-                held += 1;
+                batch.waiting -= 1;
                 dropped += 1;
             }
-            if held == UNWAIT_BATCH {
-                self.count_waiting(&mut batch, -held);
-                self.db.write(std::mem::take(&mut batch))?;
-                held = 0;
+            if -batch.waiting == UNWAIT_BATCH {
+                self.write(std::mem::take(&mut batch))?;
             }
         }
-        self.count_waiting(&mut batch, -held);
         batch.put(WAITING_NUMBERED, "1");
-        self.db.write(batch)?;
+        self.write(batch)?;
         Ok(dropped)
     }
 
@@ -797,7 +816,7 @@ impl State {
         Ok(counts)
     }
 
-    fn change_sites(&self, batch: &mut WriteBatch, changes: &HashMap<String, i64>) -> Result<()> {
+    fn change_sites(&self, batch: &mut Batch, changes: &HashMap<String, i64>) -> Result<()> {
         for (domain, change) in changes {
             let count = self.site_pages(domain)?.saturating_add_signed(*change);
             batch.put(site_key(domain), count.to_string());
@@ -847,12 +866,12 @@ impl State {
     fn expire(&self, input_key: &str, entry: &Value) -> Result<()> {
         let mut batch = self.forgetting(&entry["pages"])?;
         batch.delete(format!("pending/{input_key}"));
-        Ok(self.db.write(batch)?)
+        self.write(batch)
     }
 
     /// Forgets every planned version of a page gone from its site, so a page that comes back is planned again whatever its text; rows logged before change file `seq`, read late, are refused.
     fn forget_key(&self, key: &str, seq: i64) -> Result<()> {
-        let mut batch = WriteBatch::default();
+        let mut batch = Batch::default();
         batch.put(removed_key(key), seq.to_string());
         let mut planned = false;
         for recipe in RECIPES {
@@ -865,7 +884,7 @@ impl State {
             self.change_sites(&mut batch, &HashMap::from([(domain_of_key(key).to_string(), -1)]))?;
         }
         self.unwait_into(&mut batch, key, None)?;
-        Ok(self.db.write(batch)?)
+        self.write(batch)
     }
 
     /// Every task taken back, with the change file that took it back.
@@ -894,11 +913,11 @@ impl State {
 
     /// Forgets the versions of an input's pages that never got vectors, so the log's next showing plans them again.
     fn forget(&self, pages: &Value) -> Result<()> {
-        Ok(self.db.write(self.forgetting(pages)?)?)
+        self.write(self.forgetting(pages)?)
     }
 
-    fn forgetting(&self, pages: &Value) -> Result<WriteBatch> {
-        let mut batch = WriteBatch::default();
+    fn forgetting(&self, pages: &Value) -> Result<Batch> {
+        let mut batch = Batch::default();
         let mut gone: HashMap<String, i64> = HashMap::new();
         for page in pages.as_array().into_iter().flatten() {
             let (Some(key), Some(content_sha1)) = (page["page_key"].as_str(), page["content_sha1"].as_str()) else { continue };
@@ -951,7 +970,7 @@ impl State {
         settled: &[i64],
         backfill: Option<(usize, Option<&str>)>,
     ) -> Result<()> {
-        let mut batch = WriteBatch::default();
+        let mut batch = Batch::default();
         let mut new: HashMap<String, i64> = HashMap::new();
         for page in pages {
             if self.unplanned(&page.key)? {
@@ -971,7 +990,7 @@ impl State {
         if let Some((shard, after)) = backfill {
             batch.put(BACKFILL, backfill_value(shard, after));
         }
-        Ok(self.db.write(batch)?)
+        self.write(batch)
     }
 }
 
@@ -2027,7 +2046,9 @@ impl Planner {
         let settled = self.late_settled(true);
         let writing = self.writing.front().expect("an input cut");
         let backfill = writing.backfill.as_ref().map(|(shard, last)| (*shard, last.as_deref()));
-        self.state.commit(&writing.buffer.pages, &writing.input_key, &writing.entry, cursor, &settled, backfill)?;
+        self.state
+            .commit(&writing.buffer.pages, &writing.input_key, &writing.entry, cursor, &settled, backfill)
+            .with_context(|| format!("saving {}", writing.input_key))?;
         self.kept_cursor = cursor.unwrap_or(self.kept_cursor);
         self.settled.retain(|seq| !settled.contains(seq));
         let lane = self.writing.pop_front().expect("an input cut").lane;
@@ -2253,4 +2274,47 @@ pub fn encode_input(rows: &[(&Planned, &Text)]) -> Result<Vec<u8>> {
 
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_failed_save_changes_nothing_and_its_retry_moves_the_waiting_count_and_the_cursor_once() {
+        let dir = std::env::temp_dir().join(format!("planner-state-{}", uuid::Uuid::new_v4().simple()));
+        let state = State::open(&dir).unwrap();
+        let key = "pages/a.example/1";
+        let version =
+            Version { content_sha1: "a1".into(), fetched_at: "2026-10-28T10:00:00+00:00".into(), page_only: false, seq: Some(3), task_id: "t1".into() };
+        assert!(state.wait(key, &version, 10).unwrap());
+        let page = Planned {
+            key: key.into(),
+            url: "https://a.example/1".into(),
+            host: "a.example".into(),
+            content_sha1: "a1".into(),
+            recipe: RECIPE_V2,
+            fetched_at: version.fetched_at.clone(),
+            texts: Vec::new(),
+            page_only: false,
+            seq: 3,
+            task_id: "t1".into(),
+            source: Source::Replan,
+        };
+        let save = || state.commit(std::slice::from_ref(&page), "embed/inputs/a.parquet", "{}", Some(3), &[], None);
+        // A page count that cannot be read fails the save.
+        state.db.put(site_key("a.example"), "x").unwrap();
+        for _ in 0..3 {
+            assert!(save().is_err());
+        }
+        assert_eq!((state.waiting_count(), state.cursor().unwrap(), state.pending().unwrap().len()), (1, None, 0));
+        state.db.put(site_key("a.example"), "0").unwrap();
+        save().unwrap();
+        let moved = (state.waiting_count(), state.cursor().unwrap(), state.pending().unwrap().len(), state.site_pages("a.example").unwrap());
+        assert_eq!(moved, (0, Some(3), 1, 1));
+        assert!(state.waiting(key).unwrap().is_none());
+        drop(state);
+        assert_eq!(State::open(&dir).unwrap().waiting_count(), 0, "the count kept on disk agrees");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
