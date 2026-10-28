@@ -1252,8 +1252,8 @@ impl BucketStore {
         Ok(out)
     }
 
-    /// Up to `want` of the domain's pages waiting to go once more, newest lastmod first, and how many wait after; stale entries go, at most `STALE_PER_TAKE` a take.
-    pub fn take_resend(&self, domain: &str, want: usize) -> Result<(Vec<Pick>, u64)> {
+    /// Up to `want` of the domain's pages waiting to go once more, newest lastmod first, passing over those in `picked`, and how many wait after; stale entries go, at most `STALE_PER_TAKE` a take.
+    pub fn take_resend(&self, domain: &str, want: usize, picked: &std::collections::HashSet<Vec<u8>>) -> Result<(Vec<Pick>, u64)> {
         let robots = self.domain(domain)?.map(|record| records::robots_paths(&record)).unwrap_or_default();
         let since = self.terms(domain).since;
         let prefix = [&[RESEND], domain.as_bytes(), b"\0"].concat();
@@ -1279,6 +1279,9 @@ impl BucketStore {
                 let (record, sent) = looked.next().expect("one lookup per parsed entry");
                 if picks.len() >= want {
                     break;
+                }
+                if picked.contains(&entry.rest) {
+                    continue;
                 }
                 let allowed = robots.allows_page(domain, &entry.rest) && !self.listed_apart(domain, &entry.rest);
                 let dated_in = record.as_ref().is_none_or(|r| !before_floor(since, r.lastmod, &entry.rest));
@@ -1317,11 +1320,14 @@ impl BucketStore {
     /// Takes every page waiting to go once more off its list, clearing its going-again mark, and forgets the `resend_before` each domain was walked under; run with the bot stopped.
     pub fn unresend(&self) -> Result<u64> {
         let mut taken = 0u64;
+        let mut after: Option<Vec<u8>> = None;
         loop {
-            let keys = self.keys_under(&[RESEND], None, 10_000)?;
-            if keys.is_empty() {
+            // Each chunk reads on from the last, past the keys it deleted, rather than over their tombstones again.
+            let keys = self.keys_under(&[RESEND], after.as_deref(), 10_000)?;
+            let Some(last) = keys.last().cloned() else {
                 break;
-            }
+            };
+            after = Some(last);
             let _guard = self.lock_ready();
             let entries: Vec<Entry> = keys.iter().filter_map(|key| Entry::parse(key)).collect();
             let sents = self.sents(entries.iter().map(Entry::sent_key))?;

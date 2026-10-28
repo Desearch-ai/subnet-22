@@ -1504,7 +1504,7 @@ fn a_resend_walk_lists_pages_sent_before_the_cutoff_newest_first_and_not_twice()
     assert_eq!(store.resend_count("example.com").unwrap(), 4);
     assert_eq!(store.resent_before("example.com").unwrap(), Some(2000));
 
-    let (again, left) = store.take_resend("example.com", 10).unwrap();
+    let (again, left) = store.take_resend("example.com", 10, &Default::default()).unwrap();
     assert_eq!((again.len(), left), (4, 4));
     assert!(again.iter().all(|p| p.reason == Reason::Resend));
     store.mark_sent(&again, 2500, &rules()).unwrap();
@@ -1607,8 +1607,7 @@ async fn pages_going_once_more_take_only_the_room_new_pages_leave() {
     let sent = |host: &str| fake.lock().unwrap().enqueued.iter().map(|(_, body)| serde_json::from_slice::<Value>(body).unwrap()["urls"].as_array().unwrap().iter().filter(|u| u["host"] == host).count()).sum::<usize>();
     let resent = || progress.sent_resend.load(std::sync::atomic::Ordering::Relaxed);
     assert_eq!(dispatcher.pass(now).await.unwrap(), 1000);
-    assert_eq!((sent("new.com"), resent()), (1000, 0), "the domains with pages to send again are still being read");
-    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert_eq!((sent("new.com"), resent()), (1000, 0), "new pages take the whole room");
     assert_eq!(dispatcher.pass(now + 5).await.unwrap(), 1000);
     assert_eq!(sent("new.com"), 1500, "new pages keep the room they had, though 4 domains have 2,000 pages to send again");
     assert_eq!(resent(), 500, "resends take only what new pages leave");
@@ -1620,16 +1619,29 @@ async fn pages_going_once_more_take_only_the_room_new_pages_leave() {
 fn outcomes_of_pages_sent_once_more_stay_out_of_the_yield() {
     let dir = Dir::new("resent-outcomes");
     let buckets = known(&dir, &["example.com"]);
+    let rows = vec![
+        outcome("https://example.com/old", Outcome::Failed, 5000),
+        outcome("https://example.com/new", Outcome::Published, 5000),
+        outcome("https://example.com/gone", Outcome::Failed, 5000),
+        outcome("https://example.com/lost", Outcome::Dropped, 5000),
+    ];
     let resent = Arc::new(ResentPages::default());
     resent.insert("example.com", b"example.com/old");
-    assert!(resent.contains("example.com", b"example.com/old") && !resent.contains("example.com", b"example.com/new"));
-    let mut reader = OutcomeReader::new(rules(), 1000).with_resent(resent);
-    let rows = vec![outcome("https://example.com/old", Outcome::Failed, 5000), outcome("https://example.com/new", Outcome::Published, 5000), outcome("https://example.com/gone", Outcome::Failed, 5000)];
+    resent.insert("example.com", b"example.com/lost");
+    let mut reader = OutcomeReader::new(rules(), 1000).with_resent(resent.clone());
     reader.apply(&buckets, &rows, 5000).unwrap();
     let store = buckets.store("example.com");
     let counted = store.domain_yield("example.com").unwrap().unwrap();
     assert_eq!((counted.ok, counted.failed), (1.0, 1.0), "the resend's failure stays out; the other failure counts");
-    assert!(store.next_send("example.com", &rest("old")).unwrap().is_some(), "the resend still waits for its retry");
+    assert!(store.next_send("example.com", &rest("old")).is_ok_and(|next| next.is_none()), "a failed resend gets no retry of its own, whose outcome would count; the fill takes the page in its turn");
+    assert!(store.next_send("example.com", &rest("lost")).unwrap().is_some(), "a resend whose task was lost goes again");
+    assert!(store.next_send("example.com", &rest("gone")).unwrap().is_some());
+
+    let path = dir.0.join("resent-pages.bin");
+    resent.save(&path).unwrap();
+    let kept = ResentPages::load(&path);
+    assert!(kept.contains("example.com", b"example.com/old") && !kept.contains("example.com", b"example.com/new"), "the set outlives a restart");
+    assert!(!ResentPages::load(&dir.0.join("none.bin")).active());
 }
 
 #[test]
@@ -1640,6 +1652,110 @@ fn a_big_cap_that_holds_every_page_streams_them_all() {
     store.clear_fresh_before("example.com", u32::MAX, &mut |_| true).unwrap();
     let joined = store.join_domain("example.com", Terms { send_cap: Some(2_000_000), ..Terms::default() }, 5000, &mut |_| true).unwrap();
     assert_eq!((joined.queued, joined.sent, store.ready_count("example.com").unwrap()), (30, 0, 30), "counted first, all 30 fit, and they stream without a heap");
+}
+
+#[test]
+fn a_resend_take_passes_over_a_page_the_lists_took_this_pass() {
+    let dir = Dir::new("resend-picked");
+    let store = open(&dir);
+    store.record_listing("example.com", 7, vec![page("a", LATE), page("b", LATE + 1)], 100).unwrap();
+    store.mark_sent(&take(&store, 10), 1000, &rules()).unwrap();
+    store.resend_domain("example.com", Terms { resend_before: Some(2000), ..Terms::default() }, 5000, &mut |_| true, &mut |_| true).unwrap();
+    let picked: std::collections::HashSet<Vec<u8>> = [rest("b")].into();
+    let (picks, left) = store.take_resend("example.com", 10, &picked).unwrap();
+    assert_eq!(picks.iter().map(|p| p.url.as_str()).collect::<Vec<_>>(), ["https://example.com/a"], "b went on a list this pass, so it isn't taken twice");
+    assert_eq!(left, 2, "and it stays waiting");
+}
+
+#[test]
+fn a_resend_walk_held_to_a_slow_pace_still_stops_when_told() {
+    let dir = Dir::new("resend-stop-pace");
+    std::fs::create_dir_all(&dir.0).unwrap();
+    let path = dir.0.join("domains.json");
+    std::fs::write(&path, r#"[{"host": "example.com", "resend_before": "2026-10-27"}]"#).unwrap();
+    let list = Allowed::from_file(&path).unwrap();
+    let buckets = known(&dir, &["example.com"]);
+    buckets.allow(&list);
+    let store = buckets.store("example.com");
+    store.record_listing("example.com", 7, (0..3000).map(|i| page(&format!("p{i:04}"), LATE)).collect(), 100).unwrap();
+    store.mark_sent(&take(store, 4000), CUTOFF - 86_400, &rules()).unwrap();
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let stopping = stop.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        stopping.store(true, std::sync::atomic::Ordering::Relaxed);
+    });
+    let started = std::time::Instant::now();
+    desearch_bot::dispatch::resend_round(&buckets, &list, 1_000_000, 1, &Progress::default(), &stop).unwrap();
+    assert!(started.elapsed() < std::time::Duration::from_secs(5), "a page a second would sleep 2,000 s after the first chunk; the walk wakes when told to stop");
+    assert_eq!(store.resent_before("example.com").unwrap(), None, "and leaves the domain to be walked again");
+}
+
+#[test]
+fn unresend_reads_on_past_what_it_took() {
+    let dir = Dir::new("unresend-big");
+    let store = open(&dir);
+    store.record_listing("example.com", 7, (0..25_000).map(|i| page(&format!("p{i:05}"), LATE)).collect(), 100).unwrap();
+    store.mark_sent(&take(&store, 25_000), 1000, &rules()).unwrap();
+    assert_eq!(store.resend_domain("example.com", Terms { resend_before: Some(2000), ..Terms::default() }, 5000, &mut |_| true, &mut |_| true).unwrap().queued, 25_000);
+    assert_eq!(store.unresend().unwrap(), 25_000, "three chunks of 10,000, each read on from the last");
+    assert_eq!(store.resend_count("example.com").unwrap(), 0);
+    assert!(store.resend_list("example.com", 10).unwrap().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_site_with_only_resends_keeps_its_crawl_delay() {
+    let dir = Dir::new("resend-delay");
+    let buckets = Arc::new(known(&dir, &["slow.com"]));
+    let store = buckets.store("slow.com");
+    let mut record = records::new_domain(Some(5), Some("com"), &[], State::Active, None, None);
+    record.insert("delay".into(), 60.0.into());
+    let mut changes = Changes::default();
+    changes.domain("slow.com", &record);
+    store.write(changes).unwrap();
+    store.record_listing("slow.com", 1, (0..30).map(|i| (urls::parse(&format!("https://slow.com/p{i:02}"), "slow.com").unwrap(), 100, false)).collect(), 100).unwrap();
+    let mut quotas = [0; LANES];
+    quotas[FRESH] = 100;
+    store.mark_sent(&store.take_ready("slow.com", quotas).unwrap(), 1000, &rules()).unwrap();
+    store.resend_domain("slow.com", Terms { resend_before: Some(5000), ..Terms::default() }, 2000, &mut |_| true, &mut |_| true).unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let fake = Arc::new(Mutex::new(FakeApi { room: 1, ..FakeApi::default() }));
+    tokio::spawn(serve_api(listener, fake.clone()));
+    let mut dispatcher = Dispatcher::load(buckets.clone(), TaskApi::new(&base, Hotkey::from_uri("//test").unwrap()).unwrap(), 1000, shares(50, 10), rules(), Arc::new(Progress::default())).await.unwrap();
+    let now = 1_800_000_000;
+    assert_eq!(dispatcher.pass(now).await.unwrap(), 2, "a minute between requests is 60 an hour, two minutes' worth at once, for resends too");
+    assert_eq!(dispatcher.pass(now + 60).await.unwrap(), 0);
+    assert_eq!(dispatcher.pass(now + 121).await.unwrap(), 2);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_site_with_resends_waiting_gets_no_fill_on_top_of_them() {
+    let dir = Dir::new("resend-fill");
+    let buckets = Arc::new(known(&dir, &["example.com"]));
+    buckets.allow(&Allowed::with_terms([("example.com", Terms { hourly: Some(3600), ..Terms::default() })]));
+    let store = buckets.store("example.com");
+    store.record_listing("example.com", 1, (0..150).map(|i| (urls::parse(&format!("https://example.com/p{i:03}"), "example.com").unwrap(), 100, false)).collect(), 100).unwrap();
+    let mut quotas = [0; LANES];
+    quotas[FRESH] = 1000;
+    let picks = store.take_ready("example.com", quotas).unwrap();
+    store.mark_sent(&picks[..100], 1000, &rules()).unwrap();
+    store.mark_sent(&picks[100..], 3000, &rules()).unwrap();
+    store.resend_domain("example.com", Terms { resend_before: Some(2000), ..Terms::default() }, 2500, &mut |_| true, &mut |_| true).unwrap();
+    let later = 3000 + FILL_FLOOR;
+    store.note_outcomes(&[], &[("example.com".to_string(), Yield { ok: 1000.0, failed: 10.0, at: later })]).unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let fake = Arc::new(Mutex::new(FakeApi { room: 1, ..FakeApi::default() }));
+    tokio::spawn(serve_api(listener, fake.clone()));
+    let progress = Arc::new(Progress::default());
+    let wanted = Arc::new(StockWanted::default());
+    let api = TaskApi::new(&base, Hotkey::from_uri("//test").unwrap()).unwrap();
+    assert_eq!(store.stock_refresh("example.com", 1000, None, usize::MAX, &mut |_| true).unwrap().map(|s| s.count), Some(50), "the 50 sent after the cutoff can be refreshed");
+    let mut dispatcher = Dispatcher::load(buckets.clone(), api, 1_000_000, shares(50, 10), rules(), progress.clone()).await.unwrap().refreshing(wanted.clone());
+    let count = |counter: &std::sync::atomic::AtomicU64| counter.load(std::sync::atomic::Ordering::Relaxed);
+    assert_eq!(dispatcher.pass(later).await.unwrap(), 120, "two minutes of its 3,600 an hour, once");
+    assert_eq!((count(&progress.sent_resend), count(&progress.sent_fill)), (100, 20), "the resends first; the fill takes only what they left, once none wait");
 }
 
 #[test]
@@ -1662,6 +1778,13 @@ fn only_a_listed_subdomain_whose_record_works_takes_its_pages_from_the_parent() 
     buckets.store("news.example.com").write(changes).unwrap();
     buckets.note_apart(&list);
     assert!(list.apart("news.example.com"), "a subdomain whose robots.txt refuses us keeps its pages from going under the parent too");
+    for (reason, apart) in [("not_english", true), ("homepage_error", false)] {
+        let mut changes = Changes::default();
+        changes.domain("news.example.com", &records::new_domain(Some(10), Some("com"), &[], State::Ineligible, Some(reason), None));
+        buckets.store("news.example.com").write(changes).unwrap();
+        buckets.note_apart(&list);
+        assert_eq!(list.apart("news.example.com"), apart, "ineligible for {reason}");
+    }
 }
 
 #[test]

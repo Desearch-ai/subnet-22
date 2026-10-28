@@ -1,6 +1,6 @@
 //! Fills the task API's queue from the ready lists: as much as it has room for, round robin across domains by rank, within an hourly cap per domain.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -535,7 +535,7 @@ pub struct Dispatcher {
     resending: HashMap<String, Domain>,
     resend_resume: Option<(i64, String)>,
     resend_read: Option<Instant>,
-    resend_job: Option<tokio::task::JoinHandle<Result<HashMap<String, Domain>>>>,
+    resend_job: Option<tokio::task::JoinHandle<Result<HashMap<String, (Domain, Option<u64>)>>>>,
     /// Pages sent to go once more, so their outcomes stay out of the yields that pace new pages.
     resent: Option<Arc<ResentPages>>,
 }
@@ -726,9 +726,19 @@ impl Dispatcher {
         }
         self.take_resending().await;
         if self.resend_job.is_none() && self.resend_read.is_none_or(|at| at.elapsed() >= RESEND_LOOK) {
+            let first = self.resend_read.is_none();
             self.resend_read = Some(Instant::now());
             let buckets = self.buckets.clone();
             self.resend_job = Some(tokio::task::spawn_blocking(move || resending(&buckets, now)));
+            // The first read is waited for, so a restart knows its resends, and their sites' delays, from its first pass.
+            if first {
+                if let Some(job) = self.resend_job.as_mut() {
+                    while !job.is_finished() {
+                        tokio::time::sleep(Duration::from_millis(50)).await;
+                    }
+                }
+                self.take_resending().await;
+            }
         }
         self.take_fillers().await;
         if self.fillers_job.is_none() && self.fillers_read.is_none_or(|at| at.elapsed() >= RANKS_SECONDS) {
@@ -833,7 +843,7 @@ impl Dispatcher {
             })
         })
         .await??;
-        let listed: HashMap<String, u64> = taken.iter().map(|t| (t.domain.clone(), t.picks.len() as u64)).collect();
+        let listed: HashMap<String, HashSet<Vec<u8>>> = taken.iter().map(|t| (t.domain.clone(), t.picks.iter().map(|p| p.entry.rest.clone()).collect())).collect();
         let mut lists = Vec::with_capacity(taken.len());
         for Taken { domain, quotas, picks, left } in taken {
             let mut by_lane = [0; LANES];
@@ -860,7 +870,7 @@ impl Dispatcher {
     }
 
     /// Pages going once more, for the room new pages and retries left, within each domain's hourly limit less what its lists took this pass.
-    async fn resend(&mut self, budget: u64, now: u32, listed: &HashMap<String, u64>) -> Result<Vec<Pick>> {
+    async fn resend(&mut self, budget: u64, now: u32, listed: &HashMap<String, HashSet<Vec<u8>>>) -> Result<Vec<Pick>> {
         let buckets = self.buckets.clone();
         let mut order: Vec<(i64, String)> = self.resending.iter().filter(|(name, d)| d.ready > 0 && buckets.allows(name)).map(|(name, d)| (d.rank, name.clone())).collect();
         order.sort_unstable();
@@ -870,22 +880,28 @@ impl Dispatcher {
                 let Domain { ready, share, weight, .. } = self.resending[name];
                 let (hourly, floor) = hourly_of(&self.buckets, &self.paced, self.cap.limit(), name);
                 let allowance = self.cap.allowance_within(name, now, if share == 0.0 { PROBE_PER_HOUR.min(hourly) } else { hourly }, floor);
-                Want { rank: *rank, ready, allowance: allowance.saturating_sub(listed.get(name).copied().unwrap_or(0)), share, weight }
+                Want { rank: *rank, ready, allowance: allowance.saturating_sub(listed.get(name).map_or(0, |picked| picked.len() as u64)), share, weight }
             })
             .collect();
         let start = self.resend_resume.as_ref().map_or(0, |resume| order.partition_point(|key| key <= resume));
         let (given, next) = allot(&wants, budget, start);
         self.resend_resume = order.get(next.checked_sub(1).unwrap_or(order.len().saturating_sub(1))).cloned();
-        let asks: Vec<(String, usize)> = order.iter().zip(&given).filter(|(_, &n)| n > 0).map(|((_, name), &n)| (name.clone(), n as usize)).collect();
+        // A page the lists took this pass, from a retry or a change, isn't taken again here before it is marked sent.
+        let asks: Vec<(String, usize, HashSet<Vec<u8>>)> = order
+            .iter()
+            .zip(&given)
+            .filter(|(_, &n)| n > 0)
+            .map(|((_, name), &n)| (name.clone(), n as usize, listed.get(name).cloned().unwrap_or_default()))
+            .collect();
         if asks.is_empty() {
             return Ok(Vec::new());
         }
         let taken = tokio::task::spawn_blocking(move || {
-            on_readers(asks, |(domain, want)| {
+            on_readers(asks, |(domain, want, picked)| {
                 let Some(store) = buckets.store_for(&domain) else {
                     return Ok((domain, Vec::new(), 0));
                 };
-                let (picks, left) = store.take_resend(&domain, want)?;
+                let (picks, left) = store.take_resend(&domain, want, &picked)?;
                 Ok((domain, picks, left))
             })
         })
@@ -913,9 +929,13 @@ impl Dispatcher {
         };
         match job.await {
             Ok(Ok(resending)) => {
-                self.progress.resend_waiting.store(resending.values().map(|d| d.ready).sum(), Ordering::Relaxed);
+                self.progress.resend_waiting.store(resending.values().map(|(d, _)| d.ready).sum(), Ordering::Relaxed);
                 self.progress.resend_domains.store(resending.len() as u64, Ordering::Relaxed);
-                self.resending = resending;
+                self.resending.clear();
+                for (domain, (known, paced)) in resending {
+                    self.pace_by_delay(&domain, paced);
+                    self.resending.insert(domain, known);
+                }
             }
             Ok(Err(error)) => eprintln!("[rs] reading the domains with pages to send again failed: {error:#}"),
             Err(error) => eprintln!("[rs] reading the domains with pages to send again stopped: {error}"),
@@ -957,8 +977,12 @@ impl Dispatcher {
         };
         self.take_fillers().await;
         self.fill_rest.retain(|_, until| *until > now);
-        let eligible: Vec<&(i64, String)> =
-            self.fillers.iter().filter(|(_, name)| !self.domains.contains_key(name) && !self.fill_rest.contains_key(name)).collect();
+        // A domain with resends waiting spends its hourly limit on them, so the fill passes it by.
+        let eligible: Vec<&(i64, String)> = self
+            .fillers
+            .iter()
+            .filter(|(_, name)| !self.domains.contains_key(name) && !self.resending.contains_key(name) && !self.fill_rest.contains_key(name))
+            .collect();
         let start = self.fill_resume.as_ref().map_or(0, |resume| eligible.partition_point(|key| *key <= resume));
         let order: Vec<(i64, String)> = eligible.iter().cycle().skip(start).take(FILL_WINDOW.min(eligible.len())).map(|&key| key.clone()).collect();
         let wants: Vec<Want> = order
@@ -1405,7 +1429,7 @@ pub fn join_round(buckets: &Buckets, allowed: &Allowed, per_second: u64, progres
             read += scanned;
             let due = Duration::from_secs_f64(read as f64 / per_second.max(1) as f64);
             if let Some(ahead) = due.checked_sub(began.elapsed()) {
-                std::thread::sleep(ahead);
+                rest(ahead, stop);
             }
             !stop.load(Ordering::Relaxed)
         };
@@ -1488,7 +1512,7 @@ pub fn resend_round(buckets: &Buckets, allowed: &Allowed, read_per_sec: u64, wri
     let (mut read, mut written) = (0u64, 0u64);
     let keep_to = |done: u64, per_second: u64| {
         if let Some(ahead) = Duration::from_secs_f64(done as f64 / per_second.max(1) as f64).checked_sub(began.elapsed()) {
-            std::thread::sleep(ahead);
+            rest(ahead, stop);
         }
         !stop.load(Ordering::Relaxed)
     };
@@ -1518,6 +1542,17 @@ pub fn resend_round(buckets: &Buckets, allowed: &Allowed, read_per_sec: u64, wri
         progress.resend_done.fetch_add(1, Ordering::Relaxed);
     }
     Ok(walked)
+}
+
+/// Sleeps for `ahead` a second at a time, waking early when told to stop.
+fn rest(ahead: Duration, stop: &AtomicBool) {
+    let until = Instant::now() + ahead;
+    while !stop.load(Ordering::Relaxed) {
+        let Some(left) = until.checked_duration_since(Instant::now()).filter(|left| !left.is_zero()) else {
+            return;
+        };
+        std::thread::sleep(left.min(Duration::from_secs(1)));
+    }
 }
 
 /// Whether a domain's date floor is below the one its stored pages were last queued under, so older pages it left out may go now.
@@ -1660,16 +1695,17 @@ fn share_of(buckets: &Buckets, domain: &str, now: u32) -> f64 {
 }
 
 /// Listed domains whose pages come back well enough to send again, best ranked first.
-/// Every domain with pages waiting to go once more, with its rank, share and weight; it reads each one's records, too slow for a pass.
-fn resending(buckets: &Buckets, now: u32) -> Result<HashMap<String, Domain>> {
+/// Every domain with pages waiting to go once more, with its rank, share and weight, and the hourly rate its Crawl-delay allows; it reads each one's records, too slow for a pass.
+fn resending(buckets: &Buckets, now: u32) -> Result<HashMap<String, (Domain, Option<u64>)>> {
     let found = on_readers(buckets.stores().collect(), |store| store.resend_domains())?;
     Ok(found
         .into_iter()
         .flatten()
         .filter(|(domain, _)| buckets.allows(domain))
         .map(|(domain, ready)| {
-            let (rank, share, weight) = (rank_of(buckets, &domain), share_of(buckets, &domain, now), buckets.terms(&domain).weight);
-            (domain, Domain { rank, ready, share, weight })
+            let (rank, paced) = placing_of(buckets, &domain);
+            let (share, weight) = (share_of(buckets, &domain, now), buckets.terms(&domain).weight);
+            (domain, (Domain { rank, ready, share, weight }, paced))
         })
         .collect())
 }

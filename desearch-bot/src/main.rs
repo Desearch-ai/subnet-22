@@ -376,7 +376,9 @@ async fn run(args: RunArgs) -> Result<()> {
     }
     let resending = listed.clone().filter(|_| args.resend_per_sec > 0).map(|allowed| {
         let (buckets, progress, halt) = (buckets.clone(), progress.clone(), halt.clone());
-        let (read_per_sec, write_per_sec) = (args.join_per_sec.max(1), args.resend_per_sec);
+        // Reads are cheap beside the writes the resend pace holds; with the list walker off they go at its usual rate.
+        let read_per_sec = if args.join_per_sec > 0 { args.join_per_sec } else { 1_000_000 };
+        let write_per_sec = args.resend_per_sec;
         std::thread::spawn(move || match dispatch::resend_listed(&buckets, &allowed, read_per_sec, write_per_sec, &progress, &halt) {
             Ok(()) => println!("[rs] resend walker stopped"),
             Err(error) => eprintln!("[rs] resend walker failed: {error:#}"),
@@ -417,7 +419,24 @@ async fn run(args: RunArgs) -> Result<()> {
             Err(error) => eprintln!("[rs] refresh stock keeper failed: {error:#}"),
         })
     });
-    let resent = Arc::new(ResentPages::default());
+    // The pages lately sent once more outlive a restart, so their outcomes still stay out of the yields.
+    let resent_path = args.buckets_dir.join("resent-pages.bin");
+    let resent = Arc::new(ResentPages::load(&resent_path));
+    let saving = {
+        let (resent, halt, path) = (resent.clone(), halt.clone(), resent_path.clone());
+        std::thread::spawn(move || {
+            let mut saved = std::time::Instant::now();
+            while !halt.load(std::sync::atomic::Ordering::Relaxed) {
+                std::thread::sleep(Duration::from_secs(1));
+                if saved.elapsed() >= Duration::from_secs(3600) {
+                    if let Err(error) = resent.save(&path) {
+                        eprintln!("[rs] saving the pages sent once more failed: {error:#}");
+                    }
+                    saved = std::time::Instant::now();
+                }
+            }
+        })
+    };
     if let Some(base) = &args.task_api {
         let uri = std::env::var("FEEDER_KEY_URI").ok().filter(|u| !u.is_empty()).context("FEEDER_KEY_URI is not set")?;
         let api = TaskApi::new(base, Hotkey::from_uri(&uri).context("FEEDER_KEY_URI")?)?;
@@ -484,6 +503,10 @@ async fn run(args: RunArgs) -> Result<()> {
     if let Some(resending) = resending {
         let _ = tokio::task::spawn_blocking(move || resending.join()).await;
     }
+    let _ = tokio::task::spawn_blocking(move || saving.join()).await;
+    if let Err(error) = resent.save(&resent_path) {
+        eprintln!("[rs] saving the pages sent once more failed: {error:#}");
+    }
     if let Some(inbox) = inbox {
         let _ = tokio::task::spawn_blocking(move || inbox.join()).await;
     }
@@ -528,11 +551,9 @@ fn unresend(args: UnresendArgs) -> Result<()> {
     let owned = parse_buckets(&args.buckets)?;
     let resources = Resources::new(1 << 30, 512 << 20, owned.len());
     let buckets = Buckets::open(&args.buckets_dir, &owned, &resources)?;
-    let mut taken = 0;
-    for store in buckets.stores() {
-        taken += store.unresend()?;
-    }
-    println!("{taken} pages waiting to go once more taken off their lists, their marks cleared, in {} stores", owned.len());
+    let started = std::time::Instant::now();
+    let taken: u64 = dispatch::on_readers(buckets.stores().collect(), |store| store.unresend())?.into_iter().sum();
+    println!("{taken} pages waiting to go once more taken off their lists, their marks cleared, in {} stores, in {:.0}s", owned.len(), started.elapsed().as_secs_f64());
     Ok(())
 }
 

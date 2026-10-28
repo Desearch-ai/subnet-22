@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -26,6 +27,7 @@ const RESENT_BITS: usize = 1 << 29;
 /// How long each set takes inserts before the older one is dropped; outcomes come back well within it.
 const RESENT_ROTATE: Duration = Duration::from_secs(6 * 3600);
 const RESENT_HASHES: u64 = 3;
+const RESENT_MAGIC: &[u8; 8] = b"RESENT01";
 
 /// Pages lately sent to go once more, so their outcomes stay out of the yields that pace new pages: two sets of bits, the older dropped every `RESENT_ROTATE`, allocated on the first insert. A false positive only leaves one outcome out of a yield.
 #[derive(Default)]
@@ -64,6 +66,42 @@ impl ResentPages {
     /// Whether anything was inserted yet; until then outcomes need no page key.
     pub fn active(&self) -> bool {
         self.sets.lock().unwrap_or_else(|e| e.into_inner()).is_some()
+    }
+
+    /// Writes the sets to `path` through a temporary file, so a restart keeps them; nothing when none were made.
+    pub fn save(&self, path: &Path) -> Result<()> {
+        let mut out = Vec::new();
+        {
+            let sets = self.sets.lock().unwrap_or_else(|e| e.into_inner());
+            let Some(sets) = sets.as_ref() else {
+                return Ok(());
+            };
+            out.reserve(16 + RESENT_BITS / 4);
+            out.extend_from_slice(RESENT_MAGIC);
+            out.extend_from_slice(&sets.since.elapsed().as_secs().to_le_bytes());
+            for word in sets.current.iter().chain(&sets.older) {
+                out.extend_from_slice(&word.to_le_bytes());
+            }
+        }
+        let part = path.with_extension("part");
+        std::fs::write(&part, out).with_context(|| format!("writing {}", part.display()))?;
+        Ok(std::fs::rename(&part, path)?)
+    }
+
+    /// The sets saved at `path`; empty ones when there is no such file or it is of another shape.
+    pub fn load(path: &Path) -> ResentPages {
+        let Ok(raw) = std::fs::read(path) else {
+            return ResentPages::default();
+        };
+        if raw.len() != 16 + RESENT_BITS / 4 || &raw[..8] != RESENT_MAGIC {
+            return ResentPages::default();
+        }
+        let age = Duration::from_secs(u64::from_le_bytes(raw[8..16].try_into().unwrap()));
+        let mut words = raw[16..].chunks_exact(8).map(|word| u64::from_le_bytes(word.try_into().unwrap()));
+        let current: Vec<u64> = words.by_ref().take(RESENT_BITS / 64).collect();
+        let older: Vec<u64> = words.collect();
+        let since = Instant::now().checked_sub(age).unwrap_or_else(Instant::now);
+        ResentPages { sets: Mutex::new(Some(Resent { current, older, since })) }
     }
 }
 
@@ -224,14 +262,19 @@ impl OutcomeReader {
             let rest = (resent.is_some() || !published).then(|| Normaliser::new(&domain).ok().and_then(|n| n.parse(&row.url)).map(|key| key.key[domain.len() + 1..].to_vec())).flatten();
             // A dropped task never reached the site, so it says nothing about the domain; a page sent once more for its domain's resend_before says little about its new pages.
             let tally = tallies.entry(domain.clone()).or_default();
-            if !resent.zip(rest.as_ref()).is_some_and(|(resent, rest)| resent.contains(&domain, rest)) {
+            tally.at = tally.at.max(at);
+            let was_resend = resent.zip(rest.as_ref()).is_some_and(|(resent, rest)| resent.contains(&domain, rest));
+            if !was_resend {
                 match row.outcome {
                     Outcome::Published | Outcome::Unchanged => tally.ok += 1.0,
                     Outcome::Failed => tally.failed += 1.0,
                     Outcome::Dropped => {}
                 }
             }
-            tally.at = tally.at.max(at);
+            // A failed resend gets no retry of its own, whose outcome would count; the page goes again with the fill.
+            if was_resend && row.outcome == Outcome::Failed {
+                continue;
+            }
             let interval = self.recrawl.interval(&domain);
             let next = match row.outcome {
                 Outcome::Published | Outcome::Unchanged => continue,
