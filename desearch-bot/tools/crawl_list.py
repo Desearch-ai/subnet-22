@@ -398,6 +398,7 @@ def build(
     resend_before: str | None = None,
     resend_hosts: set[str] | None = None,
     node2_hours: float | None = None,
+    node2_min_weight: int = 1,
 ) -> tuple[list[dict], Counter]:
     ranked, counts = [], Counter()
     for row in rows:
@@ -415,6 +416,8 @@ def build(
             if v1 is None
             else apply_v1(row, base, entry_v1, override.startswith("out:"))
         )
+        if v1 is not None and entry_v1 is None and decision.listed and decision.weight < node2_min_weight:
+            decision = out("node2")
         counts[decision.site_type if decision.listed else f"out:{decision.reason}"] += 1
         feed = (
             entry_v1 is not None
@@ -539,6 +542,12 @@ def main(argv: list[str] | None = None) -> None:
         help="with --v1-set, each site outside it sends at most its stored pages under its cap divided by this many hours in an hour, at least one, so the v1 sites keep the rest of the cap",
     )
     parser.add_argument(
+        "--node2-min-weight",
+        type=int,
+        default=1,
+        help="with --v1-set, sites outside it weighted below this stay off the list; 2 leaves out companies, organizations and personal sites",
+    )
+    parser.add_argument(
         "--registry-csv",
         help="read the registry rows from this CSV instead of DESEARCH_DB",
     )
@@ -574,6 +583,7 @@ def main(argv: list[str] | None = None) -> None:
                 args.resend_before,
                 resend_hosts,
                 args.node2_hours,
+                args.node2_min_weight,
             )
     else:
         entries, counts = build(
@@ -586,6 +596,7 @@ def main(argv: list[str] | None = None) -> None:
             resend_before=args.resend_before,
             resend_hosts=resend_hosts,
             node2_hours=args.node2_hours,
+            node2_min_weight=args.node2_min_weight,
         )
     write_list(entries, args.out)
     print(f"{len(entries)} domains listed in {args.out}")

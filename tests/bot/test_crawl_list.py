@@ -330,6 +330,16 @@ def test_node2_sites_spread_their_stored_pages_over_the_hours_given():
     assert {e["host"]: e["hourly"] for e in v1_list(rows, v1)[0].values()}["corp.com"] == 5_000, "only when asked"
 
 
+def test_a_minimum_weight_leaves_lighter_node2_sites_off_the_list():
+    V1 = crawl_list.V1
+    rows = [row(host="news.com", site_type="news"), row(host="mag.com", site_type="media"), row(host="corp.com", site_type="company"), row(host="own.com", site_type="company")]
+    v1 = {"news.com": V1("news", "news"), "own.com": V1("whole", "company")}
+    entries, counts = crawl_list.build(rows, {}, {}, Hand(), v1=v1, node2_min_weight=2)
+    assert {e["host"] for e in entries} == {"news.com", "mag.com", "own.com"}, "a v1 site stays whatever its type"
+    assert counts["out:node2"] == 1
+    assert "corp.com" in v1_list(rows, v1)[0], "only when asked"
+
+
 def test_v1_takes_cited_sites_whole_and_drops_its_outs():
     V1 = crawl_list.V1
     rows = [
