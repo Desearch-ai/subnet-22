@@ -1373,3 +1373,90 @@ async fn a_removal_takes_a_buffered_page_out_and_a_late_row_from_before_it_does_
     assert!(planner.state.removed(&key).unwrap().is_none());
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Writes change file `seq` holding one take-back of `task_id`, numbered now.
+async fn log_take_back(pages: &Bucket, seq: u64, task_id: &str) {
+    let take_back = Change {
+        key: String::new(),
+        kind: Kind::TaskWithdrawn,
+        previous_content_sha1: String::new(),
+        published_at: "2026-10-14T10:00:00+00:00".into(),
+        body: Body::TaskWithdrawn { task_id: task_id.into() },
+    };
+    let key = format!("changes/dt=2026-10-14/{seq}.parquet");
+    pages.put(&key, Bytes::from(changes::encode(&[take_back]).unwrap()), PARQUET, None).await.unwrap();
+    pages.put(&CHANGES.seq_key(seq), Bytes::from(json!({"key": key, "rows": 1}).to_string()), JSON, None).await.unwrap();
+    pages.put(&CHANGES.latest_key(), Bytes::from(json!({"seq": seq}).to_string()), JSON, None).await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_page_from_a_task_taken_back_is_embedded_again_when_crawled_again_with_the_same_text() {
+    let Some((_turn, redis)) = redis_db().await else {
+        eprintln!("skipped: no Redis on {REDIS}");
+        return;
+    };
+    let dir = scratch("take-back");
+    let stub = stub::start(dir.join("r2"), "127.0.0.1:0").await.unwrap();
+    let (pages, temp) = (bucket(stub.addr, "desearch-pages"), bucket(stub.addr, "subnet-22"));
+    let by = |name: &str, task_id: &str, hour: u32| {
+        let mut page = v2(record(&format!("https://news.example/story/{name}"), &format!("{name} {}", article(2)), "article", "en"));
+        (page.task_id, page.fetched_at) = (task_id.into(), format!("2026-10-20T{hour:02}:00:00+00:00"));
+        page
+    };
+    log(&pages, 1, vec![by("p", "t1", 1)]).await;
+    let mut one = settings(dir.join("state"), 3600.0, 0);
+    one.pages_per_input = 1;
+    let mut planner = Planner::new(one, pages.clone(), temp.clone(), redis.clone(), Room::Fixed(0)).await.unwrap();
+    planner.pass().await.unwrap();
+    assert_eq!(planner.counts.planned, 1);
+    drop(planner);
+
+    log_take_back(&pages, 2, "t1").await;
+    log(&pages, 3, vec![by("p", "t1", 2), by("p", "t2", 3), by("q", "t3", 3)]).await;
+    log_take_back(&pages, 4, "t3").await;
+    let mut ten = settings(dir.join("state"), 3600.0, 0);
+    ten.pages_per_input = 10;
+    let mut planner = Planner::new(ten, pages.clone(), temp.clone(), redis.clone(), Room::Fixed(0)).await.unwrap();
+    planner.pass().await.unwrap();
+    planner.flush().await.unwrap();
+    assert_eq!((planner.counts.withdrawn, planner.counts.unchanged), (1, 0), "t1's later row is dropped; t2's same text is not unchanged");
+    let entries: Vec<Value> = planner.state.pending().unwrap().iter().map(|(_, entry)| serde_json::from_str(entry).unwrap()).collect();
+    let urls: Vec<&str> = entries.iter().flat_map(|entry| entry["pages"].as_array().unwrap().iter().map(|p| p["url"].as_str().unwrap())).collect();
+    assert_eq!(urls.iter().filter(|url| url.ends_with("/q")).count(), 0, "q's buffered page left with its task");
+    assert_eq!(urls.iter().filter(|url| url.ends_with("/p")).count(), 2, "p again, crawled by t2");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_backfill_picks_the_version_standing_after_a_take_back_as_the_compactor_does() {
+    let Some((_turn, redis)) = redis_db().await else {
+        eprintln!("skipped: no Redis on {REDIS}");
+        return;
+    };
+    let dir = scratch("backfill-take-back");
+    let stub = stub::start(dir.join("r2"), "127.0.0.1:0").await.unwrap();
+    let (pages, temp, current) = (bucket(stub.addr, "desearch-pages"), bucket(stub.addr, "subnet-22"), bucket(stub.addr, "desearch-current"));
+    let row = |text: &str, task_id: &str, hour: u32, change_seq: i64| {
+        let mut record = v2(record("https://news.example/story/p", &format!("{text} {}", article(2)), "article", "en"));
+        (record.task_id, record.fetched_at) = (task_id.into(), format!("2026-10-20T{hour:02}:00:00+00:00"));
+        PageRow { key: page_key(&record.url).unwrap(), removed: false, change_seq, version: record_version(&record), published_at: String::new(), record }
+    };
+    let (taken, honest) = (row("forged", "t9", 5, 1), row("honest", "t8", 1, 3));
+    shard(&current, 6, vec![vec![taken], vec![honest.clone()]]).await;
+    current.put("current/withdrawn.json", Bytes::from(json!({"tasks": {"t9": {"seq": 2, "last": 2}}}).to_string()), JSON, None).await.unwrap();
+    log(&pages, 1, vec![]).await;
+
+    let mut backfilling = settings(dir.join("state"), 3600.0, 0);
+    (backfilling.backfill, backfilling.backfill_shards, backfilling.pages_per_input) = (true, 6..7, 1);
+    let mut planner = Planner::new(backfilling, pages.clone(), temp.clone(), redis.clone(), Room::Fixed(0)).await.unwrap();
+    planner.current = Some(current.clone());
+    for _ in 0..50 {
+        planner.pass().await.unwrap();
+        if planner.counts.shards == 1 {
+            break;
+        }
+    }
+    let planned = planner.state.planned_version(publisher::planner::RECIPE_V2, &honest.key).unwrap().unwrap();
+    assert_eq!(planned.content_sha1, honest.record.content_sha1, "the taken-back newer fetch does not stand");
+    let _ = std::fs::remove_dir_all(&dir);
+}

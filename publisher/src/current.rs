@@ -149,7 +149,7 @@ pub fn merge(rows: Vec<PageRow>, withdrawn: &Withdrawals, keep_removals: bool) -
 }
 
 /// One key's rows: the removal row that stands, if a logged one does; where everything before is hidden; and the page that wins after it.
-fn standing(group: &[Option<PageRow>], withdrawn: &Withdrawals) -> (Option<usize>, i64, Option<usize>) {
+pub(crate) fn standing(group: &[Option<PageRow>], withdrawn: &Withdrawals) -> (Option<usize>, i64, Option<usize>) {
     let row = |i: usize| group[i].as_ref().expect("a row not taken yet");
     let removal = (0..group.len()).filter(|&i| row(i).removed).max_by_key(|&i| row(i).change_seq);
     let mut barrier = removal.map_or(i64::MIN, |i| row(i).change_seq);

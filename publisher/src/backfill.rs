@@ -12,12 +12,13 @@ use parquet::arrow::ProjectionMask;
 use parquet::file::metadata::ParquetMetaDataReader;
 use tokio::runtime::Handle;
 
-use crate::compactor::manifest_key;
-use crate::current::{rows_in, Manifest, PageRow};
+use crate::compactor::{manifest_key, withdrawn_key, Withdrawn};
+use crate::current::{rows_in, standing, Manifest, PageRow, Withdrawals};
 use crate::reading::{coalesce, footer_length, Prefetched};
 
 /// The columns that pick a page's standing version and tell whether it may be wanted.
-const PICK_COLUMNS: [&str; 11] = ["key", "removed", "change_seq", "version", "fetched_at", "content_sha1", "extraction", "lang", "url", "published", "domain"];
+const PICK_COLUMNS: [&str; 12] =
+    ["key", "removed", "change_seq", "version", "fetched_at", "content_sha1", "extraction", "lang", "url", "published", "domain", "task_id"];
 /// Row groups of one file fetched at once while picking.
 const GROUPS_AT_ONCE: usize = 16;
 /// Picks read whole at once, in key order.
@@ -47,10 +48,20 @@ pub struct ShardReader {
 
 impl ShardReader {
     /// Hands `each` the shard's standing pages that `keep` accepts, whole and in key order from after `after`, until it returns false; how many it was handed.
-    pub fn read(&self, shard: usize, after: Option<&str>, keep: impl Fn(&PageRow) -> bool, mut each: impl FnMut(PageRow) -> bool) -> Result<usize> {
+    pub fn read(
+        &self,
+        shard: usize,
+        after: Option<&str>,
+        mut withdrawn: Withdrawals,
+        keep: impl Fn(&PageRow) -> bool,
+        mut each: impl FnMut(PageRow) -> bool,
+    ) -> Result<usize> {
         let Some(manifest) = self.manifest(shard)? else { return Ok(0) };
+        for (task_id, taken) in self.withdrawn()? {
+            withdrawn.entry(task_id).or_insert(taken);
+        }
         let files = manifest.files().map(|file| self.open(&file.key, file.bytes)).collect::<Result<Vec<_>>>()?;
-        let picks = self.pick(&files, after, keep)?;
+        let picks = self.pick(&files, after, &withdrawn, keep)?;
         let mut handed = 0;
         for window in picks.chunks(PICKS_AT_ONCE) {
             let mut wanted: HashMap<(usize, usize), HashSet<&str>> = HashMap::new();
@@ -83,6 +94,16 @@ impl ShardReader {
             }
         }
         Ok(handed)
+    }
+
+    /// The tasks the compactor has seen taken back, each with the change file that took it back.
+    fn withdrawn(&self) -> Result<Withdrawals> {
+        let key = withdrawn_key(&self.prefix);
+        match self.handle.block_on(self.bucket.get(&key)) {
+            Ok(raw) => Ok(serde_json::from_slice::<Withdrawn>(&raw).with_context(|| format!("reading {key}"))?.by_task()),
+            Err(r2::Error::Missing) => Ok(Withdrawals::new()),
+            Err(error) => Err(anyhow!("reading {key}: {error}")),
+        }
     }
 
     fn manifest(&self, shard: usize) -> Result<Option<Manifest>> {
@@ -130,8 +151,8 @@ impl ShardReader {
         Ok(Prefetched::new(file.size, ranges.iter().map(|range| range.start).zip(fetched).collect()))
     }
 
-    /// Every key's standing version across the shard's files, by the compactor's rule without take-backs, where `keep` accepts it.
-    fn pick(&self, files: &[ShardFile], after: Option<&str>, keep: impl Fn(&PageRow) -> bool) -> Result<Vec<Pick>> {
+    /// Every key's standing version across the shard's files, by the compactor's rule with its take-backs, where `keep` accepts it.
+    fn pick(&self, files: &[ShardFile], after: Option<&str>, withdrawn: &Withdrawals, keep: impl Fn(&PageRow) -> bool) -> Result<Vec<Pick>> {
         let mut sources: Vec<_> = files.iter().enumerate().map(|(at, file)| self.small_rows(at, file).peekable()).collect();
         let mut picks = Vec::new();
         loop {
@@ -153,14 +174,16 @@ impl ShardReader {
             if after.is_some_and(|after| key.as_str() <= after) {
                 continue;
             }
-            let barrier = group.iter().filter(|(_, _, row)| row.removed).map(|(_, _, row)| row.change_seq).max().unwrap_or(i64::MIN);
-            let standing =
-                group
-                    .into_iter()
-                    .filter(|(_, _, row)| !row.removed && row.change_seq > barrier)
-                    .reduce(|kept, next| if next.2.replaces(&kept.2) { next } else { kept });
-            if let Some((file, group, row)) = standing.filter(|(_, _, row)| keep(row)) {
-                picks.push(Pick { key: row.key, file, group });
+            // A row a withdrawn task logged after its take-back is dropped, as the compactor drops it.
+            let (places, rows): (Vec<(usize, usize)>, Vec<Option<PageRow>>) = group
+                .into_iter()
+                .filter(|(_, _, row)| row.removed || withdrawn.get(&row.record.task_id).is_none_or(|&taken| row.change_seq <= taken))
+                .map(|(file, group, row)| ((file, group), Some(row)))
+                .unzip();
+            let (_, _, page) = standing(&rows, withdrawn);
+            if let Some(at) = page.filter(|&at| rows[at].as_ref().is_some_and(&keep)) {
+                let (file, group) = places[at];
+                picks.push(Pick { key, file, group });
             }
         }
         Ok(picks)

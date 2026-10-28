@@ -557,6 +557,8 @@ pub struct Version {
     /// Only its page text was planned.
     pub page_only: bool,
     pub seq: Option<i64>,
+    /// The crawl task that published it; empty for versions planned before it was kept.
+    pub task_id: String,
 }
 
 impl Version {
@@ -565,12 +567,14 @@ impl Version {
         let mut fields = value.split('\t');
         let (content_sha1, fetched_at) = (fields.next().unwrap_or_default().to_string(), fields.next().unwrap_or_default().to_string());
         let page_only = fields.next() == Some(PAGE);
-        Version { content_sha1, fetched_at, page_only, seq: fields.next().and_then(|seq| seq.parse().ok()) }
+        let seq = fields.next().and_then(|seq| seq.parse().ok());
+        Version { content_sha1, fetched_at, page_only, seq, task_id: fields.next().unwrap_or_default().to_string() }
     }
 
     fn value(&self) -> String {
         let page_only = if self.page_only { PAGE } else { "" };
-        format!("{}\t{}\t{page_only}\t{}", self.content_sha1, self.fetched_at, self.seq.map(|seq| seq.to_string()).unwrap_or_default())
+        let seq = self.seq.map(|seq| seq.to_string()).unwrap_or_default();
+        format!("{}\t{}\t{page_only}\t{seq}\t{}", self.content_sha1, self.fetched_at, self.task_id)
     }
 }
 
@@ -791,6 +795,21 @@ impl State {
         Ok(self.db.write(batch)?)
     }
 
+    /// Every task taken back, with the change file that took it back.
+    pub fn withdrawn(&self) -> Result<HashMap<String, i64>> {
+        let mut found = HashMap::new();
+        for item in self.db.iterator(IteratorMode::From(b"withdrawn/", rocksdb::Direction::Forward)) {
+            let (key, value) = item?;
+            let Some(task_id) = key.strip_prefix(b"withdrawn/") else { break };
+            found.insert(String::from_utf8_lossy(task_id).into_owned(), String::from_utf8_lossy(&value).parse()?);
+        }
+        Ok(found)
+    }
+
+    fn withdraw(&self, task_id: &str, seq: i64) -> Result<()> {
+        Ok(self.db.put(format!("withdrawn/{task_id}"), seq.to_string())?)
+    }
+
     /// The change file that removed `key`, while no later row has brought it back.
     pub fn removed(&self, key: &str) -> Result<Option<i64>> {
         Ok(self.db.get(removed_key(key))?.map(|raw| String::from_utf8_lossy(&raw).parse()).transpose()?)
@@ -855,8 +874,13 @@ impl State {
             if self.unplanned(&page.key)? {
                 *new.entry(domain_of_key(&page.key).to_string()).or_default() += 1;
             }
-            let version =
-                Version { content_sha1: page.content_sha1.clone(), fetched_at: page.fetched_at.clone(), page_only: page.page_only, seq: Some(page.seq) };
+            let version = Version {
+                content_sha1: page.content_sha1.clone(),
+                fetched_at: page.fetched_at.clone(),
+                page_only: page.page_only,
+                seq: Some(page.seq),
+                task_id: page.task_id.clone(),
+            };
             batch.put(planned_key(page.recipe, &page.key), version.value());
             self.unwait_into(&mut batch, &page.key, Some(&page.fetched_at))?;
         }
@@ -929,6 +953,7 @@ pub struct Planned {
     pub page_only: bool,
     /// The change file that holds the version's row.
     pub seq: i64,
+    pub task_id: String,
     pub source: Source,
 }
 
@@ -955,6 +980,8 @@ pub struct Counts {
     pub older: u64,
     /// Pages the log removed, whose planned versions are forgotten.
     pub removed: u64,
+    /// Rows of tasks taken back, which every reader drops.
+    pub withdrawn: u64,
     /// Change files read after later ones, because they were numbered late.
     pub late: u64,
     pub over_budget: u64,
@@ -1111,6 +1138,8 @@ pub struct Planner {
     settled: Vec<i64>,
     /// The cursor last kept on disk.
     kept_cursor: i64,
+    /// Tasks taken back, with the change file that took each back.
+    withdrawn: HashMap<String, i64>,
 }
 
 impl Planner {
@@ -1136,6 +1165,7 @@ impl Planner {
             })
             .collect();
         let (budget, fresh_budget) = (Budget::new(settings.pages_per_hour), Budget::new(settings.fresh_per_hour));
+        let withdrawn = state.withdrawn()?;
         let mut planner = Planner {
             settings,
             state,
@@ -1161,6 +1191,7 @@ impl Planner {
             missing,
             settled: Vec::new(),
             kept_cursor: read_through,
+            withdrawn,
         };
         if planner.settings.set_file.is_some() {
             if !planner.reload_set()? {
@@ -1356,7 +1387,7 @@ impl Planner {
         };
         let (send, pages) = mpsc::channel(BACKFILL_AHEAD);
         let (set, langs, from) = (self.set.clone(), self.settings.langs.clone(), after.clone());
-        let (state, page_first) = (self.state.clone(), self.settings.page_first);
+        let (state, page_first, withdrawn) = (self.state.clone(), self.settings.page_first, self.withdrawn.clone());
         let done = tokio::task::spawn_blocking(move || {
             let keep = |row: &PageRow| {
                 let record = &row.record;
@@ -1370,7 +1401,7 @@ impl Planner {
                     // A version as new waits in the log, which is read for it instead.
                     && state.waiting(&row.key).ok().flatten().is_none_or(|held| held.fetched_at <= record.fetched_at)
             };
-            reader.read(shard, from.as_deref(), keep, |page| send.blocking_send(page).is_ok())
+            reader.read(shard, from.as_deref(), withdrawn, keep, |page| send.blocking_send(page).is_ok())
         });
         self.reading = Some(Reading { shard, pages, done, last: after });
         Ok(true)
@@ -1426,7 +1457,17 @@ impl Planner {
                     self.state.forget_key(&key, seq)?;
                     self.counts.removed += 1;
                 }
-                ChangeRow::TaskWithdrawn(_) => {}
+                ChangeRow::TaskWithdrawn(task_id) => {
+                    for lane in Lane::ALL {
+                        let buffer = self.buffer_mut(lane);
+                        let taken: Vec<String> = buffer.pages.iter().filter(|page| page.task_id == task_id).map(|page| page.key.clone()).collect();
+                        for key in taken {
+                            buffer.remove(&key);
+                        }
+                    }
+                    self.state.withdraw(&task_id, seq)?;
+                    self.withdrawn.insert(task_id, seq);
+                }
             }
         }
         self.counts.files += 1;
@@ -1519,8 +1560,12 @@ impl Planner {
             }
             None => {}
         }
+        if self.withdrawn.contains_key(&record.task_id) {
+            self.counts.withdrawn += 1;
+            return Considered::Passed;
+        }
         // A newer row lets go of an older waiting version, whatever becomes of the row.
-        let mut waiting = self.state.waiting(&page.key).ok().flatten();
+        let mut waiting = self.state.waiting(&page.key).ok().flatten().filter(|held| !self.withdrawn.contains_key(&held.task_id));
         if waiting.as_ref().is_some_and(|held| held.fetched_at < record.fetched_at) {
             if let Err(error) = self.state.unwait(&page.key) {
                 eprintln!("letting {} stop waiting: {error:#}", page.key);
@@ -1557,9 +1602,16 @@ impl Planner {
         let already = match buffered {
             Some((lane, at)) => {
                 let held = &self.buffer(lane).pages[at];
-                Some(Version { content_sha1: held.content_sha1.clone(), fetched_at: held.fetched_at.clone(), page_only: held.page_only, seq: Some(held.seq) })
+                Some(Version {
+                    content_sha1: held.content_sha1.clone(),
+                    fetched_at: held.fetched_at.clone(),
+                    page_only: held.page_only,
+                    seq: Some(held.seq),
+                    task_id: held.task_id.clone(),
+                })
             }
-            None => self.state.planned_version(recipe, &page.key).ok().flatten(),
+            // A version from a task taken back was taken down, so the same text crawled again is planned again.
+            None => self.state.planned_version(recipe, &page.key).ok().flatten().filter(|planned| !self.withdrawn.contains_key(&planned.task_id)),
         };
         if waiting.as_ref().is_some_and(|held| record.fetched_at < held.fetched_at) {
             self.counts.older += 1;
@@ -1632,8 +1684,13 @@ impl Planner {
 
     fn keep_waiting(&mut self, page: &PageRow) {
         let record = &page.record;
-        let version =
-            Version { content_sha1: record.content_sha1.clone(), fetched_at: record.fetched_at.clone(), page_only: false, seq: Some(page.change_seq) };
+        let version = Version {
+            content_sha1: record.content_sha1.clone(),
+            fetched_at: record.fetched_at.clone(),
+            page_only: false,
+            seq: Some(page.change_seq),
+            task_id: record.task_id.clone(),
+        };
         match self.state.wait(&page.key, &version) {
             Ok(()) => self.counts.waiting += 1,
             Err(error) => eprintln!("keeping {} waiting: {error:#}", page.key),
@@ -1802,6 +1859,7 @@ fn planned_of(page: &PageRow, recipe: &'static str, page_first: bool, parts_only
         texts,
         page_only,
         seq: page.change_seq,
+        task_id: record.task_id.clone(),
         source,
     }
 }
