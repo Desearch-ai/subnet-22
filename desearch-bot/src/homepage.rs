@@ -53,8 +53,9 @@ pub fn read(body: &[u8], detect_language: &dyn Fn(&str) -> Option<String>) -> Ho
         return judged(None, Some("no_text"));
     }
     let language = detect_language(text::head(&page, LANGUAGE_SAMPLE));
-    // A page that says it is English is taken at its word.
-    let english = declared.as_deref() == Some("en") || language.as_deref() == Some("en");
+    // A page that says it is English is believed only where the model is unsure: its two samples disagree and one reads English.
+    let unsure = || detect_language(sample) != language && detect_language(sample).as_deref() == Some("en");
+    let english = language.as_deref() == Some("en") || (declared.as_deref() == Some("en") && unsure());
     judged(language, if english { None } else { Some("not_english") })
 }
 
@@ -94,11 +95,14 @@ mod tests {
     }
 
     #[test]
-    fn a_declared_english_page_passes_and_the_model_reads_a_longer_sample() {
+    fn a_declared_english_page_passes_only_where_the_model_is_unsure_and_the_model_reads_a_longer_sample() {
         let french = |_: &str| Some("fr".to_string());
         let headlines = format!("<p>{}</p>", "Headline ".repeat(500));
         let declared = format!("<html lang=\"en-US\">{headlines}</html>");
-        assert_eq!(read(declared.as_bytes(), &french).problem, None, "lang=en counts whatever the model says");
+        assert_eq!(read(declared.as_bytes(), &french).problem, Some("not_english"), "an English template on a page the model reads as French throughout");
+        let short_english = |sample: &str| Some(if sample.len() <= SAMPLE { "en" } else { "fr" }.to_string());
+        assert_eq!(read(declared.as_bytes(), &short_english).problem, None, "lang=en settles it where the two samples disagree");
+        assert_eq!(read(headlines.as_bytes(), &short_english).problem, Some("not_english"), "without lang=en the longer sample's verdict stands");
         assert_eq!(read(headlines.as_bytes(), &french).problem, Some("not_english"));
         let long_only = |sample: &str| Some(if sample.len() > SAMPLE { "en" } else { "fr" }.to_string());
         assert_eq!(read(headlines.as_bytes(), &long_only).problem, None, "the model sees more than the first 2,000 characters");
