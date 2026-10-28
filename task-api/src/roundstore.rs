@@ -168,7 +168,7 @@ pub const KEPT_S: f64 = 7.0 * 86_400.0;
 /// Where the walk dropping closed rounds' URLs and page lists has reached.
 const SEAL_MARK: &str = "round_lists";
 
-/// Up to `limit` rounds closed from `from` on and before `to`, oldest first, each with its batches' size, cut at `bytes` of batches but never empty.
+/// Up to `limit` rounds closed from `from` on and before `to`, oldest first, cut at `bytes` of batches but never under two, so a walk that starts again at its last round moves on.
 fn closed_between(conn: &Connection, from: f64, to: f64, limit: i64, bytes: i64) -> Result<Vec<(String, f64)>> {
     let mut statement = conn.prepare(
         "SELECT round_id, closed_at, octet_length(batches) FROM rounds INDEXED BY rounds_closed WHERE closed_at >= ? AND closed_at < ? ORDER BY closed_at LIMIT ?",
@@ -177,7 +177,7 @@ fn closed_between(conn: &Connection, from: f64, to: f64, limit: i64, bytes: i64)
     let (mut picked, mut read) = (Vec::new(), 0);
     for row in rows {
         let (round_id, closed_at, size) = row?;
-        if !picked.is_empty() && read + size > bytes {
+        if picked.len() > 1 && read + size > bytes {
             break;
         }
         read += size;
@@ -429,9 +429,8 @@ mod tests {
             save(&conn, &round).unwrap();
             close(&conn, &round.round_id, now - 3_600.0 + n as f64).unwrap();
         }
-        let size: i64 = conn.query_row("SELECT octet_length(batches) FROM rounds WHERE round_id = 'r0'", [], |row| row.get(0)).unwrap();
-        assert_eq!(pass(&conn, now, 10, 1).1, 1, "one round past the budget still goes");
-        assert_eq!(pass(&conn, now, 10, 3 * size).1, 2, "the round the mark is on reads small now");
+        assert_eq!(pass(&conn, now, 10, 1).1, 2, "two rounds past the budget still go");
+        assert_eq!(pass(&conn, now, 10, 1).1, 1, "starting again on the sealed round the mark is on, it still takes the next");
         assert_eq!(pass(&conn, now, 10, 1 << 30).1, 2);
         assert_eq!(conn.query_row("SELECT COUNT(*) FROM rounds WHERE batches LIKE '%page_key%'", [], |row| row.get::<_, i64>(0)).unwrap(), 0);
     }

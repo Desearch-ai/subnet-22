@@ -143,8 +143,11 @@ async fn upkeep(state: &Arc<State>, due: &mut Due) -> Result<()> {
         due.sealed_at = Some(Instant::now());
         OUTCOMES.fill_holes(&state.storage, &state.redis).await?;
         // Each step is its own transaction, so claims and verdicts get the writer between them.
-        state.db.run(|conn| roundstore::delete_expired(conn, now(), SEAL_ROUNDS, SEAL_BYTES)).await?;
-        let (_, walked) = state.db.run(|conn| roundstore::seal_closed(conn, now(), SEAL_ROUNDS, SEAL_BYTES)).await?;
+        let deleted = state.db.run(|conn| roundstore::delete_expired(conn, now(), SEAL_ROUNDS, SEAL_BYTES)).await?;
+        let (sealed, walked) = state.db.run(|conn| roundstore::seal_closed(conn, now(), SEAL_ROUNDS, SEAL_BYTES)).await?;
+        if deleted + sealed > 0 {
+            eprintln!("janitor rounds: deleted {deleted}, sealed {sealed}");
+        }
         if let Some(closed_at) = walked {
             state.db.run(move |conn| roundstore::mark_sealed(conn, closed_at)).await?;
         }
