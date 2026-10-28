@@ -75,6 +75,8 @@ pub struct KnownSitemap {
     pub suspect_at: Option<i64>,
     pub sketch: Vec<u64>,
     pub generated_until: Option<i64>,
+    /// A Google News sitemap when last read, so a quiet read keeps its news pace.
+    pub google_news: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -115,6 +117,7 @@ pub struct SitemapUpdate {
     pub suspect_at: Option<i64>,
     pub sketch: Vec<u64>,
     pub generated_until: Option<i64>,
+    pub google_news: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -529,6 +532,7 @@ impl Run<'_> {
         update.content_hash = Some(read.hash);
         update.changed = true;
         update.trust = read.trust;
+        update.google_news = read.news;
         let interval = match stored {
             Some(_) => schedule::next_interval(update.interval, true),
             None => schedule::first_interval(read.changefreq.as_deref(), news),
@@ -594,6 +598,7 @@ impl Run<'_> {
                 suspect_at: stored.suspect_at,
                 sketch: stored.sketch.clone(),
                 generated_until: stored.generated_until,
+                google_news: stored.google_news,
             },
             None => SitemapUpdate {
                 id: sitemap_id(url),
@@ -616,6 +621,7 @@ impl Run<'_> {
                 suspect_at: None,
                 sketch: Vec::new(),
                 generated_until: None,
+                google_news: false,
             },
         };
         self.result.sitemaps.push(update);
@@ -628,7 +634,7 @@ impl Run<'_> {
         let listed_news = self.listed_news();
         let update = &mut self.result.sitemaps[i];
         let index = update.kind.as_deref() == Some("index");
-        update.interval = schedule::reread_within(schedule::next_interval(update.interval, false), listed_news, update.depth, index, false);
+        update.interval = schedule::reread_within(schedule::next_interval(update.interval, false), listed_news, update.depth, index, update.google_news);
         update.next_check_at = Some(self.now + update.interval);
     }
 

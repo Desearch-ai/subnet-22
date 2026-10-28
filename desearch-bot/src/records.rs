@@ -122,6 +122,7 @@ fn known_sitemap(url: &str, record: &Json) -> Option<KnownSitemap> {
         suspect_at: moment(record.get("suspect")),
         sketch: record.get("sketch").and_then(Value::as_str).map(churn::decode).unwrap_or_default(),
         generated_until: moment(record.get("generated")),
+        google_news: record.get("gnews").and_then(Value::as_bool).unwrap_or(false),
     })
 }
 
@@ -191,6 +192,11 @@ pub fn written_sitemap(previous: Option<&Json>, update: &SitemapUpdate, at: i64)
     if let Some(kind) = &update.kind {
         record.insert("kind".into(), kind.clone().into());
     }
+    if update.google_news {
+        record.insert("gnews".into(), true.into());
+    } else if update.changed {
+        record.remove("gnews");
+    }
     if update.changed {
         record.insert("urls".into(), update.url_count.into());
         record.insert("children".into(), update.child_count.into());
@@ -223,6 +229,41 @@ pub fn url_count<'a>(sitemaps: impl Iterator<Item = &'a Json>) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_google_news_sitemap_keeps_its_flag_through_quiet_reads() {
+        let read = SitemapUpdate {
+            id: 1,
+            url: "https://example.com/news.xml".into(),
+            kind: Some("urlset".into()),
+            depth: 1,
+            parent_id: None,
+            status: "ok",
+            error: None,
+            etag: None,
+            last_modified: None,
+            content_hash: Some("h".into()),
+            changed: true,
+            url_count: 10,
+            child_count: 0,
+            interval: DEFAULT_INTERVAL,
+            next_check_at: None,
+            trust: Trust::Unknown,
+            index_lastmod: None,
+            suspect_at: None,
+            sketch: Vec::new(),
+            generated_until: None,
+            google_news: true,
+        };
+        let first = written_sitemap(None, &read, 1_000 * SECOND);
+        let known = known_sitemap(&read.url, &first).unwrap();
+        assert!(known.google_news);
+        let quiet = SitemapUpdate { changed: false, google_news: known.google_news, ..read.clone() };
+        let second = written_sitemap(Some(&first), &quiet, 2_000 * SECOND);
+        assert!(known_sitemap(&read.url, &second).unwrap().google_news, "a 304 or an unchanged hash keeps it");
+        let plain = SitemapUpdate { google_news: false, ..read.clone() };
+        assert!(!known_sitemap(&read.url, &written_sitemap(Some(&second), &plain, 3_000 * SECOND)).unwrap().google_news, "a read that finds no Google News markup clears it");
+    }
 
     #[test]
     fn a_row_set_back_to_new_checks_the_domain_afresh_with_its_homepage_read_again() {
