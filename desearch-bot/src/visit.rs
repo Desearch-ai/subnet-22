@@ -510,6 +510,11 @@ impl Run<'_> {
                 self.unchanged(i, stored);
                 return Ok(Vec::new());
             }
+            Digested::Invalid if stored.is_none() && self.guesses.contains(&url) => {
+                // A guess answered with a page that isn't a sitemap is no root, so the next visit guesses again.
+                self.result.sitemaps.remove(i);
+                return Ok(Vec::new());
+            }
             Digested::Invalid => {
                 self.failed(i, Some("invalid".into()));
                 return Ok(Vec::new());
@@ -528,7 +533,7 @@ impl Run<'_> {
             Some(_) => schedule::next_interval(update.interval, true),
             None => schedule::first_interval(read.changefreq.as_deref(), news),
         };
-        update.interval = schedule::reread_within(interval, listed_news, update.depth);
+        update.interval = schedule::reread_within(interval, listed_news, update.depth, read.kind == "index", read.news);
         update.next_check_at = Some(self.now + update.interval);
         match read.verdict.take() {
             Some(churn::Verdict::Suspect { sketch }) => {
@@ -622,7 +627,8 @@ impl Run<'_> {
         self.kept += stored.map_or(0, |s| s.url_count);
         let listed_news = self.listed_news();
         let update = &mut self.result.sitemaps[i];
-        update.interval = schedule::reread_within(schedule::next_interval(update.interval, false), listed_news, update.depth);
+        let index = update.kind.as_deref() == Some("index");
+        update.interval = schedule::reread_within(schedule::next_interval(update.interval, false), listed_news, update.depth, index, false);
         update.next_check_at = Some(self.now + update.interval);
     }
 
