@@ -412,7 +412,7 @@ pub struct Settings {
     pub fresh: Option<Duration>,
     /// Pages the fresh lane takes an hour at most; the rest go with the other pages.
     pub fresh_per_hour: f64,
-    /// How much of its budgets a starting planner holds; none in service, so a restart plans and hands over at the hourly pace from the start.
+    /// How much of its budget and hand-over pace a starting planner holds; none in service, so a restart plans and hands over at the hourly pace from the start.
     pub budget_at_start: Duration,
     /// Pages of one site the fresh lane takes an hour at most, so a site dating every page today cannot fill it.
     pub fresh_per_site: u32,
@@ -1328,8 +1328,10 @@ pub struct Planner {
     read_through: i64,
     budget: Budget,
     fresh_budget: Budget,
-    /// Pages handed over, at no more than both lanes' budgets allow.
-    handing: Budget,
+    /// Pages handed over, at no more than both lanes' budgets allow; None when they allow none, so inputs left from before still go.
+    handing: Option<Budget>,
+    /// Pages and inputs of the rest lane cut, the saved ones counted at the start.
+    rest_cut: (usize, usize),
     /// Inputs waiting for room, by lane.
     pending: [usize; 2],
     missing: BTreeMap<i64, Instant>,
@@ -1361,7 +1363,13 @@ impl Planner {
             (None, None) => latest(&pages).await?,
         };
         state.keep_cursor(read_through)?;
-        let pending = pending_by_lane(&state.pending()?);
+        let saved = state.pending()?;
+        let pending = pending_by_lane(&saved);
+        let rest_cut = saved
+            .iter()
+            .map(|(_, entry)| serde_json::from_str::<Value>(entry).unwrap_or(Value::Null))
+            .filter(|entry| Lane::of(entry) == Lane::Rest)
+            .fold((0, 0), |(pages, inputs), entry| (pages + entry["pages"].as_array().map_or(0, Vec::len), inputs + 1));
         let missing = state
             .missing()?
             .into_iter()
@@ -1370,8 +1378,10 @@ impl Planner {
             })
             .collect();
         let held = settings.budget_at_start;
-        let (budget, fresh_budget) = (Budget::new(settings.pages_per_hour, held), Budget::new(settings.fresh_per_hour, held));
-        let handing = Budget::new(settings.pages_per_hour + settings.fresh_per_hour, held);
+        // Fresh pages read again after a restart stay fresh.
+        let (budget, fresh_budget) = (Budget::new(settings.pages_per_hour, held), Budget::new(settings.fresh_per_hour, BUDGET_BANKED));
+        let pace = settings.pages_per_hour + settings.fresh.map_or(0.0, |_| settings.fresh_per_hour);
+        let handing = (pace > 0.0).then(|| Budget::new(pace, held));
         let withdrawn = state.withdrawn()?;
         let mut planner = Planner {
             settings,
@@ -1400,6 +1410,7 @@ impl Planner {
             budget,
             fresh_budget,
             handing,
+            rest_cut,
             pending,
             missing,
             settled: Vec::new(),
@@ -1492,7 +1503,7 @@ impl Planner {
         if let Err(error) = reloaded {
             eprintln!("{error:#}");
         }
-        // Inputs written before a restart go out before the log is read.
+        // Inputs written before a restart go out first, at the budgets' pace.
         self.hand_over_unless_held().await?;
         // A failed write leaves its input and those cut after it unsaved.
         self.save_written(0).await?;
@@ -1604,8 +1615,16 @@ impl Planner {
 
     /// Whether the rest lane would still have room for another input once `pages` more were buffered in it.
     fn has_room_after(&self, pages: usize) -> bool {
-        let room = self.settings.max_pending.saturating_sub(self.inputs_held(Lane::Rest)) * self.settings.pages_per_input;
+        let room = self.settings.max_pending.saturating_sub(self.inputs_held(Lane::Rest)) * self.pages_per_rest_input();
         self.rest.pages.len() + pages < room
+    }
+
+    /// The pages a rest input holds, as those cut held on average, which their characters may keep under `pages_per_input`.
+    fn pages_per_rest_input(&self) -> usize {
+        match self.rest_cut {
+            (_, 0) => self.settings.pages_per_input,
+            (pages, inputs) => (pages / inputs).clamp(1, self.settings.pages_per_input),
+        }
     }
 
     /// Whether a version of `key` is buffered or in an input not yet saved; saving it stops the page waiting.
@@ -1856,25 +1875,19 @@ impl Planner {
     pub fn consider(&mut self, page: PageRow, from: Source) -> Considered {
         self.counts.pages += 1;
         let record = &page.record;
-        // Its URL refuses every version of the page alike, so nothing is read: a version still waiting is refused the same way when it is planned again.
-        if self.excluded(&record.domain.to_lowercase()) {
-            self.counts.refused += 1;
-            return Considered::Passed;
-        }
+        let excluded = self.excluded(&record.domain.to_lowercase());
         let admission = self.set.as_ref().map(|set| set.admit(&record.url, &record.published, record.page_type.as_deref()));
-        if let Some(Err(Refusal::Unlisted | Refusal::OffPaths)) = admission {
-            self.counts.outside_set += 1;
-            return Considered::Passed;
-        }
-        let (recipe, readable) = (recipe_of(record).filter(|recipe| PLANNED_RECIPES.contains(recipe)), self.admitted(record));
+        let (recipe, readable) = (recipe_of(record).filter(|recipe| PLANNED_RECIPES.contains(recipe)), !excluded && self.admitted(record));
         let Some(recipe) = recipe.filter(|_| readable && !matches!(admission, Some(Err(_)))) else {
             if self.withdrawn.contains_key(&record.task_id) {
                 self.counts.withdrawn += 1;
                 return Considered::Passed;
             }
-            // A page waits again only after a row that clears its removal, so a refused row need not read that.
+            // A page waits again only after a row that clears its removal, so a refused row need not read that, and leaves the removal standing.
             self.still_waiting(&page);
             match admission {
+                _ if excluded => self.counts.refused += 1,
+                Some(Err(Refusal::Unlisted | Refusal::OffPaths)) => self.counts.outside_set += 1,
                 _ if recipe.is_none() => self.counts.other_recipe += 1,
                 _ if !readable => self.counts.refused += 1,
                 Some(Err(Refusal::Undated)) => self.counts.undated += 1,
@@ -2136,6 +2149,9 @@ impl Planner {
         let other = if lane == Lane::Fresh { Lane::Rest } else { Lane::Fresh };
         let backfill = self.reading.as_ref().filter(|_| self.buffer(other).backfill == 0).map(|reading| (reading.shard, reading.last.clone()));
         let mut buffer = std::mem::take(self.buffer_mut(lane));
+        if lane == Lane::Rest {
+            self.rest_cut = (self.rest_cut.0 + buffer.pages.len(), self.rest_cut.1 + 1);
+        }
         buffer.pages.iter_mut().for_each(|page| page.texts = Vec::new());
         let write = Some(write_input(self.temp.clone(), input_key.clone(), file.clone()));
         self.writing.push_back(Writing { lane, buffer, input_key, entry: entry.to_string(), file, backfill, write });
@@ -2234,13 +2250,15 @@ impl Planner {
                 break;
             }
             let pages = parsed["pages"].as_array().map_or(0, Vec::len);
-            if !self.handing.holds(pages) {
+            if self.handing.as_mut().is_some_and(|handing| !handing.holds(pages)) {
                 paced = true;
                 break;
             }
             push_input(&mut self.redis, &input_key, &entry).await?;
             self.state.handed_over(&input_key)?;
-            self.handing.spend(pages);
+            if let Some(handing) = self.handing.as_mut() {
+                handing.spend(pages);
+            }
             self.pending[lane] -= 1;
             handed += 1;
         }
@@ -2362,9 +2380,10 @@ struct Budget {
 }
 
 impl Budget {
-    /// A budget holding `held` of it to start with, at most what it banks.
+    /// A budget holding `held` of it to start with, all it banks for `BUDGET_BANKED` or more.
     fn new(per_hour: f64, held: Duration) -> Budget {
-        Budget { per_hour, tokens: (per_hour * held.as_secs_f64() / 3600.0).min(Budget::cap(per_hour)), refilled: Instant::now() }
+        let share = (held.as_secs_f64() / BUDGET_BANKED.as_secs_f64()).min(1.0);
+        Budget { per_hour, tokens: Budget::cap(per_hour) * share, refilled: Instant::now() }
     }
 
     fn cap(per_hour: f64) -> f64 {

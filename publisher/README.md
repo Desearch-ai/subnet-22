@@ -51,13 +51,13 @@ them at once to the temporary bucket. Inputs are saved in the order cut, each on
 `PLANNER_WRITES` are unsaved and another is cut, and all of them when a lane holds `PLANNER_MAX_PENDING` inputs
 or the pass ends. A failed write or save fails the pass, and the same input is tried again before any later one
 is saved. Saved inputs go to the API while it has room, the fresh lane's first, then oldest first, no faster
-than `PLANNER_PAGES_PER_HOUR` and `PLANNER_FRESH_PER_HOUR` together allow. A starting planner holds no budget,
-and budget left unspent is kept for two minutes at most, so neither a restart nor a stretch without room plans
-or hands over a backlog at once. A restart reads the log again from before the oldest page not in a saved
-input, and plans again only pages no saved input holds. A starting planner waits up to three minutes for the
-one it replaces to let go of its state. When the API is full, slow to answer (2 s or more) or does not answer,
-inputs wait, and the planner asks for room at the end of each pass and at most every 30 s in between; after a
-restart it asks before reading the log.
+than `PLANNER_PAGES_PER_HOUR` and, with the fresh lane on, `PLANNER_FRESH_PER_HOUR` together allow. A starting
+planner holds no budget but the fresh lane's two minutes, and budget left unspent is kept for two minutes at
+most, so neither a restart nor a stretch without room plans or hands over a backlog at once. A restart reads
+the log again from before the oldest page not in a saved input, and plans again only pages no saved input
+holds. A starting planner waits up to three minutes for the one it replaces to let go of its state. When the
+API is full, slow to answer (2 s or more) or does not answer, inputs wait, and the planner asks for room at the
+end of each pass and at most every 30 s in between; after a restart it asks before reading the log.
 
 After a pass, at most once a minute, the planner logs its place in the log, its counts since it started, and the
 seconds it spent since then reading the log and planning waiting pages, waiting on change files for each, waiting
@@ -74,7 +74,8 @@ on input writes and writing its state.
 - **Fresh lane:** pages seen for the first time and dated within `PLANNER_FRESH_S` (48 h) get their own inputs,
   written within `PLANNER_FRESH_FLUSH_S` (60 s), handed over ahead of other waiting inputs, outside the hourly
   budget (`PLANNER_PAGES_PER_HOUR`) and within their own (`PLANNER_FRESH_PER_HOUR`). Every other page shares the
-  budget. A page the log removes is forgotten, so it is embedded again if it comes back.
+  budget. A page the log removes is forgotten, so it is embedded again if it comes back; until a row of it is
+  planned or waits, rows from before the removal are passed over.
 - **Waiting pages:** a page refused for budget or room, or given back after it was planned, waits with the change
   file that holds it. It is planned from that file once there is room and the budget holds an input's worth of
   pages: `PLANNER_PAGES_PER_INPUT`, or two minutes of budget when that is less, as the budget holds no more. A pass
