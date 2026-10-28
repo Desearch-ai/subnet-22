@@ -296,6 +296,7 @@ fn settings(dir: PathBuf, pages_per_hour: f64, start_after: i64) -> Settings {
         max_pending: 10,
         fresh: Some(Duration::from_secs(48 * 3600)),
         fresh_per_hour: 3600.0,
+        fresh_per_site: 2_000,
         fresh_flush_after: Duration::from_secs(3600),
         pending_max_age: Duration::from_secs(3600),
         min_chars: 300,
@@ -1458,5 +1459,29 @@ async fn the_backfill_picks_the_version_standing_after_a_take_back_as_the_compac
     }
     let planned = planner.state.planned_version(publisher::planner::RECIPE_V2, &honest.key).unwrap().unwrap();
     assert_eq!(planned.content_sha1, honest.record.content_sha1, "the taken-back newer fetch does not stand");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn one_site_fills_at_most_its_share_of_the_fresh_lane_and_an_old_url_date_is_not_fresh() {
+    let Some((_turn, redis)) = redis_db().await else {
+        eprintln!("skipped: no Redis on {REDIS}");
+        return;
+    };
+    let dir = scratch("fresh-site");
+    let stub = stub::start(dir.join("r2"), "127.0.0.1:0").await.unwrap();
+    let (pages, temp) = (bucket(stub.addr, "desearch-pages"), bucket(stub.addr, "subnet-22"));
+    let today = iso(publisher::service::now_us());
+    let on = |site: &str, path: &str| {
+        let mut page = v2(record(&format!("https://{site}/{path}"), &format!("{site} {path} {}", article(2)), "article", "en"));
+        (page.domain, page.published) = (site.into(), today.clone());
+        page
+    };
+    log(&pages, 1, vec![on("a.example", "1"), on("a.example", "2"), on("a.example", "3"), on("b.example", "1"), on("b.example", "2019/03/04/x")]).await;
+    let mut two = settings(dir.join("state"), 3600.0, 0);
+    two.fresh_per_site = 2;
+    let mut planner = Planner::new(two, pages.clone(), temp.clone(), redis.clone(), Room::Fixed(0)).await.unwrap();
+    planner.pass().await.unwrap();
+    assert_eq!((planner.counts.planned, planner.counts.fresh), (5, 3), "two of a.example's, one of b.example's; the page with a 2019 URL goes with the rest");
     let _ = std::fs::remove_dir_all(&dir);
 }

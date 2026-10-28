@@ -29,7 +29,7 @@ use crate::backfill::ShardReader;
 use crate::current::{decode_changes, ChangeRow, PageRow, SHARDS};
 use crate::records::{Record, EXTRACTION_V2};
 use crate::service::now_us;
-use crate::set::{page_date, Refusal, Set};
+use crate::set::{iso_date, url_date, Refusal, Set};
 
 /// How a page becomes texts; any change to what a recipe's texts hold is a new recipe, so every page is embedded again.
 pub const RECIPE_V1: &str = "page-v1";
@@ -391,6 +391,8 @@ pub struct Settings {
     pub fresh: Option<Duration>,
     /// Pages the fresh lane takes an hour at most; the rest go with the other pages.
     pub fresh_per_hour: f64,
+    /// Pages of one site the fresh lane takes an hour at most, so a site dating every page today cannot fill it.
+    pub fresh_per_site: u32,
     /// A part-filled fresh input is written once its first page waited this long.
     pub fresh_flush_after: Duration,
     /// The temporary bucket keeps an input a day; one waiting longer than this is dropped, so no miner is sent a file already gone.
@@ -441,6 +443,7 @@ impl Settings {
             max_pending: number("PLANNER_MAX_PENDING", 50)?,
             fresh: Some(Duration::from_secs_f64(number("PLANNER_FRESH_S", 48.0 * 3600.0)?)).filter(|window| !window.is_zero()),
             fresh_per_hour: number("PLANNER_FRESH_PER_HOUR", 300_000.0)?,
+            fresh_per_site: number("PLANNER_FRESH_PER_SITE", 2_000)?,
             fresh_flush_after: Duration::from_secs_f64(number("PLANNER_FRESH_FLUSH_S", 60.0)?),
             pending_max_age: Duration::from_secs_f64(number("PLANNER_PENDING_MAX_AGE_S", 12.0 * 3600.0)?),
             min_chars: number("PLANNER_MIN_CHARS", 300)?,
@@ -1140,6 +1143,8 @@ pub struct Planner {
     kept_cursor: i64,
     /// Tasks taken back, with the change file that took each back.
     withdrawn: HashMap<String, i64>,
+    /// The hour and the pages each site put in the fresh lane in it.
+    fresh_sites: (i64, HashMap<String, u32>),
 }
 
 impl Planner {
@@ -1192,6 +1197,7 @@ impl Planner {
             settled: Vec::new(),
             kept_cursor: read_through,
             withdrawn,
+            fresh_sites: (0, HashMap::new()),
         };
         if planner.settings.set_file.is_some() {
             if !planner.reload_set()? {
@@ -1652,8 +1658,13 @@ impl Planner {
         };
         // Only a page never planned before is fresh, within its lane's own budget, so pages re-dated by their site cannot flood it.
         let seen = !self.state.unplanned(&page.key).unwrap_or(false) || waiting.is_some();
-        let fresh = self.is_fresh(record) && !seen;
-        let fresh = fresh && self.pending[Lane::Fresh as usize] < self.settings.max_pending && self.fresh_budget.take();
+        let fresh = self.is_fresh(record) && !seen && self.pending[Lane::Fresh as usize] < self.settings.max_pending;
+        let site = self.set.as_ref().and_then(|set| set.site(&record.domain).map(|(host, _)| host.to_string()));
+        let site = site.unwrap_or_else(|| domain_of_key(&page.key).to_string());
+        let fresh = fresh && self.fresh_site_room(&site) && self.fresh_budget.take();
+        if fresh {
+            *self.fresh_sites.1.entry(site).or_default() += 1;
+        }
         let lane = if fresh { Lane::Fresh } else { Lane::Rest };
         if self.pending[lane as usize] >= self.settings.max_pending {
             self.counts.no_room += 1;
@@ -1697,11 +1708,24 @@ impl Planner {
         }
     }
 
-    /// Whether the page is dated within the fresh window, by `published` or its URL, and not past tomorrow.
+    /// Whether the page is dated within the fresh window and not past tomorrow, by the older of `published` and a date in its URL.
     fn is_fresh(&self, record: &Record) -> bool {
         let Some(window) = self.settings.fresh else { return false };
         let now = now_us() as f64 / 1e6;
-        page_date(&record.published, &record.url).is_some_and(|date| date >= utc_day(now - window.as_secs_f64()) && date <= utc_day(now + 86_400.0))
+        let date = match (iso_date(&record.published), url_date(&record.url)) {
+            (Some(published), Some(path)) => Some(published.min(path)),
+            (published, path) => published.or(path),
+        };
+        date.is_some_and(|date| date >= utc_day(now - window.as_secs_f64()) && date <= utc_day(now + 86_400.0))
+    }
+
+    /// Whether `site` has room in the fresh lane this hour.
+    fn fresh_site_room(&mut self, site: &str) -> bool {
+        let hour = now_us() / 3_600_000_000;
+        if self.fresh_sites.0 != hour {
+            self.fresh_sites = (hour, HashMap::new());
+        }
+        self.fresh_sites.1.get(site).copied().unwrap_or(0) < self.settings.fresh_per_site
     }
 
     fn buffer(&self, lane: Lane) -> &Buffer {
