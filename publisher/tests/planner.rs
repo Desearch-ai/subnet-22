@@ -294,6 +294,7 @@ fn settings(dir: PathBuf, pages_per_hour: f64, start_after: i64) -> Settings {
         chars_per_input: 3_000_000,
         flush_after: Duration::from_secs(3600),
         max_pending: 10,
+        max_waiting: 1_000,
         fresh: Some(Duration::from_secs(48 * 3600)),
         fresh_per_hour: 3600.0,
         fresh_per_site: 2_000,
@@ -321,10 +322,17 @@ static REDIS_TURN: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 /// The test database, emptied, held by one test at a time.
 async fn redis_db() -> Option<(tokio::sync::MutexGuard<'static, ()>, ConnectionManager)> {
     let turn = REDIS_TURN.lock().await;
-    let client = redis::Client::open(REDIS).ok()?;
-    let mut redis = tokio::time::timeout(Duration::from_secs(2), client.get_connection_manager()).await.ok()?.ok()?;
-    let () = redis::cmd("FLUSHDB").query_async(&mut redis).await.ok()?;
-    Some((turn, redis))
+    let connected = async {
+        let client = redis::Client::open(REDIS).ok()?;
+        let mut redis = tokio::time::timeout(Duration::from_secs(2), client.get_connection_manager()).await.ok()?.ok()?;
+        let () = redis::cmd("FLUSHDB").query_async(&mut redis).await.ok()?;
+        Some(redis)
+    };
+    match connected.await {
+        Some(redis) => Some((turn, redis)),
+        None if std::env::var("PUBLISHER_TEST_REDIS").is_ok_and(|need| need == "1") => panic!("PUBLISHER_TEST_REDIS=1 and no Redis on {REDIS}"),
+        None => None,
+    }
 }
 
 fn input_recipes(file: Bytes) -> HashSet<String> {
@@ -1513,5 +1521,33 @@ async fn dropped_inputs_leave_the_task_api_s_list_only_once_their_pages_are_forg
     let _: i64 = redis.rpush(EMBED_DROPPED, &dropped).await.unwrap();
     assert_eq!(planner.forget_dropped().await.unwrap(), 1, "one read again, as after a crash before the trim, changes nothing");
     assert!(planner.state.waiting(&key).unwrap().is_some());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn no_more_pages_wait_than_the_cap_and_the_count_survives_a_restart() {
+    let Some((_turn, redis)) = redis_db().await else {
+        eprintln!("skipped: no Redis on {REDIS}");
+        return;
+    };
+    let dir = scratch("waiting-cap");
+    let stub = stub::start(dir.join("r2"), "127.0.0.1:0").await.unwrap();
+    let (pages, temp) = (bucket(stub.addr, "desearch-pages"), bucket(stub.addr, "subnet-22"));
+    let page = |n: usize| v2(record(&format!("https://news.example/story/{n}"), &format!("{n} {}", article(2)), "article", "en"));
+    log(&pages, 1, (0..5).map(page).collect()).await;
+    let mut capped = settings(dir.join("state"), 4.0, 0);
+    (capped.max_waiting, capped.pages_per_input) = (2, 1);
+    let mut planner = Planner::new(capped, pages.clone(), temp.clone(), redis.clone(), Room::Fixed(0)).await.unwrap();
+    planner.pass().await.unwrap();
+    assert_eq!((planner.counts.planned, planner.counts.waiting, planner.counts.not_kept), (1, 2, 2));
+    assert_eq!(planner.state.waiting_count(), 2);
+    drop(planner);
+
+    let mut roomy = settings(dir.join("state"), 3600.0, 0);
+    roomy.pages_per_input = 1;
+    let mut planner = Planner::new(roomy, pages.clone(), temp.clone(), redis.clone(), Room::Fixed(0)).await.unwrap();
+    assert_eq!(planner.state.waiting_count(), 2, "kept on disk");
+    planner.pass().await.unwrap();
+    assert_eq!((planner.counts.replanned, planner.state.waiting_count()), (2, 0));
     let _ = std::fs::remove_dir_all(&dir);
 }

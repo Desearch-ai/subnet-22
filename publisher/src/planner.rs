@@ -3,6 +3,7 @@
 use std::collections::{btree_map, BTreeMap, HashMap, HashSet};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 
@@ -57,6 +58,8 @@ pub const EMBED_INPUTS: &str = "embed:inputs";
 /// Inputs whose task the API dropped after its last attempt.
 pub const EMBED_DROPPED: &str = "embed:dropped";
 const CURSOR: &[u8] = b"cursor";
+/// How many pages wait, kept with every change to them.
+const WAITING_COUNT: &[u8] = b"waiting-count";
 /// The backfill's shard and the last key of it planned or passed by, `<shard>\t<key>`.
 const BACKFILL: &[u8] = b"backfill";
 /// Pages read ahead from `current/` waiting for budget and room.
@@ -387,6 +390,8 @@ pub struct Settings {
     pub flush_after: Duration,
     /// Inputs of one lane written but not yet handed over; past this, new pages of the lane are left out.
     pub max_pending: usize,
+    /// Pages kept waiting at most, so the state stays bounded while the log brings more than the budget.
+    pub max_waiting: i64,
     /// New pages dated within this long before now go in the fresh lane, which is handed over first and spends no budget; None for no fresh lane.
     pub fresh: Option<Duration>,
     /// Pages the fresh lane takes an hour at most; the rest go with the other pages.
@@ -441,6 +446,7 @@ impl Settings {
             chars_per_input: number("PLANNER_CHARS_PER_INPUT", 3_000_000)?,
             flush_after: Duration::from_secs_f64(number("PLANNER_FLUSH_S", 600.0)?),
             max_pending: number("PLANNER_MAX_PENDING", 50)?,
+            max_waiting: number("PLANNER_MAX_WAITING", 30_000_000)?,
             fresh: Some(Duration::from_secs_f64(number("PLANNER_FRESH_S", 48.0 * 3600.0)?)).filter(|window| !window.is_zero()),
             fresh_per_hour: number("PLANNER_FRESH_PER_HOUR", 300_000.0)?,
             fresh_per_site: number("PLANNER_FRESH_PER_SITE", 2_000)?,
@@ -584,6 +590,7 @@ impl Version {
 /// What the planner has planned, its place in the log and the inputs not yet handed over, kept on local disk.
 pub struct State {
     db: DB,
+    waiting: AtomicI64,
 }
 
 impl State {
@@ -591,7 +598,22 @@ impl State {
         let mut options = Options::default();
         options.create_if_missing(true);
         options.set_compression_type(DBCompressionType::Zstd);
-        Ok(State { db: DB::open(&options, dir).with_context(|| format!("opening the planner state at {}", dir.display()))? })
+        let db = DB::open(&options, dir).with_context(|| format!("opening the planner state at {}", dir.display()))?;
+        let waiting = match db.get(WAITING_COUNT)? {
+            Some(raw) => String::from_utf8_lossy(&raw).parse()?,
+            None => db.prefix_iterator(b"waiting/").take_while(|item| item.as_ref().is_ok_and(|(key, _)| key.starts_with(b"waiting/"))).count() as i64,
+        };
+        Ok(State { db, waiting: AtomicI64::new(waiting) })
+    }
+
+    /// How many pages wait.
+    pub fn waiting_count(&self) -> i64 {
+        self.waiting.load(Ordering::Relaxed)
+    }
+
+    fn count_waiting(&self, batch: &mut WriteBatch, change: i64) {
+        let count = self.waiting.fetch_add(change, Ordering::Relaxed) + change;
+        batch.put(WAITING_COUNT, count.max(0).to_string());
     }
 
     pub fn cursor(&self) -> Result<Option<i64>> {
@@ -613,11 +635,15 @@ impl State {
         Ok(self.db.get(waiting_key(key))?.map(|raw| Version::parse(&raw)))
     }
 
-    /// Keeps `version` waiting unless a newer one of the page already is.
-    fn wait(&self, key: &str, version: &Version) -> Result<()> {
+    /// Keeps `version` waiting unless a newer one of the page already is, or `most` pages already wait; whether it waits.
+    fn wait(&self, key: &str, version: &Version, most: i64) -> Result<bool> {
+        if self.waiting_count() >= most && self.db.get_pinned(waiting_key(key))?.is_none() {
+            return Ok(false);
+        }
         let mut batch = WriteBatch::default();
         self.waiting_into(&mut batch, key, version)?;
-        Ok(self.db.write(batch)?)
+        self.db.write(batch)?;
+        Ok(true)
     }
 
     fn waiting_into(&self, batch: &mut WriteBatch, key: &str, version: &Version) -> Result<()> {
@@ -625,8 +651,10 @@ impl State {
         if held.as_ref().is_some_and(|held| (held.fetched_at.as_str(), held.seq) >= (version.fetched_at.as_str(), version.seq)) {
             return Ok(());
         }
-        if let Some(seq) = held.and_then(|held| held.seq) {
-            batch.delete(replan_key(seq, key));
+        match held.map(|held| held.seq) {
+            Some(Some(seq)) => batch.delete(replan_key(seq, key)),
+            Some(None) => {}
+            None => self.count_waiting(batch, 1),
         }
         batch.put(waiting_key(key), version.value());
         if let Some(seq) = version.seq {
@@ -645,6 +673,7 @@ impl State {
         if let Some(seq) = held.seq {
             batch.delete(replan_key(seq, key));
         }
+        self.count_waiting(batch, -1);
         Ok(())
     }
 
@@ -997,6 +1026,8 @@ pub struct Counts {
     pub parts: u64,
     /// Pages left for budget or room, kept waiting to be planned from their change file.
     pub waiting: u64,
+    /// Pages left for budget or room while `max_waiting` pages already waited, left to the backfill.
+    pub not_kept: u64,
     /// Waiting pages read again from their change file, of `pages`.
     pub replanned: u64,
     /// Pages read from `current/` by the backfill, of `pages`.
@@ -1704,8 +1735,9 @@ impl Planner {
             seq: Some(page.change_seq),
             task_id: record.task_id.clone(),
         };
-        match self.state.wait(&page.key, &version) {
-            Ok(()) => self.counts.waiting += 1,
+        match self.state.wait(&page.key, &version, self.settings.max_waiting) {
+            Ok(true) => self.counts.waiting += 1,
+            Ok(false) => self.counts.not_kept += 1,
             Err(error) => eprintln!("keeping {} waiting: {error:#}", page.key),
         }
     }
