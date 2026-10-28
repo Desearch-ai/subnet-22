@@ -72,6 +72,11 @@ def test_an_unbacked_news_site_dating_more_pages_in_a_year_than_an_outlet_writes
     assert sites["busy.example"]["rule"] == sites["local.example"]["rule"] == "news"
 
 
+def test_sites_the_checks_read_as_empty_are_counted():
+    sites = [{"host": "counted.example", "rule": "news"}, {"host": "new.example", "rule": "news"}, {"host": "big.example", "rule": "whole"}, {"host": "bulk.example", "rule": "bulk"}]
+    assert v1_set.uncounted(sites, {"counted.example": {}}, {"counted.example": {}}) == (1, 1)
+
+
 def test_spam_networks_are_sites_storing_exactly_as_many_urls_as_unrelated_ones():
     counts = {
         "craftingfiction.com": 4_459_629, "filmfeels.co.uk": 4_459_629, "fitclubcolumbus.com": 4_459_629,

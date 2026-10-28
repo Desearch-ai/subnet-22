@@ -281,6 +281,13 @@ def summary(sites: list[dict]) -> Counter:
     return Counter((site["rule"], site.get("type", ""), "since" in site) for site in sites)
 
 
+def uncounted(sites: list[dict], counts: dict[str, dict], news_counts: dict[str, dict]) -> tuple[int, int]:
+    """News sites with no news counts and whole sites with no store counts, which the spam and too-big checks read as empty."""
+    news = sum(1 for site in sites if site["rule"] == "news" and site["host"] not in news_counts)
+    whole = sum(1 for site in sites if site["rule"] == "whole" and site["host"] not in counts)
+    return news, whole
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out", required=True, help="the set file to write, such as v1-set.json")
@@ -319,6 +326,8 @@ def main(argv: list[str] | None = None) -> None:
             writer.writeheader()
             writer.writerows(sorted(too_big, key=lambda site: -site["stored"]))
     print(f"{len(sites)} sites in {args.out} (news {args.news}); {len(too_big)} judged-list sites too big to take whole")
+    news_missing, whole_missing = uncounted(sites, counts, news_counts)
+    print(f"{news_missing} news sites without news counts and {whole_missing} whole sites without store counts: the spam and too-big checks read them as empty")
     for (rule, site_type, dated), count in sorted(summary(sites).items()):
         print(f"{count:>8}  {rule:6} {site_type:13} {'since' if dated else ''}")
 
