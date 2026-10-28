@@ -266,3 +266,115 @@ def test_files_are_read_as_written(tmp_path):
     rows = [crawl_list.parse_row(f) for f in crawl_list.registry_rows(str(registry))]
     assert rows[0] == Row("bbc.com", 93, "active", "", 6723761, "ok", "news", 0.99)
     assert rows[1] == Row("new.com", None, "new", "", 0, "", "", None)
+
+
+def v1_list(rows, v1, overrides=None):
+    entries, counts = crawl_list.build(rows, {}, overrides or {}, Hand(), v1=v1)
+    return {e["host"]: e for e in entries}, counts
+
+
+def test_v1_sites_send_first_and_the_rest_fill_at_lower_weights():
+    V1 = crawl_list.V1
+    rows = [
+        row(host="news.com", site_type="news"),
+        row(host="uni.com", site_type="academic"),
+        row(host="ref.com", site_type="reference"),
+        row(host="mag.com", site_type="media"),
+        row(host="corp.com", site_type="company"),
+    ]
+    v1 = {
+        "news.com": V1("news", "news", since="2020-01-01"),
+        "uni.com": V1("whole", "academic"),
+    }
+    listed, _ = v1_list(rows, v1)
+    assert listed["news.com"] == {
+        "host": "news.com",
+        "type": "news",
+        "weight": 4,
+        "hourly": 5_000,
+        "backlog": 1_500_000,
+        "since": "2020-01-01",
+    }
+    assert (listed["uni.com"]["weight"], listed["uni.com"]["send_cap"]) == (3, crawl_list.V1_WHOLE_CAP * 3)
+    assert [listed[h]["weight"] for h in ("ref.com", "mag.com", "corp.com")] == [2, 2, 1]
+
+
+def test_v1_news_and_whole_sites_in_the_waves_so_far_carry_the_resend_cutoff():
+    V1 = crawl_list.V1
+    rows = [row(host="news.com", site_type="news"), row(host="uni.com", site_type="academic"), row(host="later.com", site_type="academic"), row(host="corp.com", site_type="company")]
+    v1 = {"news.com": V1("news", "news", since="2025-10-01"), "uni.com": V1("whole", "academic"), "later.com": V1("whole", "academic")}
+    entries, _ = crawl_list.build(rows, {}, {}, Hand(), v1=v1, resend_before="2026-10-27", resend_hosts={"news.com", "uni.com", "corp.com"})
+    listed = {e["host"]: e for e in entries}
+    assert listed["news.com"]["resend_before"] == listed["uni.com"]["resend_before"] == "2026-10-27"
+    assert "resend_before" not in listed["later.com"], "a site in a later wave waits"
+    assert "resend_before" not in listed["corp.com"], "node-2 sites aren't sent again"
+    assert all("resend_before" not in e for e in v1_list(rows, v1)[0].values()), "only when asked"
+
+
+def test_v1_takes_cited_sites_whole_and_drops_its_outs():
+    V1 = crawl_list.V1
+    rows = [
+        row(host="huge.com", site_type="news"),
+        row(host="paper.com", site_type="news", rank=500),
+        row(host="corp.com", site_type="company"),
+    ]
+    v1 = {
+        "huge.com": V1("out"),
+        "paper.com": V1("news", "news"),
+        "corp.com": V1("whole", "company"),
+    }
+    listed, _ = v1_list(rows, v1)
+    assert "huge.com" not in listed, "a site the set holds out stops sending"
+    assert "send_cap" not in listed["paper.com"] and listed["paper.com"]["hourly"] == 20_000
+    assert "since" not in listed["paper.com"], "a news site taken for all years has no date floor"
+    assert (listed["corp.com"]["weight"], listed["corp.com"]["send_cap"]) == (3, crawl_list.V1_WHOLE_CAP * 3)
+
+
+def test_v1_sites_without_a_sitemap_are_listed_for_their_feed():
+    V1 = crawl_list.V1
+    rows = [
+        row(host="feedless.com", state="no_sitemap", site_type="academic"),
+        row(host="plain.com", state="no_sitemap", site_type="academic"),
+    ]
+    rows += [row(host="news.parent.com", state="no_sitemap", site_type="news"), row(host="parent.com", site_type="news")]
+    v1 = {"feedless.com": V1("whole", "academic"), "news.parent.com": V1("news", "news"), "parent.com": V1("news", "news")}
+    listed, _ = v1_list(rows, v1)
+    assert set(listed) == {"feedless.com", "parent.com"}, "a subdomain of a listed site isn't listed for its feed alone: the parent's pages under it would stop"
+
+
+def test_v1_lifts_only_label_outs():
+    V1 = crawl_list.V1
+    rows = [
+        row(host="label.com", site_type="commerce"),
+        row(host="judged.com", site_type="news"),
+        row(host="refuses.com", homepage="homepage_403"),
+        row(host="foreign.com", state_reason="not_english"),
+        row(host="mirror.com", site_type="reference"),
+    ]
+    v1 = {h: V1("whole", "news") for h in ("label.com", "judged.com", "refuses.com", "foreign.com")}
+    v1["mirror.com"] = V1("out")
+    listed, counts = v1_list(rows, v1, overrides={"judged.com": "out:junk"})
+    assert set(listed) == {"label.com"}
+    assert counts["out:v1"] == 1 and counts["out:junk"] == 1
+
+
+def test_the_v1_set_is_read_from_its_file(tmp_path):
+    path = tmp_path / "v1-set.json"
+    path.write_text(
+        json.dumps(
+            {
+                "built": "2026-10-28T06:00:00Z",
+                "sites": [
+                    {"host": "a.com", "rule": "news", "since": "2020-01-01", "type": "news", "why": ["news"]},
+                    {"host": "b.com", "rule": "whole", "paths": ["/guide/"], "type": "docs", "why": ["docs"]},
+                    {"host": "c.com", "rule": "out"},
+                ],
+            }
+        )
+    )
+    assert crawl_list.read_v1_set(str(path)) == {
+        "a.com": crawl_list.V1("news", "news", since="2020-01-01"),
+        "b.com": crawl_list.V1("whole", "docs"),
+        "c.com": crawl_list.V1("out"),
+    }
+    assert crawl_list.read_v1_set(None) is None

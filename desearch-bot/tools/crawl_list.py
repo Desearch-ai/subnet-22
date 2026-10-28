@@ -8,7 +8,7 @@ import os
 import subprocess
 import sys
 from collections import Counter
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 JEV = "jev-1.14/types-2"
@@ -74,6 +74,16 @@ EARNING_TYPES = {
     "public",
     "docs",
 }
+# With a v1 set, its sites send first and the rest of the list fills the room they leave.
+V1_NEWS_WEIGHT = 4
+V1_WEIGHT = 3
+NODE2_WEIGHT = 2
+# A v1 site taken whole: every stored page may go, up to this many.
+V1_WHOLE_CAP = 5_000_000
+# Outs a v1 site lifts: the type model's labels, never a refusal, a registry state or a hand decision.
+SOFT_OUTS = {"unlabelled", "shop", "junk"}
+# A v1 site that names no sitemap is listed too, so the bot looks for its feed; it sends nothing until it lists pages.
+FEED_STATES = {"no_sitemap"}
 
 
 @dataclass
@@ -109,6 +119,7 @@ class Decision:
     send_cap: int | None = None
     backlog: int | None = None
     hourly: int = 0
+    since: str | None = None
 
 
 @dataclass
@@ -124,6 +135,13 @@ class Hand:
 class Judged:
     pages: int
     substantive: int
+
+
+@dataclass
+class V1:
+    rule: str
+    site_type: str = ""
+    since: str | None = None
 
 
 def out(reason: str) -> Decision:
@@ -221,6 +239,55 @@ def decide(
     )
 
 
+def v1_weight(site_type: str) -> int:
+    return V1_NEWS_WEIGHT if site_type == "news" else V1_WEIGHT
+
+
+def apply_v1(row: Row, base: Decision, v1: V1 | None, forced_out: bool) -> Decision:
+    if v1 is None:
+        return (
+            replace(base, weight=min(base.weight, NODE2_WEIGHT))
+            if base.listed
+            else base
+        )
+    if v1.rule == "out":
+        return out("v1")
+    lifted = not base.listed and not forced_out and base.reason in SOFT_OUTS
+    if v1.rule not in ("news", "whole") or not (base.listed or lifted):
+        return replace(base, weight=v1_weight(base.site_type)) if base.listed else base
+    site_type = v1.site_type if v1.site_type in TIERS else base.site_type
+    if site_type not in TIERS:
+        return base
+    hourly = HOURLY_TOP if row.rank is not None and row.rank <= TOP_RANK else HOURLY
+    if site_type == "news":
+        cap = (
+            base.cap
+            if base.listed and base.site_type == "news"
+            else type_cap("news", row.rank, True, True)
+        )
+        return Decision(
+            True,
+            "",
+            "news",
+            TIERS["news"],
+            V1_NEWS_WEIGHT,
+            cap,
+            backlog=cap * CRAWL_PER_INDEX,
+            hourly=hourly,
+            since=v1.since if v1.rule == "news" else None,
+        )
+    return Decision(
+        True,
+        "",
+        site_type,
+        TIERS[site_type],
+        V1_WEIGHT,
+        V1_WHOLE_CAP,
+        send_cap=V1_WHOLE_CAP * CRAWL_PER_INDEX,
+        hourly=hourly,
+    )
+
+
 def registry_rows(csv_path: str | None) -> csv.reader:
     if csv_path:
         return csv.reader(open_text(csv_path))
@@ -295,6 +362,17 @@ def read_judged(path: str | None) -> dict[str, Judged]:
         }
 
 
+def read_v1_set(path: str | None) -> dict[str, V1] | None:
+    if not path:
+        return None
+    with open_text(path) as source:
+        sites = json.load(source)["sites"]
+    return {
+        site["host"]: V1(site["rule"], site.get("type", ""), site.get("since"))
+        for site in sites
+    }
+
+
 def read_hand(path: str | None) -> Hand:
     hand = Hand()
     if not path:
@@ -315,18 +393,29 @@ def build(
     hand: Hand,
     decisions=None,
     judged: dict[str, Judged] | None = None,
+    v1: dict[str, V1] | None = None,
+    resend_before: str | None = None,
+    resend_hosts: set[str] | None = None,
 ) -> tuple[list[dict], Counter]:
     ranked, counts = [], Counter()
     for row in rows:
-        decision = decide(
+        override = overrides.get(row.host, "")
+        base = decide(
             row,
             backing.get(row.host, Backing()),
-            overrides.get(row.host, ""),
+            override,
             hand,
             (judged or {}).get(row.host),
         )
+        entry_v1 = (v1 or {}).get(row.host)
+        decision = (
+            base
+            if v1 is None
+            else apply_v1(row, base, entry_v1, override.startswith("out:"))
+        )
         counts[decision.site_type if decision.listed else f"out:{decision.reason}"] += 1
-        if decision.listed and row.state in SENDING_STATES:
+        feed = entry_v1 is not None and entry_v1.rule in ("news", "whole") and row.state in FEED_STATES
+        if decision.listed and (row.state in SENDING_STATES or feed):
             entry = {
                 "host": row.host,
                 "type": decision.site_type,
@@ -337,21 +426,35 @@ def build(
                 entry["send_cap"] = decision.send_cap
             if decision.backlog is not None:
                 entry["backlog"] = decision.backlog
-            ranked.append((row.rank is None, row.rank or 0, row.host, entry))
+            if decision.since is not None:
+                entry["since"] = decision.since
+            if resend_before and row.host in (resend_hosts or set()) and entry_v1 is not None and entry_v1.rule in ("news", "whole"):
+                entry["resend_before"] = resend_before
+            ranked.append((row.rank is None, row.rank or 0, row.host, entry, feed and row.state not in SENDING_STATES))
+        # The decisions file keeps the decision before the v1 set, which the set itself is built from.
         if decisions is not None:
             decisions.writerow(
                 [
                     row.host,
                     row.rank or "",
                     row.state,
-                    int(decision.listed),
-                    decision.reason,
-                    decision.site_type,
-                    decision.cap,
+                    int(base.listed),
+                    base.reason,
+                    base.site_type,
+                    base.cap,
+                    entry_v1.rule if entry_v1 else "",
                 ]
             )
+    # A listed subdomain takes its pages from its parent's lists, so one listed only for its feed would leave them unsent.
+    hosts = {item[2] for item in ranked}
+    ranked = [item for item in ranked if not (item[4] and parent_listed(item[2], hosts))]
     ranked.sort(key=lambda item: item[:3])
     return [item[3] for item in ranked], counts
+
+
+def parent_listed(host: str, hosts: set[str]) -> bool:
+    labels = host.split(".")
+    return any(".".join(labels[at:]) in hosts for at in range(1, len(labels) - 1))
 
 
 def write_list(entries: list[dict], path: str) -> None:
@@ -390,26 +493,42 @@ def main(argv: list[str] | None = None) -> None:
         help="TSV of host, judged, substantive: sampled pages a judge read, and how many had content of their own",
     )
     parser.add_argument(
+        "--v1-set",
+        help="v1-set.json: its sites send first under its caps, and the rest of the list at lower weights",
+    )
+    parser.add_argument(
+        "--resend-before",
+        help="an ISO date: the pages of the v1 sites in --resend-hosts last sent before it go once more (extraction changed)",
+    )
+    parser.add_argument(
+        "--resend-hosts",
+        action="append",
+        default=[],
+        help="a file of hosts, one a line, that take --resend-before: the resend waves applied so far",
+    )
+    parser.add_argument(
         "--registry-csv",
         help="read the registry rows from this CSV instead of DESEARCH_DB",
     )
     args = parser.parse_args(argv)
     rows = (parse_row(fields) for fields in registry_rows(args.registry_csv))
-    backing, overrides, hand, judged = (
+    backing, overrides, hand, judged, v1 = (
         read_backing(args.backing),
         read_overrides(args.overrides),
         read_hand(args.excluded),
         read_judged(args.judged),
+        read_v1_set(args.v1_set),
     )
+    resend_hosts = {line.strip() for path in args.resend_hosts for line in Path(path).read_text().splitlines() if line.strip()}
     if args.decisions:
         with open_text(args.decisions, "wt") as target:
             writer = csv.writer(target, delimiter="\t", lineterminator="\n")
             writer.writerow(
-                ["host", "rank", "state", "listed", "reason", "type", "cap"]
+                ["host", "rank", "state", "listed", "reason", "type", "cap", "v1"]
             )
-            entries, counts = build(rows, backing, overrides, hand, writer, judged)
+            entries, counts = build(rows, backing, overrides, hand, writer, judged, v1, args.resend_before, resend_hosts)
     else:
-        entries, counts = build(rows, backing, overrides, hand, judged=judged)
+        entries, counts = build(rows, backing, overrides, hand, judged=judged, v1=v1, resend_before=args.resend_before, resend_hosts=resend_hosts)
     write_list(entries, args.out)
     print(f"{len(entries)} domains listed in {args.out}")
     for name, count in sorted(counts.items(), key=lambda item: -item[1]):
