@@ -234,14 +234,30 @@ pub const SPREAD_SECONDS: u32 = 300;
 /// Pages a domain may always send at once, so a small hourly limit is not cut to a page or two.
 pub const SPREAD_FLOOR: u64 = 100;
 
+/// Pages a domain may save up and send at once: one for a site that asks for a delay between requests, so it never gets two within its delay.
+pub fn most_at_once(limit: u64, delayed: bool) -> u64 {
+    if delayed {
+        1
+    } else {
+        (limit * u64::from(SPREAD_SECONDS) / u64::from(HOUR)).max(SPREAD_FLOOR)
+    }
+}
+
 pub struct HourlyCap {
     limit: u64,
     sent: HashMap<String, VecDeque<(u32, u64)>>,
+    /// When every domain's saved share was empty, so a restart adds no burst to the hour before it; none starts them full.
+    emptied: Option<u32>,
 }
 
 impl HourlyCap {
     pub fn new(limit: u64) -> Self {
-        HourlyCap { limit, sent: HashMap::new() }
+        HourlyCap { limit, sent: HashMap::new(), emptied: None }
+    }
+
+    /// As `new`, with every domain's saved share empty at `now`, refilling from there.
+    pub fn empty_at(limit: u64, now: u32) -> Self {
+        HourlyCap { emptied: Some(now), ..HourlyCap::new(limit) }
     }
 
     pub fn allowance(&mut self, domain: &str, now: u32) -> u64 {
@@ -255,30 +271,37 @@ impl HourlyCap {
 
     /// What is left of `limit` in the last hour and of the share it has saved up, for a domain held to less than the usual cap.
     pub fn allowance_under(&mut self, domain: &str, now: u32, limit: u64) -> u64 {
-        self.allowance_within(domain, now, limit, SPREAD_FLOOR)
+        self.allowance_within(domain, now, limit, false)
     }
 
-    /// As `allowance_under`, with the pages the domain may always send at once given: one for a site that asks for a delay between requests.
-    pub fn allowance_within(&mut self, domain: &str, now: u32, limit: u64, floor: u64) -> u64 {
-        let spread = (limit * u64::from(SPREAD_SECONDS) / u64::from(HOUR)).max(floor);
-        let Some(sent) = self.sent.get_mut(domain) else {
-            return limit.min(spread);
+    /// As `allowance_under`, saving up only one page for a site that asks for a delay between requests.
+    pub fn allowance_within(&mut self, domain: &str, now: u32, limit: u64, delayed: bool) -> u64 {
+        let most = most_at_once(limit, delayed);
+        let empty = VecDeque::new();
+        let sent = match self.sent.get_mut(domain) {
+            Some(sent) => {
+                while sent.front().is_some_and(|(at, _)| *at + HOUR <= now) {
+                    sent.pop_front();
+                }
+                &*sent
+            }
+            None => &empty,
         };
-        while sent.front().is_some_and(|(at, _)| *at + HOUR <= now) {
-            sent.pop_front();
-        }
         let total: u64 = sent.iter().map(|(_, n)| n).sum();
-        let per_second = limit as f64 / f64::from(HOUR);
-        let (mut owed, mut last) = (0.0_f64, now);
+        // Owed pages are counted in hour-parts, so a share of one page a delay apart refills exactly on time.
+        let (mut owed, mut last) = match self.emptied {
+            Some(at) => (most * u64::from(HOUR), at),
+            None => (0, now),
+        };
         for &(at, n) in sent.iter() {
-            owed = (owed - f64::from(at.saturating_sub(last)) * per_second).max(0.0) + n as f64;
+            owed = owed.saturating_sub(u64::from(at.saturating_sub(last)) * limit) + n * u64::from(HOUR);
             last = at;
         }
-        let owed = (owed - f64::from(now.saturating_sub(last)) * per_second).max(0.0);
+        let owed = owed.saturating_sub(u64::from(now.saturating_sub(last)) * limit);
         if sent.is_empty() {
             self.sent.remove(domain);
         }
-        limit.saturating_sub(total).min(spread.saturating_sub(owed.ceil() as u64))
+        limit.saturating_sub(total).min(most.saturating_sub(owed.div_ceil(u64::from(HOUR))))
     }
 
     pub fn record(&mut self, domain: &str, now: u32, count: u64) {
@@ -619,15 +642,15 @@ impl Dispatcher {
         Ok(dispatcher)
     }
 
-    /// Send at most this many URLs an hour, at a steady pace; 0 sends as fast as the API has room.
-    pub fn paced(mut self, per_hour: u64) -> Self {
-        self.pace = Pace::new(per_hour, now());
-        self
+    /// Send at most this many URLs an hour, at a steady pace; 0 sends as fast as the API has room. The pace and each domain's saved share start empty.
+    pub fn paced(self, per_hour: u64) -> Self {
+        self.paced_from(per_hour, now())
     }
 
     /// As `paced`, with the pace starting at `start` rather than now, for a replay on a simulated clock.
     pub fn paced_from(mut self, per_hour: u64, start: u32) -> Self {
         self.pace = Pace::new(per_hour, start);
+        self.cap = HourlyCap::empty_at(self.cap.limit(), start);
         self
     }
 
@@ -830,8 +853,8 @@ impl Dispatcher {
             .iter()
             .map(|(rank, name)| {
                 let Domain { ready, share, weight, .. } = self.domains[name];
-                let (hourly, floor) = hourly_of(&self.buckets, &self.paced, self.cap.limit(), name);
-                let allowance = self.cap.allowance_within(name, now, if share == 0.0 { PROBE_PER_HOUR.min(hourly) } else { hourly }, floor);
+                let (hourly, delayed) = hourly_of(&self.buckets, &self.paced, self.cap.limit(), name);
+                let allowance = self.cap.allowance_within(name, now, if share == 0.0 { PROBE_PER_HOUR.min(hourly) } else { hourly }, delayed);
                 Want { rank: *rank, ready, allowance, share, weight }
             })
             .collect();
@@ -891,8 +914,8 @@ impl Dispatcher {
             .iter()
             .map(|(rank, name)| {
                 let Domain { ready, share, weight, .. } = self.resending[name];
-                let (hourly, floor) = hourly_of(&self.buckets, &self.paced, self.cap.limit(), name);
-                let allowance = self.cap.allowance_within(name, now, if share == 0.0 { PROBE_PER_HOUR.min(hourly) } else { hourly }, floor);
+                let (hourly, delayed) = hourly_of(&self.buckets, &self.paced, self.cap.limit(), name);
+                let allowance = self.cap.allowance_within(name, now, if share == 0.0 { PROBE_PER_HOUR.min(hourly) } else { hourly }, delayed);
                 Want { rank: *rank, ready, allowance: allowance.saturating_sub(listed.get(name).map_or(0, |picked| picked.len() as u64)), share, weight }
             })
             .collect();
@@ -959,9 +982,11 @@ impl Dispatcher {
     async fn relist(&mut self, now: u32) -> Result<()> {
         let buckets = self.buckets.clone();
         let known: HashSet<String> = self.domains.keys().cloned().collect();
-        let joining = tokio::task::spawn_blocking(move || -> Result<Vec<(String, Domain, Option<u64>)>> {
+        let (joining, grown) = tokio::task::spawn_blocking(move || -> Result<(Vec<(String, Domain, Option<u64>)>, Vec<(String, u64)>)> {
             let found = on_readers(buckets.stores().collect(), |store| {
-                Ok(store
+                // A joining domain's stored count already holds what grew before now; only the domains kept take the growth.
+                let grown: Vec<(String, u64)> = store.take_noticed().into_iter().filter(|(domain, _)| known.contains(domain) && buckets.allows(domain)).collect();
+                let joining: Vec<(String, Domain, Option<u64>)> = store
                     .ready_domains()?
                     .into_iter()
                     .filter(|(domain, ready)| *ready > 0 && !known.contains(domain) && buckets.allows(domain))
@@ -969,9 +994,11 @@ impl Dispatcher {
                         let (placed, per_hour) = placed(&buckets, &domain, ready, now);
                         (domain, placed, per_hour)
                     })
-                    .collect::<Vec<_>>())
+                    .collect();
+                Ok((joining, grown))
             })?;
-            Ok(found.into_iter().flatten().collect())
+            let (joining, grown): (Vec<_>, Vec<_>) = found.into_iter().unzip();
+            Ok((joining.into_iter().flatten().collect(), grown.into_iter().flatten().collect()))
         })
         .await??;
         let before = self.domains.len();
@@ -979,6 +1006,11 @@ impl Dispatcher {
         self.domains.retain(|domain, _| buckets.allows(domain));
         self.paced.retain(|domain, _| buckets.allows(domain));
         let left = before - self.domains.len();
+        for (domain, added) in grown {
+            if let Some(known) = self.domains.get_mut(&domain) {
+                known.ready += added;
+            }
+        }
         let joined = joining.len();
         for (domain, placed, per_hour) in joining {
             self.pace_by_delay(&domain, per_hour);
@@ -1027,7 +1059,7 @@ impl Dispatcher {
         let eligible: Vec<&(i64, String)> = self
             .fillers
             .iter()
-            .filter(|(_, name)| !self.domains.contains_key(name) && !self.resending.contains_key(name) && !self.fill_rest.contains_key(name))
+            .filter(|(_, name)| self.buckets.allows(name) && !self.domains.contains_key(name) && !self.resending.contains_key(name) && !self.fill_rest.contains_key(name))
             .collect();
         let start = self.fill_resume.as_ref().map_or(0, |resume| eligible.partition_point(|key| *key <= resume));
         let order: Vec<(i64, String)> = eligible.iter().cycle().skip(start).take(FILL_WINDOW.min(eligible.len())).map(|&key| key.clone()).collect();
@@ -1035,8 +1067,8 @@ impl Dispatcher {
             .iter()
             .map(|(rank, name)| {
                 let terms = self.buckets.terms(name);
-                let (hourly, floor) = hourly_of(&self.buckets, &self.paced, self.cap.limit(), name);
-                let allowance = self.cap.allowance_within(name, now, hourly, floor);
+                let (hourly, delayed) = hourly_of(&self.buckets, &self.paced, self.cap.limit(), name);
+                let allowance = self.cap.allowance_within(name, now, hourly, delayed);
                 Want { rank: *rank, ready: allowance, allowance, share: 1.0, weight: terms.weight }
             })
             .collect();
@@ -1189,7 +1221,7 @@ impl Dispatcher {
     }
 
     fn set_ready(&mut self, domain: &str, ready: u64, rank: i64) {
-        if ready == 0 {
+        if ready == 0 || !self.buckets.allows(domain) {
             self.domains.remove(domain);
         } else {
             let weight = self.buckets.terms(domain).weight;
@@ -1820,12 +1852,12 @@ pub fn delay_hourly(record: &Json) -> Option<u64> {
     Some(((3600.0 / delay.min(60.0)) as u64).max(1))
 }
 
-/// A domain's hourly limit, held to what its Crawl-delay allows, and the pages it may send at once.
-fn hourly_of(buckets: &Buckets, paced: &HashMap<String, u64>, limit: u64, domain: &str) -> (u64, u64) {
+/// A domain's hourly limit, held to what its Crawl-delay allows, and whether it asks for a delay between requests.
+fn hourly_of(buckets: &Buckets, paced: &HashMap<String, u64>, limit: u64, domain: &str) -> (u64, bool) {
     let listed = buckets.terms(domain).hourly.unwrap_or(limit);
     match paced.get(domain) {
-        Some(&per_hour) if per_hour < listed => (per_hour, 1),
-        _ => (listed, SPREAD_FLOOR),
+        Some(&per_hour) => (per_hour.min(listed), true),
+        None => (listed, false),
     }
 }
 

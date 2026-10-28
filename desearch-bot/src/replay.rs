@@ -150,7 +150,7 @@ fn page_id(url: &str) -> u64 {
 
 impl Bars {
     /// A send of `url`; `interval` gives the page's refresh interval as of a send at the time it is given.
-    fn sent(&mut self, url: &str, host: &str, at: u32, limit: u64, restamping: bool, interval: impl FnOnce(u32) -> u32) {
+    fn sent(&mut self, url: &str, at: u32, restamping: bool, interval: impl FnOnce(u32) -> u32) {
         let id = page_id(url);
         if let Some((before, how)) = self.last.insert(id, (at, PENDING)) {
             let redated = self.redated.get(&id).is_some_and(|&when| when >= before);
@@ -166,17 +166,25 @@ impl Bars {
                 }
             }
         }
+    }
+
+    /// A send to `host`, held to `limit` an hour; `delayed` for a site that asks for a delay between requests.
+    fn spaced(&mut self, host: &str, at: u32, limit: u64, delayed: bool) {
         let times = self.sites.entry(host.to_string()).or_default();
         while times.front().is_some_and(|&t| t + HOUR <= at) {
             times.pop_front();
         }
         times.push_back(at);
-        let spread = (limit * u64::from(dispatch::SPREAD_SECONDS) / u64::from(HOUR)).max(dispatch::SPREAD_FLOOR);
         if times.len() as u64 > limit {
             self.over_hour += 1;
         }
-        // The share saved up, and what refills at the hourly rate while it goes.
-        if times.iter().rev().take_while(|&&t| t + dispatch::SPREAD_SECONDS > at).count() as u64 > spread + limit * u64::from(dispatch::SPREAD_SECONDS) / u64::from(HOUR) {
+        // The share saved up and what refills while it goes, or for a delayed site one page a delay apart.
+        let (within, most) = if delayed {
+            (HOUR / limit.max(1) as u32, 1)
+        } else {
+            (dispatch::SPREAD_SECONDS, dispatch::most_at_once(limit, false) + limit * u64::from(dispatch::SPREAD_SECONDS) / u64::from(HOUR))
+        };
+        if times.iter().rev().take_while(|&&t| t + within > at).count() as u64 > most {
             self.over_spread += 1;
         }
     }
@@ -319,6 +327,7 @@ pub async fn replay(args: ReplayArgs) -> Result<()> {
     let mut reader = OutcomeReader::new(recrawl.clone(), 200_000).with_resent(resent.clone());
     let mut rng = rand::rngs::StdRng::seed_from_u64(2026);
     let mut waiting: VecDeque<Sent> = VecDeque::new();
+    let mut delays: HashMap<String, Option<u64>> = HashMap::new();
     let end = args.start + args.hours * HOUR;
     let mut now = args.start;
     let mut pass_ms: Vec<u64> = Vec::new();
@@ -363,9 +372,11 @@ pub async fn replay(args: ReplayArgs) -> Result<()> {
             writeln!(log, "{line}")?;
         }
         for (host, url) in std::mem::take(&mut taken.lock().unwrap_or_else(|e| e.into_inner()).urls) {
-            let terms = buckets.terms(&host);
+            let listed = buckets.terms(&host).hourly.unwrap_or(1_000_000);
+            let delay = *delays.entry(host.clone()).or_insert_with(|| buckets.store_for(&host).and_then(|store| store.domain(&host).ok().flatten()).as_ref().and_then(dispatch::delay_hourly));
+            bars.spaced(&host, now, delay.map_or(listed, |per_hour| per_hour.min(listed)), delay.is_some());
             let interval = |_: u32| recrawl.interval(&host);
-            bars.sent(&url, &host, now, terms.hourly.unwrap_or(1_000_000), host == restamping, interval);
+            bars.sent(&url, now, host == restamping, interval);
             if args.refusing.as_deref() == Some(host.as_str()) {
                 *bars.refusing.entry((now - args.start) / HOUR).or_default() += 1;
             }
