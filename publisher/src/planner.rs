@@ -886,6 +886,19 @@ enum Unread {
     Failed(String),
 }
 
+/// Where a buffered page was read, which says what a restart reads again for it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Source {
+    /// A change file read in order: the kept cursor stays before it.
+    Log(i64),
+    /// A change file read late: it stays on the missing list.
+    Late(i64),
+    /// `current/`: the backfill's kept place stays before it.
+    Backfill,
+    /// A waiting page's change file: the page stays waiting.
+    Replan,
+}
+
 /// One page waiting in the input being filled.
 #[derive(Clone, Debug)]
 pub struct Planned {
@@ -900,6 +913,7 @@ pub struct Planned {
     pub page_only: bool,
     /// The change file that holds the version's row.
     pub seq: i64,
+    pub source: Source,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -985,6 +999,44 @@ struct Buffer {
     new: HashMap<String, u64>,
     chars: usize,
     since: Option<Instant>,
+    /// Pages by the change file read in order, and read late, that they came from.
+    log: BTreeMap<i64, usize>,
+    late: BTreeMap<i64, usize>,
+    backfill: usize,
+}
+
+impl Buffer {
+    fn count(&mut self, source: Source, add: bool) {
+        let tally = |counts: &mut BTreeMap<i64, usize>, seq: i64| {
+            let count = counts.entry(seq).or_default();
+            *count = if add { *count + 1 } else { count.saturating_sub(1) };
+            if *count == 0 {
+                counts.remove(&seq);
+            }
+        };
+        match source {
+            Source::Log(seq) => tally(&mut self.log, seq),
+            Source::Late(seq) => tally(&mut self.late, seq),
+            Source::Backfill if add => self.backfill += 1,
+            Source::Backfill => self.backfill = self.backfill.saturating_sub(1),
+            Source::Replan => {}
+        }
+    }
+
+    fn push(&mut self, planned: Planned) {
+        self.count(planned.source, true);
+        self.at.insert(planned.key.clone(), self.pages.len());
+        self.chars += chars_of(&planned);
+        self.pages.push(planned);
+        self.since.get_or_insert_with(Instant::now);
+    }
+
+    fn replace(&mut self, at: usize, planned: Planned) {
+        self.count(self.pages[at].source, false);
+        self.count(planned.source, true);
+        self.chars = self.chars - chars_of(&self.pages[at]) + chars_of(&planned);
+        self.pages[at] = planned;
+    }
 }
 
 pub struct Planner {
@@ -1014,8 +1066,10 @@ pub struct Planner {
     /// Inputs waiting for room, by lane.
     pending: [usize; 2],
     missing: BTreeMap<i64, Instant>,
-    /// Late files read or given up since the buffer was last empty; forgotten with the next commit.
+    /// Late files read or given up whose pages may still be buffered; forgotten once none are.
     settled: Vec<i64>,
+    /// The cursor last kept on disk.
+    kept_cursor: i64,
 }
 
 impl Planner {
@@ -1065,6 +1119,7 @@ impl Planner {
             pending,
             missing,
             settled: Vec::new(),
+            kept_cursor: read_through,
         };
         if planner.settings.set_file.is_some() {
             if !planner.reload_set()? {
@@ -1129,7 +1184,7 @@ impl Planner {
         while let Some((seq, rows)) = fetched.next().await {
             match rows? {
                 Ok(rows) => {
-                    self.take(rows).await?;
+                    self.take(rows, false).await?;
                     read += 1;
                 }
                 Err(why) => self.note_missing(seq, &why)?,
@@ -1169,7 +1224,7 @@ impl Planner {
                 self.state.unwait(&page.key)?;
                 took = true;
                 self.counts.replanned += 1;
-                if let Some(lane) = self.consider(*page) {
+                if let Some(lane) = self.consider(*page, Source::Replan) {
                     let buffer = self.buffer(lane);
                     if buffer.pages.len() >= self.settings.pages_per_input || buffer.chars >= self.settings.chars_per_input {
                         self.flush_lane(lane).await?;
@@ -1204,7 +1259,7 @@ impl Planner {
                     reading.last = Some(page.key.clone());
                     took = true;
                     self.counts.backfill += 1;
-                    if let Some(lane) = self.consider(page) {
+                    if let Some(lane) = self.consider(page, Source::Backfill) {
                         let buffer = self.buffer(lane);
                         if buffer.pages.len() >= self.settings.pages_per_input || buffer.chars >= self.settings.chars_per_input {
                             self.flush_lane(lane).await?;
@@ -1285,27 +1340,26 @@ impl Planner {
             self.missing.remove(&seq);
             self.settled.push(seq);
         }
-        if self.buffered_nothing() && !self.settled.is_empty() {
-            self.state.settle_missing(&self.settled)?;
-            self.settled.clear();
-        }
+        let settled = self.settle(&[Lane::Fresh, Lane::Rest]);
+        self.state.settle_missing(&settled)?;
         Ok(read)
     }
 
     /// Considers every page of change file `seq`; the inner error says why the file cannot be read yet, the outer one fails the pass.
     async fn read(&mut self, seq: i64) -> Result<std::result::Result<(), Unread>> {
         match fetch(self.pages.clone(), seq).await? {
-            Ok(rows) => self.take(rows).await.map(Ok),
+            Ok(rows) => self.take(rows, true).await.map(Ok),
             Err(why) => Ok(Err(why)),
         }
     }
 
     /// Considers every page of one change file, in file order.
-    async fn take(&mut self, rows: Vec<ChangeRow>) -> Result<()> {
+    async fn take(&mut self, rows: Vec<ChangeRow>, late: bool) -> Result<()> {
         for row in rows {
             match row {
                 ChangeRow::Page(page) => {
-                    if let Some(lane) = self.consider(*page) {
+                    let from = if late { Source::Late(page.change_seq) } else { Source::Log(page.change_seq) };
+                    if let Some(lane) = self.consider(*page, from) {
                         let buffer = self.buffer(lane);
                         if buffer.pages.len() >= self.settings.pages_per_input || buffer.chars >= self.settings.chars_per_input {
                             self.flush_lane(lane).await?;
@@ -1369,17 +1423,32 @@ impl Planner {
         Ok(())
     }
 
-    /// Marks change file `seq` read; the kept cursor moves only while nothing is buffered, so a restart reads the buffered pages' files again.
+    /// Marks change file `seq` read and keeps the cursor just before the first change file a buffered page was read from, so a restart reads only those again.
     fn advance(&mut self, seq: i64) -> Result<()> {
         self.read_through = seq;
-        if self.buffered_nothing() {
-            self.state.keep_cursor(seq)?;
+        let cursor = self.cursor_after(&[Lane::Fresh, Lane::Rest]);
+        if cursor > self.kept_cursor {
+            self.state.keep_cursor(cursor)?;
+            self.kept_cursor = cursor;
         }
         Ok(())
     }
 
+    /// Where a restart may start reading the log, given the pages still in `lanes`.
+    fn cursor_after(&self, lanes: &[Lane]) -> i64 {
+        lanes.iter().filter_map(|&lane| self.buffer(lane).log.keys().next().copied()).min().map_or(self.read_through, |first| first - 1)
+    }
+
+    /// The late files read whose pages are no longer in `lanes`, taken off the list of those still settling.
+    fn settle(&mut self, lanes: &[Lane]) -> Vec<i64> {
+        let held: HashSet<i64> = lanes.iter().flat_map(|&lane| self.buffer(lane).late.keys().copied()).collect();
+        let (kept, settled): (Vec<i64>, Vec<i64>) = std::mem::take(&mut self.settled).into_iter().partition(|seq| held.contains(seq));
+        self.settled = kept;
+        settled
+    }
+
     /// Takes the page into its lane's buffer if a planned recipe reads it, it is wanted, changed, and the budget and the API's room allow it; the lane it went in.
-    pub fn consider(&mut self, page: PageRow) -> Option<Lane> {
+    pub fn consider(&mut self, page: PageRow, from: Source) -> Option<Lane> {
         self.counts.pages += 1;
         let record = &page.record;
         let Some(recipe) = recipe_of(record).filter(|recipe| PLANNED_RECIPES.contains(recipe)) else {
@@ -1432,10 +1501,8 @@ impl Planner {
             }
         }
         if let Some((lane, at)) = buffered {
-            let planned = planned_of(&page, recipe, self.settings.page_first && lane == Lane::Rest, false);
-            let buffer = self.buffer_mut(lane);
-            buffer.chars = buffer.chars - chars_of(&buffer.pages[at]) + chars_of(&planned);
-            buffer.pages[at] = planned;
+            let planned = planned_of(&page, recipe, self.settings.page_first && lane == Lane::Rest, false, from);
+            self.buffer_mut(lane).replace(at, planned);
             return Some(lane);
         }
         let new_in = match cap {
@@ -1466,7 +1533,7 @@ impl Planner {
             self.keep_waiting(&page);
             return None;
         }
-        let planned = planned_of(&page, recipe, self.settings.page_first && lane == Lane::Rest, parts_only);
+        let planned = planned_of(&page, recipe, self.settings.page_first && lane == Lane::Rest, parts_only, from);
         if planned.texts.is_empty() {
             self.counts.unchanged += 1;
             return None;
@@ -1477,10 +1544,7 @@ impl Planner {
         if let Some(domain) = new_in {
             *buffer.new.entry(domain).or_default() += 1;
         }
-        buffer.at.insert(page.key, buffer.pages.len());
-        buffer.chars += chars_of(&planned);
-        buffer.pages.push(planned);
-        buffer.since.get_or_insert_with(Instant::now);
+        buffer.push(planned);
         self.counts.planned += 1;
         self.counts.fresh += u64::from(lane == Lane::Fresh);
         Some(lane)
@@ -1515,10 +1579,6 @@ impl Planner {
             Lane::Fresh => &mut self.fresh,
             Lane::Rest => &mut self.rest,
         }
-    }
-
-    fn buffered_nothing(&self) -> bool {
-        self.fresh.pages.is_empty() && self.rest.pages.is_empty()
     }
 
     fn admitted(&self, record: &Record) -> bool {
@@ -1575,11 +1635,13 @@ impl Planner {
         }
         // Kept until the input is stored, so a failed write is tried again with the same pages.
         self.temp.put(&input_key, Bytes::from(file), PARQUET, None).await.map_err(|error| anyhow!("writing {input_key}: {error}"))?;
-        // The cursor and late files move only with the last lane written, so a restart reads the other lane's pages again.
-        let alone = Lane::ALL.into_iter().all(|other| other == lane || self.buffer(other).pages.is_empty());
-        let (cursor, settled) = if alone { (Some(self.read_through), std::mem::take(&mut self.settled)) } else { (None, Vec::new()) };
+        // The cursor, late files and the backfill's place move only past what the other lane still holds.
+        let other = if lane == Lane::Fresh { Lane::Rest } else { Lane::Fresh };
+        let cursor = Some(self.cursor_after(&[other])).filter(|&cursor| cursor > self.kept_cursor);
+        let settled = self.settle(&[other]);
         self.state.commit(&self.buffer(lane).pages, &input_key, &entry.to_string(), cursor, &settled)?;
-        if let Some(reading) = self.reading.as_ref().filter(|_| alone) {
+        self.kept_cursor = cursor.unwrap_or(self.kept_cursor);
+        if let Some(reading) = self.reading.as_ref().filter(|_| self.buffer(other).backfill == 0) {
             self.state.keep_backfill(reading.shard, reading.last.as_deref())?;
         }
         *self.buffer_mut(lane) = Buffer::default();
@@ -1641,7 +1703,7 @@ impl Planner {
 }
 
 /// The page as the buffer holds it, its texts made only once it is taken: all of them, its page text alone, or its passages alone.
-fn planned_of(page: &PageRow, recipe: &'static str, page_first: bool, parts_only: bool) -> Planned {
+fn planned_of(page: &PageRow, recipe: &'static str, page_first: bool, parts_only: bool, source: Source) -> Planned {
     let record = &page.record;
     let mut texts = texts(&page.key, record);
     let page_only = page_first && !parts_only && texts.len() > 1;
@@ -1660,6 +1722,7 @@ fn planned_of(page: &PageRow, recipe: &'static str, page_first: bool, parts_only
         texts,
         page_only,
         seq: page.change_seq,
+        source,
     }
 }
 

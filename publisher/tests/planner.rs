@@ -1156,3 +1156,40 @@ async fn an_input_pushed_again_after_a_crash_reaches_the_task_api_once() {
     assert!(!push_input(&mut redis, "embed/inputs/a.parquet", &entry).await.unwrap());
     assert_eq!(redis.llen::<_, i64>(EMBED_INPUTS).await.unwrap(), 1);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn with_both_lanes_busy_a_restart_reads_again_only_the_files_still_buffered() {
+    let Some((_turn, redis)) = redis_db().await else {
+        eprintln!("skipped: no Redis on {REDIS}");
+        return;
+    };
+    let dir = scratch("cursor");
+    let stub = stub::start(dir.join("r2"), "127.0.0.1:0").await.unwrap();
+    let (pages, temp) = (bucket(stub.addr, "desearch-pages"), bucket(stub.addr, "subnet-22"));
+    let today = iso(publisher::service::now_us());
+    let page = |name: String, published: &str| {
+        let mut page = v2(record(&format!("https://news.example/story/{name}"), &format!("{name} {}", article(2)), "article", "en"));
+        page.published = published.into();
+        page
+    };
+    for n in 1..=12u64 {
+        log(&pages, n, vec![page(format!("old-{n}-a"), "2021-01-01"), page(format!("old-{n}-b"), "2021-01-01"), page(format!("new-{n}"), &today)]).await;
+    }
+    let mut threes = settings(dir.join("state"), 3600.0, 0);
+    threes.pages_per_input = 3;
+    let mut planner = Planner::new(threes, pages.clone(), temp.clone(), redis.clone(), Room::Fixed(0)).await.unwrap();
+    planner.pass().await.unwrap();
+    assert_eq!((planner.read_through(), planner.counts.planned, planner.counts.inputs), (12, 36, 12));
+    drop(planner);
+
+    let mut restarted = Planner::new(settings(dir.join("state"), 3600.0, 0), pages.clone(), temp.clone(), redis.clone(), Room::Fixed(0)).await.unwrap();
+    assert!(restarted.read_through() >= 10, "the cursor kept up though one lane always held pages: {}", restarted.read_through());
+    restarted.pass().await.unwrap();
+    assert_eq!(
+        restarted.counts.planned + restarted.counts.unchanged,
+        3 * restarted.counts.files,
+        "each page of a file read again is planned again or unchanged"
+    );
+    assert!(restarted.counts.files <= 2, "only the files of pages never written are read again: {}", restarted.counts.files);
+    let _ = std::fs::remove_dir_all(&dir);
+}

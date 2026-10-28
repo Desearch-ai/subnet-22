@@ -246,6 +246,7 @@ mod tests {
             texts: texts.iter().map(|&(kind, index)| Text { text_id: format!("{key}#{kind}{index}"), kind, index, text: format!("text {index}") }).collect(),
             page_only: false,
             seq: 0,
+            source: crate::planner::Source::Replan,
         }
     }
 
