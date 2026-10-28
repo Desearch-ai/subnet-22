@@ -26,11 +26,13 @@ pub struct Terms {
     pub since: Option<u32>,
     /// A news site, whose sitemaps are read again before other sites'.
     pub news: bool,
+    /// Pages last sent before this time, as Unix seconds, go once more, as retries; a site is walked for them once per value.
+    pub resend_before: Option<u32>,
 }
 
 impl Default for Terms {
     fn default() -> Self {
-        Terms { weight: 1, send_cap: None, hourly: None, backlog: None, since: None, news: false }
+        Terms { weight: 1, send_cap: None, hourly: None, backlog: None, since: None, news: false, resend_before: None }
     }
 }
 
@@ -103,7 +105,7 @@ impl Allowed {
     }
 }
 
-/// A JSON list of domain names, or of objects naming theirs under `host`, with an optional `type`, `weight`, `send_cap`, `hourly`, `backlog` and `since` (an ISO date).
+/// A JSON list of domain names, or of objects naming theirs under `host`, with an optional `type`, `weight`, `send_cap`, `hourly`, `backlog`, `since` and `resend_before` (ISO dates).
 pub fn parse(raw: &[u8]) -> Result<HashMap<String, Terms>> {
     let listed: Vec<Value> = serde_json::from_slice(raw).context("not a JSON list of domains")?;
     Ok(listed
@@ -112,9 +114,9 @@ pub fn parse(raw: &[u8]) -> Result<HashMap<String, Terms>> {
             let host = entry.as_str().or_else(|| entry.get("host").and_then(Value::as_str))?;
             let number = |name: &str| entry.get(name).and_then(Value::as_u64);
             let weight = number("weight").map_or(1, |w| w.clamp(1, 4) as u8);
-            let since = entry.get("since").and_then(Value::as_str).and_then(isodate::fromisoformat).map(|micros| (micros / 1_000_000).clamp(0, i64::from(u32::MAX)) as u32);
+            let date = |name: &str| entry.get(name).and_then(Value::as_str).and_then(isodate::fromisoformat).map(|micros| (micros / 1_000_000).clamp(0, i64::from(u32::MAX)) as u32);
             let news = entry.get("type").and_then(Value::as_str) == Some("news");
-            Some((host.to_string(), Terms { weight, send_cap: number("send_cap"), hourly: number("hourly"), backlog: number("backlog"), since, news }))
+            Some((host.to_string(), Terms { weight, send_cap: number("send_cap"), hourly: number("hourly"), backlog: number("backlog"), since: date("since"), news, resend_before: date("resend_before") }))
         })
         .collect())
 }

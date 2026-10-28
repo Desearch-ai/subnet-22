@@ -39,6 +39,8 @@ const SENT_COUNT: u8 = b'C';
 const JOINED: u8 = b'J';
 /// The date floor a domain's stored pages were last queued under, when it had one.
 const JOINED_SINCE: u8 = b'V';
+/// The `resend_before` a domain was last walked under, so a list built again with the same value walks nothing.
+const RESENT_BEFORE: u8 = b'B';
 /// Each domain's longest-unsent pages, oldest send first, kept ready for refreshes so a pass never reads the sent records.
 const STOCK: u8 = b'F';
 /// Keys a domain's new-page lane loses per locked write when it is cleared.
@@ -796,6 +798,11 @@ impl BucketStore {
         Ok(self.db.get_pinned(count_key_of(JOINED_SINCE, domain))?.and_then(|raw| raw.as_ref().try_into().ok().map(u32::from_le_bytes)))
     }
 
+    /// The `resend_before` the domain was last walked under.
+    pub fn resent_before(&self, domain: &str) -> Result<Option<u32>> {
+        Ok(self.db.get_pinned(count_key_of(RESENT_BEFORE, domain))?.and_then(|raw| raw.as_ref().try_into().ok().map(u32::from_le_bytes)))
+    }
+
     /// Domains that reached their cap since the last call.
     pub fn take_capped(&self) -> Vec<String> {
         self.capped.lock().unwrap_or_else(|e| e.into_inner()).drain().collect()
@@ -1018,6 +1025,98 @@ impl BucketStore {
         mark_joined(&mut batch, domain, terms);
         self.db.write(batch)?;
         Ok(joined)
+    }
+
+    /// Puts the domain's pages last sent before its `resend_before` back on its ready list as retries, newest lastmod first and behind its real retries; failing pages, pages already back and pages dated before its floor stay off.
+    pub fn resend_domain(&self, domain: &str, terms: Terms, pace: &mut dyn FnMut(u64) -> bool) -> Result<Joined> {
+        let mut joined = Joined::default();
+        let Some(before) = terms.resend_before else {
+            let _guard = self.lock_ready();
+            self.db.delete(count_key_of(RESENT_BEFORE, domain))?;
+            return Ok(joined);
+        };
+        let robots = self.domain(domain)?.map(|record| records::robots_paths(&record)).unwrap_or_default();
+        let prefix = prefixed(URL, domain.as_bytes(), b"");
+        let mut from = prefix.clone();
+        let mut since_pace = 0u64;
+        loop {
+            let (mut pages, mut next) = (Vec::new(), None);
+            // A fresh iterator each chunk, so the walk never holds the memtables its own writes fill.
+            for item in self.db.iterator_opt(IteratorMode::From(&from, Direction::Forward), bounded(&prefix)) {
+                let (key, raw) = item?;
+                joined.scanned += 1;
+                since_pace += 1;
+                if since_pace >= 10_000 {
+                    if !pace(since_pace) {
+                        joined.stopped = true;
+                        return Ok(joined);
+                    }
+                    since_pace = 0;
+                }
+                let Some(record) = Record::unpack(&raw) else {
+                    continue;
+                };
+                if record.pushed_at == 0 || record.pushed_at >= before {
+                    continue;
+                }
+                let rest = &key[prefix.len()..];
+                if junk(rest) || !robots.allows_page(domain, rest) || self.listed_apart(domain, rest) {
+                    continue;
+                }
+                if before_floor(terms.since, record.lastmod, rest) {
+                    joined.before_floor += 1;
+                    continue;
+                }
+                pages.push(rest.to_vec());
+                if pages.len() >= JOIN_CHUNK {
+                    next = Some([&key[..], b"\0"].concat());
+                    break;
+                }
+            }
+            joined.queued += self.resend_pages(domain, before, pages)? as u64;
+            match next {
+                Some(key) => from = key,
+                None => break,
+            }
+        }
+        if !pace(since_pace) {
+            joined.stopped = true;
+            return Ok(joined);
+        }
+        let _guard = self.lock_ready();
+        self.db.put(count_key_of(RESENT_BEFORE, domain), before.to_le_bytes())?;
+        Ok(joined)
+    }
+
+    /// Marks pages still last sent before `before` as retries and lists them; read again under the lock, since a page may have gone since the walk read it.
+    fn resend_pages(&self, domain: &str, before: u32, pages: Vec<Vec<u8>>) -> Result<usize> {
+        if pages.is_empty() {
+            return Ok(0);
+        }
+        let _guard = self.lock_ready();
+        let records = self.records(pages.iter().map(|rest| prefixed(URL, domain.as_bytes(), rest)))?;
+        let sents = self.sents(pages.iter().map(|rest| prefixed(SENT, domain.as_bytes(), rest)))?;
+        let mut batch = WriteBatch::default();
+        let mut entries = Vec::new();
+        for ((rest, record), sent) in pages.into_iter().zip(records).zip(sents) {
+            let Some(record) = record.filter(|r| r.pushed_at != 0 && r.pushed_at < before) else {
+                continue;
+            };
+            let mut sent = sent.unwrap_or(Sent { lastmod: record.lastmod, ..Sent::default() });
+            if sent.failures > 0 || sent.requeued {
+                continue;
+            }
+            sent.requeued = true;
+            batch.put(prefixed(SENT, domain.as_bytes(), &rest), sent.pack());
+            // A due of !lastmod sorts after every real retry's time, newest lastmod first.
+            entries.push(Entry { domain: domain.to_string(), rest, order: Order::Requeued { due: !record.lastmod } });
+        }
+        let mut counts = HashMap::new();
+        let added = self.add_ready(&mut batch, entries, &mut counts)?;
+        self.write_counts(&mut batch, &counts)?;
+        self.db.write(batch)?;
+        self.notice(&counts);
+        Ok(added)
     }
 
     fn queue_entries(&self, entries: Vec<Entry>) -> Result<usize> {
