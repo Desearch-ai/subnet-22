@@ -17,8 +17,8 @@ use crate::current::{rows_in, standing, Manifest, PageRow, Withdrawals};
 use crate::reading::{coalesce, footer_length, Prefetched};
 
 /// The columns that pick a page's standing version and tell whether it may be wanted.
-const PICK_COLUMNS: [&str; 12] =
-    ["key", "removed", "change_seq", "version", "fetched_at", "content_sha1", "extraction", "lang", "url", "published", "domain", "task_id"];
+const PICK_COLUMNS: [&str; 13] =
+    ["key", "removed", "change_seq", "version", "fetched_at", "content_sha1", "extraction", "lang", "url", "published", "domain", "task_id", "page_type"];
 /// Row groups of one file fetched at once while picking.
 const GROUPS_AT_ONCE: usize = 16;
 /// Picks read whole at once, in key order.

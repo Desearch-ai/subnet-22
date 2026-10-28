@@ -21,8 +21,9 @@ The planner reads the change log, a few files at once and in log order, and writ
 pages or 3M characters for the task API, handing them over as the API has room.
 
 - **What it plans** (`PLANNER_SET_FILE`): only pages the v1 set takes: a news site's pages dated on or
-  after its `since`, by `published` or a date in the URL path; a whole site's pages, or those under its
-  `paths`; a bulk source's crawled pages. Pages are also English, at least `PLANNER_MIN_CHARS` long and off
+  after its `since`, by `published` or a date in the URL path, and, when the file's `undated` is `article`,
+  its pages with no date typed `article`; a whole site's pages, or those under its `paths`; a bulk source's
+  crawled pages. Pages are also English, at least `PLANNER_MIN_CHARS` long and off
   the exclusion list.
 - **Fresh lane:** pages seen for the first time and dated within `PLANNER_FRESH_S` (48 h) get their own inputs,
   written within `PLANNER_FRESH_FLUSH_S` (60 s), handed over first, outside the hourly budget

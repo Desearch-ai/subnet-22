@@ -31,9 +31,19 @@ pub enum Refusal {
     OffPaths,
 }
 
+/// How a page the set takes is in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Admitted {
+    ByRule,
+    /// A news page with no date at all, in as an article because the file's `undated` is `article`.
+    UndatedArticle,
+}
+
 #[derive(Debug, Default)]
 pub struct Set {
     sites: HashMap<String, Rule>,
+    /// Undated news pages typed `article` are in.
+    undated_articles: bool,
 }
 
 impl Set {
@@ -55,7 +65,12 @@ impl Set {
             };
             sites.insert(host, rule);
         }
-        Ok(Set { sites })
+        let undated_articles = match file["undated"].as_str() {
+            None | Some("out") => false,
+            Some("article") => true,
+            Some(other) => bail!("undated {other:?} is not article or out"),
+        };
+        Ok(Set { sites, undated_articles })
     }
 
     /// The listed host a host is, or is nearest under, and its rule.
@@ -70,19 +85,20 @@ impl Set {
         }
     }
 
-    /// Whether the page at `url` is in, by the rule of its host's entry.
-    pub fn admit(&self, url: &str, published: &str) -> Result<(), Refusal> {
+    /// Whether the page at `url` is in, by the rule of its host's entry, and how.
+    pub fn admit(&self, url: &str, published: &str, page_type: Option<&str>) -> Result<Admitted, Refusal> {
         let (host, path) = split_url(url);
         let Some((_, rule)) = self.site(host) else { return Err(Refusal::Unlisted) };
         match rule {
             Rule::Out => Err(Refusal::Unlisted),
             Rule::News { since } => match page_date(published, url) {
+                None if self.undated_articles && page_type == Some("article") => Ok(Admitted::UndatedArticle),
                 None => Err(Refusal::Undated),
                 Some(date) if since.as_ref().is_some_and(|since| date < *since) => Err(Refusal::BeforeSince),
-                Some(_) => Ok(()),
+                Some(_) => Ok(Admitted::ByRule),
             },
             Rule::Whole { paths } if !paths.is_empty() && !paths.iter().any(|prefix| path.starts_with(prefix.as_str())) => Err(Refusal::OffPaths),
-            Rule::Whole { .. } | Rule::Bulk => Ok(()),
+            Rule::Whole { .. } | Rule::Bulk => Ok(Admitted::ByRule),
         }
     }
 
@@ -213,10 +229,15 @@ mod tests {
         .unwrap();
         assert_eq!(set.site("www.media.nature.com").map(|s| s.0), Some("nature.com"));
         assert_eq!(set.site("en.m.wikipedia.org").map(|s| s.0), Some("en.wikipedia.org"));
-        assert_eq!(set.admit("https://x.blogs.nature.com/a", ""), Err(Refusal::Unlisted), "out shuts its host and everything under it");
-        assert_eq!(set.admit("https://apnews.com/article/abc", ""), Err(Refusal::Undated));
-        assert_eq!(set.admit("https://apnews.com/article/abc", "2019-12-31"), Err(Refusal::BeforeSince));
-        assert_eq!(set.admit("https://APNEWS.com:443/2020/01/01/abc", ""), Ok(()));
+        assert_eq!(set.admit("https://x.blogs.nature.com/a", "", None), Err(Refusal::Unlisted), "out shuts its host and everything under it");
+        assert_eq!(
+            set.admit("https://apnews.com/article/abc", "", Some("article")),
+            Err(Refusal::Undated),
+            "undated articles are out unless the file says otherwise"
+        );
+        assert_eq!(set.admit("https://apnews.com/article/abc", "2019-12-31", None), Err(Refusal::BeforeSince));
+        assert_eq!(set.admit("https://APNEWS.com:443/2020/01/01/abc", "", None), Ok(Admitted::ByRule));
+        assert!(Set::parse(br#"{"undated": "sometimes", "sites": []}"#).is_err());
         assert!(Set::parse(br#"{"sites": [{"host": "a.example", "rule": "news", "since": "soon"}]}"#).is_err());
     }
 }

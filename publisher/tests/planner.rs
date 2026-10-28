@@ -671,11 +671,13 @@ async fn only_listed_sites_are_planned_each_up_to_its_index_cap_and_a_page_given
 
 #[test]
 fn the_set_takes_every_golden_case_as_the_other_readers_do() {
-    let golden: Value = serde_json::from_str(include_str!("v1-set-golden.json")).unwrap();
-    let set = Set::parse(golden.to_string().as_bytes()).unwrap();
-    for case in golden["cases"].as_array().unwrap() {
-        let (url, published) = (case["url"].as_str().unwrap(), case["published"].as_str().unwrap_or(""));
-        assert_eq!(set.admit(url, published).is_ok(), case["in"].as_bool().unwrap(), "{url} published {published:?}");
+    for raw in [include_str!("v1-set-golden.json"), include_str!("v1-set-golden-undated.json")] {
+        let golden: Value = serde_json::from_str(raw).unwrap();
+        let set = Set::parse(golden.to_string().as_bytes()).unwrap();
+        for case in golden["cases"].as_array().unwrap() {
+            let (url, published, page_type) = (case["url"].as_str().unwrap(), case["published"].as_str().unwrap_or(""), case["page_type"].as_str());
+            assert_eq!(set.admit(url, published, page_type).is_ok(), case["in"].as_bool().unwrap(), "{url} published {published:?} as {page_type:?}");
+        }
     }
 }
 
@@ -1549,5 +1551,32 @@ async fn no_more_pages_wait_than_the_cap_and_the_count_survives_a_restart() {
     assert_eq!(planner.state.waiting_count(), 2, "kept on disk");
     planner.pass().await.unwrap();
     assert_eq!((planner.counts.replanned, planner.state.waiting_count()), (2, 0));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn with_undated_articles_on_an_undated_news_article_is_planned_and_counted_apart() {
+    let Some((_turn, redis)) = redis_db().await else {
+        eprintln!("skipped: no Redis on {REDIS}");
+        return;
+    };
+    let dir = scratch("undated-article");
+    let stub = stub::start(dir.join("r2"), "127.0.0.1:0").await.unwrap();
+    let (pages, temp) = (bucket(stub.addr, "desearch-pages"), bucket(stub.addr, "subnet-22"));
+    let page = |path: &str, page_type: &str| v2(record(&format!("https://news.example/{path}"), &format!("{path} {}", article(2)), page_type, "en"));
+    log(&pages, 1, vec![page("story/a", "article"), page("topic/b", "listing"), page("2019/04/05/c", "article")]).await;
+    let set = dir.join("v1-set.json");
+    let write_set = |undated: &str| {
+        std::fs::write(&set, json!({"undated": undated, "sites": [{"host": "news.example", "rule": "news", "since": "2020-01-01"}]}).to_string()).unwrap();
+    };
+    for (undated, state, want) in [("out", "off", (0, 2, 0, 1)), ("article", "on", (1, 1, 1, 1))] {
+        write_set(undated);
+        let mut with_set = settings(dir.join(state), 3600.0, 0);
+        with_set.set_file = Some(set.clone());
+        let mut planner = Planner::new(with_set, pages.clone(), temp.clone(), redis.clone(), Room::Fixed(0)).await.unwrap();
+        planner.pass().await.unwrap();
+        let counts = &planner.counts;
+        assert_eq!((counts.planned, counts.undated, counts.undated_article_in, counts.before_since), want, "undated {undated}");
+    }
     let _ = std::fs::remove_dir_all(&dir);
 }

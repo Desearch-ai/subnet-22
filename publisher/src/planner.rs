@@ -30,7 +30,7 @@ use crate::backfill::ShardReader;
 use crate::current::{decode_changes, ChangeRow, PageRow, SHARDS};
 use crate::records::{Record, EXTRACTION_V2};
 use crate::service::now_us;
-use crate::set::{iso_date, url_date, Refusal, Set};
+use crate::set::{iso_date, url_date, Admitted, Refusal, Set};
 
 /// How a page becomes texts; any change to what a recipe's texts hold is a new recipe, so every page is embedded again.
 pub const RECIPE_V1: &str = "page-v1";
@@ -1001,8 +1001,10 @@ pub struct Counts {
     pub unlisted: u64,
     /// Pages the set has no rule taking: an unlisted or shut host, or off a whole site's paths.
     pub outside_set: u64,
-    /// Pages of a news site with no date in `published` or the URL path.
+    /// Pages of a news site with no date in `published` or the URL path, left out.
     pub undated: u64,
+    /// Such pages typed `article`, taken because the set's `undated` is `article`.
+    pub undated_article_in: u64,
     /// Pages of a news site dated before its `since`.
     pub before_since: u64,
     /// New pages of sites whose index cap is reached.
@@ -1430,7 +1432,7 @@ impl Planner {
                 let record = &row.record;
                 recipe_of(record).is_some_and(|recipe| PLANNED_RECIPES.contains(&recipe))
                     && lang_wanted(&langs, &record.lang)
-                    && set.as_ref().is_none_or(|set| set.admit(&record.url, &record.published).is_ok())
+                    && set.as_ref().is_none_or(|set| set.admit(&record.url, &record.published, record.page_type.as_deref()).is_ok())
                     && match state.planned_version(RECIPE_V2, &row.key) {
                         Ok(Some(planned)) if planned.content_sha1 == record.content_sha1 => planned.page_only && !page_first,
                         _ => true,
@@ -1619,13 +1621,17 @@ impl Planner {
             self.counts.refused += 1;
             return Considered::Passed;
         }
-        if let Some(Err(refusal)) = self.set.as_ref().map(|set| set.admit(&record.url, &record.published)) {
-            match refusal {
-                Refusal::Undated => self.counts.undated += 1,
-                Refusal::BeforeSince => self.counts.before_since += 1,
-                Refusal::Unlisted | Refusal::OffPaths => self.counts.outside_set += 1,
+        match self.set.as_ref().map(|set| set.admit(&record.url, &record.published, record.page_type.as_deref())) {
+            Some(Err(refusal)) => {
+                match refusal {
+                    Refusal::Undated => self.counts.undated += 1,
+                    Refusal::BeforeSince => self.counts.before_since += 1,
+                    Refusal::Unlisted | Refusal::OffPaths => self.counts.outside_set += 1,
+                }
+                return Considered::Passed;
             }
-            return Considered::Passed;
+            Some(Ok(Admitted::UndatedArticle)) => self.counts.undated_article_in += 1,
+            Some(Ok(Admitted::ByRule)) | None => {}
         }
         let cap = match self.listed.as_ref().filter(|_| self.set.is_none()) {
             None => None,
