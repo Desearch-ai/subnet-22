@@ -59,6 +59,7 @@ static RECLAIM: LazyLock<Script> = LazyLock::new(|| {
 });
 static ABANDON: LazyLock<Script> =
     LazyLock::new(|| Script::new(concat!(include_str!("lua/inflight.lua"), include_str!("lua/abandon.lua"), include_str!("lua/requeue.lua"), "return seq")));
+static DISCARD: LazyLock<Script> = LazyLock::new(|| Script::new(concat!(include_str!("lua/inflight.lua"), include_str!("lua/discard.lua"))));
 static COMPLETE: LazyLock<Script> = LazyLock::new(|| Script::new(concat!(include_str!("lua/inflight.lua"), include_str!("lua/complete.lua"))));
 static START: LazyLock<Script> = LazyLock::new(|| Script::new(include_str!("lua/start.lua")));
 static RESTORE: LazyLock<Script> = LazyLock::new(|| Script::new(include_str!("lua/restore.lua")));
@@ -311,6 +312,12 @@ impl TaskQueue {
         Ok(ABANDON.key(&self.ready).key(CLAIMS).arg(task_id).arg(hotkey).invoke_async(&mut redis.clone()).await?)
     }
 
+    /// Takes a claimed task out of the queues for good; false when the claim is not the hotkey's.
+    pub async fn discard(&self, redis: &Redis, task_id: &str, hotkey: &str) -> Result<bool> {
+        let discarded: i64 = DISCARD.key(CLAIMS).arg(task_id).arg(hotkey).invoke_async(&mut redis.clone()).await?;
+        Ok(discarded == 1)
+    }
+
     /// The holder and log number of a claim taken back after its expiry, None if it was not due.
     pub async fn reclaim(&self, redis: &Redis, task_id: &str, now: f64) -> Result<Option<(String, i64)>> {
         let found: Option<Vec<Reply>> = RECLAIM.key(&self.ready).key(CLAIMS).arg(task_id).arg(number(now)).invoke_async(&mut redis.clone()).await?;
@@ -321,6 +328,12 @@ impl TaskQueue {
         let rank = payload.get("rank").or_else(|| payload.get("position")).and_then(Value::as_f64).unwrap_or(0.0);
         Ok(RESTORE.key(&self.ready).arg(task_id).arg(payload.to_string()).arg(number(rank)).invoke_async(&mut redis.clone()).await?)
     }
+}
+
+/// Times miners gave the task back by abandoning it or letting its claim expire.
+pub async fn handbacks(redis: &Redis, task_id: &str) -> Result<i64> {
+    let count: Option<i64> = redis.clone().get(format!("handbacks:{task_id}")).await?;
+    Ok(count.unwrap_or(0))
 }
 
 pub async fn claim_expiry(redis: &Redis, task_id: &str) -> Result<Option<f64>> {
