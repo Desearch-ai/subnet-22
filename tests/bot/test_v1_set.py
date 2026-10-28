@@ -33,7 +33,7 @@ def test_option_a_takes_established_outlets_for_all_years_and_other_news_sites_f
     hosts = ["outlet.example", "listed.example", "africa.espn.example", "abcnews.example", "portal.example", "cited.example", "label.example"]
     sites, _ = build([decision(h, "news") for h in hosts], backing=backing, news_sources=news_sources, outlets=outlets)
     assert sites["outlet.example"] == {"host": "outlet.example", "rule": "news", "type": "news", "why": ["wikidata"]}
-    assert [sites[h].get("since") for h in hosts] == [None, None, None, None, None, "2025-10-28", "2025-10-28"], "a citation is no backing"
+    assert [sites[h].get("since") for h in hosts] == [None, None, None, None, None, "2025-10-01", "2025-10-01"], "a citation is no backing"
     assert (sites["africa.espn.example"]["why"], sites["abcnews.example"]["why"]) == (["wikidata"], ["named"])
     assert sites["label.example"]["why"] == ["news"]
 
@@ -41,14 +41,14 @@ def test_option_a_takes_established_outlets_for_all_years_and_other_news_sites_f
 def test_a_rows_news_window_comes_from_the_outlet_test_and_its_outs_give_reasons():
     benchmark = [
         {"host": "unbacked.example", "rule": "news", "type": "news", "why": ["simpleqa"]},
-        {"host": "floored.example", "rule": "news", "since": "2025-10-28", "type": "news", "why": ["simpleqa"]},
+        {"host": "floored.example", "rule": "news", "since": "2025-10-01", "type": "news", "why": ["simpleqa"]},
         {"host": "mapcarta.example", "rule": "out", "why": ["simpleqa"], "note": "pages generated from OpenStreetMap and Wikidata"},
         {"host": "trove.example", "rule": "out", "why": ["simpleqa"], "note": "Trove's terms bar bulk and commercial use"},
         {"host": "odd.example", "rule": "out", "why": ["freshqa"], "note": "investor-relations pages"},
         {"host": "copy.example", "rule": "out", "why": ["mirror"]},
     ]
     sites, _ = build(rows=[benchmark], outlets={"floored.example": "wikidata"})
-    assert sites["unbacked.example"]["since"] == "2025-10-28"
+    assert sites["unbacked.example"]["since"] == "2025-10-01"
     assert "since" not in sites["floored.example"], "an outlet takes all years whatever the row said"
     assert [sites[h]["why"] for h in ("mapcarta.example", "trove.example", "odd.example", "copy.example")] == [["template"], ["terms"], ["low-value"], ["mirror"]]
 

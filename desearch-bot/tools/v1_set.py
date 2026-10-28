@@ -12,7 +12,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 SINCE_B = "2020-01-01"
-# Option A takes an unbacked news site's last year only.
+# Option A takes an unbacked news site's last year only, from the first of the month, so the floor moves once a month.
 RECENT_DAYS = 365
 # More pages dated in a year than an unbacked outlet writes: a generated or re-stamped sitemap.
 NEWS_YEAR_MAX = 100_000
@@ -194,7 +194,7 @@ def listed_entries(decisions, backing, news_sources, outlets, judged, counts, ne
 def build(row_files, hand, decisions, backing, news_sources, judged, counts, news_counts=None, news: str = "A", today: date | None = None, outlets=None) -> tuple[list[dict], list[dict]]:
     """Hand entries first (the lead's outs), then the teammates' rows in order, then the judged list; the first to name a host wins."""
     outlets = outlets or {}
-    recent = ((today or datetime.now(timezone.utc).date()) - timedelta(days=RECENT_DAYS)).isoformat()
+    recent = ((today or datetime.now(timezone.utc).date()) - timedelta(days=RECENT_DAYS)).replace(day=1).isoformat()
     listed, too_big = listed_entries(decisions, backing, news_sources, outlets, judged, counts, news_counts or {}, news, recent)
     rows = []
     # Every news site takes its window from the same outlet test, the teammates' rows too.
