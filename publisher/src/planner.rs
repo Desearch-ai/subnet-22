@@ -978,8 +978,8 @@ impl State {
                 match self.planned_version(recipe, key)? {
                     Some(planned) if planned.content_sha1 == content_sha1 => {
                         batch.delete(planned_key(recipe, key));
-                        // Planned again from its change file, not left for a re-crawl that may never come; one planned before files were kept is the backfill's.
-                        if planned.seq.is_some() {
+                        // Planned again from its change file, not left for a re-crawl that may never come; one planned before files were kept, or a bulk page, is the backfill's.
+                        if planned.seq.is_some_and(|seq| seq >= 0) {
                             self.waiting_into(&mut batch, key, &Version { page_only: false, ..planned })?;
                         }
                         forgotten = true;

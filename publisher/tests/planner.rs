@@ -2917,18 +2917,26 @@ async fn the_backfill_plans_bulk_pages_of_current_by_the_set_s_bulk_rule() {
         {"host": "wikipedia.org", "rule": "out"},
     ]});
     std::fs::write(&set, sites.to_string()).unwrap();
-    let mut backfilling = settings(dir.join("state"), 3600.0, 0);
-    (backfilling.backfill, backfilling.set_file, backfilling.backfill_every) = (true, Some(set), Duration::from_secs(3600));
-    let mut planner = Planner::new(backfilling, pages.clone(), temp.clone(), redis.clone(), Room::Fixed(5)).await.unwrap();
-    planner.current = Some(current.clone());
-    for _ in 0..200 {
-        planner.pass().await.unwrap();
-        if planner.counts.shards >= 1024 {
-            break;
+    let shared = redis.clone();
+    let sweep = || {
+        let mut backfilling = settings(dir.join("state"), 3600.0, 0);
+        (backfilling.backfill, backfilling.set_file, backfilling.backfill_every) = (true, Some(set.clone()), Duration::from_secs(3600));
+        let (pages, temp, current, redis) = (pages.clone(), temp.clone(), current.clone(), shared.clone());
+        async move {
+            let mut planner = Planner::new(backfilling, pages, temp, redis, Room::Fixed(5)).await.unwrap();
+            planner.current = Some(current);
+            for _ in 0..200 {
+                planner.pass().await.unwrap();
+                if planner.counts.shards >= 1024 {
+                    break;
+                }
+            }
+            planner.flush().await.unwrap();
+            planner.hand_over().await.unwrap();
+            planner
         }
-    }
-    planner.flush().await.unwrap();
-    planner.hand_over().await.unwrap();
+    };
+    let mut planner = sweep().await;
     assert_eq!(planner.counts.planned, 2);
     let mut planned = HashMap::new();
     for raw in redis.lrange::<_, Vec<String>>(EMBED_INPUTS, 0, -1).await.unwrap() {
@@ -2944,5 +2952,14 @@ async fn the_backfill_plans_bulk_pages_of_current_by_the_set_s_bulk_rule() {
     assert_eq!(urls, HashSet::from([wiki, paper.record.url.as_str()]), "both bulk hosts are in by the bulk rule; other.example is not in the set");
     assert_eq!(planned[wiki].0, snapshot.record.content_sha1, "the snapshot is newer than the crawl, so it stands");
     assert_eq!(planned[&paper.record.url].1, 13, "a paper's page text and its first 12 parts");
+
+    for raw in redis.lrange::<_, Vec<String>>(EMBED_INPUTS, 0, -1).await.unwrap() {
+        let _: i64 = redis.rpush(EMBED_DROPPED, &raw).await.unwrap();
+    }
+    planner.forget_dropped().await.unwrap();
+    assert!(planner.state.waiting(&paper.key).unwrap().is_none(), "a bulk page has no change file to wait on");
+    assert_eq!(planner.state.waiting_count(), 0);
+    drop(planner);
+    assert_eq!(sweep().await.counts.planned, 2, "the next sweep plans the dropped bulk pages again");
     let _ = std::fs::remove_dir_all(&dir);
 }
