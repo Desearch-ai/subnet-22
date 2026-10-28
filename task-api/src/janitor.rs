@@ -47,7 +47,9 @@ const BEST_BLOCK_EVERY: Duration = Duration::from_secs(30);
 const OPEN_LIST_EVERY: Duration = Duration::from_secs(5);
 /// A verdict drops its publish job a day after it was finalized.
 const PUBLISH_COPY_KEEP_S: f64 = 86_400.0;
-const SEAL_ROUNDS: i64 = 4;
+const SEAL_ROUNDS: i64 = 500;
+/// Batches read per sealing step, so a pass over rounds that still hold embed page lists stays short.
+const SEAL_BYTES: i64 = 16 << 20;
 const DROP_VERDICTS: i64 = 200;
 /// Per-URL details cleared per pass: each frees ~50 KB, ~2 ms of writer time.
 const PRUNE_DETAILS: i64 = 10;
@@ -140,14 +142,13 @@ async fn upkeep(state: &Arc<State>, due: &mut Due) -> Result<()> {
     if elapsed(due.sealed_at, SEAL_EVERY) {
         due.sealed_at = Some(Instant::now());
         OUTCOMES.fill_holes(&state.storage, &state.redis).await?;
-        state
-            .db
-            .run(move |conn| {
-                let at = now();
-                roundstore::seal_closed(conn, at, SEAL_ROUNDS)?;
-                validations::drop_publish_copies(conn, at - PUBLISH_COPY_KEEP_S, DROP_VERDICTS)
-            })
-            .await?;
+        // Each step is its own transaction, so claims and verdicts get the writer between them.
+        state.db.run(|conn| roundstore::delete_expired(conn, now(), SEAL_ROUNDS, SEAL_BYTES)).await?;
+        let (_, walked) = state.db.run(|conn| roundstore::seal_closed(conn, now(), SEAL_ROUNDS, SEAL_BYTES)).await?;
+        if let Some(closed_at) = walked {
+            state.db.run(move |conn| roundstore::mark_sealed(conn, closed_at)).await?;
+        }
+        state.db.run(|conn| validations::drop_publish_copies(conn, now() - PUBLISH_COPY_KEEP_S, DROP_VERDICTS)).await?;
     }
     if elapsed(due.logged_at, UPLOAD_LOG_EVERY) {
         due.logged_at = Some(Instant::now());

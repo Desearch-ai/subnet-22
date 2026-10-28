@@ -132,7 +132,7 @@ subnet-22 bucket (temporary, objects expire after a day, readable by anyone)
   outcomes/         what became of every URL, for the bot
   embed-inputs/     texts waiting to be embedded
 desearch-pages bucket
-  changes/        every new, changed or removed page with its full text, numbered in order, kept three days
+  changes/        every new, changed or removed page with its full text, numbered in order, kept ten days
   current/        the latest version of every page, compacted from changes/ into 1,024 shards
   rounds/         each round's URL lists, kept three days
   reports/        every final result with the pages that were checked, kept 30 days

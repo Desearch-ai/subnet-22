@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use rusqlite::{params, Connection, OptionalExtension, Row};
 use serde_json::{json, Map, Value};
 
@@ -137,9 +137,9 @@ pub fn unfilled(conn: &Connection) -> Result<Vec<Round>> {
     Ok(rounds.collect::<rusqlite::Result<_>>()?)
 }
 
-/// The round's batches with their URLs dropped, keeping each batch's count and hash.
+/// The round's batches with their URLs and page lists dropped, keeping each batch's count and hash.
 pub fn sealed_batches(round: &Round) -> String {
-    let batches: Map<String, Value> = round.batches.iter().map(|b| (b.batch_id.clone(), stored(&b.sealed()))).collect();
+    let batches: Map<String, Value> = round.batches.iter().map(|b| (b.batch_id.clone(), stored(&b.queued()))).collect();
     Value::Object(batches).to_string()
 }
 
@@ -163,23 +163,65 @@ pub fn latest_revealed(conn: &Connection) -> Result<HashMap<String, String>> {
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
-/// Drops the URLs rounds closed before `closed_before` still keep, keeping each batch's count and hash.
-pub fn seal_closed(conn: &Connection, closed_before: f64, limit: i64) -> Result<usize> {
-    let mark: f64 = conn.query_row("SELECT COALESCE((SELECT mark FROM retention WHERE name = 'rounds'), 0)", [], |row| real(row, 0))?;
+/// How long a closed round stays in SQLite.
+pub const KEPT_S: f64 = 7.0 * 86_400.0;
+/// Where the walk dropping closed rounds' URLs and page lists has reached.
+const SEAL_MARK: &str = "round_lists";
+
+/// Up to `limit` rounds closed from `from` on and before `to`, oldest first, each with its batches' size, cut at `bytes` of batches but never empty.
+fn closed_between(conn: &Connection, from: f64, to: f64, limit: i64, bytes: i64) -> Result<Vec<(String, f64)>> {
     let mut statement = conn.prepare(
-        "SELECT round_id, closed_at, batches FROM rounds INDEXED BY rounds_closed WHERE closed_at >= ? AND closed_at < ? ORDER BY closed_at LIMIT ?",
+        "SELECT round_id, closed_at, octet_length(batches) FROM rounds INDEXED BY rounds_closed WHERE closed_at >= ? AND closed_at < ? ORDER BY closed_at LIMIT ?",
     )?;
-    let rows = statement.query_map(params![mark, closed_before, limit], |row| Ok((row.get::<_, String>(0)?, real(row, 1)?, row.get::<_, String>(2)?)))?;
-    let rows: Vec<(String, f64, String)> = rows.collect::<rusqlite::Result<_>>()?;
-    for (round_id, _, batches) in &rows {
-        let batches: Map<String, Value> = serde_json::from_str(batches).context("a round's batches")?;
-        let sealed: Map<String, Value> = batches.iter().map(|(id, entry)| (id.clone(), stored(&batch_of(id, entry).sealed()))).collect();
-        conn.execute("UPDATE rounds SET batches = ? WHERE round_id = ?", params![Value::Object(sealed).to_string(), round_id])?;
+    let rows = statement.query_map(params![from, to, limit], |row| Ok((row.get::<_, String>(0)?, real(row, 1)?, row.get::<_, i64>(2)?)))?;
+    let (mut picked, mut read) = (Vec::new(), 0);
+    for row in rows {
+        let (round_id, closed_at, size) = row?;
+        if !picked.is_empty() && read + size > bytes {
+            break;
+        }
+        read += size;
+        picked.push((round_id, closed_at));
     }
-    if let Some((_, closed_at, _)) = rows.last() {
-        conn.execute("INSERT INTO retention VALUES ('rounds', ?) ON CONFLICT (name) DO UPDATE SET mark = excluded.mark", [closed_at])?;
+    Ok(picked)
+}
+
+/// Deletes the oldest rounds closed a week before `now`, at most `limit` of them and `bytes` of their batches; returns how many.
+pub fn delete_expired(conn: &Connection, now: f64, limit: i64, bytes: i64) -> Result<usize> {
+    let expired = closed_between(conn, 0.0, now - KEPT_S, limit, bytes)?;
+    for (round_id, _) in &expired {
+        conn.execute("DELETE FROM rounds WHERE round_id = ?", [round_id])?;
     }
-    Ok(rows.len())
+    Ok(expired.len())
+}
+
+/// Drops the URLs and page lists rounds closed in the last week still keep, from the sealing mark on, at most `limit` rounds and `bytes` of batches; returns how many it rewrote and where `mark_sealed` moves the mark.
+pub fn seal_closed(conn: &Connection, now: f64, limit: i64, bytes: i64) -> Result<(usize, Option<f64>)> {
+    let mark: f64 = conn.query_row("SELECT COALESCE((SELECT mark FROM retention WHERE name = ?), 0)", [SEAL_MARK], |row| real(row, 0))?;
+    let walked = closed_between(conn, mark.max(now - KEPT_S), now, limit, bytes)?;
+    let mut sealed = 0;
+    for (round_id, _) in &walked {
+        let batches: String = conn.query_row("SELECT batches FROM rounds WHERE round_id = ?", [round_id], |row| row.get(0))?;
+        let batches: Map<String, Value> = match serde_json::from_str(&batches) {
+            Ok(batches) => batches,
+            Err(error) => {
+                eprintln!("round={round_id} keeps batches that do not parse ({error}); left as they are");
+                continue;
+            }
+        };
+        let queued: Map<String, Value> = batches.iter().map(|(id, entry)| (id.clone(), stored(&batch_of(id, entry).queued()))).collect();
+        if queued != batches {
+            conn.execute("UPDATE rounds SET batches = ? WHERE round_id = ?", params![Value::Object(queued).to_string(), round_id])?;
+            sealed += 1;
+        }
+    }
+    Ok((sealed, walked.last().map(|(_, closed_at)| *closed_at)))
+}
+
+/// Where the next `seal_closed` starts; the round closed at `closed_at` is looked at again, harmlessly.
+pub fn mark_sealed(conn: &Connection, closed_at: f64) -> Result<()> {
+    conn.execute("INSERT INTO retention VALUES (?, ?) ON CONFLICT (name) DO UPDATE SET mark = excluded.mark", params![SEAL_MARK, closed_at])?;
+    Ok(())
 }
 
 pub fn close(conn: &Connection, round_id: &str, at: f64) -> Result<()> {
@@ -276,30 +318,121 @@ mod tests {
         assert_eq!(get(&conn, &filled.round_id).unwrap().unwrap().public_view(), before);
     }
 
+    /// An embed round as the janitor opens it: one batch per input, each with its input's pages.
+    fn embed_round(round_id: &str, inputs: usize, pages: usize, opened_at: f64) -> Round {
+        let batches = (0..inputs)
+            .map(|n| {
+                let pages: Vec<Value> = (0..pages)
+                    .map(|p| json!({"page_key": format!("pages/{n}-{p}.zst"), "content_sha1": format!("{p:040x}"), "url": format!("https://site.example/{n}/{p}"), "host": "site.example"}))
+                    .collect();
+                let urls = pages.iter().map(|p| Url { host: "site.example".into(), url: p["url"].as_str().unwrap().into() }).collect();
+                let mut extra = Map::new();
+                extra.insert("input_key".into(), format!("embed-inputs/{n}.parquet").into());
+                extra.insert("input_sha256".into(), format!("{n:064x}").into());
+                extra.insert("texts".into(), (pages.len() * 6).into());
+                extra.insert("model".into(), "desearch-4b-v1".into());
+                extra.insert("pages".into(), pages.into());
+                Batch::new(format!("b{n}"), urls, extra)
+            })
+            .collect();
+        let mut round = crate::rounds::open_batches(batches, 100, "embed", opened_at);
+        round.round_id = round_id.into();
+        crate::rounds::reveal(&mut round, &"00".repeat(32));
+        round
+    }
+
+    /// One sealing pass as the janitor runs it; returns how many rounds were deleted and how many rewritten.
+    fn pass(conn: &Connection, now: f64, limit: i64, bytes: i64) -> (usize, usize) {
+        let deleted = delete_expired(conn, now, limit, bytes).unwrap();
+        let (sealed, walked) = seal_closed(conn, now, limit, bytes).unwrap();
+        if let Some(closed_at) = walked {
+            mark_sealed(conn, closed_at).unwrap();
+        }
+        (deleted, sealed)
+    }
+
     #[test]
-    fn a_round_closed_a_day_ago_keeps_its_manifest_without_its_urls() {
+    fn a_round_whose_batches_do_not_parse_is_passed_over_and_the_rest_are_sealed() {
+        let conn = store();
+        let now = 1_800_000_000.0;
+        for (n, round_id) in ["broken", "after"].iter().enumerate() {
+            let round = embed_round(round_id, 1, 50, now);
+            save(&conn, &round).unwrap();
+            close(&conn, round_id, now - 3_600.0 + n as f64).unwrap();
+        }
+        conn.execute("UPDATE rounds SET batches = '{not json' WHERE round_id = 'broken'", []).unwrap();
+        assert_eq!(pass(&conn, now, 10, 16 << 20), (0, 1));
+        assert_eq!(stored_text(&conn, "broken").as_deref(), Some("{not json"));
+        assert_eq!(stored_text(&conn, "after").unwrap().matches("page_key").count(), 0);
+        assert_eq!(delete_expired(&conn, now + KEPT_S, 10, 16 << 20).unwrap(), 2, "it still goes after a week");
+    }
+
+    fn stored_text(conn: &Connection, round_id: &str) -> Option<String> {
+        conn.query_row("SELECT batches FROM rounds WHERE round_id = ?", [round_id], |row| row.get(0)).optional().unwrap()
+    }
+
+    #[test]
+    fn a_queued_embed_round_keeps_its_manifest_and_input_without_its_page_lists() {
+        let conn = store();
+        let round = embed_round("r", 2, 300, 1_800_000_000.0);
+        save(&conn, &round.sealed()).unwrap();
+        let unqueued = unfilled(&conn).unwrap();
+        assert_eq!(unqueued[0].batches[0].extra["pages"].as_array().unwrap().len(), 300, "an unqueued round keeps the pages its tasks need");
+        let before = get(&conn, "r").unwrap().unwrap().public_view();
+        mark_filled(&conn, "r", &sealed_batches(&round), 1_800_000_010.0).unwrap();
+        let text = stored_text(&conn, "r").unwrap();
+        assert_eq!((text.matches("page_key").count(), text.matches("https://site.example/").count()), (0, 0));
+        let kept = get(&conn, "r").unwrap().unwrap();
+        assert_eq!(kept.public_view(), before);
+        let input = &kept.batch("b1").unwrap().extra;
+        assert_eq!((input["input_sha256"].clone(), input["input_key"].clone()), (json!(format!("{:064x}", 1)), json!("embed-inputs/1.parquet")));
+        assert_eq!(crate::proofs::manifest_hash(&kept.manifest(), kept.seed_block), kept.manifest_hash);
+    }
+
+    #[test]
+    fn closed_rounds_lose_their_urls_and_page_lists_and_go_a_week_after_closing() {
         let conn = store();
         let now = 1_800_000_000.0;
         let urls: Vec<Url> = (0..2500).map(|i| Url { host: "example.com".into(), url: format!("https://example.com/{i}") }).collect();
-        let mut old = crate::rounds::open_batches(crate::rounds::pack(urls.clone(), 1000), 100, "crawl", now);
-        old.round_id = "old".into();
-        let mut recent = crate::rounds::open_batches(crate::rounds::pack(urls[..1200].to_vec(), 1000), 100, "crawl", now);
-        recent.round_id = "recent".into();
-        for round in [&mut old, &mut recent] {
-            crate::rounds::reveal(round, &"00".repeat(32));
+        let mut crawl = crate::rounds::open_batches(crate::rounds::pack(urls, 1000), 100, "crawl", now);
+        crawl.round_id = "crawl".into();
+        crate::rounds::reveal(&mut crawl, &"00".repeat(32));
+        let (expired, embed, open) = (embed_round("expired", 2, 50, now), embed_round("embed", 2, 50, now), embed_round("open", 2, 50, now));
+        for round in [&crawl, &expired, &embed, &open] {
             save(&conn, round).unwrap();
         }
-        close(&conn, "old", now - 2.0 * 86_400.0).unwrap();
-        close(&conn, "recent", now - 60.0).unwrap();
-        let before = get(&conn, "old").unwrap().unwrap().public_view();
-        assert_eq!(seal_closed(&conn, now - 86_400.0, 10).unwrap(), 1);
-        let stored = |round_id: &str| -> usize {
-            let batches: String = conn.query_row("SELECT batches FROM rounds WHERE round_id = ?", [round_id], |row| row.get(0)).unwrap();
-            batches.matches("https://example.com/").count()
-        };
-        assert_eq!((stored("old"), stored("recent")), (0, 1200));
-        assert_eq!(get(&conn, "old").unwrap().unwrap().public_view(), before);
-        assert_eq!(seal_closed(&conn, now - 86_400.0, 10).unwrap(), 1, "the last sealed round is looked at again, harmlessly");
-        assert_eq!(get(&conn, "old").unwrap().unwrap().public_view(), before);
+        close(&conn, "expired", now - KEPT_S - 60.0).unwrap();
+        close(&conn, "embed", now - 3.0 * 86_400.0).unwrap();
+        close(&conn, "crawl", now - 60.0).unwrap();
+        let views: Vec<Map<String, Value>> = ["embed", "crawl"].iter().map(|id| get(&conn, id).unwrap().unwrap().public_view()).collect();
+
+        assert_eq!(pass(&conn, now, 10, 16 << 20), (1, 2));
+        assert_eq!(stored_text(&conn, "expired"), None);
+        for (n, id) in ["embed", "crawl"].iter().enumerate() {
+            let text = stored_text(&conn, id).unwrap();
+            assert_eq!((text.matches("page_key").count(), text.matches("https://").count()), (0, 0), "{id}");
+            assert_eq!(get(&conn, id).unwrap().unwrap().public_view(), views[n]);
+        }
+        assert_eq!(stored_text(&conn, "open").unwrap().matches("page_key").count(), 100, "an open round keeps its pages");
+        assert_eq!(pass(&conn, now, 10, 16 << 20), (0, 0), "the last round is looked at again, unchanged");
+        assert_eq!(pass(&conn, now + 4.0 * 86_400.0 + 120.0, 10, 16 << 20), (1, 0));
+        assert_eq!(stored_text(&conn, "embed"), None);
+        assert!(stored_text(&conn, "crawl").is_some());
+    }
+
+    #[test]
+    fn a_sealing_pass_reads_a_bounded_share_of_batches_but_always_moves() {
+        let conn = store();
+        let now = 1_800_000_000.0;
+        for n in 0..5 {
+            let round = embed_round(&format!("r{n}"), 1, 400, now);
+            save(&conn, &round).unwrap();
+            close(&conn, &round.round_id, now - 3_600.0 + n as f64).unwrap();
+        }
+        let size: i64 = conn.query_row("SELECT octet_length(batches) FROM rounds WHERE round_id = 'r0'", [], |row| row.get(0)).unwrap();
+        assert_eq!(pass(&conn, now, 10, 1).1, 1, "one round past the budget still goes");
+        assert_eq!(pass(&conn, now, 10, 3 * size).1, 2, "the round the mark is on reads small now");
+        assert_eq!(pass(&conn, now, 10, 1 << 30).1, 2);
+        assert_eq!(conn.query_row("SELECT COUNT(*) FROM rounds WHERE batches LIKE '%page_key%'", [], |row| row.get::<_, i64>(0)).unwrap(), 0);
     }
 }

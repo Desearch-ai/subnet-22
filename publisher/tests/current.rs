@@ -10,7 +10,7 @@ use desearch::feeds::CHANGES;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use parquet::arrow::ArrowWriter;
 use publisher::changes::{self, Body, Change, Kind};
-use publisher::compactor::{self, LocalStore, Settings, Split, Store};
+use publisher::compactor::{self, Lag, LocalStore, Settings, Split, Store};
 use publisher::current::{self, shard_of, ChangeRow, PageRow, Withdrawals, SHARDS};
 use publisher::records::{page_key, record_version, Record, ROW_COLUMNS_V2};
 
@@ -617,4 +617,174 @@ fn files_written_before_the_v2_columns_read_as_v1_and_merge_with_v2_rows() {
     let by_url = |url: &str| merged.iter().find(|row| row.record.url == url).unwrap().clone();
     assert_eq!(by_url("https://news.example/old"), *old.clone());
     assert_eq!(by_url("https://news.example/new"), *new);
+}
+
+/// `count` page URLs in each of the first `shards` shards that hold that many.
+fn urls_by_shard(shards: usize, count: usize) -> Vec<(usize, Vec<String>)> {
+    let mut by_shard: std::collections::BTreeMap<usize, Vec<String>> = std::collections::BTreeMap::new();
+    for i in 0..20_000 {
+        let url = format!("https://news.example/spread-{i}");
+        by_shard.entry(shard_of(&page_key(&url).unwrap()).unwrap()).or_default().push(url);
+    }
+    by_shard.into_iter().filter(|(_, urls)| urls.len() >= count).take(shards).map(|(shard, urls)| (shard, urls[..count].to_vec())).collect()
+}
+
+fn delta(level: u32, rows: u64) -> current::FileRef {
+    current::FileRef { key: format!("d{level}-{rows}"), rows, bytes: rows, through_seq: 1, level }
+}
+
+#[test]
+fn combinings_and_base_rewrites_each_have_their_own_budget_and_combinings_run_first() {
+    let budget = |merges_per_cycle: usize, combines_per_cycle: usize| Settings {
+        merge_ratio: 1.0,
+        fanout: 3,
+        merges_per_cycle,
+        combines_per_cycle,
+        ..Settings::default()
+    };
+    let shard = |shard: usize, base_rows: u64, deltas: Vec<current::FileRef>| current::Manifest {
+        shard,
+        base: Some(current::FileRef { key: format!("base-{shard}"), rows: base_rows, ..current::FileRef::default() }),
+        deltas,
+        ..current::Manifest::default()
+    };
+    let manifests = vec![
+        shard(0, 100, vec![delta(0, 60), delta(0, 50)]),
+        shard(1, 100, vec![delta(0, 1); 3]),
+        shard(2, 100, vec![delta(0, 1); 9]),
+        shard(3, 100, vec![delta(0, 1); 5]),
+        shard(4, 100, vec![delta(0, 120)]),
+        shard(5, 100, vec![delta(1, 1), delta(1, 1), delta(1, 1), delta(0, 1)]),
+        shard(6, 100, vec![]),
+        shard(7, 100, vec![delta(0, 40), delta(0, 40), delta(0, 40)]),
+    ];
+    let due =
+        |settings: &Settings| -> Vec<(usize, Option<u32>)> { compactor::due_rewrites(&manifests, settings).into_iter().map(|r| (r.shard, r.level)).collect() };
+    assert_eq!(due(&budget(2, 2)), [(2, Some(0)), (3, Some(0)), (4, None), (7, None)], "most files to combine first, then most delta rows");
+    assert_eq!(due(&budget(100, 100)), [(2, Some(0)), (3, Some(0)), (1, Some(0)), (5, Some(1)), (4, None), (7, None), (0, None)]);
+    assert_eq!(due(&budget(3, 0)), [(4, None), (7, None), (0, None)], "with no combine budget, base rewrites take the slots first");
+    assert_eq!(due(&budget(5, 0)), [(4, None), (7, None), (0, None), (2, Some(0)), (3, Some(0))], "and combinings the rest, most delta rows first");
+}
+
+#[test]
+fn deltas_are_combined_in_a_cycle_whose_base_rewrites_are_capped() {
+    let root = scratch("budgets");
+    let mut log = Log::new(root.join("bucket"));
+    let store = LocalStore { root: root.join("bucket") };
+    compactor::start_empty(&store, "current/", 0, 4).unwrap();
+    let spread = urls_by_shard(4, 12);
+    let (rewritten, combined) = spread.split_at(2);
+    let first = |urls: &[String]| urls[..6].iter().map(|u| page(u, "2026-10-08T10:00:00+00:00", "t1", "first")).collect::<Vec<_>>();
+    log.append(&spread.iter().flat_map(|(_, urls)| first(urls)).collect::<Vec<_>>());
+    let mut settings = settings(root.join("work"));
+    (settings.merge_ratio, settings.merges_per_cycle) = (1.0, 64);
+    assert_eq!(compactor::cycle(&store, &settings, 1_000.0).unwrap().merged, 4, "every shard starts from a base");
+
+    (settings.fanout, settings.merges_per_cycle, settings.combines_per_cycle) = (2, 1, 100);
+    for round in 0..2 {
+        let mut changes: Vec<Change> = Vec::new();
+        for (_, urls) in rewritten {
+            changes.extend(urls[6..].iter().map(|u| page(u, &format!("2026-10-08T11:0{round}:00+00:00"), "t2", &format!("new {round}"))));
+        }
+        for (_, urls) in combined {
+            changes.push(page(&urls[0], &format!("2026-10-08T1{}:00:00+00:00", 2 + round), "t3", &format!("update {round}")));
+        }
+        log.append(&changes);
+        let report = compactor::cycle(&store, &settings, 2_000.0 + round as f64).unwrap();
+        assert_eq!(report.merged, 1, "round {round}: one base rewrite a cycle");
+        assert_eq!(report.combined, round * 2, "round {round}: both shards with two small deltas are combined");
+    }
+    let manifests = compactor::load_manifests(&store, "current/", 4).unwrap();
+    for (shard, urls) in combined {
+        assert_eq!(manifests[*shard].deltas.iter().map(|d| d.level).collect::<Vec<_>>(), [1]);
+        assert_eq!(text_of(&store, &urls[0]).as_deref(), Some("update 1"));
+        assert_eq!(text_of(&store, &urls[1]).as_deref(), Some("first"));
+    }
+    for (_, urls) in rewritten {
+        assert_eq!(text_of(&store, &urls[11]).as_deref(), Some("new 1"));
+    }
+}
+
+#[test]
+fn a_cycle_reports_how_old_the_oldest_change_file_it_has_not_read_is() {
+    let root = scratch("lag");
+    let mut log = Log::new(root.join("bucket"));
+    let store = LocalStore { root: root.join("bucket") };
+    compactor::start_empty(&store, "current/", 0, 4).unwrap();
+    for i in 0..3 {
+        log.append(&[page(&format!("https://news.example/lag-{i}"), "2026-10-08T10:00:00+00:00", "t1", "x")]);
+    }
+    let written = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs_f64();
+    let mut settings = settings(root.join("work"));
+    settings.files_per_cycle = 1;
+    let later = written + 6.0 * 86_400.0;
+    let Lag::Behind(lag) = compactor::cycle(&store, &settings, later).unwrap().lag else { panic!("two files unread") };
+    assert!((lag - 6.0 * 86_400.0).abs() < 600.0, "{lag}");
+    assert!(lag > settings.lag_warn_s);
+    settings.files_per_cycle = 10;
+    assert_eq!(compactor::cycle(&store, &settings, later).unwrap().lag, Lag::CaughtUp, "every file read");
+
+    log.store.put(&CHANGES.latest_key(), Bytes::from("{\"seq\": 200}")).unwrap();
+    let report = compactor::cycle(&store, &settings, later).unwrap();
+    assert!(report.waiting);
+    assert!(matches!(report.lag, Lag::Unknown(_)), "behind, with no later file to date it: {:?}", report.lag);
+}
+
+#[test]
+fn a_failed_rewrite_leaves_its_shard_as_it_was_and_the_cycle_goes_on() {
+    let root = scratch("failed-rewrite");
+    let mut log = Log::new(root.join("bucket"));
+    let store = LocalStore { root: root.join("bucket") };
+    compactor::start_empty(&store, "current/", 0, 4).unwrap();
+    let spread = urls_by_shard(2, 8);
+    log.append(&spread.iter().flat_map(|(_, urls)| urls.iter().map(|u| page(u, "2026-10-08T10:00:00+00:00", "t1", "first"))).collect::<Vec<_>>());
+    let mut settings = settings(root.join("work"));
+    (settings.merge_ratio, settings.merges_per_cycle) = (1.0, 64);
+    compactor::cycle(&store, &settings, 1_000.0).unwrap();
+    (settings.fanout, settings.combines_per_cycle) = (2, 100);
+    let ((broken, broken_urls), (fine, fine_urls)) = (&spread[0], &spread[1]);
+    log.append(&[page(&broken_urls[0], "2026-10-08T11:00:00+00:00", "t2", "second"), page(&fine_urls[0], "2026-10-08T11:00:00+00:00", "t2", "second")]);
+    compactor::cycle(&store, &settings, 2_000.0).unwrap();
+    let lost = compactor::load_manifests(&store, "current/", 4).unwrap()[*broken].deltas[0].key.clone();
+    store.delete(&lost).unwrap();
+
+    let seq = log.append(&[page(&broken_urls[1], "2026-10-08T12:00:00+00:00", "t3", "third"), page(&fine_urls[1], "2026-10-08T12:00:00+00:00", "t3", "third")]);
+    let report = compactor::cycle(&store, &settings, 3_000.0).unwrap();
+    assert_eq!((report.through, report.combined, report.failed.len()), (seq, 1, 1));
+    assert!(report.failed[0].starts_with(&format!("shard {broken} ")), "{:?}", report.failed);
+    let manifests = compactor::load_manifests(&store, "current/", 4).unwrap();
+    assert_eq!(manifests[*broken].deltas.iter().map(|d| d.level).collect::<Vec<_>>(), [0, 0], "its deltas as they were, plus the cycle's");
+    assert_eq!(manifests[*fine].deltas.iter().map(|d| d.level).collect::<Vec<_>>(), [1]);
+    assert!(manifests.iter().all(|m| m.through_seq == seq), "every shard moved past the cycle's files");
+    assert_eq!(text_of(&store, &fine_urls[1]).as_deref(), Some("third"));
+}
+
+#[test]
+fn a_retired_file_that_cannot_be_deleted_stays_listed_and_goes_on_a_later_cycle() {
+    let root = scratch("failed-delete");
+    let mut log = Log::new(root.join("bucket"));
+    let store = LocalStore { root: root.join("bucket") };
+    compactor::start_empty(&store, "current/", 0, 4).unwrap();
+    let url = "https://news.example/one";
+    let shard = shard_of(&page_key(url).unwrap()).unwrap();
+    let mut settings = settings(root.join("work"));
+    settings.merge_ratio = 1.0;
+    log.append(&[page(url, "2026-10-08T10:00:00+00:00", "t1", "v1")]);
+    compactor::cycle(&store, &settings, 1_000.0).unwrap();
+    let retired = compactor::load_manifests(&store, "current/", 4).unwrap()[shard].retired[0].key.clone();
+    let path = root.join("bucket").join(&retired);
+    std::fs::remove_file(&path).unwrap();
+    std::fs::create_dir_all(path.join("blocking")).unwrap();
+
+    log.append(&[page(url, "2026-10-08T11:00:00+00:00", "t2", "v2")]);
+    let report = compactor::cycle(&store, &settings, 1_000.0 + 3_600.0).unwrap();
+    assert_eq!(report.delete_failed, 1);
+    assert!(compactor::load_manifests(&store, "current/", 4).unwrap()[shard].retired.iter().any(|r| r.key == retired), "kept to try again");
+    assert_eq!(text_of(&store, url).as_deref(), Some("v2"));
+
+    std::fs::remove_dir_all(&path).unwrap();
+    log.append(&[page("https://news.example/two", "2026-10-08T12:00:00+00:00", "t3", "x")]);
+    let report = compactor::cycle(&store, &settings, 1_000.0 + 7_200.0).unwrap();
+    assert_eq!(report.delete_failed, 0);
+    assert!(!compactor::load_manifests(&store, "current/", 4).unwrap()[shard].retired.iter().any(|r| r.key == retired));
 }
