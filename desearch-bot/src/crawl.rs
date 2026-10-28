@@ -314,7 +314,7 @@ impl Loop {
             let Some(permit) = self.visitor.heavy.try_take() else {
                 break;
             };
-            let Some((host, lane)) = self.heavy.pop() else {
+            let Some((host, lane)) = self.heavy.pop(now_micros() / SECOND) else {
                 break;
             };
             self.start_with(host, lane, Some(permit));
@@ -373,7 +373,7 @@ impl Loop {
                 self.busy.remove(&host);
                 if let Ok(Some(record)) = self.buckets.store(&host).domain(&host) {
                     let place = self.place(&host, records::int(record.get("rank")));
-                    self.heavy.push(host, lane, place);
+                    self.heavy.push(host, lane, place, now_micros() / SECOND);
                 }
             }
             Ok((_, Finished::Visited(write, known))) => {

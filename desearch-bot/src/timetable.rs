@@ -20,22 +20,27 @@ pub fn placed(listed: bool, news: bool, rank: Option<i64>) -> i64 {
     class * CLASS_STEP + rank.unwrap_or(UNRANKED)
 }
 
-/// Heavy domains waiting for a heavy slot, handed out best placed first; a domain waits once.
+/// Seconds of waiting that move a heavy domain up one class, so none starves behind a steady stream of news sites.
+const AGE_PER_CLASS: i64 = 3_600;
+
+/// Heavy domains waiting for a heavy slot, handed out best placed first, each hour of waiting worth a class; a domain waits once.
 #[derive(Default)]
 pub struct HeavyQueue {
-    waiting: BinaryHeap<Reverse<(i64, Arc<str>, Lane)>>,
+    waiting: Vec<(i64, i64, Arc<str>, Lane)>,
     queued: HashSet<Arc<str>>,
 }
 
 impl HeavyQueue {
-    pub fn push(&mut self, host: Arc<str>, lane: Lane, place: i64) {
+    pub fn push(&mut self, host: Arc<str>, lane: Lane, place: i64, now: i64) {
         if self.queued.insert(host.clone()) {
-            self.waiting.push(Reverse((place, host, lane)));
+            self.waiting.push((place, now, host, lane));
         }
     }
 
-    pub fn pop(&mut self) -> Option<(Arc<str>, Lane)> {
-        let Reverse((_, host, lane)) = self.waiting.pop()?;
+    pub fn pop(&mut self, now: i64) -> Option<(Arc<str>, Lane)> {
+        let aged = |(place, since, ..): &(i64, i64, Arc<str>, Lane)| place - (now - since).max(0) * CLASS_STEP / AGE_PER_CLASS;
+        let best = (0..self.waiting.len()).min_by_key(|&at| (aged(&self.waiting[at]), self.waiting[at].1))?;
+        let (_, _, host, lane) = self.waiting.swap_remove(best);
         self.queued.remove(&host);
         Some((host, lane))
     }
@@ -173,15 +178,25 @@ mod tests {
     #[test]
     fn heavy_slots_go_to_the_best_placed_waiting_domain_and_each_waits_once() {
         let mut queue = HeavyQueue::default();
-        queue.push(Arc::from("unlisted.com"), Lane::Refresh, placed(false, false, Some(2)));
-        queue.push(Arc::from("news.com"), Lane::Backlog, placed(true, true, Some(700)));
-        queue.push(Arc::from("listed.com"), Lane::Refresh, placed(true, false, Some(3)));
-        queue.push(Arc::from("news.com"), Lane::Refresh, placed(true, true, Some(700)));
+        queue.push(Arc::from("unlisted.com"), Lane::Refresh, placed(false, false, Some(2)), 0);
+        queue.push(Arc::from("news.com"), Lane::Backlog, placed(true, true, Some(700)), 0);
+        queue.push(Arc::from("listed.com"), Lane::Refresh, placed(true, false, Some(3)), 0);
+        queue.push(Arc::from("news.com"), Lane::Refresh, placed(true, true, Some(700)), 0);
         assert_eq!(queue.len(), 3);
-        let order: Vec<(String, Lane)> = std::iter::from_fn(|| queue.pop()).map(|(host, lane)| (host.to_string(), lane)).collect();
+        let order: Vec<(String, Lane)> = std::iter::from_fn(|| queue.pop(0)).map(|(host, lane)| (host.to_string(), lane)).collect();
         assert_eq!(order, [("news.com".into(), Lane::Backlog), ("listed.com".into(), Lane::Refresh), ("unlisted.com".into(), Lane::Refresh)]);
-        queue.push(Arc::from("news.com"), Lane::Refresh, 0);
+        queue.push(Arc::from("news.com"), Lane::Refresh, 0, 0);
         assert_eq!(queue.len(), 1, "a domain handed out can wait again");
+    }
+
+    #[test]
+    fn a_heavy_domain_that_waits_moves_up_and_never_starves_behind_news() {
+        let mut queue = HeavyQueue::default();
+        queue.push(Arc::from("listed.com"), Lane::Refresh, placed(true, false, Some(3)), 0);
+        queue.push(Arc::from("news-a.com"), Lane::Refresh, placed(true, true, Some(900)), 1_000);
+        assert_eq!(queue.pop(1_000).map(|(h, _)| h.to_string()), Some("news-a.com".into()), "news goes first while the other has waited little");
+        queue.push(Arc::from("news-b.com"), Lane::Refresh, placed(true, true, Some(900)), 3_700);
+        assert_eq!(queue.pop(3_700).map(|(h, _)| h.to_string()), Some("listed.com".into()), "an hour of waiting is worth a class");
     }
 
     fn names(hosts: Vec<Arc<str>>) -> Vec<String> {
