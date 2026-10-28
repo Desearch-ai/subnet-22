@@ -1778,12 +1778,25 @@ fn only_a_listed_subdomain_whose_record_works_takes_its_pages_from_the_parent() 
     buckets.store("news.example.com").write(changes).unwrap();
     buckets.note_apart(&list);
     assert!(list.apart("news.example.com"), "a subdomain whose robots.txt refuses us keeps its pages from going under the parent too");
-    for (reason, apart) in [("not_english", true), ("homepage_error", false)] {
+    let cases = [
+        ("not_english", None, true),
+        ("homepage_error", Some(404), false),
+        ("homepage_error", Some(410), false),
+        ("homepage_error", Some(401), true),
+        ("homepage_error", Some(403), true),
+        ("homepage_error", Some(429), true),
+        ("homepage_error", None, true),
+    ];
+    for (reason, home, apart) in cases {
+        let mut record = records::new_domain(Some(10), Some("com"), &[], State::Ineligible, Some(reason), None);
+        if let Some(home) = home {
+            record.insert("home_status".into(), home.into());
+        }
         let mut changes = Changes::default();
-        changes.domain("news.example.com", &records::new_domain(Some(10), Some("com"), &[], State::Ineligible, Some(reason), None));
+        changes.domain("news.example.com", &record);
         buckets.store("news.example.com").write(changes).unwrap();
         buckets.note_apart(&list);
-        assert_eq!(list.apart("news.example.com"), apart, "ineligible for {reason}");
+        assert_eq!(list.apart("news.example.com"), apart, "ineligible for {reason}, homepage {home:?}: only a missing homepage leaves its pages under the parent");
     }
 }
 

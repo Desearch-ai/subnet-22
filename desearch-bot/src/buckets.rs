@@ -566,7 +566,7 @@ impl Buckets {
         self.store_for(domain).map(|store| store.terms(domain)).unwrap_or_default()
     }
 
-    /// Marks the listed subdomains of listed domains whose own record speaks for them: active or failing, so they send their own pages, or blocked, excluded or ineligible, so their pages never go. A subdomain still new, down or unreachable, or ineligible only because its homepage answered with an error, leaves its pages under its parent.
+    /// Marks the listed subdomains of listed domains whose own record speaks for them: active or failing, so they send their own pages, or blocked, excluded or ineligible, so their pages never go. A subdomain still new, down or unreachable, or ineligible only because it has no homepage (404 or 410), leaves its pages under its parent.
     pub fn note_apart(&self, allowed: &Allowed) {
         let entries = allowed.entries();
         let names: HashSet<&str> = entries.iter().map(|(name, _)| name.as_str()).collect();
@@ -578,8 +578,9 @@ impl Buckets {
             let record = self.store_for(name).and_then(|store| store.domain(name).ok().flatten());
             let state = record.as_ref().and_then(|record| record.get("state")).and_then(Value::as_str).and_then(State::parse);
             let reason = record.as_ref().and_then(|record| record.get("reason")).and_then(Value::as_str);
+            let home = record.as_ref().and_then(|record| record.get("home_status")).and_then(Value::as_u64);
             match state {
-                Some(State::Ineligible) => reason != Some("homepage_error"),
+                Some(State::Ineligible) => !(reason == Some("homepage_error") && matches!(home, Some(404 | 410))),
                 state => matches!(state, Some(State::Active | State::Failing | State::Blocked | State::Excluded)),
             }
         };

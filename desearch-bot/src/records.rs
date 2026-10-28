@@ -159,6 +159,9 @@ pub fn written_domain(previous: &Json, write: &DomainWrite, url_count: i64) -> J
     if let Some(chars) = visit.home_chars {
         record.insert("chars".into(), chars.into());
     }
+    if let Some(status) = visit.home_status {
+        record.insert("home_status".into(), status.into());
+    }
     record
 }
 

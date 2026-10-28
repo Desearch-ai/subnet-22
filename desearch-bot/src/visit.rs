@@ -134,6 +134,7 @@ pub struct Visit {
     pub language: Option<String>,
     pub declared_lang: Option<String>,
     pub home_chars: Option<i64>,
+    pub home_status: Option<u16>,
     pub sitemaps: Vec<SitemapUpdate>,
     pub listed: i64,
     pub new: i64,
@@ -158,6 +159,7 @@ impl Visit {
             language: None,
             declared_lang: None,
             home_chars: None,
+            home_status: None,
             sitemaps: Vec::new(),
             listed: 0,
             new: 0,
@@ -681,6 +683,7 @@ impl Run<'_> {
         if self.moved_away(&answer) {
             return Ok(());
         }
+        self.result.home_status = Some(answer.status);
         if answer.status >= 500 {
             self.stop(Outcome::Unreachable, Some(format!("homepage_{}", answer.status)));
             return Ok(());
