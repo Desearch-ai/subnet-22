@@ -45,11 +45,14 @@ never inside a table row, a list item or a code block. A v1 page keeps the vecto
 
 ## Planner
 
-The planner reads the change log, a few files at once and in log order, and writes inputs of up to 1,000
-pages or 3M characters for the task API. Each input goes to the API as soon as it is written, while the API
-has room. When the API is full, slow to answer (2 s or more) or does not answer, inputs wait, and the planner
-asks for room at the end of each pass and at most every 30 s in between; after a restart it asks before reading
-the log.
+The planner reads the change log, a few files at once and in log order, and cuts inputs of up to 1,000
+pages or 3M characters for the task API, writing up to `PLANNER_WRITES` (8) of them at once to the temporary
+bucket. Inputs are saved in the order cut, each once written: the oldest when `PLANNER_WRITES` are unsaved and
+another is cut, and all of them when a lane holds `PLANNER_MAX_PENDING` inputs or the pass ends. A saved input
+goes to the API while the API has room. A failed write fails the pass and is tried again with the same pages,
+and a restart reads again only the pages of inputs not saved. When the API is full, slow to answer (2 s or more) or does not answer, inputs wait, and
+the planner asks for room at the end of each pass and at most every 30 s in between; after a restart it asks
+before reading the log.
 
 - **What it plans** (`PLANNER_SET_FILE`): only pages the v1 set takes: a news site's pages dated on or
   after its `since`, by `published` or a date in the URL path, and, when the file's `undated` is `article`,

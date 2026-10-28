@@ -1,6 +1,6 @@
 //! The planner: follows the change log and turns published pages that need a vector into embed inputs for the task API, within an hourly page budget and the room the API gives.
 
-use std::collections::{btree_map, BTreeMap, HashMap, HashSet};
+use std::collections::{btree_map, BTreeMap, HashMap, HashSet, VecDeque};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicI64, Ordering};
@@ -25,6 +25,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use tokio::runtime::Handle;
 use tokio::sync::{mpsc, watch};
+use tokio::task::JoinHandle;
 
 use crate::backfill::ShardReader;
 use crate::current::{decode_changes, ChangeRow, PageRow, SHARDS};
@@ -397,7 +398,7 @@ pub struct Settings {
     pub chars_per_input: usize,
     /// A part-filled input is written once its first page waited this long.
     pub flush_after: Duration,
-    /// Inputs of one lane written but not yet handed over; past this, new pages of the lane are left out.
+    /// Inputs of one lane cut but not yet handed over; past this, new pages of the lane wait.
     pub max_pending: usize,
     /// Pages kept waiting at most, so the state stays bounded while the log brings more than the budget.
     pub max_waiting: i64,
@@ -422,6 +423,8 @@ pub struct Settings {
     pub start_after: Option<i64>,
     /// Change files fetched and decoded at once, ahead of the one being planned.
     pub reads: usize,
+    /// Inputs written to the temporary bucket at once; each is saved, in the order cut, once it and those before it are written.
+    pub writes: usize,
     /// Pages outside the fresh lane are planned with their page text alone; their passages wait until this is off.
     pub page_first: bool,
     /// Read `current/` for pages to embed, with what budget and room the log leaves.
@@ -468,6 +471,7 @@ impl Settings {
             set_file: std::env::var("PLANNER_SET_FILE").ok().filter(|v| !v.is_empty()).map(PathBuf::from),
             start_after: std::env::var("PLANNER_START_AFTER").ok().filter(|v| !v.is_empty()).map(|v| v.parse()).transpose()?,
             reads: number("PLANNER_READS", 8)?,
+            writes: number("PLANNER_WRITES", 8)?,
             page_first: text("PLANNER_PAGE_FIRST", "0") == "1",
             backfill: text("PLANNER_BACKFILL", "0") == "1",
             backfill_shards: match std::env::var("PLANNER_BACKFILL_SHARDS").ok().filter(|v| !v.is_empty()) {
@@ -945,14 +949,7 @@ impl State {
             if self.unplanned(&page.key)? {
                 *new.entry(domain_of_key(&page.key).to_string()).or_default() += 1;
             }
-            let version = Version {
-                content_sha1: page.content_sha1.clone(),
-                fetched_at: page.fetched_at.clone(),
-                page_only: page.page_only,
-                seq: Some(page.seq),
-                task_id: page.task_id.clone(),
-            };
-            batch.put(planned_key(page.recipe, &page.key), version.value());
+            batch.put(planned_key(page.recipe, &page.key), page.version().value());
             self.unwait_into(&mut batch, &page.key, Some(&page.fetched_at))?;
         }
         self.change_sites(&mut batch, &new)?;
@@ -1026,6 +1023,18 @@ pub struct Planned {
     pub seq: i64,
     pub task_id: String,
     pub source: Source,
+}
+
+impl Planned {
+    fn version(&self) -> Version {
+        Version {
+            content_sha1: self.content_sha1.clone(),
+            fetched_at: self.fetched_at.clone(),
+            page_only: self.page_only,
+            seq: Some(self.seq),
+            task_id: self.task_id.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -1113,7 +1122,7 @@ impl Lane {
 struct Reading {
     shard: usize,
     pages: mpsc::Receiver<PageRow>,
-    done: tokio::task::JoinHandle<Result<usize>>,
+    done: JoinHandle<Result<usize>>,
     /// The last key taken from it.
     last: Option<String>,
 }
@@ -1182,6 +1191,19 @@ impl Buffer {
     }
 }
 
+/// An input cut from a lane and being written; it is saved once it and every input cut before it are written.
+struct Writing {
+    lane: Lane,
+    /// Its pages, their texts dropped once encoded.
+    buffer: Buffer,
+    input_key: String,
+    entry: String,
+    file: Bytes,
+    /// The backfill's place, kept once the input is saved.
+    backfill: Option<(usize, Option<String>)>,
+    written: JoinHandle<Result<()>>,
+}
+
 pub struct Planner {
     pub settings: Settings,
     pub state: Arc<State>,
@@ -1208,6 +1230,8 @@ pub struct Planner {
     ask_room_at: Option<Instant>,
     fresh: Buffer,
     rest: Buffer,
+    /// Inputs cut and not yet saved, in the order cut.
+    writing: VecDeque<Writing>,
     read_through: i64,
     budget: Budget,
     fresh_budget: Budget,
@@ -1273,6 +1297,7 @@ impl Planner {
             ask_room_at: None,
             fresh: Buffer::default(),
             rest: Buffer::default(),
+            writing: VecDeque::new(),
             read_through,
             budget,
             fresh_budget,
@@ -1370,6 +1395,8 @@ impl Planner {
         }
         // Inputs written before a restart go out before the log is read.
         self.hand_over_unless_held().await?;
+        // A failed write leaves its input and those cut after it unsaved.
+        self.save_written(0).await?;
         self.forget_dropped().await?;
         let latest = latest(&self.pages).await?;
         let mut read = self.read_late().await?;
@@ -1395,6 +1422,7 @@ impl Planner {
                 self.flush_lane(lane).await?;
             }
         }
+        self.save_written(0).await?;
         self.hand_over().await?;
         Ok(read > 0 || replanned || backfilled)
     }
@@ -1403,7 +1431,7 @@ impl Planner {
     async fn replan(&mut self) -> Result<(bool, bool)> {
         let mut took = false;
         for _ in 0..REPLAN_FILES_PER_PASS {
-            if self.pending[Lane::Rest as usize] >= self.settings.max_pending {
+            if self.inputs_held(Lane::Rest) >= self.settings.max_pending {
                 break;
             }
             if !self.budget.holds(self.settings.pages_per_input) {
@@ -1453,7 +1481,7 @@ impl Planner {
         let (most, mut read, started) = (self.settings.max_pending * self.settings.pages_per_input, 0, Instant::now());
         loop {
             let slice_over = read > 0 && started.elapsed() >= self.settings.fresh_flush_after;
-            if read >= most || slice_over || self.pending[Lane::Rest as usize] >= self.settings.max_pending || !self.has_token() {
+            if read >= most || slice_over || self.inputs_held(Lane::Rest) >= self.settings.max_pending || !self.has_token() {
                 return Ok(read > 0);
             }
             if self.reading.is_none() && !self.start_reading()? {
@@ -1544,7 +1572,7 @@ impl Planner {
             self.missing.remove(&seq);
             self.settled.push(seq);
         }
-        let settled = self.settle(&[Lane::Fresh, Lane::Rest]);
+        let settled = self.settle();
         self.state.settle_missing(&settled)?;
         Ok(read)
     }
@@ -1568,6 +1596,10 @@ impl Planner {
                     }
                 }
                 ChangeRow::Removed(key) => {
+                    // It forgets the version an unsaved input planned, so that input is saved first.
+                    if self.unsaved(&key).is_some() {
+                        self.save_written(0).await?;
+                    }
                     for lane in Lane::ALL {
                         self.buffer_mut(lane).remove(&key);
                     }
@@ -1645,7 +1677,7 @@ impl Planner {
     /// Marks change file `seq` read and keeps the cursor just before the first change file a buffered page was read from, so a restart reads only those again.
     fn advance(&mut self, seq: i64) -> Result<()> {
         self.read_through = seq;
-        let cursor = self.cursor_after(&[Lane::Fresh, Lane::Rest]);
+        let cursor = self.cursor_after();
         if cursor > self.kept_cursor {
             self.state.keep_cursor(cursor)?;
             self.kept_cursor = cursor;
@@ -1653,14 +1685,19 @@ impl Planner {
         Ok(())
     }
 
-    /// Where a restart may start reading the log, given the pages still in `lanes`.
-    fn cursor_after(&self, lanes: &[Lane]) -> i64 {
-        lanes.iter().filter_map(|&lane| self.buffer(lane).log.keys().next().copied()).min().map_or(self.read_through, |first| first - 1)
+    /// The lanes' buffers and those of inputs cut but not yet saved.
+    fn held(&self) -> impl Iterator<Item = &Buffer> {
+        [&self.fresh, &self.rest].into_iter().chain(self.writing.iter().map(|writing| &writing.buffer))
     }
 
-    /// The late files read whose pages are no longer in `lanes`, taken off the list of those still settling.
-    fn settle(&mut self, lanes: &[Lane]) -> Vec<i64> {
-        let held: HashSet<i64> = lanes.iter().flat_map(|&lane| self.buffer(lane).late.keys().copied()).collect();
+    /// Where a restart may start reading the log, given the pages buffered or in inputs not yet saved.
+    fn cursor_after(&self) -> i64 {
+        self.held().filter_map(|buffer| buffer.log.keys().next().copied()).min().map_or(self.read_through, |first| first - 1)
+    }
+
+    /// The late files read whose pages are neither buffered nor in inputs not yet saved, taken off the list of those still settling.
+    fn settle(&mut self) -> Vec<i64> {
+        let held: HashSet<i64> = self.held().flat_map(|buffer| buffer.late.keys().copied()).collect();
         let (kept, settled): (Vec<i64>, Vec<i64>) = std::mem::take(&mut self.settled).into_iter().partition(|seq| held.contains(seq));
         self.settled = kept;
         settled
@@ -1726,18 +1763,13 @@ impl Planner {
         };
         let buffered = Lane::ALL.into_iter().find_map(|lane| self.buffer(lane).at.get(&page.key).map(|&at| (lane, at)));
         let already = match buffered {
-            Some((lane, at)) => {
-                let held = &self.buffer(lane).pages[at];
-                Some(Version {
-                    content_sha1: held.content_sha1.clone(),
-                    fetched_at: held.fetched_at.clone(),
-                    page_only: held.page_only,
-                    seq: Some(held.seq),
-                    task_id: held.task_id.clone(),
-                })
-            }
+            Some((lane, at)) => Some(self.buffer(lane).pages[at].version()),
             // A version from a task taken back was taken down, so the same text crawled again is planned again.
-            None => self.state.planned_version(recipe, &page.key).ok().flatten().filter(|planned| !self.withdrawn.contains_key(&planned.task_id)),
+            None => match self.unsaved(&page.key).filter(|held| held.recipe == recipe) {
+                Some(held) => Some(held.version()),
+                None => self.state.planned_version(recipe, &page.key).ok().flatten(),
+            }
+            .filter(|planned| !self.withdrawn.contains_key(&planned.task_id)),
         };
         if waiting.as_ref().is_some_and(|held| record.fetched_at < held.fetched_at) {
             self.counts.older += 1;
@@ -1764,9 +1796,9 @@ impl Planner {
             return Considered::Taken(lane);
         }
         let new_in = match cap {
-            Some(cap) if self.state.unplanned(&page.key).unwrap_or(false) => {
+            Some(cap) if self.unplanned(&page.key) => {
                 let domain = domain_of_key(&page.key).to_string();
-                let buffered: u64 = Lane::ALL.into_iter().map(|lane| self.buffer(lane).new.get(&domain).copied().unwrap_or(0)).sum();
+                let buffered: u64 = self.held().map(|buffer| buffer.new.get(&domain).copied().unwrap_or(0)).sum();
                 let held = self.state.site_pages(&domain).unwrap_or(0) + buffered;
                 if held >= cap {
                     self.counts.over_cap += 1;
@@ -1777,8 +1809,8 @@ impl Planner {
             _ => None,
         };
         // Only a page never planned before is fresh, within its lane's own budget, so pages re-dated by their site cannot flood it.
-        let seen = !self.state.unplanned(&page.key).unwrap_or(false) || waiting.is_some();
-        let fresh = self.is_fresh(record) && !seen && self.pending[Lane::Fresh as usize] < self.settings.max_pending;
+        let seen = !self.unplanned(&page.key) || waiting.is_some();
+        let fresh = self.is_fresh(record) && !seen && self.inputs_held(Lane::Fresh) < self.settings.max_pending;
         let site = self.set.as_ref().and_then(|set| set.site(&record.domain).map(|(host, _)| host.to_string()));
         let site = site.unwrap_or_else(|| domain_of_key(&page.key).to_string());
         let fresh = fresh && self.fresh_site_room(&site) && self.fresh_budget.take();
@@ -1786,7 +1818,7 @@ impl Planner {
             *self.fresh_sites.1.entry(site).or_default() += 1;
         }
         let lane = if fresh { Lane::Fresh } else { Lane::Rest };
-        if self.pending[lane as usize] >= self.settings.max_pending {
+        if self.inputs_held(lane) >= self.settings.max_pending {
             self.counts.no_room += 1;
             self.keep_waiting(&page);
             return Considered::Waiting;
@@ -1887,19 +1919,23 @@ impl Planner {
         self.budget.has()
     }
 
-    /// Writes every lane's buffer.
+    /// Writes every lane's buffer and saves every input cut.
     pub async fn flush(&mut self) -> Result<()> {
         for lane in Lane::ALL {
             self.flush_lane(lane).await?;
         }
-        Ok(())
+        self.save_written(0).await
     }
 
-    /// Writes a lane's full buffer and hands it over at once, so the API's queue is fed while a pass goes on.
+    /// Cuts a lane's full buffer into an input and hands over the inputs saved, so the API's queue is fed while a pass goes on.
     async fn write_when_full(&mut self, lane: Lane) -> Result<()> {
         let buffer = self.buffer(lane);
         if buffer.pages.len() >= self.settings.pages_per_input || buffer.chars >= self.settings.chars_per_input {
             self.flush_lane(lane).await?;
+            // A lane at its cap saves its inputs, so those the API takes make room.
+            if self.inputs_held(lane) >= self.settings.max_pending {
+                self.save_written(0).await?;
+            }
             self.hand_over_unless_held().await?;
         }
         Ok(())
@@ -1913,14 +1949,15 @@ impl Planner {
         Ok(())
     }
 
-    /// Writes a lane's buffer as one input in the temp bucket and keeps it pending until the API has room.
+    /// Cuts a lane's buffer into one input and starts writing it to the temp bucket; it is saved, and pending until the API has room, once it and every input cut before it are written.
     async fn flush_lane(&mut self, lane: Lane) -> Result<()> {
-        let buffer = self.buffer(lane);
-        if buffer.pages.is_empty() {
+        if self.buffer(lane).pages.is_empty() {
             return Ok(());
         }
+        self.save_written(self.settings.writes.max(1) - 1).await?;
+        let buffer = self.buffer(lane);
         let rows: Vec<(&Planned, &Text)> = buffer.pages.iter().flat_map(|page| page.texts.iter().map(move |text| (page, text))).collect();
-        let file = encode_input(&rows)?;
+        let file = Bytes::from(encode_input(&rows)?);
         let input_key = format!("embed/inputs/{}.parquet", uuid::Uuid::new_v4().simple());
         let mut entry = json!({
             "input_key": input_key,
@@ -1933,21 +1970,60 @@ impl Planner {
         if lane == Lane::Fresh {
             entry["lane"] = "fresh".into();
         }
-        // Kept until the input is stored, so a failed write is tried again with the same pages.
-        self.temp.put(&input_key, Bytes::from(file), PARQUET, None).await.map_err(|error| anyhow!("writing {input_key}: {error}"))?;
-        // The cursor, late files and the backfill's place move only past what the other lane still holds.
+        // The backfill's place moves only past what the other lane still holds.
         let other = if lane == Lane::Fresh { Lane::Rest } else { Lane::Fresh };
-        let cursor = Some(self.cursor_after(&[other])).filter(|&cursor| cursor > self.kept_cursor);
-        let settled = self.settle(&[other]);
-        self.state.commit(&self.buffer(lane).pages, &input_key, &entry.to_string(), cursor, &settled)?;
-        self.kept_cursor = cursor.unwrap_or(self.kept_cursor);
-        if let Some(reading) = self.reading.as_ref().filter(|_| self.buffer(other).backfill == 0) {
-            self.state.keep_backfill(reading.shard, reading.last.as_deref())?;
+        let backfill = self.reading.as_ref().filter(|_| self.buffer(other).backfill == 0).map(|reading| (reading.shard, reading.last.clone()));
+        let mut buffer = std::mem::take(self.buffer_mut(lane));
+        buffer.pages.iter_mut().for_each(|page| page.texts = Vec::new());
+        let written = write_input(self.temp.clone(), input_key.clone(), file.clone());
+        self.writing.push_back(Writing { lane, buffer, input_key, entry: entry.to_string(), file, backfill, written });
+        Ok(())
+    }
+
+    /// Saves inputs in the order cut, each once written, until at most `left` are unsaved; a failed write fails the pass.
+    async fn save_written(&mut self, left: usize) -> Result<()> {
+        while self.writing.len() > left {
+            let front = self.writing.front_mut().expect("an input cut");
+            if let Err(error) = (&mut front.written).await.map_err(anyhow::Error::from).and_then(|written| written) {
+                // Writes that failed together are tried again together; rewriting one that finished is harmless.
+                for writing in self.writing.iter_mut().filter(|writing| writing.written.is_finished()) {
+                    writing.written = write_input(self.temp.clone(), writing.input_key.clone(), writing.file.clone());
+                }
+                return Err(error);
+            }
+            let writing = self.writing.pop_front().expect("an input cut");
+            self.save(writing)?;
         }
-        *self.buffer_mut(lane) = Buffer::default();
-        self.pending[lane as usize] += 1;
+        Ok(())
+    }
+
+    /// Plans a written input's pages and keeps it pending, with the cursor and late files moved only past what is still buffered or unsaved.
+    fn save(&mut self, writing: Writing) -> Result<()> {
+        let cursor = Some(self.cursor_after()).filter(|&cursor| cursor > self.kept_cursor);
+        let settled = self.settle();
+        self.state.commit(&writing.buffer.pages, &writing.input_key, &writing.entry, cursor, &settled)?;
+        self.kept_cursor = cursor.unwrap_or(self.kept_cursor);
+        if let Some((shard, last)) = &writing.backfill {
+            self.state.keep_backfill(*shard, last.as_deref())?;
+        }
+        self.pending[writing.lane as usize] += 1;
         self.counts.inputs += 1;
         Ok(())
+    }
+
+    /// The newest version of `key` in an input cut but not yet saved.
+    fn unsaved(&self, key: &str) -> Option<&Planned> {
+        self.writing.iter().rev().find_map(|writing| writing.buffer.at.get(key).map(|&at| &writing.buffer.pages[at]))
+    }
+
+    /// Whether no recipe has planned any version of `key`, saved or not.
+    fn unplanned(&self, key: &str) -> bool {
+        self.unsaved(key).is_none() && self.state.unplanned(key).unwrap_or(false)
+    }
+
+    /// Inputs of `lane` cut and not yet handed over.
+    fn inputs_held(&self, lane: Lane) -> usize {
+        self.pending[lane as usize] + self.writing.iter().filter(|writing| writing.lane == lane).count()
     }
 
     /// Hands pending inputs to the task API, oldest first, as many as it has room for.
@@ -2050,6 +2126,10 @@ async fn fetch(pages: Bucket, seq: i64) -> Result<std::result::Result<Vec<Change
         }
         Err(error) => Ok(Err(Unread::Failed(format!("reading {key}: {error}")))),
     }
+}
+
+fn write_input(temp: Bucket, input_key: String, file: Bytes) -> JoinHandle<Result<()>> {
+    tokio::spawn(async move { temp.put(&input_key, file, PARQUET, None).await.map_err(|error| anyhow!("writing {input_key}: {error}")) })
 }
 
 /// Pushes an input for the task API once: a push tried again after a crash, before its pending entry was cleared, does nothing; whether it pushed.

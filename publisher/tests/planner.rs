@@ -307,6 +307,7 @@ fn settings(dir: PathBuf, pages_per_hour: f64, start_after: i64) -> Settings {
         set_file: None,
         start_after: Some(start_after),
         reads: 4,
+        writes: 1,
         page_first: false,
         backfill: false,
         backfill_shards: 0..1024,
@@ -1979,6 +1980,149 @@ async fn while_the_task_api_is_full_slow_or_down_inputs_are_held_without_asking_
         (planner.counts.handed_over, asked.load(SeqCst)),
         (6, 7),
         "a slow answer with room holds inputs too: the four held go at the start, the two written after at the end"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// One-page inputs written three at once, a change file read at a time so each input is cut after the last one's write started.
+fn three_at_once(dir: PathBuf) -> Settings {
+    let mut three = settings(dir, 3600.0, 0);
+    (three.pages_per_input, three.reads, three.writes) = (1, 1, 3);
+    three
+}
+
+/// The URLs of the saved inputs' pages, oldest input first.
+fn saved_urls(planner: &Planner) -> Vec<String> {
+    let mut saved: Vec<Value> = planner.state.pending().unwrap().iter().map(|(_, entry)| serde_json::from_str(entry).unwrap()).collect();
+    saved.sort_by(|a, b| a["written_at"].as_f64().unwrap().total_cmp(&b["written_at"].as_f64().unwrap()));
+    saved.iter().flat_map(|entry| entry["pages"].as_array().unwrap().iter().map(|page| page["url"].as_str().unwrap().to_string())).collect()
+}
+
+async fn handed_urls(redis: &mut ConnectionManager) -> Vec<String> {
+    let handed: Vec<String> = redis.lrange(EMBED_INPUTS, 0, -1).await.unwrap();
+    handed.iter().map(|raw| serde_json::from_str::<Value>(raw).unwrap()["pages"][0]["url"].as_str().unwrap().to_string()).collect()
+}
+
+/// Logs a page of its own in each of change files 1, 2 and 3; their URLs.
+async fn three_files(pages: &Bucket) -> Vec<String> {
+    let urls: Vec<String> = (1..=3).map(|n| format!("https://news.example/story/{n}")).collect();
+    for (seq, url) in (1..).zip(&urls) {
+        log(pages, seq, vec![v2(record(url, &format!("{url} {}", article(2)), "article", "en"))]).await;
+    }
+    urls
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_failed_write_holds_back_the_inputs_cut_after_it_and_is_written_again_with_the_same_pages() {
+    let Some((_turn, mut redis)) = redis_db().await else {
+        eprintln!("skipped: no Redis on {REDIS}");
+        return;
+    };
+    let dir = scratch("write-failed");
+    let stub = stub::start(dir.join("r2"), "127.0.0.1:0").await.unwrap();
+    let (pages, temp) = (bucket(stub.addr, "desearch-pages"), bucket(stub.addr, "subnet-22"));
+    let urls = three_files(&pages).await;
+    // The first write is answered late and by then fails every try; the other two are written meanwhile.
+    stub.state.slow("PUT", "subnet-22/embed/inputs/", 1, Duration::from_secs(1));
+    let failing = stub.state.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        failing.fail("PUT", "subnet-22/embed/inputs/", 5);
+    });
+    let mut planner = Planner::new(three_at_once(dir.join("state")), pages.clone(), temp.clone(), redis.clone(), Room::Fixed(0)).await.unwrap();
+    let failed = planner.pass().await.unwrap_err();
+    assert!(format!("{failed:#}").contains("writing embed/inputs/"), "{failed:#}");
+    let saved = saved_urls(&planner);
+    assert!(saved.len() < 3 && saved[..] == urls[..saved.len()], "only inputs cut before the failed one are saved: {saved:?}");
+    assert_eq!(planner.state.cursor().unwrap(), Some(saved.len() as i64), "a restart would read the log again from the failed input's page");
+
+    planner.pass().await.unwrap();
+    assert_eq!(saved_urls(&planner), urls, "the next pass writes it again and saves all three in the order cut");
+    assert_eq!((planner.counts.planned, planner.counts.inputs, planner.state.cursor().unwrap()), (3, 3, Some(3)));
+    assert_eq!(stub.state.keys("subnet-22", "embed/inputs/").len(), 3, "the same input written again, not one cut anew");
+    planner.room = Room::Fixed(10);
+    planner.hand_over().await.unwrap();
+    assert_eq!(handed_urls(&mut redis).await, urls);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_crash_while_inputs_are_written_loses_no_page_and_a_restart_plans_again_only_those_never_saved() {
+    let Some((_turn, redis)) = redis_db().await else {
+        eprintln!("skipped: no Redis on {REDIS}");
+        return;
+    };
+    let dir = scratch("write-crash");
+    let stub = stub::start(dir.join("r2"), "127.0.0.1:0").await.unwrap();
+    let (pages, temp) = (bucket(stub.addr, "desearch-pages"), bucket(stub.addr, "subnet-22"));
+    let urls = three_files(&pages).await;
+    stub.state.slow("PUT", "subnet-22/embed/inputs/", 1, Duration::from_secs(3));
+    let mut planner = Planner::new(three_at_once(dir.join("state")), pages.clone(), temp.clone(), redis.clone(), Room::Fixed(0)).await.unwrap();
+    assert!(tokio::time::timeout(Duration::from_secs(1), planner.pass()).await.is_err(), "stopped while the first write is answered late");
+    let saved = saved_urls(&planner);
+    assert_eq!(stub.state.keys("subnet-22", "embed/inputs/").len(), 2, "the other two are written");
+    assert!(saved.len() < 3 && saved[..] == urls[..saved.len()], "none is saved behind the unwritten one: {saved:?}");
+    assert_eq!(planner.state.cursor().unwrap(), Some(saved.len() as i64));
+    drop(planner);
+
+    let mut restarted = Planner::new(three_at_once(dir.join("state")), pages.clone(), temp.clone(), redis.clone(), Room::Fixed(0)).await.unwrap();
+    restarted.pass().await.unwrap();
+    assert_eq!(saved_urls(&restarted), urls, "each page saved once, in log order");
+    assert_eq!(restarted.counts.planned, 3 - saved.len() as u64, "only the pages of inputs never saved are planned again");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn inputs_written_at_once_go_out_in_the_order_cut_whichever_is_written_first_and_a_page_seen_again_meanwhile_is_not_planned_twice() {
+    let Some((_turn, mut redis)) = redis_db().await else {
+        eprintln!("skipped: no Redis on {REDIS}");
+        return;
+    };
+    let dir = scratch("write-order");
+    let stub = stub::start(dir.join("r2"), "127.0.0.1:0").await.unwrap();
+    let (pages, temp) = (bucket(stub.addr, "desearch-pages"), bucket(stub.addr, "subnet-22"));
+    let today = iso(publisher::service::now_us());
+    let page = |name: &str, published: &str| {
+        let mut page = v2(record(&format!("https://news.example/story/{name}"), &format!("{name} {}", article(2)), "article", "en"));
+        page.published = published.into();
+        page
+    };
+    log(&pages, 1, vec![page("r1", "2020-05-01")]).await;
+    log(&pages, 2, vec![page("r2", "2020-06-01"), page("r1", "2020-05-01")]).await;
+    log(&pages, 3, vec![page("f", &today)]).await;
+    log(&pages, 4, vec![page("r3", "2020-07-01")]).await;
+    stub.state.slow("PUT", "subnet-22/embed/inputs/", 1, Duration::from_millis(500));
+    let mut planner = Planner::new(three_at_once(dir.join("state")), pages.clone(), temp.clone(), redis.clone(), Room::Fixed(10)).await.unwrap();
+    planner.pass().await.unwrap();
+    assert_eq!((planner.counts.planned, planner.counts.unchanged), (4, 1), "r1 seen again while its input is written is planned once");
+    let urls: Vec<String> = ["r1", "f", "r2", "r3"].iter().map(|name| format!("https://news.example/story/{name}")).collect();
+    assert_eq!(
+        handed_urls(&mut redis).await,
+        urls,
+        "r1 goes when r3 is cut and the API is asked, though written last; f goes ahead of r2 and r3, saved with them at the pass end"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_removal_of_a_page_whose_input_is_being_written_forgets_it_once_the_input_is_saved() {
+    let Some((_turn, redis)) = redis_db().await else {
+        eprintln!("skipped: no Redis on {REDIS}");
+        return;
+    };
+    let dir = scratch("write-removed");
+    let stub = stub::start(dir.join("r2"), "127.0.0.1:0").await.unwrap();
+    let (pages, temp) = (bucket(stub.addr, "desearch-pages"), bucket(stub.addr, "subnet-22"));
+    let a = v2(record("https://news.example/story/a", &format!("a {}", article(2)), "article", "en"));
+    log(&pages, 1, vec![a.clone()]).await;
+    log_removal(&pages, 2, &a).await;
+    log(&pages, 3, vec![a.clone()]).await;
+    let mut planner = Planner::new(three_at_once(dir.join("state")), pages.clone(), temp.clone(), redis.clone(), Room::Fixed(0)).await.unwrap();
+    planner.pass().await.unwrap();
+    assert_eq!(
+        (planner.counts.planned, planner.counts.removed, planner.counts.inputs),
+        (2, 1, 2),
+        "a came back with the same text after the removal, so it is planned again"
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
