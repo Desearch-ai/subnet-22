@@ -45,69 +45,6 @@ enum Command {
     RestoreEscaped(RestoreEscapedArgs),
     /// Delete every page kept for these domains and mark them excluded; counts them unless given `--delete`. Run it with the crawl loop stopped.
     DropDomains(DropDomainsArgs),
-    /// Copy bucket stores key by key from the live ones, read-only beside the running bot, for a replay.
-    CopyBuckets(CopyBucketsArgs),
-    /// Run a simulated day of passes on copied stores against a fake task API while the list walker builds their queues, outcomes drawn from a real day's and sitemap reads simulated.
-    Replay(ReplayArgs),
-    /// Undo every due queue for a rollback to a bot without them: schedules go back on the waiting and ready lists. Run it with the crawl loop stopped.
-    UnbuildQueues(UnbuildQueuesArgs),
-}
-
-#[derive(clap::Args)]
-struct UnbuildQueuesArgs {
-    #[arg(long, default_value = "/var/lib/desearch-bot/buckets")]
-    buckets_dir: PathBuf,
-    #[arg(long, default_value = "0-255")]
-    buckets: String,
-}
-
-#[derive(clap::Args)]
-struct CopyBucketsArgs {
-    #[arg(long, default_value = "/var/lib/desearch-bot/buckets")]
-    from: PathBuf,
-    #[arg(long)]
-    to: PathBuf,
-    /// Buckets to copy, as ranges such as `0-13,20`.
-    #[arg(long)]
-    buckets: String,
-}
-
-#[derive(clap::Args)]
-struct ReplayArgs {
-    /// The copied stores.
-    #[arg(long)]
-    buckets_dir: PathBuf,
-    #[arg(long)]
-    buckets: String,
-    /// The crawl list, as `--domains` takes it.
-    #[arg(long)]
-    domains: PathBuf,
-    /// A real day's outcomes: host, hour, published, failed and dropped, tab-separated with a header.
-    #[arg(long)]
-    outcomes: PathBuf,
-    /// Where the simulated clock starts, in Unix seconds.
-    #[arg(long)]
-    start: u32,
-    #[arg(long, default_value_t = 24)]
-    hours: u32,
-    /// URLs an hour the replay may send: the full rate times the share of buckets copied.
-    #[arg(long)]
-    per_hour: u64,
-    /// A site whose pages all fail from the middle of the replay on.
-    #[arg(long)]
-    refusing: Option<String>,
-    /// A site whose sitemap re-dates every page each hour; the listed site with most pages if not given.
-    #[arg(long)]
-    restamping: Option<String>,
-    /// Stored records the list walker reads per second as it builds the queues beside the passes.
-    #[arg(long, default_value_t = 1_000_000)]
-    join_per_sec: u64,
-    /// Domains re-crawled on their own interval, as `run` takes them.
-    #[arg(long)]
-    recrawl_overrides: Option<PathBuf>,
-    /// Where the hourly report goes.
-    #[arg(long)]
-    log: PathBuf,
 }
 
 #[derive(clap::Args)]
@@ -240,26 +177,7 @@ fn main() -> Result<()> {
         Command::Run(args) => *args,
         Command::RemoveEscaped(args) => return remove_escaped(args),
         Command::RestoreEscaped(args) => return restore_escaped(args),
-        Command::CopyBuckets(args) => return copy_buckets(args),
-        Command::Replay(args) => {
-            let args = desearch_bot::replay::ReplayArgs {
-                buckets_dir: args.buckets_dir,
-                buckets: parse_buckets(&args.buckets)?,
-                domains: args.domains,
-                outcomes: args.outcomes,
-                start: args.start,
-                hours: args.hours,
-                per_hour: args.per_hour,
-                refusing: args.refusing,
-                restamping: args.restamping,
-                join_per_sec: args.join_per_sec,
-                recrawl_overrides: args.recrawl_overrides,
-                log: args.log,
-            };
-            return tokio::runtime::Builder::new_multi_thread().enable_all().build()?.block_on(desearch_bot::replay::replay(args));
-        }
         Command::DropDomains(args) => return drop_domains(args),
-        Command::UnbuildQueues(args) => return unbuild_queues(args),
     };
     // Parsing is capped by its own slots; more blocking threads would only hold more allocator caches.
     tokio::runtime::Builder::new_multi_thread().enable_all().max_blocking_threads(128).build()?.block_on(run(args))
@@ -343,8 +261,8 @@ async fn run(args: RunArgs) -> Result<()> {
     let progress = Arc::new(Progress::default());
     let halt = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let joining = listed.filter(|_| args.join_per_sec > 0).map(|allowed| {
-        let (buckets, progress, halt, per_second, recrawl) = (buckets.clone(), progress.clone(), halt.clone(), args.join_per_sec, recrawl.clone());
-        std::thread::spawn(move || match dispatch::join_listed(&buckets, &allowed, &recrawl, per_second, &progress, &halt) {
+        let (buckets, progress, halt, per_second) = (buckets.clone(), progress.clone(), halt.clone(), args.join_per_sec);
+        std::thread::spawn(move || match dispatch::join_listed(&buckets, &allowed, per_second, &progress, &halt) {
             Ok(()) => println!("[rs] list walker stopped"),
             Err(error) => eprintln!("[rs] list walker failed: {error:#}"),
         })
@@ -365,6 +283,14 @@ async fn run(args: RunArgs) -> Result<()> {
             }
         })
     });
+    let wanted = Arc::new(dispatch::StockWanted::default());
+    let stocking = args.task_api.as_ref().map(|_| {
+        let (buckets, progress, halt, wanted, per_second) = (buckets.clone(), progress.clone(), halt.clone(), wanted.clone(), args.join_per_sec.max(1));
+        std::thread::spawn(move || match dispatch::keep_stocks(&buckets, &wanted, per_second, &progress, &halt) {
+            Ok(()) => println!("[rs] refresh stock keeper stopped"),
+            Err(error) => eprintln!("[rs] refresh stock keeper failed: {error:#}"),
+        })
+    });
     if let Some(base) = &args.task_api {
         let uri = std::env::var("FEEDER_KEY_URI").ok().filter(|u| !u.is_empty()).context("FEEDER_KEY_URI is not set")?;
         let api = TaskApi::new(base, Hotkey::from_uri(&uri).context("FEEDER_KEY_URI")?)?;
@@ -376,7 +302,8 @@ async fn run(args: RunArgs) -> Result<()> {
             recrawl.clone(),
             progress.clone(),
         ).await?
-        .paced(args.urls_per_hour);
+        .paced(args.urls_per_hour)
+        .refreshing(wanted.clone());
         tokio::spawn(dispatcher.run(stopped.clone()));
     }
     if let Some(base) = &args.outcomes_url {
@@ -420,6 +347,9 @@ async fn run(args: RunArgs) -> Result<()> {
     if let Some(backfill) = backfill {
         let _ = tokio::task::spawn_blocking(move || backfill.join()).await;
     }
+    if let Some(stocking) = stocking {
+        let _ = tokio::task::spawn_blocking(move || stocking.join()).await;
+    }
     if let Some(joining) = joining {
         let _ = tokio::task::spawn_blocking(move || joining.join()).await;
     }
@@ -457,33 +387,6 @@ fn remove_escaped(args: RemoveEscapedArgs) -> Result<()> {
     })?;
     let done = if backup_dir.is_some() { "deleted" } else { "found" };
     println!("{done} {} pages and {} sitemaps with escaped addresses in {} stores", found.pages, found.sitemaps, stores.len());
-    Ok(())
-}
-
-fn copy_buckets(args: CopyBucketsArgs) -> Result<()> {
-    let buckets = parse_buckets(&args.buckets)?;
-    let resources = Resources::new(256 << 20, 512 << 20, 1);
-    std::fs::create_dir_all(&args.to)?;
-    for bucket in buckets {
-        let started = std::time::Instant::now();
-        let name = format!("{bucket:03}");
-        let copied = desearch_bot::replay::copy_bucket(&args.from.join(&name), &args.to.join(format!("{name}.secondary")), &args.to.join(&name), &resources)?;
-        println!("bucket {name}: {copied} keys copied in {:.0}s", started.elapsed().as_secs_f64());
-    }
-    Ok(())
-}
-
-fn unbuild_queues(args: UnbuildQueuesArgs) -> Result<()> {
-    let owned = parse_buckets(&args.buckets)?;
-    let resources = Resources::new(1 << 30, 512 << 20, owned.len());
-    let buckets = Buckets::open(&args.buckets_dir, &owned, &resources)?;
-    let undone = dispatch::on_readers(buckets.stores().collect(), |store| {
-        let domains = store.queued_domains()?;
-        let schedules = domains.iter().map(|domain| store.unbuild_queue(domain)).sum::<Result<u64>>()?;
-        Ok((domains.len(), schedules))
-    })?;
-    let (domains, schedules) = undone.iter().fold((0, 0), |sum, one| (sum.0 + one.0, sum.1 + one.1));
-    println!("undid {domains} queues in {} stores: {schedules} schedules back on the waiting and ready lists", owned.len());
     Ok(())
 }
 

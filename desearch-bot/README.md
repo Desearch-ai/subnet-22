@@ -28,7 +28,7 @@ RocksDB is compiled from source, which needs `clang` and a C++ toolchain.
 
 ```bash
 python tools/export_langid.py data/langid.bin   # once: the language model homepages are judged with
-python tools/crawl_list.py --out domains.json   # --domains, from the registry
+python tools/crawl_list.py --out domains.json --recrawl-out recrawl.txt   # --domains and --recrawl-overrides, from the registry
 MALLOC_ARENA_MAX=2 desearch-bot run --buckets-dir /var/lib/desearch-bot/buckets --data-dir data
 ```
 
@@ -44,15 +44,15 @@ MALLOC_ARENA_MAX=2 desearch-bot run --buckets-dir /var/lib/desearch-bot/buckets 
 | `--task-api` | none | the task API to fill, such as `https://api-22.desearch.ai` |
 | `--outcomes-url` | none | where the task API publishes what became of each URL, such as `https://subnet-22.s3.us-east-va.io.cloud.ovh.us` |
 | `--per-domain-hourly` | 2000 | URLs one domain may send in an hour |
-| `--new-share` | 50 | for a domain whose queue is not built yet, percent of its sends kept for pages never sent |
-| `--retry-share` | 10 | for such a domain, percent kept for retries and re-crawls; changed pages get the rest |
-| `--recrawl-days` | 7 | for a domain whose queue is not built yet, days after a send that a page without a lastmod, or a page that failed, goes out again |
+| `--new-share` | 50 | percent of each domain's sends kept for pages never sent |
+| `--retry-share` | 10 | percent kept for retries and scheduled re-crawls; changed pages get the rest |
+| `--recrawl-days` | 7 | days after a send that a page without a lastmod, or a page that failed, goes out again |
 | `--recrawl-overrides` | none | a file of `domain days` lines, such as `bbc.co.uk 1`, giving listed domains and their subdomains their own interval |
 | `--gone-days` | 30 | days a page that failed on two sends in a row waits before it goes out again, unless its lastmod moves |
 | `--dropped-per-hour` | 200000 | pages of lost or taken-back tasks sent again each hour; more are spread over the following hours |
 | `--backfill-ready` | off | walk every store once to queue pages found before the queue existed |
 | `--domains` | none | a JSON list of the domains whose pages are queued, as names or `{host, weight, send_cap, hourly, backlog}`, read again when it changes; others are crawled but not queued |
-| `--join-per-sec` | 100000 | stored URL records read per second while building listed domains' due queues, eight domains at once; 0 turns it off |
+| `--join-per-sec` | 100000 | stored URL records read per second while queuing the pages of domains new to `--domains`; 0 turns it off |
 | `--backfill-sent` | none | pages the Python feeder sent, as tab-separated host, path, lastmod and time, marked sent first |
 | `--duration` | none | stop after this many seconds |
 
@@ -72,71 +72,60 @@ last time, from a compact fingerprint set kept per sitemap.
 
 ## Feeding the task API
 
-With `--domains`, each listed domain has a set: the pages it may hold, up to its `send_cap`, or for
-news its `backlog`. Every page in a set has exactly one due time, kept in the domain's due queue, and
-every pass sends the most valuable due pages its room allows. First crawls, changed pages, retries and
-refreshes are all due pages; there are no fixed shares between them.
+A page joins its domain's queue when a sitemap lists it for the first time, or lists it with a
+lastmod past the one it was sent with. Listing, search and file pages never join. A sitemap that
+moves more than 2% of its pages, and more than 50, at once is re-stamping dates, and only its 10
+newest go.
 
-- **Which pages:** pages a sitemap lists, newest first, never listing, search or file pages or pages
-  robots disallows. A news site's home and section pages stay out.
-- **Joining:** a new page joins while its domain's set has room, due at once. A news set rolls: a new
-  article joins a full set and the page due last leaves. Other sets wait for room or a higher cap.
-- **Due again:** a sent page falls due after its interval, by site type: news articles 12 hours
-  while under two days old, then a day, a week and a month as they age; reference, docs, academic and
-  public 7 days; media and community 14; company, organization and personal 30. A domain's line in
-  `--recrawl-overrides` replaces its type's interval. A page whose sitemap lastmod moves past its last
-  send falls due at once; one that moves to a date before its last send falls due a day after that
-  send. A sitemap read that re-dates more than 2% of its pages, and more than 50, moves only its 10
-  newest.
-- **Failures:** a failed page falls due a day later; the second failure in a row takes it out of the
-  set. A dropped page, whose task never reached the site, falls due within the hourly budget of
-  `--dropped-per-hour`. A page the index does not take leaves the set for good.
+Each domain's queue has three lanes that send at the same time:
 
-Every 5 seconds the bot asks `GET /v1/room` how many tasks the API can take, and sends that many times
-1,000 URLs within `--urls-per-hour`. A pass offers its room to due sites 5,000 at a time, up to ten
-times while room is left, most valuable first: rank and the list's weight, raised by how overdue the queue front is for its kind, and
-a front a whole interval overdue goes ahead of any value. Each site offers what is due within what its
-hour allows, a site with nothing left of its hour waits, and a pass reads only the front of each
-queue. Once every due site had its turn, room left in the hour of any site with a full yield share
-pulls its refreshes forward, those due soonest first, passing over pages sent within the last day. `hourly` (or `--per-domain-hourly`) caps every domain's
-sends in any hour, at most two minutes' worth at once (100 pages at least), so a site sees a steady
-stream. The hourly pace starts empty and saves at most five minutes of sends, so a restart or a stall
-is followed by no burst. A batch carries a hash of its content, so a batch sent again after a timeout
-is queued once, and a batch in flight survives a restart. URLs over 2,048 characters, the sitemap
-protocol's limit, are never sent.
+- **new**: pages never sent, newest found first, so a post published today goes on the next pass;
+- **changed**: pages whose lastmod moved, newest change first;
+- **retries**: pages without a lastmod due for a re-crawl, and failed or dropped pages going again.
 
-The outcome feed `outcomes/seq/<n>.json` is read from its newest file on, up to 8 files at a time, and
-skips to the newest when it falls an hour behind. Each file adds its published and failed pages to
-their domain's yield, counted twice: fading over a day and over an hour. A domain whose pages rarely
-come back gets fewer turns, down to 20 pages an hour, by the lower of the two, so a domain that starts
-refusing slows within the hour. A number still missing after two minutes, or whose file expired, is
-skipped. A status line every minute shows what went in each kind, the queues and how many had pages
-due, the room and the outcome feed.
+Each lane gets its share of what the domain sends (`--new-share`, `--retry-share`, and the rest for
+changed pages), kept even across passes, and what one lane leaves unused goes to the others.
 
-A walker builds each listed domain's queue once from its stored pages, paced at `--join-per-sec`
-records a second across eight domains at a time, smallest domains first: every sent page that is not
-gone, due as its schedule says or after its interval (an overdue one somewhere within its next
-interval, so first crawls go first), and the newest pages never sent up to the cap, due at once; a set
-with more sent pages than its cap keeps the newest. While a domain's queue is built its ready lists
-stop sending, and its outcomes and sitemap changes wait for the queue and then go onto it; its ready
-lists are dropped once the queue holds the domain. The walker admits more when a domain's cap rises,
-sent pages a cut left out coming back on their refresh schedule, or when gone pages freed real room,
-shrinks a set whose cap was cut, counts a set's size again from its queue whenever it walks the
-domain and every day for every domain, and stops mid-domain when the bot stops. Until its queue is built, a domain sends from its
-ready lists: pages a sitemap listed first or with a newer lastmod, failed or dropped pages going
-again, and pages without a lastmod on their re-crawl interval, by `--new-share` and `--retry-share`.
+Every 5 seconds the bot asks `GET /v1/room` how many tasks the API can take, and sends that many
+times 1,000 URLs, a few from each domain in turn, best ranked first, within `--per-domain-hourly` and
+`--urls-per-hour`. A domain sends at most two minutes' worth of its hourly limit at once (100 pages at
+least), so a site sees a steady stream rather than its hour in one burst. The hourly pace starts empty and saves at most five minutes of sends, so a restart
+or a stall is followed by no burst. A batch carries a hash of its content, so a batch sent again after
+a timeout is queued once, and a batch in flight survives a restart. URLs over 2,048 characters, the
+sitemap protocol's limit, are never sent.
 
-To go back to a release without due queues, stop the bot and put every queue's schedules back on the
-waiting and ready lists before starting the earlier release. The crawl loop stays stopped while that
-runs, tens of minutes for a billion schedules. The earlier release then sends what comes due from its
-waiting and ready lists at once, and its walker reads every listed domain's stored pages again to queue
-the pages never sent, which takes about a day:
+A sent page with a lastmod goes again when its sitemap lists a newer one. A page without one goes
+again `--recrawl-days` after it was sent, or after its domain's own interval. The outcome feed
+`outcomes/seq/<n>.json` is read from its newest file on, up to 8 files at a time, and skips to the
+newest when it falls an hour behind. Each file adds its published and failed pages to their domain's
+yield, counted twice: fading over a day and over an hour. The dispatcher gives domains whose pages
+rarely come back fewer slots, down to an hourly probe, by the lower of the two, so a domain that
+starts refusing slows within hours. A failed page goes again after its domain's interval, and after two failures in a row waits
+`--gone-days`; a dropped page, whose task never reached the site, goes again within the hourly budget.
+A number still missing after two minutes, or whose file expired, is skipped. A status line every minute shows the queue, what was
+sent in each lane, the room and the outcome feed.
 
-```bash
-sudo systemctl stop desearch-bot
-desearch-bot unbuild-queues --buckets-dir /var/lib/desearch-bot/buckets
-sudo systemctl start desearch-bot
-```
+Room the lists leave in a pass goes to refreshes: pages already sent, of listed domains with nothing
+waiting whose pages come back (at least 200 outcomes judged, and no slowing for yield), oldest send
+first. A background keeper, paced like the walker, keeps a stock of each such domain's pages sent
+longest ago (a quarter of its hourly limit, 1,000 at least) and chooses it again when a pass finds it
+empty, reading at most 200,000 sent records a choice from where the last one stopped; a pass reads
+only the stock, never the sent records. A page sent within the last day stays, and
+a stocked page that went out again or is now failing, requeued or changed leaves the stock unsent. A
+pass offers room to 2,000 domains in turn, and refreshes stay within each domain's hourly limit and
+its two-minute spread. `crawl_list.py --recrawl-out` writes the re-crawl intervals by site type (news
+1 day; reference, docs, academic and public 3 days); the bot reads the file when it starts.
+
+With `--domains`, each listed domain may carry a `weight` (1 to 4), a `send_cap`, an `hourly` limit
+and a `backlog`. A domain's turn is worth its rank's slots times its weight, and `hourly` replaces
+`--per-domain-hourly` for it. The bot counts the distinct pages it has sent for each domain; at its
+`send_cap` the domain sends no new pages, and only changed pages and re-crawls go on. A walker
+queues the pages each listed domain stored before it joined the list, newest first, as many as its
+cap leaves or, for a domain without a cap, up to its `backlog`, smallest domains first and the higher
+weight first among domains of a size. It walks a domain again when its cap
+changes, reads `--join-per-sec` records a second, and stops mid-domain when the bot stops. A domain
+already sending is only counted, since its pages are queued already, on a second walker beside the
+first, so counting and clearing never hold back new domains.
 
 Pages found before the queue existed join it once through `--backfill-ready`. Pages the Python
 feeder already sent are marked first, from its state:
@@ -161,18 +150,3 @@ The parity tests replay fixed vectors for URL keys, joins, dates, signatures and
 byte. `tests/registry.rs` needs `initdb` and `postgres` on the PATH, `tests/world.rs` crawls a
 small local web end to end, and `tests/dispatch.rs` runs the queue, its lanes, the outcome feed and
 the dispatcher against a fake task API.
-
-A day of the scheduler runs on copies of real stores: `copy-buckets` copies chosen buckets key by key
-from the running bot's, read-only beside it, and `replay` runs passes on a simulated clock against a
-task API in the process while the list walker builds their queues at `--join-per-sec`. Outcomes are
-drawn from a real day's per host and hour, each listed domain's sitemap is read about once a day with
-a few pages re-dated and a few new, one site re-dates its whole sitemap every hour, and the due window
-is cut to the share of buckets copied. It reports each hour's sends by kind, pass times, memory, the
-walker's progress and read rate, any site over its hourly limit or its two-minute spread, and any page
-sent again within a day that no failure, drop or sitemap change explains.
-
-```bash
-desearch-bot copy-buckets --from /mnt/desearch-bot/buckets --to /mnt/replay/buckets --buckets 1,5,41
-desearch-bot replay --buckets-dir /mnt/replay/buckets --buckets 1,5,41 --domains domains.json \
-  --outcomes day-rates.tsv --start "$(date +%s)" --per-hour 234375 --log replay.txt
-```

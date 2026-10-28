@@ -57,20 +57,6 @@ impl Recrawl {
         self.overrides.len()
     }
 
-    /// The interval of `domain` from its own line or its nearest listed parent's; None when neither is listed.
-    pub fn own_interval(&self, domain: &str) -> Option<u32> {
-        let mut name = domain;
-        loop {
-            if let Some(&every) = self.overrides.get(name) {
-                return Some(every);
-            }
-            match name.split_once('.') {
-                Some((_, parent)) if parent.contains('.') => name = parent,
-                _ => return None,
-            }
-        }
-    }
-
     /// The interval of `domain`: its own line, else its nearest listed parent's, else the default.
     pub fn interval(&self, domain: &str) -> u32 {
         let mut name = domain;
