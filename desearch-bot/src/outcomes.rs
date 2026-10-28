@@ -1,12 +1,13 @@
 //! What became of the URLs the bot queued, read in order from the task API's public outcome feed.
 
 use std::collections::HashMap;
-use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
+use blake2::digest::consts::U16;
+use blake2::{Blake2b, Digest};
 use bytes::Bytes;
 use parquet::file::reader::{FileReader, SerializedFileReader};
 use parquet::record::Field;
@@ -27,7 +28,7 @@ const RESENT_BITS: usize = 1 << 29;
 /// How long each set takes inserts before the older one is dropped; outcomes come back well within it.
 const RESENT_ROTATE: Duration = Duration::from_secs(6 * 3600);
 const RESENT_HASHES: u64 = 3;
-const RESENT_MAGIC: &[u8; 8] = b"RESENT01";
+const RESENT_MAGIC: &[u8; 8] = b"RESENT02";
 
 /// Pages lately sent to go once more, so their outcomes stay out of the yields that pace new pages: two sets of bits, the older dropped every `RESENT_ROTATE`, allocated on the first insert. A false positive only leaves one outcome out of a yield.
 #[derive(Default)]
@@ -105,13 +106,11 @@ impl ResentPages {
     }
 }
 
+/// Blake2b, so a saved set reads the same under any toolchain.
 fn bits(domain: &str, rest: &[u8]) -> [usize; RESENT_HASHES as usize] {
-    let hash = |seed: u64| {
-        let mut hasher = DefaultHasher::new();
-        (seed, domain, rest).hash(&mut hasher);
-        hasher.finish()
-    };
-    let (first, step) = (hash(1), hash(2) | 1);
+    let digest: [u8; 16] = Blake2b::<U16>::new().chain_update(domain).chain_update([0]).chain_update(rest).finalize().into();
+    let first = u64::from_le_bytes(digest[..8].try_into().unwrap());
+    let step = u64::from_le_bytes(digest[8..].try_into().unwrap()) | 1;
     std::array::from_fn(|i| (first.wrapping_add(step.wrapping_mul(i as u64)) % RESENT_BITS as u64) as usize)
 }
 
@@ -381,5 +380,15 @@ impl OutcomeFeed {
         let rows = read_parquet(file.bytes().await?)?;
         let published_at = published_at.or_else(|| rows.iter().map(|r| r.at.div_euclid(1_000_000)).max());
         Ok(Next::File { rows, published_at })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resent_bits_match_python() {
+        assert_eq!(bits("example.com", b"example.com/a"), [275_368_978, 137_318_645, 536_139_224]);
     }
 }
