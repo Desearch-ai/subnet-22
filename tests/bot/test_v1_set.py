@@ -88,13 +88,16 @@ def test_spam_networks_are_sites_storing_exactly_as_many_urls_as_unrelated_ones(
 def test_people_search_and_forecast_sites_are_out_by_rule():
     hosts = ["fastpeoplesearch.example", "thepublicrecord.example", "cityforecast.example", "weatherblog.example", "weatherforddemocrat.example", "weather.gov"]
     types = ["reference", "news", "news", "news", "news", "public"]
-    counts = {"cityforecast.example": {"stored": "180000"}, "weatherblog.example": {"stored": "2000"}, "weatherforddemocrat.example": {"stored": "90000"}, "weather.gov": {"stored": "90000"}}
-    sites, _ = build([decision(h, t) for h, t in zip(hosts, types)], judged={"fastpeoplesearch.example": {"judged": "20", "substantive": "20"}}, counts=counts, news_sources={"weatherforddemocrat.example": "list897+wikidata"})
+    hosts.append("weatherchannel.example")
+    types.append("news")
+    counts = {"cityforecast.example": {"stored": "180000"}, "weatherblog.example": {"stored": "2000"}, "weatherforddemocrat.example": {"stored": "3470"}, "weather.gov": {"stored": "90000"}, "weatherchannel.example": {"stored": "46000000"}}
+    sites, _ = build([decision(h, t) for h, t in zip(hosts, types)], judged={"fastpeoplesearch.example": {"judged": "20", "substantive": "20"}}, counts=counts, news_sources={"weatherforddemocrat.example": "list897+wikidata", "weatherchannel.example": "wikidata"})
+    assert sites["weatherchannel.example"]["why"] == ["template"], "a forecast site is a template even when Wikidata knows its channel"
     assert sites["fastpeoplesearch.example"]["why"] == ["people-search"]
     assert sites["thepublicrecord.example"]["rule"] == "news", "a news site named for public records is news"
     assert sites["cityforecast.example"] == {"host": "cityforecast.example", "rule": "out", "why": ["template"]}
     assert sites["weatherblog.example"]["rule"] == "news", "a small weather blog is no template"
-    assert sites["weatherforddemocrat.example"]["rule"] == "news", "a backed outlet is no template"
+    assert sites["weatherforddemocrat.example"]["rule"] == "news", "a newspaper named for its town is too small to be a forecast template"
     assert sites["weather.gov"]["rule"] == "whole", "a public site is not a forecast template by its name"
 
 

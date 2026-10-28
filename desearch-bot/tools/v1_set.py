@@ -25,7 +25,7 @@ CRAWL_PER_INDEX = 3
 FIELDS = ("host", "rule", "since", "paths", "source", "type", "why")
 # At each run of digits, left to right: YYYY-MM-DD, then YYYYMMDD, each standing apart from other digits.
 DIGITS_DATE = re.compile(r"(?<![0-9])(?:([0-9]{4})-([0-9]{2})-([0-9]{2})(?![0-9])|([0-9]{4})([0-9]{2})([0-9]{2})(?![0-9]))?")
-# Forecast sites are one template per place, so they are big; a small weather blog or a backed outlet is not one.
+# Forecast sites are one template per place, so they are big, backed or not; a small weather blog is not one.
 WEATHER = re.compile(r"weather|forecast")
 WEATHER_TYPES = {"news", "reference"}
 WEATHER_MIN = 50_000
@@ -164,7 +164,7 @@ def listed_entries(decisions, backing, news_sources, outlets, judged, counts, ne
             entries.append({"host": host, "rule": "out", "why": ["people-search"]})
             continue
         stored = int(counts.get(host, {}).get("stored") or 0)
-        if site_type in WEATHER_TYPES and WEATHER.search(host) and stored >= WEATHER_MIN and not backed_news(host, backing, news_sources, outlets):
+        if site_type in WEATHER_TYPES and WEATHER.search(host) and stored >= WEATHER_MIN:
             entries.append({"host": host, "rule": "out", "why": ["template"]})
             continue
         if site_type == "news":
