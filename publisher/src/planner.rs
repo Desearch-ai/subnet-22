@@ -78,12 +78,15 @@ const SITES_COUNTED: &[u8] = b"sites-counted";
 /// The crawl list's caps are crawl caps, three pages crawled for each one the index keeps.
 const CRAWL_PER_INDEX: u64 = 3;
 const ROOM_TIMEOUT: Duration = Duration::from_secs(20);
+/// After an answer that left inputs waiting, or none, inputs are held this long before the API is asked again mid-pass.
+const ROOM_RETRY: Duration = Duration::from_secs(30);
 const FILES_PER_PASS: usize = 64;
 /// Set when no page waits without a change file to plan it from.
 const WAITING_NUMBERED: &[u8] = b"waiting-numbered";
 const UNWAIT_BATCH: i64 = 100_000;
 /// A set older than this is warned about, as its pull may have stopped.
 const SET_STALE: Duration = Duration::from_secs(2 * 86_400);
+const SET_WARN_EVERY: Duration = Duration::from_secs(3600);
 /// Change files of waiting pages read a pass, so a backlog of them cannot hold up the log.
 const REPLAN_FILES_PER_PASS: usize = 64;
 
@@ -1199,6 +1202,9 @@ pub struct Planner {
     set_modified: Option<std::time::SystemTime>,
     /// The Unix time the held set was built, or its file written when it does not say.
     set_built: Option<f64>,
+    set_warned: Option<Instant>,
+    /// When the API may be asked for room again mid-pass.
+    ask_room_at: Option<Instant>,
     fresh: Buffer,
     rest: Buffer,
     read_through: i64,
@@ -1262,6 +1268,8 @@ impl Planner {
             replan_after: 0,
             set_modified: None,
             set_built: None,
+            set_warned: None,
+            ask_room_at: None,
             fresh: Buffer::default(),
             rest: Buffer::default(),
             read_through,
@@ -1294,12 +1302,18 @@ impl Planner {
         match std::fs::read(&path).map_err(anyhow::Error::from).and_then(|raw| Set::parse(&raw)) {
             Ok(set) if !set.is_empty() => {
                 let written = modified.duration_since(std::time::UNIX_EPOCH).map_or(0.0, |since| since.as_secs_f64());
-                let built = set.built.as_deref().and_then(|built| parse_iso(&built.replace('Z', "+00:00"))).map_or(written, |built| built as f64);
-                println!("planner: set of {} sites built {} read from {}", set.len(), iso((built * 1e6) as i64), path.display());
+                let (built, when) = match set.built.as_deref().and_then(|built| parse_iso(&built.replace('Z', "+00:00"))) {
+                    Some(built) => (built as f64, "built"),
+                    None => (written, "with no build time, its file written"),
+                };
+                println!("planner: set of {} sites {when} {} read from {}", set.len(), iso((built * 1e6) as i64), path.display());
                 self.set = Some(Arc::new(set));
                 self.set_modified = Some(modified);
                 self.set_built = Some(built);
-                self.warn_stale_set();
+                self.set_warned = None;
+                if let Some(warning) = self.stale_set_warning(Instant::now()) {
+                    eprintln!("{warning}");
+                }
             }
             Ok(_) => eprintln!("{} holds no sites; keeping the set held", path.display()),
             Err(error) => eprintln!("reading the set {}: {error:#}; keeping the set held", path.display()),
@@ -1312,10 +1326,14 @@ impl Planner {
         self.set_built.map(|built| Duration::from_secs_f64((now_us() as f64 / 1e6 - built).max(0.0)))
     }
 
-    fn warn_stale_set(&self) {
-        if let Some(age) = self.set_age().filter(|age| *age > SET_STALE) {
-            eprintln!("planner: the set was built {:.1} days ago; check that it is still pulled", age.as_secs_f64() / 86_400.0);
+    /// The warning due at `now` for a set older than two days: when it is read, then once an hour.
+    pub fn stale_set_warning(&mut self, now: Instant) -> Option<String> {
+        let age = self.set_age().filter(|age| *age > SET_STALE)?;
+        if self.set_warned.is_some_and(|warned| now.saturating_duration_since(warned) < SET_WARN_EVERY) {
+            return None;
         }
+        self.set_warned = Some(now);
+        Some(format!("planner: the set was built {:.1} days ago; check that it is still pulled", age.as_secs_f64() / 86_400.0))
     }
 
     /// Reads the crawl list again when its file changed; whether a list is held. A list that cannot be read leaves the one held.
@@ -1344,7 +1362,7 @@ impl Planner {
             eprintln!("{error:#}");
         }
         // Inputs written before a restart go out before the log is read.
-        self.hand_over().await?;
+        self.hand_over_unless_held().await?;
         self.forget_dropped().await?;
         let latest = latest(&self.pages).await?;
         let mut read = self.read_late().await?;
@@ -1416,9 +1434,10 @@ impl Planner {
         Ok(took)
     }
 
-    /// Plans pages of `current/` while the budget and the rest lane's room last; whether it took any.
+    /// Plans pages of `current/` while the budget and the rest lane's room last, starting only once the budget holds an input's worth; whether it took any.
     async fn backfill(&mut self) -> Result<bool> {
-        if !self.settings.backfill || self.current.is_none() {
+        // Waiting pages are re-planned first: both wait for an input's worth, and the re-plan runs before.
+        if !self.settings.backfill || self.current.is_none() || !self.budget.holds(self.settings.pages_per_input) {
             return Ok(false);
         }
         let mut took = false;
@@ -1588,7 +1607,7 @@ impl Planner {
 
     /// Plans until `stop` turns true, writing what is buffered first.
     pub async fn run(&mut self, mut stop: watch::Receiver<bool>) -> Result<()> {
-        let (mut reported, mut set_checked) = (Instant::now(), Instant::now());
+        let mut reported = Instant::now();
         while !*stop.borrow() {
             let busy = match self.pass().await {
                 Ok(busy) => busy,
@@ -1601,9 +1620,8 @@ impl Planner {
                 println!("planner: through change file {}, {:?}", self.read_through, self.counts);
                 reported = Instant::now();
             }
-            if set_checked.elapsed() >= Duration::from_secs(3600) {
-                self.warn_stale_set();
-                set_checked = Instant::now();
+            if let Some(warning) = self.stale_set_warning(Instant::now()) {
+                eprintln!("{warning}");
             }
             if !busy {
                 let _ = tokio::time::timeout(self.settings.poll, stop.changed()).await;
@@ -1871,6 +1889,14 @@ impl Planner {
         let buffer = self.buffer(lane);
         if buffer.pages.len() >= self.settings.pages_per_input || buffer.chars >= self.settings.chars_per_input {
             self.flush_lane(lane).await?;
+            self.hand_over_unless_held().await?;
+        }
+        Ok(())
+    }
+
+    /// Hands over unless the API's last answer, under `ROOM_RETRY` ago, left inputs waiting or never came.
+    async fn hand_over_unless_held(&mut self) -> Result<()> {
+        if self.ask_room_at.is_none_or(|at| Instant::now() >= at) {
             self.hand_over().await?;
         }
         Ok(())
@@ -1924,6 +1950,7 @@ impl Planner {
             Ok(room) => room.max(0) as usize,
             Err(error) => {
                 eprintln!("the task API's embed room is unavailable: {error:#}");
+                self.ask_room_at = Some(Instant::now() + ROOM_RETRY);
                 return Ok(0);
             }
         };
@@ -1957,6 +1984,7 @@ impl Planner {
         }
         self.counts.handed_over += handed as u64;
         self.counts.expired += expired as u64;
+        self.ask_room_at = (self.pending.iter().sum::<usize>() > 0).then(|| Instant::now() + ROOM_RETRY);
         Ok(handed)
     }
 
