@@ -299,6 +299,17 @@ def test_v1_sites_send_first_and_the_rest_fill_at_lower_weights():
     assert [listed[h]["weight"] for h in ("ref.com", "mag.com", "corp.com")] == [2, 2, 1]
 
 
+def test_v1_news_and_whole_sites_carry_the_resend_cutoff():
+    V1 = crawl_list.V1
+    rows = [row(host="news.com", site_type="news"), row(host="uni.com", site_type="academic"), row(host="corp.com", site_type="company")]
+    v1 = {"news.com": V1("news", "news", since="2025-10-01"), "uni.com": V1("whole", "academic")}
+    entries, _ = crawl_list.build(rows, {}, {}, Hand(), v1=v1, resend_before="2026-10-27")
+    listed = {e["host"]: e for e in entries}
+    assert listed["news.com"]["resend_before"] == listed["uni.com"]["resend_before"] == "2026-10-27"
+    assert "resend_before" not in listed["corp.com"], "node-2 sites aren't sent again"
+    assert all("resend_before" not in e for e in v1_list(rows, v1)[0].values()), "only when asked"
+
+
 def test_v1_takes_cited_sites_whole_and_drops_its_outs():
     V1 = crawl_list.V1
     rows = [
