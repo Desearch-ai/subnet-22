@@ -45,15 +45,16 @@ never inside a table row, a list item or a code block. A v1 page keeps the vecto
 
 ## Planner
 
-The planner reads the change log, a few files at once and in log order, and cuts inputs of up to 1,000
-pages or 3M characters for the task API, writing up to `PLANNER_WRITES` (8) of them at once to the temporary
-bucket. Inputs are saved in the order cut, each once written: the oldest when `PLANNER_WRITES` are unsaved and
-another is cut, and all of them when a lane holds `PLANNER_MAX_PENDING` inputs or the pass ends. A failed write
-or save fails the pass, and the same input is tried again before any later one is saved. Saved inputs go to the
-API while it has room, the fresh lane's first, then oldest first. A restart reads the log again from before the
-oldest page not in a saved input, and plans again only pages no saved input holds. When the API is full, slow
-to answer (2 s or more) or does not answer, inputs wait, and the planner asks for room at the end of each pass
-and at most every 30 s in between; after a restart it asks before reading the log.
+The planner reads the change log in log order, fetching `PLANNER_READS` (8) change files ahead while it plans,
+and cuts inputs of up to 1,000 pages or 3M characters for the task API, writing up to `PLANNER_WRITES` (8) of
+them at once to the temporary bucket. Inputs are saved in the order cut, each once written: the oldest when
+`PLANNER_WRITES` are unsaved and another is cut, and all of them when a lane holds `PLANNER_MAX_PENDING` inputs
+or the pass ends. A failed write or save fails the pass, and the same input is tried again before any later one
+is saved. Saved inputs go to the API while it has room, the fresh lane's first, then oldest first. A restart
+reads the log again from before the oldest page not in a saved input, and plans again only pages no saved input
+holds. A starting planner waits up to two minutes for the one it replaces to let go of its state. When the API
+is full, slow to answer (2 s or more) or does not answer, inputs wait, and the planner asks for room at the end
+of each pass and at most every 30 s in between; after a restart it asks before reading the log.
 
 - **What it plans** (`PLANNER_SET_FILE`): only pages the v1 set takes: a news site's pages dated on or
   after its `since`, by `published` or a date in the URL path, and, when the file's `undated` is `article`,

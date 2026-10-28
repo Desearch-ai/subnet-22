@@ -91,6 +91,9 @@ const SET_STALE: Duration = Duration::from_secs(2 * 86_400);
 const SET_WARN_EVERY: Duration = Duration::from_secs(3600);
 /// Change files of waiting pages read a pass, so a backlog of them cannot hold up the log.
 const REPLAN_FILES_PER_PASS: usize = 64;
+/// How long a starting planner waits for the one it replaces to let go of the state; a deploy may start it first.
+const LOCK_WAIT: Duration = Duration::from_secs(120);
+const LOCK_RETRY: Duration = Duration::from_secs(1);
 
 pub static INPUT_SCHEMA: LazyLock<SchemaRef> = LazyLock::new(|| {
     let text = |name: &str| Field::new(name, DataType::Utf8, false);
@@ -624,6 +627,23 @@ pub struct State {
 }
 
 impl State {
+    /// Opens the state, waiting up to `wait` while another planner, still stopping, holds its lock.
+    pub async fn open_when_free(dir: &Path, wait: Duration) -> Result<State> {
+        let (started, mut told) = (Instant::now(), false);
+        loop {
+            match State::open(dir) {
+                Err(error) if started.elapsed() < wait && error.downcast_ref::<rocksdb::Error>().is_some_and(locked) => {
+                    if !told {
+                        eprintln!("{error:#}; trying again for up to {wait:?}");
+                        told = true;
+                    }
+                    tokio::time::sleep(LOCK_RETRY).await;
+                }
+                opened => return opened,
+            }
+        }
+    }
+
     pub fn open(dir: &Path) -> Result<State> {
         let mut options = Options::default();
         options.create_if_missing(true);
@@ -1312,7 +1332,7 @@ pub struct Planner {
 impl Planner {
     pub async fn new(settings: Settings, pages: Bucket, temp: Bucket, redis: ConnectionManager, room: Room) -> Result<Planner> {
         std::fs::create_dir_all(&settings.dir)?;
-        let state = Arc::new(State::open(&settings.dir)?);
+        let state = Arc::new(State::open_when_free(&settings.dir, LOCK_WAIT).await?);
         let started = Instant::now();
         state.count_sites()?;
         if started.elapsed() > Duration::from_secs(1) {
@@ -1463,9 +1483,10 @@ impl Planner {
         let mut read = self.read_late().await?;
         let ahead: Vec<i64> = (self.read_through + 1..=latest).take(FILES_PER_PASS.saturating_sub(read)).collect();
         let pages = self.pages.clone();
-        let mut fetched = stream::iter(ahead).map(|seq| fetch(pages.clone(), seq).map(move |rows| (seq, rows))).buffered(self.settings.reads.max(1));
+        let mut fetched =
+            stream::iter(ahead).map(|seq| Ahead(tokio::spawn(fetch(pages.clone(), seq))).map(move |rows| (seq, rows))).buffered(self.settings.reads.max(1));
         while let Some((seq, rows)) = fetched.next().await {
-            match rows? {
+            match rows?? {
                 Ok(rows) => {
                     self.take(rows, seq, false).await?;
                     read += 1;
@@ -2180,6 +2201,11 @@ fn planned_of(page: &PageRow, recipe: &'static str, page_first: bool, parts_only
     }
 }
 
+/// Whether opening the state failed on its lock, which RocksDB reports as an I/O error naming the `LOCK` file.
+fn locked(error: &rocksdb::Error) -> bool {
+    error.kind() == rocksdb::ErrorKind::IOError && error.as_ref().contains("/LOCK")
+}
+
 /// A task reading ahead, stopped once its result is no longer wanted.
 struct Ahead<T>(JoinHandle<T>);
 
@@ -2358,6 +2384,30 @@ mod tests {
         assert!(state.waiting(key).unwrap().is_none());
         drop(state);
         assert_eq!(State::open(&dir).unwrap().waiting_count(), 0, "the count kept on disk agrees");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_state_still_held_by_a_stopping_planner_is_opened_once_let_go_and_any_other_failure_fails_at_once() {
+        let dir = std::env::temp_dir().join(format!("planner-lock-{}", uuid::Uuid::new_v4().simple()));
+        let held = State::open(&dir).unwrap();
+        let still = State::open_when_free(&dir, Duration::from_millis(1500)).await.err().expect("held past the wait");
+        assert!(format!("{still:#}").contains("/LOCK"), "{still:#}");
+
+        let stopping = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            drop(held);
+        });
+        let started = Instant::now();
+        State::open_when_free(&dir, Duration::from_secs(30)).await.unwrap();
+        assert!(started.elapsed() >= Duration::from_secs(2));
+        stopping.await.unwrap();
+
+        let file = dir.join("a-file");
+        std::fs::write(&file, "not a state").unwrap();
+        let started = Instant::now();
+        assert!(State::open_when_free(&file, Duration::from_secs(30)).await.is_err());
+        assert!(started.elapsed() < LOCK_RETRY, "{:?}", started.elapsed());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

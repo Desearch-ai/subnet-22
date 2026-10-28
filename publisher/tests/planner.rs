@@ -776,6 +776,62 @@ async fn change_files_read_at_once_are_planned_in_log_order() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn change_files_fetched_ahead_are_planned_in_log_order_whichever_arrives_first() {
+    let Some((_turn, redis)) = redis_db().await else {
+        eprintln!("skipped: no Redis on {REDIS}");
+        return;
+    };
+    let dir = scratch("ahead-order");
+    let stub = stub::start(dir.join("r2"), "127.0.0.1:0").await.unwrap();
+    let (pages, temp) = (bucket(stub.addr, "desearch-pages"), bucket(stub.addr, "subnet-22"));
+    let urls: Vec<String> = (1..=6).map(|n| format!("https://news.example/story/{n}")).collect();
+    for (seq, url) in (1..).zip(&urls) {
+        log(&pages, seq, vec![v2(record(url, &format!("{url} {}", article(2)), "article", "en"))]).await;
+    }
+    stub.state.slow("GET", "desearch-pages/changes/dt=2026-10-14/1.parquet", 1, Duration::from_millis(1500));
+    stub.state.slow("GET", "desearch-pages/changes/dt=2026-10-14/2.parquet", 1, Duration::from_millis(800));
+    let mut one_a_page = settings(dir.join("state"), 3600.0, 0);
+    one_a_page.pages_per_input = 1;
+    let mut planner = Planner::new(one_a_page, pages.clone(), temp.clone(), redis.clone(), Room::Fixed(0)).await.unwrap();
+    planner.pass().await.unwrap();
+    assert_eq!((planner.read_through(), planner.counts.files, planner.state.cursor().unwrap()), (6, 6, Some(6)));
+    assert_eq!(saved_urls(&planner), urls, "files 3 to 6 arrive before 1 and 2 and are still cut after them");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn among_change_files_fetched_ahead_one_unreadable_and_one_not_numbered_yet_hold_up_nothing_and_are_read_late() {
+    let Some((_turn, redis)) = redis_db().await else {
+        eprintln!("skipped: no Redis on {REDIS}");
+        return;
+    };
+    let dir = scratch("ahead-gaps");
+    let stub = stub::start(dir.join("r2"), "127.0.0.1:0").await.unwrap();
+    let (pages, temp) = (bucket(stub.addr, "desearch-pages"), bucket(stub.addr, "subnet-22"));
+    let page = |n: usize| v2(record(&format!("https://news.example/story/{n}"), &article(n + 1), "article", "en"));
+    log(&pages, 1, vec![page(1)]).await;
+    let key = "changes/dt=2026-10-14/2.parquet";
+    pages.put(key, Bytes::from_static(b"not a parquet file"), PARQUET, None).await.unwrap();
+    pages.put(&CHANGES.seq_key(2), Bytes::from(json!({"key": key, "rows": 1}).to_string()), JSON, None).await.unwrap();
+    log(&pages, 4, vec![page(4)]).await;
+    log(&pages, 5, vec![page(5)]).await;
+    // The gaps and the files after them are fetched before the first file arrives.
+    stub.state.slow("GET", "desearch-pages/changes/dt=2026-10-14/1.parquet", 1, Duration::from_millis(1500));
+    let mut planner = Planner::new(settings(dir.join("state"), 3600.0, 0), pages.clone(), temp.clone(), redis.clone(), Room::Fixed(0)).await.unwrap();
+    planner.pass().await.unwrap();
+    assert_eq!((planner.read_through(), planner.counts.files, planner.counts.planned), (5, 3, 3));
+    assert_eq!(planner.state.missing().unwrap().iter().map(|(seq, _)| *seq).collect::<Vec<_>>(), [2, 3]);
+
+    number_late(&pages, 2, vec![page(2)]).await;
+    number_late(&pages, 3, vec![page(3)]).await;
+    planner.pass().await.unwrap();
+    assert_eq!((planner.counts.late, planner.counts.planned), (2, 5), "both read once they can be");
+    planner.flush().await.unwrap();
+    assert!(planner.state.missing().unwrap().is_empty());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn pages_dated_in_the_last_two_days_get_their_own_inputs_outside_the_budget_and_a_restart_reads_a_buffered_lane_again() {
     let Some((_turn, mut redis)) = redis_db().await else {
         eprintln!("skipped: no Redis on {REDIS}");
