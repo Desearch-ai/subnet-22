@@ -426,7 +426,7 @@ def build(
                 entry["backlog"] = decision.backlog
             if decision.since is not None:
                 entry["since"] = decision.since
-            ranked.append((row.rank is None, row.rank or 0, row.host, entry))
+            ranked.append((row.rank is None, row.rank or 0, row.host, entry, feed and row.state not in SENDING_STATES))
         # The decisions file keeps the decision before the v1 set, which the set itself is built from.
         if decisions is not None:
             decisions.writerow(
@@ -441,8 +441,16 @@ def build(
                     entry_v1.rule if entry_v1 else "",
                 ]
             )
+    # A listed subdomain takes its pages from its parent's lists, so one listed only for its feed would leave them unsent.
+    hosts = {item[2] for item in ranked}
+    ranked = [item for item in ranked if not (item[4] and parent_listed(item[2], hosts))]
     ranked.sort(key=lambda item: item[:3])
     return [item[3] for item in ranked], counts
+
+
+def parent_listed(host: str, hosts: set[str]) -> bool:
+    labels = host.split(".")
+    return any(".".join(labels[at:]) in hosts for at in range(1, len(labels) - 1))
 
 
 def write_list(entries: list[dict], path: str) -> None:

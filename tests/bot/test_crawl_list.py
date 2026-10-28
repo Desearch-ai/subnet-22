@@ -324,8 +324,10 @@ def test_v1_sites_without_a_sitemap_are_listed_for_their_feed():
         row(host="feedless.com", state="no_sitemap", site_type="academic"),
         row(host="plain.com", state="no_sitemap", site_type="academic"),
     ]
-    listed, _ = v1_list(rows, {"feedless.com": V1("whole", "academic")})
-    assert set(listed) == {"feedless.com"}
+    rows += [row(host="news.parent.com", state="no_sitemap", site_type="news"), row(host="parent.com", site_type="news")]
+    v1 = {"feedless.com": V1("whole", "academic"), "news.parent.com": V1("news", "news"), "parent.com": V1("news", "news")}
+    listed, _ = v1_list(rows, v1)
+    assert set(listed) == {"feedless.com", "parent.com"}, "a subdomain of a listed site isn't listed for its feed alone: the parent's pages under it would stop"
 
 
 def test_v1_lifts_only_label_outs():
