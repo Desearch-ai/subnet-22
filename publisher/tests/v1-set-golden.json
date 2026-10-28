@@ -1,0 +1,29 @@
+{
+  "sites": [
+    {"host": "latimes.com", "rule": "news", "type": "news"},
+    {"host": "smalltownnews.example", "rule": "news", "since": "2025-10-28", "type": "news"},
+    {"host": "nature.com", "rule": "whole", "type": "academic"},
+    {"host": "sec.gov", "rule": "whole", "paths": ["/Archives/edgar/data/"], "type": "public"},
+    {"host": "en.wikipedia.org", "rule": "bulk", "source": "wikipedia", "type": "reference"},
+    {"host": "wikipedia.org", "rule": "out"},
+    {"host": "grokipedia.com", "rule": "out"},
+    {"host": "blogs.nature.com", "rule": "out"}
+  ],
+  "cases": [
+    {"url": "https://www.latimes.com/archives/la-xpm-2008-03-01-me-story.html", "published": "2008-03-01", "in": true},
+    {"url": "https://www.latimes.com/about/", "published": null, "in": false},
+    {"url": "https://www.latimes.com/2024/05/01/story", "published": null, "in": true},
+    {"url": "https://smalltownnews.example/2025/11/02/council-vote", "published": "2025-11-02", "in": true},
+    {"url": "https://smalltownnews.example/2023/06/01/fair", "published": "2023-06-01", "in": false},
+    {"url": "https://smalltownnews.example/2023/06/01/fair", "published": "2025-11-02", "in": true},
+    {"url": "https://www.nature.com/articles/s41586-020-2649-2", "published": "2020-09-16", "in": true},
+    {"url": "https://blogs.nature.com/post", "published": "2025-01-01", "in": false},
+    {"url": "https://www.sec.gov/Archives/edgar/data/320193/000032019324000123/aapl-20240928.htm", "published": null, "in": true},
+    {"url": "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany", "published": null, "in": false},
+    {"url": "https://en.wikipedia.org/wiki/Ada_Lovelace", "published": null, "in": true},
+    {"url": "https://en.m.wikipedia.org/wiki/Ada_Lovelace", "published": null, "in": true},
+    {"url": "https://de.wikipedia.org/wiki/Ada_Lovelace", "published": null, "in": false},
+    {"url": "https://grokipedia.com/page/Ada_Lovelace", "published": null, "in": false},
+    {"url": "https://example.org/page", "published": "2025-01-01", "in": false}
+  ]
+}

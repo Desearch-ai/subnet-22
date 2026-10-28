@@ -46,10 +46,17 @@ static REDIS_TURN: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 /// The test database, emptied, held by one test at a time.
 async fn redis_db() -> Option<(tokio::sync::MutexGuard<'static, ()>, ConnectionManager)> {
     let turn = REDIS_TURN.lock().await;
-    let client = redis::Client::open(REDIS).ok()?;
-    let mut redis = tokio::time::timeout(Duration::from_secs(2), client.get_connection_manager()).await.ok()?.ok()?;
-    let () = redis::cmd("FLUSHDB").query_async(&mut redis).await.ok()?;
-    Some((turn, redis))
+    let connected = async {
+        let client = redis::Client::open(REDIS).ok()?;
+        let mut redis = tokio::time::timeout(Duration::from_secs(2), client.get_connection_manager()).await.ok()?.ok()?;
+        let () = redis::cmd("FLUSHDB").query_async(&mut redis).await.ok()?;
+        Some(redis)
+    };
+    match connected.await {
+        Some(redis) => Some((turn, redis)),
+        None if std::env::var("PUBLISHER_TEST_REDIS").is_ok_and(|need| need == "1") => panic!("PUBLISHER_TEST_REDIS=1 and no Redis on {REDIS}"),
+        None => None,
+    }
 }
 
 fn bucket(addr: std::net::SocketAddr, name: &str, prefix: &str, errors: Arc<AtomicU64>) -> Bucket {

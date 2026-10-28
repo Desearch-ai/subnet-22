@@ -1,7 +1,9 @@
 //! The planner: follows the change log and turns published pages that need a vector into embed inputs for the task API, within an hourly page budget and the room the API gives.
 
 use std::collections::{btree_map, BTreeMap, HashMap, HashSet};
+use std::ops::Range;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 
@@ -11,19 +13,24 @@ use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use bytes::Bytes;
 use desearch::feeds::CHANGES;
 use desearch::r2::{self, Bucket, PARQUET};
+use desearch::time::utc_day;
+use futures::{stream, FutureExt, StreamExt};
 use parquet::arrow::ArrowWriter;
 use parquet::basic::{Compression, ZstdLevel};
 use parquet::file::properties::WriterProperties;
 use redis::aio::ConnectionManager;
-use redis::AsyncCommands;
+use redis::{AsyncCommands, Script};
 use rocksdb::{DBCompressionType, IteratorMode, Options, WriteBatch, DB};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use tokio::sync::watch;
+use tokio::runtime::Handle;
+use tokio::sync::{mpsc, watch};
 
-use crate::current::{decode_changes, ChangeRow, PageRow};
+use crate::backfill::ShardReader;
+use crate::current::{decode_changes, ChangeRow, PageRow, SHARDS};
 use crate::records::{Record, EXTRACTION_V2};
 use crate::service::now_us;
+use crate::set::{iso_date, url_date, Admitted, Refusal, Set};
 
 /// How a page becomes texts; any change to what a recipe's texts hold is a new recipe, so every page is embedded again.
 pub const RECIPE_V1: &str = "page-v1";
@@ -31,7 +38,7 @@ pub const RECIPE_V1: &str = "page-v1";
 pub const RECIPE_V2: &str = "page-v2";
 pub const RECIPES: [&str; 2] = [RECIPE_V1, RECIPE_V2];
 /// The recipes planned; pages of any other keep the vectors they have.
-pub const PLANNED_RECIPES: [&str; 2] = [RECIPE_V1, RECIPE_V2];
+pub const PLANNED_RECIPES: [&str; 1] = [RECIPE_V2];
 pub const PAGE: &str = "page";
 pub const PASSAGE: &str = "passage";
 /// Enough for the model's 2,048 tokens; the model server cuts the rest.
@@ -51,12 +58,29 @@ pub const EMBED_INPUTS: &str = "embed:inputs";
 /// Inputs whose task the API dropped after its last attempt.
 pub const EMBED_DROPPED: &str = "embed:dropped";
 const CURSOR: &[u8] = b"cursor";
+/// How many pages wait, kept with every change to them.
+const WAITING_COUNT: &[u8] = b"waiting-count";
+/// The backfill's shard and the last key of it planned or passed by, `<shard>\t<key>`.
+const BACKFILL: &[u8] = b"backfill";
+/// Pages read ahead from `current/` waiting for budget and room.
+const BACKFILL_AHEAD: usize = 4_096;
+/// How long a pass waits for the backfill's reader before going on.
+const BACKFILL_WAIT: Duration = Duration::from_millis(500);
+const RANGES_AT_ONCE: usize = 16;
+/// Kept past any input's wait for room, so a push tried again after a crash is not pushed twice.
+const PUSHED_TTL_S: u64 = 2 * 86_400;
+
+/// Pushes an input once, however often it is tried.
+static PUSH: LazyLock<Script> =
+    LazyLock::new(|| Script::new("if redis.call('SET', KEYS[2], '1', 'NX', 'EX', ARGV[2]) then redis.call('RPUSH', KEYS[1], ARGV[1]) return 1 end return 0"));
 /// Set once every domain's count of planned pages has been built from the planned keys.
 const SITES_COUNTED: &[u8] = b"sites-counted";
 /// The crawl list's caps are crawl caps, three pages crawled for each one the index keeps.
 const CRAWL_PER_INDEX: u64 = 3;
 const ROOM_TIMEOUT: Duration = Duration::from_secs(20);
-const FILES_PER_PASS: usize = 20;
+const FILES_PER_PASS: usize = 64;
+/// Change files of waiting pages read a pass, so a backlog of them cannot hold up the log.
+const REPLAN_FILES_PER_PASS: usize = 64;
 
 pub static INPUT_SCHEMA: LazyLock<SchemaRef> = LazyLock::new(|| {
     let text = |name: &str| Field::new(name, DataType::Utf8, false);
@@ -364,8 +388,18 @@ pub struct Settings {
     pub chars_per_input: usize,
     /// A part-filled input is written once its first page waited this long.
     pub flush_after: Duration,
-    /// Inputs written but not yet handed over; past this, new pages are left out.
+    /// Inputs of one lane written but not yet handed over; past this, new pages of the lane are left out.
     pub max_pending: usize,
+    /// Pages kept waiting at most, so the state stays bounded while the log brings more than the budget.
+    pub max_waiting: i64,
+    /// New pages dated within this long before now go in the fresh lane, which is handed over first and spends no budget; None for no fresh lane.
+    pub fresh: Option<Duration>,
+    /// Pages the fresh lane takes an hour at most; the rest go with the other pages.
+    pub fresh_per_hour: f64,
+    /// Pages of one site the fresh lane takes an hour at most, so a site dating every page today cannot fill it.
+    pub fresh_per_site: u32,
+    /// A part-filled fresh input is written once its first page waited this long.
+    pub fresh_flush_after: Duration,
     /// The temporary bucket keeps an input a day; one waiting longer than this is dropped, so no miner is sent a file already gone.
     pub pending_max_age: Duration,
     pub min_chars: usize,
@@ -373,8 +407,21 @@ pub struct Settings {
     pub excluded: HashSet<String>,
     /// The bot's crawl list; when set, only its sites are planned, each up to its index cap. Read again when it changes.
     pub list_file: Option<PathBuf>,
+    /// The v1 set; when set, only pages its rules take are planned, and the crawl list is not read. Read again when it changes.
+    pub set_file: Option<PathBuf>,
     /// The change file to start after when nothing was planned before; the newest one when None.
     pub start_after: Option<i64>,
+    /// Change files fetched and decoded at once, ahead of the one being planned.
+    pub reads: usize,
+    /// Pages outside the fresh lane are planned with their page text alone; their passages wait until this is off.
+    pub page_first: bool,
+    /// Read `current/` for pages to embed, with what budget and room the log leaves.
+    pub backfill: bool,
+    /// The shards the backfill reads, in order.
+    pub backfill_shards: Range<usize>,
+    /// How long after reading its last shard the backfill sweeps `current/` again.
+    pub backfill_every: Duration,
+    pub current_prefix: String,
     pub poll: Duration,
     /// How long a change file number not indexed yet is looked for again before it is given up.
     pub hole_wait: Duration,
@@ -399,12 +446,30 @@ impl Settings {
             chars_per_input: number("PLANNER_CHARS_PER_INPUT", 3_000_000)?,
             flush_after: Duration::from_secs_f64(number("PLANNER_FLUSH_S", 600.0)?),
             max_pending: number("PLANNER_MAX_PENDING", 50)?,
+            max_waiting: number("PLANNER_MAX_WAITING", 30_000_000)?,
+            fresh: Some(Duration::from_secs_f64(number("PLANNER_FRESH_S", 48.0 * 3600.0)?)).filter(|window| !window.is_zero()),
+            fresh_per_hour: number("PLANNER_FRESH_PER_HOUR", 300_000.0)?,
+            fresh_per_site: number("PLANNER_FRESH_PER_SITE", 2_000)?,
+            fresh_flush_after: Duration::from_secs_f64(number("PLANNER_FRESH_FLUSH_S", 60.0)?),
             pending_max_age: Duration::from_secs_f64(number("PLANNER_PENDING_MAX_AGE_S", 12.0 * 3600.0)?),
             min_chars: number("PLANNER_MIN_CHARS", 300)?,
             langs: text("PLANNER_LANGS", "en").split(',').map(|lang| lang.trim().to_lowercase()).filter(|lang| !lang.is_empty()).collect(),
             excluded,
             list_file: std::env::var("PLANNER_LIST_FILE").ok().filter(|v| !v.is_empty()).map(PathBuf::from),
+            set_file: std::env::var("PLANNER_SET_FILE").ok().filter(|v| !v.is_empty()).map(PathBuf::from),
             start_after: std::env::var("PLANNER_START_AFTER").ok().filter(|v| !v.is_empty()).map(|v| v.parse()).transpose()?,
+            reads: number("PLANNER_READS", 8)?,
+            page_first: text("PLANNER_PAGE_FIRST", "0") == "1",
+            backfill: text("PLANNER_BACKFILL", "0") == "1",
+            backfill_shards: match std::env::var("PLANNER_BACKFILL_SHARDS").ok().filter(|v| !v.is_empty()) {
+                Some(range) => {
+                    let (start, end) = range.split_once("..").ok_or_else(|| anyhow!("PLANNER_BACKFILL_SHARDS={range:?} is not a range a..b"))?;
+                    start.trim().parse()?..end.trim().parse::<usize>()?.min(SHARDS)
+                }
+                None => 0..SHARDS,
+            },
+            backfill_every: Duration::from_secs_f64(number("PLANNER_BACKFILL_EVERY_S", 86_400.0)?),
+            current_prefix: text("PLANNER_CURRENT_PREFIX", "current/"),
             poll: Duration::from_secs_f64(number("PLANNER_POLL_S", 10.0)?),
             hole_wait: Duration::from_secs_f64(number("PLANNER_HOLE_WAIT_S", 600.0)?),
         })
@@ -493,9 +558,39 @@ impl Room {
     }
 }
 
+/// A version of a page: its text, when it was fetched, and the change file that holds its row.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Version {
+    pub content_sha1: String,
+    pub fetched_at: String,
+    /// Only its page text was planned.
+    pub page_only: bool,
+    pub seq: Option<i64>,
+    /// The crawl task that published it; empty for versions planned before it was kept.
+    pub task_id: String,
+}
+
+impl Version {
+    fn parse(raw: &[u8]) -> Version {
+        let value = String::from_utf8_lossy(raw);
+        let mut fields = value.split('\t');
+        let (content_sha1, fetched_at) = (fields.next().unwrap_or_default().to_string(), fields.next().unwrap_or_default().to_string());
+        let page_only = fields.next() == Some(PAGE);
+        let seq = fields.next().and_then(|seq| seq.parse().ok());
+        Version { content_sha1, fetched_at, page_only, seq, task_id: fields.next().unwrap_or_default().to_string() }
+    }
+
+    fn value(&self) -> String {
+        let page_only = if self.page_only { PAGE } else { "" };
+        let seq = self.seq.map(|seq| seq.to_string()).unwrap_or_default();
+        format!("{}\t{}\t{page_only}\t{seq}\t{}", self.content_sha1, self.fetched_at, self.task_id)
+    }
+}
+
 /// What the planner has planned, its place in the log and the inputs not yet handed over, kept on local disk.
 pub struct State {
     db: DB,
+    waiting: AtomicI64,
 }
 
 impl State {
@@ -503,7 +598,22 @@ impl State {
         let mut options = Options::default();
         options.create_if_missing(true);
         options.set_compression_type(DBCompressionType::Zstd);
-        Ok(State { db: DB::open(&options, dir).with_context(|| format!("opening the planner state at {}", dir.display()))? })
+        let db = DB::open(&options, dir).with_context(|| format!("opening the planner state at {}", dir.display()))?;
+        let waiting = match db.get(WAITING_COUNT)? {
+            Some(raw) => String::from_utf8_lossy(&raw).parse()?,
+            None => db.prefix_iterator(b"waiting/").take_while(|item| item.as_ref().is_ok_and(|(key, _)| key.starts_with(b"waiting/"))).count() as i64,
+        };
+        Ok(State { db, waiting: AtomicI64::new(waiting) })
+    }
+
+    /// How many pages wait.
+    pub fn waiting_count(&self) -> i64 {
+        self.waiting.load(Ordering::Relaxed)
+    }
+
+    fn count_waiting(&self, batch: &mut WriteBatch, change: i64) {
+        let count = self.waiting.fetch_add(change, Ordering::Relaxed) + change;
+        batch.put(WAITING_COUNT, count.max(0).to_string());
     }
 
     pub fn cursor(&self) -> Result<Option<i64>> {
@@ -512,16 +622,86 @@ impl State {
 
     /// The content hash of the version of `key` last planned with `recipe`.
     pub fn planned(&self, recipe: &str, key: &str) -> Result<Option<String>> {
-        Ok(self.planned_version(recipe, key)?.map(|(content_sha1, _)| content_sha1))
+        Ok(self.planned_version(recipe, key)?.map(|version| version.content_sha1))
     }
 
-    /// The content hash and fetch time of the version of `key` last planned with `recipe`; the time is empty for versions planned before it was kept.
-    pub fn planned_version(&self, recipe: &str, key: &str) -> Result<Option<(String, String)>> {
-        Ok(self.db.get(planned_key(recipe, key))?.map(|raw| {
-            let value = String::from_utf8_lossy(&raw);
-            let (content_sha1, fetched_at) = value.split_once('\t').unwrap_or((&value, ""));
-            (content_sha1.to_string(), fetched_at.to_string())
-        }))
+    /// The version of `key` last planned with `recipe`; its time is empty for versions planned before it was kept.
+    pub fn planned_version(&self, recipe: &str, key: &str) -> Result<Option<Version>> {
+        Ok(self.db.get(planned_key(recipe, key))?.map(|raw| Version::parse(&raw)))
+    }
+
+    /// The newest version of `key` seen but not planned, waiting for budget or room or forgotten after it was planned.
+    pub fn waiting(&self, key: &str) -> Result<Option<Version>> {
+        Ok(self.db.get(waiting_key(key))?.map(|raw| Version::parse(&raw)))
+    }
+
+    /// Keeps `version` waiting unless a newer one of the page already is, or `most` pages already wait; whether it waits.
+    fn wait(&self, key: &str, version: &Version, most: i64) -> Result<bool> {
+        if self.waiting_count() >= most && self.db.get_pinned(waiting_key(key))?.is_none() {
+            return Ok(false);
+        }
+        let mut batch = WriteBatch::default();
+        self.waiting_into(&mut batch, key, version)?;
+        self.db.write(batch)?;
+        Ok(true)
+    }
+
+    fn waiting_into(&self, batch: &mut WriteBatch, key: &str, version: &Version) -> Result<()> {
+        let held = self.waiting(key)?;
+        if held.as_ref().is_some_and(|held| (held.fetched_at.as_str(), held.seq) >= (version.fetched_at.as_str(), version.seq)) {
+            return Ok(());
+        }
+        match held.map(|held| held.seq) {
+            Some(Some(seq)) => batch.delete(replan_key(seq, key)),
+            Some(None) => {}
+            None => self.count_waiting(batch, 1),
+        }
+        batch.put(waiting_key(key), version.value());
+        if let Some(seq) = version.seq {
+            batch.put(replan_key(seq, key), "");
+        }
+        Ok(())
+    }
+
+    /// Stops `key` waiting, once a version as new is planned or its change file is gone.
+    fn unwait_into(&self, batch: &mut WriteBatch, key: &str, planned_at: Option<&str>) -> Result<()> {
+        let Some(held) = self.waiting(key)? else { return Ok(()) };
+        if planned_at.is_some_and(|planned_at| held.fetched_at.as_str() > planned_at) {
+            return Ok(());
+        }
+        batch.delete(waiting_key(key));
+        if let Some(seq) = held.seq {
+            batch.delete(replan_key(seq, key));
+        }
+        self.count_waiting(batch, -1);
+        Ok(())
+    }
+
+    fn unwait(&self, key: &str) -> Result<()> {
+        let mut batch = WriteBatch::default();
+        self.unwait_into(&mut batch, key, None)?;
+        Ok(self.db.write(batch)?)
+    }
+
+    /// The first change file after `after` that holds waiting pages, and their keys.
+    pub fn replan_group(&self, after: i64) -> Result<Option<(i64, HashSet<String>)>> {
+        let start = format!("replan/{:020}/", after + 1);
+        let mut group: Option<(i64, HashSet<String>)> = None;
+        for item in self.db.iterator(IteratorMode::From(start.as_bytes(), rocksdb::Direction::Forward)) {
+            let (raw, _) = item?;
+            let Some(rest) = raw.strip_prefix(b"replan/") else { break };
+            let rest = String::from_utf8_lossy(rest);
+            let Some((seq, key)) = rest.split_once('/') else { continue };
+            let seq: i64 = seq.parse()?;
+            match &mut group {
+                Some((held, keys)) if *held == seq => {
+                    keys.insert(key.to_string());
+                }
+                Some(_) => break,
+                None => group = Some((seq, HashSet::from([key.to_string()]))),
+            }
+        }
+        Ok(group)
     }
 
     /// Whether no recipe has planned any version of `key`.
@@ -629,6 +809,48 @@ impl State {
         Ok(self.db.write(batch)?)
     }
 
+    /// Forgets every planned version of a page gone from its site, so a page that comes back is planned again whatever its text; rows logged before change file `seq`, read late, are refused.
+    fn forget_key(&self, key: &str, seq: i64) -> Result<()> {
+        let mut batch = WriteBatch::default();
+        batch.put(removed_key(key), seq.to_string());
+        let mut planned = false;
+        for recipe in RECIPES {
+            if self.db.get_pinned(planned_key(recipe, key))?.is_some() {
+                batch.delete(planned_key(recipe, key));
+                planned = true;
+            }
+        }
+        if planned {
+            self.change_sites(&mut batch, &HashMap::from([(domain_of_key(key).to_string(), -1)]))?;
+        }
+        self.unwait_into(&mut batch, key, None)?;
+        Ok(self.db.write(batch)?)
+    }
+
+    /// Every task taken back, with the change file that took it back.
+    pub fn withdrawn(&self) -> Result<HashMap<String, i64>> {
+        let mut found = HashMap::new();
+        for item in self.db.iterator(IteratorMode::From(b"withdrawn/", rocksdb::Direction::Forward)) {
+            let (key, value) = item?;
+            let Some(task_id) = key.strip_prefix(b"withdrawn/") else { break };
+            found.insert(String::from_utf8_lossy(task_id).into_owned(), String::from_utf8_lossy(&value).parse()?);
+        }
+        Ok(found)
+    }
+
+    fn withdraw(&self, task_id: &str, seq: i64) -> Result<()> {
+        Ok(self.db.put(format!("withdrawn/{task_id}"), seq.to_string())?)
+    }
+
+    /// The change file that removed `key`, while no later row has brought it back.
+    pub fn removed(&self, key: &str) -> Result<Option<i64>> {
+        Ok(self.db.get(removed_key(key))?.map(|raw| String::from_utf8_lossy(&raw).parse()).transpose()?)
+    }
+
+    fn returned(&self, key: &str) -> Result<()> {
+        Ok(self.db.delete(removed_key(key))?)
+    }
+
     /// Forgets the versions of an input's pages that never got vectors, so the log's next showing plans them again.
     fn forget(&self, pages: &Value) -> Result<()> {
         Ok(self.db.write(self.forgetting(pages)?)?)
@@ -641,9 +863,11 @@ impl State {
             let (Some(key), Some(content_sha1)) = (page["page_key"].as_str(), page["content_sha1"].as_str()) else { continue };
             let (mut forgotten, mut kept) = (false, false);
             for recipe in RECIPES {
-                match self.planned(recipe, key)? {
-                    Some(planned) if planned == content_sha1 => {
+                match self.planned_version(recipe, key)? {
+                    Some(planned) if planned.content_sha1 == content_sha1 => {
                         batch.delete(planned_key(recipe, key));
+                        // Planned again from its change file, not left for a re-crawl that may never come.
+                        self.waiting_into(&mut batch, key, &Version { page_only: false, ..planned })?;
                         forgotten = true;
                     }
                     Some(_) => kept = true,
@@ -658,6 +882,18 @@ impl State {
         Ok(batch)
     }
 
+    /// The shard the backfill reads and the last key of it planned or passed by; None before it starts.
+    pub fn backfill(&self) -> Result<Option<(usize, Option<String>)>> {
+        let Some(raw) = self.db.get(BACKFILL)? else { return Ok(None) };
+        let raw = String::from_utf8_lossy(&raw).into_owned();
+        let (shard, after) = raw.split_once('\t').unwrap_or((&raw, ""));
+        Ok(Some((shard.parse()?, Some(after.to_string()).filter(|after| !after.is_empty()))))
+    }
+
+    fn keep_backfill(&self, shard: usize, after: Option<&str>) -> Result<()> {
+        Ok(self.db.put(BACKFILL, format!("{shard}\t{}", after.unwrap_or("")))?)
+    }
+
     fn keep_cursor(&self, seq: i64) -> Result<()> {
         Ok(self.db.put(CURSOR, seq.to_string())?)
     }
@@ -670,7 +906,15 @@ impl State {
             if self.unplanned(&page.key)? {
                 *new.entry(domain_of_key(&page.key).to_string()).or_default() += 1;
             }
-            batch.put(planned_key(page.recipe, &page.key), format!("{}\t{}", page.content_sha1, page.fetched_at));
+            let version = Version {
+                content_sha1: page.content_sha1.clone(),
+                fetched_at: page.fetched_at.clone(),
+                page_only: page.page_only,
+                seq: Some(page.seq),
+                task_id: page.task_id.clone(),
+            };
+            batch.put(planned_key(page.recipe, &page.key), version.value());
+            self.unwait_into(&mut batch, &page.key, Some(&page.fetched_at))?;
         }
         self.change_sites(&mut batch, &new)?;
         batch.put(format!("pending/{input_key}"), entry);
@@ -688,6 +932,18 @@ fn planned_key(recipe: &str, key: &str) -> String {
     format!("planned/{recipe}/{key}")
 }
 
+fn removed_key(key: &str) -> String {
+    format!("removed/{key}")
+}
+
+fn waiting_key(key: &str) -> String {
+    format!("waiting/{key}")
+}
+
+fn replan_key(seq: i64, key: &str) -> String {
+    format!("replan/{seq:020}/{key}")
+}
+
 fn site_key(domain: &str) -> String {
     format!("sites/{domain}")
 }
@@ -702,6 +958,19 @@ enum Unread {
     Failed(String),
 }
 
+/// Where a buffered page was read, which says what a restart reads again for it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Source {
+    /// A change file read in order: the kept cursor stays before it.
+    Log(i64),
+    /// A change file read late: it stays on the missing list.
+    Late(i64),
+    /// `current/`: the backfill's kept place stays before it.
+    Backfill,
+    /// A waiting page's change file: the page stays waiting.
+    Replan,
+}
+
 /// One page waiting in the input being filled.
 #[derive(Clone, Debug)]
 pub struct Planned {
@@ -712,6 +981,12 @@ pub struct Planned {
     pub recipe: &'static str,
     pub fetched_at: String,
     pub texts: Vec<Text>,
+    /// Only the page text of a page that has passages; they are planned when the page is next seen with `page_first` off.
+    pub page_only: bool,
+    /// The change file that holds the version's row.
+    pub seq: i64,
+    pub task_id: String,
+    pub source: Source,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -724,50 +999,191 @@ pub struct Counts {
     pub refused: u64,
     /// Pages of sites the crawl list does not hold.
     pub unlisted: u64,
+    /// Pages the set has no rule taking: an unlisted or shut host, or off a whole site's paths.
+    pub outside_set: u64,
+    /// Pages of a news site with no date in `published` or the URL path, left out.
+    pub undated: u64,
+    /// Such pages typed `article`, taken because the set's `undated` is `article`.
+    pub undated_article_in: u64,
+    /// Pages of a news site dated before its `since`.
+    pub before_since: u64,
     /// New pages of sites whose index cap is reached.
     pub over_cap: u64,
     pub unchanged: u64,
     /// Versions older than the one already planned, from change files read late.
     pub older: u64,
+    /// Pages the log removed, whose planned versions are forgotten.
+    pub removed: u64,
+    /// Rows of tasks taken back, which every reader drops.
+    pub withdrawn: u64,
     /// Change files read after later ones, because they were numbered late.
     pub late: u64,
     pub over_budget: u64,
     pub no_room: u64,
+    /// Pages planned in the fresh lane, of `planned`.
+    pub fresh: u64,
+    /// Pages planned with their page text alone, of `planned`.
+    pub page_only: u64,
+    /// Pages planned for their passages alone, their page text planned before, of `planned`.
+    pub parts: u64,
+    /// Pages left for budget or room, kept waiting to be planned from their change file.
+    pub waiting: u64,
+    /// Pages left for budget or room while `max_waiting` pages already waited, left to the backfill.
+    pub not_kept: u64,
+    /// Waiting pages read again from their change file, of `pages`.
+    pub replanned: u64,
+    /// Pages read from `current/` by the backfill, of `pages`.
+    pub backfill: u64,
+    pub shards: u64,
     pub inputs: u64,
     pub handed_over: u64,
     pub expired: u64,
     pub dropped: u64,
 }
 
+/// What became of a page the planner considered.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Considered {
+    Taken(Lane),
+    /// Refused for budget or room, and kept waiting.
+    Waiting,
+    /// Not to be planned at this version.
+    Passed,
+}
+
+/// Pages dated within `Settings::fresh` go ahead of the rest and outside the budget.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Lane {
+    Fresh,
+    Rest,
+}
+
+impl Lane {
+    const ALL: [Lane; 2] = [Lane::Fresh, Lane::Rest];
+
+    fn of(entry: &Value) -> Lane {
+        if entry["lane"] == "fresh" {
+            Lane::Fresh
+        } else {
+            Lane::Rest
+        }
+    }
+}
+
+/// A shard of `current/` being read for the backfill, its pages arriving as they are read.
+struct Reading {
+    shard: usize,
+    pages: mpsc::Receiver<PageRow>,
+    done: tokio::task::JoinHandle<Result<usize>>,
+    /// The last key taken from it.
+    last: Option<String>,
+}
+
+/// The pages of one lane waiting to be written as an input.
+#[derive(Default)]
+struct Buffer {
+    pages: Vec<Planned>,
+    at: HashMap<String, usize>,
+    /// Pages no recipe has planned before, by domain, so the buffer counts toward index caps.
+    new: HashMap<String, u64>,
+    chars: usize,
+    since: Option<Instant>,
+    /// Pages by the change file read in order, and read late, that they came from.
+    log: BTreeMap<i64, usize>,
+    late: BTreeMap<i64, usize>,
+    backfill: usize,
+}
+
+impl Buffer {
+    fn count(&mut self, source: Source, add: bool) {
+        let tally = |counts: &mut BTreeMap<i64, usize>, seq: i64| {
+            let count = counts.entry(seq).or_default();
+            *count = if add { *count + 1 } else { count.saturating_sub(1) };
+            if *count == 0 {
+                counts.remove(&seq);
+            }
+        };
+        match source {
+            Source::Log(seq) => tally(&mut self.log, seq),
+            Source::Late(seq) => tally(&mut self.late, seq),
+            Source::Backfill if add => self.backfill += 1,
+            Source::Backfill => self.backfill = self.backfill.saturating_sub(1),
+            Source::Replan => {}
+        }
+    }
+
+    fn push(&mut self, planned: Planned) {
+        self.count(planned.source, true);
+        self.at.insert(planned.key.clone(), self.pages.len());
+        self.chars += chars_of(&planned);
+        self.pages.push(planned);
+        self.since.get_or_insert_with(Instant::now);
+    }
+
+    /// Takes a page out, as a removal in the log does.
+    fn remove(&mut self, key: &str) -> bool {
+        let Some(at) = self.at.remove(key) else { return false };
+        let gone = self.pages.swap_remove(at);
+        if let Some(moved) = self.pages.get(at) {
+            self.at.insert(moved.key.clone(), at);
+        }
+        self.count(gone.source, false);
+        self.chars -= chars_of(&gone);
+        if self.pages.is_empty() {
+            self.since = None;
+        }
+        true
+    }
+
+    fn replace(&mut self, at: usize, planned: Planned) {
+        self.count(self.pages[at].source, false);
+        self.count(planned.source, true);
+        self.chars = self.chars - chars_of(&self.pages[at]) + chars_of(&planned);
+        self.pages[at] = planned;
+    }
+}
+
 pub struct Planner {
     pub settings: Settings,
-    pub state: State,
+    pub state: Arc<State>,
     pub pages: Bucket,
     pub temp: Bucket,
     pub redis: ConnectionManager,
     pub room: Room,
+    /// Where the backfill reads `current/`.
+    pub current: Option<Bucket>,
     pub counts: Counts,
     listed: Option<Listed>,
     listed_modified: Option<std::time::SystemTime>,
-    buffer: Vec<Planned>,
-    buffered: HashMap<String, usize>,
-    /// Pages in the buffer no recipe has planned before, by domain, so the buffer counts toward index caps.
-    buffered_new: HashMap<String, u64>,
-    buffer_chars: usize,
-    buffer_since: Option<Instant>,
+    set: Option<Arc<Set>>,
+    reading: Option<Reading>,
+    /// When the backfill sweeps `current/` again, once it has read every shard.
+    next_sweep: Option<Instant>,
+    /// The last change file the re-plan pass read this sweep.
+    replan_after: i64,
+    set_modified: Option<std::time::SystemTime>,
+    fresh: Buffer,
+    rest: Buffer,
     read_through: i64,
-    tokens: f64,
-    refilled: Instant,
-    pending: usize,
+    budget: Budget,
+    fresh_budget: Budget,
+    /// Inputs waiting for room, by lane.
+    pending: [usize; 2],
     missing: BTreeMap<i64, Instant>,
-    /// Late files read or given up since the buffer was last empty; forgotten with the next commit.
+    /// Late files read or given up whose pages may still be buffered; forgotten once none are.
     settled: Vec<i64>,
+    /// The cursor last kept on disk.
+    kept_cursor: i64,
+    /// Tasks taken back, with the change file that took each back.
+    withdrawn: HashMap<String, i64>,
+    /// The hour and the pages each site put in the fresh lane in it.
+    fresh_sites: (i64, HashMap<String, u32>),
 }
 
 impl Planner {
     pub async fn new(settings: Settings, pages: Bucket, temp: Bucket, redis: ConnectionManager, room: Room) -> Result<Planner> {
         std::fs::create_dir_all(&settings.dir)?;
-        let state = State::open(&settings.dir)?;
+        let state = Arc::new(State::open(&settings.dir)?);
         let started = Instant::now();
         state.count_sites()?;
         if started.elapsed() > Duration::from_secs(1) {
@@ -778,7 +1194,7 @@ impl Planner {
             (None, None) => latest(&pages).await?,
         };
         state.keep_cursor(read_through)?;
-        let pending = state.pending()?.len();
+        let pending = pending_by_lane(&state.pending()?);
         let missing = state
             .missing()?
             .into_iter()
@@ -786,7 +1202,8 @@ impl Planner {
                 (seq, Instant::now().checked_sub(Duration::from_secs_f64((now_us() as f64 / 1e6 - since).max(0.0))).unwrap_or_else(Instant::now))
             })
             .collect();
-        let tokens = budget_cap(settings.pages_per_hour);
+        let (budget, fresh_budget) = (Budget::new(settings.pages_per_hour), Budget::new(settings.fresh_per_hour));
+        let withdrawn = state.withdrawn()?;
         let mut planner = Planner {
             settings,
             state,
@@ -794,25 +1211,54 @@ impl Planner {
             temp,
             redis,
             room,
+            current: None,
             counts: Counts::default(),
             listed: None,
             listed_modified: None,
-            buffer: Vec::new(),
-            buffered: HashMap::new(),
-            buffered_new: HashMap::new(),
-            buffer_chars: 0,
-            buffer_since: None,
+            set: None,
+            reading: None,
+            next_sweep: None,
+            replan_after: 0,
+            set_modified: None,
+            fresh: Buffer::default(),
+            rest: Buffer::default(),
             read_through,
-            tokens,
-            refilled: Instant::now(),
+            budget,
+            fresh_budget,
             pending,
             missing,
             settled: Vec::new(),
+            kept_cursor: read_through,
+            withdrawn,
+            fresh_sites: (0, HashMap::new()),
         };
-        if planner.settings.list_file.is_some() && !planner.reload_list()? {
+        if planner.settings.set_file.is_some() {
+            if !planner.reload_set()? {
+                return Err(anyhow!("the set in PLANNER_SET_FILE is empty"));
+            }
+        } else if planner.settings.list_file.is_some() && !planner.reload_list()? {
             return Err(anyhow!("the crawl list in PLANNER_LIST_FILE is empty"));
         }
         Ok(planner)
+    }
+
+    /// Reads the set again when its file changed; whether a set is held. A set that cannot be read leaves the one held.
+    pub fn reload_set(&mut self) -> Result<bool> {
+        let Some(path) = self.settings.set_file.clone() else { return Ok(false) };
+        let modified = std::fs::metadata(&path).and_then(|meta| meta.modified()).with_context(|| format!("reading {}", path.display()))?;
+        if self.set.is_some() && self.set_modified == Some(modified) {
+            return Ok(true);
+        }
+        match std::fs::read(&path).map_err(anyhow::Error::from).and_then(|raw| Set::parse(&raw)) {
+            Ok(set) if !set.is_empty() => {
+                println!("planner: set of {} sites read from {}", set.len(), path.display());
+                self.set = Some(Arc::new(set));
+                self.set_modified = Some(modified);
+            }
+            Ok(_) => eprintln!("{} holds no sites; keeping the set held", path.display()),
+            Err(error) => eprintln!("reading the set {}: {error:#}; keeping the set held", path.display()),
+        }
+        Ok(self.set.is_some())
     }
 
     /// Reads the crawl list again when its file changed; whether a list is held. A list that cannot be read leaves the one held.
@@ -836,25 +1282,168 @@ impl Planner {
 
     /// Reads what the log added since the last pass, writes the inputs that are due and hands over what the API has room for; whether it read anything.
     pub async fn pass(&mut self) -> Result<bool> {
-        if let Err(error) = self.reload_list() {
+        let reloaded = if self.settings.set_file.is_some() { self.reload_set() } else { self.reload_list() };
+        if let Err(error) = reloaded {
             eprintln!("{error:#}");
         }
         self.forget_dropped().await?;
         let latest = latest(&self.pages).await?;
         let mut read = self.read_late().await?;
-        while self.read_through < latest && read < FILES_PER_PASS {
-            let seq = self.read_through + 1;
-            match self.read(seq).await? {
-                Ok(()) => read += 1,
+        let ahead: Vec<i64> = (self.read_through + 1..=latest).take(FILES_PER_PASS.saturating_sub(read)).collect();
+        let pages = self.pages.clone();
+        let mut fetched = stream::iter(ahead).map(|seq| fetch(pages.clone(), seq).map(move |rows| (seq, rows))).buffered(self.settings.reads.max(1));
+        while let Some((seq, rows)) = fetched.next().await {
+            match rows? {
+                Ok(rows) => {
+                    self.take(rows, seq, false).await?;
+                    read += 1;
+                }
                 Err(why) => self.note_missing(seq, &why)?,
             }
             self.advance(seq)?;
         }
-        if self.buffer_since.is_some_and(|since| since.elapsed() >= self.settings.flush_after) {
-            self.flush().await?;
+        let replanned = self.replan().await?;
+        let backfilled = self.backfill().await?;
+        for lane in Lane::ALL {
+            let after = if lane == Lane::Fresh { self.settings.fresh_flush_after } else { self.settings.flush_after };
+            if self.buffer(lane).since.is_some_and(|since| since.elapsed() >= after) {
+                self.flush_lane(lane).await?;
+            }
         }
         self.hand_over().await?;
-        Ok(read > 0)
+        Ok(read > 0 || replanned || backfilled)
+    }
+
+    /// Plans waiting pages from the change files that hold them, oldest first, while the budget and the rest lane's room last; whether it took any.
+    async fn replan(&mut self) -> Result<bool> {
+        let mut took = false;
+        for _ in 0..REPLAN_FILES_PER_PASS {
+            if self.pending[Lane::Rest as usize] >= self.settings.max_pending || !self.budget.has() {
+                break;
+            }
+            let Some((seq, keys)) = self.state.replan_group(self.replan_after)? else {
+                self.replan_after = 0;
+                break;
+            };
+            self.replan_after = seq;
+            let rows = match fetch(self.pages.clone(), seq).await? {
+                Ok(rows) => rows,
+                // Past the cursor an unnumbered file is one the log expired, index and all.
+                Err(Unread::NotNumbered) if seq <= self.read_through => Vec::new(),
+                Err(_) => continue,
+            };
+            let mut found = HashSet::new();
+            for row in rows {
+                let ChangeRow::Page(page) = row else { continue };
+                if !keys.contains(&page.key) || self.state.waiting(&page.key)?.is_none_or(|held| held.content_sha1 != page.record.content_sha1) {
+                    continue;
+                }
+                let key = page.key.clone();
+                found.insert(key.clone());
+                took = true;
+                self.counts.replanned += 1;
+                // A page taken stops waiting when its input is written, so a crash before that loses nothing.
+                match self.consider(*page, Source::Replan) {
+                    Considered::Taken(lane) => {
+                        let buffer = self.buffer(lane);
+                        if buffer.pages.len() >= self.settings.pages_per_input || buffer.chars >= self.settings.chars_per_input {
+                            self.flush_lane(lane).await?;
+                        }
+                    }
+                    Considered::Waiting => {}
+                    Considered::Passed => self.state.unwait(&key)?,
+                }
+            }
+            // A change file gone from the log leaves its pages to the backfill.
+            for key in keys.iter().filter(|key| !found.contains(*key)) {
+                self.state.unwait(key)?;
+            }
+        }
+        Ok(took)
+    }
+
+    /// Plans pages of `current/` while the budget and the rest lane's room last; whether it took any.
+    async fn backfill(&mut self) -> Result<bool> {
+        if !self.settings.backfill || self.current.is_none() {
+            return Ok(false);
+        }
+        let mut took = false;
+        loop {
+            if self.pending[Lane::Rest as usize] >= self.settings.max_pending || !self.has_token() {
+                return Ok(took);
+            }
+            if self.reading.is_none() && !self.start_reading()? {
+                return Ok(took);
+            }
+            let reading = self.reading.as_mut().expect("a shard being read");
+            match tokio::time::timeout(BACKFILL_WAIT, reading.pages.recv()).await {
+                Err(_) => return Ok(took),
+                Ok(Some(page)) => {
+                    reading.last = Some(page.key.clone());
+                    took = true;
+                    self.counts.backfill += 1;
+                    if let Considered::Taken(lane) = self.consider(page, Source::Backfill) {
+                        let buffer = self.buffer(lane);
+                        if buffer.pages.len() >= self.settings.pages_per_input || buffer.chars >= self.settings.chars_per_input {
+                            self.flush_lane(lane).await?;
+                        }
+                    }
+                }
+                Ok(None) => {
+                    let reading = self.reading.take().expect("a shard being read");
+                    let shard = reading.shard;
+                    // A shard that failed is read again from the last place kept.
+                    reading.done.await?.with_context(|| format!("reading shard {shard} of {}", self.settings.current_prefix))?;
+                    self.flush().await?;
+                    self.counts.shards += 1;
+                    if shard + 1 < self.settings.backfill_shards.end {
+                        self.state.keep_backfill(shard + 1, None)?;
+                    } else {
+                        // Pages the log passed by, or that came in since, are planned on the next sweep.
+                        self.state.keep_backfill(self.settings.backfill_shards.start, None)?;
+                        self.next_sweep = Some(Instant::now() + self.settings.backfill_every);
+                        println!("planner: the backfill read its last shard, {shard}; it sweeps again in {:?}", self.settings.backfill_every);
+                        return Ok(took);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Starts reading the backfill's next shard from where it was left; false while a finished sweep waits for the next.
+    fn start_reading(&mut self) -> Result<bool> {
+        if self.next_sweep.is_some_and(|next| Instant::now() < next) {
+            return Ok(false);
+        }
+        let shards = self.settings.backfill_shards.clone();
+        let (shard, after) = self.state.backfill()?.unwrap_or((shards.start, None));
+        let (shard, after) = if shards.contains(&shard) { (shard, after) } else { (shards.start, None) };
+        let reader = ShardReader {
+            bucket: self.current.clone().expect("a current/ bucket"),
+            prefix: self.settings.current_prefix.clone(),
+            handle: Handle::current(),
+            ranges_at_once: RANGES_AT_ONCE,
+        };
+        let (send, pages) = mpsc::channel(BACKFILL_AHEAD);
+        let (set, langs, from) = (self.set.clone(), self.settings.langs.clone(), after.clone());
+        let (state, page_first, withdrawn) = (self.state.clone(), self.settings.page_first, self.withdrawn.clone());
+        let done = tokio::task::spawn_blocking(move || {
+            let keep = |row: &PageRow| {
+                let record = &row.record;
+                recipe_of(record).is_some_and(|recipe| PLANNED_RECIPES.contains(&recipe))
+                    && lang_wanted(&langs, &record.lang)
+                    && set.as_ref().is_none_or(|set| set.admit(&record.url, &record.published, record.page_type.as_deref()).is_ok())
+                    && match state.planned_version(RECIPE_V2, &row.key) {
+                        Ok(Some(planned)) if planned.content_sha1 == record.content_sha1 => planned.page_only && !page_first,
+                        _ => true,
+                    }
+                    // A version as new waits in the log, which is read for it instead.
+                    && state.waiting(&row.key).ok().flatten().is_none_or(|held| held.fetched_at <= record.fetched_at)
+            };
+            reader.read(shard, from.as_deref(), withdrawn, keep, |page| send.blocking_send(page).is_ok())
+        });
+        self.reading = Some(Reading { shard, pages, done, last: after });
+        Ok(true)
     }
 
     /// Change files missed on the way past: read once they can be; a number never indexed is given up after `hole_wait`, a file that cannot be read is tried until it can.
@@ -874,41 +1463,54 @@ impl Planner {
             self.missing.remove(&seq);
             self.settled.push(seq);
         }
-        if self.buffer.is_empty() && !self.settled.is_empty() {
-            self.state.settle_missing(&self.settled)?;
-            self.settled.clear();
-        }
+        let settled = self.settle(&[Lane::Fresh, Lane::Rest]);
+        self.state.settle_missing(&settled)?;
         Ok(read)
     }
 
     /// Considers every page of change file `seq`; the inner error says why the file cannot be read yet, the outer one fails the pass.
     async fn read(&mut self, seq: i64) -> Result<std::result::Result<(), Unread>> {
-        let key = match change_key(&self.pages, seq).await {
-            Ok(Some(key)) => key,
-            Ok(None) => return Ok(Err(Unread::NotNumbered)),
-            Err(error) => return Ok(Err(Unread::Failed(format!("{error:#}")))),
-        };
-        let rows = match self.pages.get(&key).await {
-            Ok(file) => match tokio::task::spawn_blocking(move || decode_changes(file, seq)).await? {
-                Ok(rows) => rows,
-                Err(error) => return Ok(Err(Unread::Failed(format!("decoding {key}: {error:#}")))),
-            },
-            Err(r2::Error::Missing) => {
-                eprintln!("change file {seq} ({key}) is gone; going on without it");
-                Vec::new()
-            }
-            Err(error) => return Ok(Err(Unread::Failed(format!("reading {key}: {error}")))),
-        };
+        match fetch(self.pages.clone(), seq).await? {
+            Ok(rows) => self.take(rows, seq, true).await.map(Ok),
+            Err(why) => Ok(Err(why)),
+        }
+    }
+
+    /// Considers every page of one change file, in file order.
+    async fn take(&mut self, rows: Vec<ChangeRow>, seq: i64, late: bool) -> Result<()> {
         for row in rows {
-            if let ChangeRow::Page(page) = row {
-                self.consider(*page);
-                if self.buffer.len() >= self.settings.pages_per_input || self.buffer_chars >= self.settings.chars_per_input {
-                    self.flush().await?;
+            match row {
+                ChangeRow::Page(page) => {
+                    let from = if late { Source::Late(page.change_seq) } else { Source::Log(page.change_seq) };
+                    if let Considered::Taken(lane) = self.consider(*page, from) {
+                        let buffer = self.buffer(lane);
+                        if buffer.pages.len() >= self.settings.pages_per_input || buffer.chars >= self.settings.chars_per_input {
+                            self.flush_lane(lane).await?;
+                        }
+                    }
+                }
+                ChangeRow::Removed(key) => {
+                    for lane in Lane::ALL {
+                        self.buffer_mut(lane).remove(&key);
+                    }
+                    self.state.forget_key(&key, seq)?;
+                    self.counts.removed += 1;
+                }
+                ChangeRow::TaskWithdrawn(task_id) => {
+                    for lane in Lane::ALL {
+                        let buffer = self.buffer_mut(lane);
+                        let taken: Vec<String> = buffer.pages.iter().filter(|page| page.task_id == task_id).map(|page| page.key.clone()).collect();
+                        for key in taken {
+                            buffer.remove(&key);
+                        }
+                    }
+                    self.state.withdraw(&task_id, seq)?;
+                    self.withdrawn.insert(task_id, seq);
                 }
             }
         }
         self.counts.files += 1;
-        Ok(Ok(()))
+        Ok(())
     }
 
     fn note_missing(&mut self, seq: i64, why: &Unread) -> Result<()> {
@@ -922,13 +1524,15 @@ impl Planner {
         Ok(())
     }
 
-    /// Takes back the pages of inputs the task API dropped after their last attempt.
+    /// Takes back the pages of inputs the task API dropped; they are trimmed from its list only once forgotten, so a crash loses none.
     pub async fn forget_dropped(&mut self) -> Result<usize> {
-        let dropped: Option<Vec<String>> = redis::cmd("LPOP").arg(EMBED_DROPPED).arg(FILES_PER_PASS * 10).query_async(&mut self.redis).await?;
-        let dropped = dropped.unwrap_or_default();
+        let dropped: Vec<String> = self.redis.lrange(EMBED_DROPPED, 0, (FILES_PER_PASS * 10) as isize - 1).await?;
         for raw in &dropped {
             let entry: Value = serde_json::from_str(raw).unwrap_or(Value::Null);
             self.state.forget(&entry["pages"])?;
+        }
+        if !dropped.is_empty() {
+            let () = self.redis.ltrim(EMBED_DROPPED, dropped.len() as isize, -1).await?;
         }
         self.counts.dropped += dropped.len() as u64;
         Ok(dropped.len())
@@ -957,99 +1561,229 @@ impl Planner {
         Ok(())
     }
 
-    /// Marks change file `seq` read; the kept cursor moves only while nothing is buffered, so a restart reads the buffered pages' files again.
+    /// Marks change file `seq` read and keeps the cursor just before the first change file a buffered page was read from, so a restart reads only those again.
     fn advance(&mut self, seq: i64) -> Result<()> {
         self.read_through = seq;
-        if self.buffer.is_empty() {
-            self.state.keep_cursor(seq)?;
+        let cursor = self.cursor_after(&[Lane::Fresh, Lane::Rest]);
+        if cursor > self.kept_cursor {
+            self.state.keep_cursor(cursor)?;
+            self.kept_cursor = cursor;
         }
         Ok(())
     }
 
-    /// Takes the page into the buffer if a planned recipe reads it, it is wanted, changed, and the budget and the API's room allow it.
-    pub fn consider(&mut self, page: PageRow) {
+    /// Where a restart may start reading the log, given the pages still in `lanes`.
+    fn cursor_after(&self, lanes: &[Lane]) -> i64 {
+        lanes.iter().filter_map(|&lane| self.buffer(lane).log.keys().next().copied()).min().map_or(self.read_through, |first| first - 1)
+    }
+
+    /// The late files read whose pages are no longer in `lanes`, taken off the list of those still settling.
+    fn settle(&mut self, lanes: &[Lane]) -> Vec<i64> {
+        let held: HashSet<i64> = lanes.iter().flat_map(|&lane| self.buffer(lane).late.keys().copied()).collect();
+        let (kept, settled): (Vec<i64>, Vec<i64>) = std::mem::take(&mut self.settled).into_iter().partition(|seq| held.contains(seq));
+        self.settled = kept;
+        settled
+    }
+
+    /// Takes the page into its lane's buffer if a planned recipe reads it, it is wanted, changed, and the budget and the API's room allow it; the lane it went in.
+    pub fn consider(&mut self, page: PageRow, from: Source) -> Considered {
         self.counts.pages += 1;
         let record = &page.record;
+        match self.state.removed(&page.key).ok().flatten() {
+            Some(removed) if page.change_seq < removed => {
+                self.counts.older += 1;
+                return Considered::Passed;
+            }
+            Some(_) => {
+                if let Err(error) = self.state.returned(&page.key) {
+                    eprintln!("noting {} back: {error:#}", page.key);
+                }
+            }
+            None => {}
+        }
+        if self.withdrawn.contains_key(&record.task_id) {
+            self.counts.withdrawn += 1;
+            return Considered::Passed;
+        }
+        // A newer row lets go of an older waiting version, whatever becomes of the row.
+        let mut waiting = self.state.waiting(&page.key).ok().flatten().filter(|held| !self.withdrawn.contains_key(&held.task_id));
+        if waiting.as_ref().is_some_and(|held| held.fetched_at < record.fetched_at) {
+            if let Err(error) = self.state.unwait(&page.key) {
+                eprintln!("letting {} stop waiting: {error:#}", page.key);
+            }
+            waiting = None;
+        }
         let Some(recipe) = recipe_of(record).filter(|recipe| PLANNED_RECIPES.contains(recipe)) else {
             self.counts.other_recipe += 1;
-            return;
+            return Considered::Passed;
         };
         if !self.admitted(record) {
             self.counts.refused += 1;
-            return;
+            return Considered::Passed;
         }
-        let cap = match &self.listed {
+        match self.set.as_ref().map(|set| set.admit(&record.url, &record.published, record.page_type.as_deref())) {
+            Some(Err(refusal)) => {
+                match refusal {
+                    Refusal::Undated => self.counts.undated += 1,
+                    Refusal::BeforeSince => self.counts.before_since += 1,
+                    Refusal::Unlisted | Refusal::OffPaths => self.counts.outside_set += 1,
+                }
+                return Considered::Passed;
+            }
+            Some(Ok(Admitted::UndatedArticle)) => self.counts.undated_article_in += 1,
+            Some(Ok(Admitted::ByRule)) | None => {}
+        }
+        let cap = match self.listed.as_ref().filter(|_| self.set.is_none()) {
             None => None,
             Some(listed) => match listed.cap(&record.domain) {
                 Some(cap) => Some(cap),
                 None => {
                     self.counts.unlisted += 1;
-                    return;
+                    return Considered::Passed;
                 }
             },
         };
-        let already = match self.buffered.get(&page.key) {
-            Some(&at) => Some((self.buffer[at].content_sha1.clone(), self.buffer[at].fetched_at.clone())),
-            None => self.state.planned_version(recipe, &page.key).ok().flatten(),
+        let buffered = Lane::ALL.into_iter().find_map(|lane| self.buffer(lane).at.get(&page.key).map(|&at| (lane, at)));
+        let already = match buffered {
+            Some((lane, at)) => {
+                let held = &self.buffer(lane).pages[at];
+                Some(Version {
+                    content_sha1: held.content_sha1.clone(),
+                    fetched_at: held.fetched_at.clone(),
+                    page_only: held.page_only,
+                    seq: Some(held.seq),
+                    task_id: held.task_id.clone(),
+                })
+            }
+            // A version from a task taken back was taken down, so the same text crawled again is planned again.
+            None => self.state.planned_version(recipe, &page.key).ok().flatten().filter(|planned| !self.withdrawn.contains_key(&planned.task_id)),
         };
-        if let Some((content_sha1, fetched_at)) = &already {
+        if waiting.as_ref().is_some_and(|held| record.fetched_at < held.fetched_at) {
+            self.counts.older += 1;
+            return Considered::Passed;
+        }
+        let mut parts_only = false;
+        if let Some(Version { content_sha1, fetched_at, page_only, .. }) = &already {
             if *content_sha1 == record.content_sha1 {
-                self.counts.unchanged += 1;
-                return;
+                if !page_only || self.settings.page_first || buffered.is_some() {
+                    self.counts.unchanged += 1;
+                    return Considered::Passed;
+                }
+                parts_only = true;
             }
             // Times are `iso` text of one width, so they order as text; a late file can hold an older version than the one planned.
             if record.fetched_at < *fetched_at {
                 self.counts.older += 1;
-                return;
+                return Considered::Passed;
             }
         }
-        let planned = Planned {
-            key: page.key.clone(),
-            url: record.url.clone(),
-            host: record.domain.clone(),
-            content_sha1: record.content_sha1.clone(),
-            recipe,
-            fetched_at: record.fetched_at.clone(),
-            texts: texts(&page.key, record),
-        };
-        if let Some(&at) = self.buffered.get(&page.key) {
-            self.buffer_chars = self.buffer_chars - chars_of(&self.buffer[at]) + chars_of(&planned);
-            self.buffer[at] = planned;
-            return;
+        if let Some((lane, at)) = buffered {
+            let planned = planned_of(&page, recipe, self.settings.page_first && lane == Lane::Rest, false, from);
+            self.buffer_mut(lane).replace(at, planned);
+            return Considered::Taken(lane);
         }
         let new_in = match cap {
             Some(cap) if self.state.unplanned(&page.key).unwrap_or(false) => {
                 let domain = domain_of_key(&page.key).to_string();
-                let held = self.state.site_pages(&domain).unwrap_or(0) + self.buffered_new.get(&domain).copied().unwrap_or(0);
+                let buffered: u64 = Lane::ALL.into_iter().map(|lane| self.buffer(lane).new.get(&domain).copied().unwrap_or(0)).sum();
+                let held = self.state.site_pages(&domain).unwrap_or(0) + buffered;
                 if held >= cap {
                     self.counts.over_cap += 1;
-                    return;
+                    return Considered::Passed;
                 }
                 Some(domain)
             }
             _ => None,
         };
-        if self.pending >= self.settings.max_pending {
+        // Only a page never planned before is fresh, within its lane's own budget, so pages re-dated by their site cannot flood it.
+        let seen = !self.state.unplanned(&page.key).unwrap_or(false) || waiting.is_some();
+        let fresh = self.is_fresh(record) && !seen && self.pending[Lane::Fresh as usize] < self.settings.max_pending;
+        let site = self.set.as_ref().and_then(|set| set.site(&record.domain).map(|(host, _)| host.to_string()));
+        let site = site.unwrap_or_else(|| domain_of_key(&page.key).to_string());
+        let fresh = fresh && self.fresh_site_room(&site) && self.fresh_budget.take();
+        if fresh {
+            *self.fresh_sites.1.entry(site).or_default() += 1;
+        }
+        let lane = if fresh { Lane::Fresh } else { Lane::Rest };
+        if self.pending[lane as usize] >= self.settings.max_pending {
             self.counts.no_room += 1;
-            return;
+            self.keep_waiting(&page);
+            return Considered::Waiting;
         }
-        if !self.take_token() {
+        if lane == Lane::Rest && !self.budget.take() {
             self.counts.over_budget += 1;
-            return;
+            self.keep_waiting(&page);
+            return Considered::Waiting;
         }
+        let planned = planned_of(&page, recipe, self.settings.page_first && lane == Lane::Rest, parts_only, from);
+        if planned.texts.is_empty() {
+            self.counts.unchanged += 1;
+            return Considered::Passed;
+        }
+        self.counts.page_only += u64::from(planned.page_only);
+        self.counts.parts += u64::from(parts_only);
+        let buffer = self.buffer_mut(lane);
         if let Some(domain) = new_in {
-            *self.buffered_new.entry(domain).or_default() += 1;
+            *buffer.new.entry(domain).or_default() += 1;
         }
-        self.buffered.insert(page.key, self.buffer.len());
-        self.buffer_chars += chars_of(&planned);
-        self.buffer.push(planned);
-        self.buffer_since.get_or_insert_with(Instant::now);
+        buffer.push(planned);
         self.counts.planned += 1;
+        self.counts.fresh += u64::from(lane == Lane::Fresh);
+        Considered::Taken(lane)
+    }
+
+    fn keep_waiting(&mut self, page: &PageRow) {
+        let record = &page.record;
+        let version = Version {
+            content_sha1: record.content_sha1.clone(),
+            fetched_at: record.fetched_at.clone(),
+            page_only: false,
+            seq: Some(page.change_seq),
+            task_id: record.task_id.clone(),
+        };
+        match self.state.wait(&page.key, &version, self.settings.max_waiting) {
+            Ok(true) => self.counts.waiting += 1,
+            Ok(false) => self.counts.not_kept += 1,
+            Err(error) => eprintln!("keeping {} waiting: {error:#}", page.key),
+        }
+    }
+
+    /// Whether the page is dated within the fresh window and not past tomorrow, by the older of `published` and a date in its URL.
+    fn is_fresh(&self, record: &Record) -> bool {
+        let Some(window) = self.settings.fresh else { return false };
+        let now = now_us() as f64 / 1e6;
+        let date = match (iso_date(&record.published), url_date(&record.url)) {
+            (Some(published), Some(path)) => Some(published.min(path)),
+            (published, path) => published.or(path),
+        };
+        date.is_some_and(|date| date >= utc_day(now - window.as_secs_f64()) && date <= utc_day(now + 86_400.0))
+    }
+
+    /// Whether `site` has room in the fresh lane this hour.
+    fn fresh_site_room(&mut self, site: &str) -> bool {
+        let hour = now_us() / 3_600_000_000;
+        if self.fresh_sites.0 != hour {
+            self.fresh_sites = (hour, HashMap::new());
+        }
+        self.fresh_sites.1.get(site).copied().unwrap_or(0) < self.settings.fresh_per_site
+    }
+
+    fn buffer(&self, lane: Lane) -> &Buffer {
+        match lane {
+            Lane::Fresh => &self.fresh,
+            Lane::Rest => &self.rest,
+        }
+    }
+
+    fn buffer_mut(&mut self, lane: Lane) -> &mut Buffer {
+        match lane {
+            Lane::Fresh => &mut self.fresh,
+            Lane::Rest => &mut self.rest,
+        }
     }
 
     fn admitted(&self, record: &Record) -> bool {
-        let lang = record.lang.to_lowercase();
-        self.settings.langs.iter().any(|want| lang == *want || lang.starts_with(&format!("{want}-")) || lang.starts_with(&format!("{want}_")))
+        lang_wanted(&self.settings.langs, &record.lang)
             && record.text.chars().count() >= self.settings.min_chars
             && !self.excluded(&record.domain.to_lowercase())
     }
@@ -1068,43 +1802,51 @@ impl Planner {
         }
     }
 
-    fn take_token(&mut self) -> bool {
-        let cap = budget_cap(self.settings.pages_per_hour);
-        self.tokens = (self.tokens + self.refilled.elapsed().as_secs_f64() * self.settings.pages_per_hour / 3600.0).min(cap);
-        self.refilled = Instant::now();
-        if self.tokens < 1.0 {
-            return false;
-        }
-        self.tokens -= 1.0;
-        true
+    fn has_token(&mut self) -> bool {
+        self.budget.has()
     }
 
-    /// Writes the buffer as one input in the temp bucket and keeps it pending until the API has room.
+    /// Writes every lane's buffer.
     pub async fn flush(&mut self) -> Result<()> {
-        if self.buffer.is_empty() {
+        for lane in Lane::ALL {
+            self.flush_lane(lane).await?;
+        }
+        Ok(())
+    }
+
+    /// Writes a lane's buffer as one input in the temp bucket and keeps it pending until the API has room.
+    async fn flush_lane(&mut self, lane: Lane) -> Result<()> {
+        let buffer = self.buffer(lane);
+        if buffer.pages.is_empty() {
             return Ok(());
         }
-        let rows: Vec<(&Planned, &Text)> = self.buffer.iter().flat_map(|page| page.texts.iter().map(move |text| (page, text))).collect();
+        let rows: Vec<(&Planned, &Text)> = buffer.pages.iter().flat_map(|page| page.texts.iter().map(move |text| (page, text))).collect();
         let file = encode_input(&rows)?;
         let input_key = format!("embed/inputs/{}.parquet", uuid::Uuid::new_v4().simple());
-        let entry = json!({
+        let mut entry = json!({
             "input_key": input_key,
             "input_sha256": hex(&Sha256::digest(&file)),
             "written_at": now_us() as f64 / 1e6,
             "texts": rows.len(),
             "chars": rows.iter().map(|(_, text)| text.text.chars().count()).sum::<usize>(),
-            "pages": self.buffer.iter().map(|p| json!({"page_key": p.key, "content_sha1": p.content_sha1, "url": p.url, "host": p.host})).collect::<Vec<_>>(),
+            "pages": buffer.pages.iter().map(|p| json!({"page_key": p.key, "content_sha1": p.content_sha1, "url": p.url, "host": p.host})).collect::<Vec<_>>(),
         });
+        if lane == Lane::Fresh {
+            entry["lane"] = "fresh".into();
+        }
         // Kept until the input is stored, so a failed write is tried again with the same pages.
         self.temp.put(&input_key, Bytes::from(file), PARQUET, None).await.map_err(|error| anyhow!("writing {input_key}: {error}"))?;
-        self.state.commit(&self.buffer, &input_key, &entry.to_string(), Some(self.read_through), &self.settled)?;
-        self.settled.clear();
-        self.buffer.clear();
-        self.buffered.clear();
-        self.buffered_new.clear();
-        self.buffer_chars = 0;
-        self.buffer_since = None;
-        self.pending += 1;
+        // The cursor, late files and the backfill's place move only past what the other lane still holds.
+        let other = if lane == Lane::Fresh { Lane::Rest } else { Lane::Fresh };
+        let cursor = Some(self.cursor_after(&[other])).filter(|&cursor| cursor > self.kept_cursor);
+        let settled = self.settle(&[other]);
+        self.state.commit(&self.buffer(lane).pages, &input_key, &entry.to_string(), cursor, &settled)?;
+        self.kept_cursor = cursor.unwrap_or(self.kept_cursor);
+        if let Some(reading) = self.reading.as_ref().filter(|_| self.buffer(other).backfill == 0) {
+            self.state.keep_backfill(reading.shard, reading.last.as_deref())?;
+        }
+        *self.buffer_mut(lane) = Buffer::default();
+        self.pending[lane as usize] += 1;
         self.counts.inputs += 1;
         Ok(())
     }
@@ -1112,7 +1854,7 @@ impl Planner {
     /// Hands pending inputs to the task API, oldest first, as many as it has room for.
     pub async fn hand_over(&mut self) -> Result<usize> {
         let pending = self.state.pending()?;
-        self.pending = pending.len();
+        self.pending = pending_by_lane(&pending);
         if pending.is_empty() {
             return Ok(0);
         }
@@ -1131,23 +1873,26 @@ impl Planner {
                 (input_key, entry, parsed)
             })
             .collect();
-        pending.sort_by(|a, b| a.2["written_at"].as_f64().unwrap_or(now).total_cmp(&b.2["written_at"].as_f64().unwrap_or(now)));
+        let written = |entry: &Value| entry["written_at"].as_f64().unwrap_or(now);
+        pending.sort_by(|a, b| (Lane::of(&a.2) as usize).cmp(&(Lane::of(&b.2) as usize)).then(written(&a.2).total_cmp(&written(&b.2))));
         let (mut handed, mut expired) = (0, 0);
         for (input_key, entry, parsed) in pending {
+            let lane = Lane::of(&parsed) as usize;
             if now - parsed["written_at"].as_f64().unwrap_or(now) > self.settings.pending_max_age.as_secs_f64() {
                 eprintln!("{input_key} waited longer than {:?} for room; dropped", self.settings.pending_max_age);
                 self.state.expire(&input_key, &parsed)?;
+                self.pending[lane] -= 1;
                 expired += 1;
                 continue;
             }
             if handed == room {
                 break;
             }
-            let _: i64 = self.redis.rpush(EMBED_INPUTS, &entry).await?;
+            push_input(&mut self.redis, &input_key, &entry).await?;
             self.state.handed_over(&input_key)?;
+            self.pending[lane] -= 1;
             handed += 1;
         }
-        self.pending -= handed + expired;
         self.counts.handed_over += handed as u64;
         self.counts.expired += expired as u64;
         Ok(handed)
@@ -1158,12 +1903,103 @@ impl Planner {
     }
 }
 
+/// The page as the buffer holds it, its texts made only once it is taken: all of them, its page text alone, or its passages alone.
+fn planned_of(page: &PageRow, recipe: &'static str, page_first: bool, parts_only: bool, source: Source) -> Planned {
+    let record = &page.record;
+    let mut texts = texts(&page.key, record);
+    let page_only = page_first && !parts_only && texts.len() > 1;
+    if page_only {
+        texts.truncate(1);
+    } else if parts_only {
+        texts.remove(0);
+    }
+    Planned {
+        key: page.key.clone(),
+        url: record.url.clone(),
+        host: record.domain.clone(),
+        content_sha1: record.content_sha1.clone(),
+        recipe,
+        fetched_at: record.fetched_at.clone(),
+        texts,
+        page_only,
+        seq: page.change_seq,
+        task_id: record.task_id.clone(),
+        source,
+    }
+}
+
+/// Change file `seq`'s rows, fetched and decoded; the inner error says why the file cannot be read yet.
+async fn fetch(pages: Bucket, seq: i64) -> Result<std::result::Result<Vec<ChangeRow>, Unread>> {
+    let key = match change_key(&pages, seq).await {
+        Ok(Some(key)) => key,
+        Ok(None) => return Ok(Err(Unread::NotNumbered)),
+        Err(error) => return Ok(Err(Unread::Failed(format!("{error:#}")))),
+    };
+    match pages.get(&key).await {
+        Ok(file) => match tokio::task::spawn_blocking(move || decode_changes(file, seq)).await? {
+            Ok(rows) => Ok(Ok(rows)),
+            Err(error) => Ok(Err(Unread::Failed(format!("decoding {key}: {error:#}")))),
+        },
+        Err(r2::Error::Missing) => {
+            eprintln!("change file {seq} ({key}) is gone; going on without it");
+            Ok(Ok(Vec::new()))
+        }
+        Err(error) => Ok(Err(Unread::Failed(format!("reading {key}: {error}")))),
+    }
+}
+
+/// Pushes an input for the task API once: a push tried again after a crash, before its pending entry was cleared, does nothing; whether it pushed.
+pub async fn push_input(redis: &mut ConnectionManager, input_key: &str, entry: &str) -> Result<bool> {
+    let pushed: i64 = PUSH.key(EMBED_INPUTS).key(format!("embed:pushed:{input_key}")).arg(entry).arg(PUSHED_TTL_S).invoke_async(redis).await?;
+    Ok(pushed == 1)
+}
+
+fn lang_wanted(langs: &[String], lang: &str) -> bool {
+    let lang = lang.to_lowercase();
+    langs.iter().any(|want| lang == *want || lang.starts_with(&format!("{want}-")) || lang.starts_with(&format!("{want}_")))
+}
+
+fn pending_by_lane(pending: &[(String, String)]) -> [usize; 2] {
+    let mut counts = [0; 2];
+    for (_, entry) in pending {
+        counts[Lane::of(&serde_json::from_str(entry).unwrap_or(Value::Null)) as usize] += 1;
+    }
+    counts
+}
+
 fn chars_of(page: &Planned) -> usize {
     page.texts.iter().map(|text| text.text.chars().count()).sum()
 }
 
-fn budget_cap(pages_per_hour: f64) -> f64 {
-    (pages_per_hour / 4.0).max(1.0)
+/// Pages an hour, of which a quarter hour's worth can be spent at once.
+struct Budget {
+    per_hour: f64,
+    tokens: f64,
+    refilled: Instant,
+}
+
+impl Budget {
+    fn new(per_hour: f64) -> Budget {
+        Budget { per_hour, tokens: Budget::cap(per_hour), refilled: Instant::now() }
+    }
+
+    fn cap(per_hour: f64) -> f64 {
+        (per_hour / 4.0).max(1.0)
+    }
+
+    fn has(&mut self) -> bool {
+        self.tokens = (self.tokens + self.refilled.elapsed().as_secs_f64() * self.per_hour / 3600.0).min(Budget::cap(self.per_hour));
+        self.refilled = Instant::now();
+        self.tokens >= 1.0
+    }
+
+    fn take(&mut self) -> bool {
+        if !self.has() {
+            return false;
+        }
+        self.tokens -= 1.0;
+        true
+    }
 }
 
 async fn latest(pages: &Bucket) -> Result<i64> {
