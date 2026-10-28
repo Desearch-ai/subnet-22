@@ -1253,14 +1253,14 @@ pub fn join_round(buckets: &Buckets, allowed: &Allowed, per_second: u64, progres
         let Some(store) = buckets.store_for(&domain) else {
             continue;
         };
-        let floor_kept = store.joined_since(&domain)? == terms.since;
+        let walked_since = store.joined_since(&domain)?;
         let joined = store.joined(&domain)?;
-        if floor_kept && joined == Some(terms.send_cap) {
+        if walked_since == terms.since && joined == Some(terms.send_cap) {
             continue;
         }
         let idle = store.ready_count(&domain)? == 0;
-        // A new date floor, a higher cap or a first walk all leave stored pages the waiting lane lacks, so it is built again; a lower cap is only counted.
-        let rewalk = !idle && (!floor_kept || cap_rose(joined, terms.send_cap));
+        // A lower floor, a higher cap or a first walk leave stored pages the waiting lane lacks, so it is built again; a higher floor or a lower cap only needs counting.
+        let rewalk = !idle && (floor_fell(walked_since, terms.since) || cap_rose(joined, terms.send_cap));
         let urls = store.domain(&domain)?.and_then(|record| records::int(record.get("urls"))).unwrap_or(0);
         todo.push((idle, std::cmp::Reverse(terms.weight), urls, domain, terms, rewalk));
     }
@@ -1315,6 +1315,15 @@ pub fn join_round(buckets: &Buckets, allowed: &Allowed, per_second: u64, progres
         let counted = walk(sending)?;
         Ok(counted + joining.join().expect("the list walker panicked")?)
     })
+}
+
+/// Whether a domain's date floor is below the one its stored pages were last queued under, so older pages it left out may go now.
+fn floor_fell(walked: Option<u32>, now: Option<u32>) -> bool {
+    match (walked, now) {
+        (Some(before), Some(now)) => now < before,
+        (Some(_), None) => true,
+        (None, _) => false,
+    }
 }
 
 /// Whether a domain's cap is above the one its stored pages were last queued under, or it was never walked.

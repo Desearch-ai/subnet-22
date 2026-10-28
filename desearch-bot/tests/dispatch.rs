@@ -1423,7 +1423,7 @@ fn a_date_floor_leaves_older_pages_unsent_wherever_they_would_queue() {
 }
 
 #[test]
-fn a_new_floor_builds_the_lane_of_a_domain_already_sending_again() {
+fn a_higher_floor_drops_older_pages_as_they_would_go_and_a_lower_floor_walks_the_domain_again() {
     let dir = Dir::new("join-floor-round");
     std::fs::create_dir_all(&dir.0).unwrap();
     let path = dir.0.join("domains.json");
@@ -1440,16 +1440,16 @@ fn a_new_floor_builds_the_lane_of_a_domain_already_sending_again() {
 
     relist(&path, &list, r#"[{"host": "example.com", "type": "news", "backlog": 100, "since": "2020-01-01"}]"#);
     assert_eq!(desearch_bot::dispatch::join_round(&buckets, &list, 1_000_000, &progress, &stop).unwrap(), 1);
-    let mut queued = ready(store);
-    queued.sort();
-    assert_eq!(queued, ["new", "undated"], "the page dated before the new floor leaves the waiting lane");
-    assert_eq!(store.ready_count("example.com").unwrap(), 2);
-    assert_eq!(progress.join_before_floor.load(std::sync::atomic::Ordering::Relaxed), 1);
+    assert_eq!(store.ready_count("example.com").unwrap(), 3, "a higher floor is only counted: the domain isn't walked or its lane cleared");
+    let mut taken: Vec<String> = take(store, 10).iter().map(|p| p.url.rsplit('/').next().unwrap().to_string()).collect();
+    taken.sort();
+    assert_eq!(taken, ["new", "undated"], "the page dated before the floor drops as it would go");
+    assert!(!ready(store).contains(&"old".to_string()));
     assert_eq!(desearch_bot::dispatch::join_round(&buckets, &list, 1_000_000, &progress, &stop).unwrap(), 0, "the same floor walks it no more");
 
     relist(&path, &list, r#"[{"host": "example.com", "type": "news", "backlog": 100}]"#);
     assert_eq!(desearch_bot::dispatch::join_round(&buckets, &list, 1_000_000, &progress, &stop).unwrap(), 1);
-    assert_eq!(store.ready_count("example.com").unwrap(), 3, "a floor taken off brings the older page back");
+    assert!(ready(store).contains(&"old".to_string()), "a floor taken off walks the domain again and brings the older page back");
     assert_eq!(store.joined_since("example.com").unwrap(), None);
 }
 

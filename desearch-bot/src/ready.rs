@@ -545,7 +545,7 @@ impl BucketStore {
     pub fn take_ready(&self, domain: &str, mut quotas: [usize; LANES]) -> Result<Vec<Pick>> {
         let want: usize = quotas.iter().sum();
         let robots = self.domain(domain)?.map(|record| records::robots_paths(&record)).unwrap_or_default();
-        let mut taking = Taking { robots, ..Taking::default() };
+        let mut taking = Taking { robots, since: self.terms(domain).since, ..Taking::default() };
         // A domain at its cap sends no more new pages; refreshes and retries of pages it sent go on.
         let room = self.fresh_room(domain)?.map(|room| room.min(usize::MAX as u64) as usize);
         if let Some(room) = room {
@@ -600,7 +600,9 @@ impl BucketStore {
                 }
                 taking.after[lane] = Some(key.clone());
                 let allowed = taking.robots.allows_page(domain, &entry.rest) && !self.listed_apart(domain, &entry.rest);
-                let due = record.filter(|_| allowed).and_then(|r| reason(&r, sent.as_ref()).map(|why| (r, why)));
+                // A floor raised since the page was queued drops it as it would go, so a moving floor never needs a walk.
+                let dated_in = |r: &Record| lane != FRESH || !before_floor(taking.since, r.lastmod, &entry.rest);
+                let due = record.filter(|r| allowed && dated_in(r)).and_then(|r| reason(&r, sent.as_ref()).map(|why| (r, why)));
                 // A page listed twice, under an older and a newer lastmod, goes once.
                 let Some((record, why)) = due.filter(|_| taking.picked.insert(entry.rest.clone())) else {
                     taking.stale.push(key);
@@ -1404,6 +1406,7 @@ impl BucketStore {
 #[derive(Default)]
 struct Taking {
     robots: Paths,
+    since: Option<u32>,
     picks: Vec<Pick>,
     stale: Vec<Vec<u8>>,
     picked: std::collections::HashSet<Vec<u8>>,
