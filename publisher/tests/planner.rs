@@ -297,6 +297,7 @@ fn settings(dir: PathBuf, pages_per_hour: f64, start_after: i64) -> Settings {
         max_waiting: 1_000,
         fresh: Some(Duration::from_secs(48 * 3600)),
         fresh_per_hour: 3600.0,
+        budget_at_start: Duration::from_secs(3600),
         fresh_per_site: 2_000,
         fresh_flush_after: Duration::from_secs(3600),
         pending_max_age: Duration::from_secs(3600),
@@ -1408,7 +1409,7 @@ async fn the_re_plan_fetches_only_the_change_files_its_budget_will_plan() {
     drop(planner);
 
     // A budget of two pages, with reads 4: two change files are worth fetching, not four.
-    let mut planner = Planner::new(tight(8.0), pages.clone(), temp.clone(), redis.clone(), Room::Fixed(0)).await.unwrap();
+    let mut planner = Planner::new(tight(60.0), pages.clone(), temp.clone(), redis.clone(), Room::Fixed(0)).await.unwrap();
     let before = stub.state.count("GET");
     planner.pass().await.unwrap();
     assert_eq!(planner.counts.replanned, 2);
@@ -1808,7 +1809,7 @@ async fn waiting_pages_are_read_again_only_once_the_budget_holds_an_input_s_wort
     let (pages, temp) = (bucket(stub.addr, "desearch-pages"), bucket(stub.addr, "subnet-22"));
     let page = |n: usize| v2(record(&format!("https://news.example/story/{n}"), &format!("{n} {}", article(2)), "article", "en"));
     log(&pages, 1, (0..5).map(page).collect()).await;
-    let mut five = settings(dir.join("state"), 20.0, 0);
+    let mut five = settings(dir.join("state"), 150.0, 0);
     five.max_pending = 1;
     let mut planner = Planner::new(five, pages.clone(), temp.clone(), redis.clone(), Room::Fixed(0)).await.unwrap();
     planner.pass().await.unwrap();
@@ -1964,13 +1965,13 @@ async fn the_backfill_shares_the_budget_with_waiting_pages_but_never_takes_what_
     planner.current = Some(current.clone());
     for _ in 0..100 {
         planner.pass().await.unwrap();
-        if planner.counts.backfill >= 895 {
+        if planner.counts.backfill >= 115 {
             break;
         }
     }
     planner.pass().await.unwrap();
     assert!(
-        planner.counts.backfill >= 895,
+        planner.counts.backfill >= 115,
         "with the re-plan at its sweep's end, as the waiting pages' change file cannot be read, the backfill takes the budget"
     );
 
@@ -2369,5 +2370,46 @@ async fn waiting_pages_are_read_again_from_several_change_files_at_once() {
     planner.pass().await.unwrap();
     assert_eq!((planner.counts.replanned, planner.counts.planned), (7, 7));
     assert!(started.elapsed() < Duration::from_secs(4), "seven files a second late each, four at once: {:?}", started.elapsed());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_restart_plans_and_hands_over_at_the_hourly_pace_from_the_start() {
+    let Some((_turn, mut redis)) = redis_db().await else {
+        eprintln!("skipped: no Redis on {REDIS}");
+        return;
+    };
+    let dir = scratch("restart-pace");
+    let stub = stub::start(dir.join("r2"), "127.0.0.1:0").await.unwrap();
+    let (pages, temp) = (bucket(stub.addr, "desearch-pages"), bucket(stub.addr, "subnet-22"));
+    let page = |n: u64| v2(record(&format!("https://news.example/story/{n}"), &format!("{n} {}", article(2)), "article", "en"));
+    for seq in 1..=6 {
+        log(&pages, seq, vec![page(seq)]).await;
+    }
+    let mut full = settings(dir.join("state"), 3600.0, 0);
+    full.pages_per_input = 1;
+    let mut planner = Planner::new(full, pages.clone(), temp.clone(), redis.clone(), Room::Fixed(0)).await.unwrap();
+    planner.pass().await.unwrap();
+    assert_eq!(planner.counts.inputs, 6, "written while the API had no room");
+    drop(planner);
+
+    for seq in 7..=9 {
+        log(&pages, seq, vec![page(seq)]).await;
+    }
+    // As in service: nothing banked, and both budgets together a page a second.
+    let mut serving = settings(dir.join("state"), 3600.0, 0);
+    (serving.pages_per_input, serving.fresh_per_hour, serving.budget_at_start) = (1, 0.0, Duration::ZERO);
+    let mut planner = Planner::new(serving, pages.clone(), temp.clone(), redis.clone(), Room::Fixed(100)).await.unwrap();
+    let started = std::time::Instant::now();
+    planner.pass().await.unwrap();
+    assert_eq!((planner.counts.planned, planner.counts.over_budget), (0, 3), "the log's new pages wait for budget");
+    let mut handed: u64 = 0;
+    while started.elapsed() < Duration::from_secs(3) {
+        planner.hand_over().await.unwrap();
+        handed = redis.llen(EMBED_INPUTS).await.unwrap();
+        assert!(handed as f64 <= 0.2 + started.elapsed().as_secs_f64(), "{handed} inputs of a page by {:?}", started.elapsed());
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!((2..=3).contains(&handed), "a page a second: {handed}");
     let _ = std::fs::remove_dir_all(&dir);
 }

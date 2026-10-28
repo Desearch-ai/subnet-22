@@ -208,7 +208,7 @@ The planner keeps its place in the log and the version of every page it planned 
 | `TASK_API_URL` | `https://api-22.desearch.ai` | where it asks for room |
 | `TASK_API_REDIS` | `redis://localhost:6379/15` | where it hands inputs over |
 | `PLANNER_DIR` | `/home/publisher/planner` | its state |
-| `PLANNER_PAGES_PER_HOUR` | 100000 | pages planned an hour at most; the log's pages past it wait and are planned later |
+| `PLANNER_PAGES_PER_HOUR` | 100000 | pages planned an hour at most, and with the fresh lane's handed over an hour at most, from the start; the log's pages past it wait and are planned later |
 | `PLANNER_PAGES_PER_INPUT` | 1000 | pages per input file at most |
 | `PLANNER_CHARS_PER_INPUT` | 3000000 | characters of text per input file at most |
 | `PLANNER_FLUSH_S` | 600 | a part-filled input is written once its first page waited this long |

@@ -95,6 +95,8 @@ const REPLAN_FILES_PER_PASS: usize = 64;
 const LOCK_WAIT: Duration = Duration::from_secs(180);
 /// Each failed open starts a new RocksDB info log, so tries are kept few.
 const LOCK_RETRY: Duration = Duration::from_secs(5);
+/// Budget left unspent, while the log brought too little or the API had no room, is kept up to this much, so a planner held back never plans or hands over a backlog at once.
+const BUDGET_BANKED: Duration = Duration::from_secs(120);
 
 pub static INPUT_SCHEMA: LazyLock<SchemaRef> = LazyLock::new(|| {
     let text = |name: &str| Field::new(name, DataType::Utf8, false);
@@ -410,6 +412,8 @@ pub struct Settings {
     pub fresh: Option<Duration>,
     /// Pages the fresh lane takes an hour at most; the rest go with the other pages.
     pub fresh_per_hour: f64,
+    /// How much of its budgets a starting planner holds; none in service, so a restart plans and hands over at the hourly pace from the start.
+    pub budget_at_start: Duration,
     /// Pages of one site the fresh lane takes an hour at most, so a site dating every page today cannot fill it.
     pub fresh_per_site: u32,
     /// A part-filled fresh input is written once its first page waited this long.
@@ -465,6 +469,7 @@ impl Settings {
             max_waiting: number("PLANNER_MAX_WAITING", 30_000_000)?,
             fresh: Some(Duration::from_secs_f64(number("PLANNER_FRESH_S", 48.0 * 3600.0)?)).filter(|window| !window.is_zero()),
             fresh_per_hour: number("PLANNER_FRESH_PER_HOUR", 300_000.0)?,
+            budget_at_start: Duration::ZERO,
             fresh_per_site: number("PLANNER_FRESH_PER_SITE", 2_000)?,
             fresh_flush_after: Duration::from_secs_f64(number("PLANNER_FRESH_FLUSH_S", 60.0)?),
             pending_max_age: Duration::from_secs_f64(number("PLANNER_PENDING_MAX_AGE_S", 12.0 * 3600.0)?),
@@ -1323,6 +1328,8 @@ pub struct Planner {
     read_through: i64,
     budget: Budget,
     fresh_budget: Budget,
+    /// Pages handed over, at no more than both lanes' budgets allow.
+    handing: Budget,
     /// Inputs waiting for room, by lane.
     pending: [usize; 2],
     missing: BTreeMap<i64, Instant>,
@@ -1362,7 +1369,9 @@ impl Planner {
                 (seq, Instant::now().checked_sub(Duration::from_secs_f64((now_us() as f64 / 1e6 - since).max(0.0))).unwrap_or_else(Instant::now))
             })
             .collect();
-        let (budget, fresh_budget) = (Budget::new(settings.pages_per_hour), Budget::new(settings.fresh_per_hour));
+        let held = settings.budget_at_start;
+        let (budget, fresh_budget) = (Budget::new(settings.pages_per_hour, held), Budget::new(settings.fresh_per_hour, held));
+        let handing = Budget::new(settings.pages_per_hour + settings.fresh_per_hour, held);
         let withdrawn = state.withdrawn()?;
         let mut planner = Planner {
             settings,
@@ -1390,6 +1399,7 @@ impl Planner {
             read_through,
             budget,
             fresh_budget,
+            handing,
             pending,
             missing,
             settled: Vec::new(),
@@ -2183,7 +2193,7 @@ impl Planner {
         self.pending[lane as usize] + self.writing.iter().filter(|writing| writing.lane == lane).count()
     }
 
-    /// Hands pending inputs to the task API, oldest first, as many as it has room for.
+    /// Hands pending inputs to the task API, the fresh lane's first, then oldest first, as many as it has room for and the budgets' pace allows.
     pub async fn hand_over(&mut self) -> Result<usize> {
         let pending = self.state.pending()?;
         self.pending = pending_by_lane(&pending);
@@ -2210,7 +2220,7 @@ impl Planner {
             .collect();
         let written = |entry: &Value| entry["written_at"].as_f64().unwrap_or(now);
         pending.sort_by(|a, b| (Lane::of(&a.2) as usize).cmp(&(Lane::of(&b.2) as usize)).then(written(&a.2).total_cmp(&written(&b.2))));
-        let (mut handed, mut expired) = (0, 0);
+        let (mut handed, mut expired, mut paced) = (0, 0, false);
         for (input_key, entry, parsed) in pending {
             let lane = Lane::of(&parsed) as usize;
             if now - parsed["written_at"].as_f64().unwrap_or(now) > self.settings.pending_max_age.as_secs_f64() {
@@ -2223,14 +2233,21 @@ impl Planner {
             if handed == room {
                 break;
             }
+            let pages = parsed["pages"].as_array().map_or(0, Vec::len);
+            if !self.handing.holds(pages) {
+                paced = true;
+                break;
+            }
             push_input(&mut self.redis, &input_key, &entry).await?;
             self.state.handed_over(&input_key)?;
+            self.handing.spend(pages);
             self.pending[lane] -= 1;
             handed += 1;
         }
         self.counts.handed_over += handed as u64;
         self.counts.expired += expired as u64;
-        let held = slow || self.pending.iter().sum::<usize>() > 0;
+        // Inputs held back only by the pace go at the next input cut, not after `ROOM_RETRY`.
+        let held = slow || (!paced && self.pending.iter().sum::<usize>() > 0);
         self.ask_room_at = held.then(|| Instant::now() + ROOM_RETRY);
         Ok(handed)
     }
@@ -2337,7 +2354,7 @@ fn chars_of(page: &Planned) -> usize {
     page.texts.iter().map(|text| text.text.chars().count()).sum()
 }
 
-/// Pages an hour, of which a quarter hour's worth can be spent at once.
+/// Pages an hour, of which `BUDGET_BANKED`'s worth can be spent at once.
 struct Budget {
     per_hour: f64,
     tokens: f64,
@@ -2345,12 +2362,13 @@ struct Budget {
 }
 
 impl Budget {
-    fn new(per_hour: f64) -> Budget {
-        Budget { per_hour, tokens: Budget::cap(per_hour), refilled: Instant::now() }
+    /// A budget holding `held` of it to start with, at most what it banks.
+    fn new(per_hour: f64, held: Duration) -> Budget {
+        Budget { per_hour, tokens: (per_hour * held.as_secs_f64() / 3600.0).min(Budget::cap(per_hour)), refilled: Instant::now() }
     }
 
     fn cap(per_hour: f64) -> f64 {
-        (per_hour / 4.0).max(1.0)
+        (per_hour * BUDGET_BANKED.as_secs_f64() / 3600.0).max(1.0)
     }
 
     fn has(&mut self) -> bool {
@@ -2375,6 +2393,10 @@ impl Budget {
         }
         self.tokens -= 1.0;
         true
+    }
+
+    fn spend(&mut self, pages: usize) {
+        self.tokens -= pages as f64;
     }
 }
 
