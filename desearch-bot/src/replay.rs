@@ -31,7 +31,6 @@ use crate::urls::{self, Record};
 const PASS: u32 = 5;
 const HOUR: u32 = 3_600;
 const FLOOR: u32 = 86_400;
-const SPREAD: u32 = 120;
 /// Seconds from a send to its outcome, as the miners, validators and publisher take.
 const OUTCOME_AFTER: u32 = 600;
 /// The sitemap every simulated read is filed under.
@@ -172,11 +171,12 @@ impl Bars {
             times.pop_front();
         }
         times.push_back(at);
-        let spread = (limit * u64::from(SPREAD) / u64::from(HOUR)).max(100);
+        let spread = (limit * u64::from(dispatch::SPREAD_SECONDS) / u64::from(HOUR)).max(dispatch::SPREAD_FLOOR);
         if times.len() as u64 > limit {
             self.over_hour += 1;
         }
-        if times.iter().rev().take_while(|&&t| t + SPREAD > at).count() as u64 > spread {
+        // The share saved up, and what refills at the hourly rate while it goes.
+        if times.iter().rev().take_while(|&&t| t + dispatch::SPREAD_SECONDS > at).count() as u64 > spread + limit * u64::from(dispatch::SPREAD_SECONDS) / u64::from(HOUR) {
             self.over_spread += 1;
         }
     }

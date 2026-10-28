@@ -229,10 +229,10 @@ impl Pace {
     }
 }
 
-/// The stretch of its hourly limit a domain may send at once, so a site sees a steady stream rather than its hour in one burst.
-const SPREAD_SECONDS: u32 = 120;
+/// The stretch of its hourly limit a domain may save up and send at once, as long as the pace saves, so passes up to that long keep it at its hourly rate.
+pub const SPREAD_SECONDS: u32 = 300;
 /// Pages a domain may always send at once, so a small hourly limit is not cut to a page or two.
-const SPREAD_FLOOR: u64 = 100;
+pub const SPREAD_FLOOR: u64 = 100;
 
 pub struct HourlyCap {
     limit: u64,
@@ -253,7 +253,7 @@ impl HourlyCap {
         self.limit
     }
 
-    /// What is left of `limit` in the last hour and of its share for the last two minutes, for a domain held to less than the usual cap.
+    /// What is left of `limit` in the last hour and of the share it has saved up, for a domain held to less than the usual cap.
     pub fn allowance_under(&mut self, domain: &str, now: u32, limit: u64) -> u64 {
         self.allowance_within(domain, now, limit, SPREAD_FLOOR)
     }
@@ -268,11 +268,17 @@ impl HourlyCap {
             sent.pop_front();
         }
         let total: u64 = sent.iter().map(|(_, n)| n).sum();
-        let recent: u64 = sent.iter().filter(|(at, _)| *at + SPREAD_SECONDS > now).map(|(_, n)| n).sum();
+        let per_second = limit as f64 / f64::from(HOUR);
+        let (mut owed, mut last) = (0.0_f64, now);
+        for &(at, n) in sent.iter() {
+            owed = (owed - f64::from(at.saturating_sub(last)) * per_second).max(0.0) + n as f64;
+            last = at;
+        }
+        let owed = (owed - f64::from(now.saturating_sub(last)) * per_second).max(0.0);
         if sent.is_empty() {
             self.sent.remove(domain);
         }
-        limit.saturating_sub(total).min(spread.saturating_sub(recent))
+        limit.saturating_sub(total).min(spread.saturating_sub(owed.ceil() as u64))
     }
 
     pub fn record(&mut self, domain: &str, now: u32, count: u64) {
@@ -511,6 +517,8 @@ pub struct Dispatcher {
     cap: HourlyCap,
     pace: Pace,
     domains: HashMap<String, Domain>,
+    /// The list's version `domains` was last matched to.
+    list_version: u64,
     /// The domain whose turn comes first next pass, as (rank, domain).
     resume: Option<(i64, String)>,
     /// The batches in flight, kept so a restart sends them again unchanged.
@@ -550,7 +558,7 @@ impl Dispatcher {
         recrawl: Recrawl,
         progress: Arc<Progress>,
     ) -> Result<Self> {
-        let reading = buckets.clone();
+        let (reading, list_version) = (buckets.clone(), buckets.list_version());
         let (domains, paced, pending) = tokio::task::spawn_blocking(move || -> Result<_> {
             let (mut domains, mut paced) = (HashMap::new(), HashMap::new());
             let forgotten = on_readers(reading.stores().collect(), |store| store.forget_expecting())?;
@@ -564,12 +572,11 @@ impl Dispatcher {
                     if !reading.allows(&domain) {
                         continue;
                     }
-                    let (rank, per_hour) = placing_of(&reading, &domain);
-                    let (share, weight) = (share_of(&reading, &domain, now()), reading.terms(&domain).weight);
+                    let (placed, per_hour) = placed(&reading, &domain, ready, now());
                     if let Some(per_hour) = per_hour {
                         paced.insert(domain.clone(), per_hour);
                     }
-                    domains.insert(domain, Domain { rank, ready, share, weight });
+                    domains.insert(domain, placed);
                 }
             }
             let pending: Vec<Pending> = match reading.stores().next().map(|store| store.meta(PENDING)).transpose()?.flatten() {
@@ -581,6 +588,7 @@ impl Dispatcher {
         })
         .await??;
         let dispatcher = Dispatcher {
+            list_version,
             buckets,
             api: Arc::new(api),
             cap: HourlyCap::new(per_domain_hourly),
@@ -718,6 +726,11 @@ impl Dispatcher {
 
     /// Take in what grew since the last pass: new pages on the lists, retries and re-crawls now due, and ranks now and then.
     async fn absorb(&mut self, now: u32) -> Result<()> {
+        let version = self.buckets.list_version();
+        if version != self.list_version {
+            self.relist(now).await?;
+            self.list_version = version;
+        }
         let (buckets, recrawl) = (self.buckets.clone(), self.recrawl.clone());
         let refresh: Vec<String> =
             if self.ranks_read.elapsed() >= RANKS_SECONDS { self.domains.keys().cloned().collect() } else { Vec::new() };
@@ -763,7 +776,7 @@ impl Dispatcher {
             for (due, noticed) in swept {
                 requeued += due.moved;
                 gone += due.gone;
-                for (domain, added) in noticed {
+                for (domain, added) in noticed.into_iter().filter(|(domain, _)| buckets.allows(domain)) {
                     *grown.entry(domain).or_default() += added;
                 }
             }
@@ -942,6 +955,39 @@ impl Dispatcher {
         }
     }
 
+    /// After the list changed: domains it no longer names leave the ready lists here, and newly named ones with pages ready join.
+    async fn relist(&mut self, now: u32) -> Result<()> {
+        let buckets = self.buckets.clone();
+        let known: HashSet<String> = self.domains.keys().cloned().collect();
+        let joining = tokio::task::spawn_blocking(move || -> Result<Vec<(String, Domain, Option<u64>)>> {
+            let found = on_readers(buckets.stores().collect(), |store| {
+                Ok(store
+                    .ready_domains()?
+                    .into_iter()
+                    .filter(|(domain, ready)| *ready > 0 && !known.contains(domain) && buckets.allows(domain))
+                    .map(|(domain, ready)| {
+                        let (placed, per_hour) = placed(&buckets, &domain, ready, now);
+                        (domain, placed, per_hour)
+                    })
+                    .collect::<Vec<_>>())
+            })?;
+            Ok(found.into_iter().flatten().collect())
+        })
+        .await??;
+        let before = self.domains.len();
+        let buckets = self.buckets.clone();
+        self.domains.retain(|domain, _| buckets.allows(domain));
+        self.paced.retain(|domain, _| buckets.allows(domain));
+        let left = before - self.domains.len();
+        let joined = joining.len();
+        for (domain, placed, per_hour) in joining {
+            self.pace_by_delay(&domain, per_hour);
+            self.domains.insert(domain, placed);
+        }
+        println!("[rs] the list changed: {left} domains left the ready lists, {joined} joined them");
+        Ok(())
+    }
+
     fn pace_by_delay(&mut self, domain: &str, paced: Option<u64>) {
         match paced {
             Some(per_hour) => self.paced.insert(domain.to_string(), per_hour),
@@ -1029,7 +1075,7 @@ impl Dispatcher {
             return Ok((0, true));
         }
         self.save_pending().await?;
-        let (mut taken, mut failed) = (0, Vec::new());
+        let (mut landed, mut failed) = (Vec::new(), Vec::new());
         let mut wave = self.pending.clone();
         while !wave.is_empty() {
             let mut sending = tokio::task::JoinSet::new();
@@ -1042,7 +1088,7 @@ impl Dispatcher {
             }
             while let Some(joined) = sending.join_next().await {
                 match joined? {
-                    (pending, Ok(_)) => taken += self.landed(pending).await?,
+                    (pending, Ok(_)) => landed.push(pending),
                     (pending, Err(ApiError::Refused(413 | 422, _))) if pending.picks.len() > 1 => wave.extend(pending.halves()),
                     (pending, Err(error @ ApiError::Refused(413 | 422, _))) => {
                         eprintln!("[rs] the task API refused {}, set aside: {error}", pending.picks[0].url);
@@ -1055,6 +1101,7 @@ impl Dispatcher {
                 }
             }
         }
+        let taken = self.landed(landed).await?;
         let cleared = failed.is_empty();
         self.pending = failed;
         self.save_pending().await?;
@@ -1068,52 +1115,57 @@ impl Dispatcher {
         Ok(())
     }
 
-    /// A batch the API took: its pages leave the ready lists and count as sent.
-    async fn landed(&mut self, pending: Pending) -> Result<u64> {
-        self.mark_sent(&pending).await?;
-        let mut per_domain: HashMap<&str, u64> = HashMap::new();
-        for sending in &pending.picks {
-            *per_domain.entry(&sending.domain).or_default() += 1;
+    /// Batches the API took: their pages leave the ready lists and count as sent, marked in one pass over the stores.
+    async fn landed(&mut self, landed: Vec<Pending>) -> Result<u64> {
+        if landed.is_empty() {
+            return Ok(0);
         }
-        for (domain, count) in per_domain {
-            self.cap.record(domain, pending.at, count);
-        }
-        for sending in &pending.picks {
-            let counter = match sending.reason {
-                0 => &self.progress.sent_new,
-                1 => &self.progress.sent_refresh,
-                3 => &self.progress.sent_fill,
-                4 => &self.progress.sent_resend,
-                _ => &self.progress.sent_retry,
-            };
-            counter.fetch_add(1, Ordering::Relaxed);
-            if let Some(resent) = self.resent.as_ref().filter(|_| sending.reason == 4) {
-                resent.insert(&sending.domain, sending.rest.as_bytes());
+        self.mark_sent(&landed).await?;
+        let mut count = 0;
+        for pending in &landed {
+            let mut per_domain: HashMap<&str, u64> = HashMap::new();
+            for sending in &pending.picks {
+                *per_domain.entry(&sending.domain).or_default() += 1;
             }
+            for (domain, count) in per_domain {
+                self.cap.record(domain, pending.at, count);
+            }
+            for sending in &pending.picks {
+                let counter = match sending.reason {
+                    0 => &self.progress.sent_new,
+                    1 => &self.progress.sent_refresh,
+                    3 => &self.progress.sent_fill,
+                    4 => &self.progress.sent_resend,
+                    _ => &self.progress.sent_retry,
+                };
+                counter.fetch_add(1, Ordering::Relaxed);
+                if let Some(resent) = self.resent.as_ref().filter(|_| sending.reason == 4) {
+                    resent.insert(&sending.domain, sending.rest.as_bytes());
+                }
+            }
+            count += pending.picks.len() as u64;
+            self.progress.batches.fetch_add(1, Ordering::Relaxed);
         }
-        let count = pending.picks.len() as u64;
         self.pace.spend(count);
         self.progress.dispatched.fetch_add(count, Ordering::Relaxed);
-        self.progress.batches.fetch_add(1, Ordering::Relaxed);
         Ok(count)
     }
 
     async fn set_aside(&mut self, pending: Pending) -> Result<()> {
-        self.mark_sent(&pending).await?;
+        self.mark_sent(std::slice::from_ref(&pending)).await?;
         self.progress.set_aside.fetch_add(pending.picks.len() as u64, Ordering::Relaxed);
         Ok(())
     }
 
-    async fn mark_sent(&mut self, pending: &Pending) -> Result<()> {
+    async fn mark_sent(&mut self, landed: &[Pending]) -> Result<()> {
         let (buckets, recrawl) = (self.buckets.clone(), self.recrawl.clone());
-        let picks: Vec<Pick> = pending.picks.iter().map(Sending::pick).collect();
-        let at = pending.at;
+        let picks: Vec<(u32, Pick)> = landed.iter().flat_map(|pending| pending.picks.iter().map(|sending| (pending.at, sending.pick()))).collect();
         let left = tokio::task::spawn_blocking(move || -> Result<Vec<(String, u64, i64)>> {
-            let mut by_bucket: HashMap<usize, Vec<Pick>> = HashMap::new();
-            for pick in picks {
-                by_bucket.entry(bucket_of(&pick.entry.domain)).or_default().push(pick);
+            let mut by_store: HashMap<(usize, u32), Vec<Pick>> = HashMap::new();
+            for (at, pick) in picks {
+                by_store.entry((bucket_of(&pick.entry.domain), at)).or_default().push(pick);
             }
-            let per_store = on_readers(by_bucket.into_values().collect(), |picks| {
+            let per_store = on_readers(by_store.into_iter().collect(), |((_, at), picks)| {
                 let mut left = Vec::new();
                 let Some(store) = buckets.store_for(&picks[0].entry.domain) else {
                     return Ok(left);
@@ -1747,6 +1799,12 @@ fn fillers(buckets: &Buckets, now: u32) -> Result<Fillers> {
 
 fn rank_of(buckets: &Buckets, domain: &str) -> i64 {
     placing_of(buckets, domain).0
+}
+
+/// A domain with pages ready as the dispatcher keeps it, and the hourly rate its Crawl-delay allows.
+fn placed(buckets: &Buckets, domain: &str, ready: u64, now: u32) -> (Domain, Option<u64>) {
+    let (rank, per_hour) = placing_of(buckets, domain);
+    (Domain { rank, ready, share: share_of(buckets, domain, now), weight: buckets.terms(domain).weight }, per_hour)
 }
 
 /// A domain's rank, and the hourly rate its Crawl-delay allows when its robots.txt names one.
