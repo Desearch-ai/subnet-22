@@ -832,6 +832,29 @@ async fn among_change_files_fetched_ahead_one_unreadable_and_one_not_numbered_ye
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_planner_counts_its_time_waiting_on_change_files_input_writes_and_state_writes() {
+    let Some((_turn, redis)) = redis_db().await else {
+        eprintln!("skipped: no Redis on {REDIS}");
+        return;
+    };
+    let dir = scratch("spent");
+    let stub = stub::start(dir.join("r2"), "127.0.0.1:0").await.unwrap();
+    let (pages, temp) = (bucket(stub.addr, "desearch-pages"), bucket(stub.addr, "subnet-22"));
+    log(&pages, 1, vec![v2(record("https://news.example/story/1", &article(2), "article", "en"))]).await;
+    stub.state.slow("GET", "desearch-pages/changes/dt=", 1, Duration::from_secs(1));
+    stub.state.slow("PUT", "subnet-22/embed/inputs/", 1, Duration::from_secs(1));
+    let mut one_a_page = settings(dir.join("state"), 3600.0, 0);
+    one_a_page.pages_per_input = 1;
+    let mut planner = Planner::new(one_a_page, pages.clone(), temp.clone(), redis.clone(), Room::Fixed(0)).await.unwrap();
+    planner.pass().await.unwrap();
+    let spent = planner.spent.clone();
+    assert!(spent.log_reads >= Duration::from_secs(1) && spent.log >= spent.log_reads, "{spent:?}");
+    assert!(spent.input_writes >= Duration::from_millis(800), "{spent:?}");
+    assert!(planner.state.writing() > Duration::ZERO);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn pages_dated_in_the_last_two_days_get_their_own_inputs_outside_the_budget_and_a_restart_reads_a_buffered_lane_again() {
     let Some((_turn, mut redis)) = redis_db().await else {
         eprintln!("skipped: no Redis on {REDIS}");

@@ -3,7 +3,7 @@
 use std::collections::{btree_map, BTreeMap, HashMap, HashSet, VecDeque};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 
@@ -624,6 +624,8 @@ impl Batch {
 pub struct State {
     db: DB,
     waiting: AtomicI64,
+    /// Nanoseconds spent in `write`.
+    writing: AtomicU64,
 }
 
 impl State {
@@ -653,7 +655,7 @@ impl State {
             Some(raw) => String::from_utf8_lossy(&raw).parse()?,
             None => db.prefix_iterator(b"waiting/").take_while(|item| item.as_ref().is_ok_and(|(key, _)| key.starts_with(b"waiting/"))).count() as i64,
         };
-        Ok(State { db, waiting: AtomicI64::new(waiting) })
+        Ok(State { db, waiting: AtomicI64::new(waiting), writing: AtomicU64::new(0) })
     }
 
     /// How many pages wait.
@@ -666,9 +668,16 @@ impl State {
         if batch.waiting != 0 {
             batch.put(WAITING_COUNT, (self.waiting_count() + batch.waiting).max(0).to_string());
         }
+        let started = Instant::now();
         self.db.write(batch.writes)?;
+        self.writing.fetch_add(started.elapsed().as_nanos() as u64, Ordering::Relaxed);
         self.waiting.fetch_add(batch.waiting, Ordering::Relaxed);
         Ok(())
+    }
+
+    /// Time spent saving inputs and changing which pages wait.
+    pub fn writing(&self) -> Duration {
+        Duration::from_nanos(self.writing.load(Ordering::Relaxed))
     }
 
     pub fn cursor(&self) -> Result<Option<i64>> {
@@ -1159,6 +1168,16 @@ pub struct Counts {
     pub dropped: u64,
 }
 
+/// Time spent since the start reading the log and planning waiting pages, and within that waiting on change files and on input writes.
+#[derive(Debug, Default, Clone)]
+pub struct Spent {
+    pub log: Duration,
+    pub log_reads: Duration,
+    pub replan: Duration,
+    pub replan_reads: Duration,
+    pub input_writes: Duration,
+}
+
 /// What became of a page the planner considered.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Considered {
@@ -1295,6 +1314,7 @@ pub struct Planner {
     /// Where the backfill reads `current/`.
     pub current: Option<Bucket>,
     pub counts: Counts,
+    pub spent: Spent,
     listed: Option<Listed>,
     listed_modified: Option<std::time::SystemTime>,
     set: Option<Arc<Set>>,
@@ -1366,6 +1386,7 @@ impl Planner {
             room,
             current: None,
             counts: Counts::default(),
+            spent: Spent::default(),
             listed: None,
             listed_modified: None,
             set: None,
@@ -1482,10 +1503,13 @@ impl Planner {
         let latest = latest(&self.pages).await?;
         let mut read = self.read_late().await?;
         let ahead: Vec<i64> = (self.read_through + 1..=latest).take(FILES_PER_PASS.saturating_sub(read)).collect();
-        let pages = self.pages.clone();
+        let (pages, started) = (self.pages.clone(), Instant::now());
         let mut fetched =
             stream::iter(ahead).map(|seq| Ahead(tokio::spawn(fetch(pages.clone(), seq))).map(move |rows| (seq, rows))).buffered(self.settings.reads.max(1));
-        while let Some((seq, rows)) = fetched.next().await {
+        loop {
+            let waited = Instant::now();
+            let Some((seq, rows)) = fetched.next().await else { break };
+            self.spent.log_reads += waited.elapsed();
             match rows?? {
                 Ok(rows) => {
                     self.take(rows, seq, false).await?;
@@ -1495,7 +1519,11 @@ impl Planner {
             }
             self.advance(seq)?;
         }
-        let (replanned, waiting_for_budget) = self.replan().await?;
+        self.spent.log += started.elapsed();
+        let started = Instant::now();
+        let replanned = self.replan().await;
+        self.spent.replan += started.elapsed();
+        let (replanned, waiting_for_budget) = replanned?;
         // The backfill never takes budget the re-plan stopped short of; past the re-plan's file cap or sweep, they share it.
         let backfilled = if waiting_for_budget { false } else { self.backfill().await? };
         for lane in Lane::ALL {
@@ -1524,12 +1552,14 @@ impl Planner {
             if !self.budget.holds(self.settings.pages_per_input) {
                 return Ok((took, self.state.waiting_count() > 0));
             }
+            let waited = Instant::now();
             let Some((seq, rows)) = fetched.next().await else {
                 if swept {
                     self.replan_after = 0;
                 }
                 return Ok((took, false));
             };
+            self.spent.replan_reads += waited.elapsed();
             self.replan_after = seq;
             let keys = match self.state.replan_group(seq - 1)? {
                 Some((at, keys)) if at == seq => keys,
@@ -1727,6 +1757,16 @@ impl Planner {
         Ok(())
     }
 
+    /// Whole seconds spent since the start.
+    fn spent_report(&self) -> String {
+        let Spent { log, log_reads, replan, replan_reads, input_writes } = &self.spent;
+        let [log, log_reads, replan, replan_reads, input_writes, state_writes] =
+            [*log, *log_reads, *replan, *replan_reads, *input_writes, self.state.writing()].map(|spent| spent.as_secs());
+        format!(
+            "Spent {{ log: {log}s, log_reads: {log_reads}s, replan: {replan}s, replan_reads: {replan_reads}s, input_writes: {input_writes}s, state_writes: {state_writes}s }}"
+        )
+    }
+
     /// Takes back the pages of inputs the task API dropped; they are trimmed from its list only once forgotten, so a crash loses none.
     pub async fn forget_dropped(&mut self) -> Result<usize> {
         let dropped: Vec<String> = self.redis.lrange(EMBED_DROPPED, 0, (FILES_PER_PASS * 10) as isize - 1).await?;
@@ -1753,7 +1793,7 @@ impl Planner {
                 }
             };
             if reported.elapsed() >= Duration::from_secs(60) {
-                println!("planner: through change file {}, {:?}", self.read_through, self.counts);
+                println!("planner: through change file {}, {:?}, {}", self.read_through, self.counts, self.spent_report());
                 reported = Instant::now();
             }
             if let Some(warning) = self.stale_set_warning(Instant::now()) {
@@ -2075,7 +2115,10 @@ impl Planner {
     async fn save_written(&mut self, left: usize) -> Result<()> {
         let temp = self.temp.clone();
         while self.writing.len() > left {
-            if let Err(error) = self.writing.front_mut().expect("an input cut").written(&temp).await {
+            let waited = Instant::now();
+            let written = self.writing.front_mut().expect("an input cut").written(&temp).await;
+            self.spent.input_writes += waited.elapsed();
+            if let Err(error) = written {
                 // Writes that failed together are tried again together.
                 for writing in self.writing.iter_mut().filter(|writing| writing.write.as_ref().is_some_and(JoinHandle::is_finished)) {
                     let _ = writing.written(&temp).await;

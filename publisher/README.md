@@ -56,6 +56,10 @@ holds. A starting planner waits up to two minutes for the one it replaces to let
 is full, slow to answer (2 s or more) or does not answer, inputs wait, and the planner asks for room at the end
 of each pass and at most every 30 s in between; after a restart it asks before reading the log.
 
+After a pass, at most once a minute, the planner logs its place in the log, its counts since it started, and the
+seconds it spent since then reading the log and planning waiting pages, waiting on change files for each, waiting
+on input writes and writing its state.
+
 - **What it plans** (`PLANNER_SET_FILE`): only pages the v1 set takes: a news site's pages dated on or
   after its `since`, by `published` or a date in the URL path, and, when the file's `undated` is `article`,
   its pages with no date typed `article`; a whole site's pages, or those under its `paths`; a bulk source's
