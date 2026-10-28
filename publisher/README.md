@@ -47,29 +47,33 @@ never inside a table row, a list item or a code block. A v1 page keeps the vecto
 
 The planner reads the change log, a few files at once and in log order, and writes inputs of up to 1,000
 pages or 3M characters for the task API. Each input goes to the API as soon as it is written, while the API
-has room. When the API is full or does not answer, inputs wait, and the planner asks for room at the end of
-each pass and at most every 30 s in between; after a restart it asks before reading the log.
+has room. When the API is full, slow to answer (2 s or more) or does not answer, inputs wait, and the planner
+asks for room at the end of each pass and at most every 30 s in between; after a restart it asks before reading
+the log.
 
 - **What it plans** (`PLANNER_SET_FILE`): only pages the v1 set takes: a news site's pages dated on or
   after its `since`, by `published` or a date in the URL path, and, when the file's `undated` is `article`,
   its pages with no date typed `article`; a whole site's pages, or those under its `paths`; a bulk source's
   crawled pages. Pages are also English, at least `PLANNER_MIN_CHARS` long and off
   the exclusion list. With `PLANNER_SET_FILE` set, the planner does not start without the set. Each time it reads
-  the set it logs the set's `built` time, or the time its file was written when the set has none, and it warns
-  then and hourly while the set is more than two days old.
+  the set it logs the set's `built` time, or the time its file was written when the set has none or it cannot be
+  read, and it warns then and hourly while the set is more than two days old; the same build read again keeps the
+  hourly timer.
 - **Fresh lane:** pages seen for the first time and dated within `PLANNER_FRESH_S` (48 h) get their own inputs,
   written within `PLANNER_FRESH_FLUSH_S` (60 s), handed over ahead of other waiting inputs, outside the hourly
   budget (`PLANNER_PAGES_PER_HOUR`) and within their own (`PLANNER_FRESH_PER_HOUR`). Every other page shares the
   budget. A page the log removes is forgotten, so it is embedded again if it comes back.
 - **Waiting pages:** a page refused for budget or room, or given back after it was planned, waits with the change file
-  that holds it. It is planned from that file once there is room and the budget holds an input's worth of pages. A
+  that holds it. It is planned from that file once there is room and the budget holds an input's worth of pages:
+  `PLANNER_PAGES_PER_INPUT`, or a quarter hour of budget when that is less, as the budget holds no more. A
   version planned without its change file number is left to the backfill or a re-crawl. An input is pushed to the
   task API once, however often a restart tries it.
-- **Backfill** (`PLANNER_BACKFILL=1`): with what budget and room the log and waiting pages leave, and only once
-  the budget holds an input's worth, it reads `current/` shard by shard (`PLANNER_BACKFILL_SHARDS`) and plans
-  each page's standing version that the set takes and was never embedded at that text. It keeps its place across
-  restarts, and sweeps again `PLANNER_BACKFILL_EVERY_S` (24 h) after its last shard, so a page the log passed by
-  is planned once `current/` holds it.
+- **Backfill** (`PLANNER_BACKFILL=1`): with what budget and room the log and waiting pages leave, it reads
+  `current/` shard by shard (`PLANNER_BACKFILL_SHARDS`). It waits while waiting pages are held back for the
+  budget, starts only once the budget holds an input's worth, and reads at most `PLANNER_MAX_PENDING` inputs'
+  worth a pass, so the log is read between. It plans each page's standing version that the set takes and was
+  never embedded at that text. It keeps its place across restarts, and sweeps again `PLANNER_BACKFILL_EVERY_S`
+  (24 h) after its last shard, so a page the log passed by is planned once `current/` holds it.
 - **Page vectors first** (`PLANNER_PAGE_FIRST=1`, off by default): pages outside the fresh lane get their
   page text alone; a page's passages are planned the next time it is seen with the setting off.
 

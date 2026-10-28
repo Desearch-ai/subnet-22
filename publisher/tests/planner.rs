@@ -1712,7 +1712,12 @@ async fn the_set_s_age_is_from_when_it_was_built_or_else_when_its_file_was_writt
     let set = dir.join("v1-set.json");
     let sites = json!([{"host": "news.example", "rule": "news"}]);
     let three_days_ago = iso(publisher::service::now_us() - 3 * 86_400_000_000).replace("+00:00", "Z");
-    for (file, state, days) in [(json!({"built": three_days_ago, "sites": sites}), "built", 3.0), (json!({"sites": sites}), "written", 0.0)] {
+    let four_days_ago = iso(publisher::service::now_us() - 4 * 86_400_000_000).replace("+00:00", "Z");
+    for (file, state, days) in [
+        (json!({"built": three_days_ago, "sites": sites}), "built", 3.0),
+        (json!({"sites": sites}), "written", 0.0),
+        (json!({"built": "yesterday", "sites": sites}), "unparsable", 0.0),
+    ] {
         std::fs::write(&set, file.to_string()).unwrap();
         let mut with_set = settings(dir.join(state), 3600.0, 0);
         with_set.set_file = Some(set.clone());
@@ -1720,15 +1725,21 @@ async fn the_set_s_age_is_from_when_it_was_built_or_else_when_its_file_was_writt
         let age = planner.set_age().unwrap().as_secs_f64() / 86_400.0;
         assert!((age - days).abs() < 0.01, "{state}: {age} days");
         let (now, hour) = (std::time::Instant::now(), Duration::from_secs(3600));
-        if state == "written" {
+        if state != "built" {
             assert_eq!(planner.stale_set_warning(now + hour), None, "a set built within two days is not warned about");
             continue;
         }
         assert_eq!(planner.stale_set_warning(now), None, "warned when it was read, so not again within the hour");
-        let warning = planner.stale_set_warning(now + hour).expect("warned again an hour later");
+        std::fs::write(&set, file.to_string()).unwrap();
+        assert!(planner.reload_set().unwrap());
+        let warning = planner.stale_set_warning(now + hour).expect("the same build read again keeps the hourly timer");
         assert!(warning.contains("built 3.0 days ago"), "{warning}");
         assert_eq!(planner.stale_set_warning(now + hour + hour / 2), None);
         assert!(planner.stale_set_warning(now + hour * 2).is_some(), "and every hour after");
+        std::fs::write(&set, json!({"built": four_days_ago, "sites": sites}).to_string()).unwrap();
+        assert!(planner.reload_set().unwrap());
+        let warning = planner.stale_set_warning(now + hour * 2 + hour / 2).expect("a new build time restarts the timer when it is read");
+        assert!(warning.contains("built 4.0 days ago"), "{warning}");
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -1780,21 +1791,70 @@ async fn waiting_pages_get_the_budget_before_the_backfill_which_also_waits_for_a
     assert!(planner.counts.backfill >= 895, "the backfill spent the budget while the waiting pages' change file could not be read");
 
     pages.put(file_key, file, PARQUET, None).await.unwrap();
+    let backfilled = planner.counts.backfill;
     let started = std::time::Instant::now();
     while planner.state.waiting_count() > 0 && started.elapsed() < Duration::from_secs(6) {
         planner.pass().await.unwrap();
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     assert_eq!(
-        (planner.counts.replanned, planner.state.waiting_count()),
-        (2, 0),
-        "the re-plan runs first, so it takes the budget once it holds an input's worth"
+        (planner.counts.replanned, planner.state.waiting_count(), planner.counts.backfill),
+        (2, 0, backfilled),
+        "the backfill waits while pages wait for the budget, so the re-plan takes it once it holds an input's worth"
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// A task API that answers the embed room `room` holds, or fails while it is below 0, and counts in `asked` how often it is asked.
-async fn room_api(room: Arc<std::sync::atomic::AtomicI64>, asked: Arc<AtomicU64>) -> String {
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_backfill_pass_reads_at_most_max_pending_inputs_worth_so_the_log_is_read_between() {
+    let Some((_turn, redis)) = redis_db().await else {
+        eprintln!("skipped: no Redis on {REDIS}");
+        return;
+    };
+    let dir = scratch("backfill-bound");
+    let stub = stub::start(dir.join("r2"), "127.0.0.1:0").await.unwrap();
+    let (pages, temp, current) = (bucket(stub.addr, "desearch-pages"), bucket(stub.addr, "subnet-22"), bucket(stub.addr, "desearch-current"));
+    let page = |name: &str| v2(record(&format!("https://news.example/story/{name}"), &format!("{name} {}", article(2)), "article", "en"));
+    let row = |n: usize| {
+        let record = v2(record(&format!("https://news.example/archive/{n}"), &format!("{n} {}", article(2)), "article", "en"));
+        PageRow {
+            key: page_key(&record.url).unwrap(),
+            removed: false,
+            change_seq: 1,
+            version: record_version(&record),
+            published_at: record.fetched_at.clone(),
+            record,
+        }
+    };
+    shard(&current, 7, vec![(0..300).map(row).collect()]).await;
+    log(&pages, 1, vec![page("first")]).await;
+    let mut bounded = settings(dir.join("state"), 3_600_000.0, 0);
+    (bounded.backfill, bounded.backfill_shards, bounded.max_pending) = (true, 7..8, 2);
+    let mut planner = Planner::new(bounded, pages.clone(), temp.clone(), redis.clone(), Room::Fixed(1_000)).await.unwrap();
+    planner.current = Some(current.clone());
+    for _ in 0..20 {
+        planner.pass().await.unwrap();
+        if planner.counts.backfill > 0 {
+            break;
+        }
+    }
+    assert_eq!((planner.counts.planned, planner.counts.backfill), (7, 6), "the log's page, then two inputs of three from current/");
+
+    log(&pages, 2, vec![page("second")]).await;
+    planner.pass().await.unwrap();
+    assert_eq!((planner.counts.planned, planner.counts.backfill), (14, 12), "the next pass reads the log before going on");
+    for _ in 0..100 {
+        planner.pass().await.unwrap();
+        if planner.counts.shards == 1 {
+            break;
+        }
+    }
+    assert_eq!((planner.counts.planned, planner.counts.backfill), (302, 300));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A task API that answers the embed room `room` holds, or fails while it is below 0, takes 2.5 s for the next `slow` answers, and counts in `asked` how often it is asked.
+async fn room_api(room: Arc<std::sync::atomic::AtomicI64>, slow: Arc<AtomicU64>, asked: Arc<AtomicU64>) -> String {
     use std::sync::atomic::Ordering::SeqCst;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1809,6 +1869,9 @@ async fn room_api(room: Arc<std::sync::atomic::AtomicI64>, asked: Arc<AtomicU64>
                 }
             }
             asked.fetch_add(1, SeqCst);
+            if slow.fetch_update(SeqCst, SeqCst, |left| left.checked_sub(1)).is_ok() {
+                tokio::time::sleep(Duration::from_millis(2_500)).await;
+            }
             let room = room.load(SeqCst);
             let (status, body) = if room < 0 { ("503 Service Unavailable", String::new()) } else { ("200 OK", json!({"room_tasks": room}).to_string()) };
             let answer = format!("HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len());
@@ -1819,7 +1882,7 @@ async fn room_api(room: Arc<std::sync::atomic::AtomicI64>, asked: Arc<AtomicU64>
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn while_the_task_api_is_full_or_down_inputs_are_held_without_asking_it_for_each_and_fresh_ones_go_first() {
+async fn while_the_task_api_is_full_slow_or_down_inputs_are_held_without_asking_it_for_each_and_fresh_ones_go_first() {
     use std::sync::atomic::Ordering::SeqCst;
     let Some((_turn, mut redis)) = redis_db().await else {
         eprintln!("skipped: no Redis on {REDIS}");
@@ -1835,8 +1898,8 @@ async fn while_the_task_api_is_full_or_down_inputs_are_held_without_asking_it_fo
         page
     };
     log(&pages, 1, vec![page("r1", "2020-05-01"), page("f1", &today), page("r2", "2020-06-01")]).await;
-    let (room, asked) = (Arc::new(std::sync::atomic::AtomicI64::new(0)), Arc::new(AtomicU64::new(0)));
-    let api = room_api(room.clone(), asked.clone()).await;
+    let (room, slow, asked) = (Arc::new(std::sync::atomic::AtomicI64::new(0)), Arc::new(AtomicU64::new(0)), Arc::new(AtomicU64::new(0)));
+    let api = room_api(room.clone(), slow.clone(), asked.clone()).await;
     let one = || {
         let mut one = settings(dir.join("state"), 3600.0, 0);
         one.pages_per_input = 1;
@@ -1864,5 +1927,17 @@ async fn while_the_task_api_is_full_or_down_inputs_are_held_without_asking_it_fo
     planner.pass().await.unwrap();
     assert_eq!((planner.counts.inputs, asked.load(SeqCst)), (2, 5), "a failed answer holds inputs too: asked at the start and the end");
     assert_eq!(planner.state.pending().unwrap().len(), 4);
+    drop(planner);
+
+    room.store(10, SeqCst);
+    slow.store(1, SeqCst);
+    log(&pages, 3, vec![page("r5", "2020-09-01"), page("r6", "2020-10-01")]).await;
+    let mut planner = Planner::new(one(), pages.clone(), temp.clone(), redis.clone(), Room::api(&api).unwrap()).await.unwrap();
+    planner.pass().await.unwrap();
+    assert_eq!(
+        (planner.counts.handed_over, asked.load(SeqCst)),
+        (6, 7),
+        "a slow answer with room holds inputs too: the four held go at the start, the two written after at the end"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }

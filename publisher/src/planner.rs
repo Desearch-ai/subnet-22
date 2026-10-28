@@ -78,8 +78,9 @@ const SITES_COUNTED: &[u8] = b"sites-counted";
 /// The crawl list's caps are crawl caps, three pages crawled for each one the index keeps.
 const CRAWL_PER_INDEX: u64 = 3;
 const ROOM_TIMEOUT: Duration = Duration::from_secs(20);
-/// After an answer that left inputs waiting, or none, inputs are held this long before the API is asked again mid-pass.
+/// After an answer that left inputs waiting, a slow one or none, inputs are held this long before the API is asked again mid-pass.
 const ROOM_RETRY: Duration = Duration::from_secs(30);
+const ROOM_SLOW: Duration = Duration::from_secs(2);
 const FILES_PER_PASS: usize = 64;
 /// Set when no page waits without a change file to plan it from.
 const WAITING_NUMBERED: &[u8] = b"waiting-numbered";
@@ -1302,15 +1303,21 @@ impl Planner {
         match std::fs::read(&path).map_err(anyhow::Error::from).and_then(|raw| Set::parse(&raw)) {
             Ok(set) if !set.is_empty() => {
                 let written = modified.duration_since(std::time::UNIX_EPOCH).map_or(0.0, |since| since.as_secs_f64());
-                let (built, when) = match set.built.as_deref().and_then(|built| parse_iso(&built.replace('Z', "+00:00"))) {
-                    Some(built) => (built as f64, "built"),
-                    None => (written, "with no build time, its file written"),
+                let (built, when) = match set.built.as_deref() {
+                    Some(raw) => match parse_iso(&raw.replace('Z', "+00:00")) {
+                        Some(built) => (built as f64, "built".to_string()),
+                        None => (written, format!("with an unparsable build time {raw:?}, its file written")),
+                    },
+                    None => (written, "with no build time, its file written".to_string()),
                 };
                 println!("planner: set of {} sites {when} {} read from {}", set.len(), iso((built * 1e6) as i64), path.display());
                 self.set = Some(Arc::new(set));
                 self.set_modified = Some(modified);
+                // The same build rewritten keeps the hourly warning's timer.
+                if self.set_built != Some(built) {
+                    self.set_warned = None;
+                }
                 self.set_built = Some(built);
-                self.set_warned = None;
                 if let Some(warning) = self.stale_set_warning(Instant::now()) {
                     eprintln!("{warning}");
                 }
@@ -1379,8 +1386,9 @@ impl Planner {
             }
             self.advance(seq)?;
         }
-        let replanned = self.replan().await?;
-        let backfilled = self.backfill().await?;
+        let (replanned, waiting_for_budget) = self.replan().await?;
+        // Waiting pages get the budget first: the backfill waits while any is held back for it.
+        let backfilled = if waiting_for_budget { false } else { self.backfill().await? };
         for lane in Lane::ALL {
             let after = if lane == Lane::Fresh { self.settings.fresh_flush_after } else { self.settings.flush_after };
             if self.buffer(lane).since.is_some_and(|since| since.elapsed() >= after) {
@@ -1391,12 +1399,15 @@ impl Planner {
         Ok(read > 0 || replanned || backfilled)
     }
 
-    /// Plans waiting pages from the change files that hold them, oldest first, while the budget holds an input's worth and the rest lane has room; whether it took any.
-    async fn replan(&mut self) -> Result<bool> {
+    /// Plans waiting pages from the change files that hold them, oldest first, while the budget holds an input's worth and the rest lane has room; whether it took any, and whether pages still wait for the budget.
+    async fn replan(&mut self) -> Result<(bool, bool)> {
         let mut took = false;
         for _ in 0..REPLAN_FILES_PER_PASS {
-            if self.pending[Lane::Rest as usize] >= self.settings.max_pending || !self.budget.holds(self.settings.pages_per_input) {
+            if self.pending[Lane::Rest as usize] >= self.settings.max_pending {
                 break;
+            }
+            if !self.budget.holds(self.settings.pages_per_input) {
+                return Ok((took, self.state.waiting_count() > 0));
             }
             let Some((seq, keys)) = self.state.replan_group(self.replan_after)? else {
                 self.replan_after = 0;
@@ -1431,29 +1442,28 @@ impl Planner {
                 self.state.unwait(key)?;
             }
         }
-        Ok(took)
+        Ok((took, false))
     }
 
-    /// Plans pages of `current/` while the budget and the rest lane's room last, starting only once the budget holds an input's worth; whether it took any.
+    /// Plans pages of `current/` while the budget and the rest lane's room last, starting only once the budget holds an input's worth and reading at most `max_pending` inputs' worth a pass, so the log is read between; whether it read any.
     async fn backfill(&mut self) -> Result<bool> {
-        // Waiting pages are re-planned first: both wait for an input's worth, and the re-plan runs before.
         if !self.settings.backfill || self.current.is_none() || !self.budget.holds(self.settings.pages_per_input) {
             return Ok(false);
         }
-        let mut took = false;
+        let (most, mut read) = (self.settings.max_pending * self.settings.pages_per_input, 0);
         loop {
-            if self.pending[Lane::Rest as usize] >= self.settings.max_pending || !self.has_token() {
-                return Ok(took);
+            if read >= most || self.pending[Lane::Rest as usize] >= self.settings.max_pending || !self.has_token() {
+                return Ok(read > 0);
             }
             if self.reading.is_none() && !self.start_reading()? {
-                return Ok(took);
+                return Ok(read > 0);
             }
             let reading = self.reading.as_mut().expect("a shard being read");
             match tokio::time::timeout(BACKFILL_WAIT, reading.pages.recv()).await {
-                Err(_) => return Ok(took),
+                Err(_) => return Ok(read > 0),
                 Ok(Some(page)) => {
                     reading.last = Some(page.key.clone());
-                    took = true;
+                    read += 1;
                     self.counts.backfill += 1;
                     if let Considered::Taken(lane) = self.consider(page, Source::Backfill) {
                         self.write_when_full(lane).await?;
@@ -1473,7 +1483,7 @@ impl Planner {
                         self.state.keep_backfill(self.settings.backfill_shards.start, None)?;
                         self.next_sweep = Some(Instant::now() + self.settings.backfill_every);
                         println!("planner: the backfill read its last shard, {shard}; it sweeps again in {:?}", self.settings.backfill_every);
-                        return Ok(took);
+                        return Ok(read > 0);
                     }
                 }
             }
@@ -1894,7 +1904,7 @@ impl Planner {
         Ok(())
     }
 
-    /// Hands over unless the API's last answer, under `ROOM_RETRY` ago, left inputs waiting or never came.
+    /// Hands over unless the API's last answer, under `ROOM_RETRY` ago, left inputs waiting, was slow or never came.
     async fn hand_over_unless_held(&mut self) -> Result<()> {
         if self.ask_room_at.is_none_or(|at| Instant::now() >= at) {
             self.hand_over().await?;
@@ -1946,6 +1956,7 @@ impl Planner {
         if pending.is_empty() {
             return Ok(0);
         }
+        let asked = Instant::now();
         let room = match self.room.tasks().await {
             Ok(room) => room.max(0) as usize,
             Err(error) => {
@@ -1954,6 +1965,7 @@ impl Planner {
                 return Ok(0);
             }
         };
+        let slow = asked.elapsed() >= ROOM_SLOW;
         let now = now_us() as f64 / 1e6;
         let mut pending: Vec<(String, String, Value)> = pending
             .into_iter()
@@ -1984,7 +1996,8 @@ impl Planner {
         }
         self.counts.handed_over += handed as u64;
         self.counts.expired += expired as u64;
-        self.ask_room_at = (self.pending.iter().sum::<usize>() > 0).then(|| Instant::now() + ROOM_RETRY);
+        let held = slow || self.pending.iter().sum::<usize>() > 0;
+        self.ask_room_at = held.then(|| Instant::now() + ROOM_RETRY);
         Ok(handed)
     }
 
