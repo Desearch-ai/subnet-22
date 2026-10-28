@@ -7,13 +7,14 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 
+use desearch::feeds::BULK;
 use desearch::r2::{self, Bucket, Credentials};
 use desearch::stub;
 use publisher::compactor::{self, R2Store, Split, Store};
 use publisher::index::VersionIndex;
-use publisher::local::{LocalFeed, LocalUploads};
+use publisher::local::{LocalFeed, LocalLog, LocalUploads};
 use publisher::worker::{self, Job};
-use publisher::{build, outcomes, planner, service};
+use publisher::{build, bulk, outcomes, planner, service};
 
 #[cfg(not(target_env = "msvc"))]
 #[global_allocator]
@@ -41,6 +42,8 @@ enum Command {
     },
     /// Publish a JSON list of jobs whose uploads are `<task_id>.parquet` files in a folder.
     Local(LocalArgs),
+    /// Publish a bulk run's batch files from `python -m bulk` into the bulk feed: a folder laid out as the pages bucket with `--log`, or the pages bucket with `--r2`.
+    Bulk(BulkArgs),
     /// Keep the current state under `COMPACTOR_PREFIX` (default `current/`) up to the change log, a cycle at a time, until SIGTERM.
     Compact {
         /// One cycle, then exit.
@@ -110,6 +113,23 @@ enum Command {
 }
 
 #[derive(clap::Args)]
+struct BulkArgs {
+    /// The run's folder, holding its manifest.json.
+    dir: PathBuf,
+    #[arg(long, conflicts_with = "r2", required_unless_present = "r2")]
+    log: Option<PathBuf>,
+    #[arg(long)]
+    r2: bool,
+    #[arg(long, default_value_t = 10_000)]
+    max_rows: usize,
+    #[arg(long, default_value_t = 32)]
+    max_text_mb: usize,
+    /// Pages an hour at most; 0 for no limit.
+    #[arg(long, default_value_t = 0.0)]
+    pages_per_hour: f64,
+}
+
+#[derive(clap::Args)]
 struct LocalArgs {
     #[arg(long)]
     jobs: PathBuf,
@@ -137,6 +157,7 @@ fn main() -> Result<()> {
             tokio::runtime::Builder::new_multi_thread().enable_all().build()?.block_on(service::remove_escaped_from_env(&index, backup))
         }
         Command::Local(args) => local(args),
+        Command::Bulk(args) => bulk(args),
         Command::Compact { once, start_empty_at } => compact(once, start_empty_at),
         Command::Plan => tokio::runtime::Builder::new_multi_thread().enable_all().build()?.block_on(plan()),
         Command::CheckCurrent { prefix, seqs, files, per_file, shards, explain } => {
@@ -233,6 +254,16 @@ fn local(args: LocalArgs) -> Result<()> {
     Ok(())
 }
 
+fn bulk(args: BulkArgs) -> Result<()> {
+    let settings = bulk::Settings { max_rows: args.max_rows, max_text_bytes: args.max_text_mb << 20, pages_per_hour: args.pages_per_hour };
+    let Some(log) = args.log else {
+        return tokio::runtime::Builder::new_multi_thread().enable_all().build()?.block_on(service::bulk_from_env(args.dir, settings));
+    };
+    let report = bulk::publish_run(&args.dir, &LocalLog::open(log, &BULK)?, &settings, &service::now_us)?;
+    println!("{} files, {} pages, bulk files {:?}", report.files, report.pages, report.change_files);
+    Ok(())
+}
+
 fn env_number<T: std::str::FromStr>(name: &str, default: T) -> Result<T> {
     match std::env::var(name).ok().filter(|v| !v.is_empty()) {
         Some(value) => value.trim().parse().map_err(|_| anyhow::anyhow!("{name}={value:?} is not a number")),
@@ -320,6 +351,7 @@ fn compact(once: bool, start_empty_at: Option<i64>) -> Result<()> {
         prefix: std::env::var("COMPACTOR_PREFIX").ok().filter(|p| !p.is_empty()).unwrap_or(defaults.prefix),
         work: std::env::var("COMPACTOR_WORK").map(PathBuf::from).unwrap_or(defaults.work),
         files_per_cycle: env_number("COMPACTOR_FILES_PER_CYCLE", defaults.files_per_cycle)?,
+        bulk_files_per_cycle: env_number("COMPACTOR_BULK_FILES_PER_CYCLE", defaults.bulk_files_per_cycle)?,
         merge_ratio: env_number("COMPACTOR_MERGE_RATIO", defaults.merge_ratio)?,
         every_s: env_number("COMPACTOR_EVERY_S", defaults.every_s)?,
         fanout: env_number("COMPACTOR_FANOUT", defaults.fanout)?,
@@ -356,7 +388,8 @@ fn compact(once: bool, start_empty_at: Option<i64>) -> Result<()> {
     loop {
         let started = Instant::now();
         let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs_f64();
-        let (report, latest) = match compactor::cycle(&store, &settings, now).and_then(|report| Ok((report, compactor::latest_seq(&store)?))) {
+        let latest = |report| -> Result<_> { Ok((report, compactor::latest_seq(&store)?, compactor::latest_bulk(&store)?)) };
+        let (report, latest, bulk_latest) = match compactor::cycle(&store, &settings, now).and_then(latest) {
             Ok(done) => done,
             Err(error) if !once => {
                 eprintln!("cycle failed, trying again in {COMPACT_RETRY_S} s: {error:#}");
@@ -399,10 +432,19 @@ fn compact(once: bool, start_empty_at: Option<i64>) -> Result<()> {
             compactor::Lag::Unknown(why) => eprintln!("warning: how far the compactor is behind is unknown: {why}"),
             _ => {}
         }
+        if bulk_latest > 0 {
+            println!(
+                "cycle: bulk files {}..{} of {bulk_latest}, {} rows{}",
+                report.bulk_from,
+                report.bulk_through,
+                report.bulk_rows,
+                if report.bulk_skipped.is_empty() { String::new() } else { format!(", numbers never written skipped: {:?}", report.bulk_skipped) }
+            );
+        }
         if once || stopped() {
             return Ok(());
         }
-        if report.through >= latest || report.waiting {
+        if (report.through >= latest || report.waiting) && (report.bulk_through >= bulk_latest || report.bulk_waiting) {
             pause((settings.every_s - started.elapsed().as_secs_f64()).max(COMPACT_RETRY_S as f64) as u64);
             if stopped() {
                 return Ok(());

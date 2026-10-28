@@ -53,6 +53,9 @@ const PASSAGE_MIN_CHARS: usize = 600;
 const PASSAGE_MAX_CHARS: usize = 1_500;
 const MAX_PASSAGES_V1: usize = 16;
 const MAX_PASSAGES_V2: usize = 32;
+/// The page type the bulk lane gives papers, whose parts stop at `MAX_PASSAGES_PAPER`.
+pub const PAPER: &str = "paper";
+const MAX_PASSAGES_PAPER: usize = 12;
 const FENCE: &str = "```";
 /// The task API's list of inputs waiting for a round.
 pub const EMBED_INPUTS: &str = "embed:inputs";
@@ -146,7 +149,10 @@ pub fn texts(key: &str, record: &Record) -> Vec<Text> {
     if !typed || record.text.chars().count() <= PASSAGES_FROM_CHARS {
         return texts;
     }
-    let sections = if v2 { passages_v2(body_v2(record)) } else { passages(&record.text, &record.headings) };
+    let mut sections = if v2 { passages_v2(body_v2(record)) } else { passages(&record.text, &record.headings) };
+    if record.page_type.as_deref() == Some(PAPER) {
+        sections.truncate(MAX_PASSAGES_PAPER);
+    }
     let title = record.title.trim();
     for (i, passage) in sections.into_iter().enumerate() {
         let lead = [Some(title).filter(|t| !t.is_empty()), passage.heading.as_deref()].into_iter().flatten().collect::<Vec<_>>().join(" › ");
@@ -2080,6 +2086,10 @@ impl Planner {
     }
 
     fn keep_waiting(&mut self, page: &PageRow) {
+        // A bulk page has no change file to be planned again from; the backfill's next sweep takes it.
+        if page.change_seq < 0 {
+            return;
+        }
         let record = &page.record;
         let version = Version {
             content_sha1: record.content_sha1.clone(),

@@ -23,6 +23,8 @@ pub struct Feed {
 
 pub const CHANGES: Feed = Feed { name: Cow::Borrowed("changes") };
 pub const OUTCOMES: Feed = Feed { name: Cow::Borrowed("outcomes") };
+/// Pages from sources' own bulk data, numbered apart from the change log so a large run never holds up crawled pages.
+pub const BULK: Feed = Feed { name: Cow::Borrowed("bulk") };
 
 impl Feed {
     /// The accepted vectors of one embedding model, under `vectors/<model>/`.

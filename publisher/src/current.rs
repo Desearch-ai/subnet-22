@@ -22,6 +22,8 @@ use serde::{Deserialize, Serialize};
 use crate::records::{record_version, Record, SOURCE};
 
 pub const SHARDS: usize = 1024;
+/// Where bulk feed pages sit in log order: before every change-log row, so a removal in the change log takes them down too; pages still go by fetch time.
+pub const BULK_ORDER: i64 = i64::MIN / 2;
 /// One lookup reads one row group.
 pub const ROW_GROUP: usize = 1000;
 const ZSTD_LEVEL: i32 = 3;
@@ -587,6 +589,9 @@ pub struct Retired {
 pub struct Manifest {
     pub shard: usize,
     pub through_seq: i64,
+    /// How far into the bulk feed the shard's files reach.
+    #[serde(default)]
+    pub through_bulk: i64,
     /// Where the base was last rewritten; a task withdrawn before it is out of every file of the shard.
     pub merged_through: i64,
     pub base: Option<FileRef>,

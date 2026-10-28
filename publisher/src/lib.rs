@@ -3,6 +3,7 @@
 pub mod backfill;
 pub mod blocked;
 pub mod build;
+pub mod bulk;
 pub mod changes;
 pub mod compactor;
 pub mod current;
