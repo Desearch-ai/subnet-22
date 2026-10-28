@@ -18,7 +18,7 @@ use parquet::arrow::ArrowWriter;
 use parquet::basic::{Compression, ZstdLevel};
 use parquet::file::properties::WriterProperties;
 use redis::aio::ConnectionManager;
-use redis::Script;
+use redis::{AsyncCommands, Script};
 use rocksdb::{DBCompressionType, IteratorMode, Options, WriteBatch, DB};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -1491,13 +1491,15 @@ impl Planner {
         Ok(())
     }
 
-    /// Takes back the pages of inputs the task API dropped after their last attempt.
+    /// Takes back the pages of inputs the task API dropped; they are trimmed from its list only once forgotten, so a crash loses none.
     pub async fn forget_dropped(&mut self) -> Result<usize> {
-        let dropped: Option<Vec<String>> = redis::cmd("LPOP").arg(EMBED_DROPPED).arg(FILES_PER_PASS * 10).query_async(&mut self.redis).await?;
-        let dropped = dropped.unwrap_or_default();
+        let dropped: Vec<String> = self.redis.lrange(EMBED_DROPPED, 0, (FILES_PER_PASS * 10) as isize - 1).await?;
         for raw in &dropped {
             let entry: Value = serde_json::from_str(raw).unwrap_or(Value::Null);
             self.state.forget(&entry["pages"])?;
+        }
+        if !dropped.is_empty() {
+            let () = self.redis.ltrim(EMBED_DROPPED, dropped.len() as isize, -1).await?;
         }
         self.counts.dropped += dropped.len() as u64;
         Ok(dropped.len())

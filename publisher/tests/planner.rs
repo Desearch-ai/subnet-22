@@ -1485,3 +1485,33 @@ async fn one_site_fills_at_most_its_share_of_the_fresh_lane_and_an_old_url_date_
     assert_eq!((planner.counts.planned, planner.counts.fresh), (5, 3), "two of a.example's, one of b.example's; the page with a 2019 URL goes with the rest");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn dropped_inputs_leave_the_task_api_s_list_only_once_their_pages_are_forgotten() {
+    let Some((_turn, mut redis)) = redis_db().await else {
+        eprintln!("skipped: no Redis on {REDIS}");
+        return;
+    };
+    let dir = scratch("dropped-order");
+    let stub = stub::start(dir.join("r2"), "127.0.0.1:0").await.unwrap();
+    let (pages, temp) = (bucket(stub.addr, "desearch-pages"), bucket(stub.addr, "subnet-22"));
+    let story = v2(record("https://news.example/story/d", &article(2), "article", "en"));
+    log(&pages, 1, vec![story.clone()]).await;
+    let mut one = settings(dir.join("state"), 3600.0, 0);
+    one.pages_per_input = 1;
+    let mut planner = Planner::new(one, pages.clone(), temp.clone(), redis.clone(), Room::Fixed(0)).await.unwrap();
+    planner.pass().await.unwrap();
+    let entry: Value = serde_json::from_str(&planner.state.pending().unwrap()[0].1).unwrap();
+    let dropped = json!({"input_key": entry["input_key"], "pages": entry["pages"]}).to_string();
+    let _: i64 = redis.rpush(EMBED_DROPPED, &dropped).await.unwrap();
+
+    assert_eq!(planner.forget_dropped().await.unwrap(), 1);
+    let key = page_key(&story.url).unwrap();
+    assert!(planner.state.planned(publisher::planner::RECIPE_V2, &key).unwrap().is_none());
+    assert!(planner.state.waiting(&key).unwrap().is_some());
+    assert_eq!(redis.llen::<_, i64>(EMBED_DROPPED).await.unwrap(), 0);
+    let _: i64 = redis.rpush(EMBED_DROPPED, &dropped).await.unwrap();
+    assert_eq!(planner.forget_dropped().await.unwrap(), 1, "one read again, as after a crash before the trim, changes nothing");
+    assert!(planner.state.waiting(&key).unwrap().is_some());
+    let _ = std::fs::remove_dir_all(&dir);
+}
