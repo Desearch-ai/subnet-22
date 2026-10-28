@@ -399,6 +399,7 @@ def build(
     resend_hosts: set[str] | None = None,
     node2_hours: float | None = None,
     node2_min_weight: int = 1,
+    rejoin_hosts: set[str] | None = None,
 ) -> tuple[list[dict], Counter]:
     ranked, counts = [], Counter()
     for row in rows:
@@ -438,7 +439,8 @@ def build(
                     max(1, math.ceil(min(row.url_count, bound) / node2_hours)),
                 )
             if decision.send_cap is not None:
-                entry["send_cap"] = decision.send_cap
+                # A cap that changes makes the list walker walk the site again, queuing pages an earlier walk left out.
+                entry["send_cap"] = decision.send_cap + (row.host in (rejoin_hosts or set()))
             if decision.backlog is not None:
                 entry["backlog"] = decision.backlog
             if decision.since is not None:
@@ -548,6 +550,12 @@ def main(argv: list[str] | None = None) -> None:
         help="with --v1-set, sites outside it weighted below this stay off the list; 2 leaves out companies, organizations and personal sites",
     )
     parser.add_argument(
+        "--rejoin-hosts",
+        action="append",
+        default=[],
+        help="a file of hosts, one a line, whose send_cap goes one up so the list walker queues their stored pages again (unqueued.py lists them)",
+    )
+    parser.add_argument(
         "--registry-csv",
         help="read the registry rows from this CSV instead of DESEARCH_DB",
     )
@@ -566,6 +574,7 @@ def main(argv: list[str] | None = None) -> None:
         for line in Path(path).read_text().splitlines()
         if line.strip()
     }
+    rejoin_hosts = {line.strip() for path in args.rejoin_hosts for line in Path(path).read_text().splitlines() if line.strip()}
     if args.decisions:
         with open_text(args.decisions, "wt") as target:
             writer = csv.writer(target, delimiter="\t", lineterminator="\n")
@@ -584,6 +593,7 @@ def main(argv: list[str] | None = None) -> None:
                 resend_hosts,
                 args.node2_hours,
                 args.node2_min_weight,
+                rejoin_hosts,
             )
     else:
         entries, counts = build(
@@ -597,6 +607,7 @@ def main(argv: list[str] | None = None) -> None:
             resend_hosts=resend_hosts,
             node2_hours=args.node2_hours,
             node2_min_weight=args.node2_min_weight,
+            rejoin_hosts=rejoin_hosts,
         )
     write_list(entries, args.out)
     print(f"{len(entries)} domains listed in {args.out}")

@@ -340,6 +340,15 @@ def test_a_minimum_weight_leaves_lighter_node2_sites_off_the_list():
     assert "corp.com" in v1_list(rows, v1)[0], "only when asked"
 
 
+def test_hosts_to_rejoin_take_a_cap_one_up():
+    rows = [row(host="corp.com", site_type="company"), row(host="other.com", site_type="company"), row(host="news.com", site_type="news")]
+    plain = {e["host"]: e for e in crawl_list.build(rows, {}, {}, Hand())[0]}
+    nudged = {e["host"]: e for e in crawl_list.build(rows, {}, {}, Hand(), rejoin_hosts={"corp.com", "news.com"})[0]}
+    assert nudged["corp.com"]["send_cap"] == plain["corp.com"]["send_cap"] + 1
+    assert nudged["other.com"] == plain["other.com"]
+    assert nudged["news.com"] == plain["news.com"], "a site without a cap has none to change"
+
+
 def test_v1_takes_cited_sites_whole_and_drops_its_outs():
     V1 = crawl_list.V1
     rows = [
