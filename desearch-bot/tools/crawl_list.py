@@ -395,6 +395,7 @@ def build(
     judged: dict[str, Judged] | None = None,
     v1: dict[str, V1] | None = None,
     resend_before: str | None = None,
+    resend_hosts: set[str] | None = None,
 ) -> tuple[list[dict], Counter]:
     ranked, counts = [], Counter()
     for row in rows:
@@ -427,7 +428,7 @@ def build(
                 entry["backlog"] = decision.backlog
             if decision.since is not None:
                 entry["since"] = decision.since
-            if resend_before and entry_v1 is not None and entry_v1.rule in ("news", "whole"):
+            if resend_before and row.host in (resend_hosts or set()) and entry_v1 is not None and entry_v1.rule in ("news", "whole"):
                 entry["resend_before"] = resend_before
             ranked.append((row.rank is None, row.rank or 0, row.host, entry, feed and row.state not in SENDING_STATES))
         # The decisions file keeps the decision before the v1 set, which the set itself is built from.
@@ -497,7 +498,13 @@ def main(argv: list[str] | None = None) -> None:
     )
     parser.add_argument(
         "--resend-before",
-        help="an ISO date: the v1 sites' pages last sent before it go once more (extraction changed)",
+        help="an ISO date: the pages of the v1 sites in --resend-hosts last sent before it go once more (extraction changed)",
+    )
+    parser.add_argument(
+        "--resend-hosts",
+        action="append",
+        default=[],
+        help="a file of hosts, one a line, that take --resend-before: the resend waves applied so far",
     )
     parser.add_argument(
         "--registry-csv",
@@ -512,15 +519,16 @@ def main(argv: list[str] | None = None) -> None:
         read_judged(args.judged),
         read_v1_set(args.v1_set),
     )
+    resend_hosts = {line.strip() for path in args.resend_hosts for line in Path(path).read_text().splitlines() if line.strip()}
     if args.decisions:
         with open_text(args.decisions, "wt") as target:
             writer = csv.writer(target, delimiter="\t", lineterminator="\n")
             writer.writerow(
                 ["host", "rank", "state", "listed", "reason", "type", "cap", "v1"]
             )
-            entries, counts = build(rows, backing, overrides, hand, writer, judged, v1, args.resend_before)
+            entries, counts = build(rows, backing, overrides, hand, writer, judged, v1, args.resend_before, resend_hosts)
     else:
-        entries, counts = build(rows, backing, overrides, hand, judged=judged, v1=v1, resend_before=args.resend_before)
+        entries, counts = build(rows, backing, overrides, hand, judged=judged, v1=v1, resend_before=args.resend_before, resend_hosts=resend_hosts)
     write_list(entries, args.out)
     print(f"{len(entries)} domains listed in {args.out}")
     for name, count in sorted(counts.items(), key=lambda item: -item[1]):
