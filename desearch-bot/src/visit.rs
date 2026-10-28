@@ -528,7 +528,7 @@ impl Run<'_> {
             Some(_) => schedule::next_interval(update.interval, true),
             None => schedule::first_interval(read.changefreq.as_deref(), news),
         };
-        update.interval = schedule::reread_within(interval, listed_news, update.depth, &update.url);
+        update.interval = schedule::reread_within(interval, listed_news, update.depth);
         update.next_check_at = Some(self.now + update.interval);
         match read.verdict.take() {
             Some(churn::Verdict::Suspect { sketch }) => {
@@ -622,7 +622,7 @@ impl Run<'_> {
         self.kept += stored.map_or(0, |s| s.url_count);
         let listed_news = self.listed_news();
         let update = &mut self.result.sitemaps[i];
-        update.interval = schedule::reread_within(schedule::next_interval(update.interval, false), listed_news, update.depth, &update.url);
+        update.interval = schedule::reread_within(schedule::next_interval(update.interval, false), listed_news, update.depth);
         update.next_check_at = Some(self.now + update.interval);
     }
 
