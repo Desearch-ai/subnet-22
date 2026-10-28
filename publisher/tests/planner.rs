@@ -1330,3 +1330,46 @@ async fn a_newer_row_lets_go_of_an_older_waiting_version_and_an_older_row_never_
     assert_eq!(planner.state.planned_version(publisher::planner::RECIPE_V2, &key("p")).unwrap().unwrap().content_sha1, version("p", "a", 1).content_sha1);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Writes change file `seq` holding one removal of `page`, numbered now.
+async fn log_removal(pages: &Bucket, seq: u64, page: &Record) {
+    let removal = Change { kind: Kind::Removed, body: Body::Removed { url: page.url.clone(), domain: page.domain.clone() }, ..change(page.clone()) };
+    let key = format!("changes/dt=2026-10-14/{seq}.parquet");
+    pages.put(&key, Bytes::from(changes::encode(&[removal]).unwrap()), PARQUET, None).await.unwrap();
+    pages.put(&CHANGES.seq_key(seq), Bytes::from(json!({"key": key, "rows": 1}).to_string()), JSON, None).await.unwrap();
+    pages.put(&CHANGES.latest_key(), Bytes::from(json!({"seq": seq}).to_string()), JSON, None).await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_removal_takes_a_buffered_page_out_and_a_late_row_from_before_it_does_not_bring_it_back() {
+    let Some((_turn, redis)) = redis_db().await else {
+        eprintln!("skipped: no Redis on {REDIS}");
+        return;
+    };
+    let dir = scratch("removed-buffered");
+    let stub = stub::start(dir.join("r2"), "127.0.0.1:0").await.unwrap();
+    let (pages, temp) = (bucket(stub.addr, "desearch-pages"), bucket(stub.addr, "subnet-22"));
+    let story = |text: &str| v2(record("https://news.example/story/p", &format!("{text} {}", article(2)), "article", "en"));
+    let other = v2(record("https://news.example/story/o", &format!("o {}", article(2)), "article", "en"));
+    log(&pages, 1, vec![story("first"), other.clone()]).await;
+    log_removal(&pages, 3, &story("first")).await;
+    let mut ten = settings(dir.join("state"), 3600.0, 0);
+    ten.pages_per_input = 10;
+    let mut planner = Planner::new(ten, pages.clone(), temp.clone(), redis.clone(), Room::Fixed(0)).await.unwrap();
+    planner.pass().await.unwrap();
+    number_late(&pages, 2, vec![story("late")]).await;
+    planner.pass().await.unwrap();
+    planner.flush().await.unwrap();
+    let entry: Value = serde_json::from_str(&planner.state.pending().unwrap()[0].1).unwrap();
+    let urls: Vec<&str> = entry["pages"].as_array().unwrap().iter().map(|p| p["url"].as_str().unwrap()).collect();
+    assert_eq!(urls, [other.url.as_str()], "the removed page left the buffer, and its late row did not come back");
+    assert_eq!((planner.counts.removed, planner.counts.older), (1, 1));
+    let key = page_key(&story("first").url).unwrap();
+    assert!(planner.state.planned(publisher::planner::RECIPE_V2, &key).unwrap().is_none());
+
+    log(&pages, 4, vec![story("back")]).await;
+    planner.pass().await.unwrap();
+    assert_eq!(planner.counts.planned, 3, "a row after the removal brings the page back");
+    assert!(planner.state.removed(&key).unwrap().is_none());
+    let _ = std::fs::remove_dir_all(&dir);
+}

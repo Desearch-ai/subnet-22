@@ -773,9 +773,10 @@ impl State {
         Ok(self.db.write(batch)?)
     }
 
-    /// Forgets every planned version of a page gone from its site, so a page that comes back is planned again whatever its text.
-    fn forget_key(&self, key: &str) -> Result<()> {
+    /// Forgets every planned version of a page gone from its site, so a page that comes back is planned again whatever its text; rows logged before change file `seq`, read late, are refused.
+    fn forget_key(&self, key: &str, seq: i64) -> Result<()> {
         let mut batch = WriteBatch::default();
+        batch.put(removed_key(key), seq.to_string());
         let mut planned = false;
         for recipe in RECIPES {
             if self.db.get_pinned(planned_key(recipe, key))?.is_some() {
@@ -788,6 +789,15 @@ impl State {
         }
         self.unwait_into(&mut batch, key, None)?;
         Ok(self.db.write(batch)?)
+    }
+
+    /// The change file that removed `key`, while no later row has brought it back.
+    pub fn removed(&self, key: &str) -> Result<Option<i64>> {
+        Ok(self.db.get(removed_key(key))?.map(|raw| String::from_utf8_lossy(&raw).parse()).transpose()?)
+    }
+
+    fn returned(&self, key: &str) -> Result<()> {
+        Ok(self.db.delete(removed_key(key))?)
     }
 
     /// Forgets the versions of an input's pages that never got vectors, so the log's next showing plans them again.
@@ -864,6 +874,10 @@ impl State {
 
 fn planned_key(recipe: &str, key: &str) -> String {
     format!("planned/{recipe}/{key}")
+}
+
+fn removed_key(key: &str) -> String {
+    format!("removed/{key}")
 }
 
 fn waiting_key(key: &str) -> String {
@@ -1043,6 +1057,21 @@ impl Buffer {
         self.since.get_or_insert_with(Instant::now);
     }
 
+    /// Takes a page out, as a removal in the log does.
+    fn remove(&mut self, key: &str) -> bool {
+        let Some(at) = self.at.remove(key) else { return false };
+        let gone = self.pages.swap_remove(at);
+        if let Some(moved) = self.pages.get(at) {
+            self.at.insert(moved.key.clone(), at);
+        }
+        self.count(gone.source, false);
+        self.chars -= chars_of(&gone);
+        if self.pages.is_empty() {
+            self.since = None;
+        }
+        true
+    }
+
     fn replace(&mut self, at: usize, planned: Planned) {
         self.count(self.pages[at].source, false);
         self.count(planned.source, true);
@@ -1196,7 +1225,7 @@ impl Planner {
         while let Some((seq, rows)) = fetched.next().await {
             match rows? {
                 Ok(rows) => {
-                    self.take(rows, false).await?;
+                    self.take(rows, seq, false).await?;
                     read += 1;
                 }
                 Err(why) => self.note_missing(seq, &why)?,
@@ -1372,13 +1401,13 @@ impl Planner {
     /// Considers every page of change file `seq`; the inner error says why the file cannot be read yet, the outer one fails the pass.
     async fn read(&mut self, seq: i64) -> Result<std::result::Result<(), Unread>> {
         match fetch(self.pages.clone(), seq).await? {
-            Ok(rows) => self.take(rows, true).await.map(Ok),
+            Ok(rows) => self.take(rows, seq, true).await.map(Ok),
             Err(why) => Ok(Err(why)),
         }
     }
 
     /// Considers every page of one change file, in file order.
-    async fn take(&mut self, rows: Vec<ChangeRow>, late: bool) -> Result<()> {
+    async fn take(&mut self, rows: Vec<ChangeRow>, seq: i64, late: bool) -> Result<()> {
         for row in rows {
             match row {
                 ChangeRow::Page(page) => {
@@ -1391,7 +1420,10 @@ impl Planner {
                     }
                 }
                 ChangeRow::Removed(key) => {
-                    self.state.forget_key(&key)?;
+                    for lane in Lane::ALL {
+                        self.buffer_mut(lane).remove(&key);
+                    }
+                    self.state.forget_key(&key, seq)?;
                     self.counts.removed += 1;
                 }
                 ChangeRow::TaskWithdrawn(_) => {}
@@ -1475,6 +1507,18 @@ impl Planner {
     pub fn consider(&mut self, page: PageRow, from: Source) -> Considered {
         self.counts.pages += 1;
         let record = &page.record;
+        match self.state.removed(&page.key).ok().flatten() {
+            Some(removed) if page.change_seq < removed => {
+                self.counts.older += 1;
+                return Considered::Passed;
+            }
+            Some(_) => {
+                if let Err(error) = self.state.returned(&page.key) {
+                    eprintln!("noting {} back: {error:#}", page.key);
+                }
+            }
+            None => {}
+        }
         // A newer row lets go of an older waiting version, whatever becomes of the row.
         let mut waiting = self.state.waiting(&page.key).ok().flatten();
         if waiting.as_ref().is_some_and(|held| held.fetched_at < record.fetched_at) {
