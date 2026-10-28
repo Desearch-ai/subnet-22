@@ -29,8 +29,9 @@ def row(
     homepage="ok",
     site_type="news",
     confidence=0.95,
+    url_count=1000,
 ):
-    return Row(host, rank, state, state_reason, 1000, homepage, site_type, confidence)
+    return Row(host, rank, state, state_reason, url_count, homepage, site_type, confidence)
 
 
 def test_shops_and_sites_without_content_stay_out():
@@ -309,6 +310,24 @@ def test_v1_news_and_whole_sites_in_the_waves_so_far_carry_the_resend_cutoff():
     assert "resend_before" not in listed["later.com"], "a site in a later wave waits"
     assert "resend_before" not in listed["corp.com"], "node-2 sites aren't sent again"
     assert all("resend_before" not in e for e in v1_list(rows, v1)[0].values()), "only when asked"
+
+
+def test_node2_sites_spread_their_stored_pages_over_the_hours_given():
+    V1 = crawl_list.V1
+    rows = [
+        row(host="news.com", site_type="news", url_count=9_000_000),
+        row(host="corp.com", site_type="company", url_count=1000),
+        row(host="tiny.com", site_type="company", url_count=10),
+        row(host="big.com", site_type="media", url_count=90_000_000),
+    ]
+    v1 = {"news.com": V1("news", "news")}
+    entries, _ = crawl_list.build(rows, {}, {}, Hand(), v1=v1, node2_hours=60)
+    listed = {e["host"]: e for e in entries}
+    assert listed["news.com"]["hourly"] == 5_000, "v1 sites keep their hourly limit"
+    assert listed["corp.com"]["hourly"] == 17
+    assert listed["tiny.com"]["hourly"] == 1, "at least one an hour"
+    assert listed["big.com"]["hourly"] == min(5_000, -(-listed["big.com"]["send_cap"] // 60)), "stored pages count up to the cap"
+    assert {e["host"]: e["hourly"] for e in v1_list(rows, v1)[0].values()}["corp.com"] == 5_000, "only when asked"
 
 
 def test_v1_takes_cited_sites_whole_and_drops_its_outs():

@@ -1,11 +1,12 @@
 #!/bin/sh
-# Builds v1-set.json and the v1 crawl list into ~ubuntu/crawl-1b/v1 from the registry (read-only) and the staged inputs; NEWS=B takes every news site from 2020, UNDATED=article takes undated news articles; RESEND_WAVES=N gives the sites of resend waves 1 to N resend_before 2026-10-27 (none by default).
+# Builds v1-set.json and the v1 crawl list into ~ubuntu/crawl-1b/v1 from the registry (read-only) and the staged inputs; NEWS=B takes every news site from 2020, UNDATED=article takes undated news articles; RESEND_WAVES=N gives the sites of resend waves 1 to N resend_before 2026-10-27 (none by default); NODE2_HOURS=H holds each site outside the set to its stored pages divided by H an hour (60 by default, 0 for no limit).
 set -e
 v=/home/ubuntu/crawl-1b/v1
 f=/var/lib/task-api-feeder
 news=${NEWS:-A}
 undated=${UNDATED:-out}
 resend_waves=${RESEND_WAVES:-0}
+node2_hours=${NODE2_HOURS:-60}
 rows=$v/benchmark-set-rows.json
 [ "$news" = B ] && rows=$v/benchmark-set-rows-B.json
 set -a; . /opt/desearch-bot/.env; set +a
@@ -20,5 +21,5 @@ while [ $i -le $resend_waves ]; do
   cat $v/resend-waves-$news/resend-wave-$(printf %02d $i).txt >> $v/resend-hosts.txt
   i=$((i + 1))
 done
-python3 $v/crawl_list.py --out $v/domains-v1.json --decisions $v/decisions-v1.tsv.gz --v1-set $v/v1-set.json $common --resend-before 2026-10-27 --resend-hosts $v/resend-hosts.txt > $v/v1-list.out
+python3 $v/crawl_list.py --out $v/domains-v1.json --decisions $v/decisions-v1.tsv.gz --v1-set $v/v1-set.json $common --resend-before 2026-10-27 --resend-hosts $v/resend-hosts.txt --node2-hours $node2_hours > $v/v1-list.out
 chown ubuntu:ubuntu $v/*

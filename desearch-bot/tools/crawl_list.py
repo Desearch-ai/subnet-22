@@ -4,6 +4,7 @@ import argparse
 import csv
 import gzip
 import json
+import math
 import os
 import subprocess
 import sys
@@ -396,6 +397,7 @@ def build(
     v1: dict[str, V1] | None = None,
     resend_before: str | None = None,
     resend_hosts: set[str] | None = None,
+    node2_hours: float | None = None,
 ) -> tuple[list[dict], Counter]:
     ranked, counts = [], Counter()
     for row in rows:
@@ -414,7 +416,11 @@ def build(
             else apply_v1(row, base, entry_v1, override.startswith("out:"))
         )
         counts[decision.site_type if decision.listed else f"out:{decision.reason}"] += 1
-        feed = entry_v1 is not None and entry_v1.rule in ("news", "whole") and row.state in FEED_STATES
+        feed = (
+            entry_v1 is not None
+            and entry_v1.rule in ("news", "whole")
+            and row.state in FEED_STATES
+        )
         if decision.listed and (row.state in SENDING_STATES or feed):
             entry = {
                 "host": row.host,
@@ -422,15 +428,34 @@ def build(
                 "weight": decision.weight,
                 "hourly": decision.hourly,
             }
+            if node2_hours and v1 is not None and entry_v1 is None:
+                bound = decision.send_cap or decision.backlog or row.url_count
+                entry["hourly"] = min(
+                    decision.hourly,
+                    max(1, math.ceil(min(row.url_count, bound) / node2_hours)),
+                )
             if decision.send_cap is not None:
                 entry["send_cap"] = decision.send_cap
             if decision.backlog is not None:
                 entry["backlog"] = decision.backlog
             if decision.since is not None:
                 entry["since"] = decision.since
-            if resend_before and row.host in (resend_hosts or set()) and entry_v1 is not None and entry_v1.rule in ("news", "whole"):
+            if (
+                resend_before
+                and row.host in (resend_hosts or set())
+                and entry_v1 is not None
+                and entry_v1.rule in ("news", "whole")
+            ):
                 entry["resend_before"] = resend_before
-            ranked.append((row.rank is None, row.rank or 0, row.host, entry, feed and row.state not in SENDING_STATES))
+            ranked.append(
+                (
+                    row.rank is None,
+                    row.rank or 0,
+                    row.host,
+                    entry,
+                    feed and row.state not in SENDING_STATES,
+                )
+            )
         # The decisions file keeps the decision before the v1 set, which the set itself is built from.
         if decisions is not None:
             decisions.writerow(
@@ -447,7 +472,9 @@ def build(
             )
     # A listed subdomain takes its pages from its parent's lists, so one listed only for its feed would leave them unsent.
     hosts = {item[2] for item in ranked}
-    ranked = [item for item in ranked if not (item[4] and parent_listed(item[2], hosts))]
+    ranked = [
+        item for item in ranked if not (item[4] and parent_listed(item[2], hosts))
+    ]
     ranked.sort(key=lambda item: item[:3])
     return [item[3] for item in ranked], counts
 
@@ -507,6 +534,11 @@ def main(argv: list[str] | None = None) -> None:
         help="a file of hosts, one a line, that take --resend-before: the resend waves applied so far",
     )
     parser.add_argument(
+        "--node2-hours",
+        type=float,
+        help="with --v1-set, each site outside it sends at most its stored pages under its cap divided by this many hours in an hour, at least one, so the v1 sites keep the rest of the cap",
+    )
+    parser.add_argument(
         "--registry-csv",
         help="read the registry rows from this CSV instead of DESEARCH_DB",
     )
@@ -519,16 +551,42 @@ def main(argv: list[str] | None = None) -> None:
         read_judged(args.judged),
         read_v1_set(args.v1_set),
     )
-    resend_hosts = {line.strip() for path in args.resend_hosts for line in Path(path).read_text().splitlines() if line.strip()}
+    resend_hosts = {
+        line.strip()
+        for path in args.resend_hosts
+        for line in Path(path).read_text().splitlines()
+        if line.strip()
+    }
     if args.decisions:
         with open_text(args.decisions, "wt") as target:
             writer = csv.writer(target, delimiter="\t", lineterminator="\n")
             writer.writerow(
                 ["host", "rank", "state", "listed", "reason", "type", "cap", "v1"]
             )
-            entries, counts = build(rows, backing, overrides, hand, writer, judged, v1, args.resend_before, resend_hosts)
+            entries, counts = build(
+                rows,
+                backing,
+                overrides,
+                hand,
+                writer,
+                judged,
+                v1,
+                args.resend_before,
+                resend_hosts,
+                args.node2_hours,
+            )
     else:
-        entries, counts = build(rows, backing, overrides, hand, judged=judged, v1=v1, resend_before=args.resend_before, resend_hosts=resend_hosts)
+        entries, counts = build(
+            rows,
+            backing,
+            overrides,
+            hand,
+            judged=judged,
+            v1=v1,
+            resend_before=args.resend_before,
+            resend_hosts=resend_hosts,
+            node2_hours=args.node2_hours,
+        )
     write_list(entries, args.out)
     print(f"{len(entries)} domains listed in {args.out}")
     for name, count in sorted(counts.items(), key=lambda item: -item[1]):
