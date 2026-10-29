@@ -2443,3 +2443,52 @@ async fn only_a_list_change_reads_every_stores_ready_counts() {
     dispatcher.pass(1_759_400_600).await.unwrap();
     assert_eq!(sent_to(&fake, "b.com"), 0, "with the list unchanged, a pass takes in only what grew, here taken away first, and reads no store's counts");
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_batch_left_pending_over_a_restart_counts_as_sent_at_the_start() {
+    let dir = Dir::new("pending-restart");
+    let buckets = Arc::new(known(&dir, &["a.com", "c.com"]));
+    ask_for_a_delay(&buckets, "c.com", 60.0);
+    queue_pages(&buckets, "a.com", 1000);
+    queue_pages(&buckets, "c.com", 100);
+    let failed_at = 1_759_400_000;
+    {
+        let (api, _fake) = fake_api(1, 1).await;
+        let mut before = Dispatcher::load(buckets.clone(), api, 1000, shares(50, 10), rules(), Arc::new(Progress::default())).await.unwrap();
+        assert_eq!(before.pass(failed_at).await.unwrap(), 0, "the batch failed and waits to go again");
+    }
+    let start = failed_at + 1800;
+    let (api, fake) = fake_api(1, 0).await;
+    let mut after = Dispatcher::load(buckets.clone(), api, 1000, shares(50, 10), rules(), Arc::new(Progress::default())).await.unwrap().paced_from(36_000_000, start);
+    after.pass(start + 1).await.unwrap();
+    assert_eq!((sent_to(&fake, "a.com"), sent_to(&fake, "c.com")), (100, 1), "only the retried batch: it counts as sent at the start, on top of the empty share, not half an hour before it");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_site_the_list_drops_and_names_again_keeps_its_crawl_delay_in_the_fill() {
+    let dir = Dir::new("readd-delay");
+    let buckets = Arc::new(known(&dir, &["example.com", "example.net"]));
+    let path = dir.0.join("domains.json");
+    std::fs::write(&path, r#"[{"host": "example.com", "hourly": 1440}, "example.net"]"#).unwrap();
+    let list = Allowed::from_file(&path).unwrap();
+    buckets.allow(&list);
+    ask_for_a_delay(&buckets, "example.com", 60.0);
+    let store = buckets.store("example.com");
+    queue_pages(&buckets, "example.com", 150);
+    let mut quotas = [0; LANES];
+    quotas[FRESH] = 1000;
+    store.mark_sent(&store.take_ready("example.com", quotas).unwrap(), 1000, &rules()).unwrap();
+    let later = 1000 + FILL_FLOOR;
+    store.note_outcomes(&[], &[("example.com".to_string(), Yield { ok: 1000.0, failed: 10.0, at: later })]).unwrap();
+    assert_eq!(store.stock_refresh("example.com", 1000, None, usize::MAX, &mut |_| true).unwrap().map(|s| s.count), Some(150));
+    let (api, fake) = fake_api(1, 0).await;
+    let wanted = Arc::new(StockWanted::default());
+    let mut dispatcher = Dispatcher::load(buckets.clone(), api, 1_000_000, shares(50, 10), rules(), Arc::new(Progress::default())).await.unwrap().refreshing(wanted.clone());
+    assert_eq!(dispatcher.pass(later).await.unwrap(), 1, "a 60 s delay: one refresh");
+    relist(&path, &list, r#"["example.net"]"#);
+    tokio::time::sleep(std::time::Duration::from_secs(16)).await;
+    dispatcher.pass(later + 600).await.unwrap();
+    relist(&path, &list, r#"[{"host": "example.com", "hourly": 1440}, "example.net"]"#);
+    dispatcher.pass(later + 605).await.unwrap();
+    assert_eq!(sent_to(&fake, "example.com"), 2, "named again, one page for the 5 s since the last pass, not five minutes of 1,440");
+}

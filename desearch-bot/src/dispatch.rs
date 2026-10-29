@@ -305,11 +305,12 @@ impl HourlyCap {
         // Owed pages are counted in hour-parts, so a share of one page a delay apart refills exactly on time.
         let (mut owed, mut last) = match self.emptied {
             Some(at) => (most, at),
-            None => (0, now),
+            None => (0, 0),
         };
+        // A batch retried after a restart keeps its pick time, before the start; it counts as sent at the start.
         for &(at, n) in sent.iter() {
             owed = owed.saturating_sub(u64::from(at.saturating_sub(last)) * limit) + n * u64::from(HOUR);
-            last = at;
+            last = last.max(at);
         }
         let owed = owed.saturating_sub(u64::from(now.saturating_sub(last)) * limit);
         if sent.is_empty() {
@@ -1019,7 +1020,6 @@ impl Dispatcher {
         let before = self.domains.len();
         let buckets = self.buckets.clone();
         self.domains.retain(|domain, _| buckets.allows(domain));
-        self.paced.retain(|domain, _| buckets.allows(domain));
         let left = before - self.domains.len();
         for (domain, added) in grown {
             if let Some(known) = self.domains.get_mut(&domain) {

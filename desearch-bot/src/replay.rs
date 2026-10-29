@@ -584,3 +584,34 @@ async fn serve(listener: TcpListener, taken: Arc<Mutex<Taken>>) {
         });
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_burst_bars_hold_a_delayed_site_to_a_pass_and_any_other_to_its_saved_share() {
+        let mut bars = Bars::default();
+        bars.spaced("slow.com", 1000, 360, true);
+        bars.spaced("slow.com", 1005, 360, true);
+        assert_eq!((bars.over_spread, bars.delayed_sent, bars.delayed_sites.len()), (0, 2, 1), "a 10 s delay may send one page in each 5 s pass");
+        bars.spaced("slow.com", 1005, 360, true);
+        assert_eq!(bars.over_spread, 1, "a second page in the same pass is over");
+        bars.spaced("quick.com", 1000, 1440, true);
+        bars.spaced("quick.com", 1000, 1440, true);
+        assert_eq!(bars.over_spread, 1, "a 2.5 s delay may send two in a 5 s pass");
+        for at in 2000..2000 + 60 {
+            bars.spaced("tiny.com", at * 5, 60, true);
+        }
+        assert_eq!(bars.over_hour, 0);
+        bars.spaced("tiny.com", 12_299, 60, true);
+        assert_eq!(bars.over_hour, 1, "a 61st page within the hour is over its 60");
+
+        for _ in 0..6000 {
+            bars.spaced("example.com", 5000, 36_000, false);
+        }
+        assert_eq!(bars.over_spread, 1, "five minutes saved and five refilled are 6,000");
+        bars.spaced("example.com", 5000, 36_000, false);
+        assert_eq!(bars.over_spread, 2);
+    }
+}
