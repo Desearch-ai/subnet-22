@@ -300,6 +300,33 @@ async fn bulk_file(pages: &Bucket, seq: u64, records: Vec<Record>) {
     pages.put(&BULK.latest_key(), Bytes::from(json!({"seq": seq}).to_string()), JSON, None).await.unwrap();
 }
 
+/// A page as a Wikipedia bulk run writes it.
+fn wiki_page(n: usize) -> Record {
+    let mut page = v2(record(&format!("https://en.wikipedia.org/wiki/Article_{n}"), &format!("{n} {}", article(2)), "article", "en"));
+    (page.domain, page.task_id, page.miner) = ("en.wikipedia.org".into(), format!("bulk-wikipedia-run-000001-{n:06}"), String::new());
+    page
+}
+
+/// A v1 set that takes Wikipedia by the bulk rule and news.example whole.
+fn bulk_set(dir: &std::path::Path) -> PathBuf {
+    let set = dir.join("v1-set.json");
+    let sites = json!({"sites": [{"host": "en.wikipedia.org", "rule": "bulk", "source": "wikipedia"}, {"host": "news.example", "rule": "whole"}]});
+    std::fs::write(&set, sites.to_string()).unwrap();
+    set
+}
+
+/// Every page URL of the inputs handed to the task API or still pending.
+async fn input_urls(redis: &mut ConnectionManager, planner: &Planner) -> Vec<String> {
+    let mut urls: Vec<String> = Vec::new();
+    let entries = redis.lrange::<_, Vec<String>>(EMBED_INPUTS, 0, -1).await.unwrap().into_iter().chain(planner.state.pending().unwrap().into_iter().map(|(_, entry)| entry));
+    for raw in entries {
+        let entry: Value = serde_json::from_str(&raw).unwrap();
+        urls.extend(entry["pages"].as_array().unwrap().iter().map(|page| page["url"].as_str().unwrap().to_string()));
+    }
+    urls.sort();
+    urls
+}
+
 /// Writes and indexes change file `seq` after later ones, leaving the newest number where it is.
 async fn number_late(pages: &Bucket, seq: u64, records: Vec<Record>) {
     let file = changes::encode(&records.into_iter().map(change).collect::<Vec<_>>()).unwrap();
@@ -3286,7 +3313,7 @@ async fn pages_the_re_plan_left_waiting_in_a_file_it_read_through_are_read_again
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn the_backfill_plans_bulk_pages_of_current_by_the_set_s_bulk_rule() {
+async fn the_backfill_leaves_bulk_feed_pages_to_the_bulk_lane_and_plans_crawled_pages_of_bulk_hosts() {
     let Some((_turn, mut redis)) = redis_db().await else {
         eprintln!("skipped: no Redis on {REDIS}");
         return;
@@ -3303,68 +3330,41 @@ async fn the_backfill_plans_bulk_pages_of_current_by_the_set_s_bulk_rule() {
     let wiki = "https://en.wikipedia.org/wiki/Squirrel";
     let crawled = row(wiki, &format!("crawled {}", article(2)), "article", "2026-10-01T00:00:00+00:00", 2);
     let snapshot = row(wiki, &format!("snapshot {}", article(2)), "article", "2026-10-27T00:00:00+00:00", BULK_ORDER + 1);
+    let only_crawled = row("https://en.wikipedia.org/wiki/Chipmunk", &format!("chipmunk {}", article(2)), "article", "2026-10-02T00:00:00+00:00", 3);
     let paper = row("https://pmc.ncbi.nlm.nih.gov/articles/PMC1/", &article(60), PAPER, "2026-10-27T00:00:00+00:00", BULK_ORDER + 2);
-    let elsewhere = row("https://other.example/a", &article(2), "article", "2026-10-27T00:00:00+00:00", BULK_ORDER + 3);
-    shard(&current, page_key(wiki).map(|key| current::shard_of(&key).unwrap()).unwrap(), vec![vec![crawled], vec![snapshot.clone()]]).await;
+    shard(&current, current::shard_of(&snapshot.key).unwrap(), vec![vec![crawled], vec![snapshot.clone()]]).await;
+    shard(&current, current::shard_of(&only_crawled.key).unwrap(), vec![vec![only_crawled.clone()]]).await;
     shard(&current, current::shard_of(&paper.key).unwrap(), vec![vec![paper.clone()]]).await;
-    shard(&current, current::shard_of(&elsewhere.key).unwrap(), vec![vec![elsewhere]]).await;
     log(&pages, 1, vec![]).await;
     let set = dir.join("v1-set.json");
     let sites = json!({"sites": [
         {"host": "en.wikipedia.org", "rule": "bulk", "source": "wikipedia"},
         {"host": "pmc.ncbi.nlm.nih.gov", "rule": "bulk", "source": "pmc"},
-        {"host": "wikipedia.org", "rule": "out"},
     ]});
     std::fs::write(&set, sites.to_string()).unwrap();
-    let shared = redis.clone();
-    let sweep = || {
-        let mut backfilling = settings(dir.join("state"), 3600.0, 0);
-        (backfilling.backfill, backfilling.set_file, backfilling.backfill_every) = (true, Some(set.clone()), Duration::from_secs(3600));
-        let (pages, temp, current, redis) = (pages.clone(), temp.clone(), current.clone(), shared.clone());
-        async move {
-            let mut planner = Planner::new(backfilling, pages, temp, redis, Room::Fixed(5)).await.unwrap();
-            planner.current = Some(current);
-            for _ in 0..200 {
-                planner.pass().await.unwrap();
-                if planner.counts.shards >= 1024 {
-                    break;
-                }
-            }
-            planner.flush().await.unwrap();
-            planner.hand_over().await.unwrap();
-            planner
+    let mut backfilling = settings(dir.join("state"), 3600.0, 0);
+    (backfilling.backfill, backfilling.set_file, backfilling.backfill_every) = (true, Some(set.clone()), Duration::from_secs(3600));
+    let mut planner = Planner::new(backfilling, pages.clone(), temp.clone(), redis.clone(), Room::Fixed(5)).await.unwrap();
+    planner.current = Some(current.clone());
+    for _ in 0..200 {
+        planner.pass().await.unwrap();
+        if planner.counts.shards >= 1024 {
+            break;
         }
-    };
-    let mut planner = sweep().await;
-    assert_eq!(planner.counts.planned, 2);
-    let mut planned = HashMap::new();
+    }
+    planner.flush().await.unwrap();
+    planner.hand_over().await.unwrap();
+    let mut planned = Vec::new();
     for raw in redis.lrange::<_, Vec<String>>(EMBED_INPUTS, 0, -1).await.unwrap() {
         let entry: Value = serde_json::from_str(&raw).unwrap();
-        let rows = input_rows(temp.get(entry["input_key"].as_str().unwrap()).await.unwrap());
-        for page in entry["pages"].as_array().unwrap() {
-            let key = page["page_key"].as_str().unwrap().to_string();
-            let texts = rows.iter().filter(|(id, _, _)| id.starts_with(&format!("{key}#"))).count();
-            planned.insert(page["url"].as_str().unwrap().to_string(), (page["content_sha1"].as_str().unwrap().to_string(), texts));
-        }
+        planned.extend(entry["pages"].as_array().unwrap().iter().map(|page| page["url"].as_str().unwrap().to_string()));
     }
-    let urls: HashSet<&str> = planned.keys().map(String::as_str).collect();
-    assert_eq!(urls, HashSet::from([wiki, paper.record.url.as_str()]), "both bulk hosts are in by the bulk rule; other.example is not in the set");
-    assert_eq!(planned[wiki].0, snapshot.record.content_sha1, "the snapshot is newer than the crawl, so it stands");
-    assert_eq!(planned[&paper.record.url].1, 13, "a paper's page text and its first 12 parts");
-
-    for raw in redis.lrange::<_, Vec<String>>(EMBED_INPUTS, 0, -1).await.unwrap() {
-        let _: i64 = redis.rpush(EMBED_DROPPED, &raw).await.unwrap();
-    }
-    planner.forget_dropped().await.unwrap();
-    assert!(planner.state.waiting(&paper.key).unwrap().is_none(), "a bulk page has no change file to wait on");
-    assert_eq!(planner.state.waiting_count(), 0);
-    drop(planner);
-    assert_eq!(sweep().await.counts.planned, 2, "the next sweep plans the dropped bulk pages again");
+    assert_eq!(planned, [only_crawled.record.url.clone()], "a version from the bulk feed is the bulk lane's, on its own budget; a crawled page of a bulk host is the backfill's");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn the_bulk_lane_plans_whole_bulk_files_under_its_own_budget_and_a_restart_goes_on_after_the_last_one_saved() {
+async fn the_bulk_lane_plans_bulk_files_in_order_under_its_own_budget_and_a_restart_goes_on_after_the_last_one_saved() {
     let Some((_turn, mut redis)) = redis_db().await else {
         eprintln!("skipped: no Redis on {REDIS}");
         return;
@@ -3398,7 +3398,7 @@ async fn the_bulk_lane_plans_whole_bulk_files_under_its_own_budget_and_a_restart
 
     let mut planner = Planner::new(lane("state", 240.0), pages.clone(), temp.clone(), redis.clone(), Room::Fixed(100)).await.unwrap();
     planner.pass().await.unwrap();
-    assert_eq!(planner.counts.bulk_files, 2, "8 pages of bulk budget take two whole files and none of the third");
+    assert_eq!(planner.counts.bulk_files, 2, "8 pages of bulk budget take the first two files and none of the third");
     assert_eq!((planner.counts.planned, planner.counts.over_budget), (9, 0), "the bulk files' 8 pages beside the log's page, which took the main budget's one");
     planner.flush().await.unwrap();
     assert_eq!(planner.state.bulk_cursor().unwrap(), 2, "saved with the inputs that hold the files' pages");
@@ -3516,7 +3516,99 @@ async fn an_input_of_bulk_and_log_pages_given_back_puts_only_the_log_pages_back_
     let _ = std::fs::remove_dir_all(&dir);
     assert_eq!(
         (mixed, after_drop, wiki_waits, replanned),
-        (true, (2, 2), false, (2, 0)),
-        "the benchmark site's two log pages wait again under their class and are planned again; the bulk pages are the backfill's"
+        (true, (2, 2), false, (4, 0)),
+        "the benchmark site's two log pages wait again under their class and are planned again; the bulk lane plans the bulk pages again from their file"
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_bulk_file_bigger_than_the_rest_lane_s_room_takes_half_of_it_and_leaves_the_log_the_rest_while_the_api_is_full() {
+    let Some((_turn, mut redis)) = redis_db().await else {
+        eprintln!("skipped: no Redis on {REDIS}");
+        return;
+    };
+    let dir = scratch("bulk-room");
+    let stub = stub::start(dir.join("r2"), "127.0.0.1:0").await.unwrap();
+    let (pages, temp) = (bucket(stub.addr, "desearch-pages"), bucket(stub.addr, "subnet-22"));
+    log(&pages, 1, vec![]).await;
+    bulk_file(&pages, 1, (0..30).map(wiki_page).collect()).await;
+    let mut full = settings(dir.join("state"), 3600.0, 0);
+    (full.set_file, full.fresh, full.bulk_pages_per_hour, full.max_pending, full.budget_at_start) = (Some(bulk_set(&dir)), None, 360_000.0, 4, Duration::from_secs(120));
+    let mut planner = Planner::new(full, pages.clone(), temp.clone(), redis.clone(), Room::Fixed(0)).await.unwrap();
+    planner.pass().await.unwrap();
+    assert_eq!(planner.state.pending().unwrap().len(), 2, "a file of 10 inputs' worth stops at half of PLANNER_MAX_PENDING (4)");
+    let story = v2(record("https://news.example/story/1", &article(2), "article", "en"));
+    log(&pages, 2, vec![story.clone()]).await;
+    planner.pass().await.unwrap();
+    planner.flush().await.unwrap();
+    assert_eq!(planner.counts.no_room, 0, "the log's page finds the room the lane left");
+    assert!(input_urls(&mut redis, &planner).await.contains(&story.url));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_bulk_number_never_indexed_is_passed_after_the_hole_wait_as_the_log_s_are() {
+    let Some((_turn, redis)) = redis_db().await else {
+        eprintln!("skipped: no Redis on {REDIS}");
+        return;
+    };
+    let dir = scratch("bulk-hole");
+    let stub = stub::start(dir.join("r2"), "127.0.0.1:0").await.unwrap();
+    let (pages, temp) = (bucket(stub.addr, "desearch-pages"), bucket(stub.addr, "subnet-22"));
+    log(&pages, 1, vec![]).await;
+    // Number 1 was taken and its writer died before indexing it.
+    bulk_file(&pages, 2, (0..2).map(wiki_page).collect()).await;
+    let set = bulk_set(&dir);
+    let lane = |state: &str, hole_wait: Duration| {
+        let mut lane = settings(dir.join(state), 0.0, 0);
+        (lane.set_file, lane.fresh, lane.bulk_pages_per_hour, lane.budget_at_start, lane.hole_wait) = (Some(set.clone()), None, 3600.0, Duration::from_secs(120), hole_wait);
+        lane
+    };
+    let mut early = Planner::new(lane("state-early", Duration::from_secs(3600)), pages.clone(), temp.clone(), redis.clone(), Room::Fixed(100)).await.unwrap();
+    early.pass().await.unwrap();
+    assert_eq!((early.counts.planned, early.state.bulk_cursor().unwrap()), (0, 0), "within the hole wait the lane waits for number 1");
+    drop(early);
+    let mut planner = Planner::new(lane("state", Duration::ZERO), pages.clone(), temp.clone(), redis.clone(), Room::Fixed(100)).await.unwrap();
+    planner.pass().await.unwrap();
+    planner.flush().await.unwrap();
+    assert_eq!((planner.counts.planned, planner.state.bulk_cursor().unwrap()), (2, 2), "past it, number 1 is given up and file 2 is read");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_dropped_bulk_page_is_planned_again_from_its_file_and_the_lane_pays_only_for_pages_it_plans() {
+    let Some((_turn, mut redis)) = redis_db().await else {
+        eprintln!("skipped: no Redis on {REDIS}");
+        return;
+    };
+    let dir = scratch("bulk-dropped");
+    let stub = stub::start(dir.join("r2"), "127.0.0.1:0").await.unwrap();
+    let (pages, temp) = (bucket(stub.addr, "desearch-pages"), bucket(stub.addr, "subnet-22"));
+    log(&pages, 1, vec![]).await;
+    bulk_file(&pages, 1, (0..3).map(wiki_page).collect()).await;
+    bulk_file(&pages, 2, (3..6).map(wiki_page).collect()).await;
+    let mut lane = settings(dir.join("state"), 0.0, 0);
+    // Ten pages of budget at the start; at 300 an hour the test refills nothing that counts.
+    (lane.set_file, lane.fresh, lane.bulk_pages_per_hour, lane.budget_at_start) = (Some(bulk_set(&dir)), None, 300.0, Duration::from_secs(120));
+    let mut planner = Planner::new(lane, pages.clone(), temp.clone(), redis.clone(), Room::Fixed(100)).await.unwrap();
+    planner.pass().await.unwrap();
+    planner.flush().await.unwrap();
+    planner.hand_over().await.unwrap();
+    assert_eq!((planner.counts.planned, planner.state.bulk_cursor().unwrap()), (6, 2));
+    let first = wiki_page(0).url;
+    let dropped = redis
+        .lrange::<_, Vec<String>>(EMBED_INPUTS, 0, -1)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|raw| raw.contains(&first))
+        .expect("the input holding file 1's pages");
+    let _: i64 = redis.rpush(EMBED_DROPPED, &dropped).await.unwrap();
+    planner.forget_dropped().await.unwrap();
+    assert_eq!((planner.state.waiting_count(), planner.state.bulk_cursor().unwrap()), (0, 0), "nothing waits; the lane reads file 1 again");
+    planner.pass().await.unwrap();
+    planner.flush().await.unwrap();
+    assert_eq!(planner.counts.planned, 9, "file 1's three pages again");
+    assert_eq!(planner.state.bulk_cursor().unwrap(), 2, "file 2's pages, planned before, cost the lane nothing, so its last page of budget gets past them");
+    let _ = std::fs::remove_dir_all(&dir);
 }

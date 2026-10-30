@@ -20,8 +20,7 @@ source files ─► python -m bulk <source> ─► run folder ─► publisher b
   - The compactor folds both feeds. Bulk pages sit before every change-log row in log order, and pages go by fetch time
     either way.
   - The planner reads the bulk feed in a lane of its own, at most `PLANNER_BULK_PAGES_PER_HOUR` pages an hour beside
-    the change log's budget, and takes the pages the set's `bulk` rule admits. Its backfill also finds them in
-    `current/`.
+    the change log's budget, and takes the pages the set's `bulk` rule admits. Its backfill leaves them to that lane.
   - The indexer tails the bulk feed beside the change log.
 - **One id a row:** `bulk-<source>-<run>-<file>-<row>`, no miner, no validator. The task API never hands out such an id,
   so no miner is credited for it and no take-back of a miner's task touches it.
