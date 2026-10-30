@@ -9,7 +9,7 @@ use std::time::Duration;
 use arrow_array::cast::AsArray;
 use arrow_array::types::Int32Type;
 use bytes::Bytes;
-use desearch::feeds::CHANGES;
+use desearch::feeds::{BULK, CHANGES};
 use desearch::r2::{self, Bucket, Credentials, JSON, PARQUET};
 use desearch::stub;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
@@ -290,6 +290,16 @@ async fn log(pages: &Bucket, seq: u64, records: Vec<Record>) {
     pages.put(&CHANGES.latest_key(), Bytes::from(json!({"seq": seq}).to_string()), JSON, None).await.unwrap();
 }
 
+/// Writes bulk file `seq` and numbers it, as `publisher bulk` does.
+async fn bulk_file(pages: &Bucket, seq: u64, records: Vec<Record>) {
+    let rows = records.len();
+    let file = changes::encode(&records.into_iter().map(change).collect::<Vec<_>>()).unwrap();
+    let key = format!("bulk/dt=2026-10-30/{seq}.parquet");
+    pages.put(&key, Bytes::from(file), PARQUET, None).await.unwrap();
+    pages.put(&BULK.seq_key(seq), Bytes::from(json!({"key": key, "rows": rows}).to_string()), JSON, None).await.unwrap();
+    pages.put(&BULK.latest_key(), Bytes::from(json!({"seq": seq}).to_string()), JSON, None).await.unwrap();
+}
+
 /// Writes and indexes change file `seq` after later ones, leaving the newest number where it is.
 async fn number_late(pages: &Bucket, seq: u64, records: Vec<Record>) {
     let file = changes::encode(&records.into_iter().map(change).collect::<Vec<_>>()).unwrap();
@@ -302,6 +312,7 @@ fn settings(dir: PathBuf, pages_per_hour: f64, start_after: i64) -> Settings {
     Settings {
         dir,
         pages_per_hour,
+        bulk_pages_per_hour: 0.0,
         pages_per_input: 3,
         chars_per_input: 3_000_000,
         flush_after: Duration::from_secs(3600),
@@ -2961,5 +2972,65 @@ async fn the_backfill_plans_bulk_pages_of_current_by_the_set_s_bulk_rule() {
     assert_eq!(planner.state.waiting_count(), 0);
     drop(planner);
     assert_eq!(sweep().await.counts.planned, 2, "the next sweep plans the dropped bulk pages again");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_bulk_lane_plans_whole_bulk_files_under_its_own_budget_and_a_restart_goes_on_after_the_last_one_saved() {
+    let Some((_turn, mut redis)) = redis_db().await else {
+        eprintln!("skipped: no Redis on {REDIS}");
+        return;
+    };
+    let dir = scratch("bulk-lane");
+    let stub = stub::start(dir.join("r2"), "127.0.0.1:0").await.unwrap();
+    let (pages, temp) = (bucket(stub.addr, "desearch-pages"), bucket(stub.addr, "subnet-22"));
+    let wiki = |n: usize| {
+        let mut page = v2(record(&format!("https://en.wikipedia.org/wiki/Article_{n}"), &format!("{n} {}", article(2)), "article", "en"));
+        (page.domain, page.task_id, page.miner) = ("en.wikipedia.org".into(), format!("bulk-wikipedia-run-000001-{n:06}"), String::new());
+        page
+    };
+    log(&pages, 1, vec![v2(record("https://news.example/story/1", &article(2), "article", "en"))]).await;
+    bulk_file(&pages, 1, (0..4).map(wiki).collect()).await;
+    bulk_file(&pages, 2, (4..8).map(wiki).collect()).await;
+    bulk_file(&pages, 3, (8..12).map(wiki).collect()).await;
+    let set = dir.join("v1-set.json");
+    let sites = json!({"sites": [{"host": "en.wikipedia.org", "rule": "bulk", "source": "wikipedia"}, {"host": "news.example", "rule": "whole"}]});
+    std::fs::write(&set, sites.to_string()).unwrap();
+    let lane = |bulk_per_hour: f64| {
+        let mut lane = settings(dir.join("state"), 0.0, 0);
+        (lane.set_file, lane.fresh, lane.bulk_pages_per_hour, lane.budget_at_start) = (Some(set.clone()), None, bulk_per_hour, Duration::from_secs(120));
+        lane
+    };
+
+    let mut planner = Planner::new(lane(240.0), pages.clone(), temp.clone(), redis.clone(), Room::Fixed(100)).await.unwrap();
+    planner.pass().await.unwrap();
+    assert_eq!(planner.counts.bulk_files, 2, "8 pages of bulk budget take two whole files and none of the third");
+    assert_eq!((planner.counts.planned, planner.counts.over_budget), (9, 0), "the bulk files' 8 pages beside the log's page, which took the main budget's one");
+    planner.flush().await.unwrap();
+    assert_eq!(planner.state.bulk_cursor().unwrap(), 2, "saved with the inputs that hold the files' pages");
+    assert_eq!(planner.state.waiting_count(), 0);
+    let mut planned: Vec<String> = Vec::new();
+    let entries = redis.lrange::<_, Vec<String>>(EMBED_INPUTS, 0, -1).await.unwrap().into_iter().chain(planner.state.pending().unwrap().into_iter().map(|(_, entry)| entry));
+    for raw in entries {
+        let entry: Value = serde_json::from_str(&raw).unwrap();
+        planned.extend(entry["pages"].as_array().unwrap().iter().map(|page| page["url"].as_str().unwrap().to_string()));
+    }
+    planned.sort();
+    let mut want: Vec<String> = (0..8).map(|n| wiki(n).url).chain(["https://news.example/story/1".to_string()]).collect();
+    want.sort();
+    assert_eq!(planned, want);
+    drop(planner);
+
+    let mut planner = Planner::new(lane(240.0), pages.clone(), temp.clone(), redis.clone(), Room::Fixed(100)).await.unwrap();
+    planner.pass().await.unwrap();
+    assert_eq!((planner.counts.bulk_files, planner.counts.planned), (1, 4), "a restart reads only the third file");
+    planner.flush().await.unwrap();
+    assert_eq!(planner.state.bulk_cursor().unwrap(), 3);
+    drop(planner);
+
+    let mut off = Planner::new(lane(0.0), pages.clone(), temp.clone(), redis.clone(), Room::Fixed(100)).await.unwrap();
+    bulk_file(&pages, 4, (12..16).map(wiki).collect()).await;
+    off.pass().await.unwrap();
+    assert_eq!(off.counts.bulk_files, 0, "0 leaves the bulk feed unread");
     let _ = std::fs::remove_dir_all(&dir);
 }

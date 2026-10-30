@@ -83,8 +83,8 @@ on input writes and writing its state.
   first. The re-plan stops within a file once only the log's share is left, and reads that file again next pass. A
   pass reads up to 64 such change files, oldest first, fetching up to `PLANNER_READS` (16) of them ahead while the
   budget and room would still hold an input's worth once the pages waiting in those already fetched were taken. A
-  page taken from them waits until its input is saved. A version planned without its change file number is left to
-  the backfill or a re-crawl. An input is pushed to the task API once, however often a restart tries it.
+  page taken from them waits until its input is saved. A version planned without its change file number, or from the
+  bulk feed, is left to the backfill or a re-crawl. An input is pushed to the task API once, however often a restart tries it.
 - **Backfill** (`PLANNER_BACKFILL=1`): with what budget and room the log and waiting pages leave, it reads
   `current/` shard by shard (`PLANNER_BACKFILL_SHARDS`). Each pass re-plans waiting pages first. The backfill
   starts once the budget holds an input's worth beyond the log's share, but not in a pass where the re-plan stopped
@@ -97,6 +97,12 @@ on input writes and writing its state.
   after three failed reads in a row the backfill goes on to the next shard, logs that it skipped it, and counts
   both in its report. It keeps its place across restarts, and sweeps again `PLANNER_BACKFILL_EVERY_S` (24 h) after
   its last shard, so a page the log passed by is planned once `current/` holds it.
+- **Bulk lane** (`PLANNER_BULK_PAGES_PER_HOUR`, 0 by default, which leaves it off): reads the bulk feed (`bulk/`)
+  in order, up to 4 files a pass, each whole once the lane's own hourly budget holds the file's pages, and only while
+  the rest lane holds under half of `PLANNER_MAX_PENDING` inputs, so the log keeps room. Its budget is apart from
+  `PLANNER_PAGES_PER_HOUR` and adds to the hand-over pace. Bulk pages pass the same set rules (`bulk`), never go in
+  the fresh lane and never wait. A restart reads the feed again after the last bulk file whose pages are all in saved
+  inputs.
 - **Page vectors first** (`PLANNER_PAGE_FIRST=1`, off by default): pages outside the fresh lane get their
   page text alone; a page's passages are planned the next time it is seen with the setting off.
 

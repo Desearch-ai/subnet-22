@@ -328,10 +328,11 @@ async fn plan() -> Result<()> {
     let mut planner = planner::Planner::new(settings, pages, temp, redis, planner::Room::api(&task_api)?).await?;
     planner.current = current;
     println!(
-        "planning {} texts after change file {}, at most {} pages an hour, inputs of {} pages, room from {task_api}",
+        "planning {} texts after change file {}, at most {} pages an hour and {} bulk pages an hour, inputs of {} pages, room from {task_api}",
         planner::PLANNED_RECIPES.join(", "),
         planner.read_through(),
         planner.settings.pages_per_hour,
+        planner.settings.bulk_pages_per_hour,
         planner.settings.pages_per_input
     );
     let (stopping, stop) = tokio::sync::watch::channel(false);
