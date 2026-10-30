@@ -6,20 +6,40 @@ import gzip
 import json
 import math
 import os
+import shlex
 import subprocess
 import sys
 from collections import Counter
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+from urllib.parse import parse_qsl, unquote, urlsplit
 
 JEV = "jev-1.14/types-2"
 QUERY = (
-    "COPY (SELECT d.host, d.rank, d.state, d.state_reason, d.url_count, t.outcome, t.site_type, t.confidence"
+    "COPY (SELECT d.host, d.rank, d.state, d.state_reason, d.url_count, t.outcome, t.site_type, t.confidence, d.canonical_host"
     " FROM bot.domains d LEFT JOIN bot.site_types t ON t.host = d.host AND t.source = '"
     + JEV
     + "')"
     " TO STDOUT WITH (FORMAT csv)"
 )
+
+# libpq reads the connection from these, so psql's command line, which any process listing shows, holds no password.
+PG_ENV = {
+    "host": "PGHOST",
+    "hostaddr": "PGHOSTADDR",
+    "port": "PGPORT",
+    "dbname": "PGDATABASE",
+    "user": "PGUSER",
+    "password": "PGPASSWORD",
+    "sslmode": "PGSSLMODE",
+    "sslrootcert": "PGSSLROOTCERT",
+    "sslcert": "PGSSLCERT",
+    "sslkey": "PGSSLKEY",
+    "connect_timeout": "PGCONNECT_TIMEOUT",
+    "application_name": "PGAPPNAME",
+    "options": "PGOPTIONS",
+    "target_session_attrs": "PGTARGETSESSIONATTRS",
+}
 
 TIERS = {
     "news": 1,
@@ -53,6 +73,8 @@ CRAWLED_STATES = {"active", "no_sitemap", "failing"}
 # Only these list pages from their sitemaps, so only these go in the bot's list; the decisions file has the rest.
 SENDING_STATES = {"active", "failing"}
 RECHECKED = {"no_text", "homepage_error"}
+# Homepage checks a recheck that read the site as the bot does (recheck_hosts.py) can overrule.
+MISFIRES = RECHECKED | {"not_english"}
 TOP_RANK = 10_000
 LOW_CAP = 10_000
 UNSURE_CAP = 100_000
@@ -97,6 +119,7 @@ class Row:
     homepage: str
     site_type: str
     confidence: float | None
+    canonical_host: str = ""
 
 
 @dataclass
@@ -185,6 +208,7 @@ def decide(
     override: str = "",
     hand: Hand | None = None,
     judged: Judged | None = None,
+    rechecked: bool = False,
 ) -> Decision:
     if override.startswith("out:"):
         return out(override[4:])
@@ -194,10 +218,15 @@ def decide(
         return out(row.state_reason or "excluded")
     if row.state == "blocked" or row.state_reason == "bot_wall":
         return out("refuses")
-    if row.state_reason == "not_english" or row.homepage == "not_english":
+    cleared = rechecked and (row.state != "ineligible" or row.state_reason in MISFIRES)
+    if not cleared and (
+        row.state_reason == "not_english" or row.homepage == "not_english"
+    ):
         return out("not_english")
-    if row.state == "ineligible" and not (
-        row.state_reason in RECHECKED and row.homepage == "ok"
+    if (
+        row.state == "ineligible"
+        and not cleared
+        and not (row.state_reason in RECHECKED and row.homepage == "ok")
     ):
         return out(f"ineligible:{row.state_reason}")
     if row.state not in CRAWLED_STATES | {"ineligible"}:
@@ -289,12 +318,39 @@ def apply_v1(row: Row, base: Decision, v1: V1 | None, forced_out: bool) -> Decis
     )
 
 
+def pg_env(dsn: str) -> dict[str, str]:
+    """libpq's environment for a URI or keyword=value connection string."""
+    parts = urlsplit(dsn)
+    if parts.scheme in ("postgres", "postgresql"):
+        found = {
+            "host": parts.hostname,
+            "port": parts.port,
+            "user": unquote(parts.username or ""),
+            "password": unquote(parts.password or ""),
+            "dbname": unquote(parts.path.lstrip("/")),
+            **dict(parse_qsl(parts.query)),
+        }
+    else:
+        found = dict(item.split("=", 1) for item in shlex.split(dsn))
+    unknown = sorted(set(found) - set(PG_ENV))
+    if unknown:
+        sys.exit(
+            f"DESEARCH_DB has settings this tool can't pass to psql: {', '.join(unknown)}"
+        )
+    return {
+        PG_ENV[key]: str(value)
+        for key, value in found.items()
+        if value not in (None, "")
+    }
+
+
 def registry_rows(csv_path: str | None) -> csv.reader:
     if csv_path:
         return csv.reader(open_text(csv_path))
+    env = {key: value for key, value in os.environ.items() if key != "DESEARCH_DB"}
+    env.update(pg_env(os.environ["DESEARCH_DB"]))
     command = [
         "psql",
-        os.environ["DESEARCH_DB"],
         "-X",
         "-q",
         "-v",
@@ -304,12 +360,23 @@ def registry_rows(csv_path: str | None) -> csv.reader:
         "-c",
         QUERY,
     ]
-    process = subprocess.Popen(command, stdout=subprocess.PIPE, text=True)
+    process = subprocess.Popen(command, stdout=subprocess.PIPE, text=True, env=env)
     return csv.reader(process.stdout)
 
 
 def parse_row(fields: list[str]) -> Row:
-    host, rank, state, state_reason, url_count, homepage, site_type, confidence = fields
+    # Registry dumps made before canonical_host was read have eight columns.
+    (
+        host,
+        rank,
+        state,
+        state_reason,
+        url_count,
+        homepage,
+        site_type,
+        confidence,
+        canonical_host,
+    ) = (fields + [""])[:9]
     return Row(
         host,
         int(rank) if rank else None,
@@ -319,6 +386,7 @@ def parse_row(fields: list[str]) -> Row:
         homepage,
         site_type,
         float(confidence) if confidence else None,
+        canonical_host,
     )
 
 
@@ -363,6 +431,16 @@ def read_judged(path: str | None) -> dict[str, Judged]:
         }
 
 
+def read_rechecked(path: str | None) -> set[str]:
+    if not path:
+        return set()
+    with open_text(path) as source:
+        verdicts = {
+            r["host"]: r["verdict"] for r in csv.DictReader(source, delimiter="\t")
+        }
+    return {host for host, verdict in verdicts.items() if verdict == "ok"}
+
+
 def read_v1_set(path: str | None) -> dict[str, V1] | None:
     if not path:
         return None
@@ -400,6 +478,7 @@ def build(
     node2_hours: float | None = None,
     node2_min_weight: int = 1,
     rejoin_hosts: set[str] | None = None,
+    rechecked: set[str] | None = None,
 ) -> tuple[list[dict], Counter]:
     ranked, counts = [], Counter()
     for row in rows:
@@ -410,6 +489,7 @@ def build(
             override,
             hand,
             (judged or {}).get(row.host),
+            row.host in (rechecked or set()),
         )
         entry_v1 = (v1 or {}).get(row.host)
         decision = (
@@ -480,6 +560,7 @@ def build(
                     base.site_type,
                     base.cap,
                     entry_v1.rule if entry_v1 else "",
+                    row.canonical_host,
                 ]
             )
     # A listed subdomain takes its pages from its parent's lists, so one listed only for its feed would leave them unsent.
@@ -599,6 +680,10 @@ def main(argv: list[str] | None = None) -> None:
         help="a file of hosts, one a line, whose send_cap goes one up so the list walker queues their stored pages again (unqueued.py lists them)",
     )
     parser.add_argument(
+        "--rechecked",
+        help="recheck_hosts.py's TSV of host and verdict: a host it read as ok passes the homepage language, text and error checks",
+    )
+    parser.add_argument(
         "--registry-csv",
         help="read the registry rows from this CSV instead of DESEARCH_DB",
     )
@@ -617,11 +702,22 @@ def main(argv: list[str] | None = None) -> None:
     )
     resend_hosts = set().union(*resend_files.values())
     rejoin_hosts = set().union(*rejoin_files.values())
+    rechecked = read_rechecked(args.rechecked)
     if args.decisions:
         with open_text(args.decisions, "wt") as target:
             writer = csv.writer(target, delimiter="\t", lineterminator="\n")
             writer.writerow(
-                ["host", "rank", "state", "listed", "reason", "type", "cap", "v1"]
+                [
+                    "host",
+                    "rank",
+                    "state",
+                    "listed",
+                    "reason",
+                    "type",
+                    "cap",
+                    "v1",
+                    "canonical",
+                ]
             )
             entries, counts = build(
                 rows,
@@ -636,6 +732,7 @@ def main(argv: list[str] | None = None) -> None:
                 args.node2_hours,
                 args.node2_min_weight,
                 rejoin_hosts,
+                rechecked,
             )
     else:
         entries, counts = build(
@@ -650,6 +747,7 @@ def main(argv: list[str] | None = None) -> None:
             node2_hours=args.node2_hours,
             node2_min_weight=args.node2_min_weight,
             rejoin_hosts=rejoin_hosts,
+            rechecked=rechecked,
         )
     resent, rejoined = matched(entries, resend_files, rejoin_files, args.out)
     write_list(entries, args.out)

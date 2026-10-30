@@ -5,6 +5,8 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 SOURCE = Path(__file__).resolve().parents[2] / "desearch-bot" / "tools" / "v1_set.py"
 SPEC = importlib.util.spec_from_file_location("v1_set", SOURCE)
 v1_set = importlib.util.module_from_spec(SPEC)
@@ -22,8 +24,8 @@ def decision(host, site_type, cap=1_000_000, listed="1"):
     return {"host": host, "rank": "100", "state": "active", "listed": listed, "reason": "", "type": site_type, "cap": str(cap)}
 
 
-def build(decisions=(), rows=(), hand=(), backing=None, news_sources=None, judged=None, counts=None, news="A", news_counts=None, outlets=None):
-    sites, too_big = v1_set.build([list(r) for r in rows], list(hand), list(decisions), backing or {}, news_sources or {}, judged or {}, counts or {}, news_counts or {}, news, TODAY, outlets)
+def build(decisions=(), rows=(), hand=(), backing=None, news_sources=None, judged=None, counts=None, news="A", news_counts=None, outlets=None, verdicts=None):
+    sites, too_big = v1_set.build([list(r) for r in rows], list(hand), list(decisions), backing or {}, news_sources or {}, judged or {}, counts or {}, news_counts or {}, news, TODAY, outlets, verdicts)
     return {site["host"]: site for site in sites}, too_big
 
 
@@ -139,6 +141,55 @@ def test_hand_entries_win_then_row_files_in_order_and_docs_hosts_are_docs():
     assert sites["wikipedia.org"]["rule"] == "out"
 
 
+def moved(host, canonical):
+    return {"host": host, "rank": "100", "state": "redirects", "listed": "0", "reason": "state:redirects", "type": "", "cap": "0", "canonical": canonical}
+
+
+def test_a_site_that_moved_passes_its_backing_to_the_host_it_moved_to():
+    rows = [
+        {"host": "paper.co.uk", "rule": "news", "type": "news", "why": ["freshqa"]},
+        {"host": "old.example", "rule": "news", "type": "news", "why": ["simpleqa"]},
+        {"host": "museum.example", "rule": "whole", "type": "reference", "why": ["simpleqa"]},
+        {"host": "paper.corp.example", "rule": "news", "type": "news", "why": ["simpleqa"]},
+        {"host": "loop-a.example", "rule": "news", "type": "news", "why": ["simpleqa"]},
+    ]
+    outlets = {h: "wikidata" for h in ("paper.co.uk", "old.example", "paper.corp.example", "loop-a.example")}
+    decisions = [moved("paper.co.uk", "paper.com"), decision("paper.com", "news"), moved("old.example", "thin.example"), decision("thin.example", "news")]
+    decisions += [moved("museum.example", "www.museum.org"), moved("museum.org", "library.example"), decision("library.example", "reference")]
+    decisions += [moved("paper.corp.example", "corp.example"), decision("corp.example", "news")]
+    decisions += [moved("loop-a.example", "loop-b.example"), moved("loop-b.example", "loop-a.example"), decision("loop-b.example", "news")]
+    judged = {"thin.example": {"judged": "20", "substantive": "2"}}
+    sites, _ = build(decisions, rows=[rows], outlets=outlets, judged=judged)
+    assert sites["paper.com"] == {"host": "paper.com", "rule": "news", "type": "news", "why": ["wikidata"]}, "the outlet test follows the move: all years"
+    assert sites["thin.example"] == {"host": "thin.example", "rule": "out", "why": ["judge"]}, "the judge goes by the host's own backing"
+    assert "library.example" not in sites, "a rule doesn't move, only backing"
+    assert sites["corp.example"]["since"] == "2025-10-01" and sites["loop-b.example"]["since"] == "2025-10-01", "no backing to a parent or around a loop"
+    station = build([moved("station.example", "group.example"), decision("group.example", "news")], outlets={"station.example": "wikidata"})[0]
+    assert station["group.example"]["since"] == "2025-10-01", "only a site the set's own entries take passes its backing on"
+    assert v1_set.moves({"a.example": "b.example", "b.example": "c.example", "docs.x.example": "x.example"}) == {"a.example": "c.example", "b.example": "c.example"}
+
+
+def test_the_site_check_puts_hosts_out_over_every_source_but_the_hand_entries():
+    hand = [{"host": "lead.example", "rule": "whole", "type": "reference", "why": ["evergreen"]}]
+    rows = [{"host": "generated.example", "rule": "whole", "type": "reference", "why": ["judge"]}, {"host": "lead.example", "rule": "out", "why": ["template"]}]
+    verdicts = {"generated.example": "out", "lead.example": "out", "fine.example": "keep", "unlisted.example": "out"}
+    sites, _ = build([decision("fine.example", "academic"), decision("generated.example", "news")], rows=[rows], hand=hand, verdicts=verdicts)
+    assert sites["generated.example"] == {"host": "generated.example", "rule": "out", "why": ["quality"]}
+    assert sites["lead.example"]["rule"] == "whole", "the lead's entry wins"
+    assert sites["fine.example"]["rule"] == "whole" and sites["unlisted.example"]["rule"] == "out"
+
+
+def test_site_verdicts_are_keep_or_out(tmp_path):
+    good = tmp_path / "verdicts.tsv.gz"
+    with gzip.open(good, "wt") as out:
+        out.write("host\tverdict\tcopied\nwww.Gen.example\tout\t0.4\nok.example\tkeep\t0\n")
+    assert v1_set.read_verdicts(str(good)) == {"gen.example": "out", "ok.example": "keep"}
+    bad = tmp_path / "bad.tsv"
+    bad.write_text("host\tverdict\nodd.example\tcap\n")
+    with pytest.raises(SystemExit):
+        v1_set.read_verdicts(str(bad))
+
+
 def test_dates_come_from_published_or_the_url_path_as_the_planner_reads_them():
     page_date = v1_set.page_date
     assert page_date("https://a.example/x", "2024-03-15T10:00:00+00:00").isoformat() == "2024-03-15"
@@ -181,10 +232,15 @@ def test_the_set_file_is_written_from_the_inputs(tmp_path):
     hand.write_text("host\trule\ttype\twhy\nwiki.example\tout\t\tmirror\n")
     news_domains = tmp_path / "news-domains.tsv"
     news_domains.write_text("host\tsources\nnews.example\tjev+wikidata\n")
+    verdicts = tmp_path / "verdicts.tsv.gz"
+    with gzip.open(verdicts, "wt") as target:
+        target.write("host\tverdict\ngenerated.example\tout\nnews.example\tkeep\n")
     out = tmp_path / "v1-set.json"
-    v1_set.main(["--out", str(out), "--decisions", str(decisions), "--rows", str(rows), "--hand", str(hand), "--news-domains", str(news_domains), "--news", "B", "--too-big", str(tmp_path / "too-big.tsv")])
+    v1_set.main(["--out", str(out), "--decisions", str(decisions), "--rows", str(rows), "--hand", str(hand), "--news-domains", str(news_domains), "--news", "B", "--too-big", str(tmp_path / "too-big.tsv"), "--site-verdicts", str(verdicts)])
     written = json.loads(out.read_text())
-    assert [site["host"] for site in written["sites"]] == ["docs.example", "dump.example", "news.example", "wiki.example"]
-    assert written["news"] == "B" and written["sites"][2]["since"] == "2020-01-01"
+    assert [site["host"] for site in written["sites"]] == ["docs.example", "dump.example", "generated.example", "news.example", "wiki.example"]
+    golden = {site["host"]: site for site in json.loads(GOLDEN.read_text())["sites"]}
+    assert written["sites"][2] == golden["generated.example"], "the golden cases hold a site the site check put out"
+    assert written["news"] == "B" and written["sites"][3]["since"] == "2020-01-01"
     assert written["undated"] == "out"
     assert written["built"].endswith("Z")
