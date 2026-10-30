@@ -3474,3 +3474,49 @@ async fn a_ranked_site_s_landing_pages_and_docs_go_before_established_news_read_
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_input_of_bulk_and_log_pages_given_back_puts_only_the_log_pages_back_waiting_under_their_class() {
+    let Some((_turn, mut redis)) = redis_db().await else {
+        eprintln!("skipped: no Redis on {REDIS}");
+        return;
+    };
+    let dir = scratch("class-bulk-dropped");
+    let stub = stub::start(dir.join("r2"), "127.0.0.1:0").await.unwrap();
+    let (pages, temp) = (bucket(stub.addr, "desearch-pages"), bucket(stub.addr, "subnet-22"));
+    let wiki = |n: usize| {
+        let mut page = v2(record(&format!("https://en.wikipedia.org/wiki/Article_{n}"), &format!("{n} {}", article(2)), "article", "en"));
+        (page.domain, page.task_id, page.miner) = ("en.wikipedia.org".into(), format!("bulk-wikipedia-run-000001-{n:06}"), String::new());
+        page
+    };
+    let set = dir.join("v1-set.json");
+    let sites = json!({"sites": [
+        {"host": "en.wikipedia.org", "rule": "bulk", "source": "wikipedia", "why": ["simpleqa"]},
+        {"host": "bench.example", "rule": "whole", "type": "academic", "why": ["simpleqa"]},
+    ]});
+    std::fs::write(&set, sites.to_string()).unwrap();
+    log(&pages, 1, vec![site_page("bench.example", 0), site_page("bench.example", 1)]).await;
+    bulk_file(&pages, 1, (0..2).map(wiki).collect()).await;
+    let mut lane = class_settings(&dir, &set, 3600.0);
+    (lane.pages_per_input, lane.fresh, lane.bulk_pages_per_hour, lane.budget_at_start) = (4, None, 36_000.0, Duration::from_secs(120));
+    let mut planner = Planner::new(lane, pages.clone(), temp.clone(), redis.clone(), Room::Fixed(10)).await.unwrap();
+    planner.pass().await.unwrap();
+    let handed: Vec<String> = redis.lrange(EMBED_INPUTS, 0, -1).await.unwrap();
+    let mixed = handed.len() == 1 && serde_json::from_str::<Value>(&handed[0]).unwrap()["pages"].as_array().unwrap().len() == 4;
+    for raw in &handed {
+        let _: i64 = redis.rpush(EMBED_DROPPED, raw).await.unwrap();
+    }
+    planner.forget_dropped().await.unwrap();
+    let after_drop = (planner.state.waiting_count(), planner.state.class_count(Class::Benchmark));
+    let wiki_waits = planner.state.waiting(&page_key(&wiki(0).url).unwrap()).unwrap().is_some();
+    let planned_before = planner.counts.planned;
+    planner.pass().await.unwrap();
+    planner.flush().await.unwrap();
+    let replanned = (planner.counts.planned - planned_before, planner.state.waiting_count());
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(
+        (mixed, after_drop, wiki_waits, replanned),
+        (true, (2, 2), false, (2, 0)),
+        "the benchmark site's two log pages wait again under their class and are planned again; the bulk pages are the backfill's"
+    );
+}
