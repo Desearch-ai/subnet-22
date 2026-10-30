@@ -145,32 +145,25 @@ def moved(host, canonical):
     return {"host": host, "rank": "100", "state": "redirects", "listed": "0", "reason": "state:redirects", "type": "", "cap": "0", "canonical": canonical}
 
 
-def test_a_site_that_moved_passes_its_backing_and_rule_to_the_host_it_moved_to():
+def test_a_site_that_moved_passes_its_backing_to_the_host_it_moved_to():
     rows = [
         {"host": "paper.co.uk", "rule": "news", "type": "news", "why": ["freshqa"]},
+        {"host": "old.example", "rule": "news", "type": "news", "why": ["simpleqa"]},
         {"host": "museum.example", "rule": "whole", "type": "reference", "why": ["simpleqa"]},
-        {"host": "times.example", "rule": "news", "type": "news", "why": ["simpleqa"]},
-        {"host": "blog.example", "rule": "news", "type": "news", "why": ["simpleqa"]},
-        {"host": "developer.corp.example", "rule": "whole", "type": "docs", "why": ["exa-webcode"]},
-        {"host": "old.org", "rule": "whole", "type": "reference", "why": ["simpleqa"]},
-        {"host": "held.example", "rule": "whole", "type": "reference", "why": ["simpleqa"]},
-        {"host": "loop-a.example", "rule": "whole", "type": "reference", "why": ["simpleqa"]},
+        {"host": "paper.corp.example", "rule": "news", "type": "news", "why": ["simpleqa"]},
+        {"host": "loop-a.example", "rule": "news", "type": "news", "why": ["simpleqa"]},
     ]
-    decisions = [moved("paper.co.uk", "paper.com"), decision("paper.com", "news"), moved("museum.example", "www.museum.org"), moved("museum.org", "library.example"), decision("library.example", "reference")]
-    decisions += [moved("times.example", "times.co.uk"), dict(decision("times.co.uk", "news", listed="0"), state="blocked", reason="refuses")]
-    decisions += [moved("blog.example", "platform.example"), decision("platform.example", "community"), moved("developer.corp.example", "corp.example"), decision("corp.example", "reference")]
-    decisions += [moved("old.org", "big.org"), decision("big.org", "reference", 100_000), moved("held.example", "kept.example"), decision("kept.example", "reference")]
-    decisions += [moved("loop-a.example", "loop-b.example"), moved("loop-b.example", "loop-a.example")]
-    hand = [{"host": "held.example", "rule": "out", "why": ["mirror"]}]
-    sites, _ = build(decisions, rows=[rows], hand=hand, outlets={"paper.co.uk": "wikidata"}, counts={"big.org": {"stored": "9000000"}})
+    outlets = {h: "wikidata" for h in ("paper.co.uk", "old.example", "paper.corp.example", "loop-a.example")}
+    decisions = [moved("paper.co.uk", "paper.com"), decision("paper.com", "news"), moved("old.example", "thin.example"), decision("thin.example", "news")]
+    decisions += [moved("museum.example", "www.museum.org"), moved("museum.org", "library.example"), decision("library.example", "reference")]
+    decisions += [moved("paper.corp.example", "corp.example"), decision("corp.example", "news")]
+    decisions += [moved("loop-a.example", "loop-b.example"), moved("loop-b.example", "loop-a.example"), decision("loop-b.example", "news")]
+    judged = {"thin.example": {"judged": "20", "substantive": "2"}}
+    sites, _ = build(decisions, rows=[rows], outlets=outlets, judged=judged)
     assert sites["paper.com"] == {"host": "paper.com", "rule": "news", "type": "news", "why": ["wikidata"]}, "the outlet test follows the move: all years"
-    assert sites["library.example"] == {"host": "library.example", "rule": "whole", "type": "reference", "why": ["simpleqa", "redirect"]}, "a chain is followed to its end"
-    assert "museum.org" not in sites
-    assert {"times.co.uk", "platform.example", "corp.example", "big.org", "kept.example", "loop-a.example", "loop-b.example"}.isdisjoint(set(sites) - {h["host"] for h in rows}), (
-        "no rule for a host that refuses us, a platform's type, a parent, a site too big, a source held out, or a loop"
-    )
-    local = build([moved("local.example", "local.com"), decision("local.com", "news")], rows=[[{"host": "local.example", "rule": "news", "type": "news", "why": ["simpleqa"]}]])[0]
-    assert local["local.com"]["since"] == "2025-10-01", "a citation is no backing on either host"
+    assert sites["thin.example"] == {"host": "thin.example", "rule": "out", "why": ["judge"]}, "the judge goes by the host's own backing"
+    assert "library.example" not in sites, "a rule doesn't move, only backing"
+    assert sites["corp.example"]["since"] == "2025-10-01" and sites["loop-b.example"]["since"] == "2025-10-01", "no backing to a parent or around a loop"
     station = build([moved("station.example", "group.example"), decision("group.example", "news")], outlets={"station.example": "wikidata"})[0]
     assert station["group.example"]["since"] == "2025-10-01", "only a site the set's own entries take passes its backing on"
     assert v1_set.moves({"a.example": "b.example", "b.example": "c.example", "docs.x.example": "x.example"}) == {"a.example": "c.example", "b.example": "c.example"}

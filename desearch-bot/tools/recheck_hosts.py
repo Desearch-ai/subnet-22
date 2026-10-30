@@ -104,24 +104,49 @@ class Pacer:
     """One request a second to each host, its www name included, or its Crawl-delay once robots.txt names one."""
 
     def __init__(self, gap: float = 1.0):
-        self.gap, self.next, self.delays, self.lock = gap, {}, {}, threading.Lock()
+        self.gap, self.last, self.delays, self.lock = gap, {}, {}, threading.Lock()
 
     def wait(self, host: str) -> None:
         host = host[4:] if host.startswith("www.") else host
         with self.lock:
             now = time.monotonic()
-            at = max(now, self.next.get(host, 0.0))
-            self.next[host] = at + max(self.gap, self.delays.get(host, 0.0))
+            gap = max(self.gap, self.delays.get(host, 0.0))
+            at = max(now, self.last.get(host, -gap) + gap)
+            self.last[host] = at
         time.sleep(at - now)
 
     def slow_to(self, host: str, delay: float | None) -> None:
         if delay:
             with self.lock:
-                self.delays[host] = min(delay, MAX_CRAWL_DELAY)
+                self.delays[host[4:] if host.startswith("www.") else host] = min(
+                    delay, MAX_CRAWL_DELAY
+                )
 
 
 class PrivateAddress(OSError):
     pass
+
+
+class Deadline:
+    """The sockets one fetch opened, shut when its time is up so no slow answer holds a worker."""
+
+    def __init__(self):
+        self.sockets, self.passed = [], False
+
+    def expire(self) -> None:
+        self.passed = True
+        for sock in self.sockets:
+            try:
+                sock.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+
+
+FETCH = threading.local()
+
+
+def public_address(address: str) -> bool:
+    return ipaddress.ip_address(address.split("%")[0]).is_global
 
 
 def public_connection(
@@ -129,16 +154,21 @@ def public_connection(
 ):
     """socket.create_connection to the host's public addresses only, checked where the connection is made."""
     host, port = address
+    deadline = getattr(FETCH, "deadline", None)
     last: OSError = PrivateAddress(host)
     for family, kind, proto, _, target in socket.getaddrinfo(
         host, port, type=socket.SOCK_STREAM
     ):
-        if not ipaddress.ip_address(target[0].split("%")[0]).is_global:
+        if not public_address(target[0]):
             continue
+        if deadline and deadline.passed:
+            raise TimeoutError("slow answer")
         sock = socket.socket(family, kind, proto)
         try:
             if timeout is not socket._GLOBAL_DEFAULT_TIMEOUT:
                 sock.settimeout(timeout)
+            if deadline:
+                deadline.sockets.append(sock)
             sock.connect(target)
             return sock
         except OSError as error:
@@ -188,41 +218,44 @@ def gunzip(body: bytes, limit: int) -> bytes:
         return body
 
 
-def read(response, limit: int) -> bytes:
-    """Up to limit bytes within the bot's whole-request time, however slowly they come."""
-    deadline, chunks, size = time.monotonic() + MAX_SECONDS, [], 0
-    while size < limit:
-        if time.monotonic() > deadline:
-            raise TimeoutError("slow answer")
-        chunk = response.read(min(65536, limit - size))
-        if not chunk:
-            break
-        chunks.append(chunk)
-        size += len(chunk)
-    return gunzip(b"".join(chunks), limit)
-
-
 def http_fetch(url: str, limit: int, pacer: Pacer) -> Answer:
-    """GET with redirects followed by hand, each hop paced for the host it goes to."""
-    for _ in range(MAX_REDIRECTS + 1):
-        pacer.wait(urlsplit(url).hostname or "")
-        request = urllib.request.Request(
-            url, headers={"User-Agent": USER_AGENT, "Accept": "*/*"}
-        )
-        try:
-            with OPENER.open(request, timeout=TIMEOUT) as response:
-                return Answer(response.status, url, read(response, limit))
-        except urllib.error.HTTPError as error:
-            location = error.headers.get("Location")
-            if error.code in REDIRECTS and location:
-                url = urljoin(url, location)
-                continue
+    """GET over http(s) only, with redirects followed by hand, each hop paced for the host it goes to, all within MAX_SECONDS."""
+    deadline = FETCH.deadline = Deadline()
+    timer = threading.Timer(MAX_SECONDS, deadline.expire)
+    timer.daemon = True
+    timer.start()
+    try:
+        for _ in range(MAX_REDIRECTS + 1):
+            parts = urlsplit(url)
+            if parts.scheme not in ("http", "https"):
+                raise OSError(f"{parts.scheme} redirect")
+            pacer.wait(parts.hostname or "")
+            request = urllib.request.Request(
+                url, headers={"User-Agent": USER_AGENT, "Accept": "*/*"}
+            )
             try:
-                body = read(error, limit)
-            except Exception:
-                body = b""
-            return Answer(error.code, url, body)
-    raise OSError("too many redirects")
+                with OPENER.open(request, timeout=TIMEOUT) as response:
+                    body = response.read(limit)
+                    if deadline.passed:
+                        raise TimeoutError("slow answer")
+                    return Answer(response.status, url, gunzip(body, limit))
+            except urllib.error.HTTPError as error:
+                location = error.headers.get("Location")
+                if error.code in REDIRECTS and location:
+                    url = urljoin(url, location)
+                    continue
+                try:
+                    body = error.read(limit)
+                except Exception:
+                    body = b""
+                return Answer(error.code, url, gunzip(body, limit))
+            finally:
+                if deadline.passed:
+                    raise TimeoutError("slow answer")
+        raise OSError("too many redirects")
+    finally:
+        timer.cancel()
+        FETCH.deadline = None
 
 
 def error_name(error: Exception) -> str:

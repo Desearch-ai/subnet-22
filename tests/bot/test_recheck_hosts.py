@@ -1,5 +1,8 @@
 import importlib.util
+import socket
 import sys
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -189,20 +192,66 @@ def test_odd_answers_do_not_stop_the_run():
 
 def test_the_pace_is_shared_with_the_www_name_and_slows_to_crawl_delay(monkeypatch):
     pacer = recheck_hosts.Pacer(1.0)
-    pacer.slow_to("paper.example", 600)
-    assert pacer.delays["paper.example"] == recheck_hosts.MAX_CRAWL_DELAY
     monkeypatch.setattr(recheck_hosts.time, "sleep", lambda seconds: None)
     pacer.wait("www.paper.example")
-    first = pacer.next["paper.example"]
+    first = pacer.last["paper.example"]
+    pacer.slow_to("www.paper.example", 600)
     pacer.wait("paper.example")
-    assert pacer.next["paper.example"] - first == recheck_hosts.MAX_CRAWL_DELAY
+    assert pacer.last["paper.example"] - first == recheck_hosts.MAX_CRAWL_DELAY, (
+        "the next request waits the delay from the last one"
+    )
 
 
-def test_a_slow_answer_is_cut_off(monkeypatch):
-    class Drip:
-        def read(self, size):
-            return b"x"
+def serve(answer):
+    """A local server that answers one connection with answer(conn), and its port."""
+    server = socket.socket()
+    server.bind(("127.0.0.1", 0))
+    server.listen(1)
 
-    monkeypatch.setattr(recheck_hosts, "MAX_SECONDS", 0)
-    with pytest.raises(TimeoutError):
-        recheck_hosts.read(Drip(), 1000)
+    def run():
+        conn, _ = server.accept()
+        with conn:
+            try:
+                answer(conn)
+            except OSError:
+                pass
+        server.close()
+
+    threading.Thread(target=run, daemon=True).start()
+    return server.getsockname()[1]
+
+
+def drip(prefix):
+    def answer(conn):
+        conn.recv(4096)
+        conn.sendall(prefix)
+        for _ in range(40):
+            conn.sendall(b"x")
+            time.sleep(0.1)
+
+    return answer
+
+
+def test_a_slow_answer_is_cut_off_and_only_http_is_followed(monkeypatch):
+    monkeypatch.setattr(recheck_hosts, "public_address", lambda address: True)
+    monkeypatch.setattr(recheck_hosts, "MAX_SECONDS", 0.5)
+    pacer = recheck_hosts.Pacer(0)
+    for prefix in (
+        b"HTTP/1.1 200 OK\r\nX-Slow: ",
+        b"HTTP/1.1 200 OK\r\nContent-Length: 999\r\n\r\n",
+    ):
+        port = serve(drip(prefix))
+        started = time.monotonic()
+        with pytest.raises(TimeoutError):
+            recheck_hosts.http_fetch(f"http://127.0.0.1:{port}/", 1000, pacer)
+        assert time.monotonic() - started < 2.5
+
+    def to_ftp(conn):
+        conn.recv(4096)
+        conn.sendall(
+            b"HTTP/1.1 302 Found\r\nLocation: ftp://127.0.0.1/\r\nContent-Length: 0\r\n\r\n"
+        )
+
+    port = serve(to_ftp)
+    with pytest.raises(OSError, match="ftp redirect"):
+        recheck_hosts.http_fetch(f"http://127.0.0.1:{port}/", 1000, pacer)

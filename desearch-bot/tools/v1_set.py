@@ -34,7 +34,7 @@ PEOPLE_SEARCH = re.compile(r"peoplesearch|people-search|peoplefinder|personsearc
 NETWORK_MIN = 1_000_000
 NETWORK_MIN_THREE = 500_000
 DOCS_HOST = re.compile(r"^(docs|developer|developers|learn)\.")
-# A site that moved passes its backing and rule along a chain of redirects this long at most.
+# A site that moved passes its backing along a chain of redirects this long at most.
 MAX_HOPS = 5
 VERDICTS = {"keep", "out"}
 # What an `out` row's `why` may say; a row giving only benchmark names takes its reason from its note.
@@ -153,17 +153,14 @@ def news_since(backed: bool, news: str, recent: str) -> str | None:
     return None if backed else recent
 
 
-def listed_entries(decisions, backing, news_sources, outlets, judged, counts, news_counts, news: str, recent: str, moved_from=None) -> tuple[list[dict], list[dict], dict[str, dict]]:
-    """The judged list's v1 types as set entries, the sites too big to take whole, which wait for named paths, and the decisions of the listed hosts other sites moved to."""
+def listed_entries(decisions, backing, news_sources, outlets, judged, counts, news_counts, news: str, recent: str, moved_from=None) -> tuple[list[dict], list[dict]]:
+    """The judged list's v1 types as set entries, and the sites too big to take whole, which wait for named paths."""
     spam = networks(counts)
-    moved_from = moved_from or {}
-    entries, too_big, targets = [], [], {}
+    entries, too_big = [], []
     for row in decisions:
         if row["listed"] != "1":
             continue
         host, site_type = row["host"], row["type"]
-        if host in moved_from:
-            targets[host] = row
         if site_type not in WHOLE_TYPES | {"news", "reference"}:
             continue
         verdict = share(judged.get(host))
@@ -178,13 +175,15 @@ def listed_entries(decisions, backing, news_sources, outlets, judged, counts, ne
             entries.append({"host": host, "rule": "out", "why": ["template"]})
             continue
         if site_type == "news":
-            why = backed_news(host, backing, news_sources, outlets, moved_from)
-            if not why and verdict is not None and verdict <= FAILED_SHARE:
+            # The judge and spam checks go by the host's own backing; a site that moved to it lends only its window.
+            own = backed_news(host, backing, news_sources, outlets)
+            if not own and verdict is not None and verdict <= FAILED_SHARE:
                 entries.append({"host": host, "rule": "out", "why": ["judge"]})
                 continue
-            if not why and int(news_counts.get(host, {}).get("dated_last_year") or 0) > NEWS_YEAR_MAX:
+            if not own and int(news_counts.get(host, {}).get("dated_last_year") or 0) > NEWS_YEAR_MAX:
                 entries.append({"host": host, "rule": "out", "why": ["spam"]})
                 continue
+            why = own or backed_news(host, backing, news_sources, outlets, moved_from)
             entry = {"host": host, "rule": "news", "type": "news", "why": why or ["news"]}
             if since := news_since(bool(why), news, recent):
                 entry["since"] = since
@@ -198,7 +197,7 @@ def listed_entries(decisions, backing, news_sources, outlets, judged, counts, ne
         else:
             continue
         entries.append(entry)
-    return entries, too_big, targets
+    return entries, too_big
 
 
 def redirects_of(decisions) -> dict[str, str]:
@@ -230,20 +229,6 @@ def moves(redirects: dict[str, str]) -> dict[str, str]:
     return found
 
 
-def carried(first: dict[str, dict], moved: dict[str, str], targets: dict[str, dict], counts: dict[str, dict]) -> list[dict]:
-    """A news or whole site that moved takes its rule to its new host when the crawl list takes that host on its own with a type the rule fits, whole only when it fits."""
-    fits = {"news": {"news"}, "whole": WHOLE_TYPES | {"reference"}}
-    found = []
-    for source, target in sorted(moved.items()):
-        entry, row = first.get(source), targets.get(target)
-        if not entry or not row or entry["rule"] not in fits or row["type"] not in fits[entry["rule"]] or entry.get("paths"):
-            continue
-        if entry["rule"] == "whole" and int(counts.get(target, {}).get("stored") or 0) > int(row["cap"]) * CRAWL_PER_INDEX:
-            continue
-        found.append({**{k: v for k, v in entry.items() if k != "since"}, "host": target, "why": entry.get("why", []) + ["redirect"]})
-    return found
-
-
 def read_verdicts(path: str | None) -> dict[str, str]:
     """The site check's TSV of host and verdict, keep or out."""
     verdicts = {}
@@ -256,7 +241,7 @@ def read_verdicts(path: str | None) -> dict[str, str]:
 
 
 def build(row_files, hand, decisions, backing, news_sources, judged, counts, news_counts=None, news: str = "A", today: date | None = None, outlets=None, verdicts=None, redirects=None) -> tuple[list[dict], list[dict]]:
-    """Hand entries first (the lead's outs), then the site check's outs, the teammates' rows in order, the judged list, and the rules of sites that moved; the first to name a host wins."""
+    """Hand entries first (the lead's outs), then the site check's outs, the teammates' rows in order, then the judged list; the first to name a host wins."""
     outlets = outlets or {}
     recent = ((today or datetime.now(timezone.utc).date()) - timedelta(days=RECENT_DAYS)).replace(day=1).isoformat()
     if redirects is None:
@@ -267,22 +252,18 @@ def build(row_files, hand, decisions, backing, news_sources, judged, counts, new
     sites: dict[str, dict] = {}
     for entry in hand + quality + rows:
         sites.setdefault(entry["host"], entry)
-    # Only a site the hand entries or the rows take passes its backing and rule on.
+    # Only a news or whole site the hand entries or the rows take passes its backing on.
     moved = {source: target for source, target in moves(redirects).items() if sites.get(source, {}).get("rule") in ("news", "whole")}
     moved_from = defaultdict(list)
     for source, target in sorted(moved.items()):
         moved_from[target].append(source)
-    listed, too_big, targets = listed_entries(decisions, backing, news_sources, outlets, judged, counts, news_counts or {}, news, recent, moved_from)
+    listed, too_big = listed_entries(decisions, backing, news_sources, outlets, judged, counts, news_counts or {}, news, recent, moved_from)
     # Every news site takes its window from the same outlet test, the teammates' rows too.
     for entry in rows:
         if entry["rule"] == "news":
             entry.pop("since", None)
             if since := news_since(bool(backed_news(entry["host"], backing, news_sources, outlets, moved_from)), news, recent):
                 entry["since"] = since
-    for entry in carried(sites, moved, targets, counts):
-        if entry["rule"] == "news" and (since := news_since(bool(backed_news(entry["host"], backing, news_sources, outlets, moved_from)), news, recent)):
-            entry["since"] = since
-        listed.append(entry)
     for entry in listed:
         sites.setdefault(entry["host"], entry)
     return [sites[host] for host in sorted(sites)], too_big
@@ -412,8 +393,7 @@ def main(argv: list[str] | None = None) -> None:
             writer.writerows(sorted(too_big, key=lambda site: -site["stored"]))
     print(f"{len(sites)} sites in {args.out} (news {args.news}); {len(too_big)} judged-list sites too big to take whole")
     quality = sum(1 for site in sites if site.get("why") == ["quality"])
-    moved = sum(1 for site in sites if "redirect" in site.get("why", []))
-    print(f"{quality} out by the site check ({sum(v == 'out' for v in verdicts.values())} out verdicts, {sum(v == 'keep' for v in verdicts.values())} keep); {moved} taken from sites that moved ({len(redirects)} redirects in the registry)")
+    print(f"{quality} out by the site check ({sum(v == 'out' for v in verdicts.values())} out verdicts, {sum(v == 'keep' for v in verdicts.values())} keep); {len(redirects)} redirects in the registry")
     news_missing, whole_missing = uncounted(sites, counts, news_counts)
     print(f"{news_missing} news sites without news counts and {whole_missing} whole sites without store counts: the spam and too-big checks read them as empty")
     for (rule, site_type, dated), count in sorted(summary(sites).items()):
