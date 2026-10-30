@@ -8,7 +8,9 @@
     {"host": "wikipedia.org", "rule": "out"},
     {"host": "grokipedia.com", "rule": "out"},
     {"host": "blogs.nature.com", "rule": "out"},
-    {"host": "generated.example", "rule": "out", "why": ["quality"]}
+    {"host": "generated.example", "rule": "out", "why": ["quality"]},
+    {"host": "landing.example", "rule": "landing", "type": "company", "why": ["rank"]},
+    {"host": "docs.landing.example", "rule": "whole", "type": "docs"}
   ],
   "cases": [
     {"url": "https://www.latimes.com/archives/la-xpm-2008-03-01-me-story.html", "published": "2008-03-01", "in": true},
@@ -26,6 +28,21 @@
     {"url": "https://de.wikipedia.org/wiki/Ada_Lovelace", "published": null, "in": false},
     {"url": "https://grokipedia.com/page/Ada_Lovelace", "published": null, "in": false},
     {"url": "https://example.org/page", "published": "2025-01-01", "in": false},
-    {"url": "https://generated.example/places/springfield-weather", "published": null, "in": false}
+    {"url": "https://generated.example/places/springfield-weather", "published": null, "in": false},
+    {"url": "https://landing.example/", "published": null, "in": true},
+    {"url": "https://www.landing.example", "published": null, "in": true},
+    {"url": "https://LANDING.example:443/About", "published": null, "in": true},
+    {"url": "https://landing.example/about/", "published": "2025-01-01", "in": true},
+    {"url": "https://landing.example/about#team", "published": null, "in": true},
+    {"url": "https://landing.example/about/team", "published": null, "in": false},
+    {"url": "https://landing.example/en-us/", "published": null, "in": true},
+    {"url": "https://landing.example/en-US/products", "published": null, "in": true},
+    {"url": "https://landing.example/en/products/gpu", "published": null, "in": false},
+    {"url": "https://landing.example/de-de/", "published": null, "in": false},
+    {"url": "https://landing.example/?ref=nav", "published": null, "in": false},
+    {"url": "https://m.landing.example/about", "published": null, "in": true},
+    {"url": "https://blog.landing.example/", "published": null, "in": false},
+    {"url": "https://docs.landing.example/guide/install/linux", "published": null, "in": true},
+    {"url": "https://landing.example/2024/05/01/story", "published": "2024-05-01", "in": false}
   ]
 }

@@ -103,6 +103,10 @@ V1_WEIGHT = 3
 NODE2_WEIGHT = 2
 # A v1 site taken whole: every stored page may go, up to this many.
 V1_WHOLE_CAP = 5_000_000
+# A landing site sends its homepage and first-level pages only (the bot's `depth`), a few an hour.
+LANDING_CAP = 100
+LANDING_HOURLY = 20
+LANDING_DEPTH = 1
 # Outs a v1 site lifts: the type model's labels, never a refusal, a registry state or a hand decision.
 SOFT_OUTS = {"unlabelled", "shop", "junk"}
 # A v1 site that names no sitemap is listed too, so the bot looks for its feed; it sends nothing until it lists pages.
@@ -144,6 +148,7 @@ class Decision:
     backlog: int | None = None
     hourly: int = 0
     since: str | None = None
+    depth: int | None = None
 
 
 @dataclass
@@ -274,7 +279,7 @@ def v1_weight(site_type: str) -> int:
 
 
 def apply_v1(row: Row, base: Decision, v1: V1 | None, forced_out: bool) -> Decision:
-    if v1 is None:
+    if v1 is None or v1.rule == "landing":
         return (
             replace(base, weight=min(base.weight, NODE2_WEIGHT))
             if base.listed
@@ -497,17 +502,33 @@ def build(
             if v1 is None
             else apply_v1(row, base, entry_v1, override.startswith("out:"))
         )
+        landing = entry_v1 is not None and entry_v1.rule == "landing"
+        # A landing site the list sends for node 2 already keeps those terms; any other sends its landing pages only.
         if (
-            v1 is not None
-            and entry_v1 is None
+            landing
             and decision.listed
-            and decision.weight < node2_min_weight
+            and not (
+                decision.weight >= node2_min_weight and row.state in SENDING_STATES
+            )
         ):
+            decision = replace(
+                decision,
+                weight=V1_WEIGHT,
+                send_cap=LANDING_CAP,
+                backlog=None,
+                hourly=LANDING_HOURLY,
+                since=None,
+                depth=LANDING_DEPTH,
+            )
+        node2 = v1 is not None and (
+            entry_v1 is None or (landing and decision.depth is None)
+        )
+        if node2 and decision.listed and decision.weight < node2_min_weight:
             decision = out("node2")
         counts[decision.site_type if decision.listed else f"out:{decision.reason}"] += 1
         feed = (
             entry_v1 is not None
-            and entry_v1.rule in ("news", "whole")
+            and entry_v1.rule in ("news", "whole", "landing")
             and row.state in FEED_STATES
         )
         if decision.listed and (row.state in SENDING_STATES or feed):
@@ -517,7 +538,7 @@ def build(
                 "weight": decision.weight,
                 "hourly": decision.hourly,
             }
-            if node2_hours and v1 is not None and entry_v1 is None:
+            if node2_hours and node2:
                 bound = decision.send_cap or decision.backlog or row.url_count
                 entry["hourly"] = min(
                     decision.hourly,
@@ -532,6 +553,8 @@ def build(
                 entry["backlog"] = decision.backlog
             if decision.since is not None:
                 entry["since"] = decision.since
+            if decision.depth is not None:
+                entry["depth"] = decision.depth
             if (
                 resend_before
                 and row.host in (resend_hosts or set())
@@ -753,7 +776,7 @@ def main(argv: list[str] | None = None) -> None:
     write_list(entries, args.out)
     print(f"{len(entries)} domains listed in {args.out}")
     print(
-        f"{len(resent)} with resend_before, {sum('since' in e for e in entries)} with since, {len(rejoined)} with send_cap one up to rejoin"
+        f"{len(resent)} with resend_before, {sum('since' in e for e in entries)} with since, {len(rejoined)} with send_cap one up to rejoin, {sum('depth' in e for e in entries)} landing sites with depth"
     )
     for name, count in sorted(counts.items(), key=lambda item: -item[1]):
         print(f"{count:>10}  {name}")
