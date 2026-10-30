@@ -31,6 +31,49 @@ pub enum Refusal {
     OffPaths,
 }
 
+/// How much a site's pages are worth embedding while the budget is short, best first.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Class {
+    /// A site a benchmark cites, whatever its rule.
+    Benchmark,
+    /// A news site taken for every year.
+    News,
+    Docs,
+    Reference,
+    /// A news site taken from its `since`.
+    RecentNews,
+    /// Every other site, whole academic and public ones among them.
+    #[default]
+    Other,
+}
+
+impl Class {
+    pub const ALL: [Class; 6] = [Class::Benchmark, Class::News, Class::Docs, Class::Reference, Class::RecentNews, Class::Other];
+
+    pub fn of(rule: &Rule, kind: Option<&str>, why: &[&str]) -> Class {
+        match rule {
+            Rule::Out => Class::Other,
+            _ if why.iter().any(|word| !BACKING.contains(word)) => Class::Benchmark,
+            Rule::News { since: None } => Class::News,
+            Rule::News { since: Some(_) } => Class::RecentNews,
+            _ if kind == Some("docs") => Class::Docs,
+            _ if kind == Some("reference") => Class::Reference,
+            _ => Class::Other,
+        }
+    }
+
+    pub fn from_digit(digit: u8) -> Option<Class> {
+        Class::ALL.get(usize::from(digit.checked_sub(b'0')?)).copied()
+    }
+
+    pub fn digit(self) -> char {
+        char::from(b'0' + self as u8)
+    }
+}
+
+/// The set's backings that name no benchmark; any other word in a site's `why` is a benchmark's name.
+const BACKING: [&str; 10] = ["wikidata", "news-list", "news-major", "news", "judge", "academic", "public", "docs", "evergreen", "rank"];
+
 /// How a page the set takes is in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Admitted {
@@ -43,7 +86,7 @@ pub enum Admitted {
 pub struct Set {
     /// When the set was built, as its file says.
     pub built: Option<String>,
-    sites: HashMap<String, Rule>,
+    sites: HashMap<String, (Rule, Class)>,
     /// Undated news pages typed `article` are in.
     undated_articles: bool,
 }
@@ -65,7 +108,9 @@ impl Set {
                 Some("out") => Rule::Out,
                 other => bail!("{host}: unknown rule {other:?}"),
             };
-            sites.insert(host, rule);
+            let why: Vec<&str> = entry["why"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
+            let class = Class::of(&rule, entry["type"].as_str(), &why);
+            sites.insert(host, (rule, class));
         }
         let undated_articles = match file["undated"].as_str() {
             None | Some("out") => false,
@@ -77,11 +122,25 @@ impl Set {
 
     /// The listed host a host is, or is nearest under, and its rule.
     pub fn site(&self, host: &str) -> Option<(&str, &Rule)> {
+        self.entry(host).map(|(listed, (rule, _))| (listed, rule))
+    }
+
+    /// Whether the set takes pages of some site of `class`.
+    pub fn has(&self, class: Class) -> bool {
+        self.sites.values().any(|(rule, held)| *held == class && *rule != Rule::Out)
+    }
+
+    /// The class of the listed host a host is, or is nearest under; `Other` when none is listed.
+    pub fn class(&self, host: &str) -> Class {
+        self.entry(host).map_or(Class::Other, |(_, (_, class))| *class)
+    }
+
+    fn entry(&self, host: &str) -> Option<(&str, &(Rule, Class))> {
         let host = host_of(host);
         let mut rest = host.as_str();
         loop {
-            if let Some((listed, rule)) = self.sites.get_key_value(rest) {
-                return Some((listed.as_str(), rule));
+            if let Some((listed, entry)) = self.sites.get_key_value(rest) {
+                return Some((listed.as_str(), entry));
             }
             rest = rest.split_once('.')?.1;
         }
@@ -240,6 +299,49 @@ mod tests {
         assert_eq!(set.admit("https://apnews.com/article/abc", "2019-12-31", None), Err(Refusal::BeforeSince));
         assert_eq!(set.admit("https://APNEWS.com:443/2020/01/01/abc", "", None), Ok(Admitted::ByRule));
         assert!(Set::parse(br#"{"undated": "sometimes", "sites": []}"#).is_err());
+        assert_eq!(set.class("apnews.com"), Class::RecentNews);
         assert!(Set::parse(br#"{"sites": [{"host": "a.example", "rule": "news", "since": "soon"}]}"#).is_err());
+    }
+
+    #[test]
+    fn a_site_s_class_comes_from_its_why_then_its_rule_and_type() {
+        let set = Set::parse(
+            br#"{"sites": [
+                {"host": "latimes.com", "rule": "news", "type": "news", "why": ["wikidata", "simpleqa"]},
+                {"host": "apnews.com", "rule": "news", "type": "news", "why": ["wikidata", "news-list"]},
+                {"host": "local.example", "rule": "news", "since": "2025-10-01", "type": "news", "why": ["news"]},
+                {"host": "docs.python.org", "rule": "whole", "type": "docs", "why": ["docs"]},
+                {"host": "britannica.com", "rule": "whole", "type": "reference", "why": ["judge", "wikidata"]},
+                {"host": "en.wikipedia.org", "rule": "bulk", "source": "wikipedia", "type": "reference", "why": ["benchmark"]},
+                {"host": "nature.com", "rule": "whole", "type": "academic", "why": ["academic", "wikidata"]},
+                {"host": "sec.gov", "rule": "whole", "type": "public", "why": ["public"]},
+                {"host": "nvidia.com", "rule": "whole", "type": "company"},
+                {"host": "blogs.nature.com", "rule": "out", "why": ["spam"]}
+            ]}"#,
+        )
+        .unwrap();
+        let classes: Vec<Class> = [
+            "latimes.com",
+            "apnews.com",
+            "local.example",
+            "docs.python.org",
+            "britannica.com",
+            "en.m.wikipedia.org",
+            "nature.com",
+            "sec.gov",
+            "nvidia.com",
+            "unlisted.example",
+        ]
+        .iter()
+        .map(|host| set.class(host))
+        .collect();
+        use Class::*;
+        assert_eq!(classes, [Benchmark, News, RecentNews, Docs, Reference, Benchmark, Other, Other, Other, Other]);
+        assert!(Class::ALL.windows(2).all(|pair| pair[0] < pair[1]), "best first");
+        assert_eq!(set.class("blogs.nature.com"), Other, "an out site's reasons name no benchmark");
+        assert!(Class::ALL.iter().all(|class| set.has(*class)));
+        let news_only = Set::parse(br#"{"sites": [{"host": "a.example", "rule": "news"}, {"host": "b.example", "rule": "out", "why": ["spam"]}]}"#).unwrap();
+        assert_eq!(Class::ALL.map(|class| news_only.has(class)), [false, true, false, false, false, false]);
+        assert!(Class::ALL.iter().all(|class| Class::from_digit(class.digit() as u8) == Some(*class)));
     }
 }

@@ -71,32 +71,47 @@ on input writes and writing its state.
   the set it logs the set's `built` time, or the time its file was written when the set has none or its `built`
   cannot be parsed, and it warns then and hourly while the set is more than two days old; the same build read again
   keeps the hourly timer.
+- **Classes:** while the budget or the API's room is short, a site's pages go by its class in the set, best first:
+  a site a benchmark cites (any word in its `why` other than `wikidata`, `news-list`, `news-major`, `news`, `judge`,
+  `academic`, `public`, `docs`, `evergreen` and `rank`), a news site with no `since`, a docs site, a reference site,
+  a news site with a `since`, then every other site. A page from the log takes a place, budget and room both, only
+  beyond what the log's better classes asked for in its last passes that read change files and have not asked for
+  yet this pass, and beyond the waiting pages of better classes in the change files the re-plan reads next. Waiting
+  and backfilled pages leave what the log asked for of their class and better. Without a set, every page is of the
+  last class. The report line counts the log's pages that asked for a place, and the pages planned outside the
+  fresh lane, by class.
 - **Fresh lane:** pages seen for the first time and dated within `PLANNER_FRESH_S` (48 h) get their own inputs,
   written within `PLANNER_FRESH_FLUSH_S` (60 s), handed over ahead of other waiting inputs, outside the hourly
   budget (`PLANNER_PAGES_PER_HOUR`) and within their own (`PLANNER_FRESH_PER_HOUR`). Every other page shares the
   budget. A page the log removes is forgotten, so it is embedded again if it comes back; until a row of it is
   planned or waits, rows from before the removal are passed over.
 - **Waiting pages:** a page refused for budget or room, or given back after it was planned, waits with the change
-  file that holds it. It is planned from that file once there is room and the budget holds an input's worth of
-  pages (`PLANNER_PAGES_PER_INPUT`, or two minutes of budget when that is less, as the budget holds no more) beyond
-  the log's share: what the log asked for in its last passes that read change files, so the log's own pages go
-  first. The re-plan stops within a file once only the log's share is left, and reads that file again next pass. A
-  pass reads up to 64 such change files, oldest first, fetching up to `PLANNER_READS` (16) of them ahead while the
-  budget and room would still hold an input's worth once the pages waiting in those already fetched were taken. A
-  page taken from them waits until its input is saved. A version planned without its change file number is left to
-  the backfill or a re-crawl. An input is pushed to the task API once, however often a restart tries it.
+  file that holds it, under its site's class. Once `PLANNER_MAX_WAITING` pages wait, a page waits only in place of
+  the page of the worst class worse than its own that has waited longest, which is left to the backfill
+  (`evicted`); otherwise it is not kept. A page is planned from its change file once there is room and the budget
+  holds an input's worth of pages (`PLANNER_PAGES_PER_INPUT`, or two minutes of budget when that is less, as the
+  budget holds no more, or the class's waiting pages counted at the pass's start when they are fewer) beyond the
+  log's share for its class. The re-plan goes class by class, best first, and stops within a file once only that
+  share is left, reading the file again next pass. A pass reads up to 64 such change files, oldest first within a
+  class, fetching up to `PLANNER_READS` (16) of them ahead while the budget and room would still hold an input's
+  worth once the pages waiting in those already fetched were taken. A page taken from them waits until its input is
+  saved. A version planned without its change file number is left to the backfill or a re-crawl. An input is pushed
+  to the task API once, however often a restart tries it. A starting planner gives a class to each waiting page
+  that has none.
 - **Backfill** (`PLANNER_BACKFILL=1`): with what budget and room the log and waiting pages leave, it reads
-  `current/` shard by shard (`PLANNER_BACKFILL_SHARDS`). Each pass re-plans waiting pages first. The backfill
-  starts once the budget holds an input's worth beyond the log's share, but not in a pass where the re-plan stopped
-  for budget; when the re-plan stops at its 64 change files a pass or the end of its sweep, the backfill takes what
-  is left, so the two share the budget while pages wait. A backfill pass reads at most `PLANNER_MAX_PENDING` ×
+  `current/` shard by shard (`PLANNER_BACKFILL_SHARDS`), a sweep for each class the set holds sites of, best first,
+  each taking the pages of that class and better. Each pass re-plans waiting pages first. The backfill starts once
+  the budget holds an input's worth beyond the log's share for its sweep's class, but not in a pass where the
+  re-plan stopped for budget at that class or a better one; when the re-plan stops at its 64 change files a pass or
+  the end of its sweep, the backfill takes what is left, so the two share the budget while pages wait. A backfill pass reads at most `PLANNER_MAX_PENDING` ×
   `PLANNER_PAGES_PER_INPUT` pages, for at most `PLANNER_FRESH_FLUSH_S`, so the log is read between. It plans each
   page's standing version that the set takes and was never embedded at that text, so a site the set marks `out` is
   never read past its small columns, and fetches at most 64 MB of row groups at once. A shard that cannot be read
   is tried again from the place kept `PLANNER_BACKFILL_RETRY_S` (600) later, while the log and waiting pages go on;
   after three failed reads in a row the backfill goes on to the next shard, logs that it skipped it, and counts
-  both in its report. It keeps its place across restarts, and sweeps again `PLANNER_BACKFILL_EVERY_S` (24 h) after
-  its last shard, so a page the log passed by is planned once `current/` holds it.
+  both in its report. It keeps its place and class across restarts, and sweeps again from the best class
+  `PLANNER_BACKFILL_EVERY_S` (24 h) after its last shard for the last class, so a page the log passed by is planned
+  once `current/` holds it.
 - **Page vectors first** (`PLANNER_PAGE_FIRST=1`, off by default): pages outside the fresh lane get their
   page text alone; a page's passages are planned the next time it is seen with the setting off.
 
