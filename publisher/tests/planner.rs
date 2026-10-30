@@ -2990,19 +2990,25 @@ async fn the_bulk_lane_plans_whole_bulk_files_under_its_own_budget_and_a_restart
         page
     };
     log(&pages, 1, vec![v2(record("https://news.example/story/1", &article(2), "article", "en"))]).await;
-    bulk_file(&pages, 1, (0..4).map(wiki).collect()).await;
-    bulk_file(&pages, 2, (4..8).map(wiki).collect()).await;
-    bulk_file(&pages, 3, (8..12).map(wiki).collect()).await;
     let set = dir.join("v1-set.json");
     let sites = json!({"sites": [{"host": "en.wikipedia.org", "rule": "bulk", "source": "wikipedia"}, {"host": "news.example", "rule": "whole"}]});
     std::fs::write(&set, sites.to_string()).unwrap();
-    let lane = |bulk_per_hour: f64| {
-        let mut lane = settings(dir.join("state"), 0.0, 0);
+    let lane = |state: &str, bulk_per_hour: f64| {
+        let mut lane = settings(dir.join(state), 0.0, 0);
         (lane.set_file, lane.fresh, lane.bulk_pages_per_hour, lane.budget_at_start) = (Some(set.clone()), None, bulk_per_hour, Duration::from_secs(120));
         lane
     };
+    let mut early = Planner::new(lane("state-early", 240.0), pages.clone(), temp.clone(), redis.clone(), Room::Fixed(100)).await.unwrap();
+    early.pass().await.unwrap();
+    assert_eq!((early.counts.bulk_files, early.state.bulk_cursor().unwrap()), (0, 0), "a lane on before the feed exists reads nothing and fails nothing");
+    drop(early);
+    let () = redis::cmd("FLUSHDB").query_async(&mut redis).await.unwrap();
 
-    let mut planner = Planner::new(lane(240.0), pages.clone(), temp.clone(), redis.clone(), Room::Fixed(100)).await.unwrap();
+    bulk_file(&pages, 1, (0..4).map(wiki).collect()).await;
+    bulk_file(&pages, 2, (4..8).map(wiki).collect()).await;
+    bulk_file(&pages, 3, (8..12).map(wiki).collect()).await;
+
+    let mut planner = Planner::new(lane("state", 240.0), pages.clone(), temp.clone(), redis.clone(), Room::Fixed(100)).await.unwrap();
     planner.pass().await.unwrap();
     assert_eq!(planner.counts.bulk_files, 2, "8 pages of bulk budget take two whole files and none of the third");
     assert_eq!((planner.counts.planned, planner.counts.over_budget), (9, 0), "the bulk files' 8 pages beside the log's page, which took the main budget's one");
@@ -3021,14 +3027,14 @@ async fn the_bulk_lane_plans_whole_bulk_files_under_its_own_budget_and_a_restart
     assert_eq!(planned, want);
     drop(planner);
 
-    let mut planner = Planner::new(lane(240.0), pages.clone(), temp.clone(), redis.clone(), Room::Fixed(100)).await.unwrap();
+    let mut planner = Planner::new(lane("state", 240.0), pages.clone(), temp.clone(), redis.clone(), Room::Fixed(100)).await.unwrap();
     planner.pass().await.unwrap();
     assert_eq!((planner.counts.bulk_files, planner.counts.planned), (1, 4), "a restart reads only the third file");
     planner.flush().await.unwrap();
     assert_eq!(planner.state.bulk_cursor().unwrap(), 3);
     drop(planner);
 
-    let mut off = Planner::new(lane(0.0), pages.clone(), temp.clone(), redis.clone(), Room::Fixed(100)).await.unwrap();
+    let mut off = Planner::new(lane("state", 0.0), pages.clone(), temp.clone(), redis.clone(), Room::Fixed(100)).await.unwrap();
     bulk_file(&pages, 4, (12..16).map(wiki).collect()).await;
     off.pass().await.unwrap();
     assert_eq!(off.counts.bulk_files, 0, "0 leaves the bulk feed unread");
