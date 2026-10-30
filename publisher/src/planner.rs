@@ -621,13 +621,21 @@ impl Version {
         let mut fields = value.split('\t');
         let (content_sha1, fetched_at) = (fields.next().unwrap_or_default().to_string(), fields.next().unwrap_or_default().to_string());
         let page_only = fields.next() == Some(PAGE);
-        let seq = fields.next().and_then(|seq| seq.parse().ok());
+        let seq = fields.next().and_then(|seq| match seq.strip_prefix('b') {
+            Some(file) => file.parse::<i64>().ok().map(|file| BULK_ORDER + file),
+            None => seq.parse().ok(),
+        });
         Version { content_sha1, fetched_at, page_only, seq, task_id: fields.next().unwrap_or_default().to_string() }
     }
 
     fn value(&self) -> String {
         let page_only = if self.page_only { PAGE } else { "" };
-        let seq = self.seq.map(|seq| seq.to_string()).unwrap_or_default();
+        // A bulk version keeps its file as `b<file>`, which a planner without the bulk lane reads as no change file.
+        let seq = match self.seq {
+            Some(seq) if seq < 0 => format!("b{}", seq - BULK_ORDER),
+            Some(seq) => seq.to_string(),
+            None => String::new(),
+        };
         format!("{}\t{}\t{page_only}\t{seq}\t{}", self.content_sha1, self.fetched_at, self.task_id)
     }
 }
@@ -3006,6 +3014,24 @@ fn hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_bulk_version_reads_as_one_without_a_change_file_to_a_planner_without_the_bulk_lane() {
+        let bulk = Version {
+            content_sha1: "a1".into(),
+            fetched_at: "2026-10-30T00:00:00+00:00".into(),
+            page_only: true,
+            seq: Some(BULK_ORDER + 7),
+            task_id: "bulk-wikipedia-20261030-000001-000004".into(),
+        };
+        let value = bulk.value();
+        // b17f0e32 reads the field as a number, and leaves a version without one to the backfill when its input is dropped.
+        assert!(value.split('\t').nth(3).unwrap().parse::<i64>().is_err(), "{value}");
+        assert_eq!(Version::parse(value.as_bytes()), bulk);
+        let crawled = Version { seq: Some(12), task_id: "t1".into(), ..bulk };
+        assert_eq!(crawled.value().split('\t').nth(3), Some("12"));
+        assert_eq!(Version::parse(crawled.value().as_bytes()), crawled);
+    }
 
     #[test]
     fn a_failed_save_changes_nothing_and_its_retry_moves_the_waiting_count_and_the_cursor_once() {
