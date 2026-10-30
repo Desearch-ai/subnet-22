@@ -813,6 +813,10 @@ impl State {
         Ok(group)
     }
 
+    fn note_bulk(&self, file: i64, key: &str) -> Result<()> {
+        Ok(self.db.put(bulk_replan_key(file, key), "")?)
+    }
+
     fn bulk_replanned(&self, file: i64, key: &str) -> Result<()> {
         Ok(self.db.delete(bulk_replan_key(file, key))?)
     }
@@ -1493,6 +1497,8 @@ pub struct Counts {
     pub backfill: u64,
     /// Bulk files the lane read through in order, their pages counted in `pages`.
     pub bulk_files: u64,
+    /// Bulk-feed versions the backfill met while the lane is on, noted for the lane to plan from their files.
+    pub bulk_noted: u64,
     pub shards: u64,
     /// Failed reads of a shard, and shards the backfill went past after failing to read them.
     pub shard_failures: u64,
@@ -2165,10 +2171,11 @@ impl Planner {
             }
             let pages = match self.bulk_rows(file).await? {
                 Ok(pages) => pages,
-                Err(why) => {
-                    if let Unread::Failed(why) = why {
-                        eprintln!("{why}; read again later for its pages given back");
-                    }
+                // A file the lane read before has an index; without one now, it expired, index and all.
+                Err(Unread::NotNumbered) if file <= self.bulk_read_through => VecDeque::new(),
+                Err(Unread::NotNumbered) => continue,
+                Err(Unread::Failed(why)) => {
+                    eprintln!("{why}; read again later for its pages given back");
                     continue;
                 }
             };
@@ -2282,6 +2289,12 @@ impl Planner {
                     reading.last = Some(page.key.clone());
                     read += 1;
                     self.counts.backfill += 1;
+                    // While the bulk lane is on, a bulk-feed version is planned by it, on its budget, from its file.
+                    if page.change_seq < 0 && self.settings.bulk_pages_per_hour > 0.0 {
+                        self.state.note_bulk(page.change_seq - BULK_ORDER, &page.key)?;
+                        self.counts.bulk_noted += 1;
+                        continue;
+                    }
                     if let Considered::Taken(lane) = self.consider(page, Source::Backfill) {
                         self.write_when_full(lane).await?;
                     }
@@ -2643,8 +2656,8 @@ impl Planner {
             }
             _ => None,
         };
-        // The bulk lane gives the pages it reads room itself; while it is on, any bulk-feed version is paid from its budget once planned.
-        let lane_read = matches!(from, Source::Bulk(_));
+        // The bulk lane gives the pages it reads, in order or for notes, room itself; while it is on, any bulk-feed version is paid from its budget once planned.
+        let lane_read = matches!(from, Source::Bulk(_)) || (from == Source::Replan && page.change_seq < 0);
         let bulk_paid = page.change_seq < 0 && self.settings.bulk_pages_per_hour > 0.0;
         // Only a page never planned before is fresh, within its lane's own budget, so pages re-dated by their site cannot flood it.
         let mut fresh =
@@ -2669,8 +2682,10 @@ impl Planner {
             self.keep_waiting(&page);
             return Considered::Waiting;
         }
-        let paid = if bulk_paid { self.bulk_budget.has() } else { self.budget.holds_after(reserve, 1) && self.budget.take() };
-        if lane == Lane::Rest && !lane_read && !paid {
+        if lane == Lane::Rest
+            && !lane_read
+            && !(if bulk_paid { self.bulk_budget.has() } else { self.budget.holds_after(reserve, 1) && self.budget.take() })
+        {
             self.counts.over_budget += 1;
             self.keep_waiting(&page);
             return Considered::Waiting;
@@ -2711,7 +2726,7 @@ impl Planner {
     }
 
     fn keep_waiting(&mut self, page: &PageRow) {
-        // A bulk page has no change file to wait on; the bulk lane plans it from its file.
+        // A bulk page has no change file to wait on: the bulk lane plans it from its file, or with the lane off the backfill takes it.
         if page.change_seq < 0 {
             return;
         }

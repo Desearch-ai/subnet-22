@@ -3426,7 +3426,7 @@ async fn with_the_bulk_lane_on_the_backfill_leaves_it_the_bulk_files_it_has_yet_
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_bulk_page_planned_page_first_gets_its_passages_from_the_backfill_on_the_bulk_lane_s_budget_once_page_first_is_off() {
+async fn a_bulk_page_planned_page_first_gets_its_passages_through_the_lane_on_its_budget_once_page_first_is_off() {
     let Some((_turn, redis)) = redis_db().await else {
         eprintln!("skipped: no Redis on {REDIS}");
         return;
@@ -3470,6 +3470,8 @@ async fn a_bulk_page_planned_page_first_gets_its_passages_from_the_backfill_on_t
             break;
         }
     }
+    // The backfill notes the bulk page for the lane, which plans it on its next pass.
+    second.pass().await.unwrap();
     second.flush().await.unwrap();
     let page_only = |url: &str| second.state.planned_version(RECIPE_V2, &page_key(url).unwrap()).unwrap().map(|version| version.page_only);
     assert_eq!((page_only(&crawled.url), page_only(&wiki.url)), (Some(false), Some(false)), "both get their passages");
@@ -3843,5 +3845,181 @@ async fn a_bulk_number_s_hole_wait_goes_on_across_a_restart_as_the_log_s_does() 
     restarted.pass().await.unwrap();
     restarted.flush().await.unwrap();
     assert_eq!(restarted.counts.planned, 2, "the wait began before the restart, so number 1 is given up at once");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn fresh_pages_leave_the_main_budget_to_the_rest_lane() {
+    let Some((_turn, redis)) = redis_db().await else {
+        eprintln!("skipped: no Redis on {REDIS}");
+        return;
+    };
+    let dir = scratch("fresh-budget");
+    let stub = stub::start(dir.join("r2"), "127.0.0.1:0").await.unwrap();
+    let (pages, temp) = (bucket(stub.addr, "desearch-pages"), bucket(stub.addr, "subnet-22"));
+    let today = iso(publisher::service::now_us());
+    let page = |name: String, published: &str| {
+        let mut page = v2(record(&format!("https://news.example/story/{name}"), &format!("{name} {}", article(2)), "article", "en"));
+        page.published = published.into();
+        page
+    };
+    let mut rows: Vec<Record> = (0..10).map(|n| page(format!("fresh-{n}"), &today)).collect();
+    rows.extend((0..10).map(|n| page(format!("old-{n}"), "2021-01-01")));
+    log(&pages, 1, rows).await;
+    // 300 an hour banks 10 pages for the rest lane; the fresh lane has its own 3,600 an hour.
+    let mut planner = Planner::new(settings(dir.join("state"), 300.0, 0), pages.clone(), temp.clone(), redis.clone(), Room::Fixed(100)).await.unwrap();
+    planner.pass().await.unwrap();
+    assert_eq!((planner.counts.planned, planner.counts.fresh, planner.counts.over_budget), (20, 10, 0), "the ten old pages take the main budget's ten");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_noted_bulk_page_takes_the_lane_s_own_room_while_the_log_asks_for_more_and_its_file_is_read_once() {
+    let Some((_turn, mut redis)) = redis_db().await else {
+        eprintln!("skipped: no Redis on {REDIS}");
+        return;
+    };
+    let dir = scratch("bulk-note-room");
+    let stub = stub::start(dir.join("r2"), "127.0.0.1:0").await.unwrap();
+    let (pages, temp) = (bucket(stub.addr, "desearch-pages"), bucket(stub.addr, "subnet-22"));
+    log(&pages, 1, vec![]).await;
+    bulk_file(&pages, 1, (0..3).map(wiki_page).collect()).await;
+    bulk_file(&pages, 2, (3..6).map(wiki_page).collect()).await;
+    let mut lane = settings(dir.join("state"), 3600.0, 0);
+    (lane.set_file, lane.fresh, lane.bulk_pages_per_hour, lane.budget_at_start) = (Some(bulk_set(&dir)), None, 360_000.0, Duration::ZERO);
+    let mut planner = Planner::new(lane, pages.clone(), temp.clone(), redis.clone(), Room::Fixed(0)).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    planner.pass().await.unwrap();
+    planner.flush().await.unwrap();
+    let pending = planner.state.pending().unwrap();
+    assert_eq!(pending.len(), 2, "files 1 and 2, one input each, the API full");
+    let first = wiki_page(0).url;
+    let (_, entry) = pending.iter().find(|(_, entry)| entry.contains(&first)).unwrap().clone();
+    let _: i64 = redis.rpush(EMBED_DROPPED, &entry).await.unwrap();
+    planner.forget_dropped().await.unwrap();
+    let news = (0..40).map(|n| v2(record(&format!("https://news.example/story/{n}"), &format!("{n} {}", article(2)), "article", "en"))).collect();
+    log(&pages, 2, news).await;
+    let pages_before = planner.counts.pages;
+    for _ in 0..6 {
+        planner.pass().await.unwrap();
+    }
+    assert_eq!(planner.counts.pages - pages_before - 40, 3, "file 1's three pages given back, read once");
+    assert_eq!(planner.state.bulk_replan_group(0).unwrap(), None, "planned again and saved, so no note is left");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn while_the_lane_spends_its_budget_the_backfill_leaves_it_a_note_for_a_bulk_page_s_passages() {
+    let Some((_turn, redis)) = redis_db().await else {
+        eprintln!("skipped: no Redis on {REDIS}");
+        return;
+    };
+    let dir = scratch("bulk-backfill-note");
+    let stub = stub::start(dir.join("r2"), "127.0.0.1:0").await.unwrap();
+    let (pages, temp, current) = (bucket(stub.addr, "desearch-pages"), bucket(stub.addr, "subnet-22"), bucket(stub.addr, "desearch-current"));
+    let mut wiki = v2(record("https://en.wikipedia.org/wiki/Long", &format!("long {}", article(8)), "article", "en"));
+    (wiki.domain, wiki.task_id, wiki.miner) = ("en.wikipedia.org".into(), "bulk-wikipedia-run-000001-000001".into(), String::new());
+    log(&pages, 1, vec![]).await;
+    bulk_file(&pages, 1, vec![wiki.clone()]).await;
+    let set = bulk_set(&dir);
+    let with = |bulk_per_hour: f64, page_first: bool, backfill: bool| {
+        let mut lane = settings(dir.join("state"), 3600.0, 0);
+        (lane.set_file, lane.fresh, lane.bulk_pages_per_hour, lane.budget_at_start, lane.page_first, lane.backfill) =
+            (Some(set.clone()), None, bulk_per_hour, Duration::from_secs(120), page_first, backfill);
+        lane
+    };
+    let mut first = Planner::new(with(3600.0, true, false), pages.clone(), temp.clone(), redis.clone(), Room::Fixed(100)).await.unwrap();
+    first.pass().await.unwrap();
+    first.flush().await.unwrap();
+    drop(first);
+    let key = page_key(&wiki.url).unwrap();
+    let row = PageRow { key: key.clone(), removed: false, change_seq: BULK_ORDER + 1, version: record_version(&wiki), published_at: wiki.fetched_at.clone(), record: wiki.clone() };
+    shard(&current, current::shard_of(&row.key).unwrap(), vec![vec![row]]).await;
+    // File 2 takes the lane's four pages of budget before the backfill meets the bulk page.
+    bulk_file(&pages, 2, (100..140).map(wiki_page).collect()).await;
+    let mut second = Planner::new(with(120.0, false, true), pages.clone(), temp.clone(), redis.clone(), Room::Fixed(100)).await.unwrap();
+    second.current = Some(current.clone());
+    for _ in 0..200 {
+        second.pass().await.unwrap();
+        if second.counts.shards >= 1024 {
+            break;
+        }
+    }
+    second.flush().await.unwrap();
+    assert_eq!(second.state.bulk_replan_group(0).unwrap(), Some((1, HashSet::from([key.clone()]))), "the backfill's place moved on, with the page noted for the lane");
+    assert_eq!(second.counts.over_budget, 0);
+    drop(second);
+    let mut third = Planner::new(with(3600.0, false, false), pages.clone(), temp.clone(), redis.clone(), Room::Fixed(100)).await.unwrap();
+    third.pass().await.unwrap();
+    third.flush().await.unwrap();
+    let page_only = third.state.planned_version(RECIPE_V2, &key).unwrap().map(|version| version.page_only);
+    assert_eq!(page_only, Some(false), "with budget again, the lane gives it its passages");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_same_input_given_back_twice_is_noted_once_and_planned_once() {
+    let Some((_turn, mut redis)) = redis_db().await else {
+        eprintln!("skipped: no Redis on {REDIS}");
+        return;
+    };
+    let dir = scratch("bulk-dropped-twice");
+    let stub = stub::start(dir.join("r2"), "127.0.0.1:0").await.unwrap();
+    let (pages, temp) = (bucket(stub.addr, "desearch-pages"), bucket(stub.addr, "subnet-22"));
+    log(&pages, 1, vec![]).await;
+    bulk_file(&pages, 1, (0..3).map(wiki_page).collect()).await;
+    let set = bulk_set(&dir);
+    let lane = || {
+        let mut lane = settings(dir.join("state"), 0.0, 0);
+        (lane.set_file, lane.fresh, lane.bulk_pages_per_hour, lane.budget_at_start) = (Some(set.clone()), None, 3600.0, Duration::from_secs(120));
+        lane
+    };
+    let mut planner = Planner::new(lane(), pages.clone(), temp.clone(), redis.clone(), Room::Fixed(100)).await.unwrap();
+    planner.pass().await.unwrap();
+    planner.flush().await.unwrap();
+    planner.hand_over().await.unwrap();
+    let entry: String = redis.lrange::<_, Vec<String>>(EMBED_INPUTS, 0, -1).await.unwrap().remove(0);
+    let _: i64 = redis.rpush(EMBED_DROPPED, &entry).await.unwrap();
+    let _: i64 = redis.rpush(EMBED_DROPPED, &entry).await.unwrap();
+    planner.forget_dropped().await.unwrap();
+    let noted = planner.state.bulk_replan_group(0).unwrap().map(|(file, keys)| (file, keys.len()));
+    drop(planner);
+    let mut restarted = Planner::new(lane(), pages.clone(), temp.clone(), redis.clone(), Room::Fixed(100)).await.unwrap();
+    for _ in 0..3 {
+        restarted.pass().await.unwrap();
+    }
+    restarted.flush().await.unwrap();
+    assert_eq!((noted, restarted.counts.planned, restarted.state.bulk_replan_group(0).unwrap()), (Some((1, 3)), 3, None));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn notes_on_a_bulk_file_whose_index_or_file_is_gone_are_let_go() {
+    let Some((_turn, mut redis)) = redis_db().await else {
+        eprintln!("skipped: no Redis on {REDIS}");
+        return;
+    };
+    let dir = scratch("bulk-notes-gone");
+    let stub = stub::start(dir.join("r2"), "127.0.0.1:0").await.unwrap();
+    let (pages, temp) = (bucket(stub.addr, "desearch-pages"), bucket(stub.addr, "subnet-22"));
+    log(&pages, 1, vec![]).await;
+    bulk_file(&pages, 1, (0..3).map(wiki_page).collect()).await;
+    bulk_file(&pages, 2, (3..6).map(wiki_page).collect()).await;
+    let mut lane = settings(dir.join("state"), 0.0, 0);
+    (lane.set_file, lane.fresh, lane.bulk_pages_per_hour, lane.budget_at_start) = (Some(bulk_set(&dir)), None, 3600.0, Duration::from_secs(120));
+    let mut planner = Planner::new(lane, pages.clone(), temp.clone(), redis.clone(), Room::Fixed(100)).await.unwrap();
+    planner.pass().await.unwrap();
+    planner.flush().await.unwrap();
+    planner.hand_over().await.unwrap();
+    for raw in redis.lrange::<_, Vec<String>>(EMBED_INPUTS, 0, -1).await.unwrap() {
+        let _: i64 = redis.rpush(EMBED_DROPPED, &raw).await.unwrap();
+    }
+    pages.delete(&BULK.seq_key(1)).await.unwrap();
+    pages.delete("bulk/dt=2026-10-30/2.parquet").await.unwrap();
+    planner.forget_dropped().await.unwrap();
+    for _ in 0..4 {
+        planner.pass().await.unwrap();
+    }
+    assert_eq!(planner.state.bulk_replan_group(0).unwrap(), None, "file 1's index and file 2 are gone, as from an expired log; the backfill has their pages");
     let _ = std::fs::remove_dir_all(&dir);
 }

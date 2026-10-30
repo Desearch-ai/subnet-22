@@ -123,10 +123,12 @@ on input writes and writing its state.
   the fresh lane and never wait. A page an input gives back is noted on disk with its bulk file, which the lane reads
   again for it alone, before newer files; the note goes once the page's new input is saved. A number not indexed
   within `PLANNER_HOLE_WAIT_S` of first being found so, a time kept across restarts, is passed by, as in the log. A
-  restart reads the feed again from the first bulk file whose pages are not all in saved inputs. While the lane is
-  on, the backfill leaves it the bulk files it has yet to read, and any bulk-feed version the backfill plans (its
-  passages once page vectors first is off, say) is paid from the lane's budget; with the lane off, the backfill plans
-  bulk-feed versions on its own budget, and plans again the bulk pages inputs give back.
+  restart reads the feed again from the first bulk file whose pages are not all in saved inputs. Pages the lane reads
+  again for notes take its room as the pages it reads in order do, and a note on a file it read before whose index
+  is gone is let go, as an expired change file is. While the lane is on, the backfill leaves it the bulk files it has
+  yet to read, and notes for it any other bulk-feed version it would plan (its passages once page vectors first is
+  off, say), so every bulk page is paid from the lane's budget; with the lane off, the backfill plans bulk-feed
+  versions on its own budget, and plans again the bulk pages inputs give back.
 - **Page vectors first** (`PLANNER_PAGE_FIRST=1`, off by default): pages outside the fresh lane get their
   page text alone; a page's passages are planned the next time it is seen with the setting off.
 
