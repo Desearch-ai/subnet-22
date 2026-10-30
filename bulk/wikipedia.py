@@ -9,6 +9,8 @@ import tarfile
 from collections import Counter
 from collections.abc import Iterable, Iterator
 from datetime import datetime, timedelta
+from itertools import islice
+from multiprocessing import Pool
 from pathlib import Path
 from urllib.parse import unquote
 
@@ -168,48 +170,74 @@ def hidden_categories(found: Iterable[dict]) -> Iterator[str]:
             yield article["name"].split(":", 1)[-1]
 
 
+_hidden: set[str] = set()
+
+
+def _keep_hidden(hidden: set[str]) -> None:
+    global _hidden
+    _hidden = hidden
+
+
+def _read(job: tuple[dict, int]) -> tuple[str, int, str, object]:
+    """One article's URL, revision bump, and its page or why it has none."""
+    article, bump = job
+    framed, disambiguation = page_html(article, _hidden)
+    if disambiguation:
+        return article["url"], bump, "disambiguation", None
+    page = extract(framed, article["url"])
+    if not page.text.strip():
+        return article["url"], bump, "no_text", None
+    return article["url"], bump, "pages", page
+
+
 def run(
     paths: list[Path],
     batches: Batches,
     as_of: datetime,
     hidden: set[str],
     limit: int = 0,
+    workers: int = 1,
 ) -> Counter:
     counts: Counter = Counter()
     # A snapshot can repeat an article; a later, higher revision gets a later second so it wins over the copy written before.
     revisions: dict[int, tuple[int, int]] = {}
-    for path in paths:
-        for article in articles(path):
-            if (article.get("namespace") or {}).get("identifier") != 0:
-                counts["other_namespace"] += 1
-                continue
-            if (article.get("event") or {}).get("type") == "delete":
-                counts["deleted"] += 1
-                continue
-            revision = (article.get("version") or {}).get("identifier") or 0
-            seen = revisions.get(article["identifier"])
-            if seen is not None and revision <= seen[0]:
-                counts["older_copy"] += 1
-                continue
-            bump = seen[1] + 1 if seen is not None else 0
-            revisions[article["identifier"]] = (revision, bump)
-            if not (article.get("article_body") or {}).get("html"):
-                counts["no_html"] += 1
-                continue
-            framed, disambiguation = page_html(article, hidden)
-            if disambiguation:
-                counts["disambiguation"] += 1
-                continue
-            page = extract(framed, article["url"])
-            if not page.text.strip():
-                counts["no_text"] += 1
-                continue
-            batches.add(
-                upload_row(
-                    article["url"], page, as_of + timedelta(seconds=bump), "text/html"
-                )
-            )
-            counts["pages"] += 1
-            if limit and counts["pages"] >= limit:
-                return counts
+
+    def jobs() -> Iterator[tuple[dict, int]]:
+        for path in paths:
+            for article in articles(path):
+                if (article.get("namespace") or {}).get("identifier") != 0:
+                    counts["other_namespace"] += 1
+                    continue
+                if (article.get("event") or {}).get("type") == "delete":
+                    counts["deleted"] += 1
+                    continue
+                revision = (article.get("version") or {}).get("identifier") or 0
+                seen = revisions.get(article["identifier"])
+                if seen is not None and revision <= seen[0]:
+                    counts["older_copy"] += 1
+                    continue
+                bump = seen[1] + 1 if seen is not None else 0
+                revisions[article["identifier"]] = (revision, bump)
+                if not (article.get("article_body") or {}).get("html"):
+                    counts["no_html"] += 1
+                    continue
+                yield article, bump
+
+    _keep_hidden(hidden)
+    pool = Pool(workers, _keep_hidden, (hidden,)) if workers > 1 else None
+    found = jobs()
+    try:
+        # A window at a time, so the pool never reads a snapshot far ahead of what is written.
+        while window := list(islice(found, max(workers, 1) * 32)):
+            for url, bump, why, page in pool.map(_read, window, chunksize=4) if pool else map(_read, window):
+                counts[why] += 1
+                if page is None:
+                    continue
+                batches.add(upload_row(url, page, as_of + timedelta(seconds=bump), "text/html"))
+                if limit and counts["pages"] >= limit:
+                    return counts
+    finally:
+        if pool is not None:
+            pool.close()
+            pool.join()
     return counts

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -83,6 +84,12 @@ def main(argv: list[str] | None = None) -> int:
         required=True,
         help="hidden category names, one per line, from `hidden-categories`",
     )
+    found.add_argument(
+        "--workers",
+        type=int,
+        default=os.cpu_count() or 1,
+        help="processes that frame and extract articles",
+    )
 
     harvest = commands.add_parser(
         "arxiv-harvest", help="save arXiv OAI-PMH pages for a date range"
@@ -147,7 +154,7 @@ def main(argv: list[str] | None = None) -> int:
             args.pmids_out.write_text("".join(f"{p}\n" for p in pmids))
     else:
         hidden = set(args.hidden.read_text().splitlines())
-        counts = wikipedia.run(args.files, batches, as_of, hidden, args.limit)
+        counts = wikipedia.run(args.files, batches, as_of, hidden, args.limit, args.workers)
     batches.close(dict(counts))
     print(
         json.dumps(

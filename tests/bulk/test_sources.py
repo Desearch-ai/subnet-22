@@ -245,19 +245,20 @@ def test_a_repeated_article_keeps_its_highest_revision_and_disambiguation_pages_
         disambiguation,
     ]
     snapshot.write_text("".join(json.dumps(a) + "\n" for a in lines))
-    batches = Batches(tmp_path / "run", "wikipedia", "20261101", AS_OF)
-    counts = wikipedia.run([snapshot], batches, AS_OF, set())
-    batches.close(dict(counts))
-    rows, _ = rows_of(tmp_path / "run")
-    assert (counts["pages"], counts["older_copy"], counts["disambiguation"]) == (
-        2,
-        1,
-        1,
-    )
-    assert [(r["fetched_at"] - AS_OF).total_seconds() for r in rows] == [0, 1], (
-        "the later, higher revision wins on fetch time"
-    )
-    assert "The tail is long." in rows[1]["text"] and rows[1]["page_type"] == "article"
+    for workers in (1, 2):
+        batches = Batches(tmp_path / f"run-{workers}", "wikipedia", "20261101", AS_OF)
+        counts = wikipedia.run([snapshot], batches, AS_OF, set(), workers=workers)
+        batches.close(dict(counts))
+        rows, _ = rows_of(tmp_path / f"run-{workers}")
+        assert (counts["pages"], counts["older_copy"], counts["disambiguation"]) == (
+            2,
+            1,
+            1,
+        )
+        assert [(r["fetched_at"] - AS_OF).total_seconds() for r in rows] == [0, 1], (
+            "the later, higher revision wins on fetch time"
+        )
+        assert "The tail is long." in rows[1]["text"] and rows[1]["page_type"] == "article"
 
 
 def test_batch_files_hold_the_upload_schema(tmp_path):
