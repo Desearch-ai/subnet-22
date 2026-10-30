@@ -77,7 +77,8 @@ on input writes and writing its state.
   a news site with a `since`, then every other site. A page from the log takes a place, budget and room both, only
   beyond what the log's better classes asked for in its last passes that read change files and have not asked for
   yet this pass, and beyond the waiting pages of better classes in the change files the re-plan reads next. Waiting
-  and backfilled pages leave what the log asked for of their class and better. Without a set, every page is of the
+  and backfilled pages leave what the log asked for of their class and better, but never so much that a full budget
+  and an empty rest lane hold no input's worth beyond it, so a quiet log holds nothing back. Without a set, every page is of the
   last class. The report line counts the log's pages that asked for a place, and the pages planned outside the
   fresh lane, by class.
 - **Fresh lane:** pages seen for the first time and dated within `PLANNER_FRESH_S` (48 h) get their own inputs,

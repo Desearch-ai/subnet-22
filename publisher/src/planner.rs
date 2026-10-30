@@ -20,7 +20,7 @@ use parquet::basic::{Compression, ZstdLevel};
 use parquet::file::properties::WriterProperties;
 use redis::aio::ConnectionManager;
 use redis::{AsyncCommands, Script};
-use rocksdb::{BlockBasedOptions, DBCompressionType, IteratorMode, Options, WriteBatch, DB};
+use rocksdb::{BlockBasedOptions, DBCompressionType, DBIteratorWithThreadMode, IteratorMode, Options, ReadOptions, WriteBatch, DB};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use tokio::runtime::Handle;
@@ -624,6 +624,8 @@ impl Version {
 struct Batch {
     writes: WriteBatch,
     waiting: i64,
+    /// By class, the change it makes to the count of pages waiting with a change file.
+    classes: [i64; CLASSES],
 }
 
 impl Batch {
@@ -644,6 +646,8 @@ pub struct State {
     writing: AtomicU64,
     /// The set a page starts waiting under the class of.
     set: RwLock<Option<Arc<Set>>>,
+    /// By class, pages waiting with a change file, counted once `class_waiting` has read them all.
+    classes: [AtomicI64; CLASSES],
     /// By class, the class key a page last let go of to make room was under, so the next search starts past it.
     evict_from: Mutex<[Option<Vec<u8>>; CLASSES]>,
 }
@@ -685,12 +689,21 @@ impl State {
         options.set_block_based_table_factory(&tables);
         // Every open, failed ones too, starts a new info log; older ones past this are deleted once open.
         options.set_keep_log_file_num(10);
+        // Pages let go of oldest first leave runs of deleted keys that reads would step over until compacted.
+        options.add_compact_on_deletion_collector_factory(10_000, 5_000, 0.5);
         let db = DB::open(&options, dir).with_context(|| format!("opening the planner state at {}", dir.display()))?;
         let waiting = match db.get(WAITING_COUNT)? {
             Some(raw) => String::from_utf8_lossy(&raw).parse()?,
             None => db.prefix_iterator(b"waiting/").take_while(|item| item.as_ref().is_ok_and(|(key, _)| key.starts_with(b"waiting/"))).count() as i64,
         };
-        Ok(State { db, waiting: AtomicI64::new(waiting), writing: AtomicU64::new(0), set: RwLock::new(None), evict_from: Mutex::default() })
+        Ok(State {
+            db,
+            waiting: AtomicI64::new(waiting),
+            writing: AtomicU64::new(0),
+            set: RwLock::new(None),
+            classes: Default::default(),
+            evict_from: Mutex::default(),
+        })
     }
 
     /// How many pages wait.
@@ -707,7 +720,26 @@ impl State {
         self.db.write(batch.writes)?;
         self.writing.fetch_add(started.elapsed().as_nanos() as u64, Ordering::Relaxed);
         self.waiting.fetch_add(batch.waiting, Ordering::Relaxed);
+        for (count, change) in self.classes.iter().zip(batch.classes) {
+            count.fetch_add(change, Ordering::Relaxed);
+        }
         Ok(())
+    }
+
+    /// Pages waiting under `class` with a change file.
+    pub fn class_count(&self, class: Class) -> i64 {
+        self.classes[class as usize].load(Ordering::Relaxed)
+    }
+
+    /// The keys from `from` on that start with `prefix`, read no further than its end.
+    fn prefixed(&self, from: &[u8], prefix: &[u8]) -> DBIteratorWithThreadMode<'_, DB> {
+        let mut end = prefix.to_vec();
+        if let Some(last) = end.last_mut() {
+            *last += 1;
+        }
+        let mut options = ReadOptions::default();
+        options.set_iterate_upper_bound(end);
+        self.db.iterator_opt(IteratorMode::From(from, rocksdb::Direction::Forward), options)
     }
 
     /// Time spent saving inputs and changing which pages wait.
@@ -751,37 +783,45 @@ impl State {
     /// The page waiting longest of the worst class worse than `class`, and that class; class keys of pages no longer waiting are dropped on the way.
     fn worse_waiting(&self, class: Class, skip: impl Fn(&str) -> bool) -> Result<Option<(Class, String)>> {
         let mut from = self.evict_from.lock().expect("the eviction places");
-        let mut read = 0;
-        for worse in Class::ALL.into_iter().rev().take_while(|worse| *worse > class) {
-            let prefix = format!("class/{}/", worse.digit());
-            let start = from[worse as usize].clone().unwrap_or_else(|| prefix.clone().into_bytes());
-            for item in self.db.iterator(IteratorMode::From(&start, rocksdb::Direction::Forward)) {
-                let (raw, _) = item?;
-                if !raw.starts_with(prefix.as_bytes()) {
-                    from[worse as usize] = None;
-                    break;
+        let (mut gone, mut read, mut found) = (WriteBatch::default(), 0, None);
+        'classes: for worse in Class::ALL.into_iter().rev().take_while(|worse| *worse > class) {
+            if self.class_count(worse) <= 0 {
+                continue;
+            }
+            let prefix = format!("class/{}/", worse.digit()).into_bytes();
+            // Past the page last let go of first, then from the start for pages that began waiting with an older change file.
+            let starts = match from[worse as usize].take() {
+                Some(place) => vec![place, prefix.clone()],
+                None => vec![prefix.clone()],
+            };
+            for start in starts {
+                for item in self.prefixed(&start, &prefix) {
+                    let (raw, _) = item?;
+                    read += 1;
+                    if read > EVICT_SCAN {
+                        from[worse as usize] = Some(raw.to_vec());
+                        break 'classes;
+                    }
+                    let Some((seq, key)) =
+                        String::from_utf8_lossy(&raw[prefix.len()..]).split_once('/').map(|(seq, key)| (seq.parse::<i64>().ok(), key.to_string()))
+                    else {
+                        continue;
+                    };
+                    if self.waiting(&key)?.is_none_or(|held| held.seq != seq) {
+                        gone.delete(&raw);
+                        continue;
+                    }
+                    if skip(&key) {
+                        continue;
+                    }
+                    from[worse as usize] = Some(raw.to_vec());
+                    found = Some((worse, key));
+                    break 'classes;
                 }
-                read += 1;
-                if read > EVICT_SCAN {
-                    return Ok(None);
-                }
-                let Some((seq, key)) =
-                    String::from_utf8_lossy(&raw[prefix.len()..]).split_once('/').map(|(seq, key)| (seq.parse::<i64>().ok(), key.to_string()))
-                else {
-                    continue;
-                };
-                if self.waiting(&key)?.is_none_or(|held| held.seq != seq) {
-                    self.db.delete(&raw)?;
-                    continue;
-                }
-                if skip(&key) {
-                    continue;
-                }
-                from[worse as usize] = Some(raw.to_vec());
-                return Ok(Some((worse, key)));
             }
         }
-        Ok(None)
+        self.db.write(gone)?;
+        Ok(found)
     }
 
     fn waiting_into(&self, batch: &mut Batch, key: &str, version: &Version) -> Result<()> {
@@ -794,6 +834,7 @@ impl State {
                 if let Some(seq) = held.seq {
                     batch.delete(replan_key(seq, key));
                     batch.delete(class_key(class, seq, key));
+                    batch.classes[class as usize] -= 1;
                 }
             }
             None => batch.waiting += 1,
@@ -803,6 +844,7 @@ impl State {
         if let Some(seq) = version.seq {
             batch.put(replan_key(seq, key), "");
             batch.put(class_key(class, seq, key), "");
+            batch.classes[class as usize] += 1;
         }
         Ok(())
     }
@@ -824,6 +866,7 @@ impl State {
         if let Some(seq) = held.seq {
             batch.delete(replan_key(seq, key));
             batch.delete(class_key(class, seq, key));
+            batch.classes[class as usize] -= 1;
         }
         batch.waiting -= 1;
         Ok(())
@@ -846,51 +889,80 @@ impl State {
         self.set.read().expect("the state's set").as_ref().map_or(Class::Other, |set| set.class(domain_of_key(key)))
     }
 
-    /// Gives every waiting page that has none a class and a class key, as those that began waiting under a planner without classes do; how many.
+    /// Gives every waiting page that has none a class and a class key, as those that began waiting under a planner without classes do, and counts the pages of each class; how many it gave one.
     pub fn class_waiting(&self) -> Result<i64> {
-        let (mut batch, mut classed, mut held) = (Batch::default(), 0, 0);
-        for item in self.db.iterator(IteratorMode::From(b"waiting/", rocksdb::Direction::Forward)) {
+        let had_class_keys = self.prefixed(b"class/", b"class/").next().transpose()?.is_some();
+        let (mut batch, mut classed, mut held, mut counts) = (Batch::default(), 0, 0, [0; CLASSES]);
+        for item in self.prefixed(b"waiting/", b"waiting/") {
             let (raw, value) = item?;
-            let Some(key) = raw.strip_prefix(b"waiting/") else { break };
-            if waiting_class(&value).is_some() {
-                continue;
-            }
-            let (key, version) = (String::from_utf8_lossy(key), Version::parse(&value));
-            let class = self.class_of_key(&key);
-            batch.put(&raw, waiting_value(&version, class));
-            if let Some(seq) = version.seq {
-                batch.put(class_key(class, seq, &key), "");
-            }
-            (classed, held) = (classed + 1, held + 1);
+            let key = String::from_utf8_lossy(&raw[b"waiting/".len()..]).into_owned();
+            let version = Version::parse(&value);
+            let class = match waiting_class(&value) {
+                Some(class) => class,
+                None => {
+                    let class = self.class_of_key(&key);
+                    batch.put(&raw, waiting_value(&version, class));
+                    if let Some(seq) = version.seq {
+                        batch.put(class_key(class, seq, &key), "");
+                    }
+                    (classed, held) = (classed + 1, held + 1);
+                    class
+                }
+            };
+            counts[class as usize] += i64::from(version.seq.is_some());
             if held == UNWAIT_BATCH {
                 self.write(std::mem::take(&mut batch))?;
                 held = 0;
             }
         }
         self.write(batch)?;
+        for (count, counted) in self.classes.iter().zip(counts) {
+            count.store(counted, Ordering::Relaxed);
+        }
+        // Pages without a class while class keys stand mean a planner without classes ran, leaving the keys of pages it planned or replaced.
+        if classed > 0 && had_class_keys {
+            self.drop_left_class_keys()?;
+        }
         Ok(classed)
     }
 
-    /// Waiting pages of `class` in its next `files` change files after `after`, up to `most`.
-    pub fn waiting_ahead(&self, class: Class, after: i64, files: usize, most: usize) -> Result<usize> {
+    /// Drops every class key whose page no longer waits with that change file.
+    fn drop_left_class_keys(&self) -> Result<()> {
+        let mut gone = WriteBatch::default();
+        for item in self.prefixed(b"class/", b"class/") {
+            let (raw, _) = item?;
+            let rest = String::from_utf8_lossy(&raw[b"class/0/".len()..]).into_owned();
+            let Some((seq, key)) = rest.split_once('/') else { continue };
+            if self.waiting(key)?.is_none_or(|held| held.seq != seq.parse().ok()) {
+                gone.delete(&raw);
+            }
+            if gone.len() >= UNWAIT_BATCH as usize {
+                self.db.write(std::mem::take(&mut gone))?;
+            }
+        }
+        Ok(self.db.write(gone)?)
+    }
+
+    /// Waiting pages of `class` in its next `files` change files after `after`, up to `most`, and the files they are in.
+    pub fn waiting_ahead(&self, class: Class, after: i64, files: usize, most: usize) -> Result<(usize, usize)> {
+        if self.class_count(class) <= 0 {
+            return Ok((0, 0));
+        }
         let prefix = format!("class/{}/", class.digit());
         let (mut pages, mut seen, mut last) = (0, 0, None);
-        for item in self.db.iterator(IteratorMode::From(format!("{prefix}{:020}/", after + 1).as_bytes(), rocksdb::Direction::Forward)) {
+        for item in self.prefixed(format!("{prefix}{:020}/", after + 1).as_bytes(), prefix.as_bytes()) {
             let (raw, _) = item?;
             let Some(rest) = raw.strip_prefix(prefix.as_bytes()) else { break };
             let seq = rest.split(|byte| *byte == b'/').next().map(<[u8]>::to_vec);
             if seq != last {
-                (seen, last) = (seen + 1, seq);
-                if seen > files {
+                if seen == files || pages >= most {
                     break;
                 }
+                (seen, last) = (seen + 1, seq);
             }
             pages += 1;
-            if pages >= most {
-                break;
-            }
         }
-        Ok(pages)
+        Ok((pages, seen))
     }
 
     fn unwait(&self, key: &str) -> Result<()> {
@@ -929,7 +1001,7 @@ impl State {
         let prefix = format!("class/{}/", class.digit());
         let start = format!("{prefix}{:020}/", after + 1);
         let mut group: Option<(i64, HashSet<String>)> = None;
-        for item in self.db.iterator(IteratorMode::From(start.as_bytes(), rocksdb::Direction::Forward)) {
+        for item in self.prefixed(start.as_bytes(), prefix.as_bytes()) {
             let (raw, _) = item?;
             let Some(rest) = raw.strip_prefix(prefix.as_bytes()) else { break };
             let rest = String::from_utf8_lossy(rest);
@@ -1138,13 +1210,18 @@ impl State {
         Ok(self.db.put(BACKFILL, backfill_value(shard, after))?)
     }
 
-    /// The worst class the backfill's sweep reads: the best to start with, and every class for a sweep begun before it was kept.
-    pub fn backfill_class(&self) -> Result<Class> {
-        Ok(match self.db.get(BACKFILL_CLASS)? {
-            Some(raw) => raw.first().copied().and_then(Class::from_digit).unwrap_or(Class::Other),
-            None if self.db.get_pinned(BACKFILL)?.is_some() => Class::Other,
-            None => Class::Benchmark,
-        })
+    /// The worst class the backfill's sweep reads; None before one is kept.
+    pub fn backfill_class(&self) -> Result<Option<Class>> {
+        Ok(self.db.get(BACKFILL_CLASS)?.and_then(|raw| raw.first().copied()).and_then(Class::from_digit))
+    }
+
+    /// The class kept for the backfill's sweep; a sweep begun before classes were kept starts again from shard `start`.
+    fn backfill_class_or_restart(&self, start: usize) -> Result<Option<Class>> {
+        let kept = self.backfill_class()?;
+        if kept.is_none() && self.backfill()?.is_some() {
+            self.keep_backfill(start, None)?;
+        }
+        Ok(kept)
     }
 
     fn keep_backfill_class(&self, class: Class) -> Result<()> {
@@ -1623,8 +1700,8 @@ impl Planner {
         if classed > 0 {
             println!("planner: {classed} waiting pages given the class of their site");
         }
-        let kept = planner.state.backfill_class()?;
-        planner.backfill_class = planner.sweep_class(kept).unwrap_or(Class::Other);
+        let kept = planner.state.backfill_class_or_restart(planner.settings.backfill_shards.start)?;
+        planner.backfill_class = planner.sweep_class(kept.unwrap_or(Class::ALL[0])).unwrap_or(Class::Other);
         planner.state.keep_backfill_class(planner.backfill_class)?;
         Ok(planner)
     }
@@ -1714,11 +1791,20 @@ impl Planner {
         let latest = latest(&self.pages).await?;
         self.pass_asked = [0; CLASSES];
         self.wanting = [0; CLASSES];
-        if self.state.waiting_count() > 0 {
-            let most = self.settings.max_pending * self.settings.pages_per_input;
-            for class in Class::ALL {
-                self.wanting[class as usize] = self.state.waiting_ahead(class, self.replan_after[class as usize], REPLAN_FILES_PER_PASS, most)?;
+        // The re-plan's files a pass go to the best classes first, so only as many are counted.
+        let (mut files, most) = (REPLAN_FILES_PER_PASS, self.settings.max_pending * self.settings.pages_per_input);
+        for class in Class::ALL {
+            if files == 0 {
+                break;
             }
+            let after = &mut self.replan_after[class as usize];
+            let (mut pages, mut read) = self.state.waiting_ahead(class, *after, files, most)?;
+            // A class read through to its last file starts again from its first.
+            if pages == 0 && *after > 0 {
+                *after = 0;
+                (pages, read) = self.state.waiting_ahead(class, 0, files, most)?;
+            }
+            (self.wanting[class as usize], files) = (pages, files - read);
         }
         let mut read = self.read_late().await?;
         let ahead: Vec<i64> = (self.read_through + 1..=latest).take(FILES_PER_PASS.saturating_sub(read)).collect();
@@ -1766,6 +1852,9 @@ impl Planner {
     async fn replan(&mut self) -> Result<(bool, Option<Class>)> {
         let (mut took, mut listed) = (false, 0);
         for class in Class::ALL {
+            if self.state.class_count(class) <= 0 {
+                continue;
+            }
             let reserve = self.reserve(class, Source::Replan);
             // An input's worth, or the fewer pages counted in reach at the pass's start, which the log left for them.
             let worth = match self.wanting[class as usize] {
@@ -1783,7 +1872,7 @@ impl Planner {
                 }
                 while ahead.len() < self.settings.reads.max(1) && listed < REPLAN_FILES_PER_PASS && !swept {
                     let expected: usize = ahead.iter().map(|(_, waiting, _)| waiting).sum();
-                    if !self.budget.holds_after(expected + reserve, worth) || !self.has_room_after(expected) || !self.room_after(expected + reserve) {
+                    if !self.budget.holds_after(expected + reserve, worth) || !self.has_room_after(expected + reserve) {
                         break;
                     }
                     match self.state.replan_group(class, after)? {
@@ -1854,7 +1943,11 @@ impl Planner {
                 .iter()
                 .map(|better| self.demand[*better as usize].saturating_sub(self.pass_asked[*better as usize]) + self.wanting[*better as usize])
                 .sum(),
-            Source::Replan | Source::Backfill => self.demand[..=class as usize].iter().sum(),
+            // The budget at its cap and an empty rest lane always hold an input's worth beyond, so a quiet log holds back nothing for long.
+            Source::Replan | Source::Backfill => {
+                let most = (Budget::cap(self.settings.pages_per_hour) as usize).min(self.settings.max_pending * self.pages_per_rest_input());
+                self.demand[..=class as usize].iter().sum::<usize>().min(most.saturating_sub(self.settings.pages_per_input))
+            }
         }
     }
 
@@ -1863,10 +1956,9 @@ impl Planner {
         self.budget.holds_after(reserve, 1) && self.room_after(reserve)
     }
 
-    /// Whether the rest lane has room for a page beyond `reserve` pages, its free inputs counted full; with none kept, the cap on its inputs alone says.
+    /// Whether the rest lane has room for a page beyond `reserve` pages; with none kept, the cap on its inputs alone says.
     fn room_after(&self, reserve: usize) -> bool {
-        let free = self.settings.max_pending.saturating_sub(self.inputs_held(Lane::Rest)) * self.settings.pages_per_input;
-        reserve == 0 || self.rest.pages.len() + reserve < free
+        reserve == 0 || self.has_room_after(reserve)
     }
 
     /// The first class from `from` on that the set takes pages of; without a set, every page is of the last.
@@ -2854,6 +2946,16 @@ mod tests {
         state.db.delete(replan_key(3, other)).unwrap();
         assert_eq!(state.worse_waiting(Class::Benchmark, |_| false).unwrap(), None);
         assert_eq!(state.replan_group(Class::Other, 0).unwrap(), None, "the left class key is dropped");
+
+        state.keep_backfill(9, Some("pages/a.example/1")).unwrap();
+        assert_eq!(
+            (state.backfill_class_or_restart(2).unwrap(), state.backfill().unwrap()),
+            (None, Some((2, None))),
+            "a sweep begun before classes starts over"
+        );
+        state.keep_backfill(9, Some("pages/a.example/1")).unwrap();
+        state.keep_backfill_class(Class::Docs).unwrap();
+        assert_eq!((state.backfill_class_or_restart(2).unwrap(), state.backfill().unwrap()), (Some(Class::Docs), Some((9, Some("pages/a.example/1".into())))));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -2914,5 +3016,82 @@ mod tests {
         }
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_file(&held);
+    }
+
+    /// A state with the set's best, second worst and worst classes.
+    fn three_class_state() -> (PathBuf, State) {
+        let dir = std::env::temp_dir().join(format!("planner-classes-{}", uuid::Uuid::new_v4().simple()));
+        let state = State::open(&dir).unwrap();
+        let set = br#"{"sites": [{"host": "bench.example", "rule": "whole", "why": ["simpleqa"]}, {"host": "recent.example", "rule": "news", "since": "2020-01-01"}, {"host": "academic.example", "rule": "whole", "type": "academic"}]}"#;
+        state.use_set(Arc::new(Set::parse(set).unwrap()));
+        (dir, state)
+    }
+
+    fn version_in(seq: i64) -> Version {
+        Version { content_sha1: "a1".into(), fetched_at: "2026-10-28T10:00:00+00:00".into(), page_only: false, seq: Some(seq), task_id: "t1".into() }
+    }
+
+    #[test]
+    fn a_page_kept_in_place_of_a_worse_one_reads_no_more_once_the_worst_class_is_let_go_of() {
+        let (dir, state) = three_class_state();
+        let n: i64 = 20_000;
+        let most = n + 1_000;
+        for i in 0..n {
+            state.wait(&format!("pages/academic.example/{i:07}"), &version_in(1 + i / 1_000), most, |_| false).unwrap();
+        }
+        for i in 0..1_000 {
+            state.wait(&format!("pages/recent.example/{i:07}"), &version_in(100_000 + i), most, |_| false).unwrap();
+        }
+        state.class_waiting().unwrap();
+        let started = Instant::now();
+        for i in 0..n {
+            let waited = state.wait(&format!("pages/bench.example/{i:07}"), &version_in(200_000), most, |_| false).unwrap();
+            assert_eq!(waited, Waited::InPlaceOf(Class::Other));
+        }
+        let draining = started.elapsed() / n as u32;
+        let started = Instant::now();
+        for i in n..n + 200 {
+            let waited = state.wait(&format!("pages/bench.example/{i:07}"), &version_in(200_000), most, |_| false).unwrap();
+            assert_eq!(waited, Waited::InPlaceOf(Class::RecentNews));
+        }
+        let drained = started.elapsed() / 200;
+        let started = Instant::now();
+        for _ in 0..20 {
+            assert_eq!(state.waiting_ahead(Class::Other, 0, REPLAN_FILES_PER_PASS, 50_000).unwrap(), (0, 0));
+        }
+        let ahead = started.elapsed() / 20;
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(drained < draining * 10, "a wait once the worst class is let go of reads past every key let go of: {drained:?} against {draining:?}");
+        assert!(ahead < draining * 10, "counting a class with no page reads past its keys let go of: {ahead:?}");
+    }
+
+    #[test]
+    fn class_keys_left_by_a_planner_without_classes_are_dropped_at_the_start_or_within_a_few_waits() {
+        let (dir, state) = three_class_state();
+        // The old planner re-planned 10,001 academic pages after this one gave them class keys, and kept one waiting.
+        for i in 0..=EVICT_SCAN {
+            state.db.put(class_key(Class::Other, 1, &format!("pages/academic.example/{i:07}")), "").unwrap();
+        }
+        state.db.put(waiting_key("pages/academic.example/live"), version_in(2).value()).unwrap();
+        state.db.put(replan_key(2, "pages/academic.example/live"), "").unwrap();
+        state.db.put(waiting_key("pages/academic.example/later"), version_in(4).value()).unwrap();
+        state.db.put(replan_key(4, "pages/academic.example/later"), "").unwrap();
+        state.waiting.store(2, Ordering::Relaxed);
+        assert_eq!(state.class_waiting().unwrap(), 2);
+        assert_eq!(state.prefixed(b"class/", b"class/").count(), 2, "only the waiting pages' class keys are left");
+        assert_eq!(state.wait("pages/bench.example/0", &version_in(3), 2, |_| false).unwrap(), Waited::InPlaceOf(Class::Other));
+
+        // Left while it runs, they are dropped as a search for a page to let go of reads past them.
+        for i in 0..=EVICT_SCAN {
+            state.db.put(class_key(Class::Other, 3, &format!("pages/academic.example/{i:07}")), "").unwrap();
+        }
+        let waits: Vec<Waited> = (1..3).map(|n| state.wait(&format!("pages/bench.example/{n}"), &version_in(5), 2, |_| false).unwrap()).collect();
+        assert_eq!(waits, [Waited::Full, Waited::InPlaceOf(Class::Other)]);
+        assert_eq!(state.prefixed(b"class/", b"class/").count(), 2, "the left keys read past are dropped");
+
+        // A page that began waiting with an older change file than the last one let go of is found from the class's start.
+        assert_eq!(state.wait("pages/academic.example/older", &version_in(1), 3, |_| false).unwrap(), Waited::Kept);
+        assert_eq!(state.wait("pages/bench.example/3", &version_in(5), 3, |_| false).unwrap(), Waited::InPlaceOf(Class::Other));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

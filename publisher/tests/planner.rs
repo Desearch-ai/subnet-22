@@ -989,6 +989,7 @@ async fn the_backfill_plans_each_set_page_s_standing_v2_version_as_the_budget_al
     again.backfill_every = Duration::ZERO;
     let mut restarted = Planner::new(again, pages.clone(), temp.clone(), redis.clone(), Room::Fixed(0)).await.unwrap();
     restarted.current = Some(current.clone());
+    assert!(restarted.state.backfill().unwrap().is_some_and(|(shard, after)| shard == 7 && after.is_some()), "a restart keeps the sweep's place");
     for _ in 0..50 {
         restarted.pass().await.unwrap();
         if restarted.counts.shards == 2 {
@@ -997,7 +998,7 @@ async fn the_backfill_plans_each_set_page_s_standing_v2_version_as_the_budget_al
     }
     assert_eq!(
         (restarted.counts.shards, restarted.state.backfill().unwrap(), restarted.state.backfill_class().unwrap()),
-        (2, Some((7, None)), Class::RecentNews),
+        (2, Some((7, None)), Some(Class::RecentNews)),
         "the shard is read through for the news site's class, then for the whole site's, and the next sweep starts over"
     );
     assert_eq!((restarted.counts.planned, restarted.counts.unchanged), (3, 0), "it goes on after the page planned before the restart");
@@ -1805,7 +1806,7 @@ async fn each_input_goes_to_the_task_api_as_it_is_written_and_inputs_left_from_b
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn waiting_pages_are_read_again_only_once_the_budget_holds_an_input_s_worth() {
+async fn waiting_pages_are_read_again_only_once_the_budget_holds_an_input_s_worth_or_all_of_them() {
     let Some((_turn, redis)) = redis_db().await else {
         eprintln!("skipped: no Redis on {REDIS}");
         return;
@@ -1814,24 +1815,24 @@ async fn waiting_pages_are_read_again_only_once_the_budget_holds_an_input_s_wort
     let stub = stub::start(dir.join("r2"), "127.0.0.1:0").await.unwrap();
     let (pages, temp) = (bucket(stub.addr, "desearch-pages"), bucket(stub.addr, "subnet-22"));
     let page = |n: usize| v2(record(&format!("https://news.example/story/{n}"), &format!("{n} {}", article(2)), "article", "en"));
-    log(&pages, 1, (0..5).map(page).collect()).await;
+    log(&pages, 1, (0..6).map(page).collect()).await;
     let mut five = settings(dir.join("state"), 150.0, 0);
     five.max_pending = 1;
     let mut planner = Planner::new(five, pages.clone(), temp.clone(), redis.clone(), Room::Fixed(0)).await.unwrap();
     planner.pass().await.unwrap();
-    assert_eq!((planner.counts.planned, planner.counts.no_room), (3, 2), "five pages of budget; the first input fills the room");
+    assert_eq!((planner.counts.planned, planner.counts.no_room), (3, 3), "five pages of budget; the first input fills the room");
 
     planner.room = Room::Fixed(5);
     planner.hand_over().await.unwrap();
     planner.pass().await.unwrap();
     assert_eq!((planner.counts.handed_over, planner.counts.replanned), (1, 0), "two pages of budget left, less than an input of three");
-    assert_eq!(planner.state.waiting_count(), 2);
+    assert_eq!(planner.state.waiting_count(), 3);
     drop(planner);
 
     let mut planner = Planner::new(settings(dir.join("state"), 3600.0, 0), pages.clone(), temp.clone(), redis.clone(), Room::Fixed(5)).await.unwrap();
     planner.pass().await.unwrap();
     planner.flush().await.unwrap();
-    assert_eq!((planner.counts.replanned, planner.counts.planned, planner.state.waiting_count()), (2, 2, 0));
+    assert_eq!((planner.counts.replanned, planner.counts.planned, planner.state.waiting_count()), (3, 3, 0));
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -3138,5 +3139,126 @@ async fn the_backfill_reads_a_better_class_s_pages_while_the_re_plan_leaves_a_wo
         (planner.counts.planned_by_class[OTHER], planner.counts.replanned, planner.counts.planned_by_class[BENCH], planner.state.waiting_count()),
         (5, 0, 2, 3)
     );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_quiet_log_lets_waiting_pages_go_once_the_api_has_room_again() {
+    let Some((_turn, redis)) = redis_db().await else {
+        eprintln!("skipped: no Redis on {REDIS}");
+        return;
+    };
+    let dir = scratch("class-idle");
+    let stub = stub::start(dir.join("r2"), "127.0.0.1:0").await.unwrap();
+    let (pages, temp) = (bucket(stub.addr, "desearch-pages"), bucket(stub.addr, "subnet-22"));
+    let page = |n: usize| v2(record(&format!("https://news.example/story/{n}"), &format!("{n} {}", article(2)), "article", "en"));
+    log(&pages, 1, (0..6).map(page).collect()).await;
+    let mut tight = settings(dir.join("state"), 3600.0, 0);
+    (tight.pages_per_input, tight.max_pending) = (1, 2);
+    let mut planner = Planner::new(tight, pages.clone(), temp.clone(), redis.clone(), Room::Fixed(0)).await.unwrap();
+    planner.pass().await.unwrap();
+    assert_eq!((planner.counts.planned, planner.counts.no_room, planner.state.waiting_count()), (2, 4, 4), "the API is full");
+
+    // The API drains and the publisher goes quiet: budget and room for every waiting page, no new change file.
+    planner.room = Room::Fixed(5);
+    planner.hand_over().await.unwrap();
+    for _ in 0..10 {
+        planner.pass().await.unwrap();
+    }
+    assert_eq!((planner.counts.replanned, planner.state.waiting_count()), (4, 0), "waiting pages are planned while budget and room exist");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_log_s_worse_class_leaves_room_for_better_waiting_pages_when_characters_keep_inputs_small() {
+    let Some((_turn, redis)) = redis_db().await else {
+        eprintln!("skipped: no Redis on {REDIS}");
+        return;
+    };
+    let dir = scratch("class-chars");
+    let stub = stub::start(dir.join("r2"), "127.0.0.1:0").await.unwrap();
+    let (pages, temp) = (bucket(stub.addr, "desearch-pages"), bucket(stub.addr, "subnet-22"));
+    let set = two_class_set(&dir);
+    log(&pages, 1, (0..5).map(|n| site_page("bench.example", n)).collect()).await;
+    // Inputs of up to three pages, each cut at one page by its characters; room for three inputs.
+    let small = || {
+        let mut small = class_settings(&dir, &set, 3600.0);
+        (small.pages_per_input, small.chars_per_input, small.max_pending) = (3, 500, 3);
+        small
+    };
+    let mut planner = Planner::new(small(), pages.clone(), temp.clone(), redis.clone(), Room::Fixed(0)).await.unwrap();
+    planner.pass().await.unwrap();
+    assert_eq!((planner.counts.planned, planner.state.waiting_count()), (3, 2), "three one-page inputs fill the room, two benchmark pages wait");
+    drop(planner);
+
+    let mut planner = Planner::new(small(), pages.clone(), temp.clone(), redis.clone(), Room::Fixed(3)).await.unwrap();
+    planner.hand_over().await.unwrap();
+    planner.room = Room::Fixed(0);
+    log(&pages, 2, (0..3).map(|n| site_page("academic.example", n)).collect()).await;
+    planner.pass().await.unwrap();
+    assert_eq!(
+        (planner.counts.planned_by_class[BENCH], planner.counts.planned_by_class[OTHER]),
+        (2, 1),
+        "the academic pages leave two of the three free inputs to the two benchmark pages waiting"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_better_class_with_nothing_waiting_does_not_hold_back_a_worse_class_s_few_pages() {
+    let Some((_turn, redis)) = redis_db().await else {
+        eprintln!("skipped: no Redis on {REDIS}");
+        return;
+    };
+    let dir = scratch("class-empty");
+    let stub = stub::start(dir.join("r2"), "127.0.0.1:0").await.unwrap();
+    let (pages, temp) = (bucket(stub.addr, "desearch-pages"), bucket(stub.addr, "subnet-22"));
+    let set = two_class_set(&dir);
+    log(&pages, 1, (0..3).map(|n| site_page("academic.example", n)).collect()).await;
+    let mut one = class_settings(&dir, &set, 1.0);
+    one.pages_per_input = 1;
+    let mut planner = Planner::new(one, pages.clone(), temp.clone(), redis.clone(), Room::Fixed(0)).await.unwrap();
+    planner.pass().await.unwrap();
+    assert_eq!((planner.counts.planned, planner.state.waiting_count()), (1, 2));
+    drop(planner);
+
+    // Two pages banked of four, inputs of three: no benchmark page waits, two academic ones do.
+    let mut two = class_settings(&dir, &set, 120.0);
+    two.budget_at_start = Duration::from_secs(60);
+    let mut planner = Planner::new(two, pages.clone(), temp.clone(), redis.clone(), Room::Fixed(0)).await.unwrap();
+    planner.pass().await.unwrap();
+    assert_eq!(planner.counts.replanned, 2, "the budget holds the academic class's two waiting pages");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pages_the_re_plan_left_waiting_in_a_file_it_read_through_are_read_again_once_there_is_room() {
+    let Some((_turn, redis)) = redis_db().await else {
+        eprintln!("skipped: no Redis on {REDIS}");
+        return;
+    };
+    let dir = scratch("class-read-through");
+    let stub = stub::start(dir.join("r2"), "127.0.0.1:0").await.unwrap();
+    let (pages, temp) = (bucket(stub.addr, "desearch-pages"), bucket(stub.addr, "subnet-22"));
+    let page = |n: usize| v2(record(&format!("https://news.example/story/{n}"), &format!("{n} {}", article(2)), "article", "en"));
+    log(&pages, 1, (0..5).map(page).collect()).await;
+    let one = |pages_per_hour: f64| {
+        let mut one = settings(dir.join("state"), pages_per_hour, 0);
+        (one.pages_per_input, one.max_pending) = (1, 2);
+        one
+    };
+    let mut planner = Planner::new(one(1.0), pages.clone(), temp.clone(), redis.clone(), Room::Fixed(0)).await.unwrap();
+    planner.pass().await.unwrap();
+    assert_eq!((planner.counts.planned, planner.state.waiting_count()), (1, 4));
+    drop(planner);
+
+    // The second input fills the room, so the re-plan reads its file through with three pages still waiting in it.
+    let mut planner = Planner::new(one(3600.0), pages.clone(), temp.clone(), redis.clone(), Room::Fixed(0)).await.unwrap();
+    planner.pass().await.unwrap();
+    assert_eq!((planner.counts.planned, planner.counts.no_room, planner.state.waiting_count()), (1, 3, 3));
+    planner.room = Room::Fixed(10);
+    planner.hand_over().await.unwrap();
+    planner.pass().await.unwrap();
+    assert_eq!((planner.counts.planned, planner.state.waiting_count()), (4, 0), "the next pass reads the file again from its class's first");
     let _ = std::fs::remove_dir_all(&dir);
 }
