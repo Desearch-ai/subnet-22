@@ -3433,3 +3433,44 @@ async fn the_bulk_lane_plans_whole_bulk_files_under_its_own_budget_and_a_restart
     assert_eq!(off.counts.bulk_files, 0, "0 leaves the bulk feed unread");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_ranked_site_s_landing_pages_and_docs_go_before_established_news_read_earlier() {
+    let Some((_turn, redis)) = redis_db().await else {
+        eprintln!("skipped: no Redis on {REDIS}");
+        return;
+    };
+    let dir = scratch("class-landing");
+    let stub = stub::start(dir.join("r2"), "127.0.0.1:0").await.unwrap();
+    let (pages, temp) = (bucket(stub.addr, "desearch-pages"), bucket(stub.addr, "subnet-22"));
+    let set = dir.join("v1-set.json");
+    let sites = json!([
+        {"host": "outlet.example", "rule": "news", "type": "news", "why": ["wikidata"]},
+        {"host": "vendor.example", "rule": "landing", "type": "company", "why": ["rank"]},
+        {"host": "docs.example", "rule": "whole", "type": "docs", "why": ["docs"]},
+    ]);
+    std::fs::write(&set, json!({"sites": sites}).to_string()).unwrap();
+    let news = |n: usize| {
+        let mut story = site_page("outlet.example", n);
+        story.published = "2024-01-01".into();
+        story
+    };
+    let landing = |n: usize| v2(record(&format!("https://vendor.example/product-{n}"), &format!("vendor {n} {}", article(2)), "other", "en"));
+    log(&pages, 1, vec![landing(0), site_page("docs.example", 0), news(0)]).await;
+    // Twenty pages banked; at 600 an hour the test refills nothing that counts.
+    let mut planner = Planner::new(class_settings(&dir, &set, 600.0), pages.clone(), temp.clone(), redis.clone(), Room::Fixed(1_000)).await.unwrap();
+    planner.pass().await.unwrap();
+    assert_eq!(planner.counts.planned, 3);
+
+    let mut second: Vec<Record> = (1..18).map(news).collect();
+    second.extend([landing(1), site_page("docs.example", 1)]);
+    log(&pages, 2, second).await;
+    planner.pass().await.unwrap();
+    let by_class = |class: Class| planner.counts.planned_by_class[class as usize];
+    assert_eq!(
+        (by_class(Class::Landing), by_class(Class::Docs), by_class(Class::News), planner.counts.over_budget),
+        (2, 2, 16, 2),
+        "the news pages leave a landing page and a docs page their places"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -41,10 +41,12 @@ pub enum Refusal {
 pub enum Class {
     /// A site a benchmark cites, whatever its rule.
     Benchmark,
-    /// A news site taken for every year.
-    News,
+    /// A ranked site's homepage and first-level pages.
+    Landing,
     Docs,
     Reference,
+    /// A news site taken for every year.
+    News,
     /// A news site taken from its `since`.
     RecentNews,
     /// Every other site, whole academic and public ones among them.
@@ -53,12 +55,13 @@ pub enum Class {
 }
 
 impl Class {
-    pub const ALL: [Class; 6] = [Class::Benchmark, Class::News, Class::Docs, Class::Reference, Class::RecentNews, Class::Other];
+    pub const ALL: [Class; 7] = [Class::Benchmark, Class::Landing, Class::Docs, Class::Reference, Class::News, Class::RecentNews, Class::Other];
 
     pub fn of(rule: &Rule, kind: Option<&str>, why: &[&str]) -> Class {
         match rule {
             Rule::Out => Class::Other,
             _ if why.iter().any(|word| !BACKING.contains(word)) => Class::Benchmark,
+            Rule::Landing => Class::Landing,
             Rule::News { since: None } => Class::News,
             Rule::News { since: Some(_) } => Class::RecentNews,
             _ if kind == Some("docs") => Class::Docs,
@@ -358,6 +361,7 @@ mod tests {
                 {"host": "nature.com", "rule": "whole", "type": "academic", "why": ["academic", "wikidata"]},
                 {"host": "sec.gov", "rule": "whole", "type": "public", "why": ["public"]},
                 {"host": "nvidia.com", "rule": "whole", "type": "company"},
+                {"host": "vendor.example", "rule": "landing", "type": "company", "why": ["rank"]},
                 {"host": "blogs.nature.com", "rule": "out", "why": ["spam"]}
             ]}"#,
         )
@@ -372,18 +376,19 @@ mod tests {
             "nature.com",
             "sec.gov",
             "nvidia.com",
+            "www.vendor.example",
             "unlisted.example",
         ]
         .iter()
         .map(|host| set.class(host))
         .collect();
         use Class::*;
-        assert_eq!(classes, [Benchmark, News, RecentNews, Docs, Reference, Benchmark, Other, Other, Other, Other]);
+        assert_eq!(classes, [Benchmark, News, RecentNews, Docs, Reference, Benchmark, Other, Other, Other, Landing, Other]);
         assert!(Class::ALL.windows(2).all(|pair| pair[0] < pair[1]), "best first");
         assert_eq!(set.class("blogs.nature.com"), Other, "an out site's reasons name no benchmark");
         assert!(Class::ALL.iter().all(|class| set.has(*class)));
         let news_only = Set::parse(br#"{"sites": [{"host": "a.example", "rule": "news"}, {"host": "b.example", "rule": "out", "why": ["spam"]}]}"#).unwrap();
-        assert_eq!(Class::ALL.map(|class| news_only.has(class)), [false, true, false, false, false, false]);
+        assert_eq!(Class::ALL.map(|class| news_only.has(class)), [false, false, false, false, true, false, false]);
         assert!(Class::ALL.iter().all(|class| Class::from_digit(class.digit() as u8) == Some(*class)));
     }
 }

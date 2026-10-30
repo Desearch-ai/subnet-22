@@ -66,15 +66,16 @@ on input writes and writing its state.
 - **What it plans** (`PLANNER_SET_FILE`): only pages the v1 set takes: a news site's pages dated on or
   after its `since`, by `published` or a date in the URL path, and, when the file's `undated` is `article`,
   its pages with no date typed `article`; a whole site's pages, or those under its `paths`; a bulk source's
-  crawled pages. Pages are also English, at least `PLANNER_MIN_CHARS` long and off
+  crawled pages; a landing site's own homepage and first-level pages with no query, under a leading English locale
+  (`/en-us/`) or none, on the host itself or its `www.` or `m.` host. Pages are also English, at least `PLANNER_MIN_CHARS` long and off
   the exclusion list. With `PLANNER_SET_FILE` set, the planner does not start without the set. Each time it reads
   the set it logs the set's `built` time, or the time its file was written when the set has none or its `built`
   cannot be parsed, and it warns then and hourly while the set is more than two days old; the same build read again
   keeps the hourly timer.
 - **Classes:** while the budget or the API's room is short, a site's pages go by its class in the set, best first:
   a site a benchmark cites (any word in its `why` other than `wikidata`, `news-list`, `news-major`, `news`, `judge`,
-  `academic`, `public`, `docs`, `evergreen` and `rank`), a news site with no `since`, a docs site, a reference site,
-  a news site with a `since`, then every other site. A page from the log takes a place, budget and room both, only
+  `academic`, `public`, `docs`, `evergreen` and `rank`), a `landing` site, a docs site, a reference site, a news site
+  with no `since`, a news site with a `since`, then every other site. A page from the log takes a place, budget and room both, only
   beyond what the log's better classes asked for in its last passes that read change files and have not asked for
   yet this pass, and beyond the waiting pages of better classes in the change files the re-plan reads next. Waiting
   and backfilled pages leave what the log asked for of their class and better, but never so much that a full budget
