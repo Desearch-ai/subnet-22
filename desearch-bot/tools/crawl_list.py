@@ -586,8 +586,8 @@ def build(
                     row.canonical_host,
                 ]
             )
-    # A listed subdomain takes its pages from its parent's lists, so one listed only for its feed would leave them unsent.
-    hosts = {item[2] for item in ranked}
+    # A listed subdomain takes its pages from its parent's lists, so one listed only for its feed would leave them unsent; a landing parent sends none of them.
+    hosts = {item[2] for item in ranked if "depth" not in item[3]}
     ranked = [
         item for item in ranked if not (item[4] and parent_listed(item[2], hosts))
     ]

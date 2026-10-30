@@ -647,6 +647,18 @@ def test_landing_sites_send_only_their_landing_pages_unless_node2_sends_them():
     assert "depth" not in {e["host"]: e for e in entries}["corp.com"], (
         "with no minimum weight node 2 sends it already"
     )
+    docs = row(host="docs.corp.com", state="no_sitemap", site_type="docs")
+    entries, _ = build(
+        rows + [docs],
+        {},
+        {},
+        Hand(),
+        v1={**v1, "docs.corp.com": V1("whole", "docs")},
+        node2_min_weight=2,
+    )
+    assert "docs.corp.com" in {e["host"] for e in entries}, (
+        "a landing parent sends none of a feed-only subdomain's pages, so it stays"
+    )
 
 
 def test_v1_lifts_only_label_outs():
