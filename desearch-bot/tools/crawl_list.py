@@ -4,6 +4,7 @@ import argparse
 import csv
 import gzip
 import json
+import math
 import os
 import subprocess
 import sys
@@ -396,6 +397,9 @@ def build(
     v1: dict[str, V1] | None = None,
     resend_before: str | None = None,
     resend_hosts: set[str] | None = None,
+    node2_hours: float | None = None,
+    node2_min_weight: int = 1,
+    rejoin_hosts: set[str] | None = None,
 ) -> tuple[list[dict], Counter]:
     ranked, counts = [], Counter()
     for row in rows:
@@ -413,8 +417,19 @@ def build(
             if v1 is None
             else apply_v1(row, base, entry_v1, override.startswith("out:"))
         )
+        if (
+            v1 is not None
+            and entry_v1 is None
+            and decision.listed
+            and decision.weight < node2_min_weight
+        ):
+            decision = out("node2")
         counts[decision.site_type if decision.listed else f"out:{decision.reason}"] += 1
-        feed = entry_v1 is not None and entry_v1.rule in ("news", "whole") and row.state in FEED_STATES
+        feed = (
+            entry_v1 is not None
+            and entry_v1.rule in ("news", "whole")
+            and row.state in FEED_STATES
+        )
         if decision.listed and (row.state in SENDING_STATES or feed):
             entry = {
                 "host": row.host,
@@ -422,15 +437,37 @@ def build(
                 "weight": decision.weight,
                 "hourly": decision.hourly,
             }
+            if node2_hours and v1 is not None and entry_v1 is None:
+                bound = decision.send_cap or decision.backlog or row.url_count
+                entry["hourly"] = min(
+                    decision.hourly,
+                    max(1, math.ceil(min(row.url_count, bound) / node2_hours)),
+                )
             if decision.send_cap is not None:
-                entry["send_cap"] = decision.send_cap
+                # A cap that changes makes the list walker walk the site again, queuing pages an earlier walk left out.
+                entry["send_cap"] = decision.send_cap + (
+                    row.host in (rejoin_hosts or set())
+                )
             if decision.backlog is not None:
                 entry["backlog"] = decision.backlog
             if decision.since is not None:
                 entry["since"] = decision.since
-            if resend_before and row.host in (resend_hosts or set()) and entry_v1 is not None and entry_v1.rule in ("news", "whole"):
+            if (
+                resend_before
+                and row.host in (resend_hosts or set())
+                and entry_v1 is not None
+                and entry_v1.rule in ("news", "whole")
+            ):
                 entry["resend_before"] = resend_before
-            ranked.append((row.rank is None, row.rank or 0, row.host, entry, feed and row.state not in SENDING_STATES))
+            ranked.append(
+                (
+                    row.rank is None,
+                    row.rank or 0,
+                    row.host,
+                    entry,
+                    feed and row.state not in SENDING_STATES,
+                )
+            )
         # The decisions file keeps the decision before the v1 set, which the set itself is built from.
         if decisions is not None:
             decisions.writerow(
@@ -447,7 +484,9 @@ def build(
             )
     # A listed subdomain takes its pages from its parent's lists, so one listed only for its feed would leave them unsent.
     hosts = {item[2] for item in ranked}
-    ranked = [item for item in ranked if not (item[4] and parent_listed(item[2], hosts))]
+    ranked = [
+        item for item in ranked if not (item[4] and parent_listed(item[2], hosts))
+    ]
     ranked.sort(key=lambda item: item[:3])
     return [item[3] for item in ranked], counts
 
@@ -455,6 +494,42 @@ def build(
 def parent_listed(host: str, hosts: set[str]) -> bool:
     labels = host.split(".")
     return any(".".join(labels[at:]) in hosts for at in range(1, len(labels) - 1))
+
+
+def read_hosts(paths: list[str]) -> dict[str, set[str]]:
+    files = {
+        path: {
+            line.strip() for line in Path(path).read_text().splitlines() if line.strip()
+        }
+        for path in paths
+    }
+    for path, hosts in files.items():
+        if not hosts:
+            sys.exit(f"{path} lists no hosts; nothing written")
+    return files
+
+
+def matched(
+    entries: list[dict],
+    resend_files: dict[str, set[str]],
+    rejoin_files: dict[str, set[str]],
+    out: str,
+) -> tuple[set[str], set[str]]:
+    """The listed hosts that took resend_before and the rejoin bump; exits when a host file matches none."""
+    rejoin_hosts = set().union(*rejoin_files.values())
+    resent = {e["host"] for e in entries if "resend_before" in e}
+    rejoined = {
+        e["host"] for e in entries if e["host"] in rejoin_hosts and "send_cap" in e
+    }
+    for path, hosts in resend_files.items():
+        if not hosts & resent:
+            sys.exit(
+                f"no listed v1 site in {path} took resend_before; {out} left as it was"
+            )
+    for path, hosts in rejoin_files.items():
+        if not hosts & rejoined:
+            sys.exit(f"no listed site with a send_cap in {path}; {out} left as it was")
+    return resent, rejoined
 
 
 def write_list(entries: list[dict], path: str) -> None:
@@ -507,6 +582,23 @@ def main(argv: list[str] | None = None) -> None:
         help="a file of hosts, one a line, that take --resend-before: the resend waves applied so far",
     )
     parser.add_argument(
+        "--node2-hours",
+        type=float,
+        help="with --v1-set, each site outside it sends at most its stored pages under its cap divided by this many hours in an hour, at least one, so the v1 sites keep the rest of the cap",
+    )
+    parser.add_argument(
+        "--node2-min-weight",
+        type=int,
+        default=1,
+        help="with --v1-set, sites outside it weighted below this stay off the list; 2 leaves out companies, organizations and personal sites",
+    )
+    parser.add_argument(
+        "--rejoin-hosts",
+        action="append",
+        default=[],
+        help="a file of hosts, one a line, whose send_cap goes one up so the list walker queues their stored pages again (unqueued.py lists them)",
+    )
+    parser.add_argument(
         "--registry-csv",
         help="read the registry rows from this CSV instead of DESEARCH_DB",
     )
@@ -519,18 +611,52 @@ def main(argv: list[str] | None = None) -> None:
         read_judged(args.judged),
         read_v1_set(args.v1_set),
     )
-    resend_hosts = {line.strip() for path in args.resend_hosts for line in Path(path).read_text().splitlines() if line.strip()}
+    resend_files, rejoin_files = (
+        read_hosts(args.resend_hosts),
+        read_hosts(args.rejoin_hosts),
+    )
+    resend_hosts = set().union(*resend_files.values())
+    rejoin_hosts = set().union(*rejoin_files.values())
     if args.decisions:
         with open_text(args.decisions, "wt") as target:
             writer = csv.writer(target, delimiter="\t", lineterminator="\n")
             writer.writerow(
                 ["host", "rank", "state", "listed", "reason", "type", "cap", "v1"]
             )
-            entries, counts = build(rows, backing, overrides, hand, writer, judged, v1, args.resend_before, resend_hosts)
+            entries, counts = build(
+                rows,
+                backing,
+                overrides,
+                hand,
+                writer,
+                judged,
+                v1,
+                args.resend_before,
+                resend_hosts,
+                args.node2_hours,
+                args.node2_min_weight,
+                rejoin_hosts,
+            )
     else:
-        entries, counts = build(rows, backing, overrides, hand, judged=judged, v1=v1, resend_before=args.resend_before, resend_hosts=resend_hosts)
+        entries, counts = build(
+            rows,
+            backing,
+            overrides,
+            hand,
+            judged=judged,
+            v1=v1,
+            resend_before=args.resend_before,
+            resend_hosts=resend_hosts,
+            node2_hours=args.node2_hours,
+            node2_min_weight=args.node2_min_weight,
+            rejoin_hosts=rejoin_hosts,
+        )
+    resent, rejoined = matched(entries, resend_files, rejoin_files, args.out)
     write_list(entries, args.out)
     print(f"{len(entries)} domains listed in {args.out}")
+    print(
+        f"{len(resent)} with resend_before, {sum('since' in e for e in entries)} with since, {len(rejoined)} with send_cap one up to rejoin"
+    )
     for name, count in sorted(counts.items(), key=lambda item: -item[1]):
         print(f"{count:>10}  {name}")
 

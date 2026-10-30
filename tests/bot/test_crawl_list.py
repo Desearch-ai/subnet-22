@@ -29,8 +29,11 @@ def row(
     homepage="ok",
     site_type="news",
     confidence=0.95,
+    url_count=1000,
 ):
-    return Row(host, rank, state, state_reason, 1000, homepage, site_type, confidence)
+    return Row(
+        host, rank, state, state_reason, url_count, homepage, site_type, confidence
+    )
 
 
 def test_shops_and_sites_without_content_stay_out():
@@ -295,20 +298,178 @@ def test_v1_sites_send_first_and_the_rest_fill_at_lower_weights():
         "backlog": 1_500_000,
         "since": "2020-01-01",
     }
-    assert (listed["uni.com"]["weight"], listed["uni.com"]["send_cap"]) == (3, crawl_list.V1_WHOLE_CAP * 3)
-    assert [listed[h]["weight"] for h in ("ref.com", "mag.com", "corp.com")] == [2, 2, 1]
+    assert (listed["uni.com"]["weight"], listed["uni.com"]["send_cap"]) == (
+        3,
+        crawl_list.V1_WHOLE_CAP * 3,
+    )
+    assert [listed[h]["weight"] for h in ("ref.com", "mag.com", "corp.com")] == [
+        2,
+        2,
+        1,
+    ]
 
 
 def test_v1_news_and_whole_sites_in_the_waves_so_far_carry_the_resend_cutoff():
     V1 = crawl_list.V1
-    rows = [row(host="news.com", site_type="news"), row(host="uni.com", site_type="academic"), row(host="later.com", site_type="academic"), row(host="corp.com", site_type="company")]
-    v1 = {"news.com": V1("news", "news", since="2025-10-01"), "uni.com": V1("whole", "academic"), "later.com": V1("whole", "academic")}
-    entries, _ = crawl_list.build(rows, {}, {}, Hand(), v1=v1, resend_before="2026-10-27", resend_hosts={"news.com", "uni.com", "corp.com"})
+    rows = [
+        row(host="news.com", site_type="news"),
+        row(host="uni.com", site_type="academic"),
+        row(host="later.com", site_type="academic"),
+        row(host="corp.com", site_type="company"),
+    ]
+    v1 = {
+        "news.com": V1("news", "news", since="2025-10-01"),
+        "uni.com": V1("whole", "academic"),
+        "later.com": V1("whole", "academic"),
+    }
+    entries, _ = crawl_list.build(
+        rows,
+        {},
+        {},
+        Hand(),
+        v1=v1,
+        resend_before="2026-10-27",
+        resend_hosts={"news.com", "uni.com", "corp.com"},
+    )
     listed = {e["host"]: e for e in entries}
-    assert listed["news.com"]["resend_before"] == listed["uni.com"]["resend_before"] == "2026-10-27"
+    assert (
+        listed["news.com"]["resend_before"]
+        == listed["uni.com"]["resend_before"]
+        == "2026-10-27"
+    )
     assert "resend_before" not in listed["later.com"], "a site in a later wave waits"
     assert "resend_before" not in listed["corp.com"], "node-2 sites aren't sent again"
-    assert all("resend_before" not in e for e in v1_list(rows, v1)[0].values()), "only when asked"
+    assert all("resend_before" not in e for e in v1_list(rows, v1)[0].values()), (
+        "only when asked"
+    )
+
+
+def test_node2_sites_spread_their_stored_pages_over_the_hours_given():
+    V1 = crawl_list.V1
+    rows = [
+        row(host="news.com", site_type="news", url_count=9_000_000),
+        row(host="corp.com", site_type="company", url_count=1000),
+        row(host="tiny.com", site_type="company", url_count=10),
+        row(host="big.com", site_type="media", url_count=90_000_000),
+    ]
+    v1 = {"news.com": V1("news", "news")}
+    entries, _ = crawl_list.build(rows, {}, {}, Hand(), v1=v1, node2_hours=60)
+    listed = {e["host"]: e for e in entries}
+    assert listed["news.com"]["hourly"] == 5_000, "v1 sites keep their hourly limit"
+    assert listed["corp.com"]["hourly"] == 17
+    assert listed["tiny.com"]["hourly"] == 1, "at least one an hour"
+    assert listed["big.com"]["hourly"] == min(
+        5_000, -(-listed["big.com"]["send_cap"] // 60)
+    ), "stored pages count up to the cap"
+    assert {e["host"]: e["hourly"] for e in v1_list(rows, v1)[0].values()}[
+        "corp.com"
+    ] == 5_000, "only when asked"
+
+
+def test_a_minimum_weight_leaves_lighter_node2_sites_off_the_list():
+    V1 = crawl_list.V1
+    rows = [
+        row(host="news.com", site_type="news"),
+        row(host="mag.com", site_type="media"),
+        row(host="corp.com", site_type="company"),
+        row(host="own.com", site_type="company"),
+    ]
+    v1 = {"news.com": V1("news", "news"), "own.com": V1("whole", "company")}
+    entries, counts = crawl_list.build(rows, {}, {}, Hand(), v1=v1, node2_min_weight=2)
+    assert {e["host"] for e in entries} == {"news.com", "mag.com", "own.com"}, (
+        "a v1 site stays whatever its type"
+    )
+    assert counts["out:node2"] == 1
+    assert "corp.com" in v1_list(rows, v1)[0], "only when asked"
+
+
+def test_hosts_to_rejoin_take_a_cap_one_up():
+    rows = [
+        row(host="corp.com", site_type="company"),
+        row(host="other.com", site_type="company"),
+        row(host="news.com", site_type="news"),
+    ]
+    plain = {e["host"]: e for e in crawl_list.build(rows, {}, {}, Hand())[0]}
+    nudged = {
+        e["host"]: e
+        for e in crawl_list.build(
+            rows, {}, {}, Hand(), rejoin_hosts={"corp.com", "news.com"}
+        )[0]
+    }
+    assert nudged["corp.com"]["send_cap"] == plain["corp.com"]["send_cap"] + 1
+    assert nudged["other.com"] == plain["other.com"]
+    assert nudged["news.com"] == plain["news.com"], (
+        "a site without a cap has none to change"
+    )
+
+
+def test_host_files_that_match_no_listed_site_leave_the_list(
+    tmp_path, monkeypatch, capsys
+):
+    monkeypatch.setattr(crawl_list, "MIN_DOMAINS", 1)
+    registry = tmp_path / "registry.csv"
+    registry.write_text(
+        "news.com,10,active,,1000,ok,news,0.99\ncorp.com,20,active,,1000,ok,company,0.99\n"
+    )
+    v1 = tmp_path / "v1-set.json"
+    v1.write_text(
+        json.dumps(
+            {
+                "sites": [
+                    {
+                        "host": "news.com",
+                        "rule": "news",
+                        "since": "2025-10-01",
+                        "type": "news",
+                    }
+                ]
+            }
+        )
+    )
+    out = tmp_path / "domains.json"
+    out.write_text('["kept.com"]')
+    files = {
+        name: tmp_path / f"{name}.txt" for name in ("waves", "rejoin", "empty", "stray")
+    }
+    for name, text in {
+        "waves": "news.com\n",
+        "rejoin": "corp.com\n",
+        "empty": "\n",
+        "stray": "gone.com\n",
+    }.items():
+        files[name].write_text(text)
+    base = [
+        "--out",
+        str(out),
+        "--registry-csv",
+        str(registry),
+        "--v1-set",
+        str(v1),
+        "--resend-before",
+        "2026-10-27",
+    ]
+    for bad in (
+        ["--resend-hosts", files["empty"]],
+        ["--resend-hosts", files["stray"]],
+        ["--resend-hosts", files["waves"], "--rejoin-hosts", files["stray"]],
+    ):
+        with pytest.raises(SystemExit):
+            crawl_list.main(base + [str(arg) for arg in bad])
+        assert out.read_text() == '["kept.com"]'
+    crawl_list.main(
+        base
+        + [
+            "--resend-hosts",
+            str(files["waves"]),
+            "--rejoin-hosts",
+            str(files["rejoin"]),
+        ]
+    )
+    assert (
+        "1 with resend_before, 1 with since, 1 with send_cap one up to rejoin"
+        in capsys.readouterr().out
+    )
+    assert {e["host"] for e in json.loads(out.read_text())} == {"news.com", "corp.com"}
 
 
 def test_v1_takes_cited_sites_whole_and_drops_its_outs():
@@ -325,9 +486,17 @@ def test_v1_takes_cited_sites_whole_and_drops_its_outs():
     }
     listed, _ = v1_list(rows, v1)
     assert "huge.com" not in listed, "a site the set holds out stops sending"
-    assert "send_cap" not in listed["paper.com"] and listed["paper.com"]["hourly"] == 20_000
-    assert "since" not in listed["paper.com"], "a news site taken for all years has no date floor"
-    assert (listed["corp.com"]["weight"], listed["corp.com"]["send_cap"]) == (3, crawl_list.V1_WHOLE_CAP * 3)
+    assert (
+        "send_cap" not in listed["paper.com"]
+        and listed["paper.com"]["hourly"] == 20_000
+    )
+    assert "since" not in listed["paper.com"], (
+        "a news site taken for all years has no date floor"
+    )
+    assert (listed["corp.com"]["weight"], listed["corp.com"]["send_cap"]) == (
+        3,
+        crawl_list.V1_WHOLE_CAP * 3,
+    )
 
 
 def test_v1_sites_without_a_sitemap_are_listed_for_their_feed():
@@ -336,10 +505,19 @@ def test_v1_sites_without_a_sitemap_are_listed_for_their_feed():
         row(host="feedless.com", state="no_sitemap", site_type="academic"),
         row(host="plain.com", state="no_sitemap", site_type="academic"),
     ]
-    rows += [row(host="news.parent.com", state="no_sitemap", site_type="news"), row(host="parent.com", site_type="news")]
-    v1 = {"feedless.com": V1("whole", "academic"), "news.parent.com": V1("news", "news"), "parent.com": V1("news", "news")}
+    rows += [
+        row(host="news.parent.com", state="no_sitemap", site_type="news"),
+        row(host="parent.com", site_type="news"),
+    ]
+    v1 = {
+        "feedless.com": V1("whole", "academic"),
+        "news.parent.com": V1("news", "news"),
+        "parent.com": V1("news", "news"),
+    }
     listed, _ = v1_list(rows, v1)
-    assert set(listed) == {"feedless.com", "parent.com"}, "a subdomain of a listed site isn't listed for its feed alone: the parent's pages under it would stop"
+    assert set(listed) == {"feedless.com", "parent.com"}, (
+        "a subdomain of a listed site isn't listed for its feed alone: the parent's pages under it would stop"
+    )
 
 
 def test_v1_lifts_only_label_outs():
@@ -351,7 +529,10 @@ def test_v1_lifts_only_label_outs():
         row(host="foreign.com", state_reason="not_english"),
         row(host="mirror.com", site_type="reference"),
     ]
-    v1 = {h: V1("whole", "news") for h in ("label.com", "judged.com", "refuses.com", "foreign.com")}
+    v1 = {
+        h: V1("whole", "news")
+        for h in ("label.com", "judged.com", "refuses.com", "foreign.com")
+    }
     v1["mirror.com"] = V1("out")
     listed, counts = v1_list(rows, v1, overrides={"judged.com": "out:junk"})
     assert set(listed) == {"label.com"}
@@ -365,8 +546,20 @@ def test_the_v1_set_is_read_from_its_file(tmp_path):
             {
                 "built": "2026-10-28T06:00:00Z",
                 "sites": [
-                    {"host": "a.com", "rule": "news", "since": "2020-01-01", "type": "news", "why": ["news"]},
-                    {"host": "b.com", "rule": "whole", "paths": ["/guide/"], "type": "docs", "why": ["docs"]},
+                    {
+                        "host": "a.com",
+                        "rule": "news",
+                        "since": "2020-01-01",
+                        "type": "news",
+                        "why": ["news"],
+                    },
+                    {
+                        "host": "b.com",
+                        "rule": "whole",
+                        "paths": ["/guide/"],
+                        "type": "docs",
+                        "why": ["docs"],
+                    },
                     {"host": "c.com", "rule": "out"},
                 ],
             }
