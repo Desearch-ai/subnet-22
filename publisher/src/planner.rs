@@ -64,6 +64,9 @@ pub const EMBED_DROPPED: &str = "embed:dropped";
 const CURSOR: &[u8] = b"cursor";
 /// The last bulk file whose pages are all saved; a restart reads the bulk feed after it.
 const BULK_CURSOR: &[u8] = b"bulk-cursor";
+/// A bulk file number the lane found not indexed, and the Unix time it first did, `<number>\t<time>`.
+const BULK_HOLE: &[u8] = b"bulk-hole";
+const BULK_REPLAN: &str = "bulk-replan/";
 /// Bulk files read in one pass at most.
 const BULK_FILES_PER_PASS: usize = 4;
 /// How many pages wait, kept with every change to them.
@@ -777,6 +780,43 @@ impl State {
         Ok(self.db.put(BULK_CURSOR, seq.to_string())?)
     }
 
+    /// The bulk file number the lane found not indexed, and the Unix time it first did.
+    pub fn bulk_hole(&self) -> Result<Option<(i64, f64)>> {
+        let Some(raw) = self.db.get(BULK_HOLE)? else { return Ok(None) };
+        let raw = String::from_utf8_lossy(&raw).into_owned();
+        let (seq, since) = raw.split_once('\t').ok_or_else(|| anyhow!("bulk-hole holds {raw:?}"))?;
+        Ok(Some((seq.parse()?, since.parse()?)))
+    }
+
+    fn keep_bulk_hole(&self, seq: i64, since: f64) -> Result<()> {
+        Ok(self.db.put(BULK_HOLE, format!("{seq}\t{since}"))?)
+    }
+
+    /// The first bulk file after `after` that holds pages inputs gave back, and their keys.
+    pub fn bulk_replan_group(&self, after: i64) -> Result<Option<(i64, HashSet<String>)>> {
+        let start = format!("{BULK_REPLAN}{:020}/", after + 1);
+        let mut group: Option<(i64, HashSet<String>)> = None;
+        for item in self.prefixed(start.as_bytes(), BULK_REPLAN.as_bytes()) {
+            let (raw, _) = item?;
+            let Some(rest) = raw.strip_prefix(BULK_REPLAN.as_bytes()) else { break };
+            let rest = String::from_utf8_lossy(rest);
+            let Some((file, key)) = rest.split_once('/') else { continue };
+            let file: i64 = file.parse()?;
+            match &mut group {
+                Some((held, keys)) if *held == file => {
+                    keys.insert(key.to_string());
+                }
+                Some(_) => break,
+                None => group = Some((file, HashSet::from([key.to_string()]))),
+            }
+        }
+        Ok(group)
+    }
+
+    fn bulk_replanned(&self, file: i64, key: &str) -> Result<()> {
+        Ok(self.db.delete(bulk_replan_key(file, key))?)
+    }
+
     pub fn cursor(&self) -> Result<Option<i64>> {
         Ok(self.db.get(CURSOR)?.map(|raw| String::from_utf8_lossy(&raw).parse()).transpose()?)
     }
@@ -1147,11 +1187,10 @@ impl State {
     }
 
     /// Drops an input never handed over; its pages are planned again the next time the log shows them.
-    fn expire(&self, input_key: &str, entry: &Value) -> Result<Option<i64>> {
-        let (mut batch, rewind) = self.forgetting(&entry["pages"])?;
+    fn expire(&self, input_key: &str, entry: &Value, bulk_lane: bool) -> Result<()> {
+        let mut batch = self.forgetting(&entry["pages"], bulk_lane)?;
         batch.delete(format!("pending/{input_key}"));
-        self.write(batch)?;
-        Ok(rewind)
+        self.write(batch)
     }
 
     /// Forgets every planned version of a page gone from its site, so a page that comes back is planned again whatever its text; rows logged before change file `seq`, read late, are refused.
@@ -1196,18 +1235,14 @@ impl State {
         Ok(self.db.delete(removed_key(key))?)
     }
 
-    /// Forgets the versions of an input's pages that never got vectors, so the log's next showing plans them again.
-    /// Forgets an input's pages; the first bulk file the bulk lane must read again for them, if any.
-    fn forget(&self, pages: &Value) -> Result<Option<i64>> {
-        let (batch, rewind) = self.forgetting(pages)?;
-        self.write(batch)?;
-        Ok(rewind)
+    /// Forgets the versions of an input's pages that never got vectors, so they are planned again: from their change file, or with the bulk lane on, from their bulk file.
+    fn forget(&self, pages: &Value, bulk_lane: bool) -> Result<()> {
+        self.write(self.forgetting(pages, bulk_lane)?)
     }
 
-    fn forgetting(&self, pages: &Value) -> Result<(Batch, Option<i64>)> {
+    fn forgetting(&self, pages: &Value, bulk_lane: bool) -> Result<Batch> {
         let mut batch = Batch::default();
         let mut gone: HashMap<String, i64> = HashMap::new();
-        let mut rewind: Option<i64> = None;
         for page in pages.as_array().into_iter().flatten() {
             let (Some(key), Some(content_sha1)) = (page["page_key"].as_str(), page["content_sha1"].as_str()) else { continue };
             let (mut forgotten, mut kept) = (false, false);
@@ -1216,8 +1251,12 @@ impl State {
                     Some(planned) if planned.content_sha1 == content_sha1 => {
                         batch.delete(planned_key(recipe, key));
                         match planned.seq {
-                            // A bulk page has no change file; the bulk lane plans it again when it reads its file again.
-                            Some(seq) if seq < 0 => rewind = Some(rewind.map_or(seq - BULK_ORDER, |first| first.min(seq - BULK_ORDER))),
+                            // A bulk page has no change file: the lane reads it again from its bulk file, or with the lane off the backfill takes it.
+                            Some(seq) if seq < 0 => {
+                                if bulk_lane {
+                                    batch.put(bulk_replan_key(seq - BULK_ORDER, key), "");
+                                }
+                            }
                             // Planned again from its change file, not left for a re-crawl that may never come; one planned before files were kept is the backfill's.
                             Some(_) => self.waiting_into(&mut batch, key, &Version { page_only: false, ..planned })?,
                             None => {}
@@ -1233,10 +1272,7 @@ impl State {
             }
         }
         self.change_sites(&mut batch, &gone)?;
-        if let Some(file) = rewind.filter(|&file| file <= self.bulk_cursor().unwrap_or(0)) {
-            batch.put(BULK_CURSOR, (file - 1).to_string());
-        }
-        Ok((batch, rewind))
+        Ok(batch)
     }
 
     /// The shard the backfill reads and the last key of it planned or passed by; None before it starts.
@@ -1291,6 +1327,9 @@ impl State {
             }
             batch.put(planned_key(page.recipe, &page.key), page.version().value());
             self.unwait_into(&mut batch, &page.key, Some(&page.fetched_at))?;
+            if page.source == Source::Replan && page.seq < 0 {
+                batch.delete(bulk_replan_key(page.seq - BULK_ORDER, &page.key));
+            }
         }
         self.change_sites(&mut batch, &new)?;
         batch.put(format!("pending/{input_key}"), entry);
@@ -1337,6 +1376,11 @@ fn waiting_value(version: &Version, class: Class) -> String {
 
 fn waiting_class(raw: &[u8]) -> Option<Class> {
     raw.split(|byte| *byte == b'\t').nth(5).filter(|digit| digit.len() == 1).and_then(|digit| Class::from_digit(digit[0]))
+}
+
+/// A page an input gave back, noted for the bulk lane to read again from bulk file `file`.
+fn bulk_replan_key(file: i64, key: &str) -> String {
+    format!("{BULK_REPLAN}{file:020}/{key}")
 }
 
 fn replan_key(seq: i64, key: &str) -> String {
@@ -1447,7 +1491,7 @@ pub struct Counts {
     pub replanned: u64,
     /// Pages read from `current/` by the backfill, of `pages`.
     pub backfill: u64,
-    /// Bulk files read whole, their pages counted in `pages`.
+    /// Bulk files the lane read through in order, their pages counted in `pages`.
     pub bulk_files: u64,
     pub shards: u64,
     /// Failed reads of a shard, and shards the backfill went past after failing to read them.
@@ -1660,8 +1704,10 @@ pub struct Planner {
     bulk_budget: Budget,
     /// The bulk file being planned and its pages not yet considered.
     bulk_file: Option<(i64, VecDeque<PageRow>)>,
-    /// A bulk file number not indexed yet, and since when.
-    bulk_hole: Option<(i64, Instant)>,
+    /// A bulk file number not indexed yet, and the Unix time the lane first found it so, kept on disk.
+    bulk_hole: Option<(i64, f64)>,
+    /// The last bulk file the lane read again for pages given back, this sweep of them.
+    bulk_replan_after: i64,
     /// Tasks taken back, with the change file that took each back.
     withdrawn: HashMap<String, i64>,
     /// The hour and the pages each site put in the fresh lane in it.
@@ -1704,7 +1750,7 @@ impl Planner {
         // Fresh pages read again after a restart stay fresh.
         let (budget, fresh_budget) = (Budget::new(settings.pages_per_hour, held), Budget::new(settings.fresh_per_hour, BUDGET_BANKED));
         let pace = settings.pages_per_hour + settings.fresh.map_or(0.0, |_| settings.fresh_per_hour) + settings.bulk_pages_per_hour;
-        let (bulk_read_through, bulk_budget) = (state.bulk_cursor()?, Budget::new(settings.bulk_pages_per_hour, held));
+        let (bulk_read_through, bulk_budget, bulk_hole) = (state.bulk_cursor()?, Budget::new(settings.bulk_pages_per_hour, held), state.bulk_hole()?);
         let handing = (pace > 0.0).then(|| Budget::new(pace, held));
         let withdrawn = state.withdrawn()?;
         let mut planner = Planner {
@@ -1748,7 +1794,8 @@ impl Planner {
             kept_bulk_cursor: bulk_read_through,
             bulk_budget,
             bulk_file: None,
-            bulk_hole: None,
+            bulk_hole,
+            bulk_replan_after: 0,
             withdrawn,
             fresh_sites: (0, HashMap::new()),
         };
@@ -2064,7 +2111,7 @@ impl Planner {
         if self.settings.bulk_pages_per_hour <= 0.0 {
             return Ok(false);
         }
-        let (mut took, mut opened) = (false, 0);
+        let (mut took, mut opened) = (self.bulk_replan().await?, 0);
         loop {
             let open = self.bulk_file.as_ref().map(|(seq, pages)| (*seq, pages.is_empty()));
             // A file read through is done whatever is left; a page, or a new file, needs room and budget.
@@ -2100,7 +2147,83 @@ impl Planner {
         Ok(took)
     }
 
-    /// Reads the next bulk file into `bulk_file`, empty for a file gone or a number not indexed within `hole_wait`; false while there is none to read yet, or it cannot be read.
+    /// Plans again, each from its own bulk file, pages inputs gave back, a file at a time while the lane has room and budget; whether it took any.
+    async fn bulk_replan(&mut self) -> Result<bool> {
+        let mut took = false;
+        for _ in 0..BULK_FILES_PER_PASS {
+            if self.inputs_held(Lane::Rest) >= self.settings.max_pending / 2 || !self.bulk_budget.has() {
+                break;
+            }
+            let Some((file, keys)) = self.state.bulk_replan_group(self.bulk_replan_after)? else {
+                self.bulk_replan_after = 0;
+                break;
+            };
+            self.bulk_replan_after = file;
+            // Pages taken again and not yet saved stay noted until their input is saved.
+            if keys.iter().all(|key| self.unsaved_anywhere(key)) {
+                continue;
+            }
+            let pages = match self.bulk_rows(file).await? {
+                Ok(pages) => pages,
+                Err(why) => {
+                    if let Unread::Failed(why) = why {
+                        eprintln!("{why}; read again later for its pages given back");
+                    }
+                    continue;
+                }
+            };
+            let (mut found, mut whole) = (HashSet::new(), true);
+            for page in pages.into_iter().filter(|page| keys.contains(&page.key)) {
+                if self.inputs_held(Lane::Rest) >= self.settings.max_pending / 2 || !self.bulk_budget.has() {
+                    whole = false;
+                    break;
+                }
+                let key = page.key.clone();
+                found.insert(key.clone());
+                took = true;
+                match self.consider(page, Source::Replan) {
+                    Considered::Taken(lane) => self.write_when_full(lane).await?,
+                    Considered::Passed if !self.unsaved_anywhere(&key) => self.state.bulk_replanned(file, &key)?,
+                    Considered::Passed | Considered::Waiting => {}
+                }
+            }
+            // A page its file no longer holds is the backfill's.
+            for key in keys.iter().filter(|key| whole && !found.contains(*key) && !self.unsaved_anywhere(key)) {
+                self.state.bulk_replanned(file, key)?;
+            }
+        }
+        Ok(took)
+    }
+
+    /// Bulk file `seq`'s pages, none for a file gone.
+    async fn bulk_rows(&self, seq: i64) -> Result<std::result::Result<VecDeque<PageRow>, Unread>> {
+        let key = match feed_index(&self.pages, &BULK, seq).await {
+            Ok(Some(key)) => key,
+            Ok(None) => return Ok(Err(Unread::NotNumbered)),
+            Err(error) => return Ok(Err(Unread::Failed(format!("{error:#}")))),
+        };
+        let rows = match self.pages.get(&key).await {
+            Ok(file) => match tokio::task::spawn_blocking(move || decode_changes(file, BULK_ORDER + seq)).await? {
+                Ok(rows) => rows,
+                Err(error) => return Ok(Err(Unread::Failed(format!("decoding bulk file {seq} ({key}): {error:#}")))),
+            },
+            Err(r2::Error::Missing) => {
+                eprintln!("bulk file {seq} ({key}) is gone; going on without it");
+                Vec::new()
+            }
+            Err(error) => return Ok(Err(Unread::Failed(format!("reading bulk file {seq} ({key}): {error}")))),
+        };
+        // The bulk feed carries pages alone; the compactor ignores anything else in it, and so does the planner.
+        Ok(Ok(rows
+            .into_iter()
+            .filter_map(|row| match row {
+                ChangeRow::Page(page) => Some(*page),
+                _ => None,
+            })
+            .collect()))
+    }
+
+    /// Reads the next bulk file into `bulk_file`, empty for a number not indexed within `hole_wait`; false while there is none to read yet, or it cannot be read.
     async fn open_bulk_file(&mut self) -> Result<bool> {
         let seq = self.bulk_read_through + 1;
         match feed_latest(&self.pages, &BULK).await {
@@ -2111,60 +2234,30 @@ impl Planner {
                 return Ok(false);
             }
         }
-        let key = match feed_index(&self.pages, &BULK, seq).await {
-            Ok(Some(key)) => key,
-            Ok(None) => {
-                if self.bulk_hole.is_none_or(|(hole, _)| hole != seq) {
-                    self.bulk_hole = Some((seq, Instant::now()));
-                }
-                if self.bulk_hole.is_some_and(|(_, since)| since.elapsed() < self.settings.hole_wait) {
+        match self.bulk_rows(seq).await? {
+            Ok(pages) => self.bulk_file = Some((seq, pages)),
+            Err(Unread::NotNumbered) => {
+                let now = now_us() as f64 / 1e6;
+                let since = match self.bulk_hole {
+                    Some((hole, since)) if hole == seq => since,
+                    _ => {
+                        self.state.keep_bulk_hole(seq, now)?;
+                        self.bulk_hole = Some((seq, now));
+                        now
+                    }
+                };
+                if now - since < self.settings.hole_wait.as_secs_f64() {
                     return Ok(false);
                 }
                 eprintln!("bulk file {seq} was never numbered; going on without it");
                 self.bulk_file = Some((seq, VecDeque::new()));
-                return Ok(true);
             }
-            Err(error) => {
-                eprintln!("{error:#}; the bulk feed is read again next pass");
+            Err(Unread::Failed(why)) => {
+                eprintln!("{why}; read again next pass");
                 return Ok(false);
             }
-        };
-        let rows = match self.pages.get(&key).await {
-            Ok(file) => match tokio::task::spawn_blocking(move || decode_changes(file, BULK_ORDER + seq)).await? {
-                Ok(rows) => rows,
-                Err(error) => {
-                    eprintln!("decoding bulk file {seq} ({key}): {error:#}; read again next pass");
-                    return Ok(false);
-                }
-            },
-            Err(r2::Error::Missing) => {
-                eprintln!("bulk file {seq} ({key}) is gone; going on without it");
-                Vec::new()
-            }
-            Err(error) => {
-                eprintln!("reading bulk file {seq} ({key}): {error}; read again next pass");
-                return Ok(false);
-            }
-        };
-        // The bulk feed carries pages alone; the compactor ignores anything else in it, and so does the planner.
-        let pages = rows
-            .into_iter()
-            .filter_map(|row| match row {
-                ChangeRow::Page(page) => Some(*page),
-                _ => None,
-            })
-            .collect();
-        self.bulk_file = Some((seq, pages));
-        Ok(true)
-    }
-
-    /// Reads the bulk feed again from file `file`, whose pages an input gave back.
-    fn rewind_bulk(&mut self, file: i64) {
-        if self.bulk_file.as_ref().is_some_and(|(seq, _)| *seq >= file) {
-            self.bulk_file = None;
         }
-        self.bulk_read_through = self.bulk_read_through.min(file - 1);
-        self.kept_bulk_cursor = self.kept_bulk_cursor.min(file - 1);
+        Ok(true)
     }
 
     /// Plans pages of `current/` while the budget and the rest lane's room last, starting only once the budget holds an input's worth and reading at most `max_pending` inputs' worth a pass for at most the fresh lane's flush wait, so the log is read between; whether it read any.
@@ -2263,11 +2356,12 @@ impl Planner {
         let (send, pages) = mpsc::channel(BACKFILL_AHEAD);
         let (set, langs, from, class) = (self.set.clone(), self.settings.langs.clone(), after.clone(), self.backfill_class);
         let (state, page_first, withdrawn) = (self.state.clone(), self.settings.page_first, self.withdrawn.clone());
+        let bulk_through = (self.settings.bulk_pages_per_hour > 0.0).then_some(self.bulk_read_through);
         let done = tokio::task::spawn_blocking(move || {
             let keep = |row: &PageRow| {
                 let record = &row.record;
-                // A version from the bulk feed is the bulk lane's, on its own budget.
-                row.change_seq >= 0
+                // While the bulk lane is on, versions from bulk files it has yet to read are its own.
+                bulk_through.is_none_or(|through| row.change_seq >= 0 || row.change_seq - BULK_ORDER <= through)
                     && recipe_of(record).is_some_and(|recipe| PLANNED_RECIPES.contains(&recipe))
                     && lang_wanted(&langs, &record.lang)
                     && set.as_ref().is_none_or(|set| {
@@ -2381,9 +2475,7 @@ impl Planner {
         let dropped: Vec<String> = self.redis.lrange(EMBED_DROPPED, 0, (FILES_PER_PASS * 10) as isize - 1).await?;
         for raw in &dropped {
             let entry: Value = serde_json::from_str(raw).unwrap_or(Value::Null);
-            if let Some(file) = self.state.forget(&entry["pages"])? {
-                self.rewind_bulk(file);
-            }
+            self.state.forget(&entry["pages"], self.settings.bulk_pages_per_hour > 0.0)?;
         }
         if !dropped.is_empty() {
             let () = self.redis.ltrim(EMBED_DROPPED, dropped.len() as isize, -1).await?;
@@ -2441,7 +2533,7 @@ impl Planner {
 
     /// Where a restart may start reading the bulk feed, given the bulk pages buffered or in inputs not yet saved.
     fn bulk_cursor_after(&self, saving: bool) -> i64 {
-        self.held(saving).filter_map(|buffer| buffer.bulk.keys().next().copied()).min().map_or(self.bulk_read_through, |first| first - 1)
+        self.held(saving).filter_map(|buffer| buffer.bulk.keys().next().copied()).min().map_or(self.bulk_read_through, |first| (first - 1).min(self.bulk_read_through))
     }
 
     /// The late files read whose pages are neither buffered nor in inputs not yet saved.
@@ -2551,11 +2643,12 @@ impl Planner {
             }
             _ => None,
         };
-        // The bulk lane gives a bulk page room, and pays for it from its own budget once it is planned.
-        let bulk = matches!(from, Source::Bulk(_));
+        // The bulk lane gives the pages it reads room itself; while it is on, any bulk-feed version is paid from its budget once planned.
+        let lane_read = matches!(from, Source::Bulk(_));
+        let bulk_paid = page.change_seq < 0 && self.settings.bulk_pages_per_hour > 0.0;
         // Only a page never planned before is fresh, within its lane's own budget, so pages re-dated by their site cannot flood it.
         let mut fresh =
-            !bulk && self.is_fresh(record) && waiting.is_none() && self.inputs_held(Lane::Fresh) < self.settings.max_pending && self.unplanned(&page.key);
+            !bulk_paid && self.is_fresh(record) && waiting.is_none() && self.inputs_held(Lane::Fresh) < self.settings.max_pending && self.unplanned(&page.key);
         if fresh {
             let site = self.set.as_ref().and_then(|set| set.site(&record.domain).map(|(host, _)| host.to_string()));
             let site = site.unwrap_or_else(|| domain_of_key(&page.key).to_string());
@@ -2571,12 +2664,13 @@ impl Planner {
             self.pass_asked[class as usize] += 1;
             self.counts.asked_by_class[class as usize] += 1;
         }
-        if !bulk && (self.inputs_held(lane) >= self.settings.max_pending || (lane == Lane::Rest && !self.room_after(reserve))) {
+        if !lane_read && (self.inputs_held(lane) >= self.settings.max_pending || (lane == Lane::Rest && !self.room_after(reserve))) {
             self.counts.no_room += 1;
             self.keep_waiting(&page);
             return Considered::Waiting;
         }
-        if lane == Lane::Rest && !bulk && !(self.budget.holds_after(reserve, 1) && self.budget.take()) {
+        let paid = if bulk_paid { self.bulk_budget.has() } else { self.budget.holds_after(reserve, 1) && self.budget.take() };
+        if lane == Lane::Rest && !lane_read && !paid {
             self.counts.over_budget += 1;
             self.keep_waiting(&page);
             return Considered::Waiting;
@@ -2588,7 +2682,7 @@ impl Planner {
         }
         self.counts.page_only += u64::from(planned.page_only);
         self.counts.parts += u64::from(parts_only);
-        if bulk {
+        if bulk_paid {
             self.bulk_budget.spend(1);
         }
         let buffer = self.buffer_mut(lane);
@@ -2598,7 +2692,7 @@ impl Planner {
         buffer.push(planned);
         self.counts.planned += 1;
         self.counts.fresh += u64::from(lane == Lane::Fresh);
-        if lane == Lane::Rest && !bulk {
+        if lane == Lane::Rest && !bulk_paid {
             self.counts.planned_by_class[class as usize] += 1;
         }
         Considered::Taken(lane)
@@ -2840,9 +2934,7 @@ impl Planner {
             let lane = Lane::of(&parsed) as usize;
             if now - parsed["written_at"].as_f64().unwrap_or(now) > self.settings.pending_max_age.as_secs_f64() {
                 eprintln!("{input_key} waited longer than {:?} for room; dropped", self.settings.pending_max_age);
-                if let Some(file) = self.state.expire(&input_key, &parsed)? {
-                    self.rewind_bulk(file);
-                }
+                self.state.expire(&input_key, &parsed, self.settings.bulk_pages_per_hour > 0.0)?;
                 self.pending[lane] -= 1;
                 expired += 1;
                 continue;
