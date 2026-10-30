@@ -1207,7 +1207,9 @@ fn the_domain_list_takes_names_or_hosts_and_is_read_again_when_its_file_changes(
     assert_eq!(names["a.com"], Terms::default());
     assert_eq!(names["c.net"], Terms { weight: 4, send_cap: Some(1500), news: true, ..Terms::default() }, "the crawl list's type, weight and cap");
     let news = allowed::parse(br#"[{"host": "e.com", "type": "news", "weight": 4, "hourly": 20000, "backlog": 3000000}]"#).unwrap();
-    assert_eq!(news["e.com"], Terms { weight: 4, send_cap: None, hourly: Some(20_000), backlog: Some(3_000_000), since: None, news: true, resend_before: None }, "an hourly limit and a backlog bound");
+    assert_eq!(news["e.com"], Terms { weight: 4, send_cap: None, hourly: Some(20_000), backlog: Some(3_000_000), since: None, news: true, resend_before: None, depth: None }, "an hourly limit and a backlog bound");
+    let landing = allowed::parse(br#"[{"host": "h.com", "type": "company", "send_cap": 100, "hourly": 20, "depth": 1}, {"host": "i.com", "depth": 900}]"#).unwrap();
+    assert_eq!((landing["h.com"].depth, landing["i.com"].depth), (Some(1), Some(255)), "a landing site's depth, at most 255");
     let floored = allowed::parse(br#"[{"host": "f.com", "type": "news", "since": "2020-01-01"}, {"host": "g.com", "since": "soon"}]"#).unwrap();
     assert_eq!((floored["f.com"].since, floored["g.com"].since), (Some(FLOOR), None), "a date floor as an ISO date; one that doesn't read is none");
     assert_eq!(names["d.io"].weight, 4, "weights stay within 1 to 4");
@@ -1565,6 +1567,34 @@ fn a_higher_floor_drops_older_pages_as_they_would_go_and_a_lower_floor_walks_the
     assert_eq!(desearch_bot::dispatch::join_round(&buckets, &list, 1_000_000, &progress, &stop).unwrap(), 1);
     assert!(ready(store).contains(&"old".to_string()), "a floor taken off walks the domain again and brings the older page back");
     assert_eq!(store.joined_since("example.com").unwrap(), None);
+}
+
+#[test]
+fn a_landing_site_sends_its_homepage_and_first_level_pages_and_a_deeper_depth_walks_it_again() {
+    let dir = Dir::new("join-depth");
+    std::fs::create_dir_all(&dir.0).unwrap();
+    let path = dir.0.join("domains.json");
+    std::fs::write(&path, r#"[{"host": "example.com", "type": "company", "send_cap": 100, "depth": 1}]"#).unwrap();
+    let list = Allowed::from_file(&path).unwrap();
+    let buckets = known(&dir, &["example.com"]);
+    buckets.allow(&list);
+    let store = buckets.store("example.com");
+    let mut listed: Vec<(Url, u32, bool)> = ["", "about", "en-us/products", "products/gpu", "fr-fr/", "page?id=2"].iter().map(|path| page(path, LATE)).collect();
+    listed.push((urls::parse("https://shop.example.com/", "example.com").unwrap(), LATE, false));
+    store.record_listing("example.com", 7, listed, 100).unwrap();
+    let progress = Progress::default();
+    let stop = std::sync::atomic::AtomicBool::new(false);
+    assert_eq!(desearch_bot::dispatch::join_round(&buckets, &list, 1_000_000, &progress, &stop).unwrap(), 1);
+    let mut queued = ready(store);
+    queued.sort();
+    assert_eq!(queued, ["", "about", "en-us/products"], "deeper pages, another locale, a query and another host stay unsent");
+    assert_eq!(store.joined_depth("example.com").unwrap(), Some(1));
+    assert_eq!(desearch_bot::dispatch::join_round(&buckets, &list, 1_000_000, &progress, &stop).unwrap(), 0, "the same depth walks it no more");
+
+    relist(&path, &list, r#"[{"host": "example.com", "type": "company", "send_cap": 100}]"#);
+    assert_eq!(desearch_bot::dispatch::join_round(&buckets, &list, 1_000_000, &progress, &stop).unwrap(), 1);
+    assert_eq!(take(store, 10).len(), 7, "a depth taken off walks the domain again and brings every page");
+    assert_eq!(store.joined_depth("example.com").unwrap(), None);
 }
 
 #[test]

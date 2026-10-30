@@ -210,7 +210,7 @@ fn lossy(bytes: &[u8]) -> String {
 }
 
 /// The address with XML's character references decoded, so `&amp;` in a sitemap reads as `&`.
-fn location(bytes: &[u8]) -> String {
+pub(crate) fn location(bytes: &[u8]) -> String {
     let text = String::from_utf8_lossy(bytes);
     if !text.contains('&') {
         return text.into_owned();

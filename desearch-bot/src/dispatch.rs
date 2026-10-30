@@ -1502,16 +1502,18 @@ pub fn join_round(buckets: &Buckets, allowed: &Allowed, per_second: u64, progres
             continue;
         };
         let walked_since = store.joined_since(&domain)?;
+        let walked_depth = store.joined_depth(&domain)?;
         let joined = store.joined(&domain)?;
-        let settled = walked_since == terms.since && joined == Some(terms.send_cap);
+        let settled = walked_since == terms.since && walked_depth == terms.depth && joined == Some(terms.send_cap);
         if settled {
             continue;
         }
         let idle = store.ready_count(&domain)? == 0;
-        // A lower floor, a higher cap or a first walk leave stored pages the waiting lane lacks, so it is built again; a lower cap only needs counting.
-        let rewalk = !idle && (floor_fell(walked_since, terms.since) || cap_rose(joined, terms.send_cap));
-        // A floor that only rose needs neither: pages before it drop as they would go, and later reads leave them out.
-        let settled = settled || (joined == Some(terms.send_cap) && !floor_fell(walked_since, terms.since));
+        // A lower floor, a deeper depth, a higher cap or a first walk leave stored pages the waiting lane lacks, so it is built again; a lower cap only needs counting.
+        let opened = floor_fell(walked_since, terms.since) || depth_rose(walked_depth, terms.depth);
+        let rewalk = !idle && (opened || cap_rose(joined, terms.send_cap));
+        // A floor that only rose needs neither: pages below it drop as they would go, and later reads leave them out.
+        let settled = settled || (joined == Some(terms.send_cap) && !opened);
         let urls = store.domain(&domain)?.and_then(|record| records::int(record.get("urls"))).unwrap_or(0);
         todo.push((idle, std::cmp::Reverse(terms.weight), urls, domain, Walk { terms, rewalk, settled }));
     }
@@ -1663,6 +1665,15 @@ fn rest(ahead: Duration, stop: &AtomicBool) {
 fn floor_fell(walked: Option<u32>, now: Option<u32>) -> bool {
     match (walked, now) {
         (Some(before), Some(now)) => now < before,
+        (Some(_), None) => true,
+        (None, _) => false,
+    }
+}
+
+/// Whether a domain's depth is deeper than the one its stored pages were last queued under, so deeper pages it left out may go now.
+fn depth_rose(walked: Option<u8>, now: Option<u8>) -> bool {
+    match (walked, now) {
+        (Some(before), Some(now)) => now > before,
         (Some(_), None) => true,
         (None, _) => false,
     }

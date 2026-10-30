@@ -6,6 +6,7 @@ use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use desearch_bot::allowed::{Allowed, Terms};
 use desearch_bot::buckets::{bucket_of, Buckets, Changes, Resources};
 use desearch_bot::crawl::Loop;
 use desearch_bot::records;
@@ -482,6 +483,60 @@ async fn a_feed_named_as_a_sitemap_is_read_as_one() {
     assert_eq!((record["state"].as_str(), record["urls"].as_i64()), (Some("active"), Some(12)), "the feed's items are the site's listed pages");
     let story = buckets.store(host).url(&urls::parse(&format!("http://{host}/2026/10/story-12"), host).unwrap()).unwrap().unwrap();
     assert_eq!(story.lastmod, 1_793_095_920, "dated by the item's pubDate");
+    drop(crawl);
+    std::fs::remove_dir_all(&root).ok();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_landing_site_lists_its_homepage_and_the_pages_it_links_to_beside_its_sitemap() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let web: Shared = Arc::default();
+    let host = "landing.test";
+    {
+        let mut w = web.lock().unwrap();
+        w.add(host, "/robots.txt", 200, None, format!("User-agent: *\nAllow: /\nSitemap: http://{host}/list.xml\n").as_bytes());
+        w.add(host, "/list.xml", 200, None, urlset(host, &(0..12).map(|i| format!("/story/{i}")).collect::<Vec<_>>()).as_bytes());
+        let links = "<a href=\"/about\">About</a><a href='/en-us/pricing'>Pricing</a><a href=team/>Team</a><a href=\"https://other.test/x\">Other</a>";
+        w.add(host, "/", 200, None, format!("<html lang=\"en\"><body><p>{ENGLISH}</p>{links}</body></html>").as_bytes());
+    }
+    tokio::spawn(serve(listener, web.clone()));
+
+    let root = std::env::temp_dir().join(format!("desearch-bot-landing-{}", std::process::id()));
+    let buckets = Arc::new(Buckets::open(&root, &[bucket_of(host)], &Resources::new(8 << 20, 8 << 20, 1)).unwrap());
+    buckets.allow(&Allowed::with_terms([(host, Terms { send_cap: Some(100), depth: Some(1), ..Terms::default() })]));
+    let mut changes = Changes::default();
+    changes.domain(host, &records::new_domain(Some(1), Some("new_generic"), &[], State::New, None, Some(0)));
+    buckets.store(host).write(changes).unwrap();
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .dns_resolver(Arc::new(TestResolver { addr, known: [host].into() }))
+        .timeout(Duration::from_secs(10))
+        .build()
+        .unwrap();
+    let visitor = Visitor {
+        client,
+        buckets: buckets.clone(),
+        suffixes: Arc::new(PublicSuffixList::parse("test\n")),
+        signer: None,
+        language: Arc::new(|text: &str| Some(if text.contains("the") { "en" } else { "fr" }.to_string())),
+        floor: 0.0,
+        connect_timeout: Duration::from_secs(10),
+        cpu: Slots::new(4),
+        bodies: Slots::new(2),
+        pause: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        heavy: Slots::new(1),
+    };
+    let mut crawl = Loop::new(buckets.clone(), Arc::new(visitor), 16, Registry::offline(), HashSet::new());
+    assert_eq!(crawl.load().unwrap(), 1);
+    assert_eq!(crawl.step().await.unwrap(), 1);
+    let store = buckets.store(host);
+    let record = store.domain(host).unwrap().unwrap();
+    assert_eq!((record["state"].as_str(), record["urls"].as_i64()), (Some("active"), Some(16)), "the sitemap's 12 pages, the homepage and the 3 it links to on its own host");
+    for page in ["/", "/about", "/en-us/pricing", "/team/"] {
+        assert!(store.url(&urls::parse(&format!("http://{host}{page}"), host).unwrap()).unwrap().is_some(), "{page}");
+    }
+    assert!(web.lock().unwrap().hits.iter().any(|(h, path, _)| h == host && path == "/"), "the homepage was read");
     drop(crawl);
     std::fs::remove_dir_all(&root).ok();
 }

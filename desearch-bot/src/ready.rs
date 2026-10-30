@@ -39,6 +39,8 @@ const SENT_COUNT: u8 = b'C';
 const JOINED: u8 = b'J';
 /// The date floor a domain's stored pages were last queued under, when it had one.
 const JOINED_SINCE: u8 = b'V';
+/// The depth a domain's stored pages were last queued under, when it had one.
+const JOINED_DEPTH: u8 = b'H';
 /// The `resend_before` a domain was last walked under, so a list built again with the same value walks nothing.
 const RESENT_BEFORE: u8 = b'B';
 /// Pages last sent before their domain's `resend_before`, waiting to go once more, newest lastmod first; kept off the ready lists, so they take only the room new pages and retries leave.
@@ -151,6 +153,54 @@ fn calendar_date(year: &str, month: &str, day: &str) -> Option<chrono::NaiveDate
 pub fn before_floor(since: Option<u32>, lastmod: u32, rest: &[u8]) -> bool {
     let grace = if lastmod != 0 { 86_400 } else { 0 };
     since.is_some_and(|floor| page_date(lastmod, rest).is_some_and(|date| date.saturating_add(grace) < floor))
+}
+
+/// Whether a page is past its domain's `depth`, as the set's landing rule reads it: on another host, with a query, under a locale other than English, or more path levels down than `depth`, a leading `en` or `en-us` not counted.
+pub fn too_deep(depth: Option<u8>, domain: &str, rest: &[u8]) -> bool {
+    let Some(depth) = depth else {
+        return false;
+    };
+    let Ok(rest) = std::str::from_utf8(rest) else {
+        return true;
+    };
+    let (host, path) = rest.find('/').map_or((rest, ""), |at| (&rest[..at], &rest[at..]));
+    let host = host.strip_prefix("www.").unwrap_or(host);
+    if host != domain && host.strip_prefix("m.") != Some(domain) {
+        return true;
+    }
+    let (path, query) = path.split_once('?').unwrap_or((path, ""));
+    let mut levels = path.split('/').filter(|level| !level.is_empty()).peekable();
+    match levels.peek() {
+        Some(first) if first.eq_ignore_ascii_case("en") || (locale(first) && first[..2].eq_ignore_ascii_case("en")) => {
+            levels.next();
+        }
+        Some(first) if locale(first) => return true,
+        _ => {}
+    }
+    !query.is_empty() || levels.count() > usize::from(depth)
+}
+
+/// Two letters, `-` or `_`, two letters: `en-us`, `de_DE`.
+fn locale(level: &str) -> bool {
+    let b = level.as_bytes();
+    b.len() == 5 && b[..2].iter().all(u8::is_ascii_alphabetic) && matches!(b[2], b'-' | b'_') && b[3..].iter().all(u8::is_ascii_alphabetic)
+}
+
+/// What a domain's terms leave unsent: pages dated before its floor, and pages past its depth.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Floor {
+    since: Option<u32>,
+    depth: Option<u8>,
+}
+
+impl Floor {
+    pub fn of(terms: &Terms) -> Floor {
+        Floor { since: terms.since, depth: terms.depth }
+    }
+
+    pub fn drops(self, domain: &str, lastmod: u32, rest: &[u8]) -> bool {
+        before_floor(self.since, lastmod, rest) || too_deep(self.depth, domain, rest)
+    }
 }
 
 pub fn restamped(changed: usize, listed: usize) -> bool {
@@ -485,7 +535,7 @@ pub struct Joined {
     pub queued: u64,
     /// New-page entries cleared first, for a domain with a cap.
     pub cleared: u64,
-    /// Pages never sent left unqueued, dated before the domain's floor.
+    /// Pages never sent left unqueued below the domain's floor: dated before it, or past its depth.
     pub before_floor: u64,
     /// Stopped before the walk ended; the domain is walked again next time.
     pub stopped: bool,
@@ -516,7 +566,7 @@ struct DomainScan {
     domain: Vec<u8>,
     listed: usize,
     changed: Vec<(Vec<u8>, u32)>,
-    since: Option<u32>,
+    floor: Floor,
 }
 
 impl BucketStore {
@@ -574,7 +624,7 @@ impl BucketStore {
     pub fn take_ready(&self, domain: &str, mut quotas: [usize; LANES]) -> Result<Vec<Pick>> {
         let want: usize = quotas.iter().sum();
         let robots = self.domain(domain)?.map(|record| records::robots_paths(&record)).unwrap_or_default();
-        let mut taking = Taking { robots, since: self.terms(domain).since, ..Taking::default() };
+        let mut taking = Taking { robots, floor: Floor::of(&self.terms(domain)), ..Taking::default() };
         // A domain at its cap sends no more new pages; refreshes and retries of pages it sent go on.
         let room = self.fresh_room(domain)?.map(|room| room.min(usize::MAX as u64) as usize);
         if let Some(room) = room {
@@ -635,7 +685,7 @@ impl BucketStore {
                 taking.after[lane] = Some(key.clone());
                 let allowed = taking.robots.allows_page(domain, &entry.rest) && !self.listed_apart(domain, &entry.rest);
                 // A floor raised since the page was queued drops it as it would go, in every lane, so a moving floor never needs a walk.
-                let dated_in = record.as_ref().is_none_or(|r| !before_floor(taking.since, r.lastmod, &entry.rest));
+                let dated_in = record.as_ref().is_none_or(|r| !taking.floor.drops(domain, r.lastmod, &entry.rest));
                 if !dated_in {
                     self.floor_dropped.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     // A retry dropped here loses its going-again mark, so a lower floor or a resend can take the page later.
@@ -664,7 +714,7 @@ impl BucketStore {
     /// Replace the domain's refresh stock with the `keep` pages sent longest ago that could go again, of at most `most` sent records read on from `after`; None when `pace` stopped it first.
     pub fn stock_refresh(&self, domain: &str, keep: usize, after: Option<&[u8]>, most: usize, pace: &mut dyn FnMut(u64) -> bool) -> Result<Option<Stocked>> {
         let prefix = prefixed(SENT, domain.as_bytes(), b"");
-        let since = self.terms(domain).since;
+        let floor = Floor::of(&self.terms(domain));
         let mut oldest: BinaryHeap<(u32, Vec<u8>)> = BinaryHeap::new();
         let (mut last, mut scanned) = (after.map(<[u8]>::to_vec), 0);
         let next = loop {
@@ -680,7 +730,7 @@ impl BucketStore {
                 let rest = &key[prefix.len()..];
                 if let (Some(record), Some(sent)) = (record, sent) {
                     // A page dated before the floor never goes, so as the oldest send it would hold every place in the stock.
-                    if record.pushed_at != 0 && refreshable(&record, &sent) && !junk(rest) && !before_floor(since, record.lastmod, rest) {
+                    if record.pushed_at != 0 && refreshable(&record, &sent) && !junk(rest) && !floor.drops(domain, record.lastmod, rest) {
                         oldest.push((record.pushed_at, rest.to_vec()));
                         if oldest.len() > keep {
                             oldest.pop();
@@ -714,7 +764,7 @@ impl BucketStore {
     /// Up to `want` refreshes from the domain's stock, oldest send first, none sent within `floor` of `now`; stale entries go.
     pub fn take_stock(&self, domain: &str, want: usize, now: u32, floor: u32) -> Result<Stock> {
         let robots = self.domain(domain)?.map(|record| records::robots_paths(&record)).unwrap_or_default();
-        let since = self.terms(domain).since;
+        let terms_floor = Floor::of(&self.terms(domain));
         let prefix = prefixed(STOCK, domain.as_bytes(), b"");
         let mut entries = Vec::new();
         let mut taken = Stock::default();
@@ -747,7 +797,7 @@ impl BucketStore {
                 break;
             }
             // Sent again since it was stocked, no longer one to refresh, or dated before the floor: it leaves the stock unsent.
-            let fresh = record.filter(|r| r.pushed_at == pushed_at && !before_floor(since, r.lastmod, &rest)).filter(|r| sent.is_some_and(|s| refreshable(r, &s)));
+            let fresh = record.filter(|r| r.pushed_at == pushed_at && !terms_floor.drops(domain, r.lastmod, &rest)).filter(|r| sent.is_some_and(|s| refreshable(r, &s)));
             if let Some(record) = fresh.filter(|_| robots.allows_page(domain, &rest) && !self.listed_apart(domain, &rest)) {
                 let entry = Entry { domain: domain.to_string(), rest: rest.clone(), order: Order::Requeued { due: pushed_at } };
                 taken.picks.push(Pick { url: fetchable(&rest, record.flags), lastmod: record.lastmod, reason: Reason::Refresh, failures: 0, entry });
@@ -837,6 +887,11 @@ impl BucketStore {
     /// The date floor the domain's stored pages were last queued under.
     pub fn joined_since(&self, domain: &str) -> Result<Option<u32>> {
         Ok(self.db.get_pinned(count_key_of(JOINED_SINCE, domain))?.and_then(|raw| raw.as_ref().try_into().ok().map(u32::from_le_bytes)))
+    }
+
+    /// The depth the domain's stored pages were last queued under.
+    pub fn joined_depth(&self, domain: &str) -> Result<Option<u8>> {
+        Ok(self.db.get_pinned(count_key_of(JOINED_DEPTH, domain))?.and_then(|raw| raw.first().copied()))
     }
 
     /// Records the cap and floor a domain's stored pages stand under, for a change that needs no walk.
@@ -1018,6 +1073,7 @@ impl BucketStore {
     /// Each stored page of the domain that may join its list now: never sent, found before the walk began, not junk, allowed, not listed apart and dated on or after its floor; counts the pages sent and those before the floor. False when `pace` stopped it.
     fn never_sent(&self, domain: &str, terms: Terms, started: u32, joined: &mut Joined, pace: &mut dyn FnMut(u64) -> bool, found: &mut dyn FnMut(&[u8], &Record) -> Result<()>) -> Result<bool> {
         let robots = self.domain(domain)?.map(|record| records::robots_paths(&record)).unwrap_or_default();
+        let floor = Floor::of(&terms);
         let prefix = prefixed(URL, domain.as_bytes(), b"");
         let mut since_pace = 0u64;
         for item in self.db.iterator_opt(IteratorMode::From(&prefix, Direction::Forward), bounded(&prefix)) {
@@ -1042,7 +1098,7 @@ impl BucketStore {
             if record.first_seen >= started || junk(rest) || !robots.allows_page(domain, rest) || self.listed_apart(domain, rest) {
                 continue;
             }
-            if before_floor(terms.since, record.lastmod, rest) {
+            if floor.drops(domain, record.lastmod, rest) {
                 joined.before_floor += 1;
                 continue;
             }
@@ -1149,7 +1205,7 @@ impl BucketStore {
                 if junk(rest) || !robots.allows_page(domain, rest) || self.listed_apart(domain, rest) {
                     continue;
                 }
-                if before_floor(terms.since, record.lastmod, rest) {
+                if Floor::of(&terms).drops(domain, record.lastmod, rest) {
                     joined.before_floor += 1;
                     continue;
                 }
@@ -1255,7 +1311,7 @@ impl BucketStore {
     /// Up to `want` of the domain's pages waiting to go once more, newest lastmod first, passing over those in `picked`, and how many wait after; stale entries go, at most `STALE_PER_TAKE` a take.
     pub fn take_resend(&self, domain: &str, want: usize, picked: &std::collections::HashSet<Vec<u8>>) -> Result<(Vec<Pick>, u64)> {
         let robots = self.domain(domain)?.map(|record| records::robots_paths(&record)).unwrap_or_default();
-        let since = self.terms(domain).since;
+        let floor = Floor::of(&self.terms(domain));
         let prefix = [&[RESEND], domain.as_bytes(), b"\0"].concat();
         let (mut picks, mut stale, mut unflag) = (Vec::new(), Vec::new(), Vec::new());
         let mut after: Option<Vec<u8>> = None;
@@ -1284,7 +1340,7 @@ impl BucketStore {
                     continue;
                 }
                 let allowed = robots.allows_page(domain, &entry.rest) && !self.listed_apart(domain, &entry.rest);
-                let dated_in = record.as_ref().is_none_or(|r| !before_floor(since, r.lastmod, &entry.rest));
+                let dated_in = record.as_ref().is_none_or(|r| !floor.drops(domain, r.lastmod, &entry.rest));
                 if !dated_in {
                     self.floor_dropped.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     if let Some(sent) = sent.filter(|s| s.requeued) {
@@ -1579,8 +1635,8 @@ impl BucketStore {
                 if let Some(done) = state.domain.take() {
                     entries.extend(changed_entries(done));
                 }
-                let since = self.terms(&String::from_utf8_lossy(domain)).since;
-                state.domain = Some(DomainScan { domain: domain.to_vec(), listed: 0, changed: Vec::new(), since });
+                let floor = Floor::of(&self.terms(&String::from_utf8_lossy(domain)));
+                state.domain = Some(DomainScan { domain: domain.to_vec(), listed: 0, changed: Vec::new(), floor });
             }
             let scan = state.domain.as_mut().expect("set above");
             scan.listed += 1;
@@ -1590,7 +1646,7 @@ impl BucketStore {
             };
             if record.pushed_at == 0 {
                 // Pages first seen since the walk began went on their lists when they were found.
-                if record.first_seen < state.started && !junk(rest) && !before_floor(scan.since, record.lastmod, rest) {
+                if record.first_seen < state.started && !junk(rest) && !scan.floor.drops(&String::from_utf8_lossy(domain), record.lastmod, rest) {
                     let order = Order::Fresh { first_seen: record.first_seen, lastmod: record.lastmod };
                     entries.push(Entry { domain: String::from_utf8_lossy(domain).into_owned(), rest: rest.to_vec(), order });
                 }
@@ -1637,20 +1693,21 @@ impl BucketStore {
         listed: usize,
     ) -> Result<(usize, HashMap<String, i64>)> {
         let mut entries = Vec::new();
-        let mut room: HashMap<Vec<u8>, (bool, Option<u32>)> = HashMap::new();
+        let mut room: HashMap<Vec<u8>, (bool, Floor)> = HashMap::new();
         for (key, record) in fresh {
             if let Some((domain, rest)) = split_key(&key[1..]).filter(|(_, rest)| !junk(rest)) {
-                // A domain at its cap queues no more new pages, and none dated before its floor.
-                let (open, since) = match room.get(domain) {
+                // A domain at its cap queues no more new pages, and none below its floor.
+                let (open, floor) = match room.get(domain) {
                     Some(&known) => known,
                     None => {
                         let name = String::from_utf8_lossy(domain);
-                        let known = (self.fresh_room(&name)? != Some(0), self.terms(&name).since);
+                        let known = (self.fresh_room(&name)? != Some(0), Floor::of(&self.terms(&name)));
                         room.insert(domain.to_vec(), known);
                         known
                     }
                 };
-                if !open || before_floor(since, record.lastmod, rest) || self.listed_apart(&String::from_utf8_lossy(domain), rest) {
+                let name = String::from_utf8_lossy(domain);
+                if !open || floor.drops(&name, record.lastmod, rest) || self.listed_apart(&name, rest) {
                     continue;
                 }
                 let order = Order::Fresh { first_seen: record.first_seen, lastmod: record.lastmod };
@@ -1668,7 +1725,7 @@ impl BucketStore {
             if let Some((domain, _)) = changed.first().and_then(|(key, _)| split_key(key)) {
                 let domain = domain.to_vec();
                 let changed = changed.iter().filter_map(|(key, lastmod)| Some((split_key(key)?.1.to_vec(), *lastmod))).collect();
-                entries.extend(changed_entries(DomainScan { domain, listed, changed, since: None }));
+                entries.extend(changed_entries(DomainScan { domain, listed, changed, floor: Floor::default() }));
             }
         }
         let mut counts = HashMap::new();
@@ -1777,7 +1834,7 @@ impl BucketStore {
 #[derive(Default)]
 struct Taking {
     robots: Paths,
-    since: Option<u32>,
+    floor: Floor,
     picks: Vec<Pick>,
     stale: Vec<Vec<u8>>,
     picked: std::collections::HashSet<Vec<u8>>,
@@ -1833,6 +1890,10 @@ fn mark_joined(batch: &mut WriteBatch, domain: &str, terms: Terms) {
     match terms.since {
         Some(since) => batch.put(count_key_of(JOINED_SINCE, domain), since.to_le_bytes()),
         None => batch.delete(count_key_of(JOINED_SINCE, domain)),
+    }
+    match terms.depth {
+        Some(depth) => batch.put(count_key_of(JOINED_DEPTH, domain), [depth]),
+        None => batch.delete(count_key_of(JOINED_DEPTH, domain)),
     }
 }
 
@@ -1920,6 +1981,27 @@ mod tests {
         assert!(!before_floor(Some(may_2019), 0, b"example.com/2019/05/story"));
         assert!(!before_floor(Some(may_2019), 0, b"example.com/story"), "an undated page goes");
         assert!(!before_floor(None, 1, b"example.com/story"));
+    }
+
+    #[test]
+    fn a_landing_depth_keeps_the_pages_the_sets_landing_rule_takes() {
+        let golden: serde_json::Value = serde_json::from_str(include_str!("../../tests/bot/v1_set_golden.json")).unwrap();
+        let mut checked = 0;
+        for case in golden["cases"].as_array().unwrap() {
+            let address = case["url"].as_str().unwrap();
+            let Some(url) = crate::urls::parse(address, "landing.example").filter(|_| !address.contains("docs.landing.example")) else {
+                continue;
+            };
+            let rest = &url.key[url.key.iter().position(|&b| b == 0).unwrap() + 1..];
+            assert_eq!(!too_deep(Some(1), "landing.example", rest), case["in"].as_bool().unwrap(), "{address}");
+            checked += 1;
+        }
+        assert_eq!(checked, 14, "every landing case but the whole subdomain's");
+        assert!(!too_deep(None, "example.com", b"shop.example.com/a/b?c=1"), "no depth, no limit");
+        assert!(too_deep(Some(0), "example.com", b"example.com/about") && !too_deep(Some(2), "example.com", b"example.com/en_GB/a/b"));
+        let floor = Floor::of(&Terms { since: Some(1_000_000_000), depth: Some(1), ..Terms::default() });
+        assert!(floor.drops("example.com", 1, b"example.com/new") && floor.drops("example.com", 2_000_000_000, b"example.com/a/b"));
+        assert!(!floor.drops("example.com", 2_000_000_000, b"example.com/new"));
     }
 
     #[test]
