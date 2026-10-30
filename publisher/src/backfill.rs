@@ -23,6 +23,8 @@ const PICK_COLUMNS: [&str; 13] =
 const GROUPS_AT_ONCE: usize = 16;
 /// Picks read whole at once, in key order.
 const PICKS_AT_ONCE: usize = 5_000;
+/// Compressed bytes of whole row groups held at once, so sparse picks never fetch a whole shard together.
+const READ_BYTES_AT_ONCE: u64 = 64 << 20;
 const TAIL_BYTES: u64 = 1 << 20;
 
 /// One pages file of a shard, its footer read.
@@ -75,14 +77,18 @@ impl ShardReader {
                     continue;
                 }
                 groups.sort_unstable();
-                let fetched = self.fetch(file, &groups, None)?;
-                for group in groups {
-                    let keys = &wanted[&(at, group)];
-                    let wanted = |key: &str| keys.contains(key);
-                    let all = ProjectionMask::all();
-                    rows.extend(
-                        rows_in(fetched.clone(), file.metadata.clone(), vec![group], all, Some(&wanted)).with_context(|| format!("decoding {}", file.key))?,
-                    );
+                let size = |group: usize| file.metadata.metadata().row_group(group).compressed_size() as u64;
+                for run in runs(&groups, size, READ_BYTES_AT_ONCE) {
+                    let fetched = self.fetch(file, &run, None)?;
+                    for group in run {
+                        let keys = &wanted[&(at, group)];
+                        let wanted = |key: &str| keys.contains(key);
+                        let all = ProjectionMask::all();
+                        rows.extend(
+                            rows_in(fetched.clone(), file.metadata.clone(), vec![group], all, Some(&wanted))
+                                .with_context(|| format!("decoding {}", file.key))?,
+                        );
+                    }
                 }
             }
             rows.sort_by(|a, b| a.key.cmp(&b.key));
@@ -212,5 +218,34 @@ impl ShardReader {
                 Err(error) => vec![Err(error)],
             }
         })
+    }
+}
+
+/// `groups` in order, cut into runs of at most `most` bytes, or of one group larger than that.
+fn runs(groups: &[usize], size: impl Fn(usize) -> u64, most: u64) -> Vec<Vec<usize>> {
+    let (mut runs, mut bytes): (Vec<Vec<usize>>, u64) = (Vec::new(), 0);
+    for &group in groups {
+        match runs.last_mut() {
+            Some(run) if bytes + size(group) <= most => run.push(group),
+            _ => {
+                runs.push(vec![group]);
+                bytes = 0;
+            }
+        }
+        bytes += size(group);
+    }
+    runs
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn row_groups_are_read_in_runs_of_bounded_bytes_in_order() {
+        let sizes = [30, 30, 50, 10, 120, 5, 5];
+        assert_eq!(runs(&[0, 1, 2, 3, 4, 5, 6], |group| sizes[group], 64), [vec![0, 1], vec![2, 3], vec![4], vec![5, 6]]);
+        assert_eq!(runs(&[1, 3, 6], |group| sizes[group], 64), [vec![1, 3, 6]]);
+        assert!(runs(&[], |group| sizes[group], 64).is_empty());
     }
 }

@@ -2562,3 +2562,191 @@ async fn with_no_budget_and_the_fresh_lane_off_inputs_left_from_before_still_go(
     assert_eq!(planner.counts.handed_over, 6);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_log_s_pages_go_before_waiting_ones_as_the_re_plan_leaves_what_the_log_last_asked_for() {
+    let Some((_turn, redis)) = redis_db().await else {
+        eprintln!("skipped: no Redis on {REDIS}");
+        return;
+    };
+    let dir = scratch("log-first");
+    let stub = stub::start(dir.join("r2"), "127.0.0.1:0").await.unwrap();
+    let (pages, temp) = (bucket(stub.addr, "desearch-pages"), bucket(stub.addr, "subnet-22"));
+    let page = |n: u64| v2(record(&format!("https://news.example/story/{n}"), &format!("{n} {}", article(2)), "article", "en"));
+    for seq in 1..=9 {
+        log(&pages, seq, vec![page(seq)]).await;
+    }
+    let mut tight = settings(dir.join("state"), 4.0, 0);
+    tight.pages_per_input = 1;
+    let mut planner = Planner::new(tight, pages.clone(), temp.clone(), redis.clone(), Room::Fixed(0)).await.unwrap();
+    planner.pass().await.unwrap();
+    assert_eq!((planner.counts.planned, planner.counts.waiting), (1, 8));
+    drop(planner);
+
+    // Ten pages banked; at 300 an hour the test refills nothing that counts.
+    for seq in 10..=13 {
+        log(&pages, seq, vec![page(seq)]).await;
+    }
+    let mut ten = settings(dir.join("state"), 300.0, 0);
+    (ten.pages_per_input, ten.max_pending) = (1, 50);
+    let mut planner = Planner::new(ten, pages.clone(), temp.clone(), redis.clone(), Room::Fixed(0)).await.unwrap();
+    planner.pass().await.unwrap();
+    assert_eq!(
+        (planner.counts.planned, planner.counts.replanned, planner.counts.over_budget),
+        (6, 2, 0),
+        "the log's four, then two waiting pages, leaving four for the log's next pass"
+    );
+    for seq in 14..=17 {
+        log(&pages, seq, vec![page(seq)]).await;
+    }
+    planner.pass().await.unwrap();
+    assert_eq!((planner.counts.planned, planner.counts.over_budget), (10, 0), "the log's next four find their budget");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_backfill_plans_no_page_of_a_site_the_set_marks_out_even_once_its_shard_is_being_read() {
+    let Some((_turn, mut redis)) = redis_db().await else {
+        eprintln!("skipped: no Redis on {REDIS}");
+        return;
+    };
+    let dir = scratch("backfill-out");
+    let stub = stub::start(dir.join("r2"), "127.0.0.1:0").await.unwrap();
+    let (pages, temp, current) = (bucket(stub.addr, "desearch-pages"), bucket(stub.addr, "subnet-22"), bucket(stub.addr, "desearch-current"));
+    let row = |url: &str| {
+        let mut record = v2(record(url, &format!("{url} {}", article(2)), "article", "en"));
+        (record.domain, record.published) = (url.split('/').nth(2).unwrap().into(), "2024-01-01".into());
+        PageRow {
+            key: page_key(url).unwrap(),
+            removed: false,
+            change_seq: 1,
+            version: record_version(&record),
+            published_at: record.fetched_at.clone(),
+            record,
+        }
+    };
+    let urls = [
+        "https://news.example/a",
+        "https://news.example/b",
+        "https://junk.example/x",
+        "https://spam.news.example/y",
+        "https://later.example/c",
+        "https://later.example/d",
+    ];
+    shard(&current, 7, vec![urls.iter().map(|url| row(url)).collect()]).await;
+    log(&pages, 1, vec![v2(record("https://other.example/log", &article(2), "article", "en"))]).await;
+    let set = dir.join("v1-set.json");
+    let write_set = |later: &str| {
+        let sites = json!([
+            {"host": "news.example", "rule": "news", "since": "2020-01-01"},
+            {"host": "spam.news.example", "rule": "out"},
+            {"host": "junk.example", "rule": "out"},
+            {"host": "later.example", "rule": later},
+        ]);
+        std::fs::write(&set, json!({"sites": sites}).to_string()).unwrap();
+    };
+    write_set("whole");
+    // A page a pass, each handed over at the pass's end.
+    let mut one = settings(dir.join("state"), 3600.0, 0);
+    (one.backfill, one.backfill_shards, one.set_file, one.pages_per_input, one.max_pending) = (true, 7..8, Some(set.clone()), 1, 1);
+    let mut planner = Planner::new(one, pages.clone(), temp.clone(), redis.clone(), Room::Fixed(100)).await.unwrap();
+    planner.current = Some(current.clone());
+    for _ in 0..20 {
+        planner.pass().await.unwrap();
+        if planner.counts.backfill == 1 {
+            break;
+        }
+    }
+    assert_eq!(planner.counts.planned, 1, "a later.example page goes first, as its keys sort first");
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    write_set("out");
+    for _ in 0..50 {
+        planner.pass().await.unwrap();
+        if planner.counts.shards == 1 {
+            break;
+        }
+    }
+    let planned: HashSet<String> = handed_urls(&mut redis).await.into_iter().collect();
+    let later = if planned.contains(urls[4]) { urls[4] } else { urls[5] };
+    assert_eq!(planned, HashSet::from([urls[0].to_string(), urls[1].to_string(), later.to_string()]));
+    assert_eq!(planner.counts.backfill, 4, "out sites' pages are never handed to the planner, and the other later.example page is refused");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_shard_the_backfill_cannot_read_holds_up_neither_the_pass_nor_the_log_and_is_tried_again_later() {
+    let Some((_turn, redis)) = redis_db().await else {
+        eprintln!("skipped: no Redis on {REDIS}");
+        return;
+    };
+    let dir = scratch("backfill-failed");
+    let stub = stub::start(dir.join("r2"), "127.0.0.1:0").await.unwrap();
+    let (pages, temp, current) = (bucket(stub.addr, "desearch-pages"), bucket(stub.addr, "subnet-22"), bucket(stub.addr, "desearch-current"));
+    let row = |url: &str| {
+        let record = v2(record(url, &format!("{url} {}", article(2)), "article", "en"));
+        PageRow {
+            key: page_key(url).unwrap(),
+            removed: false,
+            change_seq: 1,
+            version: record_version(&record),
+            published_at: record.fetched_at.clone(),
+            record,
+        }
+    };
+    shard(&current, 7, vec![vec![row("https://news.example/a")]]).await;
+    current.put("current/shard=0007/base-000000000000.parquet", Bytes::from_static(b"not a parquet file"), PARQUET, None).await.unwrap();
+    log(&pages, 1, vec![v2(record("https://news.example/log", &article(2), "article", "en"))]).await;
+    let mut backfilling = settings(dir.join("state"), 3600.0, 0);
+    (backfilling.backfill, backfilling.backfill_shards, backfilling.pages_per_input) = (true, 7..8, 1);
+    let mut planner = Planner::new(backfilling, pages.clone(), temp.clone(), redis.clone(), Room::Fixed(0)).await.unwrap();
+    planner.current = Some(current.clone());
+    for _ in 0..3 {
+        planner.pass().await.unwrap();
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert_eq!((planner.counts.planned, planner.counts.shards), (1, 0), "the log's page is planned");
+    let before = stub.state.count("GET");
+    planner.pass().await.unwrap();
+    assert_eq!(stub.state.count("GET") - before, 1, "only the log's newest number is read while the shard waits to be tried again");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_backfill_leaves_what_the_log_last_asked_for_too() {
+    let Some((_turn, redis)) = redis_db().await else {
+        eprintln!("skipped: no Redis on {REDIS}");
+        return;
+    };
+    let dir = scratch("log-first-backfill");
+    let stub = stub::start(dir.join("r2"), "127.0.0.1:0").await.unwrap();
+    let (pages, temp, current) = (bucket(stub.addr, "desearch-pages"), bucket(stub.addr, "subnet-22"), bucket(stub.addr, "desearch-current"));
+    let page = |name: String| v2(record(&format!("https://news.example/story/{name}"), &format!("{name} {}", article(2)), "article", "en"));
+    let row = |n: u64| {
+        let record = page(format!("archive-{n}"));
+        PageRow {
+            key: page_key(&record.url).unwrap(),
+            removed: false,
+            change_seq: 1,
+            version: record_version(&record),
+            published_at: record.fetched_at.clone(),
+            record,
+        }
+    };
+    shard(&current, 7, vec![(0..10).map(row).collect()]).await;
+    for seq in 1..=4 {
+        log(&pages, seq, vec![page(format!("{seq}"))]).await;
+    }
+    // Ten pages banked; at 300 an hour the test refills nothing that counts.
+    let mut ten = settings(dir.join("state"), 300.0, 0);
+    (ten.backfill, ten.backfill_shards, ten.pages_per_input, ten.max_pending) = (true, 7..8, 1, 50);
+    let mut planner = Planner::new(ten, pages.clone(), temp.clone(), redis.clone(), Room::Fixed(0)).await.unwrap();
+    planner.current = Some(current.clone());
+    planner.pass().await.unwrap();
+    assert_eq!((planner.counts.planned, planner.counts.backfill), (6, 2), "the log's four, then two of current/, leaving four for the log");
+    for seq in 5..=8 {
+        log(&pages, seq, vec![page(format!("{seq}"))]).await;
+    }
+    planner.pass().await.unwrap();
+    assert_eq!((planner.counts.planned, planner.counts.over_budget), (10, 0), "the log's next four find their budget");
+    let _ = std::fs::remove_dir_all(&dir);
+}

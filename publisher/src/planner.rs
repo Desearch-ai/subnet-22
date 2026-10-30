@@ -67,6 +67,7 @@ const BACKFILL: &[u8] = b"backfill";
 const BACKFILL_AHEAD: usize = 4_096;
 /// How long a pass waits for the backfill's reader before going on.
 const BACKFILL_WAIT: Duration = Duration::from_millis(500);
+const BACKFILL_RETRY: Duration = Duration::from_secs(600);
 const RANGES_AT_ONCE: usize = 16;
 /// Kept past any input's wait for room, so a push tried again after a crash is not pushed twice.
 const PUSHED_TTL_S: u64 = 2 * 86_400;
@@ -1160,6 +1161,13 @@ pub struct Counts {
     pub dropped: u64,
 }
 
+impl Counts {
+    /// Pages that asked the hourly budget for a place: those taken outside the fresh lane and those refused for budget.
+    fn asked(&self) -> u64 {
+        self.planned - self.fresh + self.over_budget
+    }
+}
+
 /// Time spent since the start reading the log and planning waiting pages, and within that waiting on change files and on input writes.
 #[derive(Debug, Default, Clone)]
 pub struct Spent {
@@ -1311,7 +1319,7 @@ pub struct Planner {
     listed_modified: Option<std::time::SystemTime>,
     set: Option<Arc<Set>>,
     reading: Option<Reading>,
-    /// When the backfill sweeps `current/` again, once it has read every shard.
+    /// When the backfill reads again: its next sweep once it has read every shard, or a while after a shard failed.
     next_sweep: Option<Instant>,
     /// The last change file the re-plan pass read this sweep.
     replan_after: i64,
@@ -1327,6 +1335,8 @@ pub struct Planner {
     writing: VecDeque<Writing>,
     read_through: i64,
     budget: Budget,
+    /// Pages of the budget the log asked for in its last pass; the re-plan and the backfill leave as many for its next.
+    log_demand: usize,
     fresh_budget: Budget,
     /// Pages handed over, at no more than both lanes' budgets allow; None when they allow none, so inputs left from before still go.
     handing: Option<Budget>,
@@ -1408,6 +1418,7 @@ impl Planner {
             writing: VecDeque::new(),
             read_through,
             budget,
+            log_demand: 0,
             fresh_budget,
             handing,
             rest_cut,
@@ -1509,6 +1520,7 @@ impl Planner {
         self.save_written(0).await?;
         self.forget_dropped().await?;
         let latest = latest(&self.pages).await?;
+        let asked = self.counts.asked();
         let mut read = self.read_late().await?;
         let ahead: Vec<i64> = (self.read_through + 1..=latest).take(FILES_PER_PASS.saturating_sub(read)).collect();
         let (pages, started) = (self.pages.clone(), Instant::now());
@@ -1528,6 +1540,7 @@ impl Planner {
             self.advance(seq)?;
         }
         self.spent.log += started.elapsed();
+        self.log_demand = (self.counts.asked() - asked) as usize;
         let started = Instant::now();
         let replanned = self.replan().await;
         self.spent.replan += started.elapsed();
@@ -1553,12 +1566,12 @@ impl Planner {
             if self.inputs_held(Lane::Rest) >= self.settings.max_pending {
                 return Ok((took, false));
             }
-            if !self.budget.holds(self.settings.pages_per_input) {
+            if !self.budget.holds_after(self.log_demand, self.settings.pages_per_input) {
                 return Ok((took, self.state.waiting_count() > 0));
             }
             while ahead.len() < self.settings.reads.max(1) && listed < REPLAN_FILES_PER_PASS && !swept {
-                let expected = ahead.iter().map(|(_, waiting, _)| waiting).sum();
-                if !self.budget.holds_after(expected, self.settings.pages_per_input) || !self.has_room_after(expected) {
+                let expected: usize = ahead.iter().map(|(_, waiting, _)| waiting).sum();
+                if !self.budget.holds_after(expected + self.log_demand, self.settings.pages_per_input) || !self.has_room_after(expected) {
                     break;
                 }
                 match self.state.replan_group(after)? {
@@ -1634,7 +1647,7 @@ impl Planner {
 
     /// Plans pages of `current/` while the budget and the rest lane's room last, starting only once the budget holds an input's worth and reading at most `max_pending` inputs' worth a pass for at most the fresh lane's flush wait, so the log is read between; whether it read any.
     async fn backfill(&mut self) -> Result<bool> {
-        if !self.settings.backfill || self.current.is_none() || !self.budget.holds(self.settings.pages_per_input) {
+        if !self.settings.backfill || self.current.is_none() || !self.budget.holds_after(self.log_demand, self.settings.pages_per_input) {
             return Ok(false);
         }
         let (most, mut read, started) = (self.settings.max_pending * self.settings.pages_per_input, 0, Instant::now());
@@ -1660,8 +1673,13 @@ impl Planner {
                 Ok(None) => {
                     let reading = self.reading.take().expect("a shard being read");
                     let shard = reading.shard;
-                    // A shard that failed is read again from the last place kept.
-                    reading.done.await?.with_context(|| format!("reading shard {shard} of {}", self.settings.current_prefix))?;
+                    // A shard that failed is read again from the last place kept, after a wait, and the pass goes on.
+                    let done = reading.done.await.map_err(anyhow::Error::from).and_then(|read| read);
+                    if let Err(error) = done {
+                        eprintln!("reading shard {shard} of {}: {error:#}; the backfill tries again in {BACKFILL_RETRY:?}", self.settings.current_prefix);
+                        self.next_sweep = Some(Instant::now() + BACKFILL_RETRY);
+                        return Ok(read > 0);
+                    }
                     self.flush().await?;
                     self.counts.shards += 1;
                     if shard + 1 < self.settings.backfill_shards.end {
@@ -2090,8 +2108,9 @@ impl Planner {
         }
     }
 
+    /// Whether the budget holds a page beyond what the log asked for in its last phase.
     fn has_token(&mut self) -> bool {
-        self.budget.has()
+        self.budget.holds_after(self.log_demand, 1)
     }
 
     /// Writes every lane's buffer and saves every input cut.
