@@ -278,7 +278,7 @@ def build(row_files, hand, decisions, backing, news_sources, judged, counts, new
     def keep_ranked(rows):
         for row in rows:
             if landing_rank and row["listed"] == "1" and row["rank"] and int(row["rank"]) <= landing_rank:
-                ranked.append(row)
+                ranked.append({"host": row["host"], "type": row["type"]})
             yield row
 
     listed, too_big = listed_entries(keep_ranked(decisions), backing, news_sources, outlets, judged, counts, news_counts or {}, news, recent, moved_from)
@@ -334,8 +334,8 @@ def page_date(url: str, published: str | None) -> date | None:
 
 
 def site_host(host: str) -> str:
-    """A host as the set names it: a mobile host (en.m.wikipedia.org) is its site's host."""
-    return re.sub(r"^([^.]+)\.m\.", r"\1.", bare(host))
+    """A host as the set names it: a mobile host (en.m.wikipedia.org) is its site's host, as set.rs reads it."""
+    return re.sub(r"^([^.]+)\.m\.(?=.*\.)", r"\1.", bare(host))
 
 
 def entry_for(sites: dict[str, dict], host: str) -> dict | None:

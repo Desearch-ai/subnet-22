@@ -148,6 +148,7 @@ def test_a_landing_site_gives_its_own_homepage_and_first_level_pages():
         assert v1_set.matches(sites, url, None), url
     for url in ("https://vendor.example/products/gpu", "https://vendor.example/fr-fr/", "https://vendor.example/en-us/a/b", "https://vendor.example/?p=1", "https://shop.vendor.example/", "https://vendor.example/en-us/de-de/x"):
         assert not v1_set.matches(sites, url, "2025-01-01"), url
+    assert not v1_set.matches({"shop.example": {"host": "shop.example", "rule": "landing"}}, "https://shop.m.example/", None), "x.m.y is no mobile host, as set.rs reads it"
 
 
 def test_hand_entries_win_then_row_files_in_order_and_docs_hosts_are_docs():

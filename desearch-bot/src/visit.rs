@@ -354,13 +354,17 @@ impl Run<'_> {
     fn roots(&mut self, named: &[String]) -> Result<Vec<String>, Crash> {
         let base = format!("https://{}/", self.known.host);
         let joined = named.iter().map(|url| urls::join(&base, url)).collect::<Result<Vec<_>, _>>().map_err(|_| Crash::new("ValueError"))?;
-        let known = self.known.sitemaps.values().filter(|s| s.depth == 0).map(|s| s.url.clone());
+        // A homepage read as a list is no root: the sitemaps and feeds a site names or answers later still come first.
+        let is_home = |s: &&KnownSitemap| s.kind.as_deref() == Some(HOMEPAGE_KIND);
+        if let Some(stored) = self.known.sitemaps.values().find(|s| s.depth == 0 && is_home(s)) {
+            self.home = stored.url.clone();
+        }
+        let known = self.known.sitemaps.values().filter(|s| s.depth == 0 && !is_home(s)).map(|s| s.url.clone());
         let mut seen = HashSet::new();
         let mut roots: Vec<String> = joined.into_iter().chain(known).filter(|url| seen.insert(url.clone())).collect();
         let landing = self.visitor.buckets.terms(&self.known.host).depth.is_some();
-        let has_home = self.known.sitemaps.values().any(|s| s.kind.as_deref() == Some(HOMEPAGE_KIND));
         if !roots.is_empty() {
-            if landing && !has_home && seen.insert(self.home.clone()) {
+            if landing && seen.insert(self.home.clone()) {
                 roots.push(self.home.clone());
             }
             return Ok(roots);
@@ -476,7 +480,9 @@ impl Run<'_> {
         self.fetches += 1;
         let validators = stored.map(|s| (s.etag.clone(), s.last_modified.clone()));
         let budget = Some(self.visitor.bodies.clone());
-        let (answer, error) = match self.get(&url, MAX_SITEMAP_BYTES, validators, budget).await {
+        let reads_home = url == self.home || stored.is_some_and(|s| s.kind.as_deref() == Some(HOMEPAGE_KIND));
+        let limit = if reads_home { MAX_HOMEPAGE_BYTES } else { MAX_SITEMAP_BYTES };
+        let (answer, error) = match self.get(&url, limit, validators, budget).await {
             Ok(answer) => (Some(answer), None),
             Err(error) => {
                 self.network_error = Some(error.clone());
@@ -519,7 +525,7 @@ impl Run<'_> {
             sketch: s.sketch.clone(),
             generated_until: s.generated_until,
         });
-        let homepage = (url == self.home || stored.is_some_and(|s| s.kind.as_deref() == Some(HOMEPAGE_KIND))).then(|| answer.url.clone());
+        let homepage = reads_home.then(|| answer.url.clone());
         let job = FileJob {
             _permit: answer.permit,
             homepage,
@@ -873,17 +879,15 @@ enum Digested {
 /// Everything CPU-bound about one sitemap file: decompress, hash, parse, date, and store what it lists.
 fn digest(job: FileJob) -> Result<Digested, Crash> {
     let body = gunzip(&job.body);
-    let listing = job.homepage.as_deref().map(|base| homepage_listing(&body, base));
-    // A homepage changes on every read with its tokens and times; only the pages it lists tell a change.
-    let hashed = match &listing {
-        Some((_, entries)) => Sha256::digest(entries.iter().map(|entry| entry.url.as_str()).collect::<Vec<_>>().join("\n")),
-        None => Sha256::digest(&body),
-    };
-    let hash: String = hashed.iter().take(16).map(|b| format!("{b:02x}")).collect();
-    if job.stored_hash.as_deref() == Some(hash.as_str()) {
+    let hex = |digest: &[u8]| -> String { digest.iter().take(16).map(|b| format!("{b:02x}")).collect() };
+    let hash = hex(&Sha256::digest(&body));
+    if job.homepage.is_none() && job.stored_hash.as_deref() == Some(hash.as_str()) {
         return Ok(Digested::Unchanged);
     }
-    let (kind, entries) = listing.unwrap_or_else(|| sitemaps::parse_entries(&body));
+    let (kind, entries) = match job.homepage.as_deref() {
+        Some(base) => homepage_listing(&body, base),
+        None => sitemaps::parse_entries(&body),
+    };
     if kind == "invalid" {
         return Ok(Digested::Invalid);
     }
@@ -925,6 +929,13 @@ fn digest(job: FileJob) -> Result<Digested, Crash> {
             .collect(),
         Err(_) => Vec::new(),
     };
+    // A homepage changes on every read with its tokens and times; only the pages it lists tell a change.
+    if job.homepage.is_some() {
+        read.hash = hex(&Sha256::digest(rows.iter().flat_map(|(url, _, _)| [url.key.as_slice(), b"\n"]).flatten().copied().collect::<Vec<u8>>()));
+        if job.stored_hash.as_deref() == Some(read.hash.as_str()) {
+            return Ok(Digested::Unchanged);
+        }
+    }
     let store = job.buckets.store(&job.known.host);
     let mut hashed: Vec<(u64, &[u8])> = rows.iter().map(|(url, _, _)| (fingerprint(&url.key, 0), url.key.as_slice())).collect();
     hashed.sort_unstable();
@@ -941,9 +952,9 @@ fn digest(job: FileJob) -> Result<Digested, Crash> {
     Ok(Digested::Read(read))
 }
 
-/// A homepage as a sitemap: itself first, then each page it links to, relative links read from where it was found.
+/// A homepage as a sitemap: itself first, then each page it links to with no query, relative links read from where it was found.
 fn homepage_listing(body: &[u8], base: &str) -> (&'static str, Vec<Entry>) {
-    let linked = homepage::links(body).into_iter().filter_map(|href| urls::join(base, &href).ok());
+    let linked = homepage::links(body).into_iter().filter_map(|href| urls::join(base, &href).ok()).filter(|url| !url.contains('?'));
     (HOMEPAGE_KIND, std::iter::once(base.to_string()).chain(linked).map(|url| Entry { url, ..Entry::default() }).collect())
 }
 

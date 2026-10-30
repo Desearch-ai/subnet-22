@@ -85,9 +85,10 @@ are read again within 30 minutes.
 RSS and Atom feeds are read as sitemaps. Where robots.txt names no sitemap, the bot tries
 `/sitemap.xml` and `/sitemap_index.xml`, then on a listed site `/feed`, `/rss.xml` and its homepage;
 an answer that is neither a sitemap nor a feed isn't kept. A homepage is read as a list of itself and
-the pages it links to, at most 400, relative links taken from where it answered; it counts as changed
-only when those pages change, and is read again at most hourly. A site with a `depth` has its
-homepage read this way beside whatever sitemaps it has.
+the pages on its site it links to with no query, from its first 400 links and its first 512 KB,
+relative links taken from where it answered; it counts as changed only when those pages change, and
+is read again at most hourly. It never stands in for a sitemap: the guesses are tried again on later
+visits. A site with a `depth` has its homepage read this way beside whatever sitemaps it has.
 
 A listed subdomain with a registry record of its own is crawled on its own host, under its own
 robots.txt. Its pages go under it while that record is active or failing, and not at all while it is
@@ -172,7 +173,8 @@ as they would go, which the status line counts. A floor that only rises needs no
 **Depth.** A landing site's `depth` is the most path levels its pages may have, a leading English
 locale (`/en/`, `/en-us/`) not counted, as the v1 set's landing rule reads them. Deeper pages, pages
 with a query, pages under another locale (`/de-de/`) and pages of other hosts stay unsent, wherever
-the date floor leaves pages out. A deeper depth, or none, walks the domain again.
+the date floor leaves pages out, and its cap counts only the pages its depth lets go. A deeper depth,
+or none, walks the domain again.
 
 **Resends.** `resend_before` sends a domain's pages last sent before it once more, as after an
 extraction change. When a domain's value changes, a walk in a thread of its own lists those pages at

@@ -1598,6 +1598,33 @@ fn a_landing_site_sends_its_homepage_and_first_level_pages_and_a_deeper_depth_wa
 }
 
 #[test]
+fn pages_sent_before_a_site_had_a_depth_take_none_of_its_landing_cap() {
+    let dir = Dir::new("join-depth-sent");
+    std::fs::create_dir_all(&dir.0).unwrap();
+    let path = dir.0.join("domains.json");
+    std::fs::write(&path, r#"[{"host": "example.com", "type": "company"}]"#).unwrap();
+    let list = Allowed::from_file(&path).unwrap();
+    let buckets = known(&dir, &["example.com"]);
+    buckets.allow(&list);
+    let store = buckets.store("example.com");
+    store.record_listing("example.com", 7, vec![page("a/1", LATE), page("a/2", LATE), page("a/3", LATE)], 100).unwrap();
+    let progress = Progress::default();
+    let stop = std::sync::atomic::AtomicBool::new(false);
+    assert_eq!(desearch_bot::dispatch::join_round(&buckets, &list, 1_000_000, &progress, &stop).unwrap(), 1);
+    store.mark_sent(&take(store, 10), 1000, &rules()).unwrap();
+    store.record_listing("example.com", 7, vec![page("about", LATE), page("team", LATE)], 2000).unwrap();
+
+    relist(&path, &list, r#"[{"host": "example.com", "type": "company", "send_cap": 2, "depth": 1}]"#);
+    assert_eq!(desearch_bot::dispatch::join_round(&buckets, &list, 1_000_000, &progress, &stop).unwrap(), 1);
+    assert_eq!(store.sent_count("example.com").unwrap(), Some(0), "the three pages sent before lie past the depth");
+    let mut sent: Vec<String> = take(store, 10).iter().map(|p| p.url.clone()).collect();
+    sent.sort();
+    assert_eq!(sent, ["https://example.com/about", "https://example.com/team"]);
+    let walked = store.rewalk_domain("example.com", list.get("example.com").unwrap(), &|| 3000, &mut |_| true).unwrap();
+    assert_eq!((walked.sent, walked.queued), (0, 2), "a walk counts the same way");
+}
+
+#[test]
 fn the_list_reads_resend_before_as_a_date() {
     let parsed = allowed::parse(br#"[{"host": "example.com", "resend_before": "2026-10-27"}, {"host": "example.org"}]"#).unwrap();
     assert_eq!(parsed["example.com"].resend_before, Some(CUTOFF));

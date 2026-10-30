@@ -1089,11 +1089,12 @@ impl BucketStore {
             let Some(record) = Record::unpack(&raw) else {
                 continue;
             };
+            let rest = &key[prefix.len()..];
             if record.pushed_at != 0 {
-                joined.sent += 1;
+                // A depth's cap counts only the pages it lets go: pages sent before the domain had one take none of it.
+                joined.sent += u64::from(!too_deep(terms.depth, domain, rest));
                 continue;
             }
-            let rest = &key[prefix.len()..];
             // Pages first seen after the walk began went on their list when found.
             if record.first_seen >= started || junk(rest) || !robots.allows_page(domain, rest) || self.listed_apart(domain, rest) {
                 continue;
@@ -1133,8 +1134,9 @@ impl BucketStore {
         let prefix = prefixed(SENT, domain.as_bytes(), b"");
         let mut since_pace = 0u64;
         for item in self.db.iterator_opt(IteratorMode::From(&prefix, Direction::Forward), bounded(&prefix)) {
-            item?;
-            joined.sent += 1;
+            let (key, _) = item?;
+            joined.scanned += 1;
+            joined.sent += u64::from(!too_deep(terms.depth, domain, &key[prefix.len()..]));
             since_pace += 1;
             if since_pace >= 10_000 {
                 if !pace(since_pace) {
@@ -1148,7 +1150,6 @@ impl BucketStore {
             joined.stopped = true;
             return Ok(joined);
         }
-        joined.scanned = joined.sent;
         {
             let _guard = self.lock_ready();
             self.db.put(count_key_of(SENT_COUNT, domain), joined.sent.to_le_bytes())?;
