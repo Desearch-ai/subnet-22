@@ -1622,6 +1622,12 @@ fn pages_sent_before_a_site_had_a_depth_take_none_of_its_landing_cap() {
     assert_eq!(sent, ["https://example.com/about", "https://example.com/team"]);
     let walked = store.rewalk_domain("example.com", list.get("example.com").unwrap(), &|| 3000, &mut |_| true).unwrap();
     assert_eq!((walked.sent, walked.queued), (0, 2), "a walk counts the same way");
+
+    relist(&path, &list, r#"[{"host": "example.com", "type": "company", "send_cap": 2}]"#);
+    assert_eq!(desearch_bot::dispatch::join_round(&buckets, &list, 1_000_000, &progress, &stop).unwrap(), 1);
+    relist(&path, &list, r#"[{"host": "example.com", "type": "company", "send_cap": 2, "depth": 1}]"#);
+    assert_eq!(desearch_bot::dispatch::join_round(&buckets, &list, 1_000_000, &progress, &stop).unwrap(), 1);
+    assert_eq!(store.sent_count("example.com").unwrap(), Some(0), "a depth given under the same cap counts the sent pages again");
 }
 
 #[test]

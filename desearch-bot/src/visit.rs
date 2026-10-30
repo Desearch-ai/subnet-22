@@ -355,11 +355,11 @@ impl Run<'_> {
         let base = format!("https://{}/", self.known.host);
         let joined = named.iter().map(|url| urls::join(&base, url)).collect::<Result<Vec<_>, _>>().map_err(|_| Crash::new("ValueError"))?;
         // A homepage read as a list is no root: the sitemaps and feeds a site names or answers later still come first.
-        let is_home = |s: &&KnownSitemap| s.kind.as_deref() == Some(HOMEPAGE_KIND);
-        if let Some(stored) = self.known.sitemaps.values().find(|s| s.depth == 0 && is_home(s)) {
-            self.home = stored.url.clone();
+        let (homes, known): (Vec<&KnownSitemap>, Vec<&KnownSitemap>) = self.known.sitemaps.values().filter(|s| s.depth == 0).partition(|s| self.is_homepage(&s.url, Some(s)));
+        let known: Vec<String> = known.into_iter().map(|s| s.url.clone()).collect();
+        if let Some(home) = homes.first().map(|s| s.url.clone()) {
+            self.home = home;
         }
-        let known = self.known.sitemaps.values().filter(|s| s.depth == 0 && !is_home(s)).map(|s| s.url.clone());
         let mut seen = HashSet::new();
         let mut roots: Vec<String> = joined.into_iter().chain(known).filter(|url| seen.insert(url.clone())).collect();
         let landing = self.visitor.buckets.terms(&self.known.host).depth.is_some();
@@ -376,6 +376,18 @@ impl Run<'_> {
         // A landing site's homepage is no guess: it is read even when a sitemap answers.
         self.guesses = guesses.iter().filter(|url| !(landing && **url == self.home)).cloned().collect();
         Ok(guesses)
+    }
+
+    /// Whether a root is the homepage read as a list: stored as one, or `/` on the site's host or its `www.` host, which a failed read leaves without a kind.
+    fn is_homepage(&self, url: &str, stored: Option<&KnownSitemap>) -> bool {
+        if stored.is_some_and(|s| s.kind.as_deref() == Some(HOMEPAGE_KIND)) {
+            return true;
+        }
+        let Ok(parts) = urls::split(url) else {
+            return false;
+        };
+        let host = parts.hostname().unwrap_or_default();
+        host.strip_prefix("www.").unwrap_or(&host) == self.known.host && matches!(parts.path.as_str(), "" | "/") && parts.query.is_none()
     }
 
     /// Read robots.txt; None means the visit ends here.
@@ -480,7 +492,7 @@ impl Run<'_> {
         self.fetches += 1;
         let validators = stored.map(|s| (s.etag.clone(), s.last_modified.clone()));
         let budget = Some(self.visitor.bodies.clone());
-        let reads_home = url == self.home || stored.is_some_and(|s| s.kind.as_deref() == Some(HOMEPAGE_KIND));
+        let reads_home = url == self.home || self.is_homepage(&url, stored);
         let limit = if reads_home { MAX_HOMEPAGE_BYTES } else { MAX_SITEMAP_BYTES };
         let (answer, error) = match self.get(&url, limit, validators, budget).await {
             Ok(answer) => (Some(answer), None),
@@ -920,7 +932,8 @@ fn digest(job: FileJob) -> Result<Digested, Crash> {
             .filter_map(|(entry, date)| {
                 let url = normaliser.parse(&entry.url)?;
                 let rest = url.key.splitn(2, |&b| b == 0).nth(1)?;
-                if !job.robots.allows_page(&job.known.host, rest) {
+                // A homepage's links with a query left once tracking is stripped are searches, sorts and sessions.
+                if !job.robots.allows_page(&job.known.host, rest) || (job.homepage.is_some() && rest.contains(&b'?')) {
                     return None;
                 }
                 let timed = sitemaps::has_time(entry.lastmod.as_deref().or(entry.published.as_deref()));
@@ -952,9 +965,9 @@ fn digest(job: FileJob) -> Result<Digested, Crash> {
     Ok(Digested::Read(read))
 }
 
-/// A homepage as a sitemap: itself first, then each page it links to with no query, relative links read from where it was found.
+/// A homepage as a sitemap: itself first, then each page it links to, relative links read from where it was found.
 fn homepage_listing(body: &[u8], base: &str) -> (&'static str, Vec<Entry>) {
-    let linked = homepage::links(body).into_iter().filter_map(|href| urls::join(base, &href).ok()).filter(|url| !url.contains('?'));
+    let linked = homepage::links(body).into_iter().filter_map(|href| urls::join(base, &href).ok());
     (HOMEPAGE_KIND, std::iter::once(base.to_string()).chain(linked).map(|url| Entry { url, ..Entry::default() }).collect())
 }
 

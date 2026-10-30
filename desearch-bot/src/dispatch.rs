@@ -1513,7 +1513,8 @@ pub fn join_round(buckets: &Buckets, allowed: &Allowed, per_second: u64, progres
         let opened = floor_fell(walked_since, terms.since) || depth_rose(walked_depth, terms.depth);
         let rewalk = !idle && (opened || cap_rose(joined, terms.send_cap));
         // A floor that only rose needs neither: pages below it drop as they would go, and later reads leave them out.
-        let settled = settled || (joined == Some(terms.send_cap) && !opened);
+        // A changed depth changes which sent pages count against the cap, so it is counted again.
+        let settled = settled || (joined == Some(terms.send_cap) && !opened && walked_depth == terms.depth);
         let urls = store.domain(&domain)?.and_then(|record| records::int(record.get("urls"))).unwrap_or(0);
         todo.push((idle, std::cmp::Reverse(terms.weight), urls, domain, Walk { terms, rewalk, settled }));
     }
