@@ -6,11 +6,13 @@ import gzip
 import json
 import math
 import os
+import shlex
 import subprocess
 import sys
 from collections import Counter
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+from urllib.parse import parse_qsl, unquote, urlsplit
 
 JEV = "jev-1.14/types-2"
 QUERY = (
@@ -20,6 +22,24 @@ QUERY = (
     + "')"
     " TO STDOUT WITH (FORMAT csv)"
 )
+
+# libpq reads the connection from these, so psql's command line, which any process listing shows, holds no password.
+PG_ENV = {
+    "host": "PGHOST",
+    "hostaddr": "PGHOSTADDR",
+    "port": "PGPORT",
+    "dbname": "PGDATABASE",
+    "user": "PGUSER",
+    "password": "PGPASSWORD",
+    "sslmode": "PGSSLMODE",
+    "sslrootcert": "PGSSLROOTCERT",
+    "sslcert": "PGSSLCERT",
+    "sslkey": "PGSSLKEY",
+    "connect_timeout": "PGCONNECT_TIMEOUT",
+    "application_name": "PGAPPNAME",
+    "options": "PGOPTIONS",
+    "target_session_attrs": "PGTARGETSESSIONATTRS",
+}
 
 TIERS = {
     "news": 1,
@@ -298,12 +318,39 @@ def apply_v1(row: Row, base: Decision, v1: V1 | None, forced_out: bool) -> Decis
     )
 
 
+def pg_env(dsn: str) -> dict[str, str]:
+    """libpq's environment for a URI or keyword=value connection string."""
+    parts = urlsplit(dsn)
+    if parts.scheme in ("postgres", "postgresql"):
+        found = {
+            "host": parts.hostname,
+            "port": parts.port,
+            "user": unquote(parts.username or ""),
+            "password": unquote(parts.password or ""),
+            "dbname": unquote(parts.path.lstrip("/")),
+            **dict(parse_qsl(parts.query)),
+        }
+    else:
+        found = dict(item.split("=", 1) for item in shlex.split(dsn))
+    unknown = sorted(set(found) - set(PG_ENV))
+    if unknown:
+        sys.exit(
+            f"DESEARCH_DB has settings this tool can't pass to psql: {', '.join(unknown)}"
+        )
+    return {
+        PG_ENV[key]: str(value)
+        for key, value in found.items()
+        if value not in (None, "")
+    }
+
+
 def registry_rows(csv_path: str | None) -> csv.reader:
     if csv_path:
         return csv.reader(open_text(csv_path))
+    env = {key: value for key, value in os.environ.items() if key != "DESEARCH_DB"}
+    env.update(pg_env(os.environ["DESEARCH_DB"]))
     command = [
         "psql",
-        os.environ["DESEARCH_DB"],
         "-X",
         "-q",
         "-v",
@@ -313,7 +360,7 @@ def registry_rows(csv_path: str | None) -> csv.reader:
         "-c",
         QUERY,
     ]
-    process = subprocess.Popen(command, stdout=subprocess.PIPE, text=True)
+    process = subprocess.Popen(command, stdout=subprocess.PIPE, text=True, env=env)
     return csv.reader(process.stdout)
 
 

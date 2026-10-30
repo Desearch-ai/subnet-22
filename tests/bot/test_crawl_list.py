@@ -330,6 +330,44 @@ def test_files_are_read_as_written(tmp_path):
     assert crawl_list.read_rechecked(str(rechecked)) == {"cnn.com"}
 
 
+def test_the_registry_password_never_reaches_psqls_command_line(monkeypatch):
+    seen = {}
+
+    class Process:
+        stdout = iter(["a.com,1,active,,10,ok,news,0.9,\n"])
+
+    def popen(command, env=None, **kwargs):
+        seen.update(command=command, env=env)
+        return Process()
+
+    monkeypatch.setattr(crawl_list.subprocess, "Popen", popen)
+    monkeypatch.setenv(
+        "DESEARCH_DB",
+        "postgresql://postgres:s%40cret-pw@db.example.co:5432/postgres?sslmode=require",
+    )
+    assert [r[0] for r in crawl_list.registry_rows(None)] == ["a.com"]
+    assert not any("cret-pw" in arg for arg in seen["command"])
+    assert "DESEARCH_DB" not in seen["env"]
+    assert {
+        k: seen["env"][k]
+        for k in ("PGHOST", "PGPORT", "PGUSER", "PGPASSWORD", "PGDATABASE", "PGSSLMODE")
+    } == {
+        "PGHOST": "db.example.co",
+        "PGPORT": "5432",
+        "PGUSER": "postgres",
+        "PGPASSWORD": "s@cret-pw",
+        "PGDATABASE": "postgres",
+        "PGSSLMODE": "require",
+    }
+    assert crawl_list.pg_env("host=db.example.co password='a b' dbname=bot") == {
+        "PGHOST": "db.example.co",
+        "PGPASSWORD": "a b",
+        "PGDATABASE": "bot",
+    }
+    with pytest.raises(SystemExit):
+        crawl_list.pg_env("postgresql://u:p@h/db?krbsrvname=x")
+
+
 def v1_list(rows, v1, overrides=None):
     entries, counts = crawl_list.build(rows, {}, overrides or {}, Hand(), v1=v1)
     return {e["host"]: e for e in entries}, counts
