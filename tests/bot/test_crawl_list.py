@@ -643,6 +643,16 @@ def test_landing_sites_send_only_their_landing_pages_unless_node2_sends_them():
     )
     node2, _ = build(rows, {}, {}, Hand(), v1={}, node2_min_weight=2)
     assert listed["mag.com"] == node2[0] and "bank.com" not in listed
+    resent, _ = build(
+        rows, {}, {}, Hand(), v1=v1, node2_min_weight=2, resend_before="2026-10-27"
+    )
+    assert {e["host"] for e in resent if "resend_before" in e} == {
+        "corp.com",
+        "quiet.com",
+        "radio.com",
+    }, (
+        "every site on landing terms, with no wave file; node 2's terms stay as they were"
+    )
     entries, _ = build(rows, {}, {}, Hand(), v1=v1)
     assert "depth" not in {e["host"]: e for e in entries}["corp.com"], (
         "with no minimum weight node 2 sends it already"

@@ -157,16 +157,16 @@ pub fn before_floor(since: Option<u32>, lastmod: u32, rest: &[u8]) -> bool {
 
 /// Whether a page is past its domain's `depth`, as the set's landing rule reads it: on another host, with a query, under a locale other than English, or more path levels down than `depth`, a leading `en` or `en-us` not counted.
 pub fn too_deep(depth: Option<u8>, domain: &str, rest: &[u8]) -> bool {
-    let Some(depth) = depth else {
-        return false;
-    };
-    let Ok(rest) = std::str::from_utf8(rest) else {
-        return true;
-    };
+    depth.is_some_and(|depth| levels(domain, rest).is_none_or(|levels| levels > usize::from(depth)))
+}
+
+/// A page's path levels on its domain's own host, a leading `en` or `en-us` not counted; None on another host, with a query or under another locale, which no depth takes.
+fn levels(domain: &str, rest: &[u8]) -> Option<usize> {
+    let rest = std::str::from_utf8(rest).ok()?;
     let (host, path) = rest.find('/').map_or((rest, ""), |at| (&rest[..at], &rest[at..]));
     let host = host.strip_prefix("www.").unwrap_or(host);
     if host != domain && host.strip_prefix("m.") != Some(domain) {
-        return true;
+        return None;
     }
     let (path, query) = path.split_once('?').unwrap_or((path, ""));
     let mut levels = path.split('/').filter(|level| !level.is_empty()).peekable();
@@ -174,10 +174,10 @@ pub fn too_deep(depth: Option<u8>, domain: &str, rest: &[u8]) -> bool {
         Some(first) if first.eq_ignore_ascii_case("en") || (locale(first) && first[..2].eq_ignore_ascii_case("en")) => {
             levels.next();
         }
-        Some(first) if locale(first) => return true,
+        Some(first) if locale(first) => return None,
         _ => {}
     }
-    !query.is_empty() || levels.count() > usize::from(depth)
+    query.is_empty().then(|| levels.count())
 }
 
 /// Two letters, `-` or `_`, two letters: `en-us`, `de_DE`.
@@ -1182,6 +1182,9 @@ impl BucketStore {
         let prefix = prefixed(URL, domain.as_bytes(), b"");
         let mut from = prefix.clone();
         let mut since_pace = 0u64;
+        // A site with a depth goes again only up to its cap, its shallowest pages first and the newest of a level first, so its homepage leads.
+        let most = terms.depth.and(terms.send_cap).map(|cap| usize::try_from(cap).unwrap_or(usize::MAX));
+        let mut shallowest: BinaryHeap<(usize, Reverse<u32>, Vec<u8>)> = BinaryHeap::new();
         loop {
             let (mut pages, mut next) = (Vec::new(), None);
             // A fresh iterator each chunk, so the walk never holds the memtables its own writes fill.
@@ -1210,6 +1213,13 @@ impl BucketStore {
                     joined.before_floor += 1;
                     continue;
                 }
+                if let Some(most) = most {
+                    shallowest.push((levels(domain, rest).unwrap_or(usize::MAX), Reverse(record.lastmod), rest.to_vec()));
+                    if shallowest.len() > most {
+                        shallowest.pop();
+                    }
+                    continue;
+                }
                 pages.push(rest.to_vec());
                 if pages.len() >= RESEND_CHUNK {
                     next = Some([&key[..], b"\0"].concat());
@@ -1225,6 +1235,14 @@ impl BucketStore {
             match next {
                 Some(key) => from = key,
                 None => break,
+            }
+        }
+        if !shallowest.is_empty() {
+            let listed = self.resend_pages(domain, before, now, shallowest.into_sorted_vec().into_iter().map(|(_, _, rest)| rest).collect())?;
+            joined.queued += listed as u64;
+            if !write(listed as u64) {
+                joined.stopped = true;
+                return Ok(joined);
             }
         }
         if !read(since_pace) {

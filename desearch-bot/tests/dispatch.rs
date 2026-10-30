@@ -1638,6 +1638,23 @@ fn the_list_reads_resend_before_as_a_date() {
 }
 
 #[test]
+fn a_site_with_a_depth_goes_again_only_up_to_its_cap_shallowest_first() {
+    let dir = Dir::new("resend-depth");
+    let store = open(&dir);
+    let names = ["", "about", "team", "products", "products/gpu", "fr-fr/accueil"];
+    let lastmods = [EARLY, LATE, LATE + 300, LATE + 200, LATE + 900, LATE + 900];
+    store.record_listing("example.com", 7, names.iter().zip(lastmods).map(|(name, lastmod)| page(name, lastmod)).collect(), 100).unwrap();
+    store.mark_sent(&take(&store, 10), 1000, &rules()).unwrap();
+
+    let terms = Terms { send_cap: Some(3), depth: Some(1), resend_before: Some(2000), ..Terms::default() };
+    let resent = store.resend_domain("example.com", terms, 1_800_000_000, &mut |_| true, &mut |_| true).unwrap();
+    assert_eq!((resent.queued, resent.before_floor), (3, 2), "the two past the depth stay off; of the four within it, the cap's three go");
+    let mut again: Vec<String> = store.take_resend("example.com", 10, &Default::default()).unwrap().0.iter().map(|p| p.url.clone()).collect();
+    again.sort();
+    assert_eq!(again, ["https://example.com/", "https://example.com/products", "https://example.com/team"], "the homepage, then the newest first-level pages");
+}
+
+#[test]
 fn a_resend_walk_lists_pages_sent_before_the_cutoff_newest_first_and_not_twice() {
     let dir = Dir::new("resend");
     let store = open(&dir);

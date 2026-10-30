@@ -555,11 +555,14 @@ def build(
                 entry["since"] = decision.since
             if decision.depth is not None:
                 entry["depth"] = decision.depth
-            if (
-                resend_before
-                and row.host in (resend_hosts or set())
-                and entry_v1 is not None
-                and entry_v1.rule in ("news", "whole")
+            # A landing site's pages sent before the cutoff go again, as many as its cap, so they reach the index re-read.
+            if resend_before and (
+                decision.depth is not None
+                or (
+                    row.host in (resend_hosts or set())
+                    and entry_v1 is not None
+                    and entry_v1.rule in ("news", "whole")
+                )
             ):
                 entry["resend_before"] = resend_before
             ranked.append(

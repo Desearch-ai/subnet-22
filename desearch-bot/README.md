@@ -180,7 +180,8 @@ or none, walks the domain again.
 extraction change. When a domain's value changes, a walk in a thread of its own lists those pages at
 `--resend-per-sec` a second, newest lastmod first, on a resend list apart from the lanes; a list
 built again with the same value walks nothing. Failing pages, pages robots.txt disallows and pages
-dated before the floor stay off. Resends take only the room the lanes leave, before refreshes, within
+dated before the floor stay off. A site with a `depth` goes again only up to its `send_cap`, its
+shallowest pages first, so its homepage leads. Resends take only the room the lanes leave, before refreshes, within
 the domain's hourly limit and Crawl-delay, and refreshes pass a domain by while its resends wait. A
 failed resend gets no retry of its own. Resent pages' outcomes stay out of the yields that pace the
 domain, also across a restart: the pages lately resent are kept in `resent-pages.bin` beside the
