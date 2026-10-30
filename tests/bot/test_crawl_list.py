@@ -30,9 +30,18 @@ def row(
     site_type="news",
     confidence=0.95,
     url_count=1000,
+    canonical_host="",
 ):
     return Row(
-        host, rank, state, state_reason, url_count, homepage, site_type, confidence
+        host,
+        rank,
+        state,
+        state_reason,
+        url_count,
+        homepage,
+        site_type,
+        confidence,
+        canonical_host,
     )
 
 
@@ -99,6 +108,42 @@ def test_registry_states_and_language():
         ).reason
         == "ineligible:no_text"
     )
+
+
+def test_a_recheck_overrules_only_the_homepage_checks():
+    def reason(rechecked=True, **fields):
+        found = decide(row(**fields), Backing(), rechecked=rechecked)
+        return "listed" if found.listed else found.reason
+
+    assert (
+        reason(state="ineligible", state_reason="not_english", homepage="") == "listed"
+    )
+    assert reason(homepage="not_english", state="no_sitemap") == "listed"
+    assert (
+        reason(state="ineligible", state_reason="no_text", homepage="blank") == "listed"
+    )
+    assert (
+        reason(
+            rechecked=False,
+            state="ineligible",
+            state_reason="no_text",
+            homepage="blank",
+        )
+        == "ineligible:no_text"
+    )
+    assert (
+        reason(
+            state="ineligible", state_reason="homepage_error", homepage="homepage_403"
+        )
+        == "refuses"
+    ), "the type model's own refusal still holds"
+    assert reason(state="ineligible", state_reason="bot_wall") == "refuses"
+    assert reason(state="blocked", state_reason="robots_disallow") == "refuses"
+    assert (
+        reason(state="excluded", state_reason="non_english_tld") == "non_english_tld"
+    ), "a registry exclusion isn't a homepage check"
+    assert reason(state="ineligible", state_reason="adult") == "ineligible:adult"
+    assert reason(state="unreachable") == "state:unreachable"
 
 
 def test_unlabelled_domains_take_their_type_from_wikidata_or_wait():
@@ -265,10 +310,24 @@ def test_files_are_read_as_written(tmp_path):
         "uniprot.org": crawl_list.Judged(20, 19)
     }
     registry = tmp_path / "registry.csv"
-    registry.write_text("bbc.com,93,active,,6723761,ok,news,0.99\nnew.com,,new,,0,,,\n")
+    registry.write_text(
+        "bbc.com,93,active,,6723761,ok,news,0.99,\nnew.com,,new,,0,,,,\nold.com,9,redirects,redirect,40,,,,new.com\n"
+    )
     rows = [crawl_list.parse_row(f) for f in crawl_list.registry_rows(str(registry))]
     assert rows[0] == Row("bbc.com", 93, "active", "", 6723761, "ok", "news", 0.99)
     assert rows[1] == Row("new.com", None, "new", "", 0, "", "", None)
+    assert rows[2].canonical_host == "new.com"
+    assert (
+        crawl_list.parse_row(
+            ["old.com", "", "active", "", "0", "", "", ""]
+        ).canonical_host
+        == ""
+    )
+    rechecked = tmp_path / "recheck.tsv"
+    rechecked.write_text(
+        "host\tverdict\twhy\ncnn.com\tok\t\nnytimes.com\twalled\thomepage_403\nlater.com\tok\t\nlater.com\twalled\thomepage_403\n"
+    )
+    assert crawl_list.read_rechecked(str(rechecked)) == {"cnn.com"}
 
 
 def v1_list(rows, v1, overrides=None):
@@ -409,7 +468,7 @@ def test_host_files_that_match_no_listed_site_leave_the_list(
     monkeypatch.setattr(crawl_list, "MIN_DOMAINS", 1)
     registry = tmp_path / "registry.csv"
     registry.write_text(
-        "news.com,10,active,,1000,ok,news,0.99\ncorp.com,20,active,,1000,ok,company,0.99\n"
+        "news.com,10,active,,1000,ok,news,0.99,\ncorp.com,20,active,,1000,ok,company,0.99,\n"
     )
     v1 = tmp_path / "v1-set.json"
     v1.write_text(
@@ -537,6 +596,39 @@ def test_v1_lifts_only_label_outs():
     listed, counts = v1_list(rows, v1, overrides={"judged.com": "out:junk"})
     assert set(listed) == {"label.com"}
     assert counts["out:v1"] == 1 and counts["out:junk"] == 1
+
+
+def test_a_rechecked_v1_site_is_listed_once_it_sends_and_its_redirect_is_kept():
+    V1 = crawl_list.V1
+    rows = [
+        row(host="outlet.com", homepage="not_english", site_type=""),
+        row(host="feedless.org", state="no_sitemap", homepage="not_english"),
+        row(host="waiting.com", state="ineligible", state_reason="not_english"),
+        row(host="foreign.com", homepage="not_english", site_type=""),
+        row(host="old.com", state="redirects", canonical_host="new.com"),
+    ]
+    v1 = {
+        "outlet.com": V1("news", "news"),
+        "feedless.org": V1("whole", "reference"),
+        "waiting.com": V1("news", "news"),
+        "foreign.com": V1("news", "news"),
+    }
+    rechecked = {"outlet.com", "feedless.org", "waiting.com"}
+    decisions = []
+
+    class Writer:
+        writerow = decisions.append
+
+    entries, counts = crawl_list.build(
+        rows, {}, {}, Hand(), Writer(), v1=v1, rechecked=rechecked
+    )
+    assert {e["host"] for e in entries} == {"outlet.com", "feedless.org"}, (
+        "an ineligible site sends nothing until the bot reads it again"
+    )
+    assert counts["out:not_english"] == 1
+    by_host = {d[0]: d for d in decisions}
+    assert by_host["waiting.com"][3:6] == [1, "", "news"]
+    assert by_host["old.com"][-1] == "new.com"
 
 
 def test_the_v1_set_is_read_from_its_file(tmp_path):
