@@ -19,8 +19,13 @@ pub enum Rule {
     },
     /// Pages from a bulk source, and the site's crawled pages too.
     Bulk,
+    /// The host's own homepage and first-level pages, never the hosts under it.
+    Landing,
     Out,
 }
+
+/// Path levels a landing page has at most, a leading English locale (`/en-us/`) not counted.
+pub const LANDING_DEPTH: usize = 1;
 
 /// Why a page is left out.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -105,6 +110,7 @@ impl Set {
                 },
                 Some("whole") => Rule::Whole { paths: entry["paths"].as_array().into_iter().flatten().filter_map(Value::as_str).map(String::from).collect() },
                 Some("bulk") => Rule::Bulk,
+                Some("landing") => Rule::Landing,
                 Some("out") => Rule::Out,
                 other => bail!("{host}: unknown rule {other:?}"),
             };
@@ -149,8 +155,11 @@ impl Set {
     /// Whether the page at `url` is in, by the rule of its host's entry, and how.
     pub fn admit(&self, url: &str, published: &str, page_type: Option<&str>) -> Result<Admitted, Refusal> {
         let (host, path) = split_url(url);
-        let Some((_, rule)) = self.site(host) else { return Err(Refusal::Unlisted) };
+        let Some((listed, rule)) = self.site(host) else { return Err(Refusal::Unlisted) };
         match rule {
+            Rule::Landing if !own_host(host, listed) => Err(Refusal::Unlisted),
+            Rule::Landing if !landing_page(url) => Err(Refusal::OffPaths),
+            Rule::Landing => Ok(Admitted::ByRule),
             Rule::Out => Err(Refusal::Unlisted),
             Rule::News { since } => match page_date(published, url) {
                 None if self.undated_articles && page_type == Some("article") => Ok(Admitted::UndatedArticle),
@@ -179,6 +188,34 @@ fn split_url(url: &str) -> (&str, &str) {
     let (authority, path) = rest.find('/').map_or((rest, "/"), |at| (&rest[..at], &rest[at..]));
     let host = authority.rsplit_once('@').map_or(authority, |(_, host)| host);
     (host.split_once(':').map_or(host, |(host, _)| host), path)
+}
+
+/// Whether a host is the listed host itself, or its `www.` or `m.` host.
+fn own_host(host: &str, listed: &str) -> bool {
+    let host = host_of(host);
+    host == listed || host.strip_prefix("m.") == Some(listed)
+}
+
+/// A homepage or first-level page with no query; a leading English locale (`en`, `en-us`) is no level, and a page under another locale (`de-de`) is none.
+pub fn landing_page(url: &str) -> bool {
+    let rest = url.split_once("://").map_or(url, |(_, rest)| rest);
+    let rest = &rest[..rest.find('#').unwrap_or(rest.len())];
+    let (rest, query) = rest.split_once('?').unwrap_or((rest, ""));
+    let mut levels = rest.find('/').map_or("", |at| &rest[at..]).split('/').filter(|level| !level.is_empty()).peekable();
+    match levels.peek() {
+        Some(first) if first.eq_ignore_ascii_case("en") || (locale(first) && first[..2].eq_ignore_ascii_case("en")) => {
+            levels.next();
+        }
+        Some(first) if locale(first) => return false,
+        _ => {}
+    }
+    query.is_empty() && levels.count() <= LANDING_DEPTH
+}
+
+/// Two letters, `-` or `_`, two letters: `en-us`, `de_DE`.
+fn locale(level: &str) -> bool {
+    let b = level.as_bytes();
+    b.len() == 5 && b[..2].iter().all(u8::is_ascii_alphabetic) && matches!(b[2], b'-' | b'_') && b[3..].iter().all(u8::is_ascii_alphabetic)
 }
 
 /// A host as the set names it: lowercase, without `www.`, and a mobile `<x>.m.<site>` as `<x>.<site>`.
@@ -300,6 +337,11 @@ mod tests {
         assert_eq!(set.admit("https://APNEWS.com:443/2020/01/01/abc", "", None), Ok(Admitted::ByRule));
         assert!(Set::parse(br#"{"undated": "sometimes", "sites": []}"#).is_err());
         assert_eq!(set.class("apnews.com"), Class::RecentNews);
+        let landing = Set::parse(br#"{"sites": [{"host": "vendor.example", "rule": "landing"}]}"#).unwrap();
+        assert_eq!(landing.admit("https://www.vendor.example/en_GB/about", "", None), Ok(Admitted::ByRule));
+        assert_eq!(landing.admit("https://vendor.example/products/gpu", "", None), Err(Refusal::OffPaths));
+        assert_eq!(landing.admit("https://shop.vendor.example/", "", None), Err(Refusal::Unlisted), "landing takes its own host only");
+        assert!(!landing_page("https://vendor.example/fr-fr/") && !landing_page("https://vendor.example?p=1") && landing_page("https://vendor.example/a#b?c"));
         assert!(Set::parse(br#"{"sites": [{"host": "a.example", "rule": "news", "since": "soon"}]}"#).is_err());
     }
 

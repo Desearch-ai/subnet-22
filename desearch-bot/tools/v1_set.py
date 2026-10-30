@@ -37,6 +37,10 @@ DOCS_HOST = re.compile(r"^(docs|developer|developers|learn)\.")
 # A site that moved passes its backing along a chain of redirects this long at most.
 MAX_HOPS = 5
 VERDICTS = {"keep", "out"}
+# A landing site gives its homepage and first-level pages; a leading English locale (`/en-us/`) is no level, and another locale's pages are out.
+LANDING_DEPTH = 1
+ENGLISH_LOCALE = re.compile(r"en(?:[-_][a-z]{2})?", re.I | re.A)
+LOCALE = re.compile(r"[a-z]{2}[-_][a-z]{2}", re.I | re.A)
 # What an `out` row's `why` may say; a row giving only benchmark names takes its reason from its note.
 OUT_REASONS = {
     "mirror", "benchmark-copy", "people-search", "template", "spam", "aggregator", "judge", "terms", "not-english",
@@ -200,6 +204,18 @@ def listed_entries(decisions, backing, news_sources, outlets, judged, counts, ne
     return entries, too_big
 
 
+def landing_entries(ranked: list[dict], judged: dict, counts: dict[str, dict], sites: dict[str, dict]) -> list[dict]:
+    """Ranked listed sites that no entry takes or shuts, each for its homepage and first-level pages, unless it is spam, people search or failed the judge."""
+    spam = networks(counts)
+    entries = []
+    for row in ranked:
+        host, verdict = row["host"], share(judged.get(row["host"]))
+        if entry_for(sites, host) is not None or host in spam or PEOPLE_SEARCH.search(host) or (verdict is not None and verdict <= FAILED_SHARE):
+            continue
+        entries.append({"host": host, "rule": "landing", "type": row["type"], "why": ["rank"]})
+    return entries
+
+
 def redirects_of(decisions) -> dict[str, str]:
     """Hosts the crawl list holds out only because they redirect, and the registry's host for where they went."""
     return {row["host"]: bare(row["canonical"]) for row in decisions if row["state"] == "redirects" and row["reason"] == "state:redirects" and row.get("canonical")}
@@ -240,8 +256,8 @@ def read_verdicts(path: str | None) -> dict[str, str]:
     return verdicts
 
 
-def build(row_files, hand, decisions, backing, news_sources, judged, counts, news_counts=None, news: str = "A", today: date | None = None, outlets=None, verdicts=None, redirects=None) -> tuple[list[dict], list[dict]]:
-    """Hand entries first (the lead's outs), then the site check's outs, the teammates' rows in order, then the judged list; the first to name a host wins."""
+def build(row_files, hand, decisions, backing, news_sources, judged, counts, news_counts=None, news: str = "A", today: date | None = None, outlets=None, verdicts=None, redirects=None, landing_rank: int | None = None) -> tuple[list[dict], list[dict]]:
+    """Hand entries first (the lead's outs), then the site check's outs, the teammates' rows in order, the judged list, then the landing sites; the first to name a host wins."""
     outlets = outlets or {}
     recent = ((today or datetime.now(timezone.utc).date()) - timedelta(days=RECENT_DAYS)).replace(day=1).isoformat()
     if redirects is None:
@@ -257,7 +273,15 @@ def build(row_files, hand, decisions, backing, news_sources, judged, counts, new
     moved_from = defaultdict(list)
     for source, target in sorted(moved.items()):
         moved_from[target].append(source)
-    listed, too_big = listed_entries(decisions, backing, news_sources, outlets, judged, counts, news_counts or {}, news, recent, moved_from)
+    ranked = []
+
+    def keep_ranked(rows):
+        for row in rows:
+            if landing_rank and row["listed"] == "1" and row["rank"] and int(row["rank"]) <= landing_rank:
+                ranked.append({"host": row["host"], "type": row["type"]})
+            yield row
+
+    listed, too_big = listed_entries(keep_ranked(decisions), backing, news_sources, outlets, judged, counts, news_counts or {}, news, recent, moved_from)
     # Every news site takes its window from the same outlet test, the teammates' rows too.
     for entry in rows:
         if entry["rule"] == "news":
@@ -265,6 +289,9 @@ def build(row_files, hand, decisions, backing, news_sources, judged, counts, new
             if since := news_since(bool(backed_news(entry["host"], backing, news_sources, outlets, moved_from)), news, recent):
                 entry["since"] = since
     for entry in listed:
+        sites.setdefault(entry["host"], entry)
+    # Each landing site is checked against the other sources' entries only, so a ranked subdomain of a landing site is one too.
+    for entry in landing_entries(ranked, judged, counts, sites):
         sites.setdefault(entry["host"], entry)
     return [sites[host] for host in sorted(sites)], too_big
 
@@ -306,14 +333,28 @@ def page_date(url: str, published: str | None) -> date | None:
     return (found and real_date(*found.groups())) or path_date(urlsplit(url).path)
 
 
+def site_host(host: str) -> str:
+    """A host as the set names it: a mobile host (en.m.wikipedia.org) is its site's host, as set.rs reads it."""
+    return re.sub(r"^([^.]+)\.m\.(?=.*\.)", r"\1.", bare(host))
+
+
 def entry_for(sites: dict[str, dict], host: str) -> dict | None:
-    # A mobile host (en.m.wikipedia.org) is its site's host.
-    host = re.sub(r"^([^.]+)\.m\.", r"\1.", bare(host))
+    host = site_host(host)
     while host:
         if host in sites:
             return sites[host]
         host = host.partition(".")[2]
     return None
+
+
+def landing_page(path: str, query: str) -> bool:
+    """A homepage or first-level page with no query, a leading English locale not counted."""
+    levels = [level for level in path.split("/") if level]
+    if levels and ENGLISH_LOCALE.fullmatch(levels[0]):
+        levels = levels[1:]
+    elif levels and LOCALE.fullmatch(levels[0]):
+        return False
+    return not query and len(levels) <= LANDING_DEPTH
 
 
 def matches(sites: dict[str, dict], url: str, published: str | None, page_type: str | None = None, undated: str = "out") -> bool:
@@ -324,6 +365,9 @@ def matches(sites: dict[str, dict], url: str, published: str | None, page_type: 
         return False
     if entry["rule"] == "bulk":
         return True
+    if entry["rule"] == "landing":
+        # A landing entry takes its own host only, never the hosts under it.
+        return site_host(parts.hostname or "") in (entry["host"], f"m.{entry['host']}") and landing_page(parts.path, parts.query)
     if entry["rule"] == "whole":
         return not entry.get("paths") or any(
             parts.path.startswith(path) for path in entry["paths"]
@@ -364,6 +408,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--counts", help="store counts TSV (.gz allowed) with host and stored")
     parser.add_argument("--news-counts", help="news store counts TSV (.gz allowed) with host and dated_last_year")
     parser.add_argument("--too-big", help="TSV to write the judged-list sites too big to take whole")
+    parser.add_argument("--landing-rank", type=int, help="listed sites ranked this high or higher that no other entry takes or shuts are landing sites: their homepage and first-level pages are in")
     parser.add_argument("--site-verdicts", help="the site check's TSV (.gz allowed) of host and verdict, keep or out: out puts a host out for quality, over every source but the hand entries")
     args = parser.parse_args(argv)
     backing = {r["host"]: r for r in tsv(args.backing)}
@@ -379,7 +424,7 @@ def main(argv: list[str] | None = None) -> None:
         redirects = redirects_of(csv.DictReader(source, delimiter="\t"))
     with open_text(args.decisions) as source:
         decisions = csv.DictReader(source, delimiter="\t")
-        sites, too_big = build([read_rows(path) for path in args.rows], hand_entries(tsv(args.hand)), decisions, backing, news_sources, judged, counts, news_counts, args.news, outlets=outlets, verdicts=verdicts, redirects=redirects)
+        sites, too_big = build([read_rows(path) for path in args.rows], hand_entries(tsv(args.hand)), decisions, backing, news_sources, judged, counts, news_counts, args.news, outlets=outlets, verdicts=verdicts, redirects=redirects, landing_rank=args.landing_rank)
     if not sites:
         sys.exit(f"no sites; {args.out} left as it was")
     built = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -392,6 +437,7 @@ def main(argv: list[str] | None = None) -> None:
             writer.writeheader()
             writer.writerows(sorted(too_big, key=lambda site: -site["stored"]))
     print(f"{len(sites)} sites in {args.out} (news {args.news}); {len(too_big)} judged-list sites too big to take whole")
+    print(f"{sum(site['rule'] == 'landing' for site in sites)} landing sites (rank {args.landing_rank or 'none'} and higher)")
     quality = sum(1 for site in sites if site.get("why") == ["quality"])
     print(f"{quality} out by the site check ({sum(v == 'out' for v in verdicts.values())} out verdicts, {sum(v == 'keep' for v in verdicts.values())} keep); {len(redirects)} redirects in the registry")
     news_missing, whole_missing = uncounted(sites, counts, news_counts)

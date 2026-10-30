@@ -24,8 +24,8 @@ def decision(host, site_type, cap=1_000_000, listed="1"):
     return {"host": host, "rank": "100", "state": "active", "listed": listed, "reason": "", "type": site_type, "cap": str(cap)}
 
 
-def build(decisions=(), rows=(), hand=(), backing=None, news_sources=None, judged=None, counts=None, news="A", news_counts=None, outlets=None, verdicts=None):
-    sites, too_big = v1_set.build([list(r) for r in rows], list(hand), list(decisions), backing or {}, news_sources or {}, judged or {}, counts or {}, news_counts or {}, news, TODAY, outlets, verdicts)
+def build(decisions=(), rows=(), hand=(), backing=None, news_sources=None, judged=None, counts=None, news="A", news_counts=None, outlets=None, verdicts=None, landing_rank=None):
+    sites, too_big = v1_set.build([list(r) for r in rows], list(hand), list(decisions), backing or {}, news_sources or {}, judged or {}, counts or {}, news_counts or {}, news, TODAY, outlets, verdicts, landing_rank=landing_rank)
     return {site["host"]: site for site in sites}, too_big
 
 
@@ -124,6 +124,31 @@ def test_evergreen_sites_go_whole_only_when_they_fit_and_reference_needs_the_jud
 def test_other_types_and_unlisted_sites_stay_out():
     sites, _ = build([decision("shop.example", "company"), decision("mag.example", "media"), decision("gone.example", "news", listed="0")])
     assert sites == {}
+
+
+def test_ranked_listed_sites_no_entry_takes_are_landing_sites():
+    ranked = [decision(host, kind) for host, kind in [("vendor.example", "company"), ("dev.vendor.example", "company"), ("club.example", "organization"), ("mag.example", "media"), ("failed.example", "company"), ("people-search.example", "company"), ("blog.nature.example", "personal"), ("closed.example", "company"), ("big.example", "academic")]]
+    low = {**decision("low.example", "company"), "rank": "200001"}
+    unranked = {**decision("unranked.example", "company"), "rank": ""}
+    judged = {"failed.example": {"judged": "20", "substantive": "4"}, "club.example": {"judged": "20", "substantive": "12"}}
+    rows = [[{"host": "nature.example", "rule": "whole", "type": "academic", "why": ["simpleqa"]}, {"host": "closed.example", "rule": "out", "why": ["terms"]}]]
+    counts = {"big.example": {"stored": "9000000"}}
+    sites, too_big = build(ranked + [low, unranked], rows=rows, judged=judged, counts=counts, landing_rank=200_000)
+    landing = {host for host, site in sites.items() if site["rule"] == "landing"}
+    assert landing == {"vendor.example", "dev.vendor.example", "club.example", "mag.example", "big.example"}, "a subdomain of a landing site is one too; a too-big whole site is one"
+    assert sites["vendor.example"] == {"host": "vendor.example", "rule": "landing", "type": "company", "why": ["rank"]}
+    assert sites["closed.example"]["rule"] == "out" and "blog.nature.example" not in sites, "an entry above takes or shuts it"
+    assert [site["host"] for site in too_big] == ["big.example"]
+    assert all(site["rule"] != "landing" for site in build(ranked)[0].values()), "no landing sites without a rank"
+
+
+def test_a_landing_site_gives_its_own_homepage_and_first_level_pages():
+    sites = {"vendor.example": {"host": "vendor.example", "rule": "landing", "type": "company"}}
+    for url in ("http://vendor.example", "https://www.vendor.example/products/", "https://vendor.example/en_GB/about", "https://vendor.example/EN/", "https://m.vendor.example/"):
+        assert v1_set.matches(sites, url, None), url
+    for url in ("https://vendor.example/products/gpu", "https://vendor.example/fr-fr/", "https://vendor.example/en-us/a/b", "https://vendor.example/?p=1", "https://shop.vendor.example/", "https://vendor.example/en-us/de-de/x"):
+        assert not v1_set.matches(sites, url, "2025-01-01"), url
+    assert not v1_set.matches({"shop.example": {"host": "shop.example", "rule": "landing"}}, "https://shop.m.example/", None), "x.m.y is no mobile host, as set.rs reads it"
 
 
 def test_hand_entries_win_then_row_files_in_order_and_docs_hosts_are_docs():
@@ -226,6 +251,7 @@ def test_the_set_file_is_written_from_the_inputs(tmp_path):
         out.write("host\trank\tstate\tlisted\treason\ttype\tcap\tv1\n")
         out.write("news.example\t1\tactive\t1\t\tnews\t1000000\t\n")
         out.write("shop.example\t2\tactive\t0\tshop\t\t0\t\n")
+        out.write("vendor.example\t3\tno_sitemap\t1\t\tcompany\t2000\t\n")
     rows = tmp_path / "rows.json"
     rows.write_text(json.dumps({"built": "2026-10-28", "sites": [{"host": "docs.example", "rule": "whole", "paths": ["/guide/"], "type": "docs", "why": ["exa-webcode"]}], "dump_sites": [{"host": "dump.example", "rule": "bulk", "source": "dump", "type": "reference", "why": ["benchmark"]}]}))
     hand = tmp_path / "hand.tsv"
@@ -236,11 +262,11 @@ def test_the_set_file_is_written_from_the_inputs(tmp_path):
     with gzip.open(verdicts, "wt") as target:
         target.write("host\tverdict\ngenerated.example\tout\nnews.example\tkeep\n")
     out = tmp_path / "v1-set.json"
-    v1_set.main(["--out", str(out), "--decisions", str(decisions), "--rows", str(rows), "--hand", str(hand), "--news-domains", str(news_domains), "--news", "B", "--too-big", str(tmp_path / "too-big.tsv"), "--site-verdicts", str(verdicts)])
+    v1_set.main(["--out", str(out), "--decisions", str(decisions), "--rows", str(rows), "--hand", str(hand), "--news-domains", str(news_domains), "--news", "B", "--too-big", str(tmp_path / "too-big.tsv"), "--site-verdicts", str(verdicts), "--landing-rank", "3"])
     written = json.loads(out.read_text())
-    assert [site["host"] for site in written["sites"]] == ["docs.example", "dump.example", "generated.example", "news.example", "wiki.example"]
+    assert [site["host"] for site in written["sites"]] == ["docs.example", "dump.example", "generated.example", "news.example", "vendor.example", "wiki.example"]
     golden = {site["host"]: site for site in json.loads(GOLDEN.read_text())["sites"]}
     assert written["sites"][2] == golden["generated.example"], "the golden cases hold a site the site check put out"
     assert written["news"] == "B" and written["sites"][3]["since"] == "2020-01-01"
-    assert written["undated"] == "out"
+    assert written["undated"] == "out" and written["sites"][4]["rule"] == "landing"
     assert written["built"].endswith("Z")

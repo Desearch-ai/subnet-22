@@ -1,10 +1,11 @@
 //! Enough of a homepage to tell whether it is readable English.
 
+use std::collections::HashSet;
 use std::sync::LazyLock;
 
 use regex::Regex;
 
-use crate::text;
+use crate::{sitemaps, text};
 
 const MIN_CHARS: usize = 200;
 const SAMPLE: usize = 2000;
@@ -16,6 +17,9 @@ static SCRIPT_OR_STYLE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?is)<script[^>]*>.*?</script>|<style[^>]*>.*?</style>|<noscript[^>]*>.*?</noscript>|<svg[^>]*>.*?</svg>").unwrap()
 });
 static TAG: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"<[^>]+>").unwrap());
+static LINK: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?is)<a\s(?:[^>]*?\s)?href\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))"#).unwrap());
+/// Links one homepage lists at most, in page order: fewer than a sitemap the churn check would judge.
+const MAX_LINKS: usize = 400;
 static CHARSET: LazyLock<regex::bytes::Regex> =
     LazyLock::new(|| regex::bytes::Regex::new(r#"(?i-u)charset=["']?([\w-]+)"#).unwrap());
 static BOT_WALL: LazyLock<Regex> = LazyLock::new(|| {
@@ -58,6 +62,23 @@ pub fn read(body: &[u8], detect_language: &dyn Fn(&str) -> Option<String>) -> Ho
     judged(language, if english { None } else { Some("not_english") })
 }
 
+/// The addresses a homepage links to, in page order, each once and with character references decoded; fragments and script, mail, phone and data links are none.
+pub fn links(body: &[u8]) -> Vec<String> {
+    let html = decode(body);
+    let html = SCRIPT_OR_STYLE.replace_all(&html, " ");
+    let mut seen = HashSet::new();
+    LINK.captures_iter(&html)
+        .filter_map(|found| found.get(1).or_else(|| found.get(2)).or_else(|| found.get(3)))
+        .map(|href| sitemaps::location(href.as_str().trim().as_bytes()))
+        .filter(|href| {
+            let scheme = href.split_once(':').map(|(scheme, _)| scheme.to_ascii_lowercase());
+            !href.is_empty() && !href.starts_with('#') && !matches!(scheme.as_deref(), Some("javascript" | "mailto" | "tel" | "data"))
+        })
+        .filter(|href| seen.insert(href.clone()))
+        .take(MAX_LINKS)
+        .collect()
+}
+
 /// The body as text in its declared charset, falling back to UTF-8.
 pub fn decode(body: &[u8]) -> String {
     let label = CHARSET.captures(&body[..body.len().min(4096)]).map(|c| c[1].to_vec());
@@ -82,6 +103,16 @@ mod tests {
 
     fn english(_: &str) -> Option<String> {
         Some("en".into())
+    }
+
+    #[test]
+    fn a_homepage_lists_the_addresses_it_links_to_once_each_in_page_order() {
+        let body = br##"<nav><a href="/about">About</a> <A class=x HREF='/en-us/products?a=1&amp;b=2'>P</A> <a data-href="/no" href=/pricing>$</a>
+            <a href="#top">Top</a><a href="mailto:x@a.com">M</a><a href=" JavaScript:void(0)">J</a><a href="/about">again</a>
+            <script>var a = '<a href="/scripted">';</script><a name="anchor">none</a><a href="https://other.com/">o</a></nav>"##;
+        assert_eq!(links(body), ["/about", "/en-us/products?a=1&b=2", "/pricing", "https://other.com/"]);
+        let many: String = (0..500).map(|i| format!("<a href=\"/p{i}\">{i}</a>")).collect();
+        assert_eq!(links(many.as_bytes()).len(), MAX_LINKS);
     }
 
     #[test]

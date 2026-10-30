@@ -617,6 +617,60 @@ def test_v1_sites_without_a_sitemap_are_listed_for_their_feed():
     )
 
 
+def test_landing_sites_send_only_their_landing_pages_unless_node2_sends_them():
+    V1 = crawl_list.V1
+    rows = [
+        row(host="corp.com", site_type="company"),
+        row(host="quiet.com", state="no_sitemap", site_type="organization"),
+        row(host="mag.com", site_type="media"),
+        row(host="radio.com", state="no_sitemap", site_type="media"),
+        row(host="bank.com", state="excluded", state_reason="bank", site_type=""),
+    ]
+    v1 = {r.host: V1("landing", "") for r in rows}
+    build = crawl_list.build
+    entries, _ = build(rows, {}, {}, Hand(), v1=v1, node2_min_weight=2)
+    listed = {e["host"]: e for e in entries}
+    assert listed["corp.com"] == {
+        "host": "corp.com",
+        "type": "company",
+        "weight": 3,
+        "hourly": 20,
+        "send_cap": 100,
+        "depth": 1,
+    }
+    assert listed["quiet.com"]["depth"] == listed["radio.com"]["depth"] == 1, (
+        "listed for the homepage the bot reads as a list"
+    )
+    node2, _ = build(rows, {}, {}, Hand(), v1={}, node2_min_weight=2)
+    assert listed["mag.com"] == node2[0] and "bank.com" not in listed
+    resent, _ = build(
+        rows, {}, {}, Hand(), v1=v1, node2_min_weight=2, resend_before="2026-10-27"
+    )
+    assert {e["host"] for e in resent if "resend_before" in e} == {
+        "corp.com",
+        "quiet.com",
+        "radio.com",
+    }, (
+        "every site on landing terms, with no wave file; node 2's terms stay as they were"
+    )
+    entries, _ = build(rows, {}, {}, Hand(), v1=v1)
+    assert "depth" not in {e["host"]: e for e in entries}["corp.com"], (
+        "with no minimum weight node 2 sends it already"
+    )
+    docs = row(host="docs.corp.com", state="no_sitemap", site_type="docs")
+    entries, _ = build(
+        rows + [docs],
+        {},
+        {},
+        Hand(),
+        v1={**v1, "docs.corp.com": V1("whole", "docs")},
+        node2_min_weight=2,
+    )
+    assert "docs.corp.com" in {e["host"] for e in entries}, (
+        "a landing parent sends none of a feed-only subdomain's pages, so it stays"
+    )
+
+
 def test_v1_lifts_only_label_outs():
     V1 = crawl_list.V1
     rows = [

@@ -28,11 +28,13 @@ pub struct Terms {
     pub news: bool,
     /// Pages last sent before this time, as Unix seconds, go once more, as retries; a site is walked for them once per value.
     pub resend_before: Option<u32>,
+    /// A landing site's: the most path levels its pages may have, a leading English locale not counted; deeper pages, pages with a query and pages of other hosts stay unsent.
+    pub depth: Option<u8>,
 }
 
 impl Default for Terms {
     fn default() -> Self {
-        Terms { weight: 1, send_cap: None, hourly: None, backlog: None, since: None, news: false, resend_before: None }
+        Terms { weight: 1, send_cap: None, hourly: None, backlog: None, since: None, news: false, resend_before: None, depth: None }
     }
 }
 
@@ -116,7 +118,7 @@ impl Allowed {
     }
 }
 
-/// A JSON list of domain names, or of objects naming theirs under `host`, with an optional `type`, `weight`, `send_cap`, `hourly`, `backlog`, `since` and `resend_before` (ISO dates).
+/// A JSON list of domain names, or of objects naming theirs under `host`, with an optional `type`, `weight`, `send_cap`, `hourly`, `backlog`, `since` and `resend_before` (ISO dates), and `depth`.
 pub fn parse(raw: &[u8]) -> Result<HashMap<String, Terms>> {
     let listed: Vec<Value> = serde_json::from_slice(raw).context("not a JSON list of domains")?;
     Ok(listed
@@ -127,7 +129,8 @@ pub fn parse(raw: &[u8]) -> Result<HashMap<String, Terms>> {
             let weight = number("weight").map_or(1, |w| w.clamp(1, 4) as u8);
             let date = |name: &str| entry.get(name).and_then(Value::as_str).and_then(isodate::fromisoformat).map(|micros| (micros / 1_000_000).clamp(0, i64::from(u32::MAX)) as u32);
             let news = entry.get("type").and_then(Value::as_str) == Some("news");
-            Some((host.to_string(), Terms { weight, send_cap: number("send_cap"), hourly: number("hourly"), backlog: number("backlog"), since: date("since"), news, resend_before: date("resend_before") }))
+            let depth = number("depth").map(|depth| depth.min(u64::from(u8::MAX)) as u8);
+            Some((host.to_string(), Terms { weight, send_cap: number("send_cap"), hourly: number("hourly"), backlog: number("backlog"), since: date("since"), news, resend_before: date("resend_before"), depth }))
         })
         .collect())
 }

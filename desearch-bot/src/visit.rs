@@ -32,6 +32,8 @@ const MAX_REDIRECTS: usize = 5;
 const SITEMAP_GUESSES: [&str; 2] = ["/sitemap.xml", "/sitemap_index.xml"];
 /// Tried after the sitemap guesses, on listed domains only: a feed names a site's newest pages when it lists no sitemap.
 const FEED_GUESSES: [&str; 2] = ["/feed", "/rss.xml"];
+/// Tried last on listed domains, and read on every visit of a landing site whatever sitemaps it has: the homepage, as a list of itself and the pages it links to.
+const HOMEPAGE: &str = "/";
 const MAX_DEPTH: i64 = 3;
 const MAX_FILES: usize = 40;
 /// The most unread sitemap files one visit records for the visits after it.
@@ -42,6 +44,10 @@ const MIN_URLS: i64 = 10;
 const ROBOTS_EVERY: i64 = DAY;
 const MAX_ROBOTS_BYTES: usize = 512 * 1024;
 const MAX_HOMEPAGE_BYTES: usize = 512 * 1024;
+/// The kind a homepage read as a list of pages is stored under.
+const HOMEPAGE_KIND: &str = "homepage";
+/// A homepage listing is read again at most this often.
+const HOMEPAGE_INTERVAL: i64 = schedule::HOUR;
 /// The sitemap protocol caps a file at 50 MB uncompressed, and so do we.
 pub const MAX_SITEMAP_BYTES: usize = 50 * 1024 * 1024;
 
@@ -271,6 +277,7 @@ pub struct Visitor {
 impl Visitor {
     /// Visit one domain and report everything the visit learned.
     pub async fn visit(&self, known: Arc<Known>, now: i64) -> Result<Visit, Crash> {
+        let home = format!("https://{}/", known.host);
         let mut run = Run {
             visitor: self,
             pacer: Pacer::new(known.crawl_delay, self.floor),
@@ -289,6 +296,7 @@ impl Visitor {
             kept: 0,
             answered: false,
             network_error: None,
+            home,
         };
         run.go().await?;
         Ok(run.result)
@@ -315,6 +323,8 @@ struct Run<'a> {
     kept: i64,
     answered: bool,
     network_error: Option<String>,
+    /// The homepage's address, which a landing site lists its first-level pages from.
+    home: String,
 }
 
 impl Run<'_> {
@@ -344,15 +354,40 @@ impl Run<'_> {
     fn roots(&mut self, named: &[String]) -> Result<Vec<String>, Crash> {
         let base = format!("https://{}/", self.known.host);
         let joined = named.iter().map(|url| urls::join(&base, url)).collect::<Result<Vec<_>, _>>().map_err(|_| Crash::new("ValueError"))?;
-        let known = self.known.sitemaps.values().filter(|s| s.depth == 0).map(|s| s.url.clone());
+        // A homepage read as a list is no root: the sitemaps and feeds a site names or answers later still come first.
+        let (homes, known): (Vec<&KnownSitemap>, Vec<&KnownSitemap>) = self.known.sitemaps.values().filter(|s| s.depth == 0).partition(|s| self.is_homepage(&s.url, Some(s)));
+        let known: Vec<String> = known.into_iter().map(|s| s.url.clone()).collect();
+        if let Some(home) = homes.first().map(|s| s.url.clone()) {
+            self.home = home;
+        }
         let mut seen = HashSet::new();
-        let roots: Vec<String> = joined.into_iter().chain(known).filter(|url| seen.insert(url.clone())).collect();
+        let mut roots: Vec<String> = joined.into_iter().chain(known).filter(|url| seen.insert(url.clone())).collect();
+        let landing = self.visitor.buckets.terms(&self.known.host).depth.is_some();
         if !roots.is_empty() {
+            if landing && seen.insert(self.home.clone()) {
+                roots.push(self.home.clone());
+            }
             return Ok(roots);
         }
-        let guesses = guess_paths(self.visitor.buckets.lists(&self.known.host)).map(|path| urls::join(&base, path)).collect::<Result<Vec<_>, _>>().map_err(|_| Crash::new("ValueError"))?;
-        self.guesses = guesses.iter().cloned().collect();
+        let guesses = guess_paths(self.visitor.buckets.lists(&self.known.host))
+            .map(|path| if path == HOMEPAGE { Ok(self.home.clone()) } else { urls::join(&base, path) })
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| Crash::new("ValueError"))?;
+        // A landing site's homepage is no guess: it is read even when a sitemap answers.
+        self.guesses = guesses.iter().filter(|url| !(landing && **url == self.home)).cloned().collect();
         Ok(guesses)
+    }
+
+    /// Whether a root is the homepage read as a list: stored as one, or `/` on the site's host or its `www.` host, which a failed read leaves without a kind.
+    fn is_homepage(&self, url: &str, stored: Option<&KnownSitemap>) -> bool {
+        if stored.is_some_and(|s| s.kind.as_deref() == Some(HOMEPAGE_KIND)) {
+            return true;
+        }
+        let Ok(parts) = urls::split(url) else {
+            return false;
+        };
+        let host = parts.hostname().unwrap_or_default();
+        host.strip_prefix("www.").unwrap_or(&host) == self.known.host && matches!(parts.path.as_str(), "" | "/") && parts.query.is_none()
     }
 
     /// Read robots.txt; None means the visit ends here.
@@ -374,6 +409,10 @@ impl Run<'_> {
             let text = homepage::decode(&answer.body);
             (paths, delay) = robots::rules(&text, robots::TOKEN);
             named = robots::sitemaps(&text);
+        }
+        // The homepage is read where robots.txt answered: its scheme, and the www host it may have moved to.
+        if let Ok(home) = urls::join(&answer.url, HOMEPAGE) {
+            self.home = home;
         }
         let allowed = paths.allows("/");
         self.result.robots_allows = Some(allowed);
@@ -453,7 +492,9 @@ impl Run<'_> {
         self.fetches += 1;
         let validators = stored.map(|s| (s.etag.clone(), s.last_modified.clone()));
         let budget = Some(self.visitor.bodies.clone());
-        let (answer, error) = match self.get(&url, MAX_SITEMAP_BYTES, validators, budget).await {
+        let reads_home = url == self.home || self.is_homepage(&url, stored);
+        let limit = if reads_home { MAX_HOMEPAGE_BYTES } else { MAX_SITEMAP_BYTES };
+        let (answer, error) = match self.get(&url, limit, validators, budget).await {
             Ok(answer) => (Some(answer), None),
             Err(error) => {
                 self.network_error = Some(error.clone());
@@ -496,8 +537,10 @@ impl Run<'_> {
             sketch: s.sketch.clone(),
             generated_until: s.generated_until,
         });
+        let homepage = reads_home.then(|| answer.url.clone());
         let job = FileJob {
             _permit: answer.permit,
+            homepage,
             body: answer.body,
             standing,
             stored_hash: stored.and_then(|s| s.content_hash.clone()),
@@ -540,6 +583,9 @@ impl Run<'_> {
             None => schedule::first_interval(read.changefreq.as_deref(), news),
         };
         update.interval = schedule::reread_within(interval, listed_news, update.depth, read.kind == "index", read.news);
+        if read.kind == HOMEPAGE_KIND {
+            update.interval = update.interval.max(HOMEPAGE_INTERVAL);
+        }
         update.next_check_at = Some(self.now + update.interval);
         match read.verdict.take() {
             Some(churn::Verdict::Suspect { sketch }) => {
@@ -810,6 +856,8 @@ impl Run<'_> {
 struct FileJob {
     standing: churn::Standing,
     _permit: Option<OwnedSemaphorePermit>,
+    /// For the homepage, where it was read from after redirects, which its links are relative to.
+    homepage: Option<String>,
     body: Vec<u8>,
     stored_hash: Option<String>,
     now: i64,
@@ -843,11 +891,15 @@ enum Digested {
 /// Everything CPU-bound about one sitemap file: decompress, hash, parse, date, and store what it lists.
 fn digest(job: FileJob) -> Result<Digested, Crash> {
     let body = gunzip(&job.body);
-    let hash: String = Sha256::digest(&body).iter().take(16).map(|b| format!("{b:02x}")).collect();
-    if job.stored_hash.as_deref() == Some(hash.as_str()) {
+    let hex = |digest: &[u8]| -> String { digest.iter().take(16).map(|b| format!("{b:02x}")).collect() };
+    let hash = hex(&Sha256::digest(&body));
+    if job.homepage.is_none() && job.stored_hash.as_deref() == Some(hash.as_str()) {
         return Ok(Digested::Unchanged);
     }
-    let (kind, entries) = sitemaps::parse_entries(&body);
+    let (kind, entries) = match job.homepage.as_deref() {
+        Some(base) => homepage_listing(&body, base),
+        None => sitemaps::parse_entries(&body),
+    };
     if kind == "invalid" {
         return Ok(Digested::Invalid);
     }
@@ -880,7 +932,8 @@ fn digest(job: FileJob) -> Result<Digested, Crash> {
             .filter_map(|(entry, date)| {
                 let url = normaliser.parse(&entry.url)?;
                 let rest = url.key.splitn(2, |&b| b == 0).nth(1)?;
-                if !job.robots.allows_page(&job.known.host, rest) {
+                // A homepage's links with a query left once tracking is stripped are searches, sorts and sessions.
+                if !job.robots.allows_page(&job.known.host, rest) || (job.homepage.is_some() && rest.contains(&b'?')) {
                     return None;
                 }
                 let timed = sitemaps::has_time(entry.lastmod.as_deref().or(entry.published.as_deref()));
@@ -889,6 +942,13 @@ fn digest(job: FileJob) -> Result<Digested, Crash> {
             .collect(),
         Err(_) => Vec::new(),
     };
+    // A homepage changes on every read with its tokens and times; only the pages it lists tell a change.
+    if job.homepage.is_some() {
+        read.hash = hex(&Sha256::digest(rows.iter().flat_map(|(url, _, _)| [url.key.as_slice(), b"\n"]).flatten().copied().collect::<Vec<u8>>()));
+        if job.stored_hash.as_deref() == Some(read.hash.as_str()) {
+            return Ok(Digested::Unchanged);
+        }
+    }
     let store = job.buckets.store(&job.known.host);
     let mut hashed: Vec<(u64, &[u8])> = rows.iter().map(|(url, _, _)| (fingerprint(&url.key, 0), url.key.as_slice())).collect();
     hashed.sort_unstable();
@@ -903,6 +963,12 @@ fn digest(job: FileJob) -> Result<Digested, Crash> {
     };
     read.verdict = Some(verdict);
     Ok(Digested::Read(read))
+}
+
+/// A homepage as a sitemap: itself first, then each page it links to, relative links read from where it was found.
+fn homepage_listing(body: &[u8], base: &str) -> (&'static str, Vec<Entry>) {
+    let linked = homepage::links(body).into_iter().filter_map(|href| urls::join(base, &href).ok());
+    (HOMEPAGE_KIND, std::iter::once(base.to_string()).chain(linked).map(|url| Entry { url, ..Entry::default() }).collect())
 }
 
 fn children(job: &FileJob, entries: &[Entry], trust: Trust) -> Result<Vec<Child>, Crash> {
@@ -941,9 +1007,9 @@ pub fn epoch(micros: Option<i64>) -> i64 {
     micros.map_or(0, |us| us.div_euclid(SECOND))
 }
 
-/// Where to look for a sitemap no robots.txt names: the usual files, then on a listed domain its feed.
+/// Where to look for a sitemap no robots.txt names: the usual files, then on a listed domain its feed and its homepage.
 fn guess_paths(listed: bool) -> impl Iterator<Item = &'static str> {
-    SITEMAP_GUESSES.into_iter().chain(FEED_GUESSES.into_iter().filter(move |_| listed))
+    SITEMAP_GUESSES.into_iter().chain(FEED_GUESSES.into_iter().chain([HOMEPAGE]).filter(move |_| listed))
 }
 
 fn crawl_delay(value: Option<f64>) -> f64 {
@@ -990,7 +1056,7 @@ mod tests {
     #[test]
     fn a_listed_domain_with_no_sitemap_named_is_also_looked_at_for_a_feed() {
         assert_eq!(guess_paths(false).collect::<Vec<_>>(), ["/sitemap.xml", "/sitemap_index.xml"]);
-        assert_eq!(guess_paths(true).collect::<Vec<_>>(), ["/sitemap.xml", "/sitemap_index.xml", "/feed", "/rss.xml"], "after the sitemaps, which go first");
+        assert_eq!(guess_paths(true).collect::<Vec<_>>(), ["/sitemap.xml", "/sitemap_index.xml", "/feed", "/rss.xml", "/"], "after the sitemaps, which go first; the homepage last");
     }
 
     #[test]

@@ -53,7 +53,7 @@ MALLOC_ARENA_MAX=2 desearch-bot run --buckets-dir /var/lib/desearch-bot/buckets 
 | `--gone-days` | 30 | days a page that failed on two sends in a row waits before it goes out again, unless its lastmod moves |
 | `--dropped-per-hour` | 200000 | pages of lost or taken-back tasks sent again each hour; more are spread over the following hours |
 | `--backfill-ready` | off | walk every store once to queue pages found before the queue existed |
-| `--domains` | none | a JSON list of the domains whose pages are queued, as names or `{host, type, weight, send_cap, hourly, backlog, since, resend_before}`, read again when it changes; others are crawled but not queued |
+| `--domains` | none | a JSON list of the domains whose pages are queued, as names or `{host, type, weight, send_cap, hourly, backlog, since, resend_before, depth}`, read again when it changes; others are crawled but not queued |
 | `--join-per-sec` | 100000 | stored URL records read per second while queuing the pages of listed domains; 0 turns it off |
 | `--resend-per-sec` | 20000 | pages listed per second to go once more for domains whose `resend_before` changed; 0 turns it off |
 | `--inbox` | none | a directory of URL lists, one `<host>.txt` per host |
@@ -83,8 +83,12 @@ fingerprint set kept per sitemap. A listed news site's root sitemap index and it
 are read again within 30 minutes.
 
 RSS and Atom feeds are read as sitemaps. Where robots.txt names no sitemap, the bot tries
-`/sitemap.xml` and `/sitemap_index.xml`, then on a listed site `/feed` and `/rss.xml`; an answer that
-is neither a sitemap nor a feed isn't kept.
+`/sitemap.xml` and `/sitemap_index.xml`, then on a listed site `/feed`, `/rss.xml` and its homepage;
+an answer that is neither a sitemap nor a feed isn't kept. A homepage is read as a list of itself and
+the pages on its site it links to with no query, from its first 400 links and its first 512 KB,
+relative links taken from where it answered; it counts as changed only when those pages change, and
+is read again at most hourly. It never stands in for a sitemap: the guesses are tried again on later
+visits. A site with a `depth` has its homepage read this way beside whatever sitemaps it has.
 
 A listed subdomain with a registry record of its own is crawled on its own host, under its own
 robots.txt. Its pages go under it while that record is active or failing, and not at all while it is
@@ -148,7 +152,7 @@ two-minute spread.
 ## The crawl list
 
 With `--domains`, each listed domain may carry a `type`, a `weight` (1 to 4), a `send_cap`, an
-`hourly` limit, a `backlog`, a `since` date and a `resend_before` date. A domain's turn is worth its
+`hourly` limit, a `backlog`, a `since` date, a `resend_before` date and a `depth`. A domain's turn is worth its
 rank's slots times its weight, and `hourly` replaces `--per-domain-hourly` for it. A domain typed
 `news` gets the news visit order and re-reads above.
 
@@ -166,11 +170,18 @@ day's grace for time zones, or else a date in its path (`/2025/03/14/`, `/2025/0
 in the walk and in the backfill, and stay out of the refresh stock; pages already waiting are dropped
 as they would go, which the status line counts. A floor that only rises needs no walk.
 
+**Depth.** A landing site's `depth` is the most path levels its pages may have, a leading English
+locale (`/en/`, `/en-us/`) not counted, as the v1 set's landing rule reads them. Deeper pages, pages
+with a query, pages under another locale (`/de-de/`) and pages of other hosts stay unsent, wherever
+the date floor leaves pages out, and its cap counts only the pages its depth lets go. A deeper depth,
+or none, walks the domain again.
+
 **Resends.** `resend_before` sends a domain's pages last sent before it once more, as after an
 extraction change. When a domain's value changes, a walk in a thread of its own lists those pages at
 `--resend-per-sec` a second, newest lastmod first, on a resend list apart from the lanes; a list
 built again with the same value walks nothing. Failing pages, pages robots.txt disallows and pages
-dated before the floor stay off. Resends take only the room the lanes leave, before refreshes, within
+dated before the floor stay off. A site with a `depth` goes again only up to its `send_cap`, its
+shallowest pages first, so its homepage leads. Resends take only the room the lanes leave, before refreshes, within
 the domain's hourly limit and Crawl-delay, and refreshes pass a domain by while its resends wait. A
 failed resend gets no retry of its own. Resent pages' outcomes stay out of the yields that pace the
 domain, also across a restart: the pages lately resent are kept in `resent-pages.bin` beside the
