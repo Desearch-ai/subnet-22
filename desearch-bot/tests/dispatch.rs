@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use desearch_bot::allowed::{self, Allowed, Terms};
 use desearch_bot::buckets::{bucket_of, BucketStore, Buckets, Changes, Resources};
 use desearch_bot::dispatch::{
-    allot, batch_id, interleave, recent_share, settle, shares, slots, split, yield_share, Dispatcher, HourlyCap, Pace, Progress, StockWanted, Want, FILL_FLOOR,
+    allot, batch_id, interleave, most_at_once, recent_share, settle, shares, slots, split, yield_share, Dispatcher, HourlyCap, Pace, Progress, StockWanted, Want, FILL_FLOOR,
     PROBE_PER_HOUR, YIELD_JUDGED, YIELD_RECENT_JUDGED,
 };
 use desearch_bot::hotkey::{self, Hotkey};
@@ -480,15 +480,112 @@ fn outcomes_tally_each_domains_yield_once_per_file_under_the_domain_its_host_was
 #[test]
 fn the_hourly_cap_spreads_a_domains_hour_and_forgets_sends_older_than_an_hour() {
     let mut cap = HourlyCap::new(36_000);
-    assert_eq!(cap.allowance("a.com", 1000), 1200, "two minutes' worth goes at once, not the hour");
-    cap.record("a.com", 1000, 1200);
-    assert_eq!(cap.allowance("a.com", 1119), 0);
-    assert_eq!(cap.allowance("a.com", 1120), 1200, "then the next two minutes' worth");
-    cap.record("a.com", 1120, 34_000);
-    assert_eq!(cap.allowance("a.com", 1240), 800, "never more than the hour leaves");
-    assert_eq!(cap.allowance("a.com", 4600), 1200, "sends older than an hour are forgotten");
-    assert_eq!(cap.allowance("b.com", 1000), 1200);
+    assert_eq!(cap.allowance("a.com", 1000), 3000, "five minutes' worth goes at once, not the hour");
+    cap.record("a.com", 1000, 3000);
+    assert_eq!(cap.allowance("a.com", 1000), 0);
+    assert_eq!(cap.allowance("a.com", 1120), 1200, "two minutes later, two minutes' worth is back");
+    assert_eq!(cap.allowance("a.com", 2000), 3000, "and never more than five minutes' worth");
+    let mut sent = 3000;
+    for at in (1300..4600).step_by(300) {
+        let allowed = cap.allowance("a.com", at);
+        cap.record("a.com", at, allowed);
+        sent += allowed;
+    }
+    assert_eq!(sent, 36_000);
+    assert_eq!(cap.allowance("a.com", 4599), 0, "never more than the hour leaves");
+    assert_eq!(cap.allowance("a.com", 4600), 3000, "sends older than an hour are forgotten");
+    assert_eq!(cap.allowance("b.com", 1000), 3000);
     assert_eq!(HourlyCap::new(20).allowance("c.com", 1000), 20, "a small hour goes whole");
+}
+
+#[test]
+fn a_domain_keeps_its_hourly_rate_however_long_the_passes_up_to_five_minutes() {
+    for pass in [5, 45, 120, 170, 240, 300] {
+        let mut cap = HourlyCap::new(36_000);
+        let mut second_hour = 0;
+        for at in (0..7200).step_by(pass) {
+            let allowed = cap.allowance("a.com", 1000 + at);
+            cap.record("a.com", 1000 + at, allowed);
+            if at >= 3600 {
+                second_hour += allowed;
+            }
+        }
+        assert!((35_000..=36_000).contains(&second_hour), "passes {pass} s apart sent {second_hour} in the second hour");
+    }
+}
+
+#[test]
+fn time_idle_saves_no_more_than_five_minutes_of_the_hour() {
+    let mut cap = HourlyCap::new(36_000);
+    cap.record("a.com", 1000, 3000);
+    assert_eq!(cap.allowance("a.com", 3000), 3000, "idle long enough to refill many times over");
+    cap.record("a.com", 3000, 3000);
+    assert_eq!(cap.allowance("a.com", 3000), 0, "the idle time saved no more than five minutes' worth");
+    assert_eq!(cap.allowance("a.com", 3060), 600);
+}
+
+#[test]
+fn every_domains_share_starts_empty_after_a_restart_so_the_hour_around_it_holds() {
+    let mut cap = HourlyCap::empty_at(36_000, 1000);
+    assert_eq!(cap.allowance("a.com", 1000), 0, "nothing saved at the start");
+    assert_eq!(cap.allowance("a.com", 1060), 600, "a minute's worth a minute later");
+    assert_eq!(cap.allowance("a.com", 1300), 3000);
+    assert_eq!(cap.allowance_within("slow.com", 1059, 60, true), 0);
+    assert_eq!(cap.allowance_within("slow.com", 1060, 60, true), 1, "a site a minute apart waits its minute after a restart too");
+    let busiest_hour = |restarted: HourlyCap| {
+        let mut sends: Vec<(u32, u64)> = Vec::new();
+        let mut busiest = 0;
+        for (mut cap, from, to) in [(HourlyCap::new(36_000), 1000, 2800), (restarted, 2800, 6400)] {
+            for at in (from..to).step_by(5) {
+                let allowed = cap.allowance("a.com", at);
+                cap.record("a.com", at, allowed);
+                sends.push((at, allowed));
+                busiest = busiest.max(sends.iter().filter(|(sent, _)| sent + 3600 > at).map(|(_, n)| n).sum::<u64>());
+            }
+        }
+        busiest
+    };
+    assert!(busiest_hour(HourlyCap::empty_at(36_000, 2800)) <= 39_000, "a restart half an hour into a busy hour adds at most the share saved before it");
+    assert!(busiest_hour(HourlyCap::new(36_000)) > 39_000, "a full share at the restart would add a second one");
+}
+
+#[test]
+fn the_cap_never_passes_the_hour_or_the_saved_share_whatever_is_sent() {
+    let mut seed: u64 = 0x9E37_79B9_7F4A_7C15;
+    let mut draw = |n: u64| {
+        seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+        (seed >> 33) % n
+    };
+    let limits = [1u64, 7, 20, 60, 240, 1000, 1440, 2000, 36_000];
+    for _ in 0..1000 {
+        let delayed = draw(2) == 0;
+        let limit = limits[draw(limits.len() as u64) as usize];
+        let mut cap = if draw(2) == 0 { HourlyCap::new(2000) } else { HourlyCap::empty_at(2000, 1_000_000) };
+        let mut sends: Vec<(u32, u64)> = Vec::new();
+        let mut at = 1_000_000;
+        let mut last_pass: Option<u32> = None;
+        for _ in 0..300 {
+            let gap = if draw(10) == 0 { 2000 } else { 400 };
+            at += 1 + draw(gap) as u32;
+            cap.pass_at(at);
+            let allowed = cap.allowance_within("x.com", at, limit, delayed);
+            let most_this_pass = last_pass.map_or(1, |before| (u64::from(at - before) * limit).div_ceil(3600).max(1));
+            last_pass = Some(at);
+            let n = if draw(4) == 0 { draw(allowed + 1) } else { allowed };
+            if n == 0 {
+                continue;
+            }
+            cap.record("x.com", at, n);
+            sends.push((at, n));
+            let within = |seconds: u32| sends.iter().filter(|(sent, _)| sent + seconds > at).map(|(_, n)| n).sum::<u64>();
+            assert!(within(3600) <= limit, "{} in the hour to {at} under {limit}", within(3600));
+            if delayed {
+                assert!(n <= most_this_pass, "{n} at once under {limit} an hour, at most {most_this_pass} for the time since the last pass");
+            } else {
+                assert!(within(300) <= most_at_once(limit) + limit * 300 / 3600, "{} in five minutes under {limit}", within(300));
+            }
+        }
+    }
 }
 
 #[test]
@@ -1020,7 +1117,7 @@ fn a_refresh_stock_passes_over_pages_dated_before_the_floor() {
 async fn spare_room_goes_to_the_oldest_sent_pages_of_domains_whose_pages_come_back() {
     let dir = Dir::new("dispatcher-fill");
     let buckets = Arc::new(known(&dir, &["example.com", "example.org"]));
-    buckets.allow(&Allowed::with_terms([("example.com", Terms { hourly: Some(3600), ..Terms::default() }), ("example.org", Terms::default())]));
+    buckets.allow(&Allowed::with_terms([("example.com", Terms { hourly: Some(1440), ..Terms::default() }), ("example.org", Terms::default())]));
     let later = 1000 + FILL_FLOOR;
     for (host, ok, failed) in [("example.com", 1000.0, 10.0), ("example.org", 5.0, 1000.0)] {
         let store = buckets.store(host);
@@ -1045,12 +1142,12 @@ async fn spare_room_goes_to_the_oldest_sent_pages_of_domains_whose_pages_come_ba
     assert_eq!(buckets.store("example.com").stock_refresh("example.com", 1000, None, usize::MAX, &mut |_| true).unwrap().map(|s| s.count), Some(150));
     assert_eq!(dispatcher.pass(later + 1).await.unwrap(), 0, "a domain found out of stock waits for it");
     let later = later + 600;
-    assert_eq!(dispatcher.pass(later).await.unwrap(), 120, "two minutes of example.com's 3,600 an hour");
+    assert_eq!(dispatcher.pass(later).await.unwrap(), 120, "five minutes of example.com's 1,440 an hour");
     let body: Value = serde_json::from_slice(&fake.lock().unwrap().enqueued[0].1).unwrap();
     assert!(body["urls"].as_array().unwrap().iter().all(|u| u["host"] == "example.com"));
     assert_eq!(progress.sent_fill.load(std::sync::atomic::Ordering::Relaxed), 120);
     assert_eq!(progress.fill_domains.load(std::sync::atomic::Ordering::Relaxed), 1);
-    assert_eq!(dispatcher.pass(later + 120).await.unwrap(), 30, "the rest after the next two minutes");
+    assert_eq!(dispatcher.pass(later + 300).await.unwrap(), 30, "the rest after the next five minutes");
 }
 
 #[test]
@@ -1724,16 +1821,16 @@ async fn a_site_with_only_resends_keeps_its_crawl_delay() {
     tokio::spawn(serve_api(listener, fake.clone()));
     let mut dispatcher = Dispatcher::load(buckets.clone(), TaskApi::new(&base, Hotkey::from_uri("//test").unwrap()).unwrap(), 1000, shares(50, 10), rules(), Arc::new(Progress::default())).await.unwrap();
     let now = 1_800_000_000;
-    assert_eq!(dispatcher.pass(now).await.unwrap(), 2, "a minute between requests is 60 an hour, two minutes' worth at once, for resends too");
-    assert_eq!(dispatcher.pass(now + 60).await.unwrap(), 0);
-    assert_eq!(dispatcher.pass(now + 121).await.unwrap(), 2);
+    assert_eq!(dispatcher.pass(now).await.unwrap(), 1, "a minute between requests is one at a time, for resends too");
+    assert_eq!(dispatcher.pass(now + 30).await.unwrap(), 0);
+    assert_eq!(dispatcher.pass(now + 60).await.unwrap(), 1, "then one a minute");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_site_with_resends_waiting_gets_no_fill_on_top_of_them() {
     let dir = Dir::new("resend-fill");
     let buckets = Arc::new(known(&dir, &["example.com"]));
-    buckets.allow(&Allowed::with_terms([("example.com", Terms { hourly: Some(3600), ..Terms::default() })]));
+    buckets.allow(&Allowed::with_terms([("example.com", Terms { hourly: Some(1440), ..Terms::default() })]));
     let store = buckets.store("example.com");
     store.record_listing("example.com", 1, (0..150).map(|i| (urls::parse(&format!("https://example.com/p{i:03}"), "example.com").unwrap(), 100, false)).collect(), 100).unwrap();
     let mut quotas = [0; LANES];
@@ -1754,7 +1851,7 @@ async fn a_site_with_resends_waiting_gets_no_fill_on_top_of_them() {
     assert_eq!(store.stock_refresh("example.com", 1000, None, usize::MAX, &mut |_| true).unwrap().map(|s| s.count), Some(50), "the 50 sent after the cutoff can be refreshed");
     let mut dispatcher = Dispatcher::load(buckets.clone(), api, 1_000_000, shares(50, 10), rules(), progress.clone()).await.unwrap().refreshing(wanted.clone());
     let count = |counter: &std::sync::atomic::AtomicU64| counter.load(std::sync::atomic::Ordering::Relaxed);
-    assert_eq!(dispatcher.pass(later).await.unwrap(), 120, "two minutes of its 3,600 an hour, once");
+    assert_eq!(dispatcher.pass(later).await.unwrap(), 120, "five minutes of its 1,440 an hour, once");
     assert_eq!((count(&progress.sent_resend), count(&progress.sent_fill)), (100, 20), "the resends first; the fill takes only what they left, once none wait");
 }
 
@@ -1960,7 +2057,8 @@ fn a_crawl_delay_sets_the_pages_an_hour_a_site_can_take() {
     assert_eq!(desearch_bot::dispatch::delay_hourly(&record(Value::from(0))), None);
     assert_eq!(desearch_bot::dispatch::delay_hourly(&record(Value::Null)), None);
     let mut cap = HourlyCap::new(36_000);
-    assert_eq!(cap.allowance_within("arxiv.org", 1000, 240, 1), 8, "two minutes of 240 an hour, with no floor of a hundred");
+    assert_eq!(cap.allowance_within("arxiv.org", 1000, 240, true), 1, "one page before a second pass, however many an hour");
+    assert_eq!(cap.allowance_within("arxiv.org", 1000, 240, false), 100, "five minutes of 240 an hour is 20, held up to the floor of a hundred");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1992,11 +2090,11 @@ async fn a_site_asking_for_a_delay_between_requests_gets_no_more_than_the_delay_
     };
     let now = 1_759_400_000;
     dispatcher.pass(now).await.unwrap();
-    assert_eq!((sent_by(&fake, "example.com"), sent_by(&fake, "example.org")), (2, 30), "a minute between requests is 60 an hour, two minutes' worth at once");
+    assert_eq!((sent_by(&fake, "example.com"), sent_by(&fake, "example.org")), (1, 30), "a minute between requests is one at a time");
+    dispatcher.pass(now + 30).await.unwrap();
+    assert_eq!(sent_by(&fake, "example.com"), 1);
     dispatcher.pass(now + 60).await.unwrap();
-    assert_eq!(sent_by(&fake, "example.com"), 2);
-    dispatcher.pass(now + 121).await.unwrap();
-    assert_eq!(sent_by(&fake, "example.com"), 4);
+    assert_eq!(sent_by(&fake, "example.com"), 2, "then one a minute");
 }
 
 #[test]
@@ -2052,4 +2150,345 @@ fn a_capped_walk_keeps_the_pages_found_while_it_ran() {
 fn the_resend_walk_reads_at_the_walkers_rate_or_freely_with_the_walker_off() {
     assert_eq!(desearch_bot::dispatch::resend_reads(100_000), 100_000);
     assert_eq!(desearch_bot::dispatch::resend_reads(0), 1_000_000, "the bot and the replay alike, not one record a second");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn every_batch_of_a_wave_is_marked_sent_together() {
+    let dir = Dir::new("wave-marked");
+    let buckets = Arc::new(known(&dir, &["example.com", "example.org"]));
+    for host in ["example.com", "example.org"] {
+        let pages = (0..12_000).map(|i| (urls::parse(&format!("https://{host}/p{i:05}"), host).unwrap(), 100, false)).collect();
+        buckets.store(host).record_listing(host, 1, pages, 100).unwrap();
+    }
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let fake = Arc::new(Mutex::new(FakeApi { room: 100, ..FakeApi::default() }));
+    tokio::spawn(serve_api(listener, fake.clone()));
+    let progress = Arc::new(Progress::default());
+    let api = TaskApi::new(&base, Hotkey::from_uri("//test").unwrap()).unwrap();
+    let mut dispatcher = Dispatcher::load(buckets.clone(), api, 1_000_000, shares(50, 10), rules(), progress.clone()).await.unwrap();
+    let now = 1_759_400_000;
+    assert_eq!(dispatcher.pass(now).await.unwrap(), 24_000);
+    assert_eq!(progress.batches.load(std::sync::atomic::Ordering::Relaxed), 3, "one wave of three batches");
+    for host in ["example.com", "example.org"] {
+        let store = buckets.store(host);
+        assert_eq!(store.ready_count(host).unwrap(), 0);
+        for page in ["p00000", "p11999"] {
+            assert_eq!(store.url(&urls::parse(&format!("https://{host}/{page}"), host).unwrap()).unwrap().unwrap().pushed_at, now);
+        }
+    }
+    assert_eq!(progress.ready_domains.load(std::sync::atomic::Ordering::Relaxed), 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_list_change_takes_the_domains_it_drops_off_the_ready_lists_and_brings_back_those_it_names_again() {
+    let dir = Dir::new("relist-ready");
+    let buckets = Arc::new(known(&dir, &["a.com", "b.com", "c.com"]));
+    let path = dir.0.join("domains.json");
+    std::fs::write(&path, r#"["a.com", "b.com", "c.com"]"#).unwrap();
+    let list = Allowed::from_file(&path).unwrap();
+    buckets.allow(&list);
+    for host in ["a.com", "b.com", "c.com"] {
+        let pages = (0..10).map(|i| (urls::parse(&format!("https://{host}/p{i:02}"), host).unwrap(), 100, false)).collect();
+        buckets.store(host).record_listing(host, 1, pages, 100).unwrap();
+    }
+    relist(&path, &list, r#"["a.com", "b.com"]"#);
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let fake = Arc::new(Mutex::new(FakeApi { room: 1, ..FakeApi::default() }));
+    tokio::spawn(serve_api(listener, fake.clone()));
+    let progress = Arc::new(Progress::default());
+    let api = TaskApi::new(&base, Hotkey::from_uri("//test").unwrap()).unwrap();
+    let mut dispatcher = Dispatcher::load(buckets.clone(), api, 1000, shares(50, 10), rules(), progress.clone()).await.unwrap();
+    assert_eq!(progress.ready_domains.load(std::sync::atomic::Ordering::Relaxed), 2, "c.com left the list before the start");
+
+    relist(&path, &list, r#"["a.com", "c.com"]"#);
+    assert_eq!(dispatcher.pass(1_759_400_000).await.unwrap(), 20);
+    let sent_by = |host: &str| {
+        fake.lock().unwrap().enqueued.iter().map(|(_, body)| serde_json::from_slice::<Value>(body).unwrap()["urls"].as_array().unwrap().iter().filter(|u| u["host"] == host).count()).sum::<usize>()
+    };
+    assert_eq!((sent_by("a.com"), sent_by("b.com"), sent_by("c.com")), (10, 0, 10), "c.com's pages go again though nothing new was queued for it");
+    assert_eq!(progress.ready.load(std::sync::atomic::Ordering::Relaxed), 0, "b.com's pages wait in the store, not on the ready lists");
+    assert_eq!(buckets.store("b.com").ready_count("b.com").unwrap(), 10);
+}
+
+fn sent_to(fake: &Arc<Mutex<FakeApi>>, host: &str) -> usize {
+    fake.lock().unwrap().enqueued.iter().map(|(_, body)| serde_json::from_slice::<Value>(body).unwrap()["urls"].as_array().unwrap().iter().filter(|u| u["host"] == host).count()).sum::<usize>()
+}
+
+fn ask_for_a_delay(buckets: &Buckets, host: &str, delay: f64) {
+    let mut record = records::new_domain(Some(10), Some("com"), &[], State::Active, None, None);
+    record.insert("delay".into(), delay.into());
+    let mut changes = Changes::default();
+    changes.domain(host, &record);
+    buckets.store(host).write(changes).unwrap();
+}
+
+fn queue_pages(buckets: &Buckets, host: &str, count: usize) {
+    let pages = (0..count).map(|i| (urls::parse(&format!("https://{host}/p{i:04}"), host).unwrap(), 100, false)).collect();
+    buckets.store(host).record_listing(host, 1, pages, 100).unwrap();
+}
+
+async fn fake_api(room: i64, fail_next: usize) -> (TaskApi, Arc<Mutex<FakeApi>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let fake = Arc::new(Mutex::new(FakeApi { room, fail_next, ..FakeApi::default() }));
+    tokio::spawn(serve_api(listener, fake.clone()));
+    (TaskApi::new(&base, Hotkey::from_uri("//test").unwrap()).unwrap(), fake)
+}
+
+#[test]
+fn a_site_asking_for_a_delay_gets_what_it_allows_since_the_last_pass_and_saves_nothing_past_it() {
+    let mut cap = HourlyCap::new(36_000);
+    let mut sends: Vec<(u32, u64)> = Vec::new();
+    let mut pass = |cap: &mut HourlyCap, at: u32, sending: bool| {
+        cap.pass_at(at);
+        let allowed = cap.allowance_within("slow.com", at, 360, true);
+        if sending && allowed > 0 {
+            cap.record("slow.com", at, allowed);
+            sends.push((at, allowed));
+        }
+        allowed
+    };
+    assert_eq!(pass(&mut cap, 1000, true), 1, "a 10 s delay sends one page before a second pass");
+    for at in (1030..1300).step_by(30) {
+        assert_eq!(pass(&mut cap, at, true), 3, "three pages for each 30 s between passes");
+    }
+    let mut at = 1270;
+    let mut sent = 0;
+    for _ in 0..8 {
+        at += 45;
+        let allowed = pass(&mut cap, at, true);
+        assert!((4..=5).contains(&allowed), "four or five for 45 s, the half page carried, not {allowed}");
+        sent += allowed;
+    }
+    assert_eq!(sent, 36, "4.5 a pass, its full 360 an hour");
+    for idle in (at + 30..at + 3600).step_by(30) {
+        pass(&mut cap, idle, false);
+    }
+    assert_eq!(pass(&mut cap, at + 3600, true), 3, "an idle hour saves nothing past the last pass");
+    for at in (at + 3610..at + 7200).step_by(10) {
+        pass(&mut cap, at, true);
+    }
+    let busiest = sends.iter().map(|(at, _)| sends.iter().filter(|(sent, _)| (*at..*at + 3600).contains(sent)).map(|(_, n)| n).sum::<u64>()).max().unwrap();
+    assert!(busiest <= 360, "{busiest} in an hour under a 10 s delay");
+
+    let mut restarted = HourlyCap::empty_at(36_000, 1000);
+    restarted.pass_at(1030);
+    assert_eq!(restarted.allowance_within("slow.com", 1030, 360, true), 1, "the first pass after a restart sends at most one page");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_site_asking_for_a_delay_sends_one_page_for_each_delay_since_the_last_pass() {
+    let dir = Dir::new("delay-gap");
+    let buckets = Arc::new(known(&dir, &["example.com"]));
+    ask_for_a_delay(&buckets, "example.com", 10.0);
+    queue_pages(&buckets, "example.com", 100);
+    let (api, fake) = fake_api(1, 0).await;
+    let mut dispatcher = Dispatcher::load(buckets.clone(), api, 1000, shares(50, 10), rules(), Arc::new(Progress::default())).await.unwrap();
+    let start = 1_759_400_000;
+    let mut by_pass = Vec::new();
+    for at in (start..start + 300).step_by(30) {
+        let before = sent_to(&fake, "example.com");
+        dispatcher.pass(at).await.unwrap();
+        by_pass.push(sent_to(&fake, "example.com") - before);
+    }
+    assert_eq!(by_pass, [1, 3, 3, 3, 3, 3, 3, 3, 3, 3], "one at the first pass, then three for each 30 s at a 10 s delay");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_site_asking_for_a_delay_gets_one_request_a_delay_apart_while_passes_are_shorter() {
+    let dir = Dir::new("delay-spacing");
+    let buckets = Arc::new(known(&dir, &["example.com", "example.org"]));
+    buckets.allow(&Allowed::with_terms([("example.com", Terms::default()), ("example.org", Terms { hourly: Some(30), ..Terms::default() })]));
+    for host in ["example.com", "example.org"] {
+        ask_for_a_delay(&buckets, host, 60.0);
+        queue_pages(&buckets, host, 100);
+    }
+    let (api, fake) = fake_api(1, 0).await;
+    let mut dispatcher = Dispatcher::load(buckets.clone(), api, 1000, shares(50, 10), rules(), Arc::new(Progress::default())).await.unwrap();
+    let start = 1_759_400_000;
+    let mut sends: HashMap<&str, Vec<u32>> = HashMap::new();
+    let mut counted = HashMap::new();
+    for at in (start..start + 600).step_by(5) {
+        dispatcher.pass(at).await.unwrap();
+        for host in ["example.com", "example.org"] {
+            let now_sent = sent_to(&fake, host);
+            let before = counted.insert(host, now_sent).unwrap_or(0);
+            assert!(now_sent - before <= 1, "{host} got {} requests at once", now_sent - before);
+            if now_sent > before {
+                sends.entry(host).or_default().push(at - start);
+            }
+        }
+    }
+    assert_eq!(sends["example.com"], (0..600).step_by(60).collect::<Vec<u32>>(), "a minute apart, never closer");
+    assert_eq!(sends["example.org"], (0..600).step_by(120).collect::<Vec<u32>>(), "a list limit below the delay's rate spaces it further, one at a time still");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_paced_dispatcher_starts_every_domains_share_empty() {
+    let dir = Dir::new("empty-start");
+    let buckets = Arc::new(known(&dir, &["example.com"]));
+    queue_pages(&buckets, "example.com", 300);
+    let (api, _fake) = fake_api(1, 0).await;
+    let start = 1_759_400_000;
+    let mut dispatcher = Dispatcher::load(buckets.clone(), api, 1000, shares(50, 10), rules(), Arc::new(Progress::default())).await.unwrap().paced_from(36_000_000, start);
+    assert_eq!(dispatcher.pass(start + 60).await.unwrap(), 16, "a minute of its 1,000 an hour, not the hundred a full share holds");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_domain_the_list_drops_gets_no_refreshes() {
+    let dir = Dir::new("fill-dropped");
+    let buckets = Arc::new(known(&dir, &["example.com", "example.net"]));
+    let path = dir.0.join("domains.json");
+    std::fs::write(&path, r#"[{"host": "example.com", "hourly": 1440}, "example.net"]"#).unwrap();
+    let list = Allowed::from_file(&path).unwrap();
+    buckets.allow(&list);
+    let store = buckets.store("example.com");
+    queue_pages(&buckets, "example.com", 150);
+    let mut quotas = [0; LANES];
+    quotas[FRESH] = 1000;
+    store.mark_sent(&store.take_ready("example.com", quotas).unwrap(), 1000, &rules()).unwrap();
+    let later = 1000 + FILL_FLOOR;
+    store.note_outcomes(&[], &[("example.com".to_string(), Yield { ok: 1000.0, failed: 10.0, at: later })]).unwrap();
+    assert_eq!(store.stock_refresh("example.com", 1000, None, usize::MAX, &mut |_| true).unwrap().map(|s| s.count), Some(150));
+    let (api, fake) = fake_api(1, 0).await;
+    let wanted = Arc::new(StockWanted::default());
+    let mut dispatcher = Dispatcher::load(buckets.clone(), api, 1_000_000, shares(50, 10), rules(), Arc::new(Progress::default())).await.unwrap().refreshing(wanted.clone());
+    assert_eq!(dispatcher.pass(later).await.unwrap(), 120, "five minutes of its 1,440 an hour");
+    relist(&path, &list, r#"["example.net"]"#);
+    dispatcher.pass(later + 600).await.unwrap();
+    assert_eq!(sent_to(&fake, "example.com"), 120, "the 30 refreshes left wait while the list leaves it out");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_batch_that_lands_after_the_list_dropped_its_domain_leaves_it_off_the_ready_lists() {
+    let dir = Dir::new("retry-dropped");
+    let buckets = Arc::new(known(&dir, &["a.com", "d.com"]));
+    let path = dir.0.join("domains.json");
+    std::fs::write(&path, r#"["a.com", "d.com"]"#).unwrap();
+    let list = Allowed::from_file(&path).unwrap();
+    buckets.allow(&list);
+    for host in ["a.com", "d.com"] {
+        queue_pages(&buckets, host, 300);
+    }
+    let (api, _fake) = fake_api(1, 1).await;
+    let progress = Arc::new(Progress::default());
+    let mut dispatcher = Dispatcher::load(buckets.clone(), api, 1000, shares(50, 10), rules(), progress.clone()).await.unwrap();
+    assert_eq!(dispatcher.pass(1_759_400_000).await.unwrap(), 0, "the one batch failed and waits to go again");
+    relist(&path, &list, r#"["a.com"]"#);
+    dispatcher.pass(1_759_400_600).await.unwrap();
+    assert_eq!(progress.ready_domains.load(std::sync::atomic::Ordering::Relaxed), 1, "d.com's other pages wait in the store, off the ready lists");
+    assert_eq!(buckets.store("d.com").ready_count("d.com").unwrap(), 200);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_list_change_counts_a_joining_domains_pages_once_and_keeps_what_grew_for_those_already_on() {
+    let dir = Dir::new("relist-count");
+    let buckets = Arc::new(known(&dir, &["a.com", "b.com", "c.com"]));
+    let path = dir.0.join("domains.json");
+    std::fs::write(&path, r#"["a.com", "b.com"]"#).unwrap();
+    let list = Allowed::from_file(&path).unwrap();
+    buckets.allow(&list);
+    for host in ["a.com", "b.com"] {
+        queue_pages(&buckets, host, 10);
+    }
+    let (api, _fake) = fake_api(0, 0).await;
+    let progress = Arc::new(Progress::default());
+    let mut dispatcher = Dispatcher::load(buckets.clone(), api, 1000, shares(50, 10), rules(), progress.clone()).await.unwrap();
+    let more = (0..5).map(|i| (urls::parse(&format!("https://a.com/more{i}"), "a.com").unwrap(), 100, false)).collect();
+    buckets.store("a.com").record_listing("a.com", 2, more, 200).unwrap();
+    relist(&path, &list, r#"["a.com", "b.com", "c.com"]"#);
+    queue_pages(&buckets, "c.com", 10);
+    dispatcher.pass(1_759_400_000).await.unwrap();
+    assert_eq!(progress.ready.load(std::sync::atomic::Ordering::Relaxed), 35, "a.com's 15, b.com's 10 and c.com's 10, each counted once");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_domain_the_list_names_again_keeps_its_crawl_delay() {
+    let dir = Dir::new("relist-delay");
+    let buckets = Arc::new(known(&dir, &["a.com", "c.com"]));
+    let path = dir.0.join("domains.json");
+    std::fs::write(&path, r#"["a.com", "c.com"]"#).unwrap();
+    let list = Allowed::from_file(&path).unwrap();
+    buckets.allow(&list);
+    ask_for_a_delay(&buckets, "c.com", 60.0);
+    for host in ["a.com", "c.com"] {
+        queue_pages(&buckets, host, 10);
+    }
+    relist(&path, &list, r#"["a.com"]"#);
+    let (api, fake) = fake_api(1, 0).await;
+    let mut dispatcher = Dispatcher::load(buckets.clone(), api, 1000, shares(50, 10), rules(), Arc::new(Progress::default())).await.unwrap();
+    relist(&path, &list, r#"["a.com", "c.com"]"#);
+    dispatcher.pass(1_759_400_000).await.unwrap();
+    assert_eq!((sent_to(&fake, "a.com"), sent_to(&fake, "c.com")), (10, 1), "c.com joins one request at a time");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn only_a_list_change_reads_every_stores_ready_counts() {
+    let dir = Dir::new("relist-once");
+    let buckets = Arc::new(known(&dir, &["a.com", "b.com"]));
+    let path = dir.0.join("domains.json");
+    std::fs::write(&path, r#"["a.com"]"#).unwrap();
+    let list = Allowed::from_file(&path).unwrap();
+    buckets.allow(&list);
+    queue_pages(&buckets, "a.com", 10);
+    let (api, fake) = fake_api(1, 0).await;
+    let mut dispatcher = Dispatcher::load(buckets.clone(), api, 1000, shares(50, 10), rules(), Arc::new(Progress::default())).await.unwrap();
+    relist(&path, &list, r#"["a.com", "b.com"]"#);
+    assert_eq!(dispatcher.pass(1_759_400_000).await.unwrap(), 10);
+    queue_pages(&buckets, "b.com", 10);
+    buckets.store("b.com").take_noticed();
+    tokio::time::sleep(std::time::Duration::from_secs(16)).await;
+    dispatcher.pass(1_759_400_600).await.unwrap();
+    assert_eq!(sent_to(&fake, "b.com"), 0, "with the list unchanged, a pass takes in only what grew, here taken away first, and reads no store's counts");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_batch_left_pending_over_a_restart_counts_as_sent_at_the_start() {
+    let dir = Dir::new("pending-restart");
+    let buckets = Arc::new(known(&dir, &["a.com", "c.com"]));
+    ask_for_a_delay(&buckets, "c.com", 60.0);
+    queue_pages(&buckets, "a.com", 1000);
+    queue_pages(&buckets, "c.com", 100);
+    let failed_at = 1_759_400_000;
+    {
+        let (api, _fake) = fake_api(1, 1).await;
+        let mut before = Dispatcher::load(buckets.clone(), api, 1000, shares(50, 10), rules(), Arc::new(Progress::default())).await.unwrap();
+        assert_eq!(before.pass(failed_at).await.unwrap(), 0, "the batch failed and waits to go again");
+    }
+    let start = failed_at + 1800;
+    let (api, fake) = fake_api(1, 0).await;
+    let mut after = Dispatcher::load(buckets.clone(), api, 1000, shares(50, 10), rules(), Arc::new(Progress::default())).await.unwrap().paced_from(36_000_000, start);
+    after.pass(start + 1).await.unwrap();
+    assert_eq!((sent_to(&fake, "a.com"), sent_to(&fake, "c.com")), (100, 1), "only the retried batch: it counts as sent at the start, on top of the empty share, not half an hour before it");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_site_the_list_drops_and_names_again_keeps_its_crawl_delay_in_the_fill() {
+    let dir = Dir::new("readd-delay");
+    let buckets = Arc::new(known(&dir, &["example.com", "example.net"]));
+    let path = dir.0.join("domains.json");
+    std::fs::write(&path, r#"[{"host": "example.com", "hourly": 1440}, "example.net"]"#).unwrap();
+    let list = Allowed::from_file(&path).unwrap();
+    buckets.allow(&list);
+    ask_for_a_delay(&buckets, "example.com", 60.0);
+    let store = buckets.store("example.com");
+    queue_pages(&buckets, "example.com", 150);
+    let mut quotas = [0; LANES];
+    quotas[FRESH] = 1000;
+    store.mark_sent(&store.take_ready("example.com", quotas).unwrap(), 1000, &rules()).unwrap();
+    let later = 1000 + FILL_FLOOR;
+    store.note_outcomes(&[], &[("example.com".to_string(), Yield { ok: 1000.0, failed: 10.0, at: later })]).unwrap();
+    assert_eq!(store.stock_refresh("example.com", 1000, None, usize::MAX, &mut |_| true).unwrap().map(|s| s.count), Some(150));
+    let (api, fake) = fake_api(1, 0).await;
+    let wanted = Arc::new(StockWanted::default());
+    let mut dispatcher = Dispatcher::load(buckets.clone(), api, 1_000_000, shares(50, 10), rules(), Arc::new(Progress::default())).await.unwrap().refreshing(wanted.clone());
+    assert_eq!(dispatcher.pass(later).await.unwrap(), 1, "a 60 s delay: one refresh");
+    relist(&path, &list, r#"["example.net"]"#);
+    tokio::time::sleep(std::time::Duration::from_secs(16)).await;
+    dispatcher.pass(later + 600).await.unwrap();
+    relist(&path, &list, r#"[{"host": "example.com", "hourly": 1440}, "example.net"]"#);
+    dispatcher.pass(later + 605).await.unwrap();
+    assert_eq!(sent_to(&fake, "example.com"), 2, "named again, one page for the 5 s since the last pass, not five minutes of 1,440");
 }

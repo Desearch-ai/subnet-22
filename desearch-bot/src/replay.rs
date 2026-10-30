@@ -1,7 +1,7 @@
 //! Hours of the dispatcher on copied stores: passes on a simulated clock against an in-process task API while the list walker joins listed domains and the stock keeper chooses refresh stocks, with outcomes drawn from a real day's and sitemap reads simulated.
 
 use std::collections::hash_map::DefaultHasher;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -31,7 +31,6 @@ use crate::urls::{self, Record};
 const PASS: u32 = 5;
 const HOUR: u32 = 3_600;
 const FLOOR: u32 = 86_400;
-const SPREAD: u32 = 120;
 /// Seconds from a send to its outcome, as the miners, validators and publisher take.
 const OUTCOME_AFTER: u32 = 600;
 /// The sitemap every simulated read is filed under.
@@ -135,6 +134,9 @@ struct Bars {
     restamped_early: u64,
     over_hour: u64,
     over_spread: u64,
+    /// Sends this hour to sites that ask for a delay between requests, and those sites.
+    delayed_sent: u64,
+    delayed_sites: HashSet<String>,
     refusing: HashMap<u32, u64>,
 }
 
@@ -151,7 +153,7 @@ fn page_id(url: &str) -> u64 {
 
 impl Bars {
     /// A send of `url`; `interval` gives the page's refresh interval as of a send at the time it is given.
-    fn sent(&mut self, url: &str, host: &str, at: u32, limit: u64, restamping: bool, interval: impl FnOnce(u32) -> u32) {
+    fn sent(&mut self, url: &str, at: u32, restamping: bool, interval: impl FnOnce(u32) -> u32) {
         let id = page_id(url);
         if let Some((before, how)) = self.last.insert(id, (at, PENDING)) {
             let redated = self.redated.get(&id).is_some_and(|&when| when >= before);
@@ -167,16 +169,28 @@ impl Bars {
                 }
             }
         }
+    }
+
+    /// A send to `host`, held to `limit` an hour; `delayed` for a site that asks for a delay between requests.
+    fn spaced(&mut self, host: &str, at: u32, limit: u64, delayed: bool) {
         let times = self.sites.entry(host.to_string()).or_default();
         while times.front().is_some_and(|&t| t + HOUR <= at) {
             times.pop_front();
         }
         times.push_back(at);
-        let spread = (limit * u64::from(SPREAD) / u64::from(HOUR)).max(100);
         if times.len() as u64 > limit {
             self.over_hour += 1;
         }
-        if times.iter().rev().take_while(|&&t| t + SPREAD > at).count() as u64 > spread {
+        // A delayed site gets what its delay allows over a pass, rounded up; any other the share saved up and what refills while it goes.
+        let (within, most) = if delayed {
+            self.delayed_sent += 1;
+            self.delayed_sites.insert(host.to_string());
+            (1, (u64::from(PASS) * limit).div_ceil(u64::from(HOUR)))
+        } else {
+            (dispatch::SPREAD_SECONDS, dispatch::most_at_once(limit) + limit * u64::from(dispatch::SPREAD_SECONDS) / u64::from(HOUR))
+        };
+        let times = &self.sites[host];
+        if times.iter().rev().take_while(|&&t| t + within > at).count() as u64 > most {
             self.over_spread += 1;
         }
     }
@@ -319,6 +333,7 @@ pub async fn replay(args: ReplayArgs) -> Result<()> {
     let mut reader = OutcomeReader::new(recrawl.clone(), 200_000).with_resent(resent.clone());
     let mut rng = rand::rngs::StdRng::seed_from_u64(2026);
     let mut waiting: VecDeque<Sent> = VecDeque::new();
+    let mut delays: HashMap<String, Option<u64>> = HashMap::new();
     let end = args.start + args.hours * HOUR;
     let mut now = args.start;
     let mut pass_ms: Vec<u64> = Vec::new();
@@ -363,9 +378,11 @@ pub async fn replay(args: ReplayArgs) -> Result<()> {
             writeln!(log, "{line}")?;
         }
         for (host, url) in std::mem::take(&mut taken.lock().unwrap_or_else(|e| e.into_inner()).urls) {
-            let terms = buckets.terms(&host);
+            let listed = buckets.terms(&host).hourly.unwrap_or(1_000_000);
+            let delay = *delays.entry(host.clone()).or_insert_with(|| buckets.store_for(&host).and_then(|store| store.domain(&host).ok().flatten()).as_ref().and_then(dispatch::delay_hourly));
+            bars.spaced(&host, now, delay.map_or(listed, |per_hour| per_hour.min(listed)), delay.is_some());
             let interval = |_: u32| recrawl.interval(&host);
-            bars.sent(&url, &host, now, terms.hourly.unwrap_or(1_000_000), host == restamping, interval);
+            bars.sent(&url, now, host == restamping, interval);
             if args.refusing.as_deref() == Some(host.as_str()) {
                 *bars.refusing.entry((now - args.start) / HOUR).or_default() += 1;
             }
@@ -408,7 +425,7 @@ pub async fn replay(args: ReplayArgs) -> Result<()> {
             sorted.sort_unstable();
             let p = |q: f64| sorted.get(((sorted.len() as f64 * q) as usize).min(sorted.len().saturating_sub(1))).copied().unwrap_or(0);
             let line = format!(
-                "[replay] hour {:>2}: {hour_sent} sent (new {} refresh {} retry {} resend {} fill {}), resend walk listed {} waiting {}, pass p50 {} ms p99 {} ms max {} ms, {} ready in {} domains, walker {done}/{of} queued {} before the floor {} cleared at caps {}, stocks chosen {} fill domains {}, sitemaps {} read {} new {} re-dated, rss {} MiB; over hour {} over spread {} early {} due within a day {} early re-dated {} re-stamped early {} early after a failure {} after a drop {}",
+                "[replay] hour {:>2}: {hour_sent} sent (new {} refresh {} retry {} resend {} fill {}), resend walk listed {} waiting {}, pass p50 {} ms p99 {} ms max {} ms, {} ready in {} domains, walker {done}/{of} queued {} before the floor {} cleared at caps {}, stocks chosen {} fill domains {}, sitemaps {} read {} new {} re-dated, rss {} MiB; over hour {} over spread {} early {} due within a day {} early re-dated {} re-stamped early {} early after a failure {} after a drop {}, sites with a delay {} sent to {}",
                 (now - args.start) / HOUR,
                 counts.new - last.new,
                 counts.refresh - last.refresh,
@@ -438,13 +455,17 @@ pub async fn replay(args: ReplayArgs) -> Result<()> {
                 bars.early_redated,
                 bars.restamped_early,
                 bars.early_after_failure,
-                bars.early_after_drop
+                bars.early_after_drop,
+                bars.delayed_sent,
+                bars.delayed_sites.len()
             );
             println!("{line}");
             writeln!(log, "{line}")?;
             log.flush()?;
             last = counts;
             hour_sent = 0;
+            bars.delayed_sent = 0;
+            bars.delayed_sites.clear();
             pass_ms.clear();
         }
     }
@@ -561,5 +582,36 @@ async fn serve(listener: TcpListener, taken: Arc<Mutex<Taken>>) {
             let head = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", reply.len());
             let _ = socket.write_all(&[head.into_bytes(), reply].concat()).await;
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_burst_bars_hold_a_delayed_site_to_a_pass_and_any_other_to_its_saved_share() {
+        let mut bars = Bars::default();
+        bars.spaced("slow.com", 1000, 360, true);
+        bars.spaced("slow.com", 1005, 360, true);
+        assert_eq!((bars.over_spread, bars.delayed_sent, bars.delayed_sites.len()), (0, 2, 1), "a 10 s delay may send one page in each 5 s pass");
+        bars.spaced("slow.com", 1005, 360, true);
+        assert_eq!(bars.over_spread, 1, "a second page in the same pass is over");
+        bars.spaced("quick.com", 1000, 1440, true);
+        bars.spaced("quick.com", 1000, 1440, true);
+        assert_eq!(bars.over_spread, 1, "a 2.5 s delay may send two in a 5 s pass");
+        for at in 2000..2000 + 60 {
+            bars.spaced("tiny.com", at * 5, 60, true);
+        }
+        assert_eq!(bars.over_hour, 0);
+        bars.spaced("tiny.com", 12_299, 60, true);
+        assert_eq!(bars.over_hour, 1, "a 61st page within the hour is over its 60");
+
+        for _ in 0..6000 {
+            bars.spaced("example.com", 5000, 36_000, false);
+        }
+        assert_eq!(bars.over_spread, 1, "five minutes saved and five refilled are 6,000");
+        bars.spaced("example.com", 5000, 36_000, false);
+        assert_eq!(bars.over_spread, 2);
     }
 }
