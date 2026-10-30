@@ -13,8 +13,9 @@ use desearch::feeds::CHANGES;
 use desearch::r2::{self, Bucket, Credentials, JSON, PARQUET};
 use desearch::stub;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+use publisher::backfill::ShardReader;
 use publisher::changes::{self, Body, Change, Kind};
-use publisher::current::{self, FileRef, Manifest, PageRow};
+use publisher::current::{self, FileRef, Manifest, PageRow, Withdrawals};
 use publisher::planner::{
     page_text, page_text_v2, passages, passages_v2, push_input, texts, Listed, Passage, Planner, Room, Settings, EMBED_DROPPED, EMBED_INPUTS, PAGE, PASSAGE,
     RECIPE_V2,
@@ -313,6 +314,7 @@ fn settings(dir: PathBuf, pages_per_hour: f64, start_after: i64) -> Settings {
         backfill: false,
         backfill_shards: 0..1024,
         backfill_every: Duration::from_secs(3600),
+        backfill_retry: Duration::from_secs(600),
         current_prefix: "current/".into(),
         poll: Duration::from_millis(10),
         hole_wait: Duration::from_secs(3600),
@@ -2596,6 +2598,8 @@ async fn the_log_s_pages_go_before_waiting_ones_as_the_re_plan_leaves_what_the_l
         (6, 2, 0),
         "the log's four, then two waiting pages, leaving four for the log's next pass"
     );
+    planner.pass().await.unwrap();
+    assert_eq!(planner.counts.planned, 6, "a pass that reads no change file leaves the log's share as it was");
     for seq in 14..=17 {
         log(&pages, seq, vec![page(seq)]).await;
     }
@@ -2743,10 +2747,130 @@ async fn the_backfill_leaves_what_the_log_last_asked_for_too() {
     planner.current = Some(current.clone());
     planner.pass().await.unwrap();
     assert_eq!((planner.counts.planned, planner.counts.backfill), (6, 2), "the log's four, then two of current/, leaving four for the log");
+    planner.pass().await.unwrap();
+    assert_eq!(planner.counts.planned, 6, "a pass that reads no change file leaves the log's share as it was");
     for seq in 5..=8 {
         log(&pages, seq, vec![page(format!("{seq}"))]).await;
     }
     planner.pass().await.unwrap();
     assert_eq!((planner.counts.planned, planner.counts.over_budget), (10, 0), "the log's next four find their budget");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_re_plan_leaves_the_log_s_share_within_a_change_file_and_the_rest_of_the_file_keeps_waiting() {
+    let Some((_turn, redis)) = redis_db().await else {
+        eprintln!("skipped: no Redis on {REDIS}");
+        return;
+    };
+    let dir = scratch("log-first-big-file");
+    let stub = stub::start(dir.join("r2"), "127.0.0.1:0").await.unwrap();
+    let (pages, temp) = (bucket(stub.addr, "desearch-pages"), bucket(stub.addr, "subnet-22"));
+    let page = |n: u64| v2(record(&format!("https://news.example/story/{n}"), &format!("{n} {}", article(2)), "article", "en"));
+    log(&pages, 1, (1..=9).map(page).collect()).await;
+    let mut tight = settings(dir.join("state"), 4.0, 0);
+    tight.pages_per_input = 1;
+    let mut planner = Planner::new(tight, pages.clone(), temp.clone(), redis.clone(), Room::Fixed(0)).await.unwrap();
+    planner.pass().await.unwrap();
+    assert_eq!((planner.counts.planned, planner.counts.waiting), (1, 8), "eight pages of one change file wait");
+    drop(planner);
+
+    // Ten pages banked; at 300 an hour the test refills nothing that counts.
+    for seq in 10..=13 {
+        log(&pages, seq, vec![page(seq)]).await;
+    }
+    let mut ten = settings(dir.join("state"), 300.0, 0);
+    (ten.pages_per_input, ten.max_pending) = (1, 50);
+    let mut planner = Planner::new(ten, pages.clone(), temp.clone(), redis.clone(), Room::Fixed(0)).await.unwrap();
+    planner.pass().await.unwrap();
+    assert_eq!(
+        (planner.counts.planned, planner.counts.replanned, planner.counts.over_budget, planner.state.waiting_count()),
+        (6, 2, 0, 6),
+        "two of the file's eight, and the six not reached still wait"
+    );
+    for seq in 14..=17 {
+        log(&pages, seq, vec![page(seq)]).await;
+    }
+    planner.pass().await.unwrap();
+    assert_eq!((planner.counts.planned, planner.counts.over_budget), (10, 0), "the log's next four find their budget");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_shard_the_backfill_fails_to_read_three_times_in_a_row_is_gone_past_and_counted() {
+    let Some((_turn, redis)) = redis_db().await else {
+        eprintln!("skipped: no Redis on {REDIS}");
+        return;
+    };
+    let dir = scratch("backfill-skipped");
+    let stub = stub::start(dir.join("r2"), "127.0.0.1:0").await.unwrap();
+    let (pages, temp, current) = (bucket(stub.addr, "desearch-pages"), bucket(stub.addr, "subnet-22"), bucket(stub.addr, "desearch-current"));
+    let row = |url: &str| {
+        let record = v2(record(url, &format!("{url} {}", article(2)), "article", "en"));
+        PageRow {
+            key: page_key(url).unwrap(),
+            removed: false,
+            change_seq: 1,
+            version: record_version(&record),
+            published_at: record.fetched_at.clone(),
+            record,
+        }
+    };
+    shard(&current, 7, vec![vec![row("https://news.example/a")]]).await;
+    current.put("current/shard=0007/base-000000000000.parquet", Bytes::from_static(b"not a parquet file"), PARQUET, None).await.unwrap();
+    shard(&current, 8, vec![vec![row("https://news.example/b")]]).await;
+    log(&pages, 1, vec![v2(record("https://other.example/log", &article(2), "article", "en"))]).await;
+    let mut backfilling = settings(dir.join("state"), 3600.0, 0);
+    (backfilling.backfill, backfilling.backfill_shards, backfilling.pages_per_input, backfilling.backfill_retry) = (true, 7..9, 1, Duration::ZERO);
+    let mut planner = Planner::new(backfilling, pages.clone(), temp.clone(), redis.clone(), Room::Fixed(0)).await.unwrap();
+    planner.current = Some(current.clone());
+    for _ in 0..30 {
+        planner.pass().await.unwrap();
+        if planner.counts.backfill == 1 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(
+        (planner.counts.shard_failures, planner.counts.shards_skipped, planner.counts.shards),
+        (3, 1, 1),
+        "shard 7 failed three times and shard 8 was read through"
+    );
+    assert_eq!(planner.counts.backfill, 1, "shard 8's page is read once shard 7 is gone past");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_backfill_reads_a_shard_s_whole_row_groups_a_bounded_number_of_bytes_at_a_time() {
+    let dir = scratch("reader-bytes");
+    let stub = stub::start(dir.join("r2"), "127.0.0.1:0").await.unwrap();
+    let current = bucket(stub.addr, "desearch-current");
+    let row = |n: usize| {
+        let record = v2(record(&format!("https://news.example/story/{n}"), &format!("{n} words of a page"), "article", "en"));
+        PageRow {
+            key: page_key(&record.url).unwrap(),
+            removed: false,
+            change_seq: 1,
+            version: record_version(&record),
+            published_at: record.fetched_at.clone(),
+            record,
+        }
+    };
+    // Five row groups of a thousand pages, all of them picked.
+    shard(&current, 7, vec![(0..5_000).map(row).collect()]).await;
+    let read = |bytes_at_once: u64| {
+        let reader =
+            ShardReader { bucket: current.clone(), prefix: "current/".into(), handle: tokio::runtime::Handle::current(), ranges_at_once: 4, bytes_at_once };
+        let counted = stub.state.clone();
+        tokio::task::spawn_blocking(move || {
+            let before = counted.count("GET");
+            let handed = reader.read(7, None, Withdrawals::new(), |_| true, |_| true).unwrap();
+            (handed, counted.count("GET") - before)
+        })
+    };
+    let (all, together) = read(u64::MAX).await.unwrap();
+    let (again, apart) = read(1).await.unwrap();
+    assert_eq!((all, again), (5_000, 5_000));
+    assert!(apart >= together + 4, "the five row groups fetched one by one once over the bound: {apart} GETs against {together}");
     let _ = std::fs::remove_dir_all(&dir);
 }

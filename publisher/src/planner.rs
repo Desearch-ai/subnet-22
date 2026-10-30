@@ -20,14 +20,14 @@ use parquet::basic::{Compression, ZstdLevel};
 use parquet::file::properties::WriterProperties;
 use redis::aio::ConnectionManager;
 use redis::{AsyncCommands, Script};
-use rocksdb::{DBCompressionType, IteratorMode, Options, WriteBatch, DB};
+use rocksdb::{BlockBasedOptions, DBCompressionType, IteratorMode, Options, WriteBatch, DB};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use tokio::runtime::Handle;
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 
-use crate::backfill::ShardReader;
+use crate::backfill::{ShardReader, READ_BYTES_AT_ONCE};
 use crate::current::{decode_changes, ChangeRow, PageRow, SHARDS};
 use crate::records::{iso, parse_iso, Record, EXTRACTION_V2};
 use crate::service::now_us;
@@ -67,7 +67,8 @@ const BACKFILL: &[u8] = b"backfill";
 const BACKFILL_AHEAD: usize = 4_096;
 /// How long a pass waits for the backfill's reader before going on.
 const BACKFILL_WAIT: Duration = Duration::from_millis(500);
-const BACKFILL_RETRY: Duration = Duration::from_secs(600);
+/// Failed reads of one shard in a row after which the backfill goes on to the next.
+const SHARD_TRIES: u32 = 3;
 const RANGES_AT_ONCE: usize = 16;
 /// Kept past any input's wait for room, so a push tried again after a crash is not pushed twice.
 const PUSHED_TTL_S: u64 = 2 * 86_400;
@@ -442,6 +443,8 @@ pub struct Settings {
     pub backfill_shards: Range<usize>,
     /// How long after reading its last shard the backfill sweeps `current/` again.
     pub backfill_every: Duration,
+    /// How long after a failed read the backfill reads the shard again.
+    pub backfill_retry: Duration,
     pub current_prefix: String,
     pub poll: Duration,
     /// How long a change file number not indexed yet is looked for again before it is given up.
@@ -492,6 +495,7 @@ impl Settings {
                 None => 0..SHARDS,
             },
             backfill_every: Duration::from_secs_f64(number("PLANNER_BACKFILL_EVERY_S", 86_400.0)?),
+            backfill_retry: Duration::from_secs_f64(number("PLANNER_BACKFILL_RETRY_S", 600.0)?),
             current_prefix: text("PLANNER_CURRENT_PREFIX", "current/"),
             poll: Duration::from_secs_f64(number("PLANNER_POLL_S", 10.0)?),
             hole_wait: Duration::from_secs_f64(number("PLANNER_HOLE_WAIT_S", 600.0)?),
@@ -657,6 +661,10 @@ impl State {
         let mut options = Options::default();
         options.create_if_missing(true);
         options.set_compression_type(DBCompressionType::Zstd);
+        // Most reads ask for keys that are not there, which a filter answers without reading a block; tables written before it get one as they are compacted.
+        let mut tables = BlockBasedOptions::default();
+        tables.set_bloom_filter(10.0, false);
+        options.set_block_based_table_factory(&tables);
         // Every open, failed ones too, starts a new info log; older ones past this are deleted once open.
         options.set_keep_log_file_num(10);
         let db = DB::open(&options, dir).with_context(|| format!("opening the planner state at {}", dir.display()))?;
@@ -1155,6 +1163,9 @@ pub struct Counts {
     /// Pages read from `current/` by the backfill, of `pages`.
     pub backfill: u64,
     pub shards: u64,
+    /// Failed reads of a shard, and shards the backfill went past after failing to read them.
+    pub shard_failures: u64,
+    pub shards_skipped: u64,
     pub inputs: u64,
     pub handed_over: u64,
     pub expired: u64,
@@ -1321,6 +1332,8 @@ pub struct Planner {
     reading: Option<Reading>,
     /// When the backfill reads again: its next sweep once it has read every shard, or a while after a shard failed.
     next_sweep: Option<Instant>,
+    /// The shard the backfill last failed to read, and how many times in a row.
+    failing: (usize, u32),
     /// The last change file the re-plan pass read this sweep.
     replan_after: i64,
     set_modified: Option<std::time::SystemTime>,
@@ -1408,6 +1421,7 @@ impl Planner {
             set: None,
             reading: None,
             next_sweep: None,
+            failing: (usize::MAX, 0),
             replan_after: 0,
             set_modified: None,
             set_built: None,
@@ -1540,7 +1554,11 @@ impl Planner {
             self.advance(seq)?;
         }
         self.spent.log += started.elapsed();
-        self.log_demand = (self.counts.asked() - asked) as usize;
+        // A log phase that read no file says nothing of the next; a higher demand counts at once, a lower one over a few.
+        if read > 0 {
+            let demand = (self.counts.asked() - asked) as usize;
+            self.log_demand = demand.max((3 * self.log_demand + demand) / 4);
+        }
         let started = Instant::now();
         let replanned = self.replan().await;
         self.spent.replan += started.elapsed();
@@ -1607,6 +1625,11 @@ impl Planner {
                 let ChangeRow::Page(page) = row else { continue };
                 if !keys.contains(&page.key) || self.state.waiting(&page.key)?.is_none_or(|held| held.content_sha1 != page.record.content_sha1) {
                     continue;
+                }
+                // The log's share holds within a file too; the file is read again from its start next pass.
+                if !self.has_token() {
+                    self.replan_after = seq - 1;
+                    return Ok((took, true));
                 }
                 let key = page.key.clone();
                 found.insert(key.clone());
@@ -1675,13 +1698,28 @@ impl Planner {
                     let shard = reading.shard;
                     // A shard that failed is read again from the last place kept, after a wait, and the pass goes on.
                     let done = reading.done.await.map_err(anyhow::Error::from).and_then(|read| read);
-                    if let Err(error) = done {
-                        eprintln!("reading shard {shard} of {}: {error:#}; the backfill tries again in {BACKFILL_RETRY:?}", self.settings.current_prefix);
-                        self.next_sweep = Some(Instant::now() + BACKFILL_RETRY);
-                        return Ok(read > 0);
+                    if let Err(error) = &done {
+                        self.counts.shard_failures += 1;
+                        let failures = if self.failing.0 == shard { self.failing.1 + 1 } else { 1 };
+                        if failures < SHARD_TRIES {
+                            eprintln!(
+                                "reading shard {shard} of {}: {error:#}; the backfill tries again in {:?}",
+                                self.settings.current_prefix, self.settings.backfill_retry
+                            );
+                            self.failing = (shard, failures);
+                            self.next_sweep = Some(Instant::now() + self.settings.backfill_retry);
+                            return Ok(read > 0);
+                        }
+                        eprintln!(
+                            "THE BACKFILL SKIPS SHARD {shard} of {} after {failures} failed reads in a row, until its next sweep: {error:#}",
+                            self.settings.current_prefix
+                        );
+                        self.counts.shards_skipped += 1;
                     }
+                    self.failing = (usize::MAX, 0);
+                    // Inputs holding the shard's pages are saved first, as each moves the backfill's place to its own.
                     self.flush().await?;
-                    self.counts.shards += 1;
+                    self.counts.shards += u64::from(done.is_ok());
                     if shard + 1 < self.settings.backfill_shards.end {
                         self.state.keep_backfill(shard + 1, None)?;
                     } else {
@@ -1709,6 +1747,7 @@ impl Planner {
             prefix: self.settings.current_prefix.clone(),
             handle: Handle::current(),
             ranges_at_once: RANGES_AT_ONCE,
+            bytes_at_once: READ_BYTES_AT_ONCE,
         };
         let (send, pages) = mpsc::channel(BACKFILL_AHEAD);
         let (set, langs, from) = (self.set.clone(), self.settings.langs.clone(), after.clone());
@@ -2516,6 +2555,19 @@ mod tests {
         assert!(state.waiting(key).unwrap().is_none());
         drop(state);
         assert_eq!(State::open(&dir).unwrap().waiting_count(), 0, "the count kept on disk agrees");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_state_s_tables_carry_a_filter_for_keys_that_are_not_there() {
+        let dir = std::env::temp_dir().join(format!("planner-filter-{}", uuid::Uuid::new_v4().simple()));
+        let state = State::open(&dir).unwrap();
+        for n in 0..1_000 {
+            state.db.put(format!("planned/page-v2/pages/a.example/{n:040}"), "x").unwrap();
+        }
+        state.db.flush().unwrap();
+        let tables = state.db.property_value("rocksdb.aggregated-table-properties").unwrap().unwrap_or_default();
+        assert!(tables.contains("# entries for filter=1000;"), "{tables}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

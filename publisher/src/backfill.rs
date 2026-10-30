@@ -24,7 +24,7 @@ const GROUPS_AT_ONCE: usize = 16;
 /// Picks read whole at once, in key order.
 const PICKS_AT_ONCE: usize = 5_000;
 /// Compressed bytes of whole row groups held at once, so sparse picks never fetch a whole shard together.
-const READ_BYTES_AT_ONCE: u64 = 64 << 20;
+pub const READ_BYTES_AT_ONCE: u64 = 64 << 20;
 const TAIL_BYTES: u64 = 1 << 20;
 
 /// One pages file of a shard, its footer read.
@@ -46,6 +46,8 @@ pub struct ShardReader {
     pub prefix: String,
     pub handle: Handle,
     pub ranges_at_once: usize,
+    /// Compressed bytes of whole row groups fetched at once, `READ_BYTES_AT_ONCE` in service.
+    pub bytes_at_once: u64,
 }
 
 impl ShardReader {
@@ -78,7 +80,7 @@ impl ShardReader {
                 }
                 groups.sort_unstable();
                 let size = |group: usize| file.metadata.metadata().row_group(group).compressed_size() as u64;
-                for run in runs(&groups, size, READ_BYTES_AT_ONCE) {
+                for run in runs(&groups, size, self.bytes_at_once) {
                     let fetched = self.fetch(file, &run, None)?;
                     for group in run {
                         let keys = &wanted[&(at, group)];
