@@ -338,7 +338,7 @@ def detector():
 
 
 def read_homepage(body: bytes, detect) -> tuple[int, str, str | None, str | None]:
-    """Characters, declared lang, detected language and the bot's problem, as homepage.rs reads a page."""
+    """Characters, declared lang, detected language and the problem, as homepage.rs reads a page but stricter: a page that declares another language isn't English."""
     html = decode(body)
     declared = HTML_LANG.search(html[:4000])
     declared = declared.group(1).lower().split("-")[0] if declared else None
@@ -348,7 +348,9 @@ def read_homepage(body: bytes, detect) -> tuple[int, str, str | None, str | None
     if len(page) < MIN_CHARS:
         return len(page), declared, None, "no_text"
     language = detect(page[:LANGUAGE_SAMPLE])
-    english = language == "en" or (language is None and declared == "en")
+    english = (language == "en" and declared in (None, "en")) or (
+        language is None and declared == "en"
+    )
     return len(page), declared, language, None if english else "not_english"
 
 

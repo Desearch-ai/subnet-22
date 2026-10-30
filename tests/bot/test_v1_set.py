@@ -171,6 +171,8 @@ def test_a_site_that_moved_passes_its_backing_and_rule_to_the_host_it_moved_to()
     )
     local = build([moved("local.example", "local.com"), decision("local.com", "news")], rows=[[{"host": "local.example", "rule": "news", "type": "news", "why": ["simpleqa"]}]])[0]
     assert local["local.com"]["since"] == "2025-10-01", "a citation is no backing on either host"
+    station = build([moved("station.example", "group.example"), decision("group.example", "news")], outlets={"station.example": "wikidata"})[0]
+    assert station["group.example"]["since"] == "2025-10-01", "only a site the set's own entries take passes its backing on"
     assert v1_set.moves({"a.example": "b.example", "b.example": "c.example", "docs.x.example": "x.example"}) == {"a.example": "c.example", "b.example": "c.example"}
 
 

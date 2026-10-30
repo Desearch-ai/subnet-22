@@ -115,6 +115,14 @@ def test_a_site_that_moved_is_named_by_the_bots_rule():
     )
 
 
+def test_a_page_declaring_another_language_is_not_english_whatever_the_model_says():
+    spanish_template = ENGLISH.replace("lang='en'", "lang='es'")
+    assert (
+        check({"https://paper.example/": (200, None, spanish_template)}).verdict
+        == "not_english"
+    )
+
+
 def test_language_text_and_errors_are_read_as_the_bot_reads_them():
     french = "<html lang='en'>" + "Le conseil municipal a voté le budget. " * 20
     assert (

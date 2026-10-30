@@ -262,23 +262,23 @@ def build(row_files, hand, decisions, backing, news_sources, judged, counts, new
     if redirects is None:
         decisions = list(decisions)
         redirects = redirects_of(decisions)
-    moved = moves(redirects)
-    moved_from = defaultdict(list)
-    for source, target in sorted(moved.items()):
-        moved_from[target].append(source)
-    listed, too_big, targets = listed_entries(decisions, backing, news_sources, outlets, judged, counts, news_counts or {}, news, recent, moved_from)
-    rows = []
-    # Every news site takes its window from the same outlet test, the teammates' rows too.
-    for entry in (row_entry(row) for row_file in row_files for row in row_file):
-        if entry["rule"] == "news":
-            entry.pop("since", None)
-            if since := news_since(bool(backed_news(entry["host"], backing, news_sources, outlets, moved_from)), news, recent):
-                entry["since"] = since
-        rows.append(entry)
+    rows = [row_entry(row) for row_file in row_files for row in row_file]
     quality = [{"host": host, "rule": "out", "why": ["quality"]} for host, verdict in sorted((verdicts or {}).items()) if verdict == "out"]
     sites: dict[str, dict] = {}
     for entry in hand + quality + rows:
         sites.setdefault(entry["host"], entry)
+    # Only a site the hand entries or the rows take passes its backing and rule on.
+    moved = {source: target for source, target in moves(redirects).items() if sites.get(source, {}).get("rule") in ("news", "whole")}
+    moved_from = defaultdict(list)
+    for source, target in sorted(moved.items()):
+        moved_from[target].append(source)
+    listed, too_big, targets = listed_entries(decisions, backing, news_sources, outlets, judged, counts, news_counts or {}, news, recent, moved_from)
+    # Every news site takes its window from the same outlet test, the teammates' rows too.
+    for entry in rows:
+        if entry["rule"] == "news":
+            entry.pop("since", None)
+            if since := news_since(bool(backed_news(entry["host"], backing, news_sources, outlets, moved_from)), news, recent):
+                entry["since"] = since
     for entry in carried(sites, moved, targets, counts):
         if entry["rule"] == "news" and (since := news_since(bool(backed_news(entry["host"], backing, news_sources, outlets, moved_from)), news, recent)):
             entry["since"] = since
