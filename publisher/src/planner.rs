@@ -11,7 +11,7 @@ use anyhow::{anyhow, Context, Result};
 use arrow_array::{ArrayRef, Int32Array, LargeStringArray, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use bytes::Bytes;
-use desearch::feeds::CHANGES;
+use desearch::feeds::{Feed, BULK, CHANGES};
 use desearch::r2::{self, Bucket, PARQUET};
 use desearch::time::utc_day;
 use futures::{stream, FutureExt, StreamExt};
@@ -28,7 +28,7 @@ use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 
 use crate::backfill::{ShardReader, READ_BYTES_AT_ONCE};
-use crate::current::{decode_changes, ChangeRow, PageRow, SHARDS};
+use crate::current::{decode_changes, ChangeRow, PageRow, BULK_ORDER, SHARDS};
 use crate::records::{iso, parse_iso, Record, EXTRACTION_V2};
 use crate::service::now_us;
 use crate::set::{iso_date, url_date, Admitted, Class, Refusal, Set};
@@ -53,12 +53,19 @@ const PASSAGE_MIN_CHARS: usize = 600;
 const PASSAGE_MAX_CHARS: usize = 1_500;
 const MAX_PASSAGES_V1: usize = 16;
 const MAX_PASSAGES_V2: usize = 32;
+/// The page type the bulk lane gives papers, whose parts stop at `MAX_PASSAGES_PAPER`.
+pub const PAPER: &str = "paper";
+const MAX_PASSAGES_PAPER: usize = 12;
 const FENCE: &str = "```";
 /// The task API's list of inputs waiting for a round.
 pub const EMBED_INPUTS: &str = "embed:inputs";
 /// Inputs whose task the API dropped after its last attempt.
 pub const EMBED_DROPPED: &str = "embed:dropped";
 const CURSOR: &[u8] = b"cursor";
+/// The last bulk file whose pages are all saved; a restart reads the bulk feed after it.
+const BULK_CURSOR: &[u8] = b"bulk-cursor";
+/// Bulk files read in one pass at most.
+const BULK_FILES_PER_PASS: usize = 4;
 /// How many pages wait, kept with every change to them.
 const WAITING_COUNT: &[u8] = b"waiting-count";
 /// The backfill's shard and the last key of it planned or passed by, `<shard>\t<key>`.
@@ -151,7 +158,10 @@ pub fn texts(key: &str, record: &Record) -> Vec<Text> {
     if !typed || record.text.chars().count() <= PASSAGES_FROM_CHARS {
         return texts;
     }
-    let sections = if v2 { passages_v2(body_v2(record)) } else { passages(&record.text, &record.headings) };
+    let mut sections = if v2 { passages_v2(body_v2(record)) } else { passages(&record.text, &record.headings) };
+    if record.page_type.as_deref() == Some(PAPER) {
+        sections.truncate(MAX_PASSAGES_PAPER);
+    }
     let title = record.title.trim();
     for (i, passage) in sections.into_iter().enumerate() {
         let lead = [Some(title).filter(|t| !t.is_empty()), passage.heading.as_deref()].into_iter().flatten().collect::<Vec<_>>().join(" › ");
@@ -406,6 +416,8 @@ pub struct Settings {
     pub dir: PathBuf,
     /// Pages planned an hour at most; the rest of the log's pages are left for a later backfill.
     pub pages_per_hour: f64,
+    /// Bulk feed pages planned an hour at most, a whole file at a time, beside `pages_per_hour`; 0 leaves the bulk feed unread.
+    pub bulk_pages_per_hour: f64,
     pub pages_per_input: usize,
     /// An input is written once its texts reach this many characters, so a task of long articles stays one a miner finishes in its claim time.
     pub chars_per_input: usize,
@@ -471,6 +483,7 @@ impl Settings {
         Ok(Settings {
             dir: PathBuf::from(text("PLANNER_DIR", "/home/publisher/planner")),
             pages_per_hour: number("PLANNER_PAGES_PER_HOUR", 100_000.0)?,
+            bulk_pages_per_hour: number("PLANNER_BULK_PAGES_PER_HOUR", 0.0)?,
             pages_per_input: number("PLANNER_PAGES_PER_INPUT", 1_000)?,
             chars_per_input: number("PLANNER_CHARS_PER_INPUT", 3_000_000)?,
             flush_after: Duration::from_secs_f64(number("PLANNER_FLUSH_S", 600.0)?),
@@ -745,6 +758,15 @@ impl State {
     /// Time spent saving inputs and changing which pages wait.
     pub fn writing(&self) -> Duration {
         Duration::from_nanos(self.writing.load(Ordering::Relaxed))
+    }
+
+    /// The last bulk file read whose pages are all saved; 0 before the first.
+    pub fn bulk_cursor(&self) -> Result<i64> {
+        Ok(self.db.get(BULK_CURSOR)?.map(|raw| String::from_utf8_lossy(&raw).parse()).transpose()?.unwrap_or(0))
+    }
+
+    fn keep_bulk_cursor(&self, seq: i64) -> Result<()> {
+        Ok(self.db.put(BULK_CURSOR, seq.to_string())?)
     }
 
     pub fn cursor(&self) -> Result<Option<i64>> {
@@ -1180,8 +1202,8 @@ impl State {
                 match self.planned_version(recipe, key)? {
                     Some(planned) if planned.content_sha1 == content_sha1 => {
                         batch.delete(planned_key(recipe, key));
-                        // Planned again from its change file, not left for a re-crawl that may never come; one planned before files were kept is the backfill's.
-                        if planned.seq.is_some() {
+                        // Planned again from its change file, not left for a re-crawl that may never come; one planned before files were kept, or a bulk page, is the backfill's.
+                        if planned.seq.is_some_and(|seq| seq >= 0) {
                             self.waiting_into(&mut batch, key, &Version { page_only: false, ..planned })?;
                         }
                         forgotten = true;
@@ -1238,7 +1260,7 @@ impl State {
         pages: &[Planned],
         input_key: &str,
         entry: &str,
-        cursor: Option<i64>,
+        (cursor, bulk_cursor): (Option<i64>, Option<i64>),
         settled: &[i64],
         backfill: Option<(usize, Option<&str>)>,
     ) -> Result<()> {
@@ -1255,6 +1277,9 @@ impl State {
         batch.put(format!("pending/{input_key}"), entry);
         if let Some(seq) = cursor {
             batch.put(CURSOR, seq.to_string());
+        }
+        if let Some(seq) = bulk_cursor {
+            batch.put(BULK_CURSOR, seq.to_string());
         }
         for seq in settled {
             batch.delete(missing_key(*seq));
@@ -1324,6 +1349,8 @@ pub enum Source {
     Backfill,
     /// A waiting page's change file: the page stays waiting.
     Replan,
+    /// A bulk file read in order: the kept bulk cursor stays before it.
+    Bulk(i64),
 }
 
 /// One page waiting in the input being filled.
@@ -1401,6 +1428,8 @@ pub struct Counts {
     pub replanned: u64,
     /// Pages read from `current/` by the backfill, of `pages`.
     pub backfill: u64,
+    /// Bulk files read whole, their pages counted in `pages`.
+    pub bulk_files: u64,
     pub shards: u64,
     /// Failed reads of a shard, and shards the backfill went past after failing to read them.
     pub shard_failures: u64,
@@ -1476,6 +1505,7 @@ struct Buffer {
     /// Pages by the change file read in order, and read late, that they came from.
     log: BTreeMap<i64, usize>,
     late: BTreeMap<i64, usize>,
+    bulk: BTreeMap<i64, usize>,
     backfill: usize,
 }
 
@@ -1491,6 +1521,7 @@ impl Buffer {
         match source {
             Source::Log(seq) => tally(&mut self.log, seq),
             Source::Late(seq) => tally(&mut self.late, seq),
+            Source::Bulk(seq) => tally(&mut self.bulk, seq),
             Source::Backfill if add => self.backfill += 1,
             Source::Backfill => self.backfill = self.backfill.saturating_sub(1),
             Source::Replan => {}
@@ -1605,6 +1636,9 @@ pub struct Planner {
     settled: Vec<i64>,
     /// The cursor last kept on disk.
     kept_cursor: i64,
+    bulk_read_through: i64,
+    kept_bulk_cursor: i64,
+    bulk_budget: Budget,
     /// Tasks taken back, with the change file that took each back.
     withdrawn: HashMap<String, i64>,
     /// The hour and the pages each site put in the fresh lane in it.
@@ -1646,7 +1680,8 @@ impl Planner {
         let held = settings.budget_at_start;
         // Fresh pages read again after a restart stay fresh.
         let (budget, fresh_budget) = (Budget::new(settings.pages_per_hour, held), Budget::new(settings.fresh_per_hour, BUDGET_BANKED));
-        let pace = settings.pages_per_hour + settings.fresh.map_or(0.0, |_| settings.fresh_per_hour);
+        let pace = settings.pages_per_hour + settings.fresh.map_or(0.0, |_| settings.fresh_per_hour) + settings.bulk_pages_per_hour;
+        let (bulk_read_through, bulk_budget) = (state.bulk_cursor()?, Budget::new(settings.bulk_pages_per_hour, held));
         let handing = (pace > 0.0).then(|| Budget::new(pace, held));
         let withdrawn = state.withdrawn()?;
         let mut planner = Planner {
@@ -1686,6 +1721,9 @@ impl Planner {
             missing,
             settled: Vec::new(),
             kept_cursor: read_through,
+            bulk_read_through,
+            kept_bulk_cursor: bulk_read_through,
+            bulk_budget,
             withdrawn,
             fresh_sites: (0, HashMap::new()),
         };
@@ -1835,6 +1873,7 @@ impl Planner {
         let replanned = self.replan().await;
         self.spent.replan += started.elapsed();
         let (replanned, stopped) = replanned?;
+        let bulked = self.bulk().await?;
         // The backfill never takes a place the re-plan stopped short of for a class it reads; past the re-plan's file cap or sweep, they share it.
         let backfilled = if stopped.is_some_and(|class| class <= self.backfill_class) { false } else { self.backfill().await? };
         for lane in Lane::ALL {
@@ -1845,7 +1884,7 @@ impl Planner {
         }
         self.save_written(0).await?;
         self.hand_over().await?;
-        Ok(read > 0 || replanned || backfilled)
+        Ok(read > 0 || replanned || bulked || backfilled)
     }
 
     /// Plans waiting pages from the change files that hold them, best class first and oldest first within it, while the budget and the rest lane's room hold an input's worth beyond what the log last asked for of the class and better; whether it took any, and the class it stopped at while pages still wait. Up to `reads` files are fetched ahead, each only while the budget and room would still hold an input's worth once the waiting pages of the files before it were taken, so a pass stopping for either leaves no fetched file unread.
@@ -1939,6 +1978,8 @@ impl Planner {
     /// The places a page of `class` leaves for better ones: from the log, what the log's better classes have yet to ask for this pass and their waiting pages the re-plan reads next; from elsewhere, what the log last asked for of its class and better.
     fn reserve(&self, class: Class, from: Source) -> usize {
         match from {
+            // A bulk page has its own budget, and room, with its file.
+            Source::Bulk(_) => 0,
             Source::Log(_) | Source::Late(_) => Class::ALL[..class as usize]
                 .iter()
                 .map(|better| self.demand[*better as usize].saturating_sub(self.pass_asked[*better as usize]) + self.wanting[*better as usize])
@@ -1991,6 +2032,70 @@ impl Planner {
     /// Whether a version of `key` is buffered or in an input not yet saved; saving it stops the page waiting.
     fn unsaved_anywhere(&self, key: &str) -> bool {
         self.held(false).any(|buffer| buffer.at.contains_key(key))
+    }
+
+    /// Plans bulk files in order, each whole once its own budget holds the file's pages, while the rest lane keeps half its room for the log; whether it read any. A file that cannot be read yet is read again next pass.
+    async fn bulk(&mut self) -> Result<bool> {
+        if self.settings.bulk_pages_per_hour <= 0.0 {
+            return Ok(false);
+        }
+        let latest = match feed_latest(&self.pages, &BULK).await {
+            Ok(latest) => latest,
+            Err(error) => {
+                eprintln!("{error:#}; the bulk feed is read again next pass");
+                return Ok(false);
+            }
+        };
+        let mut read = 0;
+        while self.bulk_read_through < latest && read < BULK_FILES_PER_PASS && self.inputs_held(Lane::Rest) < self.settings.max_pending / 2 {
+            let seq = self.bulk_read_through + 1;
+            let (key, rows) = match feed_index(&self.pages, &BULK, seq).await {
+                Ok(Some(index)) => index,
+                Ok(None) => break,
+                Err(error) => {
+                    eprintln!("{error:#}; the bulk feed is read again next pass");
+                    break;
+                }
+            };
+            if !self.bulk_budget.holds(rows) {
+                break;
+            }
+            let rows = match self.pages.get(&key).await {
+                Ok(file) => match tokio::task::spawn_blocking(move || decode_changes(file, BULK_ORDER + seq)).await? {
+                    Ok(rows) => rows,
+                    Err(error) => {
+                        eprintln!("decoding bulk file {seq} ({key}): {error:#}; read again next pass");
+                        break;
+                    }
+                },
+                Err(r2::Error::Missing) => {
+                    eprintln!("bulk file {seq} ({key}) is gone; going on without it");
+                    Vec::new()
+                }
+                Err(error) => {
+                    eprintln!("reading bulk file {seq} ({key}): {error}; read again next pass");
+                    break;
+                }
+            };
+            self.bulk_budget.spend(rows.len());
+            for row in rows {
+                // The bulk feed carries pages alone; the compactor ignores anything else in it, and so does the planner.
+                if let ChangeRow::Page(page) = row {
+                    if let Considered::Taken(lane) = self.consider(*page, Source::Bulk(seq)) {
+                        self.write_when_full(lane).await?;
+                    }
+                }
+            }
+            self.bulk_read_through = seq;
+            let cursor = self.bulk_cursor_after(false);
+            if cursor > self.kept_bulk_cursor {
+                self.state.keep_bulk_cursor(cursor)?;
+                self.kept_bulk_cursor = cursor;
+            }
+            self.counts.bulk_files += 1;
+            read += 1;
+        }
+        Ok(read > 0)
     }
 
     /// Plans pages of `current/` while the budget and the rest lane's room last, starting only once the budget holds an input's worth and reading at most `max_pending` inputs' worth a pass for at most the fresh lane's flush wait, so the log is read between; whether it read any.
@@ -2261,6 +2366,11 @@ impl Planner {
         self.held(saving).filter_map(|buffer| buffer.log.keys().next().copied()).min().map_or(self.read_through, |first| first - 1)
     }
 
+    /// Where a restart may start reading the bulk feed, given the bulk pages buffered or in inputs not yet saved.
+    fn bulk_cursor_after(&self, saving: bool) -> i64 {
+        self.held(saving).filter_map(|buffer| buffer.bulk.keys().next().copied()).min().map_or(self.bulk_read_through, |first| first - 1)
+    }
+
     /// The late files read whose pages are neither buffered nor in inputs not yet saved.
     fn late_settled(&self, saving: bool) -> Vec<i64> {
         let held: HashSet<i64> = self.held(saving).flat_map(|buffer| buffer.late.keys().copied()).collect();
@@ -2368,8 +2478,11 @@ impl Planner {
             }
             _ => None,
         };
+        // A bulk page was budgeted, and given room, with its file.
+        let bulk = matches!(from, Source::Bulk(_));
         // Only a page never planned before is fresh, within its lane's own budget, so pages re-dated by their site cannot flood it.
-        let mut fresh = self.is_fresh(record) && waiting.is_none() && self.inputs_held(Lane::Fresh) < self.settings.max_pending && self.unplanned(&page.key);
+        let mut fresh =
+            !bulk && self.is_fresh(record) && waiting.is_none() && self.inputs_held(Lane::Fresh) < self.settings.max_pending && self.unplanned(&page.key);
         if fresh {
             let site = self.set.as_ref().and_then(|set| set.site(&record.domain).map(|(host, _)| host.to_string()));
             let site = site.unwrap_or_else(|| domain_of_key(&page.key).to_string());
@@ -2385,12 +2498,12 @@ impl Planner {
             self.pass_asked[class as usize] += 1;
             self.counts.asked_by_class[class as usize] += 1;
         }
-        if self.inputs_held(lane) >= self.settings.max_pending || (lane == Lane::Rest && !self.room_after(reserve)) {
+        if !bulk && (self.inputs_held(lane) >= self.settings.max_pending || (lane == Lane::Rest && !self.room_after(reserve))) {
             self.counts.no_room += 1;
             self.keep_waiting(&page);
             return Considered::Waiting;
         }
-        if lane == Lane::Rest && !(self.budget.holds_after(reserve, 1) && self.budget.take()) {
+        if lane == Lane::Rest && !bulk && !(self.budget.holds_after(reserve, 1) && self.budget.take()) {
             self.counts.over_budget += 1;
             self.keep_waiting(&page);
             return Considered::Waiting;
@@ -2409,7 +2522,7 @@ impl Planner {
         buffer.push(planned);
         self.counts.planned += 1;
         self.counts.fresh += u64::from(lane == Lane::Fresh);
-        if lane == Lane::Rest {
+        if lane == Lane::Rest && !bulk {
             self.counts.planned_by_class[class as usize] += 1;
         }
         Considered::Taken(lane)
@@ -2428,6 +2541,10 @@ impl Planner {
     }
 
     fn keep_waiting(&mut self, page: &PageRow) {
+        // A bulk page has no change file to be planned again from; the backfill's next sweep takes it.
+        if page.change_seq < 0 {
+            return;
+        }
         let record = &page.record;
         let version = Version {
             content_sha1: record.content_sha1.clone(),
@@ -2584,13 +2701,15 @@ impl Planner {
     /// Saves the written input first in line, with the cursor, late files and the backfill's place moved only past what is still buffered or unsaved, and only then takes it out of the line.
     fn save_first(&mut self) -> Result<()> {
         let cursor = Some(self.cursor_after(true)).filter(|&cursor| cursor > self.kept_cursor);
+        let bulk_cursor = Some(self.bulk_cursor_after(true)).filter(|&cursor| cursor > self.kept_bulk_cursor);
         let settled = self.late_settled(true);
         let writing = self.writing.front().expect("an input cut");
         let backfill = writing.backfill.as_ref().map(|(shard, last)| (*shard, last.as_deref()));
         self.state
-            .commit(&writing.buffer.pages, &writing.input_key, &writing.entry, cursor, &settled, backfill)
+            .commit(&writing.buffer.pages, &writing.input_key, &writing.entry, (cursor, bulk_cursor), &settled, backfill)
             .with_context(|| format!("saving {}", writing.input_key))?;
         self.kept_cursor = cursor.unwrap_or(self.kept_cursor);
+        self.kept_bulk_cursor = bulk_cursor.unwrap_or(self.kept_bulk_cursor);
         self.settled.retain(|seq| !settled.contains(seq));
         let lane = self.writing.pop_front().expect("an input cut").lane;
         self.pending[lane as usize] += 1;
@@ -2829,6 +2948,28 @@ async fn latest(pages: &Bucket) -> Result<i64> {
     latest["seq"].as_i64().ok_or_else(|| anyhow!("{} has no seq", CHANGES.latest_key()))
 }
 
+/// The newest file number of `feed`; 0 while it has none.
+async fn feed_latest(pages: &Bucket, feed: &Feed) -> Result<i64> {
+    match pages.get(&feed.latest_key()).await {
+        Ok(raw) => serde_json::from_slice::<Value>(&raw)?["seq"].as_i64().ok_or_else(|| anyhow!("{} has no seq", feed.latest_key())),
+        Err(r2::Error::Missing) => Ok(0),
+        Err(error) => Err(anyhow!("reading {}: {error}", feed.latest_key())),
+    }
+}
+
+/// File `seq` of `feed` and its rows, from its index; None until it is numbered.
+async fn feed_index(pages: &Bucket, feed: &Feed, seq: i64) -> Result<Option<(String, usize)>> {
+    match pages.get(&feed.seq_key(seq as u64)).await {
+        Ok(raw) => {
+            let index: Value = serde_json::from_slice(&raw)?;
+            let key = index["key"].as_str().ok_or_else(|| anyhow!("{} has no key", feed.seq_key(seq as u64)))?;
+            Ok(Some((key.to_string(), index["rows"].as_u64().unwrap_or(0) as usize)))
+        }
+        Err(r2::Error::Missing) => Ok(None),
+        Err(error) => Err(anyhow!("reading the index of {} file {seq}: {error}", feed.name)),
+    }
+}
+
 async fn change_key(pages: &Bucket, seq: i64) -> Result<Option<String>> {
     match pages.get(&CHANGES.seq_key(seq as u64)).await {
         Ok(raw) => Ok(serde_json::from_slice::<Value>(&raw)?["key"].as_str().map(String::from)),
@@ -2887,7 +3028,7 @@ mod tests {
             task_id: "t1".into(),
             source: Source::Replan,
         };
-        let save = || state.commit(std::slice::from_ref(&page), "embed/inputs/a.parquet", "{}", Some(3), &[], None);
+        let save = || state.commit(std::slice::from_ref(&page), "embed/inputs/a.parquet", "{}", (Some(3), None), &[], None);
         // A page count that cannot be read fails the save.
         state.db.put(site_key("a.example"), "x").unwrap();
         for _ in 0..3 {

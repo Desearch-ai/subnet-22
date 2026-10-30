@@ -9,12 +9,12 @@ use std::time::UNIX_EPOCH;
 
 use anyhow::{anyhow, Context, Result};
 use bytes::Bytes;
-use desearch::feeds::CHANGES;
+use desearch::feeds::{Feed, BULK, CHANGES};
 use desearch::r2::{self, Bucket};
 use serde::{Deserialize, Serialize};
 use tokio::runtime::Handle;
 
-use crate::current::{self, shard_dir, shard_of, ChangeRow, FileRef, Manifest, PageRow, Retired, Withdrawals, SHARDS};
+use crate::current::{self, shard_dir, shard_of, ChangeRow, FileRef, Manifest, PageRow, Retired, Withdrawals, BULK_ORDER, SHARDS};
 use crate::index::VersionIndex;
 
 /// Objects in a bucket or a folder, as the compactor reads and writes them.
@@ -140,6 +140,8 @@ pub struct Settings {
     /// Local room for rows waiting to be sorted into their shard.
     pub work: PathBuf,
     pub files_per_cycle: i64,
+    /// Bulk feed files read a cycle at most, after the change log's, so a bulk run is folded without holding up crawled pages.
+    pub bulk_files_per_cycle: i64,
     /// Once caught up, a cycle starts this long after the last one, so each delta holds a while of the log.
     pub every_s: f64,
     /// A shard's base is rewritten once its deltas hold this share of it.
@@ -170,6 +172,7 @@ impl Default for Settings {
             prefix: "current/".into(),
             work: PathBuf::from("compactor-work"),
             files_per_cycle: 300,
+            bulk_files_per_cycle: 30,
             merge_ratio: 1.0,
             every_s: 900.0,
             fanout: 12,
@@ -204,6 +207,12 @@ pub struct Report {
     /// The cycle stopped at a number not written yet.
     pub waiting: bool,
     pub lag: Lag,
+    pub bulk_from: i64,
+    pub bulk_through: i64,
+    pub bulk_rows: u64,
+    pub bulk_skipped: Vec<i64>,
+    /// The bulk read stopped at a number not written yet.
+    pub bulk_waiting: bool,
 }
 
 /// How far behind the change log the cycle left the current state.
@@ -246,8 +255,11 @@ pub fn withdrawn_key(prefix: &str) -> String {
     format!("{prefix}withdrawn.json")
 }
 
-fn file_key(prefix: &str, shard: usize, kind: &str, through: i64) -> String {
-    format!("{prefix}{}/{kind}-{through:012}.parquet", shard_dir(shard))
+fn file_key(prefix: &str, shard: usize, kind: &str, through: i64, through_bulk: i64) -> String {
+    match through_bulk {
+        0 => format!("{prefix}{}/{kind}-{through:012}.parquet", shard_dir(shard)),
+        bulk => format!("{prefix}{}/{kind}-{through:012}-b{bulk:012}.parquet", shard_dir(shard)),
+    }
 }
 
 /// Runs `work` on every item across `threads` threads, keeping the results in item order.
@@ -389,6 +401,13 @@ pub fn check(store: &dyn Store, prefix: &str, seqs: &[i64], per_file: usize, sha
     Ok((sampled.len(), removed, wrong))
 }
 
+/// The newest bulk feed number, 0 before the first bulk file.
+pub fn latest_bulk(store: &dyn Store) -> Result<i64> {
+    let Some(raw) = store.get(&BULK.latest_key())? else { return Ok(0) };
+    let latest: serde_json::Value = serde_json::from_slice(&raw)?;
+    latest["seq"].as_i64().ok_or_else(|| anyhow!("{} has no seq", BULK.latest_key()))
+}
+
 /// The newest numbered change file.
 pub fn latest_seq(store: &dyn Store) -> Result<i64> {
     let raw = store.get(&CHANGES.latest_key())?.ok_or_else(|| anyhow!("the change log has no {}", CHANGES.latest_key()))?;
@@ -398,7 +417,12 @@ pub fn latest_seq(store: &dyn Store) -> Result<i64> {
 
 /// The change file numbered `seq`, None while its number is not written yet.
 pub fn change_key(store: &dyn Store, seq: i64) -> Result<Option<String>> {
-    let Some(raw) = store.get(&CHANGES.seq_key(seq as u64))? else { return Ok(None) };
+    feed_key(store, &CHANGES, seq)
+}
+
+/// The file `feed` numbered `seq`, None while its number is not written yet.
+pub fn feed_key(store: &dyn Store, feed: &Feed, seq: i64) -> Result<Option<String>> {
+    let Some(raw) = store.get(&feed.seq_key(seq as u64))? else { return Ok(None) };
     let pointer: serde_json::Value = serde_json::from_slice(&raw)?;
     Ok(pointer["key"].as_str().map(String::from))
 }
@@ -456,9 +480,9 @@ impl Spill {
 const HOLE_LOOKAHEAD: i64 = 64;
 
 /// Whether number `seq` will never be written: the next number written after it was written `wait_s` ago.
-fn never_written(store: &dyn Store, seq: i64, latest: i64, wait_s: f64, now: f64) -> Result<bool> {
+fn never_written(store: &dyn Store, feed: &Feed, seq: i64, latest: i64, wait_s: f64, now: f64) -> Result<bool> {
     for later in seq + 1..=latest.min(seq + HOLE_LOOKAHEAD) {
-        if let Some(at) = store.modified(&CHANGES.seq_key(later as u64))? {
+        if let Some(at) = store.modified(&feed.seq_key(later as u64))? {
             return Ok(now - at >= wait_s);
         }
     }
@@ -495,16 +519,17 @@ fn write_files(
     spill: &Spill,
     gone: &Withdrawals,
     (from, through, now): (i64, i64, f64),
+    (bulk_from, bulk_through): (i64, i64),
     written: &Mutex<Vec<String>>,
 ) -> Result<Written> {
     let prefix = settings.prefix.as_str();
     let shards: Vec<usize> = (0..SHARDS).collect();
     let deltas = each(&shards, settings.threads, |&shard| -> Result<Option<FileRef>> {
         let rows = current::merge(spill.take(shard)?, gone, true);
-        if rows.is_empty() || through < from {
+        if rows.is_empty() || (through < from && bulk_through < bulk_from) {
             return Ok(None);
         }
-        let key = file_key(prefix, shard, "delta", through);
+        let key = file_key(prefix, shard, "delta", through, bulk_through);
         let file = current::encode(&rows)?;
         let bytes = file.len() as u64;
         store.put(&key, Bytes::from(file))?;
@@ -517,6 +542,7 @@ fn write_files(
             manifest.deltas.push(delta);
         }
         manifest.through_seq = manifest.through_seq.max(through);
+        manifest.through_bulk = manifest.through_bulk.max(bulk_through);
     }
 
     let due = due_rewrites(manifests, settings);
@@ -527,8 +553,8 @@ fn write_files(
             let files = each(&inputs, settings.threads, |file| store.get(&file.key)?.ok_or_else(|| anyhow!("{} is in a manifest but missing", file.key)))?;
             let (file, rows) = current::merge_files(files, gone, rewrite.level.is_some())?;
             let (key, level) = match rewrite.level {
-                None => (file_key(prefix, rewrite.shard, "base", manifest.through_seq), 0),
-                Some(level) => (file_key(prefix, rewrite.shard, &format!("delta{}", level + 1), manifest.through_seq), level + 1),
+                None => (file_key(prefix, rewrite.shard, "base", manifest.through_seq, manifest.through_bulk), 0),
+                Some(level) => (file_key(prefix, rewrite.shard, &format!("delta{}", level + 1), manifest.through_seq, manifest.through_bulk), level + 1),
             };
             let bytes = file.len() as u64;
             store.put(&key, Bytes::from(file))?;
@@ -621,6 +647,49 @@ fn rewrite_due(manifest: &Manifest, settings: &Settings) -> Option<Option<u32>> 
     levels.into_iter().find(|&(_, count)| count >= settings.fanout.max(2)).map(|(level, _)| Some(level))
 }
 
+/// The bulk feed's pages read up to `bulk_files_per_cycle` files past the shard furthest behind, placed before every change-log row in log order.
+fn read_bulk(store: &dyn Store, settings: &Settings, manifests: &[Manifest], spill: &mut Spill, report: &mut Report, now: f64) -> Result<()> {
+    let from = manifests.iter().map(|m| m.through_bulk).min().unwrap_or(0) + 1;
+    (report.bulk_from, report.bulk_through) = (from, from - 1);
+    let latest = latest_bulk(store)?;
+    let wanted: Vec<i64> = (from..=latest.min(from + settings.bulk_files_per_cycle - 1)).collect();
+    for chunk in wanted.chunks(settings.threads.max(1) * 2) {
+        let decoded = each(chunk, settings.threads, |&seq| -> Result<Option<Vec<ChangeRow>>> {
+            let Some(key) = feed_key(store, &BULK, seq)? else { return Ok(None) };
+            let file = store.get(&key)?.ok_or_else(|| anyhow!("bulk file {seq} ({key}) is numbered but missing"))?;
+            Ok(Some(current::decode_changes(file, BULK_ORDER + seq).with_context(|| format!("bulk file {seq} ({key})"))?))
+        })?;
+        for (&seq, rows) in chunk.iter().zip(decoded) {
+            let rows = match rows {
+                Some(rows) => rows,
+                None if never_written(store, &BULK, seq, latest, settings.hole_wait_s, now)? => {
+                    report.bulk_skipped.push(seq);
+                    report.bulk_through = seq;
+                    continue;
+                }
+                None => {
+                    report.bulk_waiting = true;
+                    return Ok(());
+                }
+            };
+            for row in rows {
+                // Only pages: a bulk removal sits before every crawl row it should hide, and a crawl row a bulk page beat is no longer kept.
+                let ChangeRow::Page(page) = row else {
+                    eprintln!("bulk file {seq} holds a removal or take-back; the bulk feed carries pages only, so it is ignored");
+                    continue;
+                };
+                let Some(shard) = shard_of(&page.key) else { continue };
+                if seq > manifests[shard].through_bulk {
+                    spill.push(shard, *page)?;
+                    report.bulk_rows += 1;
+                }
+            }
+            report.bulk_through = seq;
+        }
+    }
+    Ok(())
+}
+
 /// One pass: the change log read up to `files_per_cycle` files past the shard furthest behind, then merges and cleanup.
 pub fn cycle(store: &dyn Store, settings: &Settings, now: f64) -> Result<Report> {
     let prefix = settings.prefix.as_str();
@@ -640,7 +709,7 @@ pub fn cycle(store: &dyn Store, settings: &Settings, now: f64) -> Result<Report>
         for (&seq, rows) in chunk.iter().zip(decoded) {
             let rows = match rows {
                 Some(rows) => rows,
-                None if never_written(store, seq, latest, settings.hole_wait_s, now)? => {
+                None if never_written(store, &CHANGES, seq, latest, settings.hole_wait_s, now)? => {
                     report.skipped.push(seq);
                     report.through = seq;
                     continue;
@@ -675,6 +744,7 @@ pub fn cycle(store: &dyn Store, settings: &Settings, now: f64) -> Result<Report>
             report.through = seq;
         }
     }
+    read_bulk(store, settings, &manifests, &mut spill, &mut report, now)?;
     let through = report.through;
     // Kept before any manifest moves past the rows that withdrew them.
     store.put(&withdrawn_key(prefix), Bytes::from(serde_json::to_vec(&withdrawn)?))?;
@@ -682,7 +752,8 @@ pub fn cycle(store: &dyn Store, settings: &Settings, now: f64) -> Result<Report>
 
     let referenced: HashSet<String> = manifests.iter().flat_map(|m| m.files().map(|f| f.key.clone())).collect();
     let written = Mutex::new(Vec::new());
-    match write_files(store, settings, &mut manifests, &spill, &gone, (from, through, now), &written) {
+    let bulk = (report.bulk_from, report.bulk_through);
+    match write_files(store, settings, &mut manifests, &spill, &gone, (from, through, now), bulk, &written) {
         Ok(done) => {
             for failure in &done.failed {
                 eprintln!("{failure}; the shard stays as it was");
@@ -810,7 +881,14 @@ pub fn compare(store: &dyn Store, prefix: &str, index: &VersionIndex, shards: &R
 
 /// Compares every page of `shards` in the current state under `prefix` with a plain fold of the change log it covers, without shards or files; reads the whole log, so for test runs.
 pub fn compare_log(store: &dyn Store, prefix: &str, shards: &Range<usize>, threads: usize) -> Result<Compared> {
-    let through = load_manifests(store, prefix, threads)?.iter().map(|m| m.through_seq).min().unwrap_or(0);
+    let manifests = load_manifests(store, prefix, threads)?;
+    let through = manifests.iter().map(|m| m.through_seq).min().unwrap_or(0);
+    let bulk_seqs: Vec<i64> = (1..=manifests.iter().map(|m| m.through_bulk).min().unwrap_or(0)).collect();
+    let bulk_files = each(&bulk_seqs, threads, |&seq| -> Result<Vec<ChangeRow>> {
+        let Some(key) = feed_key(store, &BULK, seq)? else { return Ok(Vec::new()) };
+        let file = store.get(&key)?.ok_or_else(|| anyhow!("bulk file {seq} is missing"))?;
+        current::decode_changes(file, BULK_ORDER + seq)
+    })?;
     let seqs: Vec<i64> = (1..=through).collect();
     let files = each(&seqs, threads, |&seq| -> Result<Vec<ChangeRow>> {
         let Some(key) = change_key(store, seq)? else { return Ok(Vec::new()) };
@@ -819,6 +897,12 @@ pub fn compare_log(store: &dyn Store, prefix: &str, shards: &Range<usize>, threa
     })?;
     let (mut rows, mut withdrawn) = (Vec::new(), Withdrawals::new());
     let wanted = |key: &str| shard_of(key).is_some_and(|shard| shards.contains(&shard));
+    for file in bulk_files {
+        rows.extend(file.into_iter().filter_map(|row| match row {
+            ChangeRow::Page(page) if wanted(&page.key) => Some(*page),
+            _ => None,
+        }));
+    }
     for (&seq, file) in seqs.iter().zip(files) {
         for row in file {
             match row {
