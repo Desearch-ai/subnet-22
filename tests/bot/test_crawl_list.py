@@ -758,8 +758,44 @@ def test_the_v1_set_is_read_from_its_file(tmp_path):
 
 
 def test_a_recheck_waiting_for_its_retry_stays_listed():
-    retrying = row(host="retry.com", state="new", state_reason="SocketTimeoutError")
+    failures = [
+        "SocketTimeoutError",
+        "ClientConnectorDNSError",
+        "TooManyRedirects",
+        "unknown",
+        "robots_503",
+        "homepage_500",
+        "sitemap_429",
+        "sitemap_502",
+    ]
+    retrying = [
+        row(host=f"{r.lower()}.com", state="new", state_reason=r) for r in failures
+    ]
     fresh = row(host="fresh.com", state="new", state_reason="")
     crashed = row(host="crash.com", state="new", state_reason="crashed: StoreError")
-    listed = {e["host"] for e in crawl_list.build([retrying, fresh, crashed], {}, {}, Hand())[0]}
-    assert listed == {"retry.com"}, "the bot writes a reason on a new row only while it retries a site that answered before"
+    listed = {
+        e["host"]
+        for e in crawl_list.build([*retrying, fresh, crashed], {}, {}, Hand())[0]
+    }
+    assert listed == {r.host for r in retrying}, (
+        "the bot writes a reason on a new row only while it retries a site that answered before"
+    )
+
+
+def test_a_recheck_refused_while_it_retries_sends_nothing():
+    refused = row(host="refused.com", state="new", state_reason="homepage_error")
+    assert decide(refused, Backing()).reason == "state:new"
+    for reason in (
+        "homepage_error",
+        "robots_disallow",
+        "bot_wall",
+        "crashed: StoreError",
+        "no_text",
+    ):
+        assert not crawl_list.failure(reason), reason
+    assert crawl_list.build([refused], {}, {}, Hand())[0] == []
+    landing = crawl_list.V1("landing", "news")
+    assert (
+        crawl_list.build([refused], {}, {}, Hand(), v1={"refused.com": landing})[0]
+        == []
+    )

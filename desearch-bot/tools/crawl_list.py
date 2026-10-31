@@ -173,9 +173,19 @@ class V1:
     since: str | None = None
 
 
+def failure(reason: str) -> bool:
+    """Whether the bot's reason is a site failing to answer: a network error, a 5xx, or a sitemap rate limit. Refusals and crashes are not."""
+    if reason.startswith("crashed"):
+        return False
+    kind, _, status = reason.rpartition("_")
+    if kind in ("robots", "homepage", "sitemap") and status.isdigit():
+        return int(status) >= 500 or (kind == "sitemap" and status == "429")
+    return reason.endswith("Error") or reason in ("TooManyRedirects", "unknown")
+
+
 def state_of(row: Row) -> str:
-    """The row's state for the list: a new row the bot gave a reason is a recheck waiting for its retry, listed as a failing site, as it was before."""
-    if row.state == "new" and row.state_reason and not row.state_reason.startswith("crashed"):
+    """The row's state for the list: a new row the bot is retrying after a failure is listed as a failing site, as it was before."""
+    if row.state == "new" and row.state_reason and failure(row.state_reason):
         return "failing"
     return row.state
 
