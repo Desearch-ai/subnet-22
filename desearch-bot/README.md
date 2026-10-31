@@ -79,14 +79,16 @@ queue in the same order, where each hour of waiting moves a site up a class. A r
 to `new` has its site checked again. If that check fails on a site that answered before, it is tried
 again after 15 minutes, 2 hours and 12 hours before it waits a month.
 
-A site whose sitemaps list pages has its homepage read once for its language. A page that checks the
-browser (Cloudflare, DataDome, PerimeterX, Imperva, Akamai), or a short one that says to enable
-JavaScript or that access is denied, is a bot wall. A homepage of under 200 characters is judged by
-its text with its title and description, since on such a site it is a menu or an app shell. A page that
-declares English is believed where the model gives no verdict or a minor one (no language, Latin, a
-creole). A body cut at the read limit inside a script reads only the text before it. A rate limit, or a
-refusal from a site that answered before, is tried again as an unreachable site is; other error pages
-make the site ineligible. Cookies a redirect sets go with the later hops of that redirect chain only.
+A site whose sitemaps list pages has its homepage read once for its language. A short page that checks
+the browser (Cloudflare, DataDome, PerimeterX, Imperva, Akamai), says to enable JavaScript or says that
+access is denied is a bot wall. A homepage of under 200 characters is judged by its text with its title
+and description, since on such a site it is a menu or an app shell, and stays out when it declares
+another language. A page that declares English is believed where the model gives no verdict or reads it
+as a class English is misread as (no language, Latin, a pidgin or creole). A body cut at the read limit
+inside a script reads only the text before it. On a recheck of a site that answered before, a homepage
+that refuses us or limits our rate is tried again on the same schedule before it makes the site
+ineligible. Cookies a redirect sets go with the later hops of that chain only: back to their own host,
+or to the domain they name within the host's registrable domain.
 
 A sitemap read again looks up only the entries it did not list the same way last time, from a compact
 fingerprint set kept per sitemap. A listed news site's root sitemap index and its Google News sitemaps

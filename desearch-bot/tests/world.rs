@@ -434,12 +434,8 @@ async fn a_homepage_that_answers_with_an_error_keeps_its_status_on_the_record() 
     assert_eq!(crawl.step().await.unwrap(), hosts.len());
     for (host, status) in hosts {
         let record = buckets.store(host).domain(host).unwrap().unwrap();
-        let expected = match host {
-            "known.test" => ("new", "homepage_403"),
-            "busy.test" => ("unreachable", "homepage_429"),
-            _ => ("ineligible", "homepage_error"),
-        };
-        assert_eq!((record["state"].as_str(), record["reason"].as_str()), (Some(expected.0), Some(expected.1)), "{host}: a rate limit waits as an unreachable site does, and a refusal from a site that answered before is tried again soon");
+        let state = if host == "known.test" { "new" } else { "ineligible" };
+        assert_eq!((record["state"].as_str(), record["reason"].as_str()), (Some(state), Some("homepage_error")), "{host}: a refusal on a recheck of a site that answered before is tried again soon");
         assert_eq!(record["home_status"].as_u64(), Some(u64::from(status)), "{host}");
     }
     drop(crawl);

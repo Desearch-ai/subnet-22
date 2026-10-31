@@ -90,7 +90,7 @@ async fn main() -> Result<()> {
     };
     let mut crawl = Loop::new(buckets.clone(), Arc::new(visitor), concurrency, Registry::offline(), HashSet::new());
     crawl.load()?;
-    // Visits still going at the deadline stay new, and are written as unfinished.
+    // Visits still going at the deadline stay new with no reason, and are written as unfinished; a failed recheck waiting for its retry is written as retry.
     let _ = tokio::time::timeout(Duration::from_secs(deadline_seconds), async {
         while crawl.step().await? > 0 {}
         anyhow::Ok(())
@@ -101,7 +101,11 @@ async fn main() -> Result<()> {
     for host in &hosts {
         let record = buckets.store(host).domain(host)?.unwrap_or_default();
         let field = |name: &str| record.get(name).map(|v| v.as_str().map_or_else(|| v.to_string(), String::from)).unwrap_or_default().replace('\t', " ");
-        let state = if field("state") == "new" { "unfinished".to_string() } else { field("state") };
+        let state = match (field("state").as_str(), field("reason").as_str()) {
+            ("new", "" | "null") => "unfinished".to_string(),
+            ("new", _) => "retry".to_string(),
+            (state, _) => state.to_string(),
+        };
         writeln!(writer, "{host}\t{state}\t{}", FIELDS[1..].iter().map(|name| field(name)).collect::<Vec<_>>().join("\t"))?;
     }
     writer.flush()?;

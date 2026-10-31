@@ -148,6 +148,8 @@ pub struct Visit {
     pub requests: i64,
     pub deferred: Vec<(String, i64, Option<i64>)>,
     pub cut_short: bool,
+    /// The homepage refused us or limited our rate on a recheck of a site that answered before: tried again soon before it counts.
+    pub passing: bool,
 }
 
 impl Visit {
@@ -173,6 +175,7 @@ impl Visit {
             requests: 0,
             deferred: Vec::new(),
             cut_short: false,
+            passing: false,
         }
     }
 }
@@ -730,19 +733,20 @@ impl Run<'_> {
             return Ok(());
         }
         self.result.home_status = Some(answer.status);
-        // A rate limit, or a refusal from a site that answered before, may be its answer to a busy hour: it is tried again as an unreachable site is, and only one that lasts keeps the site out.
-        let passing = answer.status == 429 || (matches!(answer.status, 401 | 403) && self.known.last_ok_at.is_some());
-        if answer.status >= 500 || passing {
+        if answer.status >= 500 {
             self.stop(Outcome::Unreachable, Some(format!("homepage_{}", answer.status)));
             return Ok(());
         }
         if answer.status != 200 {
+            // A rate limit or refusal on a recheck of a site that answered before may be its answer to a busy hour; one that lasts keeps it out.
+            self.result.passing = matches!(answer.status, 401 | 403 | 429) && self.known.state == State::New && self.known.last_ok_at.is_some();
             self.stop(Outcome::Ineligible, Some("homepage_error".into()));
             return Ok(());
         }
         let body = answer.body;
+        let cut = body.len() >= MAX_HOMEPAGE_BYTES;
         let detect = self.visitor.language.clone();
-        let page = self.visitor.cpu(move || homepage::read(&body, &*detect)).await?;
+        let page = self.visitor.cpu(move || homepage::read_cut(&body, &*detect, cut)).await?;
         self.result.home_chars = Some(page.chars as i64);
         self.result.declared_lang = page.declared;
         self.result.language = page.language;
@@ -839,7 +843,8 @@ impl Run<'_> {
             }
             if matches!(status, 301 | 302 | 303 | 307 | 308) {
                 for value in response.headers().get_all("set-cookie") {
-                    if let Some(cookie) = Cookie::parse(&host, &String::from_utf8_lossy(value.as_bytes())) {
+                    let registrable = self.visitor.suffixes.registrable(&host);
+                    if let Some(cookie) = Cookie::parse(&host, &String::from_utf8_lossy(value.as_bytes()), registrable.as_deref()) {
                         cookies.retain(|kept| (kept.domain.as_str(), kept.name()) != (cookie.domain.as_str(), cookie.name()));
                         cookies.push(cookie);
                     }
@@ -981,7 +986,7 @@ fn digest(job: FileJob) -> Result<Digested, Crash> {
 
 /// A homepage as a sitemap: itself first, then each page it links to, relative links read from where it was found.
 fn homepage_listing(body: &[u8], base: &str) -> (&'static str, Vec<Entry>) {
-    let linked = homepage::links(body).into_iter().filter_map(|href| urls::join(base, &href).ok());
+    let linked = homepage::links(body, body.len() >= MAX_HOMEPAGE_BYTES).into_iter().filter_map(|href| urls::join(base, &href).ok());
     (HOMEPAGE_KIND, std::iter::once(base.to_string()).chain(linked).map(|url| Entry { url, ..Entry::default() }).collect())
 }
 
@@ -1046,13 +1051,15 @@ struct Cookie {
 }
 
 impl Cookie {
-    /// A `Set-Cookie` value from `host`; None when it has no name or names a domain that doesn't cover the host.
-    fn parse(host: &str, value: &str) -> Option<Cookie> {
+    /// A `Set-Cookie` value from `host`; None when it has no name, or names a domain that doesn't cover the host or lies above its registrable domain.
+    fn parse(host: &str, value: &str, registrable: Option<&str>) -> Option<Cookie> {
         let mut attributes = value.split(';');
         let (name, pair) = attributes.next().and_then(|pair| pair.split_once('=').map(|(name, value)| (name.trim(), format!("{}={}", name.trim(), value.trim()))))?;
-        let named = attributes.find_map(|attribute| attribute.split_once('=').filter(|(key, _)| key.trim().eq_ignore_ascii_case("domain")).map(|(_, domain)| domain.trim().trim_start_matches('.').to_ascii_lowercase()));
+        let named = attributes
+            .find_map(|attribute| attribute.split_once('=').filter(|(key, _)| key.trim().eq_ignore_ascii_case("domain")).map(|(_, domain)| domain.trim().trim_start_matches('.').to_ascii_lowercase()))
+            .filter(|domain| !domain.is_empty());
         let (domain, host_only) = match named {
-            Some(domain) if domain.contains('.') && covers(&domain, host) => (domain, false),
+            Some(domain) if covers(&domain, host) && registrable.is_some_and(|registrable| covers(registrable, &domain)) => (domain, false),
             Some(_) => return None,
             None => (host.to_string(), true),
         };
@@ -1115,15 +1122,16 @@ mod tests {
 
     #[test]
     fn a_redirect_cookie_goes_to_its_host_or_the_parent_domain_it_names() {
-        let host_only = Cookie::parse("oxfordreference.com", "AWSALBAPP-0=_remove_; Path=/").unwrap();
+        let host_only = Cookie::parse("oxfordreference.com", "AWSALBAPP-0=_remove_; Path=/", Some("oxfordreference.com")).unwrap();
         assert_eq!((host_only.domain.as_str(), host_only.pair.as_str(), host_only.name()), ("oxfordreference.com", "AWSALBAPP-0=_remove_", "AWSALBAPP-0"));
         assert!(host_only.goes_to("oxfordreference.com") && !host_only.goes_to("www.oxfordreference.com"), "one with no domain goes back to its own host only");
-        let parent = Cookie::parse("login.example.com", "sid = 1 ; Domain=.Example.com").unwrap();
+        let parent = Cookie::parse("login.example.com", "sid = 1 ; Domain=.Example.com", Some("example.com")).unwrap();
         assert_eq!(parent.domain, "example.com");
         assert!(parent.goes_to("www.example.com") && parent.goes_to("example.com") && !parent.goes_to("badexample.com"));
-        assert_eq!(Cookie::parse("a.example.com", "x=1; Domain=other.com"), None, "a domain that doesn't cover the host");
-        assert_eq!(Cookie::parse("a.example.com", "x=1; Domain=com"), None, "a bare suffix");
-        assert_eq!(Cookie::parse("a.example.com", "=1"), None);
+        assert_eq!(Cookie::parse("a.example.com", "x=1; Domain=other.com", Some("example.com")), None, "a domain that doesn't cover the host");
+        assert_eq!(Cookie::parse("a.example.co.uk", "x=1; Domain=co.uk", Some("example.co.uk")), None, "a public suffix");
+        assert_eq!(Cookie::parse("a.example.com", "x=1; Domain=", Some("example.com")).map(|c| c.host_only), Some(true), "an empty domain is the host's own");
+        assert_eq!(Cookie::parse("a.example.com", "=1", Some("example.com")), None);
     }
 
     #[test]

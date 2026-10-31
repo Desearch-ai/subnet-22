@@ -129,15 +129,19 @@ fn failed(previous: State, failures: i64, last_ok_at: Option<i64>, now: i64, rng
         }
         State::Down => down(rng),
         // One timeout or error page on a recheck must not park a site that answered before for a month.
-        State::New if last_ok_at.is_some() && failures <= RECHECK_RETRY.len() as i64 => {
-            Decision { state: State::New, failures, next_check_at: Some(now + RECHECK_RETRY[(failures.max(1) - 1) as usize]) }
-        }
-        _ => Decision {
-            state: State::Unreachable,
-            failures,
-            next_check_at: Some(after(now, recheck(State::Unreachable), rng)),
-        },
+        State::New if last_ok_at.is_some() => recheck_retry(failures - 1, now).unwrap_or_else(|| unreachable(failures, now, rng)),
+        _ => unreachable(failures, now, rng),
     }
+}
+
+fn unreachable(failures: i64, now: i64, rng: &mut impl Rng) -> Decision {
+    Decision { state: State::Unreachable, failures, next_check_at: Some(after(now, recheck(State::Unreachable), rng)) }
+}
+
+/// The next try of a recheck that failed `failures` times before, kept new; None once its retries are spent.
+pub fn recheck_retry(failures: i64, now: i64) -> Option<Decision> {
+    let wait = RECHECK_RETRY.get(usize::try_from(failures).ok()?)?;
+    Some(Decision { state: State::New, failures: failures + 1, next_check_at: Some(now + wait) })
 }
 
 fn after(now: i64, interval: i64, rng: &mut impl Rng) -> i64 {
@@ -167,5 +171,7 @@ mod tests {
         assert_eq!((third.state, third.next_check_at), (State::New, Some(now + 12 * HOUR)));
         let parked = decide(State::New, Outcome::Unreachable, 3, Some(now - 20 * DAY), now, &mut rng);
         assert_eq!(parked.state, State::Unreachable, "after its retries it waits like any other");
+        assert_eq!(recheck_retry(0, now).map(|d| (d.state, d.failures)), Some((State::New, 1)));
+        assert_eq!(recheck_retry(3, now), None);
     }
 }
