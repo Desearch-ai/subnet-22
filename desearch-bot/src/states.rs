@@ -76,6 +76,8 @@ impl Outcome {
 
 const RETRY: [i64; 5] = [15 * MINUTE, 30 * MINUTE, HOUR, 2 * HOUR, 4 * HOUR];
 const DOWN_AFTER: i64 = 7 * DAY;
+/// Failed visits a site that answered before, set back to new for a recheck, gets before it waits a month.
+const RECHECK_RETRIES: i64 = 3;
 /// Spread rechecks so domains visited together do not all fall due in the same second.
 pub const JITTER: f64 = 0.1;
 
@@ -126,6 +128,10 @@ fn failed(previous: State, failures: i64, last_ok_at: Option<i64>, now: i64, rng
             Decision { state: State::Failing, failures, next_check_at: Some(now + retry) }
         }
         State::Down => down(rng),
+        // One timeout or error page on a recheck must not park a site that answered before for a month.
+        State::New if last_ok_at.is_some() && failures <= RECHECK_RETRIES => {
+            Decision { state: State::New, failures, next_check_at: Some(now + RETRY[(failures.clamp(1, RETRY.len() as i64) - 1) as usize]) }
+        }
         _ => Decision {
             state: State::Unreachable,
             failures,
@@ -155,5 +161,11 @@ mod tests {
         let new = decide(State::New, Outcome::Unreachable, 0, None, now, &mut rng);
         assert_eq!(new.state, State::Unreachable);
         assert!(new.next_check_at.unwrap() >= now + 27 * DAY);
+        let recheck = decide(State::New, Outcome::Unreachable, 0, Some(now - 20 * DAY), now, &mut rng);
+        assert_eq!((recheck.state, recheck.failures, recheck.next_check_at), (State::New, 1, Some(now + 15 * MINUTE)), "a recheck of a site that answered before tries again soon");
+        let third = decide(State::New, Outcome::Unreachable, 2, Some(now - 20 * DAY), now, &mut rng);
+        assert_eq!((third.state, third.next_check_at), (State::New, Some(now + HOUR)));
+        let parked = decide(State::New, Outcome::Unreachable, 3, Some(now - 20 * DAY), now, &mut rng);
+        assert_eq!(parked.state, State::Unreachable, "after its retries it waits like any other");
     }
 }

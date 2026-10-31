@@ -730,7 +730,9 @@ impl Run<'_> {
             return Ok(());
         }
         self.result.home_status = Some(answer.status);
-        if answer.status >= 500 {
+        // A rate limit, or a refusal from a site that answered before, may be its answer to a busy hour: it is tried again as an unreachable site is, and only one that lasts keeps the site out.
+        let passing = answer.status == 429 || (matches!(answer.status, 401 | 403) && self.known.last_ok_at.is_some());
+        if answer.status >= 500 || passing {
             self.stop(Outcome::Unreachable, Some(format!("homepage_{}", answer.status)));
             return Ok(());
         }
@@ -795,6 +797,8 @@ impl Run<'_> {
     ) -> Result<Answer, String> {
         let mut url = url.to_string();
         let mut permit = None;
+        // Cookies a redirect sets go with the later hops of the same chain, as a browser sends them; some sign-in redirects loop without them.
+        let mut cookies: Vec<Cookie> = Vec::new();
         for _ in 0..=MAX_REDIRECTS {
             let host = urls::split(&url).map_err(|_| "ValueError".to_string())?.hostname().unwrap_or_default();
             if !net::public_host(&host) {
@@ -810,6 +814,10 @@ impl Run<'_> {
                 for (name, value) in signer.headers(&url, chrono::Utc::now().timestamp()) {
                     request = request.header(name, value);
                 }
+            }
+            let sending: Vec<&str> = cookies.iter().filter(|c| c.goes_to(&host)).map(|c| c.pair.as_str()).collect();
+            if !sending.is_empty() {
+                request = request.header("Cookie", sending.join("; "));
             }
             if let Some((etag, modified)) = &validators {
                 if let Some(etag) = etag {
@@ -830,6 +838,12 @@ impl Run<'_> {
                 self.pacer.slow_to(Some((self.pacer.interval * 2.0).max(asked)));
             }
             if matches!(status, 301 | 302 | 303 | 307 | 308) {
+                for value in response.headers().get_all("set-cookie") {
+                    if let Some(cookie) = Cookie::parse(&host, &String::from_utf8_lossy(value.as_bytes())) {
+                        cookies.retain(|kept| (kept.domain.as_str(), kept.name()) != (cookie.domain.as_str(), cookie.name()));
+                        cookies.push(cookie);
+                    }
+                }
                 if let Some(location) = header(response.headers(), "location").filter(|l| !l.is_empty()) {
                     url = urls::join(&url, &location).map_err(|_| "ValueError".to_string())?;
                     continue;
@@ -1023,6 +1037,46 @@ fn retry_after(headers: &HeaderMap) -> f64 {
     header(headers, "retry-after").and_then(|v| v.trim().parse::<f64>().ok()).unwrap_or(0.0)
 }
 
+/// A cookie a redirect set: `name=value`, for its own host only, or for a parent domain it names and the hosts under it.
+#[derive(Debug, PartialEq, Eq)]
+struct Cookie {
+    domain: String,
+    host_only: bool,
+    pair: String,
+}
+
+impl Cookie {
+    /// A `Set-Cookie` value from `host`; None when it has no name or names a domain that doesn't cover the host.
+    fn parse(host: &str, value: &str) -> Option<Cookie> {
+        let mut attributes = value.split(';');
+        let (name, pair) = attributes.next().and_then(|pair| pair.split_once('=').map(|(name, value)| (name.trim(), format!("{}={}", name.trim(), value.trim()))))?;
+        let named = attributes.find_map(|attribute| attribute.split_once('=').filter(|(key, _)| key.trim().eq_ignore_ascii_case("domain")).map(|(_, domain)| domain.trim().trim_start_matches('.').to_ascii_lowercase()));
+        let (domain, host_only) = match named {
+            Some(domain) if domain.contains('.') && covers(&domain, host) => (domain, false),
+            Some(_) => return None,
+            None => (host.to_string(), true),
+        };
+        (!name.is_empty()).then_some(Cookie { domain, host_only, pair })
+    }
+
+    fn goes_to(&self, host: &str) -> bool {
+        if self.host_only {
+            host == self.domain
+        } else {
+            covers(&self.domain, host)
+        }
+    }
+
+    fn name(&self) -> &str {
+        self.pair.split_once('=').map_or("", |(name, _)| name)
+    }
+}
+
+/// Whether a cookie for `domain` goes to `host`: the host itself or one under it.
+fn covers(domain: &str, host: &str) -> bool {
+    host == domain || host.strip_suffix(domain).is_some_and(|rest| rest.ends_with('.'))
+}
+
 fn header(headers: &HeaderMap, name: &str) -> Option<String> {
     headers.get(name).map(|value| String::from_utf8_lossy(value.as_bytes()).into_owned())
 }
@@ -1057,6 +1111,19 @@ mod tests {
     fn a_listed_domain_with_no_sitemap_named_is_also_looked_at_for_a_feed() {
         assert_eq!(guess_paths(false).collect::<Vec<_>>(), ["/sitemap.xml", "/sitemap_index.xml"]);
         assert_eq!(guess_paths(true).collect::<Vec<_>>(), ["/sitemap.xml", "/sitemap_index.xml", "/feed", "/rss.xml", "/"], "after the sitemaps, which go first; the homepage last");
+    }
+
+    #[test]
+    fn a_redirect_cookie_goes_to_its_host_or_the_parent_domain_it_names() {
+        let host_only = Cookie::parse("oxfordreference.com", "AWSALBAPP-0=_remove_; Path=/").unwrap();
+        assert_eq!((host_only.domain.as_str(), host_only.pair.as_str(), host_only.name()), ("oxfordreference.com", "AWSALBAPP-0=_remove_", "AWSALBAPP-0"));
+        assert!(host_only.goes_to("oxfordreference.com") && !host_only.goes_to("www.oxfordreference.com"), "one with no domain goes back to its own host only");
+        let parent = Cookie::parse("login.example.com", "sid = 1 ; Domain=.Example.com").unwrap();
+        assert_eq!(parent.domain, "example.com");
+        assert!(parent.goes_to("www.example.com") && parent.goes_to("example.com") && !parent.goes_to("badexample.com"));
+        assert_eq!(Cookie::parse("a.example.com", "x=1; Domain=other.com"), None, "a domain that doesn't cover the host");
+        assert_eq!(Cookie::parse("a.example.com", "x=1; Domain=com"), None, "a bare suffix");
+        assert_eq!(Cookie::parse("a.example.com", "=1"), None);
     }
 
     #[test]

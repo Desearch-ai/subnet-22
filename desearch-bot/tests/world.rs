@@ -385,7 +385,7 @@ async fn a_homepage_that_answers_with_an_error_keeps_its_status_on_the_record() 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let web: Shared = Arc::default();
-    let hosts: [(&str, u16); 5] = [("missing.test", 404), ("gone-home.test", 410), ("closed.test", 401), ("denied.test", 403), ("busy.test", 429)];
+    let hosts: [(&str, u16); 6] = [("missing.test", 404), ("gone-home.test", 410), ("closed.test", 401), ("denied.test", 403), ("busy.test", 429), ("known.test", 403)];
     {
         let mut w = web.lock().unwrap();
         for (host, status) in hosts {
@@ -403,7 +403,11 @@ async fn a_homepage_that_answers_with_an_error_keeps_its_status_on_the_record() 
     let buckets = Arc::new(Buckets::open(&root, &owned, &Resources::new(8 << 20, 8 << 20, owned.len())).unwrap());
     for (host, _) in hosts {
         let mut changes = Changes::default();
-        changes.domain(host, &records::new_domain(Some(1), Some("new_generic"), &[], State::New, None, Some(0)));
+        let mut record = records::new_domain(Some(1), Some("new_generic"), &[], State::New, None, Some(0));
+        if host == "known.test" {
+            record.insert("ok".into(), 1_700_000_000.into());
+        }
+        changes.domain(host, &record);
         buckets.store(host).write(changes).unwrap();
     }
     let client = reqwest::Client::builder()
@@ -430,7 +434,12 @@ async fn a_homepage_that_answers_with_an_error_keeps_its_status_on_the_record() 
     assert_eq!(crawl.step().await.unwrap(), hosts.len());
     for (host, status) in hosts {
         let record = buckets.store(host).domain(host).unwrap().unwrap();
-        assert_eq!((record["state"].as_str(), record["reason"].as_str()), (Some("ineligible"), Some("homepage_error")), "{host}");
+        let expected = match host {
+            "known.test" => ("new", "homepage_403"),
+            "busy.test" => ("unreachable", "homepage_429"),
+            _ => ("ineligible", "homepage_error"),
+        };
+        assert_eq!((record["state"].as_str(), record["reason"].as_str()), (Some(expected.0), Some(expected.1)), "{host}: a rate limit waits as an unreachable site does, and a refusal from a site that answered before is tried again soon");
         assert_eq!(record["home_status"].as_u64(), Some(u64::from(status)), "{host}");
     }
     drop(crawl);
