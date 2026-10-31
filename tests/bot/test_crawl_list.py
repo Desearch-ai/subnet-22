@@ -799,3 +799,45 @@ def test_a_recheck_refused_while_it_retries_sends_nothing():
         crawl_list.build([refused], {}, {}, Hand(), v1={"refused.com": landing})[0]
         == []
     )
+
+
+def test_only_a_server_error_or_a_known_network_failure_counts_as_failing():
+    for reason in (
+        "InvalidUrlClientError",
+        "ConnectionTimeoutError",
+        "TimeoutError",
+        "SocketTimeoutError",
+        "ClientConnectorDNSError",
+        "ClientConnectorCertificateError",
+        "ClientConnectorSSLError",
+        "ServerDisconnectedError",
+        "ClientConnectorError",
+        "ClientPayloadError",
+        "ClientOSError",
+        "OSError",
+        "ValueError",
+        "CancelledError",
+        "TooManyRedirects",
+        "unknown",
+        "robots_500",
+        "homepage_599",
+        "sitemap_429",
+    ):
+        assert crawl_list.failure(reason), reason
+    for reason in (
+        "homepage_999",
+        "robots_999",
+        "sitemap_999",
+        "homepage_499",
+        "robots_429",
+        "homepage_429",
+        "sitemap_403",
+        "sitemap_5xx",
+        "HOMEPAGE_503",
+        "FirewallBlockError",
+        "RuntimeError",
+        "crashed: CancelledError",
+    ):
+        assert not crawl_list.failure(reason), reason
+    linkedin = row(host="linkedin.com", state="new", state_reason="homepage_999")
+    assert crawl_list.build([linkedin], {}, {}, Hand())[0] == []

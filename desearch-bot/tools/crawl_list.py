@@ -111,6 +111,26 @@ LANDING_DEPTH = 1
 SOFT_OUTS = {"unlabelled", "shop", "junk"}
 # A v1 site that names no sitemap is listed too, so the bot looks for its feed; it sends nothing until it lists pages.
 FEED_STATES = {"no_sitemap"}
+SERVER_ERRORS = {str(status) for status in range(500, 600)}
+# The names the bot (net.rs, visit.rs) gives a site that doesn't answer; any other reason is not a failure.
+NETWORK_ERRORS = {
+    "InvalidUrlClientError",
+    "ConnectionTimeoutError",
+    "TimeoutError",
+    "SocketTimeoutError",
+    "ClientConnectorDNSError",
+    "ClientConnectorCertificateError",
+    "ClientConnectorSSLError",
+    "ServerDisconnectedError",
+    "ClientConnectorError",
+    "ClientPayloadError",
+    "ClientOSError",
+    "OSError",
+    "ValueError",
+    "CancelledError",
+    "TooManyRedirects",
+    "unknown",
+}
 
 
 @dataclass
@@ -175,12 +195,10 @@ class V1:
 
 def failure(reason: str) -> bool:
     """Whether the bot's reason is a site failing to answer: a network error, a 5xx, or a sitemap rate limit. Refusals and crashes are not."""
-    if reason.startswith("crashed"):
-        return False
-    kind, _, status = reason.rpartition("_")
-    if kind in ("robots", "homepage", "sitemap") and status.isdigit():
-        return int(status) >= 500 or (kind == "sitemap" and status == "429")
-    return reason.endswith("Error") or reason in ("TooManyRedirects", "unknown")
+    kind, _, status = reason.partition("_")
+    if kind in ("robots", "homepage", "sitemap"):
+        return status in SERVER_ERRORS or (kind == "sitemap" and status == "429")
+    return reason in NETWORK_ERRORS
 
 
 def state_of(row: Row) -> str:
