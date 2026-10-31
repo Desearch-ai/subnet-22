@@ -77,7 +77,7 @@ go listed news sites first, then the rest of the list, then unlisted domains, by
 Domains with more than 2,000 sitemap records take one of `--heavy-slots`, handed out from a waiting
 queue in the same order, where each hour of waiting moves a site up a class. A registry row set back
 to `new` has its site checked again. If that check fails on a site that answered before, it is tried
-again after 15 minutes, 30 minutes and an hour before it waits a month.
+again after 15 minutes, 2 hours and 12 hours before it waits a month.
 
 A site whose sitemaps list pages has its homepage read once for its language. A page that checks the
 browser (Cloudflare, DataDome, PerimeterX, Imperva, Akamai), or a short one that says to enable
