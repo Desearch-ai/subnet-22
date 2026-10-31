@@ -29,6 +29,9 @@ struct Page {
     status: u16,
     etag: Option<&'static str>,
     body: Vec<u8>,
+    headers: Vec<(&'static str, String)>,
+    /// Served instead when the request carries this `name=value` cookie.
+    with_cookie: Option<(&'static str, Box<Page>)>,
 }
 
 #[derive(Default)]
@@ -39,7 +42,19 @@ struct Web {
 
 impl Web {
     fn add(&mut self, host: &str, path: &str, status: u16, etag: Option<&'static str>, body: &[u8]) {
-        self.pages.insert((host.into(), path.into()), Page { status, etag, body: body.to_vec() });
+        self.pages.insert((host.into(), path.into()), Page { status, etag, body: body.to_vec(), headers: Vec::new(), with_cookie: None });
+    }
+
+    fn redirect(&mut self, host: &str, path: &str, to: &str, set_cookie: Option<&str>) {
+        let mut headers = vec![("Location", to.to_string())];
+        headers.extend(set_cookie.map(|cookie| ("Set-Cookie", cookie.to_string())));
+        self.pages.insert((host.into(), path.into()), Page { status: 302, etag: None, body: Vec::new(), headers, with_cookie: None });
+    }
+
+    fn with_cookie(&mut self, host: &str, path: &str, cookie: &'static str, page: Page) {
+        if let Some(found) = self.pages.get_mut(&(host.to_string(), path.to_string())) {
+            found.with_cookie = Some((cookie, Box::new(page)));
+        }
     }
 }
 
@@ -80,12 +95,20 @@ async fn serve(listener: TcpListener, web: Shared) {
                     web.hits.push((host.clone(), path.to_string(), validator.clone()));
                     web.pages.get(&(host, path.to_string())).cloned()
                 };
-                let page = page.unwrap_or(Page { status: 404, etag: None, body: b"not found".to_vec() });
+                let page = page.unwrap_or(Page { status: 404, etag: None, body: b"not found".to_vec(), headers: Vec::new(), with_cookie: None });
+                let sent = headers.get("cookie").cloned().unwrap_or_default();
+                let page = match &page.with_cookie {
+                    Some((cookie, other)) if sent.split("; ").any(|pair| pair == *cookie) => (**other).clone(),
+                    _ => page,
+                };
                 let (status, body) =
                     if page.etag.is_some() && validator.as_deref() == page.etag { (304, Vec::new()) } else { (page.status, page.body) };
                 let mut response = format!("HTTP/1.1 {status} X\r\nContent-Length: {}\r\n", body.len());
                 if let Some(etag) = page.etag {
                     response.push_str(&format!("ETag: {etag}\r\n"));
+                }
+                for (name, value) in &page.headers {
+                    response.push_str(&format!("{name}: {value}\r\n"));
                 }
                 response.push_str("\r\n");
                 let mut bytes = response.into_bytes();
@@ -385,7 +408,7 @@ async fn a_homepage_that_answers_with_an_error_keeps_its_status_on_the_record() 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let web: Shared = Arc::default();
-    let hosts: [(&str, u16); 5] = [("missing.test", 404), ("gone-home.test", 410), ("closed.test", 401), ("denied.test", 403), ("busy.test", 429)];
+    let hosts: [(&str, u16); 6] = [("missing.test", 404), ("gone-home.test", 410), ("closed.test", 401), ("denied.test", 403), ("busy.test", 429), ("known.test", 403)];
     {
         let mut w = web.lock().unwrap();
         for (host, status) in hosts {
@@ -403,7 +426,11 @@ async fn a_homepage_that_answers_with_an_error_keeps_its_status_on_the_record() 
     let buckets = Arc::new(Buckets::open(&root, &owned, &Resources::new(8 << 20, 8 << 20, owned.len())).unwrap());
     for (host, _) in hosts {
         let mut changes = Changes::default();
-        changes.domain(host, &records::new_domain(Some(1), Some("new_generic"), &[], State::New, None, Some(0)));
+        let mut record = records::new_domain(Some(1), Some("new_generic"), &[], State::New, None, Some(0));
+        if host == "known.test" {
+            record.insert("ok".into(), 1_700_000_000.into());
+        }
+        changes.domain(host, &record);
         buckets.store(host).write(changes).unwrap();
     }
     let client = reqwest::Client::builder()
@@ -430,7 +457,8 @@ async fn a_homepage_that_answers_with_an_error_keeps_its_status_on_the_record() 
     assert_eq!(crawl.step().await.unwrap(), hosts.len());
     for (host, status) in hosts {
         let record = buckets.store(host).domain(host).unwrap().unwrap();
-        assert_eq!((record["state"].as_str(), record["reason"].as_str()), (Some("ineligible"), Some("homepage_error")), "{host}");
+        let state = if host == "known.test" { "new" } else { "ineligible" };
+        assert_eq!((record["state"].as_str(), record["reason"].as_str()), (Some(state), Some("homepage_error")), "{host}: a refusal on a recheck of a site that answered before is tried again soon");
         assert_eq!(record["home_status"].as_u64(), Some(u64::from(status)), "{host}");
     }
     drop(crawl);
@@ -539,4 +567,87 @@ async fn a_landing_site_lists_its_homepage_and_the_pages_it_links_to_beside_its_
     assert!(web.lock().unwrap().hits.iter().any(|(h, path, _)| h == host && path == "/"), "the homepage was read");
     drop(crawl);
     std::fs::remove_dir_all(&root).ok();
+}
+
+async fn visit_once(web: Shared, hosts: &[&'static str], answered: &[&str], name: &str) -> Arc<Buckets> {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(serve(listener, web));
+    let root = std::env::temp_dir().join(format!("desearch-bot-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let mut owned: Vec<usize> = hosts.iter().map(|h| bucket_of(h)).collect();
+    owned.sort_unstable();
+    owned.dedup();
+    let buckets = Arc::new(Buckets::open(&root, &owned, &Resources::new(8 << 20, 8 << 20, owned.len())).unwrap());
+    for host in hosts {
+        let mut record = records::new_domain(Some(1), Some("new_generic"), &[], State::New, None, Some(0));
+        if answered.contains(host) {
+            record.insert("ok".into(), 1_700_000_000.into());
+        }
+        let mut changes = Changes::default();
+        changes.domain(host, &record);
+        buckets.store(host).write(changes).unwrap();
+    }
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .dns_resolver(Arc::new(TestResolver { addr, known: hosts.iter().copied().collect() }))
+        .timeout(Duration::from_secs(10))
+        .build()
+        .unwrap();
+    let visitor = Visitor {
+        client,
+        buckets: buckets.clone(),
+        suffixes: Arc::new(PublicSuffixList::parse("test\n")),
+        signer: None,
+        language: Arc::new(|text: &str| Some(if text.contains("the") { "en" } else { "fr" }.to_string())),
+        floor: 0.0,
+        connect_timeout: Duration::from_secs(10),
+        cpu: Slots::new(4),
+        bodies: Slots::new(2),
+        pause: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        heavy: Slots::new(1),
+    };
+    let mut crawl = Loop::new(buckets.clone(), Arc::new(visitor), 16, Registry::offline(), HashSet::new());
+    assert_eq!(crawl.load().unwrap(), hosts.len());
+    assert_eq!(crawl.step().await.unwrap(), hosts.len());
+    drop(crawl);
+    buckets
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_sign_in_redirect_that_sets_a_cookie_reaches_the_homepage() {
+    let web: Shared = Arc::default();
+    let host = "cookie.test";
+    {
+        let mut w = web.lock().unwrap();
+        w.add(host, "/robots.txt", 200, None, format!("User-agent: *\nSitemap: http://{host}/list.xml\n").as_bytes());
+        w.add(host, "/list.xml", 200, None, urlset(host, &(0..12).map(|i| format!("/story/{i}")).collect::<Vec<_>>()).as_bytes());
+        w.redirect(host, "/", &format!("http://{host}/login"), Some("session=1; Path=/"));
+        w.redirect(host, "/login", &format!("http://{host}/"), None);
+        let home = Page { status: 200, etag: None, body: format!("<html lang=\"en\"><p>{ENGLISH}</p></html>").into_bytes(), headers: Vec::new(), with_cookie: None };
+        w.with_cookie(host, "/", "session=1", home);
+    }
+    let buckets = visit_once(web, &[host], &[], "cookie").await;
+    let record = buckets.store(host).domain(host).unwrap().unwrap();
+    assert_eq!((record["state"].as_str(), record["home_status"].as_u64()), (Some("active"), Some(200)), "without the cookie it loops until too many redirects");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_recheck_whose_sitemap_answers_503_is_tried_again() {
+    let web: Shared = Arc::default();
+    let hosts = ["busy.test", "fresh.test"];
+    {
+        let mut w = web.lock().unwrap();
+        for host in hosts {
+            w.add(host, "/robots.txt", 200, None, format!("User-agent: *\nSitemap: http://{host}/list.xml\n").as_bytes());
+            w.add(host, "/list.xml", 503, None, b"busy");
+        }
+    }
+    let buckets = visit_once(web, &hosts, &["busy.test"], "sitemap-503").await;
+    let state = |host: &str| {
+        let record = buckets.store(host).domain(host).unwrap().unwrap();
+        (record["state"].as_str().unwrap_or_default().to_string(), record["reason"].as_str().unwrap_or_default().to_string())
+    };
+    assert_eq!(state("busy.test"), ("new".into(), "sitemap_503".into()), "a recheck of a site that answered before");
+    assert_eq!(state("fresh.test"), ("no_sitemap".into(), "no_sitemap".into()), "a site never seen before");
 }

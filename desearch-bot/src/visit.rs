@@ -148,6 +148,8 @@ pub struct Visit {
     pub requests: i64,
     pub deferred: Vec<(String, i64, Option<i64>)>,
     pub cut_short: bool,
+    /// The homepage refused us or limited our rate on a recheck of a site that answered before: tried again soon before it counts.
+    pub passing: bool,
 }
 
 impl Visit {
@@ -173,6 +175,7 @@ impl Visit {
             requests: 0,
             deferred: Vec::new(),
             cut_short: false,
+            passing: false,
         }
     }
 }
@@ -297,6 +300,7 @@ impl Visitor {
             answered: false,
             network_error: None,
             home,
+            transient: None,
         };
         run.go().await?;
         Ok(run.result)
@@ -325,6 +329,8 @@ struct Run<'a> {
     network_error: Option<String>,
     /// The homepage's address, which a landing site lists its first-level pages from.
     home: String,
+    /// The first sitemap or guess that answered with a rate limit, a server error or not at all.
+    transient: Option<String>,
 }
 
 impl Run<'_> {
@@ -503,6 +509,9 @@ impl Run<'_> {
         };
         let failing = answer.as_ref().is_none_or(|a| a.status >= 500 || a.status == 429);
         self.failed_in_row = if failing { self.failed_in_row + 1 } else { 0 };
+        if failing && self.transient.is_none() {
+            self.transient = Some(answer.as_ref().map_or_else(|| error.clone().unwrap_or_else(|| "unknown".into()), |a| format!("sitemap_{}", a.status)));
+        }
         if self.guesses.contains(&url) && answer.as_ref().is_none_or(|a| a.status != 200) {
             return Ok(Vec::new());
         }
@@ -712,7 +721,10 @@ impl Run<'_> {
             return;
         }
         if !self.found {
-            self.stop(Outcome::NoSitemap, Some("no_sitemap".into()));
+            // A recheck of a site that answered before, whose sitemaps answered with a rate limit, a server error or not at all, is tried again before it counts as having none.
+            let retry = self.transient.clone().filter(|_| self.known.state == State::New && self.known.last_ok_at.is_some());
+            self.result.passing |= retry.is_some();
+            self.stop(Outcome::NoSitemap, Some(retry.unwrap_or_else(|| "no_sitemap".into())));
         } else if self.result.listed + self.kept < MIN_URLS && !updates.iter().any(|u| u.kind.as_deref() == Some("index")) {
             self.stop(Outcome::NoSitemap, Some("sitemap_too_small".into()));
         }
@@ -735,12 +747,15 @@ impl Run<'_> {
             return Ok(());
         }
         if answer.status != 200 {
+            // A rate limit or refusal on a recheck of a site that answered before may be its answer to a busy hour; one that lasts keeps it out.
+            self.result.passing = matches!(answer.status, 401 | 403 | 429) && self.known.state == State::New && self.known.last_ok_at.is_some();
             self.stop(Outcome::Ineligible, Some("homepage_error".into()));
             return Ok(());
         }
         let body = answer.body;
+        let cut = body.len() >= MAX_HOMEPAGE_BYTES;
         let detect = self.visitor.language.clone();
-        let page = self.visitor.cpu(move || homepage::read(&body, &*detect)).await?;
+        let page = self.visitor.cpu(move || homepage::read_cut(&body, &*detect, cut)).await?;
         self.result.home_chars = Some(page.chars as i64);
         self.result.declared_lang = page.declared;
         self.result.language = page.language;
@@ -795,6 +810,8 @@ impl Run<'_> {
     ) -> Result<Answer, String> {
         let mut url = url.to_string();
         let mut permit = None;
+        // Cookies a redirect sets go with the later hops of the same chain, as a browser sends them; some sign-in redirects loop without them.
+        let mut cookies: Vec<Cookie> = Vec::new();
         for _ in 0..=MAX_REDIRECTS {
             let host = urls::split(&url).map_err(|_| "ValueError".to_string())?.hostname().unwrap_or_default();
             if !net::public_host(&host) {
@@ -810,6 +827,10 @@ impl Run<'_> {
                 for (name, value) in signer.headers(&url, chrono::Utc::now().timestamp()) {
                     request = request.header(name, value);
                 }
+            }
+            let sending: Vec<&str> = cookies.iter().filter(|c| c.goes_to(&host)).map(|c| c.pair.as_str()).collect();
+            if !sending.is_empty() {
+                request = request.header("Cookie", sending.join("; "));
             }
             if let Some((etag, modified)) = &validators {
                 if let Some(etag) = etag {
@@ -830,6 +851,13 @@ impl Run<'_> {
                 self.pacer.slow_to(Some((self.pacer.interval * 2.0).max(asked)));
             }
             if matches!(status, 301 | 302 | 303 | 307 | 308) {
+                for value in response.headers().get_all("set-cookie") {
+                    let registrable = self.visitor.suffixes.registrable(&host);
+                    if let Some(cookie) = Cookie::parse(&host, &String::from_utf8_lossy(value.as_bytes()), registrable.as_deref()) {
+                        cookies.retain(|kept| (kept.domain.as_str(), kept.name()) != (cookie.domain.as_str(), cookie.name()));
+                        cookies.push(cookie);
+                    }
+                }
                 if let Some(location) = header(response.headers(), "location").filter(|l| !l.is_empty()) {
                     url = urls::join(&url, &location).map_err(|_| "ValueError".to_string())?;
                     continue;
@@ -967,7 +995,7 @@ fn digest(job: FileJob) -> Result<Digested, Crash> {
 
 /// A homepage as a sitemap: itself first, then each page it links to, relative links read from where it was found.
 fn homepage_listing(body: &[u8], base: &str) -> (&'static str, Vec<Entry>) {
-    let linked = homepage::links(body).into_iter().filter_map(|href| urls::join(base, &href).ok());
+    let linked = homepage::links(body, body.len() >= MAX_HOMEPAGE_BYTES).into_iter().filter_map(|href| urls::join(base, &href).ok());
     (HOMEPAGE_KIND, std::iter::once(base.to_string()).chain(linked).map(|url| Entry { url, ..Entry::default() }).collect())
 }
 
@@ -1023,6 +1051,48 @@ fn retry_after(headers: &HeaderMap) -> f64 {
     header(headers, "retry-after").and_then(|v| v.trim().parse::<f64>().ok()).unwrap_or(0.0)
 }
 
+/// A cookie a redirect set: `name=value`, for its own host only, or for a parent domain it names and the hosts under it.
+#[derive(Debug, PartialEq, Eq)]
+struct Cookie {
+    domain: String,
+    host_only: bool,
+    pair: String,
+}
+
+impl Cookie {
+    /// A `Set-Cookie` value from `host`; None when it has no name, or names a domain that doesn't cover the host or lies above its registrable domain.
+    fn parse(host: &str, value: &str, registrable: Option<&str>) -> Option<Cookie> {
+        let mut attributes = value.split(';');
+        let (name, pair) = attributes.next().and_then(|pair| pair.split_once('=').map(|(name, value)| (name.trim(), format!("{}={}", name.trim(), value.trim()))))?;
+        let named = attributes
+            .find_map(|attribute| attribute.split_once('=').filter(|(key, _)| key.trim().eq_ignore_ascii_case("domain")).map(|(_, domain)| domain.trim().trim_start_matches('.').to_ascii_lowercase()))
+            .filter(|domain| !domain.is_empty());
+        let (domain, host_only) = match named {
+            Some(domain) if covers(&domain, host) && registrable.is_some_and(|registrable| covers(registrable, &domain)) => (domain, false),
+            Some(_) => return None,
+            None => (host.to_string(), true),
+        };
+        (!name.is_empty()).then_some(Cookie { domain, host_only, pair })
+    }
+
+    fn goes_to(&self, host: &str) -> bool {
+        if self.host_only {
+            host == self.domain
+        } else {
+            covers(&self.domain, host)
+        }
+    }
+
+    fn name(&self) -> &str {
+        self.pair.split_once('=').map_or("", |(name, _)| name)
+    }
+}
+
+/// Whether a cookie for `domain` goes to `host`: the host itself or one under it.
+fn covers(domain: &str, host: &str) -> bool {
+    host == domain || host.strip_suffix(domain).is_some_and(|rest| rest.ends_with('.'))
+}
+
 fn header(headers: &HeaderMap, name: &str) -> Option<String> {
     headers.get(name).map(|value| String::from_utf8_lossy(value.as_bytes()).into_owned())
 }
@@ -1057,6 +1127,20 @@ mod tests {
     fn a_listed_domain_with_no_sitemap_named_is_also_looked_at_for_a_feed() {
         assert_eq!(guess_paths(false).collect::<Vec<_>>(), ["/sitemap.xml", "/sitemap_index.xml"]);
         assert_eq!(guess_paths(true).collect::<Vec<_>>(), ["/sitemap.xml", "/sitemap_index.xml", "/feed", "/rss.xml", "/"], "after the sitemaps, which go first; the homepage last");
+    }
+
+    #[test]
+    fn a_redirect_cookie_goes_to_its_host_or_the_parent_domain_it_names() {
+        let host_only = Cookie::parse("oxfordreference.com", "AWSALBAPP-0=_remove_; Path=/", Some("oxfordreference.com")).unwrap();
+        assert_eq!((host_only.domain.as_str(), host_only.pair.as_str(), host_only.name()), ("oxfordreference.com", "AWSALBAPP-0=_remove_", "AWSALBAPP-0"));
+        assert!(host_only.goes_to("oxfordreference.com") && !host_only.goes_to("www.oxfordreference.com"), "one with no domain goes back to its own host only");
+        let parent = Cookie::parse("login.example.com", "sid = 1 ; Domain=.Example.com", Some("example.com")).unwrap();
+        assert_eq!(parent.domain, "example.com");
+        assert!(parent.goes_to("www.example.com") && parent.goes_to("example.com") && !parent.goes_to("badexample.com"));
+        assert_eq!(Cookie::parse("a.example.com", "x=1; Domain=other.com", Some("example.com")), None, "a domain that doesn't cover the host");
+        assert_eq!(Cookie::parse("a.example.co.uk", "x=1; Domain=co.uk", Some("example.co.uk")), None, "a public suffix");
+        assert_eq!(Cookie::parse("a.example.com", "x=1; Domain=", Some("example.com")).map(|c| c.host_only), Some(true), "an empty domain is the host's own");
+        assert_eq!(Cookie::parse("a.example.com", "=1", Some("example.com")), None);
     }
 
     #[test]

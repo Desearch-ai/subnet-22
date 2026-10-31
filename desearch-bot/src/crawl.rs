@@ -56,7 +56,9 @@ pub struct DomainWrite {
 
 /// The state a visit leaves a domain in, and when the loop should come back to it.
 pub fn plan(known: &Known, visit: Visit, now: i64, rng: &mut impl Rng) -> DomainWrite {
-    let decision = states::decide(known.state, visit.outcome, known.failures, known.last_ok_at, now, rng);
+    // A refusal that may pass, on a recheck, is tried again before its outcome counts.
+    let retry = (visit.passing && known.state == State::New).then(|| states::recheck_retry(known.failures, now, rng)).flatten();
+    let decision = retry.unwrap_or_else(|| states::decide(known.state, visit.outcome, known.failures, known.last_ok_at, now, rng));
     let mut due = decision.next_check_at;
     if decision.state == State::Active {
         let earliest = if visit.deferred.is_empty() { earliest_sitemap(known, &visit, now) } else { Some(now) };

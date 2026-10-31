@@ -111,6 +111,26 @@ LANDING_DEPTH = 1
 SOFT_OUTS = {"unlabelled", "shop", "junk"}
 # A v1 site that names no sitemap is listed too, so the bot looks for its feed; it sends nothing until it lists pages.
 FEED_STATES = {"no_sitemap"}
+SERVER_ERRORS = {str(status) for status in range(500, 600)}
+# The names the bot (net.rs, visit.rs) gives a site that doesn't answer; any other reason is not a failure.
+NETWORK_ERRORS = {
+    "InvalidUrlClientError",
+    "ConnectionTimeoutError",
+    "TimeoutError",
+    "SocketTimeoutError",
+    "ClientConnectorDNSError",
+    "ClientConnectorCertificateError",
+    "ClientConnectorSSLError",
+    "ServerDisconnectedError",
+    "ClientConnectorError",
+    "ClientPayloadError",
+    "ClientOSError",
+    "OSError",
+    "ValueError",
+    "CancelledError",
+    "TooManyRedirects",
+    "unknown",
+}
 
 
 @dataclass
@@ -171,6 +191,21 @@ class V1:
     rule: str
     site_type: str = ""
     since: str | None = None
+
+
+def failure(reason: str) -> bool:
+    """Whether the bot's reason is a site failing to answer: a network error, a 5xx, or a sitemap rate limit. Refusals and crashes are not."""
+    kind, _, status = reason.partition("_")
+    if kind in ("robots", "homepage", "sitemap"):
+        return status in SERVER_ERRORS or (kind == "sitemap" and status == "429")
+    return reason in NETWORK_ERRORS
+
+
+def state_of(row: Row) -> str:
+    """The row's state for the list: a new row the bot is retrying after a failure is listed as a failing site, as it was before."""
+    if row.state == "new" and row.state_reason and failure(row.state_reason):
+        return "failing"
+    return row.state
 
 
 def out(reason: str) -> Decision:
@@ -234,7 +269,7 @@ def decide(
         and not (row.state_reason in RECHECKED and row.homepage == "ok")
     ):
         return out(f"ineligible:{row.state_reason}")
-    if row.state not in CRAWLED_STATES | {"ineligible"}:
+    if state_of(row) not in CRAWLED_STATES | {"ineligible"}:
         return out(f"state:{row.state}")
     if row.homepage in REFUSALS and override != "keep":
         return out("refuses")
@@ -508,7 +543,7 @@ def build(
             landing
             and decision.listed
             and not (
-                decision.weight >= node2_min_weight and row.state in SENDING_STATES
+                decision.weight >= node2_min_weight and state_of(row) in SENDING_STATES
             )
         ):
             decision = replace(
@@ -529,9 +564,9 @@ def build(
         feed = (
             entry_v1 is not None
             and entry_v1.rule in ("news", "whole", "landing")
-            and row.state in FEED_STATES
+            and state_of(row) in FEED_STATES
         )
-        if decision.listed and (row.state in SENDING_STATES or feed):
+        if decision.listed and (state_of(row) in SENDING_STATES or feed):
             entry = {
                 "host": row.host,
                 "type": decision.site_type,
@@ -571,7 +606,7 @@ def build(
                     row.rank or 0,
                     row.host,
                     entry,
-                    feed and row.state not in SENDING_STATES,
+                    feed and state_of(row) not in SENDING_STATES,
                 )
             )
         # The decisions file keeps the decision before the v1 set, which the set itself is built from.

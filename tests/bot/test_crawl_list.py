@@ -755,3 +755,89 @@ def test_the_v1_set_is_read_from_its_file(tmp_path):
         "c.com": crawl_list.V1("out"),
     }
     assert crawl_list.read_v1_set(None) is None
+
+
+def test_a_recheck_waiting_for_its_retry_stays_listed():
+    failures = [
+        "SocketTimeoutError",
+        "ClientConnectorDNSError",
+        "TooManyRedirects",
+        "unknown",
+        "robots_503",
+        "homepage_500",
+        "sitemap_429",
+        "sitemap_502",
+    ]
+    retrying = [
+        row(host=f"{r.lower()}.com", state="new", state_reason=r) for r in failures
+    ]
+    fresh = row(host="fresh.com", state="new", state_reason="")
+    crashed = row(host="crash.com", state="new", state_reason="crashed: StoreError")
+    listed = {
+        e["host"]
+        for e in crawl_list.build([*retrying, fresh, crashed], {}, {}, Hand())[0]
+    }
+    assert listed == {r.host for r in retrying}, (
+        "the bot writes a reason on a new row only while it retries a site that answered before"
+    )
+
+
+def test_a_recheck_refused_while_it_retries_sends_nothing():
+    refused = row(host="refused.com", state="new", state_reason="homepage_error")
+    assert decide(refused, Backing()).reason == "state:new"
+    for reason in (
+        "homepage_error",
+        "robots_disallow",
+        "bot_wall",
+        "crashed: StoreError",
+        "no_text",
+    ):
+        assert not crawl_list.failure(reason), reason
+    assert crawl_list.build([refused], {}, {}, Hand())[0] == []
+    landing = crawl_list.V1("landing", "news")
+    assert (
+        crawl_list.build([refused], {}, {}, Hand(), v1={"refused.com": landing})[0]
+        == []
+    )
+
+
+def test_only_a_server_error_or_a_known_network_failure_counts_as_failing():
+    for reason in (
+        "InvalidUrlClientError",
+        "ConnectionTimeoutError",
+        "TimeoutError",
+        "SocketTimeoutError",
+        "ClientConnectorDNSError",
+        "ClientConnectorCertificateError",
+        "ClientConnectorSSLError",
+        "ServerDisconnectedError",
+        "ClientConnectorError",
+        "ClientPayloadError",
+        "ClientOSError",
+        "OSError",
+        "ValueError",
+        "CancelledError",
+        "TooManyRedirects",
+        "unknown",
+        "robots_500",
+        "homepage_599",
+        "sitemap_429",
+    ):
+        assert crawl_list.failure(reason), reason
+    for reason in (
+        "homepage_999",
+        "robots_999",
+        "sitemap_999",
+        "homepage_499",
+        "robots_429",
+        "homepage_429",
+        "sitemap_403",
+        "sitemap_5xx",
+        "HOMEPAGE_503",
+        "FirewallBlockError",
+        "RuntimeError",
+        "crashed: CancelledError",
+    ):
+        assert not crawl_list.failure(reason), reason
+    linkedin = row(host="linkedin.com", state="new", state_reason="homepage_999")
+    assert crawl_list.build([linkedin], {}, {}, Hand())[0] == []

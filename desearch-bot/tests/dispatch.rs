@@ -1975,6 +1975,20 @@ fn only_a_listed_subdomain_whose_record_works_takes_its_pages_from_the_parent() 
         buckets.note_apart(&list);
         assert_eq!(list.apart("news.example.com"), apart, "ineligible for {reason}, homepage {home:?}: only a missing homepage leaves its pages under the parent");
     }
+    let mut retrying = records::new_domain(Some(10), Some("com"), &[], State::New, Some("homepage_error"), None);
+    retrying.insert("home_status".into(), 429.into());
+    let mut changes = Changes::default();
+    changes.domain("news.example.com", &retrying);
+    buckets.store("news.example.com").write(changes).unwrap();
+    buckets.note_apart(&list);
+    assert!(list.apart("news.example.com"), "a refusing subdomain that waits for its retries as new keeps its pages from going too");
+    let mut settled = records::new_domain(Some(10), Some("com"), &[], State::NoSitemap, Some("no_sitemap"), None);
+    settled.insert("home_status".into(), 403.into());
+    let mut changes = Changes::default();
+    changes.domain("news.example.com", &settled);
+    buckets.store("news.example.com").write(changes).unwrap();
+    buckets.note_apart(&list);
+    assert!(!list.apart("news.example.com"), "an old refusal on the record of a subdomain that has since settled as no_sitemap keeps nothing apart");
 }
 
 #[test]
