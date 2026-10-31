@@ -79,8 +79,8 @@ queue in the same order, where each hour of waiting moves a site up a class. A r
 to `new` has its site checked again. If that check fails on a site that answered before, because the
 site doesn't answer, its sitemaps answer with a rate limit or a server error, or its homepage refuses
 us, it is tried again after 15 minutes, 2 hours and 12 hours, each up to half as long again at random,
-before it is judged as it would have been. Meanwhile its registry row stays `new` with the reason, and
-the crawl list keeps it.
+before it is judged as it would have been. Meanwhile its registry row stays `new` with the reason. The
+crawl list keeps a site that fails to answer and leaves out one whose homepage refuses us.
 
 A site whose sitemaps list pages has its homepage read once for its language. A page of under 1,500
 characters that is a browser check (Cloudflare, DataDome, PerimeterX, Imperva, Akamai), says to enable
