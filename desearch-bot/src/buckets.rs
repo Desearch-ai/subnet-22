@@ -579,8 +579,8 @@ impl Buckets {
             let state = record.as_ref().and_then(|record| record.get("state")).and_then(Value::as_str).and_then(State::parse);
             let reason = record.as_ref().and_then(|record| record.get("reason")).and_then(Value::as_str);
             let home = record.as_ref().and_then(|record| record.get("home_status")).and_then(Value::as_u64);
-            // A homepage that refuses us keeps the subdomain's pages from going, whatever state its retries leave it in.
-            if matches!(home, Some(401 | 403 | 429)) {
+            // A subdomain whose homepage refused its recheck keeps its pages from going while it waits as new for its retries.
+            if state == Some(State::New) && matches!(home, Some(401 | 403 | 429)) {
                 return true;
             }
             match state {

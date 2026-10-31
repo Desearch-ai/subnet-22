@@ -300,6 +300,7 @@ impl Visitor {
             answered: false,
             network_error: None,
             home,
+            transient: None,
         };
         run.go().await?;
         Ok(run.result)
@@ -328,6 +329,8 @@ struct Run<'a> {
     network_error: Option<String>,
     /// The homepage's address, which a landing site lists its first-level pages from.
     home: String,
+    /// The first sitemap or guess that answered with a rate limit, a server error or not at all.
+    transient: Option<String>,
 }
 
 impl Run<'_> {
@@ -506,6 +509,9 @@ impl Run<'_> {
         };
         let failing = answer.as_ref().is_none_or(|a| a.status >= 500 || a.status == 429);
         self.failed_in_row = if failing { self.failed_in_row + 1 } else { 0 };
+        if failing && self.transient.is_none() {
+            self.transient = Some(answer.as_ref().map_or_else(|| error.clone().unwrap_or_else(|| "unknown".into()), |a| format!("sitemap_{}", a.status)));
+        }
         if self.guesses.contains(&url) && answer.as_ref().is_none_or(|a| a.status != 200) {
             return Ok(Vec::new());
         }
@@ -715,7 +721,10 @@ impl Run<'_> {
             return;
         }
         if !self.found {
-            self.stop(Outcome::NoSitemap, Some("no_sitemap".into()));
+            // A recheck of a site that answered before, whose sitemaps answered with a rate limit, a server error or not at all, is tried again before it counts as having none.
+            let retry = self.transient.clone().filter(|_| self.known.state == State::New && self.known.last_ok_at.is_some());
+            self.result.passing |= retry.is_some();
+            self.stop(Outcome::NoSitemap, Some(retry.unwrap_or_else(|| "no_sitemap".into())));
         } else if self.result.listed + self.kept < MIN_URLS && !updates.iter().any(|u| u.kind.as_deref() == Some("index")) {
             self.stop(Outcome::NoSitemap, Some("sitemap_too_small".into()));
         }

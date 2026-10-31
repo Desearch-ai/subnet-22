@@ -173,6 +173,13 @@ class V1:
     since: str | None = None
 
 
+def state_of(row: Row) -> str:
+    """The row's state for the list: a new row the bot gave a reason is a recheck waiting for its retry, listed as a failing site, as it was before."""
+    if row.state == "new" and row.state_reason and not row.state_reason.startswith("crashed"):
+        return "failing"
+    return row.state
+
+
 def out(reason: str) -> Decision:
     return Decision(False, reason)
 
@@ -234,7 +241,7 @@ def decide(
         and not (row.state_reason in RECHECKED and row.homepage == "ok")
     ):
         return out(f"ineligible:{row.state_reason}")
-    if row.state not in CRAWLED_STATES | {"ineligible"}:
+    if state_of(row) not in CRAWLED_STATES | {"ineligible"}:
         return out(f"state:{row.state}")
     if row.homepage in REFUSALS and override != "keep":
         return out("refuses")
@@ -508,7 +515,7 @@ def build(
             landing
             and decision.listed
             and not (
-                decision.weight >= node2_min_weight and row.state in SENDING_STATES
+                decision.weight >= node2_min_weight and state_of(row) in SENDING_STATES
             )
         ):
             decision = replace(
@@ -529,9 +536,9 @@ def build(
         feed = (
             entry_v1 is not None
             and entry_v1.rule in ("news", "whole", "landing")
-            and row.state in FEED_STATES
+            and state_of(row) in FEED_STATES
         )
-        if decision.listed and (row.state in SENDING_STATES or feed):
+        if decision.listed and (state_of(row) in SENDING_STATES or feed):
             entry = {
                 "host": row.host,
                 "type": decision.site_type,
@@ -571,7 +578,7 @@ def build(
                     row.rank or 0,
                     row.host,
                     entry,
-                    feed and row.state not in SENDING_STATES,
+                    feed and state_of(row) not in SENDING_STATES,
                 )
             )
         # The decisions file keeps the decision before the v1 set, which the set itself is built from.

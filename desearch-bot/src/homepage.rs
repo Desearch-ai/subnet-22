@@ -21,16 +21,18 @@ const WALL_MAX_CHARS: usize = 1500;
 const MISREADS: [&str; 12] = ["zxx", "la", "pcm", "gcf", "bcl", "fuv", "jam", "tpi", "kri", "srn", "hwc", "bi"];
 
 static HTML_LANG: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?i)<html[^>]*\blang=["']?([a-zA-Z-]{2,8})"#).unwrap());
-static COMMENT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?s)<!--.*?-->").unwrap());
-static SCRIPT_OR_STYLE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?is)<script(?:\s[^>]*)?>.*?</script>|<style(?:\s[^>]*)?>.*?</style>|<noscript(?:\s[^>]*)?>.*?</noscript>|<svg(?:\s[^>]*[^/>])?>.*?</svg>").unwrap()
+/// Comments, scripts, styles, noscript and drawings, in one pass, so whichever starts first holds what is inside it: a `<!--` in a script hides nothing.
+static HIDDEN: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?is)<!--.*?-->|<script(?:\s[^>]*)?>.*?</script>|<style(?:\s[^>]*)?>.*?</style>|<noscript(?:\s[^>]*)?>.*?</noscript>|<svg(?:\s[^>]*[^/>])?>.*?</svg>").unwrap()
 });
 /// A script, style or noscript still open once the closed ones are gone: in a body cut at the read limit, the cut fell inside it.
 static OPEN_BLOCK: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)<(?:script|style|noscript)(?:\s[^>]*)?>").unwrap());
-/// Pages that check the browser before showing the site: Cloudflare, DataDome, PerimeterX, Imperva and Akamai.
-static CHALLENGE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)<title>just a moment|cf-chl-|captcha-delivery\.com|px-captcha|_incapsula_resource|verify you are human|bm-verify=").unwrap()
-});
+/// What only a page checking the browser carries: Cloudflare's interstitial, DataDome's and PerimeterX's captchas, Imperva's incident and Akamai's verify.
+static CHALLENGE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)<title>just a moment|captcha-delivery\.com|px-captcha|incapsula incident id|bm-verify=").unwrap());
+/// What firewalls and forms put on ordinary pages too, so it marks a wall only on a page with next to no text.
+static CHALLENGE_SCRIPT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)cf-chl-|_incapsula_resource|verify you are human").unwrap());
+static LOREM: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)\blorem ipsum\b").unwrap());
 static META: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?is)<meta\s[^>]*>").unwrap());
 static SUMMARY_NAME: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r#"(?i)\s(?:name|property)\s*=\s*["']?(?:description|og:description|twitter:description)["'\s/>]"#).unwrap());
@@ -59,7 +61,7 @@ pub struct Homepage {
 
 /// The markup with comments, scripts, styles, noscript and drawings taken out; `cut`, for a body cut at the read limit, also drops a block the cut left open.
 fn shown(html: &str, cut: bool) -> String {
-    let shown = SCRIPT_OR_STYLE.replace_all(&COMMENT.replace_all(html, " "), " ").into_owned();
+    let shown = HIDDEN.replace_all(html, " ").into_owned();
     match OPEN_BLOCK.find(&shown).filter(|_| cut) {
         Some(open) => shown[..open.start()].to_string(),
         None => shown,
@@ -74,36 +76,37 @@ pub fn read(body: &[u8], detect_language: &dyn Fn(&str) -> Option<String>) -> Ho
 /// Judge a homepage that may have been cut at the read limit.
 pub fn read_cut(body: &[u8], detect_language: &dyn Fn(&str) -> Option<String>, cut: bool) -> Homepage {
     let html = decode(body);
+    // Only a language code is a declaration: `lang="english"` declares nothing.
     let declared = HTML_LANG
         .captures(text::head(&html, 4000))
-        .map(|c| c[1].to_lowercase().split('-').next().unwrap_or("").to_string());
+        .map(|c| c[1].to_lowercase().split('-').next().unwrap_or("").to_string())
+        .filter(|code| (2..=3).contains(&code.len()));
     let stripped = TAG.replace_all(&shown(&html, cut), " ").into_owned();
     let words: Vec<&str> = text::words(&stripped).collect();
     let page = words.join(" ");
     let chars = text::char_count(&page);
     let sample = text::head(&page, SAMPLE);
     let judged = |language: Option<String>, problem| Homepage { chars, declared: declared.clone(), language, problem };
-    if chars < WALL_MAX_CHARS && (BOT_WALL.is_match(sample) || CHALLENGE.is_match(text::head(&html, CHALLENGE_SAMPLE))) {
+    let markup = text::head(&html, CHALLENGE_SAMPLE);
+    if chars < WALL_MAX_CHARS && (BOT_WALL.is_match(sample) || CHALLENGE.is_match(markup)) || chars < MIN_CHARS && CHALLENGE_SCRIPT.is_match(markup) {
         return judged(None, Some("bot_wall"));
     }
-    // A page that says it is English is believed where the model gives no verdict or reads it as a class English is misread as: an English template over another language stays out.
-    let english = |language: &Option<String>| {
-        language.as_deref() == Some("en") || (declared.as_deref() == Some("en") && language.as_deref().is_none_or(|language| MISREADS.contains(&language)))
-    };
     if chars < MIN_CHARS {
-        // The check runs on sites whose sitemaps list pages, so a short homepage is a menu or an app shell: its title and description tell its language, and a declaration of another one keeps it out.
-        let summary = format!("{page} {}", descriptions(&COMMENT.replace_all(&html, " ")).join(" "));
-        let language = detect_language(text::head(&summary, LANGUAGE_SAMPLE));
-        if declared.as_deref().is_some_and(|declared| declared != "en") {
-            return judged(language, Some("not_english"));
-        }
-        if english(&language) {
-            return judged(language.or_else(|| declared.clone()), None);
-        }
-        return judged(language.clone(), Some(if language.is_none() { "no_text" } else { "not_english" }));
+        // The check runs on sites whose sitemaps list pages, so a short homepage is a menu or an app shell: its own description and the model's reading of it tell its language, never its declaration alone. A challenge shell carries no description.
+        let found = descriptions(&shown(&html, cut));
+        let language = (!found.is_empty()).then(|| detect_language(text::head(&format!("{page} {}", found.join(" ")), LANGUAGE_SAMPLE))).flatten();
+        let problem = match language.as_deref() {
+            None => Some("no_text"),
+            Some(_) if declared.as_deref().is_some_and(|declared| declared != "en") => Some("not_english"),
+            Some("en") => None,
+            Some(_) => Some("not_english"),
+        };
+        return judged(language, problem);
     }
     let language = detect_language(text::head(&page, LANGUAGE_SAMPLE));
-    let problem = if english(&language) { None } else { Some("not_english") };
+    // A page that says it is English is believed where the model gives no verdict or reads it as a class English is misread as, unless it is placeholder text: an English template over another language stays out.
+    let declared_english = declared.as_deref() == Some("en") && !LOREM.is_match(sample) && language.as_deref().is_none_or(|language| MISREADS.contains(&language));
+    let problem = if language.as_deref() == Some("en") || declared_english { None } else { Some("not_english") };
     judged(language, problem)
 }
 
@@ -207,11 +210,54 @@ mod tests {
         assert_eq!(read(b"", &english).problem, Some("no_text"), "nothing to judge");
         assert_eq!(read(b"<html><title>Home</title></html>", &english).problem, Some("no_text"));
         let declared = read(br#"<html lang="en"><title>Home</title></html>"#, &english);
-        assert_eq!((declared.problem, declared.language.as_deref()), (None, Some("en")), "a pass on the declaration keeps it as the language, so the homepage isn't read again");
+        assert_eq!((declared.problem, declared.language), (Some("no_text"), None), "a declaration alone never passes a short page");
+        let summary = read(br#"<html lang="en"><title>Home</title><meta name="description" content="News and events of our town council"></html>"#, &english);
+        assert_eq!((summary.problem, summary.language.as_deref()), (None, Some("en")), "a pass keeps the model's language, so the homepage isn't read again");
         let japanese = br#"<html lang="ja"><title>Home</title><meta property="og:description" content="Read the news in English and Japanese every day"></html>"#;
         assert_eq!(read(japanese, &english).problem, Some("not_english"), "a short page declaring another language");
         let decoy = br#"<html><title>Shop</title><meta name="description" data-content="Learn about our company and our team" content=""><!-- <meta name="description" content="Lorem ipsum dolor sit amet consectetur"> --></html>"#;
         assert_eq!(read(decoy, &english).problem, Some("no_text"), "a data attribute and a commented-out tag are no description");
+    }
+
+    /// The second review's probes: an always-English model, so only the page's own make-up can keep these out.
+    #[test]
+    fn markers_a_firewall_puts_on_every_page_leave_a_real_page_alone() {
+        let prose = "The council meets every Tuesday to discuss local roads, parks and schools in our town. ".repeat(9);
+        let imperva = format!("<html><head><title>Town of Springfield</title></head><body><p>{prose}</p><script type=\"text/javascript\" src=\"/_Incapsula_Resource?SWJIYLWA=719d34d31c8e3a6e6fffd425f7e032f3&ns=1&cb=1234\"></script></body></html>");
+        assert_eq!(read(imperva.as_bytes(), &english).problem, None, "Imperva's script on an 802-character page");
+        let captcha = format!("<html><body><p>{prose}</p><form><label>Please verify you are human</label><input name=q></form></body></html>");
+        assert_eq!(read(captcha.as_bytes(), &english).problem, None, "a captcha label on an 810-character page");
+        let block = br#"<html><head><title>Access</title></head><body>Request unsuccessful. Incapsula incident ID: 123000150123456789-12345678901234567</body></html>"#;
+        assert_eq!(read(block, &english).problem, Some("bot_wall"), "Imperva's block page");
+    }
+
+    #[test]
+    fn a_comment_opener_inside_a_script_hides_nothing() {
+        let prose = "The council meets every Tuesday to discuss local roads, parks and schools in our town. ".repeat(9);
+        let page = format!("<html><head><script>var marker = \"<!--\";</script></head><body><p>{prose}</p><a href=/council>Council</a><!-- footer --></body></html>");
+        let read = read(page.as_bytes(), &english);
+        assert!(read.problem.is_none() && read.chars > 780, "{read:?}");
+        assert_eq!(links(page.as_bytes(), false), ["/council"]);
+    }
+
+    #[test]
+    fn a_short_page_needs_its_own_description_to_pass() {
+        let empty = br#"<html lang="en"><head><title></title><script src="/challenge.js"></script></head><body><div id="c"></div></body></html>"#;
+        assert_eq!(read(empty, &english).problem, Some("no_text"), "an empty page declaring English");
+        let sucuri = br#"<html><title>You are being redirected...</title><noscript>Javascript is required. Please enable javascript before you are allowed to see this page.</noscript><script>var s={},u,c,U,r,i,l=0,a,e=eval,w=String.fromCharCode,sucuri_cloudproxy_js='',S='cz0iMSIuc3Vic3RyKDAsMSkgKyAiNXNlYyIu';document.cookie='sucuri_cloudproxy_uuid_1=1';location.reload();</script></html>"#;
+        assert_ne!(read(sucuri, &english).problem, None, "a Sucuri challenge");
+        let one_moment = br#"<html><head><title>One moment, please...</title><script src="/.well-known/challenge.js"></script></head><body><div id="captcha"></div></body></html>"#;
+        assert_ne!(read(one_moment, &english).problem, None, "a captcha shell");
+        let ddos_guard = br#"<html lang="en"><head><title>DDoS-Guard</title></head><body><div id="ddg"></div><script src="/.well-known/ddos-guard/check?context=free_splash"></script></body></html>"#;
+        assert_ne!(read(ddos_guard, &english).problem, None, "a DDoS-Guard shell");
+        let library = br#"<html lang="english"><head><title>Springfield Public Library</title><meta name="description" content="Books, events and services for everyone in Springfield"></head><body><div id=root></div></body></html>"#;
+        assert_eq!(read(library, &english).problem, None, "lang=english is no other language");
+    }
+
+    #[test]
+    fn a_placeholder_template_never_passes_on_its_declaration() {
+        let lorem = format!("<html lang=\"en\"><body><h1>Welcome</h1><p>{}</p></body></html>", "Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore. ".repeat(10));
+        assert_eq!(read(lorem.as_bytes(), &|_: &str| Some("la".to_string())).problem, Some("not_english"));
     }
 
     #[test]

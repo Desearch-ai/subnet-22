@@ -755,3 +755,11 @@ def test_the_v1_set_is_read_from_its_file(tmp_path):
         "c.com": crawl_list.V1("out"),
     }
     assert crawl_list.read_v1_set(None) is None
+
+
+def test_a_recheck_waiting_for_its_retry_stays_listed():
+    retrying = row(host="retry.com", state="new", state_reason="SocketTimeoutError")
+    fresh = row(host="fresh.com", state="new", state_reason="")
+    crashed = row(host="crash.com", state="new", state_reason="crashed: StoreError")
+    listed = {e["host"] for e in crawl_list.build([retrying, fresh, crashed], {}, {}, Hand())[0]}
+    assert listed == {"retry.com"}, "the bot writes a reason on a new row only while it retries a site that answered before"

@@ -13,8 +13,7 @@ fn main() -> Result<()> {
     let detect = |text: &str| text.chars().nth(19).map(|_| model.classify(text).to_string());
     for path in &args[3..] {
         let body = std::fs::read(path)?;
-        let cut = &body[..body.len().min(limit)];
-        let page = homepage::read(cut, &detect);
+        let page = homepage::read_cut(&body[..body.len().min(limit)], &detect, body.len() >= limit);
         println!("{path}\tbytes {}\tchars {}\tdeclared {:?}\tlang {:?}\tproblem {:?}", body.len(), page.chars, page.declared, page.language, page.problem);
     }
     Ok(())

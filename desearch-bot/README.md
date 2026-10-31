@@ -76,19 +76,23 @@ checked. Each kind can count on its share, and slots one leaves unused go to the
 go listed news sites first, then the rest of the list, then unlisted domains, by rank within each.
 Domains with more than 2,000 sitemap records take one of `--heavy-slots`, handed out from a waiting
 queue in the same order, where each hour of waiting moves a site up a class. A registry row set back
-to `new` has its site checked again. If that check fails on a site that answered before, it is tried
-again after 15 minutes, 2 hours and 12 hours before it waits a month.
+to `new` has its site checked again. If that check fails on a site that answered before, because the
+site doesn't answer, its sitemaps answer with a rate limit or a server error, or its homepage refuses
+us, it is tried again after 15 minutes, 2 hours and 12 hours, each up to half as long again at random,
+before it is judged as it would have been. Meanwhile its registry row stays `new` with the reason, and
+the crawl list keeps it.
 
-A site whose sitemaps list pages has its homepage read once for its language. A short page that checks
-the browser (Cloudflare, DataDome, PerimeterX, Imperva, Akamai), says to enable JavaScript or says that
-access is denied is a bot wall. A homepage of under 200 characters is judged by its text with its title
-and description, since on such a site it is a menu or an app shell, and stays out when it declares
-another language. A page that declares English is believed where the model gives no verdict or reads it
-as a class English is misread as (no language, Latin, a pidgin or creole). A body cut at the read limit
-inside a script reads only the text before it. On a recheck of a site that answered before, a homepage
-that refuses us or limits our rate is tried again on the same schedule before it makes the site
-ineligible. Cookies a redirect sets go with the later hops of that chain only: back to their own host,
-or to the domain they name within the host's registrable domain.
+A site whose sitemaps list pages has its homepage read once for its language. A page of under 1,500
+characters that is a browser check (Cloudflare, DataDome, PerimeterX, Imperva, Akamai), says to enable
+JavaScript or says that access is denied is a bot wall; the scripts and labels firewalls and forms put
+on ordinary pages count only on a page of under 200. A homepage of under 200 characters is judged by
+its own description with its text, since on such a site it is a menu or an app shell: with no
+description, or a declaration of another language, it stays out. A longer page that declares English is
+believed where the model gives no verdict or reads it as a class English is misread as (no language,
+Latin, a pidgin or creole), unless it is placeholder text. Comments, scripts and styles are taken out in
+one pass, and a body cut at the read limit inside a script reads only the text before it. Cookies a
+redirect sets go with the later hops of that chain only: back to their own host, or to the domain they
+name within the host's registrable domain.
 
 A sitemap read again looks up only the entries it did not list the same way last time, from a compact
 fingerprint set kept per sitemap. A listed news site's root sitemap index and its Google News sitemaps
