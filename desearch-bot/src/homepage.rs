@@ -11,11 +11,31 @@ const MIN_CHARS: usize = 200;
 const SAMPLE: usize = 2000;
 /// The language model reads this much: headline-heavy homepages need more than the bot-wall check does.
 const LANGUAGE_SAMPLE: usize = 8000;
+/// A challenge page's markers sit in its markup, near the start.
+const CHALLENGE_SAMPLE: usize = 20_000;
+/// The descriptions sit in the head.
+const HEAD_SAMPLE: usize = 65_536;
+/// A wall's own page is short; a longer page that says "enable JavaScript" or "access denied" is a page with a video, a form or a heading.
+const WALL_MAX_CHARS: usize = 1500;
+/// Written languages with a real share of the web. A page that declares English and reads as another of these is not English; one read as anything else (no language, Latin, a creole) is judged by its declaration.
+const MAJOR: [&str; 52] = [
+    "en", "zh", "es", "ar", "pt", "id", "ms", "fr", "ja", "ru", "de", "ko", "tr", "fa", "it", "vi", "pl", "nl", "th", "uk", "ro", "el", "cs", "hu", "sv", "he", "da",
+    "fi", "no", "nb", "sk", "bg", "hr", "sr", "lt", "sl", "lv", "et", "hi", "bn", "ur", "ta", "te", "mr", "gu", "kn", "ml", "pa", "ca", "az", "kk", "ka",
+];
 
 static HTML_LANG: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?i)<html[^>]*\blang=["']?([a-zA-Z-]{2,8})"#).unwrap());
+/// A body cut at the read limit can end inside a script, which then runs to its end.
 static SCRIPT_OR_STYLE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?is)<script[^>]*>.*?</script>|<style[^>]*>.*?</style>|<noscript[^>]*>.*?</noscript>|<svg[^>]*>.*?</svg>").unwrap()
+    Regex::new(r"(?is)<script[^>]*>.*?(?:</script>|\z)|<style[^>]*>.*?(?:</style>|\z)|<noscript[^>]*>.*?(?:</noscript>|\z)|<svg[^>]*>.*?(?:</svg>|\z)").unwrap()
 });
+/// Pages that check the browser before showing the site: Cloudflare, DataDome, PerimeterX, Imperva and Akamai.
+static CHALLENGE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)<title>just a moment|cf-chl-|captcha-delivery\.com|px-captcha|_incapsula_resource|verify you are human|bm-verify=").unwrap()
+});
+static META: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?is)<meta\s[^>]*>").unwrap());
+static SUMMARY_NAME: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"(?i)\b(?:name|property)\s*=\s*["']?(?:description|og:description|twitter:description)["'\s/>]"#).unwrap());
+static CONTENT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?is)\bcontent\s*=\s*(?:"([^"]*)"|'([^']*)')"#).unwrap());
 static TAG: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"<[^>]+>").unwrap());
 static LINK: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?is)<a\s(?:[^>]*?\s)?href\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))"#).unwrap());
 /// Links one homepage lists at most, in page order: fewer than a sitemap the churn check would judge.
@@ -50,16 +70,29 @@ pub fn read(body: &[u8], detect_language: &dyn Fn(&str) -> Option<String>) -> Ho
     let chars = text::char_count(&page);
     let sample = text::head(&page, SAMPLE);
     let judged = |language: Option<String>, problem| Homepage { chars, declared: declared.clone(), language, problem };
-    if BOT_WALL.is_match(sample) {
+    if (chars < WALL_MAX_CHARS && BOT_WALL.is_match(sample)) || CHALLENGE.is_match(text::head(&html, CHALLENGE_SAMPLE)) {
         return judged(None, Some("bot_wall"));
     }
+    // A page that says it is English is believed only where the model gives no verdict or a minor one: an English template over another language stays out.
+    let english = |language: &Option<String>| {
+        language.as_deref() == Some("en") || (declared.as_deref() == Some("en") && language.as_deref().is_none_or(|language| !MAJOR.contains(&language)))
+    };
     if chars < MIN_CHARS {
-        return judged(None, Some("no_text"));
+        // The check runs on sites whose sitemaps list pages, so a short homepage is a menu or an app shell: its title and description tell its language.
+        let summary = format!("{page} {}", descriptions(&html).join(" "));
+        let language = detect_language(text::head(&summary, LANGUAGE_SAMPLE));
+        let problem = if english(&language) {
+            None
+        } else if language.is_none() {
+            Some("no_text")
+        } else {
+            Some("not_english")
+        };
+        return judged(language, problem);
     }
     let language = detect_language(text::head(&page, LANGUAGE_SAMPLE));
-    // A page that says it is English is believed only where the model gives no verdict: an English template over another language stays out.
-    let english = language.as_deref() == Some("en") || (declared.as_deref() == Some("en") && language.is_none());
-    judged(language, if english { None } else { Some("not_english") })
+    let problem = if english(&language) { None } else { Some("not_english") };
+    judged(language, problem)
 }
 
 /// The addresses a homepage links to, in page order, each once and with character references decoded; fragments and script, mail, phone and data links are none.
@@ -77,6 +110,18 @@ pub fn links(body: &[u8]) -> Vec<String> {
         .filter(|href| seen.insert(href.clone()))
         .take(MAX_LINKS)
         .collect()
+}
+
+/// The page's own summaries: its description, Open Graph and Twitter descriptions, each once.
+fn descriptions(html: &str) -> Vec<String> {
+    let mut found: Vec<String> = Vec::new();
+    for tag in META.find_iter(text::head(html, HEAD_SAMPLE)).map(|m| m.as_str()).filter(|tag| SUMMARY_NAME.is_match(tag)) {
+        let content = CONTENT.captures(tag).and_then(|c| c.get(1).or_else(|| c.get(2))).map(|m| sitemaps::location(m.as_str().trim().as_bytes()));
+        if let Some(content) = content.filter(|c| !c.is_empty() && !found.contains(c)) {
+            found.push(content);
+        }
+    }
+    found
 }
 
 /// The body as text in its declared charset, falling back to UTF-8.
@@ -101,8 +146,9 @@ fn python_alias(label: &[u8]) -> Option<&'static encoding_rs::Encoding> {
 mod tests {
     use super::*;
 
-    fn english(_: &str) -> Option<String> {
-        Some("en".into())
+    /// As the bot's model: no verdict on under 20 characters.
+    fn english(text: &str) -> Option<String> {
+        text.chars().nth(19).map(|_| "en".into())
     }
 
     #[test]
@@ -113,6 +159,53 @@ mod tests {
         assert_eq!(links(body), ["/about", "/en-us/products?a=1&b=2", "/pricing", "https://other.com/"]);
         let many: String = (0..500).map(|i| format!("<a href=\"/p{i}\">{i}</a>")).collect();
         assert_eq!(links(many.as_bytes()).len(), MAX_LINKS);
+    }
+
+    #[test]
+    fn a_body_cut_inside_a_script_reads_only_the_text_before_it() {
+        let body = format!("<html lang=\"en\"><p>{}</p><script>window.__DATA__ = {{\"items\": [{}", "word ".repeat(60), "\"x1y2\", ".repeat(5000));
+        let code = |text: &str| Some(if text.contains("x1y2") { "zxx" } else { "en" }.to_string());
+        let page = read(body.as_bytes(), &code);
+        assert_eq!((page.problem, page.chars), (None, 299), "the cut script is no text");
+    }
+
+    #[test]
+    fn a_short_homepage_is_judged_by_its_title_and_description() {
+        let shell = br#"<html lang="en"><head><title>Sportsnet</title><meta name="description" content="Canada&#39;s leading sports network, with scores and news"></head><body><div id="root"></div><script>render()</script></body></html>"#;
+        let page = read(shell, &english);
+        assert_eq!((page.problem, page.chars), (None, 9), "an app shell whose summary reads as English");
+        let menu = br#"<html><title>The Programming Language Lua</title><meta content='Official website of the Lua language' name=description><a href=about.html>about</a></html>"#;
+        assert_eq!(read(menu, &english).problem, None, "a menu with no lang attribute, read by its summary");
+        let french = |text: &str| text.chars().nth(19).map(|_| "fr".to_string());
+        assert_eq!(read(shell, &french).problem, Some("not_english"), "a summary in another language");
+        assert_eq!(read(b"", &english).problem, Some("no_text"), "nothing to judge");
+        assert_eq!(read(b"<html><title>Home</title></html>", &english).problem, Some("no_text"));
+    }
+
+    #[test]
+    fn a_wall_phrase_on_a_long_page_is_page_text() {
+        let video = format!("<p>{}</p><p>To view this video please enable JavaScript, and consider upgrading</p><p>{}</p>", "word ".repeat(20), "word ".repeat(400));
+        assert_eq!(read(video.as_bytes(), &english).problem, None);
+        assert_eq!(read(b"<h1>Access denied</h1><p>You don't have permission to access this server.</p>", &english).problem, Some("bot_wall"));
+    }
+
+    #[test]
+    fn a_declared_english_page_read_as_a_minor_class_is_english() {
+        let page = format!("<html lang=\"en-US\"><p>{}</p></html>", "word ".repeat(60));
+        let minor = |_: &str| Some("zxx".to_string());
+        assert_eq!(read(page.as_bytes(), &minor).problem, None, "no language, Latin or a creole yields to the declaration");
+        let gujarati = |_: &str| Some("gu".to_string());
+        assert_eq!(read(page.as_bytes(), &gujarati).problem, Some("not_english"), "a major language does not");
+        let undeclared = format!("<p>{}</p>", "word ".repeat(60));
+        assert_eq!(read(undeclared.as_bytes(), &minor).problem, Some("not_english"), "with no declaration the model decides");
+    }
+
+    #[test]
+    fn a_page_that_checks_the_browser_is_a_wall() {
+        let akamai = br#"<html><head><title>&nbsp;</title><meta http-equiv="refresh" content="5; URL='/?bm-verify=AAQAAAAO'"></head><body>Powered and protected by <a href="https://www.akamai.com/privacy">Privacy</a></body></html>"#;
+        assert_eq!(read(akamai, &english).problem, Some("bot_wall"));
+        let cloudflare = format!("<html><head><title>Just a moment...</title></head><body><p>{}</p></body></html>", "word ".repeat(60));
+        assert_eq!(read(cloudflare.as_bytes(), &english).problem, Some("bot_wall"));
     }
 
     #[test]

@@ -76,7 +76,17 @@ checked. Each kind can count on its share, and slots one leaves unused go to the
 go listed news sites first, then the rest of the list, then unlisted domains, by rank within each.
 Domains with more than 2,000 sitemap records take one of `--heavy-slots`, handed out from a waiting
 queue in the same order, where each hour of waiting moves a site up a class. A registry row set back
-to `new` has its site checked again.
+to `new` has its site checked again. If that check fails on a site that answered before, it is tried
+again after 15 minutes, 30 minutes and an hour before it waits a month.
+
+A site whose sitemaps list pages has its homepage read once for its language. A page that checks the
+browser (Cloudflare, DataDome, PerimeterX, Imperva, Akamai), or a short one that says to enable
+JavaScript or that access is denied, is a bot wall. A homepage of under 200 characters is judged by
+its text with its title and description, since on such a site it is a menu or an app shell. A page that
+declares English is believed where the model gives no verdict or a minor one (no language, Latin, a
+creole). A body cut at the read limit inside a script reads only the text before it. A rate limit, or a
+refusal from a site that answered before, is tried again as an unreachable site is; other error pages
+make the site ineligible. Cookies a redirect sets go with the later hops of that redirect chain only.
 
 A sitemap read again looks up only the entries it did not list the same way last time, from a compact
 fingerprint set kept per sitemap. A listed news site's root sitemap index and its Google News sitemaps
