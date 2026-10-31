@@ -67,6 +67,8 @@ const BULK_CURSOR: &[u8] = b"bulk-cursor";
 /// A bulk file number the lane found not indexed, and the Unix time it first did, `<number>\t<time>`.
 const BULK_HOLE: &[u8] = b"bulk-hole";
 const BULK_REPLAN: &str = "bulk-replan/";
+/// Bulk-feed versions the lane read again and left unplanned, by page key: their file's number, for the backfill to plan.
+const BULK_LEFT: &str = "bulk-left/";
 /// Bulk files read in one pass at most.
 const BULK_FILES_PER_PASS: usize = 4;
 /// How many pages wait, kept with every change to them.
@@ -817,8 +819,17 @@ impl State {
         Ok(self.db.put(bulk_replan_key(file, key), "")?)
     }
 
-    fn bulk_replanned(&self, file: i64, key: &str) -> Result<()> {
-        Ok(self.db.delete(bulk_replan_key(file, key))?)
+    /// Lets go of the note on `key` in bulk file `file`, leaving that version to the backfill.
+    fn leave_bulk(&self, file: i64, key: &str) -> Result<()> {
+        let mut batch = Batch::default();
+        batch.delete(bulk_replan_key(file, key));
+        batch.put(bulk_left_key(key), file.to_string());
+        self.write(batch)
+    }
+
+    /// The file of the bulk-feed version of `key` the lane left to the backfill.
+    pub fn bulk_left(&self, key: &str) -> Result<Option<i64>> {
+        Ok(self.db.get(bulk_left_key(key))?.map(|raw| String::from_utf8_lossy(&raw).parse()).transpose()?)
     }
 
     pub fn cursor(&self) -> Result<Option<i64>> {
@@ -1334,6 +1345,9 @@ impl State {
             if page.source == Source::Replan && page.seq < 0 {
                 batch.delete(bulk_replan_key(page.seq - BULK_ORDER, &page.key));
             }
+            if page.seq < 0 && self.db.get(bulk_left_key(&page.key))?.is_some() {
+                batch.delete(bulk_left_key(&page.key));
+            }
         }
         self.change_sites(&mut batch, &new)?;
         batch.put(format!("pending/{input_key}"), entry);
@@ -1385,6 +1399,10 @@ fn waiting_class(raw: &[u8]) -> Option<Class> {
 /// A page an input gave back, noted for the bulk lane to read again from bulk file `file`.
 fn bulk_replan_key(file: i64, key: &str) -> String {
     format!("{BULK_REPLAN}{file:020}/{key}")
+}
+
+fn bulk_left_key(key: &str) -> String {
+    format!("{BULK_LEFT}{key}")
 }
 
 fn replan_key(seq: i64, key: &str) -> String {
@@ -2153,7 +2171,7 @@ impl Planner {
         Ok(took)
     }
 
-    /// Plans again, each from its own bulk file, pages inputs gave back, a file at a time while the lane has room and budget; whether it took any.
+    /// Plans again, each from its own bulk file, pages inputs gave back, a file at a time while the lane has room and budget, leaving to the backfill those it does not plan; whether it took any.
     async fn bulk_replan(&mut self) -> Result<bool> {
         let mut took = false;
         for _ in 0..BULK_FILES_PER_PASS {
@@ -2190,13 +2208,13 @@ impl Planner {
                 took = true;
                 match self.consider(page, Source::Replan) {
                     Considered::Taken(lane) => self.write_when_full(lane).await?,
-                    Considered::Passed if !self.unsaved_anywhere(&key) => self.state.bulk_replanned(file, &key)?,
+                    Considered::Passed if !self.unsaved_anywhere(&key) => self.state.leave_bulk(file, &key)?,
                     Considered::Passed | Considered::Waiting => {}
                 }
             }
             // A page its file no longer holds is the backfill's.
             for key in keys.iter().filter(|key| whole && !found.contains(*key) && !self.unsaved_anywhere(key)) {
-                self.state.bulk_replanned(file, key)?;
+                self.state.leave_bulk(file, key)?;
             }
         }
         Ok(took)
@@ -2289,11 +2307,15 @@ impl Planner {
                     reading.last = Some(page.key.clone());
                     read += 1;
                     self.counts.backfill += 1;
-                    // While the bulk lane is on, a bulk-feed version is planned by it, on its budget, from its file.
+                    // While the bulk lane is on, it plans a bulk-feed version from its file, unless the planner refuses the page or the lane left it.
                     if page.change_seq < 0 && self.settings.bulk_pages_per_hour > 0.0 {
-                        self.state.note_bulk(page.change_seq - BULK_ORDER, &page.key)?;
-                        self.counts.bulk_noted += 1;
-                        continue;
+                        let file = page.change_seq - BULK_ORDER;
+                        let readable = !self.excluded(&page.record.domain.to_lowercase()) && self.admitted(&page.record);
+                        if readable && self.state.bulk_left(&page.key)? != Some(file) {
+                            self.state.note_bulk(file, &page.key)?;
+                            self.counts.bulk_noted += 1;
+                            continue;
+                        }
                     }
                     if let Considered::Taken(lane) = self.consider(page, Source::Backfill) {
                         self.write_when_full(lane).await?;
@@ -2726,7 +2748,7 @@ impl Planner {
     }
 
     fn keep_waiting(&mut self, page: &PageRow) {
-        // A bulk page has no change file to wait on: the bulk lane plans it from its file, or with the lane off the backfill takes it.
+        // A bulk page has no change file to wait on: the bulk lane plans it from its file, or the backfill takes it.
         if page.change_seq < 0 {
             return;
         }
