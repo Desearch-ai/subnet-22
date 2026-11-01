@@ -1,4 +1,4 @@
-//! Visits listed hosts once each as the bot does, on a scratch store: `visit_probe HOSTS OUT DATA_DIR CONCURRENCY SITEMAP_SECONDS DEADLINE_SECONDS [answered] [local] [pages]`; `pages` also writes each host's queued pages to OUT.pages; the run's totals go to OUT.summary.
+//! Visits listed hosts once each as the bot does, on a scratch store: `visit_probe HOSTS OUT DATA_DIR CONCURRENCY SITEMAP_SECONDS DEADLINE_SECONDS [answered] [local] [pages]`; `pages` also writes each host's queued pages to OUT.pages; the run's totals go to OUT.summary, its requests per host to OUT.requests.
 
 use std::collections::HashSet;
 use std::io::Write;
@@ -95,7 +95,7 @@ async fn main() -> Result<()> {
             _ => FollowLinks::Thin,
         },
     };
-    let mut crawl = Loop::new(buckets.clone(), Arc::new(visitor), concurrency, Registry::offline(), HashSet::new());
+    let mut crawl = Loop::new(buckets.clone(), Arc::new(visitor), concurrency, Registry::offline(), HashSet::new()).with_tally();
     crawl.load()?;
     // Visits still going at the deadline stay new with no reason, and are written as unfinished; a failed recheck waiting for its retry is written as retry.
     let _ = tokio::time::timeout(Duration::from_secs(deadline_seconds), async {
@@ -104,6 +104,8 @@ async fn main() -> Result<()> {
     })
     .await;
     std::fs::write(out.with_extension("summary"), crawl.summary().to_string())?;
+    let tally = crawl.requests_by_domain().map(|tally| tally.iter().map(|(host, n)| format!("{host}\t{n}\n")).collect::<String>()).unwrap_or_default();
+    std::fs::write(out.with_extension("requests"), tally)?;
     let mut writer = std::io::BufWriter::new(std::fs::File::create(&out)?);
     writeln!(writer, "host\t{}", FIELDS.join("\t"))?;
     for host in &hosts {

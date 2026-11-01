@@ -208,6 +208,8 @@ pub struct Loop {
     /// Domains that look found still to be made due, by when at the latest, in Unix seconds.
     to_wake: Vec<String>,
     wake_by: i64,
+    /// Requests made per domain, kept only when asked for, as a probe does.
+    tally: Option<HashMap<String, i64>>,
 }
 
 impl Loop {
@@ -237,6 +239,7 @@ impl Loop {
             waking: None,
             to_wake: Vec::new(),
             wake_by: 0,
+            tally: None,
         }
     }
 
@@ -247,6 +250,16 @@ impl Loop {
     }
 
     /// Keep these percents of the visit slots for domains never checked and for sitemap backlogs; refresh gets the rest.
+    /// Keep each domain's request count, for `requests_by_domain`.
+    pub fn with_tally(mut self) -> Self {
+        self.tally = Some(HashMap::new());
+        self
+    }
+
+    pub fn requests_by_domain(&self) -> Option<&HashMap<String, i64>> {
+        self.tally.as_ref()
+    }
+
     pub fn with_shares(mut self, discovery: usize, backlog: usize) -> Self {
         self.shares = [100usize.saturating_sub(discovery + backlog), backlog, discovery];
         self
@@ -439,6 +452,9 @@ impl Loop {
     fn save(&mut self, write: DomainWrite, known: &Known) -> Result<()> {
         self.busy.remove(write.host.as_str());
         self.stats.requests += write.visit.requests;
+        if let Some(tally) = self.tally.as_mut() {
+            *tally.entry(write.host.clone()).or_default() += write.visit.requests;
+        }
         self.stats.new += write.visit.new;
         self.stats.listed += write.visit.listed;
         let outcome = format!("{} {}", write.state.as_str(), write.reason.as_deref().unwrap_or("-"));
