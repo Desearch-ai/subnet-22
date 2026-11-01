@@ -52,7 +52,7 @@ const HOMEPAGE_KIND: &str = "homepage";
 /// A homepage listing is read again at most this often.
 const HOMEPAGE_INTERVAL: i64 = schedule::HOUR;
 /// The kind the pages found by following a site's links from its homepage are stored under, as one listing.
-const LINKS_KIND: &str = "links";
+pub const LINKS_KIND: &str = "links";
 /// A listed site whose sitemaps list fewer pages than this has its links followed too.
 pub const THIN_URLS: i64 = 1_000;
 /// Pages one run fetches at most, and how long it may take.
@@ -449,7 +449,6 @@ impl Visitor {
             listed,
             following: false,
             home_known: false,
-            homepage: None,
             site_peer: None,
         };
         run.go().await?;
@@ -490,8 +489,6 @@ struct Run<'a> {
     following: bool,
     /// The homepage's address came from robots.txt read on this visit or a homepage read before, not from a guess at its scheme.
     home_known: bool,
-    /// The homepage as read before a link run, which the verdict is then judged on, as the run may draw a rate limit.
-    homepage: Option<Answer>,
     /// The address the site's own host last answered from on this visit.
     site_peer: Option<IpAddr>,
 }
@@ -507,12 +504,16 @@ impl Run<'_> {
             self.roots(&[])?
         };
         self.walk(roots).await?;
-        if let Some(every) = self.links_due() {
-            self.links(every).await?;
-        }
+        // Link work comes after the verdict, which it never changes: its pages are only queued.
+        let read = self.result.outcome == Outcome::Sitemap;
         self.settle();
         if self.result.outcome == Outcome::Sitemap && self.needs_language() {
             self.language().await?;
+        }
+        if read && matches!(self.result.outcome, Outcome::Sitemap | Outcome::NoSitemap) {
+            if let Some(every) = self.links_due() {
+                self.links(every).await?;
+            }
         }
         Ok(())
     }
@@ -875,7 +876,7 @@ impl Run<'_> {
 
     /// When this visit follows the site's links, how often runs come: once its last run is due, unless the disk runs low or the site is failing.
     fn links_due(&self) -> Option<i64> {
-        if self.result.outcome != Outcome::Sitemap || self.result.cut_short || !self.home_known || self.visitor.pause.load(Ordering::Relaxed) {
+        if self.result.cut_short || !self.home_known || self.visitor.pause.load(Ordering::Relaxed) {
             return None;
         }
         let every = self.links_every()?;
@@ -900,13 +901,12 @@ impl Run<'_> {
         if !self.on_site(&answer.url) {
             return Ok(false);
         }
-        let passes = answer.status == 200 && {
-            let (body, detect) = (answer.body.clone(), self.visitor.language.clone());
-            let cut = body.len() >= MAX_HOMEPAGE_BYTES;
-            self.visitor.cpu(move || homepage::read_cut(&body, &*detect, cut)).await?.problem.is_none()
-        };
-        self.homepage = Some(answer);
-        Ok(passes)
+        if answer.status != 200 {
+            return Ok(false);
+        }
+        let (body, detect) = (answer.body, self.visitor.language.clone());
+        let cut = body.len() >= MAX_HOMEPAGE_BYTES;
+        Ok(self.visitor.cpu(move || homepage::read_cut(&body, &*detect, cut)).await?.problem.is_none())
     }
 
     /// Follow the site's own links from its homepage a few levels down, within a budget, and keep the pages found as one listing.
@@ -923,8 +923,8 @@ impl Run<'_> {
             return Ok(());
         };
         let mut claims = vec![claim];
-        // A run may draw a rate limit or a refusal, which the language read after it would meet.
-        if self.needs_language() {
+        // A site not judged on its homepage yet, as one without sitemaps is not, must read as English first.
+        if self.needs_language() && self.result.language.is_none() {
             slots.turn(ip).await;
             if !self.homepage_passes().await? {
                 return Ok(());
@@ -1190,12 +1190,8 @@ impl Run<'_> {
     }
 
     async fn language(&mut self) -> Result<(), Crash> {
-        let answer = match self.homepage.take() {
-            Some(answer) => answer,
-            None => match self.first_answer("/", MAX_HOMEPAGE_BYTES).await {
-                Some(answer) => answer,
-                None => return Ok(()),
-            },
+        let Some(answer) = self.first_answer("/", MAX_HOMEPAGE_BYTES).await else {
+            return Ok(());
         };
         if self.moved_away(&answer) {
             return Ok(());

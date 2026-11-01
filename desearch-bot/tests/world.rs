@@ -921,7 +921,7 @@ async fn a_listed_site_without_sitemaps_has_its_links_followed_a_few_levels_down
     }
     assert!(!hits.iter().any(|(h, _, _)| h == "other.test"));
     let record = buckets.store(host).domain(host).unwrap().unwrap();
-    assert_eq!(record["state"].as_str(), Some("active"));
+    assert_eq!((record["state"].as_str(), record["reason"].as_str(), record["urls"].as_i64()), (Some("no_sitemap"), Some("sitemap_too_small"), Some(4)), "the run's pages are queued, and the verdict is the homepage's");
     let links = buckets.store(host).sitemap(host, &format!("https://{host}/#links")).unwrap().unwrap();
     let next = links["next"].as_i64().unwrap() - chrono::Utc::now().timestamp();
     assert_eq!(links["kind"].as_str(), Some("links"));
@@ -1335,4 +1335,45 @@ async fn following_links_changes_no_verdict_even_when_no_run_happens() {
         };
         assert_eq!(a, b, "{off} and {thin}");
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_link_run_changes_no_verdict() {
+    let (off_web, thin_web): (Shared, Shared) = (Arc::default(), Arc::default());
+    deep_site(&off_web, "deep-off.test");
+    deep_site(&thin_web, "deep-thin.test");
+    let listed = |host: &'static str| move |buckets: &Arc<Buckets>| buckets.allow(&Allowed::of([host]));
+    let off = verdict(off_web, "deep-off.test", "deep-off", FollowLinks::Off, false, listed("deep-off.test")).await;
+    let thin = verdict(thin_web.clone(), "deep-thin.test", "deep-thin", FollowLinks::Thin, false, listed("deep-thin.test")).await;
+    assert_eq!(off, thin);
+    assert!(thin_web.lock().unwrap().hits.iter().any(|(_, path, _)| path == "/a/1"), "the run did go");
+
+    let gone = |web: &Shared, host: &str| {
+        let mut w = web.lock().unwrap();
+        w.add(host, "/robots.txt", 200, None, b"User-agent: *\nAllow: /\n");
+        w.add(host, "/list.xml", 404, None, b"gone");
+        w.add(host, "/", 403, None, b"denied");
+    };
+    let active = |host: &'static str| {
+        move |buckets: &Arc<Buckets>| {
+            buckets.allow(&Allowed::of([host]));
+            let now = chrono::Utc::now().timestamp();
+            let mut record = records::new_domain(Some(1), Some("new_generic"), &[], State::Active, None, Some(0));
+            for (name, at) in [("robots", now - 10 * 86_400), ("checked", now - 86_400), ("ok", now - 86_400)] {
+                record.insert(name.into(), at.into());
+            }
+            record.insert("lang".into(), "en".into());
+            let mut changes = Changes::default();
+            changes.domain(host, &record);
+            let list = format!("http://{host}/list.xml");
+            changes.sitemap(host, &list, serde_json::json!({"id": sitemap_id(&list), "kind": "urlset", "depth": 0, "status": "ok", "urls": 12, "next": 0}).as_object().unwrap());
+            buckets.store(host).write(changes).unwrap();
+        }
+    };
+    let (off_web, thin_web): (Shared, Shared) = (Arc::default(), Arc::default());
+    gone(&off_web, "gone-run-off.test");
+    gone(&thin_web, "gone-run-thin.test");
+    let off = verdict(off_web, "gone-run-off.test", "gone-run-off", FollowLinks::Off, false, active("gone-run-off.test")).await;
+    let thin = verdict(thin_web, "gone-run-thin.test", "gone-run-thin", FollowLinks::Thin, false, active("gone-run-thin.test")).await;
+    assert_eq!((off.clone(), off.1.as_deref()), (thin, Some("sitemap_gone")), "a failed run's record never stands in for the gone sitemap");
 }

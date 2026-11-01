@@ -250,9 +250,12 @@ pub fn unread_sitemap(url: &str, depth: i64, parent: Option<i64>) -> Json {
     record.as_object().cloned().unwrap_or_default()
 }
 
-/// URLs a domain lists across the sitemaps that last answered.
+/// URLs a domain lists across the sitemaps that last answered; a link run's pages are queued, never counted.
 pub fn url_count<'a>(sitemaps: impl Iterator<Item = &'a Json>) -> i64 {
-    sitemaps.filter(|s| s.get("status").and_then(Value::as_str) == Some("ok")).map(|s| int(s.get("urls")).unwrap_or(0)).sum()
+    sitemaps
+        .filter(|s| s.get("status").and_then(Value::as_str) == Some("ok") && s.get("kind").and_then(Value::as_str) != Some("links"))
+        .map(|s| int(s.get("urls")).unwrap_or(0))
+        .sum()
 }
 
 #[cfg(test)]

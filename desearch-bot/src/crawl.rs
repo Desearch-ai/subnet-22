@@ -17,7 +17,7 @@ use crate::schedule::{HOUR, SECOND};
 use crate::states::{self, Outcome, State};
 use crate::suffixes::tld_group;
 use crate::timetable::{placed, HeavyQueue, Lane, Timetable};
-use crate::visit::{is_listing, Crash, Known, Visit, Visitor};
+use crate::visit::{is_listing, Crash, Known, Visit, Visitor, LINKS_KIND};
 use crate::{exclusions, records};
 
 const TICK: Duration = Duration::from_secs(1);
@@ -444,13 +444,13 @@ impl Loop {
             return Ok(());
         }
         let mut changes = Changes::default();
-        // Each file's URL count, and whether it answered; a file counts toward the domain only if it did.
-        let mut totals: HashMap<&str, (i64, bool)> = known.sitemaps.iter().map(|(url, s)| (url.as_str(), (s.url_count, s.ok))).collect();
+        // Each file's URL count, and whether it answered; a file counts toward the domain only if it did, and a link run's listing never.
+        let mut totals: HashMap<&str, (i64, bool)> = known.sitemaps.iter().map(|(url, s)| (url.as_str(), (s.url_count, s.ok && s.kind.as_deref() != Some(LINKS_KIND)))).collect();
         for update in &write.visit.sitemaps {
             let previous = store.sitemap(&write.host, &update.url)?;
             let record = records::written_sitemap(previous.as_ref(), update, write.checked_at);
             changes.sitemap(&write.host, &update.url, &record);
-            let ok = record.get("status").and_then(Value::as_str) == Some("ok");
+            let ok = record.get("status").and_then(Value::as_str) == Some("ok") && update.kind.as_deref() != Some(LINKS_KIND);
             totals.insert(&update.url, (records::int(record.get("urls")).unwrap_or(0), ok));
         }
         if write.state == State::Active {
