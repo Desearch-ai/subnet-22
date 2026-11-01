@@ -123,8 +123,9 @@ as often down to every 60 days; with `--follow-links all`, every whole or news s
 A listed subdomain with a registry record of its own is crawled on its own host, under its own
 robots.txt. Its pages go under it while that record is active, failing or without sitemaps, and not
 at all while it is blocked, excluded or ineligible. In any other state, and while its homepage is
-missing, they stay with its parent. One with no working sitemap of its own takes in, once a day, the
-pages its listed parents hold on its host and never sent. The bot reads which subdomains stand on their own before its first send and every 10 minutes.
+missing, they stay with its parent. While it sends, the new and changed pages its listed parents list
+on its host go to it as they list them, and one with no working sitemap of its own takes in, once,
+those they held for it before and never sent. The bot reads which subdomains stand on their own before its first send and every 10 minutes.
 
 With `--inbox DIR`, each `<host>.txt` in the directory, a URL a line with optionally a tab and its
 date, is taken in as that host's listing, in parts of 50,000 URLs, the way a sitemap's pages come in.

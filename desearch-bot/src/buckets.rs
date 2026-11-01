@@ -14,7 +14,7 @@ use rocksdb::{
 };
 use regex::bytes::Regex;
 use serde::Deserialize;
-use serde_json::{Map, Value};
+use serde_json::{json, Map, Value};
 
 use crate::allowed::{Allowed, Terms};
 use crate::listed::{self, ListedSet};
@@ -36,9 +36,12 @@ pub type Json = Map<String, Value>;
 /// An address kept with a sitemap's XML escapes in, as in `?amp;id=1` or `Q&amp;A`.
 static ESCAPED: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"&(amp|lt|gt|quot|apos|#[0-9]+|#x[0-9a-fA-F]+);|[?&]amp;").expect("a valid pattern"));
 const DELETES_PER_WRITE: usize = 10_000;
-/// A subdomain kept apart takes in its parents' pages on its host at most this often, in seconds, and at most this many from each parent at a time.
+/// A subdomain kept apart takes in its parents' pages on its host once, tried at most this often, in seconds, reading this many of their records at a time.
 const ADOPT_EVERY: i64 = 86_400;
-const ADOPT_MOST: usize = 200_000;
+const ADOPT_CHUNK: usize = 50_000;
+
+/// Pages a listing names on the hosts of subdomains kept apart, keyed as each subdomain's own, for their stores.
+pub type Handed = HashMap<String, Vec<(Url, u32, bool)>>;
 
 type Entry = (Box<[u8]>, Box<[u8]>);
 
@@ -97,6 +100,20 @@ pub fn bucket_of(host: &str) -> usize {
 }
 
 /// A stable id for a sitemap file, the same wherever it is computed.
+/// Whether a domain's pages go out as it stands: active, failing or without sitemaps.
+fn sends(store: &BucketStore, name: &str) -> bool {
+    let state = store.domain(name).ok().flatten().and_then(|record| record.get("state").and_then(Value::as_str).and_then(State::parse));
+    matches!(state, Some(State::Active | State::Failing | State::NoSitemap))
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn hex_decode(text: &str) -> Option<Vec<u8>> {
+    (0..text.len()).step_by(2).map(|at| text.get(at..at + 2).and_then(|pair| u8::from_str_radix(pair, 16).ok())).collect()
+}
+
 pub fn sitemap_id(url: &str) -> i64 {
     (u64::from_be_bytes(Blake2b::<U8>::digest(url.as_bytes()).into()) >> 1) as i64
 }
@@ -315,14 +332,19 @@ impl BucketStore {
         Ok(unknown as f64 / keys.len() as f64)
     }
 
-    pub fn record_listing(&self, host: &str, sitemap_id: i64, mut entries: Vec<(Url, u32, bool)>, now: u32) -> Result<Listing> {
+    pub fn record_listing(&self, host: &str, sitemap_id: i64, entries: Vec<(Url, u32, bool)>, now: u32) -> Result<Listing> {
+        Ok(self.record_listing_handing(host, sitemap_id, entries, now)?.0)
+    }
+
+    /// As `record_listing`, also returning the new and changed pages it names for subdomains kept apart, which go to their own stores.
+    pub fn record_listing_handing(&self, host: &str, sitemap_id: i64, mut entries: Vec<(Url, u32, bool)>, now: u32) -> Result<(Listing, Handed)> {
         for entry in entries.iter_mut() {
             entry.0.key.insert(0, URL);
         }
         entries.sort_by(|a, b| a.0.key.cmp(&b.0.key));
         entries.dedup_by(|later, first| later.0.key == first.0.key);
         if entries.is_empty() {
-            return Ok(Listing::default());
+            return Ok((Listing::default(), Handed::new()));
         }
         let listed_key = listed_key(host, sitemap_id);
         let stored = self.db.get(&listed_key)?;
@@ -340,15 +362,26 @@ impl BucketStore {
             if !batch.is_empty() {
                 self.db.write(batch)?;
             }
-            return Ok(listing);
+            return Ok((listing, Handed::new()));
         }
+        let mut handed = Handed::new();
         let guard = self.lock_ready();
         let cf = self.db.cf_handle("default").context("default column family")?;
         let found = self.db.batched_multi_get_cf(cf, changed.iter().map(|e| &e.0.key), true);
         let (mut fresh, mut moved) = (Vec::new(), Vec::new());
         for ((url, lastmod, timed), raw) in changed.into_iter().zip(found) {
             let timed_flag = if *timed { TIMED } else { 0 };
-            let record = match raw?.as_deref().and_then(Record::unpack) {
+            let raw = raw?;
+            let held = raw.as_deref().and_then(Record::unpack);
+            let rest = &url.key[2 + host.len()..];
+            // A page this domain sent under the same lastmod goes nowhere again.
+            if held.is_none_or(|held| held.pushed_at == 0 || (*lastmod != 0 && *lastmod != held.lastmod)) && self.listed_apart(host, rest) {
+                let on = rest.split(|&b| b == b'/').next().unwrap_or_default();
+                let sub = String::from_utf8_lossy(on.strip_prefix(b"www.").unwrap_or(on)).into_owned();
+                let key = [sub.as_bytes(), b"\0", rest].concat();
+                handed.entry(sub).or_default().push((Url { key, flags: url.flags & (HTTPS | WWW) }, *lastmod, *timed));
+            }
+            let record = match held {
                 None => {
                     listing.new += 1;
                     let record = Record { sitemap_id, lastmod: *lastmod, first_seen: now, last_seen: now, flags: url.flags | timed_flag, ..Record::default() };
@@ -376,7 +409,7 @@ impl BucketStore {
         self.db.write(batch)?;
         drop(guard);
         self.notice(&counts);
-        Ok(listing)
+        Ok((listing, handed))
     }
 
     /// Deletes pages and sitemaps whose address kept its XML escapes, with what was sent of those pages, each saved to `backup` first; without a backup it only counts them.
@@ -455,19 +488,22 @@ impl BucketStore {
         Ok(self.db.get([&[URL], &url.key[..]].concat())?.as_deref().and_then(Record::unpack))
     }
 
-    /// Up to `most` pages `domain` lists on the host `on`, never sent and not yet in `held`, keyed as `on`'s own, with their lastmods and whether those carry a time.
-    pub fn unsent_on(&self, domain: &str, on: &str, most: usize, held: &BucketStore) -> Result<Vec<(Url, u32, bool)>> {
+    /// Of `most` records `domain` holds on the host `on` after the key `after`, the pages never sent and not yet in `held`, keyed as `on`'s own, with their lastmods and whether those carry a time; and the last key read while more may follow.
+    pub fn unsent_on(&self, domain: &str, on: &str, after: Option<&[u8]>, most: usize, held: &BucketStore) -> Result<(Vec<(Url, u32, bool)>, Option<Vec<u8>>)> {
         let prefix = [&[URL], domain.as_bytes(), b"\0", on.as_bytes(), b"/"].concat();
         let mut upper = prefix.clone();
         *upper.last_mut().unwrap() += 1;
         let mut bounds = ReadOptions::default();
         bounds.set_iterate_upper_bound(upper);
-        let mut pages = Vec::new();
-        for item in self.db.iterator_opt(IteratorMode::From(&prefix, Direction::Forward), bounds) {
-            if pages.len() >= most {
-                break;
-            }
+        let start = after.map_or_else(|| prefix.clone(), |key| [key, b"\0"].concat());
+        let (mut pages, mut read, mut last) = (Vec::new(), 0, None);
+        for item in self.db.iterator_opt(IteratorMode::From(&start, Direction::Forward), bounds) {
             let (key, raw) = item?;
+            if read >= most {
+                return Ok((pages, last));
+            }
+            read += 1;
+            last = Some(key.to_vec());
             let Some(record) = Record::unpack(&raw).filter(|record| record.pushed_at == 0) else {
                 continue;
             };
@@ -477,7 +513,25 @@ impl BucketStore {
                 pages.push((url, record.lastmod, record.flags & TIMED != 0));
             }
         }
-        Ok(pages)
+        Ok((pages, None))
+    }
+
+    /// Notes whether a listed subdomain stands apart; one coming back apart takes in its parents' pages again, as they kept some for it while it did not.
+    pub fn note_away(&self, name: &str, apart: bool) -> Result<()> {
+        let away = format!("away:{name}");
+        let was_away = self.meta(&away)?.is_some();
+        if !apart && !was_away {
+            self.set_meta(&away, &Value::Bool(true))?;
+        } else if apart && was_away {
+            let mut batch = WriteBatch::default();
+            let prefix = meta_key(&format!("adopted:{name}:"));
+            for key in self.scan(&prefix, |key, _| Ok(key.to_vec()))? {
+                batch.delete(key);
+            }
+            batch.delete(meta_key(&away));
+            self.db.write(batch)?;
+        }
+        Ok(())
     }
 
     /// Memory RocksDB holds for this store outside the block cache: table readers and memtables.
@@ -617,10 +671,29 @@ impl Buckets {
                 state => matches!(state, Some(State::Active | State::Failing | State::NoSitemap | State::Blocked | State::Excluded)),
             }
         };
-        allowed.set_apart(entries.iter().filter(|(name, _)| under_listed(name) && works(name)).map(|(name, _)| name.clone()).collect());
+        let apart: HashSet<String> = entries.iter().filter(|(name, _)| under_listed(name) && works(name)).map(|(name, _)| name.clone()).collect();
+        for (name, _) in entries.iter().filter(|(name, _)| under_listed(name)) {
+            if let Some(store) = self.store_for(name) {
+                if let Err(error) = store.note_away(name, apart.contains(name)) {
+                    eprintln!("[rs] noting whether {name} stands apart failed: {error:#}");
+                }
+            }
+        }
+        allowed.set_apart(apart);
     }
 
-    /// Gives each subdomain kept apart with no working sitemap of its own the pages its listed parents hold on its host and never sent, at most once a day; returns how many went on its ready lists.
+    /// Store a listing in its domain's store, and the new and changed pages it names for subdomains kept apart in theirs, while those send; one that never sends gets none.
+    pub fn record_listing(&self, host: &str, sitemap_id: i64, entries: Vec<(Url, u32, bool)>, now: u32) -> Result<Listing> {
+        let (listing, handed) = self.store(host).record_listing_handing(host, sitemap_id, entries, now)?;
+        for (sub, pages) in handed {
+            if let Some(store) = self.store_for(&sub).filter(|store| sends(store, &sub)) {
+                store.record_listing(&sub, sitemap_id, pages, now)?;
+            }
+        }
+        Ok(listing)
+    }
+
+    /// Gives each subdomain kept apart with no working sitemap of its own, once, the pages its listed parents held on its host before and never sent, in chunks it resumes; returns how many went on its ready lists.
     pub fn adopt_apart(&self, allowed: &Allowed, now: u32) -> Result<usize> {
         let entries = allowed.entries();
         let names: HashSet<&str> = entries.iter().map(|(name, _)| name.as_str()).collect();
@@ -629,29 +702,44 @@ impl Buckets {
             let Some(store) = self.store_for(name) else {
                 continue;
             };
-            let state = store.domain(name)?.and_then(|record| record.get("state").and_then(Value::as_str).and_then(State::parse));
-            let works = |record: &Json| record.get("status").and_then(Value::as_str) == Some("ok") && is_sitemap(record.get("kind").and_then(Value::as_str));
-            // Kept apart, its pages go only under its own name: those its parents found would stay unsent.
-            if !matches!(state, Some(State::Active | State::Failing | State::NoSitemap)) || store.sitemaps(name)?.iter().any(|(_, record)| works(record)) {
-                continue;
-            }
-            let mark = format!("adopted:{name}");
-            if store.meta(&mark)?.and_then(|at| at.as_i64()).is_some_and(|at| i64::from(now) - at < ADOPT_EVERY) {
-                continue;
-            }
             let labels: Vec<&str> = name.split('.').collect();
-            for parent in (1..labels.len().saturating_sub(1)).map(|at| labels[at..].join(".")).filter(|parent| names.contains(parent.as_str())) {
-                let Some(from) = self.store_for(&parent) else {
+            let parents: Vec<String> = (1..labels.len().saturating_sub(1)).map(|at| labels[at..].join(".")).filter(|parent| names.contains(parent.as_str())).collect();
+            let mut qualifies = None;
+            for parent in parents {
+                let mark = format!("adopted:{name}:{parent}");
+                let held = store.meta(&mark)?;
+                if held.as_ref().is_some_and(|m| m.get("done").is_some() || m.get("at").and_then(Value::as_i64).is_some_and(|at| i64::from(now) - at < ADOPT_EVERY)) {
+                    continue;
+                }
+                if qualifies.is_none() {
+                    qualifies = Some(self.adopts(store, name)?);
+                }
+                let Some(from) = self.store_for(&parent).filter(|_| qualifies == Some(true)) else {
+                    store.set_meta(&mark, &json!({"at": now}))?;
                     continue;
                 };
-                let pages = from.unsent_on(&parent, name, ADOPT_MOST, store)?;
-                if !pages.is_empty() {
-                    queued += store.record_listing(name, sitemap_id(&format!("parent://{parent}/")), pages, now)?.ready;
+                let mut after = held.and_then(|m| m.get("after").and_then(Value::as_str).and_then(|key| hex_decode(key)));
+                loop {
+                    let (pages, next) = from.unsent_on(&parent, name, after.as_deref(), ADOPT_CHUNK, store)?;
+                    if !pages.is_empty() {
+                        queued += store.record_listing(name, sitemap_id(&format!("parent://{parent}/")), pages, now)?.ready;
+                    }
+                    let Some(key) = next else {
+                        store.set_meta(&mark, &json!({"done": now}))?;
+                        break;
+                    };
+                    store.set_meta(&mark, &json!({"at": now, "after": hex_encode(&key)}))?;
+                    after = Some(key);
                 }
             }
-            store.set_meta(&mark, &Value::from(now))?;
         }
         Ok(queued)
+    }
+
+    /// Whether a subdomain kept apart takes in its parents' pages: it sends, and has no working sitemap of its own to list them.
+    fn adopts(&self, store: &BucketStore, name: &str) -> Result<bool> {
+        let works = |record: &Json| record.get("status").and_then(Value::as_str) == Some("ok") && is_sitemap(record.get("kind").and_then(Value::as_str));
+        Ok(sends(store, name) && !store.sitemaps(name)?.iter().any(|(_, record)| works(record)))
     }
 
     /// Whether a list names the domain; false with no list.

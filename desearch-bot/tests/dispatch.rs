@@ -1999,7 +1999,7 @@ fn only_a_listed_subdomain_whose_record_works_takes_its_pages_from_the_parent() 
 }
 
 #[test]
-fn a_listed_subdomain_without_sitemaps_takes_in_the_pages_its_parent_holds_on_its_host_and_never_sent() {
+fn a_subdomain_kept_apart_takes_in_its_parents_earlier_pages_once_and_each_new_one_as_they_list_it() {
     let dir = Dir::new("adopt");
     let sub = "maths.example.com";
     let buckets = known(&dir, &["example.com", sub]);
@@ -2021,20 +2021,54 @@ fn a_listed_subdomain_without_sitemaps_takes_in_the_pages_its_parent_holds_on_it
     let own = |name: &str| buckets.store(sub).url(&urls::parse(&format!("https://{sub}/{name}"), sub).unwrap()).unwrap();
     assert!(own("s2").is_some() && own("s1").is_none());
     assert_eq!(buckets.store(sub).ready_list(sub, 10).unwrap().len(), 1);
-    parent.record_listing("example.com", 7, vec![page("a", 10), on_sub("s2", 20), on_sub("s1", 30), on_sub("s3", 40)], 2_000).unwrap();
-    assert_eq!(buckets.adopt_apart(&list, 1_000 + 3_600).unwrap(), 0, "taken in at most once a day");
-    let mut changes = Changes::default();
-    changes.domain(sub, &records::new_domain(Some(10), Some("com"), &[], State::Active, None, None));
-    buckets.store(sub).write(changes).unwrap();
-    assert_eq!(buckets.adopt_apart(&list, 1_000 + 86_400).unwrap(), 1, "a day on, the new page only, though its homepage listing made it active");
-    assert!(own("s3").is_some());
-    let own_list = format!("https://{sub}/sitemap.xml");
-    let mut changes = Changes::default();
-    changes.sitemap(sub, &own_list, serde_json::json!({"id": 1, "kind": "urlset", "depth": 0, "status": "ok", "urls": 40}).as_object().unwrap());
-    buckets.store(sub).write(changes).unwrap();
-    parent.record_listing("example.com", 7, vec![page("a", 10), on_sub("s2", 20), on_sub("s1", 30), on_sub("s3", 40), on_sub("s4", 50)], 3_000).unwrap();
-    assert_eq!(buckets.adopt_apart(&list, 1_000 + 2 * 86_400).unwrap(), 0, "a subdomain with a working sitemap of its own lists its pages itself");
+    assert_eq!(buckets.adopt_apart(&list, 1_000 + 2 * 86_400).unwrap(), 0, "the parent's earlier pages are taken in once");
+    buckets.record_listing("example.com", 9, vec![on_sub("s1", 30)], 1_500).unwrap();
+    assert!(own("s1").is_none(), "a page its parent sent goes nowhere again when another listing names it");
+
+    buckets.record_listing("example.com", 7, vec![page("a", 10), on_sub("s2", 60), on_sub("s1", 70), on_sub("s3", 40)], 2_000).unwrap();
+    assert!(own("s3").is_some(), "a new page goes to the subdomain the moment its parent lists it");
+    assert_eq!(own("s2").unwrap().lastmod, 60, "and so does a new lastmod");
+    let sub_store = buckets.store(sub);
+    let mut quotas = [0; LANES];
+    quotas[FRESH] = 10;
+    let picks = sub_store.take_ready(sub, quotas).unwrap();
+    assert_eq!(picks.len(), 3, "s1 under a newer lastmod than its parent sent, s2 and s3 wait on the subdomain's own list: {:?}", picks.iter().map(|p| p.url.as_str()).collect::<Vec<_>>());
+    sub_store.mark_sent(&picks, 2_100, &rules()).unwrap();
+    buckets.record_listing("example.com", 7, vec![page("a", 10), on_sub("s2", 90), on_sub("s1", 70), on_sub("s3", 40)], 3_000).unwrap();
+    let mut quotas = [0; LANES];
+    quotas[CHANGED] = 10;
+    assert_eq!(sub_store.take_ready(sub, quotas).unwrap().iter().map(|p| p.url.as_str()).collect::<Vec<_>>(), [format!("https://{sub}/s2")], "a page it sent goes again once its parent lists a newer lastmod");
     assert_eq!(take(parent, 10).iter().map(|p| p.url.as_str()).collect::<Vec<_>>(), ["https://example.com/a"], "the parent's own page goes under it, the subdomain's never");
+
+    let state = |state: State| {
+        let mut changes = Changes::default();
+        changes.domain(sub, &records::new_domain(Some(10), Some("com"), &[], state, None, None));
+        buckets.store(sub).write(changes).unwrap();
+        buckets.note_apart(&list);
+    };
+    state(State::Down);
+    assert!(!list.apart(sub));
+    buckets.record_listing("example.com", 7, vec![page("a", 10), on_sub("s2", 90), on_sub("s1", 70), on_sub("s3", 40), on_sub("s5", 50)], 4_000).unwrap();
+    state(State::NoSitemap);
+    assert!(list.apart(sub));
+    assert_eq!(buckets.adopt_apart(&list, 1_000 + 3 * 86_400).unwrap(), 1, "back apart, it takes in what its parent kept for it meanwhile");
+    assert!(own("s5").is_some());
+}
+
+#[test]
+fn a_subdomain_kept_apart_that_never_sends_is_handed_nothing() {
+    let dir = Dir::new("apart-ineligible");
+    let sub = "fr.example.com";
+    let buckets = known(&dir, &["example.com", sub]);
+    let list = Allowed::of(["example.com", sub]);
+    buckets.allow(&list);
+    let mut changes = Changes::default();
+    changes.domain(sub, &records::new_domain(Some(10), Some("com"), &[], State::Ineligible, Some("not_english"), None));
+    buckets.store(sub).write(changes).unwrap();
+    buckets.note_apart(&list);
+    assert!(list.apart(sub));
+    buckets.record_listing("example.com", 7, vec![(urls::parse(&format!("https://{sub}/p"), "example.com").unwrap(), 10, false)], 100).unwrap();
+    assert!(buckets.store(sub).url(&urls::parse(&format!("https://{sub}/p"), sub).unwrap()).unwrap().is_none(), "its pages never go, so it keeps none");
 }
 
 #[test]
@@ -2631,4 +2665,18 @@ async fn a_site_the_list_drops_and_names_again_keeps_its_crawl_delay_in_the_fill
     relist(&path, &list, r#"[{"host": "example.com", "hourly": 1440}, "example.net"]"#);
     dispatcher.pass(later + 605).await.unwrap();
     assert_eq!(sent_to(&fake, "example.com"), 2, "named again, one page for the 5 s since the last pass, not five minutes of 1,440");
+}
+
+#[test]
+fn a_parents_pages_on_a_subdomain_are_read_in_chunks_that_resume() {
+    let dir = Dir::new("adopt-chunks");
+    let sub = "maths.example.com";
+    let buckets = known(&dir, &["example.com", sub]);
+    let pages = (0..5).map(|i| (urls::parse(&format!("https://{sub}/p{i}"), "example.com").unwrap(), 10, false)).collect();
+    buckets.store("example.com").record_listing("example.com", 7, pages, 100).unwrap();
+    let (from, held) = (buckets.store("example.com"), buckets.store(sub));
+    let (first, after) = from.unsent_on("example.com", sub, None, 2, held).unwrap();
+    assert_eq!(first.len(), 2);
+    let (rest, done) = from.unsent_on("example.com", sub, after.as_deref(), 10, held).unwrap();
+    assert_eq!((rest.len(), done), (3, None), "the second chunk starts after the first");
 }

@@ -49,7 +49,7 @@ pub fn take_in(buckets: &Buckets, dir: &Path, now: u32, stop: &AtomicBool) -> Re
         let Some(store) = buckets.store_for(&host) else {
             continue;
         };
-        match take_file(store, &host, &path, now, stop) {
+        match take_file(buckets, store, &host, &path, now, stop) {
             Ok(None) => {}
             Ok(Some((urls, queued, finished))) => {
                 taken.files += 1;
@@ -70,7 +70,7 @@ pub fn take_in(buckets: &Buckets, dir: &Path, now: u32, stop: &AtomicBool) -> Re
 }
 
 /// One host's file, in parts: the URLs read, how many went on the list, and whether it was read to the end; None when unchanged or the host is unknown.
-fn take_file(store: &BucketStore, host: &str, path: &Path, now: u32, stop: &AtomicBool) -> Result<Option<(usize, usize, bool)>> {
+fn take_file(buckets: &Buckets, store: &BucketStore, host: &str, path: &Path, now: u32, stop: &AtomicBool) -> Result<Option<(usize, usize, bool)>> {
     if !store.has_domain(host)? {
         return Ok(None);
     }
@@ -97,7 +97,7 @@ fn take_file(store: &BucketStore, host: &str, path: &Path, now: u32, stop: &Atom
         }
         if rows.len() >= PART || (read == 0 && !rows.is_empty()) {
             urls += rows.len();
-            queued += store.record_listing(host, sitemap_id(&format!("inbox://{host}/{part}")), std::mem::take(&mut rows), now)?.ready;
+            queued += buckets.record_listing(host, sitemap_id(&format!("inbox://{host}/{part}")), std::mem::take(&mut rows), now)?.ready;
             part += 1;
             if stop.load(Ordering::Relaxed) && read > 0 {
                 return Ok(Some((urls, queued, false)));

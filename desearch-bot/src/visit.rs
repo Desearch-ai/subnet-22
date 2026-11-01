@@ -1354,7 +1354,7 @@ fn digest(mut job: FileJob) -> Result<Digested, Crash> {
     let new_share = || store.new_share(hashed.iter().map(|(_, key)| *key)).unwrap_or(0.0);
     let verdict = churn::judge(&job.standing, rows.len(), sketch, new_share, job.now);
     read.listing = match verdict {
-        churn::Verdict::Clear => store.record_listing(&job.known.host, job.id, rows, epoch(Some(job.now)) as u32).map_err(|_| Crash::new("StoreError"))?,
+        churn::Verdict::Clear => job.buckets.record_listing(&job.known.host, job.id, rows, epoch(Some(job.now)) as u32).map_err(|_| Crash::new("StoreError"))?,
         churn::Verdict::Suspect { .. } | churn::Verdict::Generated { .. } => Listing { listed: rows.len(), ..Listing::default() },
     };
     read.verdict = Some(verdict);
