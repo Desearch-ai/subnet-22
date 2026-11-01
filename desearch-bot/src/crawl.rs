@@ -38,9 +38,10 @@ const RESUME_MARGIN: u64 = 5 << 30;
 const DISK_CHECK: Duration = Duration::from_secs(10);
 /// Percent of the visit slots each lane can count on: refresh, backlog, discovery.
 const SHARES: [usize; 3] = [50, 20, 30];
-/// Listed domains woken at once are spread this far apart, over a day at most.
+/// Listed domains woken at once are spread this far apart, over a day at most, or over three days when there are this many, as on a first start.
 const WAKE_GAP: i64 = 2 * SECOND;
 const WAKE_SPREAD: i64 = 24 * HOUR;
+const WAKE_MANY: usize = 20_000;
 /// Domains made due on one pass of the loop, which writes each one's record.
 const WAKE_CHUNK: usize = 1_000;
 
@@ -131,6 +132,12 @@ fn earliest_sitemap(known: &Known, visit: &Visit, now: i64) -> Option<i64> {
         .collect();
     times.extend(updated.iter().filter(|(url, _)| !known.sitemaps.contains_key(**url)).filter_map(|(_, when)| *when));
     times.into_iter().min()
+}
+
+/// Seconds that many woken domains are spread over.
+fn wake_spread(hosts: usize) -> i64 {
+    let spread = if hosts > WAKE_MANY { 3 * WAKE_SPREAD } else { (hosts as i64 * WAKE_GAP).min(WAKE_SPREAD) };
+    spread / SECOND
 }
 
 /// Listed domains found without sitemaps on a visit made while unlisted.
@@ -507,7 +514,7 @@ impl Loop {
 
     fn woke(&mut self, hosts: Vec<String>) {
         if !hosts.is_empty() {
-            let spread = (hosts.len() as i64 * WAKE_GAP).min(WAKE_SPREAD) / SECOND;
+            let spread = wake_spread(hosts.len());
             self.wake_by = now_micros() / SECOND + spread;
             println!("[rs] {} listed domains without sitemaps, not yet visited as listed, come due within {} minutes", hosts.len(), spread / 60);
         }
@@ -692,4 +699,16 @@ fn thousands(n: i64) -> String {
         out.insert(0, '-');
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn many_woken_domains_spread_over_three_days() {
+        assert_eq!(wake_spread(100), 200);
+        assert_eq!(wake_spread(20_000), 40_000, "two seconds apart");
+        assert_eq!(wake_spread(40_020), 3 * 24 * 3_600, "a first start wakes every listed site without sitemaps");
+    }
 }
