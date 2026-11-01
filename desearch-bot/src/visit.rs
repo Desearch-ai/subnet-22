@@ -76,6 +76,7 @@ const PEER_GAP: Duration = Duration::from_secs(1);
 /// Failed connections in a row to one address, across runs, that stop link runs there, and for how long.
 const PEER_FAILURES: u8 = 3;
 const PEER_REST: Duration = Duration::from_secs(24 * 3600);
+const PEER_PRUNE_EVERY: Duration = Duration::from_secs(3600);
 const MAX_PATH_SEGMENTS: usize = 12;
 /// Files, feeds and forms: never fetched to follow their links.
 static NOT_PAGES: LazyLock<Regex> = LazyLock::new(|| {
@@ -269,13 +270,38 @@ pub struct Answer {
 pub struct Slots {
     permits: Arc<Semaphore>,
     size: usize,
-    peers: Arc<Mutex<HashMap<IpAddr, Peer>>>,
+    peers: Arc<Mutex<Peers>>,
+}
+
+/// The addresses link runs went to lately, and when the ones idle for a while were last dropped.
+#[derive(Default)]
+struct Peers {
+    map: HashMap<IpAddr, Peer>,
+    pruned: Option<Instant>,
+}
+
+impl Peers {
+    fn entry(&mut self, ip: IpAddr) -> &mut Peer {
+        let peer = self.map.entry(ip).or_default();
+        peer.touched = Some(Instant::now());
+        peer
+    }
+
+    /// Drops addresses with no run, no stop and no fetch for longer than a stop lasts, at most once an hour.
+    fn prune(&mut self, now: Instant) {
+        if self.pruned.is_some_and(|at| now < at + PEER_PRUNE_EVERY) {
+            return;
+        }
+        self.pruned = Some(now);
+        self.map.retain(|_, peer| peer.running || peer.stopped_until.is_some_and(|until| until > now) || peer.touched.is_some_and(|touched| now < touched + PEER_REST + PEER_PRUNE_EVERY));
+    }
 }
 
 /// Link runs at one address: whether one runs there, when its last fetch went, connections that failed in a row, and until when runs there stop.
 #[derive(Default)]
 struct Peer {
     running: bool,
+    touched: Option<Instant>,
     last: Option<Instant>,
     failures: u8,
     stopped_until: Option<Instant>,
@@ -284,12 +310,12 @@ struct Peer {
 /// The one link run an address takes at a time, given back when the run ends.
 struct PeerClaim {
     ip: IpAddr,
-    peers: Arc<Mutex<HashMap<IpAddr, Peer>>>,
+    peers: Arc<Mutex<Peers>>,
 }
 
 impl Drop for PeerClaim {
     fn drop(&mut self) {
-        if let Some(peer) = self.peers.lock().unwrap_or_else(|e| e.into_inner()).get_mut(&self.ip) {
+        if let Some(peer) = self.peers.lock().unwrap_or_else(|e| e.into_inner()).map.get_mut(&self.ip) {
             peer.running = false;
         }
     }
@@ -303,7 +329,8 @@ impl Slots {
     /// The address for a link run, unless one runs there already or runs there are stopped.
     fn claim(&self, ip: IpAddr) -> Option<PeerClaim> {
         let mut peers = self.peers.lock().unwrap_or_else(|e| e.into_inner());
-        let peer = peers.entry(ip).or_default();
+        peers.prune(Instant::now());
+        let peer = peers.entry(ip);
         if peer.running || peer.stopped_until.is_some_and(|until| until > Instant::now()) {
             return None;
         }
@@ -315,7 +342,7 @@ impl Slots {
     async fn turn(&self, ip: IpAddr) {
         let wait = {
             let mut peers = self.peers.lock().unwrap_or_else(|e| e.into_inner());
-            let peer = peers.entry(ip).or_default();
+            let peer = peers.entry(ip);
             let at = peer.last.map_or_else(Instant::now, |last| (last + PEER_GAP).max(Instant::now()));
             peer.last = Some(at);
             at
@@ -326,7 +353,7 @@ impl Slots {
     /// Notes how a link fetch to the address went; enough failed connections in a row stop runs there for a while.
     fn connected(&self, ip: IpAddr, connected: bool) {
         let mut peers = self.peers.lock().unwrap_or_else(|e| e.into_inner());
-        let peer = peers.entry(ip).or_default();
+        let peer = peers.entry(ip);
         if connected {
             peer.failures = 0;
             return;
@@ -1696,6 +1723,21 @@ mod tests {
             slots.connected(other, connected);
         }
         assert!(slots.claim(other).is_some(), "one that connects in between starts the count again");
+    }
+
+    #[test]
+    fn addresses_idle_longer_than_a_stop_are_forgotten() {
+        let slots = Slots::new(4);
+        let (idle, stopped): (IpAddr, IpAddr) = ("192.0.2.9".parse().unwrap(), "192.0.2.10".parse().unwrap());
+        drop(slots.claim(idle));
+        for _ in 0..PEER_FAILURES {
+            slots.connected(stopped, false);
+        }
+        let mut peers = slots.peers.lock().unwrap();
+        peers.prune(Instant::now() + PEER_PRUNE_EVERY);
+        assert_eq!(peers.map.len(), 2, "both recent");
+        peers.prune(Instant::now() + PEER_REST + 3 * PEER_PRUNE_EVERY);
+        assert!(peers.map.is_empty(), "the idle one and the one whose stop ran out");
     }
 
     #[test]
