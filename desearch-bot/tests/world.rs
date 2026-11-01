@@ -1104,3 +1104,27 @@ async fn a_rate_limit_a_link_run_draws_is_no_verdict_on_the_site() {
     let record = buckets.store(host).domain(host).unwrap().unwrap();
     assert_eq!((record["state"].as_str(), record["lang"].as_str()), (Some("active"), Some("en")), "judged on the homepage as it answered before the run: {record:?}");
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_homepage_that_asks_robots_not_to_follow_its_links_lists_only_itself() {
+    let web: Shared = Arc::default();
+    let (meta, header, preview) = ("meta-nofollow.test", "header-nofollow.test", "preview.test");
+    {
+        let mut w = web.lock().unwrap();
+        let links: String = (0..12).map(|i| format!("<a href=\"/page/{i}\">Page {i}</a>")).collect();
+        w.add(meta, "/", 200, None, format!("<html lang=\"en\"><head><meta name=robots content=noindex,nofollow></head><p>{ENGLISH}</p>{links}</html>").as_bytes());
+        let body = format!("<html lang=\"en\"><p>{ENGLISH}</p>{links}</html>").into_bytes();
+        let headers = vec![("X-Robots-Tag", "noarchive".to_string()), ("X-Robots-Tag", "none".to_string())];
+        w.pages.insert((header.into(), "/".into()), Page { status: 200, etag: None, body, headers, with_cookie: None });
+        let body = format!("<html lang=\"en\"><head><meta name=\"robots\" content=\"index, max-image-preview:none\"></head><p>{ENGLISH}</p>{links}</html>").into_bytes();
+        let headers = vec![("X-Robots-Tag", "max-image-preview:none, otherbot: noarchive".to_string())];
+        w.pages.insert((preview.into(), "/".into()), Page { status: 200, etag: None, body, headers, with_cookie: None });
+    }
+    let (buckets, _crawl) = crawl_prepared(web.clone(), &[meta, header, preview], "nofollow", |buckets| buckets.allow(&Allowed::of([meta, header, preview]))).await;
+    assert!(buckets.store(preview).url(&urls::parse(&format!("http://{preview}/page/3"), preview).unwrap()).unwrap().is_some(), "an image preview limit is no nofollow");
+    for host in [meta, header] {
+        let stored = |path: &str| buckets.store(host).url(&urls::parse(&format!("http://{host}{path}"), host).unwrap()).unwrap().is_some();
+        assert!(stored("/") && !stored("/page/3"), "{host}: the homepage only");
+    }
+    assert!(!web.lock().unwrap().hits.iter().any(|(host, path, _)| host != preview && path.starts_with("/page/")));
+}

@@ -81,8 +81,8 @@ static NOT_PAGES: LazyLock<Regex> = LazyLock::new(|| {
 });
 static NOFOLLOW: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(concat!(
-        r#"(?is)<meta\b[^>]*\bname\s*=\s*["']?(?:robots|desearchbot)\b[^>]*\bcontent\s*=\s*["'][^"']*\b(?:nofollow|none)\b"#,
-        r#"|<meta\b[^>]*\bcontent\s*=\s*["'][^"']*\b(?:nofollow|none)\b[^>]*\bname\s*=\s*["']?(?:robots|desearchbot)\b"#,
+        r#"(?is)<meta\b[^>]*\bname\s*=\s*["']?(?:robots|desearchbot)\b[^>]*\bcontent\s*=\s*["']?(?:[^"'>]*[,\s])?(?:nofollow|none)\b"#,
+        r#"|<meta\b[^>]*\bcontent\s*=\s*["']?(?:[^"'>]*[,\s])?(?:nofollow|none)\b[^>]*\bname\s*=\s*["']?(?:robots|desearchbot)\b"#,
     ))
     .expect("a valid pattern")
 });
@@ -666,11 +666,13 @@ impl Run<'_> {
             generated_until: s.generated_until,
         });
         let homepage = reads_home.then(|| answer.url.clone());
+        let unfollowed = reads_home && nofollow(&answer.headers, &answer.body);
         let job = FileJob {
             _permit: answer.permit,
             homepage,
             body: answer.body,
             prepared: None,
+            nofollow: unfollowed,
             standing,
             stored_hash: stored.and_then(|s| s.content_hash.clone()),
             now: self.now,
@@ -879,7 +881,7 @@ impl Run<'_> {
                 continue;
             }
             read += 1;
-            if nofollow(&answer) {
+            if nofollow(&answer.headers, &answer.body) {
                 continue;
             }
             let (body, base) = (answer.body, answer.url);
@@ -941,6 +943,7 @@ impl Run<'_> {
             homepage: Some(self.home.clone()),
             body: Vec::new(),
             prepared: Some(found.into_iter().map(|url| Entry { url, ..Entry::default() }).collect()),
+            nofollow: false,
             standing,
             stored_hash: stored.and_then(|s| s.content_hash.clone()),
             now: self.now,
@@ -1254,6 +1257,8 @@ struct FileJob {
     body: Vec<u8>,
     /// Pages found by following links, listed as they are instead of parsed from the body.
     prepared: Option<Vec<Entry>>,
+    /// The homepage asks robots not to follow its links, so it lists only itself.
+    nofollow: bool,
     stored_hash: Option<String>,
     now: i64,
     trust: Trust,
@@ -1293,7 +1298,7 @@ fn digest(mut job: FileJob) -> Result<Digested, Crash> {
     }
     let (kind, entries) = match (job.prepared.take(), job.homepage.as_deref()) {
         (Some(entries), _) => (LINKS_KIND, entries),
-        (None, Some(base)) => homepage_listing(&body, base),
+        (None, Some(base)) => homepage_listing(&body, base, job.nofollow),
         (None, None) => sitemaps::parse_entries(&body),
     };
     if kind == "invalid" {
@@ -1361,9 +1366,10 @@ fn digest(mut job: FileJob) -> Result<Digested, Crash> {
     Ok(Digested::Read(read))
 }
 
-/// A homepage as a sitemap: itself first, then each page it links to, relative links read from where it was found.
-fn homepage_listing(body: &[u8], base: &str) -> (&'static str, Vec<Entry>) {
-    let linked = homepage::links(body, body.len() >= MAX_HOMEPAGE_BYTES).into_iter().filter_map(|href| urls::join(base, &href).ok());
+/// A homepage as a sitemap: itself first, then each page it links to unless it asks robots not to follow them, relative links read from where it was found.
+fn homepage_listing(body: &[u8], base: &str, nofollow: bool) -> (&'static str, Vec<Entry>) {
+    let links = if nofollow { Vec::new() } else { homepage::links(body, body.len() >= MAX_HOMEPAGE_BYTES) };
+    let linked = links.into_iter().filter_map(|href| urls::join(base, &href).ok());
     (HOMEPAGE_KIND, std::iter::once(base.to_string()).chain(linked).map(|url| Entry { url, ..Entry::default() }).collect())
 }
 
@@ -1435,10 +1441,15 @@ pub fn is_listing(kind: Option<&str>) -> bool {
     matches!(kind, Some(HOMEPAGE_KIND | LINKS_KIND))
 }
 
-/// Whether a page asks robots not to follow its links, in its X-Robots-Tag header or a robots meta tag.
-fn nofollow(answer: &Answer) -> bool {
-    header(&answer.headers, "x-robots-tag").is_some_and(|tag| tag.to_ascii_lowercase().contains("nofollow"))
-        || NOFOLLOW.is_match(&String::from_utf8_lossy(&answer.body[..answer.body.len().min(HEAD_BYTES)]))
+/// Whether a page asks robots not to follow its links, in any X-Robots-Tag header or a robots meta tag, as `nofollow` or `none`.
+fn nofollow(headers: &HeaderMap, body: &[u8]) -> bool {
+    // A directive may follow a robot's name, as in `otherbot: nofollow`, but `max-image-preview:none` is a directive with a value.
+    let directive = |item: &str| match item.split_once(':') {
+        Some((name, rest)) if !name.trim().starts_with("max-") && name.trim() != "unavailable_after" => rest.trim().to_string(),
+        _ => item.trim().to_string(),
+    };
+    let asks = |value: &[u8]| String::from_utf8_lossy(value).to_ascii_lowercase().split(',').any(|item| matches!(directive(item).as_str(), "nofollow" | "none"));
+    headers.get_all("x-robots-tag").iter().any(|value| asks(value.as_bytes())) || NOFOLLOW.is_match(&String::from_utf8_lossy(&body[..body.len().min(HEAD_BYTES)]))
 }
 
 /// Whether an answer is a web page: HTML by the type it names, or markup when it names none.
