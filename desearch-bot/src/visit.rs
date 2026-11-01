@@ -1071,7 +1071,7 @@ impl Run<'_> {
             .known
             .sitemaps
             .values()
-            .filter(|s| s.ok && s.url_count > 0 && s.kind.as_deref().is_some_and(|kind| kind != "invalid") && !read.contains(s.url.as_str()) && !due(s, self.now))
+            .filter(|s| s.ok && s.url_count > 0 && is_sitemap(s.kind.as_deref()) && !read.contains(s.url.as_str()) && !due(s, self.now))
             .collect();
         let index = updates.iter().any(|u| u.kind.as_deref() == Some("index")) || standing.iter().any(|s| s.kind.as_deref() == Some("index"));
         let listed = self.result.listed + self.kept + standing.iter().map(|s| s.url_count).sum::<i64>();

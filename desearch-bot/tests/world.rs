@@ -1196,3 +1196,21 @@ async fn a_link_run_keeps_no_files_or_forms_and_stops_at_a_busy_server() {
     }
     assert!(!web.lock().unwrap().hits.iter().any(|(_, path, _)| path == "/z"), "the 503 ends the run");
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_homepage_listing_not_read_on_a_recheck_keeps_no_site_active() {
+    let web: Shared = Arc::default();
+    let host = "homeonly.test";
+    let now = chrono::Utc::now().timestamp();
+    let (buckets, _crawl) = crawl_following(web.clone(), &[host], "homeonly", FollowLinks::Off, Slots::new(2), |buckets| {
+        buckets.allow(&Allowed::of([host]));
+        let mut changes = Changes::default();
+        changes.domain(host, &records::new_domain(Some(1), Some("new_generic"), &[], State::NoSitemap, Some("sitemap_too_small"), Some(0)));
+        let home = format!("http://{host}/");
+        changes.sitemap(host, &home, serde_json::json!({"id": sitemap_id(&home), "kind": "homepage", "depth": 0, "status": "ok", "urls": 13, "next": now + 3_600}).as_object().unwrap());
+        buckets.store(host).write(changes).unwrap();
+    })
+    .await;
+    let record = buckets.store(host).domain(host).unwrap().unwrap();
+    assert_eq!(record["state"].as_str(), Some("no_sitemap"), "only sitemaps stand in for a read");
+}
