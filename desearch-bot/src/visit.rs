@@ -301,6 +301,7 @@ impl Visitor {
             network_error: None,
             home,
             transient: None,
+            www_only: false,
         };
         run.go().await?;
         Ok(run.result)
@@ -331,6 +332,8 @@ struct Run<'a> {
     home: String,
     /// The first sitemap or guess that answered with a rate limit, a server error or not at all.
     transient: Option<String>,
+    /// The bare host has no DNS record and its www host answered.
+    www_only: bool,
 }
 
 impl Run<'_> {
@@ -358,7 +361,7 @@ impl Run<'_> {
     }
 
     fn roots(&mut self, named: &[String]) -> Result<Vec<String>, Crash> {
-        let base = format!("https://{}/", self.known.host);
+        let base = format!("https://{}{}/", if self.www_only { "www." } else { "" }, self.known.host);
         let joined = named.iter().map(|url| urls::join(&base, url)).collect::<Result<Vec<_>, _>>().map_err(|_| Crash::new("ValueError"))?;
         // A homepage read as a list is no root: the sitemaps and feeds a site names or answers later still come first.
         let (homes, known): (Vec<&KnownSitemap>, Vec<&KnownSitemap>) = self.known.sitemaps.values().filter(|s| s.depth == 0).partition(|s| self.is_homepage(&s.url, Some(s)));
@@ -765,15 +768,29 @@ impl Run<'_> {
         Ok(())
     }
 
-    /// Try https, then http; stop at a DNS failure since the other scheme will not help.
+    /// Try https, then http; a DNS failure skips the other scheme and tries the www host, the only one some sites resolve.
     async fn first_answer(&mut self, path: &str, limit: usize) -> Option<Answer> {
+        let www = format!("www.{}", self.known.host);
+        let hosts = match (self.www_only, self.known.host.starts_with("www.")) {
+            (true, _) => vec![www],
+            (false, true) => vec![self.known.host.clone()],
+            (false, false) => vec![self.known.host.clone(), www],
+        };
         let mut last = "unknown".to_string();
-        for scheme in ["https", "http"] {
-            match self.get(&format!("{scheme}://{}{path}", self.known.host), limit, None, None).await {
-                Ok(answer) => return Some(answer),
-                Err(error) => last = error,
+        for (i, host) in hosts.iter().enumerate() {
+            for scheme in ["https", "http"] {
+                match self.get(&format!("{scheme}://{host}{path}"), limit, None, None).await {
+                    Ok(answer) => {
+                        self.www_only |= i > 0;
+                        return Some(answer);
+                    }
+                    Err(error) => last = error,
+                }
+                if last.contains("DNS") {
+                    break;
+                }
             }
-            if last.contains("DNS") {
+            if !last.contains("DNS") {
                 break;
             }
         }

@@ -570,6 +570,10 @@ async fn a_landing_site_lists_its_homepage_and_the_pages_it_links_to_beside_its_
 }
 
 async fn visit_once(web: Shared, hosts: &[&'static str], answered: &[&str], name: &str) -> Arc<Buckets> {
+    visit_resolving(web, hosts, hosts, answered, name).await
+}
+
+async fn visit_resolving(web: Shared, hosts: &[&'static str], resolves: &[&'static str], answered: &[&str], name: &str) -> Arc<Buckets> {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(serve(listener, web));
@@ -590,7 +594,7 @@ async fn visit_once(web: Shared, hosts: &[&'static str], answered: &[&str], name
     }
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
-        .dns_resolver(Arc::new(TestResolver { addr, known: hosts.iter().copied().collect() }))
+        .dns_resolver(Arc::new(TestResolver { addr, known: resolves.iter().copied().collect() }))
         .timeout(Duration::from_secs(10))
         .build()
         .unwrap();
@@ -612,6 +616,23 @@ async fn visit_once(web: Shared, hosts: &[&'static str], answered: &[&str], name
     assert_eq!(crawl.step().await.unwrap(), hosts.len());
     drop(crawl);
     buckets
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_site_whose_bare_host_has_no_dns_record_is_read_on_its_www_host() {
+    let web: Shared = Arc::default();
+    let (host, www) = ("wwwonly.test", "www.wwwonly.test");
+    {
+        let mut w = web.lock().unwrap();
+        w.add(www, "/robots.txt", 200, None, format!("User-agent: *\nSitemap: http://{www}/list.xml\n").as_bytes());
+        w.add(www, "/list.xml", 200, None, urlset(www, &(0..12).map(|i| format!("/story/{i}")).collect::<Vec<_>>()).as_bytes());
+        w.add(www, "/", 200, None, format!("<html lang=\"en\"><p>{ENGLISH}</p></html>").as_bytes());
+    }
+    let buckets = visit_resolving(web, &[host], &[www], &[], "wwwonly").await;
+    let record = buckets.store(host).domain(host).unwrap().unwrap();
+    assert_eq!((record["state"].as_str(), record["lang"].as_str(), record["urls"].as_i64()), (Some("active"), Some("en"), Some(12)));
+    let stored = buckets.store(host).url(&urls::parse(&format!("http://{www}/story/3"), host).unwrap()).unwrap();
+    assert!(stored.is_some());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
