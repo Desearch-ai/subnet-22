@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
 use desearch_bot::allowed::{self, Allowed, Terms};
@@ -2017,11 +2018,11 @@ fn a_subdomain_kept_apart_takes_in_its_parents_earlier_pages_once_and_each_new_o
 
     buckets.note_apart(&list);
     assert!(list.apart(sub));
-    assert_eq!(buckets.adopt_apart(&list, 1_000).unwrap(), 1, "the page its parent never sent; the one it sent stays sent");
+    assert_eq!(buckets.adopt_apart(&list, 1_000, &AtomicBool::new(false)).unwrap(), 1, "the page its parent never sent; the one it sent stays sent");
     let own = |name: &str| buckets.store(sub).url(&urls::parse(&format!("https://{sub}/{name}"), sub).unwrap()).unwrap();
     assert!(own("s2").is_some() && own("s1").is_none());
     assert_eq!(buckets.store(sub).ready_list(sub, 10).unwrap().len(), 1);
-    assert_eq!(buckets.adopt_apart(&list, 1_000 + 2 * 86_400).unwrap(), 0, "the parent's earlier pages are taken in once");
+    assert_eq!(buckets.adopt_apart(&list, 1_000 + 2 * 86_400, &AtomicBool::new(false)).unwrap(), 0, "the parent's earlier pages are taken in once");
     buckets.record_listing("example.com", 9, vec![on_sub("s1", 30)], 1_500).unwrap();
     assert!(own("s1").is_none(), "a page its parent sent goes nowhere again when another listing names it");
 
@@ -2051,7 +2052,7 @@ fn a_subdomain_kept_apart_takes_in_its_parents_earlier_pages_once_and_each_new_o
     buckets.record_listing("example.com", 7, vec![page("a", 10), on_sub("s2", 90), on_sub("s1", 70), on_sub("s3", 40), on_sub("s5", 50)], 4_000).unwrap();
     state(State::NoSitemap);
     assert!(list.apart(sub));
-    assert_eq!(buckets.adopt_apart(&list, 1_000 + 3 * 86_400).unwrap(), 1, "back apart, it takes in what its parent kept for it meanwhile");
+    assert_eq!(buckets.adopt_apart(&list, 1_000 + 3 * 86_400, &AtomicBool::new(false)).unwrap(), 1, "back apart, it takes in what its parent kept for it meanwhile");
     assert!(own("s5").is_some());
 }
 
@@ -2679,4 +2680,27 @@ fn a_parents_pages_on_a_subdomain_are_read_in_chunks_that_resume() {
     assert_eq!(first.len(), 2);
     let (rest, done) = from.unsent_on("example.com", sub, after.as_deref(), 10, held).unwrap();
     assert_eq!((rest.len(), done), (3, None), "the second chunk starts after the first");
+}
+
+#[test]
+fn the_backfill_takes_one_chunk_a_call_and_none_once_stopping() {
+    let dir = Dir::new("adopt-one-chunk");
+    let subs = ["a.example.com", "b.example.com"];
+    let buckets = known(&dir, &["example.com", subs[0], subs[1]]);
+    let list = Allowed::of(["example.com", subs[0], subs[1]]);
+    buckets.allow(&list);
+    for sub in subs {
+        let mut changes = Changes::default();
+        changes.domain(sub, &records::new_domain(Some(10), Some("com"), &[], State::NoSitemap, Some("no_sitemap"), None));
+        buckets.store(sub).write(changes).unwrap();
+    }
+    let pages = subs.iter().map(|sub| (urls::parse(&format!("https://{sub}/p"), "example.com").unwrap(), 10, false)).collect();
+    buckets.store("example.com").record_listing("example.com", 7, pages, 100).unwrap();
+    buckets.note_apart(&list);
+    assert_eq!(buckets.adopt_apart(&list, 1_000, &AtomicBool::new(true)).unwrap(), 0, "nothing while the bot stops");
+    let held = |sub: &str| buckets.store(sub).url(&urls::parse(&format!("https://{sub}/p"), sub).unwrap()).unwrap().is_some();
+    assert_eq!(buckets.adopt_apart(&list, 1_000, &AtomicBool::new(false)).unwrap(), 1);
+    assert!(held(subs[0]) && !held(subs[1]), "one chunk a call");
+    assert_eq!(buckets.adopt_apart(&list, 1_000, &AtomicBool::new(false)).unwrap(), 1);
+    assert!(held(subs[1]));
 }

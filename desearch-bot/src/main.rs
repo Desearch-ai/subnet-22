@@ -377,12 +377,12 @@ async fn run(args: RunArgs) -> Result<()> {
                 std::thread::sleep(Duration::from_secs(5));
                 if noted.0.elapsed() >= dispatch::APART_EVERY || noted.1 != allowed.version() {
                     buckets.note_apart(&allowed);
-                    match buckets.adopt_apart(&allowed, dispatch::now()) {
-                        Ok(0) => {}
-                        Ok(queued) => println!("[rs] subdomains kept apart took in {queued} pages their parents list"),
-                        Err(error) => eprintln!("[rs] taking in parents' pages for subdomains kept apart failed: {error:#}"),
-                    }
                     noted = (std::time::Instant::now(), allowed.version());
+                }
+                match buckets.adopt_apart(&allowed, dispatch::now(), &halt) {
+                    Ok(0) => {}
+                    Ok(queued) => println!("[rs] subdomains kept apart took in {queued} pages their parents list"),
+                    Err(error) => eprintln!("[rs] taking in parents' pages for subdomains kept apart failed: {error:#}"),
                 }
             }
         });

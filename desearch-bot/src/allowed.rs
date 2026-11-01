@@ -93,6 +93,13 @@ impl Allowed {
         self.get(host).is_some() && self.apart.read().unwrap_or_else(|e| e.into_inner()).contains(host)
     }
 
+    /// The listed subdomains kept apart, sorted.
+    pub fn apart_names(&self) -> Vec<String> {
+        let mut names: Vec<String> = self.apart.read().unwrap_or_else(|e| e.into_inner()).iter().filter(|host| self.get(host).is_some()).cloned().collect();
+        names.sort_unstable();
+        names
+    }
+
     pub fn set_apart(&self, hosts: HashSet<String>) {
         *self.apart.write().unwrap_or_else(|e| e.into_inner()) = hosts;
     }

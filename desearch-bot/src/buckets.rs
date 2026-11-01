@@ -2,7 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, MutexGuard, OnceLock};
 
 use anyhow::{Context, Result};
@@ -36,7 +36,7 @@ pub type Json = Map<String, Value>;
 /// An address kept with a sitemap's XML escapes in, as in `?amp;id=1` or `Q&amp;A`.
 static ESCAPED: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"&(amp|lt|gt|quot|apos|#[0-9]+|#x[0-9a-fA-F]+);|[?&]amp;").expect("a valid pattern"));
 const DELETES_PER_WRITE: usize = 10_000;
-/// A subdomain kept apart takes in its parents' pages on its host once, tried at most this often, in seconds, reading this many of their records at a time.
+/// A subdomain kept apart takes in its parents' pages on its host once, tried again this often, in seconds, while it does not qualify, reading this many of their records a call.
 const ADOPT_EVERY: i64 = 86_400;
 const ADOPT_CHUNK: usize = 50_000;
 
@@ -693,47 +693,40 @@ impl Buckets {
         Ok(listing)
     }
 
-    /// Gives each subdomain kept apart with no working sitemap of its own, once, the pages its listed parents held on its host before and never sent, in chunks it resumes; returns how many went on its ready lists.
-    pub fn adopt_apart(&self, allowed: &Allowed, now: u32) -> Result<usize> {
-        let entries = allowed.entries();
-        let names: HashSet<&str> = entries.iter().map(|(name, _)| name.as_str()).collect();
-        let mut queued = 0;
-        for (name, _) in entries.iter().filter(|(name, _)| allowed.apart(name)) {
-            let Some(store) = self.store_for(name) else {
+    /// Takes in one chunk of the pages a subdomain kept apart, with no working sitemap of its own, had its listed parents hold before and never sent, resuming where the last chunk stopped; returns how many went on its ready list.
+    pub fn adopt_apart(&self, allowed: &Allowed, now: u32, stop: &AtomicBool) -> Result<usize> {
+        for name in allowed.apart_names() {
+            if stop.load(Ordering::Relaxed) {
+                break;
+            }
+            let Some(store) = self.store_for(&name) else {
                 continue;
             };
             let labels: Vec<&str> = name.split('.').collect();
-            let parents: Vec<String> = (1..labels.len().saturating_sub(1)).map(|at| labels[at..].join(".")).filter(|parent| names.contains(parent.as_str())).collect();
-            let mut qualifies = None;
-            for parent in parents {
+            for parent in (1..labels.len().saturating_sub(1)).map(|at| labels[at..].join(".")).filter(|parent| allowed.get(parent).is_some()) {
                 let mark = format!("adopted:{name}:{parent}");
                 let held = store.meta(&mark)?;
                 if held.as_ref().is_some_and(|m| m.get("done").is_some() || m.get("at").and_then(Value::as_i64).is_some_and(|at| i64::from(now) - at < ADOPT_EVERY)) {
                     continue;
                 }
-                if qualifies.is_none() {
-                    qualifies = Some(self.adopts(store, name)?);
-                }
-                let Some(from) = self.store_for(&parent).filter(|_| qualifies == Some(true)) else {
-                    store.set_meta(&mark, &json!({"at": now}))?;
+                let Some(from) = self.store_for(&parent) else {
                     continue;
                 };
-                let mut after = held.and_then(|m| m.get("after").and_then(Value::as_str).and_then(|key| hex_decode(key)));
-                loop {
-                    let (pages, next) = from.unsent_on(&parent, name, after.as_deref(), ADOPT_CHUNK, store)?;
-                    if !pages.is_empty() {
-                        queued += store.record_listing(name, sitemap_id(&format!("parent://{parent}/")), pages, now)?.ready;
-                    }
-                    let Some(key) = next else {
-                        store.set_meta(&mark, &json!({"done": now}))?;
-                        break;
-                    };
-                    store.set_meta(&mark, &json!({"at": now, "after": hex_encode(&key)}))?;
-                    after = Some(key);
+                if !self.adopts(store, &name)? {
+                    store.set_meta(&mark, &json!({"at": now}))?;
+                    continue;
                 }
+                let after = held.and_then(|m| m.get("after").and_then(Value::as_str).and_then(hex_decode));
+                let (pages, next) = from.unsent_on(&parent, &name, after.as_deref(), ADOPT_CHUNK, store)?;
+                let queued = if pages.is_empty() { 0 } else { store.record_listing(&name, sitemap_id(&format!("parent://{parent}/")), pages, now)?.ready };
+                match next {
+                    Some(key) => store.set_meta(&mark, &json!({"after": hex_encode(&key)}))?,
+                    None => store.set_meta(&mark, &json!({"done": now}))?,
+                }
+                return Ok(queued);
             }
         }
-        Ok(queued)
+        Ok(0)
     }
 
     /// Whether a subdomain kept apart takes in its parents' pages: it sends, and has no working sitemap of its own to list them.
