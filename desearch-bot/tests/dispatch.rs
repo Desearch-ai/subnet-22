@@ -1988,7 +1988,53 @@ fn only_a_listed_subdomain_whose_record_works_takes_its_pages_from_the_parent() 
     changes.domain("news.example.com", &settled);
     buckets.store("news.example.com").write(changes).unwrap();
     buckets.note_apart(&list);
-    assert!(!list.apart("news.example.com"), "an old refusal on the record of a subdomain that has since settled as no_sitemap keeps nothing apart");
+    assert!(list.apart("news.example.com"), "a subdomain settled as no_sitemap sends its own pages, its parent's on its host among them");
+    let mut down = records::new_domain(Some(10), Some("com"), &[], State::Down, None, None);
+    down.insert("home_status".into(), 403.into());
+    let mut changes = Changes::default();
+    changes.domain("news.example.com", &down);
+    buckets.store("news.example.com").write(changes).unwrap();
+    buckets.note_apart(&list);
+    assert!(!list.apart("news.example.com"), "an old refusal on the record of a subdomain that has since gone down keeps nothing apart");
+}
+
+#[test]
+fn a_listed_subdomain_without_sitemaps_takes_in_the_pages_its_parent_holds_on_its_host_and_never_sent() {
+    let dir = Dir::new("adopt");
+    let sub = "maths.example.com";
+    let buckets = known(&dir, &["example.com", sub]);
+    let list = Allowed::of(["example.com", sub]);
+    buckets.allow(&list);
+    let mut changes = Changes::default();
+    changes.domain(sub, &records::new_domain(Some(10), Some("com"), &[], State::NoSitemap, Some("no_sitemap"), None));
+    buckets.store(sub).write(changes).unwrap();
+    let on_sub = |name: &str, lastmod: u32| (urls::parse(&format!("https://{sub}/{name}"), "example.com").unwrap(), lastmod, false);
+    let parent = buckets.store("example.com");
+    parent.record_listing("example.com", 7, vec![page("a", 10), on_sub("s2", 20), on_sub("s1", 30)], 100).unwrap();
+    let sent = take(parent, 1);
+    assert_eq!(sent.iter().map(|p| p.url.as_str()).collect::<Vec<_>>(), [format!("https://{sub}/s1")]);
+    parent.mark_sent(&sent, 150, &rules()).unwrap();
+
+    buckets.note_apart(&list);
+    assert!(list.apart(sub));
+    assert_eq!(buckets.adopt_apart(&list, 1_000).unwrap(), 1, "the page its parent never sent; the one it sent stays sent");
+    let own = |name: &str| buckets.store(sub).url(&urls::parse(&format!("https://{sub}/{name}"), sub).unwrap()).unwrap();
+    assert!(own("s2").is_some() && own("s1").is_none());
+    assert_eq!(buckets.store(sub).ready_list(sub, 10).unwrap().len(), 1);
+    parent.record_listing("example.com", 7, vec![page("a", 10), on_sub("s2", 20), on_sub("s1", 30), on_sub("s3", 40)], 2_000).unwrap();
+    assert_eq!(buckets.adopt_apart(&list, 1_000 + 3_600).unwrap(), 0, "taken in at most once a day");
+    let mut changes = Changes::default();
+    changes.domain(sub, &records::new_domain(Some(10), Some("com"), &[], State::Active, None, None));
+    buckets.store(sub).write(changes).unwrap();
+    assert_eq!(buckets.adopt_apart(&list, 1_000 + 86_400).unwrap(), 1, "a day on, the new page only, though its homepage listing made it active");
+    assert!(own("s3").is_some());
+    let own_list = format!("https://{sub}/sitemap.xml");
+    let mut changes = Changes::default();
+    changes.sitemap(sub, &own_list, serde_json::json!({"id": 1, "kind": "urlset", "depth": 0, "status": "ok", "urls": 40}).as_object().unwrap());
+    buckets.store(sub).write(changes).unwrap();
+    parent.record_listing("example.com", 7, vec![page("a", 10), on_sub("s2", 20), on_sub("s1", 30), on_sub("s3", 40), on_sub("s4", 50)], 3_000).unwrap();
+    assert_eq!(buckets.adopt_apart(&list, 1_000 + 2 * 86_400).unwrap(), 0, "a subdomain with a working sitemap of its own lists its pages itself");
+    assert_eq!(take(parent, 10).iter().map(|p| p.url.as_str()).collect::<Vec<_>>(), ["https://example.com/a"], "the parent's own page goes under it, the subdomain's never");
 }
 
 #[test]

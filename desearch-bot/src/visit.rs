@@ -1103,7 +1103,7 @@ fn guess_paths(listed: bool) -> impl Iterator<Item = &'static str> {
 }
 
 /// Whether a stored kind is a sitemap or feed the site lists pages in, not a homepage or a page that wasn't one.
-fn is_sitemap(kind: Option<&str>) -> bool {
+pub(crate) fn is_sitemap(kind: Option<&str>) -> bool {
     kind.is_some_and(|kind| !matches!(kind, HOMEPAGE_KIND | "invalid"))
 }
 

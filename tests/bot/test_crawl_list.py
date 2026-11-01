@@ -604,16 +604,18 @@ def test_v1_sites_without_a_sitemap_are_listed_for_their_feed():
     ]
     rows += [
         row(host="news.parent.com", state="no_sitemap", site_type="news"),
+        row(host="shop.parent.com", state="no_sitemap", site_type="news"),
         row(host="parent.com", site_type="news"),
     ]
     v1 = {
         "feedless.com": V1("whole", "academic"),
         "news.parent.com": V1("news", "news"),
+        "shop.parent.com": V1("landing", "news"),
         "parent.com": V1("news", "news"),
     }
     listed, _ = v1_list(rows, v1)
-    assert set(listed) == {"feedless.com", "parent.com"}, (
-        "a subdomain of a listed site isn't listed for its feed alone: the parent's pages under it would stop"
+    assert set(listed) == {"feedless.com", "parent.com", "news.parent.com"}, (
+        "a whole or news subdomain without sitemaps sends its own pages, its parent's among them; a landing one would leave them unsent"
     )
 
 

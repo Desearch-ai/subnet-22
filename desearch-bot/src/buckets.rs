@@ -20,7 +20,8 @@ use crate::allowed::{Allowed, Terms};
 use crate::listed::{self, ListedSet};
 use crate::ready::SENT;
 use crate::states::State;
-use crate::urls::{Listing, Record, Url, TIMED};
+use crate::urls::{Listing, Record, Url, HTTPS, TIMED, WWW};
+use crate::visit::is_sitemap;
 
 pub const BUCKETS: usize = 256;
 const DOMAIN: u8 = b'D';
@@ -35,6 +36,9 @@ pub type Json = Map<String, Value>;
 /// An address kept with a sitemap's XML escapes in, as in `?amp;id=1` or `Q&amp;A`.
 static ESCAPED: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"&(amp|lt|gt|quot|apos|#[0-9]+|#x[0-9a-fA-F]+);|[?&]amp;").expect("a valid pattern"));
 const DELETES_PER_WRITE: usize = 10_000;
+/// A subdomain kept apart takes in its parents' pages on its host at most this often, in seconds, and at most this many from each parent at a time.
+const ADOPT_EVERY: i64 = 86_400;
+const ADOPT_MOST: usize = 200_000;
 
 type Entry = (Box<[u8]>, Box<[u8]>);
 
@@ -451,6 +455,31 @@ impl BucketStore {
         Ok(self.db.get([&[URL], &url.key[..]].concat())?.as_deref().and_then(Record::unpack))
     }
 
+    /// Up to `most` pages `domain` lists on the host `on`, never sent and not yet in `held`, keyed as `on`'s own, with their lastmods and whether those carry a time.
+    pub fn unsent_on(&self, domain: &str, on: &str, most: usize, held: &BucketStore) -> Result<Vec<(Url, u32, bool)>> {
+        let prefix = [&[URL], domain.as_bytes(), b"\0", on.as_bytes(), b"/"].concat();
+        let mut upper = prefix.clone();
+        *upper.last_mut().unwrap() += 1;
+        let mut bounds = ReadOptions::default();
+        bounds.set_iterate_upper_bound(upper);
+        let mut pages = Vec::new();
+        for item in self.db.iterator_opt(IteratorMode::From(&prefix, Direction::Forward), bounds) {
+            if pages.len() >= most {
+                break;
+            }
+            let (key, raw) = item?;
+            let Some(record) = Record::unpack(&raw).filter(|record| record.pushed_at == 0) else {
+                continue;
+            };
+            let rest = &key[2 + domain.len()..];
+            let url = Url { key: [on.as_bytes(), b"\0", rest].concat(), flags: record.flags & (HTTPS | WWW) };
+            if held.url(&url)?.is_none() {
+                pages.push((url, record.lastmod, record.flags & TIMED != 0));
+            }
+        }
+        Ok(pages)
+    }
+
     /// Memory RocksDB holds for this store outside the block cache: table readers and memtables.
     pub fn memory(&self) -> (u64, u64) {
         let read = |name: &str| self.db.property_int_value(name).ok().flatten().unwrap_or(0);
@@ -566,7 +595,7 @@ impl Buckets {
         self.store_for(domain).map(|store| store.terms(domain)).unwrap_or_default()
     }
 
-    /// Marks the listed subdomains of listed domains whose own record speaks for them: active or failing, so they send their own pages, or blocked, excluded or ineligible, so their pages never go. A subdomain still new, down or unreachable, or ineligible only because it has no homepage (404 or 410), leaves its pages under its parent.
+    /// Marks the listed subdomains of listed domains whose own record speaks for them: active, failing or without sitemaps, so they send their own pages, or blocked, excluded or ineligible, so their pages never go. A subdomain still new, down or unreachable, or ineligible only because it has no homepage (404 or 410), leaves its pages under its parent.
     pub fn note_apart(&self, allowed: &Allowed) {
         let entries = allowed.entries();
         let names: HashSet<&str> = entries.iter().map(|(name, _)| name.as_str()).collect();
@@ -585,10 +614,44 @@ impl Buckets {
             }
             match state {
                 Some(State::Ineligible) => !(reason == Some("homepage_error") && matches!(home, Some(404 | 410))),
-                state => matches!(state, Some(State::Active | State::Failing | State::Blocked | State::Excluded)),
+                state => matches!(state, Some(State::Active | State::Failing | State::NoSitemap | State::Blocked | State::Excluded)),
             }
         };
         allowed.set_apart(entries.iter().filter(|(name, _)| under_listed(name) && works(name)).map(|(name, _)| name.clone()).collect());
+    }
+
+    /// Gives each subdomain kept apart with no working sitemap of its own the pages its listed parents hold on its host and never sent, at most once a day; returns how many went on its ready lists.
+    pub fn adopt_apart(&self, allowed: &Allowed, now: u32) -> Result<usize> {
+        let entries = allowed.entries();
+        let names: HashSet<&str> = entries.iter().map(|(name, _)| name.as_str()).collect();
+        let mut queued = 0;
+        for (name, _) in entries.iter().filter(|(name, _)| allowed.apart(name)) {
+            let Some(store) = self.store_for(name) else {
+                continue;
+            };
+            let state = store.domain(name)?.and_then(|record| record.get("state").and_then(Value::as_str).and_then(State::parse));
+            let works = |record: &Json| record.get("status").and_then(Value::as_str) == Some("ok") && is_sitemap(record.get("kind").and_then(Value::as_str));
+            // Kept apart, its pages go only under its own name: those its parents found would stay unsent.
+            if !matches!(state, Some(State::Active | State::Failing | State::NoSitemap)) || store.sitemaps(name)?.iter().any(|(_, record)| works(record)) {
+                continue;
+            }
+            let mark = format!("adopted:{name}");
+            if store.meta(&mark)?.and_then(|at| at.as_i64()).is_some_and(|at| i64::from(now) - at < ADOPT_EVERY) {
+                continue;
+            }
+            let labels: Vec<&str> = name.split('.').collect();
+            for parent in (1..labels.len().saturating_sub(1)).map(|at| labels[at..].join(".")).filter(|parent| names.contains(parent.as_str())) {
+                let Some(from) = self.store_for(&parent) else {
+                    continue;
+                };
+                let pages = from.unsent_on(&parent, name, ADOPT_MOST, store)?;
+                if !pages.is_empty() {
+                    queued += store.record_listing(name, sitemap_id(&format!("parent://{parent}/")), pages, now)?.ready;
+                }
+            }
+            store.set_meta(&mark, &Value::from(now))?;
+        }
+        Ok(queued)
     }
 
     /// Whether a list names the domain; false with no list.
