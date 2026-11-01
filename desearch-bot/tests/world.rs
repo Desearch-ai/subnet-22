@@ -576,6 +576,10 @@ async fn visit_once(web: Shared, hosts: &[&'static str], answered: &[&str], name
 }
 
 async fn visit_resolving(web: Shared, hosts: &[&'static str], resolves: &[&'static str], answered: &[&str], name: &str) -> Arc<Buckets> {
+    visit_seeded(web, hosts, resolves, answered, &[], name).await
+}
+
+async fn visit_seeded(web: Shared, hosts: &[&'static str], resolves: &[&'static str], answered: &[&str], www: &[&str], name: &str) -> Arc<Buckets> {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(serve(listener, web));
@@ -589,6 +593,9 @@ async fn visit_resolving(web: Shared, hosts: &[&'static str], resolves: &[&'stat
         let mut record = records::new_domain(Some(1), Some("new_generic"), &[], State::New, None, Some(0));
         if answered.contains(host) {
             record.insert("ok".into(), 1_700_000_000.into());
+        }
+        if www.contains(host) {
+            record.insert("www".into(), true.into());
         }
         let mut changes = Changes::default();
         changes.domain(host, &record);
@@ -636,6 +643,23 @@ async fn a_site_whose_bare_host_has_no_dns_record_is_read_on_its_www_host() {
     assert_eq!(record["www"], true, "the next visit starts on the www host");
     let stored = buckets.store(host).url(&urls::parse(&format!("http://{www}/story/3"), host).unwrap()).unwrap();
     assert!(stored.is_some());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_bare_host_that_answers_again_clears_the_www_flag_and_is_read_first() {
+    let web: Shared = Arc::default();
+    let (host, www) = ("flip.test", "www.flip.test");
+    {
+        let mut w = web.lock().unwrap();
+        w.add(host, "/robots.txt", 200, None, format!("User-agent: *\nSitemap: http://{host}/list.xml\n").as_bytes());
+        w.add(host, "/list.xml", 200, None, urlset(host, &(0..12).map(|i| format!("/story/{i}")).collect::<Vec<_>>()).as_bytes());
+        w.add(host, "/", 200, None, format!("<html lang=\"en\"><p>{ENGLISH}</p></html>").as_bytes());
+    }
+    let buckets = visit_seeded(web.clone(), &[host], &[host, www], &[], &[host], "flip").await;
+    let record = buckets.store(host).domain(host).unwrap().unwrap();
+    assert_eq!(record["state"].as_str(), Some("active"));
+    assert!(record.get("www").is_none());
+    assert!(!web.lock().unwrap().hits.iter().any(|(h, _, _)| h == www), "the bare host is asked first");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

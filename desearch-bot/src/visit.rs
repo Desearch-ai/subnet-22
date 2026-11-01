@@ -338,7 +338,7 @@ struct Run<'a> {
     home: String,
     /// The first sitemap or guess that answered with a rate limit, a server error or not at all.
     transient: Option<String>,
-    /// The bare host has no DNS record and its www host answered, on this visit or the last.
+    /// The bare host had no DNS record and its www host answered, on this visit or the last one that read either.
     www_only: bool,
 }
 
@@ -777,17 +777,13 @@ impl Run<'_> {
     /// Try https, then http; a DNS failure skips the other scheme and tries the www host, the only one some sites resolve.
     async fn first_answer(&mut self, path: &str, limit: usize) -> Option<Answer> {
         let www = format!("www.{}", self.known.host);
-        let hosts = match (self.known.host.starts_with("www."), self.www_only) {
-            (true, _) => vec![self.known.host.clone()],
-            (false, true) => vec![www, self.known.host.clone()],
-            (false, false) => vec![self.known.host.clone(), www],
-        };
+        let hosts = if self.known.host.starts_with("www.") { vec![self.known.host.clone()] } else { vec![self.known.host.clone(), www] };
         let mut last = "unknown".to_string();
-        for host in &hosts {
+        for (i, host) in hosts.iter().enumerate() {
             for scheme in ["https", "http"] {
                 match self.get(&format!("{scheme}://{host}{path}"), limit, None, None).await {
                     Ok(answer) => {
-                        self.www_only = *host != self.known.host;
+                        self.www_only = i > 0;
                         self.result.www_only = Some(self.www_only);
                         return Some(answer);
                     }
