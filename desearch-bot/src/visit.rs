@@ -975,8 +975,9 @@ impl Run<'_> {
         let mut found = vec![home.clone()];
         let mut queue: VecDeque<(String, u8)> = VecDeque::from([(home, 0)]);
         let (requests, mut read, mut failing, mut refused) = (self.result.requests, 0, 0, None);
-        // Pages fetched that did not answer as pages: never queued.
+        // Pages fetched that did not answer as pages: never queued; those gone or moved off the site come off the ready list too.
         let mut unread: HashSet<String> = HashSet::new();
+        let mut taken_back: Vec<String> = Vec::new();
         self.following = true;
         while let Some((page, depth)) = queue.pop_front() {
             // Every request counts against the budget, each redirect hop too.
@@ -996,6 +997,9 @@ impl Run<'_> {
             };
             if answer.status != 200 {
                 unread.insert(page.clone());
+                if matches!(answer.status, 300..=399 | 404 | 410) {
+                    taken_back.push(page.clone());
+                }
             }
             let peer = answer.peer.unwrap_or(ip);
             slots.connected(peer, true);
@@ -1031,6 +1035,7 @@ impl Run<'_> {
             // A page that moved is kept where it moved to, which robots.txt allows as the redirect was followed.
             if answer.url != page {
                 unread.insert(page.clone());
+                taken_back.push(page.clone());
                 if let Some(key) = self.followable(&normaliser, &answer.url).filter(|_| is_page(&answer.url)) {
                     if seen.insert(key) {
                         found.push(answer.url.clone());
@@ -1061,6 +1066,11 @@ impl Run<'_> {
         }
         self.following = false;
         found.retain(|url| !unread.contains(url));
+        let rests: Vec<Vec<u8>> = taken_back.iter().filter_map(|url| normaliser.parse(url)).filter_map(|url| url.key.splitn(2, |&b| b == 0).nth(1).map(<[u8]>::to_vec)).collect();
+        if !rests.is_empty() {
+            let (buckets, host) = (self.visitor.buckets.clone(), self.known.host.clone());
+            self.visitor.cpu(move || buckets.store(&host).unqueue(&host, &rests)).await?.map_err(|_| Crash::new("StoreError"))?;
+        }
         self.links_listing(found, read, refused, every).await
     }
 

@@ -1753,6 +1753,26 @@ impl BucketStore {
         Ok((added, counts))
     }
 
+    /// Takes pages never sent off the domain's ready list, as their keys' rests: pages a fetch found gone or moved off the site; their records stay, so a listing naming them again queues nothing.
+    pub fn unqueue(&self, domain: &str, rests: &[Vec<u8>]) -> Result<usize> {
+        let records = self.records(rests.iter().map(|rest| prefixed(URL, domain.as_bytes(), rest)))?;
+        let keys: Vec<Vec<u8>> = rests
+            .iter()
+            .zip(records)
+            .filter_map(|(rest, record)| record.filter(|record| record.pushed_at == 0).map(|record| (rest, record)))
+            .map(|(rest, record)| Entry { domain: domain.to_string(), rest: rest.clone(), order: Order::Fresh { first_seen: record.first_seen, lastmod: record.lastmod } }.key())
+            .collect();
+        if keys.is_empty() {
+            return Ok(0);
+        }
+        let _guard = self.lock_ready();
+        let (mut batch, mut counts) = (WriteBatch::default(), HashMap::new());
+        self.remove_ready(&mut batch, &keys, &mut counts)?;
+        self.write_counts(&mut batch, &counts)?;
+        self.db.write(batch)?;
+        Ok(counts.values().map(|n| n.unsigned_abs() as usize).sum())
+    }
+
     pub(crate) fn notice(&self, counts: &HashMap<String, i64>) {
         let mut noticed = self.noticed.lock().unwrap_or_else(|e| e.into_inner());
         let Some(noticed) = noticed.as_mut() else {

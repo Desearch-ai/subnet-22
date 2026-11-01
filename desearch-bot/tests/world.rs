@@ -1399,6 +1399,11 @@ async fn a_link_run_queues_no_page_that_failed_or_moved_where_robots_txt_disallo
     assert_eq!(links["urls"].as_i64(), Some(3), "the homepage, /b and /new-home: {links:?}");
     let stored = |path: &str| buckets.store(host).url(&urls::parse(&format!("http://{host}{path}"), host).unwrap()).unwrap().is_some();
     assert!(stored("/new-home") && !stored("/private/x"));
+    let ready: Vec<String> = buckets.store(host).ready_list(host, 100).unwrap().iter().map(|e| String::from_utf8_lossy(&e.rest).into_owned()).collect();
+    for path in ["/go", "/gone", "/moved"] {
+        assert!(!ready.contains(&format!("{host}{path}")), "{path}, listed by the homepage, waits no more once the run found it gone or moved: {ready:?}");
+    }
+    assert!(ready.contains(&format!("{host}/b")));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
