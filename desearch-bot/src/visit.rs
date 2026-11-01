@@ -581,8 +581,8 @@ impl Run<'_> {
         let mut roots: Vec<String> = joined.into_iter().chain(known).filter(|url| seen.insert(url.clone())).collect();
         // A landing site's homepage is no guess: it is read even when a sitemap answers.
         let reads_home = self.visitor.buckets.terms(&self.known.host).depth.is_some();
-        // Stored sitemaps that are gone or never answered hide nothing: the site is guessed at as on a first visit.
-        if self.known.sitemaps.values().filter(|s| s.depth == 0 && !is_listing(s.kind.as_deref())).all(|s| s.dead) {
+        // Stored sitemaps that are gone or never answered hide nothing: the site is guessed at as on a first visit, unless robots.txt names its sitemaps.
+        if named.is_empty() && self.known.sitemaps.values().filter(|s| s.depth == 0 && !is_listing(s.kind.as_deref())).all(|s| s.dead) {
             for path in guess_paths(self.listed) {
                 let url = if path == HOMEPAGE { self.home.clone() } else { urls::join(&base, path).map_err(|_| Crash::new("ValueError"))? };
                 if seen.insert(url.clone()) {

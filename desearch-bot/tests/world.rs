@@ -1441,3 +1441,20 @@ async fn a_link_run_finding_mostly_new_pages_comes_back_in_its_interval_not_minu
     assert!(links["next"].as_i64().unwrap() - now > 86_400, "no second run minutes later: {links:?}");
     assert!(buckets.store(host).url(&urls::parse(&format!("http://{host}/x/x/x/p2-7"), host).unwrap()).unwrap().is_some(), "and its 600 pages are kept");
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_site_whose_robots_txt_names_sitemaps_that_refuse_us_is_not_guessed_at() {
+    let web: Shared = Arc::default();
+    let host = "named-refuses.test";
+    {
+        let mut w = web.lock().unwrap();
+        w.add(host, "/robots.txt", 200, None, format!("User-agent: *\nSitemap: http://{host}/news.xml\n").as_bytes());
+        w.add(host, "/news.xml", 403, None, b"denied");
+        w.add(host, "/sitemap.xml", 200, None, urlset(host, &(0..12).map(|i| format!("/story/{i}")).collect::<Vec<_>>()).as_bytes());
+        w.add(host, "/", 200, None, format!("<html lang=\"en\"><p>{ENGLISH}</p></html>").as_bytes());
+    }
+    let (buckets, _crawl) = crawl_following(web.clone(), &[host], "named-refuses", FollowLinks::Off, Slots::new(2), |buckets| buckets.allow(&Allowed::of([host]))).await;
+    let hits: Vec<String> = web.lock().unwrap().hits.iter().map(|(_, path, _)| path.clone()).collect();
+    assert_eq!(hits, ["/robots.txt", "/news.xml"], "the sitemap robots.txt names refused us: no way around it");
+    assert_eq!(buckets.store(host).domain(host).unwrap().unwrap()["state"].as_str(), Some("no_sitemap"));
+}
