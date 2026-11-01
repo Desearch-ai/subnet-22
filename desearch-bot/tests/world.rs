@@ -1172,3 +1172,27 @@ async fn no_link_slots_turn_off_the_homepage_reads_of_thin_sites_too() {
     assert!(buckets.store(host).sitemap(host, &format!("http://{host}/")).unwrap().is_none(), "the homepage is read for its language only, not as a list");
     assert!(buckets.store(host).url(&urls::parse(&format!("http://{host}/page/3"), host).unwrap()).unwrap().is_none());
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_link_run_keeps_no_files_or_forms_and_stops_at_a_busy_server() {
+    let web: Shared = Arc::default();
+    let host = "busy.links.test";
+    {
+        let mut w = web.lock().unwrap();
+        let page = |links: &[&str]| {
+            let links: String = links.iter().map(|href| format!("<a href=\"{href}\">{href}</a>")).collect();
+            format!("<html lang=\"en\"><p>{ENGLISH}</p>{links}</html>").into_bytes()
+        };
+        w.add(host, "/", 200, None, &page(&["/x", "/y", "/z"]));
+        w.add(host, "/x", 200, None, &page(&["/x/1", "/x/form.docx", "/wp-admin/edit", "/cdn-cgi/l/email", "/x/icon.ico"]));
+        w.add(host, "/y", 503, None, b"busy");
+        w.add(host, "/z", 200, None, &page(&["/z/1"]));
+    }
+    let (buckets, _crawl) = crawl_prepared(web.clone(), &[host], "links-busy", |buckets| buckets.allow(&Allowed::of([host]))).await;
+    let stored = |path: &str| buckets.store(host).url(&urls::parse(&format!("http://{host}{path}"), host).unwrap()).unwrap().is_some();
+    assert!(stored("/x/1"));
+    for path in ["/x/form.docx", "/wp-admin/edit", "/cdn-cgi/l/email", "/x/icon.ico"] {
+        assert!(!stored(path), "{path} is no page");
+    }
+    assert!(!web.lock().unwrap().hits.iter().any(|(_, path, _)| path == "/z"), "the 503 ends the run");
+}

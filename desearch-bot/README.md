@@ -115,8 +115,8 @@ A listed site, landing sites aside, whose sitemaps list under 1,000 pages or non
 read as a list beside its sitemaps, and its links followed from the homepage: three levels down, at most
 150 fetches and 10 minutes a run, on its own host and its `www.` host only, HTML pages only, no
 queries, files, feeds or forms, within its robots.txt rules and crawl delay, not past a page marked
-`nofollow`, and no redirect off the site or onto a disallowed path. A refusal or rate limit ends the
-run. The pages found are kept as one listing. Runs come weekly while they find new pages, then half
+`nofollow`, and no redirect off the site or onto a disallowed path. A refusal, a rate limit or a 503
+ends the run. The pages found are kept as one listing. Runs come weekly while they find new pages, then half
 as often down to every 60 days; with `--follow-links all`, every whole or news site the list weights
 3 or more gets a run monthly. A run that finds every slot taken waits a random time up to its interval.
 

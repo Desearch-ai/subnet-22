@@ -855,21 +855,22 @@ impl Run<'_> {
         let mut seen: HashSet<Vec<u8>> = HashSet::from([key]);
         let mut found = vec![home.clone()];
         let mut queue: VecDeque<(String, u8)> = VecDeque::from([(home, 0)]);
-        let (mut fetched, mut read, mut failing, mut refused) = (0, 0, 0, None);
+        let (requests, mut read, mut failing, mut refused) = (self.result.requests, 0, 0, None);
         self.following = true;
         while let Some((page, depth)) = queue.pop_front() {
-            if found.len() >= LINKS_MOST || fetched >= LINKS_FETCHES || failing >= MAX_FAILURES_IN_ROW || started.elapsed() >= LINKS_TIME || self.visitor.pause.load(Ordering::Relaxed) {
+            // Every request counts against the budget, each redirect hop too.
+            let spent = (self.result.requests - requests) as usize;
+            if found.len() >= LINKS_MOST || spent >= LINKS_FETCHES || failing >= MAX_FAILURES_IN_ROW || started.elapsed() >= LINKS_TIME || self.visitor.pause.load(Ordering::Relaxed) {
                 break;
             }
-            fetched += 1;
             let Ok(answer) = self.get(&page, MAX_HOMEPAGE_BYTES, None, None).await else {
                 failing += 1;
                 continue;
             };
             match answer.status {
                 200 => failing = 0,
-                // A refusal or a rate limit ends the run: the site asks for less.
-                401 | 402 | 403 | 429 => {
+                // A refusal, a rate limit or a busy server ends the run: the site asks for less.
+                401 | 402 | 403 | 429 | 503 => {
                     refused = Some(answer.status);
                     break;
                 }
@@ -899,7 +900,7 @@ impl Run<'_> {
                 let Some(key) = self.followable(&normaliser, &link) else {
                     continue;
                 };
-                if seen.insert(key) {
+                if seen.insert(key) && is_page(&link) {
                     if depth + 1 < LINKS_DEPTH && fetchable(&link) {
                         queue.push_back((link.clone(), depth + 1));
                     }
@@ -1427,6 +1428,11 @@ fn links_url(host: &str) -> String {
 /// Whether a stored kind is a sitemap or feed the site lists pages in, not a homepage, a link listing or a page that wasn't one.
 pub(crate) fn is_sitemap(kind: Option<&str>) -> bool {
     kind.is_some_and(|kind| !matches!(kind, HOMEPAGE_KIND | LINKS_KIND | "invalid"))
+}
+
+/// Whether a link a run finds is a page to keep: no file, feed or form.
+fn is_page(url: &str) -> bool {
+    urls::split(url).is_ok_and(|parts| !NOT_PAGES.is_match(&parts.path))
 }
 
 /// Whether a page found while following links is fetched in turn: no file, feed or form, and not so deep or repetitive that it looks like a trap.
