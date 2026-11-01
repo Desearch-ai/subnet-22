@@ -228,6 +228,8 @@ async fn crawls_a_small_web() {
     assert_eq!(domain("blocked.test")["reason"], "robots_disallow");
     assert_eq!((domain("empty.test")["state"].as_str(), domain("empty.test")["reason"].as_str()), (Some("no_sitemap"), Some("no_sitemap")));
     assert_eq!(domain("gone.test")["reason"], "ClientConnectorDNSError");
+    assert!(!web.lock().unwrap().hits.iter().any(|(host, _, _)| host.starts_with("www.")), "a bare host that answers never sends the bot to www");
+    assert!(domain("site.test").get("www").is_none());
 
     let store = buckets.store("site.test");
     let mut changes = Changes::default();
@@ -631,6 +633,7 @@ async fn a_site_whose_bare_host_has_no_dns_record_is_read_on_its_www_host() {
     let buckets = visit_resolving(web, &[host], &[www], &[], "wwwonly").await;
     let record = buckets.store(host).domain(host).unwrap().unwrap();
     assert_eq!((record["state"].as_str(), record["lang"].as_str(), record["urls"].as_i64()), (Some("active"), Some("en"), Some(12)));
+    assert_eq!(record["www"], true, "the next visit starts on the www host");
     let stored = buckets.store(host).url(&urls::parse(&format!("http://{www}/story/3"), host).unwrap()).unwrap();
     assert!(stored.is_some());
 }

@@ -54,9 +54,11 @@ pub fn new_domain(
 }
 
 /// A registry row set back to `new` while the store holds another state: someone asked for the domain to be checked afresh.
+/// An exclusion stays, except one the bot made itself from the domain's top-level name, whose rule can change.
 pub fn wants_recheck(registry_state: &str, record: &Json) -> bool {
     let stored = record.get("state").and_then(Value::as_str);
-    registry_state == State::New.as_str() && stored.is_some_and(|state| state != State::New.as_str() && state != State::Excluded.as_str())
+    let by_name = record.get("reason").and_then(Value::as_str) == Some("non_english_tld");
+    registry_state == State::New.as_str() && stored.is_some_and(|state| state != State::New.as_str() && (state != State::Excluded.as_str() || by_name))
 }
 
 /// A domain to check afresh: new and due now, through the discovery lane, with its homepage read again.
@@ -87,6 +89,7 @@ pub fn known(host: &str, domain: &Json, sitemaps: &[(String, Json)]) -> Option<K
             .unwrap_or_default(),
         sitemaps: sitemaps.iter().filter_map(|(url, record)| Some((url.clone(), known_sitemap(url, record)?))).collect(),
         canonical_host: text(domain.get("canonical")),
+        www_only: domain.get("www").and_then(Value::as_bool).unwrap_or(false),
     })
 }
 
@@ -161,6 +164,15 @@ pub fn written_domain(previous: &Json, write: &DomainWrite, url_count: i64) -> J
     }
     if let Some(status) = visit.home_status {
         record.insert("home_status".into(), status.into());
+    }
+    match visit.www_only {
+        Some(true) => {
+            record.insert("www".into(), true.into());
+        }
+        Some(false) => {
+            record.remove("www");
+        }
+        None => {}
     }
     record
 }
@@ -281,5 +293,31 @@ mod tests {
         assert!(!wants_recheck("new", &record), "already new");
         let excluded = new_domain(None, None, &[], State::Excluded, Some("hand"), None);
         assert!(!wants_recheck("new", &excluded), "an excluded domain stays out");
+        let by_name = new_domain(None, Some("other_cctld"), &[], State::Excluded, Some("non_english_tld"), None);
+        assert!(wants_recheck("new", &by_name), "an exclusion by top-level name lifts when asked");
+    }
+
+    #[test]
+    fn the_www_host_a_visit_answered_on_is_kept_with_the_domain() {
+        let record = new_domain(Some(5), Some("big_generic"), &[], State::New, None, None);
+        let write = |www_only| {
+            let visit = crate::visit::Visit { www_only, ..crate::visit::Visit::new("a.test") };
+            DomainWrite {
+                host: "a.test".into(),
+                state: State::Active,
+                reason: None,
+                failures: 0,
+                next_due_at: None,
+                last_ok_at: None,
+                canonical_host: None,
+                checked_at: 1_700_000_000 * SECOND,
+                backlog: false,
+                visit,
+            }
+        };
+        let www = written_domain(&record, &write(Some(true)), 0);
+        assert!(known("a.test", &www, &[]).unwrap().www_only);
+        assert!(known("a.test", &written_domain(&www, &write(None), 0), &[]).unwrap().www_only, "a visit that read neither keeps it");
+        assert!(!known("a.test", &written_domain(&www, &write(Some(false)), 0), &[]).unwrap().www_only, "the bare host answering again clears it");
     }
 }

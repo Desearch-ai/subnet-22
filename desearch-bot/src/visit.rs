@@ -99,6 +99,8 @@ pub struct Known {
     pub categories: Vec<String>,
     pub sitemaps: IndexMap<String, KnownSitemap>,
     pub canonical_host: Option<String>,
+    /// The bare host had no DNS record when last read and its www host answered.
+    pub www_only: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -150,6 +152,8 @@ pub struct Visit {
     pub cut_short: bool,
     /// The homepage refused us or limited our rate on a recheck of a site that answered before: tried again soon before it counts.
     pub passing: bool,
+    /// Which host answered robots.txt or the homepage, when either was read: the www host or the bare one.
+    pub www_only: Option<bool>,
 }
 
 impl Visit {
@@ -176,6 +180,7 @@ impl Visit {
             deferred: Vec::new(),
             cut_short: false,
             passing: false,
+            www_only: None,
         }
     }
 }
@@ -280,7 +285,8 @@ pub struct Visitor {
 impl Visitor {
     /// Visit one domain and report everything the visit learned.
     pub async fn visit(&self, known: Arc<Known>, now: i64) -> Result<Visit, Crash> {
-        let home = format!("https://{}/", known.host);
+        let www_only = known.www_only;
+        let home = format!("https://{}{}/", if www_only { "www." } else { "" }, known.host);
         let mut run = Run {
             visitor: self,
             pacer: Pacer::new(known.crawl_delay, self.floor),
@@ -301,7 +307,7 @@ impl Visitor {
             network_error: None,
             home,
             transient: None,
-            www_only: false,
+            www_only,
         };
         run.go().await?;
         Ok(run.result)
@@ -332,7 +338,7 @@ struct Run<'a> {
     home: String,
     /// The first sitemap or guess that answered with a rate limit, a server error or not at all.
     transient: Option<String>,
-    /// The bare host has no DNS record and its www host answered.
+    /// The bare host has no DNS record and its www host answered, on this visit or the last.
     www_only: bool,
 }
 
@@ -771,17 +777,18 @@ impl Run<'_> {
     /// Try https, then http; a DNS failure skips the other scheme and tries the www host, the only one some sites resolve.
     async fn first_answer(&mut self, path: &str, limit: usize) -> Option<Answer> {
         let www = format!("www.{}", self.known.host);
-        let hosts = match (self.www_only, self.known.host.starts_with("www.")) {
-            (true, _) => vec![www],
-            (false, true) => vec![self.known.host.clone()],
+        let hosts = match (self.known.host.starts_with("www."), self.www_only) {
+            (true, _) => vec![self.known.host.clone()],
+            (false, true) => vec![www, self.known.host.clone()],
             (false, false) => vec![self.known.host.clone(), www],
         };
         let mut last = "unknown".to_string();
-        for (i, host) in hosts.iter().enumerate() {
+        for host in &hosts {
             for scheme in ["https", "http"] {
                 match self.get(&format!("{scheme}://{host}{path}"), limit, None, None).await {
                     Ok(answer) => {
-                        self.www_only |= i > 0;
+                        self.www_only = *host != self.known.host;
+                        self.result.www_only = Some(self.www_only);
                         return Some(answer);
                     }
                     Err(error) => last = error,
