@@ -385,19 +385,23 @@ impl Run<'_> {
         let mut seen = HashSet::new();
         let mut roots: Vec<String> = joined.into_iter().chain(known).filter(|url| seen.insert(url.clone())).collect();
         let landing = self.visitor.buckets.terms(&self.known.host).depth.is_some();
-        if !roots.is_empty() {
-            if landing && seen.insert(self.home.clone()) {
-                roots.push(self.home.clone());
+        // Stored sitemaps that no longer answer hide nothing: the site is guessed at as on a first visit.
+        if !self.known.sitemaps.values().any(|s| s.ok && is_sitemap(s.kind.as_deref())) {
+            for path in guess_paths(self.visitor.buckets.lists(&self.known.host)) {
+                let url = if path == HOMEPAGE { self.home.clone() } else { urls::join(&base, path).map_err(|_| Crash::new("ValueError"))? };
+                if seen.insert(url.clone()) {
+                    // A landing site's homepage is no guess: it is read even when a sitemap answers.
+                    if !(landing && url == self.home) {
+                        self.guesses.insert(url.clone());
+                    }
+                    roots.push(url);
+                }
             }
-            return Ok(roots);
         }
-        let guesses = guess_paths(self.visitor.buckets.lists(&self.known.host))
-            .map(|path| if path == HOMEPAGE { Ok(self.home.clone()) } else { urls::join(&base, path) })
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|_| Crash::new("ValueError"))?;
-        // A landing site's homepage is no guess: it is read even when a sitemap answers.
-        self.guesses = guesses.iter().filter(|url| !(landing && **url == self.home)).cloned().collect();
-        Ok(guesses)
+        if landing && seen.insert(self.home.clone()) {
+            roots.push(self.home.clone());
+        }
+        Ok(roots)
     }
 
     /// Whether a root is the homepage read as a list: stored as one, or `/` on the site's host or its `www.` host, which a failed read leaves without a kind.
@@ -1079,6 +1083,11 @@ pub fn epoch(micros: Option<i64>) -> i64 {
 /// Where to look for a sitemap no robots.txt names: the usual files, then on a listed domain its feed and its homepage.
 fn guess_paths(listed: bool) -> impl Iterator<Item = &'static str> {
     SITEMAP_GUESSES.into_iter().chain(FEED_GUESSES.into_iter().chain([HOMEPAGE]).filter(move |_| listed))
+}
+
+/// Whether a stored kind is a sitemap or feed the site lists pages in, not a homepage or a page that wasn't one.
+fn is_sitemap(kind: Option<&str>) -> bool {
+    kind.is_some_and(|kind| !matches!(kind, HOMEPAGE_KIND | "invalid"))
 }
 
 fn crawl_delay(value: Option<f64>) -> f64 {

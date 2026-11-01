@@ -786,3 +786,24 @@ async fn a_sitemap_is_guessed_where_robots_txt_answered() {
     assert_eq!((record["state"].as_str(), record["urls"].as_i64()), (Some("active"), Some(12)), "robots.txt answered on http only, and so does the guess");
     assert!(web.lock().unwrap().hits.iter().any(|(h, path, _)| h == host && path == "/sitemap.xml"));
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_stored_sitemap_that_is_gone_leaves_the_site_guessed_at() {
+    let web: Shared = Arc::default();
+    let host = "stale.test";
+    {
+        let mut w = web.lock().unwrap();
+        w.add(host, "/robots.txt", 200, None, b"User-agent: *\nAllow: /\n");
+        w.add(host, "/sitemap.xml", 200, None, urlset(host, &(0..12).map(|i| format!("/story/{i}")).collect::<Vec<_>>()).as_bytes());
+        w.add(host, "/", 200, None, format!("<html lang=\"en\"><p>{ENGLISH}</p></html>").as_bytes());
+    }
+    let (buckets, _crawl) = crawl_prepared(web.clone(), &[host], "stale-guess", |buckets| {
+        let old = format!("http://{host}/old-sitemap.xml");
+        let mut changes = Changes::default();
+        changes.sitemap(host, &old, &serde_json::json!({"id": sitemap_id(&old), "depth": 0, "status": "gone", "urls": 0, "next": 0}).as_object().unwrap().clone());
+        buckets.store(host).write(changes).unwrap();
+    })
+    .await;
+    let record = buckets.store(host).domain(host).unwrap().unwrap();
+    assert_eq!((record["state"].as_str(), record["urls"].as_i64()), (Some("active"), Some(12)), "the dead record is read, then the guesses");
+}
