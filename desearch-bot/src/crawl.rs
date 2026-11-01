@@ -80,7 +80,7 @@ pub fn plan(known: &Known, visit: Visit, now: i64, rng: &mut impl Rng) -> Domain
         outcome if outcome.answered() => None,
         _ => known.canonical_host.clone(),
     };
-    let last_ok_at = if visit.outcome.answered() && visit.requests > 0 { Some(now) } else { known.last_ok_at };
+    let last_ok_at = if visit.outcome.answered() && visit.requests - visit.aside > 0 { Some(now) } else { known.last_ok_at };
     DomainWrite {
         host: known.host.clone(),
         state: decision.state,

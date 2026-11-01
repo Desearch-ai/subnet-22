@@ -38,6 +38,8 @@ struct Page {
 struct Web {
     pages: HashMap<(String, String), Page>,
     hits: Vec<(String, String, Option<String>)>,
+    /// Served instead once the path was asked this many times.
+    later: HashMap<(String, String), (usize, Page)>,
 }
 
 impl Web {
@@ -92,8 +94,10 @@ async fn serve(listener: TcpListener, web: Shared) {
                 let validator = headers.get("if-none-match").cloned();
                 let page = {
                     let mut web = web.lock().unwrap();
+                    let asked = web.hits.iter().filter(|(h, p, _)| *h == host && p == path).count();
                     web.hits.push((host.clone(), path.to_string(), validator.clone()));
-                    web.pages.get(&(host, path.to_string())).cloned()
+                    let key = (host, path.to_string());
+                    web.later.get(&key).filter(|(after, _)| asked >= *after).map(|(_, page)| page.clone()).or_else(|| web.pages.get(&key).cloned())
                 };
                 let page = page.unwrap_or(Page { status: 404, etag: None, body: b"not found".to_vec(), headers: Vec::new(), with_cookie: None });
                 let sent = headers.get("cookie").cloned().unwrap_or_default();
@@ -1033,4 +1037,70 @@ async fn a_site_whose_homepage_is_not_english_has_no_links_followed() {
     let record = buckets.store(host).domain(host).unwrap().unwrap();
     assert_eq!((record["state"].as_str(), record["reason"].as_str()), (Some("ineligible"), Some("not_english")));
     assert!(!web.lock().unwrap().hits.iter().any(|(_, path, _)| path == "/page/1"), "judged before any link is followed");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_homepage_read_before_a_link_run_only_decides_whether_the_run_goes() {
+    let web: Shared = Arc::default();
+    let (refuses, small) = ("refuses.test", "petit.test");
+    {
+        let mut w = web.lock().unwrap();
+        w.add(refuses, "/", 403, None, b"no");
+        let french = "Le comité examine le budget annuel pendant que les lecteurs suivent les nouvelles locales chaque jour.";
+        let links: String = (0..3).map(|i| format!("<a href=\"/page/{i}\">Page {i}</a>")).collect();
+        w.add(small, "/", 200, None, format!("<html lang=\"fr\"><p>{french} {french}</p>{links}</html>").as_bytes());
+        w.add(small, "/page/1", 200, None, format!("<html><p>{french}</p></html>").as_bytes());
+    }
+    let (buckets, _crawl) = crawl_prepared(web.clone(), &[refuses, small], "gate", |buckets| buckets.allow(&Allowed::of([refuses, small]))).await;
+    let record = |host: &str| buckets.store(host).domain(host).unwrap().unwrap();
+    let verdict = |host: &str| (record(host)["state"].as_str().map(str::to_string), record(host)["reason"].as_str().map(str::to_string));
+    assert_eq!(verdict(refuses), (Some("no_sitemap".into()), Some("no_sitemap".into())), "as without link runs: a refusing homepage is no verdict on a site without sitemaps");
+    assert_eq!(verdict(small), (Some("no_sitemap".into()), Some("sitemap_too_small".into())));
+    for host in [refuses, small] {
+        assert!(record(host).get("lang").is_none() && record(host).get("home_status").is_none(), "{host} keeps no homepage verdict");
+    }
+    assert!(!web.lock().unwrap().hits.iter().any(|(_, path, _)| path == "/page/1"), "no run past a homepage that isn't English");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_link_run_that_gets_no_answer_leaves_an_active_site_active() {
+    let web: Shared = Arc::default();
+    let host = "quiet.test";
+    let now = chrono::Utc::now().timestamp();
+    let (buckets, _crawl) = crawl_prepared(web.clone(), &[host], "quiet", |buckets| {
+        buckets.allow(&Allowed::of([host]));
+        let mut record = records::new_domain(Some(1), Some("new_generic"), &[], State::Active, None, Some(0));
+        for (name, at) in [("robots", now), ("checked", now), ("ok", now - 86_400)] {
+            record.insert(name.into(), at.into());
+        }
+        record.insert("lang".into(), "en".into());
+        let mut changes = Changes::default();
+        changes.domain(host, &record);
+        let list = format!("http://{host}/list.xml");
+        let home = format!("http://www.{host}/");
+        for (url, kind, urls) in [(list, "urlset", 12), (home, "homepage", 5)] {
+            changes.sitemap(host, &url, serde_json::json!({"id": sitemap_id(&url), "kind": kind, "depth": 0, "status": "ok", "urls": urls, "next": now + 86_400}).as_object().unwrap());
+        }
+        buckets.store(host).write(changes).unwrap();
+    })
+    .await;
+    let record = buckets.store(host).domain(host).unwrap().unwrap();
+    assert_eq!(record["state"].as_str(), Some("active"), "a run whose fetches all fail says nothing about the site: {record:?}");
+    assert_eq!(record["ok"].as_i64(), Some(now - 86_400), "nor that it answered");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_rate_limit_a_link_run_draws_is_no_verdict_on_the_site() {
+    let web: Shared = Arc::default();
+    let host = "limits.test";
+    {
+        let mut w = web.lock().unwrap();
+        let links: String = (0..12).map(|i| format!("<a href=\"/page/{i}\">Page {i}</a>")).collect();
+        w.add(host, "/", 200, None, format!("<html lang=\"en\"><p>{ENGLISH}</p>{links}</html>").as_bytes());
+        let limited = Page { status: 429, etag: None, body: b"slow down".to_vec(), headers: Vec::new(), with_cookie: None };
+        w.later.insert((host.into(), "/".into()), (2, limited));
+    }
+    let (buckets, _crawl) = crawl_prepared(web.clone(), &[host], "limits", |buckets| buckets.allow(&Allowed::of([host]))).await;
+    let record = buckets.store(host).domain(host).unwrap().unwrap();
+    assert_eq!((record["state"].as_str(), record["lang"].as_str()), (Some("active"), Some("en")), "judged on the homepage as it answered before the run: {record:?}");
 }

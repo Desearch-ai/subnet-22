@@ -207,6 +207,8 @@ pub struct Visit {
     pub on_list: Option<bool>,
     /// When a link run due on this visit, which found every slot taken, is tried again.
     pub links_wait: Option<i64>,
+    /// Requests made for link work, which never count as the site answering.
+    pub aside: i64,
 }
 
 impl Visit {
@@ -236,6 +238,7 @@ impl Visit {
             www_only: None,
             on_list: None,
             links_wait: None,
+            aside: 0,
         }
     }
 }
@@ -371,6 +374,8 @@ impl Visitor {
             www_only,
             listed,
             following: false,
+            home_known: false,
+            homepage: None,
         };
         run.go().await?;
         Ok(run.result)
@@ -408,6 +413,10 @@ struct Run<'a> {
     listed: bool,
     /// Set while a link run fetches: its redirects stay on the site, within its robots rules.
     following: bool,
+    /// The homepage's address came from robots.txt read on this visit or a homepage read before, not from a guess at its scheme.
+    home_known: bool,
+    /// The homepage as read before a link run, which the verdict is then judged on, as the run may draw a rate limit.
+    homepage: Option<Answer>,
 }
 
 impl Run<'_> {
@@ -421,19 +430,11 @@ impl Run<'_> {
             self.roots(&[])?
         };
         self.walk(roots).await?;
-        let mut judged = false;
         if let Some(every) = self.links_due() {
-            // A run may draw a rate limit, which the homepage read for its language would then meet.
-            if self.needs_language() {
-                self.language().await?;
-                judged = true;
-            }
-            if self.result.outcome == Outcome::Sitemap {
-                self.follow_links(every).await?;
-            }
+            self.links(every).await?;
         }
         self.settle();
-        if self.result.outcome == Outcome::Sitemap && self.needs_language() && !judged {
+        if self.result.outcome == Outcome::Sitemap && self.needs_language() {
             self.language().await?;
         }
         Ok(())
@@ -456,6 +457,7 @@ impl Run<'_> {
             .filter(|s| s.depth == 0 && s.kind.as_deref() != Some(LINKS_KIND))
             .partition(|s| self.is_homepage(&s.url, Some(s)));
         let known: Vec<String> = known.into_iter().map(|s| s.url.clone()).collect();
+        self.home_known = self.result.robots_read || !homes.is_empty();
         if let Some(home) = homes.first().map(|s| s.url.clone()) {
             // A visit that skips robots.txt guesses where the homepage was last read.
             if !self.result.robots_read && self.own_host(&home) {
@@ -466,7 +468,7 @@ impl Run<'_> {
         let mut seen = HashSet::new();
         let mut roots: Vec<String> = joined.into_iter().chain(known).filter(|url| seen.insert(url.clone())).collect();
         // A landing site's homepage, and a thin one's, is no guess: it is read even when a sitemap answers.
-        let reads_home = self.visitor.buckets.terms(&self.known.host).depth.is_some() || self.thin();
+        let reads_home = self.visitor.buckets.terms(&self.known.host).depth.is_some() || (self.thin() && self.home_known);
         // Stored sitemaps that no longer answer hide nothing: the site is guessed at as on a first visit.
         if !self.known.sitemaps.values().any(|s| s.ok && is_sitemap(s.kind.as_deref())) {
             for path in guess_paths(self.listed) {
@@ -788,11 +790,38 @@ impl Run<'_> {
 
     /// When this visit follows the site's links, how often runs come: once its last run is due, unless the disk runs low or the site is failing.
     fn links_due(&self) -> Option<i64> {
-        if self.result.outcome != Outcome::Sitemap || self.result.cut_short || self.visitor.pause.load(Ordering::Relaxed) {
+        if self.result.outcome != Outcome::Sitemap || self.result.cut_short || !self.home_known || self.visitor.pause.load(Ordering::Relaxed) {
             return None;
         }
         let every = self.links_every()?;
         self.known.sitemaps.get(&links_url(&self.known.host)).is_none_or(|s| due(s, self.now)).then_some(every)
+    }
+
+    /// The visit's link work, which never decides its verdict: whether the site answered is judged without it.
+    async fn links(&mut self, every: i64) -> Result<(), Crash> {
+        let (requests, answered) = (self.result.requests, self.answered);
+        let done = self.follow_links(every).await;
+        self.result.aside += self.result.requests - requests;
+        self.answered = answered;
+        done
+    }
+
+    /// Whether the homepage answers as readable English, which a site not yet judged must before a run; the verdict itself comes later, as without one.
+    async fn homepage_passes(&mut self) -> Result<bool, Crash> {
+        let home = self.home.clone();
+        let Ok(answer) = self.get(&home, MAX_HOMEPAGE_BYTES, None, None).await else {
+            return Ok(false);
+        };
+        if !self.own_host(&answer.url) {
+            return Ok(false);
+        }
+        let passes = answer.status == 200 && {
+            let (body, detect) = (answer.body.clone(), self.visitor.language.clone());
+            let cut = body.len() >= MAX_HOMEPAGE_BYTES;
+            self.visitor.cpu(move || homepage::read_cut(&body, &*detect, cut)).await?.problem.is_none()
+        };
+        self.homepage = Some(answer);
+        Ok(passes)
     }
 
     /// Follow the site's own links from its homepage a few levels down, within a budget, and keep the pages found as one listing.
@@ -804,6 +833,10 @@ impl Run<'_> {
             self.result.links_wait = Some(self.now + rand::thread_rng().gen_range(LINKS_RETRY..=every));
             return Ok(());
         };
+        // A run may draw a rate limit or a refusal, which the language read after it would meet.
+        if self.needs_language() && !self.homepage_passes().await? {
+            return Ok(());
+        }
         let Ok(normaliser) = Normaliser::new(self.bare_host()) else {
             return Ok(());
         };
@@ -1016,7 +1049,7 @@ impl Run<'_> {
         let updates = &self.result.sitemaps;
         if self.known.state == State::Active {
             let mut roots = updates.iter().filter(|u| u.depth == 0).peekable();
-            if self.result.requests > 0 && !self.answered {
+            if self.result.requests - self.result.aside > 0 && !self.answered {
                 self.stop(Outcome::Unreachable, self.network_error.clone());
             } else if roots.peek().is_some() && !self.found && roots.all(|u| u.status == "gone") {
                 self.stop(Outcome::NoSitemap, Some("sitemap_gone".into()));
@@ -1048,8 +1081,12 @@ impl Run<'_> {
     }
 
     async fn language(&mut self) -> Result<(), Crash> {
-        let Some(answer) = self.first_answer("/", MAX_HOMEPAGE_BYTES).await else {
-            return Ok(());
+        let answer = match self.homepage.take() {
+            Some(answer) => answer,
+            None => match self.first_answer("/", MAX_HOMEPAGE_BYTES).await {
+                Some(answer) => answer,
+                None => return Ok(()),
+            },
         };
         if self.moved_away(&answer) {
             return Ok(());
