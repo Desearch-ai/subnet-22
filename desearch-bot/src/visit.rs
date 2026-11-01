@@ -754,12 +754,22 @@ impl Run<'_> {
             }
             return;
         }
-        if !self.found {
+        // Sitemaps that answered when last read and are not due again still list what they listed: a recheck between two reads finds them as they were.
+        let read: HashSet<&str> = updates.iter().map(|u| u.url.as_str()).collect();
+        let standing: Vec<&KnownSitemap> = self
+            .known
+            .sitemaps
+            .values()
+            .filter(|s| s.ok && s.url_count > 0 && s.kind.as_deref().is_some_and(|kind| kind != "invalid") && !read.contains(s.url.as_str()) && !due(s, self.now))
+            .collect();
+        let index = updates.iter().any(|u| u.kind.as_deref() == Some("index")) || standing.iter().any(|s| s.kind.as_deref() == Some("index"));
+        let listed = self.result.listed + self.kept + standing.iter().map(|s| s.url_count).sum::<i64>();
+        if !self.found && standing.is_empty() {
             // A recheck of a site that answered before, whose sitemaps answered with a rate limit, a server error or not at all, is tried again before it counts as having none.
             let retry = self.transient.clone().filter(|_| self.known.state == State::New && self.known.last_ok_at.is_some());
             self.result.passing |= retry.is_some();
             self.stop(Outcome::NoSitemap, Some(retry.unwrap_or_else(|| "no_sitemap".into())));
-        } else if self.result.listed + self.kept < MIN_URLS && !updates.iter().any(|u| u.kind.as_deref() == Some("index")) {
+        } else if listed < MIN_URLS && !index {
             self.stop(Outcome::NoSitemap, Some("sitemap_too_small".into()));
         }
     }

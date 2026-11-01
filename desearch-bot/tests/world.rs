@@ -807,3 +807,27 @@ async fn a_stored_sitemap_that_is_gone_leaves_the_site_guessed_at() {
     let record = buckets.store(host).domain(host).unwrap().unwrap();
     assert_eq!((record["state"].as_str(), record["urls"].as_i64()), (Some("active"), Some(12)), "the dead record is read, then the guesses");
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_recheck_between_two_reads_of_a_working_sitemap_keeps_the_site_active() {
+    let web: Shared = Arc::default();
+    let host = "between.test";
+    let list = format!("http://{host}/list.xml");
+    {
+        let mut w = web.lock().unwrap();
+        w.add(host, "/robots.txt", 200, None, format!("User-agent: *\nSitemap: {list}\n").as_bytes());
+        w.add(host, "/list.xml", 200, None, urlset(host, &(0..12).map(|i| format!("/story/{i}")).collect::<Vec<_>>()).as_bytes());
+        w.add(host, "/", 200, None, format!("<html lang=\"en\"><p>{ENGLISH}</p></html>").as_bytes());
+    }
+    let later = chrono::Utc::now().timestamp() + 86_400;
+    let (buckets, _crawl) = crawl_prepared(web.clone(), &[host], "standing", |buckets| {
+        let mut changes = Changes::default();
+        let record = serde_json::json!({"id": sitemap_id(&list), "kind": "urlset", "depth": 0, "status": "ok", "urls": 12, "next": later});
+        changes.sitemap(host, &list, record.as_object().unwrap());
+        buckets.store(host).write(changes).unwrap();
+    })
+    .await;
+    let record = buckets.store(host).domain(host).unwrap().unwrap();
+    assert_eq!((record["state"].as_str(), record["urls"].as_i64()), (Some("active"), Some(12)), "the sitemap is not due, and still lists its 12 pages");
+    assert!(!web.lock().unwrap().hits.iter().any(|(_, path, _)| path == "/list.xml"), "a sitemap not due is not read");
+}
