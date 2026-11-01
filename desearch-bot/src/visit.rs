@@ -338,16 +338,22 @@ impl Slots {
         Some(PeerClaim { ip, peers: self.peers.clone() })
     }
 
-    /// Waits until a link fetch to the address may go, and books it.
-    async fn turn(&self, ip: IpAddr) {
+    /// Waits until a link fetch may go to any of a run's addresses, the one it will use not being known before, and books it on all of them.
+    async fn turn(&self, ips: &[IpAddr]) {
         let wait = {
             let mut peers = self.peers.lock().unwrap_or_else(|e| e.into_inner());
-            let peer = peers.entry(ip);
-            let at = peer.last.map_or_else(Instant::now, |last| (last + PEER_GAP).max(Instant::now()));
-            peer.last = Some(at);
+            let at = ips.iter().filter_map(|ip| peers.entry(*ip).last).map(|last| last + PEER_GAP).fold(Instant::now(), Instant::max);
+            for ip in ips {
+                peers.entry(*ip).last = Some(at);
+            }
             at
         };
         tokio::time::sleep_until(wait).await;
+    }
+
+    /// Books a fetch that went to an address a run had not used yet.
+    fn book(&self, ip: IpAddr) {
+        self.peers.lock().unwrap_or_else(|e| e.into_inner()).entry(ip).last = Some(Instant::now());
     }
 
     /// Notes how a link fetch to the address went; enough failed connections in a row stop runs there for a while.
@@ -952,7 +958,7 @@ impl Run<'_> {
         let mut claims = vec![claim];
         // A site not judged on its homepage yet, as one without sitemaps is not, must read as English first.
         if self.needs_language() && self.result.language.is_none() {
-            slots.turn(ip).await;
+            slots.turn(&[ip]).await;
             if !self.homepage_passes().await? {
                 return Ok(());
             }
@@ -978,7 +984,7 @@ impl Run<'_> {
             if found.len() >= LINKS_MOST || spent >= LINKS_FETCHES || failing >= MAX_FAILURES_IN_ROW || started.elapsed() >= LINKS_TIME || self.visitor.pause.load(Ordering::Relaxed) {
                 break;
             }
-            slots.turn(ip).await;
+            slots.turn(&claims.iter().map(|claim| claim.ip).collect::<Vec<_>>()).await;
             let answer = match self.get(&page, MAX_HOMEPAGE_BYTES, None, None).await {
                 Ok(answer) => answer,
                 Err(error) => {
@@ -996,7 +1002,10 @@ impl Run<'_> {
             // A site answering from another address too takes that one as well, or stops.
             if !claims.iter().any(|claim| claim.ip == peer) {
                 match slots.claim(peer) {
-                    Some(claim) => claims.push(claim),
+                    Some(claim) => {
+                        slots.book(peer);
+                        claims.push(claim);
+                    }
                     None => break,
                 }
             }
@@ -1711,9 +1720,14 @@ mod tests {
         drop(claim);
         assert!(slots.claim(ip).is_some(), "free again once the run ends");
         let started = Instant::now();
-        slots.turn(ip).await;
-        slots.turn(ip).await;
+        slots.turn(&[ip]).await;
+        slots.turn(&[ip]).await;
         assert!(started.elapsed() >= PEER_GAP, "fetches to one address a second apart");
+        let (first, second): (IpAddr, IpAddr) = ("192.0.2.11".parse().unwrap(), "192.0.2.12".parse().unwrap());
+        slots.turn(&[first, second]).await;
+        let started = Instant::now();
+        slots.turn(&[second]).await;
+        assert!(started.elapsed() >= PEER_GAP - Duration::from_millis(10), "a fetch books every address its run uses");
         for _ in 0..PEER_FAILURES {
             slots.connected(ip, false);
         }
