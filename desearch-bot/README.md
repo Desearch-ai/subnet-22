@@ -43,7 +43,7 @@ MALLOC_ARENA_MAX=2 desearch-bot run --buckets-dir /var/lib/desearch-bot/buckets 
 | `--backlog-share` | 20 | percent kept for sitemaps found but not read yet; re-checks of known sites get the rest |
 | `--heavy-slots` | 16 | visits at once to domains with more than 2,000 sitemap records |
 | `--follow-links` | `thin` | which listed sites have their links followed: `off`, `thin` (sitemaps listing under 1,000 pages, or none) or `all` (those, and every whole or news site) |
-| `--links-slots` | 32 | link runs at once; 0, like `--follow-links off`, turns off link runs and the homepage reads of thin sites |
+| `--links-slots` | 32 | link runs at once; 0, like `--follow-links off`, turns them off |
 | `--task-api` | none | the task API to fill, such as `https://api-22.desearch.ai` |
 | `--outcomes-url` | none | where the task API publishes what became of each URL, such as `https://subnet-22.s3.us-east-va.io.cloud.ovh.us` |
 | `--urls-per-hour` | 0 | URLs sent in an hour at most, at a steady pace; 0 sends what the task API has room for |
@@ -111,8 +111,8 @@ visits. A site with a `depth` has its homepage read this way beside whatever sit
 found without sitemaps on a visit made while the list did not name it is visited again within a day
 of the list naming it, since only a listed site's feed and homepage are tried.
 
-A listed site, landing sites aside, whose sitemaps list under 1,000 pages or none, has its homepage
-read as a list beside its sitemaps, and its links followed from the homepage: three levels down, at most
+A listed site, landing sites aside, whose sitemaps list under 1,000 pages or none, has its links
+followed from the homepage: three levels down, at most
 150 fetches and 10 minutes a run, on its own host and its `www.` host only, HTML pages only, no
 queries, files, feeds or forms, within its robots.txt rules and crawl delay, not past a page marked
 `nofollow`, and no redirect off the site or onto a disallowed path. A refusal, a rate limit or a 503

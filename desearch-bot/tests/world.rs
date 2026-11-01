@@ -1159,22 +1159,6 @@ async fn a_site_listed_with_www_has_its_robots_rules_applied_and_a_link_run_stay
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn no_link_slots_turn_off_the_homepage_reads_of_thin_sites_too() {
-    let web: Shared = Arc::default();
-    let host = "slotless.test";
-    {
-        let mut w = web.lock().unwrap();
-        w.add(host, "/robots.txt", 200, None, format!("User-agent: *\nSitemap: http://{host}/list.xml\n").as_bytes());
-        w.add(host, "/list.xml", 200, None, urlset(host, &(0..12).map(|i| format!("/story/{i}")).collect::<Vec<_>>()).as_bytes());
-        let links: String = (0..12).map(|i| format!("<a href=\"/page/{i}\">Page {i}</a>")).collect();
-        w.add(host, "/", 200, None, format!("<html lang=\"en\"><p>{ENGLISH}</p>{links}</html>").as_bytes());
-    }
-    let (buckets, _crawl) = crawl_following(web.clone(), &[host], "slotless", FollowLinks::Thin, Slots::new(0), |buckets| buckets.allow(&Allowed::of([host]))).await;
-    assert!(buckets.store(host).sitemap(host, &format!("http://{host}/")).unwrap().is_none(), "the homepage is read for its language only, not as a list");
-    assert!(buckets.store(host).url(&urls::parse(&format!("http://{host}/page/3"), host).unwrap()).unwrap().is_none());
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_link_run_keeps_no_files_or_forms_and_stops_at_a_busy_server() {
     let web: Shared = Arc::default();
     let host = "busy.links.test";
@@ -1291,4 +1275,64 @@ async fn a_sitemap_that_refuses_us_is_no_reason_to_guess() {
     .await;
     let hits: Vec<String> = web.lock().unwrap().hits.iter().map(|(_, path, _)| path.clone()).collect();
     assert_eq!(hits, ["/list.xml"], "a refusal is an answer: the sitemap is asked again, and nothing is guessed");
+}
+
+/// A site's state and reason after one visit in a mode, with every link slot taken when `busy`.
+async fn verdict(web: Shared, host: &'static str, name: &str, mode: FollowLinks, busy: bool, prepare: impl FnOnce(&Arc<Buckets>)) -> (Option<String>, Option<String>, bool) {
+    let links = Slots::new(1);
+    let _held = busy.then(|| links.try_take().unwrap());
+    let (buckets, _crawl) = crawl_following(web, &[host], name, mode, links, prepare).await;
+    let record = buckets.store(host).domain(host).unwrap().unwrap();
+    let home = buckets.store(host).sitemap(host, &format!("http://{host}/")).unwrap().is_some();
+    (record["state"].as_str().map(str::to_string), record["reason"].as_str().map(str::to_string), home)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn following_links_changes_no_verdict_even_when_no_run_happens() {
+    let small = |web: &Shared, host: &str| {
+        let mut w = web.lock().unwrap();
+        w.add(host, "/robots.txt", 200, None, format!("User-agent: *\nSitemap: http://{host}/list.xml\n").as_bytes());
+        w.add(host, "/list.xml", 200, None, urlset(host, &(0..5).map(|i| format!("/story/{i}")).collect::<Vec<_>>()).as_bytes());
+        let links: String = (0..12).map(|i| format!("<a href=\"/page/{i}\">Page {i}</a>")).collect();
+        w.add(host, "/", 200, None, format!("<html lang=\"en\"><p>{ENGLISH}</p>{links}</html>").as_bytes());
+    };
+    let gone = |web: &Shared, host: &str| {
+        let mut w = web.lock().unwrap();
+        w.add(host, "/robots.txt", 200, None, b"User-agent: *\nAllow: /\n");
+        w.add(host, "/list.xml", 404, None, b"gone");
+        w.add(host, "/", 403, None, b"denied");
+    };
+    let active = |host: &'static str| {
+        move |buckets: &Arc<Buckets>| {
+            buckets.allow(&Allowed::of([host]));
+            let now = chrono::Utc::now().timestamp();
+            let mut record = records::new_domain(Some(1), Some("new_generic"), &[], State::Active, None, Some(0));
+            for (name, at) in [("robots", now - 10 * 86_400), ("checked", now - 86_400), ("ok", now - 86_400)] {
+                record.insert(name.into(), at.into());
+            }
+            record.insert("lang".into(), "en".into());
+            let mut changes = Changes::default();
+            changes.domain(host, &record);
+            let list = format!("http://{host}/list.xml");
+            changes.sitemap(host, &list, serde_json::json!({"id": sitemap_id(&list), "kind": "urlset", "depth": 0, "status": "ok", "urls": 12, "next": 0}).as_object().unwrap());
+            buckets.store(host).write(changes).unwrap();
+        }
+    };
+    for (off, thin, site) in [("small-off.test", "small-thin.test", 0), ("gone-off.test", "gone-thin.test", 1)] {
+        let (off_web, thin_web): (Shared, Shared) = (Arc::default(), Arc::default());
+        if site == 0 {
+            small(&off_web, off);
+            small(&thin_web, thin);
+        } else {
+            gone(&off_web, off);
+            gone(&thin_web, thin);
+        }
+        let listed = |host: &'static str| move |buckets: &Arc<Buckets>| buckets.allow(&Allowed::of([host]));
+        let (a, b) = if site == 0 {
+            (verdict(off_web, off, off, FollowLinks::Off, false, listed(off)).await, verdict(thin_web, thin, thin, FollowLinks::Thin, true, listed(thin)).await)
+        } else {
+            (verdict(off_web, off, off, FollowLinks::Off, false, active(off)).await, verdict(thin_web, thin, thin, FollowLinks::Thin, true, active(thin)).await)
+        };
+        assert_eq!(a, b, "{off} and {thin}");
+    }
 }
