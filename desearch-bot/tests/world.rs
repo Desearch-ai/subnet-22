@@ -1214,3 +1214,33 @@ async fn a_homepage_listing_not_read_on_a_recheck_keeps_no_site_active() {
     let record = buckets.store(host).domain(host).unwrap().unwrap();
     assert_eq!(record["state"].as_str(), Some("no_sitemap"), "only sitemaps stand in for a read");
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn guesses_go_where_the_homepage_was_last_read() {
+    let web: Shared = Arc::default();
+    let (host, www) = ("lastread.test", "www.lastread.test");
+    {
+        let mut w = web.lock().unwrap();
+        w.add(www, "/sitemap.xml", 200, None, urlset(www, &(0..12).map(|i| format!("/story/{i}")).collect::<Vec<_>>()).as_bytes());
+        w.add(www, "/", 200, None, format!("<html lang=\"en\"><p>{ENGLISH}</p></html>").as_bytes());
+    }
+    let now = chrono::Utc::now().timestamp();
+    let (buckets, _crawl) = crawl_following(web.clone(), &[host, www], "last-read", FollowLinks::Off, Slots::new(2), |buckets| {
+        buckets.allow(&Allowed::of([host]));
+        let mut record = records::new_domain(Some(1), Some("new_generic"), &[], State::Active, None, Some(0));
+        for (name, at) in [("robots", now), ("checked", now), ("ok", now)] {
+            record.insert(name.into(), at.into());
+        }
+        record.insert("lang".into(), "en".into());
+        let mut changes = Changes::default();
+        changes.domain(host, &record);
+        for (home, fetched) in [(format!("http://{host}/"), now - 10 * 86_400), (format!("http://{www}/"), now - 86_400)] {
+            changes.sitemap(host, &home, serde_json::json!({"id": sitemap_id(&home), "kind": "homepage", "depth": 0, "status": "ok", "urls": 3, "next": 0, "fetched": fetched}).as_object().unwrap());
+        }
+        buckets.store(host).write(changes).unwrap();
+    })
+    .await;
+    let record = buckets.store(host).domain(host).unwrap().unwrap();
+    assert_eq!(record["state"].as_str(), Some("active"), "{record:?}");
+    assert!(buckets.store(host).url(&urls::parse(&format!("http://{www}/story/3"), host).unwrap()).unwrap().is_some(), "the guess went to the www host, read last");
+}

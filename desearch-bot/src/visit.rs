@@ -132,6 +132,8 @@ pub struct KnownSitemap {
     pub generated_until: Option<i64>,
     /// A Google News sitemap when last read, so a quiet read keeps its news pace.
     pub google_news: bool,
+    /// When it was last fetched.
+    pub fetched_at: Option<i64>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -458,7 +460,8 @@ impl Run<'_> {
             .partition(|s| self.is_homepage(&s.url, Some(s)));
         let known: Vec<String> = known.into_iter().map(|s| s.url.clone()).collect();
         self.home_known = self.result.robots_read || !homes.is_empty();
-        if let Some(home) = homes.first().map(|s| s.url.clone()) {
+        // The homepage last read, of those stored under either scheme or host.
+        if let Some(home) = homes.iter().rev().max_by_key(|s| (s.ok, s.fetched_at)).map(|s| s.url.clone()) {
             // A visit that skips robots.txt guesses where the homepage was last read.
             if !self.result.robots_read && self.own_host(&home) {
                 base = urls::join(&home, HOMEPAGE).unwrap_or(base);

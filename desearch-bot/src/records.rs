@@ -126,6 +126,7 @@ fn known_sitemap(url: &str, record: &Json) -> Option<KnownSitemap> {
         sketch: record.get("sketch").and_then(Value::as_str).map(churn::decode).unwrap_or_default(),
         generated_until: moment(record.get("generated")),
         google_news: record.get("gnews").and_then(Value::as_bool).unwrap_or(false),
+        fetched_at: moment(record.get("fetched")),
     })
 }
 
