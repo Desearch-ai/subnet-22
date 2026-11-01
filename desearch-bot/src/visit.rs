@@ -942,6 +942,8 @@ impl Run<'_> {
         let mut found = vec![home.clone()];
         let mut queue: VecDeque<(String, u8)> = VecDeque::from([(home, 0)]);
         let (requests, mut read, mut failing, mut refused) = (self.result.requests, 0, 0, None);
+        // Pages fetched that did not answer as pages: never queued.
+        let mut unread: HashSet<String> = HashSet::new();
         self.following = true;
         while let Some((page, depth)) = queue.pop_front() {
             // Every request counts against the budget, each redirect hop too.
@@ -954,10 +956,14 @@ impl Run<'_> {
                 Ok(answer) => answer,
                 Err(error) => {
                     slots.connected(ip, !refused_connection(&error));
+                    unread.insert(page);
                     failing += 1;
                     continue;
                 }
             };
+            if answer.status != 200 {
+                unread.insert(page.clone());
+            }
             let peer = answer.peer.unwrap_or(ip);
             slots.connected(peer, true);
             // A site answering from another address too takes that one as well, or stops.
@@ -986,6 +992,15 @@ impl Run<'_> {
             if !self.on_site(&answer.url) || !is_html(&answer) {
                 continue;
             }
+            // A page that moved is kept where it moved to, which robots.txt allows as the redirect was followed.
+            if answer.url != page {
+                unread.insert(page.clone());
+                if let Some(key) = self.followable(&normaliser, &answer.url).filter(|_| is_page(&answer.url)) {
+                    if seen.insert(key) {
+                        found.push(answer.url.clone());
+                    }
+                }
+            }
             read += 1;
             if nofollow(&answer.headers, &answer.body) {
                 continue;
@@ -1009,6 +1024,7 @@ impl Run<'_> {
             }
         }
         self.following = false;
+        found.retain(|url| !unread.contains(url));
         self.links_listing(found, read, refused, every).await
     }
 

@@ -911,9 +911,10 @@ async fn a_listed_site_without_sitemaps_has_its_links_followed_a_few_levels_down
     deep_site(&web, host);
     let (buckets, _crawl) = crawl_prepared(web.clone(), &[host], "links", |buckets| buckets.allow(&Allowed::of([host]))).await;
     let stored = |path: &str| buckets.store(host).url(&urls::parse(&format!("http://{host}{path}"), host).unwrap()).unwrap().is_some();
-    for path in ["/", "/a", "/b", "/a/1", "/a/2", "/a/3", "/b/1", "/a/1/deep"] {
+    for path in ["/", "/a", "/b", "/a/1", "/a/1/deep"] {
         assert!(stored(path), "{path}");
     }
+    assert!(!stored("/a/2") && !stored("/b/1"), "pages that answered 404 are never queued");
     assert!(!stored("/private/x") && !stored("/search?q=1"), "robots.txt and queries are respected");
     let hits = web.lock().unwrap().hits.clone();
     for path in ["/private/x", "/a/1/deep", "/report.pdf", "/search?q=1"] {
@@ -1376,4 +1377,26 @@ async fn a_link_run_changes_no_verdict() {
     let off = verdict(off_web, "gone-run-off.test", "gone-run-off", FollowLinks::Off, false, active("gone-run-off.test")).await;
     let thin = verdict(thin_web, "gone-run-thin.test", "gone-run-thin", FollowLinks::Thin, false, active("gone-run-thin.test")).await;
     assert_eq!((off.clone(), off.1.as_deref()), (thin, Some("sitemap_gone")), "a failed run's record never stands in for the gone sitemap");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_link_run_queues_no_page_that_failed_or_moved_where_robots_txt_disallows() {
+    let web: Shared = Arc::default();
+    let host = "keepgo.test";
+    {
+        let mut w = web.lock().unwrap();
+        w.add(host, "/robots.txt", 200, None, b"User-agent: *\nDisallow: /private/\n");
+        let links: String = ["/go", "/gone", "/moved", "/b"].iter().map(|href| format!("<a href=\"{href}\">{href}</a>")).collect();
+        w.add(host, "/", 200, None, format!("<html lang=\"en\"><p>{ENGLISH}</p>{links}</html>").as_bytes());
+        w.redirect(host, "/go", &format!("http://{host}/private/x"), None);
+        w.add(host, "/gone", 404, None, b"no");
+        w.redirect(host, "/moved", &format!("http://{host}/new-home"), None);
+        w.add(host, "/new-home", 200, None, format!("<html lang=\"en\"><p>{ENGLISH}</p></html>").as_bytes());
+        w.add(host, "/b", 200, None, format!("<html lang=\"en\"><p>{ENGLISH}</p></html>").as_bytes());
+    }
+    let (buckets, _crawl) = crawl_following(web.clone(), &[host], "keepgo", FollowLinks::Thin, Slots::new(2), |buckets| buckets.allow(&Allowed::of([host]))).await;
+    let links = buckets.store(host).sitemap(host, &format!("https://{host}/#links")).unwrap().unwrap();
+    assert_eq!(links["urls"].as_i64(), Some(3), "the homepage, /b and /new-home: {links:?}");
+    let stored = |path: &str| buckets.store(host).url(&urls::parse(&format!("http://{host}{path}"), host).unwrap()).unwrap().is_some();
+    assert!(stored("/new-home") && !stored("/private/x"));
 }
