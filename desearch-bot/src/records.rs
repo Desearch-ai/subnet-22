@@ -122,6 +122,11 @@ fn known_sitemap(url: &str, record: &Json) -> Option<KnownSitemap> {
         index_lastmod: text(record.get("index_lastmod")),
         url_count: int(record.get("urls")).unwrap_or(0),
         ok: record.get("status").and_then(Value::as_str) == Some("ok"),
+        dead: match record.get("status").and_then(Value::as_str) {
+            Some("gone") => true,
+            Some("error") => text(record.get("error")).is_none_or(|error| !error.starts_with("http_") && error != "invalid"),
+            _ => false,
+        },
         suspect_at: moment(record.get("suspect")),
         sketch: record.get("sketch").and_then(Value::as_str).map(churn::decode).unwrap_or_default(),
         generated_until: moment(record.get("generated")),

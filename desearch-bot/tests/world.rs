@@ -1261,3 +1261,34 @@ async fn sites_on_one_address_take_their_link_runs_one_at_a_time() {
         assert!((2 * 3_600 - 5..=7 * 86_400).contains(&wait), "{host} waits as for a busy slot: {wait} s");
     }
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_sitemap_that_refuses_us_is_no_reason_to_guess() {
+    let web: Shared = Arc::default();
+    let host = "refuses-sitemap.test";
+    {
+        let mut w = web.lock().unwrap();
+        for path in ["/robots.txt", "/list.xml", "/sitemap.xml", "/sitemap_index.xml", "/feed", "/rss.xml", "/"] {
+            w.add(host, path, 403, None, b"denied");
+        }
+    }
+    let now = chrono::Utc::now().timestamp();
+    let (_buckets, _crawl) = crawl_following(web.clone(), &[host], "refused-sitemap", FollowLinks::Off, Slots::new(2), |buckets| {
+        buckets.allow(&Allowed::of([host]));
+        let mut record = records::new_domain(Some(1), Some("new_generic"), &[], State::Active, None, Some(0));
+        for (name, at) in [("robots", now), ("checked", now), ("ok", now)] {
+            record.insert(name.into(), at.into());
+        }
+        record.insert("lang".into(), "en".into());
+        let mut changes = Changes::default();
+        changes.domain(host, &record);
+        let list = format!("http://{host}/list.xml");
+        changes.sitemap(host, &list, serde_json::json!({"id": sitemap_id(&list), "kind": "urlset", "depth": 0, "status": "error", "error": "http_403", "urls": 500, "next": 0}).as_object().unwrap());
+        let home = format!("http://{host}/");
+        changes.sitemap(host, &home, serde_json::json!({"id": sitemap_id(&home), "kind": "homepage", "depth": 0, "status": "ok", "urls": 3, "next": now + 86_400, "fetched": now - 3_600}).as_object().unwrap());
+        buckets.store(host).write(changes).unwrap();
+    })
+    .await;
+    let hits: Vec<String> = web.lock().unwrap().hits.iter().map(|(_, path, _)| path.clone()).collect();
+    assert_eq!(hits, ["/list.xml"], "a refusal is an answer: the sitemap is asked again, and nothing is guessed");
+}
