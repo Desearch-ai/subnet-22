@@ -118,7 +118,10 @@ queries, files, feeds or forms, within its robots.txt rules and crawl delay, not
 `nofollow`, and no redirect off the site or onto a disallowed path. A refusal, a rate limit or a 503
 ends the run. The pages found are kept as one listing. Runs come weekly while they find new pages, then half
 as often down to every 60 days; with `--follow-links all`, every whole or news site the list weights
-3 or more gets a run monthly. A run that finds every slot taken waits a random time up to its interval.
+3 or more gets a run monthly. A run that finds every slot taken, or another run on the address its
+site answers from, waits a random time up to its interval. Runs on one address, whichever sites
+share it, keep their fetches a second apart, and three failed connections to it in a row stop runs
+there for a day.
 
 A listed subdomain with a registry record of its own is crawled on its own host, under its own
 robots.txt. Its pages go under it while that record is active, failing or without sitemaps, and not

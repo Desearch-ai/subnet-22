@@ -1149,7 +1149,8 @@ async fn a_site_listed_with_www_has_its_robots_rules_applied_and_a_link_run_stay
         w.redirect(ported, "/go", &format!("http://{ported}:{port}/elsewhere"), None);
         w.add(ported, "/elsewhere", 200, None, format!("<html><p>{ENGLISH}</p></html>").as_bytes());
     }
-    let (buckets, _crawl) = crawl_prepared(web.clone(), &[host, ported], "www-robots", |buckets| buckets.allow(&Allowed::of([host, ported]))).await;
+    let (buckets, _crawl) = crawl_prepared(web.clone(), &[host], "www-robots", |buckets| buckets.allow(&Allowed::of([host]))).await;
+    let _ported = crawl_prepared(web.clone(), &[ported], "www-ported", |buckets| buckets.allow(&Allowed::of([ported]))).await;
     let stored = |path: &str| buckets.store(host).url(&urls::parse(&format!("http://{host}{path}"), host).unwrap()).unwrap().is_some();
     assert!(stored("/a/3") && !stored("/private/b") && !stored("/private/c"), "a page robots.txt disallows is never kept");
     let hits = web.lock().unwrap().hits.clone();
@@ -1243,4 +1244,20 @@ async fn guesses_go_where_the_homepage_was_last_read() {
     let record = buckets.store(host).domain(host).unwrap().unwrap();
     assert_eq!(record["state"].as_str(), Some("active"), "{record:?}");
     assert!(buckets.store(host).url(&urls::parse(&format!("http://{www}/story/3"), host).unwrap()).unwrap().is_some(), "the guess went to the www host, read last");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn sites_on_one_address_take_their_link_runs_one_at_a_time() {
+    let web: Shared = Arc::default();
+    let hosts = ["first.shared.test", "second.shared.test", "third.shared.test"];
+    for host in hosts {
+        deep_site(&web, host);
+    }
+    let (buckets, _crawl) = crawl_prepared(web.clone(), &hosts, "shared-address", |buckets| buckets.allow(&Allowed::of(hosts))).await;
+    let ran: Vec<&str> = hosts.iter().copied().filter(|host| buckets.store(host).sitemap(host, &format!("https://{host}/#links")).unwrap().is_some()).collect();
+    assert_eq!(ran.len(), 1, "they all answer from 127.0.0.1: {ran:?}");
+    for host in hosts.iter().filter(|host| !ran.contains(host)) {
+        let wait = buckets.store(host).domain(host).unwrap().unwrap()["due"].as_i64().unwrap() - chrono::Utc::now().timestamp();
+        assert!((2 * 3_600 - 5..=7 * 86_400).contains(&wait), "{host} waits as for a busy slot: {wait} s");
+    }
 }

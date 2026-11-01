@@ -2,8 +2,9 @@
 
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::net::IpAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, LazyLock};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
 
 use flate2::{Decompress, FlushDecompress, Status};
@@ -70,6 +71,11 @@ const LINKS_ALL_WEIGHT: u8 = 3;
 const LINKS_RETRY: i64 = 2 * HOUR;
 /// How much of a page's start is searched for a robots meta tag.
 const HEAD_BYTES: usize = 65_536;
+/// Link-run fetches to one address, across runs and sites, are this far apart at least.
+const PEER_GAP: Duration = Duration::from_secs(1);
+/// Failed connections in a row to one address, across runs, that stop link runs there, and for how long.
+const PEER_FAILURES: u8 = 3;
+const PEER_REST: Duration = Duration::from_secs(24 * 3600);
 const MAX_PATH_SEGMENTS: usize = 12;
 /// Files, feeds and forms: never fetched to follow their links.
 static NOT_PAGES: LazyLock<Regex> = LazyLock::new(|| {
@@ -252,18 +258,82 @@ pub struct Answer {
     pub url: String,
     /// Held until the body is parsed, when it was fetched under the sitemap budget.
     pub permit: Option<OwnedSemaphorePermit>,
+    /// The address the answer came from.
+    pub peer: Option<IpAddr>,
 }
 
-/// A fixed number of permits, and how many are taken.
+/// A fixed number of permits, and how many are taken; for link runs, also which addresses they go to.
 #[derive(Clone)]
 pub struct Slots {
     permits: Arc<Semaphore>,
     size: usize,
+    peers: Arc<Mutex<HashMap<IpAddr, Peer>>>,
+}
+
+/// Link runs at one address: whether one runs there, when its last fetch went, connections that failed in a row, and until when runs there stop.
+#[derive(Default)]
+struct Peer {
+    running: bool,
+    last: Option<Instant>,
+    failures: u8,
+    stopped_until: Option<Instant>,
+}
+
+/// The one link run an address takes at a time, given back when the run ends.
+struct PeerClaim {
+    ip: IpAddr,
+    peers: Arc<Mutex<HashMap<IpAddr, Peer>>>,
+}
+
+impl Drop for PeerClaim {
+    fn drop(&mut self) {
+        if let Some(peer) = self.peers.lock().unwrap_or_else(|e| e.into_inner()).get_mut(&self.ip) {
+            peer.running = false;
+        }
+    }
 }
 
 impl Slots {
     pub fn new(size: usize) -> Self {
-        Slots { permits: Arc::new(Semaphore::new(size)), size }
+        Slots { permits: Arc::new(Semaphore::new(size)), size, peers: Arc::default() }
+    }
+
+    /// The address for a link run, unless one runs there already or runs there are stopped.
+    fn claim(&self, ip: IpAddr) -> Option<PeerClaim> {
+        let mut peers = self.peers.lock().unwrap_or_else(|e| e.into_inner());
+        let peer = peers.entry(ip).or_default();
+        if peer.running || peer.stopped_until.is_some_and(|until| until > Instant::now()) {
+            return None;
+        }
+        peer.running = true;
+        Some(PeerClaim { ip, peers: self.peers.clone() })
+    }
+
+    /// Waits until a link fetch to the address may go, and books it.
+    async fn turn(&self, ip: IpAddr) {
+        let wait = {
+            let mut peers = self.peers.lock().unwrap_or_else(|e| e.into_inner());
+            let peer = peers.entry(ip).or_default();
+            let at = peer.last.map_or_else(Instant::now, |last| (last + PEER_GAP).max(Instant::now()));
+            peer.last = Some(at);
+            at
+        };
+        tokio::time::sleep_until(wait).await;
+    }
+
+    /// Notes how a link fetch to the address went; enough failed connections in a row stop runs there for a while.
+    fn connected(&self, ip: IpAddr, connected: bool) {
+        let mut peers = self.peers.lock().unwrap_or_else(|e| e.into_inner());
+        let peer = peers.entry(ip).or_default();
+        if connected {
+            peer.failures = 0;
+            return;
+        }
+        peer.failures = peer.failures.saturating_add(1);
+        if peer.failures >= PEER_FAILURES && peer.stopped_until.is_none_or(|until| until <= Instant::now()) {
+            peer.stopped_until = Some(Instant::now() + PEER_REST);
+            println!("[rs] link runs to {ip} stop for a day: {} connections to it in a row failed", peer.failures);
+        }
     }
 
     pub fn busy(&self) -> usize {
@@ -378,6 +448,7 @@ impl Visitor {
             following: false,
             home_known: false,
             homepage: None,
+            site_peer: None,
         };
         run.go().await?;
         Ok(run.result)
@@ -419,6 +490,8 @@ struct Run<'a> {
     home_known: bool,
     /// The homepage as read before a link run, which the verdict is then judged on, as the run may draw a rate limit.
     homepage: Option<Answer>,
+    /// The address the site's own host last answered from on this visit.
+    site_peer: Option<IpAddr>,
 }
 
 impl Run<'_> {
@@ -836,16 +909,24 @@ impl Run<'_> {
 
     /// Follow the site's own links from its homepage a few levels down, within a budget, and keep the pages found as one listing.
     async fn follow_links(&mut self, every: i64) -> Result<(), Crash> {
-        let slots = &self.visitor.links;
+        let slots = self.visitor.links.clone();
         // Sites whose sitemaps list some pages leave a quarter of the slots to those that list none.
         let permit = if self.sitemap_urls() == 0 || slots.busy() * 4 < slots.size() * 3 { slots.try_take() } else { None };
-        let Some(_permit) = permit else {
+        // One run at a time on the address the site answered from, whichever sites share it.
+        let Some(ip) = self.site_peer else {
+            return Ok(());
+        };
+        let (Some(_permit), Some(claim)) = (permit, slots.claim(ip)) else {
             self.result.links_wait = Some(self.now + rand::thread_rng().gen_range(LINKS_RETRY..=every));
             return Ok(());
         };
+        let mut claims = vec![claim];
         // A run may draw a rate limit or a refusal, which the language read after it would meet.
-        if self.needs_language() && !self.homepage_passes().await? {
-            return Ok(());
+        if self.needs_language() {
+            slots.turn(ip).await;
+            if !self.homepage_passes().await? {
+                return Ok(());
+            }
         }
         let Ok(normaliser) = Normaliser::new(self.bare_host()) else {
             return Ok(());
@@ -866,10 +947,24 @@ impl Run<'_> {
             if found.len() >= LINKS_MOST || spent >= LINKS_FETCHES || failing >= MAX_FAILURES_IN_ROW || started.elapsed() >= LINKS_TIME || self.visitor.pause.load(Ordering::Relaxed) {
                 break;
             }
-            let Ok(answer) = self.get(&page, MAX_HOMEPAGE_BYTES, None, None).await else {
-                failing += 1;
-                continue;
+            slots.turn(ip).await;
+            let answer = match self.get(&page, MAX_HOMEPAGE_BYTES, None, None).await {
+                Ok(answer) => answer,
+                Err(error) => {
+                    slots.connected(ip, !matches!(error.as_str(), "ConnectionTimeoutError" | "SocketTimeoutError" | "TimeoutError" | "ClientConnectorError"));
+                    failing += 1;
+                    continue;
+                }
             };
+            let peer = answer.peer.unwrap_or(ip);
+            slots.connected(peer, true);
+            // A site answering from another address too takes that one as well, or stops.
+            if !claims.iter().any(|claim| claim.ip == peer) {
+                match slots.claim(peer) {
+                    Some(claim) => claims.push(claim),
+                    None => break,
+                }
+            }
             match answer.status {
                 200 => failing = 0,
                 // A refusal, a rate limit or a busy server ends the run: the site asks for less.
@@ -1217,6 +1312,10 @@ impl Run<'_> {
             let connecting = Some(self.visitor.connect_timeout);
             let mut response = request.send().await.map_err(|e| net::failure(&e, started.elapsed(), connecting).to_string())?;
             self.answered = true;
+            let peer = response.remote_addr().map(|addr| addr.ip());
+            if peer.is_some() && self.on_site(&url) {
+                self.site_peer = peer;
+            }
             let waited = started.elapsed().as_secs_f64();
             let status = response.status().as_u16();
             if status == 429 || status == 503 {
@@ -1234,7 +1333,7 @@ impl Run<'_> {
                 if let Some(location) = header(response.headers(), "location").filter(|l| !l.is_empty()) {
                     let next = urls::join(&url, &location).map_err(|_| "ValueError".to_string())?;
                     if self.following && !(self.on_site(&next) && self.robots_allow(&next)) {
-                        return Ok(Answer { status, body: Vec::new(), headers: response.headers().clone(), url: next, permit });
+                        return Ok(Answer { status, body: Vec::new(), headers: response.headers().clone(), url: next, permit, peer });
                     }
                     url = next;
                     continue;
@@ -1247,7 +1346,7 @@ impl Run<'_> {
             };
             // Slow to answer means busy: rest that long before the next request.
             self.pacer.rest(waited);
-            return Ok(Answer { status, body, headers: response.headers().clone(), url, permit });
+            return Ok(Answer { status, body, headers: response.headers().clone(), url, permit, peer });
         }
         Err("TooManyRedirects".into())
     }
@@ -1556,6 +1655,29 @@ pub fn gunzip(body: &[u8]) -> Cow<'_, [u8]> {
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[tokio::test]
+    async fn an_address_takes_one_link_run_at_a_time_a_fetch_a_second_and_rests_after_failed_connections() {
+        let slots = Slots::new(4);
+        let ip: IpAddr = "192.0.2.7".parse().unwrap();
+        let claim = slots.claim(ip).unwrap();
+        assert!(slots.claim(ip).is_none(), "one run at a time on an address");
+        drop(claim);
+        assert!(slots.claim(ip).is_some(), "free again once the run ends");
+        let started = Instant::now();
+        slots.turn(ip).await;
+        slots.turn(ip).await;
+        assert!(started.elapsed() >= PEER_GAP, "fetches to one address a second apart");
+        for _ in 0..PEER_FAILURES {
+            slots.connected(ip, false);
+        }
+        assert!(slots.claim(ip).is_none(), "failed connections in a row stop runs there");
+        let other: IpAddr = "192.0.2.8".parse().unwrap();
+        for connected in [false, true, false, false] {
+            slots.connected(other, connected);
+        }
+        assert!(slots.claim(other).is_some(), "one that connects in between starts the count again");
+    }
 
     #[test]
     fn a_listed_domain_with_no_sitemap_named_is_also_looked_at_for_a_feed() {
