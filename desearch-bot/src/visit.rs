@@ -778,9 +778,9 @@ impl Run<'_> {
         stored.chain(read).sum()
     }
 
-    /// A listed site whose sitemaps list few pages or none, while links are followed at all.
+    /// A listed site whose sitemaps list few pages or none, while links are followed at all: neither off nor without slots.
     fn thin(&self) -> bool {
-        self.visitor.follow_links != FollowLinks::Off && self.listed && self.sitemap_urls() < THIN_URLS
+        self.visitor.follow_links != FollowLinks::Off && self.visitor.links.size() > 0 && self.listed && self.sitemap_urls() < THIN_URLS
     }
 
     /// How often this site's links are followed, the one rule `--follow-links` switches; None when they are not.

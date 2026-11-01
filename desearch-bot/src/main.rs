@@ -176,7 +176,7 @@ struct RunArgs {
     /// Visits at once to domains with thousands of sitemap records, which bounds the memory those records take.
     #[arg(long, default_value_t = 16)]
     heavy_slots: usize,
-    /// Visits at once following a listed site's links from its homepage, each for minutes, when its sitemaps list few pages or none.
+    /// Visits at once following a listed site's links from its homepage, each for minutes, when its sitemaps list few pages or none; 0 turns off link runs and thin sites' homepage reads.
     #[arg(long, default_value_t = 32)]
     links_slots: usize,
     /// Which listed sites have their links followed: off; thin, those whose sitemaps list under 1,000 pages or none, weekly; or all, those and every whole or news site monthly.

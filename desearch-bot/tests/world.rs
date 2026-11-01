@@ -1156,3 +1156,19 @@ async fn a_site_listed_with_www_has_its_robots_rules_applied_and_a_link_run_stay
     assert!(!hits.iter().any(|(_, path, _)| path.starts_with("/private/")), "nor fetched");
     assert!(!hits.iter().any(|(_, path, _)| path == "/elsewhere"), "a redirect to another port leaves the site");
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn no_link_slots_turn_off_the_homepage_reads_of_thin_sites_too() {
+    let web: Shared = Arc::default();
+    let host = "slotless.test";
+    {
+        let mut w = web.lock().unwrap();
+        w.add(host, "/robots.txt", 200, None, format!("User-agent: *\nSitemap: http://{host}/list.xml\n").as_bytes());
+        w.add(host, "/list.xml", 200, None, urlset(host, &(0..12).map(|i| format!("/story/{i}")).collect::<Vec<_>>()).as_bytes());
+        let links: String = (0..12).map(|i| format!("<a href=\"/page/{i}\">Page {i}</a>")).collect();
+        w.add(host, "/", 200, None, format!("<html lang=\"en\"><p>{ENGLISH}</p>{links}</html>").as_bytes());
+    }
+    let (buckets, _crawl) = crawl_following(web.clone(), &[host], "slotless", FollowLinks::Thin, Slots::new(0), |buckets| buckets.allow(&Allowed::of([host]))).await;
+    assert!(buckets.store(host).sitemap(host, &format!("http://{host}/")).unwrap().is_none(), "the homepage is read for its language only, not as a list");
+    assert!(buckets.store(host).url(&urls::parse(&format!("http://{host}/page/3"), host).unwrap()).unwrap().is_none());
+}
