@@ -675,7 +675,7 @@ async fn crawl_following(web: Shared, hosts: &[&'static str], name: &str, follow
     let visitor = Visitor {
         client,
         buckets: buckets.clone(),
-        suffixes: Arc::new(PublicSuffixList::parse("test\n")),
+        suffixes: Arc::new(PublicSuffixList::parse("test\ngov.test\n")),
         signer: None,
         language: Arc::new(|text: &str| Some(if text.contains("the") { "en" } else { "fr" }.to_string())),
         floor: 0.0,
@@ -1127,4 +1127,32 @@ async fn a_homepage_that_asks_robots_not_to_follow_its_links_lists_only_itself()
         assert!(stored("/") && !stored("/page/3"), "{host}: the homepage only");
     }
     assert!(!web.lock().unwrap().hits.iter().any(|(host, path, _)| host != preview && path.starts_with("/page/")));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_site_listed_with_www_has_its_robots_rules_applied_and_a_link_run_stays_on_its_port() {
+    let web: Shared = Arc::default();
+    // Under a public suffix of its own, as gov.uk is, the www host is the domain itself.
+    let (host, ported) = ("www.gov.test", "ported.test");
+    let other = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = other.local_addr().unwrap().port();
+    tokio::spawn(serve(other, web.clone()));
+    {
+        let mut w = web.lock().unwrap();
+        w.add(host, "/robots.txt", 200, None, format!("User-agent: *\nDisallow: /private/\nSitemap: http://{host}/index.xml\n").as_bytes());
+        w.add(host, "/index.xml", 200, None, format!("<sitemapindex><sitemap><loc>http://{host}/private/more.xml</loc></sitemap><sitemap><loc>http://{host}/ok.xml</loc></sitemap></sitemapindex>").as_bytes());
+        let pages: Vec<String> = (0..12).map(|i| format!("/a/{i}")).chain(["/private/b".to_string()]).collect();
+        w.add(host, "/ok.xml", 200, None, urlset(host, &pages).as_bytes());
+        w.add(host, "/private/more.xml", 200, None, urlset(host, &["/private/c".into()]).as_bytes());
+        w.add(host, "/", 200, None, format!("<html lang=\"en\"><p>{ENGLISH}</p></html>").as_bytes());
+        w.add(ported, "/", 200, None, format!("<html lang=\"en\"><p>{ENGLISH}</p><a href=\"/go\">go</a></html>").as_bytes());
+        w.redirect(ported, "/go", &format!("http://{ported}:{port}/elsewhere"), None);
+        w.add(ported, "/elsewhere", 200, None, format!("<html><p>{ENGLISH}</p></html>").as_bytes());
+    }
+    let (buckets, _crawl) = crawl_prepared(web.clone(), &[host, ported], "www-robots", |buckets| buckets.allow(&Allowed::of([host, ported]))).await;
+    let stored = |path: &str| buckets.store(host).url(&urls::parse(&format!("http://{host}{path}"), host).unwrap()).unwrap().is_some();
+    assert!(stored("/a/3") && !stored("/private/b") && !stored("/private/c"), "a page robots.txt disallows is never kept");
+    let hits = web.lock().unwrap().hits.clone();
+    assert!(!hits.iter().any(|(_, path, _)| path.starts_with("/private/")), "nor fetched");
+    assert!(!hits.iter().any(|(_, path, _)| path == "/elsewhere"), "a redirect to another port leaves the site");
 }

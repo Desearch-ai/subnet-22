@@ -498,7 +498,7 @@ impl Run<'_> {
             return false;
         };
         let host = parts.hostname().unwrap_or_default();
-        host.strip_prefix("www.").unwrap_or(&host) == self.known.host && matches!(parts.path.as_str(), "" | "/") && parts.query.is_none() && parts.fragment.is_none()
+        host.strip_prefix("www.").unwrap_or(&host) == self.bare_host() && matches!(parts.path.as_str(), "" | "/") && parts.query.is_none() && parts.fragment.is_none()
     }
 
     /// The domain's name without a `www.` it may be listed with, as its pages' store keys name their host.
@@ -510,6 +510,11 @@ impl Run<'_> {
     fn own_host(&self, url: &str) -> bool {
         let host = urls::split(url).ok().and_then(|parts| parts.hostname()).unwrap_or_default();
         host.strip_prefix("www.").unwrap_or(&host) == self.bare_host()
+    }
+
+    /// Whether an address is on the site its robots.txt covers: its own host or `www.` host, on the default port.
+    fn on_site(&self, url: &str) -> bool {
+        self.own_host(url) && urls::split(url).is_ok_and(|parts| parts.port().ok().flatten().is_none_or(|port| port == 80 || port == 443))
     }
 
     /// Read robots.txt; None means the visit ends here.
@@ -595,7 +600,7 @@ impl Run<'_> {
             return true;
         };
         let host = parts.hostname().unwrap_or_default();
-        if host.strip_prefix("www.").unwrap_or(&host) != self.known.host || parts.port().ok().flatten().is_some_and(|port| port != 80 && port != 443) {
+        if host.strip_prefix("www.").unwrap_or(&host) != self.bare_host() || parts.port().ok().flatten().is_some_and(|port| port != 80 && port != 443) {
             return true;
         }
         let target = match &parts.query {
@@ -814,7 +819,7 @@ impl Run<'_> {
         let Ok(answer) = self.get(&home, MAX_HOMEPAGE_BYTES, None, None).await else {
             return Ok(false);
         };
-        if !self.own_host(&answer.url) {
+        if !self.on_site(&answer.url) {
             return Ok(false);
         }
         let passes = answer.status == 200 && {
@@ -877,7 +882,7 @@ impl Run<'_> {
                     continue;
                 }
             }
-            if !self.own_host(&answer.url) || !is_html(&answer) {
+            if !self.on_site(&answer.url) || !is_html(&answer) {
                 continue;
             }
             read += 1;
@@ -1224,7 +1229,7 @@ impl Run<'_> {
                 }
                 if let Some(location) = header(response.headers(), "location").filter(|l| !l.is_empty()) {
                     let next = urls::join(&url, &location).map_err(|_| "ValueError".to_string())?;
-                    if self.following && !(self.own_host(&next) && self.robots_allow(&next)) {
+                    if self.following && !(self.on_site(&next) && self.robots_allow(&next)) {
                         return Ok(Answer { status, body: Vec::new(), headers: response.headers().clone(), url: next, permit });
                     }
                     url = next;

@@ -38,7 +38,8 @@ impl Paths {
     pub fn allows_page(&self, domain: &str, rest: &[u8]) -> bool {
         let rest = String::from_utf8_lossy(rest);
         let (host, target) = rest.split_at(rest.find('/').unwrap_or(rest.len()));
-        host != domain || self.allows(if target.is_empty() { "/" } else { target })
+        // Stored pages name their host without the `www.` a domain may be listed with.
+        (host != domain && host != domain.strip_prefix("www.").unwrap_or(domain)) || self.allows(if target.is_empty() { "/" } else { target })
     }
 }
 
@@ -162,6 +163,14 @@ mod tests {
         assert!(!allowed("/2024/story/print") && !allowed("/2024/print") && allowed("/print"));
         assert!(allowed("/robots.txt") && allowed("/news/story"));
         assert!(!rules("User-agent: *\nDisallow: *\n", TOKEN).0.allows("/anything"));
+    }
+
+    #[test]
+    fn a_domain_listed_with_www_has_its_pages_checked_against_its_rules() {
+        let (paths, _) = rules("User-agent: *\nDisallow: /private/\n", TOKEN);
+        assert!(!paths.allows_page("www.example.com", b"example.com/private/x") && paths.allows_page("www.example.com", b"example.com/ok"));
+        assert!(!paths.allows_page("example.com", b"example.com/private/x"));
+        assert!(paths.allows_page("example.com", b"example.com:8080/private/x"), "another port is another site, with its own rules");
     }
 
     #[test]
