@@ -41,6 +41,8 @@ const SHARES: [usize; 3] = [50, 20, 30];
 /// Listed domains woken at once are spread this far apart, over a day at most.
 const WAKE_GAP: i64 = 2 * SECOND;
 const WAKE_SPREAD: i64 = 24 * HOUR;
+/// Domains made due on one pass of the loop, which writes each one's record.
+const WAKE_CHUNK: usize = 1_000;
 
 #[derive(Clone, Debug)]
 pub struct DomainWrite {
@@ -131,27 +133,9 @@ fn earliest_sitemap(known: &Known, visit: &Visit, now: i64) -> Option<i64> {
     times.into_iter().min()
 }
 
-/// Makes listed domains found without sitemaps on a visit made while unlisted due within hours, spread over a day at most; returns their records.
-fn wake(buckets: &Buckets, busy: &HashSet<Arc<str>>, now: i64) -> Vec<(String, Json)> {
-    let unread = |host: &str| buckets.store(host).domain(host).ok().flatten().filter(records::listed_unread);
-    let hosts: Vec<String> = buckets.listed().into_iter().filter(|host| !busy.contains(host.as_str()) && unread(host).is_some()).collect();
-    let spread = (hosts.len() as i64 * WAKE_GAP).min(WAKE_SPREAD) / SECOND;
-    let mut rng = rand::thread_rng();
-    let mut woken = Vec::new();
-    for host in hosts {
-        // Read again: a visit may have finished since the look.
-        let Some(mut record) = unread(&host).filter(|record| records::int(record.get("due")).is_none_or(|due| due > now + spread)) else {
-            continue;
-        };
-        record.insert("due".into(), (now + rng.gen_range(0..=spread)).into());
-        let mut changes = Changes::default();
-        changes.domain(&host, &record);
-        match buckets.store(&host).write(changes) {
-            Ok(()) => woken.push((host, record)),
-            Err(error) => eprintln!("[rs] waking {host} failed: {error:#}"),
-        }
-    }
-    woken
+/// Listed domains found without sitemaps on a visit made while unlisted.
+fn unread(buckets: &Buckets) -> Vec<String> {
+    buckets.listed().into_iter().filter(|host| buckets.store(host).domain(host).ok().flatten().is_some_and(|record| records::listed_unread(&record))).collect()
 }
 
 pub fn now_micros() -> i64 {
@@ -213,7 +197,10 @@ pub struct Loop {
     disk_low: bool,
     /// The list version whose domains were last looked at for ones visited while it did not name them, and that look while it runs.
     woken: u64,
-    waking: Option<JoinHandle<Vec<(String, Json)>>>,
+    waking: Option<JoinHandle<Vec<String>>>,
+    /// Domains that look found still to be made due, by when at the latest, in Unix seconds.
+    to_wake: Vec<String>,
+    wake_by: i64,
 }
 
 impl Loop {
@@ -241,6 +228,8 @@ impl Loop {
             disk_low: false,
             woken: 0,
             waking: None,
+            to_wake: Vec::new(),
+            wake_by: 0,
         }
     }
 
@@ -331,6 +320,9 @@ impl Loop {
         self.sync().await;
         if let Some(scan) = self.waking.take() {
             self.woke(scan.await.unwrap_or_default());
+        }
+        while !self.to_wake.is_empty() {
+            self.wake();
         }
         Ok(finished)
     }
@@ -498,6 +490,7 @@ impl Loop {
         if let Some(scan) = self.waking.take_if(|scan| scan.is_finished()) {
             self.woke(scan.await.unwrap_or_default());
         }
+        self.wake();
         self.look_for_unread();
     }
 
@@ -508,16 +501,41 @@ impl Loop {
             return;
         }
         self.woken = version;
-        let (buckets, busy) = (self.buckets.clone(), self.busy.clone());
-        self.waking = Some(tokio::task::spawn_blocking(move || wake(&buckets, &busy, now_micros() / SECOND)));
+        let buckets = self.buckets.clone();
+        self.waking = Some(tokio::task::spawn_blocking(move || unread(&buckets)));
     }
 
-    fn woke(&mut self, woken: Vec<(String, Json)>) {
-        for (host, record) in &woken {
-            self.schedule(host, record, false);
+    fn woke(&mut self, hosts: Vec<String>) {
+        if !hosts.is_empty() {
+            let spread = (hosts.len() as i64 * WAKE_GAP).min(WAKE_SPREAD) / SECOND;
+            self.wake_by = now_micros() / SECOND + spread;
+            println!("[rs] {} listed domains without sitemaps, not yet visited as listed, come due within {} minutes", hosts.len(), spread / 60);
         }
-        if !woken.is_empty() {
-            println!("[rs] {} listed domains without sitemaps, not yet visited as listed, are due within a day", woken.len());
+        self.to_wake = hosts;
+    }
+
+    /// Makes some of the domains found unread due, each by its record as it stands now, which only its due time changes.
+    fn wake(&mut self) {
+        let now = now_micros() / SECOND;
+        let mut rng = rand::thread_rng();
+        let at = self.to_wake.len().saturating_sub(WAKE_CHUNK);
+        for host in self.to_wake.split_off(at) {
+            if self.busy.contains(host.as_str()) {
+                continue;
+            }
+            let Ok(Some(mut record)) = self.buckets.store(&host).domain(&host) else {
+                continue;
+            };
+            if !records::listed_unread(&record) || records::int(record.get("due")).is_some_and(|due| due <= self.wake_by) {
+                continue;
+            }
+            record.insert("due".into(), (now + rng.gen_range(0..=(self.wake_by - now).max(0))).into());
+            let mut changes = Changes::default();
+            changes.domain(&host, &record);
+            match self.buckets.store(&host).write(changes) {
+                Ok(()) => self.schedule(&host, &record, false),
+                Err(error) => eprintln!("[rs] waking {host} failed: {error:#}"),
+            }
         }
     }
 
