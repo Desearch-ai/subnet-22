@@ -1,4 +1,4 @@
-//! Visits listed hosts once each as the bot does, on a scratch store: `visit_probe HOSTS OUT DATA_DIR CONCURRENCY SITEMAP_SECONDS DEADLINE_SECONDS [answered] [local]`.
+//! Visits listed hosts once each as the bot does, on a scratch store: `visit_probe HOSTS OUT DATA_DIR CONCURRENCY SITEMAP_SECONDS DEADLINE_SECONDS [answered] [local] [pages]`; `pages` also writes each host's queued pages to OUT.pages; the run's totals go to OUT.summary.
 
 use std::collections::HashSet;
 use std::io::Write;
@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
-use desearch_bot::allowed::Allowed;
+use desearch_bot::allowed::{Allowed, Terms};
 use desearch_bot::buckets::{bucket_of, Buckets, Changes, Resources};
 use desearch_bot::crawl::Loop;
 use desearch_bot::langid::LangId;
@@ -33,13 +33,14 @@ async fn main() -> Result<()> {
     let deadline_seconds: u64 = args[6].parse()?;
     let answered = args[7..].iter().any(|a| a == "answered");
     let local = args[7..].iter().any(|a| a == "local");
+    let pages = args[7..].iter().any(|a| a == "pages");
     let root = out.with_extension("store");
     let _ = std::fs::remove_dir_all(&root);
     let mut owned: Vec<usize> = hosts.iter().map(|h| bucket_of(h)).collect();
     owned.sort_unstable();
     owned.dedup();
     let buckets = Arc::new(Buckets::open(&root, &owned, &Resources::new(256 << 20, 2 << 30, owned.len()))?);
-    buckets.allow(&Allowed::of(hosts.clone()));
+    buckets.allow(&Allowed::with_terms(hosts.iter().map(|host| (host.clone(), Terms { weight: 3, ..Terms::default() }))));
     for host in &hosts {
         let mut changes = Changes::default();
         let mut record = records::new_domain(Some(1), Some("new_generic"), &[], State::New, None, Some(0));
@@ -102,6 +103,7 @@ async fn main() -> Result<()> {
         anyhow::Ok(())
     })
     .await;
+    std::fs::write(out.with_extension("summary"), crawl.summary().to_string())?;
     let mut writer = std::io::BufWriter::new(std::fs::File::create(&out)?);
     writeln!(writer, "host\t{}", FIELDS.join("\t"))?;
     for host in &hosts {
@@ -115,6 +117,15 @@ async fn main() -> Result<()> {
         writeln!(writer, "{host}\t{state}\t{}", FIELDS[1..].iter().map(|name| field(name)).collect::<Vec<_>>().join("\t"))?;
     }
     writer.flush()?;
+    if pages {
+        let mut writer = std::io::BufWriter::new(std::fs::File::create(out.with_extension("pages"))?);
+        for host in &hosts {
+            for entry in buckets.store(host).ready_list(host, usize::MAX)? {
+                writeln!(writer, "{host}\t{}", String::from_utf8_lossy(&entry.rest))?;
+            }
+        }
+        writer.flush()?;
+    }
     let _ = std::fs::remove_dir_all(&root);
     std::process::exit(0)
 }
