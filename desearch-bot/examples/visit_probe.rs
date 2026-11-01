@@ -18,7 +18,7 @@ use desearch_bot::registry::Registry;
 use desearch_bot::signing::USER_AGENT;
 use desearch_bot::states::State;
 use desearch_bot::suffixes::PublicSuffixList;
-use desearch_bot::visit::{Slots, Visitor, MIN_HOST_INTERVAL};
+use desearch_bot::visit::{FollowLinks, Slots, Visitor, MIN_HOST_INTERVAL};
 
 const FIELDS: [&str; 10] = ["state", "reason", "robots_status", "home_status", "chars", "declared", "lang", "canonical", "urls", "failures"];
 
@@ -87,6 +87,12 @@ async fn main() -> Result<()> {
         bodies: Slots::new(16),
         pause: pause.clone(),
         heavy: Slots::new(4),
+        links: Slots::new(concurrency),
+        follow_links: match std::env::var("FOLLOW_LINKS").as_deref() {
+            Ok("off") => FollowLinks::Off,
+            Ok("all") => FollowLinks::All,
+            _ => FollowLinks::Thin,
+        },
     };
     let mut crawl = Loop::new(buckets.clone(), Arc::new(visitor), concurrency, Registry::offline(), HashSet::new());
     crawl.load()?;

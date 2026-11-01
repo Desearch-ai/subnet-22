@@ -14,7 +14,7 @@ use desearch_bot::registry::Registry;
 use desearch_bot::states::State;
 use desearch_bot::suffixes::PublicSuffixList;
 use desearch_bot::urls;
-use desearch_bot::visit::{Slots, Visitor};
+use desearch_bot::visit::{FollowLinks, Slots, Visitor};
 use hickory_resolver::error::ResolveError;
 use reqwest::dns::{Addrs, Name, Resolve, Resolving};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -211,6 +211,8 @@ async fn crawls_a_small_web() {
         bodies: Slots::new(2),
         pause: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         heavy: Slots::new(1),
+        links: Slots::new(2),
+        follow_links: FollowLinks::Thin,
     };
     let mut crawl = Loop::new(buckets.clone(), Arc::new(visitor), 16, Registry::offline(), HashSet::new());
     assert_eq!(crawl.load().unwrap(), 4);
@@ -299,6 +301,8 @@ async fn a_sitemap_listing_new_urls_on_every_read_is_held_back_while_one_that_se
         bodies: Slots::new(2),
         pause: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         heavy: Slots::new(1),
+        links: Slots::new(2),
+        follow_links: FollowLinks::Thin,
     };
     let mut crawl = Loop::new(buckets.clone(), Arc::new(visitor), 16, Registry::offline(), HashSet::new());
     let stored = |host: &str, path: &str| buckets.store(host).url(&urls::parse(&format!("http://{host}{path}"), host).unwrap()).unwrap().is_some();
@@ -391,6 +395,8 @@ async fn a_subdomain_kept_as_a_domain_of_its_own_is_crawled_on_its_own_host_with
         bodies: Slots::new(2),
         pause: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         heavy: Slots::new(1),
+        links: Slots::new(2),
+        follow_links: FollowLinks::Thin,
     };
     let mut crawl = Loop::new(buckets.clone(), Arc::new(visitor), 16, Registry::offline(), HashSet::new());
     assert_eq!(crawl.load().unwrap(), 1);
@@ -453,6 +459,8 @@ async fn a_homepage_that_answers_with_an_error_keeps_its_status_on_the_record() 
         bodies: Slots::new(2),
         pause: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         heavy: Slots::new(1),
+        links: Slots::new(2),
+        follow_links: FollowLinks::Thin,
     };
     let mut crawl = Loop::new(buckets.clone(), Arc::new(visitor), 16, Registry::offline(), HashSet::new());
     assert_eq!(crawl.load().unwrap(), hosts.len());
@@ -505,6 +513,8 @@ async fn a_feed_named_as_a_sitemap_is_read_as_one() {
         bodies: Slots::new(2),
         pause: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         heavy: Slots::new(1),
+        links: Slots::new(2),
+        follow_links: FollowLinks::Thin,
     };
     let mut crawl = Loop::new(buckets.clone(), Arc::new(visitor), 16, Registry::offline(), HashSet::new());
     assert_eq!(crawl.load().unwrap(), 1);
@@ -556,6 +566,8 @@ async fn a_landing_site_lists_its_homepage_and_the_pages_it_links_to_beside_its_
         bodies: Slots::new(2),
         pause: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         heavy: Slots::new(1),
+        links: Slots::new(2),
+        follow_links: FollowLinks::Thin,
     };
     let mut crawl = Loop::new(buckets.clone(), Arc::new(visitor), 16, Registry::offline(), HashSet::new());
     assert_eq!(crawl.load().unwrap(), 1);
@@ -619,6 +631,8 @@ async fn visit_seeded(web: Shared, hosts: &[&'static str], resolves: &[&'static 
         bodies: Slots::new(2),
         pause: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         heavy: Slots::new(1),
+        links: Slots::new(2),
+        follow_links: FollowLinks::Thin,
     };
     let mut crawl = Loop::new(buckets.clone(), Arc::new(visitor), 16, Registry::offline(), HashSet::new());
     assert_eq!(crawl.load().unwrap(), hosts.len());
@@ -629,6 +643,10 @@ async fn visit_seeded(web: Shared, hosts: &[&'static str], resolves: &[&'static 
 
 /// One crawl step over hosts seeded as new, after `prepare` has set up their list and stored records; the loop is kept for later steps.
 async fn crawl_prepared(web: Shared, hosts: &[&'static str], name: &str, prepare: impl FnOnce(&Arc<Buckets>)) -> (Arc<Buckets>, Loop) {
+    crawl_following(web, hosts, name, FollowLinks::Thin, Slots::new(2), prepare).await
+}
+
+async fn crawl_following(web: Shared, hosts: &[&'static str], name: &str, follow_links: FollowLinks, links: Slots, prepare: impl FnOnce(&Arc<Buckets>)) -> (Arc<Buckets>, Loop) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(serve(listener, web));
@@ -662,6 +680,8 @@ async fn crawl_prepared(web: Shared, hosts: &[&'static str], name: &str, prepare
         bodies: Slots::new(2),
         pause: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         heavy: Slots::new(1),
+        links,
+        follow_links,
     };
     let mut crawl = Loop::new(buckets.clone(), Arc::new(visitor), 16, Registry::offline(), HashSet::new());
     assert_eq!(crawl.load().unwrap(), hosts.len());
@@ -864,4 +884,153 @@ async fn a_site_found_without_sitemaps_before_the_list_named_it_is_due_again_onc
     let stored = buckets.store(host).url(&urls::parse(&format!("http://{host}/paper/7"), host).unwrap()).unwrap();
     assert!(stored.is_some(), "the listed visit reads its homepage as a list");
     std::fs::remove_file(&list).ok();
+}
+
+/// A site whose homepage links to sections that link to pages, and to what a run must leave alone.
+fn deep_site(web: &Shared, host: &str) {
+    let mut w = web.lock().unwrap();
+    w.add(host, "/robots.txt", 200, None, b"User-agent: *\nDisallow: /private/\n");
+    let page = |links: &[&str]| {
+        let links: String = links.iter().map(|href| format!("<a href=\"{href}\">{href}</a>")).collect();
+        format!("<html lang=\"en\"><p>{ENGLISH}</p>{links}</html>").into_bytes()
+    };
+    w.add(host, "/", 200, None, &page(&["/a", "/b", "/private/x", "/search?q=1", "/report.pdf", "http://other.test/x"]));
+    w.add(host, "/a", 200, None, &page(&["/a/1", "/a/2", "/a/3"]));
+    w.add(host, "/a/1", 200, None, &page(&["/a/1/deep"]));
+    w.add(host, "/b", 200, None, &page(&["/b/1"]));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_listed_site_without_sitemaps_has_its_links_followed_a_few_levels_down_within_its_rules() {
+    let web: Shared = Arc::default();
+    let host = "deep.test";
+    deep_site(&web, host);
+    let (buckets, _crawl) = crawl_prepared(web.clone(), &[host], "links", |buckets| buckets.allow(&Allowed::of([host]))).await;
+    let stored = |path: &str| buckets.store(host).url(&urls::parse(&format!("http://{host}{path}"), host).unwrap()).unwrap().is_some();
+    for path in ["/", "/a", "/b", "/a/1", "/a/2", "/a/3", "/b/1", "/a/1/deep"] {
+        assert!(stored(path), "{path}");
+    }
+    assert!(!stored("/private/x") && !stored("/search?q=1"), "robots.txt and queries are respected");
+    let hits = web.lock().unwrap().hits.clone();
+    for path in ["/private/x", "/a/1/deep", "/report.pdf", "/search?q=1"] {
+        assert!(!hits.iter().any(|(_, p, _)| p == path), "{path} is never fetched");
+    }
+    assert!(!hits.iter().any(|(h, _, _)| h == "other.test"));
+    let record = buckets.store(host).domain(host).unwrap().unwrap();
+    assert_eq!(record["state"].as_str(), Some("active"));
+    let links = buckets.store(host).sitemap(host, &format!("https://{host}/#links")).unwrap().unwrap();
+    let next = links["next"].as_i64().unwrap() - chrono::Utc::now().timestamp();
+    assert_eq!(links["kind"].as_str(), Some("links"));
+    assert!((6 * 86_400..=7 * 86_400).contains(&next), "a run that found new pages comes again in a week, not in {next} s");
+}
+
+/// Whether one visit stored a page three links below the homepage, and in how many days its next link run is due.
+async fn followed(host: &'static str, mode: FollowLinks, web: Shared, terms: Terms) -> (bool, Option<i64>) {
+    let (buckets, _crawl) = crawl_following(web, &[host], host, mode, Slots::new(2), |buckets| buckets.allow(&Allowed::with_terms([(host, terms)]))).await;
+    let deep = buckets.store(host).url(&urls::parse(&format!("http://{host}/a/1/deep"), host).unwrap()).unwrap().is_some();
+    let links = buckets.store(host).sitemap(host, &format!("https://{host}/#links")).unwrap();
+    (deep, links.and_then(|l| l["next"].as_i64()).map(|next| (next - chrono::Utc::now().timestamp() + 43_200) / 86_400))
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn links_are_followed_on_whole_sites_with_big_sitemaps_only_when_switched_to_all_and_never_when_off() {
+    let big = |host: &str| {
+        let web: Shared = Arc::default();
+        deep_site(&web, host);
+        let list = format!("http://{host}/list.xml");
+        let mut w = web.lock().unwrap();
+        w.add(host, "/robots.txt", 200, None, format!("User-agent: *\nDisallow: /private/\nSitemap: {list}\n").as_bytes());
+        w.add(host, "/list.xml", 200, None, urlset(host, &(0..1200).map(|i| format!("/story/{i}")).collect::<Vec<_>>()).as_bytes());
+        drop(w);
+        web
+    };
+    let whole = Terms { weight: 3, ..Terms::default() };
+    assert_eq!(followed("big-thin.test", FollowLinks::Thin, big("big-thin.test"), whole).await, (false, None), "a site whose sitemaps list 1,200 pages");
+    assert_eq!(followed("big-all.test", FollowLinks::All, big("big-all.test"), whole).await, (true, Some(30)), "a whole site, monthly");
+    assert_eq!(followed("big-node.test", FollowLinks::All, big("big-node.test"), Terms::default()).await, (false, None), "a site the list weights below its own picks");
+    let flat: Shared = Arc::default();
+    deep_site(&flat, "flat.test");
+    assert_eq!(followed("flat.test", FollowLinks::Off, flat, Terms::default()).await, (false, None), "off, even with no sitemap");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_link_run_stops_at_a_refusal_follows_no_redirect_off_its_rules_and_no_link_on_a_nofollow_page() {
+    let web: Shared = Arc::default();
+    let host = "polite.test";
+    {
+        let mut w = web.lock().unwrap();
+        w.add(host, "/robots.txt", 200, None, b"User-agent: *\nDisallow: /private/\n");
+        let page = |head: &str, links: &[&str]| {
+            let links: String = links.iter().map(|href| format!("<a href=\"{href}\">{href}</a>")).collect();
+            format!("<html lang=\"en\"><head>{head}</head><p>{ENGLISH}</p>{links}</html>").into_bytes()
+        };
+        w.add(host, "/", 200, None, &page("", &["/a", "/go", "/b", "/c"]));
+        w.add(host, "/a", 200, None, &page("<meta content=\"noindex, nofollow\" name=\"robots\">", &["/a/1"]));
+        w.redirect(host, "/go", &format!("http://{host}/private/x"), None);
+        w.add(host, "/b", 403, None, b"no");
+        w.add(host, "/c", 200, None, &page("", &["/c/1"]));
+    }
+    let (buckets, _crawl) = crawl_prepared(web.clone(), &[host], "polite", |buckets| buckets.allow(&Allowed::of([host]))).await;
+    let stored = |path: &str| buckets.store(host).url(&urls::parse(&format!("http://{host}{path}"), host).unwrap()).unwrap().is_some();
+    assert!(stored("/c") && !stored("/a/1") && !stored("/c/1"), "the nofollow page's link is never kept, nor what lies past the refusal");
+    let hits = web.lock().unwrap().hits.clone();
+    for path in ["/private/x", "/c", "/a/1"] {
+        assert!(!hits.iter().any(|(_, p, _)| p == path), "{path} is never fetched");
+    }
+    let links = buckets.store(host).sitemap(host, &format!("https://{host}/#links")).unwrap().unwrap();
+    assert_eq!(links["status"].as_str(), Some("ok"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_link_run_that_finds_every_slot_taken_waits_hours_to_days_and_nothing_loops() {
+    let web: Shared = Arc::default();
+    let host = "waiting.test";
+    deep_site(&web, host);
+    let links = Slots::new(1);
+    let _held = links.try_take().unwrap();
+    let (buckets, _crawl) = crawl_following(web.clone(), &[host], "links-wait", FollowLinks::Thin, links, |buckets| buckets.allow(&Allowed::of([host]))).await;
+    let record = buckets.store(host).domain(host).unwrap().unwrap();
+    let wait = record["due"].as_i64().unwrap() - chrono::Utc::now().timestamp();
+    assert!((2 * 3_600 - 5..=7 * 86_400).contains(&wait), "due in {wait} s");
+    assert!(buckets.store(host).sitemap(host, &format!("https://{host}/#links")).unwrap().is_none());
+
+    let web: Shared = Arc::default();
+    let host = "grown.test";
+    let list = format!("http://{host}/list.xml");
+    {
+        let mut w = web.lock().unwrap();
+        w.add(host, "/robots.txt", 200, None, format!("User-agent: *\nSitemap: {list}\n").as_bytes());
+        w.add(host, "/list.xml", 200, None, urlset(host, &(0..1200).map(|i| format!("/story/{i}")).collect::<Vec<_>>()).as_bytes());
+        w.add(host, "/", 200, None, format!("<html lang=\"en\"><p>{ENGLISH}</p></html>").as_bytes());
+    }
+    let (buckets, _crawl) = crawl_prepared(web.clone(), &[host], "grown", |buckets| {
+        buckets.allow(&Allowed::of([host]));
+        let mut changes = Changes::default();
+        for (url, kind, urls) in [(list.clone(), "urlset", 1200), (format!("http://{host}/"), "homepage", 3), (format!("https://{host}/#links"), "links", 40)] {
+            changes.sitemap(host, &url, serde_json::json!({"id": sitemap_id(&url), "kind": kind, "depth": 0, "status": "ok", "urls": urls, "next": 0}).as_object().unwrap());
+        }
+        buckets.store(host).write(changes).unwrap();
+    })
+    .await;
+    let record = buckets.store(host).domain(host).unwrap().unwrap();
+    let due = record["due"].as_i64().unwrap() - chrono::Utc::now().timestamp();
+    assert_eq!(record["state"].as_str(), Some("active"));
+    assert!(due > 60, "a homepage and link listing no longer read set no time, so the site is not due again at once: {due} s");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_site_whose_homepage_is_not_english_has_no_links_followed() {
+    let web: Shared = Arc::default();
+    let host = "ailleurs.test";
+    {
+        let mut w = web.lock().unwrap();
+        let french = "Le comité examine le budget annuel pendant que les lecteurs suivent les nouvelles locales chaque jour.";
+        let links: String = (0..12).map(|i| format!("<a href=\"/page/{i}\">Page {i}</a>")).collect();
+        w.add(host, "/", 200, None, format!("<html lang=\"fr\"><p>{french} {french} {french}</p>{links}</html>").as_bytes());
+        w.add(host, "/page/1", 200, None, format!("<html><p>{french}</p><a href=\"/page/1/deep\">plus</a></html>").as_bytes());
+    }
+    let (buckets, _crawl) = crawl_prepared(web.clone(), &[host], "not-english", |buckets| buckets.allow(&Allowed::of([host]))).await;
+    let record = buckets.store(host).domain(host).unwrap().unwrap();
+    assert_eq!((record["state"].as_str(), record["reason"].as_str()), (Some("ineligible"), Some("not_english")));
+    assert!(!web.lock().unwrap().hits.iter().any(|(_, path, _)| path == "/page/1"), "judged before any link is followed");
 }

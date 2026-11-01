@@ -42,6 +42,8 @@ MALLOC_ARENA_MAX=2 desearch-bot run --buckets-dir /var/lib/desearch-bot/buckets 
 | `--discovery-share` | 30 | percent of the visit slots kept for domains never checked |
 | `--backlog-share` | 20 | percent kept for sitemaps found but not read yet; re-checks of known sites get the rest |
 | `--heavy-slots` | 16 | visits at once to domains with more than 2,000 sitemap records |
+| `--follow-links` | `thin` | which listed sites have their links followed: `off`, `thin` (sitemaps listing under 1,000 pages, or none) or `all` (those, and every whole or news site) |
+| `--links-slots` | 32 | link runs at once; 0 turns them off |
 | `--task-api` | none | the task API to fill, such as `https://api-22.desearch.ai` |
 | `--outcomes-url` | none | where the task API publishes what became of each URL, such as `https://subnet-22.s3.us-east-va.io.cloud.ovh.us` |
 | `--urls-per-hour` | 0 | URLs sent in an hour at most, at a steady pace; 0 sends what the task API has room for |
@@ -108,6 +110,15 @@ is read again at most hourly. It never stands in for a sitemap: the guesses are 
 visits. A site with a `depth` has its homepage read this way beside whatever sitemaps it has. A site
 found without sitemaps on a visit made while the list did not name it is visited again within a day
 of the list naming it, since only a listed site's feed and homepage are tried.
+
+A listed site, landing sites aside, whose sitemaps list under 1,000 pages or none, has its homepage
+read as a list beside its sitemaps, and its links followed from the homepage: three levels down, at most
+150 fetches and 10 minutes a run, on its own host and its `www.` host only, HTML pages only, no
+queries, files, feeds or forms, within its robots.txt rules and crawl delay, not past a page marked
+`nofollow`, and no redirect off the site or onto a disallowed path. A refusal or rate limit ends the
+run. The pages found are kept as one listing. Runs come weekly while they find new pages, then half
+as often down to every 60 days; with `--follow-links all`, every whole or news site the list weights
+3 or more gets a run monthly. A run that finds every slot taken waits a random time up to its interval.
 
 A listed subdomain with a registry record of its own is crawled on its own host, under its own
 robots.txt. Its pages go under it while that record is active, failing or without sitemaps, and not

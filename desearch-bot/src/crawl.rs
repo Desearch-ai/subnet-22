@@ -17,7 +17,7 @@ use crate::schedule::{HOUR, SECOND};
 use crate::states::{self, Outcome, State};
 use crate::suffixes::tld_group;
 use crate::timetable::{placed, HeavyQueue, Lane, Timetable};
-use crate::visit::{Crash, Known, Visit, Visitor};
+use crate::visit::{is_listing, Crash, Known, Visit, Visitor};
 use crate::{exclusions, records};
 
 const TICK: Duration = Duration::from_secs(1);
@@ -72,6 +72,9 @@ pub fn plan(known: &Known, visit: Visit, now: i64, rng: &mut impl Rng) -> Domain
             due = due.map(|d| d.max(now + CUT_SHORT_WAIT));
         }
     }
+    if let Some(at) = visit.links_wait.filter(|_| matches!(decision.state, State::Active | State::NoSitemap)) {
+        due = due.map(|d| d.min(at));
+    }
     let canonical_host = match visit.outcome {
         Outcome::Redirect => visit.canonical_host.clone(),
         outcome if outcome.answered() => None,
@@ -120,6 +123,8 @@ fn earliest_sitemap(known: &Known, visit: &Visit, now: i64) -> Option<i64> {
     let mut times: Vec<i64> = known
         .sitemaps
         .values()
+        // A homepage or link listing left unread while due sets no time: it is read once the site qualifies again.
+        .filter(|s| updated.contains_key(s.url.as_str()) || !is_listing(s.kind.as_deref()) || s.next_check_at.is_some_and(|next| next > now))
         .map(|s| updated.get(s.url.as_str()).copied().unwrap_or(s.next_check_at).unwrap_or(now))
         .collect();
     times.extend(updated.iter().filter(|(url, _)| !known.sitemaps.contains_key(**url)).filter_map(|(_, when)| *when));

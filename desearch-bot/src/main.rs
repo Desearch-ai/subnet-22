@@ -23,7 +23,7 @@ use desearch_bot::registry::{self, Registry};
 use desearch_bot::signing::Signer;
 use desearch_bot::suffixes::PublicSuffixList;
 use desearch_bot::taskapi::TaskApi;
-use desearch_bot::visit::{Slots, Visitor, MIN_HOST_INTERVAL};
+use desearch_bot::visit::{FollowLinks, Slots, Visitor, MIN_HOST_INTERVAL};
 
 #[cfg(not(target_env = "msvc"))]
 #[global_allocator]
@@ -176,6 +176,12 @@ struct RunArgs {
     /// Visits at once to domains with thousands of sitemap records, which bounds the memory those records take.
     #[arg(long, default_value_t = 16)]
     heavy_slots: usize,
+    /// Visits at once following a listed site's links from its homepage, each for minutes, when its sitemaps list few pages or none.
+    #[arg(long, default_value_t = 32)]
+    links_slots: usize,
+    /// Which listed sites have their links followed: off; thin, those whose sitemaps list under 1,000 pages or none, weekly; or all, those and every whole or news site monthly.
+    #[arg(long, value_enum, default_value_t = FollowLinks::Thin)]
+    follow_links: FollowLinks,
     /// Percent of the visit slots kept for domains never checked; slots one kind of work leaves unused go to the others.
     #[arg(long, default_value_t = 30)]
     discovery_share: usize,
@@ -338,6 +344,8 @@ async fn run(args: RunArgs) -> Result<()> {
         bodies: Slots::new(args.sitemap_slots),
         pause: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         heavy: Slots::new(args.heavy_slots),
+        links: Slots::new(args.links_slots),
+        follow_links: args.follow_links,
     });
     if args.compact {
         let stores = buckets.clone();
