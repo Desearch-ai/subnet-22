@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use desearch_bot::allowed::{Allowed, Terms};
-use desearch_bot::buckets::{bucket_of, Buckets, Changes, Resources};
+use desearch_bot::buckets::{bucket_of, sitemap_id, Buckets, Changes, Resources};
 use desearch_bot::crawl::Loop;
 use desearch_bot::records;
 use desearch_bot::registry::Registry;
@@ -627,6 +627,48 @@ async fn visit_seeded(web: Shared, hosts: &[&'static str], resolves: &[&'static 
     buckets
 }
 
+/// One crawl step over hosts seeded as new, after `prepare` has set up their list and stored records; the loop is kept for later steps.
+async fn crawl_prepared(web: Shared, hosts: &[&'static str], name: &str, prepare: impl FnOnce(&Arc<Buckets>)) -> (Arc<Buckets>, Loop) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(serve(listener, web));
+    let root = std::env::temp_dir().join(format!("desearch-bot-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let mut owned: Vec<usize> = hosts.iter().map(|h| bucket_of(h)).collect();
+    owned.sort_unstable();
+    owned.dedup();
+    let buckets = Arc::new(Buckets::open(&root, &owned, &Resources::new(8 << 20, 8 << 20, owned.len())).unwrap());
+    for host in hosts {
+        let mut changes = Changes::default();
+        changes.domain(host, &records::new_domain(Some(1), Some("new_generic"), &[], State::New, None, Some(0)));
+        buckets.store(host).write(changes).unwrap();
+    }
+    prepare(&buckets);
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .dns_resolver(Arc::new(TestResolver { addr, known: hosts.iter().copied().collect() }))
+        .timeout(Duration::from_secs(10))
+        .build()
+        .unwrap();
+    let visitor = Visitor {
+        client,
+        buckets: buckets.clone(),
+        suffixes: Arc::new(PublicSuffixList::parse("test\n")),
+        signer: None,
+        language: Arc::new(|text: &str| Some(if text.contains("the") { "en" } else { "fr" }.to_string())),
+        floor: 0.0,
+        connect_timeout: Duration::from_secs(10),
+        cpu: Slots::new(4),
+        bodies: Slots::new(2),
+        pause: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        heavy: Slots::new(1),
+    };
+    let mut crawl = Loop::new(buckets.clone(), Arc::new(visitor), 16, Registry::offline(), HashSet::new());
+    assert_eq!(crawl.load().unwrap(), hosts.len());
+    assert_eq!(crawl.step().await.unwrap(), hosts.len());
+    (buckets, crawl)
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_site_whose_bare_host_has_no_dns_record_is_read_on_its_www_host() {
     let web: Shared = Arc::default();
@@ -698,4 +740,49 @@ async fn a_recheck_whose_sitemap_answers_503_is_tried_again() {
     };
     assert_eq!(state("busy.test"), ("new".into(), "sitemap_503".into()), "a recheck of a site that answered before");
     assert_eq!(state("fresh.test"), ("no_sitemap".into(), "no_sitemap".into()), "a site never seen before");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_visit_that_skips_robots_txt_guesses_where_the_homepage_was_last_read() {
+    let web: Shared = Arc::default();
+    let host = "plainhome.test";
+    {
+        let mut w = web.lock().unwrap();
+        let links: String = (0..12).map(|i| format!("<a href=\"/page/{i}\">Page {i}</a>")).collect();
+        w.add(host, "/", 200, None, format!("<html lang=\"en\"><p>{ENGLISH}</p>{links}</html>").as_bytes());
+    }
+    let now = chrono::Utc::now().timestamp();
+    let (buckets, _crawl) = crawl_prepared(web.clone(), &[host], "home-scheme", |buckets| {
+        buckets.allow(&Allowed::of([host]));
+        let mut record = records::new_domain(Some(1), Some("new_generic"), &[], State::Active, None, Some(0));
+        for (name, at) in [("robots", now), ("checked", now), ("ok", now), ("lang", 0)] {
+            record.insert(name.into(), if name == "lang" { "en".into() } else { at.into() });
+        }
+        let home = format!("http://{host}/");
+        let mut changes = Changes::default();
+        changes.domain(host, &record);
+        changes.sitemap(host, &home, serde_json::json!({"id": sitemap_id(&home), "kind": "homepage", "depth": 0, "status": "ok", "urls": 13, "next": 0}).as_object().unwrap());
+        buckets.store(host).write(changes).unwrap();
+    })
+    .await;
+    let record = buckets.store(host).domain(host).unwrap().unwrap();
+    assert_eq!(record["state"].as_str(), Some("active"), "guesses on https would fail three times before the homepage is reached");
+    let hits = web.lock().unwrap().hits.clone();
+    assert!(hits.iter().any(|(h, p, _)| h == host && p == "/") && !hits.iter().any(|(_, p, _)| p == "/robots.txt"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_sitemap_is_guessed_where_robots_txt_answered() {
+    let web: Shared = Arc::default();
+    let host = "plain.test";
+    {
+        let mut w = web.lock().unwrap();
+        w.add(host, "/robots.txt", 200, None, b"User-agent: *\nAllow: /\n");
+        w.add(host, "/sitemap.xml", 200, None, urlset(host, &(0..12).map(|i| format!("/story/{i}")).collect::<Vec<_>>()).as_bytes());
+        w.add(host, "/", 200, None, format!("<html lang=\"en\"><p>{ENGLISH}</p></html>").as_bytes());
+    }
+    let buckets = visit_once(web.clone(), &[host], &[], "guess-scheme").await;
+    let record = buckets.store(host).domain(host).unwrap().unwrap();
+    assert_eq!((record["state"].as_str(), record["urls"].as_i64()), (Some("active"), Some(12)), "robots.txt answered on http only, and so does the guess");
+    assert!(web.lock().unwrap().hits.iter().any(|(h, path, _)| h == host && path == "/sitemap.xml"));
 }

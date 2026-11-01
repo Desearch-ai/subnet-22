@@ -99,7 +99,8 @@ fingerprint set kept per sitemap. A listed news site's root sitemap index and it
 are read again within 30 minutes.
 
 RSS and Atom feeds are read as sitemaps. Where robots.txt names no sitemap, the bot tries
-`/sitemap.xml` and `/sitemap_index.xml`, then on a listed site `/feed`, `/rss.xml` and its homepage;
+`/sitemap.xml` and `/sitemap_index.xml`, then on a listed site `/feed`, `/rss.xml` and its homepage,
+where robots.txt answered, or where the homepage was last read when the visit skips robots.txt;
 an answer that is neither a sitemap nor a feed isn't kept. A homepage is read as a list of itself and
 the pages on its site it links to with no query, from its first 400 links and its first 512 KB,
 relative links taken from where it answered; it counts as changed only when those pages change, and

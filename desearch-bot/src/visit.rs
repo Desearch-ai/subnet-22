@@ -305,6 +305,7 @@ impl Visitor {
             kept: 0,
             answered: false,
             network_error: None,
+            base: home.clone(),
             home,
             transient: None,
             www_only,
@@ -336,6 +337,8 @@ struct Run<'a> {
     network_error: Option<String>,
     /// The homepage's address, which a landing site lists its first-level pages from.
     home: String,
+    /// Where guessed sitemap paths are asked for: the scheme and host robots.txt answered on, after its redirects.
+    base: String,
     /// The first sitemap or guess that answered with a rate limit, a server error or not at all.
     transient: Option<String>,
     /// The bare host had no DNS record and its www host answered, on this visit or the last one that read either.
@@ -367,12 +370,16 @@ impl Run<'_> {
     }
 
     fn roots(&mut self, named: &[String]) -> Result<Vec<String>, Crash> {
-        let base = format!("https://{}{}/", if self.www_only { "www." } else { "" }, self.known.host);
+        let mut base = self.base.clone();
         let joined = named.iter().map(|url| urls::join(&base, url)).collect::<Result<Vec<_>, _>>().map_err(|_| Crash::new("ValueError"))?;
         // A homepage read as a list is no root: the sitemaps and feeds a site names or answers later still come first.
         let (homes, known): (Vec<&KnownSitemap>, Vec<&KnownSitemap>) = self.known.sitemaps.values().filter(|s| s.depth == 0).partition(|s| self.is_homepage(&s.url, Some(s)));
         let known: Vec<String> = known.into_iter().map(|s| s.url.clone()).collect();
         if let Some(home) = homes.first().map(|s| s.url.clone()) {
+            // A visit that skips robots.txt guesses where the homepage was last read.
+            if !self.result.robots_read && self.own_host(&home) {
+                base = urls::join(&home, HOMEPAGE).unwrap_or(base);
+            }
             self.home = home;
         }
         let mut seen = HashSet::new();
@@ -405,6 +412,17 @@ impl Run<'_> {
         host.strip_prefix("www.").unwrap_or(&host) == self.known.host && matches!(parts.path.as_str(), "" | "/") && parts.query.is_none()
     }
 
+    /// The domain's name without a `www.` it may be listed with, as its pages' store keys name their host.
+    fn bare_host(&self) -> &str {
+        self.known.host.strip_prefix("www.").unwrap_or(&self.known.host)
+    }
+
+    /// Whether an address is on the domain's own host or its `www.` host, the hosts the robots.txt read covers.
+    fn own_host(&self, url: &str) -> bool {
+        let host = urls::split(url).ok().and_then(|parts| parts.hostname()).unwrap_or_default();
+        host.strip_prefix("www.").unwrap_or(&host) == self.bare_host()
+    }
+
     /// Read robots.txt; None means the visit ends here.
     async fn robots(&mut self) -> Result<Option<Vec<String>>, Crash> {
         let Some(answer) = self.first_answer("/robots.txt", MAX_ROBOTS_BYTES).await else {
@@ -425,8 +443,11 @@ impl Run<'_> {
             (paths, delay) = robots::rules(&text, robots::TOKEN);
             named = robots::sitemaps(&text);
         }
-        // The homepage is read where robots.txt answered: its scheme, and the www host it may have moved to.
+        // The homepage is read where robots.txt answered: its scheme, and the www host it may have moved to; so are guessed sitemaps, on the site's own hosts.
         if let Ok(home) = urls::join(&answer.url, HOMEPAGE) {
+            if self.own_host(&home) {
+                self.base = home.clone();
+            }
             self.home = home;
         }
         let allowed = paths.allows("/");
