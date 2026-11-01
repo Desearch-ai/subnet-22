@@ -8,7 +8,7 @@ use anyhow::Result;
 use rand::Rng;
 use serde_json::Value;
 use tokio::sync::{watch, OwnedSemaphorePermit};
-use tokio::task::{Id, JoinError, JoinSet};
+use tokio::task::{Id, JoinError, JoinHandle, JoinSet};
 use tokio::time::Instant;
 
 use crate::buckets::{Buckets, Changes, Json};
@@ -38,6 +38,9 @@ const RESUME_MARGIN: u64 = 5 << 30;
 const DISK_CHECK: Duration = Duration::from_secs(10);
 /// Percent of the visit slots each lane can count on: refresh, backlog, discovery.
 const SHARES: [usize; 3] = [50, 20, 30];
+/// Listed domains woken at once are spread this far apart, over a day at most.
+const WAKE_GAP: i64 = 2 * SECOND;
+const WAKE_SPREAD: i64 = 24 * HOUR;
 
 #[derive(Clone, Debug)]
 pub struct DomainWrite {
@@ -123,6 +126,29 @@ fn earliest_sitemap(known: &Known, visit: &Visit, now: i64) -> Option<i64> {
     times.into_iter().min()
 }
 
+/// Makes listed domains found without sitemaps on a visit made while unlisted due within hours, spread over a day at most; returns their records.
+fn wake(buckets: &Buckets, busy: &HashSet<Arc<str>>, now: i64) -> Vec<(String, Json)> {
+    let unread = |host: &str| buckets.store(host).domain(host).ok().flatten().filter(records::listed_unread);
+    let hosts: Vec<String> = buckets.listed().into_iter().filter(|host| !busy.contains(host.as_str()) && unread(host).is_some()).collect();
+    let spread = (hosts.len() as i64 * WAKE_GAP).min(WAKE_SPREAD) / SECOND;
+    let mut rng = rand::thread_rng();
+    let mut woken = Vec::new();
+    for host in hosts {
+        // Read again: a visit may have finished since the look.
+        let Some(mut record) = unread(&host).filter(|record| records::int(record.get("due")).is_none_or(|due| due > now + spread)) else {
+            continue;
+        };
+        record.insert("due".into(), (now + rng.gen_range(0..=spread)).into());
+        let mut changes = Changes::default();
+        changes.domain(&host, &record);
+        match buckets.store(&host).write(changes) {
+            Ok(()) => woken.push((host, record)),
+            Err(error) => eprintln!("[rs] waking {host} failed: {error:#}"),
+        }
+    }
+    woken
+}
+
 pub fn now_micros() -> i64 {
     chrono::Utc::now().timestamp_micros()
 }
@@ -180,6 +206,9 @@ pub struct Loop {
     min_free_disk: u64,
     disk_checked: Option<Instant>,
     disk_low: bool,
+    /// The list version whose domains were last looked at for ones visited while it did not name them, and that look while it runs.
+    woken: u64,
+    waking: Option<JoinHandle<Vec<(String, Json)>>>,
 }
 
 impl Loop {
@@ -205,6 +234,8 @@ impl Loop {
             min_free_disk: 0,
             disk_checked: None,
             disk_low: false,
+            woken: 0,
+            waking: None,
         }
     }
 
@@ -293,6 +324,9 @@ impl Loop {
         }
         self.flush()?;
         self.sync().await;
+        if let Some(scan) = self.waking.take() {
+            self.woke(scan.await.unwrap_or_default());
+        }
         Ok(finished)
     }
 
@@ -455,6 +489,30 @@ impl Loop {
                 }
             }
             Err(error) => eprintln!("[rs] reading registry changes failed: {error:#}"),
+        }
+        if let Some(scan) = self.waking.take_if(|scan| scan.is_finished()) {
+            self.woke(scan.await.unwrap_or_default());
+        }
+        self.look_for_unread();
+    }
+
+    /// When the list changes, looks in the background for listed domains found without sitemaps on a visit made while it did not name them, and makes them due.
+    fn look_for_unread(&mut self) {
+        let version = self.buckets.list_version();
+        if version == 0 || version == self.woken || self.waking.is_some() {
+            return;
+        }
+        self.woken = version;
+        let (buckets, busy) = (self.buckets.clone(), self.busy.clone());
+        self.waking = Some(tokio::task::spawn_blocking(move || wake(&buckets, &busy, now_micros() / SECOND)));
+    }
+
+    fn woke(&mut self, woken: Vec<(String, Json)>) {
+        for (host, record) in &woken {
+            self.schedule(host, record, false);
+        }
+        if !woken.is_empty() {
+            println!("[rs] {} listed domains without sitemaps, not yet visited as listed, are due within a day", woken.len());
         }
     }
 

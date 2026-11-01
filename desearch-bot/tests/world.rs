@@ -831,3 +831,37 @@ async fn a_recheck_between_two_reads_of_a_working_sitemap_keeps_the_site_active(
     assert_eq!((record["state"].as_str(), record["urls"].as_i64()), (Some("active"), Some(12)), "the sitemap is not due, and still lists its 12 pages");
     assert!(!web.lock().unwrap().hits.iter().any(|(_, path, _)| path == "/list.xml"), "a sitemap not due is not read");
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_site_found_without_sitemaps_before_the_list_named_it_is_due_again_once_it_does() {
+    let web: Shared = Arc::default();
+    let host = "joined.test";
+    {
+        let mut w = web.lock().unwrap();
+        let links: String = (0..12).map(|i| format!("<a href=\"/paper/{i}\">Paper {i}</a>")).collect();
+        w.add(host, "/", 200, None, format!("<html lang=\"en\"><p>{ENGLISH}</p>{links}</html>").as_bytes());
+    }
+    let list = std::env::temp_dir().join(format!("desearch-bot-joined-list-{}.json", std::process::id()));
+    std::fs::write(&list, b"[\"other.test\"]").unwrap();
+    let allowed = Allowed::from_file(&list).unwrap();
+    let (buckets, mut crawl) = crawl_prepared(web.clone(), &[host], "joined", |buckets| buckets.allow(&allowed)).await;
+    let record = || buckets.store(host).domain(host).unwrap().unwrap();
+    let now = chrono::Utc::now().timestamp();
+    assert_eq!((record()["state"].as_str(), record()["listed"].as_bool()), (Some("no_sitemap"), Some(false)));
+    assert!(record()["due"].as_i64().unwrap() > now + 86_400, "found without sitemaps, it waits for its monthly recheck");
+    assert!(!web.lock().unwrap().hits.iter().any(|(_, path, _)| path == "/"), "an unlisted site's homepage is no guess");
+
+    std::thread::sleep(Duration::from_millis(20));
+    std::fs::write(&list, format!("[\"other.test\", \"{host}\"]")).unwrap();
+    assert!(allowed.reload().unwrap());
+    assert_eq!(crawl.step().await.unwrap(), 0);
+    let due = record()["due"].as_i64().unwrap();
+    assert!(due <= chrono::Utc::now().timestamp() + 2, "the list naming it makes it due within seconds, not {due}");
+
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    assert_eq!(crawl.step().await.unwrap(), 1);
+    assert_eq!(record()["listed"].as_bool(), Some(true));
+    let stored = buckets.store(host).url(&urls::parse(&format!("http://{host}/paper/7"), host).unwrap()).unwrap();
+    assert!(stored.is_some(), "the listed visit reads its homepage as a list");
+    std::fs::remove_file(&list).ok();
+}

@@ -154,6 +154,8 @@ pub struct Visit {
     pub passing: bool,
     /// Which host answered robots.txt or the homepage, when either was read: the www host or the bare one.
     pub www_only: Option<bool>,
+    /// Whether the list named the domain when the visit started; None when no visit ran.
+    pub on_list: Option<bool>,
 }
 
 impl Visit {
@@ -181,6 +183,7 @@ impl Visit {
             cut_short: false,
             passing: false,
             www_only: None,
+            on_list: None,
         }
     }
 }
@@ -287,6 +290,7 @@ impl Visitor {
     pub async fn visit(&self, known: Arc<Known>, now: i64) -> Result<Visit, Crash> {
         let www_only = known.www_only;
         let home = format!("https://{}{}/", if www_only { "www." } else { "" }, known.host);
+        let listed = self.buckets.lists(&known.host);
         let mut run = Run {
             visitor: self,
             pacer: Pacer::new(known.crawl_delay, self.floor),
@@ -294,6 +298,7 @@ impl Visitor {
                 robots_allows: known.robots_allows,
                 robots_paths: known.robots_paths.clone(),
                 crawl_delay: known.crawl_delay,
+                on_list: Some(listed),
                 ..Visit::new(&known.host)
             },
             known,
@@ -309,6 +314,7 @@ impl Visitor {
             home,
             transient: None,
             www_only,
+            listed,
         };
         run.go().await?;
         Ok(run.result)
@@ -343,6 +349,7 @@ struct Run<'a> {
     transient: Option<String>,
     /// The bare host had no DNS record and its www host answered, on this visit or the last one that read either.
     www_only: bool,
+    listed: bool,
 }
 
 impl Run<'_> {
@@ -387,7 +394,7 @@ impl Run<'_> {
         let landing = self.visitor.buckets.terms(&self.known.host).depth.is_some();
         // Stored sitemaps that no longer answer hide nothing: the site is guessed at as on a first visit.
         if !self.known.sitemaps.values().any(|s| s.ok && is_sitemap(s.kind.as_deref())) {
-            for path in guess_paths(self.visitor.buckets.lists(&self.known.host)) {
+            for path in guess_paths(self.listed) {
                 let url = if path == HOMEPAGE { self.home.clone() } else { urls::join(&base, path).map_err(|_| Crash::new("ValueError"))? };
                 if seen.insert(url.clone()) {
                     // A landing site's homepage is no guess: it is read even when a sitemap answers.

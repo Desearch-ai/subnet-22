@@ -174,7 +174,15 @@ pub fn written_domain(previous: &Json, write: &DomainWrite, url_count: i64) -> J
         }
         None => {}
     }
+    if let Some(listed) = visit.on_list {
+        record.insert("listed".into(), listed.into());
+    }
     record
+}
+
+/// A listed domain whose last visit, made while the list did not name it, found no sitemap: only a listed domain's visit reads its feed and homepage, so it is due again soon.
+pub fn listed_unread(record: &Json) -> bool {
+    record.get("state").and_then(Value::as_str) == Some(State::NoSitemap.as_str()) && record.get("listed").and_then(Value::as_bool) != Some(true)
 }
 
 /// The sitemap record after a read; its counts change only when its content did.

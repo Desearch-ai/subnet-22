@@ -105,7 +105,9 @@ an answer that is neither a sitemap nor a feed isn't kept. A homepage is read as
 the pages on its site it links to with no query, from its first 400 links and its first 512 KB,
 relative links taken from where it answered; it counts as changed only when those pages change, and
 is read again at most hourly. It never stands in for a sitemap: the guesses are tried again on later
-visits. A site with a `depth` has its homepage read this way beside whatever sitemaps it has.
+visits. A site with a `depth` has its homepage read this way beside whatever sitemaps it has. A site
+found without sitemaps on a visit made while the list did not name it is visited again within a day
+of the list naming it, since only a listed site's feed and homepage are tried.
 
 A listed subdomain with a registry record of its own is crawled on its own host, under its own
 robots.txt. Its pages go under it while that record is active or failing, and not at all while it is
