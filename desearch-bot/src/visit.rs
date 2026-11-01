@@ -1090,12 +1090,8 @@ impl Run<'_> {
             update.next_check_at = Some(self.now + interval);
             return Ok(());
         }
-        let standing = stored.map_or_else(churn::Standing::default, |s| churn::Standing {
-            listed_before: s.url_count > 0,
-            suspect_at: s.suspect_at,
-            sketch: s.sketch.clone(),
-            generated_until: s.generated_until,
-        });
+        // A run reads the site's own pages, not a file it is handed, and comes once an interval: no churn check holds it back.
+        let standing = churn::Standing::default();
         let job = FileJob {
             _permit: None,
             homepage: Some(self.home.clone()),

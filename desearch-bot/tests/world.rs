@@ -1400,3 +1400,39 @@ async fn a_link_run_queues_no_page_that_failed_or_moved_where_robots_txt_disallo
     let stored = |path: &str| buckets.store(host).url(&urls::parse(&format!("http://{host}{path}"), host).unwrap()).unwrap().is_some();
     assert!(stored("/new-home") && !stored("/private/x"));
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_link_run_finding_mostly_new_pages_comes_back_in_its_interval_not_minutes() {
+    let web: Shared = Arc::default();
+    let host = "fresh-links.test";
+    let list = format!("http://{host}/list.xml");
+    {
+        let mut w = web.lock().unwrap();
+        w.add(host, "/list.xml", 200, None, urlset(host, &(0..12).map(|i| format!("/story/{i}")).collect::<Vec<_>>()).as_bytes());
+        w.add(host, "/", 200, None, format!("<html lang=\"en\"><p>{ENGLISH}</p><a href=\"/p1\">1</a><a href=\"/p2\">2</a></html>").as_bytes());
+        for part in ["p1", "p2"] {
+            let links: String = (0..300).map(|i| format!("<a href=\"/x/x/x/{part}-{i}\">{i}</a>")).collect();
+            w.add(host, &format!("/{part}"), 200, None, format!("<html lang=\"en\"><p>{ENGLISH}</p>{links}</html>").as_bytes());
+        }
+    }
+    let now = chrono::Utc::now().timestamp();
+    let (buckets, _crawl) = crawl_prepared(web.clone(), &[host], "fresh-links", |buckets| {
+        buckets.allow(&Allowed::of([host]));
+        let mut record = records::new_domain(Some(1), Some("new_generic"), &[], State::Active, None, Some(0));
+        for (name, at) in [("robots", now), ("checked", now), ("ok", now)] {
+            record.insert(name.into(), at.into());
+        }
+        record.insert("lang".into(), "en".into());
+        let mut changes = Changes::default();
+        changes.domain(host, &record);
+        let (home, links) = (format!("http://{host}/"), format!("https://{host}/#links"));
+        for (url, kind, urls, next) in [(list.clone(), "urlset", 12, 0), (home, "homepage", 3, now + 86_400), (links, "links", 600, 0)] {
+            changes.sitemap(host, &url, serde_json::json!({"id": sitemap_id(&url), "kind": kind, "depth": 0, "status": "ok", "urls": urls, "next": next}).as_object().unwrap());
+        }
+        buckets.store(host).write(changes).unwrap();
+    })
+    .await;
+    let links = buckets.store(host).sitemap(host, &format!("https://{host}/#links")).unwrap().unwrap();
+    assert!(links["next"].as_i64().unwrap() - now > 86_400, "no second run minutes later: {links:?}");
+    assert!(buckets.store(host).url(&urls::parse(&format!("http://{host}/x/x/x/p2-7"), host).unwrap()).unwrap().is_some(), "and its 600 pages are kept");
+}
