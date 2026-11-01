@@ -953,7 +953,7 @@ impl Run<'_> {
             let answer = match self.get(&page, MAX_HOMEPAGE_BYTES, None, None).await {
                 Ok(answer) => answer,
                 Err(error) => {
-                    slots.connected(ip, !matches!(error.as_str(), "ConnectionTimeoutError" | "SocketTimeoutError" | "TimeoutError" | "ClientConnectorError"));
+                    slots.connected(ip, !refused_connection(&error));
                     failing += 1;
                     continue;
                 }
@@ -1547,6 +1547,11 @@ fn fetchable(url: &str) -> bool {
         && !segments.iter().any(|segment| segments.iter().filter(|other| other == &segment).count() >= 3)
 }
 
+/// Whether a failed request never got a connection: refused, or timed out connecting; a slow answer or a bad certificate did connect.
+fn refused_connection(error: &str) -> bool {
+    matches!(error, "ConnectionTimeoutError" | "ClientConnectorError")
+}
+
 /// Whether a homepage or link listing: read only while the site qualifies, not on a sitemap's schedule.
 pub fn is_listing(kind: Option<&str>) -> bool {
     matches!(kind, Some(HOMEPAGE_KIND | LINKS_KIND))
@@ -1675,6 +1680,16 @@ mod tests {
             slots.connected(other, connected);
         }
         assert!(slots.claim(other).is_some(), "one that connects in between starts the count again");
+    }
+
+    #[test]
+    fn only_a_connection_that_never_opens_counts_against_an_address() {
+        for error in ["ConnectionTimeoutError", "ClientConnectorError"] {
+            assert!(refused_connection(error), "{error}");
+        }
+        for error in ["SocketTimeoutError", "TimeoutError", "ClientPayloadError", "ClientConnectorSSLError", "ClientConnectorCertificateError", "ClientConnectorDNSError", "ServerDisconnectedError"] {
+            assert!(!refused_connection(error), "{error}: a slow or broken answer from one site says nothing about its neighbours");
+        }
     }
 
     #[test]
