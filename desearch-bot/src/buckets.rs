@@ -233,10 +233,11 @@ pub struct BucketStore {
     pub(crate) hub_refreshed: Mutex<HashMap<String, (u32, u32)>>,
     /// When each host may be asked again, as the last run on it left its clock, so a run right after another keeps its crawl delay.
     next_ask: Mutex<HashMap<String, tokio::time::Instant>>,
+    next_ask_writes: AtomicU64,
 }
 
-/// Hosts' request clocks kept before those already past their time are dropped.
-const NEXT_ASK_KEPT: usize = 100_000;
+/// Hosts' request clocks are pruned of those already past their time every this many writes, so only hosts asked lately stay.
+const NEXT_ASK_PRUNE: u64 = 256;
 
 impl BucketStore {
     /// When a run on the host may send its first request, as the last run on it left its clock.
@@ -246,7 +247,7 @@ impl BucketStore {
 
     pub(crate) fn asked(&self, host: &str, next: tokio::time::Instant) {
         let mut kept = self.next_ask.lock().unwrap_or_else(|e| e.into_inner());
-        if kept.len() >= NEXT_ASK_KEPT {
+        if self.next_ask_writes.fetch_add(1, Ordering::Relaxed) % NEXT_ASK_PRUNE == NEXT_ASK_PRUNE - 1 {
             let now = tokio::time::Instant::now();
             kept.retain(|_, at| *at > now);
         }
@@ -267,6 +268,7 @@ impl BucketStore {
             capped: Mutex::new(HashSet::new()),
             hub_refreshed: Mutex::new(HashMap::new()),
             next_ask: Mutex::new(HashMap::new()),
+            next_ask_writes: AtomicU64::new(0),
             floor_dropped: AtomicU64::new(0),
         })
     }
@@ -894,6 +896,21 @@ fn encode(record: &Json) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hosts_request_clocks_keep_only_those_still_running() {
+        let dir = std::env::temp_dir().join(format!("desearch-bot-clocks-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = BucketStore::open(&dir, &Resources::new(8 << 20, 8 << 20, 1)).unwrap();
+        let (past, ahead) = (tokio::time::Instant::now(), tokio::time::Instant::now() + std::time::Duration::from_secs(60));
+        for i in 0..1_000 {
+            store.asked(&format!("host-{i}.test"), if i % 100 == 0 { ahead } else { past });
+        }
+        let kept = store.next_ask.lock().unwrap().len();
+        assert!(kept < 2 * NEXT_ASK_PRUNE as usize, "{kept} clocks kept");
+        assert_eq!(store.next_ask("host-900.test"), Some(ahead), "one still running stays");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn stores_compress_and_share_the_cache() {
