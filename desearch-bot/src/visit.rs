@@ -485,7 +485,7 @@ impl Visitor {
             following: false,
             home_known: false,
             site_peer: None,
-            guess_refused: false,
+            refused: false,
         };
         run.go().await?;
         Ok(run.result)
@@ -527,8 +527,8 @@ struct Run<'a> {
     home_known: bool,
     /// The address the site's own host last answered from on this visit.
     site_peer: Option<IpAddr>,
-    /// A guess was refused or rate limited.
-    guess_refused: bool,
+    /// A sitemap, guess or homepage read on this visit was refused or rate limited.
+    refused: bool,
 }
 
 impl Run<'_> {
@@ -684,7 +684,7 @@ impl Run<'_> {
             let Some((url, depth, parent, index_date, force)) = queue.pop_front() else {
                 break;
             };
-            if seen.contains(&url) || ((self.found || self.guess_refused) && self.guesses.contains(&url)) {
+            if seen.contains(&url) || ((self.found || self.refused) && self.guesses.contains(&url)) {
                 continue;
             }
             seen.insert(url.clone());
@@ -753,9 +753,9 @@ impl Run<'_> {
         if failing && self.transient.is_none() {
             self.transient = Some(answer.as_ref().map_or_else(|| error.clone().unwrap_or_else(|| "unknown".into()), |a| format!("sitemap_{}", a.status)));
         }
+        // A site that refuses a read, or asks us to slow down, gets no more guesses and no link work.
+        self.refused |= answer.as_ref().is_some_and(|a| matches!(a.status, 401 | 402 | 403 | 429));
         if self.guesses.contains(&url) && answer.as_ref().is_none_or(|a| a.status != 200) {
-            // A site that refuses a guess, or asks us to slow down, gets no more of them.
-            self.guess_refused |= answer.as_ref().is_some_and(|a| matches!(a.status, 401 | 402 | 403 | 429));
             return Ok(Vec::new());
         }
         let i = self.update(&url, depth, parent, index_date, stored);
@@ -916,9 +916,9 @@ impl Run<'_> {
 
     /// When this visit follows the site's links, how often runs come: once its last run is due, unless the disk runs low or the site is failing.
     fn links_due(&self) -> Option<i64> {
-        // A site whose robots.txt refuses us or asks us to slow down gets no link work.
+        // A site whose robots.txt or sitemaps refuse us or ask us to slow down gets no link work.
         let robots = self.result.robots_status.or(self.known.robots_status);
-        if self.result.cut_short || !self.home_known || robots.is_some_and(|status| matches!(status, 401 | 402 | 403 | 429)) || self.visitor.pause.load(Ordering::Relaxed) {
+        if self.result.cut_short || self.refused || !self.home_known || robots.is_some_and(|status| matches!(status, 401 | 402 | 403 | 429)) || self.visitor.pause.load(Ordering::Relaxed) {
             return None;
         }
         let every = self.links_every()?;

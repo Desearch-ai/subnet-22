@@ -1489,3 +1489,24 @@ async fn a_site_whose_robots_txt_refuses_us_gets_no_link_work() {
     let paths = |web: &Shared| web.lock().unwrap().hits.iter().map(|(_, path, _)| path.clone()).collect::<Vec<_>>();
     assert_eq!(paths(&off_web), paths(&thin_web), "not one request more");
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_site_that_refuses_a_sitemap_or_a_guess_gets_no_link_work() {
+    for (case, robots, refusing) in [("named", "Sitemap: http://{host}/news.xml\n", "/news.xml"), ("guessed", "", "/sitemap.xml")] {
+        let (off_web, thin_web): (Shared, Shared) = (Arc::default(), Arc::default());
+        let (off_host, thin_host): (&'static str, &'static str) = (format!("{case}-off.test").leak(), format!("{case}-thin.test").leak());
+        for (web, host) in [(&off_web, off_host), (&thin_web, thin_host)] {
+            deep_site(web, host);
+            let mut w = web.lock().unwrap();
+            w.add(host, "/robots.txt", 200, None, format!("User-agent: *\n{}", robots.replace("{host}", host)).as_bytes());
+            w.add(host, refusing, 403, None, b"denied");
+        }
+        let listed = |host: &'static str| move |buckets: &Arc<Buckets>| buckets.allow(&Allowed::of([host]));
+        let off = verdict(off_web.clone(), off_host, &format!("{case}-off"), FollowLinks::Off, false, listed(off_host)).await;
+        let thin = verdict(thin_web.clone(), thin_host, &format!("{case}-thin"), FollowLinks::Thin, false, listed(thin_host)).await;
+        assert_eq!(off, thin, "{case}");
+        let paths = |web: &Shared| web.lock().unwrap().hits.iter().map(|(_, path, _)| path.clone()).collect::<Vec<_>>();
+        assert_eq!(paths(&off_web), ["/robots.txt", refusing], "{case}");
+        assert_eq!(paths(&off_web), paths(&thin_web), "{case}: not one request more");
+    }
+}
