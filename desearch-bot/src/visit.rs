@@ -166,6 +166,8 @@ pub struct Known {
     pub canonical_host: Option<String>,
     /// The bare host had no DNS record when last read and its www host answered.
     pub www_only: bool,
+    /// When the site's own recheck is due, which link work may come before.
+    pub recheck_at: Option<i64>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -229,6 +231,8 @@ pub struct Visit {
     pub aside: i64,
     /// Why link work failed on our side; the verdict stands.
     pub links_error: Option<String>,
+    /// The visit came for link work alone and leaves the site's verdict as it was.
+    pub links_only: bool,
 }
 
 impl Visit {
@@ -261,6 +265,7 @@ impl Visit {
             links_wait: None,
             aside: 0,
             links_error: None,
+            links_only: false,
         }
     }
 }
@@ -568,6 +573,9 @@ struct Run<'a> {
 
 impl Run<'_> {
     async fn go(&mut self) -> Result<(), Crash> {
+        if self.links_alone() {
+            return self.links_only().await;
+        }
         let roots = if self.robots_due() {
             match self.robots().await? {
                 Some(roots) => roots,
@@ -588,6 +596,31 @@ impl Run<'_> {
                 if let Err(Crash(error)) = self.links(every).await {
                     self.result.links_error = Some(error);
                 }
+            }
+        }
+        Ok(())
+    }
+
+    /// Whether the visit came for link work alone, a run due or waiting for a slot, while the site's own recheck is not due for a while yet, nor an active site's sitemap.
+    fn links_alone(&self) -> bool {
+        let sitemap_due = self.known.state == State::Active && self.known.sitemaps.values().any(|s| !is_listing(s.kind.as_deref()) && due(s, self.now));
+        self.visitor.follow_links != FollowLinks::Off
+            && matches!(self.known.state, State::Active | State::NoSitemap)
+            && self.known.recheck_at.is_some_and(|at| at - self.now > HOUR)
+            && !sitemap_due
+    }
+
+    /// Link work on what earlier visits read: robots.txt, sitemaps and the homepage are not asked again, and a run that cannot start asks nothing.
+    async fn links_only(&mut self) -> Result<(), Crash> {
+        self.result.links_only = true;
+        let homes: Vec<&KnownSitemap> = self.known.sitemaps.values().filter(|s| s.depth == 0 && s.kind.as_deref() != Some(LINKS_KIND) && self.is_homepage(&s.url, Some(s))).collect();
+        self.home_known = !homes.is_empty();
+        if let Some(home) = homes.iter().rev().max_by_key(|s| (s.ok, s.fetched_at)).map(|s| s.url.clone()) {
+            self.home = home;
+        }
+        if let Some(every) = self.links_due() {
+            if let Err(Crash(error)) = self.links(every).await {
+                self.result.links_error = Some(error);
             }
         }
         Ok(())

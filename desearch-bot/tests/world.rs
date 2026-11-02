@@ -787,7 +787,7 @@ async fn crawl_adjusted(
         heavy: Slots::new(1),
         links,
         follow_links,
-        resolver: None,
+        resolver: Some(Arc::new(TestResolver { addr, known: hosts.iter().chain(also).copied().collect() })),
     };
     adjust(&mut visitor);
     let mut crawl = Loop::new(buckets.clone(), Arc::new(visitor), 16, Registry::offline(), HashSet::new());
@@ -1930,6 +1930,39 @@ async fn a_link_run_reads_the_homepage_the_visit_read_without_asking_again() {
     assert_eq!(hits.iter().filter(|path| *path == "/").count(), 1, "{hits:?}");
     assert!(hits.contains(&"/a".to_string()), "and the run went on from it: {hits:?}");
     assert!(buckets.store(host).sitemap(host, &format!("https://{host}/#links")).unwrap().is_some());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_site_waiting_for_a_link_slot_is_asked_nothing_until_one_is_free() {
+    let web: Shared = Arc::default();
+    let host = "slot-wait.test";
+    deep_site(&web, host);
+    let slots = Slots::new(1);
+    let held = slots.try_take().unwrap();
+    let (buckets, mut crawl) = crawl_following(web.clone(), &[host], "slot-wait", FollowLinks::Thin, slots.clone(), |b| b.allow(&Allowed::of([host]))).await;
+    let now = chrono::Utc::now().timestamp();
+    let record = buckets.store(host).domain(host).unwrap().unwrap();
+    let (due, recheck) = (record["due"].as_i64().unwrap(), record["recheck"].as_i64().unwrap());
+    assert!(due < recheck && recheck - now > 7 * 86_400, "back sooner for its run than for its recheck: {record:?}");
+    let come_back = |crawl: &mut Loop| {
+        let mut record = buckets.store(host).domain(host).unwrap().unwrap();
+        record.insert("due".into(), now.into());
+        let mut changes = Changes::default();
+        changes.domain(host, &record);
+        buckets.store(host).write(changes).unwrap();
+        crawl.load().unwrap();
+    };
+    let asked = web.lock().unwrap().hits.len();
+    come_back(&mut crawl);
+    assert_eq!(crawl.step().await.unwrap(), 1);
+    assert_eq!(web.lock().unwrap().hits.len(), asked, "with every slot still taken, the site is asked nothing");
+    let after = buckets.store(host).domain(host).unwrap().unwrap();
+    assert_eq!((&after["state"], &after["reason"], &after["recheck"]), (&record["state"], &record["reason"], &record["recheck"]), "and its verdict stands");
+    drop(held);
+    come_back(&mut crawl);
+    assert_eq!(crawl.step().await.unwrap(), 1);
+    let hits: Vec<String> = web.lock().unwrap().hits[asked..].iter().map(|(_, path, _)| path.clone()).collect();
+    assert!(hits.contains(&"/a".to_string()) && !hits.contains(&"/robots.txt".to_string()), "a free slot runs the links alone: {hits:?}");
 }
 
 /// An active site read an hour ago, its robots.txt rules disallowing /site, with these sitemaps stored at these next times.

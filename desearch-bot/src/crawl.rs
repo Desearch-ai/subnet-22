@@ -57,11 +57,29 @@ pub struct DomainWrite {
     pub checked_at: i64,
     /// Due again at once, to keep reading sitemaps found but not read yet.
     pub backlog: bool,
+    /// When the site's own recheck is due, which link work may come before.
+    pub recheck_at: Option<i64>,
     pub visit: Visit,
 }
 
 /// The state a visit leaves a domain in, and when the loop should come back to it.
 pub fn plan(known: &Known, visit: Visit, now: i64, rng: &mut impl Rng) -> DomainWrite {
+    if visit.links_only {
+        let due = [known.recheck_at, visit.links_wait].into_iter().flatten().min();
+        return DomainWrite {
+            host: known.host.clone(),
+            state: known.state,
+            reason: None,
+            failures: known.failures,
+            next_due_at: due,
+            last_ok_at: known.last_ok_at,
+            canonical_host: known.canonical_host.clone(),
+            checked_at: now,
+            backlog: false,
+            recheck_at: known.recheck_at,
+            visit,
+        };
+    }
     // A refusal that may pass, on a recheck, is tried again before its outcome counts.
     let retry = (visit.passing && known.state == State::New).then(|| states::recheck_retry(known.failures, now, rng)).flatten();
     let decision = retry.unwrap_or_else(|| states::decide(known.state, visit.outcome, known.failures, known.last_ok_at, now, rng));
@@ -79,6 +97,7 @@ pub fn plan(known: &Known, visit: Visit, now: i64, rng: &mut impl Rng) -> Domain
             due = Some(now + CUT_SHORT_WAIT);
         }
     }
+    let recheck_at = due;
     if let Some(at) = visit.links_wait.filter(|_| matches!(decision.state, State::Active | State::NoSitemap)) {
         due = due.map(|d| d.min(at));
     }
@@ -98,6 +117,7 @@ pub fn plan(known: &Known, visit: Visit, now: i64, rng: &mut impl Rng) -> Domain
         canonical_host,
         checked_at: now,
         backlog: decision.state == State::Active && due.is_some_and(|d| d <= now),
+        recheck_at,
         visit,
     }
 }
@@ -114,6 +134,7 @@ pub fn crashed(known: &Known, error: &str, now: i64) -> DomainWrite {
         canonical_host: known.canonical_host.clone(),
         checked_at: now,
         backlog: false,
+        recheck_at: None,
         visit: Visit::new(&known.host),
     }
 }
@@ -465,7 +486,7 @@ impl Loop {
         }
         self.stats.new += write.visit.new;
         self.stats.listed += write.visit.listed;
-        let outcome = format!("{} {}", write.state.as_str(), write.reason.as_deref().unwrap_or("-"));
+        let outcome = if write.visit.links_only { "links_only -".to_string() } else { format!("{} {}", write.state.as_str(), write.reason.as_deref().unwrap_or("-")) };
         *self.stats.outcomes.entry(outcome).or_default() += 1;
         if let Some(error) = &write.visit.links_error {
             self.stats.link_errors += 1;
@@ -501,7 +522,9 @@ impl Loop {
         changes.domain(&write.host, &record);
         store.write(changes)?;
         self.schedule(&write.host, &record, write.backlog);
-        self.unreported.push(Report::of(&write, urls));
+        if !write.visit.links_only {
+            self.unreported.push(Report::of(&write, urls));
+        }
         Ok(())
     }
 
@@ -565,6 +588,8 @@ impl Loop {
                 continue;
             }
             record.insert("due".into(), (now + rng.gen_range(0..=(self.wake_by - now).max(0))).into());
+            // A woken domain is read in full, not for its link work alone.
+            record.remove("recheck");
             let mut changes = Changes::default();
             changes.domain(&host, &record);
             match self.buckets.store(&host).write(changes) {

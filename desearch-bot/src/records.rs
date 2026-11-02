@@ -91,6 +91,7 @@ pub fn known(host: &str, domain: &Json, sitemaps: &[(String, Json)]) -> Option<K
         sitemaps: sitemaps.iter().filter_map(|(url, record)| Some((url.clone(), known_sitemap(url, record)?))).collect(),
         canonical_host: text(domain.get("canonical")),
         www_only: domain.get("www").and_then(Value::as_bool).unwrap_or(false),
+        recheck_at: moment(domain.get("recheck")),
     })
 }
 
@@ -141,10 +142,14 @@ fn known_sitemap(url: &str, record: &Json) -> Option<KnownSitemap> {
 pub fn written_domain(previous: &Json, write: &DomainWrite, url_count: i64) -> Json {
     let visit = &write.visit;
     let mut record = previous.clone();
+    record.insert("due".into(), seconds(write.next_due_at));
+    record.insert("recheck".into(), seconds(write.recheck_at));
+    if visit.links_only {
+        return record;
+    }
     record.insert("state".into(), write.state.as_str().into());
     record.insert("reason".into(), write.reason.clone().into());
     record.insert("failures".into(), write.failures.into());
-    record.insert("due".into(), seconds(write.next_due_at));
     record.insert("ok".into(), seconds(write.last_ok_at));
     record.insert("checked".into(), seconds(Some(write.checked_at)));
     record.insert("canonical".into(), write.canonical_host.clone().into());
@@ -331,6 +336,7 @@ mod tests {
                 canonical_host: None,
                 checked_at: 1_700_000_000 * SECOND,
                 backlog: false,
+                recheck_at: None,
                 visit,
             }
         };
