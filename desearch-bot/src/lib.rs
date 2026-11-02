@@ -11,6 +11,7 @@ pub mod hotkey;
 pub mod inbox;
 pub mod isodate;
 pub mod langid;
+pub mod links;
 pub mod listed;
 pub mod net;
 pub mod outcomes;

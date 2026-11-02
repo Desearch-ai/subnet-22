@@ -211,6 +211,8 @@ pub struct Due {
     pub state: String,
     pub due: Option<i64>,
     pub rank: Option<i64>,
+    /// When the domain's link work comes next; none while it has none.
+    pub links_due: Option<i64>,
 }
 
 /// One bucket's domains, their sitemaps and every URL they list.

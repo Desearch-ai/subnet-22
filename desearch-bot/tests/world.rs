@@ -224,7 +224,8 @@ async fn crawls_a_small_web() {
         heavy: Slots::new(1),
         links: Slots::new(2),
         follow_links: FollowLinks::Thin,
-        resolver: None,
+        resolver: Some(Arc::new(TestResolver { addr, known: ["site.test", "blocked.test", "empty.test"].into() })),
+        links_cpu: Slots::new(2),
     };
     let mut crawl = Loop::new(buckets.clone(), Arc::new(visitor), 16, Registry::offline(), HashSet::new());
     assert_eq!(crawl.load().unwrap(), 4);
@@ -315,7 +316,8 @@ async fn a_sitemap_listing_new_urls_on_every_read_is_held_back_while_one_that_se
         heavy: Slots::new(1),
         links: Slots::new(2),
         follow_links: FollowLinks::Thin,
-        resolver: None,
+        resolver: Some(Arc::new(TestResolver { addr, known: hosts.into() })),
+        links_cpu: Slots::new(2),
     };
     let mut crawl = Loop::new(buckets.clone(), Arc::new(visitor), 16, Registry::offline(), HashSet::new());
     let stored = |host: &str, path: &str| buckets.store(host).url(&urls::parse(&format!("http://{host}{path}"), host).unwrap()).unwrap().is_some();
@@ -410,7 +412,8 @@ async fn a_subdomain_kept_as_a_domain_of_its_own_is_crawled_on_its_own_host_with
         heavy: Slots::new(1),
         links: Slots::new(2),
         follow_links: FollowLinks::Thin,
-        resolver: None,
+        resolver: Some(Arc::new(TestResolver { addr, known: [host, "site.test"].into() })),
+        links_cpu: Slots::new(2),
     };
     let mut crawl = Loop::new(buckets.clone(), Arc::new(visitor), 16, Registry::offline(), HashSet::new());
     assert_eq!(crawl.load().unwrap(), 1);
@@ -475,7 +478,8 @@ async fn a_homepage_that_answers_with_an_error_keeps_its_status_on_the_record() 
         heavy: Slots::new(1),
         links: Slots::new(2),
         follow_links: FollowLinks::Thin,
-        resolver: None,
+        resolver: Some(Arc::new(TestResolver { addr, known: hosts.iter().map(|(h, _)| *h).collect() })),
+        links_cpu: Slots::new(2),
     };
     let mut crawl = Loop::new(buckets.clone(), Arc::new(visitor), 16, Registry::offline(), HashSet::new());
     assert_eq!(crawl.load().unwrap(), hosts.len());
@@ -530,7 +534,8 @@ async fn a_feed_named_as_a_sitemap_is_read_as_one() {
         heavy: Slots::new(1),
         links: Slots::new(2),
         follow_links: FollowLinks::Thin,
-        resolver: None,
+        resolver: Some(Arc::new(TestResolver { addr, known: [host].into() })),
+        links_cpu: Slots::new(2),
     };
     let mut crawl = Loop::new(buckets.clone(), Arc::new(visitor), 16, Registry::offline(), HashSet::new());
     assert_eq!(crawl.load().unwrap(), 1);
@@ -595,6 +600,7 @@ async fn an_index_entry_naming_several_sitemaps_reads_each_and_their_cdata_locat
         links: Slots::new(2),
         follow_links: FollowLinks::Off,
         resolver: Some(Arc::new(TestResolver { addr, known: [host].into() })),
+        links_cpu: Slots::new(2),
     };
     let mut crawl = Loop::new(buckets.clone(), Arc::new(visitor), 16, Registry::offline(), HashSet::new());
     assert_eq!(crawl.load().unwrap(), 1);
@@ -649,7 +655,8 @@ async fn a_landing_site_lists_its_homepage_and_the_pages_it_links_to_beside_its_
         heavy: Slots::new(1),
         links: Slots::new(2),
         follow_links: FollowLinks::Thin,
-        resolver: None,
+        resolver: Some(Arc::new(TestResolver { addr, known: [host].into() })),
+        links_cpu: Slots::new(2),
     };
     let mut crawl = Loop::new(buckets.clone(), Arc::new(visitor), 16, Registry::offline(), HashSet::new());
     assert_eq!(crawl.load().unwrap(), 1);
@@ -715,7 +722,8 @@ async fn visit_seeded(web: Shared, hosts: &[&'static str], resolves: &[&'static 
         heavy: Slots::new(1),
         links: Slots::new(2),
         follow_links: FollowLinks::Thin,
-        resolver: None,
+        resolver: Some(Arc::new(TestResolver { addr, known: resolves.iter().copied().collect() })),
+        links_cpu: Slots::new(2),
     };
     let mut crawl = Loop::new(buckets.clone(), Arc::new(visitor), 16, Registry::offline(), HashSet::new());
     assert_eq!(crawl.load().unwrap(), hosts.len());
@@ -730,7 +738,7 @@ async fn crawl_prepared(web: Shared, hosts: &[&'static str], name: &str, prepare
 }
 
 async fn crawl_following(web: Shared, hosts: &[&'static str], name: &str, follow_links: FollowLinks, links: Slots, prepare: impl FnOnce(&Arc<Buckets>)) -> (Arc<Buckets>, Loop) {
-    crawl_adjusted(web, hosts, &[], name, follow_links, links, prepare, |_| {}).await
+    crawl_adjusted(web, hosts, &[], name, follow_links, links, (0, 0), prepare, |_| {}).await
 }
 
 /// How long a test request may take before it fails.
@@ -738,7 +746,7 @@ const TEST_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// As `crawl_following`, with more hosts that resolve, such as a site's www host.
 async fn crawl_resolving(web: Shared, hosts: &[&'static str], also: &[&'static str], name: &str, follow_links: FollowLinks, prepare: impl FnOnce(&Arc<Buckets>)) -> (Arc<Buckets>, Loop) {
-    crawl_adjusted(web, hosts, also, name, follow_links, Slots::new(2), prepare, |_| {}).await
+    crawl_adjusted(web, hosts, also, name, follow_links, Slots::new(2), (0, 0), prepare, |_| {}).await
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -749,6 +757,7 @@ async fn crawl_adjusted(
     name: &str,
     follow_links: FollowLinks,
     links: Slots,
+    paced: (u64, i64),
     prepare: impl FnOnce(&Arc<Buckets>),
     adjust: impl FnOnce(&mut Visitor),
 ) -> (Arc<Buckets>, Loop) {
@@ -788,11 +797,13 @@ async fn crawl_adjusted(
         links,
         follow_links,
         resolver: Some(Arc::new(TestResolver { addr, known: hosts.iter().chain(also).copied().collect() })),
+        links_cpu: Slots::new(2),
     };
     adjust(&mut visitor);
-    let mut crawl = Loop::new(buckets.clone(), Arc::new(visitor), 16, Registry::offline(), HashSet::new());
+    let mut crawl = Loop::new(buckets.clone(), Arc::new(visitor), 16, Registry::offline(), HashSet::new()).with_links(paced.0, paced.1);
     assert_eq!(crawl.load().unwrap(), hosts.len());
-    assert_eq!(crawl.step().await.unwrap(), hosts.len());
+    // A site queued for link work alone is not visited.
+    assert!(crawl.step().await.unwrap() <= hosts.len());
     (buckets, crawl)
 }
 
@@ -1096,11 +1107,15 @@ async fn a_link_run_that_finds_every_slot_taken_waits_minutes_to_hours_and_nothi
     deep_site(&web, host);
     let links = Slots::new(1);
     let _held = links.try_take().unwrap();
-    let (buckets, _crawl) = crawl_following(web.clone(), &[host], "links-wait", FollowLinks::Thin, links, |buckets| buckets.allow(&Allowed::of([host]))).await;
+    let (buckets, mut crawl) = crawl_following(web.clone(), &[host], "links-wait", FollowLinks::Thin, links, |buckets| buckets.allow(&Allowed::of([host]))).await;
     let record = buckets.store(host).domain(host).unwrap().unwrap();
-    let wait = record["due"].as_i64().unwrap() - chrono::Utc::now().timestamp();
-    assert!((10 * 60 - 5..=2 * 3_600 + 5).contains(&wait), "due in {wait} s");
+    let now = chrono::Utc::now().timestamp();
+    assert!(record["due"].as_i64().unwrap() - now > 7 * 86_400, "its visits keep their own time: {record:?}");
     assert!(buckets.store(host).sitemap(host, &format!("https://{host}/#links")).unwrap().is_none());
+    let asked = web.lock().unwrap().hits.len();
+    assert_eq!(crawl.step().await.unwrap(), 0);
+    assert_eq!(web.lock().unwrap().hits.len(), asked, "its link work waits minutes on the queue, asking nothing meanwhile");
+    assert_eq!(crawl.links_queued().0, 1);
 
     let web: Shared = Arc::default();
     let host = "grown.test";
@@ -1341,14 +1356,17 @@ async fn sites_on_one_address_take_their_link_runs_one_at_a_time() {
     for host in hosts {
         deep_site(&web, host);
     }
-    let (buckets, _crawl) = crawl_prepared(web.clone(), &hosts, "shared-address", |buckets| buckets.allow(&Allowed::of(hosts))).await;
+    let (buckets, mut crawl) = crawl_prepared(web.clone(), &hosts, "shared-address", |buckets| buckets.allow(&Allowed::of(hosts))).await;
     let ran: Vec<&str> = hosts.iter().copied().filter(|host| buckets.store(host).sitemap(host, &format!("https://{host}/#links")).unwrap().is_some()).collect();
-    assert_eq!(ran.len(), 1, "they all answer from 127.0.0.1: {ran:?}");
+    assert!(!ran.is_empty() && ran.len() < hosts.len(), "they all answer from 127.0.0.1, so a run waits while another holds it: {ran:?}");
     for host in hosts.iter().filter(|host| !ran.contains(host)) {
-        let wait = buckets.store(host).domain(host).unwrap().unwrap()["due"].as_i64().unwrap() - chrono::Utc::now().timestamp();
-        assert!((10 * 60 - 5..=2 * 3_600 + 5).contains(&wait), "{host} waits as for a busy slot, never a failed run: {wait} s");
-        assert!(buckets.store(host).sitemap(host, &format!("https://{host}/#links")).unwrap().is_none());
+        let record = buckets.store(host).domain(host).unwrap().unwrap();
+        assert!(record["due"].as_i64().unwrap() - chrono::Utc::now().timestamp() > 7 * 86_400, "{host}: its visits keep their own time");
+        assert!(buckets.store(host).sitemap(host, &format!("https://{host}/#links")).unwrap().is_none(), "{host}: a wait is never a failed run");
     }
+    let asked = web.lock().unwrap().hits.len();
+    assert_eq!(crawl.step().await.unwrap(), 0);
+    assert_eq!(web.lock().unwrap().hits.len(), asked, "the waiting runs come back in minutes, not at once");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1694,6 +1712,7 @@ async fn link_work_failing_on_our_side_keeps_the_verdict() {
         "links-crash",
         FollowLinks::Thin,
         Slots::new(2),
+        (0, 0),
         |buckets| buckets.allow(&Allowed::of([host])),
         // Only the link run's homepage check asks for the language of a site without sitemaps.
         |visitor| visitor.language = Arc::new(|_: &str| panic!("language detection broke")),
@@ -1887,6 +1906,7 @@ async fn link_work_failing_on_our_side_waits_its_interval_before_running_again()
         "links-crash-again",
         FollowLinks::Thin,
         Slots::new(2),
+        (0, 0),
         |buckets| buckets.allow(&Allowed::of([host])),
         |visitor| visitor.language = Arc::new(|_: &str| panic!("language detection broke")),
     )
@@ -1912,7 +1932,7 @@ async fn pages_slow_to_answer_never_stop_link_runs_at_their_address() {
     }
     deep_site(&web, next);
     // Requests here give up after 800 ms, well past the 200 ms a connection may take.
-    let (_buckets, _crawl) = crawl_adjusted(web.clone(), &[slow], &[], "slow-pages", FollowLinks::Thin, slots.clone(), |b| b.allow(&Allowed::of([slow])), |visitor| {
+    let (_buckets, _crawl) = crawl_adjusted(web.clone(), &[slow], &[], "slow-pages", FollowLinks::Thin, slots.clone(), (0, 0), |b| b.allow(&Allowed::of([slow])), |visitor| {
         visitor.connect_timeout = Duration::from_millis(200);
     })
     .await;
@@ -1922,19 +1942,19 @@ async fn pages_slow_to_answer_never_stop_link_runs_at_their_address() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_link_run_reads_the_homepage_the_visit_read_without_asking_again() {
+async fn link_work_reads_the_homepage_once_for_its_check_and_its_first_page() {
     let web: Shared = Arc::default();
     let host = "home-once.test";
     deep_site(&web, host);
     let (buckets, _crawl) = crawl_following(web.clone(), &[host], "home-once", FollowLinks::Thin, Slots::new(2), |buckets| buckets.allow(&Allowed::of([host]))).await;
     let hits: Vec<String> = web.lock().unwrap().hits.iter().map(|(_, path, _)| path.clone()).collect();
-    assert_eq!(hits.iter().filter(|path| *path == "/").count(), 1, "{hits:?}");
+    assert_eq!(hits.iter().filter(|path| *path == "/").count(), 2, "the visit reads it as a guess, link work once more: {hits:?}");
     assert!(hits.contains(&"/a".to_string()), "and the run went on from it: {hits:?}");
     assert!(buckets.store(host).sitemap(host, &format!("https://{host}/#links")).unwrap().is_some());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_site_waiting_for_a_link_slot_is_asked_nothing_until_one_is_free() {
+async fn a_site_waiting_for_a_link_slot_is_asked_nothing_and_never_visited_for_it() {
     let web: Shared = Arc::default();
     let host = "slot-wait.test";
     deep_site(&web, host);
@@ -1943,25 +1963,24 @@ async fn a_site_waiting_for_a_link_slot_is_asked_nothing_until_one_is_free() {
     let (buckets, mut crawl) = crawl_following(web.clone(), &[host], "slot-wait", FollowLinks::Thin, slots.clone(), |b| b.allow(&Allowed::of([host]))).await;
     let now = chrono::Utc::now().timestamp();
     let record = buckets.store(host).domain(host).unwrap().unwrap();
-    let (due, recheck) = (record["due"].as_i64().unwrap(), record["recheck"].as_i64().unwrap());
-    assert!(due < recheck && recheck - now > 7 * 86_400, "back sooner for its run than for its recheck: {record:?}");
-    let come_back = |crawl: &mut Loop| {
+    assert!(record["due"].as_i64().unwrap() - now > 7 * 86_400, "waiting for a slot never brings a visit sooner: {record:?}");
+    let turn_comes = |crawl: &mut Loop| {
         let mut record = buckets.store(host).domain(host).unwrap().unwrap();
-        record.insert("due".into(), now.into());
+        record.insert("links_due".into(), now.into());
         let mut changes = Changes::default();
         changes.domain(host, &record);
         buckets.store(host).write(changes).unwrap();
         crawl.load().unwrap();
     };
     let asked = web.lock().unwrap().hits.len();
-    come_back(&mut crawl);
-    assert_eq!(crawl.step().await.unwrap(), 1);
+    turn_comes(&mut crawl);
+    assert_eq!(crawl.step().await.unwrap(), 0, "no visit");
     assert_eq!(web.lock().unwrap().hits.len(), asked, "with every slot still taken, the site is asked nothing");
     let after = buckets.store(host).domain(host).unwrap().unwrap();
-    assert_eq!((&after["state"], &after["reason"], &after["recheck"]), (&record["state"], &record["reason"], &record["recheck"]), "and its verdict stands");
+    assert_eq!((&after["state"], &after["reason"], &after["due"]), (&record["state"], &record["reason"], &record["due"]), "and its verdict and visits stand");
     drop(held);
-    come_back(&mut crawl);
-    assert_eq!(crawl.step().await.unwrap(), 1);
+    turn_comes(&mut crawl);
+    assert_eq!(crawl.step().await.unwrap(), 0);
     let hits: Vec<String> = web.lock().unwrap().hits[asked..].iter().map(|(_, path, _)| path.clone()).collect();
     assert!(hits.contains(&"/a".to_string()) && !hits.contains(&"/robots.txt".to_string()), "a free slot runs the links alone: {hits:?}");
 }
@@ -1976,15 +1995,15 @@ async fn a_site_without_sitemaps_whose_links_are_followed_comes_back_for_its_wee
     let record = buckets.store(host).domain(host).unwrap().unwrap();
     let links = buckets.store(host).sitemap(host, &format!("https://{host}/#links")).unwrap().unwrap();
     assert_eq!(record["state"].as_str(), Some("no_sitemap"));
-    assert_eq!(record["due"].as_i64(), links["next"].as_i64(), "due for its next run: {record:?}");
-    assert!((record["due"].as_i64().unwrap() - now) <= 7 * 86_400 && record["recheck"].as_i64().unwrap() > record["due"].as_i64().unwrap());
+    assert_eq!(record["links_due"].as_i64(), links["next"].as_i64(), "queued for its next run: {record:?}");
+    assert!((record["links_due"].as_i64().unwrap() - now) <= 7 * 86_400 && record["due"].as_i64().unwrap() - now > 20 * 86_400, "while its visits keep their month");
 }
 
-/// A listed site without sitemaps, its robots.txt and its homepage read eight days ago, its own recheck weeks away: a visit now comes for link work alone.
+/// A listed site without sitemaps, its robots.txt and its homepage read eight days ago, its own recheck weeks away and its link work due now.
 fn waiting_for_links(buckets: &Arc<Buckets>, host: &str, now: i64) {
     buckets.allow(&Allowed::of([host]));
     let mut record = records::new_domain(Some(1), Some("new_generic"), &[], State::NoSitemap, Some("no_sitemap"), Some(0));
-    for (name, at) in [("robots", now - 8 * 86_400), ("checked", now - 8 * 86_400), ("ok", now - 8 * 86_400), ("recheck", now + 20 * 86_400), ("recheck_of", now - 8 * 86_400)] {
+    for (name, at) in [("robots", now - 8 * 86_400), ("checked", now - 8 * 86_400), ("ok", now - 8 * 86_400), ("due", now + 20 * 86_400), ("links_due", now)] {
         record.insert(name.into(), at.into());
     }
     record.insert("robots_status".into(), 200.into());
@@ -2027,6 +2046,90 @@ async fn a_link_run_refused_partway_keeps_what_it_read_and_waits_twice_as_long()
     let links = buckets.store(host).sitemap(host, &format!("https://{host}/#links")).unwrap().unwrap();
     assert_eq!(links["status"].as_str(), Some("ok"), "the pages read before it are kept");
     assert!(links["next"].as_i64().unwrap() - now >= 14 * 86_400 - 60, "{links:?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn turning_link_work_on_spreads_first_runs_over_days_and_runs_none_at_once() {
+    let web: Shared = Arc::default();
+    let hosts: Vec<&'static str> = (0..6).map(|i| &*format!("first-wave-{i}.test").leak()).collect();
+    for host in &hosts {
+        deep_site(&web, host);
+    }
+    let spread = 3 * 86_400;
+    let list = hosts.clone();
+    let (buckets, crawl) = crawl_adjusted(web.clone(), &hosts, &[], "first-wave", FollowLinks::Thin, Slots::new(2), (0, spread), move |b| b.allow(&Allowed::of(list)), |_| {}).await;
+    let now = chrono::Utc::now().timestamp();
+    let hits: Vec<String> = web.lock().unwrap().hits.iter().map(|(_, path, _)| path.clone()).collect();
+    assert!(!hits.contains(&"/a".to_string()), "no run yet: {hits:?}");
+    let due: Vec<i64> = hosts.iter().map(|host| buckets.store(host).domain(host).unwrap().unwrap()["links_due"].as_i64().unwrap() - now).collect();
+    assert!(due.iter().all(|&at| (-5..spread).contains(&at)), "each first run at its own spot in three days: {due:?}");
+    assert!(due.iter().collect::<HashSet<_>>().len() > 3, "spread, not bunched: {due:?}");
+    assert_eq!(crawl.links_queued().0, hosts.len());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn link_runs_start_no_faster_than_their_hourly_limit() {
+    let mut ran = Vec::new();
+    for per_hour in [0, 60] {
+        let web: Shared = Arc::default();
+        let hosts: Vec<&'static str> = (0..4).map(|i| &*format!("paced-{per_hour}-{i}.test").leak()).collect();
+        for host in &hosts {
+            deep_site(&web, host);
+        }
+        let list = hosts.clone();
+        let (buckets, _crawl) = crawl_adjusted(web.clone(), &hosts, &[], &format!("paced-{per_hour}"), FollowLinks::Thin, Slots::new(1), (per_hour, 0), move |b| b.allow(&Allowed::of(list)), |_| {}).await;
+        ran.push(hosts.iter().filter(|host| buckets.store(host).sitemap(host, &format!("https://{host}/#links")).unwrap().is_some()).count());
+    }
+    assert_eq!(ran, [4, 1], "with no limit each runs in turn as the runner frees; 60 an hour starts one now and the next a minute on");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn link_work_parses_on_its_own_slots_while_the_visits_hold_every_one_of_theirs() {
+    let web: Shared = Arc::default();
+    let host = "own-cpu.test";
+    deep_site(&web, host);
+    let now = chrono::Utc::now().timestamp();
+    let ran = tokio::time::timeout(Duration::from_secs(60), crawl_adjusted(web.clone(), &[host], &[], "own-cpu", FollowLinks::Thin, Slots::new(2), (0, 0), |b| waiting_for_links(b, host, now), |visitor| {
+        for _ in 0..visitor.cpu.size() {
+            std::mem::forget(visitor.cpu.try_take());
+        }
+    }))
+    .await;
+    let (buckets, _crawl) = ran.expect("link work waits for no visit's parsing");
+    assert!(buckets.store(host).sitemap(host, &format!("https://{host}/#links")).unwrap().is_some());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_queued_site_that_no_longer_qualifies_when_its_turn_comes_is_asked_nothing() {
+    let web: Shared = Arc::default();
+    let (fine, refusing, unlisted, excluded) = ("still-fine.test", "refused-since.test", "unlisted-since.test", "excluded-since.test");
+    for host in [fine, refusing, unlisted, excluded] {
+        deep_site(&web, host);
+    }
+    let now = chrono::Utc::now().timestamp();
+    let (buckets, _crawl) = crawl_following(web.clone(), &[fine, refusing, unlisted, excluded], "requalify", FollowLinks::Thin, Slots::new(4), |b| {
+        for host in [fine, refusing, unlisted, excluded] {
+            waiting_for_links(b, host, now);
+        }
+        b.allow(&Allowed::of([fine, refusing, excluded]));
+        let mut changes = Changes::default();
+        let mut record = b.store(refusing).domain(refusing).unwrap().unwrap();
+        record.insert("robots_status".into(), 403.into());
+        changes.domain(refusing, &record);
+        b.store(refusing).write(changes).unwrap();
+        let mut changes = Changes::default();
+        let mut record = b.store(excluded).domain(excluded).unwrap().unwrap();
+        record.insert("state".into(), "blocked".into());
+        changes.domain(excluded, &record);
+        b.store(excluded).write(changes).unwrap();
+    })
+    .await;
+    let asked: HashSet<String> = web.lock().unwrap().hits.iter().map(|(host, _, _)| host.clone()).collect();
+    assert!(asked.contains(fine), "the site that still qualifies runs");
+    for host in [refusing, unlisted, excluded] {
+        assert!(!asked.contains(host), "{host} is asked nothing");
+        assert!(buckets.store(host).domain(host).unwrap().unwrap().get("links_due").is_none(), "{host} leaves the queue");
+    }
 }
 
 /// An active site read an hour ago, its robots.txt rules disallowing /site, with these sitemaps stored at these next times.

@@ -179,6 +179,15 @@ struct RunArgs {
     /// Visits at once following a listed site's links from its homepage, each for minutes, when its sitemaps list few pages or none; 0 turns them off.
     #[arg(long, default_value_t = 32)]
     links_slots: usize,
+    /// Link runs started in an hour at most, whatever slots are free; 0 sets no limit.
+    #[arg(long, default_value_t = 2000)]
+    links_per_hour: u64,
+    /// Files link work parses at once, apart from the visits' own.
+    #[arg(long, default_value_t = 2)]
+    links_cpu: usize,
+    /// Days a site's first link run may come after it first qualifies, each site at a spot of its own, so turning link work on starts few runs at once.
+    #[arg(long, default_value_t = 3)]
+    links_first_days: i64,
     /// Which listed sites have their links followed: off; thin, those whose sitemaps list under 1,000 pages or none, weekly; or all, those and every whole or news site monthly.
     #[arg(long, value_enum, default_value_t = FollowLinks::Thin)]
     follow_links: FollowLinks,
@@ -348,6 +357,7 @@ async fn run(args: RunArgs) -> Result<()> {
         links: Slots::new(args.links_slots),
         follow_links: args.follow_links,
         resolver: Some(Arc::new(resolver)),
+        links_cpu: Slots::new(args.links_cpu),
     });
     if args.compact {
         let stores = buckets.clone();
@@ -363,7 +373,8 @@ async fn run(args: RunArgs) -> Result<()> {
     }
     let mut crawl = Loop::new(buckets.clone(), visitor, args.concurrency, registry, excluded)
         .with_min_free_disk(args.min_free_gb << 30)
-        .with_shares(args.discovery_share, args.backlog_share);
+        .with_shares(args.discovery_share, args.backlog_share)
+        .with_links(args.links_per_hour, args.links_first_days * 86_400);
     let scheduled = crawl.load()?;
     println!("[rs] {scheduled} domains in {} buckets", owned.len());
 

@@ -166,8 +166,6 @@ pub struct Known {
     pub canonical_host: Option<String>,
     /// The bare host had no DNS record when last read and its www host answered.
     pub www_only: bool,
-    /// When the site's own recheck is due, which link work may come before.
-    pub recheck_at: Option<i64>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -233,8 +231,16 @@ pub struct Visit {
     pub links_error: Option<String>,
     /// The visit came for link work alone and leaves the site's verdict as it was.
     pub links_only: bool,
-    /// When the site's next link run is due, while its links are followed.
-    pub links_next: Option<i64>,
+    /// When the site's link work is due next, as the visit found it; None when it found nothing to say.
+    pub links_at: Option<LinksAt>,
+}
+
+/// When a site's link work comes, which never moves its visits: a first run, spread over days; a run at a time; or none, as it no longer qualifies.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LinksAt {
+    First,
+    At(i64),
+    Never,
 }
 
 impl Visit {
@@ -268,7 +274,7 @@ impl Visit {
             aside: 0,
             links_error: None,
             links_only: false,
-            links_next: None,
+            links_at: None,
         }
     }
 }
@@ -484,15 +490,31 @@ pub struct Visitor {
     pub follow_links: FollowLinks,
     /// Looks up the addresses a link run will ask before it asks them; without it a run learns them from its answers.
     pub resolver: Option<Arc<dyn Resolve>>,
+    /// Parsing for link work, apart from the visits' own.
+    pub links_cpu: Slots,
 }
 
 impl Visitor {
     /// Visit one domain and report everything the visit learned.
     pub async fn visit(&self, known: Arc<Known>, now: i64) -> Result<Visit, Crash> {
+        let mut run = self.run(known, now);
+        run.go().await?;
+        Ok(run.result)
+    }
+
+    /// Link work alone for a site taken off the link queue: its standing is checked again before any request.
+    pub async fn links(&self, known: Arc<Known>, now: i64) -> Visit {
+        let mut run = self.run(known, now);
+        run.result.links_only = true;
+        run.link_work().await;
+        run.result
+    }
+
+    fn run(&self, known: Arc<Known>, now: i64) -> Run<'_> {
         let www_only = known.www_only;
         let home = format!("https://{}{}/", if www_only { "www." } else { "" }, known.host);
         let listed = self.buckets.lists(&known.host);
-        let mut run = Run {
+        Run {
             visitor: self,
             pacer: Pacer::new(known.crawl_delay, self.floor),
             result: Visit {
@@ -523,14 +545,21 @@ impl Visitor {
             home_refused: None,
             connect_failed: false,
             home_read: None,
-        };
-        run.go().await?;
-        Ok(run.result)
+            stored_home: false,
+        }
     }
 
     async fn cpu<T: Send + 'static>(&self, work: impl FnOnce() -> T + Send + 'static) -> Result<T, Crash> {
-        let _permit = self.cpu.take().await?;
+        Self::on(&self.cpu, work).await
+    }
+
+    async fn on<T: Send + 'static>(slots: &Slots, work: impl FnOnce() -> T + Send + 'static) -> Result<T, Crash> {
+        let _permit = slots.take().await?;
         tokio::task::spawn_blocking(work).await.map_err(|_| Crash::new("RuntimeError"))
+    }
+
+    async fn links_cpu<T: Send + 'static>(&self, work: impl FnOnce() -> T + Send + 'static) -> Result<T, Crash> {
+        Self::on(&self.links_cpu, work).await
     }
 }
 
@@ -572,13 +601,12 @@ struct Run<'a> {
     connect_failed: bool,
     /// The homepage as this visit read it, kept for link work to read again without asking.
     home_read: Option<(String, Vec<u8>, HeaderMap)>,
+    /// Link work found the homepage's address in a homepage read before, not only in robots.txt.
+    stored_home: bool,
 }
 
 impl Run<'_> {
     async fn go(&mut self) -> Result<(), Crash> {
-        if self.links_alone() {
-            return self.links_only().await;
-        }
         let roots = if self.robots_due() {
             match self.robots().await? {
                 Some(roots) => roots,
@@ -588,57 +616,65 @@ impl Run<'_> {
             self.roots(&[])?
         };
         self.walk(roots).await?;
-        // Link work comes after the verdict, which it never changes: its pages are only queued.
+        // Link work never runs in a visit and never decides its verdict: the visit only says when it is due.
         let read = self.result.outcome == Outcome::Sitemap;
         self.settle();
         if self.result.outcome == Outcome::Sitemap && self.needs_language() {
             self.language().await?;
         }
         if read && matches!(self.result.outcome, Outcome::Sitemap | Outcome::NoSitemap) {
-            if let Some(every) = self.links_due() {
-                if let Err(Crash(error)) = self.links(every).await {
-                    self.result.links_error = Some(error);
-                }
-            }
-            self.note_links_next();
+            self.result.links_at = self.links_at();
         }
         Ok(())
     }
 
-    /// Whether the visit came for link work alone, a run due or waiting for a slot, while the site's own recheck is not due for a while yet, nor an active site's sitemap.
-    fn links_alone(&self) -> bool {
-        let sitemap_due = self.known.state == State::Active && self.known.sitemaps.values().any(|s| !is_listing(s.kind.as_deref()) && due(s, self.now));
-        self.visitor.follow_links != FollowLinks::Off
-            && matches!(self.known.state, State::Active | State::NoSitemap)
-            && self.known.recheck_at.is_some_and(|at| at - self.now > HOUR)
-            && !sitemap_due
+    /// When this site's link work is due, as this visit leaves it: never once it no longer qualifies; None with links not followed or the disk low.
+    fn links_at(&self) -> Option<LinksAt> {
+        if self.visitor.follow_links == FollowLinks::Off || self.visitor.pause.load(Ordering::Relaxed) {
+            return None;
+        }
+        if self.links_allowed().is_none() {
+            return Some(LinksAt::Never);
+        }
+        Some(match self.known.sitemaps.get(&links_url(&self.known.host)).and_then(|s| s.next_check_at) {
+            Some(next) => LinksAt::At(next.max(self.now)),
+            None => LinksAt::First,
+        })
     }
 
-    /// Link work on what earlier visits read: robots.txt, sitemaps and the homepage are not asked again, and a run that cannot start asks nothing.
-    async fn links_only(&mut self) -> Result<(), Crash> {
-        self.result.links_only = true;
+    /// Link work for a site taken off the link queue, on what earlier visits read; a site that no longer qualifies is asked nothing.
+    async fn link_work(&mut self) {
         let homes: Vec<&KnownSitemap> = self.known.sitemaps.values().filter(|s| s.depth == 0 && s.kind.as_deref() != Some(LINKS_KIND) && self.is_homepage(&s.url, Some(s))).collect();
-        self.home_known = !homes.is_empty();
+        self.stored_home = !homes.is_empty();
+        // A site never read as a homepage has its address from robots.txt, read again when its run starts.
+        self.home_known = self.stored_home || self.known.robots_status.is_some();
         if let Some(home) = homes.iter().rev().max_by_key(|s| (s.ok, s.fetched_at)).map(|s| s.url.clone()) {
             self.home = home;
         }
-        if let Some(every) = self.links_due() {
-            if let Err(Crash(error)) = self.links(every).await {
-                self.result.links_error = Some(error);
-            }
-        }
-        self.note_links_next();
-        Ok(())
-    }
-
-    /// When the next link run is due, for the site to be visited then, while its links are followed and nothing it answered bars them.
-    fn note_links_next(&mut self) {
-        if self.links_every().is_none() || self.refused || self.refused_before() || self.robots_refused() || self.result.robots_allows == Some(false) {
+        if self.visitor.pause.load(Ordering::Relaxed) {
+            self.wait_for_turn();
             return;
         }
+        let Some(every) = self.links_allowed() else {
+            self.result.links_at = Some(LinksAt::Never);
+            return;
+        };
         let url = links_url(&self.known.host);
-        let next = self.result.sitemaps.iter().find(|u| u.url == url).and_then(|u| u.next_check_at).or_else(|| self.known.sitemaps.get(&url).and_then(|s| s.next_check_at));
-        self.result.links_next = next.filter(|&at| at > self.now);
+        if let Some(next) = self.known.sitemaps.get(&url).filter(|s| !due(s, self.now)).and_then(|s| s.next_check_at) {
+            self.result.links_at = Some(LinksAt::At(next));
+            return;
+        }
+        if let Err(Crash(error)) = self.links(every).await {
+            self.result.links_error = Some(error);
+        }
+        if self.result.links_wait.is_some() {
+            return;
+        }
+        let next = self.result.sitemaps.iter().find(|u| u.url == url).and_then(|u| u.next_check_at);
+        self.result.links_at = Some(match (self.links_allowed(), next) {
+            (Some(_), Some(next)) => LinksAt::At(next),
+            _ => LinksAt::Never,
+        });
     }
 
     fn robots_due(&self) -> bool {
@@ -870,9 +906,6 @@ impl Run<'_> {
                 return Ok(Vec::new());
             }
         }
-        if reads_home {
-            self.keep_home(&answer);
-        }
         let update = &mut self.result.sitemaps[i];
         update.etag = header(&answer.headers, "etag");
         update.last_modified = header(&answer.headers, "last-modified");
@@ -1007,14 +1040,12 @@ impl Run<'_> {
         (self.visitor.follow_links == FollowLinks::All && self.listed && terms.weight >= LINKS_ALL_WEIGHT).then_some(LINKS_ALL_INTERVAL)
     }
 
-    /// When this visit follows the site's links, how often runs come: once its last run is due, unless the disk runs low or the site is failing.
-    fn links_due(&self) -> Option<i64> {
-        // A site whose robots.txt or sitemaps refuse us or ask us to slow down gets no link work.
-        if self.result.cut_short || self.refused || self.refused_before() || !self.home_known || self.robots_refused() || self.visitor.pause.load(Ordering::Relaxed) {
+    /// How often this site's links are followed, while it qualifies: none once its robots.txt or sitemaps refuse us or ask us to slow down.
+    fn links_allowed(&self) -> Option<i64> {
+        if self.result.cut_short || self.refused || self.refused_before() || !self.home_known || self.robots_refused() || self.result.robots_allows == Some(false) {
             return None;
         }
-        let every = self.links_every()?;
-        self.known.sitemaps.get(&links_url(&self.known.host)).is_none_or(|s| due(s, self.now)).then_some(every)
+        self.links_every()
     }
 
     /// The visit's link work, which never decides its verdict: whether the site answered is judged without it.
@@ -1069,7 +1100,7 @@ impl Run<'_> {
         }
         let (body, detect) = (answer.body, self.visitor.language.clone());
         let cut = body.len() >= MAX_HOMEPAGE_BYTES;
-        Ok(self.visitor.cpu(move || homepage::read_cut(&body, &*detect, cut)).await?.problem.is_none())
+        Ok(self.visitor.links_cpu(move || homepage::read_cut(&body, &*detect, cut)).await?.problem.is_none())
     }
 
     /// Link work that cannot start yet comes back within hours, at no cost to the site meanwhile.
@@ -1103,6 +1134,7 @@ impl Run<'_> {
         let permit = if self.sitemap_urls() == 0 || slots.busy() * 4 < slots.size() * 3 { slots.try_take() } else { None };
         // One run at a time on the address the site answered from, whichever sites share it.
         let Some(ip) = self.site_peer.or(self.addresses(&self.home.clone()).await.first().copied()) else {
+            self.wait_for_turn();
             return Ok(());
         };
         let (Some(_permit), Some(claim)) = (permit, slots.claim(ip)) else {
@@ -1110,8 +1142,8 @@ impl Run<'_> {
             return Ok(());
         };
         let mut claims = vec![claim];
-        // Link work alone reads robots.txt again once a day has passed, and runs only where it still lets us in.
-        if self.result.links_only && self.known.robots_checked_at.is_none_or(|checked| self.now - checked >= ROBOTS_EVERY) {
+        // Link work reads robots.txt again once a day has passed, or for the homepage address no homepage read left, and runs only where it still lets us in.
+        if self.result.links_only && (!self.stored_home || self.known.robots_checked_at.is_none_or(|checked| self.now - checked >= ROBOTS_EVERY)) {
             slots.turn(&[ip]).await;
             if self.robots().await?.is_none() || self.robots_refused() {
                 return Ok(());
@@ -1234,7 +1266,7 @@ impl Run<'_> {
             }
             let (body, base) = (answer.body, answer.url);
             let cut = body.len() >= MAX_HOMEPAGE_BYTES;
-            let links = self.visitor.cpu(move || homepage::links(&body, cut).into_iter().filter_map(|href| urls::join(&base, &href).ok()).collect::<Vec<_>>()).await?;
+            let links = self.visitor.links_cpu(move || homepage::links(&body, cut).into_iter().filter_map(|href| urls::join(&base, &href).ok()).collect::<Vec<_>>()).await?;
             for link in links {
                 if found.len() >= LINKS_MOST {
                     break;
@@ -1259,7 +1291,7 @@ impl Run<'_> {
             let mut listings: Vec<i64> = known.chain(read).filter(|(_, kind)| is_listing(*kind)).map(|(id, _)| id).collect();
             listings.push(crate::buckets::sitemap_id(&links_url(&self.known.host)));
             let (buckets, host) = (self.visitor.buckets.clone(), self.known.host.clone());
-            self.visitor.cpu(move || buckets.store(&host).unqueue(&host, &rests, &listings)).await?.map_err(|_| Crash::new("StoreError"))?;
+            self.visitor.links_cpu(move || buckets.store(&host).unqueue(&host, &rests, &listings)).await?.map_err(|_| Crash::new("StoreError"))?;
         }
         self.links_listing(found, read, refused, every).await
     }
@@ -1311,7 +1343,7 @@ impl Run<'_> {
             robots: self.result.robots_paths.clone(),
             buckets: self.visitor.buckets.clone(),
         };
-        match self.visitor.cpu(move || digest(job)).await?? {
+        match self.visitor.links_cpu(move || digest(job)).await?? {
             Digested::Read(mut listing) => {
                 // A run the site refused partway keeps what it read, and waits as long as one refused at once.
                 let interval = if listing.listing.new > 0 && refused.is_none() { every } else { later };
@@ -1458,7 +1490,6 @@ impl Run<'_> {
             self.stop(Outcome::Ineligible, Some("homepage_error".into()));
             return Ok(());
         }
-        self.keep_home(&answer);
         let body = answer.body;
         let cut = body.len() >= MAX_HOMEPAGE_BYTES;
         let detect = self.visitor.language.clone();

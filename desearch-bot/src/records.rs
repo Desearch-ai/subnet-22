@@ -91,8 +91,6 @@ pub fn known(host: &str, domain: &Json, sitemaps: &[(String, Json)]) -> Option<K
         sitemaps: sitemaps.iter().filter_map(|(url, record)| Some((url.clone(), known_sitemap(url, record)?))).collect(),
         canonical_host: text(domain.get("canonical")),
         www_only: domain.get("www").and_then(Value::as_bool).unwrap_or(false),
-        // A recheck time holds only for the visit that set it; a visit by a build that keeps none moves "checked" on.
-        recheck_at: moment(domain.get("recheck")).filter(|_| domain.get("recheck_of").is_some_and(|of| Some(of) == domain.get("checked"))),
     })
 }
 
@@ -143,7 +141,9 @@ fn known_sitemap(url: &str, record: &Json) -> Option<KnownSitemap> {
 pub fn written_domain(previous: &Json, write: &DomainWrite, url_count: i64) -> Json {
     let visit = &write.visit;
     let mut record = previous.clone();
-    record.insert("due".into(), seconds(write.next_due_at));
+    if !visit.links_only {
+        record.insert("due".into(), seconds(write.next_due_at));
+    }
     if visit.robots_read {
         record.insert("robots".into(), seconds(Some(write.checked_at)));
         record.insert("robots_status".into(), visit.robots_status.into());
@@ -156,11 +156,10 @@ pub fn written_domain(previous: &Json, write: &DomainWrite, url_count: i64) -> J
             record.insert("rules".into(), json!({"allow": paths.allow, "disallow": paths.disallow}));
         }
     }
+    // Link work alone leaves the domain's standing and due time as they were.
     if visit.links_only {
         return record;
     }
-    record.insert("recheck".into(), seconds(write.recheck_at));
-    record.insert("recheck_of".into(), seconds(Some(write.checked_at)));
     record.insert("state".into(), write.state.as_str().into());
     record.insert("reason".into(), write.reason.clone().into());
     record.insert("failures".into(), write.failures.into());
@@ -324,15 +323,6 @@ mod tests {
     }
 
     #[test]
-    fn a_recheck_time_holds_only_until_another_build_visits() {
-        let record = json!({"state": "no_sitemap", "categories": [], "checked": 1_700_000_000, "recheck": 1_702_000_000, "recheck_of": 1_700_000_000});
-        assert_eq!(known("a.test", record.as_object().unwrap(), &[]).unwrap().recheck_at, Some(1_702_000_000 * SECOND));
-        let mut later = record.as_object().unwrap().clone();
-        later.insert("checked".into(), 1_700_500_000.into());
-        assert_eq!(known("a.test", &later, &[]).unwrap().recheck_at, None, "a visit that kept no recheck time leaves the old one unread");
-    }
-
-    #[test]
     fn the_www_host_a_visit_answered_on_is_kept_with_the_domain() {
         let record = new_domain(Some(5), Some("big_generic"), &[], State::New, None, None);
         let write = |www_only| {
@@ -347,7 +337,6 @@ mod tests {
                 canonical_host: None,
                 checked_at: 1_700_000_000 * SECOND,
                 backlog: false,
-                recheck_at: None,
                 visit,
             }
         };

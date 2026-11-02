@@ -96,6 +96,7 @@ async fn main() -> Result<()> {
             _ => FollowLinks::Thin,
         },
         resolver: resolver.map(|resolver| Arc::new(resolver) as Arc<dyn reqwest::dns::Resolve>),
+        links_cpu: Slots::new(2),
     };
     let mut crawl = Loop::new(buckets.clone(), Arc::new(visitor), concurrency, Registry::offline(), HashSet::new()).with_tally();
     crawl.load()?;

@@ -100,3 +100,61 @@ fn a_walk_stopped_for_the_disk_waits_no_hour_for_the_files_it_left() {
     let paused = plan(&known, Visit { requests: 0, paused: true, ..Visit::new("a.test") }, NOW, &mut rng);
     assert!(paused.next_due_at.is_some_and(|due| due <= NOW), "its due files wait only for the disk");
 }
+
+/// A domain's record and stored sitemaps, as round B may have left them, and a visit to it: off mode schedules each as round A does.
+fn off_mode_cases() -> Vec<(&'static str, Known, Visit)> {
+    let sitemap = |url: &str, kind: &str, next: i64| (url.to_string(), json!({"id": 1, "kind": kind, "depth": 0, "status": "ok", "urls": 3, "next": NOW / SECOND + next}).as_object().unwrap().clone());
+    let domain = |state: &str, b_fields: bool| {
+        let mut record = json!({"state": state, "failures": 0, "categories": [], "lang": "en", "ok": NOW / SECOND - 86_400, "checked": NOW / SECOND - 3_600});
+        if b_fields {
+            for (name, at) in [("recheck", NOW / SECOND + 600), ("recheck_of", NOW / SECOND - 3_600), ("links_due", NOW / SECOND - 60)] {
+                record[name] = at.into();
+            }
+        }
+        record
+    };
+    let known = |state: &str, b_fields: bool, sitemaps: &[(String, serde_json::Map<String, serde_json::Value>)]| records::known("a.test", domain(state, b_fields).as_object().unwrap(), sitemaps).unwrap();
+    let urlset = sitemap("https://a.test/s.xml", "urlset", 6 * 3_600);
+    let later = sitemap("https://a.test/s.xml", "urlset", 5 * 86_400);
+    let stale = sitemap("https://a.test/s.xml", "urlset", -86_400);
+    let links_soon = sitemap("https://a.test/#links", "links", 2 * 86_400);
+    let links_past = sitemap("https://a.test/#links", "links", -600);
+    let read = |outcome: Outcome, requests: i64| Visit { outcome, requests, ..Visit::new("a.test") };
+    vec![
+        ("active, sitemap in 6 h", known("active", false, &[urlset.clone()]), read(Outcome::Sitemap, 2)),
+        ("active, sitemap due, read", known("active", false, &[stale.clone()]), read(Outcome::Sitemap, 3)),
+        ("active, sitemap due, nothing asked", known("active", false, &[stale]), read(Outcome::Sitemap, 0)),
+        ("active, links run in 2 days", known("active", false, &[later, links_soon.clone()]), read(Outcome::Sitemap, 2)),
+        ("active, links run past", known("active", false, &[urlset.clone(), links_past.clone()]), read(Outcome::Sitemap, 2)),
+        ("active, round B fields", known("active", true, &[urlset.clone(), links_past.clone()]), read(Outcome::Sitemap, 2)),
+        ("no_sitemap, links run past", known("no_sitemap", true, &[links_past]), read(Outcome::NoSitemap, 5)),
+        ("no_sitemap, links run soon", known("no_sitemap", false, &[links_soon]), read(Outcome::NoSitemap, 5)),
+        ("new, found a sitemap", known("new", false, &[]), read(Outcome::Sitemap, 4)),
+        ("new, none found", known("new", true, &[]), read(Outcome::NoSitemap, 6)),
+    ]
+}
+
+#[test]
+fn off_mode_schedules_each_case_as_round_a_did() {
+    let got: Vec<(&str, Option<i64>, bool)> = off_mode_cases()
+        .into_iter()
+        .map(|(name, known, visit)| {
+            let write = plan(&known, visit, NOW, &mut rand::rngs::StdRng::seed_from_u64(11));
+            (name, write.next_due_at.map(|due| (due - NOW) / SECOND), write.backlog)
+        })
+        .collect();
+    // Seconds from now to the next visit, and whether it is backlog, as round A with the idle-visit fix schedules them.
+    let round_a = [
+        ("active, sitemap in 6 h", Some(21_600), false),
+        ("active, sitemap due, read", Some(-86_400), true),
+        ("active, sitemap due, nothing asked", Some(3_600), false),
+        ("active, links run in 2 days", Some(82_528), false),
+        ("active, links run past", Some(21_600), false),
+        ("active, round B fields", Some(21_600), false),
+        ("no_sitemap, links run past", Some(2_475_858), false),
+        ("no_sitemap, links run soon", Some(2_475_858), false),
+        ("new, found a sitemap", Some(82_528), false),
+        ("new, none found", Some(2_475_858), false),
+    ];
+    assert_eq!(got, round_a);
+}

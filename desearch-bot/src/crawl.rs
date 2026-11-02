@@ -12,12 +12,13 @@ use tokio::task::{Id, JoinError, JoinHandle, JoinSet};
 use tokio::time::Instant;
 
 use crate::buckets::{Buckets, Changes, Json};
+use crate::links::{first_wave, LinkPace, LinkQueue};
 use crate::registry::{Change, Registry, Report};
 use crate::schedule::{HOUR, SECOND};
 use crate::states::{self, Outcome, State};
 use crate::suffixes::tld_group;
 use crate::timetable::{placed, HeavyQueue, Lane, Timetable};
-use crate::visit::{is_listing, robots_allow, Crash, Known, Visit, Visitor, LINKS_KIND};
+use crate::visit::{is_listing, robots_allow, Crash, FollowLinks, Known, LinksAt, Visit, Visitor, LINKS_KIND};
 use crate::{exclusions, records};
 
 const TICK: Duration = Duration::from_secs(1);
@@ -44,6 +45,10 @@ const WAKE_SPREAD: i64 = 24 * HOUR;
 const WAKE_MANY: usize = 20_000;
 /// Domains made due on one pass of the loop, which writes each one's record.
 const WAKE_CHUNK: usize = 1_000;
+/// Sites whose link work waits its turn, at most; one turned away is offered again by its next visit.
+const LINKS_QUEUED: usize = 200_000;
+/// A site visited when its link work comes up takes it this many seconds later.
+const LINKS_BUSY_WAIT: i64 = 60;
 
 #[derive(Clone, Debug)]
 pub struct DomainWrite {
@@ -57,29 +62,11 @@ pub struct DomainWrite {
     pub checked_at: i64,
     /// Due again at once, to keep reading sitemaps found but not read yet.
     pub backlog: bool,
-    /// When the site's own recheck is due, which link work may come before.
-    pub recheck_at: Option<i64>,
     pub visit: Visit,
 }
 
 /// The state a visit leaves a domain in, and when the loop should come back to it.
 pub fn plan(known: &Known, visit: Visit, now: i64, rng: &mut impl Rng) -> DomainWrite {
-    if visit.links_only {
-        let due = [known.recheck_at, visit.links_wait, visit.links_next].into_iter().flatten().min();
-        return DomainWrite {
-            host: known.host.clone(),
-            state: known.state,
-            reason: None,
-            failures: known.failures,
-            next_due_at: due,
-            last_ok_at: known.last_ok_at,
-            canonical_host: known.canonical_host.clone(),
-            checked_at: now,
-            backlog: false,
-            recheck_at: known.recheck_at,
-            visit,
-        };
-    }
     // A refusal that may pass, on a recheck, is tried again before its outcome counts.
     let retry = (visit.passing && known.state == State::New).then(|| states::recheck_retry(known.failures, now, rng)).flatten();
     let decision = retry.unwrap_or_else(|| states::decide(known.state, visit.outcome, known.failures, known.last_ok_at, now, rng));
@@ -97,11 +84,6 @@ pub fn plan(known: &Known, visit: Visit, now: i64, rng: &mut impl Rng) -> Domain
             due = Some(now + CUT_SHORT_WAIT);
         }
     }
-    let recheck_at = due;
-    // Link work comes in its own time, a run due or a slot awaited, before the site's recheck.
-    for at in [visit.links_wait, visit.links_next].into_iter().flatten().filter(|_| matches!(decision.state, State::Active | State::NoSitemap)) {
-        due = due.map(|d| d.min(at));
-    }
     let canonical_host = match visit.outcome {
         Outcome::Redirect => visit.canonical_host.clone(),
         outcome if outcome.answered() => None,
@@ -118,7 +100,22 @@ pub fn plan(known: &Known, visit: Visit, now: i64, rng: &mut impl Rng) -> Domain
         canonical_host,
         checked_at: now,
         backlog: decision.state == State::Active && due.is_some_and(|d| d <= now),
-        recheck_at,
+        visit,
+    }
+}
+
+/// What link work alone leaves a domain: its standing and its due time as they were.
+pub fn links_plan(known: &Known, visit: Visit, now: i64) -> DomainWrite {
+    DomainWrite {
+        host: known.host.clone(),
+        state: known.state,
+        reason: None,
+        failures: known.failures,
+        next_due_at: None,
+        last_ok_at: known.last_ok_at,
+        canonical_host: known.canonical_host.clone(),
+        checked_at: now,
+        backlog: false,
         visit,
     }
 }
@@ -135,7 +132,6 @@ pub fn crashed(known: &Known, error: &str, now: i64) -> DomainWrite {
         canonical_host: known.canonical_host.clone(),
         checked_at: now,
         backlog: false,
-        recheck_at: None,
         visit: Visit::new(&known.host),
     }
 }
@@ -153,14 +149,13 @@ fn earliest_sitemap(known: &Known, visit: &Visit, now: i64) -> Option<i64> {
     let mut times: Vec<i64> = known
         .sitemaps
         .values()
-        // A homepage listing left unread while due sets no time: it is read once the site qualifies again; link runs set theirs apart.
-        .filter(|s| s.kind.as_deref() != Some(LINKS_KIND))
+        // A homepage or link listing left unread while due sets no time: it is read once the site qualifies again.
         .filter(|s| updated.contains_key(s.url.as_str()) || !is_listing(s.kind.as_deref()) || s.next_check_at.is_some_and(|next| next > now))
         // Nor does a file robots.txt disallows, never read while it does; the next robots.txt read decides again.
         .filter(|s| updated.contains_key(s.url.as_str()) || robots_allow(&visit.robots_paths, bare, &s.url))
         .map(|s| updated.get(s.url.as_str()).copied().unwrap_or(s.next_check_at).unwrap_or(now))
         .collect();
-    times.extend(visit.sitemaps.iter().filter(|u| !known.sitemaps.contains_key(&u.url) && u.kind.as_deref() != Some(LINKS_KIND)).filter_map(|u| u.next_check_at));
+    times.extend(updated.iter().filter(|(url, _)| !known.sitemaps.contains_key(**url)).filter_map(|(_, when)| *when));
     times.into_iter().min()
 }
 
@@ -209,6 +204,10 @@ pub struct Stats {
     /// Visits finished in each lane.
     pub lanes: [u64; 3],
     pub link_errors: u64,
+    /// Link runs that read the site, and link work that found it no longer qualifies or waited.
+    pub link_runs: u64,
+    pub link_dropped: u64,
+    pub link_waits: u64,
 }
 
 /// Keeps many visits in flight across the buckets one process owns.
@@ -241,6 +240,12 @@ pub struct Loop {
     wake_by: i64,
     /// Requests made per domain, kept only when asked for, as a probe does.
     tally: Option<HashMap<String, i64>>,
+    /// Link work waiting its turn, and the runners that take it, apart from the visits.
+    links: LinkQueue,
+    link_pace: LinkPace,
+    link_runs: JoinSet<LinkFinished>,
+    link_tasks: HashMap<Id, Arc<str>>,
+    links_spread: i64,
 }
 
 impl Loop {
@@ -271,7 +276,24 @@ impl Loop {
             to_wake: Vec::new(),
             wake_by: 0,
             tally: None,
+            links: LinkQueue::new(LINKS_QUEUED),
+            link_pace: LinkPace::new(0),
+            link_runs: JoinSet::new(),
+            link_tasks: HashMap::new(),
+            links_spread: 0,
         }
+    }
+
+    /// Link runs started an hour at most, 0 for no limit, and how long after a site first qualifies its first run may come.
+    pub fn with_links(mut self, per_hour: u64, first_spread: i64) -> Self {
+        self.link_pace = LinkPace::new(per_hour);
+        self.links_spread = first_spread;
+        self
+    }
+
+    /// Sites whose link work waits its turn, and the bytes the queue holds.
+    pub fn links_queued(&self) -> (usize, usize) {
+        (self.links.len(), self.links.bytes())
     }
 
     /// Stop starting visits while the disk has less than this many bytes free.
@@ -307,11 +329,15 @@ impl Loop {
                 .collect();
             handles.into_iter().flat_map(|h| h.join().expect("loading a store panicked")).collect::<Vec<_>>()
         });
+        let following = self.visitor.follow_links != FollowLinks::Off;
         for schedule in schedules {
             for (host, due) in schedule? {
                 if let Some(state) = State::parse(&due.state) {
                     let place = self.place(&host, due.rank);
                     self.timetable.set(&host, Lane::of(state, false), due.due, Some(place));
+                }
+                if let Some(at) = due.links_due.filter(|_| following) {
+                    self.links.push(&host, at);
                 }
             }
         }
@@ -331,6 +357,9 @@ impl Loop {
                     while let Some(done) = self.visits.try_join_next_with_id() {
                         self.finish(done);
                     }
+                }
+                Some(done) = self.link_runs.join_next_with_id(), if !self.link_runs.is_empty() => {
+                    self.finish_links(done);
                 }
                 _ = tokio::time::sleep(TICK) => {}
             }
@@ -354,6 +383,13 @@ impl Loop {
             }
         }
         self.visits.abort_all();
+        while !self.link_runs.is_empty() {
+            match tokio::time::timeout_at(deadline, self.link_runs.join_next_with_id()).await {
+                Ok(Some(done)) => self.finish_links(done),
+                _ => break,
+            }
+        }
+        self.link_runs.abort_all();
         self.flush()?;
         self.sync().await;
         Ok(())
@@ -368,6 +404,17 @@ impl Loop {
             finished += 1;
         }
         self.flush()?;
+        // Link work taken up now runs to its end, as the visits did.
+        loop {
+            self.fill_links(now_micros() / SECOND);
+            match self.link_runs.join_next_with_id().await {
+                Some(done) => {
+                    self.finish_links(done);
+                    self.flush()?;
+                }
+                None => break,
+            }
+        }
         self.sync().await;
         if let Some(scan) = self.waking.take() {
             self.woke(scan.await.unwrap_or_default());
@@ -417,6 +464,52 @@ impl Loop {
                         free -= 1;
                     }
                 }
+            }
+        }
+        self.fill_links(now);
+    }
+
+    /// Runners free and the hourly pace allowing, take the earliest due link work; a site being visited waits a minute.
+    fn fill_links(&mut self, now: i64) {
+        if self.disk_low || self.visitor.follow_links == FollowLinks::Off {
+            return;
+        }
+        while self.link_runs.len() < self.visitor.links.size() && self.link_pace.ready() {
+            let Some(host) = self.links.pop_due(now) else {
+                break;
+            };
+            if !self.busy.insert(host.clone()) {
+                self.links.push(&host, now + LINKS_BUSY_WAIT);
+                continue;
+            }
+            self.link_pace.take();
+            let handle = self.link_runs.spawn(links_one(host.clone(), self.buckets.clone(), self.visitor.clone(), self.excluded.clone()));
+            self.link_tasks.insert(handle.id(), host);
+        }
+    }
+
+    fn finish_links(&mut self, done: Result<(Id, LinkFinished), JoinError>) {
+        let id = match &done {
+            Ok((id, _)) => *id,
+            Err(error) => error.id(),
+        };
+        let Some(host) = self.link_tasks.remove(&id) else {
+            return;
+        };
+        match done {
+            // Waiting its turn costs no write: only the queue knows.
+            Ok((_, LinkFinished::Done(write, _))) if write.visit.links_wait.is_some() && write.visit.sitemaps.is_empty() && !write.visit.robots_read => {
+                self.busy.remove(&host);
+                self.stats.link_waits += 1;
+                self.links.push(&host, write.visit.links_wait.unwrap_or_default() / SECOND);
+            }
+            Ok((_, LinkFinished::Done(write, known))) => self.pending.push((write, known)),
+            Ok((_, LinkFinished::Gone)) => {
+                self.busy.remove(&host);
+            }
+            Err(error) => {
+                eprintln!("[rs] link work on {host} failed: {error}");
+                self.busy.remove(&host);
             }
         }
     }
@@ -488,13 +581,16 @@ impl Loop {
         }
         self.stats.new += write.visit.new;
         self.stats.listed += write.visit.listed;
-        let outcome = if write.visit.links_only { "links_only -".to_string() } else { format!("{} {}", write.state.as_str(), write.reason.as_deref().unwrap_or("-")) };
-        *self.stats.outcomes.entry(outcome).or_default() += 1;
+        if !write.visit.links_only {
+            let outcome = format!("{} {}", write.state.as_str(), write.reason.as_deref().unwrap_or("-"));
+            *self.stats.outcomes.entry(outcome).or_default() += 1;
+        }
         if let Some(error) = &write.visit.links_error {
             self.stats.link_errors += 1;
             eprintln!("[rs] link work on {} failed, its verdict kept: {error}", write.host);
         }
-        let store = self.buckets.store(&write.host);
+        let buckets = self.buckets.clone();
+        let store = buckets.store(&write.host);
         let Some(current) = store.domain(&write.host)? else {
             return Ok(());
         };
@@ -520,7 +616,8 @@ impl Loop {
             }
         }
         let urls = totals.values().filter(|(_, ok)| *ok).map(|(count, _)| count).sum();
-        let record = records::written_domain(&current, &write, urls);
+        let mut record = records::written_domain(&current, &write, urls);
+        self.queue_links(&write, &mut record);
         changes.domain(&write.host, &record);
         store.write(changes)?;
         self.schedule(&write.host, &record, write.backlog);
@@ -528,6 +625,40 @@ impl Loop {
             self.unreported.push(Report::of(&write, urls));
         }
         Ok(())
+    }
+
+    /// Keeps when the domain's link work comes next, in its record and on the queue; a site's first run takes a spot of its own in the spread.
+    fn queue_links(&mut self, write: &DomainWrite, record: &mut Json) {
+        let now = write.checked_at / SECOND;
+        if let Some(at) = write.visit.links_wait {
+            self.stats.link_waits += 1;
+            record.insert("links_due".into(), (at / SECOND).into());
+            self.links.push(&write.host, at / SECOND);
+            return;
+        }
+        let at = match write.visit.links_at {
+            None => return,
+            Some(LinksAt::Never) => None,
+            Some(LinksAt::At(at)) => Some(at / SECOND),
+            Some(LinksAt::First) => Some(records::int(record.get("links_due")).unwrap_or(now + first_wave(&write.host, self.links_spread))),
+        };
+        if write.visit.links_only {
+            if write.visit.sitemaps.iter().any(|u| u.kind.as_deref() == Some(LINKS_KIND)) {
+                self.stats.link_runs += 1;
+            } else if at.is_none() {
+                self.stats.link_dropped += 1;
+            }
+        }
+        match at {
+            Some(at) => {
+                record.insert("links_due".into(), at.into());
+                self.links.push(&write.host, at);
+            }
+            None => {
+                record.remove("links_due");
+                self.links.remove(&write.host);
+            }
+        }
     }
 
     /// Send the registry what visits found, and take in what changed there.
@@ -590,8 +721,6 @@ impl Loop {
                 continue;
             }
             record.insert("due".into(), (now + rng.gen_range(0..=(self.wake_by - now).max(0))).into());
-            // A woken domain is read in full, not for its link work alone.
-            record.remove("recheck");
             let mut changes = Changes::default();
             changes.domain(&host, &record);
             match self.buckets.store(&host).write(changes) {
@@ -696,6 +825,10 @@ impl Loop {
             "outcomes": self.stats.outcomes,
             "lanes": Lane::ALL.iter().map(|&lane| (lane.as_str(), self.stats.lanes[lane.index()])).collect::<BTreeMap<_, _>>(),
             "link_errors": self.stats.link_errors,
+            "link_runs": self.stats.link_runs,
+            "link_dropped": self.stats.link_dropped,
+            "link_waits": self.stats.link_waits,
+            "links_queued": self.links.len(),
             "handoff_errors": self.buckets.handoff_errors.load(std::sync::atomic::Ordering::Relaxed),
         })
     }
@@ -719,6 +852,28 @@ async fn visit_one(host: Arc<str>, buckets: Arc<Buckets>, visitor: Arc<Visitor>,
     let known = Arc::new(known);
     let write = once(known.clone(), &visitor, &excluded).await;
     Finished::Visited(Box::new(write), known)
+}
+
+enum LinkFinished {
+    Done(Box<DomainWrite>, Arc<Known>),
+    Gone,
+}
+
+/// Link work for a site taken off the queue; one excluded since, or no longer listed, leaves the queue at no cost to the site.
+async fn links_one(host: Arc<str>, buckets: Arc<Buckets>, visitor: Arc<Visitor>, excluded: Arc<HashSet<String>>) -> LinkFinished {
+    let reading = host.clone();
+    let loaded = tokio::task::spawn_blocking(move || load_known(&buckets, &reading)).await;
+    let Ok(Some(known)) = loaded else {
+        return LinkFinished::Gone;
+    };
+    let known = Arc::new(known);
+    let now = now_micros();
+    let visit = if known.categories.iter().any(|c| excluded.contains(c)) || exclusions::blocked_operator(&known.host) || !matches!(known.state, State::Active | State::NoSitemap) {
+        Visit { links_only: true, links_at: Some(LinksAt::Never), ..Visit::new(&known.host) }
+    } else {
+        visitor.links(known.clone(), now).await
+    };
+    LinkFinished::Done(Box::new(links_plan(&known, visit, now)), known)
 }
 
 /// What a visit needs to know about a domain, from its store; None once excluded.
