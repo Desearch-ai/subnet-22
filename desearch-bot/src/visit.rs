@@ -948,7 +948,28 @@ impl Run<'_> {
         let done = self.follow_links(every).await;
         self.result.aside += self.result.requests - requests;
         self.answered = answered;
+        if let Err(Crash(error)) = &done {
+            self.links_failed(every, error);
+        }
         done
+    }
+
+    /// Link work that failed on our side is kept as a failed run, due after its interval, so the site is not visited again at once.
+    fn links_failed(&mut self, every: i64, error: &str) {
+        let url = links_url(&self.known.host);
+        let known = self.known.clone();
+        let stored = known.sitemaps.get(&url);
+        let i = match self.result.sitemaps.iter().position(|u| u.url == url) {
+            Some(i) => i,
+            None => self.update(&url, 0, None, None, stored),
+        };
+        let interval = stored.map_or(every, |s| s.interval).clamp(every, LINKS_INTERVAL_MAX);
+        let update = &mut self.result.sitemaps[i];
+        update.kind = Some(LINKS_KIND.into());
+        update.status = "error";
+        update.error = Some(format!("crashed: {error}"));
+        update.interval = interval;
+        update.next_check_at = Some(self.now + interval);
     }
 
     /// Whether the homepage answers as readable English, which a site not yet judged must before a run; the verdict itself comes later, as without one.

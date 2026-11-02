@@ -1853,6 +1853,28 @@ async fn a_robots_txt_rate_limit_with_a_gone_sitemap_stored_asks_only_for_that_s
     assert_eq!(hits, ["/robots.txt", "/sitemap.xml"], "a stored sitemap hides the guesses, as production has it");
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn link_work_failing_on_our_side_waits_its_interval_before_running_again() {
+    let web: Shared = Arc::default();
+    let host = "links-crash-again.test";
+    deep_site(&web, host);
+    let now = chrono::Utc::now().timestamp();
+    let (buckets, _crawl) = crawl_adjusted(
+        web.clone(),
+        &[host],
+        &[],
+        "links-crash-again",
+        FollowLinks::Thin,
+        Slots::new(2),
+        |buckets| buckets.allow(&Allowed::of([host])),
+        |visitor| visitor.language = Arc::new(|_: &str| panic!("language detection broke")),
+    )
+    .await;
+    let links = buckets.store(host).sitemap(host, &format!("https://{host}/#links")).unwrap().expect("the failed run is kept");
+    assert_eq!(links["status"].as_str(), Some("error"));
+    assert!(links["next"].as_i64().unwrap() - now >= 7 * 86_400 - 60, "{links:?}");
+}
+
 /// An active site read an hour ago, its robots.txt rules disallowing /site, with these sitemaps stored at these next times.
 fn active_with(buckets: &Arc<Buckets>, host: &str, now: i64, sitemaps: &[(&str, &str, i64, i64)]) {
     let mut record = records::new_domain(Some(1), Some("new_generic"), &[], State::Active, None, Some(0));
