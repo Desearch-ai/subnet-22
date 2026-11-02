@@ -2060,6 +2060,17 @@ mod tests {
             checked += 1;
         }
         assert_eq!(checked, 14, "every landing case but the whole subdomain's");
+        let mut deeper = 0;
+        for case in golden["cases"].as_array().unwrap() {
+            let address = case["url"].as_str().unwrap();
+            let Some(url) = crate::urls::parse(address, "deep.example") else {
+                continue;
+            };
+            let rest = &url.key[url.key.iter().position(|&b| b == 0).unwrap() + 1..];
+            assert_eq!(!too_deep(Some(3), "deep.example", rest), case["in"].as_bool().unwrap(), "{address}");
+            deeper += 1;
+        }
+        assert_eq!(deeper, 6, "every case of the site three levels deep");
         assert!(!too_deep(None, "example.com", b"shop.example.com/a/b?c=1"), "no depth, no limit");
         assert!(too_deep(Some(0), "example.com", b"example.com/about") && !too_deep(Some(2), "example.com", b"example.com/en_GB/a/b"));
         let floor = Floor::of(&Terms { since: Some(1_000_000_000), depth: Some(1), ..Terms::default() });

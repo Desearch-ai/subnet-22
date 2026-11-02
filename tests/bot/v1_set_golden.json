@@ -10,7 +10,8 @@
     {"host": "blogs.nature.com", "rule": "out"},
     {"host": "generated.example", "rule": "out", "why": ["quality"]},
     {"host": "landing.example", "rule": "landing", "type": "company", "why": ["rank"]},
-    {"host": "docs.landing.example", "rule": "whole", "type": "docs"}
+    {"host": "docs.landing.example", "rule": "whole", "type": "docs"},
+    {"host": "deep.example", "rule": "landing", "depth": 3, "type": "company", "why": ["rank"]}
   ],
   "cases": [
     {"url": "https://www.latimes.com/archives/la-xpm-2008-03-01-me-story.html", "published": "2008-03-01", "in": true},
@@ -43,6 +44,12 @@
     {"url": "https://m.landing.example/about", "published": null, "in": true},
     {"url": "https://blog.landing.example/", "published": null, "in": false},
     {"url": "https://docs.landing.example/guide/install/linux", "published": null, "in": true},
-    {"url": "https://landing.example/2024/05/01/story", "published": "2024-05-01", "in": false}
+    {"url": "https://landing.example/2024/05/01/story", "published": "2024-05-01", "in": false},
+    {"url": "https://deep.example/products/gpu/h100", "published": null, "in": true},
+    {"url": "https://www.deep.example/en-us/products/gpu/h100", "published": null, "in": true},
+    {"url": "https://deep.example/products/gpu/h100/specs", "published": null, "in": false},
+    {"url": "https://deep.example/products/gpu?id=1", "published": null, "in": false},
+    {"url": "https://deep.example/de-de/products", "published": null, "in": false},
+    {"url": "https://blog.deep.example/a", "published": null, "in": false}
   ]
 }
