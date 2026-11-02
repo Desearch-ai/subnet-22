@@ -1090,7 +1090,7 @@ async fn a_link_run_stops_at_a_refusal_follows_no_redirect_off_its_rules_and_no_
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_link_run_that_finds_every_slot_taken_waits_hours_to_days_and_nothing_loops() {
+async fn a_link_run_that_finds_every_slot_taken_waits_minutes_to_hours_and_nothing_loops() {
     let web: Shared = Arc::default();
     let host = "waiting.test";
     deep_site(&web, host);
@@ -1099,7 +1099,7 @@ async fn a_link_run_that_finds_every_slot_taken_waits_hours_to_days_and_nothing_
     let (buckets, _crawl) = crawl_following(web.clone(), &[host], "links-wait", FollowLinks::Thin, links, |buckets| buckets.allow(&Allowed::of([host]))).await;
     let record = buckets.store(host).domain(host).unwrap().unwrap();
     let wait = record["due"].as_i64().unwrap() - chrono::Utc::now().timestamp();
-    assert!((2 * 3_600 - 5..=7 * 86_400).contains(&wait), "due in {wait} s");
+    assert!((10 * 60 - 5..=2 * 3_600 + 5).contains(&wait), "due in {wait} s");
     assert!(buckets.store(host).sitemap(host, &format!("https://{host}/#links")).unwrap().is_none());
 
     let web: Shared = Arc::default();
@@ -1346,7 +1346,8 @@ async fn sites_on_one_address_take_their_link_runs_one_at_a_time() {
     assert_eq!(ran.len(), 1, "they all answer from 127.0.0.1: {ran:?}");
     for host in hosts.iter().filter(|host| !ran.contains(host)) {
         let wait = buckets.store(host).domain(host).unwrap().unwrap()["due"].as_i64().unwrap() - chrono::Utc::now().timestamp();
-        assert!((2 * 3_600 - 5..=7 * 86_400).contains(&wait), "{host} waits as for a busy slot: {wait} s");
+        assert!((10 * 60 - 5..=2 * 3_600 + 5).contains(&wait), "{host} waits as for a busy slot, never a failed run: {wait} s");
+        assert!(buckets.store(host).sitemap(host, &format!("https://{host}/#links")).unwrap().is_none());
     }
 }
 

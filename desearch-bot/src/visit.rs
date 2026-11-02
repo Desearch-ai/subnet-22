@@ -68,8 +68,8 @@ const LINKS_INTERVAL_MAX: i64 = 60 * DAY;
 /// With `--follow-links all`, a site whose sitemaps list many pages has its links followed this often, if the list weights it as one of its own picks: a whole or news site.
 const LINKS_ALL_INTERVAL: i64 = 30 * DAY;
 const LINKS_ALL_WEIGHT: u8 = 3;
-/// A run that found every slot taken is tried again at a random time between this and its interval, so waiting runs spread out.
-const LINKS_RETRY: i64 = 2 * HOUR;
+/// A run that found every slot taken, or its address held by another run, is tried again at a random time between these, so waiting runs spread out.
+const LINKS_WAIT: (i64, i64) = (10 * 60 * SECOND, 2 * HOUR);
 /// How much of a page's start is searched for a robots meta tag.
 const HEAD_BYTES: usize = 65_536;
 /// Link-run fetches to one address, across runs and sites, are this far apart at least.
@@ -1072,6 +1072,11 @@ impl Run<'_> {
         Ok(self.visitor.cpu(move || homepage::read_cut(&body, &*detect, cut)).await?.problem.is_none())
     }
 
+    /// Link work that cannot start yet comes back within hours, at no cost to the site meanwhile.
+    fn wait_for_turn(&mut self) {
+        self.result.links_wait = Some(self.now + rand::thread_rng().gen_range(LINKS_WAIT.0..=LINKS_WAIT.1));
+    }
+
     /// The addresses a URL's host has, as the resolver finds them; none without one.
     async fn addresses(&self, url: &str) -> Vec<IpAddr> {
         let host = urls::split(url).ok().and_then(|parts| parts.hostname()).unwrap_or_default();
@@ -1101,7 +1106,7 @@ impl Run<'_> {
             return Ok(());
         };
         let (Some(_permit), Some(claim)) = (permit, slots.claim(ip)) else {
-            self.result.links_wait = Some(self.now + rand::thread_rng().gen_range(LINKS_RETRY..=every));
+            self.wait_for_turn();
             return Ok(());
         };
         let mut claims = vec![claim];
@@ -1151,6 +1156,12 @@ impl Run<'_> {
                 // An address the page will be asked on is claimed and booked before it is asked.
                 let ips = self.addresses(&page).await;
                 if !hold(&slots, &mut claims, &ips) {
+                    // Another run on an address the site answers from is a wait, never a failed run.
+                    if read == 0 {
+                        self.following = false;
+                        self.wait_for_turn();
+                        return Ok(());
+                    }
                     break;
                 }
                 slots.turn(&claims.iter().map(|claim| claim.ip).collect::<Vec<_>>()).await;
