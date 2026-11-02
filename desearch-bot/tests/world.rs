@@ -1715,6 +1715,26 @@ async fn a_link_run_keeps_a_page_that_redirects_to_its_own_store_key() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_link_run_takes_no_page_a_sitemap_lists_off_the_ready_list() {
+    let web: Shared = Arc::default();
+    let host = "listed-gone.test";
+    {
+        let mut w = web.lock().unwrap();
+        w.add(host, "/robots.txt", 200, None, format!("User-agent: *\nSitemap: http://{host}/list.xml\n").as_bytes());
+        let mut paths: Vec<String> = (0..10).map(|i| format!("/story/{i}")).collect();
+        paths.push("/gone".into());
+        w.add(host, "/list.xml", 200, None, urlset(host, &paths).as_bytes());
+        w.add(host, "/", 200, None, format!("<html lang=\"en\"><p>{ENGLISH}</p><a href=\"/gone\">x</a><a href=\"/story/1\">y</a></html>").as_bytes());
+        w.add(host, "/story/1", 200, None, format!("<html lang=\"en\"><p>{ENGLISH}</p></html>").as_bytes());
+    }
+    let (buckets, _crawl) = crawl_following(web.clone(), &[host], "listed-gone", FollowLinks::Thin, Slots::new(2), |buckets| buckets.allow(&Allowed::of([host]))).await;
+    let hits: Vec<String> = web.lock().unwrap().hits.iter().map(|(_, path, _)| path.clone()).collect();
+    assert!(hits.contains(&"/gone".to_string()), "the run asked for it: {hits:?}");
+    let ready: Vec<String> = buckets.store(host).ready_list(host, 1000).unwrap().iter().map(|e| String::from_utf8_lossy(&e.rest).into_owned()).collect();
+    assert!(ready.contains(&format!("{host}/gone")), "the sitemap lists it, so a 404 to a link run leaves it queued: {ready:?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_robots_txt_that_refuses_us_stops_all_guessing_while_a_rate_limit_stops_none_on_a_first_visit() {
     let mut seen = Vec::new();
     for status in [403u16, 429] {

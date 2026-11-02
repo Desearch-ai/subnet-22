@@ -15,7 +15,7 @@ use crate::buckets::{meta_key, BucketStore, Changes, LISTED, URL};
 use crate::recrawl::Recrawl;
 use crate::records;
 use crate::robots::Paths;
-use crate::urls::{Record, HTTPS, WWW};
+use crate::urls::{Record, FROM_PAGES, HTTPS, WWW};
 
 /// Pages waiting to be sent, under their domain, in the order they go.
 const READY: u8 = b'R';
@@ -1776,13 +1776,13 @@ impl BucketStore {
         Ok((added, counts))
     }
 
-    /// Takes pages never sent off the domain's ready list, as their keys' rests: pages a fetch found gone or moved off the site; their records stay, so a listing naming them again queues nothing.
+    /// Takes pages never sent, and named by no sitemap, off the domain's ready list, as their keys' rests: pages a fetch found gone or moved off the site; their records stay, so a listing naming them again queues nothing.
     pub fn unqueue(&self, domain: &str, rests: &[Vec<u8>]) -> Result<usize> {
         let records = self.records(rests.iter().map(|rest| prefixed(URL, domain.as_bytes(), rest)))?;
         let keys: Vec<Vec<u8>> = rests
             .iter()
             .zip(records)
-            .filter_map(|(rest, record)| record.filter(|record| record.pushed_at == 0).map(|record| (rest, record)))
+            .filter_map(|(rest, record)| record.filter(|record| record.pushed_at == 0 && record.flags & FROM_PAGES != 0).map(|record| (rest, record)))
             .map(|(rest, record)| Entry { domain: domain.to_string(), rest: rest.clone(), order: Order::Fresh { first_seen: record.first_seen, lastmod: record.lastmod } }.key())
             .collect();
         if keys.is_empty() {

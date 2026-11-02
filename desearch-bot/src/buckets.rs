@@ -20,7 +20,7 @@ use crate::allowed::{Allowed, Terms};
 use crate::listed::{self, ListedSet};
 use crate::ready::{self, Order, SENT};
 use crate::states::State;
-use crate::urls::{Listing, Record, Url, HTTPS, TIMED, WWW};
+use crate::urls::{Listing, Record, Url, FROM_PAGES, HTTPS, TIMED, WWW};
 use crate::visit::is_sitemap;
 
 pub const BUCKETS: usize = 256;
@@ -344,14 +344,14 @@ impl BucketStore {
     }
 
     pub fn record_listing(&self, host: &str, sitemap_id: i64, entries: Vec<(Url, u32, bool)>, now: u32) -> Result<Listing> {
-        let (listing, handed) = self.record_listing_handing(host, sitemap_id, entries, now)?;
+        let (listing, handed) = self.record_listing_handing(host, sitemap_id, entries, now, false)?;
         let subs: Vec<String> = handed.pages.keys().cloned().collect();
         self.handed_landed(&handed, &subs)?;
         Ok(listing)
     }
 
-    /// As `record_listing`, also returning the new and changed pages it names for subdomains kept apart, which go to their own stores; until `handed_landed` names a subdomain, its pages count as not listed, so the next listing hands them again.
-    pub fn record_listing_handing(&self, host: &str, sitemap_id: i64, mut entries: Vec<(Url, u32, bool)>, now: u32) -> Result<(Listing, Handed)> {
+    /// As `record_listing`, also returning the pages it names for subdomains kept apart, which count as not listed until `handed_landed` names their subdomain; a listing `from_pages` marks the pages no sitemap named.
+    pub fn record_listing_handing(&self, host: &str, sitemap_id: i64, mut entries: Vec<(Url, u32, bool)>, now: u32, from_pages: bool) -> Result<(Listing, Handed)> {
         for entry in entries.iter_mut() {
             entry.0.key.insert(0, URL);
         }
@@ -376,6 +376,7 @@ impl BucketStore {
             return Ok((listing, Handed::default()));
         }
         let mut handed = Handed::default();
+        let from_pages = if from_pages { FROM_PAGES } else { 0 };
         let guard = self.lock_ready();
         let cf = self.db.cf_handle("default").context("default column family")?;
         let found = self.db.batched_multi_get_cf(cf, changed.iter().map(|e| &e.0 .0.key), true);
@@ -404,7 +405,7 @@ impl BucketStore {
             let record = match held {
                 None => {
                     listing.new += 1;
-                    let record = Record { sitemap_id, lastmod: *lastmod, first_seen: now, last_seen: now, flags: url.flags | timed_flag, ..Record::default() };
+                    let record = Record { sitemap_id, lastmod: *lastmod, first_seen: now, last_seen: now, flags: url.flags | timed_flag | from_pages, ..Record::default() };
                     fresh.push((url.key.clone(), record));
                     record
                 }
@@ -423,6 +424,7 @@ impl BucketStore {
                     }
                     record.sitemap_id = sitemap_id;
                     record.last_seen = now;
+                    record.flags &= !FROM_PAGES | from_pages;
                     record
                 }
             };
@@ -736,8 +738,17 @@ impl Buckets {
 
     /// Store a listing in its domain's store, and the new and changed pages it names for subdomains kept apart in theirs, while those send; one that never sends gets none. A hand-off that does not land, as the subdomain waits for a recheck or its store failed, is tried again on the next listing.
     pub fn record_listing(&self, host: &str, sitemap_id: i64, entries: Vec<(Url, u32, bool)>, now: u32) -> Result<Listing> {
+        self.listing(host, sitemap_id, entries, now, false)
+    }
+
+    /// As `record_listing`, for the pages a homepage read or a link run found on the site's own pages.
+    pub fn record_page_listing(&self, host: &str, sitemap_id: i64, entries: Vec<(Url, u32, bool)>, now: u32) -> Result<Listing> {
+        self.listing(host, sitemap_id, entries, now, true)
+    }
+
+    fn listing(&self, host: &str, sitemap_id: i64, entries: Vec<(Url, u32, bool)>, now: u32, from_pages: bool) -> Result<Listing> {
         let parent = self.store(host);
-        let (listing, mut handed) = parent.record_listing_handing(host, sitemap_id, entries, now)?;
+        let (listing, mut handed) = parent.record_listing_handing(host, sitemap_id, entries, now, from_pages)?;
         let mut landed = Vec::new();
         for (sub, pages) in std::mem::take(&mut handed.pages) {
             let Some(store) = self.store_for(&sub) else {
