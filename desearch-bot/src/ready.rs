@@ -105,11 +105,12 @@ static JUNK_ON_HUBS: LazyLock<Regex> = LazyLock::new(|| {
 });
 /// The data words of the v1 set's hub pages; a page whose path level is one, or holds one, is a hub.
 const HUB_WORDS: [&str; 12] = ["fixtures", "leaderboard", "markets", "polls", "rankings", "results", "schedule", "scoreboard", "scores", "standings", "table", "tables"];
-/// Path levels that name a section, topic or tag.
-const HUB_SECTIONS: [&str; 8] = ["category", "categories", "section", "sections", "tag", "tags", "topic", "topics"];
-/// The last level of a hub, a name: at most this many words, letters only; a level with a data word, at most one more.
-const HUB_NAME_WORDS: usize = 3;
-const HUB_LEVELS: usize = 3;
+/// Path levels that make a page a listing, as the extraction types it: a category, topic or tag.
+const HUB_SECTIONS: [&str; 6] = ["category", "categories", "tag", "tags", "topic", "topics"];
+/// A level holding a data word has at most this many words, so an article's slug is no data page.
+const HUB_DATA_WORDS: usize = 4;
+/// Hub pages of one outlet that go again on its `hubs` interval, at most, in each interval; the rest keep the domain's.
+pub const HUB_REFRESH_MOST: u32 = 60;
 
 pub fn junk(rest: &[u8]) -> bool {
     JUNK.is_match(rest)
@@ -124,7 +125,7 @@ pub fn junk_on(hubs: bool, rest: &[u8]) -> bool {
     }
 }
 
-/// Whether a page of an established outlet is one of its hubs, which go again on its `hubs` interval: on its own host with no query and no date, its homepage, a page under a section, topic or tag level or with a short level holding a data word, or a page at most three levels down whose last level is a name of letters, three words at most.
+/// Whether a page of an established outlet is one of its hubs, which go again on its `hubs` interval: on its own host with no query and no date, its homepage, a page with a category, topic or tag level, or one with a short level holding one of the set's data words.
 pub fn hub_page(domain: &str, rest: &[u8]) -> bool {
     let Some(levels) = path_levels(domain, rest) else {
         return false;
@@ -132,20 +133,11 @@ pub fn hub_page(domain: &str, rest: &[u8]) -> bool {
     if page_date(0, rest).is_some() {
         return false;
     }
-    let levels: Vec<String> = levels.iter().map(|level| level.to_ascii_lowercase()).collect();
-    let words = |level: &str| level.split(['-', '_', '.']).filter(|word| !word.is_empty()).map(String::from).collect::<Vec<String>>();
-    let Some(last) = levels.last() else {
-        return true;
-    };
     let data = |level: &str| {
-        let words = words(level);
-        words.len() <= HUB_NAME_WORDS + 1 && words.iter().any(|word| HUB_WORDS.contains(&word.as_str()))
+        let words: Vec<&str> = level.split(['-', '_', '.']).filter(|word| !word.is_empty()).collect();
+        words.len() <= HUB_DATA_WORDS && words.iter().any(|word| HUB_WORDS.contains(word))
     };
-    if levels.iter().any(|level| HUB_SECTIONS.contains(&level.as_str()) || data(level)) {
-        return true;
-    }
-    let name = words(last);
-    levels.len() <= HUB_LEVELS && name.len() <= HUB_NAME_WORDS && name.iter().all(|word| word.bytes().all(|b| b.is_ascii_alphabetic()))
+    levels.is_empty() || levels.iter().map(|level| level.to_ascii_lowercase()).any(|level| HUB_SECTIONS.contains(&level.as_str()) || data(&level))
 }
 
 /// A page's date: its lastmod, else a date in its path, read as the planner reads it.
@@ -896,10 +888,11 @@ impl BucketStore {
                 if record.lastmod > pick.lastmod {
                     moved.push(Entry { order: Order::Changed { lastmod: record.lastmod }, ..pick.entry.clone() });
                 }
-                // No lastmod will ever say such a page changed, so it goes again on its domain's interval, or an outlet's hub on the outlet's.
+                // No lastmod will ever say such a page changed, so it goes again on its domain's interval, or an outlet's hub, within its cap, on the sooner of that and the outlet's.
                 if record.lastmod == 0 {
-                    let hubs = self.terms(&pick.entry.domain).hubs.filter(|_| hub_page(&pick.entry.domain, &pick.entry.rest));
-                    let next = Scheduled { why: Why::Recrawl, due: at.saturating_add(hubs.unwrap_or_else(|| recrawl.interval(&pick.entry.domain))), at };
+                    let every = recrawl.interval(&pick.entry.domain);
+                    let hubs = self.terms(&pick.entry.domain).hubs.filter(|hubs| hub_page(&pick.entry.domain, &pick.entry.rest) && self.hub_room(&pick.entry.domain, at, *hubs));
+                    let next = Scheduled { why: Why::Recrawl, due: at.saturating_add(hubs.map_or(every, |hubs| hubs.min(every))), at };
                     put_schedule(&mut batch, pick.entry.domain.as_bytes(), &pick.entry.rest, next);
                 }
             }
@@ -926,6 +919,17 @@ impl BucketStore {
         self.db.write(batch)?;
         self.notice(&counts);
         Ok(())
+    }
+
+    /// Whether one more of the outlet's hubs may go again on its interval: at most `HUB_REFRESH_MOST` in each interval, counted since this store opened.
+    fn hub_room(&self, domain: &str, at: u32, every: u32) -> bool {
+        let mut refreshed = self.hub_refreshed.lock().unwrap_or_else(|e| e.into_inner());
+        let (since, count) = refreshed.entry(domain.to_string()).or_insert((at, 0));
+        if at >= since.saturating_add(every) {
+            (*since, *count) = (at, 0);
+        }
+        *count += 1;
+        *count <= HUB_REFRESH_MOST
     }
 
     /// Distinct pages of the domain ever sent, once the list walker counted them.
@@ -2124,10 +2128,10 @@ mod tests {
 
     #[test]
     fn an_outlet_s_hubs_are_its_homepage_sections_topics_tags_and_data_pages() {
-        for hub in ["example.com", "example.com/", "www.example.com/world/", "example.com/en/us-news", "example.com/news/world/europe", "example.com/tag/sudan-war", "example.com/topics/c2vdnvdg6xxt", "example.com/nfl/scoreboard/_/week/9/year/2026", "example.com/sport/football/premier-league/scores-fixtures", "example.com/premier-league-table", "example.com/football/premierleague/Results", "m.example.com/politics/keir-starmer"] {
+        for hub in ["example.com", "example.com/", "example.com/tag/sudan-war", "www.example.com/category/news/", "m.example.com/en/tag/x", "example.com/topics/c2vdnvdg6xxt", "example.com/nfl/scoreboard/_/week/9/year/2026", "example.com/sport/football/premier-league/scores-fixtures", "example.com/premier-league-table", "example.com/football/premierleague/Results"] {
             assert!(hub_page("example.com", hub.as_bytes()), "{hub}");
         }
-        for page in ["example.com/2026/10/31/story", "example.com/news/election-results-what-we-know-so-far", "example.com/city-council-approves-new-budget", "example.com/news/articles/c0abc123x", "example.com/a/b/c/d", "example.com/world/?page=2", "blog.example.com/world", "example.com/de-de/welt", "example.com/news/2026-10-31-recap"] {
+        for page in ["example.com/world/", "example.com/en/us-news", "example.com/news/world/europe", "m.example.com/politics/keir-starmer", "example.com/obituaries", "example.com/events", "example.com/donate", "example.com/2026/10/31/story", "example.com/news/election-results-what-we-know-so-far", "example.com/city-council-approves-new-budget", "example.com/news/articles/c0abc123x", "example.com/a/b/c/d", "example.com/tag/x?page=2", "blog.example.com/tag/x", "example.com/de-de/tag/x", "example.com/tag/2026-10-31-recap"] {
             assert!(!hub_page("example.com", page.as_bytes()), "{page}");
         }
     }
@@ -2154,10 +2158,10 @@ mod tests {
         let recrawl = Recrawl::default();
         store.mark_sent(&outlet, 1_000, &recrawl).unwrap();
         store.mark_sent(&plain, 1_000, &recrawl).unwrap();
-        assert_eq!(store.requeue_due(1_000 + 3_600, 100, &recrawl).unwrap(), Requeued { moved: 4, gone: 0 }, "the outlet's homepage, section, tag and scoreboard");
-        assert_eq!(urls("outlet.com", &store.take_ready("outlet.com", [0, 20, 0]).unwrap()), ["", "nfl/scoreboard", "tag/sudan-war", "world"]);
+        assert_eq!(store.requeue_due(1_000 + 3_600, 100, &recrawl).unwrap(), Requeued { moved: 3, gone: 0 }, "the outlet's homepage, tag and scoreboard");
+        assert_eq!(urls("outlet.com", &store.take_ready("outlet.com", [0, 20, 0]).unwrap()), ["", "nfl/scoreboard", "tag/sudan-war"]);
         assert!(store.take_ready("plain.com", [0, 20, 0]).unwrap().is_empty());
-        assert_eq!(store.requeue_due(1_000 + recrawl.every, 100, &recrawl).unwrap(), Requeued { moved: 7, gone: 0 }, "the rest go again on the domain's interval");
+        assert_eq!(store.requeue_due(1_000 + recrawl.every, 100, &recrawl).unwrap(), Requeued { moved: 8, gone: 0 }, "the rest go again on the domain's interval");
         drop(store);
         std::fs::remove_dir_all(&dir).ok();
     }

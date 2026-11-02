@@ -289,15 +289,36 @@ fn an_outlet_s_hub_goes_again_and_is_retried_on_its_hubs_interval() {
     buckets.allow(&Allowed::with_terms([("example.com", Terms { hubs: Some(3_600), ..Terms::default() })]));
     let store = buckets.store("example.com");
     let article = "a-long-article-slug-about-things";
-    store.record_listing("example.com", 7, vec![page("world", 0), page(article, 0)], 100).unwrap();
+    store.record_listing("example.com", 7, vec![page("tag/sudan-war", 0), page(article, 0)], 100).unwrap();
     store.mark_sent(&take(store, 10), 1000, &rules()).unwrap();
-    assert_eq!(store.next_send("example.com", &rest("world")).unwrap(), Some(Scheduled { why: Why::Recrawl, due: 1000 + 3_600, at: 1000 }));
+    assert_eq!(store.next_send("example.com", &rest("tag/sudan-war")).unwrap(), Some(Scheduled { why: Why::Recrawl, due: 1000 + 3_600, at: 1000 }));
     assert_eq!(store.next_send("example.com", &rest(article)).unwrap(), Some(Scheduled { why: Why::Recrawl, due: 1000 + RECRAWL, at: 1000 }));
 
-    let failed = [outcome("https://example.com/world", Outcome::Failed, 1100), outcome(&format!("https://example.com/{article}"), Outcome::Failed, 1100)];
+    let failed = [outcome("https://example.com/tag/sudan-war", Outcome::Failed, 1100), outcome(&format!("https://example.com/{article}"), Outcome::Failed, 1100)];
     OutcomeReader::new(rules(), 1000).apply(&buckets, &failed, 1100).unwrap();
-    assert_eq!(store.next_send("example.com", &rest("world")).unwrap(), Some(Scheduled { why: Why::Failed, due: 1100 + 3_600, at: 1100 }));
+    assert_eq!(store.next_send("example.com", &rest("tag/sudan-war")).unwrap(), Some(Scheduled { why: Why::Failed, due: 1100 + 3_600, at: 1100 }));
     assert_eq!(store.next_send("example.com", &rest(article)).unwrap(), Some(Scheduled { why: Why::Failed, due: 1100 + RECRAWL, at: 1100 }), "an article waits the domain's interval");
+}
+
+#[test]
+fn an_outlet_s_hubs_go_again_at_most_sixty_an_interval_never_later_than_the_domain_s_interval_and_its_sections_on_the_domain_s() {
+    let dir = Dir::new("ready-hub-cap");
+    let store = open(&dir);
+    store.allow(Allowed::with_terms([("outlet.com", Terms { hubs: Some(3_600), ..Terms::default() }), ("quick.com", Terms { hubs: Some(3_600), ..Terms::default() })]));
+    let pages = |domain: &str, paths: Vec<String>| paths.iter().map(|path| (urls::parse(&format!("https://{domain}/{path}"), domain).unwrap(), 0, false)).collect::<Vec<_>>();
+    let mut outlet: Vec<String> = (0..70).map(|i| format!("tag/t{i}")).collect();
+    outlet.extend(["world".to_string(), "obituaries".to_string()]);
+    store.record_listing("outlet.com", 7, pages("outlet.com", outlet), 100).unwrap();
+    store.record_listing("quick.com", 7, pages("quick.com", vec!["tag/a".into(), "tag/b".into()]), 100).unwrap();
+    let recrawl = Recrawl::new(RECRAWL, RECRAWL).with_overrides("quick.com 0.01\n").unwrap();
+    store.mark_sent(&store.take_ready("outlet.com", [0, 0, 100]).unwrap(), 1_000, &recrawl).unwrap();
+    store.mark_sent(&store.take_ready("quick.com", [0, 0, 100]).unwrap(), 1_000, &recrawl).unwrap();
+    assert_eq!(store.next_send("outlet.com", b"outlet.com/world").unwrap().map(|n| n.due), Some(1_000 + RECRAWL), "a section is no hub the bot can tell");
+    assert_eq!(store.requeue_due(1_000 + 864, 200, &recrawl).unwrap(), Requeued { moved: 2, gone: 0 }, "a domain interval sooner than its hubs' wins");
+    assert_eq!(store.requeue_due(1_000 + 3_600, 200, &recrawl).unwrap(), Requeued { moved: 60, gone: 0 }, "sixty of the 70 tags come back on the hubs interval");
+    let again = store.take_ready("outlet.com", [0, 100, 0]).unwrap();
+    store.mark_sent(&again, 1_000 + 3_600, &recrawl).unwrap();
+    assert_eq!(store.requeue_due(1_000 + 7_200, 200, &recrawl).unwrap(), Requeued { moved: 60, gone: 0 }, "a new interval has a new cap");
 }
 
 #[test]

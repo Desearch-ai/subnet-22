@@ -229,6 +229,8 @@ pub struct BucketStore {
     pub(crate) capped: Mutex<HashSet<String>>,
     /// Waiting pages dropped as they would go, dated before their domain's floor.
     pub floor_dropped: AtomicU64,
+    /// Each outlet's hub pages given its hubs interval since the window that began at the time kept, and how many.
+    pub(crate) hub_refreshed: Mutex<HashMap<String, (u32, u32)>>,
 }
 
 impl BucketStore {
@@ -244,6 +246,7 @@ impl BucketStore {
             noticed: Mutex::new(None),
             allowed: OnceLock::new(),
             capped: Mutex::new(HashSet::new()),
+            hub_refreshed: Mutex::new(HashMap::new()),
             floor_dropped: AtomicU64::new(0),
         })
     }

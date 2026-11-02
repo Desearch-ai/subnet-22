@@ -217,10 +217,11 @@ or none, walks the domain again.
 **Hubs.** An established news outlet's `hubs` is how many seconds after a send its hub pages go again.
 Its homepage is read as a list of pages on every visit, no more often than that, and its tag and
 category pages are queued like any other. Its hubs are its homepage and its pages on its own host with
-no query and no date in the path that sit under a section, topic or tag level, have a short level
-naming data (scores, fixtures, results, tables, standings, schedules, rankings, polls, markets), or
-are at most three levels down with a last level of up to three words of letters. A hub that fails is
-tried again within the same interval; its other pages keep the domain's re-crawl interval.
+no query and no date in the path that have a category, topic or tag level, or a level of up to four
+words naming data (scores, scoreboard, fixtures, results, table, tables, standings, schedule,
+leaderboard, rankings, polls, markets). At most 60 of an outlet's hubs go again on its interval in each
+interval, and never later than the domain's re-crawl interval; the rest, and its other pages, keep
+that interval. A hub that fails is tried again within the same interval.
 
 **Resends.** `resend_before` sends a domain's pages last sent before it once more, as after an
 extraction change. When a domain's value changes, a walk in a thread of its own lists those pages at
