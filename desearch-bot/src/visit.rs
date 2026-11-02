@@ -235,6 +235,8 @@ pub struct Visit {
     pub links_refused: Option<u16>,
     /// The visit came for link work alone and leaves the site's verdict as it was.
     pub links_only: bool,
+    /// Link work read a robots.txt that bars us or names sitemaps not kept yet: a visit decides the site now instead.
+    pub revisit: bool,
     /// When the site's link work is due next, as the visit found it; None when it found nothing to say.
     pub links_at: Option<LinksAt>,
 }
@@ -279,6 +281,7 @@ impl Visit {
             aside: 0,
             links_error: None,
             links_only: false,
+            revisit: false,
             links_at: None,
         }
     }
@@ -558,6 +561,7 @@ impl Visitor {
             connect_failed: false,
             home_read: None,
             stored_home: false,
+            names_new: false,
         }
     }
 
@@ -619,6 +623,8 @@ struct Run<'a> {
     home_read: Option<(String, Vec<u8>, HeaderMap)>,
     /// Link work found the homepage's address in a homepage read before, not only in robots.txt.
     stored_home: bool,
+    /// The robots.txt read names a sitemap the store does not hold.
+    names_new: bool,
 }
 
 impl Run<'_> {
@@ -806,6 +812,7 @@ impl Run<'_> {
             let text = homepage::decode(&answer.body);
             (paths, delay) = robots::rules(&text, robots::TOKEN);
             named = robots::sitemaps(&text);
+            self.names_new = named.iter().filter_map(|name| urls::join(&answer.url, name).ok()).any(|url| !self.known.sitemaps.contains_key(&url));
         }
         // The homepage is read where robots.txt answered: its scheme, and the www host it may have moved to; so are guessed sitemaps, on the site's own hosts.
         if let Ok(home) = urls::join(&answer.url, HOMEPAGE) {
@@ -1174,7 +1181,13 @@ impl Run<'_> {
         // Link work reads robots.txt again once a day has passed, or for the homepage address no homepage read left, and runs only where it still lets us in.
         if self.result.links_only && (!self.stored_home || self.known.robots_checked_at.is_none_or(|checked| self.now - checked >= ROBOTS_EVERY)) {
             slots.turn(&[ip]).await;
-            if self.robots().await?.is_none() || self.robots_refused() {
+            let read = self.robots().await?.is_some();
+            // What a visit would decide differently from here, a visit decides.
+            if self.result.robots_allows == Some(false) || self.robots_refused() || (read && self.names_new) {
+                self.result.revisit = true;
+                return Ok(());
+            }
+            if !read {
                 return Ok(());
             }
         }

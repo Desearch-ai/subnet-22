@@ -2120,19 +2120,37 @@ fn waiting_for_links(buckets: &Arc<Buckets>, host: &str, now: i64) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn link_work_alone_reads_robots_txt_again_after_a_day_and_runs_only_where_it_still_lets_us_in() {
-    for (case, status, body) in [("disallow", 200u16, &b"User-agent: *\nDisallow: /\n"[..]), ("refused", 403, &b"denied"[..])] {
+async fn link_work_whose_robots_txt_bars_us_or_names_new_sitemaps_leaves_the_verdict_a_visit_would() {
+    let cases: [(&str, u16, &[u8]); 3] = [("disallow", 200, b"User-agent: *\nDisallow: /\n"), ("refused", 403, b"denied"), ("named", 200, b"User-agent: *\nSitemap: /list.xml\n")];
+    for (case, status, body) in cases {
         let web: Shared = Arc::default();
-        let host: &'static str = format!("stale-robots-{case}.test").leak();
-        deep_site(&web, host);
-        web.lock().unwrap().add(host, "/robots.txt", status, None, body);
+        let (linked, visited): (&'static str, &'static str) = (format!("stale-robots-{case}.test").leak(), format!("visited-robots-{case}.test").leak());
+        for host in [linked, visited] {
+            deep_site(&web, host);
+            let mut w = web.lock().unwrap();
+            w.add(host, "/robots.txt", status, None, body);
+            w.add(host, "/list.xml", 200, None, urlset(host, &(0..12).map(|i| format!("/story/{i}")).collect::<Vec<_>>()).as_bytes());
+        }
         let now = chrono::Utc::now().timestamp();
-        let (buckets, _crawl) = crawl_following(web.clone(), &[host], &format!("stale-robots-{case}"), FollowLinks::Thin, Slots::new(2), |b| waiting_for_links(b, host, now)).await;
-        let hits: Vec<String> = web.lock().unwrap().hits.iter().map(|(_, path, _)| path.clone()).collect();
-        assert_eq!(hits, ["/robots.txt"], "{case}: robots.txt read a week ago is read again, and no page is asked");
-        let record = buckets.store(host).domain(host).unwrap().unwrap();
-        assert_eq!((record["robots_status"].as_u64(), record["allows"].as_bool()), (Some(status.into()), Some(case == "refused")), "{case}: kept for the next visit");
-        assert_eq!(record["state"].as_str(), Some("no_sitemap"), "{case}: the verdict waits for the recheck");
+        let (buckets, _crawl) = crawl_following(web.clone(), &[linked, visited], &format!("stale-robots-{case}"), FollowLinks::Thin, Slots::new(2), |b| {
+            b.allow(&Allowed::of([linked, visited]));
+            waiting_for_links(b, linked, now);
+            waiting_for_links(b, visited, now);
+            let mut record = b.store(visited).domain(visited).unwrap().unwrap();
+            record.insert("due".into(), now.into());
+            record.remove("links_due");
+            let mut changes = Changes::default();
+            changes.domain(visited, &record);
+            b.store(visited).write(changes).unwrap();
+        })
+        .await;
+        let verdict = |host: &str| {
+            let record = buckets.store(host).domain(host).unwrap().unwrap();
+            (record["state"].as_str().map(str::to_string), record["reason"].as_str().map(str::to_string), record["allows"].as_bool())
+        };
+        assert_eq!(verdict(linked), verdict(visited), "{case}: link work leaves the verdict a visit reading the same robots.txt does");
+        let hits: Vec<String> = web.lock().unwrap().hits.iter().filter(|(h, ..)| h == linked).map(|(_, path, _)| path.clone()).collect();
+        assert!(!hits.iter().any(|path| path == "/a"), "{case}: no page is asked for link work: {hits:?}");
     }
 }
 

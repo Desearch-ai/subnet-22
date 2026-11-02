@@ -891,6 +891,13 @@ async fn links_one(host: Arc<str>, buckets: Arc<Buckets>, visitor: Arc<Visitor>,
     } else {
         visitor.links(known.clone(), now).await
     };
+    if visit.revisit {
+        // The visit reads robots.txt again for itself and leaves link work on the site as it decides, or ends it.
+        let fresh = Arc::new(Known { robots_checked_at: None, ..(*known).clone() });
+        let mut write = once(fresh.clone(), &visitor, &excluded).await;
+        write.visit.links_at = write.visit.links_at.or(Some(LinksAt::Never));
+        return LinkFinished::Done(Box::new(write), fresh);
+    }
     LinkFinished::Done(Box::new(links_plan(&known, visit, now)), known)
 }
 
