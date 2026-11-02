@@ -532,6 +532,69 @@ async fn a_feed_named_as_a_sitemap_is_read_as_one() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_index_entry_naming_several_sitemaps_reads_each_and_their_cdata_locations() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let web: Shared = Arc::default();
+    let host = "sports.test";
+    {
+        let mut w = web.lock().unwrap();
+        w.add(host, "/robots.txt", 200, None, format!("User-agent: *\nAllow: /\nSitemap: http://{host}/sitemap.xml\n").as_bytes());
+        w.add(host, "/", 200, None, format!("<html lang=\"en\"><body><p>{ENGLISH}</p></body></html>").as_bytes());
+        let index = format!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<sitemapindex xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">\n    <sitemap>\n        \
+             <loc>http://{host}/googlenewssitemap</loc>\n        <loc>http://{host}/sitemap/videos</loc>\n        <loc>http://{host}/where-to-watch.xml</loc>\n    \
+             </sitemap> \n</sitemapindex>"
+        );
+        w.add(host, "/sitemap.xml", 200, None, index.as_bytes());
+        let news: String = (1..=12)
+            .map(|i| format!("\t<url>\n\t\t<loc><![CDATA[http://{host}/f1/story/_/id/{i}/title]]></loc>\n\t\t<n:news><n:publication_date>2026-11-02T09:{i:02}:00Z</n:publication_date></n:news>\n\t</url>\n"))
+            .collect();
+        let news = format!("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\" xmlns:n=\"http://www.google.com/schemas/sitemap-news/0.9\">{news}</urlset>");
+        w.add(host, "/googlenewssitemap", 200, None, news.as_bytes());
+        w.add(host, "/sitemap/videos", 200, None, urlset(host, &["/video/1".into(), "/video/2".into()]).as_bytes());
+        w.add(host, "/where-to-watch.xml", 200, None, urlset(host, &["/where-to-watch".into()]).as_bytes());
+    }
+    tokio::spawn(serve(listener, web.clone()));
+
+    let root = std::env::temp_dir().join(format!("desearch-bot-several-{}", std::process::id()));
+    let buckets = Arc::new(Buckets::open(&root, &[bucket_of(host)], &Resources::new(8 << 20, 8 << 20, 1)).unwrap());
+    let mut changes = Changes::default();
+    changes.domain(host, &records::new_domain(Some(1), Some("new_generic"), &[], State::New, None, Some(0)));
+    buckets.store(host).write(changes).unwrap();
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .dns_resolver(Arc::new(TestResolver { addr, known: [host].into() }))
+        .timeout(Duration::from_secs(10))
+        .build()
+        .unwrap();
+    let visitor = Visitor {
+        client,
+        buckets: buckets.clone(),
+        suffixes: Arc::new(PublicSuffixList::parse("test\n")),
+        signer: None,
+        language: Arc::new(|text: &str| Some(if text.contains("the") { "en" } else { "fr" }.to_string())),
+        floor: 0.0,
+        connect_timeout: Duration::from_secs(10),
+        cpu: Slots::new(4),
+        bodies: Slots::new(2),
+        pause: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        heavy: Slots::new(1),
+        links: Slots::new(2),
+        follow_links: FollowLinks::Off,
+    };
+    let mut crawl = Loop::new(buckets.clone(), Arc::new(visitor), 16, Registry::offline(), HashSet::new());
+    assert_eq!(crawl.load().unwrap(), 1);
+    assert_eq!(crawl.step().await.unwrap(), 1);
+    let record = buckets.store(host).domain(host).unwrap().unwrap();
+    assert_eq!((record["state"].as_str(), record["urls"].as_i64()), (Some("active"), Some(15)), "every sitemap the entry names, and every page of the news sitemap");
+    let stored = |path: &str| buckets.store(host).url(&urls::parse(&format!("http://{host}{path}"), host).unwrap()).unwrap();
+    assert!(stored("/f1/story/_/id/12/title").is_some() && stored("/video/2").is_some() && stored("/where-to-watch").is_some());
+    drop(crawl);
+    std::fs::remove_dir_all(&root).ok();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_landing_site_lists_its_homepage_and_the_pages_it_links_to_beside_its_sitemap() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
