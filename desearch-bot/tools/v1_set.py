@@ -39,6 +39,10 @@ MAX_HOPS = 5
 VERDICTS = {"keep", "out"}
 # A landing site gives its homepage and first-level pages; a leading English locale (`/en-us/`) is no level, and another locale's pages are out.
 LANDING_DEPTH = 1
+# An established outlet's undated hub pages: its homepage, sections, topics and tags by type, and its data pages by a word of a path level.
+HUB_PAGES = {"types": ["home", "listing"], "words": ["fixtures", "leaderboard", "markets", "polls", "rankings", "results", "schedule", "scoreboard", "scores", "standings", "table", "tables"]}
+WORD_BREAKS = re.compile(r"[-_.]")
+ASCII_LOWER = str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz")
 ENGLISH_LOCALE = re.compile(r"en(?:[-_][a-z]{2})?", re.I | re.A)
 LOCALE = re.compile(r"[a-z]{2}[-_][a-z]{2}", re.I | re.A)
 # What an `out` row's `why` may say; a row giving only benchmark names takes its reason from its note.
@@ -347,18 +351,27 @@ def entry_for(sites: dict[str, dict], host: str) -> dict | None:
     return None
 
 
-def landing_page(path: str, query: str) -> bool:
-    """A homepage or first-level page with no query, a leading English locale not counted."""
+def landing_page(path: str, query: str, depth: int = LANDING_DEPTH) -> bool:
+    """A homepage or a page at most `depth` levels down with no query, a leading English locale not counted."""
     levels = [level for level in path.split("/") if level]
     if levels and ENGLISH_LOCALE.fullmatch(levels[0]):
         levels = levels[1:]
     elif levels and LOCALE.fullmatch(levels[0]):
         return False
-    return not query and len(levels) <= LANDING_DEPTH
+    return not query and len(levels) <= depth
 
 
-def matches(sites: dict[str, dict], url: str, published: str | None, page_type: str | None = None, undated: str = "out") -> bool:
-    """Whether a page belongs to v1: the entry for its host or the nearest listed host above it decides; with `undated` article, an undated news article is in."""
+def hub_page(hub_pages: dict | None, path: str, page_type: str | None) -> bool:
+    """A page of a hub type, or one with a data word as a path level or as a word of one split at `-`, `_` and `.`, in ASCII lower case."""
+    if not hub_pages:
+        return False
+    words = set(hub_pages["words"])
+    levels = [level.translate(ASCII_LOWER) for level in path.split("/") if level]
+    return page_type in hub_pages["types"] or any(level in words or words.intersection(WORD_BREAKS.split(level)) for level in levels)
+
+
+def matches(sites: dict[str, dict], url: str, published: str | None, page_type: str | None = None, undated: str = "out", hub_pages: dict | None = None) -> bool:
+    """Whether a page belongs to v1: the entry for its host or the nearest listed host above it decides; with `undated` article, an undated news article is in, and on a news site with `hubs`, an undated hub page."""
     parts = urlsplit(url)
     entry = entry_for(sites, parts.hostname or "")
     if entry is None or entry["rule"] == "out":
@@ -367,14 +380,14 @@ def matches(sites: dict[str, dict], url: str, published: str | None, page_type: 
         return True
     if entry["rule"] == "landing":
         # A landing entry takes its own host only, never the hosts under it.
-        return site_host(parts.hostname or "") in (entry["host"], f"m.{entry['host']}") and landing_page(parts.path, parts.query)
+        return site_host(parts.hostname or "") in (entry["host"], f"m.{entry['host']}") and landing_page(parts.path, parts.query, entry.get("depth", LANDING_DEPTH))
     if entry["rule"] == "whole":
         return not entry.get("paths") or any(
             parts.path.startswith(path) for path in entry["paths"]
         )
     dated = page_date(url, published)
     if dated is None:
-        return undated == "article" and page_type == "article"
+        return (undated == "article" and page_type == "article") or (bool(entry.get("hubs")) and hub_page(hub_pages, parts.path, page_type))
     return (
         not entry.get("since") or dated >= date.fromisoformat(entry["since"])
     )

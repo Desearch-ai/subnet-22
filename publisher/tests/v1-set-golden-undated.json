@@ -1,10 +1,12 @@
 {
   "undated": "article",
+  "hub_pages": {"types": ["home", "listing"], "words": ["fixtures", "leaderboard", "markets", "polls", "rankings", "results", "schedule", "scoreboard", "scores", "standings", "table", "tables"]},
   "sites": [
     {"host": "latimes.com", "rule": "news", "type": "news"},
     {"host": "smalltownnews.example", "rule": "news", "since": "2025-10-28", "type": "news"},
     {"host": "nature.com", "rule": "whole", "type": "academic"},
-    {"host": "wikipedia.org", "rule": "out"}
+    {"host": "wikipedia.org", "rule": "out"},
+    {"host": "outlet.example", "rule": "news", "type": "news", "hubs": true}
   ],
   "cases": [
     {"url": "https://www.latimes.com/california/story/council-vote", "published": null, "page_type": "article", "in": true},
@@ -16,6 +18,22 @@
     {"url": "https://smalltownnews.example/2025/11/02/fair", "published": null, "page_type": "article", "in": true},
     {"url": "https://smalltownnews.example/old-fair", "published": "2023-06-01", "page_type": "article", "in": false},
     {"url": "https://www.nature.com/articles/s41586-020-2649-2", "published": null, "page_type": "other", "in": true},
-    {"url": "https://de.wikipedia.org/wiki/Ada_Lovelace", "published": null, "page_type": "article", "in": false}
+    {"url": "https://de.wikipedia.org/wiki/Ada_Lovelace", "published": null, "page_type": "article", "in": false},
+    {"url": "https://www.latimes.com/nfl/scoreboard", "published": null, "page_type": "other", "in": false},
+    {"url": "https://www.outlet.example/", "published": null, "page_type": "home", "in": true},
+    {"url": "https://outlet.example/world/", "published": null, "page_type": "listing", "in": true},
+    {"url": "https://outlet.example/tag/sudan-war", "published": null, "page_type": "listing", "in": true},
+    {"url": "https://outlet.example/news/story", "published": null, "page_type": "article", "in": true},
+    {"url": "https://outlet.example/nfl/scoreboard", "published": null, "page_type": "other", "in": true},
+    {"url": "https://outlet.example/sport/football/premier-league-table", "published": null, "page_type": "other", "in": true},
+    {"url": "https://outlet.example/football/premierleague/Results", "published": null, "page_type": null, "in": true},
+    {"url": "https://outlet.example/soccer/scoreboard/_/league/eng.1", "published": null, "page_type": "landing", "in": true},
+    {"url": "https://outlet.example/markets.html?x=1", "published": null, "page_type": "other", "in": true},
+    {"url": "https://outlet.example/about/", "published": null, "page_type": "other", "in": false},
+    {"url": "https://outlet.example/tabletop-games", "published": null, "page_type": "other", "in": false},
+    {"url": "https://outlet.example/news/story", "published": null, "page_type": null, "in": false},
+    {"url": "https://outlet.example/live", "published": null, "page_type": "landing", "in": false},
+    {"url": "https://outlet.example/2024/05/01/recap", "published": null, "page_type": "other", "in": true},
+    {"url": "https://outlet.example/world/", "published": "2019-01-01", "page_type": "listing", "in": true}
   ]
 }

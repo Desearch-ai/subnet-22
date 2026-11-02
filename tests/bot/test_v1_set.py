@@ -241,8 +241,12 @@ def test_undated_news_articles_are_in_only_when_the_set_says_so():
     golden = json.loads(GOLDEN_UNDATED.read_text())
     sites = {site["host"]: site for site in golden["sites"]}
     for case in golden["cases"]:
-        assert v1_set.matches(sites, case["url"], case["published"], case["page_type"], golden["undated"]) == case["in"], case
+        assert v1_set.matches(sites, case["url"], case["published"], case["page_type"], golden["undated"], golden["hub_pages"]) == case["in"], case
     assert not v1_set.matches(sites, "https://www.latimes.com/california/story/council-vote", None, "article"), "undated pages stay out by default"
+    assert not v1_set.matches(sites, "https://outlet.example/world/", None, "listing", golden["undated"]), "hubs need the file's hub pages"
+    assert golden["hub_pages"] == v1_set.HUB_PAGES, "the builder writes the hub pages the golden cases read"
+    deep = {"deep.example": {"host": "deep.example", "rule": "landing", "depth": 3}}
+    assert v1_set.matches(deep, "https://deep.example/a/b/c", None) and not v1_set.matches(deep, "https://deep.example/a/b/c/d", None)
 
 
 def test_the_set_file_is_written_from_the_inputs(tmp_path):

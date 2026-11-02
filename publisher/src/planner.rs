@@ -1484,6 +1484,8 @@ pub struct Counts {
     pub undated: u64,
     /// Such pages typed `article`, taken because the set's `undated` is `article`.
     pub undated_article_in: u64,
+    /// Such pages of a news site with `hubs`, taken as its hub pages.
+    pub undated_hub_in: u64,
     /// Pages of a news site dated before its `since`.
     pub before_since: u64,
     /// New pages of sites whose index cap is reached.
@@ -2618,8 +2620,10 @@ impl Planner {
             return Considered::Passed;
         }
         let waiting = self.still_waiting(&page);
-        if let Some(Ok(Admitted::UndatedArticle)) = admission {
-            self.counts.undated_article_in += 1;
+        match admission {
+            Some(Ok(Admitted::UndatedArticle)) => self.counts.undated_article_in += 1,
+            Some(Ok(Admitted::UndatedHub)) => self.counts.undated_hub_in += 1,
+            _ => {}
         }
         let cap = match self.listed.as_ref().filter(|_| self.set.is_none()) {
             None => None,
