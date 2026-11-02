@@ -245,6 +245,7 @@ impl OutcomeReader {
         let mut counted = Counted::default();
         let mut tallies: HashMap<String, Yield> = HashMap::new();
         let mut schedules: HashMap<usize, Vec<PageSchedule>> = HashMap::new();
+        let mut refusing: HashMap<String, bool> = HashMap::new();
         for row in rows {
             match row.outcome {
                 Outcome::Published | Outcome::Unchanged => counted.published += 1,
@@ -270,8 +271,8 @@ impl OutcomeReader {
                     Outcome::Dropped => {}
                 }
             }
-            // A failed resend gets no retry of its own, whose outcome would count; the page goes again with the fill.
-            if was_resend && row.outcome == Outcome::Failed {
+            // A failed resend is retried as any failure is, counted and paced by the domain's yield, unless the site refuses us.
+            if was_resend && row.outcome == Outcome::Failed && *refusing.entry(domain.clone()).or_insert_with(|| refuses(buckets, &domain)) {
                 continue;
             }
             let interval = self.recrawl.interval(&domain);
@@ -302,6 +303,13 @@ impl OutcomeReader {
         on_readers(groups, |(pages, tallies)| buckets.store(&tallies[0].0).note_outcomes(&pages, &tallies))?;
         Ok(counted)
     }
+}
+
+/// Whether the site's robots.txt or homepage last refused us or limited our rate.
+fn refuses(buckets: &Buckets, domain: &str) -> bool {
+    let record = buckets.store(domain).domain(domain).ok().flatten();
+    let refused = |field: &str| record.as_ref().and_then(|r| r.get(field)).and_then(Value::as_u64).is_some_and(|status| matches!(status, 401 | 402 | 403 | 429));
+    refused("robots_status") || refused("home_status")
 }
 
 /// One numbered outcome file, nothing yet, a number not indexed while later ones are, or an index whose file expired unread.

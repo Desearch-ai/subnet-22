@@ -219,7 +219,8 @@ built again with the same value walks nothing. Failing pages, pages robots.txt d
 dated before the floor stay off. A site with a `depth` goes again only up to its `send_cap`, its
 shallowest pages first, so its homepage leads. Resends take only the room the lanes leave, before refreshes, within
 the domain's hourly limit and Crawl-delay, and refreshes pass a domain by while its resends wait. A
-failed resend gets no retry of its own. Resent pages' outcomes stay out of the yields that pace the
+failed resend is retried as any failed page is, in the retries lane and counted in the domain's yield,
+unless the site's robots.txt or homepage last refused us or limited our rate. Resent pages' outcomes stay out of the yields that pace the
 domain, also across a restart: the pages lately resent are kept in `resent-pages.bin` beside the
 stores. With the bot stopped, `desearch-bot unresend` takes every waiting resend back, clears the
 pages' marks and forgets each domain's walked value; install a list without `resend_before` first.

@@ -1811,7 +1811,7 @@ fn outcomes_of_pages_sent_once_more_stay_out_of_the_yield() {
     let store = buckets.store("example.com");
     let counted = store.domain_yield("example.com").unwrap().unwrap();
     assert_eq!((counted.ok, counted.failed), (1.0, 1.0), "the resend's failure stays out; the other failure counts");
-    assert!(store.next_send("example.com", &rest("old")).is_ok_and(|next| next.is_none()), "a failed resend gets no retry of its own, whose outcome would count; the fill takes the page in its turn");
+    assert_eq!(store.next_send("example.com", &rest("old")).unwrap().map(|n| (n.why, n.due)), Some((Why::Failed, 5000 + RECRAWL)), "a failed resend is retried as any failure is");
     assert!(store.next_send("example.com", &rest("lost")).unwrap().is_some(), "a resend whose task was lost goes again");
     assert!(store.next_send("example.com", &rest("gone")).unwrap().is_some());
 
@@ -1820,6 +1820,43 @@ fn outcomes_of_pages_sent_once_more_stay_out_of_the_yield() {
     let kept = ResentPages::load(&path);
     assert!(kept.contains("example.com", b"example.com/old") && !kept.contains("example.com", b"example.com/new"), "the set outlives a restart");
     assert!(!ResentPages::load(&dir.0.join("none.bin")).active());
+}
+
+#[test]
+fn a_failed_resend_is_retried_as_any_failure_unless_the_site_refuses_us() {
+    let dir = Dir::new("resend-failed");
+    let buckets = known(&dir, &["example.com", "example.org"]);
+    let resent = Arc::new(ResentPages::default());
+    let mut reader = OutcomeReader::new(rules(), 1000).with_resent(resent.clone());
+    for host in ["example.com", "example.org"] {
+        let store = buckets.store(host);
+        store.record_listing(host, 7, vec![(urls::parse(&format!("https://{host}/a"), host).unwrap(), LATE, false)], 100).unwrap();
+        let mut quotas = [0; LANES];
+        quotas[FRESH] = 10;
+        store.mark_sent(&store.take_ready(host, quotas).unwrap(), 1000, &rules()).unwrap();
+        store.resend_domain(host, Terms { resend_before: Some(2000), ..Terms::default() }, 3000, &mut |_| true, &mut |_| true).unwrap();
+        let (picks, _) = store.take_resend(host, 10, &Default::default()).unwrap();
+        resent.insert(host, &picks[0].entry.rest);
+        store.mark_sent(&picks, 3000, &rules()).unwrap();
+    }
+    let mut record = buckets.store("example.org").domain("example.org").unwrap().unwrap();
+    record.insert("home_status".into(), 403.into());
+    let mut changes = Changes::default();
+    changes.domain("example.org", &record);
+    buckets.store("example.org").write(changes).unwrap();
+
+    reader.apply(&buckets, &[outcome("https://example.com/a", Outcome::Failed, 3100), outcome("https://example.org/a", Outcome::Failed, 3100)], 3100).unwrap();
+    assert!(buckets.store("example.org").next_send("example.org", b"example.org/a").unwrap().is_none(), "a site whose homepage refuses us gets no retry");
+    let store = buckets.store("example.com");
+    assert_eq!(requeue(store, 3100 + RECRAWL), Requeued { moved: 1, gone: 0 });
+    let retry = take(store, 10);
+    assert_eq!((retry.len(), retry[0].reason, retry[0].failures), (1, Reason::Requeued, 1), "in the retries lane, paced like any retry");
+    store.mark_sent(&retry, 3200 + RECRAWL, &rules()).unwrap();
+    // A week on, the set of pages lately resent no longer holds it.
+    OutcomeReader::new(rules(), 1000).apply(&buckets, &[outcome("https://example.com/a", Outcome::Failed, 3300 + RECRAWL)], 3300 + RECRAWL).unwrap();
+    assert_eq!(store.domain_yield("example.com").unwrap().map(|y| y.failed), Some(1.0), "the retry's outcome counts in the yield");
+    assert_eq!(requeue(store, 3300 + 2 * RECRAWL), Requeued { moved: 0, gone: 1 }, "two failures in a row wait the long interval");
+    assert_eq!(requeue(store, 3300 + RECRAWL + GONE), Requeued { moved: 1, gone: 0 }, "then it goes once more");
 }
 
 #[test]
