@@ -8,6 +8,7 @@ pub mod changes;
 pub mod compactor;
 pub mod current;
 pub mod index;
+pub mod lang;
 pub mod local;
 pub mod outcomes;
 pub mod planner;

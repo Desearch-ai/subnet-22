@@ -4109,3 +4109,51 @@ async fn a_given_back_bulk_page_whose_file_is_gone_is_planned_by_the_backfill_wh
     assert_eq!(planner.state.bulk_left(&key).unwrap(), None, "the version planned, what the lane left is let go");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+fn prose(n: usize) -> String {
+    format!("Story {n}. The city council voted on Tuesday to approve a new budget for the coming year, and members said that the plan will add funding for parks and roads that residents had asked for. {}", "word ".repeat(60))
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_page_naming_no_language_is_planned_from_the_log_and_the_backfill_when_its_text_reads_as_english() {
+    let Some((_turn, redis)) = redis_db().await else {
+        eprintln!("skipped: no Redis on {REDIS}");
+        return;
+    };
+    let dir = scratch("nolang");
+    let stub = stub::start(dir.join("r2"), "127.0.0.1:0").await.unwrap();
+    let (pages, temp, current) = (bucket(stub.addr, "desearch-pages"), bucket(stub.addr, "subnet-22"), bucket(stub.addr, "desearch-current"));
+    let french = "Le conseil municipal a voté mardi pour approuver un nouveau budget pour l'année à venir, et les membres ont dit que le plan ajoute des fonds pour les parcs et les routes de la ville et de ses quartiers. ".repeat(3);
+    let page = |url: &str, text: &str, lang: &str| v2(record(url, text, "article", lang));
+    log(
+        &pages,
+        1,
+        vec![page("https://news.example/log/1", &prose(1), ""), page("https://news.example/log/2", &french, ""), page("https://news.example/log/3", &prose(3), "fr")],
+    )
+    .await;
+    let row = |url: &str, text: &str| PageRow { key: page_key(url).unwrap(), removed: false, change_seq: 1, version: record_version(&page(url, text, "")), published_at: "2026-10-20T01:00:00+00:00".into(), record: page(url, text, "") };
+    shard(&current, 3, vec![vec![row("https://news.example/back/1", &prose(4)), row("https://news.example/back/2", &french)]]).await;
+    let set = dir.join("v1-set.json");
+    std::fs::write(&set, json!({"sites": [{"host": "news.example", "rule": "whole"}]}).to_string()).unwrap();
+    let mut backfilling = settings(dir.join("state"), 3600.0, 0);
+    (backfilling.backfill, backfilling.backfill_shards, backfilling.set_file, backfilling.pages_per_input) = (true, 3..4, Some(set), 1);
+    backfilling.backfill_every = Duration::ZERO;
+
+    let mut planner = Planner::new(backfilling, pages.clone(), temp.clone(), redis.clone(), Room::Fixed(0)).await.unwrap();
+    planner.current = Some(current.clone());
+    for _ in 0..20 {
+        planner.pass().await.unwrap();
+        if planner.counts.shards >= 1 {
+            break;
+        }
+    }
+    let planned: HashSet<String> = planner
+        .state
+        .pending()
+        .unwrap()
+        .iter()
+        .map(|(_, entry)| serde_json::from_str::<Value>(entry).unwrap()["pages"][0]["url"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(planned, HashSet::from(["https://news.example/log/1".to_string(), "https://news.example/back/1".to_string()]), "English text with no language named; French text and a named French page stay out");
+    let _ = std::fs::remove_dir_all(&dir);
+}
