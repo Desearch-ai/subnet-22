@@ -2551,3 +2551,40 @@ async fn link_work_right_after_a_visit_keeps_the_sites_crawl_delay() {
     // The first visit tries https, then http, before robots.txt has said how long to wait.
     assert!(gaps[1..].iter().all(|gap| *gap >= 2.9), "every later request three seconds after the last, the visit's and its link work's alike: {gaps:?}");
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn link_work_never_hands_a_site_to_visit_after_visit_nor_comes_back_at_once() {
+    for (case, robots) in [("barred", "User-agent: *\nDisallow: /list.xml\nSitemap: /list.xml\n"), ("named", "User-agent: *\nSitemap: /list.xml\n")] {
+        let web: Shared = Arc::default();
+        let host: &'static str = format!("loop-{case}.test").leak();
+        deep_site(&web, host);
+        {
+            let mut w = web.lock().unwrap();
+            w.add(host, "/robots.txt", 200, None, robots.as_bytes());
+            w.add(host, "/list.xml", 200, None, urlset(host, &(0..12).map(|i| format!("/story/{i}")).collect::<Vec<_>>()).as_bytes());
+        }
+        let now = chrono::Utc::now().timestamp();
+        let (hosts, name) = ([host], format!("loop-{case}"));
+        let crawl = crawl_following(web.clone(), &hosts, &name, FollowLinks::Thin, Slots::new(2), |b| {
+            b.allow(&Allowed::of([host]));
+            // No homepage kept, so every link run reads robots.txt first.
+            let mut record = records::new_domain(Some(1), Some("new_generic"), &[], State::NoSitemap, Some("no_sitemap"), Some(0));
+            for (name, at) in [("robots", now - 8 * 86_400), ("checked", now - 8 * 86_400), ("ok", now - 8 * 86_400), ("due", now + 20 * 86_400), ("links_due", now)] {
+                record.insert(name.into(), at.into());
+            }
+            record.insert("robots_status".into(), 200.into());
+            record.insert("allows".into(), true.into());
+            record.insert("listed".into(), true.into());
+            record.insert("lang".into(), "en".into());
+            let mut changes = Changes::default();
+            changes.domain(host, &record);
+            b.store(host).write(changes).unwrap();
+        });
+        let (buckets, _crawl) = tokio::time::timeout(Duration::from_secs(40), crawl).await.unwrap_or_else(|_| panic!("{case}: the step never ends"));
+        let robots_reads = web.lock().unwrap().hits.iter().filter(|(_, path, _)| path == "/robots.txt").count();
+        assert!(robots_reads <= 2, "{case}: robots.txt read {robots_reads} times");
+        let record = buckets.store(host).domain(host).unwrap().unwrap();
+        let due = record.get("links_due").and_then(|d| d.as_i64());
+        assert!(due.is_none_or(|due| due >= now + 600), "{case}: link work comes back no sooner than ten minutes: {record:?}");
+    }
+}

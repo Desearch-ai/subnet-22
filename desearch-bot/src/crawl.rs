@@ -49,6 +49,8 @@ const WAKE_CHUNK: usize = 1_000;
 const LINKS_QUEUED: usize = 200_000;
 /// A site visited when its link work comes up takes it this many seconds later.
 const LINKS_BUSY_WAIT: i64 = 60;
+/// Link work set by link work, or by the visit it handed a site to, comes no sooner than this.
+const LINKS_LEAST_WAIT: i64 = 10 * 60;
 
 #[derive(Clone, Debug)]
 pub struct DomainWrite {
@@ -660,6 +662,8 @@ impl Loop {
             Some(LinksAt::At(at)) => Some(at / SECOND),
             Some(LinksAt::First) => Some(records::int(record.get("links_due")).unwrap_or(now + first_wave(&write.host, self.links_spread))),
         };
+        // Link work never brings itself back at once, however its run or hand-off ended.
+        let at = at.map(|at| if write.visit.links_only || write.visit.revisit { at.max(now_micros() / SECOND + LINKS_LEAST_WAIT) } else { at });
         if write.visit.links_only {
             if write.visit.sitemaps.iter().any(|u| u.kind.as_deref() == Some(LINKS_KIND)) {
                 self.stats.link_runs += 1;
@@ -896,6 +900,7 @@ async fn links_one(host: Arc<str>, buckets: Arc<Buckets>, visitor: Arc<Visitor>,
         let fresh = Arc::new(Known { robots_checked_at: None, ..(*known).clone() });
         let mut write = once(fresh.clone(), &visitor, &excluded).await;
         write.visit.links_at = write.visit.links_at.or(Some(LinksAt::Never));
+        write.visit.revisit = true;
         return LinkFinished::Done(Box::new(write), fresh);
     }
     LinkFinished::Done(Box::new(links_plan(&known, visit, now)), known)

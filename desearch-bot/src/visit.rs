@@ -812,7 +812,6 @@ impl Run<'_> {
             let text = homepage::decode(&answer.body);
             (paths, delay) = robots::rules(&text, robots::TOKEN);
             named = robots::sitemaps(&text);
-            self.names_new = named.iter().filter_map(|name| urls::join(&answer.url, name).ok()).any(|url| !self.known.sitemaps.contains_key(&url));
         }
         // The homepage is read where robots.txt answered: its scheme, and the www host it may have moved to; so are guessed sitemaps, on the site's own hosts.
         if let Ok(home) = urls::join(&answer.url, HOMEPAGE) {
@@ -830,6 +829,8 @@ impl Run<'_> {
             self.stop(Outcome::Blocked, Some("robots_disallow".into()));
             return Ok(None);
         }
+        // Only a sitemap a visit would read is news: on the site, where robots.txt lets us.
+        self.names_new = named.iter().filter_map(|name| urls::join(&self.base, name).ok()).any(|url| self.on_site(&url) && self.robots_allow(&url) && !self.known.sitemaps.contains_key(&url));
         self.roots(&named).map(Some)
     }
 
