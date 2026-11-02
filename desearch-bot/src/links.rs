@@ -109,6 +109,13 @@ impl LinkPace {
         true
     }
 
+    /// Gives back the share of a run that only waited its turn.
+    pub fn refund(&mut self) {
+        if self.per_hour > 0.0 {
+            self.tokens = (self.tokens + 1.0).min(Self::burst(self.per_hour));
+        }
+    }
+
     pub fn ready(&self) -> bool {
         self.per_hour == 0.0 || self.tokens + self.at.elapsed().as_secs_f64() * self.per_hour / 3600.0 >= 1.0
     }

@@ -500,6 +500,7 @@ impl Loop {
             // Waiting its turn costs no write: only the queue knows.
             Ok((_, LinkFinished::Done(write, _))) if write.visit.links_wait.is_some() && write.visit.sitemaps.is_empty() && !write.visit.robots_read => {
                 self.stats.link_waits += 1;
+                self.link_pace.refund();
                 self.links.push(&host, write.visit.links_wait.unwrap_or_default() / SECOND);
                 self.release(&host);
             }

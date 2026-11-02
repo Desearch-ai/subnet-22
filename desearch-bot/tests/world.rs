@@ -2417,3 +2417,34 @@ async fn link_work_leaves_a_site_with_a_sitemap_backlog_in_the_backlog_lane() {
     crawl.step().await.unwrap();
     assert_eq!(crawl.summary()["lanes"]["backlog"], 1, "the visit after link work still reads the backlog in its lane: {}", crawl.summary());
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_link_run_that_only_waits_spends_none_of_the_hourly_limit() {
+    let web: Shared = Arc::default();
+    let (waits, runs) = ("listing-paced.test", "bare-paced.test");
+    deep_site(&web, runs);
+    let now = chrono::Utc::now().timestamp();
+    let links = Slots::new(4);
+    // Three of four slots taken: a site whose sitemaps list pages leaves the last to one that lists none.
+    let _held: Vec<_> = (0..3).map(|_| links.try_take().unwrap()).collect();
+    let (buckets, _crawl) = crawl_adjusted(web.clone(), &[waits, runs], &[], "paced-wait", FollowLinks::Thin, links, (60, 0), |b| {
+        b.allow(&Allowed::of([waits, runs]));
+        waiting_for_links(b, runs, now);
+        waiting_for_links(b, waits, now - 10);
+        let list = format!("http://{waits}/list.xml");
+        let mut changes = Changes::default();
+        changes.sitemap(waits, &list, serde_json::json!({"id": sitemap_id(&list), "kind": "urlset", "depth": 0, "status": "ok", "urls": 12, "next": now + 86_400}).as_object().unwrap());
+        buckets_links_due(b, waits, now - 10, &mut changes);
+        b.store(waits).write(changes).unwrap();
+    }, |_| {})
+    .await;
+    let ran = |host: &str| buckets.store(host).sitemap(host, &format!("https://{host}/#links")).unwrap().is_some();
+    assert!(!ran(waits), "the first site up waited for a slot");
+    assert!(ran(runs), "and gave back its share, so the next site ran within the same minute");
+}
+
+fn buckets_links_due(buckets: &Arc<Buckets>, host: &str, at: i64, changes: &mut Changes) {
+    let mut record = buckets.store(host).domain(host).unwrap().unwrap();
+    record.insert("links_due".into(), at.into());
+    changes.domain(host, &record);
+}
