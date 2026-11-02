@@ -2448,3 +2448,52 @@ fn buckets_links_due(buckets: &Arc<Buckets>, host: &str, at: i64, changes: &mut 
     record.insert("links_due".into(), at.into());
     changes.domain(host, &record);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn failed_connections_count_against_the_address_they_were_made_to() {
+    let web: Shared = Arc::default();
+    let (host, www, next) = ("split-hosts.test", "www.split-hosts.test", "same-address.test");
+    let page = |links: &[&str]| {
+        let links: String = links.iter().map(|href| format!("<a href=\"{href}\">{href}</a>")).collect();
+        format!("<html lang=\"en\"><p>{ENGLISH}</p>{links}</html>").into_bytes()
+    };
+    {
+        let mut w = web.lock().unwrap();
+        for site in [host, next] {
+            w.add(site, "/robots.txt", 200, None, b"User-agent: *\nAllow: /\n");
+        }
+        let far: Vec<String> = (1..=4).map(|i| format!("http://{www}/far-{i}")).collect();
+        w.add(host, "/", 200, None, &page(&far.iter().map(String::as_str).collect::<Vec<_>>()));
+        w.add(next, "/", 200, None, &page(&["/a"]));
+        w.add(next, "/a", 200, None, &page(&[]));
+    }
+    let v4 = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = v4.local_addr().unwrap();
+    tokio::spawn(serve(v4, web.clone()));
+    // The www host answers on an address where nothing listens.
+    let closed: SocketAddr = format!("[::1]:{}", addr.port()).parse().unwrap();
+    let addrs: HashMap<&'static str, SocketAddr> = [(host, addr), (www, closed), (next, addr)].into();
+    let on_own = |visitor: &mut Visitor| {
+        visitor.client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .dns_resolver(Arc::new(MapResolver(addrs.clone())))
+            .timeout(TEST_TIMEOUT)
+            .build()
+            .unwrap();
+        visitor.resolver = Some(Arc::new(MapResolver(addrs.clone())));
+    };
+    let links = Slots::new(2);
+    let now = chrono::Utc::now().timestamp();
+    let _first = crawl_adjusted(web.clone(), &[host], &[], "split-first", FollowLinks::Thin, links.clone(), (0, 0), |b| {
+        b.allow(&Allowed::of([host]));
+        waiting_for_links(b, host, now);
+    }, on_own)
+    .await;
+    assert!(!web.lock().unwrap().hits.iter().any(|(h, _, _)| h == www), "nothing answered on the www host's address");
+    let (buckets, _crawl) = crawl_adjusted(web.clone(), &[next], &[], "split-next", FollowLinks::Thin, links.clone(), (0, 0), |b| {
+        b.allow(&Allowed::of([next]));
+        waiting_for_links(b, next, now);
+    }, on_own)
+    .await;
+    assert!(buckets.store(next).sitemap(next, &format!("https://{next}/#links")).unwrap().is_some(), "the address that answered is not stopped for the one that did not");
+}

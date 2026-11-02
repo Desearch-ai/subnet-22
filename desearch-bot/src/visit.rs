@@ -540,6 +540,7 @@ impl Visitor {
             listed,
             following: false,
             link_claims: Vec::new(),
+            asked_ips: Vec::new(),
             home_known: false,
             site_peer: None,
             refused: false,
@@ -592,6 +593,8 @@ struct Run<'a> {
     following: bool,
     /// The addresses a link run holds; a redirect to another host is fetched only once its addresses are held too.
     link_claims: Vec<PeerClaim>,
+    /// The addresses a link run's last request went to, which a failed connection counts against.
+    asked_ips: Vec<IpAddr>,
     /// The homepage's address came from robots.txt read on this visit or a homepage read before, not from a guess at its scheme.
     home_known: bool,
     /// The address the site's own host last answered from on this visit.
@@ -1210,6 +1213,7 @@ impl Run<'_> {
                     break;
                 }
                 slots.turn(&self.link_claims.iter().map(|claim| claim.ip).collect::<Vec<_>>()).await;
+                self.asked_ips = ips;
             }
             let fetched = match kept {
                 Some((url, body, headers)) => Ok(Answer { status: 200, body, headers, url, permit: None, peer: self.site_peer }),
@@ -1218,7 +1222,9 @@ impl Run<'_> {
             let answer = match fetched {
                 Ok(answer) => answer,
                 Err(_) => {
-                    slots.connected(ip, !self.connect_failed);
+                    for asked in if self.asked_ips.is_empty() { vec![ip] } else { std::mem::take(&mut self.asked_ips) } {
+                        slots.connected(asked, !self.connect_failed);
+                    }
                     unread.insert(page);
                     failing += 1;
                     continue;
@@ -1573,6 +1579,7 @@ impl Run<'_> {
             return false;
         }
         slots.turn(&ips).await;
+        self.asked_ips = ips;
         true
     }
 
