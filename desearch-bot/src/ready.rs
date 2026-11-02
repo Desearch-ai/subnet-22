@@ -1557,9 +1557,7 @@ impl BucketStore {
             // Entries without a schedule were written by earlier versions and go back as they are.
             match next {
                 Some(next) if next.outdated(record.pushed_at) => continue,
-                Some(Scheduled { why: Why::Recrawl, .. }) => sent.failures = 0,
                 Some(Scheduled { why: Why::Failed, at, .. }) => {
-                    sent.failures = sent.failures.saturating_add(1);
                     if sent.failures >= GONE_AFTER {
                         put_schedule(&mut batch, domain, rest, Scheduled { why: Why::Gone, due: at.saturating_add(recrawl.gone), at: record.pushed_at });
                         batch.put(prefixed(SENT, domain, rest), sent.pack());
@@ -1567,7 +1565,7 @@ impl BucketStore {
                         continue;
                     }
                 }
-                Some(Scheduled { why: Why::Dropped | Why::Gone, .. }) | None => {}
+                Some(Scheduled { why: Why::Recrawl | Why::Dropped | Why::Gone, .. }) | None => {}
             }
             sent.requeued = true;
             batch.put(prefixed(SENT, domain, rest), sent.pack());
@@ -1594,6 +1592,13 @@ impl BucketStore {
             put_schedule(&mut batch, domain.as_bytes(), rest, *next);
         }
         let _guard = self.lock_ready();
+        // Each failed send counts once, when its outcome comes, whatever went out since.
+        let failed: Vec<Vec<u8>> = schedules.iter().filter(|s| s.next.why == Why::Failed).map(|s| prefixed(SENT, s.domain.as_bytes(), &s.rest)).collect();
+        for (key, sent) in failed.iter().zip(self.sents(failed.iter().cloned())?) {
+            if let Some(sent) = sent {
+                batch.put(key, Sent { failures: sent.failures.saturating_add(1), ..sent }.pack());
+            }
+        }
         self.db.write(batch)?;
         Ok(())
     }

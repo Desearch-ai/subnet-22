@@ -301,6 +301,25 @@ fn an_outlet_s_hub_goes_again_and_is_retried_on_its_hubs_interval() {
 }
 
 #[test]
+fn an_outlet_s_hub_failing_on_two_sends_in_a_row_takes_the_long_wait_even_when_outcomes_come_after_it_went_again() {
+    let dir = Dir::new("ready-hub-late");
+    let buckets = known(&dir, &["example.com"]);
+    buckets.allow(&Allowed::with_terms([("example.com", Terms { hubs: Some(3_600), ..Terms::default() })]));
+    let store = buckets.store("example.com");
+    store.record_listing("example.com", 7, vec![page("tag/sudan-war", 0)], 100).unwrap();
+    let hub = "https://example.com/tag/sudan-war";
+    store.mark_sent(&take(store, 10), 1_000, &rules()).unwrap();
+    assert_eq!(requeue(store, 1_000 + 3_600), Requeued { moved: 1, gone: 0 }, "it goes again on its hubs interval before the first send's outcome");
+    let again = store.take_ready("example.com", [0, 100, 0]).unwrap();
+    store.mark_sent(&again, 4_650, &rules()).unwrap();
+    let mut reader = OutcomeReader::new(rules(), 1000);
+    reader.apply(&buckets, &[outcome(hub, Outcome::Failed, 4_700)], 4_700).unwrap();
+    reader.apply(&buckets, &[outcome(hub, Outcome::Failed, 8_400)], 8_400).unwrap();
+    assert_eq!(requeue(store, 8_400 + 3_600), Requeued { moved: 0, gone: 1 }, "both sends failed");
+    assert_eq!(store.next_send("example.com", &rest("tag/sudan-war")).unwrap().map(|n| n.why), Some(Why::Gone));
+}
+
+#[test]
 fn an_outlet_s_hubs_go_again_at_most_sixty_an_interval_never_later_than_the_domain_s_interval_and_its_sections_on_the_domain_s() {
     let dir = Dir::new("ready-hub-cap");
     let store = open(&dir);
