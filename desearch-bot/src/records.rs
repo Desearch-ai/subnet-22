@@ -91,7 +91,8 @@ pub fn known(host: &str, domain: &Json, sitemaps: &[(String, Json)]) -> Option<K
         sitemaps: sitemaps.iter().filter_map(|(url, record)| Some((url.clone(), known_sitemap(url, record)?))).collect(),
         canonical_host: text(domain.get("canonical")),
         www_only: domain.get("www").and_then(Value::as_bool).unwrap_or(false),
-        recheck_at: moment(domain.get("recheck")),
+        // A recheck time holds only for the visit that set it; a visit by a build that keeps none moves "checked" on.
+        recheck_at: moment(domain.get("recheck")).filter(|_| domain.get("recheck_of").is_some_and(|of| Some(of) == domain.get("checked"))),
     })
 }
 
@@ -143,10 +144,11 @@ pub fn written_domain(previous: &Json, write: &DomainWrite, url_count: i64) -> J
     let visit = &write.visit;
     let mut record = previous.clone();
     record.insert("due".into(), seconds(write.next_due_at));
-    record.insert("recheck".into(), seconds(write.recheck_at));
     if visit.links_only {
         return record;
     }
+    record.insert("recheck".into(), seconds(write.recheck_at));
+    record.insert("recheck_of".into(), seconds(Some(write.checked_at)));
     record.insert("state".into(), write.state.as_str().into());
     record.insert("reason".into(), write.reason.clone().into());
     record.insert("failures".into(), write.failures.into());
@@ -319,6 +321,15 @@ mod tests {
         assert!(!wants_recheck("new", &excluded), "an excluded domain stays out");
         let by_name = new_domain(None, Some("other_cctld"), &[], State::Excluded, Some("non_english_tld"), None);
         assert!(wants_recheck("new", &by_name), "an exclusion by top-level name lifts when asked");
+    }
+
+    #[test]
+    fn a_recheck_time_holds_only_until_another_build_visits() {
+        let record = json!({"state": "no_sitemap", "categories": [], "checked": 1_700_000_000, "recheck": 1_702_000_000, "recheck_of": 1_700_000_000});
+        assert_eq!(known("a.test", record.as_object().unwrap(), &[]).unwrap().recheck_at, Some(1_702_000_000 * SECOND));
+        let mut later = record.as_object().unwrap().clone();
+        later.insert("checked".into(), 1_700_500_000.into());
+        assert_eq!(known("a.test", &later, &[]).unwrap().recheck_at, None, "a visit that kept no recheck time leaves the old one unread");
     }
 
     #[test]
