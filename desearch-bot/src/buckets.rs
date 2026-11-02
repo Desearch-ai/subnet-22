@@ -379,7 +379,7 @@ impl BucketStore {
         let guard = self.lock_ready();
         let cf = self.db.cf_handle("default").context("default column family")?;
         let found = self.db.batched_multi_get_cf(cf, changed.iter().map(|e| &e.0 .0.key), true);
-        let (mut fresh, mut moved) = (Vec::new(), Vec::new());
+        let (mut fresh, mut moved, mut relisted) = (Vec::new(), Vec::new(), Vec::new());
         for (((url, lastmod, timed), print), raw) in changed.into_iter().zip(found) {
             let timed_flag = if *timed { TIMED } else { 0 };
             let raw = raw?;
@@ -417,6 +417,10 @@ impl BucketStore {
                             moved.push((url.key.clone(), *lastmod));
                         }
                     }
+                    // A sent page this listing names anew, once it listed before, starts its failures over.
+                    if record.pushed_at != 0 && before.is_some() {
+                        relisted.push([&[SENT], &url.key[1..]].concat());
+                    }
                     record.sitemap_id = sitemap_id;
                     record.last_seen = now;
                     record
@@ -427,6 +431,7 @@ impl BucketStore {
             }
             batch.put(&url.key, record.pack());
         }
+        self.clear_failures(&mut batch, relisted)?;
         let waiting: HashSet<u64> = handed.prints.values().flatten().copied().collect();
         let kept: Vec<u64> = prints.into_iter().filter(|print| !waiting.contains(print)).collect();
         let after = ListedSet::encode(&kept);

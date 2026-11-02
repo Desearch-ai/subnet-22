@@ -1537,14 +1537,20 @@ impl BucketStore {
             return Ok(());
         }
         let _guard = self.lock_ready();
-        let sents = self.sents(pages.iter().map(|(domain, rest)| prefixed(SENT, domain.as_bytes(), rest)))?;
         let mut batch = WriteBatch::default();
-        for ((domain, rest), sent) in pages.iter().zip(sents) {
+        self.clear_failures(&mut batch, pages.iter().map(|(domain, rest)| prefixed(SENT, domain.as_bytes(), rest)).collect())?;
+        self.db.write(batch)?;
+        Ok(())
+    }
+
+    /// Starts over the failure count of these sent records that carry one; the caller holds the ready lock and writes the batch.
+    pub(crate) fn clear_failures(&self, batch: &mut WriteBatch, keys: Vec<Vec<u8>>) -> Result<()> {
+        let sents = self.sents(keys.iter().cloned())?;
+        for (key, sent) in keys.into_iter().zip(sents) {
             if let Some(sent) = sent.filter(|sent| sent.failures > 0) {
-                batch.put(prefixed(SENT, domain.as_bytes(), rest), Sent { failures: 0, ..sent }.pack());
+                batch.put(key, Sent { failures: 0, ..sent }.pack());
             }
         }
-        self.db.write(batch)?;
         Ok(())
     }
 

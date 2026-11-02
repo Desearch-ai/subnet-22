@@ -6,7 +6,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
 use desearch_bot::allowed::{self, Allowed, Terms};
-use desearch_bot::buckets::{bucket_of, BucketStore, Buckets, Changes, Resources};
+use desearch_bot::buckets::{bucket_of, sitemap_id, BucketStore, Buckets, Changes, Resources};
 use desearch_bot::dispatch::{
     allot, batch_id, interleave, most_at_once, recent_share, settle, shares, slots, split, yield_share, Dispatcher, HourlyCap, Pace, Progress, StockWanted, Want, FILL_FLOOR,
     PROBE_PER_HOUR, YIELD_JUDGED, YIELD_RECENT_JUDGED,
@@ -305,6 +305,51 @@ fn a_page_set_to_the_long_wait_goes_earlier_when_its_lastmod_moves() {
     assert_eq!(store.sent("example.com", &rest("a")).unwrap().unwrap().failures, 0, "a new lastmod starts the failures over");
     assert_eq!(requeue(store, at + GONE), Requeued::default(), "the long wait of the earlier send is spent");
     assert_eq!(store.next_send("example.com", &rest("a")).unwrap(), None);
+}
+
+#[test]
+fn a_page_in_the_long_wait_goes_again_whatever_its_sitemap_answered_and_a_listing_naming_it_anew_starts_its_failures_over() {
+    let dir = Dir::new("ready-gone-back");
+    let buckets = known(&dir, &["example.com"]);
+    let store = buckets.store("example.com");
+    let list = "https://example.com/sitemap.xml";
+    let id = sitemap_id(list);
+    let answered = |status: &str, at: u32| {
+        let mut changes = Changes::default();
+        let record = serde_json::json!({"id": id, "kind": "urlset", "depth": 0, "status": status, "urls": 2, "fetched": at, "changed": 100});
+        changes.sitemap("example.com", list, record.as_object().unwrap());
+        store.write(changes).unwrap();
+    };
+    answered("ok", 100);
+    store.record_listing("example.com", id, vec![page("a", 10), page("b", 10)], 100).unwrap();
+    let mut reader = OutcomeReader::new(rules(), 1000);
+    let mut fail = |at: u32| reader.apply(&buckets, &[outcome("https://example.com/a", Outcome::Failed, at)], at).unwrap();
+    store.mark_sent(&take(store, 10), 1000, &rules()).unwrap();
+    fail(1100);
+    requeue(store, 1100 + RECRAWL);
+    store.mark_sent(&take(store, 10), 1200 + RECRAWL, &rules()).unwrap();
+    fail(1300 + RECRAWL);
+    assert_eq!(requeue(store, 1300 + 2 * RECRAWL), Requeued { moved: 0, gone: 1 });
+
+    let mut at = 1300 + RECRAWL + GONE;
+    let mut sends = 0;
+    for cycle in 0..6 {
+        // The sitemap answers 404 at the end of the first wait, then comes back as it was.
+        answered(if cycle == 0 { "gone" } else { "ok" }, at);
+        requeue(store, at);
+        let picks = take(store, 10);
+        sends += picks.iter().filter(|p| p.url.ends_with("/a")).count();
+        store.mark_sent(&picks, at + 10, &rules()).unwrap();
+        fail(at + 100);
+        requeue(store, at + 100 + RECRAWL);
+        at += 100 + GONE;
+    }
+    assert_eq!(sends, 6, "a failing page goes once after each long wait");
+
+    store.record_listing("example.com", id, vec![page("b", 10)], at).unwrap();
+    assert!(store.sent("example.com", &rest("a")).unwrap().unwrap().failures >= 2);
+    store.record_listing("example.com", id, vec![page("a", 10), page("b", 10)], at + 60).unwrap();
+    assert_eq!(store.sent("example.com", &rest("a")).unwrap().unwrap().failures, 0, "its sitemap names it again");
 }
 
 #[test]
