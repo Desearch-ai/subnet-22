@@ -27,7 +27,7 @@ use crate::sitemaps::{self, Entry};
 use crate::states::{Outcome, State, JITTER};
 use crate::suffixes::PublicSuffixList;
 use crate::urls::{self, Listing, Normaliser};
-use crate::{homepage, isodate, net};
+use crate::{homepage, isodate, net, records};
 
 pub const MIN_HOST_INTERVAL: f64 = 1.0;
 /// Some sites ask for hours between requests; past this we slow down no further.
@@ -166,8 +166,8 @@ pub struct Known {
     pub canonical_host: Option<String>,
     /// The bare host had no DNS record when last read and its www host answered.
     pub www_only: bool,
-    /// The status a link run was refused with, which ends link work on the site.
-    pub links_refused: Option<u16>,
+    /// The status a link run was refused with, and when, which ends link work on the site while it holds.
+    pub links_refused: Option<(u16, i64)>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1072,7 +1072,7 @@ impl Run<'_> {
         if self.result.cut_short || self.refused || self.refused_before() || !self.home_known || self.robots_refused() || self.result.robots_allows == Some(false) {
             return None;
         }
-        if self.result.links_refused.or(self.known.links_refused).is_some() {
+        if self.result.links_refused.is_some() || self.known.links_refused.is_some_and(|(status, at)| self.now - at < records::links_refusal_holds(status)) {
             return None;
         }
         self.links_every()
@@ -1199,10 +1199,7 @@ impl Run<'_> {
             }
             if !self.homepage_passes().await? {
                 return match self.home_refused {
-                    Some(status) => {
-                        self.result.home_status = Some(status);
-                        self.links_listing(Vec::new(), 0, Some(status), every).await
-                    }
+                    Some(status) => self.links_listing(Vec::new(), 0, Some(status), every).await,
                     None => Ok(()),
                 };
             }
@@ -1285,9 +1282,6 @@ impl Run<'_> {
                 // A refusal, a rate limit or a busy server ends the run: the site asks for less.
                 401 | 402 | 403 | 429 | 503 => {
                     refused = Some(answer.status);
-                    if depth == 0 {
-                        self.result.home_status = Some(answer.status);
-                    }
                     break;
                 }
                 status if status >= 500 => {

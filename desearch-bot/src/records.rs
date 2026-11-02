@@ -6,7 +6,7 @@ use crate::buckets::{sitemap_id, Json};
 use crate::churn;
 use crate::crawl::DomainWrite;
 use crate::robots::Paths;
-use crate::schedule::{Trust, DEFAULT_INTERVAL, SECOND};
+use crate::schedule::{Trust, DAY, DEFAULT_INTERVAL, SECOND};
 use crate::states::State;
 use crate::visit::{Known, KnownSitemap, SitemapUpdate};
 
@@ -91,7 +91,7 @@ pub fn known(host: &str, domain: &Json, sitemaps: &[(String, Json)]) -> Option<K
         sitemaps: sitemaps.iter().filter_map(|(url, record)| Some((url.clone(), known_sitemap(url, record)?))).collect(),
         canonical_host: text(domain.get("canonical")),
         www_only: domain.get("www").and_then(Value::as_bool).unwrap_or(false),
-        links_refused: int(domain.get("links_status")).and_then(|status| u16::try_from(status).ok()),
+        links_refused: int(domain.get("links_status")).and_then(|status| u16::try_from(status).ok()).zip(moment(domain.get("links_status_at"))),
     })
 }
 
@@ -138,6 +138,22 @@ fn known_sitemap(url: &str, record: &Json) -> Option<KnownSitemap> {
     })
 }
 
+/// How long a refusal a link run drew holds: a rate limit or a busy server a week, a refusal 60 days.
+pub fn links_refusal_holds(status: u16) -> i64 {
+    if matches!(status, 429 | 503) {
+        7 * DAY
+    } else {
+        60 * DAY
+    }
+}
+
+/// The refusal a link run drew on the domain, while it holds at `now`, in microseconds.
+pub fn links_refusal(domain: &Json, now: i64) -> Option<u16> {
+    let status = u16::try_from(int(domain.get("links_status"))?).ok()?;
+    let at = moment(domain.get("links_status_at"))?;
+    (now - at < links_refusal_holds(status)).then_some(status)
+}
+
 /// The domain record after a visit: robots fields only when robots was read.
 pub fn written_domain(previous: &Json, write: &DomainWrite, url_count: i64) -> Json {
     let visit = &write.visit;
@@ -159,9 +175,7 @@ pub fn written_domain(previous: &Json, write: &DomainWrite, url_count: i64) -> J
     }
     if let Some(status) = visit.links_refused {
         record.insert("links_status".into(), status.into());
-    }
-    if let Some(status) = visit.home_status {
-        record.insert("home_status".into(), status.into());
+        record.insert("links_status_at".into(), seconds(Some(write.checked_at)));
     }
     // Link work alone leaves the domain's standing and due time as they were.
     if visit.links_only {
@@ -182,6 +196,9 @@ pub fn written_domain(previous: &Json, write: &DomainWrite, url_count: i64) -> J
     }
     if let Some(chars) = visit.home_chars {
         record.insert("chars".into(), chars.into());
+    }
+    if let Some(status) = visit.home_status {
+        record.insert("home_status".into(), status.into());
     }
     match visit.www_only {
         Some(true) => {

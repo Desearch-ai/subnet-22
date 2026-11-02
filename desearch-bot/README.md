@@ -119,7 +119,7 @@ queries, files, feeds or forms, within its robots.txt rules and crawl delay, not
 `nofollow`, and no redirect off the site or onto a disallowed path; a redirect to its other host is
 asked only once the run holds that host's addresses too. A refusal, a rate limit or a 503
 ends the run and link work on the site, and is kept on the domain, where a failed resend sees it as
-it sees a homepage refusal. A run reads robots.txt again once a day has passed; when it bars us,
+it sees a homepage refusal: a rate limit or a 503 for a week, a refusal for 60 days. A run reads robots.txt again once a day has passed; when it bars us,
 refuses us or names a sitemap on the site it lets us read and not kept yet, the site is visited at
 once instead, and that visit decides it. Link work a run or such a visit sets comes ten minutes
 later at the soonest. The pages found are kept as one listing. Runs come weekly while they find new pages, then half

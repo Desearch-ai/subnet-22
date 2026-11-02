@@ -1935,7 +1935,8 @@ async fn a_homepage_that_refuses_a_link_run_ends_link_work_and_is_kept_where_res
     let links = buckets.store(host).sitemap(host, &format!("https://{host}/#links")).unwrap().unwrap();
     assert_eq!(links["error"].as_str(), Some("http_403"));
     let record = buckets.store(host).domain(host).unwrap().unwrap();
-    assert_eq!((record["home_status"].as_u64(), record["links_status"].as_u64()), (Some(403), Some(403)), "{record:?}");
+    assert_eq!(record["links_status"].as_u64(), Some(403), "{record:?}");
+    assert!(record.get("home_status").is_none() && record["links_status_at"].as_i64().is_some(), "kept with its time, where only a visit's homepage read sets home_status: {record:?}");
     assert!(record.get("links_due").is_none() && crawl.links_queued().0 == 0, "no more link work: {record:?}");
 }
 
@@ -1954,7 +1955,8 @@ async fn a_homepage_refusing_link_works_language_check_ends_link_work_and_is_kep
     let links = buckets.store(host).sitemap(host, &format!("https://{host}/#links")).unwrap();
     assert_eq!(links.expect("the refused run is kept")["error"].as_str(), Some("http_403"));
     let record = buckets.store(host).domain(host).unwrap().unwrap();
-    assert_eq!((record["home_status"].as_u64(), record["links_status"].as_u64()), (Some(403), Some(403)), "{record:?}");
+    assert_eq!(record["links_status"].as_u64(), Some(403), "{record:?}");
+    assert!(record.get("home_status").is_none() && record["links_status_at"].as_i64().is_some(), "kept with its time, where only a visit's homepage read sets home_status: {record:?}");
     assert!(record.get("links_due").is_none() && crawl.links_queued().0 == 0, "no more link work: {record:?}");
 }
 
@@ -2167,7 +2169,7 @@ async fn a_link_run_refused_partway_keeps_what_it_read_and_ends_link_work_on_the
     assert_eq!(links["status"].as_str(), Some("ok"), "the pages read before it are kept");
     let record = buckets.store(host).domain(host).unwrap().unwrap();
     assert_eq!(record["links_status"].as_u64(), Some(403), "{record:?}");
-    assert_ne!(record.get("home_status").and_then(|s| s.as_u64()), Some(403), "the homepage answered");
+    assert!(record.get("home_status").is_none(), "{record:?}");
     assert!(record.get("links_due").is_none() && crawl.links_queued().0 == 0, "no more link work: {record:?}");
 }
 
@@ -2586,5 +2588,28 @@ async fn link_work_never_hands_a_site_to_visit_after_visit_nor_comes_back_at_onc
         let record = buckets.store(host).domain(host).unwrap().unwrap();
         let due = record.get("links_due").and_then(|d| d.as_i64());
         assert!(due.is_none_or(|due| due >= now + 600), "{case}: link work comes back no sooner than ten minutes: {record:?}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_refusal_a_link_run_drew_ends_link_work_only_while_it_holds() {
+    let now = chrono::Utc::now().timestamp();
+    let cases: [(&'static str, u16, i64, bool); 4] = [("limited-fresh.test", 429, 86_400, false), ("limited-old.test", 429, 8 * 86_400, true), ("refused-fresh.test", 403, 30 * 86_400, false), ("refused-old.test", 403, 61 * 86_400, true)];
+    for (host, status, ago, runs) in cases {
+        let web: Shared = Arc::default();
+        deep_site(&web, host);
+        let (buckets, _crawl) = crawl_following(web.clone(), &[host], host, FollowLinks::Thin, Slots::new(2), |b| {
+            b.allow(&Allowed::of([host]));
+            waiting_for_links(b, host, now);
+            let mut record = b.store(host).domain(host).unwrap().unwrap();
+            record.insert("links_status".into(), status.into());
+            record.insert("links_status_at".into(), (now - ago).into());
+            let mut changes = Changes::default();
+            changes.domain(host, &record);
+            b.store(host).write(changes).unwrap();
+        })
+        .await;
+        let ran = buckets.store(host).sitemap(host, &format!("https://{host}/#links")).unwrap().is_some();
+        assert_eq!(ran, runs, "{host}: a {status} from {} days ago", ago / 86_400);
     }
 }

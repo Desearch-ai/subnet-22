@@ -17,6 +17,8 @@ use crate::buckets::{bucket_of, Buckets};
 use crate::dispatch::on_readers;
 use crate::ready::{self, Outcome, PageSchedule, Scheduled, Why, Yield};
 use crate::recrawl::Recrawl;
+use crate::records;
+use crate::schedule::SECOND;
 use crate::urls::Normaliser;
 
 const TIMEOUT: Duration = Duration::from_secs(60);
@@ -277,7 +279,7 @@ impl OutcomeReader {
                 continue;
             }
             // A failed resend is retried as any failure is, counted and paced by the domain's yield, unless the site refuses us.
-            if was_resend && row.outcome == Outcome::Failed && *refusing.entry(domain.clone()).or_insert_with(|| refuses(buckets, &domain)) {
+            if was_resend && row.outcome == Outcome::Failed && *refusing.entry(domain.clone()).or_insert_with(|| refuses(buckets, &domain, now)) {
                 continue;
             }
             let mut interval = self.recrawl.interval(&domain);
@@ -323,11 +325,12 @@ impl OutcomeReader {
     }
 }
 
-/// Whether the site's robots.txt or homepage last refused us or limited our rate, or a link run was refused there.
-fn refuses(buckets: &Buckets, domain: &str) -> bool {
+/// Whether the site's robots.txt or homepage last refused us or limited our rate, or a link run's refusal there still holds.
+fn refuses(buckets: &Buckets, domain: &str, now: u32) -> bool {
     let record = buckets.store(domain).domain(domain).ok().flatten();
     let refused = |field: &str| record.as_ref().and_then(|r| r.get(field)).and_then(Value::as_u64).is_some_and(|status| matches!(status, 401 | 402 | 403 | 429));
-    refused("robots_status") || refused("home_status") || refused("links_status")
+    let links = record.as_ref().and_then(|r| records::links_refusal(r, i64::from(now) * SECOND)).is_some_and(|status| matches!(status, 401 | 402 | 403 | 429));
+    refused("robots_status") || refused("home_status") || links
 }
 
 /// One store's part of an outcome file: pages to schedule, pages that came back, and each domain's yield.

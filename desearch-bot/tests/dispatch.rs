@@ -1998,28 +1998,37 @@ fn a_failed_resend_is_retried_as_any_failure_unless_the_site_refuses_us() {
 }
 
 #[test]
-fn a_failed_resend_of_a_site_that_refused_a_link_run_gets_no_retry() {
+fn a_failed_resend_of_a_site_that_refused_a_link_run_gets_no_retry_while_the_refusal_holds() {
+    let cases: [(&str, u16, u32, bool); 4] = [("a.net", 429, 86_400, false), ("b.net", 429, 8 * 86_400, true), ("c.net", 403, 30 * 86_400, false), ("d.net", 403, 61 * 86_400, true)];
+    let hosts: Vec<&str> = cases.iter().map(|case| case.0).collect();
     let dir = Dir::new("resend-links-refused");
-    let host = "example.net";
-    let buckets = known(&dir, &[host]);
+    let buckets = known(&dir, &hosts);
     let resent = Arc::new(ResentPages::default());
     let mut reader = OutcomeReader::new(rules(), 1000).with_resent(resent.clone());
-    let store = buckets.store(host);
-    store.record_listing(host, 7, vec![(urls::parse(&format!("https://{host}/a"), host).unwrap(), LATE, false)], 100).unwrap();
-    let mut quotas = [0; LANES];
-    quotas[FRESH] = 10;
-    store.mark_sent(&store.take_ready(host, quotas).unwrap(), 1000, &rules()).unwrap();
-    store.resend_domain(host, Terms { resend_before: Some(2000), ..Terms::default() }, 3000, &mut |_| true, &mut |_| true).unwrap();
-    let (picks, _) = store.take_resend(host, 10, &Default::default()).unwrap();
-    resent.insert(host, &picks[0].entry.rest);
-    store.mark_sent(&picks, 3000, &rules()).unwrap();
-    let mut record = store.domain(host).unwrap().unwrap();
-    record.insert("links_status".into(), 403.into());
-    let mut changes = Changes::default();
-    changes.domain(host, &record);
-    store.write(changes).unwrap();
-    reader.apply(&buckets, &[outcome(&format!("https://{host}/a"), Outcome::Failed, 3100)], 3100).unwrap();
-    assert!(store.next_send(host, b"example.net/a").unwrap().is_none(), "a refusal a link run drew counts as the homepage's would");
+    let now = 100 * 86_400;
+    for (host, status, ago, _) in cases {
+        let store = buckets.store(host);
+        store.record_listing(host, 7, vec![(urls::parse(&format!("https://{host}/a"), host).unwrap(), LATE, false)], 100).unwrap();
+        let mut quotas = [0; LANES];
+        quotas[FRESH] = 10;
+        store.mark_sent(&store.take_ready(host, quotas).unwrap(), 1000, &rules()).unwrap();
+        store.resend_domain(host, Terms { resend_before: Some(2000), ..Terms::default() }, 3000, &mut |_| true, &mut |_| true).unwrap();
+        let (picks, _) = store.take_resend(host, 10, &Default::default()).unwrap();
+        resent.insert(host, &picks[0].entry.rest);
+        store.mark_sent(&picks, now - 100, &rules()).unwrap();
+        let mut record = store.domain(host).unwrap().unwrap();
+        record.insert("links_status".into(), status.into());
+        record.insert("links_status_at".into(), (now - ago).into());
+        let mut changes = Changes::default();
+        changes.domain(host, &record);
+        store.write(changes).unwrap();
+    }
+    let rows: Vec<OutcomeRow> = hosts.iter().map(|host| outcome(&format!("https://{host}/a"), Outcome::Failed, now)).collect();
+    reader.apply(&buckets, &rows, now).unwrap();
+    for (host, status, ago, retried) in cases {
+        let rest = format!("{host}/a").into_bytes();
+        assert_eq!(buckets.store(host).next_send(host, &rest).unwrap().is_some(), retried, "{host}: a {status} a link run drew {} days ago", ago / 86_400);
+    }
 }
 
 #[test]
