@@ -14,9 +14,10 @@ pub enum Rule {
         since: Option<String>,
         hubs: bool,
     },
-    /// Every page, or every page under one of `paths`.
+    /// Every page, or every page under one of `paths`; with `own`, of the listed host itself only, never the hosts under it.
     Whole {
         paths: Vec<String>,
+        own: bool,
     },
     /// Pages from a bulk source, and the site's crawled pages too.
     Bulk,
@@ -141,7 +142,14 @@ impl Set {
                     };
                     Rule::News { since, hubs }
                 }
-                Some("whole") => Rule::Whole { paths: entry["paths"].as_array().into_iter().flatten().filter_map(Value::as_str).map(String::from).collect() },
+                Some("whole") => Rule::Whole {
+                    paths: entry["paths"].as_array().into_iter().flatten().filter_map(Value::as_str).map(String::from).collect(),
+                    own: match &entry["own_host"] {
+                        Value::Null => false,
+                        Value::Bool(own) => *own,
+                        other => bail!("{host}: own_host {other} is not true or false"),
+                    },
+                },
                 Some("bulk") => Rule::Bulk,
                 Some("landing") => Rule::Landing {
                     depth: match &entry["depth"] {
@@ -216,7 +224,8 @@ impl Set {
                 Some(date) if since.as_ref().is_some_and(|since| date < *since) => Err(Refusal::BeforeSince),
                 Some(_) => Ok(Admitted::ByRule),
             },
-            Rule::Whole { paths } if !paths.is_empty() && !paths.iter().any(|prefix| path.starts_with(prefix.as_str())) => Err(Refusal::OffPaths),
+            Rule::Whole { own: true, .. } if !own_host(host, listed) => Err(Refusal::Unlisted),
+            Rule::Whole { paths, .. } if !paths.is_empty() && !paths.iter().any(|prefix| path.starts_with(prefix.as_str())) => Err(Refusal::OffPaths),
             Rule::Whole { .. } | Rule::Bulk => Ok(Admitted::ByRule),
         }
     }
@@ -411,6 +420,11 @@ mod tests {
         assert_eq!(set.admit("https://outlet.example/premier-league-table", "", None), Ok(Admitted::UndatedHub));
         assert_eq!(set.admit("https://outlet.example/tabletop", "", None), Err(Refusal::Undated));
         assert_eq!(set.admit("https://plain.example/world/", "", Some("listing")), Err(Refusal::Undated), "no hubs, no hub pages");
+        let own = Set::parse(br#"{"sites": [{"host": "mag.example", "rule": "whole", "own_host": true}, {"host": "nulls.example", "rule": "landing", "depth": null, "hubs": null, "own_host": null}]}"#).unwrap();
+        assert_eq!(own.admit("https://www.mag.example/reviews/a/b/c/d?x=1", "", None), Ok(Admitted::ByRule));
+        assert_eq!(own.admit("https://shop.mag.example/x", "", None), Err(Refusal::Unlisted), "a whole entry for its own host takes no host under it");
+        assert_eq!(own.admit("https://nulls.example/a/b", "", None), Err(Refusal::OffPaths), "null is no value: depth 1");
+        assert!(Set::parse(br#"{"sites": [{"host": "a.example", "rule": "whole", "own_host": 1}]}"#).is_err());
         let bare = Set::parse(br#"{"sites": [{"host": "outlet.example", "rule": "news", "hubs": true}]}"#).unwrap();
         assert_eq!(bare.admit("https://outlet.example/world/", "", Some("listing")), Err(Refusal::Undated), "hubs need the file's hub pages");
         for bad in [

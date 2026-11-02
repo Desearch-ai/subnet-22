@@ -420,8 +420,11 @@ def matches(sites: dict[str, dict], url: str, published: str | None, page_type: 
         return True
     if entry["rule"] == "landing":
         # A landing entry takes its own host only, never the hosts under it.
-        return site_host(parts.hostname or "") in (entry["host"], f"m.{entry['host']}") and landing_page(parts.path, parts.query, entry.get("depth", LANDING_DEPTH))
+        return site_host(parts.hostname or "") in (entry["host"], f"m.{entry['host']}") and landing_page(parts.path, parts.query, entry.get("depth") or LANDING_DEPTH)
     if entry["rule"] == "whole":
+        # A site whole for its rank takes its own host only.
+        if entry.get("own_host") and site_host(parts.hostname or "") not in (entry["host"], f"m.{entry['host']}"):
+            return False
         return not entry.get("paths") or any(
             parts.path.startswith(path) for path in entry["paths"]
         )
