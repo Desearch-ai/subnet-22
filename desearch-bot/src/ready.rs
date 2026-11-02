@@ -1637,11 +1637,16 @@ impl BucketStore {
             put_schedule(&mut batch, domain.as_bytes(), rest, *next);
         }
         let _guard = self.lock_ready();
-        // Each failed send counts once, when its outcome comes, whatever went out since.
-        let failed: Vec<(Vec<u8>, u32)> = schedules.iter().filter(|s| s.next.why == Why::Failed).map(|s| (prefixed(FAILS, s.domain.as_bytes(), &s.rest), s.next.at)).collect();
-        for ((key, at), fails) in failed.iter().zip(self.fails(failed.iter().map(|(key, _)| key.clone()))?) {
+        // Each failed send counts once, when its outcome comes: not one a later send already overtook, and not again when a file is applied twice.
+        let failed: Vec<&PageSchedule> = schedules.iter().filter(|s| s.next.why == Why::Failed).collect();
+        let records = self.records(failed.iter().map(|s| prefixed(URL, s.domain.as_bytes(), &s.rest)))?;
+        let fails = self.fails(failed.iter().map(|s| prefixed(FAILS, s.domain.as_bytes(), &s.rest)))?;
+        for ((page, record), fails) in failed.iter().zip(records).zip(fails) {
             let fails = fails.unwrap_or_default();
-            batch.put(key, Fails { count: fails.count.saturating_add(1), at: *at }.pack());
+            if record.is_none_or(|record| page.next.outdated(record.pushed_at)) || fails.at >= page.next.at {
+                continue;
+            }
+            batch.put(prefixed(FAILS, page.domain.as_bytes(), &page.rest), Fails { count: fails.count.saturating_add(1), at: page.next.at }.pack());
         }
         self.db.write(batch)?;
         Ok(())

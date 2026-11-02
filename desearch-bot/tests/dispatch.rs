@@ -335,6 +335,28 @@ fn the_sent_record_keeps_the_failure_count_earlier_versions_read() {
 }
 
 #[test]
+fn a_failed_send_counts_once_and_never_after_a_later_send_overtook_it() {
+    let dir = Dir::new("ready-fails-once");
+    let buckets = known(&dir, &["example.com"]);
+    let store = buckets.store("example.com");
+    store.record_listing("example.com", 7, vec![page("a", 10), page("b", 10)], 100).unwrap();
+    store.mark_sent(&take(store, 10), 1000, &rules()).unwrap();
+    let mut reader = OutcomeReader::new(rules(), 1000);
+    let twice = [outcome("https://example.com/a", Outcome::Failed, 1100)];
+    reader.apply(&buckets, &twice, 1100).unwrap();
+    reader.apply(&buckets, &twice, 1100).unwrap();
+    assert_eq!(store.failed_sends("example.com", &rest("a")).unwrap(), 1, "a file applied again counts nothing more");
+
+    store.record_listing("example.com", 7, vec![page("b", 20)], 4000).unwrap();
+    let again = take(store, 10);
+    assert_eq!(again.len(), 1);
+    store.mark_sent(&again, 5000, &rules()).unwrap();
+    reader.apply(&buckets, &[outcome("https://example.com/b", Outcome::Published, 5100)], 5100).unwrap();
+    reader.apply(&buckets, &[outcome("https://example.com/b", Outcome::Failed, 1100)], 6000).unwrap();
+    assert_eq!(store.failed_sends("example.com", &rest("b")).unwrap(), 0, "the first send's late failure counts nothing once a later send went and came back");
+}
+
+#[test]
 fn an_outlet_s_hubs_go_again_at_most_sixty_an_interval_never_later_than_the_domain_s_interval_and_its_sections_on_the_domain_s() {
     let dir = Dir::new("ready-hub-cap");
     let store = open(&dir);
