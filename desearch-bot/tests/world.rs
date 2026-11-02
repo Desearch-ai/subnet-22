@@ -1965,6 +1965,20 @@ async fn a_site_waiting_for_a_link_slot_is_asked_nothing_until_one_is_free() {
     assert!(hits.contains(&"/a".to_string()) && !hits.contains(&"/robots.txt".to_string()), "a free slot runs the links alone: {hits:?}");
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_site_without_sitemaps_whose_links_are_followed_comes_back_for_its_weekly_run() {
+    let web: Shared = Arc::default();
+    let host = "weekly-run.test";
+    deep_site(&web, host);
+    let (buckets, _crawl) = crawl_following(web.clone(), &[host], "weekly-run", FollowLinks::Thin, Slots::new(2), |b| b.allow(&Allowed::of([host]))).await;
+    let now = chrono::Utc::now().timestamp();
+    let record = buckets.store(host).domain(host).unwrap().unwrap();
+    let links = buckets.store(host).sitemap(host, &format!("https://{host}/#links")).unwrap().unwrap();
+    assert_eq!(record["state"].as_str(), Some("no_sitemap"));
+    assert_eq!(record["due"].as_i64(), links["next"].as_i64(), "due for its next run: {record:?}");
+    assert!((record["due"].as_i64().unwrap() - now) <= 7 * 86_400 && record["recheck"].as_i64().unwrap() > record["due"].as_i64().unwrap());
+}
+
 /// An active site read an hour ago, its robots.txt rules disallowing /site, with these sitemaps stored at these next times.
 fn active_with(buckets: &Arc<Buckets>, host: &str, now: i64, sitemaps: &[(&str, &str, i64, i64)]) {
     let mut record = records::new_domain(Some(1), Some("new_generic"), &[], State::Active, None, Some(0));

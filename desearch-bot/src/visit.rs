@@ -233,6 +233,8 @@ pub struct Visit {
     pub links_error: Option<String>,
     /// The visit came for link work alone and leaves the site's verdict as it was.
     pub links_only: bool,
+    /// When the site's next link run is due, while its links are followed.
+    pub links_next: Option<i64>,
 }
 
 impl Visit {
@@ -266,6 +268,7 @@ impl Visit {
             aside: 0,
             links_error: None,
             links_only: false,
+            links_next: None,
         }
     }
 }
@@ -597,6 +600,7 @@ impl Run<'_> {
                     self.result.links_error = Some(error);
                 }
             }
+            self.note_links_next();
         }
         Ok(())
     }
@@ -623,7 +627,18 @@ impl Run<'_> {
                 self.result.links_error = Some(error);
             }
         }
+        self.note_links_next();
         Ok(())
+    }
+
+    /// When the next link run is due, for the site to be visited then, while its links are followed and nothing it answered bars them.
+    fn note_links_next(&mut self) {
+        if self.links_every().is_none() || self.refused || self.refused_before() || self.robots_refused() {
+            return;
+        }
+        let url = links_url(&self.known.host);
+        let next = self.result.sitemaps.iter().find(|u| u.url == url).and_then(|u| u.next_check_at).or_else(|| self.known.sitemaps.get(&url).and_then(|s| s.next_check_at));
+        self.result.links_next = next.filter(|&at| at > self.now);
     }
 
     fn robots_due(&self) -> bool {

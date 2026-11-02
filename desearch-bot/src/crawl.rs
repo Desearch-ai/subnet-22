@@ -65,7 +65,7 @@ pub struct DomainWrite {
 /// The state a visit leaves a domain in, and when the loop should come back to it.
 pub fn plan(known: &Known, visit: Visit, now: i64, rng: &mut impl Rng) -> DomainWrite {
     if visit.links_only {
-        let due = [known.recheck_at, visit.links_wait].into_iter().flatten().min();
+        let due = [known.recheck_at, visit.links_wait, visit.links_next].into_iter().flatten().min();
         return DomainWrite {
             host: known.host.clone(),
             state: known.state,
@@ -98,7 +98,8 @@ pub fn plan(known: &Known, visit: Visit, now: i64, rng: &mut impl Rng) -> Domain
         }
     }
     let recheck_at = due;
-    if let Some(at) = visit.links_wait.filter(|_| matches!(decision.state, State::Active | State::NoSitemap)) {
+    // Link work comes in its own time, a run due or a slot awaited, before the site's recheck.
+    for at in [visit.links_wait, visit.links_next].into_iter().flatten().filter(|_| matches!(decision.state, State::Active | State::NoSitemap)) {
         due = due.map(|d| d.min(at));
     }
     let canonical_host = match visit.outcome {
@@ -152,13 +153,14 @@ fn earliest_sitemap(known: &Known, visit: &Visit, now: i64) -> Option<i64> {
     let mut times: Vec<i64> = known
         .sitemaps
         .values()
-        // A homepage or link listing left unread while due sets no time: it is read once the site qualifies again.
+        // A homepage listing left unread while due sets no time: it is read once the site qualifies again; link runs set theirs apart.
+        .filter(|s| s.kind.as_deref() != Some(LINKS_KIND))
         .filter(|s| updated.contains_key(s.url.as_str()) || !is_listing(s.kind.as_deref()) || s.next_check_at.is_some_and(|next| next > now))
         // Nor does a file robots.txt disallows, never read while it does; the next robots.txt read decides again.
         .filter(|s| updated.contains_key(s.url.as_str()) || robots_allow(&visit.robots_paths, bare, &s.url))
         .map(|s| updated.get(s.url.as_str()).copied().unwrap_or(s.next_check_at).unwrap_or(now))
         .collect();
-    times.extend(updated.iter().filter(|(url, _)| !known.sitemaps.contains_key(**url)).filter_map(|(_, when)| *when));
+    times.extend(visit.sitemaps.iter().filter(|u| !known.sitemaps.contains_key(&u.url) && u.kind.as_deref() != Some(LINKS_KIND)).filter_map(|u| u.next_check_at));
     times.into_iter().min()
 }
 
