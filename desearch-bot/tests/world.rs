@@ -1465,7 +1465,8 @@ async fn a_site_that_refuses_a_guess_gets_no_more_guesses() {
     let host = "refuses-guesses.test";
     {
         let mut w = web.lock().unwrap();
-        for path in ["/robots.txt", "/sitemap.xml", "/sitemap_index.xml", "/feed", "/rss.xml", "/"] {
+        w.add(host, "/robots.txt", 200, None, b"User-agent: *\nAllow: /\n");
+        for path in ["/sitemap.xml", "/sitemap_index.xml", "/feed", "/rss.xml", "/"] {
             w.add(host, path, 403, None, b"denied");
         }
     }
@@ -1509,4 +1510,22 @@ async fn a_site_that_refuses_a_sitemap_or_a_guess_gets_no_link_work() {
         assert_eq!(paths(&off_web), ["/robots.txt", refusing], "{case}");
         assert_eq!(paths(&off_web), paths(&thin_web), "{case}: not one request more");
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_site_whose_robots_txt_refuses_us_is_not_guessed_at_even_with_a_gone_sitemap_stored() {
+    let web: Shared = Arc::default();
+    let host = "robots-refuses-gone.test";
+    web.lock().unwrap().add(host, "/robots.txt", 403, None, b"denied");
+    let (_buckets, crawl) = crawl_following(web.clone(), &[host], "robots-refuses-gone", FollowLinks::Off, Slots::new(2), |buckets| {
+        buckets.allow(&Allowed::of([host]));
+        let gone = format!("http://{host}/sitemap.xml");
+        let mut changes = Changes::default();
+        changes.sitemap(host, &gone, serde_json::json!({"id": sitemap_id(&gone), "kind": "urlset", "depth": 0, "status": "gone", "urls": 0, "next": 0}).as_object().unwrap());
+        buckets.store(host).write(changes).unwrap();
+    })
+    .await;
+    let hits: Vec<String> = web.lock().unwrap().hits.iter().map(|(_, path, _)| path.clone()).collect();
+    assert_eq!(hits, ["/robots.txt", "/sitemap.xml"], "only the stored sitemap is asked for again");
+    assert_eq!(crawl.stats.requests, 3, "robots.txt on https then http, and the stored sitemap: no guess on either scheme");
 }
