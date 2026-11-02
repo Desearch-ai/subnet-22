@@ -77,3 +77,26 @@ fn retries_of_rechecks_failing_together_spread_out() {
     let dues: std::collections::HashSet<i64> = (0..20).map(|seed| chain(|| refused(true), seed)[0].1.unwrap()).collect();
     assert!(dues.len() > 10, "{} distinct first retries of 20", dues.len());
 }
+
+#[test]
+fn a_visit_that_asked_nothing_is_not_due_again_at_once_while_one_that_read_waits_for_nothing() {
+    let mut rng = rand::rngs::StdRng::seed_from_u64(7);
+    let stale = json!({"id": 1, "kind": "urlset", "depth": 0, "status": "ok", "urls": 3, "next": (NOW / SECOND) - 86_400});
+    let record = json!({"state": "active", "failures": 0, "categories": [], "lang": "en"});
+    let known = records::known("a.test", record.as_object().unwrap(), &[("https://a.test/s.xml".into(), stale.as_object().unwrap().clone())]).unwrap();
+    let idle = plan(&known, Visit { requests: 0, ..Visit::new("a.test") }, NOW, &mut rng);
+    assert_eq!(idle.next_due_at, Some(NOW + 3600 * SECOND), "it asked nothing, so it would ask nothing again at once");
+    assert!(!idle.backlog);
+    let busy = plan(&known, Visit { requests: 3, ..Visit::new("a.test") }, NOW, &mut rng);
+    assert!(busy.next_due_at.is_some_and(|due| due <= NOW) && busy.backlog, "a visit that read files keeps reading the backlog at once");
+}
+
+#[test]
+fn a_walk_stopped_for_the_disk_waits_no_hour_for_the_files_it_left() {
+    let mut rng = rand::rngs::StdRng::seed_from_u64(7);
+    let stale = json!({"id": 1, "kind": "urlset", "depth": 0, "status": "ok", "urls": 3, "next": (NOW / SECOND) - 86_400});
+    let record = json!({"state": "active", "failures": 0, "categories": [], "lang": "en"});
+    let known = records::known("a.test", record.as_object().unwrap(), &[("https://a.test/s.xml".into(), stale.as_object().unwrap().clone())]).unwrap();
+    let paused = plan(&known, Visit { requests: 0, paused: true, ..Visit::new("a.test") }, NOW, &mut rng);
+    assert!(paused.next_due_at.is_some_and(|due| due <= NOW), "its due files wait only for the disk");
+}

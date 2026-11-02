@@ -17,7 +17,7 @@ use crate::schedule::{HOUR, SECOND};
 use crate::states::{self, Outcome, State};
 use crate::suffixes::tld_group;
 use crate::timetable::{placed, HeavyQueue, Lane, Timetable};
-use crate::visit::{is_listing, Crash, Known, Visit, Visitor, LINKS_KIND};
+use crate::visit::{is_listing, robots_allow, Crash, Known, Visit, Visitor, LINKS_KIND};
 use crate::{exclusions, records};
 
 const TICK: Duration = Duration::from_secs(1);
@@ -74,6 +74,10 @@ pub fn plan(known: &Known, visit: Visit, now: i64, rng: &mut impl Rng) -> Domain
         if visit.cut_short {
             due = due.map(|d| d.max(now + CUT_SHORT_WAIT));
         }
+        // A visit that asked nothing read every file it could: due again at once, it would ask nothing again.
+        if visit.requests == 0 && !visit.paused && due.is_some_and(|d| d <= now) {
+            due = Some(now + CUT_SHORT_WAIT);
+        }
     }
     if let Some(at) = visit.links_wait.filter(|_| matches!(decision.state, State::Active | State::NoSitemap)) {
         due = due.map(|d| d.min(at));
@@ -122,12 +126,15 @@ pub fn adopted(target: &str) -> (&'static str, State, Option<&'static str>) {
 }
 
 fn earliest_sitemap(known: &Known, visit: &Visit, now: i64) -> Option<i64> {
+    let bare = known.host.strip_prefix("www.").unwrap_or(&known.host);
     let updated: HashMap<&str, Option<i64>> = visit.sitemaps.iter().map(|u| (u.url.as_str(), u.next_check_at)).collect();
     let mut times: Vec<i64> = known
         .sitemaps
         .values()
         // A homepage or link listing left unread while due sets no time: it is read once the site qualifies again.
         .filter(|s| updated.contains_key(s.url.as_str()) || !is_listing(s.kind.as_deref()) || s.next_check_at.is_some_and(|next| next > now))
+        // Nor does a file robots.txt disallows, never read while it does; the next robots.txt read decides again.
+        .filter(|s| updated.contains_key(s.url.as_str()) || robots_allow(&visit.robots_paths, bare, &s.url))
         .map(|s| updated.get(s.url.as_str()).copied().unwrap_or(s.next_check_at).unwrap_or(now))
         .collect();
     times.extend(updated.iter().filter(|(url, _)| !known.sitemaps.contains_key(**url)).filter_map(|(_, when)| *when));

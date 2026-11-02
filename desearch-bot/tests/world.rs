@@ -1649,3 +1649,66 @@ async fn a_robots_txt_rate_limit_with_a_gone_sitemap_stored_asks_only_for_that_s
     let hits: Vec<String> = web.lock().unwrap().hits.iter().map(|(_, path, _)| path.clone()).collect();
     assert_eq!(hits, ["/robots.txt", "/sitemap.xml"], "a stored sitemap hides the guesses, as production has it");
 }
+
+/// An active site read an hour ago, its robots.txt rules disallowing /site, with these sitemaps stored at these next times.
+fn active_with(buckets: &Arc<Buckets>, host: &str, now: i64, sitemaps: &[(&str, &str, i64, i64)]) {
+    let mut record = records::new_domain(Some(1), Some("new_generic"), &[], State::Active, None, Some(0));
+    for (name, at) in [("robots", now - 3600), ("checked", now - 3600), ("ok", now - 3600)] {
+        record.insert(name.into(), at.into());
+    }
+    record.insert("lang".into(), "en".into());
+    record.insert("allows".into(), true.into());
+    record.insert("rules".into(), serde_json::json!({"allow": [], "disallow": ["/site"]}));
+    let mut changes = Changes::default();
+    changes.domain(host, &record);
+    for (path, kind, depth, next) in sitemaps {
+        let url = format!("http://{host}{path}");
+        changes.sitemap(host, &url, serde_json::json!({"id": sitemap_id(&url), "kind": kind, "depth": depth, "status": "ok", "urls": 12, "next": next, "interval": 86_400}).as_object().unwrap());
+    }
+    buckets.store(host).write(changes).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_due_sitemap_robots_txt_disallows_sets_no_due_time() {
+    let web: Shared = Arc::default();
+    let host = "disallowed-sitemap.test";
+    let now = chrono::Utc::now().timestamp();
+    let (buckets, _crawl) = crawl_prepared(web.clone(), &[host], "disallowed-sitemap", |buckets| {
+        active_with(buckets, host, now, &[("/sitemap.xml", "urlset", 0, now - 30 * 86_400), ("/news.xml", "urlset", 0, now + 6 * 3600)]);
+    })
+    .await;
+    assert!(web.lock().unwrap().hits.is_empty(), "/sitemap.xml stays unread while robots.txt disallows it, and /news.xml is not due");
+    let due = buckets.store(host).domain(host).unwrap().unwrap()["due"].as_i64().unwrap();
+    assert!((due - (now + 6 * 3600)).abs() <= 120, "due when /news.xml is, not at once and not an hour on: due in {} s", due - now);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_backlog_of_due_children_is_read_a_visit_at_a_time_until_none_is_due() {
+    let web: Shared = Arc::default();
+    let host = "big-backlog.test";
+    let children: Vec<String> = (0..100).map(|i| format!("/child-{i:03}.xml")).collect();
+    {
+        let mut w = web.lock().unwrap();
+        for (i, child) in children.iter().enumerate() {
+            w.add(host, child, 200, None, urlset(host, &[format!("/page-{i}")]).as_bytes());
+        }
+    }
+    let now = chrono::Utc::now().timestamp();
+    let mut stored: Vec<(&str, &str, i64, i64)> = vec![("/index.xml", "index", 0, now + 86_400)];
+    stored.extend(children.iter().map(|child| (child.as_str(), "urlset", 1, now - 86_400)));
+    let (buckets, mut crawl) = crawl_prepared(web.clone(), &[host], "big-backlog", |buckets| active_with(buckets, host, now, &stored)).await;
+    let mut read = web.lock().unwrap().hits.len();
+    assert_eq!(read, 40, "a visit reads 40 files at most");
+    for _ in 0..2 {
+        assert!(buckets.store(host).domain(host).unwrap().unwrap()["due"].as_i64().unwrap() <= chrono::Utc::now().timestamp(), "due again at once while children wait");
+        crawl.load().unwrap();
+        crawl.step().await.unwrap();
+        let now_read = web.lock().unwrap().hits.len();
+        assert!(now_read > read, "each visit reads more of the backlog");
+        read = now_read;
+    }
+    let paths: HashSet<String> = web.lock().unwrap().hits.iter().map(|(_, path, _)| path.clone()).collect();
+    assert_eq!(paths.len(), 100, "every child read once, none twice");
+    let due = buckets.store(host).domain(host).unwrap().unwrap()["due"].as_i64().unwrap();
+    assert!(due > chrono::Utc::now().timestamp() + 3600, "and the site rests once none is due");
+}

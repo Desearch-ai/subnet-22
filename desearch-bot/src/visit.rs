@@ -212,6 +212,8 @@ pub struct Visit {
     pub requests: i64,
     pub deferred: Vec<(String, i64, Option<i64>)>,
     pub cut_short: bool,
+    /// Sitemap reads stopped for the disk with files still due, so the visit asked less than it would have.
+    pub paused: bool,
     /// The homepage refused us or limited our rate on a recheck of a site that answered before: tried again soon before it counts.
     pub passing: bool,
     /// Which host answered robots.txt or the homepage, when either was read: the www host or the bare one.
@@ -249,6 +251,7 @@ impl Visit {
             requests: 0,
             deferred: Vec::new(),
             cut_short: false,
+            paused: false,
             passing: false,
             www_only: None,
             on_list: None,
@@ -713,6 +716,7 @@ impl Run<'_> {
             queue.extend(children);
         }
         self.result.cut_short = self.failed_in_row >= MAX_FAILURES_IN_ROW;
+        self.result.paused = self.visitor.pause.load(Ordering::Relaxed) && !queue.is_empty();
         for (url, depth, parent, _, _) in queue {
             if self.result.deferred.len() >= MAX_DEFERRED {
                 break;
@@ -727,18 +731,7 @@ impl Run<'_> {
 
     /// Whether robots.txt lets us fetch this URL; the file we read covers the domain and its www host only.
     fn robots_allow(&self, url: &str) -> bool {
-        let Ok(parts) = urls::split(url) else {
-            return true;
-        };
-        let host = parts.hostname().unwrap_or_default();
-        if host.strip_prefix("www.").unwrap_or(&host) != self.bare_host() || parts.port().ok().flatten().is_some_and(|port| port != 80 && port != 443) {
-            return true;
-        }
-        let target = match &parts.query {
-            Some(query) => format!("{}?{query}", parts.path),
-            None => parts.path.clone(),
-        };
-        self.result.robots_paths.allows(&urls::tidy_target(if target.is_empty() { "/" } else { &target }))
+        robots_allow(&self.result.robots_paths, self.bare_host(), url)
     }
 
     /// Read one sitemap file and return the child sitemaps worth reading next.
@@ -1578,6 +1571,22 @@ fn children(job: &FileJob, entries: &[Entry], trust: Trust) -> Result<Vec<Child>
 
 fn due(stored: &KnownSitemap, now: i64) -> bool {
     stored.next_check_at.is_none_or(|next| next <= now)
+}
+
+/// Whether robots.txt rules, read for a domain and its www host, let us fetch this URL; another host or port has rules of its own.
+pub(crate) fn robots_allow(paths: &Paths, bare_host: &str, url: &str) -> bool {
+    let Ok(parts) = urls::split(url) else {
+        return true;
+    };
+    let host = parts.hostname().unwrap_or_default();
+    if host.strip_prefix("www.").unwrap_or(&host) != bare_host || parts.port().ok().flatten().is_some_and(|port| port != 80 && port != 443) {
+        return true;
+    }
+    let target = match &parts.query {
+        Some(query) => format!("{}?{query}", parts.path),
+        None => parts.path.clone(),
+    };
+    paths.allows(&urls::tidy_target(if target.is_empty() { "/" } else { &target }))
 }
 
 /// The most frequent value, the first seen winning a tie.
