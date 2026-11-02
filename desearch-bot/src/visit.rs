@@ -154,6 +154,8 @@ pub struct Known {
     pub robots_checked_at: Option<i64>,
     pub robots_allows: Option<bool>,
     pub robots_paths: Paths,
+    /// How robots.txt answered when last read.
+    pub robots_status: Option<u16>,
     pub crawl_delay: Option<f64>,
     pub language: Option<String>,
     pub categories: Vec<String>,
@@ -914,7 +916,9 @@ impl Run<'_> {
 
     /// When this visit follows the site's links, how often runs come: once its last run is due, unless the disk runs low or the site is failing.
     fn links_due(&self) -> Option<i64> {
-        if self.result.cut_short || !self.home_known || self.visitor.pause.load(Ordering::Relaxed) {
+        // A site whose robots.txt refuses us or asks us to slow down gets no link work.
+        let robots = self.result.robots_status.or(self.known.robots_status);
+        if self.result.cut_short || !self.home_known || robots.is_some_and(|status| matches!(status, 401 | 402 | 403 | 429)) || self.visitor.pause.load(Ordering::Relaxed) {
             return None;
         }
         let every = self.links_every()?;

@@ -80,6 +80,7 @@ pub fn known(host: &str, domain: &Json, sitemaps: &[(String, Json)]) -> Option<K
         robots_checked_at: moment(domain.get("robots")),
         robots_allows: domain.get("allows").and_then(Value::as_bool),
         robots_paths: robots_paths(domain),
+        robots_status: int(domain.get("robots_status")).and_then(|status| u16::try_from(status).ok()),
         crawl_delay: domain.get("delay").and_then(Value::as_f64),
         language: text(domain.get("lang")),
         categories: domain

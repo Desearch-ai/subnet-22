@@ -1474,3 +1474,18 @@ async fn a_site_that_refuses_a_guess_gets_no_more_guesses() {
     assert_eq!(hits, ["/robots.txt", "/sitemap.xml"], "the first refusal ends the guessing");
     assert_eq!(buckets.store(host).domain(host).unwrap().unwrap()["state"].as_str(), Some("no_sitemap"));
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_site_whose_robots_txt_refuses_us_gets_no_link_work() {
+    let (off_web, thin_web): (Shared, Shared) = (Arc::default(), Arc::default());
+    for (web, host) in [(&off_web, "refuses-off.test"), (&thin_web, "refuses-thin.test")] {
+        deep_site(web, host);
+        web.lock().unwrap().add(host, "/robots.txt", 403, None, b"denied");
+    }
+    let listed = |host: &'static str| move |buckets: &Arc<Buckets>| buckets.allow(&Allowed::of([host]));
+    let off = verdict(off_web.clone(), "refuses-off.test", "refuses-off", FollowLinks::Off, false, listed("refuses-off.test")).await;
+    let thin = verdict(thin_web.clone(), "refuses-thin.test", "refuses-thin", FollowLinks::Thin, false, listed("refuses-thin.test")).await;
+    assert_eq!(off, thin);
+    let paths = |web: &Shared| web.lock().unwrap().hits.iter().map(|(_, path, _)| path.clone()).collect::<Vec<_>>();
+    assert_eq!(paths(&off_web), paths(&thin_web), "not one request more");
+}
