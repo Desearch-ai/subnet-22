@@ -1776,13 +1776,14 @@ impl BucketStore {
         Ok((added, counts))
     }
 
-    /// Takes pages never sent, and named by no sitemap, off the domain's ready list, as their keys' rests: pages a fetch found gone or moved off the site; their records stay, so a listing naming them again queues nothing.
-    pub fn unqueue(&self, domain: &str, rests: &[Vec<u8>]) -> Result<usize> {
+    /// Takes pages never sent, named by no sitemap and last listed by one of the site's own `listings`, off the domain's ready list, as their keys' rests: pages a fetch found gone or moved off the site; their records stay, so a listing naming them again queues nothing.
+    pub fn unqueue(&self, domain: &str, rests: &[Vec<u8>], listings: &[i64]) -> Result<usize> {
         let records = self.records(rests.iter().map(|rest| prefixed(URL, domain.as_bytes(), rest)))?;
         let keys: Vec<Vec<u8>> = rests
             .iter()
             .zip(records)
-            .filter_map(|(rest, record)| record.filter(|record| record.pushed_at == 0 && record.flags & FROM_PAGES != 0).map(|record| (rest, record)))
+            // A build that keeps no mark leaves it on a page its sitemap lists, but moves the page's listing on.
+            .filter_map(|(rest, record)| record.filter(|record| record.pushed_at == 0 && record.flags & FROM_PAGES != 0 && listings.contains(&record.sitemap_id)).map(|record| (rest, record)))
             .map(|(rest, record)| Entry { domain: domain.to_string(), rest: rest.clone(), order: Order::Fresh { first_seen: record.first_seen, lastmod: record.lastmod } }.key())
             .collect();
         if keys.is_empty() {
@@ -2094,6 +2095,26 @@ mod tests {
             ]
         );
         assert_eq!(Entry::parse(&keys[0]).unwrap().rest, b"example.com/a");
+    }
+
+    #[test]
+    fn a_page_a_sitemap_listed_since_a_link_run_found_it_is_never_taken_back() {
+        let dir = std::env::temp_dir().join(format!("desearch-bot-ready-unqueue-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = BucketStore::open(&dir, &crate::buckets::Resources::new(8 << 20, 8 << 20, 1)).unwrap();
+        let page = |path: &str| (crate::urls::parse(&format!("https://example.com/{path}"), "example.com").unwrap(), 0, false);
+        let links = 99;
+        store.record_listing_handing("example.com", links, vec![page("a"), page("b")], 100, true).unwrap();
+        // As a build that keeps no mark records a sitemap naming the page: the mark stays, the listing moves on.
+        let key = prefixed(URL, b"example.com", b"example.com/b");
+        let mut record = Record::unpack(&store.db.get(&key).unwrap().unwrap()).unwrap();
+        record.sitemap_id = 7;
+        store.db.put(&key, record.pack()).unwrap();
+        let rests = [b"example.com/a".to_vec(), b"example.com/b".to_vec()];
+        assert_eq!(store.unqueue("example.com", &rests, &[links]).unwrap(), 1, "only the page a link run listed last");
+        assert_eq!(store.ready_list("example.com", 10).unwrap().iter().map(|e| e.rest.clone()).collect::<Vec<_>>(), [b"example.com/b".to_vec()]);
+        drop(store);
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

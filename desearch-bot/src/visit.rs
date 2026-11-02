@@ -1236,8 +1236,12 @@ impl Run<'_> {
         found.retain(|url| !unread.contains(url));
         let rests: Vec<Vec<u8>> = taken_back.iter().filter_map(|url| normaliser.parse(url)).filter_map(|url| url.key.splitn(2, |&b| b == 0).nth(1).map(<[u8]>::to_vec)).collect();
         if !rests.is_empty() {
+            let known = self.known.sitemaps.values().map(|s| (s.id, s.kind.as_deref()));
+            let read = self.result.sitemaps.iter().map(|u| (u.id, u.kind.as_deref()));
+            let mut listings: Vec<i64> = known.chain(read).filter(|(_, kind)| is_listing(*kind)).map(|(id, _)| id).collect();
+            listings.push(crate::buckets::sitemap_id(&links_url(&self.known.host)));
             let (buckets, host) = (self.visitor.buckets.clone(), self.known.host.clone());
-            self.visitor.cpu(move || buckets.store(&host).unqueue(&host, &rests)).await?.map_err(|_| Crash::new("StoreError"))?;
+            self.visitor.cpu(move || buckets.store(&host).unqueue(&host, &rests, &listings)).await?.map_err(|_| Crash::new("StoreError"))?;
         }
         self.links_listing(found, read, refused, every).await
     }
