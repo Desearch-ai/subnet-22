@@ -149,6 +149,21 @@ impl Resolve for TestResolver {
     }
 }
 
+/// Each host on an address of its own, for runs that must not share one.
+struct MapResolver(HashMap<&'static str, SocketAddr>);
+
+impl Resolve for MapResolver {
+    fn resolve(&self, name: Name) -> Resolving {
+        let found = self.0.get(name.as_str()).copied();
+        Box::pin(async move {
+            match found {
+                Some(addr) => Ok(Box::new(std::iter::once(addr)) as Addrs),
+                None => Err(Box::new(ResolveError::from("no such host")) as Box<dyn std::error::Error + Send + Sync>),
+            }
+        })
+    }
+}
+
 fn gzip(data: &[u8]) -> Vec<u8> {
     let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
     encoder.write_all(data).unwrap();
@@ -2193,4 +2208,52 @@ async fn a_backlog_of_due_children_is_read_a_visit_at_a_time_until_none_is_due()
     assert_eq!(paths.len(), 100, "every child read once, none twice");
     let due = buckets.store(host).domain(host).unwrap().unwrap()["due"].as_i64().unwrap();
     assert!(due > chrono::Utc::now().timestamp() + 3600, "and the site rests once none is due");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_link_runs_redirect_to_another_host_is_fetched_only_once_that_hosts_address_is_held() {
+    let web: Shared = Arc::default();
+    let (host, www, other) = ("hop.test", "www.hop.test", "holder.test");
+    let page = |links: &[&str]| {
+        let links: String = links.iter().map(|href| format!("<a href=\"{href}\">{href}</a>")).collect();
+        format!("<html lang=\"en\"><p>{ENGLISH}</p>{links}</html>").into_bytes()
+    };
+    {
+        let mut w = web.lock().unwrap();
+        for site in [host, other] {
+            w.add(site, "/robots.txt", 200, None, b"User-agent: *\nAllow: /\n");
+        }
+        w.add(host, "/", 200, None, &page(&["/1", "/2", "/go"]));
+        w.add(host, "/1", 200, None, &page(&[]));
+        w.add(host, "/2", 200, None, &page(&[]));
+        w.redirect(host, "/go", &format!("http://{www}/moved"), None);
+        w.add(www, "/moved", 200, None, &page(&[]));
+        w.add(other, "/", 200, None, &page(&["/slow"]));
+        w.silent.insert((other.to_string(), "/slow".to_string()));
+    }
+    let v4 = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let v6 = TcpListener::bind("[::1]:0").await.unwrap();
+    let addrs: HashMap<&'static str, SocketAddr> =
+        [(host, v4.local_addr().unwrap()), (www, v6.local_addr().unwrap()), (other, v6.local_addr().unwrap())].into();
+    tokio::spawn(serve(v4, web.clone()));
+    tokio::spawn(serve(v6, web.clone()));
+    let on_own = |visitor: &mut Visitor| {
+        visitor.client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .dns_resolver(Arc::new(MapResolver(addrs.clone())))
+            .timeout(TEST_TIMEOUT)
+            .build()
+            .unwrap();
+        visitor.resolver = Some(Arc::new(MapResolver(addrs.clone())));
+    };
+    let moved = |web: &Shared| web.lock().unwrap().hits.iter().any(|(h, p, _)| h == www && p == "/moved");
+
+    let (_buckets, _crawl) = crawl_adjusted(web.clone(), &[host, other], &[], "hop-held", FollowLinks::Thin, Slots::new(2), (0, 0), |b| b.allow(&Allowed::of([host, other])), on_own).await;
+    assert!(web.lock().unwrap().hits.iter().any(|(h, p, _)| h == other && p == "/slow"), "the other site's run held the www host's address meanwhile");
+    assert!(!moved(&web), "a hop to an address another run holds is dropped, never asked");
+
+    web.lock().unwrap().hits.clear();
+    let (buckets, _crawl) = crawl_adjusted(web.clone(), &[host], &[], "hop-free", FollowLinks::Thin, Slots::new(2), (0, 0), |b| b.allow(&Allowed::of([host])), on_own).await;
+    assert!(moved(&web), "once the run holds the www host's address too, the hop is asked");
+    assert!(buckets.store(host).url(&urls::parse(&format!("http://{www}/moved"), host).unwrap()).unwrap().is_some());
 }

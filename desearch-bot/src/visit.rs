@@ -539,6 +539,7 @@ impl Visitor {
             www_only,
             listed,
             following: false,
+            link_claims: Vec::new(),
             home_known: false,
             site_peer: None,
             refused: false,
@@ -589,6 +590,8 @@ struct Run<'a> {
     listed: bool,
     /// Set while a link run fetches: its redirects stay on the site, within its robots rules.
     following: bool,
+    /// The addresses a link run holds; a redirect to another host is fetched only once its addresses are held too.
+    link_claims: Vec<PeerClaim>,
     /// The homepage's address came from robots.txt read on this visit or a homepage read before, not from a guess at its scheme.
     home_known: bool,
     /// The address the site's own host last answered from on this visit.
@@ -1129,6 +1132,13 @@ impl Run<'_> {
 
     /// Follow the site's own links from its homepage a few levels down, within a budget, and keep the pages found as one listing.
     async fn follow_links(&mut self, every: i64) -> Result<(), Crash> {
+        let done = self.follow(every).await;
+        self.following = false;
+        self.link_claims.clear();
+        done
+    }
+
+    async fn follow(&mut self, every: i64) -> Result<(), Crash> {
         let slots = self.visitor.links.clone();
         // Sites whose sitemaps list some pages leave a quarter of the slots to those that list none.
         let permit = if self.sitemap_urls() == 0 || slots.busy() * 4 < slots.size() * 3 { slots.try_take() } else { None };
@@ -1141,7 +1151,7 @@ impl Run<'_> {
             self.wait_for_turn();
             return Ok(());
         };
-        let mut claims = vec![claim];
+        self.link_claims = vec![claim];
         // Link work reads robots.txt again once a day has passed, or for the homepage address no homepage read left, and runs only where it still lets us in.
         if self.result.links_only && (!self.stored_home || self.known.robots_checked_at.is_none_or(|checked| self.now - checked >= ROBOTS_EVERY)) {
             slots.turn(&[ip]).await;
@@ -1187,7 +1197,7 @@ impl Run<'_> {
             if kept.is_none() {
                 // An address the page will be asked on is claimed and booked before it is asked.
                 let ips = self.addresses(&page).await;
-                if !hold(&slots, &mut claims, &ips) {
+                if !hold(&slots, &mut self.link_claims, &ips) {
                     // Another run on an address the site answers from is a wait, never a failed run.
                     if read == 0 {
                         self.following = false;
@@ -1196,7 +1206,7 @@ impl Run<'_> {
                     }
                     break;
                 }
-                slots.turn(&claims.iter().map(|claim| claim.ip).collect::<Vec<_>>()).await;
+                slots.turn(&self.link_claims.iter().map(|claim| claim.ip).collect::<Vec<_>>()).await;
             }
             let fetched = match kept {
                 Some((url, body, headers)) => Ok(Answer { status: 200, body, headers, url, permit: None, peer: self.site_peer }),
@@ -1222,11 +1232,11 @@ impl Run<'_> {
             let peer = answer.peer.unwrap_or(ip);
             slots.connected(peer, true);
             // A site answering from another address too takes that one as well, or stops.
-            if !claims.iter().any(|claim| claim.ip == peer) {
+            if !self.link_claims.iter().any(|claim| claim.ip == peer) {
                 match slots.claim(peer) {
                     Some(claim) => {
                         slots.book(peer);
-                        claims.push(claim);
+                        self.link_claims.push(claim);
                     }
                     None => break,
                 }
@@ -1549,6 +1559,20 @@ impl Run<'_> {
         true
     }
 
+    /// Holds and spaces the addresses of a link run's redirect to another host before it is asked; false drops the hop.
+    async fn hold_hop(&mut self, from: &str, next: &str) -> bool {
+        if urls::split(next).ok().and_then(|parts| parts.hostname()).is_some_and(|host| host == from) {
+            return true;
+        }
+        let ips = self.addresses(next).await;
+        let slots = self.visitor.links.clone();
+        if ips.is_empty() || !hold(&slots, &mut self.link_claims, &ips) {
+            return false;
+        }
+        slots.turn(&ips).await;
+        true
+    }
+
     /// Follow redirects by hand, pacing and signing each hop for the host it goes to.
     async fn get(
         &mut self,
@@ -1617,7 +1641,7 @@ impl Run<'_> {
                 }
                 if let Some(location) = header(response.headers(), "location").filter(|l| !l.is_empty()) {
                     let next = urls::join(&url, &location).map_err(|_| "ValueError".to_string())?;
-                    if self.following && !(self.on_site(&next) && self.robots_allow(&next)) {
+                    if self.following && !(self.on_site(&next) && self.robots_allow(&next) && self.hold_hop(&host, &next).await) {
                         return Ok(Answer { status, body: Vec::new(), headers: response.headers().clone(), url: next, permit, peer });
                     }
                     url = next;
