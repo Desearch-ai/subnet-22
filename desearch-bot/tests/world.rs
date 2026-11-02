@@ -1611,3 +1611,41 @@ async fn link_work_failing_on_our_side_keeps_the_verdict() {
     assert_eq!((record["state"].as_str(), record["reason"].as_str()), (Some("no_sitemap"), Some("sitemap_too_small")), "{record:?}");
     assert_eq!(crawl.summary()["link_errors"], 1);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_robots_txt_that_refuses_us_stops_all_guessing_while_a_rate_limit_stops_none_on_a_first_visit() {
+    let mut seen = Vec::new();
+    for status in [403u16, 429] {
+        let web: Shared = Arc::default();
+        let host: &'static str = format!("robots-{status}.test").leak();
+        {
+            let mut w = web.lock().unwrap();
+            w.add(host, "/robots.txt", status, None, b"no");
+            w.add(host, "/sitemap.xml", 200, None, urlset(host, &(0..12).map(|i| format!("/story/{i}")).collect::<Vec<_>>()).as_bytes());
+            w.add(host, "/", 200, None, format!("<html lang=\"en\"><p>{ENGLISH}</p></html>").as_bytes());
+        }
+        let (buckets, _crawl) = crawl_following(web.clone(), &[host], &format!("robots-{status}"), FollowLinks::Off, Slots::new(2), |buckets| buckets.allow(&Allowed::of([host]))).await;
+        let hits: Vec<String> = web.lock().unwrap().hits.iter().map(|(_, path, _)| path.clone()).collect();
+        let state = buckets.store(host).domain(host).unwrap().unwrap()["state"].as_str().map(String::from);
+        seen.push((hits.contains(&"/sitemap.xml".to_string()), state));
+    }
+    assert_eq!(seen[0], (false, Some("no_sitemap".into())), "a refusal is a wall");
+    assert_eq!(seen[1], (true, Some("active".into())), "a rate limit with nothing stored is guessed at, as production does");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_robots_txt_rate_limit_with_a_gone_sitemap_stored_asks_only_for_that_sitemap() {
+    let web: Shared = Arc::default();
+    let host = "robots-429-gone.test";
+    web.lock().unwrap().add(host, "/robots.txt", 429, None, b"slow down");
+    let (_buckets, _crawl) = crawl_following(web.clone(), &[host], "robots-429-gone", FollowLinks::Off, Slots::new(2), |buckets| {
+        buckets.allow(&Allowed::of([host]));
+        let gone = format!("http://{host}/sitemap.xml");
+        let mut changes = Changes::default();
+        changes.sitemap(host, &gone, serde_json::json!({"id": sitemap_id(&gone), "kind": "urlset", "depth": 0, "status": "gone", "urls": 0, "next": 0}).as_object().unwrap());
+        buckets.store(host).write(changes).unwrap();
+    })
+    .await;
+    let hits: Vec<String> = web.lock().unwrap().hits.iter().map(|(_, path, _)| path.clone()).collect();
+    assert_eq!(hits, ["/robots.txt", "/sitemap.xml"], "a stored sitemap hides the guesses, as production has it");
+}
