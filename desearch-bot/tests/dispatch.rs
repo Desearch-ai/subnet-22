@@ -283,6 +283,24 @@ fn a_failed_page_waits_its_interval_and_after_two_failures_in_a_row_the_long_wai
 }
 
 #[test]
+fn an_outlet_s_hub_goes_again_and_is_retried_on_its_hubs_interval() {
+    let dir = Dir::new("ready-hub-failed");
+    let buckets = known(&dir, &["example.com"]);
+    buckets.allow(&Allowed::with_terms([("example.com", Terms { hubs: Some(3_600), ..Terms::default() })]));
+    let store = buckets.store("example.com");
+    let article = "a-long-article-slug-about-things";
+    store.record_listing("example.com", 7, vec![page("world", 0), page(article, 0)], 100).unwrap();
+    store.mark_sent(&take(store, 10), 1000, &rules()).unwrap();
+    assert_eq!(store.next_send("example.com", &rest("world")).unwrap(), Some(Scheduled { why: Why::Recrawl, due: 1000 + 3_600, at: 1000 }));
+    assert_eq!(store.next_send("example.com", &rest(article)).unwrap(), Some(Scheduled { why: Why::Recrawl, due: 1000 + RECRAWL, at: 1000 }));
+
+    let failed = [outcome("https://example.com/world", Outcome::Failed, 1100), outcome(&format!("https://example.com/{article}"), Outcome::Failed, 1100)];
+    OutcomeReader::new(rules(), 1000).apply(&buckets, &failed, 1100).unwrap();
+    assert_eq!(store.next_send("example.com", &rest("world")).unwrap(), Some(Scheduled { why: Why::Failed, due: 1100 + 3_600, at: 1100 }));
+    assert_eq!(store.next_send("example.com", &rest(article)).unwrap(), Some(Scheduled { why: Why::Failed, due: 1100 + RECRAWL, at: 1100 }), "an article waits the domain's interval");
+}
+
+#[test]
 fn a_page_set_to_the_long_wait_goes_earlier_when_its_lastmod_moves() {
     let dir = Dir::new("ready-gone-changed");
     let buckets = known(&dir, &["example.com"]);

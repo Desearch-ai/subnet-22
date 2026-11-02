@@ -55,7 +55,7 @@ MALLOC_ARENA_MAX=2 desearch-bot run --buckets-dir /var/lib/desearch-bot/buckets 
 | `--gone-days` | 30 | days a page that failed on two sends in a row waits before it goes out again, unless its lastmod moves |
 | `--dropped-per-hour` | 200000 | pages of lost or taken-back tasks sent again each hour; more are spread over the following hours |
 | `--backfill-ready` | off | walk every store once to queue pages found before the queue existed |
-| `--domains` | none | a JSON list of the domains whose pages are queued, as names or `{host, type, weight, send_cap, hourly, backlog, since, resend_before, depth}`, read again when it changes; others are crawled but not queued |
+| `--domains` | none | a JSON list of the domains whose pages are queued, as names or `{host, type, weight, send_cap, hourly, backlog, since, resend_before, depth, hubs}`, read again when it changes; others are crawled but not queued |
 | `--join-per-sec` | 100000 | stored URL records read per second while queuing the pages of listed domains; 0 turns it off |
 | `--resend-per-sec` | 20000 | pages listed per second to go once more for domains whose `resend_before` changed; 0 turns it off |
 | `--inbox` | none | a directory of URL lists, one `<host>.txt` per host |
@@ -108,7 +108,7 @@ an answer that is neither a sitemap nor a feed isn't kept. A homepage is read as
 the pages on its site it links to with no query, from its first 400 links and its first 512 KB,
 relative links taken from where it answered; it counts as changed only when those pages change, and
 is read again at most hourly. It never stands in for a sitemap: the guesses are tried again on later
-visits. A site with a `depth` has its homepage read this way beside whatever sitemaps it has. A site
+visits. A site with a `depth` or `hubs` has its homepage read this way beside whatever sitemaps it has. A site
 found without sitemaps on a visit made while the list did not name it is visited again within a day
 of the list naming it, since only a listed site's feed and homepage are tried.
 
@@ -190,7 +190,7 @@ two-minute spread.
 ## The crawl list
 
 With `--domains`, each listed domain may carry a `type`, a `weight` (1 to 4), a `send_cap`, an
-`hourly` limit, a `backlog`, a `since` date, a `resend_before` date and a `depth`. A domain's turn is worth its
+`hourly` limit, a `backlog`, a `since` date, a `resend_before` date, a `depth` and `hubs`. A domain's turn is worth its
 rank's slots times its weight, and `hourly` replaces `--per-domain-hourly` for it. A domain typed
 `news` gets the news visit order and re-reads above.
 
@@ -213,6 +213,14 @@ locale (`/en/`, `/en-us/`) not counted, as the v1 set's landing rule reads them.
 with a query, pages under another locale (`/de-de/`) and pages of other hosts stay unsent, wherever
 the date floor leaves pages out, and its cap counts only the pages its depth lets go. A deeper depth,
 or none, walks the domain again.
+
+**Hubs.** An established news outlet's `hubs` is how many seconds after a send its hub pages go again.
+Its homepage is read as a list of pages on every visit, no more often than that, and its tag and
+category pages are queued like any other. Its hubs are its homepage and its pages on its own host with
+no query and no date in the path that sit under a section, topic or tag level, have a short level
+naming data (scores, fixtures, results, tables, standings, schedules, rankings, polls, markets), or
+are at most three levels down with a last level of up to three words of letters. A hub that fails is
+tried again within the same interval; its other pages keep the domain's re-crawl interval.
 
 **Resends.** `resend_before` sends a domain's pages last sent before it once more, as after an
 extraction change. When a domain's value changes, a walk in a thread of its own lists those pages at

@@ -15,7 +15,7 @@ use serde_json::Value;
 
 use crate::buckets::{bucket_of, Buckets};
 use crate::dispatch::on_readers;
-use crate::ready::{Outcome, PageSchedule, Scheduled, Why, Yield};
+use crate::ready::{self, Outcome, PageSchedule, Scheduled, Why, Yield};
 use crate::recrawl::Recrawl;
 use crate::urls::Normaliser;
 
@@ -280,7 +280,13 @@ impl OutcomeReader {
             if was_resend && row.outcome == Outcome::Failed && *refusing.entry(domain.clone()).or_insert_with(|| refuses(buckets, &domain)) {
                 continue;
             }
-            let interval = self.recrawl.interval(&domain);
+            let mut interval = self.recrawl.interval(&domain);
+            // An outlet's hub that failed is tried again within its own interval.
+            if let (Some(hubs), Some(rest)) = (buckets.terms(&domain).hubs, rest.as_ref()) {
+                if row.outcome == Outcome::Failed && ready::hub_page(&domain, rest) {
+                    interval = interval.min(hubs);
+                }
+            }
             let next = match row.outcome {
                 Outcome::Published | Outcome::Unchanged => continue,
                 Outcome::Failed => Scheduled { why: Why::Failed, due: at.saturating_add(interval), at },

@@ -103,6 +103,13 @@ static JUNK_ON_HUBS: LazyLock<Regex> = LazyLock::new(|| {
     .build()
     .expect("a valid pattern")
 });
+/// The data words of the v1 set's hub pages; a page whose path level is one, or holds one, is a hub.
+const HUB_WORDS: [&str; 12] = ["fixtures", "leaderboard", "markets", "polls", "rankings", "results", "schedule", "scoreboard", "scores", "standings", "table", "tables"];
+/// Path levels that name a section, topic or tag.
+const HUB_SECTIONS: [&str; 8] = ["category", "categories", "section", "sections", "tag", "tags", "topic", "topics"];
+/// The last level of a hub, a name: at most this many words, letters only; a level with a data word, at most one more.
+const HUB_NAME_WORDS: usize = 3;
+const HUB_LEVELS: usize = 3;
 
 pub fn junk(rest: &[u8]) -> bool {
     JUNK.is_match(rest)
@@ -115,6 +122,30 @@ pub fn junk_on(hubs: bool, rest: &[u8]) -> bool {
     } else {
         JUNK.is_match(rest)
     }
+}
+
+/// Whether a page of an established outlet is one of its hubs, which go again on its `hubs` interval: on its own host with no query and no date, its homepage, a page under a section, topic or tag level or with a short level holding a data word, or a page at most three levels down whose last level is a name of letters, three words at most.
+pub fn hub_page(domain: &str, rest: &[u8]) -> bool {
+    let Some(levels) = path_levels(domain, rest) else {
+        return false;
+    };
+    if page_date(0, rest).is_some() {
+        return false;
+    }
+    let levels: Vec<String> = levels.iter().map(|level| level.to_ascii_lowercase()).collect();
+    let words = |level: &str| level.split(['-', '_', '.']).filter(|word| !word.is_empty()).map(String::from).collect::<Vec<String>>();
+    let Some(last) = levels.last() else {
+        return true;
+    };
+    let data = |level: &str| {
+        let words = words(level);
+        words.len() <= HUB_NAME_WORDS + 1 && words.iter().any(|word| HUB_WORDS.contains(&word.as_str()))
+    };
+    if levels.iter().any(|level| HUB_SECTIONS.contains(&level.as_str()) || data(level)) {
+        return true;
+    }
+    let name = words(last);
+    levels.len() <= HUB_LEVELS && name.len() <= HUB_NAME_WORDS && name.iter().all(|word| word.bytes().all(|b| b.is_ascii_alphabetic()))
 }
 
 /// A page's date: its lastmod, else a date in its path, read as the planner reads it.
@@ -183,6 +214,11 @@ pub fn too_deep(depth: Option<u8>, domain: &str, rest: &[u8]) -> bool {
 
 /// A page's path levels on its domain's own host, a leading `en` or `en-us` not counted; None on another host, with a query or under another locale, which no depth takes.
 fn levels(domain: &str, rest: &[u8]) -> Option<usize> {
+    path_levels(domain, rest).map(|levels| levels.len())
+}
+
+/// The path levels `levels` counts.
+fn path_levels<'a>(domain: &str, rest: &'a [u8]) -> Option<Vec<&'a str>> {
     let rest = std::str::from_utf8(rest).ok()?;
     let (host, path) = rest.find('/').map_or((rest, ""), |at| (&rest[..at], &rest[at..]));
     let host = host.strip_prefix("www.").unwrap_or(host);
@@ -198,7 +234,7 @@ fn levels(domain: &str, rest: &[u8]) -> Option<usize> {
         Some(first) if locale(first) => return None,
         _ => {}
     }
-    query.is_empty().then(|| levels.count())
+    query.is_empty().then(|| levels.collect())
 }
 
 /// Two letters, `-` or `_`, two letters: `en-us`, `de_DE`.
@@ -860,9 +896,10 @@ impl BucketStore {
                 if record.lastmod > pick.lastmod {
                     moved.push(Entry { order: Order::Changed { lastmod: record.lastmod }, ..pick.entry.clone() });
                 }
-                // No lastmod will ever say such a page changed, so it goes again on its domain's interval.
+                // No lastmod will ever say such a page changed, so it goes again on its domain's interval, or an outlet's hub on the outlet's.
                 if record.lastmod == 0 {
-                    let next = Scheduled { why: Why::Recrawl, due: at.saturating_add(recrawl.interval(&pick.entry.domain)), at };
+                    let hubs = self.terms(&pick.entry.domain).hubs.filter(|_| hub_page(&pick.entry.domain, &pick.entry.rest));
+                    let next = Scheduled { why: Why::Recrawl, due: at.saturating_add(hubs.unwrap_or_else(|| recrawl.interval(&pick.entry.domain))), at };
                     put_schedule(&mut batch, pick.entry.domain.as_bytes(), &pick.entry.rest, next);
                 }
             }
@@ -2083,6 +2120,46 @@ mod tests {
         }
         assert_eq!(Floor::of(&Terms { hubs: Some(60), ..Terms::default() }).junk(b"example.com/tag/x"), false);
         assert!(Floor::of(&Terms::default()).junk(b"example.com/tag/x"));
+    }
+
+    #[test]
+    fn an_outlet_s_hubs_are_its_homepage_sections_topics_tags_and_data_pages() {
+        for hub in ["example.com", "example.com/", "www.example.com/world/", "example.com/en/us-news", "example.com/news/world/europe", "example.com/tag/sudan-war", "example.com/topics/c2vdnvdg6xxt", "example.com/nfl/scoreboard/_/week/9/year/2026", "example.com/sport/football/premier-league/scores-fixtures", "example.com/premier-league-table", "example.com/football/premierleague/Results", "m.example.com/politics/keir-starmer"] {
+            assert!(hub_page("example.com", hub.as_bytes()), "{hub}");
+        }
+        for page in ["example.com/2026/10/31/story", "example.com/news/election-results-what-we-know-so-far", "example.com/city-council-approves-new-budget", "example.com/news/articles/c0abc123x", "example.com/a/b/c/d", "example.com/world/?page=2", "blog.example.com/world", "example.com/de-de/welt", "example.com/news/2026-10-31-recap"] {
+            assert!(!hub_page("example.com", page.as_bytes()), "{page}");
+        }
+    }
+
+    #[test]
+    fn an_outlet_s_hubs_go_again_on_its_interval_and_its_other_pages_on_the_domain_s() {
+        let dir = std::env::temp_dir().join(format!("desearch-bot-ready-hubs-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = BucketStore::open(&dir, &crate::buckets::Resources::new(8 << 20, 8 << 20, 1)).unwrap();
+        store.allow(crate::allowed::Allowed::with_terms([("outlet.com", Terms { hubs: Some(3_600), ..Terms::default() }), ("plain.com", Terms::default())]));
+        let paths = ["", "world", "tag/sudan-war", "author/jane", "2026/10/31/story", "a-long-article-slug-about-things", "nfl/scoreboard"];
+        let urls = |domain: &str, picks: &[Pick]| -> Vec<String> {
+            let mut found: Vec<String> = picks.iter().map(|p| p.url.trim_start_matches(&format!("https://{domain}/")).to_string()).collect();
+            found.sort();
+            found
+        };
+        for domain in ["outlet.com", "plain.com"] {
+            let rows = paths.iter().map(|path| (crate::urls::parse(&format!("https://{domain}/{path}"), domain).unwrap(), 0, false)).collect();
+            store.record_listing(domain, 7, rows, 100).unwrap();
+        }
+        let (outlet, plain) = (store.take_ready("outlet.com", [0, 0, 20]).unwrap(), store.take_ready("plain.com", [0, 0, 20]).unwrap());
+        assert_eq!(urls("outlet.com", &outlet), ["", "2026/10/31/story", "a-long-article-slug-about-things", "nfl/scoreboard", "tag/sudan-war", "world"], "an author page is junk on any site");
+        assert_eq!(urls("plain.com", &plain).len(), 5, "a tag page is junk on a site without hubs");
+        let recrawl = Recrawl::default();
+        store.mark_sent(&outlet, 1_000, &recrawl).unwrap();
+        store.mark_sent(&plain, 1_000, &recrawl).unwrap();
+        assert_eq!(store.requeue_due(1_000 + 3_600, 100, &recrawl).unwrap(), Requeued { moved: 4, gone: 0 }, "the outlet's homepage, section, tag and scoreboard");
+        assert_eq!(urls("outlet.com", &store.take_ready("outlet.com", [0, 20, 0]).unwrap()), ["", "nfl/scoreboard", "tag/sudan-war", "world"]);
+        assert!(store.take_ready("plain.com", [0, 20, 0]).unwrap().is_empty());
+        assert_eq!(store.requeue_due(1_000 + recrawl.every, 100, &recrawl).unwrap(), Requeued { moved: 7, gone: 0 }, "the rest go again on the domain's interval");
+        drop(store);
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
