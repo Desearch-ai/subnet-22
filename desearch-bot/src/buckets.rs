@@ -18,7 +18,7 @@ use serde_json::{json, Map, Value};
 
 use crate::allowed::{Allowed, Terms};
 use crate::listed::{self, ListedSet};
-use crate::ready::SENT;
+use crate::ready::{self, Order, SENT};
 use crate::states::State;
 use crate::urls::{Listing, Record, Url, HTTPS, TIMED, WWW};
 use crate::visit::is_sitemap;
@@ -395,8 +395,12 @@ impl BucketStore {
                 handed.pages.entry(sub.clone()).or_default().push((Url { key, flags: url.flags & (HTTPS | WWW) }, *lastmod, *timed));
                 handed.prints.entry(sub).or_default().push(print);
             }
-            // A subdomain's page kept off this list while it stood apart, offered again as its hand-off never landed, goes under its parent once it does not.
-            let requeued = !hands && on != host.as_bytes() && held.is_some_and(|held| held.pushed_at == 0);
+            // A listed subdomain's page kept off this list while it stood apart, offered again as its hand-off never landed, goes under its parent once it does not.
+            let offered = !hands && on != host.strip_prefix("www.").unwrap_or(host).as_bytes() && std::str::from_utf8(on).is_ok_and(|sub| self.lists(sub));
+            let requeued = match held.filter(|held| offered && held.pushed_at == 0) {
+                Some(held) => self.db.get(ready::Entry { domain: host.to_string(), rest: rest.to_vec(), order: Order::Fresh { first_seen: held.first_seen, lastmod: held.lastmod } }.key())?.is_none(),
+                None => false,
+            };
             let record = match held {
                 None => {
                     listing.new += 1;

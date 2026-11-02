@@ -2742,3 +2742,18 @@ fn a_hand_off_that_does_not_land_is_offered_again_and_never_lost() {
     buckets.record_listing("example.com", 7, listing(), 300).unwrap();
     assert_eq!(buckets.store(news).ready_list(news, 10).unwrap().len(), 1, "a page that landed is not handed again");
 }
+
+#[test]
+fn only_a_listed_subdomains_page_kept_off_its_parents_list_is_queued_again() {
+    let dir = Dir::new("requeue-narrow");
+    let buckets = known(&dir, &["www.example.com", "example.com"]);
+    buckets.allow(&Allowed::of(["www.example.com", "example.com"]));
+    let ready = |host: &str| buckets.store(host).ready_list(host, 10).unwrap().len();
+    let page = |host: &str, url: &str, lastmod: u32| (urls::parse(url, host).unwrap(), lastmod, false);
+    buckets.record_listing("www.example.com", 7, vec![page("www.example.com", "https://www.example.com/a", 10)], 100).unwrap();
+    buckets.record_listing("www.example.com", 7, vec![page("www.example.com", "https://www.example.com/a", 20)], 200).unwrap();
+    assert_eq!(ready("www.example.com"), 1, "a domain listed with www. queues its own page once whatever its lastmod");
+    buckets.record_listing("example.com", 7, vec![page("example.com", "https://blog.example.com/b", 10)], 100).unwrap();
+    buckets.record_listing("example.com", 7, vec![page("example.com", "https://blog.example.com/b", 20)], 200).unwrap();
+    assert_eq!(ready("example.com"), 1, "a page on an unlisted subdomain is the parent's own, queued once");
+}
