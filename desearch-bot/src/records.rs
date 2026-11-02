@@ -144,18 +144,6 @@ pub fn written_domain(previous: &Json, write: &DomainWrite, url_count: i64) -> J
     let visit = &write.visit;
     let mut record = previous.clone();
     record.insert("due".into(), seconds(write.next_due_at));
-    if visit.links_only {
-        return record;
-    }
-    record.insert("recheck".into(), seconds(write.recheck_at));
-    record.insert("recheck_of".into(), seconds(Some(write.checked_at)));
-    record.insert("state".into(), write.state.as_str().into());
-    record.insert("reason".into(), write.reason.clone().into());
-    record.insert("failures".into(), write.failures.into());
-    record.insert("ok".into(), seconds(write.last_ok_at));
-    record.insert("checked".into(), seconds(Some(write.checked_at)));
-    record.insert("canonical".into(), write.canonical_host.clone().into());
-    record.insert("urls".into(), url_count.into());
     if visit.robots_read {
         record.insert("robots".into(), seconds(Some(write.checked_at)));
         record.insert("robots_status".into(), visit.robots_status.into());
@@ -168,6 +156,18 @@ pub fn written_domain(previous: &Json, write: &DomainWrite, url_count: i64) -> J
             record.insert("rules".into(), json!({"allow": paths.allow, "disallow": paths.disallow}));
         }
     }
+    if visit.links_only {
+        return record;
+    }
+    record.insert("recheck".into(), seconds(write.recheck_at));
+    record.insert("recheck_of".into(), seconds(Some(write.checked_at)));
+    record.insert("state".into(), write.state.as_str().into());
+    record.insert("reason".into(), write.reason.clone().into());
+    record.insert("failures".into(), write.failures.into());
+    record.insert("ok".into(), seconds(write.last_ok_at));
+    record.insert("checked".into(), seconds(Some(write.checked_at)));
+    record.insert("canonical".into(), write.canonical_host.clone().into());
+    record.insert("urls".into(), url_count.into());
     if let Some(language) = &visit.language {
         record.insert("lang".into(), language.clone().into());
     }

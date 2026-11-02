@@ -1979,6 +1979,40 @@ async fn a_site_without_sitemaps_whose_links_are_followed_comes_back_for_its_wee
     assert!((record["due"].as_i64().unwrap() - now) <= 7 * 86_400 && record["recheck"].as_i64().unwrap() > record["due"].as_i64().unwrap());
 }
 
+/// A listed site without sitemaps, its robots.txt and its homepage read eight days ago, its own recheck weeks away: a visit now comes for link work alone.
+fn waiting_for_links(buckets: &Arc<Buckets>, host: &str, now: i64) {
+    buckets.allow(&Allowed::of([host]));
+    let mut record = records::new_domain(Some(1), Some("new_generic"), &[], State::NoSitemap, Some("no_sitemap"), Some(0));
+    for (name, at) in [("robots", now - 8 * 86_400), ("checked", now - 8 * 86_400), ("ok", now - 8 * 86_400), ("recheck", now + 20 * 86_400), ("recheck_of", now - 8 * 86_400)] {
+        record.insert(name.into(), at.into());
+    }
+    record.insert("robots_status".into(), 200.into());
+    record.insert("allows".into(), true.into());
+    record.insert("listed".into(), true.into());
+    let home = format!("http://{host}/");
+    let mut changes = Changes::default();
+    changes.domain(host, &record);
+    changes.sitemap(host, &home, serde_json::json!({"id": sitemap_id(&home), "kind": "homepage", "depth": 0, "status": "ok", "urls": 3, "next": now + 86_400, "fetched": now - 8 * 86_400}).as_object().unwrap());
+    buckets.store(host).write(changes).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn link_work_alone_reads_robots_txt_again_after_a_day_and_runs_only_where_it_still_lets_us_in() {
+    for (case, status, body) in [("disallow", 200u16, &b"User-agent: *\nDisallow: /\n"[..]), ("refused", 403, &b"denied"[..])] {
+        let web: Shared = Arc::default();
+        let host: &'static str = format!("stale-robots-{case}.test").leak();
+        deep_site(&web, host);
+        web.lock().unwrap().add(host, "/robots.txt", status, None, body);
+        let now = chrono::Utc::now().timestamp();
+        let (buckets, _crawl) = crawl_following(web.clone(), &[host], &format!("stale-robots-{case}"), FollowLinks::Thin, Slots::new(2), |b| waiting_for_links(b, host, now)).await;
+        let hits: Vec<String> = web.lock().unwrap().hits.iter().map(|(_, path, _)| path.clone()).collect();
+        assert_eq!(hits, ["/robots.txt"], "{case}: robots.txt read a week ago is read again, and no page is asked");
+        let record = buckets.store(host).domain(host).unwrap().unwrap();
+        assert_eq!((record["robots_status"].as_u64(), record["allows"].as_bool()), (Some(status.into()), Some(case == "refused")), "{case}: kept for the next visit");
+        assert_eq!(record["state"].as_str(), Some("no_sitemap"), "{case}: the verdict waits for the recheck");
+    }
+}
+
 /// An active site read an hour ago, its robots.txt rules disallowing /site, with these sitemaps stored at these next times.
 fn active_with(buckets: &Arc<Buckets>, host: &str, now: i64, sitemaps: &[(&str, &str, i64, i64)]) {
     let mut record = records::new_domain(Some(1), Some("new_generic"), &[], State::Active, None, Some(0));

@@ -633,7 +633,7 @@ impl Run<'_> {
 
     /// When the next link run is due, for the site to be visited then, while its links are followed and nothing it answered bars them.
     fn note_links_next(&mut self) {
-        if self.links_every().is_none() || self.refused || self.refused_before() || self.robots_refused() {
+        if self.links_every().is_none() || self.refused || self.refused_before() || self.robots_refused() || self.result.robots_allows == Some(false) {
             return;
         }
         let url = links_url(&self.known.host);
@@ -1105,6 +1105,13 @@ impl Run<'_> {
             return Ok(());
         };
         let mut claims = vec![claim];
+        // Link work alone reads robots.txt again once a day has passed, and runs only where it still lets us in.
+        if self.result.links_only && self.known.robots_checked_at.is_none_or(|checked| self.now - checked >= ROBOTS_EVERY) {
+            slots.turn(&[ip]).await;
+            if self.robots().await?.is_none() || self.robots_refused() {
+                return Ok(());
+            }
+        }
         // A site not judged on its homepage yet, as one without sitemaps is not, must read as English first.
         if self.needs_language() && self.result.language.is_none() {
             if self.home_read.is_none() {
