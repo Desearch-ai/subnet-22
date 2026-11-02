@@ -2704,3 +2704,41 @@ fn the_backfill_takes_one_chunk_a_call_and_none_once_stopping() {
     assert_eq!(buckets.adopt_apart(&list, 1_000, &AtomicBool::new(false)).unwrap(), 1);
     assert!(held(subs[1]));
 }
+
+#[test]
+fn a_hand_off_that_does_not_land_is_offered_again_and_never_lost() {
+    let dir = Dir::new("apart-waiting");
+    let (news, blog) = ("news.example.com", "blog.example.com");
+    let buckets = known(&dir, &["example.com", news, blog]);
+    let list = Allowed::of(["example.com", news, blog]);
+    buckets.allow(&list);
+    let set = |sub: &str, state: State, home: Option<u16>| {
+        let mut record = records::new_domain(Some(10), Some("com"), &[], state, home.map(|_| "homepage_error"), None);
+        if let Some(home) = home {
+            record.insert("home_status".into(), home.into());
+        }
+        let mut changes = Changes::default();
+        changes.domain(sub, &record);
+        buckets.store(sub).write(changes).unwrap();
+        buckets.note_apart(&list);
+    };
+    set(news, State::New, Some(403));
+    set(blog, State::New, Some(403));
+    assert!(list.apart(news) && list.apart(blog), "both wait as new for a recheck their homepages refused");
+    let on = |sub: &str, name: &str| (urls::parse(&format!("https://{sub}/{name}"), "example.com").unwrap(), 20, false);
+    let listing = || vec![page("a", 10), on(news, "n1"), on(blog, "b1")];
+    let held = |sub: &str, name: &str| buckets.store(sub).url(&urls::parse(&format!("https://{sub}/{name}"), sub).unwrap()).unwrap();
+    buckets.record_listing("example.com", 7, listing(), 100).unwrap();
+    assert!(held(news, "n1").is_none() && held(blog, "b1").is_none(), "neither sends yet, so neither holds a page");
+
+    set(news, State::NoSitemap, None);
+    set(blog, State::Down, None);
+    assert!(list.apart(news) && !list.apart(blog));
+    buckets.record_listing("example.com", 7, listing(), 200).unwrap();
+    assert!(held(news, "n1").is_some(), "the same listing hands the page over once its subdomain sends");
+    assert_eq!(buckets.store(news).ready_list(news, 10).unwrap().len(), 1);
+    let parent: Vec<String> = take(buckets.store("example.com"), 10).iter().map(|p| p.url.clone()).collect();
+    assert!(parent.contains(&format!("https://{blog}/b1")), "one no longer apart leaves the page under its parent: {parent:?}");
+    buckets.record_listing("example.com", 7, listing(), 300).unwrap();
+    assert_eq!(buckets.store(news).ready_list(news, 10).unwrap().len(), 1, "a page that landed is not handed again");
+}

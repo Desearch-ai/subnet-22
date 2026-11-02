@@ -40,8 +40,13 @@ const DELETES_PER_WRITE: usize = 10_000;
 const ADOPT_EVERY: i64 = 86_400;
 const ADOPT_CHUNK: usize = 50_000;
 
-/// Pages a listing names on the hosts of subdomains kept apart, keyed as each subdomain's own, for their stores.
-pub type Handed = HashMap<String, Vec<(Url, u32, bool)>>;
+/// Pages a listing names on the hosts of subdomains kept apart, keyed as each subdomain's own, for their stores; the listing counts them as listed only once each lands.
+#[derive(Default)]
+pub struct Handed {
+    pub pages: HashMap<String, Vec<(Url, u32, bool)>>,
+    prints: HashMap<String, Vec<u64>>,
+    listed: Option<(Vec<u8>, Vec<u64>)>,
+}
 
 type Entry = (Box<[u8]>, Box<[u8]>);
 
@@ -104,6 +109,12 @@ pub fn bucket_of(host: &str) -> usize {
 fn sends(store: &BucketStore, name: &str) -> bool {
     let state = store.domain(name).ok().flatten().and_then(|record| record.get("state").and_then(Value::as_str).and_then(State::parse));
     matches!(state, Some(State::Active | State::Failing | State::NoSitemap))
+}
+
+/// Whether a domain's pages never go as it stands: blocked, excluded or ineligible.
+fn never_sends(store: &BucketStore, name: &str) -> bool {
+    let state = store.domain(name).ok().flatten().and_then(|record| record.get("state").and_then(Value::as_str).and_then(State::parse));
+    matches!(state, Some(State::Blocked | State::Excluded | State::Ineligible))
 }
 
 fn hex_encode(bytes: &[u8]) -> String {
@@ -333,10 +344,13 @@ impl BucketStore {
     }
 
     pub fn record_listing(&self, host: &str, sitemap_id: i64, entries: Vec<(Url, u32, bool)>, now: u32) -> Result<Listing> {
-        Ok(self.record_listing_handing(host, sitemap_id, entries, now)?.0)
+        let (listing, handed) = self.record_listing_handing(host, sitemap_id, entries, now)?;
+        let subs: Vec<String> = handed.pages.keys().cloned().collect();
+        self.handed_landed(&handed, &subs)?;
+        Ok(listing)
     }
 
-    /// As `record_listing`, also returning the new and changed pages it names for subdomains kept apart, which go to their own stores.
+    /// As `record_listing`, also returning the new and changed pages it names for subdomains kept apart, which go to their own stores; until `handed_landed` names a subdomain, its pages count as not listed, so the next listing hands them again.
     pub fn record_listing_handing(&self, host: &str, sitemap_id: i64, mut entries: Vec<(Url, u32, bool)>, now: u32) -> Result<(Listing, Handed)> {
         for entry in entries.iter_mut() {
             entry.0.key.insert(0, URL);
@@ -344,43 +358,45 @@ impl BucketStore {
         entries.sort_by(|a, b| a.0.key.cmp(&b.0.key));
         entries.dedup_by(|later, first| later.0.key == first.0.key);
         if entries.is_empty() {
-            return Ok((Listing::default(), Handed::new()));
+            return Ok((Listing::default(), Handed::default()));
         }
         let listed_key = listed_key(host, sitemap_id);
         let stored = self.db.get(&listed_key)?;
         let before = stored.as_deref().and_then(ListedSet::decode);
         let prints: Vec<u64> = entries.iter().map(|(url, lastmod, _)| listed::fingerprint(&url.key, *lastmod)).collect();
-        let changed: Vec<&(Url, u32, bool)> =
-            entries.iter().zip(&prints).filter(|(_, print)| !before.as_ref().is_some_and(|set| set.contains(**print))).map(|(entry, _)| entry).collect();
+        let changed: Vec<(&(Url, u32, bool), u64)> =
+            entries.iter().zip(&prints).filter(|(_, print)| !before.as_ref().is_some_and(|set| set.contains(**print))).map(|(entry, print)| (entry, *print)).collect();
         let mut batch = WriteBatch::default();
         let mut listing = Listing { listed: entries.len(), ..Listing::default() };
-        let after = ListedSet::encode(&prints);
-        if stored.as_deref() != Some(&after[..]) {
-            batch.put(&listed_key, after);
-        }
         if changed.is_empty() {
-            if !batch.is_empty() {
-                self.db.write(batch)?;
+            let after = ListedSet::encode(&prints);
+            if stored.as_deref() != Some(&after[..]) {
+                self.db.put(&listed_key, after)?;
             }
-            return Ok((listing, Handed::new()));
+            return Ok((listing, Handed::default()));
         }
-        let mut handed = Handed::new();
+        let mut handed = Handed::default();
         let guard = self.lock_ready();
         let cf = self.db.cf_handle("default").context("default column family")?;
-        let found = self.db.batched_multi_get_cf(cf, changed.iter().map(|e| &e.0.key), true);
+        let found = self.db.batched_multi_get_cf(cf, changed.iter().map(|e| &e.0 .0.key), true);
         let (mut fresh, mut moved) = (Vec::new(), Vec::new());
-        for ((url, lastmod, timed), raw) in changed.into_iter().zip(found) {
+        for (((url, lastmod, timed), print), raw) in changed.into_iter().zip(found) {
             let timed_flag = if *timed { TIMED } else { 0 };
             let raw = raw?;
             let held = raw.as_deref().and_then(Record::unpack);
             let rest = &url.key[2 + host.len()..];
+            let on = rest.split(|&b| b == b'/').next().unwrap_or_default();
+            let on = on.strip_prefix(b"www.").unwrap_or(on);
             // A page this domain sent under the same lastmod goes nowhere again.
-            if held.is_none_or(|held| held.pushed_at == 0 || (*lastmod != 0 && *lastmod != held.lastmod)) && self.listed_apart(host, rest) {
-                let on = rest.split(|&b| b == b'/').next().unwrap_or_default();
-                let sub = String::from_utf8_lossy(on.strip_prefix(b"www.").unwrap_or(on)).into_owned();
+            let hands = held.is_none_or(|held| held.pushed_at == 0 || (*lastmod != 0 && *lastmod != held.lastmod)) && self.listed_apart(host, rest);
+            if hands {
+                let sub = String::from_utf8_lossy(on).into_owned();
                 let key = [sub.as_bytes(), b"\0", rest].concat();
-                handed.entry(sub).or_default().push((Url { key, flags: url.flags & (HTTPS | WWW) }, *lastmod, *timed));
+                handed.pages.entry(sub.clone()).or_default().push((Url { key, flags: url.flags & (HTTPS | WWW) }, *lastmod, *timed));
+                handed.prints.entry(sub).or_default().push(print);
             }
+            // A subdomain's page kept off this list while it stood apart, offered again as its hand-off never landed, goes under its parent once it does not.
+            let requeued = !hands && on != host.as_bytes() && held.is_some_and(|held| held.pushed_at == 0);
             let record = match held {
                 None => {
                     listing.new += 1;
@@ -402,7 +418,19 @@ impl BucketStore {
                     record
                 }
             };
+            if requeued {
+                fresh.push((url.key.clone(), record));
+            }
             batch.put(&url.key, record.pack());
+        }
+        let waiting: HashSet<u64> = handed.prints.values().flatten().copied().collect();
+        let kept: Vec<u64> = prints.into_iter().filter(|print| !waiting.contains(print)).collect();
+        let after = ListedSet::encode(&kept);
+        if stored.as_deref() != Some(&after[..]) {
+            batch.put(&listed_key, after);
+        }
+        if !handed.pages.is_empty() {
+            handed.listed = Some((listed_key, kept));
         }
         let (ready, counts) = self.ready_from_listing(&mut batch, &fresh, &moved, listing.listed)?;
         listing.ready = ready;
@@ -410,6 +438,19 @@ impl BucketStore {
         drop(guard);
         self.notice(&counts);
         Ok((listing, handed))
+    }
+
+    /// Counts as listed the pages a listing handed to these subdomains, now that they hold them.
+    pub fn handed_landed(&self, handed: &Handed, landed: &[String]) -> Result<()> {
+        let Some((key, kept)) = &handed.listed else {
+            return Ok(());
+        };
+        let mut prints = kept.clone();
+        prints.extend(landed.iter().filter_map(|sub| handed.prints.get(sub)).flatten());
+        if prints.len() > kept.len() {
+            self.db.put(key, ListedSet::encode(&prints))?;
+        }
+        Ok(())
     }
 
     /// Deletes pages and sitemaps whose address kept its XML escapes, with what was sent of those pages, each saved to `backup` first; without a backup it only counts them.
@@ -684,17 +725,31 @@ impl Buckets {
         allowed.set_apart(apart);
     }
 
-    /// Store a listing in its domain's store, and the new and changed pages it names for subdomains kept apart in theirs, while those send; one that never sends gets none.
+    /// Store a listing in its domain's store, and the new and changed pages it names for subdomains kept apart in theirs, while those send; one that never sends gets none. A hand-off that does not land, as the subdomain waits for a recheck or its store failed, is tried again on the next listing.
     pub fn record_listing(&self, host: &str, sitemap_id: i64, entries: Vec<(Url, u32, bool)>, now: u32) -> Result<Listing> {
-        let (listing, handed) = self.store(host).record_listing_handing(host, sitemap_id, entries, now)?;
-        for (sub, pages) in handed {
-            if let Some(store) = self.store_for(&sub).filter(|store| sends(store, &sub)) {
+        let parent = self.store(host);
+        let (listing, mut handed) = parent.record_listing_handing(host, sitemap_id, entries, now)?;
+        let mut landed = Vec::new();
+        for (sub, pages) in std::mem::take(&mut handed.pages) {
+            let Some(store) = self.store_for(&sub) else {
+                continue;
+            };
+            if never_sends(store, &sub) {
+                landed.push(sub);
+            } else if sends(store, &sub) {
                 // The parent's listing is kept whatever its subdomains do with their share.
-                if let Err(error) = store.record_listing(&sub, sitemap_id, pages, now) {
-                    self.handoff_errors.fetch_add(1, Ordering::Relaxed);
-                    eprintln!("[rs] handing {host}'s pages to {sub} failed: {error:#}");
+                match store.record_listing(&sub, sitemap_id, pages, now) {
+                    Ok(_) => landed.push(sub),
+                    Err(error) => {
+                        self.handoff_errors.fetch_add(1, Ordering::Relaxed);
+                        eprintln!("[rs] handing {host}'s pages to {sub} failed: {error:#}");
+                    }
                 }
             }
+        }
+        if let Err(error) = parent.handed_landed(&handed, &landed) {
+            self.handoff_errors.fetch_add(1, Ordering::Relaxed);
+            eprintln!("[rs] noting {host}'s pages as handed failed: {error:#}");
         }
         Ok(listing)
     }
