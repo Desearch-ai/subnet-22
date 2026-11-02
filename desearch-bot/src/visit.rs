@@ -166,6 +166,8 @@ pub struct Known {
     pub canonical_host: Option<String>,
     /// The bare host had no DNS record when last read and its www host answered.
     pub www_only: bool,
+    /// The status a link run was refused with, which ends link work on the site.
+    pub links_refused: Option<u16>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -229,6 +231,8 @@ pub struct Visit {
     pub aside: i64,
     /// Why link work failed on our side; the verdict stands.
     pub links_error: Option<String>,
+    /// The status a link run was refused or limited with, kept on the domain so resends see it.
+    pub links_refused: Option<u16>,
     /// The visit came for link work alone and leaves the site's verdict as it was.
     pub links_only: bool,
     /// When the site's link work is due next, as the visit found it; None when it found nothing to say.
@@ -259,6 +263,7 @@ impl Visit {
             declared_lang: None,
             home_chars: None,
             home_status: None,
+            links_refused: None,
             sitemaps: Vec::new(),
             listed: 0,
             new: 0,
@@ -1059,6 +1064,9 @@ impl Run<'_> {
         if self.result.cut_short || self.refused || self.refused_before() || !self.home_known || self.robots_refused() || self.result.robots_allows == Some(false) {
             return None;
         }
+        if self.result.links_refused.or(self.known.links_refused).is_some() {
+            return None;
+        }
         self.links_every()
     }
 
@@ -1177,7 +1185,10 @@ impl Run<'_> {
             }
             if !self.homepage_passes().await? {
                 return match self.home_refused {
-                    Some(status) => self.links_listing(Vec::new(), 0, Some(status), every).await,
+                    Some(status) => {
+                        self.result.home_status = Some(status);
+                        self.links_listing(Vec::new(), 0, Some(status), every).await
+                    }
                     None => Ok(()),
                 };
             }
@@ -1260,6 +1271,9 @@ impl Run<'_> {
                 // A refusal, a rate limit or a busy server ends the run: the site asks for less.
                 401 | 402 | 403 | 429 | 503 => {
                     refused = Some(answer.status);
+                    if depth == 0 {
+                        self.result.home_status = Some(answer.status);
+                    }
                     break;
                 }
                 status if status >= 500 => {
@@ -1331,6 +1345,8 @@ impl Run<'_> {
 
     /// Keep a run's pages as the site's link listing, and set when the next run is due: soon while runs find new pages, later while they find none.
     async fn links_listing(&mut self, found: Vec<String>, read: usize, refused: Option<u16>, every: i64) -> Result<(), Crash> {
+        // A refusal ends link work on the site.
+        self.result.links_refused = refused;
         let url = links_url(&self.known.host);
         let known = self.known.clone();
         let stored = known.sitemaps.get(&url);

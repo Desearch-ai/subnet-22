@@ -323,11 +323,11 @@ impl OutcomeReader {
     }
 }
 
-/// Whether the site's robots.txt or homepage last refused us or limited our rate.
+/// Whether the site's robots.txt or homepage last refused us or limited our rate, or a link run was refused there.
 fn refuses(buckets: &Buckets, domain: &str) -> bool {
     let record = buckets.store(domain).domain(domain).ok().flatten();
     let refused = |field: &str| record.as_ref().and_then(|r| r.get(field)).and_then(Value::as_u64).is_some_and(|status| matches!(status, 401 | 402 | 403 | 429));
-    refused("robots_status") || refused("home_status")
+    refused("robots_status") || refused("home_status") || refused("links_status")
 }
 
 /// One store's part of an outcome file: pages to schedule, pages that came back, and each domain's yield.

@@ -91,6 +91,7 @@ pub fn known(host: &str, domain: &Json, sitemaps: &[(String, Json)]) -> Option<K
         sitemaps: sitemaps.iter().filter_map(|(url, record)| Some((url.clone(), known_sitemap(url, record)?))).collect(),
         canonical_host: text(domain.get("canonical")),
         www_only: domain.get("www").and_then(Value::as_bool).unwrap_or(false),
+        links_refused: int(domain.get("links_status")).and_then(|status| u16::try_from(status).ok()),
     })
 }
 
@@ -156,6 +157,12 @@ pub fn written_domain(previous: &Json, write: &DomainWrite, url_count: i64) -> J
             record.insert("rules".into(), json!({"allow": paths.allow, "disallow": paths.disallow}));
         }
     }
+    if let Some(status) = visit.links_refused {
+        record.insert("links_status".into(), status.into());
+    }
+    if let Some(status) = visit.home_status {
+        record.insert("home_status".into(), status.into());
+    }
     // Link work alone leaves the domain's standing and due time as they were.
     if visit.links_only {
         return record;
@@ -175,9 +182,6 @@ pub fn written_domain(previous: &Json, write: &DomainWrite, url_count: i64) -> J
     }
     if let Some(chars) = visit.home_chars {
         record.insert("chars".into(), chars.into());
-    }
-    if let Some(status) = visit.home_status {
-        record.insert("home_status".into(), status.into());
     }
     match visit.www_only {
         Some(true) => {

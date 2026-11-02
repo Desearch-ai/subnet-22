@@ -1919,13 +1919,13 @@ async fn a_sitemap_that_refused_us_last_visit_still_bars_link_work() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_link_run_its_homepage_refuses_waits_twice_as_long_before_the_next() {
+async fn a_homepage_that_refuses_a_link_run_ends_link_work_and_is_kept_where_resends_see_it() {
     let web: Shared = Arc::default();
     let host = "home-refuses-run.test";
     thin_active(&web, host, 200);
     web.lock().unwrap().add(host, "/", 403, None, b"denied");
     let now = chrono::Utc::now().timestamp();
-    let (buckets, _crawl) = crawl_following(web.clone(), &[host], "home-refuses-run", FollowLinks::Thin, Slots::new(2), |buckets| {
+    let (buckets, crawl) = crawl_following(web.clone(), &[host], "home-refuses-run", FollowLinks::Thin, Slots::new(2), |buckets| {
         buckets.allow(&Allowed::of([host]));
         let mut changes = Changes::default();
         changes.domain(host, &active_record(now));
@@ -1934,11 +1934,13 @@ async fn a_link_run_its_homepage_refuses_waits_twice_as_long_before_the_next() {
     .await;
     let links = buckets.store(host).sitemap(host, &format!("https://{host}/#links")).unwrap().unwrap();
     assert_eq!(links["error"].as_str(), Some("http_403"));
-    assert!(links["next"].as_i64().unwrap() - now >= 14 * 86_400 - 60, "a refused run comes back after twice its week: {links:?}");
+    let record = buckets.store(host).domain(host).unwrap().unwrap();
+    assert_eq!((record["home_status"].as_u64(), record["links_status"].as_u64()), (Some(403), Some(403)), "{record:?}");
+    assert!(record.get("links_due").is_none() && crawl.links_queued().0 == 0, "no more link work: {record:?}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_homepage_refusing_link_works_language_check_is_kept_as_a_refused_run() {
+async fn a_homepage_refusing_link_works_language_check_ends_link_work_and_is_kept_where_resends_see_it() {
     let web: Shared = Arc::default();
     let host = "gate-refuses.test";
     {
@@ -1948,12 +1950,12 @@ async fn a_homepage_refusing_link_works_language_check_is_kept_as_a_refused_run(
         w.add(host, "/list.xml", 200, None, urlset(host, &["/story/1".to_string(), "/story/2".to_string()]).as_bytes());
         w.add(host, "/", 403, None, b"denied");
     }
-    let now = chrono::Utc::now().timestamp();
-    let (buckets, _crawl) = crawl_following(web.clone(), &[host], "gate-refuses", FollowLinks::Thin, Slots::new(2), |buckets| buckets.allow(&Allowed::of([host]))).await;
+    let (buckets, crawl) = crawl_following(web.clone(), &[host], "gate-refuses", FollowLinks::Thin, Slots::new(2), |buckets| buckets.allow(&Allowed::of([host]))).await;
     let links = buckets.store(host).sitemap(host, &format!("https://{host}/#links")).unwrap();
-    let links = links.expect("the refusal is kept, so the next run waits for its retry");
-    assert_eq!(links["error"].as_str(), Some("http_403"));
-    assert!(links["next"].as_i64().unwrap() - now >= 14 * 86_400 - 60, "{links:?}");
+    assert_eq!(links.expect("the refused run is kept")["error"].as_str(), Some("http_403"));
+    let record = buckets.store(host).domain(host).unwrap().unwrap();
+    assert_eq!((record["home_status"].as_u64(), record["links_status"].as_u64()), (Some(403), Some(403)), "{record:?}");
+    assert!(record.get("links_due").is_none() && crawl.links_queued().0 == 0, "no more link work: {record:?}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -2135,18 +2137,20 @@ async fn link_work_alone_reads_robots_txt_again_after_a_day_and_runs_only_where_
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_link_run_refused_partway_keeps_what_it_read_and_waits_twice_as_long() {
+async fn a_link_run_refused_partway_keeps_what_it_read_and_ends_link_work_on_the_site() {
     let web: Shared = Arc::default();
     let host = "refused-partway.test";
     deep_site(&web, host);
     web.lock().unwrap().add(host, "/b", 403, None, b"denied");
-    let now = chrono::Utc::now().timestamp();
-    let (buckets, _crawl) = crawl_following(web.clone(), &[host], "refused-partway", FollowLinks::Thin, Slots::new(2), |b| b.allow(&Allowed::of([host]))).await;
+    let (buckets, crawl) = crawl_following(web.clone(), &[host], "refused-partway", FollowLinks::Thin, Slots::new(2), |b| b.allow(&Allowed::of([host]))).await;
     let hits: Vec<String> = web.lock().unwrap().hits.iter().map(|(_, path, _)| path.clone()).collect();
     assert!(!hits.iter().any(|path| path.starts_with("/a/")), "the run stops at the refusal: {hits:?}");
     let links = buckets.store(host).sitemap(host, &format!("https://{host}/#links")).unwrap().unwrap();
     assert_eq!(links["status"].as_str(), Some("ok"), "the pages read before it are kept");
-    assert!(links["next"].as_i64().unwrap() - now >= 14 * 86_400 - 60, "{links:?}");
+    let record = buckets.store(host).domain(host).unwrap().unwrap();
+    assert_eq!(record["links_status"].as_u64(), Some(403), "{record:?}");
+    assert_ne!(record.get("home_status").and_then(|s| s.as_u64()), Some(403), "the homepage answered");
+    assert!(record.get("links_due").is_none() && crawl.links_queued().0 == 0, "no more link work: {record:?}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

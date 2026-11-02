@@ -1998,6 +1998,31 @@ fn a_failed_resend_is_retried_as_any_failure_unless_the_site_refuses_us() {
 }
 
 #[test]
+fn a_failed_resend_of_a_site_that_refused_a_link_run_gets_no_retry() {
+    let dir = Dir::new("resend-links-refused");
+    let host = "example.net";
+    let buckets = known(&dir, &[host]);
+    let resent = Arc::new(ResentPages::default());
+    let mut reader = OutcomeReader::new(rules(), 1000).with_resent(resent.clone());
+    let store = buckets.store(host);
+    store.record_listing(host, 7, vec![(urls::parse(&format!("https://{host}/a"), host).unwrap(), LATE, false)], 100).unwrap();
+    let mut quotas = [0; LANES];
+    quotas[FRESH] = 10;
+    store.mark_sent(&store.take_ready(host, quotas).unwrap(), 1000, &rules()).unwrap();
+    store.resend_domain(host, Terms { resend_before: Some(2000), ..Terms::default() }, 3000, &mut |_| true, &mut |_| true).unwrap();
+    let (picks, _) = store.take_resend(host, 10, &Default::default()).unwrap();
+    resent.insert(host, &picks[0].entry.rest);
+    store.mark_sent(&picks, 3000, &rules()).unwrap();
+    let mut record = store.domain(host).unwrap().unwrap();
+    record.insert("links_status".into(), 403.into());
+    let mut changes = Changes::default();
+    changes.domain(host, &record);
+    store.write(changes).unwrap();
+    reader.apply(&buckets, &[outcome(&format!("https://{host}/a"), Outcome::Failed, 3100)], 3100).unwrap();
+    assert!(store.next_send(host, b"example.net/a").unwrap().is_none(), "a refusal a link run drew counts as the homepage's would");
+}
+
+#[test]
 fn a_big_cap_that_holds_every_page_streams_them_all() {
     let dir = Dir::new("join-big-cap");
     let store = open(&dir);
