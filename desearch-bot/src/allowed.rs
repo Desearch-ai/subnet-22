@@ -11,6 +11,9 @@ use serde_json::Value;
 
 use crate::isodate;
 
+/// The soonest an outlet's hubs go again, whatever its list entry says.
+pub const HUBS_LEAST: u32 = 3_600;
+
 /// What the list says about one domain.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Terms {
@@ -139,7 +142,7 @@ pub fn parse(raw: &[u8]) -> Result<HashMap<String, Terms>> {
             let date = |name: &str| entry.get(name).and_then(Value::as_str).and_then(isodate::fromisoformat).map(|micros| (micros / 1_000_000).clamp(0, i64::from(u32::MAX)) as u32);
             let news = entry.get("type").and_then(Value::as_str) == Some("news");
             let depth = number("depth").map(|depth| depth.min(u64::from(u8::MAX)) as u8);
-            let hubs = number("hubs").filter(|every| *every > 0).map(|every| every.min(u64::from(u32::MAX)) as u32);
+            let hubs = number("hubs").filter(|every| *every > 0).map(|every| every.clamp(u64::from(HUBS_LEAST), u64::from(u32::MAX)) as u32);
             Some((host.to_string(), Terms { weight, send_cap: number("send_cap"), hourly: number("hourly"), backlog: number("backlog"), since: date("since"), news, resend_before: date("resend_before"), depth, hubs }))
         })
         .collect())

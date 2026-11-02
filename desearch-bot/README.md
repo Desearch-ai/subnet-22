@@ -215,7 +215,8 @@ with a query, pages under another locale (`/de-de/`) and pages of other hosts st
 the date floor leaves pages out, and its cap counts only the pages its depth lets go. A deeper depth,
 or none, walks the domain again.
 
-**Hubs.** An established news outlet's `hubs` is how many seconds after a send its hub pages go again.
+**Hubs.** An established news outlet's `hubs` is how many seconds after a send its hub pages go again,
+an hour at least.
 Its homepage is read as a list of pages on every visit, no more often than that, and its tag and
 category pages are queued like any other. Its hubs are its homepage and its pages on its own host with
 no query and no date in the path that have a category, topic or tag level, or a level of up to four

@@ -1310,6 +1310,13 @@ fn a_domains_weight_multiplies_the_slots_its_rank_earns() {
 }
 
 #[test]
+fn an_outlet_s_hubs_go_again_no_sooner_than_hourly_whatever_its_list_entry_says() {
+    let outlets = allowed::parse(br#"[{"host": "a.com", "hubs": 1}, {"host": "b.com", "hubs": 60}, {"host": "c.com", "hubs": 0}, {"host": "d.com", "hubs": 7200}]"#).unwrap();
+    let hubs: Vec<Option<u32>> = ["a.com", "b.com", "c.com", "d.com"].iter().map(|host| outlets[*host].hubs).collect();
+    assert_eq!(hubs, [Some(3_600), Some(3_600), None, Some(7_200)]);
+}
+
+#[test]
 fn the_domain_list_takes_names_or_hosts_and_is_read_again_when_its_file_changes() {
     let names = allowed::parse(br#"["a.com", {"host": "b.org", "rank": 2}, 7, {"host": "c.net", "type": "news", "weight": 4, "send_cap": 1500}, {"host": "d.io", "weight": 9}]"#).unwrap();
     let mut hosts: Vec<&str> = names.keys().map(String::as_str).collect();
