@@ -120,6 +120,11 @@ impl Timetable {
         self.waiting.push(Reverse((when, lane, rank.unwrap_or(UNRANKED), host)));
     }
 
+    /// The lane a domain waits in, while it is scheduled.
+    pub fn lane(&self, host: &str) -> Option<Lane> {
+        self.due.get(host).map(|(_, lane)| *lane)
+    }
+
     /// Up to limit due domains of one lane, best ranked first; each leaves the timetable until set again.
     pub fn take(&mut self, lane: Lane, limit: usize, now: i64) -> Vec<Arc<str>> {
         self.promote(now);

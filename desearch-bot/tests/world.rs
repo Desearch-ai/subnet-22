@@ -149,6 +149,27 @@ impl Resolve for TestResolver {
     }
 }
 
+/// Answers as `TestResolver` does, after a wait.
+struct SlowResolver {
+    addr: SocketAddr,
+    known: HashSet<&'static str>,
+    wait: Duration,
+}
+
+impl Resolve for SlowResolver {
+    fn resolve(&self, name: Name) -> Resolving {
+        let found = self.known.contains(name.as_str()).then_some(self.addr);
+        let wait = self.wait;
+        Box::pin(async move {
+            tokio::time::sleep(wait).await;
+            match found {
+                Some(addr) => Ok(Box::new(std::iter::once(addr)) as Addrs),
+                None => Err(Box::new(ResolveError::from("no such host")) as Box<dyn std::error::Error + Send + Sync>),
+            }
+        })
+    }
+}
+
 /// Each host on an address of its own, for runs that must not share one.
 struct MapResolver(HashMap<&'static str, SocketAddr>);
 
@@ -2317,4 +2338,58 @@ async fn a_link_runs_redirect_to_another_host_is_fetched_only_once_that_hosts_ad
     let (buckets, _crawl) = crawl_adjusted(web.clone(), &[host], &[], "hop-free", FollowLinks::Thin, Slots::new(2), (0, 0), |b| b.allow(&Allowed::of([host])), on_own).await;
     assert!(moved(&web), "once the run holds the www host's address too, the hop is asked");
     assert!(buckets.store(host).url(&urls::parse(&format!("http://{www}/moved"), host).unwrap()).unwrap().is_some());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_visit_due_while_link_work_holds_the_site_still_comes_when_that_work_ends_unwritten() {
+    let web: Shared = Arc::default();
+    let host = "held.test";
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(serve(listener, web.clone()));
+    let root = std::env::temp_dir().join(format!("desearch-bot-held-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let buckets = Arc::new(Buckets::open(&root, &[bucket_of(host)], &Resources::new(8 << 20, 8 << 20, 1)).unwrap());
+    let now = chrono::Utc::now().timestamp();
+    waiting_for_links(&buckets, host, now);
+    let mut record = buckets.store(host).domain(host).unwrap().unwrap();
+    record.insert("due".into(), (now + 1).into());
+    let mut changes = Changes::default();
+    changes.domain(host, &record);
+    buckets.store(host).write(changes).unwrap();
+    let links = Slots::new(1);
+    let _held = links.try_take().unwrap();
+    let visitor = Visitor {
+        client: reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .dns_resolver(Arc::new(TestResolver { addr, known: [host].into() }))
+            .timeout(TEST_TIMEOUT)
+            .build()
+            .unwrap(),
+        buckets: buckets.clone(),
+        suffixes: Arc::new(PublicSuffixList::parse("test\n")),
+        signer: None,
+        language: Arc::new(|text: &str| Some(if text.contains("the") { "en" } else { "fr" }.to_string())),
+        floor: 0.0,
+        connect_timeout: Duration::from_secs(10),
+        cpu: Slots::new(4),
+        bodies: Slots::new(2),
+        pause: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        heavy: Slots::new(1),
+        links,
+        follow_links: FollowLinks::Thin,
+        // The link run looks up the site's address slowly, then finds no slot: it ends as a wait, writing nothing.
+        resolver: Some(Arc::new(SlowResolver { addr, known: [host].into(), wait: Duration::from_secs(3) })),
+        links_cpu: Slots::new(2),
+    };
+    let mut crawl = Loop::new(buckets.clone(), Arc::new(visitor), 16, Registry::offline(), HashSet::new());
+    crawl.load().unwrap();
+    let (stop, stopped) = tokio::sync::watch::channel(false);
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(7)).await;
+        stop.send(true).unwrap();
+    });
+    crawl.run(stopped).await.unwrap();
+    assert!(crawl.summary()["link_waits"].as_u64().unwrap() >= 1, "the link run waited for a slot");
+    assert_eq!(crawl.summary()["visited"], 1, "the visit turned away while the run held the site comes once it ends");
 }

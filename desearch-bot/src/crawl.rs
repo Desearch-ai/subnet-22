@@ -499,18 +499,33 @@ impl Loop {
         match done {
             // Waiting its turn costs no write: only the queue knows.
             Ok((_, LinkFinished::Done(write, _))) if write.visit.links_wait.is_some() && write.visit.sitemaps.is_empty() && !write.visit.robots_read => {
-                self.busy.remove(&host);
                 self.stats.link_waits += 1;
                 self.links.push(&host, write.visit.links_wait.unwrap_or_default() / SECOND);
+                self.release(&host);
             }
             Ok((_, LinkFinished::Done(write, known))) => self.pending.push((write, known)),
-            Ok((_, LinkFinished::Gone)) => {
-                self.busy.remove(&host);
-            }
+            Ok((_, LinkFinished::Gone)) => self.release(&host),
             Err(error) => {
                 eprintln!("[rs] link work on {host} failed: {error}");
-                self.busy.remove(&host);
+                self.release(&host);
             }
+        }
+    }
+
+    /// Frees a site link work held without writing it, back in the timetable by its record, as a visit due meanwhile was turned away.
+    fn release(&mut self, host: &str) {
+        self.busy.remove(host);
+        if let Ok(Some(record)) = self.buckets.store(host).domain(host) {
+            let backlog = self.backlog_of(host, &record);
+            self.schedule(host, &record, backlog);
+        }
+    }
+
+    /// Whether a site goes back in the backlog lane: where it waits now, or, taken off meanwhile, active and due already.
+    fn backlog_of(&self, host: &str, record: &Json) -> bool {
+        match self.timetable.lane(host) {
+            Some(lane) => lane == Lane::Backlog,
+            None => record.get("state").and_then(Value::as_str) == Some(State::Active.as_str()) && records::int(record.get("due")).is_some_and(|due| due <= now_micros() / SECOND),
         }
     }
 
