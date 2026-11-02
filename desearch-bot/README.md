@@ -100,8 +100,8 @@ A sitemap read again looks up only the entries it did not list the same way last
 fingerprint set kept per sitemap. A listed news site's root sitemap index and its Google News sitemaps
 are read again within 30 minutes.
 
-A sitemap value may sit in a CDATA section, and an index entry naming several sitemaps has each
-read. RSS and Atom feeds are read as sitemaps. Where robots.txt names no sitemap and no stored sitemap
+A sitemap value may sit in a CDATA section, a news date may sit under any prefix the file binds to
+the Google News namespace, and an index entry naming several sitemaps has each read. RSS and Atom feeds are read as sitemaps. Where robots.txt names no sitemap and no stored sitemap
 still answers, the bot tries `/sitemap.xml` and `/sitemap_index.xml`, then on a listed site `/feed`, `/rss.xml` and its homepage,
 where robots.txt answered, or where the homepage was last read when the visit skips robots.txt;
 an answer that is neither a sitemap nor a feed isn't kept. A homepage is read as a list of itself and

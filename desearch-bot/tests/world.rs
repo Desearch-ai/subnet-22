@@ -590,6 +590,7 @@ async fn an_index_entry_naming_several_sitemaps_reads_each_and_their_cdata_locat
     assert_eq!((record["state"].as_str(), record["urls"].as_i64()), (Some("active"), Some(15)), "every sitemap the entry names, and every page of the news sitemap");
     let stored = |path: &str| buckets.store(host).url(&urls::parse(&format!("http://{host}{path}"), host).unwrap()).unwrap();
     assert!(stored("/f1/story/_/id/12/title").is_some() && stored("/video/2").is_some() && stored("/where-to-watch").is_some());
+    assert_eq!(stored("/f1/story/_/id/12/title").unwrap().lastmod, 1_793_610_720, "dated by its news date under the file's own prefix");
     drop(crawl);
     std::fs::remove_dir_all(&root).ok();
 }

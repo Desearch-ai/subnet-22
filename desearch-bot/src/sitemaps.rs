@@ -7,6 +7,8 @@ use regex::bytes::Regex;
 
 static SITEMAP_INDEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i-u)<sitemapindex").unwrap());
 static NEWS_NAMESPACE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i-u)sitemap-news/0\.9").unwrap());
+static NEWS_PREFIX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"(?i-u)\bxmlns:([a-z_][a-z0-9_.-]*)\s*=\s*["']https?://www\.google\.com/schemas/sitemap-news/0\.9/?["']"#).unwrap());
 /// RSS 2.0, RSS 1.0 and Atom, which the sitemap protocol takes as sitemaps.
 static FEED_ROOT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i-u)<(rss|rdf:RDF|feed)\b").unwrap());
 static FEED_ITEM: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?is-u)<item\b[^>]*>(.*?)</item>|<entry\b[^>]*>(.*?)</entry>").unwrap());
@@ -34,6 +36,7 @@ pub fn parse_entries(body: &[u8]) -> (&'static str, Vec<Entry>) {
     let mut kind = None;
     // Once a closing tag is missing from some point on, no later opening tag can find one either.
     let mut unclosed = [false; 2];
+    let mut names = None;
     let mut at = 0;
     while let Some(found) = memchr(b'<', &body[at..]) {
         let start = at + found;
@@ -54,7 +57,8 @@ pub fn parse_entries(body: &[u8]) -> (&'static str, Vec<Entry>) {
             continue;
         };
         kind.get_or_insert(if which == 0 { "urlset" } else { "index" });
-        entries.extend(entry(&body[open_end..close], which == 1));
+        let names = names.get_or_insert_with(|| field_names(body));
+        entries.extend(entry(&body[open_end..close], which == 1, names));
         at = close + closing.len();
     }
     if let (Some(kind), false) = (kind, entries.is_empty()) {
@@ -69,19 +73,31 @@ pub fn parse_entries(body: &[u8]) -> (&'static str, Vec<Entry>) {
     (kind, locations)
 }
 
-/// Python's `<(loc|lastmod|changefreq|news:publication_date)>\s*([^<\s]*)\s*</`, first value of each kept; with `every`, each location is an entry with the dates.
-fn entry(inner: &[u8], every: bool) -> Vec<Entry> {
+/// The fields an entry is read for: `FIELDS`, then the news date under each other prefix the file binds to the news sitemap namespace.
+fn field_names(body: &[u8]) -> Vec<Vec<u8>> {
+    let mut names: Vec<Vec<u8>> = FIELDS.iter().map(|name| name.to_vec()).collect();
+    for bound in NEWS_PREFIX.captures_iter(&body[..body.len().min(4096)]) {
+        let name = [&bound[1], b":publication_date"].concat();
+        if !names.iter().any(|known| known.eq_ignore_ascii_case(&name)) {
+            names.push(name);
+        }
+    }
+    names
+}
+
+/// Python's `<(loc|lastmod|changefreq|news:publication_date)>\s*([^<\s]*)\s*</` over `names`, first value of each kept; with `every`, each location is an entry with the dates.
+fn entry(inner: &[u8], every: bool, names: &[Vec<u8>]) -> Vec<Entry> {
     let mut fields: [Option<&[u8]>; 4] = [None; 4];
     let mut locations = Vec::new();
     let mut at = 0;
     while let Some(found) = memchr(b'<', &inner[at..]) {
         let start = at + found;
         at = start + 1;
-        let Some(slot) = FIELDS.iter().position(|name| starts_with(inner, start + 1, name) && inner.get(start + 1 + name.len()) == Some(&b'>'))
-        else {
+        let Some(named) = names.iter().position(|name| starts_with(inner, start + 1, name) && inner.get(start + 1 + name.len()) == Some(&b'>')) else {
             continue;
         };
-        let (value, end) = value(inner, start + 2 + FIELDS[slot].len());
+        let slot = named.min(FIELDS.len() - 1);
+        let (value, end) = value(inner, start + 2 + names[named].len());
         if !starts_with(inner, end, b"</") {
             continue;
         }
@@ -277,17 +293,33 @@ mod tests {
 
     /// A CDATA section's text up to its first `]]>`, between whitespace, with no `<` or whitespace in it.
     const HELD: &str = r"<!\[CDATA\[\s*((?:[^\s<\]]|\][^\s<\]]|\]\]+[^\s<\]>])*\]*)\s*\]\]>";
-    static PATTERNS: LazyLock<[Regex; 3]> = LazyLock::new(|| {
-        [
-            Regex::new(r"(?is-u)<url\b(.*?)</url>|<sitemap\b(.*?)</sitemap>").unwrap(),
-            Regex::new(&format!(r"(?i-u)<(loc|lastmod|changefreq|news:publication_date)>\s*(?:{HELD}|([^<\s]*))\s*</")).unwrap(),
-            Regex::new(&format!(r"(?i-u)<loc>\s*(?:{HELD}|([^<\s]+))\s*</loc>")).unwrap(),
-        ]
+    static PATTERNS: LazyLock<[Regex; 2]> = LazyLock::new(|| {
+        [Regex::new(r"(?is-u)<url\b(.*?)</url>|<sitemap\b(.*?)</sitemap>").unwrap(), Regex::new(&format!(r"(?i-u)<loc>\s*(?:{HELD}|([^<\s]+))\s*</loc>")).unwrap()]
     });
+
+    thread_local! {
+        static FIELD_PATTERNS: std::cell::RefCell<std::collections::HashMap<Vec<Vec<u8>>, std::rc::Rc<Regex>>> = Default::default();
+    }
+
+    /// `<(loc|lastmod|changefreq|news:publication_date|…)>\s*([^<\s]*)\s*</` over the names given.
+    fn field_pattern(names: &[Vec<u8>]) -> std::rc::Rc<Regex> {
+        FIELD_PATTERNS.with(|cache| {
+            let mut cache = cache.borrow_mut();
+            if let Some(found) = cache.get(names) {
+                return found.clone();
+            }
+            let alternatives: Vec<String> = names.iter().map(|name| regex::escape(std::str::from_utf8(name).unwrap())).collect();
+            let pattern = std::rc::Rc::new(Regex::new(&format!(r"(?i-u)<({})>\s*(?:{HELD}|([^<\s]*))\s*</", alternatives.join("|"))).unwrap());
+            cache.insert(names.to_vec(), pattern.clone());
+            pattern
+        })
+    }
 
     /// Regular expressions kept as the definition the scanner must match.
     fn oracle(body: &[u8]) -> (&'static str, Vec<Entry>) {
-        let [entry, field, loc] = &*PATTERNS;
+        let [entry, loc] = &*PATTERNS;
+        let names = field_names(body);
+        let field = field_pattern(&names);
         let mut entries = Vec::new();
         let mut kind = None;
         for c in entry.captures_iter(body) {
@@ -297,7 +329,7 @@ mod tests {
             let mut locations = Vec::new();
             for f in field.captures_iter(inner) {
                 let value = f.get(2).or(f.get(3)).unwrap().as_bytes();
-                let slot = FIELDS.iter().position(|n| n.eq_ignore_ascii_case(f.get(1).unwrap().as_bytes())).unwrap();
+                let slot = names.iter().position(|n| n.eq_ignore_ascii_case(f.get(1).unwrap().as_bytes())).unwrap().min(FIELDS.len() - 1);
                 if !value.is_empty() {
                     fields[slot].get_or_insert(value);
                     if slot == 0 {
@@ -332,11 +364,12 @@ mod tests {
 
     #[test]
     fn scanner_reads_exactly_what_the_patterns_read() {
-        let pieces: [&[u8]; 35] = [
+        let pieces: [&[u8]; 38] = [
             b"<url>", b"</url>", b"<URL >", b"<urlset>", b"<url_x>", b"<sitemap>", b"</SITEMAP>", b"<sitemapindex>",
             b"<loc>", b"</loc>", b"<LOC>", b"<lastmod>", b"</lastmod>", b"<changefreq>", b"<news:publication_date>",
             b"</", b"<", b">", b" ", b"\n", b"\x0b", b"\t", b"http://a.com/x", b"2024-01-01", b"Daily", b"\xff\xfe", b"</ loc>",
             b"<locale>", b"x", b"<url/>", b"<![CDATA[", b"<![cdata[", b"]]>", b"]", b"]]",
+            b"<urlset xmlns:n=\"http://www.google.com/schemas/sitemap-news/0.9\">", b"<n:publication_date>", b"<N:Publication_Date>",
         ];
         let held: [&[u8]; 13] = [b"<url>", b"</url>", b"<sitemap>", b"</sitemap>", b"<loc>", b"</loc>", b"<![CDATA[", b"]]>", b"]", b">", b"<", b" ", b"x"];
         let mut rng = StdRng::seed_from_u64(7);
@@ -386,6 +419,20 @@ mod tests {
         ], "a section holding whitespace, or never closed, is no value");
         let (kind, entries) = parse_entries(b"<sitemapindex><loc><![CDATA[https://a.com/s.xml]]></loc></sitemapindex>");
         assert_eq!((kind, entries[0].url.as_str()), ("index", "https://a.com/s.xml"));
+    }
+
+    #[test]
+    fn reads_news_dates_under_any_prefix_bound_to_the_news_namespace() {
+        let body = b"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\" xmlns:n=\"http://www.google.com/schemas/sitemap-news/0.9\">\t<url>\n\
+            \t\t<loc><![CDATA[https://www.example.com/f1/story/_/id/1/title]]></loc>\n\t\t<n:news>\n\t\t\t<n:publication>\n\t\t\t\t<n:name>Example</n:name>\n\t\t\t</n:publication>\n\
+            \t\t\t<n:publication_date>2026-11-02T09:57:23Z</n:publication_date>\n\t\t</n:news>\n\t</url>\n\
+            \t<url><loc>https://www.example.com/2</loc><news:news><news:publication_date>2026-11-01</news:publication_date></news:news></url>\n\
+            \t<url><loc>https://www.example.com/3</loc><x:publication_date>2026-10-01</x:publication_date></url></urlset>";
+        let (_, entries) = parse_entries(body);
+        assert_eq!(entries.iter().map(|e| e.published.as_deref()).collect::<Vec<_>>(), [Some("2026-11-02T09:57:23Z"), Some("2026-11-01"), None], "a prefix bound elsewhere, or not at all, is no news date");
+        let both = b"<urlset xmlns:news='https://www.google.com/schemas/sitemap-news/0.9/' xmlns:g=\"http://www.google.com/schemas/sitemap-news/0.9\">\
+            <url><loc>https://a.com/1</loc><g:publication_date>2026-10-30</g:publication_date></url></urlset>";
+        assert_eq!(parse_entries(both).1[0].published.as_deref(), Some("2026-10-30"));
     }
 
     #[test]
