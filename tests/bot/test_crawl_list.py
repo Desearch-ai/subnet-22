@@ -747,14 +747,25 @@ def test_the_v1_set_is_read_from_its_file(tmp_path):
                         "why": ["docs"],
                     },
                     {"host": "c.com", "rule": "out"},
+                    {
+                        "host": "d.com",
+                        "rule": "landing",
+                        "depth": 3,
+                        "type": "company",
+                        "why": ["rank"],
+                    },
+                    {"host": "e.com", "rule": "news", "hubs": True, "type": "news"},
                 ],
             }
         )
     )
+    V1 = crawl_list.V1
     assert crawl_list.read_v1_set(str(path)) == {
-        "a.com": crawl_list.V1("news", "news", since="2020-01-01"),
-        "b.com": crawl_list.V1("whole", "docs"),
-        "c.com": crawl_list.V1("out"),
+        "a.com": V1("news", "news", since="2020-01-01", why=("news",)),
+        "b.com": V1("whole", "docs", why=("docs",)),
+        "c.com": V1("out"),
+        "d.com": V1("landing", "company", depth=3, why=("rank",)),
+        "e.com": V1("news", "news", hubs=True),
     }
     assert crawl_list.read_v1_set(None) is None
 
@@ -843,3 +854,78 @@ def test_only_a_server_error_or_a_known_network_failure_counts_as_failing():
         assert not crawl_list.failure(reason), reason
     linkedin = row(host="linkedin.com", state="new", state_reason="homepage_999")
     assert crawl_list.build([linkedin], {}, {}, Hand())[0] == []
+
+
+def test_established_outlets_carry_how_often_their_hubs_go_again():
+    V1 = crawl_list.V1
+    rows = [
+        row(host="top.com", rank=9_000),
+        row(host="local.com", rank=50_000),
+        row(host="floored.com", rank=5_000),
+        row(host="plain.com", rank=5_000),
+    ]
+    v1 = {
+        "top.com": V1("news", "news", hubs=True),
+        "local.com": V1("news", "news", hubs=True),
+        "floored.com": V1("news", "news", since="2025-11-01"),
+        "plain.com": V1("news", "news"),
+    }
+    listed, _ = v1_list(rows, v1)
+    assert (listed["top.com"]["hubs"], listed["local.com"]["hubs"]) == (3_600, 86_400)
+    assert "hubs" not in listed["floored.com"] and "hubs" not in listed["plain.com"]
+    assert listed["top.com"]["backlog"] == listed["plain.com"]["backlog"], (
+        "hubs change nothing else"
+    )
+
+
+def test_deeper_landing_sites_and_sites_whole_for_their_rank_send_more_shallowest_first():
+    V1 = crawl_list.V1
+    rows = [
+        row(host="corp.com", rank=5_000, site_type="company"),
+        row(host="small.com", rank=50_000, site_type="company"),
+        row(host="mag.com", rank=500, site_type="media"),
+        row(host="cited.com", rank=500, site_type="media"),
+    ]
+    v1 = {
+        "corp.com": V1("landing", "company", depth=3, why=("rank",)),
+        "small.com": V1("landing", "company", why=("rank",)),
+        "mag.com": V1("whole", "media", why=("rank",)),
+        "cited.com": V1("whole", "media", why=("simpleqa",)),
+    }
+    entries, _ = crawl_list.build(
+        rows,
+        {},
+        {},
+        Hand(),
+        v1=v1,
+        node2_min_weight=2,
+        resend_before="2026-10-27",
+        widened_before="2026-11-03",
+    )
+    listed = {e["host"]: e for e in entries}
+    assert listed["corp.com"] == {
+        "host": "corp.com",
+        "type": "company",
+        "weight": 3,
+        "hourly": 200,
+        "send_cap": 2_000,
+        "depth": 3,
+        "resend_before": "2026-11-03",
+    }
+    assert listed["mag.com"] == {
+        "host": "mag.com",
+        "type": "media",
+        "weight": 3,
+        "hourly": 2_000,
+        "send_cap": 20_000,
+        "depth": 5,
+        "resend_before": "2026-11-03",
+    }
+    assert listed["small.com"]["depth"] == 1, "a first-level site keeps its terms"
+    assert listed["small.com"]["resend_before"] == "2026-10-27"
+    assert (
+        listed["cited.com"]["send_cap"] == 15_000_000
+        and "depth" not in listed["cited.com"]
+    )
+    plain, _ = crawl_list.build(rows, {}, {}, Hand(), v1=v1, node2_min_weight=2)
+    assert not any("resend_before" in e for e in plain), "nothing goes again unasked"
