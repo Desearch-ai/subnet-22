@@ -40,6 +40,8 @@ struct Web {
     hits: Vec<(String, String, Option<String>)>,
     /// Served instead once the path was asked this many times.
     later: HashMap<(String, String), (usize, Page)>,
+    /// Asked for, and never answered.
+    silent: HashSet<(String, String)>,
 }
 
 impl Web {
@@ -92,13 +94,18 @@ async fn serve(listener: TcpListener, web: Shared) {
                     lines.filter_map(|l| l.split_once(':')).map(|(k, v)| (k.trim().to_ascii_lowercase(), v.trim().into())).collect();
                 let host = headers.get("host").map_or("", |h| h.split(':').next().unwrap_or("")).to_string();
                 let validator = headers.get("if-none-match").cloned();
-                let page = {
+                let (page, silent) = {
                     let mut web = web.lock().unwrap();
                     let asked = web.hits.iter().filter(|(h, p, _)| *h == host && p == path).count();
                     web.hits.push((host.clone(), path.to_string(), validator.clone()));
                     let key = (host, path.to_string());
-                    web.later.get(&key).filter(|(after, _)| asked >= *after).map(|(_, page)| page.clone()).or_else(|| web.pages.get(&key).cloned())
+                    let silent = web.silent.contains(&key);
+                    (web.later.get(&key).filter(|(after, _)| asked >= *after).map(|(_, page)| page.clone()).or_else(|| web.pages.get(&key).cloned()), silent)
                 };
+                if silent {
+                    tokio::time::sleep(Duration::from_secs(30)).await;
+                    return;
+                }
                 let page = page.unwrap_or(Page { status: 404, etag: None, body: b"not found".to_vec(), headers: Vec::new(), with_cookie: None });
                 let sent = headers.get("cookie").cloned().unwrap_or_default();
                 let page = match &page.with_cookie {
@@ -718,6 +725,9 @@ async fn crawl_following(web: Shared, hosts: &[&'static str], name: &str, follow
     crawl_adjusted(web, hosts, &[], name, follow_links, links, prepare, |_| {}).await
 }
 
+/// How long a test request may take before it fails.
+const TEST_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// As `crawl_following`, with more hosts that resolve, such as a site's www host.
 async fn crawl_resolving(web: Shared, hosts: &[&'static str], also: &[&'static str], name: &str, follow_links: FollowLinks, prepare: impl FnOnce(&Arc<Buckets>)) -> (Arc<Buckets>, Loop) {
     crawl_adjusted(web, hosts, also, name, follow_links, Slots::new(2), prepare, |_| {}).await
@@ -752,7 +762,7 @@ async fn crawl_adjusted(
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .dns_resolver(Arc::new(TestResolver { addr, known: hosts.iter().chain(also).copied().collect() }))
-        .timeout(Duration::from_secs(10))
+        .timeout(if name.starts_with("slow-") { Duration::from_millis(800) } else { TEST_TIMEOUT })
         .build()
         .unwrap();
     let mut visitor = Visitor {
@@ -1873,6 +1883,31 @@ async fn link_work_failing_on_our_side_waits_its_interval_before_running_again()
     let links = buckets.store(host).sitemap(host, &format!("https://{host}/#links")).unwrap().expect("the failed run is kept");
     assert_eq!(links["status"].as_str(), Some("error"));
     assert!(links["next"].as_i64().unwrap() - now >= 7 * 86_400 - 60, "{links:?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn pages_slow_to_answer_never_stop_link_runs_at_their_address() {
+    let slots = Slots::new(2);
+    let (slow, next): (&'static str, &'static str) = ("slow-pages.test", "next-door.test");
+    let web: Shared = Arc::default();
+    {
+        let mut w = web.lock().unwrap();
+        w.add(slow, "/robots.txt", 200, None, b"User-agent: *\nAllow: /\n");
+        let links: String = (1..=4).map(|i| format!("<a href=\"/s{i}\">{i}</a>")).collect();
+        w.add(slow, "/", 200, None, format!("<html lang=\"en\"><p>{ENGLISH}</p>{links}</html>").as_bytes());
+        for i in 1..=4 {
+            w.silent.insert((slow.into(), format!("/s{i}")));
+        }
+    }
+    deep_site(&web, next);
+    // Requests here give up after 800 ms, well past the 200 ms a connection may take.
+    let (_buckets, _crawl) = crawl_adjusted(web.clone(), &[slow], &[], "slow-pages", FollowLinks::Thin, slots.clone(), |b| b.allow(&Allowed::of([slow])), |visitor| {
+        visitor.connect_timeout = Duration::from_millis(200);
+    })
+    .await;
+    let (_buckets, _crawl) = crawl_following(web.clone(), &[next], "next-door", FollowLinks::Thin, slots.clone(), |b| b.allow(&Allowed::of([next]))).await;
+    let hits: Vec<String> = web.lock().unwrap().hits.iter().filter(|(host, _, _)| host == next).map(|(_, path, _)| path.clone()).collect();
+    assert!(hits.contains(&"/a".to_string()), "the address answered, if slowly, so its neighbour's run goes ahead: {hits:?}");
 }
 
 /// An active site read an hour ago, its robots.txt rules disallowing /site, with these sitemaps stored at these next times.

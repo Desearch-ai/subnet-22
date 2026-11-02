@@ -495,6 +495,7 @@ impl Visitor {
             site_peer: None,
             refused: false,
             home_refused: None,
+            connect_failed: false,
         };
         run.go().await?;
         Ok(run.result)
@@ -540,6 +541,8 @@ struct Run<'a> {
     refused: bool,
     /// How the homepage refused link work's language check.
     home_refused: Option<u16>,
+    /// The last request that failed never connected: refused, or timed out while connecting.
+    connect_failed: bool,
 }
 
 impl Run<'_> {
@@ -1039,8 +1042,8 @@ impl Run<'_> {
             slots.turn(&claims.iter().map(|claim| claim.ip).collect::<Vec<_>>()).await;
             let answer = match self.get(&page, MAX_HOMEPAGE_BYTES, None, None).await {
                 Ok(answer) => answer,
-                Err(error) => {
-                    slots.connected(ip, !refused_connection(&error));
+                Err(_) => {
+                    slots.connected(ip, !self.connect_failed);
                     unread.insert(page);
                     failing += 1;
                     continue;
@@ -1389,6 +1392,7 @@ impl Run<'_> {
     ) -> Result<Answer, String> {
         let mut url = url.to_string();
         let mut permit = None;
+        self.connect_failed = false;
         // Cookies a redirect sets go with the later hops of the same chain, as a browser sends them; some sign-in redirects loop without them.
         let mut cookies: Vec<Cookie> = Vec::new();
         for _ in 0..=MAX_REDIRECTS {
@@ -1421,7 +1425,10 @@ impl Run<'_> {
             }
             let started = Instant::now();
             let connecting = Some(self.visitor.connect_timeout);
-            let mut response = request.send().await.map_err(|e| net::failure(&e, started.elapsed(), connecting).to_string())?;
+            let mut response = request.send().await.map_err(|e| {
+                self.connect_failed = net::connect_failed(&e);
+                net::failure(&e, started.elapsed(), connecting).to_string()
+            })?;
             self.answered = true;
             let peer = response.remote_addr().map(|addr| addr.ip());
             if peer.is_some() && self.on_site(&url) {
@@ -1681,9 +1688,6 @@ fn fetchable(url: &str) -> bool {
 }
 
 /// Whether a failed request never got a connection: refused, or timed out connecting; a slow answer or a bad certificate did connect.
-fn refused_connection(error: &str) -> bool {
-    matches!(error, "ConnectionTimeoutError" | "ClientConnectorError")
-}
 
 /// Whether a homepage or link listing: read only while the site qualifies, not on a sitemap's schedule.
 pub fn is_listing(kind: Option<&str>) -> bool {
@@ -1833,16 +1837,6 @@ mod tests {
         assert_eq!(peers.map.len(), 2, "both recent");
         peers.prune(Instant::now() + PEER_REST + 3 * PEER_PRUNE_EVERY);
         assert!(peers.map.is_empty(), "the idle one and the one whose stop ran out");
-    }
-
-    #[test]
-    fn only_a_connection_that_never_opens_counts_against_an_address() {
-        for error in ["ConnectionTimeoutError", "ClientConnectorError"] {
-            assert!(refused_connection(error), "{error}");
-        }
-        for error in ["SocketTimeoutError", "TimeoutError", "ClientPayloadError", "ClientConnectorSSLError", "ClientConnectorCertificateError", "ClientConnectorDNSError", "ServerDisconnectedError"] {
-            assert!(!refused_connection(error), "{error}: a slow or broken answer from one site says nothing about its neighbours");
-        }
     }
 
     #[test]
