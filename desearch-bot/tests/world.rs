@@ -2393,3 +2393,27 @@ async fn a_visit_due_while_link_work_holds_the_site_still_comes_when_that_work_e
     assert!(crawl.summary()["link_waits"].as_u64().unwrap() >= 1, "the link run waited for a slot");
     assert_eq!(crawl.summary()["visited"], 1, "the visit turned away while the run held the site comes once it ends");
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn link_work_leaves_a_site_with_a_sitemap_backlog_in_the_backlog_lane() {
+    let web: Shared = Arc::default();
+    let host = "backlog-links.test";
+    let children: Vec<String> = (0..50).map(|i| format!("/child-{i:03}.xml")).collect();
+    {
+        let mut w = web.lock().unwrap();
+        for (i, child) in children.iter().enumerate() {
+            w.add(host, child, 200, None, urlset(host, &[format!("/page-{i}")]).as_bytes());
+        }
+    }
+    let now = chrono::Utc::now().timestamp();
+    let mut stored: Vec<(&str, &str, i64, i64)> = vec![("/index.xml", "index", 0, now + 86_400), ("/", "homepage", 0, now + 86_400)];
+    stored.extend(children.iter().map(|child| (child.as_str(), "urlset", 1, now - 86_400)));
+    let (_buckets, mut crawl) = crawl_prepared(web.clone(), &[host], "backlog-links", |buckets| {
+        buckets.allow(&Allowed::of([host]));
+        active_with(buckets, host, now, &stored);
+    })
+    .await;
+    assert!(crawl.summary()["link_runs"].as_u64().unwrap() + crawl.summary()["link_dropped"].as_u64().unwrap() >= 1, "{}", crawl.summary());
+    crawl.step().await.unwrap();
+    assert_eq!(crawl.summary()["lanes"]["backlog"], 1, "the visit after link work still reads the backlog in its lane: {}", crawl.summary());
+}

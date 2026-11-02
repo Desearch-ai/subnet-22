@@ -635,7 +635,9 @@ impl Loop {
         self.queue_links(&write, &mut record);
         changes.domain(&write.host, &record);
         store.write(changes)?;
-        self.schedule(&write.host, &record, write.backlog);
+        // Link work alone keeps the site in the lane it waits in.
+        let backlog = if write.visit.links_only { self.backlog_of(&write.host, &record) } else { write.backlog };
+        self.schedule(&write.host, &record, backlog);
         if !write.visit.links_only {
             self.unreported.push(Report::of(&write, urls));
         }
