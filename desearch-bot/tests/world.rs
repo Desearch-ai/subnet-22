@@ -651,6 +651,18 @@ async fn crawl_prepared(web: Shared, hosts: &[&'static str], name: &str, prepare
 }
 
 async fn crawl_following(web: Shared, hosts: &[&'static str], name: &str, follow_links: FollowLinks, links: Slots, prepare: impl FnOnce(&Arc<Buckets>)) -> (Arc<Buckets>, Loop) {
+    crawl_adjusted(web, hosts, name, follow_links, links, prepare, |_| {}).await
+}
+
+async fn crawl_adjusted(
+    web: Shared,
+    hosts: &[&'static str],
+    name: &str,
+    follow_links: FollowLinks,
+    links: Slots,
+    prepare: impl FnOnce(&Arc<Buckets>),
+    adjust: impl FnOnce(&mut Visitor),
+) -> (Arc<Buckets>, Loop) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(serve(listener, web));
@@ -672,7 +684,7 @@ async fn crawl_following(web: Shared, hosts: &[&'static str], name: &str, follow
         .timeout(Duration::from_secs(10))
         .build()
         .unwrap();
-    let visitor = Visitor {
+    let mut visitor = Visitor {
         client,
         buckets: buckets.clone(),
         suffixes: Arc::new(PublicSuffixList::parse("test\ngov.test\n")),
@@ -687,6 +699,7 @@ async fn crawl_following(web: Shared, hosts: &[&'static str], name: &str, follow
         links,
         follow_links,
     };
+    adjust(&mut visitor);
     let mut crawl = Loop::new(buckets.clone(), Arc::new(visitor), 16, Registry::offline(), HashSet::new());
     assert_eq!(crawl.load().unwrap(), hosts.len());
     assert_eq!(crawl.step().await.unwrap(), hosts.len());
@@ -1576,4 +1589,25 @@ async fn a_landing_site_whose_homepage_failed_last_time_is_still_guessed_at() {
     let record = buckets.store(host).domain(host).unwrap().unwrap();
     assert!(hits.contains(&"/sitemap.xml".to_string()), "a failed homepage read is no sitemap: {hits:?}");
     assert_ne!(record["reason"].as_str(), Some("no_sitemap"), "{record:?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn link_work_failing_on_our_side_keeps_the_verdict() {
+    let web: Shared = Arc::default();
+    let host = "links-crash.test";
+    deep_site(&web, host);
+    let (buckets, crawl) = crawl_adjusted(
+        web.clone(),
+        &[host],
+        "links-crash",
+        FollowLinks::Thin,
+        Slots::new(2),
+        |buckets| buckets.allow(&Allowed::of([host])),
+        // Only the link run's homepage check asks for the language of a site without sitemaps.
+        |visitor| visitor.language = Arc::new(|_: &str| panic!("language detection broke")),
+    )
+    .await;
+    let record = buckets.store(host).domain(host).unwrap().unwrap();
+    assert_eq!((record["state"].as_str(), record["reason"].as_str()), (Some("no_sitemap"), Some("sitemap_too_small")), "{record:?}");
+    assert_eq!(crawl.summary()["link_errors"], 1);
 }

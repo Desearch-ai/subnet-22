@@ -584,6 +584,8 @@ pub struct Buckets {
     root: PathBuf,
     cache: Cache,
     stores: Vec<Option<BucketStore>>,
+    /// Subdomain stores that failed to take the pages a listing handed them.
+    pub handoff_errors: AtomicU64,
 }
 
 /// Where RocksDB's memory goes, in bytes.
@@ -607,7 +609,7 @@ impl Buckets {
             let (bucket, store) = store?;
             stores[bucket] = Some(store);
         }
-        Ok(Buckets { root: root.to_path_buf(), cache: resources.cache.clone(), stores })
+        Ok(Buckets { root: root.to_path_buf(), cache: resources.cache.clone(), stores, handoff_errors: AtomicU64::new(0) })
     }
 
     pub fn memory(&self) -> Memory {
@@ -687,7 +689,11 @@ impl Buckets {
         let (listing, handed) = self.store(host).record_listing_handing(host, sitemap_id, entries, now)?;
         for (sub, pages) in handed {
             if let Some(store) = self.store_for(&sub).filter(|store| sends(store, &sub)) {
-                store.record_listing(&sub, sitemap_id, pages, now)?;
+                // The parent's listing is kept whatever its subdomains do with their share.
+                if let Err(error) = store.record_listing(&sub, sitemap_id, pages, now) {
+                    self.handoff_errors.fetch_add(1, Ordering::Relaxed);
+                    eprintln!("[rs] handing {host}'s pages to {sub} failed: {error:#}");
+                }
             }
         }
         Ok(listing)

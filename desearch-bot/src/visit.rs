@@ -222,6 +222,8 @@ pub struct Visit {
     pub links_wait: Option<i64>,
     /// Requests made for link work, which never count as the site answering.
     pub aside: i64,
+    /// Why link work failed on our side; the verdict stands.
+    pub links_error: Option<String>,
 }
 
 impl Visit {
@@ -252,6 +254,7 @@ impl Visit {
             on_list: None,
             links_wait: None,
             aside: 0,
+            links_error: None,
         }
     }
 }
@@ -550,7 +553,9 @@ impl Run<'_> {
         }
         if read && matches!(self.result.outcome, Outcome::Sitemap | Outcome::NoSitemap) {
             if let Some(every) = self.links_due() {
-                self.links(every).await?;
+                if let Err(Crash(error)) = self.links(every).await {
+                    self.result.links_error = Some(error);
+                }
             }
         }
         Ok(())

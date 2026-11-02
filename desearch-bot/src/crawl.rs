@@ -178,6 +178,7 @@ pub struct Stats {
     pub outcomes: BTreeMap<String, u64>,
     /// Visits finished in each lane.
     pub lanes: [u64; 3],
+    pub link_errors: u64,
 }
 
 /// Keeps many visits in flight across the buckets one process owns.
@@ -459,6 +460,10 @@ impl Loop {
         self.stats.listed += write.visit.listed;
         let outcome = format!("{} {}", write.state.as_str(), write.reason.as_deref().unwrap_or("-"));
         *self.stats.outcomes.entry(outcome).or_default() += 1;
+        if let Some(error) = &write.visit.links_error {
+            self.stats.link_errors += 1;
+            eprintln!("[rs] link work on {} failed, its verdict kept: {error}", write.host);
+        }
         let store = self.buckets.store(&write.host);
         let Some(current) = store.domain(&write.host)? else {
             return Ok(());
@@ -656,6 +661,8 @@ impl Loop {
             "listed_urls": self.stats.listed,
             "outcomes": self.stats.outcomes,
             "lanes": Lane::ALL.iter().map(|&lane| (lane.as_str(), self.stats.lanes[lane.index()])).collect::<BTreeMap<_, _>>(),
+            "link_errors": self.stats.link_errors,
+            "handoff_errors": self.buckets.handoff_errors.load(std::sync::atomic::Ordering::Relaxed),
         })
     }
 }
