@@ -128,6 +128,7 @@ fn known_sitemap(url: &str, record: &Json) -> Option<KnownSitemap> {
             Some("error") => text(record.get("error")).is_none_or(|error| !error.starts_with("http_") && error != "invalid"),
             _ => false,
         },
+        refused: record.get("status").and_then(Value::as_str) == Some("error") && text(record.get("error")).is_some_and(|error| matches!(error.as_str(), "http_401" | "http_402" | "http_403" | "http_429")),
         suspect_at: moment(record.get("suspect")),
         sketch: record.get("sketch").and_then(Value::as_str).map(churn::decode).unwrap_or_default(),
         generated_until: moment(record.get("generated")),

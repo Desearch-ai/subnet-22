@@ -1734,6 +1734,87 @@ async fn a_link_run_takes_no_page_a_sitemap_lists_off_the_ready_list() {
     assert!(ready.contains(&format!("{host}/gone")), "the sitemap lists it, so a 404 to a link run leaves it queued: {ready:?}");
 }
 
+/// An active thin site, its language known, whose robots.txt names one sitemap of a dozen pages.
+fn thin_active(web: &Shared, host: &str, list: u16) {
+    let mut w = web.lock().unwrap();
+    w.add(host, "/robots.txt", 200, None, format!("User-agent: *\nSitemap: http://{host}/list.xml\n").as_bytes());
+    if list == 200 {
+        w.add(host, "/list.xml", 200, None, urlset(host, &(0..12).map(|i| format!("/story/{i}")).collect::<Vec<_>>()).as_bytes());
+    } else {
+        w.add(host, "/list.xml", list, None, b"denied");
+    }
+}
+
+fn active_record(now: i64) -> serde_json::Map<String, serde_json::Value> {
+    let mut record = records::new_domain(Some(1), Some("new_generic"), &[], State::Active, None, Some(0));
+    for (name, at) in [("robots", now - 2 * 86_400), ("checked", now - 86_400), ("ok", now - 86_400)] {
+        record.insert(name.into(), at.into());
+    }
+    record.insert("lang".into(), "en".into());
+    record
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_sitemap_that_refused_us_last_visit_still_bars_link_work() {
+    let mut hits_by = Vec::new();
+    for mode in [FollowLinks::Off, FollowLinks::Thin] {
+        let host: &'static str = format!("refused-before-{mode:?}.test").to_lowercase().leak();
+        let web: Shared = Arc::default();
+        deep_site(&web, host);
+        thin_active(&web, host, 403);
+        let now = chrono::Utc::now().timestamp();
+        let (_buckets, _crawl) = crawl_following(web.clone(), &[host], &format!("refused-before-{mode:?}"), mode, Slots::new(2), |buckets| {
+            buckets.allow(&Allowed::of([host]));
+            let list = format!("http://{host}/list.xml");
+            let mut changes = Changes::default();
+            changes.domain(host, &active_record(now));
+            changes.sitemap(host, &list, serde_json::json!({"id": sitemap_id(&list), "kind": "urlset", "depth": 0, "status": "error", "error": "http_403", "urls": 0, "next": now + 2 * 86_400}).as_object().unwrap());
+            buckets.store(host).write(changes).unwrap();
+        })
+        .await;
+        hits_by.push(web.lock().unwrap().hits.iter().map(|(_, path, _)| path.clone()).collect::<Vec<_>>());
+    }
+    assert_eq!(hits_by[0], ["/robots.txt"]);
+    assert_eq!(hits_by[0], hits_by[1], "a site that refused its sitemap gets no more requests with links followed");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_link_run_its_homepage_refuses_waits_twice_as_long_before_the_next() {
+    let web: Shared = Arc::default();
+    let host = "home-refuses-run.test";
+    thin_active(&web, host, 200);
+    web.lock().unwrap().add(host, "/", 403, None, b"denied");
+    let now = chrono::Utc::now().timestamp();
+    let (buckets, _crawl) = crawl_following(web.clone(), &[host], "home-refuses-run", FollowLinks::Thin, Slots::new(2), |buckets| {
+        buckets.allow(&Allowed::of([host]));
+        let mut changes = Changes::default();
+        changes.domain(host, &active_record(now));
+        buckets.store(host).write(changes).unwrap();
+    })
+    .await;
+    let links = buckets.store(host).sitemap(host, &format!("https://{host}/#links")).unwrap().unwrap();
+    assert_eq!(links["error"].as_str(), Some("http_403"));
+    assert!(links["next"].as_i64().unwrap() - now >= 14 * 86_400 - 60, "a refused run comes back after twice its week: {links:?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_homepage_refusing_link_works_language_check_is_kept_as_a_refused_run() {
+    let web: Shared = Arc::default();
+    let host = "gate-refuses.test";
+    deep_site(&web, host);
+    {
+        let mut w = web.lock().unwrap();
+        let denied = Page { status: 403, etag: None, body: b"denied".to_vec(), headers: Vec::new(), with_cookie: None };
+        w.later.insert((host.into(), "/".into()), (1, denied));
+    }
+    let now = chrono::Utc::now().timestamp();
+    let (buckets, _crawl) = crawl_following(web.clone(), &[host], "gate-refuses", FollowLinks::Thin, Slots::new(2), |buckets| buckets.allow(&Allowed::of([host]))).await;
+    let links = buckets.store(host).sitemap(host, &format!("https://{host}/#links")).unwrap();
+    let links = links.expect("the refusal is kept, so the next run waits for its retry");
+    assert_eq!(links["error"].as_str(), Some("http_403"));
+    assert!(links["next"].as_i64().unwrap() - now >= 14 * 86_400 - 60, "{links:?}");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_robots_txt_that_refuses_us_stops_all_guessing_while_a_rate_limit_stops_none_on_a_first_visit() {
     let mut seen = Vec::new();

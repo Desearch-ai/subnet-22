@@ -136,6 +136,8 @@ pub struct KnownSitemap {
     pub ok: bool,
     /// It answered 404 or 410 last time, or never answered at all; a refusal, a rate limit or a server error is an answer.
     pub dead: bool,
+    /// It answered 401, 402, 403 or 429 last time.
+    pub refused: bool,
     pub suspect_at: Option<i64>,
     pub sketch: Vec<u64>,
     pub generated_until: Option<i64>,
@@ -492,6 +494,7 @@ impl Visitor {
             home_known: false,
             site_peer: None,
             refused: false,
+            home_refused: None,
         };
         run.go().await?;
         Ok(run.result)
@@ -535,6 +538,8 @@ struct Run<'a> {
     site_peer: Option<IpAddr>,
     /// A sitemap, guess or homepage read on this visit was refused or rate limited.
     refused: bool,
+    /// How the homepage refused link work's language check.
+    home_refused: Option<u16>,
 }
 
 impl Run<'_> {
@@ -614,6 +619,12 @@ impl Run<'_> {
             roots.push(self.home.clone());
         }
         Ok(roots)
+    }
+
+    /// Whether a stored sitemap or homepage refused us or asked us to slow down when last read, and this visit read it no better; a refused link run waits for its own retry.
+    fn refused_before(&self) -> bool {
+        let read: HashSet<&str> = self.result.sitemaps.iter().filter(|u| u.status == "ok").map(|u| u.url.as_str()).collect();
+        self.known.sitemaps.values().any(|s| s.refused && s.kind.as_deref() != Some(LINKS_KIND) && !read.contains(s.url.as_str()))
     }
 
     /// Whether robots.txt, as read on this visit or last, refused us or asked us to slow down.
@@ -924,7 +935,7 @@ impl Run<'_> {
     /// When this visit follows the site's links, how often runs come: once its last run is due, unless the disk runs low or the site is failing.
     fn links_due(&self) -> Option<i64> {
         // A site whose robots.txt or sitemaps refuse us or ask us to slow down gets no link work.
-        if self.result.cut_short || self.refused || !self.home_known || self.robots_refused() || self.visitor.pause.load(Ordering::Relaxed) {
+        if self.result.cut_short || self.refused || self.refused_before() || !self.home_known || self.robots_refused() || self.visitor.pause.load(Ordering::Relaxed) {
             return None;
         }
         let every = self.links_every()?;
@@ -950,6 +961,7 @@ impl Run<'_> {
             return Ok(false);
         }
         if answer.status != 200 {
+            self.home_refused = matches!(answer.status, 401 | 402 | 403 | 429).then_some(answer.status);
             return Ok(false);
         }
         let (body, detect) = (answer.body, self.visitor.language.clone());
@@ -975,7 +987,10 @@ impl Run<'_> {
         if self.needs_language() && self.result.language.is_none() {
             slots.turn(&[ip]).await;
             if !self.homepage_passes().await? {
-                return Ok(());
+                return match self.home_refused {
+                    Some(status) => self.links_listing(Vec::new(), 0, Some(status), every).await,
+                    None => Ok(()),
+                };
             }
         }
         let Ok(normaliser) = Normaliser::new(self.bare_host()) else {
@@ -1111,10 +1126,12 @@ impl Run<'_> {
         let update = &mut self.result.sitemaps[i];
         update.kind = Some(LINKS_KIND.into());
         if read == 0 {
+            // A refusal waits twice as long each time, as a run finding nothing new does.
+            let wait = if refused.is_some() { later } else { interval };
             update.status = "error";
             update.error = Some(refused.map_or_else(|| "unread".into(), |status| format!("http_{status}")));
-            update.interval = interval;
-            update.next_check_at = Some(self.now + interval);
+            update.interval = wait;
+            update.next_check_at = Some(self.now + wait);
             return Ok(());
         }
         // A run reads the site's own pages, not a file it is handed, and comes once an interval: no churn check holds it back.
