@@ -498,7 +498,9 @@ impl Visitor {
     /// Visit one domain and report everything the visit learned.
     pub async fn visit(&self, known: Arc<Known>, now: i64) -> Result<Visit, Crash> {
         let mut run = self.run(known, now);
-        run.go().await?;
+        let done = run.go().await;
+        run.keep_clock();
+        done?;
         Ok(run.result)
     }
 
@@ -507,6 +509,7 @@ impl Visitor {
         let mut run = self.run(known, now);
         run.result.links_only = true;
         run.link_work().await;
+        run.keep_clock();
         run.result
     }
 
@@ -514,9 +517,11 @@ impl Visitor {
         let www_only = known.www_only;
         let home = format!("https://{}{}/", if www_only { "www." } else { "" }, known.host);
         let listed = self.buckets.lists(&known.host);
+        let mut pacer = Pacer::new(known.crawl_delay, self.floor);
+        pacer.next = self.buckets.store_for(&known.host).and_then(|store| store.next_ask(&known.host));
         Run {
             visitor: self,
-            pacer: Pacer::new(known.crawl_delay, self.floor),
+            pacer,
             result: Visit {
                 robots_allows: known.robots_allows,
                 robots_paths: known.robots_paths.clone(),
@@ -1566,6 +1571,13 @@ impl Run<'_> {
         self.result.canonical_host = Some(target);
         self.stop(Outcome::Redirect, Some("redirect".into()));
         true
+    }
+
+    /// Leaves the host's clock for the next run on it, which may follow at once.
+    fn keep_clock(&self) {
+        if let (Some(next), Some(store)) = (self.pacer.next, self.visitor.buckets.store_for(&self.known.host)) {
+            store.asked(&self.known.host, next);
+        }
     }
 
     /// Holds and spaces the addresses of a link run's redirect to another host before it is asked; false drops the hop.

@@ -123,7 +123,8 @@ as often down to every 60 days; with `--follow-links all`, every whole or news s
 3 or more gets a run monthly. A run that finds every slot taken, or another run on the address its
 site answers from, waits a random time up to its interval. Runs on one address, whichever sites
 share it, keep their fetches a second apart, and three failed connections to it in a row stop runs
-there for a day.
+there for a day. A visit or link run that comes right after another on the same site waits out the site's
+crawl delay from the last one's last request.
 
 A listed subdomain with a registry record of its own is crawled on its own host, under its own
 robots.txt. Its pages go under it while that record is active, failing or without sitemaps, and not

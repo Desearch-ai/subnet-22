@@ -231,9 +231,28 @@ pub struct BucketStore {
     pub floor_dropped: AtomicU64,
     /// Each outlet's hub pages given its hubs interval since the window that began at the time kept, and how many.
     pub(crate) hub_refreshed: Mutex<HashMap<String, (u32, u32)>>,
+    /// When each host may be asked again, as the last run on it left its clock, so a run right after another keeps its crawl delay.
+    next_ask: Mutex<HashMap<String, tokio::time::Instant>>,
 }
 
+/// Hosts' request clocks kept before those already past their time are dropped.
+const NEXT_ASK_KEPT: usize = 100_000;
+
 impl BucketStore {
+    /// When a run on the host may send its first request, as the last run on it left its clock.
+    pub(crate) fn next_ask(&self, host: &str) -> Option<tokio::time::Instant> {
+        self.next_ask.lock().unwrap_or_else(|e| e.into_inner()).get(host).copied()
+    }
+
+    pub(crate) fn asked(&self, host: &str, next: tokio::time::Instant) {
+        let mut kept = self.next_ask.lock().unwrap_or_else(|e| e.into_inner());
+        if kept.len() >= NEXT_ASK_KEPT {
+            let now = tokio::time::Instant::now();
+            kept.retain(|_, at| *at > now);
+        }
+        kept.insert(host.to_string(), next);
+    }
+
     pub fn open(path: &Path, resources: &Resources) -> Result<Self> {
         let options = resources.options();
         // Compression, filters, cache and memtable sizes are column family options; the default family must get them too.
@@ -247,6 +266,7 @@ impl BucketStore {
             allowed: OnceLock::new(),
             capped: Mutex::new(HashSet::new()),
             hub_refreshed: Mutex::new(HashMap::new()),
+            next_ask: Mutex::new(HashMap::new()),
             floor_dropped: AtomicU64::new(0),
         })
     }

@@ -38,6 +38,8 @@ struct Page {
 struct Web {
     pages: HashMap<(String, String), Page>,
     hits: Vec<(String, String, Option<String>)>,
+    /// When each request came, hits and the TLS handshakes hung up on alike.
+    hit_at: Vec<std::time::Instant>,
     /// Served instead once the path was asked this many times.
     later: HashMap<(String, String), (usize, Page)>,
     /// Asked for, and never answered.
@@ -76,6 +78,7 @@ async fn serve(listener: TcpListener, web: Shared) {
                         break end;
                     }
                     if buffer.len() >= 4 && !buffer.starts_with(b"GET ") {
+                        web.lock().unwrap().hit_at.push(std::time::Instant::now());
                         return;
                     }
                     let mut chunk = [0u8; 4096];
@@ -98,6 +101,7 @@ async fn serve(listener: TcpListener, web: Shared) {
                     let mut web = web.lock().unwrap();
                     let asked = web.hits.iter().filter(|(h, p, _)| *h == host && p == path).count();
                     web.hits.push((host.clone(), path.to_string(), validator.clone()));
+                    web.hit_at.push(std::time::Instant::now());
                     let key = (host, path.to_string());
                     let silent = web.silent.contains(&key);
                     (web.later.get(&key).filter(|(after, _)| asked >= *after).map(|(_, page)| page.clone()).or_else(|| web.pages.get(&key).cloned()), silent)
@@ -2496,4 +2500,32 @@ async fn failed_connections_count_against_the_address_they_were_made_to() {
     }, on_own)
     .await;
     assert!(buckets.store(next).sitemap(next, &format!("https://{next}/#links")).unwrap().is_some(), "the address that answered is not stopped for the one that did not");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn link_work_right_after_a_visit_keeps_the_sites_crawl_delay() {
+    let web: Shared = Arc::default();
+    let host = "delayed.test";
+    {
+        let mut w = web.lock().unwrap();
+        w.add(host, "/robots.txt", 200, None, format!("User-agent: *\nCrawl-delay: 3\nSitemap: http://{host}/list.xml\n").as_bytes());
+        w.add(host, "/list.xml", 200, None, urlset(host, &(0..12).map(|i| format!("/story/{i}")).collect::<Vec<_>>()).as_bytes());
+        w.add(host, "/", 200, None, format!("<html lang=\"en\"><p>{ENGLISH}</p><a href=\"/a\">a</a></html>").as_bytes());
+        w.add(host, "/a", 200, None, format!("<html lang=\"en\"><p>{ENGLISH}</p></html>").as_bytes());
+    }
+    let now = chrono::Utc::now().timestamp();
+    let (buckets, _crawl) = crawl_prepared(web.clone(), &[host], "delayed", |b| {
+        b.allow(&Allowed::of([host]));
+        let url = format!("https://{host}/#links");
+        let mut changes = Changes::default();
+        changes.sitemap(host, &url, serde_json::json!({"id": sitemap_id(&url), "kind": "links", "depth": 0, "status": "ok", "urls": 3, "next": now - 60, "interval": 7 * 86_400}).as_object().unwrap());
+        b.store(host).write(changes).unwrap();
+    })
+    .await;
+    let listing = buckets.store(host).sitemap(host, &format!("https://{host}/#links")).unwrap().unwrap();
+    assert!(listing["next"].as_i64().unwrap() > now + 86_400, "the visit's overdue link work ran right after it: {listing:?}");
+    let at = web.lock().unwrap().hit_at.clone();
+    let gaps: Vec<f64> = at.windows(2).map(|pair| (pair[1] - pair[0]).as_secs_f64()).collect();
+    // The first visit tries https, then http, before robots.txt has said how long to wait.
+    assert!(gaps[1..].iter().all(|gap| *gap >= 2.9), "every later request three seconds after the last, the visit's and its link work's alike: {gaps:?}");
 }
