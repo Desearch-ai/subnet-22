@@ -1531,6 +1531,23 @@ impl BucketStore {
         Ok(())
     }
 
+    /// Pages whose send came back published: a failure count they carry starts over, so they go back to refreshes and resend waves.
+    pub fn note_recovered(&self, pages: &[(String, Vec<u8>)]) -> Result<()> {
+        if pages.is_empty() {
+            return Ok(());
+        }
+        let _guard = self.lock_ready();
+        let sents = self.sents(pages.iter().map(|(domain, rest)| prefixed(SENT, domain.as_bytes(), rest)))?;
+        let mut batch = WriteBatch::default();
+        for ((domain, rest), sent) in pages.iter().zip(sents) {
+            if let Some(sent) = sent.filter(|sent| sent.failures > 0) {
+                batch.put(prefixed(SENT, domain.as_bytes(), rest), Sent { failures: 0, ..sent }.pack());
+            }
+        }
+        self.db.write(batch)?;
+        Ok(())
+    }
+
     /// The page's latest schedule, if one is waiting.
     pub fn next_send(&self, domain: &str, rest: &[u8]) -> Result<Option<Scheduled>> {
         Ok(self.db.get_pinned(prefixed(NEXT, domain.as_bytes(), rest))?.as_deref().and_then(Scheduled::unpack))

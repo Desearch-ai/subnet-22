@@ -240,12 +240,13 @@ impl OutcomeReader {
         found
     }
 
-    /// Tally a file's rows per domain and schedule its failed and dropped pages, a few writes per store.
+    /// Tally a file's rows per domain, schedule its failed and dropped pages, and start the failure count of its published ones over, a few writes per store.
     pub fn apply(&mut self, buckets: &Buckets, rows: &[OutcomeRow], now: u32) -> Result<Counted> {
         let mut counted = Counted::default();
         let mut tallies: HashMap<String, Yield> = HashMap::new();
         let mut schedules: HashMap<usize, Vec<PageSchedule>> = HashMap::new();
         let mut refusing: HashMap<String, bool> = HashMap::new();
+        let mut recovered: HashMap<usize, Vec<(String, Vec<u8>)>> = HashMap::new();
         for row in rows {
             match row.outcome {
                 Outcome::Published | Outcome::Unchanged => counted.published += 1,
@@ -259,7 +260,7 @@ impl OutcomeReader {
             let at = row.at.div_euclid(1_000_000).clamp(0, u32::MAX.into()) as u32;
             let resent = self.resent.as_ref().filter(|resent| resent.active());
             let published = matches!(row.outcome, Outcome::Published | Outcome::Unchanged);
-            let rest = (resent.is_some() || !published).then(|| Normaliser::new(&domain).ok().and_then(|n| n.parse(&row.url)).map(|key| key.key[domain.len() + 1..].to_vec())).flatten();
+            let rest = Normaliser::new(&domain).ok().and_then(|n| n.parse(&row.url)).map(|key| key.key[domain.len() + 1..].to_vec());
             // A dropped task never reached the site, so it says nothing about the domain; a page sent once more for its domain's resend_before says little about its new pages.
             let tally = tallies.entry(domain.clone()).or_default();
             tally.at = tally.at.max(at);
@@ -270,6 +271,10 @@ impl OutcomeReader {
                     Outcome::Failed => tally.failed += 1.0,
                     Outcome::Dropped => {}
                 }
+            }
+            if published {
+                recovered.entry(bucket_of(&domain)).or_default().extend(rest.map(|rest| (domain, rest)));
+                continue;
             }
             // A failed resend is retried as any failure is, counted and paced by the domain's yield, unless the site refuses us.
             if was_resend && row.outcome == Outcome::Failed && *refusing.entry(domain.clone()).or_insert_with(|| refuses(buckets, &domain)) {
@@ -291,16 +296,23 @@ impl OutcomeReader {
             };
             schedules.entry(bucket_of(&domain)).or_default().push(PageSchedule { domain, rest, next });
         }
-        let mut by_bucket: HashMap<usize, (Vec<PageSchedule>, Vec<(String, Yield)>)> = HashMap::new();
+        let mut by_bucket: HashMap<usize, Group> = HashMap::new();
         for (domain, tally) in tallies {
-            by_bucket.entry(bucket_of(&domain)).or_default().1.push((domain, tally));
+            by_bucket.entry(bucket_of(&domain)).or_default().2.push((domain, tally));
         }
         for (bucket, pages) in schedules {
             by_bucket.entry(bucket).or_default().0 = pages;
         }
-        let groups: Vec<(Vec<PageSchedule>, Vec<(String, Yield)>)> = by_bucket.into_values().collect();
-        // Every scheduled page's domain was tallied first, so each group has a domain to find its store by.
-        on_readers(groups, |(pages, tallies)| buckets.store(&tallies[0].0).note_outcomes(&pages, &tallies))?;
+        for (bucket, pages) in recovered {
+            by_bucket.entry(bucket).or_default().1 = pages;
+        }
+        let groups: Vec<Group> = by_bucket.into_values().collect();
+        // Every page's domain was tallied first, so each group has a domain to find its store by.
+        on_readers(groups, |(pages, recovered, tallies)| {
+            let store = buckets.store(&tallies[0].0);
+            store.note_outcomes(&pages, &tallies)?;
+            store.note_recovered(&recovered)
+        })?;
         Ok(counted)
     }
 }
@@ -311,6 +323,9 @@ fn refuses(buckets: &Buckets, domain: &str) -> bool {
     let refused = |field: &str| record.as_ref().and_then(|r| r.get(field)).and_then(Value::as_u64).is_some_and(|status| matches!(status, 401 | 402 | 403 | 429));
     refused("robots_status") || refused("home_status")
 }
+
+/// One store's part of an outcome file: pages to schedule, pages that came back, and each domain's yield.
+type Group = (Vec<PageSchedule>, Vec<(String, Vec<u8>)>, Vec<(String, Yield)>);
 
 /// One numbered outcome file, nothing yet, a number not indexed while later ones are, or an index whose file expired unread.
 pub enum Next {

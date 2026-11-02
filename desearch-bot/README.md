@@ -170,9 +170,10 @@ file on, up to 8 files at a time, and skips to the newest when it falls an hour 
 its published and failed pages to their domain's yield, counted twice: fading over a day and over an
 hour. The dispatcher gives domains whose pages rarely come back fewer slots, down to an hourly probe,
 by the lower of the two, so a domain that starts refusing slows within hours. A failed page goes again
-after its domain's interval, and after two failures in a row waits `--gone-days`; a dropped page,
-whose task never reached the site, goes again within the hourly budget. A number still missing after
-two minutes, or whose file expired, is skipped. A status line every minute shows the queue, what was
+after its domain's interval, and after two failures in a row waits `--gone-days`; a send that comes back
+published starts the count over. A dropped page, whose task never reached the site, goes again
+within the hourly budget. A number still missing after two minutes, or whose file expired, is
+skipped. A status line every minute shows the queue, what was
 sent in each lane, the room and the outcome feed.
 
 Room the lists leave in a pass goes to refreshes: pages already sent, of listed domains with nothing

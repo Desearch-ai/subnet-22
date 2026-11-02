@@ -308,6 +308,32 @@ fn a_page_set_to_the_long_wait_goes_earlier_when_its_lastmod_moves() {
 }
 
 #[test]
+fn a_page_that_answers_again_starts_its_failures_over_and_goes_back_to_refreshes_and_resend_waves() {
+    let dir = Dir::new("ready-recovered");
+    let buckets = known(&dir, &["example.com"]);
+    let store = buckets.store("example.com");
+    store.record_listing("example.com", 7, vec![page("a", 10)], 100).unwrap();
+    store.mark_sent(&take(store, 10), 1000, &rules()).unwrap();
+    let mut reader = OutcomeReader::new(rules(), 1000);
+    reader.apply(&buckets, &[outcome("https://example.com/a", Outcome::Failed, 1100)], 1100).unwrap();
+    requeue(store, 1100 + RECRAWL);
+    let retry = take(store, 10);
+    assert_eq!(retry[0].failures, 1);
+    let sent = 1200 + RECRAWL;
+    store.mark_sent(&retry, sent, &rules()).unwrap();
+    reader.apply(&buckets, &[outcome("https://example.com/a", Outcome::Published, sent + 100)], sent + 100).unwrap();
+    assert_eq!(store.sent("example.com", &rest("a")).unwrap().unwrap().failures, 0, "the retry answered");
+    assert_eq!(store.stock_refresh("example.com", 10, None, usize::MAX, &mut |_| true).unwrap().map(|s| s.count), Some(1), "back among the refreshes");
+    let terms = Terms { resend_before: Some(sent + 1000), ..Terms::default() };
+    assert_eq!(store.resend_domain("example.com", terms, sent + 2000, &mut |_| true, &mut |_| true).unwrap().queued, 1, "and in a later resend wave");
+
+    let (resend, _) = store.take_resend("example.com", 10, &Default::default()).unwrap();
+    store.mark_sent(&resend, sent + 3000, &rules()).unwrap();
+    reader.apply(&buckets, &[outcome("https://example.com/a", Outcome::Failed, sent + 3100)], sent + 3100).unwrap();
+    assert_eq!(requeue(store, sent + 3100 + RECRAWL), Requeued { moved: 1, gone: 0 }, "a failure after it answered is the first in a row");
+}
+
+#[test]
 fn a_failure_replaces_the_recrawl_of_a_page_without_a_lastmod_and_a_clean_recrawl_clears_its_failures() {
     let dir = Dir::new("ready-undated-failed");
     let buckets = known(&dir, &["example.com"]);
