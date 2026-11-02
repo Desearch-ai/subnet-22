@@ -320,6 +320,21 @@ fn an_outlet_s_hub_failing_on_two_sends_in_a_row_takes_the_long_wait_even_when_o
 }
 
 #[test]
+fn the_sent_record_keeps_the_failure_count_earlier_versions_read() {
+    let dir = Dir::new("ready-fails-rollback");
+    let buckets = known(&dir, &["example.com"]);
+    let store = buckets.store("example.com");
+    store.record_listing("example.com", 7, vec![page("a", 10)], 100).unwrap();
+    store.mark_sent(&take(store, 10), 1000, &rules()).unwrap();
+    OutcomeReader::new(rules(), 1000).apply(&buckets, &[outcome("https://example.com/a", Outcome::Failed, 1100)], 1100).unwrap();
+    let failures = || store.sent("example.com", &rest("a")).unwrap().unwrap().failures;
+    assert_eq!(failures(), 0, "an earlier version counts the failure when the retry comes due, so it must not be counted here too");
+    assert_eq!(store.failed_sends("example.com", &rest("a")).unwrap(), 1);
+    assert_eq!(requeue(store, 1100 + RECRAWL), Requeued { moved: 1, gone: 0 });
+    assert_eq!(failures(), 1, "the retry counts it, as an earlier version would");
+}
+
+#[test]
 fn an_outlet_s_hubs_go_again_at_most_sixty_an_interval_never_later_than_the_domain_s_interval_and_its_sections_on_the_domain_s() {
     let dir = Dir::new("ready-hub-cap");
     let store = open(&dir);

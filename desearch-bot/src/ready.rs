@@ -51,6 +51,8 @@ const RESEND_COUNT: u8 = b'G';
 const RESEND_CHUNK: usize = 2_000;
 /// Each domain's longest-unsent pages, oldest send first, kept ready for refreshes so a pass never reads the sent records.
 const STOCK: u8 = b'F';
+/// Each page's failed sends counted as their outcomes come; the sent record's count keeps the meaning earlier versions read, so going back to one costs no page the long wait.
+const FAILS: u8 = b'K';
 /// Keys a domain's new-page lane loses per locked write when it is cleared.
 const TRIM_CHUNK: usize = 50_000;
 /// Sent records read at a time while a domain's refresh stock is chosen.
@@ -379,6 +381,31 @@ impl Sent {
     }
 }
 
+/// A page's failed sends counted as their outcomes came, and the time of the last one counted.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Fails {
+    count: u8,
+    at: u32,
+}
+
+impl Fails {
+    fn pack(self) -> [u8; 5] {
+        let mut out = [0u8; 5];
+        out[0] = self.count;
+        out[1..].copy_from_slice(&self.at.to_be_bytes());
+        out
+    }
+
+    fn unpack(data: &[u8]) -> Option<Fails> {
+        (data.len() == 5).then(|| Fails { count: data[0], at: u32::from_be_bytes(data[1..].try_into().unwrap()) })
+    }
+}
+
+/// The failure count key of a page's sent record key.
+fn fails_key(sent_key: &[u8]) -> Vec<u8> {
+    [&[FAILS], &sent_key[1..]].concat()
+}
+
 /// Why a page goes out now.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Reason {
@@ -664,6 +691,17 @@ impl BucketStore {
         Ok(self.db.get_pinned(prefixed(SENT, domain.as_bytes(), rest))?.as_deref().and_then(Sent::unpack))
     }
 
+    /// The page's failed sends counted as their outcomes came, since it last came back published or went for a new lastmod.
+    pub fn failed_sends(&self, domain: &str, rest: &[u8]) -> Result<u8> {
+        Ok(self.db.get_pinned(prefixed(FAILS, domain.as_bytes(), rest))?.as_deref().and_then(Fails::unpack).map_or(0, |fails| fails.count))
+    }
+
+    fn fails(&self, keys: impl Iterator<Item = Vec<u8>>) -> Result<Vec<Option<Fails>>> {
+        let keys: Vec<Vec<u8>> = keys.collect();
+        let cf = self.db.cf_handle("default").context("default column family")?;
+        self.db.batched_multi_get_cf(cf, &keys, false).into_iter().map(|raw| Ok(raw?.as_deref().and_then(Fails::unpack))).collect()
+    }
+
     /// Pages waiting to join their ready lists, by when.
     pub fn waiting(&self) -> Result<Vec<(u32, String, Vec<u8>)>> {
         let mut out = Vec::new();
@@ -897,6 +935,9 @@ impl BucketStore {
                 }
             }
             let failures = if pick.reason == Reason::Requeued { pick.failures } else { 0 };
+            if pick.reason != Reason::Requeued {
+                batch.delete(fails_key(&pick.entry.sent_key()));
+            }
             batch.put(pick.entry.sent_key(), Sent { lastmod: pick.lastmod, failures, requeued: false }.pack());
         }
         // A lastmod that moved while the page was in flight is a change the API has not seen.
@@ -1537,13 +1578,14 @@ impl BucketStore {
         let records = self.records(parsed.iter().map(|(_, domain, rest)| prefixed(URL, domain, rest)))?;
         let sents = self.sents(parsed.iter().map(|(_, domain, rest)| prefixed(SENT, domain, rest)))?;
         let schedules = self.schedules(parsed.iter().map(|(_, domain, rest)| prefixed(NEXT, domain, rest)))?;
+        let fails = self.fails(parsed.iter().map(|(_, domain, rest)| prefixed(FAILS, domain, rest)))?;
         let mut batch = WriteBatch::default();
         // Deleted first, so a new schedule that lands on the same second survives the batch.
         for key in &keys {
             batch.delete(key);
         }
         let mut entries = Vec::new();
-        for ((((due, domain, rest), record), sent), next) in parsed.iter().zip(records).zip(sents).zip(schedules) {
+        for (((((due, domain, rest), record), sent), next), fails) in parsed.iter().zip(records).zip(sents).zip(schedules).zip(fails) {
             if next.is_some_and(|next| next.due != *due) {
                 continue;
             }
@@ -1557,15 +1599,18 @@ impl BucketStore {
             // Entries without a schedule were written by earlier versions and go back as they are.
             match next {
                 Some(next) if next.outdated(record.pushed_at) => continue,
+                Some(Scheduled { why: Why::Recrawl, .. }) => sent.failures = 0,
                 Some(Scheduled { why: Why::Failed, at, .. }) => {
-                    if sent.failures >= GONE_AFTER {
+                    sent.failures = sent.failures.saturating_add(1);
+                    // Pages failed before outcomes were counted as they came keep the sent record's count.
+                    if fails.map_or(sent.failures, |fails| fails.count) >= GONE_AFTER {
                         put_schedule(&mut batch, domain, rest, Scheduled { why: Why::Gone, due: at.saturating_add(recrawl.gone), at: record.pushed_at });
                         batch.put(prefixed(SENT, domain, rest), sent.pack());
                         done.gone += 1;
                         continue;
                     }
                 }
-                Some(Scheduled { why: Why::Recrawl | Why::Dropped | Why::Gone, .. }) | None => {}
+                Some(Scheduled { why: Why::Dropped | Why::Gone, .. }) | None => {}
             }
             sent.requeued = true;
             batch.put(prefixed(SENT, domain, rest), sent.pack());
@@ -1593,11 +1638,10 @@ impl BucketStore {
         }
         let _guard = self.lock_ready();
         // Each failed send counts once, when its outcome comes, whatever went out since.
-        let failed: Vec<Vec<u8>> = schedules.iter().filter(|s| s.next.why == Why::Failed).map(|s| prefixed(SENT, s.domain.as_bytes(), &s.rest)).collect();
-        for (key, sent) in failed.iter().zip(self.sents(failed.iter().cloned())?) {
-            if let Some(sent) = sent {
-                batch.put(key, Sent { failures: sent.failures.saturating_add(1), ..sent }.pack());
-            }
+        let failed: Vec<(Vec<u8>, u32)> = schedules.iter().filter(|s| s.next.why == Why::Failed).map(|s| (prefixed(FAILS, s.domain.as_bytes(), &s.rest), s.next.at)).collect();
+        for ((key, at), fails) in failed.iter().zip(self.fails(failed.iter().map(|(key, _)| key.clone()))?) {
+            let fails = fails.unwrap_or_default();
+            batch.put(key, Fails { count: fails.count.saturating_add(1), at: *at }.pack());
         }
         self.db.write(batch)?;
         Ok(())
@@ -1619,6 +1663,7 @@ impl BucketStore {
     pub(crate) fn clear_failures(&self, batch: &mut WriteBatch, keys: Vec<Vec<u8>>) -> Result<()> {
         let sents = self.sents(keys.iter().cloned())?;
         for (key, sent) in keys.into_iter().zip(sents) {
+            batch.delete(fails_key(&key));
             if let Some(sent) = sent.filter(|sent| sent.failures > 0) {
                 batch.put(key, Sent { failures: 0, ..sent }.pack());
             }
@@ -1640,7 +1685,7 @@ impl BucketStore {
         if !delete {
             return Ok(found);
         }
-        let ranges: Vec<(Vec<u8>, Vec<u8>)> = [URL, READY, SENT, LISTED, NEXT, STOCK]
+        let ranges: Vec<(Vec<u8>, Vec<u8>)> = [URL, READY, SENT, LISTED, NEXT, STOCK, FAILS]
             .into_iter()
             .map(|kind| ([&[kind], domain.as_bytes(), b"\0"].concat(), [&[kind], domain.as_bytes(), b"\x01"].concat()))
             .collect();
