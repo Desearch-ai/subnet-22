@@ -268,7 +268,7 @@ def test_top_landing_sites_go_deeper_or_whole_once_the_site_check_keeps_them():
     assert sites["vendor.example"] == {"host": "vendor.example", "rule": "landing", "type": "company", "why": ["rank"], "depth": 3}
     assert "depth" not in sites["far.example"] and sites["far.example"]["rule"] == "landing"
     assert [sites[h]["rule"] for h in ("mag.example", "club.example", "wiki.example")] == ["whole"] * 3
-    assert sites["mag.example"] == {"host": "mag.example", "rule": "whole", "type": "media", "why": ["rank"]}
+    assert sites["mag.example"] == {"host": "mag.example", "rule": "whole", "type": "media", "why": ["rank"], "own_host": True}
     assert sites["blog.example"]["rule"] == sites["unchecked.example"]["rule"] == "landing", "other types, and sites the check hasn't kept, stay landing sites"
     assert all(site["rule"] == "landing" and "depth" not in site for site in build(decisions, verdicts=verdicts, landing_rank=200_000)[0].values()), "none without the ranks"
     deep = {"deep.example": {"host": "deep.example", "rule": "landing", "depth": 3}}
@@ -282,7 +282,7 @@ def test_docs_and_news_subdomains_of_sites_taken_for_their_rank_are_taken_as_the
     rows = [[{"host": "bank.example", "rule": "whole", "type": "public", "why": ["public"]}]]
     sites, _ = build(decisions, rows=rows, verdicts={"mag.example": "keep"}, landing_rank=200_000, deep_rank=10_000, whole_rank=10_000, subdomains=True)
     assert sites["docs.vendor.example"] == {"host": "docs.vendor.example", "rule": "landing", "depth": 3, "type": "docs", "why": ["rank"]}
-    assert sites["investor.vendor.example"]["type"] == "company" and sites["news.mag.example"] == {"host": "news.mag.example", "rule": "whole", "type": "media", "why": ["rank"]}
+    assert sites["investor.vendor.example"]["type"] == "company" and sites["news.mag.example"] == {"host": "news.mag.example", "rule": "whole", "own_host": True, "type": "media", "why": ["rank"]}
     assert sites["help.plain.example"] == {"host": "help.plain.example", "rule": "landing", "type": "docs", "why": ["rank"]}
     assert not {"shop.vendor.example", "support.vendor.example", "docs.bank.example"} & set(sites), "another label, an unlisted row, or a parent taken for a backing gives none"
     assert "docs.vendor.example" not in build(decisions, rows=rows, landing_rank=200_000)[0]
@@ -313,7 +313,37 @@ def test_the_set_file_is_written_from_the_inputs(tmp_path):
     assert written["news"] == "B" and written["sites"][3]["since"] == "2020-01-01"
     assert written["undated"] == "out" and written["sites"][4]["rule"] == "landing"
     assert written["built"].endswith("Z") and "hub_pages" not in written
-    v1_set.main(["--out", str(out), "--decisions", str(decisions), "--news-domains", str(news_domains), "--landing-rank", "3", "--deep-rank", "3", "--hubs"])
+    with pytest.raises(SystemExit):
+        v1_set.main(["--out", str(out), "--decisions", str(decisions), "--landing-rank", "3", "--deep-rank", "3"])
+    suffixes = tmp_path / "public_suffix_list.dat"
+    suffixes.write_text("// ===BEGIN ICANN DOMAINS===\ncom\n*.ck\n!www.ck\n")
+    v1_set.main(["--out", str(out), "--decisions", str(decisions), "--news-domains", str(news_domains), "--landing-rank", "3", "--deep-rank", "3", "--hubs", "--public-suffixes", str(suffixes)])
     written = {site["host"]: site for site in json.loads(out.read_text())["sites"]} | {"": json.loads(out.read_text())}
     assert written["news.example"]["hubs"] is True and written["vendor.example"]["depth"] == 3
     assert written[""]["hub_pages"] == v1_set.HUB_PAGES
+
+
+def test_public_suffixes_are_never_taken_deeper_or_whole_nor_parents_of_subdomains(tmp_path):
+    listing = tmp_path / "public_suffix_list.dat"
+    listing.write_text("// ===BEGIN ICANN DOMAINS===\nac.za\n*.ck\n!www.ck\n// ===BEGIN PRIVATE DOMAINS===\nherokuapp.com\nus.com\n")
+    suffixes = v1_set.read_suffixes(str(listing))
+    assert [v1_set.platform(h, suffixes) for h in ("ac.za", "herokuapp.com", "us.com", "co.ck", "www.ck", "vendor.example")] == [True, True, True, True, False, False]
+    decisions = [ranked_at("herokuapp.com", "media", 50), ranked_at("us.com", "company", 60), ranked_at("ac.za", "organization", 70), ranked_at("mag.example", "media", 80)]
+    decisions += [ranked_at("news.us.com", "company", 300_000), ranked_at("news.mag.example", "media", 300_000)]
+    verdicts = {h: "keep" for h in ("herokuapp.com", "ac.za", "mag.example")}
+    sites, _ = build(decisions, verdicts=verdicts, landing_rank=200_000, deep_rank=10_000, whole_rank=10_000, subdomains=True, suffixes=suffixes)
+    assert [sites[h]["rule"] for h in ("herokuapp.com", "us.com", "ac.za")] == ["landing"] * 3 and "depth" not in sites["us.com"]
+    assert sites["mag.example"]["own_host"] is True and "news.us.com" not in sites and sites["news.mag.example"]["own_host"] is True
+    whole = {site["host"]: site for site in sites.values()}
+    assert not v1_set.matches(whole, "https://shop.mag.example/x", None), "whole for its rank takes its own host only"
+
+
+def test_hand_depths_and_switches_are_read_as_the_set_holds_them_and_a_bad_one_stops_the_build():
+    rows = [{"host": "a.example", "rule": "landing", "depth": "3", "hubs": "", "why": "rank"}, {"host": "b.example", "rule": "news", "hubs": "TRUE", "why": "news"}, {"host": "c.example", "rule": "whole", "own_host": "false", "why": "docs"}]
+    entries = {e["host"]: e for e in v1_set.hand_entries(rows)}
+    assert (entries["a.example"]["depth"], entries["b.example"]["hubs"], entries["c.example"]["own_host"]) == (3, True, False)
+    assert "hubs" not in entries["a.example"]
+    for bad in ({"host": "d.example", "rule": "landing", "depth": "deep"}, {"host": "d.example", "rule": "landing", "depth": "-1"}, {"host": "d.example", "rule": "news", "hubs": "yes"}):
+        with pytest.raises(SystemExit):
+            v1_set.hand_entries([bad])
+    assert [v1_set.bad_entry(e) for e in ({"depth": 0}, {"depth": True}, {"depth": "3"}, {"hubs": 1}, {"own_host": "true"}, {"depth": 2, "hubs": True}, {"depth": None})] == ["depth 0", "depth True", "depth '3'", "hubs 1", "own_host 'true'", None, None]
