@@ -1458,3 +1458,19 @@ async fn a_site_whose_robots_txt_names_sitemaps_that_refuse_us_is_not_guessed_at
     assert_eq!(hits, ["/robots.txt", "/news.xml"], "the sitemap robots.txt names refused us: no way around it");
     assert_eq!(buckets.store(host).domain(host).unwrap().unwrap()["state"].as_str(), Some("no_sitemap"));
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_site_that_refuses_a_guess_gets_no_more_guesses() {
+    let web: Shared = Arc::default();
+    let host = "refuses-guesses.test";
+    {
+        let mut w = web.lock().unwrap();
+        for path in ["/robots.txt", "/sitemap.xml", "/sitemap_index.xml", "/feed", "/rss.xml", "/"] {
+            w.add(host, path, 403, None, b"denied");
+        }
+    }
+    let (buckets, _crawl) = crawl_following(web.clone(), &[host], "refuses-guesses", FollowLinks::Off, Slots::new(2), |buckets| buckets.allow(&Allowed::of([host]))).await;
+    let hits: Vec<String> = web.lock().unwrap().hits.iter().map(|(_, path, _)| path.clone()).collect();
+    assert_eq!(hits, ["/robots.txt", "/sitemap.xml"], "the first refusal ends the guessing");
+    assert_eq!(buckets.store(host).domain(host).unwrap().unwrap()["state"].as_str(), Some("no_sitemap"));
+}

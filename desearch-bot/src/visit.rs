@@ -483,6 +483,7 @@ impl Visitor {
             following: false,
             home_known: false,
             site_peer: None,
+            guess_refused: false,
         };
         run.go().await?;
         Ok(run.result)
@@ -524,6 +525,8 @@ struct Run<'a> {
     home_known: bool,
     /// The address the site's own host last answered from on this visit.
     site_peer: Option<IpAddr>,
+    /// A guess was refused or rate limited.
+    guess_refused: bool,
 }
 
 impl Run<'_> {
@@ -679,7 +682,7 @@ impl Run<'_> {
             let Some((url, depth, parent, index_date, force)) = queue.pop_front() else {
                 break;
             };
-            if seen.contains(&url) || (self.found && self.guesses.contains(&url)) {
+            if seen.contains(&url) || ((self.found || self.guess_refused) && self.guesses.contains(&url)) {
                 continue;
             }
             seen.insert(url.clone());
@@ -749,6 +752,8 @@ impl Run<'_> {
             self.transient = Some(answer.as_ref().map_or_else(|| error.clone().unwrap_or_else(|| "unknown".into()), |a| format!("sitemap_{}", a.status)));
         }
         if self.guesses.contains(&url) && answer.as_ref().is_none_or(|a| a.status != 200) {
+            // A site that refuses a guess, or asks us to slow down, gets no more of them.
+            self.guess_refused |= answer.as_ref().is_some_and(|a| matches!(a.status, 401 | 402 | 403 | 429));
             return Ok(Vec::new());
         }
         let i = self.update(&url, depth, parent, index_date, stored);
