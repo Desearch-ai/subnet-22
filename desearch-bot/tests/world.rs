@@ -715,12 +715,19 @@ async fn crawl_prepared(web: Shared, hosts: &[&'static str], name: &str, prepare
 }
 
 async fn crawl_following(web: Shared, hosts: &[&'static str], name: &str, follow_links: FollowLinks, links: Slots, prepare: impl FnOnce(&Arc<Buckets>)) -> (Arc<Buckets>, Loop) {
-    crawl_adjusted(web, hosts, name, follow_links, links, prepare, |_| {}).await
+    crawl_adjusted(web, hosts, &[], name, follow_links, links, prepare, |_| {}).await
 }
 
+/// As `crawl_following`, with more hosts that resolve, such as a site's www host.
+async fn crawl_resolving(web: Shared, hosts: &[&'static str], also: &[&'static str], name: &str, follow_links: FollowLinks, prepare: impl FnOnce(&Arc<Buckets>)) -> (Arc<Buckets>, Loop) {
+    crawl_adjusted(web, hosts, also, name, follow_links, Slots::new(2), prepare, |_| {}).await
+}
+
+#[allow(clippy::too_many_arguments)]
 async fn crawl_adjusted(
     web: Shared,
     hosts: &[&'static str],
+    also: &[&'static str],
     name: &str,
     follow_links: FollowLinks,
     links: Slots,
@@ -744,7 +751,7 @@ async fn crawl_adjusted(
     prepare(&buckets);
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
-        .dns_resolver(Arc::new(TestResolver { addr, known: hosts.iter().copied().collect() }))
+        .dns_resolver(Arc::new(TestResolver { addr, known: hosts.iter().chain(also).copied().collect() }))
         .timeout(Duration::from_secs(10))
         .build()
         .unwrap();
@@ -1663,6 +1670,7 @@ async fn link_work_failing_on_our_side_keeps_the_verdict() {
     let (buckets, crawl) = crawl_adjusted(
         web.clone(),
         &[host],
+        &[],
         "links-crash",
         FollowLinks::Thin,
         Slots::new(2),
@@ -1674,6 +1682,36 @@ async fn link_work_failing_on_our_side_keeps_the_verdict() {
     let record = buckets.store(host).domain(host).unwrap().unwrap();
     assert_eq!((record["state"].as_str(), record["reason"].as_str()), (Some("no_sitemap"), Some("sitemap_too_small")), "{record:?}");
     assert_eq!(crawl.summary()["link_errors"], 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_link_run_keeps_a_page_that_redirects_to_its_own_store_key() {
+    let mut kept = Vec::new();
+    for mode in [FollowLinks::Off, FollowLinks::Thin] {
+        let host: &'static str = format!("samekey-{mode:?}.test").to_lowercase().leak();
+        let www: &'static str = format!("www.{host}").leak();
+        let web: Shared = Arc::default();
+        {
+            let mut w = web.lock().unwrap();
+            w.add(host, "/robots.txt", 200, None, format!("User-agent: *\nSitemap: http://{host}/list.xml\n").as_bytes());
+            let mut paths: Vec<String> = (0..10).map(|i| format!("/story/{i}")).collect();
+            paths.extend(["/about".to_string(), "/contact".to_string()]);
+            w.add(host, "/list.xml", 200, None, urlset(host, &paths).as_bytes());
+            let page = |links: &[&str]| {
+                let links: String = links.iter().map(|href| format!("<a href=\"{href}\">{href}</a>")).collect();
+                format!("<html lang=\"en\"><p>{ENGLISH}</p>{links}</html>").into_bytes()
+            };
+            w.add(host, "/", 200, None, &page(&["/about?utm_source=nav", &format!("http://{www}/contact")]));
+            w.redirect(host, "/about?utm_source=nav", &format!("http://{host}/about"), None);
+            w.redirect(www, "/contact", &format!("http://{host}/contact"), None);
+            w.add(host, "/about", 200, None, &page(&[]));
+            w.add(host, "/contact", 200, None, &page(&[]));
+        }
+        let (buckets, _crawl) = crawl_resolving(web.clone(), &[host], &[www], &format!("samekey-{mode:?}"), mode, |buckets| buckets.allow(&Allowed::of([host]))).await;
+        let ready: Vec<String> = buckets.store(host).ready_list(host, 1000).unwrap().iter().map(|e| String::from_utf8_lossy(&e.rest).into_owned()).collect();
+        kept.push((ready.contains(&format!("{host}/about")), ready.contains(&format!("{host}/contact"))));
+    }
+    assert_eq!(kept, [(true, true), (true, true)], "a redirect to the same page, by tracking query or www host, takes nothing off the ready list");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

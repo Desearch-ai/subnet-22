@@ -1010,9 +1010,11 @@ impl Run<'_> {
                     continue;
                 }
             };
+            // A redirect to the same store key, another scheme, host spelling or tracking query, is the same page.
+            let moved = normaliser.parse(&answer.url).map(|url| url.key) != normaliser.parse(&page).map(|url| url.key);
             if answer.status != 200 {
                 unread.insert(page.clone());
-                if matches!(answer.status, 300..=399 | 404 | 410) {
+                if matches!(answer.status, 404 | 410) || (matches!(answer.status, 300..=399) && moved) {
                     taken_back.push(page.clone());
                 }
             }
@@ -1048,7 +1050,7 @@ impl Run<'_> {
                 continue;
             }
             // A page that moved is kept where it moved to, which robots.txt allows as the redirect was followed.
-            if answer.url != page {
+            if moved {
                 unread.insert(page.clone());
                 taken_back.push(page.clone());
                 if let Some(key) = self.followable(&normaliser, &answer.url).filter(|_| is_page(&answer.url)) {
