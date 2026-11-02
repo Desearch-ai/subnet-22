@@ -1811,11 +1811,12 @@ async fn a_link_run_its_homepage_refuses_waits_twice_as_long_before_the_next() {
 async fn a_homepage_refusing_link_works_language_check_is_kept_as_a_refused_run() {
     let web: Shared = Arc::default();
     let host = "gate-refuses.test";
-    deep_site(&web, host);
     {
+        // robots.txt names a sitemap too small to list the site, so the visit guesses nothing and reads no homepage.
         let mut w = web.lock().unwrap();
-        let denied = Page { status: 403, etag: None, body: b"denied".to_vec(), headers: Vec::new(), with_cookie: None };
-        w.later.insert((host.into(), "/".into()), (1, denied));
+        w.add(host, "/robots.txt", 200, None, format!("User-agent: *\nSitemap: http://{host}/list.xml\n").as_bytes());
+        w.add(host, "/list.xml", 200, None, urlset(host, &["/story/1".to_string(), "/story/2".to_string()]).as_bytes());
+        w.add(host, "/", 403, None, b"denied");
     }
     let now = chrono::Utc::now().timestamp();
     let (buckets, _crawl) = crawl_following(web.clone(), &[host], "gate-refuses", FollowLinks::Thin, Slots::new(2), |buckets| buckets.allow(&Allowed::of([host]))).await;
@@ -1908,6 +1909,18 @@ async fn pages_slow_to_answer_never_stop_link_runs_at_their_address() {
     let (_buckets, _crawl) = crawl_following(web.clone(), &[next], "next-door", FollowLinks::Thin, slots.clone(), |b| b.allow(&Allowed::of([next]))).await;
     let hits: Vec<String> = web.lock().unwrap().hits.iter().filter(|(host, _, _)| host == next).map(|(_, path, _)| path.clone()).collect();
     assert!(hits.contains(&"/a".to_string()), "the address answered, if slowly, so its neighbour's run goes ahead: {hits:?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_link_run_reads_the_homepage_the_visit_read_without_asking_again() {
+    let web: Shared = Arc::default();
+    let host = "home-once.test";
+    deep_site(&web, host);
+    let (buckets, _crawl) = crawl_following(web.clone(), &[host], "home-once", FollowLinks::Thin, Slots::new(2), |buckets| buckets.allow(&Allowed::of([host]))).await;
+    let hits: Vec<String> = web.lock().unwrap().hits.iter().map(|(_, path, _)| path.clone()).collect();
+    assert_eq!(hits.iter().filter(|path| *path == "/").count(), 1, "{hits:?}");
+    assert!(hits.contains(&"/a".to_string()), "and the run went on from it: {hits:?}");
+    assert!(buckets.store(host).sitemap(host, &format!("https://{host}/#links")).unwrap().is_some());
 }
 
 /// An active site read an hour ago, its robots.txt rules disallowing /site, with these sitemaps stored at these next times.

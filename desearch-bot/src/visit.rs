@@ -497,6 +497,7 @@ impl Visitor {
             refused: false,
             home_refused: None,
             connect_failed: false,
+            home_read: None,
         };
         run.go().await?;
         Ok(run.result)
@@ -544,6 +545,8 @@ struct Run<'a> {
     home_refused: Option<u16>,
     /// The last request that failed never connected: refused, or timed out while connecting.
     connect_failed: bool,
+    /// The homepage as this visit read it, kept for link work to read again without asking.
+    home_read: Option<(String, Vec<u8>, HeaderMap)>,
 }
 
 impl Run<'_> {
@@ -802,6 +805,9 @@ impl Run<'_> {
                 return Ok(Vec::new());
             }
         }
+        if reads_home {
+            self.keep_home(&answer);
+        }
         let update = &mut self.result.sitemaps[i];
         update.etag = header(&answer.headers, "etag");
         update.last_modified = header(&answer.headers, "last-modified");
@@ -978,9 +984,16 @@ impl Run<'_> {
 
     /// Whether the homepage answers as readable English, which a site not yet judged must before a run; the verdict itself comes later, as without one.
     async fn homepage_passes(&mut self) -> Result<bool, Crash> {
-        let home = self.home.clone();
-        let Ok(answer) = self.get(&home, MAX_HOMEPAGE_BYTES, None, None).await else {
-            return Ok(false);
+        let answer = match self.home_read.clone() {
+            Some((url, body, headers)) => Answer { status: 200, body, headers, url, permit: None, peer: self.site_peer },
+            None => {
+                let home = self.home.clone();
+                let Ok(answer) = self.get(&home, MAX_HOMEPAGE_BYTES, None, None).await else {
+                    return Ok(false);
+                };
+                self.keep_home(&answer);
+                answer
+            }
         };
         if !self.on_site(&answer.url) {
             return Ok(false);
@@ -992,6 +1005,13 @@ impl Run<'_> {
         let (body, detect) = (answer.body, self.visitor.language.clone());
         let cut = body.len() >= MAX_HOMEPAGE_BYTES;
         Ok(self.visitor.cpu(move || homepage::read_cut(&body, &*detect, cut)).await?.problem.is_none())
+    }
+
+    /// Keeps a homepage that answered on the site while link work may follow.
+    fn keep_home(&mut self, answer: &Answer) {
+        if self.visitor.follow_links != FollowLinks::Off && self.listed && answer.status == 200 && self.on_site(&answer.url) {
+            self.home_read = Some((answer.url.clone(), answer.body.clone(), answer.headers.clone()));
+        }
     }
 
     /// Follow the site's own links from its homepage a few levels down, within a budget, and keep the pages found as one listing.
@@ -1040,8 +1060,15 @@ impl Run<'_> {
             if found.len() >= LINKS_MOST || spent >= LINKS_FETCHES || failing >= MAX_FAILURES_IN_ROW || started.elapsed() >= LINKS_TIME || self.visitor.pause.load(Ordering::Relaxed) {
                 break;
             }
-            slots.turn(&claims.iter().map(|claim| claim.ip).collect::<Vec<_>>()).await;
-            let answer = match self.get(&page, MAX_HOMEPAGE_BYTES, None, None).await {
+            let kept = self.home_read.take().filter(|_| depth == 0 && page == self.home);
+            if kept.is_none() {
+                slots.turn(&claims.iter().map(|claim| claim.ip).collect::<Vec<_>>()).await;
+            }
+            let fetched = match kept {
+                Some((url, body, headers)) => Ok(Answer { status: 200, body, headers, url, permit: None, peer: self.site_peer }),
+                None => self.get(&page, MAX_HOMEPAGE_BYTES, None, None).await,
+            };
+            let answer = match fetched {
                 Ok(answer) => answer,
                 Err(_) => {
                     slots.connected(ip, !self.connect_failed);
@@ -1324,6 +1351,7 @@ impl Run<'_> {
             self.stop(Outcome::Ineligible, Some("homepage_error".into()));
             return Ok(());
         }
+        self.keep_home(&answer);
         let body = answer.body;
         let cut = body.len() >= MAX_HOMEPAGE_BYTES;
         let detect = self.visitor.language.clone();
