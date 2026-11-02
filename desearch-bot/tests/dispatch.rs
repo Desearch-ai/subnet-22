@@ -1279,7 +1279,9 @@ fn the_domain_list_takes_names_or_hosts_and_is_read_again_when_its_file_changes(
     assert_eq!(names["a.com"], Terms::default());
     assert_eq!(names["c.net"], Terms { weight: 4, send_cap: Some(1500), news: true, ..Terms::default() }, "the crawl list's type, weight and cap");
     let news = allowed::parse(br#"[{"host": "e.com", "type": "news", "weight": 4, "hourly": 20000, "backlog": 3000000}]"#).unwrap();
-    assert_eq!(news["e.com"], Terms { weight: 4, send_cap: None, hourly: Some(20_000), backlog: Some(3_000_000), since: None, news: true, resend_before: None, depth: None }, "an hourly limit and a backlog bound");
+    assert_eq!(news["e.com"], Terms { weight: 4, send_cap: None, hourly: Some(20_000), backlog: Some(3_000_000), since: None, news: true, resend_before: None, depth: None, hubs: None }, "an hourly limit and a backlog bound");
+    let outlets = allowed::parse(br#"[{"host": "j.com", "type": "news", "hubs": 3600}, {"host": "k.com", "hubs": 0}, {"host": "l.com", "hubs": 99999999999}]"#).unwrap();
+    assert_eq!((outlets["j.com"].hubs, outlets["k.com"].hubs, outlets["l.com"].hubs), (Some(3_600), None, Some(u32::MAX)), "how often an outlet's hubs go again, in seconds; 0 is none");
     let landing = allowed::parse(br#"[{"host": "h.com", "type": "company", "send_cap": 100, "hourly": 20, "depth": 1}, {"host": "i.com", "depth": 900}]"#).unwrap();
     assert_eq!((landing["h.com"].depth, landing["i.com"].depth), (Some(1), Some(255)), "a landing site's depth, at most 255");
     let floored = allowed::parse(br#"[{"host": "f.com", "type": "news", "since": "2020-01-01"}, {"host": "g.com", "since": "soon"}]"#).unwrap();

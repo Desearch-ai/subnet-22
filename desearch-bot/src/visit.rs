@@ -708,8 +708,9 @@ impl Run<'_> {
         }
         let mut seen = HashSet::new();
         let mut roots: Vec<String> = joined.into_iter().chain(known).filter(|url| seen.insert(url.clone())).collect();
-        // A landing site's homepage is no guess: it is read even when a sitemap answers.
-        let reads_home = self.visitor.buckets.terms(&self.known.host).depth.is_some();
+        // A landing site's or an outlet's homepage is no guess: it is read even when a sitemap answers.
+        let terms = self.visitor.buckets.terms(&self.known.host);
+        let reads_home = terms.depth.is_some() || terms.hubs.is_some();
         // Gone or unanswered sitemaps hide no guesses, unless robots.txt named sitemaps, which a visit skipping it cannot tell, or limited our rate; a refusal is a wall.
         let mut stored = self.known.sitemaps.values().filter(|s| s.depth == 0 && !is_listing(s.kind.as_deref()) && !self.is_homepage(&s.url, Some(s)));
         let limited = self.result.robots_status.or(self.known.robots_status) == Some(429);
@@ -961,7 +962,9 @@ impl Run<'_> {
         };
         let mut interval = schedule::reread_within(interval, listed_news, depth, read.kind == "index", read.news);
         if read.kind == HOMEPAGE_KIND {
-            interval = interval.max(HOMEPAGE_INTERVAL);
+            // An outlet's homepage is read for its hubs no more often than they go again.
+            let hubs = self.visitor.buckets.terms(&self.known.host).hubs.map_or(0, |every| i64::from(every) * SECOND);
+            interval = interval.max(HOMEPAGE_INTERVAL).max(hubs);
         }
         self.take_read(i, &mut read, stored, interval, &url);
         Ok(std::mem::take(&mut read.children))

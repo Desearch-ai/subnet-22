@@ -92,8 +92,29 @@ static JUNK: LazyLock<Regex> = LazyLock::new(|| {
     .expect("a valid pattern")
 });
 
+/// The same, less the tag and category sections an established outlet's hubs are.
+static JUNK_ON_HUBS: LazyLock<Regex> = LazyLock::new(|| {
+    RegexBuilder::new(concat!(
+        r"/(authors?|page/[0-9]+|search|feeds?|rss|amp|wp-json|attachment|print|login|cart|checkout)(/|$)",
+        r"|\.(pdf|jpe?g|png|gif|webp|svg|zip|gz|mp[34]|mov|xml|json|css|js)$",
+        r"|[?&](page|p|s|q|replytocom)=",
+    ))
+    .case_insensitive(true)
+    .build()
+    .expect("a valid pattern")
+});
+
 pub fn junk(rest: &[u8]) -> bool {
     JUNK.is_match(rest)
+}
+
+/// Whether a page is junk on its domain: one with hubs keeps its tag and category sections.
+pub fn junk_on(hubs: bool, rest: &[u8]) -> bool {
+    if hubs {
+        JUNK_ON_HUBS.is_match(rest)
+    } else {
+        JUNK.is_match(rest)
+    }
 }
 
 /// A page's date: its lastmod, else a date in its path, read as the planner reads it.
@@ -186,20 +207,25 @@ fn locale(level: &str) -> bool {
     b.len() == 5 && b[..2].iter().all(u8::is_ascii_alphabetic) && matches!(b[2], b'-' | b'_') && b[3..].iter().all(u8::is_ascii_alphabetic)
 }
 
-/// What a domain's terms leave unsent: pages dated before its floor, and pages past its depth.
+/// What a domain's terms leave unsent: pages dated before its floor, pages past its depth, and junk, which tag and category pages are only on a site without hubs.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Floor {
     since: Option<u32>,
     depth: Option<u8>,
+    hubs: bool,
 }
 
 impl Floor {
     pub fn of(terms: &Terms) -> Floor {
-        Floor { since: terms.since, depth: terms.depth }
+        Floor { since: terms.since, depth: terms.depth, hubs: terms.hubs.is_some() }
     }
 
     pub fn drops(self, domain: &str, lastmod: u32, rest: &[u8]) -> bool {
         before_floor(self.since, lastmod, rest) || too_deep(self.depth, domain, rest)
+    }
+
+    pub fn junk(self, rest: &[u8]) -> bool {
+        junk_on(self.hubs, rest)
     }
 }
 
@@ -730,7 +756,7 @@ impl BucketStore {
                 let rest = &key[prefix.len()..];
                 if let (Some(record), Some(sent)) = (record, sent) {
                     // A page dated before the floor never goes, so as the oldest send it would hold every place in the stock.
-                    if record.pushed_at != 0 && refreshable(&record, &sent) && !junk(rest) && !floor.drops(domain, record.lastmod, rest) {
+                    if record.pushed_at != 0 && refreshable(&record, &sent) && !floor.junk(rest) && !floor.drops(domain, record.lastmod, rest) {
                         oldest.push((record.pushed_at, rest.to_vec()));
                         if oldest.len() > keep {
                             oldest.pop();
@@ -1096,7 +1122,7 @@ impl BucketStore {
                 continue;
             }
             // Pages first seen after the walk began went on their list when found.
-            if record.first_seen >= started || junk(rest) || !robots.allows_page(domain, rest) || self.listed_apart(domain, rest) {
+            if record.first_seen >= started || floor.junk(rest) || !robots.allows_page(domain, rest) || self.listed_apart(domain, rest) {
                 continue;
             }
             if floor.drops(domain, record.lastmod, rest) {
@@ -1206,7 +1232,7 @@ impl BucketStore {
                     continue;
                 }
                 let rest = &key[prefix.len()..];
-                if junk(rest) || !robots.allows_page(domain, rest) || self.listed_apart(domain, rest) {
+                if Floor::of(&terms).junk(rest) || !robots.allows_page(domain, rest) || self.listed_apart(domain, rest) {
                     continue;
                 }
                 if Floor::of(&terms).drops(domain, record.lastmod, rest) {
@@ -1688,7 +1714,7 @@ impl BucketStore {
             };
             if record.pushed_at == 0 {
                 // Pages first seen since the walk began went on their lists when they were found.
-                if record.first_seen < state.started && !junk(rest) && !scan.floor.drops(&String::from_utf8_lossy(domain), record.lastmod, rest) {
+                if record.first_seen < state.started && !scan.floor.junk(rest) && !scan.floor.drops(&String::from_utf8_lossy(domain), record.lastmod, rest) {
                     let order = Order::Fresh { first_seen: record.first_seen, lastmod: record.lastmod };
                     entries.push(Entry { domain: String::from_utf8_lossy(domain).into_owned(), rest: rest.to_vec(), order });
                 }
@@ -1737,7 +1763,7 @@ impl BucketStore {
         let mut entries = Vec::new();
         let mut room: HashMap<Vec<u8>, (bool, Floor)> = HashMap::new();
         for (key, record) in fresh {
-            if let Some((domain, rest)) = split_key(&key[1..]).filter(|(_, rest)| !junk(rest)) {
+            if let Some((domain, rest)) = split_key(&key[1..]) {
                 // A domain at its cap queues no more new pages, and none below its floor.
                 let (open, floor) = match room.get(domain) {
                     Some(&known) => known,
@@ -1749,7 +1775,7 @@ impl BucketStore {
                     }
                 };
                 let name = String::from_utf8_lossy(domain);
-                if !open || floor.drops(&name, record.lastmod, rest) || self.listed_apart(&name, rest) {
+                if !open || floor.junk(rest) || floor.drops(&name, record.lastmod, rest) || self.listed_apart(&name, rest) {
                     continue;
                 }
                 let order = Order::Fresh { first_seen: record.first_seen, lastmod: record.lastmod };
@@ -1767,7 +1793,8 @@ impl BucketStore {
             if let Some((domain, _)) = changed.first().and_then(|(key, _)| split_key(key)) {
                 let domain = domain.to_vec();
                 let changed = changed.iter().filter_map(|(key, lastmod)| Some((split_key(key)?.1.to_vec(), *lastmod))).collect();
-                entries.extend(changed_entries(DomainScan { domain, listed, changed, floor: Floor::default() }));
+                let floor = Floor { hubs: self.terms(&String::from_utf8_lossy(&domain)).hubs.is_some(), ..Floor::default() };
+                entries.extend(changed_entries(DomainScan { domain, listed, changed, floor }));
             }
         }
         let mut counts = HashMap::new();
@@ -1923,8 +1950,8 @@ fn cut_at(found: &BTreeMap<u32, u64>, fits: u64) -> Option<(u32, u64)> {
 
 /// A domain's changed pages once all of it was read, cut to the newest few when it re-stamps.
 fn changed_entries(scan: DomainScan) -> Vec<Entry> {
-    let restamping = restamped(scan.changed.len(), scan.listed);
-    let mut changed: Vec<(Vec<u8>, u32)> = scan.changed.into_iter().filter(|(rest, _)| !junk(rest)).collect();
+    let (restamping, floor) = (restamped(scan.changed.len(), scan.listed), scan.floor);
+    let mut changed: Vec<(Vec<u8>, u32)> = scan.changed.into_iter().filter(|(rest, _)| !floor.junk(rest)).collect();
     if restamping {
         changed.sort_by_key(|(_, lastmod)| Reverse(*lastmod));
         changed.truncate(RESTAMP_KEEP);
@@ -2044,6 +2071,18 @@ mod tests {
         assert!(!before_floor(Some(may_2019), 0, b"example.com/2019/05/story"));
         assert!(!before_floor(Some(may_2019), 0, b"example.com/story"), "an undated page goes");
         assert!(!before_floor(None, 1, b"example.com/story"));
+    }
+
+    #[test]
+    fn an_outlet_with_hubs_keeps_its_tag_and_category_pages() {
+        for path in ["example.com/tag/sudan-war", "example.com/category/news/", "example.com/topics/tag/x"] {
+            assert!(junk_on(false, path.as_bytes()) && !junk_on(true, path.as_bytes()), "{path}");
+        }
+        for path in ["example.com/author/jane", "example.com/tag/x/page/2", "example.com/a.pdf", "example.com/search?q=x", "example.com/feed"] {
+            assert!(junk_on(true, path.as_bytes()), "{path}");
+        }
+        assert_eq!(Floor::of(&Terms { hubs: Some(60), ..Terms::default() }).junk(b"example.com/tag/x"), false);
+        assert!(Floor::of(&Terms::default()).junk(b"example.com/tag/x"));
     }
 
     #[test]
