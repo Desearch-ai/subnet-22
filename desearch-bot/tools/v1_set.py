@@ -22,7 +22,7 @@ FAILED_SHARE = 0.4
 WHOLE_TYPES = {"academic", "public", "docs"}
 # A site fits whole when its stored pages fit under three times its judged cap, the crawl's share.
 CRAWL_PER_INDEX = 3
-FIELDS = ("host", "rule", "since", "paths", "source", "type", "why")
+FIELDS = ("host", "rule", "since", "paths", "depth", "hubs", "source", "type", "why")
 # At each run of digits, left to right: YYYY-MM-DD, then YYYYMMDD, each standing apart from other digits.
 DIGITS_DATE = re.compile(r"(?<![0-9])(?:([0-9]{4})-([0-9]{2})-([0-9]{2})(?![0-9])|([0-9]{4})([0-9]{2})([0-9]{2})(?![0-9]))?")
 # Forecast sites are one template per place, so they are big, backed or not; a small weather blog is not one.
@@ -39,6 +39,13 @@ MAX_HOPS = 5
 VERDICTS = {"keep", "out"}
 # A landing site gives its homepage and first-level pages; a leading English locale (`/en-us/`) is no level, and another locale's pages are out.
 LANDING_DEPTH = 1
+# Top company landing sites go this deep; top media, organization and reference ones go whole once the site check keeps them.
+DEEP_DEPTH = 3
+DEEP_TYPES = {"company"}
+WHOLE_TYPES_BY_RANK = {"media", "organization", "reference"}
+# These subdomains of a site taken for its rank are sites of their own, taken as their parent is.
+SUBDOMAIN_LABELS = ("docs", "help", "support", "newsroom", "investor", "news")
+SUBDOMAIN_DOCS = {"docs", "help", "support"}
 # An established outlet's undated hub pages: its homepage, sections, topics and tags by type, and its data pages by a word of a path level.
 HUB_PAGES = {"types": ["home", "listing"], "words": ["fixtures", "leaderboard", "markets", "polls", "rankings", "results", "schedule", "scoreboard", "scores", "standings", "table", "tables"]}
 WORD_BREAKS = re.compile(r"[-_.]")
@@ -208,15 +215,39 @@ def listed_entries(decisions, backing, news_sources, outlets, judged, counts, ne
     return entries, too_big
 
 
-def landing_entries(ranked: list[dict], judged: dict, counts: dict[str, dict], sites: dict[str, dict]) -> list[dict]:
-    """Ranked listed sites that no entry takes or shuts, each for its homepage and first-level pages, unless it is spam, people search or failed the judge."""
+def landing_entries(ranked: list[dict], judged: dict, counts: dict[str, dict], sites: dict[str, dict], kept: set[str] = frozenset(), whole_rank: int | None = None, deep_rank: int | None = None) -> list[dict]:
+    """Ranked listed sites that no entry takes or shuts, each for its homepage and first-level pages, unless it is spam, people search or failed the judge; the top ones go deeper, or whole once the site check keeps them."""
     spam = networks(counts)
     entries = []
     for row in ranked:
         host, verdict = row["host"], share(judged.get(row["host"]))
         if entry_for(sites, host) is not None or host in spam or PEOPLE_SEARCH.search(host) or (verdict is not None and verdict <= FAILED_SHARE):
             continue
-        entries.append({"host": host, "rule": "landing", "type": row["type"], "why": ["rank"]})
+        entry = {"host": host, "rule": "landing", "type": row["type"], "why": ["rank"]}
+        rank = int(row.get("rank") or 0)
+        if whole_rank and rank <= whole_rank and row["type"] in WHOLE_TYPES_BY_RANK and host in kept:
+            entry["rule"] = "whole"
+        elif deep_rank and rank <= deep_rank and row["type"] in DEEP_TYPES:
+            entry["depth"] = DEEP_DEPTH
+        entries.append(entry)
+    return entries
+
+
+def by_rank(entry: dict | None) -> bool:
+    """A landing site, or a site taken whole for its rank."""
+    return entry is not None and entry.get("why") == ["rank"] and entry["rule"] in ("landing", "whole")
+
+
+def subdomain_entries(rows: list[dict], sites: dict[str, dict]) -> list[dict]:
+    """Listed docs, help, support, newsroom, investor and news subdomains of a site taken for its rank, each taken as its parent is."""
+    entries = []
+    for row in rows:
+        label, _, parent = row["host"].partition(".")
+        found = sites.get(parent)
+        if row["listed"] != "1" or label not in SUBDOMAIN_LABELS or not by_rank(found) or entry_for(sites, row["host"]) is not found:
+            continue
+        taken = {key: found[key] for key in ("rule", "depth") if key in found}
+        entries.append({"host": row["host"], **taken, "type": "docs" if label in SUBDOMAIN_DOCS else found.get("type") or row["type"], "why": ["rank"]})
     return entries
 
 
@@ -260,8 +291,8 @@ def read_verdicts(path: str | None) -> dict[str, str]:
     return verdicts
 
 
-def build(row_files, hand, decisions, backing, news_sources, judged, counts, news_counts=None, news: str = "A", today: date | None = None, outlets=None, verdicts=None, redirects=None, landing_rank: int | None = None) -> tuple[list[dict], list[dict]]:
-    """Hand entries first (the lead's outs), then the site check's outs, the teammates' rows in order, the judged list, then the landing sites; the first to name a host wins."""
+def build(row_files, hand, decisions, backing, news_sources, judged, counts, news_counts=None, news: str = "A", today: date | None = None, outlets=None, verdicts=None, redirects=None, landing_rank: int | None = None, hubs: bool = False, whole_rank: int | None = None, deep_rank: int | None = None, subdomains: bool = False) -> tuple[list[dict], list[dict]]:
+    """Hand entries first (the lead's outs), then the site check's outs, the teammates' rows in order, the judged list, the landing sites, then their subdomains; the first to name a host wins."""
     outlets = outlets or {}
     recent = ((today or datetime.now(timezone.utc).date()) - timedelta(days=RECENT_DAYS)).replace(day=1).isoformat()
     if redirects is None:
@@ -277,12 +308,14 @@ def build(row_files, hand, decisions, backing, news_sources, judged, counts, new
     moved_from = defaultdict(list)
     for source, target in sorted(moved.items()):
         moved_from[target].append(source)
-    ranked = []
+    ranked, labelled = [], []
 
     def keep_ranked(rows):
         for row in rows:
             if landing_rank and row["listed"] == "1" and row["rank"] and int(row["rank"]) <= landing_rank:
-                ranked.append({"host": row["host"], "type": row["type"]})
+                ranked.append({"host": row["host"], "type": row["type"], "rank": row["rank"]})
+            if subdomains and row["host"].partition(".")[0] in SUBDOMAIN_LABELS:
+                labelled.append({"host": row["host"], "type": row["type"], "listed": row["listed"]})
             yield row
 
     listed, too_big = listed_entries(keep_ranked(decisions), backing, news_sources, outlets, judged, counts, news_counts or {}, news, recent, moved_from)
@@ -295,8 +328,15 @@ def build(row_files, hand, decisions, backing, news_sources, judged, counts, new
     for entry in listed:
         sites.setdefault(entry["host"], entry)
     # Each landing site is checked against the other sources' entries only, so a ranked subdomain of a landing site is one too.
-    for entry in landing_entries(ranked, judged, counts, sites):
+    kept = {host for host, verdict in (verdicts or {}).items() if verdict == "keep"}
+    for entry in landing_entries(ranked, judged, counts, sites, kept, whole_rank, deep_rank):
         sites.setdefault(entry["host"], entry)
+    for entry in subdomain_entries(labelled, sites):
+        sites.setdefault(entry["host"], entry)
+    # A news site taken for all years is an established outlet, which gives its undated hub pages too.
+    for entry in sites.values():
+        if hubs and entry["rule"] == "news" and "since" not in entry:
+            entry["hubs"] = True
     return [sites[host] for host in sorted(sites)], too_big
 
 
@@ -423,6 +463,10 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--too-big", help="TSV to write the judged-list sites too big to take whole")
     parser.add_argument("--landing-rank", type=int, help="listed sites ranked this high or higher that no other entry takes or shuts are landing sites: their homepage and first-level pages are in")
     parser.add_argument("--site-verdicts", help="the site check's TSV (.gz allowed) of host and verdict, keep or out: out puts a host out for quality, over every source but the hand entries")
+    parser.add_argument("--hubs", action="store_true", help="news sites taken for all years give their undated hub pages too: the homepage, sections, topics, tags and data pages")
+    parser.add_argument("--whole-rank", type=int, help="media, organization and reference landing sites ranked this high or higher that the site check keeps go whole")
+    parser.add_argument("--deep-rank", type=int, help=f"company landing sites ranked this high or higher give pages {DEEP_DEPTH} levels down")
+    parser.add_argument("--subdomains", action="store_true", help="listed docs, help, support, newsroom, investor and news subdomains of a site taken for its rank are taken as their parent is")
     args = parser.parse_args(argv)
     backing = {r["host"]: r for r in tsv(args.backing)}
     news_sources = {r["host"]: r["sources"] for r in tsv(args.news_domains)}
@@ -437,12 +481,15 @@ def main(argv: list[str] | None = None) -> None:
         redirects = redirects_of(csv.DictReader(source, delimiter="\t"))
     with open_text(args.decisions) as source:
         decisions = csv.DictReader(source, delimiter="\t")
-        sites, too_big = build([read_rows(path) for path in args.rows], hand_entries(tsv(args.hand)), decisions, backing, news_sources, judged, counts, news_counts, args.news, outlets=outlets, verdicts=verdicts, redirects=redirects, landing_rank=args.landing_rank)
+        sites, too_big = build([read_rows(path) for path in args.rows], hand_entries(tsv(args.hand)), decisions, backing, news_sources, judged, counts, news_counts, args.news, outlets=outlets, verdicts=verdicts, redirects=redirects, landing_rank=args.landing_rank, hubs=args.hubs, whole_rank=args.whole_rank, deep_rank=args.deep_rank, subdomains=args.subdomains)
     if not sites:
         sys.exit(f"no sites; {args.out} left as it was")
     built = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     temporary = Path(f"{args.out}.new")
-    temporary.write_text(json.dumps({"built": built, "news": args.news, "undated": args.undated, "sites": sites}, separators=(",", ":")))
+    head = {"built": built, "news": args.news, "undated": args.undated}
+    if any(site.get("hubs") for site in sites):
+        head["hub_pages"] = HUB_PAGES
+    temporary.write_text(json.dumps({**head, "sites": sites}, separators=(",", ":")))
     temporary.replace(args.out)
     if args.too_big:
         with open(args.too_big, "w", newline="") as target:
@@ -450,7 +497,8 @@ def main(argv: list[str] | None = None) -> None:
             writer.writeheader()
             writer.writerows(sorted(too_big, key=lambda site: -site["stored"]))
     print(f"{len(sites)} sites in {args.out} (news {args.news}); {len(too_big)} judged-list sites too big to take whole")
-    print(f"{sum(site['rule'] == 'landing' for site in sites)} landing sites (rank {args.landing_rank or 'none'} and higher)")
+    print(f"{sum(site['rule'] == 'landing' for site in sites)} landing sites (rank {args.landing_rank or 'none'} and higher), {sum('depth' in site for site in sites)} of them {DEEP_DEPTH} levels deep; {sum(site['rule'] == 'whole' and site.get('why') == ['rank'] for site in sites)} whole for their rank")
+    print(f"{sum(bool(site.get('hubs')) for site in sites)} news sites with hubs")
     quality = sum(1 for site in sites if site.get("why") == ["quality"])
     print(f"{quality} out by the site check ({sum(v == 'out' for v in verdicts.values())} out verdicts, {sum(v == 'keep' for v in verdicts.values())} keep); {len(redirects)} redirects in the registry")
     news_missing, whole_missing = uncounted(sites, counts, news_counts)
