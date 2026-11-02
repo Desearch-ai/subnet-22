@@ -1553,3 +1553,27 @@ async fn a_named_sitemap_that_went_dead_hides_the_guesses_on_a_visit_that_skips_
     assert!(hits.is_empty(), "robots.txt named /news.xml, read an hour ago: nothing is guessed, got {hits:?}");
     assert_eq!(crawl.stats.requests, 0);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_landing_site_whose_homepage_failed_last_time_is_still_guessed_at() {
+    let web: Shared = Arc::default();
+    let host = "landing-home-500.test";
+    {
+        let mut w = web.lock().unwrap();
+        w.add(host, "/robots.txt", 200, None, b"User-agent: *\nAllow: /\n");
+        w.add(host, "/sitemap.xml", 200, None, urlset(host, &(0..12).map(|i| format!("/story/{i}")).collect::<Vec<_>>()).as_bytes());
+        w.add(host, "/", 500, None, b"oops");
+    }
+    let (buckets, _crawl) = crawl_following(web.clone(), &[host], "landing-home-500", FollowLinks::Off, Slots::new(2), |buckets| {
+        buckets.allow(&Allowed::with_terms([(host, Terms { depth: Some(2), ..Terms::default() })]));
+        let home = format!("http://{host}/");
+        let mut changes = Changes::default();
+        changes.sitemap(host, &home, serde_json::json!({"id": sitemap_id(&home), "depth": 0, "status": "error", "error": "http_500", "urls": 0, "next": 0}).as_object().unwrap());
+        buckets.store(host).write(changes).unwrap();
+    })
+    .await;
+    let hits: Vec<String> = web.lock().unwrap().hits.iter().map(|(_, path, _)| path.clone()).collect();
+    let record = buckets.store(host).domain(host).unwrap().unwrap();
+    assert!(hits.contains(&"/sitemap.xml".to_string()), "a failed homepage read is no sitemap: {hits:?}");
+    assert_ne!(record["reason"].as_str(), Some("no_sitemap"), "{record:?}");
+}

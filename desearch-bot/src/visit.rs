@@ -587,7 +587,7 @@ impl Run<'_> {
         // A landing site's homepage is no guess: it is read even when a sitemap answers.
         let reads_home = self.visitor.buckets.terms(&self.known.host).depth.is_some();
         // Gone or unanswered sitemaps hide no guesses, unless robots.txt named sitemaps, which a visit skipping it cannot tell, or refused us.
-        let mut stored = self.known.sitemaps.values().filter(|s| s.depth == 0 && !is_listing(s.kind.as_deref()));
+        let mut stored = self.known.sitemaps.values().filter(|s| s.depth == 0 && !is_listing(s.kind.as_deref()) && !self.is_homepage(&s.url, Some(s)));
         let open = if self.result.robots_read { stored.all(|s| s.dead) } else { stored.next().is_none() };
         if !self.robots_refused() && named.is_empty() && open {
             for path in guess_paths(self.listed) {
