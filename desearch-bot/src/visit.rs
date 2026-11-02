@@ -11,6 +11,7 @@ use flate2::{Decompress, FlushDecompress, Status};
 use indexmap::IndexMap;
 use rand::Rng;
 use regex::Regex;
+use reqwest::dns::{Name, Resolve};
 use reqwest::header::HeaderMap;
 use sha2::{Digest, Sha256};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
@@ -400,6 +401,20 @@ impl Slots {
     }
 }
 
+/// Claims for a run each address it has not claimed yet; false when another run holds one, or runs there are stopped.
+fn hold(slots: &Slots, claims: &mut Vec<PeerClaim>, ips: &[IpAddr]) -> bool {
+    for ip in ips {
+        if claims.iter().any(|claim| claim.ip == *ip) {
+            continue;
+        }
+        match slots.claim(*ip) {
+            Some(claim) => claims.push(claim),
+            None => return false,
+        }
+    }
+    true
+}
+
 /// One host's request clock, so a slow host never shares a budget with a fast one.
 struct Pacer {
     interval: f64,
@@ -459,6 +474,8 @@ pub struct Visitor {
     /// Visits at once following a site's links, which each hold their visit slot for minutes.
     pub links: Slots,
     pub follow_links: FollowLinks,
+    /// Looks up the addresses a link run will ask before it asks them; without it a run learns them from its answers.
+    pub resolver: Option<Arc<dyn Resolve>>,
 }
 
 impl Visitor {
@@ -1007,6 +1024,18 @@ impl Run<'_> {
         Ok(self.visitor.cpu(move || homepage::read_cut(&body, &*detect, cut)).await?.problem.is_none())
     }
 
+    /// The addresses a URL's host has, as the resolver finds them; none without one.
+    async fn addresses(&self, url: &str) -> Vec<IpAddr> {
+        let host = urls::split(url).ok().and_then(|parts| parts.hostname()).unwrap_or_default();
+        let (Some(resolver), Ok(name)) = (&self.visitor.resolver, host.parse::<Name>()) else {
+            return Vec::new();
+        };
+        match resolver.resolve(name).await {
+            Ok(found) => found.map(|addr| addr.ip()).collect(),
+            Err(_) => Vec::new(),
+        }
+    }
+
     /// Keeps a homepage that answered on the site while link work may follow.
     fn keep_home(&mut self, answer: &Answer) {
         if self.visitor.follow_links != FollowLinks::Off && self.listed && answer.status == 200 && self.on_site(&answer.url) {
@@ -1020,7 +1049,7 @@ impl Run<'_> {
         // Sites whose sitemaps list some pages leave a quarter of the slots to those that list none.
         let permit = if self.sitemap_urls() == 0 || slots.busy() * 4 < slots.size() * 3 { slots.try_take() } else { None };
         // One run at a time on the address the site answered from, whichever sites share it.
-        let Some(ip) = self.site_peer else {
+        let Some(ip) = self.site_peer.or(self.addresses(&self.home.clone()).await.first().copied()) else {
             return Ok(());
         };
         let (Some(_permit), Some(claim)) = (permit, slots.claim(ip)) else {
@@ -1030,7 +1059,9 @@ impl Run<'_> {
         let mut claims = vec![claim];
         // A site not judged on its homepage yet, as one without sitemaps is not, must read as English first.
         if self.needs_language() && self.result.language.is_none() {
-            slots.turn(&[ip]).await;
+            if self.home_read.is_none() {
+                slots.turn(&[ip]).await;
+            }
             if !self.homepage_passes().await? {
                 return match self.home_refused {
                     Some(status) => self.links_listing(Vec::new(), 0, Some(status), every).await,
@@ -1062,6 +1093,11 @@ impl Run<'_> {
             }
             let kept = self.home_read.take().filter(|_| depth == 0 && page == self.home);
             if kept.is_none() {
+                // An address the page will be asked on is claimed and booked before it is asked.
+                let ips = self.addresses(&page).await;
+                if !hold(&slots, &mut claims, &ips) {
+                    break;
+                }
                 slots.turn(&claims.iter().map(|claim| claim.ip).collect::<Vec<_>>()).await;
             }
             let fetched = match kept {
@@ -1866,6 +1902,19 @@ mod tests {
         assert_eq!(peers.map.len(), 2, "both recent");
         peers.prune(Instant::now() + PEER_REST + 3 * PEER_PRUNE_EVERY);
         assert!(peers.map.is_empty(), "the idle one and the one whose stop ran out");
+    }
+
+    #[test]
+    fn a_run_claims_an_address_before_asking_it_and_stops_where_another_run_holds_one() {
+        let slots = Slots::new(2);
+        let (ours, theirs): (IpAddr, IpAddr) = ("192.0.2.1".parse().unwrap(), "192.0.2.2".parse().unwrap());
+        let mut claims = vec![slots.claim(ours).unwrap()];
+        let held = slots.claim(theirs).unwrap();
+        assert!(!hold(&slots, &mut claims, &[ours, theirs]), "another run is on the second address");
+        drop(held);
+        assert!(hold(&slots, &mut claims, &[ours, theirs]));
+        assert_eq!(claims.len(), 2, "both held now, so both are spaced and booked before the next fetch");
+        assert!(slots.claim(theirs).is_none());
     }
 
     #[test]

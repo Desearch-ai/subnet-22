@@ -224,6 +224,7 @@ async fn crawls_a_small_web() {
         heavy: Slots::new(1),
         links: Slots::new(2),
         follow_links: FollowLinks::Thin,
+        resolver: None,
     };
     let mut crawl = Loop::new(buckets.clone(), Arc::new(visitor), 16, Registry::offline(), HashSet::new());
     assert_eq!(crawl.load().unwrap(), 4);
@@ -314,6 +315,7 @@ async fn a_sitemap_listing_new_urls_on_every_read_is_held_back_while_one_that_se
         heavy: Slots::new(1),
         links: Slots::new(2),
         follow_links: FollowLinks::Thin,
+        resolver: None,
     };
     let mut crawl = Loop::new(buckets.clone(), Arc::new(visitor), 16, Registry::offline(), HashSet::new());
     let stored = |host: &str, path: &str| buckets.store(host).url(&urls::parse(&format!("http://{host}{path}"), host).unwrap()).unwrap().is_some();
@@ -408,6 +410,7 @@ async fn a_subdomain_kept_as_a_domain_of_its_own_is_crawled_on_its_own_host_with
         heavy: Slots::new(1),
         links: Slots::new(2),
         follow_links: FollowLinks::Thin,
+        resolver: None,
     };
     let mut crawl = Loop::new(buckets.clone(), Arc::new(visitor), 16, Registry::offline(), HashSet::new());
     assert_eq!(crawl.load().unwrap(), 1);
@@ -472,6 +475,7 @@ async fn a_homepage_that_answers_with_an_error_keeps_its_status_on_the_record() 
         heavy: Slots::new(1),
         links: Slots::new(2),
         follow_links: FollowLinks::Thin,
+        resolver: None,
     };
     let mut crawl = Loop::new(buckets.clone(), Arc::new(visitor), 16, Registry::offline(), HashSet::new());
     assert_eq!(crawl.load().unwrap(), hosts.len());
@@ -526,6 +530,7 @@ async fn a_feed_named_as_a_sitemap_is_read_as_one() {
         heavy: Slots::new(1),
         links: Slots::new(2),
         follow_links: FollowLinks::Thin,
+        resolver: None,
     };
     let mut crawl = Loop::new(buckets.clone(), Arc::new(visitor), 16, Registry::offline(), HashSet::new());
     assert_eq!(crawl.load().unwrap(), 1);
@@ -589,6 +594,7 @@ async fn an_index_entry_naming_several_sitemaps_reads_each_and_their_cdata_locat
         heavy: Slots::new(1),
         links: Slots::new(2),
         follow_links: FollowLinks::Off,
+        resolver: Some(Arc::new(TestResolver { addr, known: [host].into() })),
     };
     let mut crawl = Loop::new(buckets.clone(), Arc::new(visitor), 16, Registry::offline(), HashSet::new());
     assert_eq!(crawl.load().unwrap(), 1);
@@ -643,6 +649,7 @@ async fn a_landing_site_lists_its_homepage_and_the_pages_it_links_to_beside_its_
         heavy: Slots::new(1),
         links: Slots::new(2),
         follow_links: FollowLinks::Thin,
+        resolver: None,
     };
     let mut crawl = Loop::new(buckets.clone(), Arc::new(visitor), 16, Registry::offline(), HashSet::new());
     assert_eq!(crawl.load().unwrap(), 1);
@@ -708,6 +715,7 @@ async fn visit_seeded(web: Shared, hosts: &[&'static str], resolves: &[&'static 
         heavy: Slots::new(1),
         links: Slots::new(2),
         follow_links: FollowLinks::Thin,
+        resolver: None,
     };
     let mut crawl = Loop::new(buckets.clone(), Arc::new(visitor), 16, Registry::offline(), HashSet::new());
     assert_eq!(crawl.load().unwrap(), hosts.len());
@@ -779,6 +787,7 @@ async fn crawl_adjusted(
         heavy: Slots::new(1),
         links,
         follow_links,
+        resolver: None,
     };
     adjust(&mut visitor);
     let mut crawl = Loop::new(buckets.clone(), Arc::new(visitor), 16, Registry::offline(), HashSet::new());

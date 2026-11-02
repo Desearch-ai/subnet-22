@@ -332,8 +332,9 @@ async fn run(args: RunArgs) -> Result<()> {
     let model = LangId::load(&args.data_dir.join("langid.bin"))?;
     let cores = std::thread::available_parallelism().map_or(4, |n| n.get());
     let read_timeout = Duration::from_secs_f64(args.timeout);
+    let resolver = PublicResolver::local();
     let visitor = Arc::new(Visitor {
-        client: net::client(PublicResolver::local(), read_timeout)?,
+        client: net::client(resolver.clone(), read_timeout)?,
         buckets: buckets.clone(),
         suffixes,
         signer: Signer::from_env()?.map(Arc::new),
@@ -346,6 +347,7 @@ async fn run(args: RunArgs) -> Result<()> {
         heavy: Slots::new(args.heavy_slots),
         links: Slots::new(args.links_slots),
         follow_links: args.follow_links,
+        resolver: Some(Arc::new(resolver)),
     });
     if args.compact {
         let stores = buckets.clone();

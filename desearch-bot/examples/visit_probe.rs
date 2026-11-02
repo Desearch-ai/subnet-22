@@ -52,8 +52,9 @@ async fn main() -> Result<()> {
         buckets.store(host).write(changes)?;
     }
     let read_timeout = Duration::from_secs(10);
-    let client = if local {
-        net::client(PublicResolver::local(), read_timeout)?
+    let resolver = local.then(PublicResolver::local);
+    let client = if let Some(resolver) = &resolver {
+        net::client(resolver.clone(), read_timeout)?
     } else {
         reqwest::Client::builder()
             .user_agent(USER_AGENT)
@@ -94,6 +95,7 @@ async fn main() -> Result<()> {
             Ok("all") => FollowLinks::All,
             _ => FollowLinks::Thin,
         },
+        resolver: resolver.map(|resolver| Arc::new(resolver) as Arc<dyn reqwest::dns::Resolve>),
     };
     let mut crawl = Loop::new(buckets.clone(), Arc::new(visitor), concurrency, Registry::offline(), HashSet::new()).with_tally();
     crawl.load()?;
