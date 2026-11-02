@@ -378,6 +378,7 @@ impl Slots {
         if peer.failures >= PEER_FAILURES && peer.stopped_until.is_none_or(|until| until <= Instant::now()) {
             peer.stopped_until = Some(Instant::now() + PEER_REST);
             println!("[rs] link runs to {ip} stop for a day: {} connections to it in a row failed", peer.failures);
+            peer.failures = 0;
         }
     }
 
@@ -1837,6 +1838,19 @@ mod tests {
         assert_eq!(peers.map.len(), 2, "both recent");
         peers.prune(Instant::now() + PEER_REST + 3 * PEER_PRUNE_EVERY);
         assert!(peers.map.is_empty(), "the idle one and the one whose stop ran out");
+    }
+
+    #[test]
+    fn an_address_back_from_its_stop_takes_as_many_failures_again_to_stop() {
+        let slots = Slots::new(1);
+        let ip: IpAddr = "192.0.2.1".parse().unwrap();
+        for _ in 0..PEER_FAILURES {
+            slots.connected(ip, false);
+        }
+        assert!(slots.claim(ip).is_none(), "stopped");
+        slots.peers.lock().unwrap().map.get_mut(&ip).unwrap().stopped_until = Some(Instant::now());
+        slots.connected(ip, false);
+        assert!(slots.claim(ip).is_some(), "one failure after the stop ran out is not enough to stop it again");
     }
 
     #[test]
