@@ -188,7 +188,9 @@ fn value(text: &[u8], from: usize) -> (&[u8], usize) {
     let start = skip(from).min(text.len());
     if starts_with(text, start, CDATA) {
         let open = start + CDATA.len();
-        let Some(close) = find(text, open, b"]]>") else {
+        // A value holds no `<`, so its section must close before the next one: the search never runs past it.
+        let bound = memchr(b'<', &text[open.min(text.len())..]).map_or(text.len(), |at| open + at);
+        let Some(close) = find(&text[..bound], open, b"]]>") else {
             return (&[], start);
         };
         let held = &text[open..close];
@@ -419,6 +421,16 @@ mod tests {
         ], "a section holding whitespace, or never closed, is no value");
         let (kind, entries) = parse_entries(b"<sitemapindex><loc><![CDATA[https://a.com/s.xml]]></loc></sitemapindex>");
         assert_eq!((kind, entries[0].url.as_str()), ("index", "https://a.com/s.xml"));
+    }
+
+    #[test]
+    fn a_large_file_of_unclosed_cdata_sections_reads_in_linear_time() {
+        let entry = b"<url><loc><![CDATA[https://www.example.com/a/long/enough/path/to/a/story</loc><lastmod>2026-11-02</lastmod></url>\n";
+        let body: Vec<u8> = [&b"<urlset>"[..], &entry.repeat(2_000_000 / entry.len()), b"</urlset>"].concat();
+        let started = std::time::Instant::now();
+        let (kind, entries) = parse_entries(&body);
+        assert_eq!((kind, entries.len()), ("invalid", 0));
+        assert!(started.elapsed() < std::time::Duration::from_secs(1), "2 MB of sections never closed took {:?}", started.elapsed());
     }
 
     #[test]
