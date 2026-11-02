@@ -2014,6 +2014,21 @@ async fn link_work_alone_reads_robots_txt_again_after_a_day_and_runs_only_where_
     }
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_link_run_refused_partway_keeps_what_it_read_and_waits_twice_as_long() {
+    let web: Shared = Arc::default();
+    let host = "refused-partway.test";
+    deep_site(&web, host);
+    web.lock().unwrap().add(host, "/b", 403, None, b"denied");
+    let now = chrono::Utc::now().timestamp();
+    let (buckets, _crawl) = crawl_following(web.clone(), &[host], "refused-partway", FollowLinks::Thin, Slots::new(2), |b| b.allow(&Allowed::of([host]))).await;
+    let hits: Vec<String> = web.lock().unwrap().hits.iter().map(|(_, path, _)| path.clone()).collect();
+    assert!(!hits.iter().any(|path| path.starts_with("/a/")), "the run stops at the refusal: {hits:?}");
+    let links = buckets.store(host).sitemap(host, &format!("https://{host}/#links")).unwrap().unwrap();
+    assert_eq!(links["status"].as_str(), Some("ok"), "the pages read before it are kept");
+    assert!(links["next"].as_i64().unwrap() - now >= 14 * 86_400 - 60, "{links:?}");
+}
+
 /// An active site read an hour ago, its robots.txt rules disallowing /site, with these sitemaps stored at these next times.
 fn active_with(buckets: &Arc<Buckets>, host: &str, now: i64, sitemaps: &[(&str, &str, i64, i64)]) {
     let mut record = records::new_domain(Some(1), Some("new_generic"), &[], State::Active, None, Some(0));

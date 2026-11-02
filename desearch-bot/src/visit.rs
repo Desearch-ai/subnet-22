@@ -1313,7 +1313,8 @@ impl Run<'_> {
         };
         match self.visitor.cpu(move || digest(job)).await?? {
             Digested::Read(mut listing) => {
-                let interval = if listing.listing.new > 0 { every } else { later };
+                // A run the site refused partway keeps what it read, and waits as long as one refused at once.
+                let interval = if listing.listing.new > 0 && refused.is_none() { every } else { later };
                 self.take_read(i, &mut listing, stored, interval, &url);
             }
             Digested::Unchanged | Digested::Invalid => {
