@@ -1529,3 +1529,27 @@ async fn a_site_whose_robots_txt_refuses_us_is_not_guessed_at_even_with_a_gone_s
     assert_eq!(hits, ["/robots.txt", "/sitemap.xml"], "only the stored sitemap is asked for again");
     assert_eq!(crawl.stats.requests, 3, "robots.txt on https then http, and the stored sitemap: no guess on either scheme");
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_named_sitemap_that_went_dead_hides_the_guesses_on_a_visit_that_skips_robots_txt() {
+    let web: Shared = Arc::default();
+    let host = "named-dead.test";
+    let now = chrono::Utc::now().timestamp();
+    let (_buckets, crawl) = crawl_following(web.clone(), &[host], "named-dead", FollowLinks::Off, Slots::new(2), |buckets| {
+        let mut record = records::new_domain(Some(1), Some("new_generic"), &[], State::Active, None, Some(0));
+        for name in ["robots", "checked", "ok"] {
+            record.insert(name.into(), now.into());
+        }
+        record.insert("lang".into(), "en".into());
+        let (news, home) = (format!("http://{host}/news.xml"), format!("http://{host}/"));
+        let mut changes = Changes::default();
+        changes.domain(host, &record);
+        changes.sitemap(host, &news, serde_json::json!({"id": sitemap_id(&news), "kind": "urlset", "depth": 0, "status": "error", "error": "SocketTimeoutError", "urls": 0, "next": now + 3600}).as_object().unwrap());
+        changes.sitemap(host, &home, serde_json::json!({"id": sitemap_id(&home), "kind": "homepage", "depth": 0, "status": "ok", "urls": 3, "next": now + 3600}).as_object().unwrap());
+        buckets.store(host).write(changes).unwrap();
+    })
+    .await;
+    let hits: Vec<String> = web.lock().unwrap().hits.iter().map(|(_, path, _)| path.clone()).collect();
+    assert!(hits.is_empty(), "robots.txt named /news.xml, read an hour ago: nothing is guessed, got {hits:?}");
+    assert_eq!(crawl.stats.requests, 0);
+}
