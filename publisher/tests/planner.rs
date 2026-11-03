@@ -4177,7 +4177,7 @@ fn nav_table(dir: &std::path::Path) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_page_is_embedded_without_its_site_s_template_lines_and_again_once_they_change_its_page_text() {
+async fn a_page_is_embedded_without_its_site_s_template_lines_and_the_log_never_plans_the_same_text_again_for_them() {
     let Some((_turn, redis)) = redis_db().await else {
         eprintln!("skipped: no Redis on {REDIS}");
         return;
@@ -4185,32 +4185,28 @@ async fn a_page_is_embedded_without_its_site_s_template_lines_and_again_once_the
     let dir = scratch("templates");
     let stub = stub::start(dir.join("r2"), "127.0.0.1:0").await.unwrap();
     let (pages, temp) = (bucket(stub.addr, "desearch-pages"), bucket(stub.addr, "subnet-22"));
-    let story = v2(record("https://news.example/story/1", &format!("{}\n{}", NAV.join("\n"), article(2)), "article", "en"));
+    let story = |n: usize| v2(record(&format!("https://news.example/story/{n}"), &format!("{}\n{}", NAV.join("\n"), article(2)), "article", "en"));
     let settings = Settings { templates_dir: dir.join("templates"), ..settings(dir.join("state"), 3600.0, 0) };
-    log(&pages, 1, vec![story.clone()]).await;
+    log(&pages, 1, vec![story(1)]).await;
     let mut planner = Planner::new(settings, pages.clone(), temp.clone(), redis.clone(), Room::Fixed(0)).await.unwrap();
     planner.pass().await.unwrap();
-    assert_eq!(planner.counts.planned, 1, "with no table the page is planned whole");
     planner.flush().await.unwrap();
+    assert_eq!(planner.counts.planned, 1, "with no table the page is planned whole");
 
     nav_table(&dir.join("templates"));
-    log(&pages, 2, vec![story.clone()]).await;
+    log(&pages, 2, vec![story(1), story(2)]).await;
     planner.pass().await.unwrap();
-    assert_eq!((planner.counts.planned, planner.counts.restripped), (2, 1), "the same text is planned again once its template lines are known");
     planner.flush().await.unwrap();
-    log(&pages, 3, vec![story.clone()]).await;
-    planner.pass().await.unwrap();
-    assert_eq!((planner.counts.planned, planner.counts.unchanged), (2, 1), "and only once");
-    planner.flush().await.unwrap();
+    assert_eq!((planner.counts.planned, planner.counts.unchanged, planner.counts.restripped), (2, 1, 0), "the same text from the log waits for the backfill");
     let mut pages_texts = Vec::new();
     for (_, raw) in planner.state.pending().unwrap() {
         let entry: Value = serde_json::from_str(&raw).unwrap();
-        pages_texts.push(input_texts(temp.get(entry["input_key"].as_str().unwrap()).await.unwrap())[0].clone());
+        let url = entry["pages"][0]["url"].as_str().unwrap().to_string();
+        pages_texts.push((url, input_texts(temp.get(entry["input_key"].as_str().unwrap()).await.unwrap())[0].clone()));
     }
     pages_texts.sort();
-    assert_eq!(pages_texts.len(), 2);
-    assert!(pages_texts[0].starts_with("A title\n- Home") && pages_texts[1].starts_with("A title\nParagraph 0"), "{pages_texts:?}");
-    assert!(!pages_texts[1].contains("Most read"));
+    assert!(pages_texts[0].1.starts_with("A title\n- Home") && pages_texts[1].1.starts_with("A title\nParagraph 0"), "{pages_texts:?}");
+    assert!(!pages_texts[1].1.contains("Most read"));
 
     let nav = NAV.join("\n");
     let video = v2(record("https://news.example/video/2", &format!("{nav}\n{nav}\n{nav}\n{nav}\nWatch the bridge open"), "video", "en"));

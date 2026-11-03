@@ -2756,7 +2756,8 @@ impl Planner {
         let (mut parts_only, mut restripped) = (false, false);
         if let Some(Version { content_sha1, fetched_at, page_only, stripped, .. }) = &already {
             if *content_sha1 == record.content_sha1 {
-                restripped = buffered.is_none() && cleaned.changed_since(*stripped);
+                // Only the backfill plans a version again for its template lines, so it never takes budget from the log's pages.
+                restripped = from == Source::Backfill && buffered.is_none() && cleaned.changed_since(*stripped);
                 if !restripped && (!page_only || self.settings.page_first || buffered.is_some()) {
                     self.counts.unchanged += 1;
                     return Considered::Passed;
