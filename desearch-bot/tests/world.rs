@@ -2552,10 +2552,10 @@ async fn link_work_right_after_a_visit_keeps_the_sites_crawl_delay() {
     .await;
     let listing = buckets.store(host).sitemap(host, &format!("https://{host}/#links")).unwrap().unwrap();
     assert!(listing["next"].as_i64().unwrap() > now + 86_400, "the visit's overdue link work ran right after it: {listing:?}");
-    let at = web.lock().unwrap().hit_at.clone();
+    // The requests the server took; a TLS handshake it hung up on is no request, and the http try after it goes at once.
+    let at: Vec<std::time::Instant> = web.lock().unwrap().at.iter().map(|(_, _, at)| *at).collect();
     let gaps: Vec<f64> = at.windows(2).map(|pair| (pair[1] - pair[0]).as_secs_f64()).collect();
-    // The first visit tries https, then http, before robots.txt has said how long to wait.
-    assert!(gaps[1..].iter().all(|gap| *gap >= 2.9), "every later request three seconds after the last, the visit's and its link work's alike: {gaps:?}");
+    assert!(at.len() >= 4 && gaps.iter().all(|gap| *gap >= 2.9), "every request three seconds after the last, the visit's and its link work's alike: {gaps:?}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
