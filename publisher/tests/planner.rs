@@ -950,6 +950,7 @@ async fn pages_dated_in_the_last_two_days_get_their_own_inputs_outside_the_budge
     let mut planner = Planner::new(two, pages.clone(), temp.clone(), redis.clone(), Room::Fixed(0)).await.unwrap();
     planner.pass().await.unwrap();
     assert_eq!((planner.counts.inputs, planner.counts.fresh), (1, 1), "c and d fill an input while f3 waits in the fresh lane");
+    nothing_banked(&planner);
     drop(planner);
     let mut serving = settings(dir.join("state"), 3600.0, 0);
     serving.budget_at_start = Duration::ZERO;
@@ -1049,8 +1050,8 @@ async fn the_backfill_plans_each_set_page_s_standing_v2_version_as_the_budget_al
     }
     assert_eq!(
         (restarted.counts.shards, restarted.state.backfill().unwrap(), restarted.state.backfill_class().unwrap()),
-        (2, Some((7, None)), Some(Class::RecentNews)),
-        "the shard is read through for the news site's class, then for the whole site's, and the next sweep starts over"
+        (2, Some((7, None)), Some(Class::Other)),
+        "each sweep reads the shard for every class, and the next sweep starts over"
     );
     assert_eq!((restarted.counts.planned, restarted.counts.unchanged), (3, 0), "it goes on after the page planned before the restart");
     let planned: HashMap<String, String> = restarted
@@ -2454,6 +2455,7 @@ async fn a_restart_plans_and_hands_over_at_the_hourly_pace_from_the_start() {
     let mut planner = Planner::new(full, pages.clone(), temp.clone(), redis.clone(), Room::Fixed(0)).await.unwrap();
     planner.pass().await.unwrap();
     assert_eq!(planner.counts.inputs, 6, "written while the API had no room");
+    nothing_banked(&planner);
     drop(planner);
 
     for seq in 7..=9 {
@@ -2543,6 +2545,13 @@ async fn six_held(dir: &std::path::Path, pages: &Bucket, temp: &Bucket, redis: &
     let mut planner = Planner::new(full, pages.clone(), temp.clone(), redis.clone(), Room::Fixed(0)).await.unwrap();
     planner.pass().await.unwrap();
     assert_eq!(planner.counts.inputs, 6);
+    nothing_banked(&planner);
+}
+
+/// Notes the planner's budgets as spent, as a planner stops whose log brings more than its budget.
+fn nothing_banked(planner: &Planner) {
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs_f64();
+    planner.state.keep_budgets(now, [0.0; 3]).unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2928,7 +2937,8 @@ async fn the_backfill_reads_a_shard_s_whole_row_groups_a_bounded_number_of_bytes
     let (all, together) = read(u64::MAX).await.unwrap();
     let (again, apart) = read(1).await.unwrap();
     assert_eq!((all, again), (5_000, 5_000));
-    assert!(apart >= together + 4, "the five row groups fetched one by one once over the bound: {apart} GETs against {together}");
+    // Unbounded, each window of picks is one run: three windows of two, two and one row groups.
+    assert!(apart >= together + 2, "the five row groups fetched one by one once over the bound: {apart} GETs against {together}");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -3108,7 +3118,7 @@ async fn the_log_s_pages_of_a_better_class_take_the_last_room_before_worse_ones_
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn the_backfill_sweeps_current_for_a_better_class_s_pages_before_a_worse_one_s() {
+async fn the_backfill_reads_every_class_s_pages_in_one_sweep_of_current() {
     let Some((_turn, redis)) = redis_db().await else {
         eprintln!("skipped: no Redis on {REDIS}");
         return;
@@ -3128,26 +3138,22 @@ async fn the_backfill_sweeps_current_for_a_better_class_s_pages_before_a_worse_o
     let rows: Vec<PageRow> = (0..2).flat_map(|n| [row(site_page("academic.example", n)), row(site_page("bench.example", n))]).collect();
     shard(&current, 7, vec![rows]).await;
     log(&pages, 1, vec![site_page("unlisted.example", 0)]).await;
-    // One page banked a pass's worth of time.
-    let mut slow = class_settings(&dir, &set, 30.0);
-    (slow.backfill, slow.backfill_shards, slow.pages_per_input) = (true, 7..8, 1);
-    let mut planner = Planner::new(slow, pages.clone(), temp.clone(), redis.clone(), Room::Fixed(0)).await.unwrap();
+    let mut backfilling = class_settings(&dir, &set, 3600.0);
+    (backfilling.backfill, backfilling.backfill_shards, backfilling.pages_per_input) = (true, 7..8, 1);
+    let mut planner = Planner::new(backfilling, pages.clone(), temp.clone(), redis.clone(), Room::Fixed(0)).await.unwrap();
     planner.current = Some(current.clone());
     for _ in 0..20 {
         planner.pass().await.unwrap();
-        if planner.counts.planned > 0 {
+        if planner.counts.shards > 0 {
             break;
         }
     }
-    let planned: Vec<String> = planner
-        .state
-        .pending()
-        .unwrap()
-        .iter()
-        .map(|(_, entry)| serde_json::from_str::<Value>(entry).unwrap()["pages"][0]["url"].as_str().unwrap().to_string())
-        .collect();
-    assert_eq!(planned.len(), 1);
-    assert!(planned[0].starts_with("https://bench.example/"), "the academic site's keys sort first, but its class is read after: {planned:?}");
+    assert_eq!(
+        (planner.counts.shards, planner.counts.planned_by_class[BENCH], planner.counts.planned_by_class[OTHER]),
+        (1, 2, 2),
+        "one read of the shard plans both classes' pages"
+    );
+    assert_eq!(planner.state.backfill_class().unwrap(), Some(Class::Other));
     let _ = std::fs::remove_dir_all(&dir);
 }
 

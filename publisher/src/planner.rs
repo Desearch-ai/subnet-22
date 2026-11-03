@@ -80,12 +80,12 @@ const WAITING_COUNT: &[u8] = b"waiting-count";
 /// The backfill's shard and the last key of it planned or passed by, `<shard>\t<key>`.
 const BACKFILL: &[u8] = b"backfill";
 /// Pages read ahead from `current/` waiting for budget and room.
-const BACKFILL_AHEAD: usize = 4_096;
+const BACKFILL_AHEAD: usize = 16_384;
 /// How long a pass waits for the backfill's reader before going on.
 const BACKFILL_WAIT: Duration = Duration::from_millis(500);
 /// Failed reads of one shard in a row after which the backfill goes on to the next.
 const SHARD_TRIES: u32 = 3;
-const RANGES_AT_ONCE: usize = 16;
+const RANGES_AT_ONCE: usize = 128;
 /// Kept past any input's wait for room, so a push tried again after a crash is not pushed twice.
 const PUSHED_TTL_S: u64 = 2 * 86_400;
 
@@ -110,6 +110,8 @@ const SET_WARN_EVERY: Duration = Duration::from_secs(3600);
 /// Change files of waiting pages read a pass, so a backlog of them cannot hold up the log.
 const REPLAN_FILES_PER_PASS: usize = 64;
 const CLASSES: usize = Class::ALL.len();
+/// The budgets' banked pages and when they were kept, `<unix time>\t<budget>\t<bulk>\t<hand-over>`, so a restart goes on at the pace it left.
+const BUDGETS: &[u8] = b"budgets";
 /// The backfill's class: it reads `current/` for the pages of sites of this class and better.
 const BACKFILL_CLASS: &[u8] = b"backfill-class";
 /// Class keys a search for a page to let go of reads past at most, each one a page no longer waiting.
@@ -1381,6 +1383,17 @@ impl State {
         Ok(self.db.put(BACKFILL_CLASS, class.digit().to_string())?)
     }
 
+    /// The banked pages of the budget, the bulk budget and the hand-over pace, and the Unix time they were kept.
+    pub fn budgets(&self) -> Result<Option<(f64, [f64; 3])>> {
+        let Some(raw) = self.db.get(BUDGETS)? else { return Ok(None) };
+        let fields: Vec<f64> = String::from_utf8_lossy(&raw).split('\t').filter_map(|field| field.parse().ok()).collect();
+        Ok((fields.len() == 4).then(|| (fields[0], [fields[1], fields[2], fields[3]])))
+    }
+
+    pub fn keep_budgets(&self, at: f64, tokens: [f64; 3]) -> Result<()> {
+        Ok(self.db.put(BUDGETS, format!("{at}\t{}\t{}\t{}", tokens[0], tokens[1], tokens[2]))?)
+    }
+
     fn keep_cursor(&self, seq: i64) -> Result<()> {
         Ok(self.db.put(CURSOR, seq.to_string())?)
     }
@@ -1649,6 +1662,8 @@ struct Reading {
     done: JoinHandle<Result<usize>>,
     /// The last key taken from it.
     last: Option<String>,
+    /// A page taken from it but left for want of a place, read first next time.
+    held: Option<PageRow>,
 }
 
 /// The pages of one lane waiting to be written as an input.
@@ -1844,11 +1859,14 @@ impl Planner {
             })
             .collect();
         let held = settings.budget_at_start;
+        // A restart goes on with the pages the budgets had banked, and what they banked while it was down, so an hour's count stays even across it.
+        let kept = state.budgets()?;
+        let resume = |at: usize, per_hour: f64| Budget::resumed(per_hour, held, kept.map(|(when, tokens)| (when, tokens[at])));
         // Fresh pages read again after a restart stay fresh.
-        let (budget, fresh_budget) = (Budget::new(settings.pages_per_hour, held), Budget::new(settings.fresh_per_hour, BUDGET_BANKED));
+        let (budget, fresh_budget) = (resume(0, settings.pages_per_hour), Budget::new(settings.fresh_per_hour, BUDGET_BANKED));
         let pace = settings.pages_per_hour + settings.fresh.map_or(0.0, |_| settings.fresh_per_hour) + settings.bulk_pages_per_hour;
-        let (bulk_read_through, bulk_budget, bulk_hole) = (state.bulk_cursor()?, Budget::new(settings.bulk_pages_per_hour, held), state.bulk_hole()?);
-        let handing = (pace > 0.0).then(|| Budget::new(pace, held));
+        let (bulk_read_through, bulk_budget, bulk_hole) = (state.bulk_cursor()?, resume(1, settings.bulk_pages_per_hour), state.bulk_hole()?);
+        let handing = (pace > 0.0).then(|| resume(2, pace));
         let withdrawn = state.withdrawn()?;
         let tables = Tables::open(&settings.templates_dir);
         println!("planner: site template tables of {:?} sites (store, recent) in {}", tables.sites(), settings.templates_dir.display());
@@ -1911,8 +1929,12 @@ impl Planner {
         if classed > 0 {
             println!("planner: {classed} waiting pages given the class of their site");
         }
+        // A sweep of the shards reads the pages of every class at once; one begun for fewer classes starts again from its first shard.
         let kept = planner.state.backfill_class_or_restart(planner.settings.backfill_shards.start)?;
-        planner.backfill_class = planner.sweep_class(kept.unwrap_or(Class::ALL[0])).unwrap_or(Class::Other);
+        planner.backfill_class = planner.every_class();
+        if kept.is_some_and(|kept| kept != planner.backfill_class) && planner.state.backfill()?.is_some() {
+            planner.state.keep_backfill(planner.settings.backfill_shards.start, None)?;
+        }
         planner.state.keep_backfill_class(planner.backfill_class)?;
         Ok(planner)
     }
@@ -1986,6 +2008,12 @@ impl Planner {
             Err(error) => eprintln!("reading the crawl list {}: {error:#}; keeping the list held", path.display()),
         }
         Ok(self.listed.is_some())
+    }
+
+    fn keep_budgets(&mut self) -> Result<()> {
+        let handing = self.handing.as_mut().map_or(0.0, Budget::banked);
+        let tokens = [self.budget.banked(), self.bulk_budget.banked(), handing];
+        self.state.keep_budgets(now_us() as f64 / 1e6, tokens)
     }
 
     /// Reads the site template tables again when their files changed.
@@ -2066,8 +2094,8 @@ impl Planner {
         self.spent.replan += started.elapsed();
         let (replanned, stopped) = replanned?;
         let bulked = self.bulk().await?;
-        // The backfill never takes a place the re-plan stopped short of for a class it reads; past the re-plan's file cap or sweep, they share it.
-        let backfilled = if stopped.is_some_and(|class| class <= self.backfill_class) { false } else { self.backfill().await? };
+        // The backfill never takes a place the re-plan stopped short of for its class or a better one; past the re-plan's file cap or sweep, they share it.
+        let backfilled = self.backfill(stopped).await?;
         for lane in Lane::ALL {
             let after = if lane == Lane::Fresh { self.settings.fresh_flush_after } else { self.settings.flush_after };
             if self.buffer(lane).since.is_some_and(|since| since.elapsed() >= after) {
@@ -2076,6 +2104,7 @@ impl Planner {
         }
         self.save_written(0).await?;
         self.hand_over().await?;
+        self.keep_budgets()?;
         Ok(read > 0 || replanned || bulked || backfilled)
     }
 
@@ -2195,12 +2224,9 @@ impl Planner {
     }
 
     /// The first class from `from` on that the set takes pages of; without a set, every page is of the last.
-    fn sweep_class(&self, from: Class) -> Option<Class> {
-        let rest = &Class::ALL[from as usize..];
-        match &self.set {
-            Some(set) => rest.iter().copied().find(|class| set.has(*class)),
-            None => rest.last().copied(),
-        }
+    /// The worst class the set takes pages of, so a sweep reads every class.
+    fn every_class(&self) -> Class {
+        Class::ALL.iter().rev().copied().find(|class| self.set.as_ref().is_none_or(|set| set.has(*class))).unwrap_or(Class::Other)
     }
 
     fn class_of(&self, key: &str) -> Class {
@@ -2382,24 +2408,36 @@ impl Planner {
     }
 
     /// Plans pages of `current/` while the budget and the rest lane's room last, starting only once the budget holds an input's worth and reading at most `max_pending` inputs' worth a pass for at most the fresh lane's flush wait, so the log is read between; whether it read any.
-    async fn backfill(&mut self) -> Result<bool> {
-        let reserve = self.reserve(self.backfill_class, Source::Backfill);
+    async fn backfill(&mut self, stopped: Option<Class>) -> Result<bool> {
+        let reserve = self.reserve(Class::ALL[0], Source::Backfill);
         if !self.settings.backfill || self.current.is_none() || !self.budget.holds_after(reserve, self.settings.pages_per_input) || !self.room_after(reserve) {
             return Ok(false);
         }
-        let (most, mut read, started) = (self.settings.max_pending * self.settings.pages_per_input, 0, Instant::now());
+        let (most, mut read, started, planned) = (self.settings.max_pending * self.settings.pages_per_input, 0, Instant::now(), self.counts.planned);
         loop {
             let slice_over = read > 0 && started.elapsed() >= self.settings.fresh_flush_after;
-            if read >= most || slice_over || self.inputs_held(Lane::Rest) >= self.settings.max_pending || !self.has_place(reserve) {
+            let full = self.counts.planned - planned >= most as u64;
+            if full || slice_over || self.inputs_held(Lane::Rest) >= self.settings.max_pending || !self.has_place(reserve) {
                 return Ok(read > 0);
             }
             if self.reading.is_none() && !self.start_reading()? {
                 return Ok(read > 0);
             }
             let reading = self.reading.as_mut().expect("a shard being read");
-            match tokio::time::timeout(BACKFILL_WAIT, reading.pages.recv()).await {
+            let next = match reading.held.take() {
+                Some(page) => Ok(Some(page)),
+                None => tokio::time::timeout(BACKFILL_WAIT, reading.pages.recv()).await,
+            };
+            match next {
                 Err(_) => return Ok(read > 0),
                 Ok(Some(page)) => {
+                    // A page takes a place only beyond what its class leaves to the log's better ones; else it is read again next pass.
+                    let class = self.class_of(&page.key);
+                    if stopped.is_some_and(|stopped| stopped <= class) || !self.has_place(self.reserve(class, Source::Backfill)) {
+                        self.reading.as_mut().expect("a shard being read").held = Some(page);
+                        return Ok(read > 0);
+                    }
+                    let reading = self.reading.as_mut().expect("a shard being read");
                     reading.last = Some(page.key.clone());
                     read += 1;
                     self.counts.backfill += 1;
@@ -2449,19 +2487,10 @@ impl Planner {
                         continue;
                     }
                     self.state.keep_backfill(self.settings.backfill_shards.start, None)?;
-                    let done = self.backfill_class;
-                    self.backfill_class = match Class::ALL.get(done as usize + 1).and_then(|next| self.sweep_class(*next)) {
-                        Some(next) => {
-                            println!("planner: the backfill read its last shard, {shard}, for {done:?} sites and better; it reads {next:?} sites next");
-                            next
-                        }
-                        // Pages the log passed by, or that came in since, are planned on the next sweep.
-                        None => {
-                            self.next_sweep = Some(Instant::now() + self.settings.backfill_every);
-                            println!("planner: the backfill read its last shard, {shard}; it sweeps again in {:?}", self.settings.backfill_every);
-                            self.sweep_class(Class::ALL[0]).unwrap_or(Class::Other)
-                        }
-                    };
+                    // Pages the log passed by, or that came in since, are planned on the next sweep.
+                    self.next_sweep = Some(Instant::now() + self.settings.backfill_every);
+                    println!("planner: the backfill read its last shard, {shard}; it sweeps again in {:?}", self.settings.backfill_every);
+                    self.backfill_class = self.every_class();
                     self.state.keep_backfill_class(self.backfill_class)?;
                     return Ok(read > 0);
                 }
@@ -2512,7 +2541,7 @@ impl Planner {
             };
             reader.read(shard, from.as_deref(), withdrawn, keep, |page| send.blocking_send(page).is_ok())
         });
-        self.reading = Some(Reading { shard, pages, done, last: after });
+        self.reading = Some(Reading { shard, pages, done, last: after, held: None });
         Ok(true)
     }
 
@@ -3256,6 +3285,22 @@ struct Budget {
 }
 
 impl Budget {
+    /// A budget going on from `tokens` banked at Unix time `at`, refilled for the time since, or holding `held` of it when that is more.
+    fn resumed(per_hour: f64, held: Duration, kept: Option<(f64, f64)>) -> Budget {
+        let mut budget = Budget::new(per_hour, held);
+        if let Some((at, tokens)) = kept.filter(|(at, tokens)| at.is_finite() && tokens.is_finite()) {
+            let since = (now_us() as f64 / 1e6 - at).max(0.0);
+            budget.tokens = budget.tokens.max((tokens + since * per_hour / 3600.0).min(Budget::cap(per_hour)));
+        }
+        budget
+    }
+
+    /// The pages banked now.
+    fn banked(&mut self) -> f64 {
+        self.holds(0);
+        self.tokens
+    }
+
     /// A budget holding `held` of it to start with, all it banks for `BUDGET_BANKED` or more.
     fn new(per_hour: f64, held: Duration) -> Budget {
         let share = (held.as_secs_f64() / BUDGET_BANKED.as_secs_f64()).min(1.0);
@@ -3475,6 +3520,25 @@ mod tests {
     }
 
     /// Holds the state at `PLANNER_HOLD_STATE` for a minute, as a planner still stopping would; run as its own process by the test below.
+    #[test]
+    fn a_restarted_budget_goes_on_from_what_it_banked_and_refills_for_its_downtime_up_to_its_cap() {
+        let now = now_us() as f64 / 1e6;
+        let per_hour = 3600.0;
+        assert_eq!(Budget::resumed(per_hour, Duration::ZERO, None).tokens, 0.0, "nothing kept, nothing banked");
+        let resumed = Budget::resumed(per_hour, Duration::ZERO, Some((now - 10.0, 5.0))).tokens;
+        assert!((14.9..15.1).contains(&resumed), "{resumed}");
+        assert_eq!(Budget::resumed(per_hour, Duration::ZERO, Some((now - 3600.0, 5.0))).tokens, Budget::cap(per_hour), "never more than it banks");
+        assert_eq!(Budget::resumed(per_hour, BUDGET_BANKED, Some((now, 0.0))).tokens, Budget::cap(per_hour), "a budget held from the start keeps it");
+
+        let dir = std::env::temp_dir().join(format!("planner-budgets-{}", uuid::Uuid::new_v4().simple()));
+        let state = State::open(&dir).unwrap();
+        assert_eq!(state.budgets().unwrap(), None);
+        state.keep_budgets(now, [1.5, 2.0, -3.0]).unwrap();
+        assert_eq!(state.budgets().unwrap(), Some((now, [1.5, 2.0, -3.0])));
+        drop(state);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     #[ignore]
     fn hold_the_state() {
