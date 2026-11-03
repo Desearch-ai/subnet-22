@@ -604,7 +604,8 @@ def build(
         )
         entry_v1 = None if v1 is None else set_entry(v1, row.host)
         # Only a site's own entry lifts a label out; one it takes from a parent (gov.uk) does not.
-        inherited = v1 is not None and not ({row.host, set_host(row.host)} & v1.keys())
+        own = set_host(row.host)
+        inherited = v1 is not None and not ({own, own.removeprefix("m.")} & v1.keys())
         decision = (
             base
             if v1 is None

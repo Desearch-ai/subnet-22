@@ -900,6 +900,7 @@ def test_a_site_takes_the_set_entry_the_planner_reads_for_its_pages():
         row(host="cdn.spam.com", site_type="reference"),
         row(host="council.uni.edu", site_type=""),
         row(host="uni.edu", site_type=""),
+        row(host="m.bbc.co.uk", site_type=""),
     ]
     v1 = {
         "bbc.co.uk": V1("news", "news"),
@@ -918,7 +919,8 @@ def test_a_site_takes_the_set_entry_the_planner_reads_for_its_pages():
         "www.gov.example",
         "www.agency.example",
         "uni.edu",
-    }, "only a site's own entry lifts a label out"
+        "m.bbc.co.uk",
+    }, "only a site's own entry lifts a label out, its m. host's too"
     assert listed["sport.bbc.co.uk"]["backlog"] == listed["bbc.co.uk"]["backlog"]
     assert listed["data.uni.edu"]["send_cap"] == crawl_list.V1_WHOLE_CAP * 3
     assert (counts["out:not_in_set"], counts["out:v1"]) == (2, 1), (
