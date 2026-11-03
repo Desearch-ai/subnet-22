@@ -79,8 +79,8 @@ static UTILITY_SEGMENT: LazyLock<Regex> = LazyLock::new(|| {
 });
 static LOCALE_SEGMENT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^[a-z]{2}(?:[-_][a-z]{2})?$").unwrap());
 /// The parents a utility page may sit under, besides a locale.
-const UTILITY_PARENTS: [&str; 18] =
-    ["legal", "policies", "policy", "help", "about", "info", "company", "site", "support", "account", "accounts", "user", "users", "customer", "my", "pages", "p", "page"];
+const UTILITY_PARENTS: [&str; 17] =
+    ["legal", "policies", "policy", "help", "about", "info", "company", "site", "support", "account", "accounts", "user", "users", "customer", "my", "pages", "p"];
 static UTILITY_QUERY: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)(?:^|&)(?:attachment_id|print|share)=").unwrap());
 static UTILITY_TITLE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(concat!(
@@ -510,8 +510,7 @@ struct Loaded {
 
 type Stamp = (Option<SystemTime>, u64);
 
-/// The store and recent table files in a directory, read again when either changes; a file that fails to read leaves the one before it.
-/// The store and recent table files of a directory; a clone shares the files read.
+/// The store and recent table files of a directory, read again when either changes; a file that fails to read leaves the one before it, and a clone shares the files read.
 #[derive(Clone)]
 pub struct Tables {
     dir: PathBuf,
@@ -559,6 +558,11 @@ impl Tables {
             }
         }
         changed
+    }
+
+    /// Sites with a table in the store file and in the recent file.
+    pub fn sites(&self) -> [usize; 2] {
+        [0, 1].map(|at| self.files[at].as_ref().map_or(0, |loaded| loaded.file.len()))
     }
 
     pub fn get(&self, host: &str) -> Option<Joined<'_>> {

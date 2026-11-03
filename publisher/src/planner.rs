@@ -1850,7 +1850,9 @@ impl Planner {
         let (bulk_read_through, bulk_budget, bulk_hole) = (state.bulk_cursor()?, Budget::new(settings.bulk_pages_per_hour, held), state.bulk_hole()?);
         let handing = (pace > 0.0).then(|| Budget::new(pace, held));
         let withdrawn = state.withdrawn()?;
-        let tables = Arc::new(RwLock::new(Tables::open(&settings.templates_dir)));
+        let tables = Tables::open(&settings.templates_dir);
+        println!("planner: site template tables of {:?} sites (store, recent) in {}", tables.sites(), settings.templates_dir.display());
+        let tables = Arc::new(RwLock::new(tables));
         let mut planner = Planner {
             tables,
             settings,
@@ -1987,11 +1989,13 @@ impl Planner {
     }
 
     /// Reads the site template tables again when their files changed.
-    pub fn reload_tables(&mut self) {
+    pub async fn reload_tables(&mut self) {
         let mut tables = self.tables.read().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
-        if tables.reload() {
+        let reloaded = tokio::task::spawn_blocking(move || tables.reload().then_some(tables)).await;
+        if let Ok(Some(tables)) = reloaded {
+            let sites = tables.sites();
             *self.tables.write().unwrap_or_else(|poisoned| poisoned.into_inner()) = tables;
-            println!("planner: site template tables read from {}", self.settings.templates_dir.display());
+            println!("planner: site template tables of {sites:?} sites read from {}", self.settings.templates_dir.display());
         }
     }
 
@@ -2008,7 +2012,7 @@ impl Planner {
         if let Err(error) = reloaded {
             eprintln!("{error:#}");
         }
-        self.reload_tables();
+        self.reload_tables().await;
         // Inputs written before a restart go out first, at the budgets' pace.
         self.hand_over_unless_held().await?;
         // A failed write leaves its input and those cut after it unsaved.
@@ -2694,7 +2698,12 @@ impl Planner {
                 _ if excluded => self.counts.refused += 1,
                 Some(Err(Refusal::Unlisted | Refusal::OffPaths)) => self.counts.outside_set += 1,
                 _ if recipe.is_none() => self.counts.other_recipe += 1,
-                _ if junk => self.counts.junk += 1,
+                _ if junk => {
+                    self.counts.junk += 1;
+                    if from == Source::Backfill {
+                        self.settle(&page, RECIPE_V2, Some(0));
+                    }
+                }
                 _ if !readable => self.counts.refused += 1,
                 Some(Err(Refusal::Undated)) => self.counts.undated += 1,
                 _ => self.counts.before_since += 1,
@@ -2715,12 +2724,6 @@ impl Planner {
         }
         if self.withdrawn.contains_key(&record.task_id) {
             self.counts.withdrawn += 1;
-            return Considered::Passed;
-        }
-        let cleaned = self.cleaned(&page);
-        if clean::thin(&cleaned.body, record.page_type.as_deref()) {
-            self.counts.thin += 1;
-            self.still_waiting(&page);
             return Considered::Passed;
         }
         let waiting = self.still_waiting(&page);
@@ -2753,11 +2756,18 @@ impl Planner {
             self.counts.older += 1;
             return Considered::Passed;
         }
-        let (mut parts_only, mut restripped) = (false, false);
+        let (mut parts_only, mut restripped, mut cleaned) = (false, false, None);
         if let Some(Version { content_sha1, fetched_at, page_only, stripped, .. }) = &already {
             if *content_sha1 == record.content_sha1 {
                 // Only the backfill plans a version again for its template lines, so it never takes budget from the log's pages.
-                restripped = from == Source::Backfill && buffered.is_none() && cleaned.changed_since(*stripped);
+                if from == Source::Backfill && buffered.is_none() {
+                    let page_cleaned = self.cleaned(&page);
+                    restripped = page_cleaned.changed_since(*stripped);
+                    if !restripped {
+                        self.settle(&page, recipe, page_cleaned.kept());
+                    }
+                    cleaned = Some(page_cleaned);
+                }
                 if !restripped && (!page_only || self.settings.page_first || buffered.is_some()) {
                     self.counts.unchanged += 1;
                     return Considered::Passed;
@@ -2769,6 +2779,14 @@ impl Planner {
                 self.counts.older += 1;
                 return Considered::Passed;
             }
+        }
+        let cleaned = cleaned.unwrap_or_else(|| self.cleaned(&page));
+        if clean::thin(&cleaned.body, record.page_type.as_deref()) {
+            self.counts.thin += 1;
+            if from == Source::Backfill {
+                self.settle(&page, recipe, cleaned.kept());
+            }
+            return Considered::Passed;
         }
         if let Some((lane, at)) = buffered {
             let planned = planned_of(&page, &cleaned, recipe, self.settings.page_first && lane == Lane::Rest, false, from);
@@ -2857,6 +2875,20 @@ impl Planner {
             return None;
         }
         Some(held)
+    }
+
+    /// Notes on the planned version of the backfill's page, when it is the page's text, that its site's tables were read for it, so later sweeps do not read the page whole again.
+    fn settle(&self, page: &PageRow, recipe: &str, stripped: Option<usize>) {
+        if stripped.is_none() || self.unsaved_anywhere(&page.key) {
+            return;
+        }
+        if let Ok(Some(planned)) = self.state.planned_version(recipe, &page.key) {
+            if planned.stripped.is_none() && planned.content_sha1 == page.record.content_sha1 {
+                if let Err(error) = self.state.db.put(planned_key(recipe, &page.key), Version { stripped, ..planned }.value()) {
+                    eprintln!("noting {} as read for its template lines: {error:#}", page.key);
+                }
+            }
+        }
     }
 
     fn keep_waiting(&mut self, page: &PageRow) {

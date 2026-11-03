@@ -4242,6 +4242,7 @@ async fn the_backfill_embeds_again_only_stored_pages_whose_template_lines_change
         PageRow { key: page_key(url).unwrap(), removed: false, change_seq: 1, version: record_version(&record), published_at: record.fetched_at.clone(), record }
     };
     let mut rows: Vec<PageRow> = (0..3).map(|n| row(&format!("https://news.example/s/{n}"), format!("{}\n{n} {}", NAV.join("\n"), article(2)))).collect();
+    rows.push(row("https://news.example/long", format!("{}\n{}", NAV.join("\n"), article(40))));
     rows.push(row("https://docs.example/guide", format!("{}\n{}", NAV.join("\n"), article(2))));
     shard(&current, 7, vec![rows]).await;
     log(&pages, 1, vec![v2(record("https://other.example/log", &article(2), "article", "en"))]).await;
@@ -4252,17 +4253,17 @@ async fn the_backfill_embeds_again_only_stored_pages_whose_template_lines_change
     let mut planner = Planner::new(backfilling, pages.clone(), temp.clone(), redis.clone(), Room::Fixed(0)).await.unwrap();
     planner.current = Some(current.clone());
     sweep(&mut planner, 1).await;
-    assert_eq!((planner.counts.backfill, planner.counts.planned), (4, 4), "with no tables every page is planned whole");
+    assert_eq!((planner.counts.backfill, planner.counts.planned), (5, 5), "with no tables every page is planned whole");
 
     nav_table(&dir.join("templates"));
     sweep(&mut planner, 2).await;
     assert_eq!(
-        (planner.counts.backfill, planner.counts.planned, planner.counts.restripped),
-        (7, 7, 3),
-        "the site with a table is read whole and planned again; the other site's pages are not read"
+        (planner.counts.backfill, planner.counts.planned, planner.counts.restripped, planner.counts.unchanged),
+        (9, 8, 3, 1),
+        "the site with a table is read whole and planned again where its template lines change the page text; the other site's pages are not read"
     );
     sweep(&mut planner, 3).await;
-    assert_eq!((planner.counts.backfill, planner.counts.planned), (7, 7), "a sweep after reads none of them whole again");
+    assert_eq!((planner.counts.backfill, planner.counts.planned), (9, 8), "a sweep after reads none of them whole again");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
