@@ -174,6 +174,8 @@ pub struct Known {
     pub reason: Option<String>,
     /// The last visit stopped for the site's Crawl-delay, so this one goes on from where it stopped.
     pub paced: bool,
+    /// When the site's Crawl-delay lets the next request go, as its record keeps it, in microseconds.
+    pub quiet_at: Option<i64>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -554,7 +556,8 @@ impl Visitor {
         let home = format!("https://{}{}/", if www_only { "www." } else { "" }, known.host);
         let listed = self.buckets.lists(&known.host);
         let mut pacer = Pacer::new(known.crawl_delay, self.floor);
-        pacer.next = self.buckets.store_for(&known.host).and_then(|store| store.next_ask(&known.host));
+        // The host's clock as the last run left it, or after a restart as its record keeps it, so no request comes before the delay allows.
+        pacer.next = self.buckets.store_for(&known.host).and_then(|store| store.next_ask(&known.host)).or_else(|| known.quiet_at.and_then(instant_at));
         Run {
             visitor: self,
             pacer,
@@ -2029,6 +2032,12 @@ fn is_html(answer: &Answer) -> bool {
         Some(kind) => kind.to_ascii_lowercase().contains("html"),
         None => answer.body.iter().find(|b| !b.is_ascii_whitespace()) == Some(&b'<'),
     }
+}
+
+/// The clock time of a moment in microseconds since the epoch, when it is still to come.
+fn instant_at(micros: i64) -> Option<tokio::time::Instant> {
+    let ahead = micros.checked_sub(chrono::Utc::now().timestamp_micros()).filter(|ahead| *ahead > 0)?;
+    Some(tokio::time::Instant::now() + Duration::from_micros(u64::try_from(ahead).ok()?))
 }
 
 fn crawl_delay(value: Option<f64>) -> f64 {

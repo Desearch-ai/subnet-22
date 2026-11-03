@@ -2868,3 +2868,51 @@ async fn a_site_asking_a_day_between_requests_reads_its_sitemap_and_homepage_bet
     assert_eq!(hits(&web), ["/robots.txt", "/list.xml", "/robots.txt", "/"], "robots.txt every other day, the sitemap and the homepage between");
     assert_eq!((domain["state"].as_str(), domain["lang"].as_str()), (Some("active"), Some("en")));
 }
+
+/// A listed site without sitemaps whose link work is due now, asking `delay` between requests, robots.txt read an hour ago and no homepage stored.
+fn delayed_link_site(web: &Shared, buckets: &Arc<Buckets>, host: &str, delay: f64, now: i64) {
+    deep_site(web, host);
+    web.lock().unwrap().add(host, "/robots.txt", 200, None, format!("User-agent: *\nCrawl-delay: {delay}\n").as_bytes());
+    buckets.allow(&Allowed::of([host]));
+    let mut record = records::new_domain(Some(1), Some("new_generic"), &[], State::NoSitemap, Some("no_sitemap"), Some(0));
+    for (name, at) in [("robots", now - 3_600), ("checked", now - 3_600), ("ok", now - 3_600), ("due", now + 20 * 86_400), ("links_due", now)] {
+        record.insert(name.into(), at.into());
+    }
+    record.insert("robots_status".into(), 200.into());
+    record.insert("allows".into(), true.into());
+    record.insert("listed".into(), true.into());
+    record.insert("delay".into(), delay.into());
+    let mut changes = Changes::default();
+    changes.domain(host, &record);
+    buckets.store(host).write(changes).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn after_a_restart_a_visit_waits_out_the_last_link_runs_delay() {
+    let web: Shared = Arc::default();
+    let host = "links-then-restart.test";
+    let now = chrono::Utc::now().timestamp();
+    let prepare = |b: &Arc<Buckets>| delayed_link_site(&web, b, host, 3_600.0, now);
+    let (buckets, crawl) = crawl_following(web.clone(), &[host], "links-restart-1", FollowLinks::Thin, Slots::new(2), prepare).await;
+    drop(crawl);
+    let asked = web.lock().unwrap().hits.iter().filter(|(h, _, _)| h == host).count();
+    assert_eq!(asked, 1, "the link run asks robots.txt, then waits its hour");
+    let (domain, sitemaps) = (buckets.store(host).domain(host).unwrap().unwrap(), buckets.store(host).sitemaps(host).unwrap());
+    assert!(domain["quiet"].as_i64().unwrap() >= now + 3_600);
+    // Ten seconds on, a restarted bot with its visit due at once, on stores holding what the link run left.
+    let (buckets, _crawl) = crawl_following(web.clone(), &[host], "links-restart-2", FollowLinks::Thin, Slots::new(2), |b| {
+        b.allow(&Allowed::of([host]));
+        let mut record = domain.clone();
+        record.insert("due".into(), 0.into());
+        record.insert("links_due".into(), (now + 86_400).into());
+        let mut changes = Changes::default();
+        changes.domain(host, &record);
+        for (url, sitemap) in &sitemaps {
+            changes.sitemap(host, url, sitemap);
+        }
+        b.store(host).write(changes).unwrap();
+    })
+    .await;
+    assert_eq!(web.lock().unwrap().hits.iter().filter(|(h, _, _)| h == host).count(), asked, "the visit's first request waits out the hour the link run's last one began");
+    assert!(buckets.store(host).domain(host).unwrap().unwrap()["due"].as_i64().unwrap() >= now + 3_600);
+}

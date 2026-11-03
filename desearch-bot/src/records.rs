@@ -101,6 +101,7 @@ pub fn known(host: &str, domain: &Json, sitemaps: &[(String, Json)]) -> Option<K
         canonical_host: text(domain.get("canonical")),
         reason: text(domain.get("reason")),
         paced: domain.get("paced").and_then(Value::as_bool) == Some(true),
+        quiet_at: moment(domain.get("quiet")),
         www_only: domain.get("www").and_then(Value::as_bool).unwrap_or(false),
         links_refused: int(domain.get("links_status")).and_then(|status| u16::try_from(status).ok()).zip(moment(domain.get("links_status_at"))),
     })
