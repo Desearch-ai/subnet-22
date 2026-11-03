@@ -210,6 +210,40 @@ pub struct Stats {
     pub link_runs: u64,
     pub link_dropped: u64,
     pub link_waits: u64,
+    /// Link runs that handed their site to a visit at once.
+    pub handoffs: u64,
+    pub robots_requests: i64,
+}
+
+/// A count over the last hour, a minute at a time.
+struct LastHour {
+    minutes: [i64; 60],
+    at: i64,
+}
+
+impl Default for LastHour {
+    fn default() -> Self {
+        LastHour { minutes: [0; 60], at: 0 }
+    }
+}
+
+impl LastHour {
+    fn roll(&mut self, minute: i64) {
+        for m in (self.at + 1).max(minute - 59)..=minute {
+            self.minutes[m.rem_euclid(60) as usize] = 0;
+        }
+        self.at = self.at.max(minute);
+    }
+
+    fn add(&mut self, minute: i64, n: i64) {
+        self.roll(minute);
+        self.minutes[minute.rem_euclid(60) as usize] += n;
+    }
+
+    fn total(&mut self, minute: i64) -> i64 {
+        self.roll(minute);
+        self.minutes.iter().sum()
+    }
 }
 
 /// Keeps many visits in flight across the buckets one process owns.
@@ -248,6 +282,7 @@ pub struct Loop {
     link_runs: JoinSet<LinkFinished>,
     link_tasks: HashMap<Id, Arc<str>>,
     links_spread: i64,
+    robots_hour: LastHour,
 }
 
 impl Loop {
@@ -283,6 +318,7 @@ impl Loop {
             link_runs: JoinSet::new(),
             link_tasks: HashMap::new(),
             links_spread: 0,
+            robots_hour: LastHour::default(),
         }
     }
 
@@ -594,6 +630,9 @@ impl Loop {
     fn save(&mut self, write: DomainWrite, known: &Known) -> Result<()> {
         self.busy.remove(write.host.as_str());
         self.stats.requests += write.visit.requests;
+        self.stats.robots_requests += write.visit.robots_requests;
+        self.robots_hour.add(now_micros() / (60 * SECOND), write.visit.robots_requests);
+        self.stats.handoffs += u64::from(write.visit.revisit);
         if let Some(tally) = self.tally.as_mut() {
             *tally.entry(write.host.clone()).or_default() += write.visit.requests;
         }
@@ -812,10 +851,12 @@ impl Loop {
             .map(|&lane| format!("{} {}/{} ({} due)", lane.as_str(), self.running[lane.index()], self.share(lane), thousands(self.timetable.queued(lane) as i64)))
             .collect();
         println!(
-            "[rs] {} visited  {:.1}/s  {:.1} req/s  in flight {}  lanes {}  new urls {}  scheduled {}  sitemap slots {}/{} parsing {}/{} heavy {}/{} ({} waiting)  rocksdb readers {} MB memtables {} MB cache {} MB  heap {} MB in use {} MB resident  disk free {} GB",
+            "[rs] {} visited  {:.1}/s  {:.1} req/s  robots.txt {}/h  link hand-offs {}  in flight {}  lanes {}  new urls {}  scheduled {}  sitemap slots {}/{} parsing {}/{} heavy {}/{} ({} waiting)  rocksdb readers {} MB memtables {} MB cache {} MB  heap {} MB in use {} MB resident  disk free {} GB",
             thousands(self.stats.visited as i64),
             self.stats.visited as f64 / elapsed,
             self.stats.requests as f64 / elapsed,
+            thousands(self.robots_hour.total(now_micros() / (60 * SECOND))),
+            thousands(self.stats.handoffs as i64),
             self.visits.len(),
             lanes.join(" "),
             thousands(self.stats.new),
@@ -850,6 +891,8 @@ impl Loop {
             "link_runs": self.stats.link_runs,
             "link_dropped": self.stats.link_dropped,
             "link_waits": self.stats.link_waits,
+            "handoffs": self.stats.handoffs,
+            "robots_requests": self.stats.robots_requests,
             "links_queued": self.links.len(),
             "handoff_errors": self.buckets.handoff_errors.load(std::sync::atomic::Ordering::Relaxed),
         })
@@ -899,6 +942,8 @@ async fn links_one(host: Arc<str>, buckets: Arc<Buckets>, visitor: Arc<Visitor>,
         // The visit reads robots.txt again for itself and leaves link work on the site as it decides, or ends it.
         let fresh = Arc::new(Known { robots_checked_at: None, ..(*known).clone() });
         let mut write = once(fresh.clone(), &visitor, &excluded).await;
+        write.visit.requests += visit.requests;
+        write.visit.robots_requests += visit.robots_requests;
         write.visit.links_at = write.visit.links_at.or(Some(LinksAt::Never));
         write.visit.revisit = true;
         return LinkFinished::Done(Box::new(write), fresh);
@@ -946,6 +991,18 @@ fn thousands(n: i64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_last_hour_count_forgets_minutes_an_hour_old() {
+        let mut hour = LastHour::default();
+        hour.add(1_000, 5);
+        hour.add(1_030, 2);
+        assert_eq!(hour.total(1_059), 7);
+        assert_eq!(hour.total(1_060), 2, "the first minute is an hour old");
+        assert_eq!(hour.total(1_200), 0);
+        hour.add(1_200, 1);
+        assert_eq!(hour.total(1_200), 1);
+    }
 
     #[test]
     fn many_woken_domains_spread_over_three_days() {

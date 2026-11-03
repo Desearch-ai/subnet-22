@@ -2582,9 +2582,12 @@ async fn link_work_never_hands_a_site_to_visit_after_visit_nor_comes_back_at_onc
             changes.domain(host, &record);
             b.store(host).write(changes).unwrap();
         });
-        let (buckets, _crawl) = tokio::time::timeout(Duration::from_secs(40), crawl).await.unwrap_or_else(|_| panic!("{case}: the step never ends"));
+        let (buckets, crawl) = tokio::time::timeout(Duration::from_secs(40), crawl).await.unwrap_or_else(|_| panic!("{case}: the step never ends"));
         let robots_reads = web.lock().unwrap().hits.iter().filter(|(_, path, _)| path == "/robots.txt").count();
         assert!(robots_reads <= 2, "{case}: robots.txt read {robots_reads} times");
+        let summary = crawl.summary();
+        assert_eq!(summary["handoffs"].as_u64(), Some(u64::from(case == "named")), "{case}: hand-offs show: {summary}");
+        assert!(summary["robots_requests"].as_i64().is_some_and(|asked| asked as usize >= robots_reads), "{case}: robots.txt requests show, each scheme tried: {summary}");
         let record = buckets.store(host).domain(host).unwrap().unwrap();
         let due = record.get("links_due").and_then(|d| d.as_i64());
         assert!(due.is_none_or(|due| due >= now + 600), "{case}: link work comes back no sooner than ten minutes: {record:?}");

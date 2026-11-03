@@ -237,6 +237,8 @@ pub struct Visit {
     pub links_only: bool,
     /// Link work read a robots.txt that bars us or names sitemaps not kept yet: a visit decides the site now instead.
     pub revisit: bool,
+    /// Requests for robots.txt, each scheme and host tried.
+    pub robots_requests: i64,
     /// When the site's link work is due next, as the visit found it; None when it found nothing to say.
     pub links_at: Option<LinksAt>,
 }
@@ -282,6 +284,7 @@ impl Visit {
             links_error: None,
             links_only: false,
             revisit: false,
+            robots_requests: 0,
             links_at: None,
         }
     }
@@ -1553,6 +1556,15 @@ impl Run<'_> {
 
     /// Try https, then http; a DNS failure skips the other scheme and tries the www host, the only one some sites resolve.
     async fn first_answer(&mut self, path: &str, limit: usize) -> Option<Answer> {
+        let asked = self.result.requests;
+        let answer = self.first_answer_of(path, limit).await;
+        if path == "/robots.txt" {
+            self.result.robots_requests += self.result.requests - asked;
+        }
+        answer
+    }
+
+    async fn first_answer_of(&mut self, path: &str, limit: usize) -> Option<Answer> {
         let www = format!("www.{}", self.known.host);
         let hosts = if self.known.host.starts_with("www.") { vec![self.known.host.clone()] } else { vec![self.known.host.clone(), www] };
         let mut last = "unknown".to_string();
