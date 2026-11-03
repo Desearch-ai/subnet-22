@@ -92,9 +92,12 @@ struct ReplayArgs {
     /// A site whose sitemap re-dates every page each hour; the listed site with most pages if not given.
     #[arg(long)]
     restamping: Option<String>,
-    /// Stored records the list walker and the stock keeper each read per second.
+    /// Stored records the list walker reads per second.
     #[arg(long, default_value_t = 1_000_000)]
     join_per_sec: u64,
+    /// Sent records the refresh stock keeper's threads read per second together; --join-per-sec if not given.
+    #[arg(long)]
+    stock_per_sec: Option<u64>,
     /// Pages the resend walk lists per second for domains whose `resend_before` changed.
     #[arg(long, default_value_t = 20_000)]
     resend_per_sec: u64,
@@ -254,6 +257,9 @@ struct RunArgs {
     /// URL records read per second while queuing the stored pages of domains new to the --domains list; 0 turns the walk off.
     #[arg(long, default_value_t = 100_000)]
     join_per_sec: u64,
+    /// Sent records the refresh stock keeper's threads read per second together; --join-per-sec if not given.
+    #[arg(long)]
+    stock_per_sec: Option<u64>,
     /// Pages listed per second to go once more for listed domains whose `resend_before` changed; 0 turns resend walks off.
     #[arg(long, default_value_t = 20_000)]
     resend_per_sec: u64,
@@ -288,6 +294,7 @@ fn main() -> Result<()> {
                 refusing: args.refusing,
                 restamping: args.restamping,
                 join_per_sec: args.join_per_sec,
+                stock_per_sec: args.stock_per_sec.unwrap_or(args.join_per_sec),
                 resend_per_sec: args.resend_per_sec,
                 switch_at: args.switch_at,
                 switch_domains: args.switch_domains,
@@ -441,7 +448,7 @@ async fn run(args: RunArgs) -> Result<()> {
     });
     let wanted = Arc::new(dispatch::StockWanted::default());
     let stocking = args.task_api.as_ref().map(|_| {
-        let (buckets, progress, halt, wanted, per_second) = (buckets.clone(), progress.clone(), halt.clone(), wanted.clone(), args.join_per_sec.max(1));
+        let (buckets, progress, halt, wanted, per_second) = (buckets.clone(), progress.clone(), halt.clone(), wanted.clone(), args.stock_per_sec.unwrap_or(args.join_per_sec).max(1));
         std::thread::spawn(move || match dispatch::keep_stocks(&buckets, &wanted, per_second, &progress, &halt) {
             Ok(()) => println!("[rs] refresh stock keeper stopped"),
             Err(error) => eprintln!("[rs] refresh stock keeper failed: {error:#}"),

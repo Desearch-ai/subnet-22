@@ -105,8 +105,10 @@ pub struct ReplayArgs {
     pub refusing: Option<String>,
     /// A site whose sitemap re-dates every page each hour; the listed site with most pages if none.
     pub restamping: Option<String>,
-    /// Stored records the list walker and the stock keeper each read per second, beside the passes.
+    /// Stored records the list walker reads per second, beside the passes.
     pub join_per_sec: u64,
+    /// Sent records the stock keeper's threads read per second together.
+    pub stock_per_sec: u64,
     /// Pages the resend walk lists per second for domains whose `resend_before` changed.
     pub resend_per_sec: u64,
     /// Hours into the replay at which the crawl list becomes `switch_domains`.
@@ -316,7 +318,7 @@ pub async fn replay(args: ReplayArgs) -> Result<()> {
     let wanted = Arc::new(StockWanted::default());
     let keeper = {
         let (buckets, wanted, progress, stop, clock) = (buckets.clone(), wanted.clone(), progress.clone(), stop.clone(), clock.clone());
-        let per_second = args.join_per_sec;
+        let per_second = args.stock_per_sec;
         std::thread::spawn(move || dispatch::keep_stocks_on(&buckets, &wanted, per_second, &progress, &stop, &|| clock.load(Ordering::Relaxed)))
     };
 

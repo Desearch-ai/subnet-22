@@ -59,6 +59,8 @@ const STOCK_NONE_WAIT: u32 = 6 * 3600;
 const STOCK_SCAN: usize = 200_000;
 /// Domains the keeper takes off the queue at once, in the order passes found them out of stock, best ranked first.
 const STOCK_BATCH: usize = 1000;
+/// Threads choosing refresh stocks at once, each for the domains of its own buckets.
+pub const STOCK_WORKERS: usize = 8;
 /// Due schedules moved back onto ready lists per store per pass; small so a pass on a cold cache still sends soon.
 const REQUEUE_PER_PASS: usize = 5_000;
 /// A pass tries again with what is left when stale entries left the first allotment short.
@@ -1770,22 +1772,28 @@ fn cap_rose(joined: Option<Option<u64>>, cap: Option<u64>) -> bool {
     }
 }
 
-/// Domains whose refresh stock ran out, in the order the dispatcher found them, each once.
+/// Domains whose refresh stock ran out, in the order the dispatcher found them, each once, queued apart for each stock keeper thread.
 #[derive(Default)]
 pub struct StockWanted {
-    queue: Mutex<(VecDeque<String>, std::collections::HashSet<String>)>,
+    queues: [Mutex<(VecDeque<String>, HashSet<String>)>; STOCK_WORKERS],
 }
 
 impl StockWanted {
+    /// The keeper thread that chooses this domain's stock, the same for every ask.
+    pub fn worker_of(domain: &str) -> usize {
+        bucket_of(domain) % STOCK_WORKERS
+    }
+
     pub fn ask(&self, domain: &str) {
-        let mut queue = self.queue.lock().unwrap_or_else(|e| e.into_inner());
+        let mut queue = self.queues[Self::worker_of(domain)].lock().unwrap_or_else(|e| e.into_inner());
         if queue.1.insert(domain.to_string()) {
             queue.0.push_back(domain.to_string());
         }
     }
 
-    fn take(&self, most: usize) -> Vec<String> {
-        let mut queue = self.queue.lock().unwrap_or_else(|e| e.into_inner());
+    /// Up to `most` of the domains waiting for keeper thread `worker`, first asked first.
+    pub fn take(&self, worker: usize, most: usize) -> Vec<String> {
+        let mut queue = self.queues[worker].lock().unwrap_or_else(|e| e.into_inner());
         let taken: Vec<String> = (0..most).map_while(|_| queue.0.pop_front()).collect();
         for domain in &taken {
             queue.1.remove(domain);
@@ -1794,27 +1802,73 @@ impl StockWanted {
     }
 
     pub fn waiting(&self) -> usize {
-        self.queue.lock().unwrap_or_else(|e| e.into_inner()).0.len()
+        self.queues.iter().map(|queue| queue.lock().unwrap_or_else(|e| e.into_inner()).0.len()).sum()
     }
 }
 
-/// Choose the refresh stock of each domain the dispatcher found out of it, reading `per_second` sent records a second, until stopped.
+/// Sent records the keeper threads read together, at most `per_second`; time spent idle or reading slower saves none for later.
+struct StockPace {
+    per_second: u64,
+    next: Mutex<Instant>,
+}
+
+impl StockPace {
+    fn new(per_second: u64) -> Self {
+        StockPace { per_second: per_second.max(1), next: Mutex::new(Instant::now()) }
+    }
+
+    fn wait(&self, read: u64) {
+        let cost = Duration::from_secs_f64(read as f64 / self.per_second as f64);
+        let until = {
+            let mut next = self.next.lock().unwrap_or_else(|e| e.into_inner());
+            let now = Instant::now();
+            // Only the read just done counts against time already gone, so the pace never bursts.
+            *next = (*next).max(now.checked_sub(cost).unwrap_or(now)) + cost;
+            *next
+        };
+        if let Some(ahead) = until.checked_duration_since(Instant::now()) {
+            std::thread::sleep(ahead);
+        }
+    }
+}
+
+/// Choose the refresh stock of each domain the dispatcher found out of it, reading `per_second` sent records a second across all keeper threads, until stopped.
 pub fn keep_stocks(buckets: &Buckets, wanted: &StockWanted, per_second: u64, progress: &Progress, stop: &AtomicBool) -> Result<()> {
     keep_stocks_on(buckets, wanted, per_second, progress, stop, &now)
 }
 
 /// As `keep_stocks`, telling the time by `clock`, as a replay's simulated one.
-pub fn keep_stocks_on(buckets: &Buckets, wanted: &StockWanted, per_second: u64, progress: &Progress, stop: &AtomicBool, clock: &dyn Fn() -> u32) -> Result<()> {
+pub fn keep_stocks_on(buckets: &Buckets, wanted: &StockWanted, per_second: u64, progress: &Progress, stop: &AtomicBool, clock: &(dyn Fn() -> u32 + Sync)) -> Result<()> {
+    let pace = StockPace::new(per_second);
+    let failed = AtomicBool::new(false);
+    let quit = || stop.load(Ordering::Relaxed) || failed.load(Ordering::Relaxed);
+    std::thread::scope(|scope| {
+        let workers: Vec<_> = (0..STOCK_WORKERS)
+            .map(|worker| {
+                let (pace, failed, quit) = (&pace, &failed, &quit);
+                scope.spawn(move || {
+                    let kept = keep_worker_stocks(buckets, wanted, worker, pace, progress, quit, clock);
+                    if kept.is_err() {
+                        failed.store(true, Ordering::Relaxed);
+                    }
+                    kept
+                })
+            })
+            .collect();
+        workers.into_iter().map(|worker| worker.join().expect("a stock keeper thread panicked")).collect::<Result<Vec<()>>>()?;
+        Ok(())
+    })
+}
+
+/// One keeper thread: it alone chooses the stocks of the domains `StockWanted::worker_of` gives it, so each domain's cursor and wait live here.
+fn keep_worker_stocks(buckets: &Buckets, wanted: &StockWanted, worker: usize, pace: &StockPace, progress: &Progress, quit: &(dyn Fn() -> bool + Sync), clock: &(dyn Fn() -> u32 + Sync)) -> Result<()> {
     let mut not_before: HashMap<String, u32> = HashMap::new();
     let mut cursor: HashMap<String, Vec<u8>> = HashMap::new();
-    let (mut began, mut read) = (Instant::now(), 0u64);
-    while !stop.load(Ordering::Relaxed) {
+    while !quit() {
         progress.stock_waiting.store(wanted.waiting() as u64, Ordering::Relaxed);
         let at = clock();
-        let batch: Vec<String> = wanted.take(STOCK_BATCH).into_iter().filter(|domain| not_before.get(domain).is_none_or(|&until| until <= at)).collect();
+        let batch: Vec<String> = wanted.take(worker, STOCK_BATCH).into_iter().filter(|domain| not_before.get(domain).is_none_or(|&until| until <= at)).collect();
         if batch.is_empty() {
-            // Idle time saves no reads for later, so the pace never bursts.
-            (began, read) = (Instant::now(), 0);
             std::thread::sleep(JOIN_IDLE);
             continue;
         }
@@ -1824,15 +1878,11 @@ pub fn keep_stocks_on(buckets: &Buckets, wanted: &StockWanted, per_second: u64, 
                 continue;
             };
             let keep = (buckets.terms(&domain).hourly.unwrap_or(0) as usize / 4).max(STOCK_KEEP);
-            let mut pace = |scanned: u64| {
-                read += scanned;
-                let due = Duration::from_secs_f64(read as f64 / per_second.max(1) as f64);
-                if let Some(ahead) = due.checked_sub(began.elapsed()) {
-                    std::thread::sleep(ahead);
-                }
-                !stop.load(Ordering::Relaxed)
+            let mut paced = |scanned: u64| {
+                pace.wait(scanned);
+                !quit()
             };
-            let Some(stocked) = store.stock_refresh(&domain, keep, cursor.get(&domain).map(Vec::as_slice), STOCK_SCAN, &mut pace)? else {
+            let Some(stocked) = store.stock_refresh(&domain, keep, cursor.get(&domain).map(Vec::as_slice), STOCK_SCAN, &mut paced)? else {
                 return Ok(());
             };
             progress.stocked.fetch_add(1, Ordering::Relaxed);

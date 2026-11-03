@@ -57,6 +57,7 @@ MALLOC_ARENA_MAX=2 desearch-bot run --buckets-dir /var/lib/desearch-bot/buckets 
 | `--backfill-ready` | off | walk every store once to queue pages found before the queue existed |
 | `--domains` | none | a JSON list of the domains whose pages are queued, as names or `{host, type, weight, send_cap, hourly, backlog, since, resend_before, depth, hubs}`, read again when it changes; others are crawled but not queued |
 | `--join-per-sec` | 100000 | stored URL records read per second while queuing the pages of listed domains; 0 turns it off |
+| `--stock-per-sec` | `--join-per-sec` | sent records the refresh stock keeper's threads read per second together |
 | `--resend-per-sec` | 20000 | pages listed per second to go once more for domains whose `resend_before` changed; 0 turns it off |
 | `--inbox` | none | a directory of URL lists, one `<host>.txt` per host |
 | `--backfill-sent` | none | pages the Python feeder sent, as tab-separated host, path, lastmod and time, marked sent first |
@@ -194,9 +195,11 @@ sent in each lane, the room and the outcome feed.
 
 Room the lists leave in a pass goes to refreshes: pages already sent, of listed domains with nothing
 waiting whose pages come back (at least 200 outcomes judged, and no slowing for yield), oldest send
-first. A background keeper, paced like the walker, keeps a stock of each such domain's pages sent
-longest ago (a quarter of its hourly limit, 1,000 at least) and chooses it again when a pass finds it
-empty, reading at most 200,000 sent records a choice from where the last one stopped; a pass reads
+first. A background keeper keeps a stock of each such domain's pages sent longest ago (a quarter of
+its hourly limit, 1,000 at least) and chooses it again when a pass finds it empty, reading at most
+200,000 sent records a choice from where the last one stopped. It runs eight threads, each choosing
+the stocks of the domains in its own share of the buckets, which read `--stock-per-sec` sent records
+a second together, and time spent idle saves no reads for later; a pass reads
 only the stock, never the sent records. A page sent within the last day stays, and a stocked page
 that went out again or is now failing, requeued or changed leaves the stock unsent. A pass offers
 room to 2,000 domains in turn, and refreshes stay within each domain's hourly limit and its

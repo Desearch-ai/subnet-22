@@ -9,7 +9,7 @@ use desearch_bot::allowed::{self, Allowed, Terms};
 use desearch_bot::buckets::{bucket_of, sitemap_id, BucketStore, Buckets, Changes, Resources};
 use desearch_bot::dispatch::{
     allot, batch_id, interleave, most_at_once, recent_share, settle, shares, slots, split, yield_share, Dispatcher, HourlyCap, Pace, Progress, StockWanted, Want, FILL_FLOOR,
-    PROBE_PER_HOUR, YIELD_JUDGED, YIELD_RECENT_JUDGED,
+    PROBE_PER_HOUR, STOCK_WORKERS, YIELD_JUDGED, YIELD_RECENT_JUDGED,
 };
 use desearch_bot::hotkey::{self, Hotkey};
 use desearch_bot::outcomes::{self, HourlySpread, Next, OutcomeFeed, OutcomeReader, OutcomeRow, ResentPages};
@@ -1707,6 +1707,82 @@ fn stock_choice_rate_on_a_big_domain() {
 }
 
 #[test]
+fn a_domain_waiting_for_its_stock_goes_to_one_keeper_thread_however_often_it_is_asked() {
+    let hosts: Vec<String> = (0..2000).map(|i| format!("site{i}.example")).collect();
+    let wanted = StockWanted::default();
+    std::thread::scope(|scope| {
+        for _ in 0..4 {
+            scope.spawn(|| hosts.iter().for_each(|host| wanted.ask(host)));
+        }
+    });
+    assert_eq!(wanted.waiting(), hosts.len(), "asked by four at once, each waits once");
+    let drain = |wanted: &StockWanted| -> Vec<Vec<String>> {
+        std::thread::scope(|scope| {
+            let workers: Vec<_> = (0..STOCK_WORKERS).map(|worker| scope.spawn(move || std::iter::from_fn(|| Some(wanted.take(worker, 7)).filter(|b| !b.is_empty())).flatten().collect::<Vec<_>>())).collect();
+            workers.into_iter().map(|w| w.join().unwrap()).collect()
+        })
+    };
+    let mut owner = HashMap::new();
+    for (worker, domains) in drain(&wanted).into_iter().enumerate() {
+        assert!(!domains.is_empty(), "thread {worker} has domains of its own");
+        for domain in domains {
+            assert_eq!(StockWanted::worker_of(&domain), worker);
+            assert!(owner.insert(domain.clone(), worker).is_none(), "{domain} taken twice");
+        }
+    }
+    assert_eq!((owner.len(), wanted.waiting()), (hosts.len(), 0));
+    hosts.iter().for_each(|host| wanted.ask(host));
+    for (worker, domains) in drain(&wanted).into_iter().enumerate() {
+        assert!(domains.iter().all(|domain| owner[domain] == worker), "asked again, a domain goes back to the same thread");
+    }
+}
+
+#[test]
+fn the_stock_keeper_threads_choose_each_waiting_domain_once_reading_no_faster_together_than_the_pace() {
+    let dir = Dir::new("keeper-threads");
+    let hosts: Vec<String> = (0..64).map(|i| format!("site{i}.example")).collect();
+    assert_eq!(hosts.iter().map(|h| StockWanted::worker_of(h)).collect::<std::collections::HashSet<_>>().len(), STOCK_WORKERS);
+    let mut owned: Vec<usize> = hosts.iter().map(|h| bucket_of(h)).collect();
+    owned.sort_unstable();
+    owned.dedup();
+    let buckets = Arc::new(Buckets::open(&dir.0, &owned, &Resources::new(64 << 20, 1 << 30, owned.len())).unwrap());
+    for host in &hosts {
+        let store = buckets.store(host);
+        let pages = (0..100).map(|p| (urls::parse(&format!("https://{host}/page{p}"), host).unwrap(), 100, false)).collect();
+        store.record_listing(host, 1, pages, 100).unwrap();
+        let mut quotas = [0; LANES];
+        quotas[FRESH] = 100;
+        store.mark_sent(&store.take_ready(host, quotas).unwrap(), 1000, &rules()).unwrap();
+    }
+    let wanted = Arc::new(StockWanted::default());
+    std::thread::scope(|scope| {
+        for _ in 0..4 {
+            scope.spawn(|| hosts.iter().for_each(|host| wanted.ask(host)));
+        }
+    });
+    let (progress, stop) = (Arc::new(Progress::default()), Arc::new(AtomicBool::new(false)));
+    let started = std::time::Instant::now();
+    let keeper = {
+        let (buckets, wanted, progress, stop) = (buckets.clone(), wanted.clone(), progress.clone(), stop.clone());
+        std::thread::spawn(move || desearch_bot::dispatch::keep_stocks(&buckets, &wanted, 3200, &progress, &stop))
+    };
+    let stocked = || progress.stocked.load(std::sync::atomic::Ordering::Relaxed);
+    while stocked() < hosts.len() as u64 {
+        assert!(started.elapsed() < std::time::Duration::from_secs(60), "{} of {} stocks chosen", stocked(), hosts.len());
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let took = started.elapsed();
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    assert_eq!((stocked(), wanted.waiting()), (hosts.len() as u64, 0), "no domain chosen twice");
+    assert!(took >= std::time::Duration::from_millis(1500), "6,400 sent records at 3,200 a second across all threads take two seconds, not {took:?}");
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    keeper.join().unwrap().unwrap();
+    for host in &hosts {
+        assert_eq!(buckets.store(host).take_stock(host, 1000, 1000 + FILL_FLOOR, FILL_FLOOR).unwrap().picks.len(), 100, "{host}");
+    }
+}
+
+#[test]
 fn a_date_floor_leaves_older_pages_unsent_wherever_they_would_queue() {
     let dir = Dir::new("join-floor");
     std::fs::create_dir_all(&dir.0).unwrap();
@@ -3249,7 +3325,24 @@ async fn passes_with_delayed_sites_stay_short() {
     let stop = Arc::new(AtomicBool::new(false));
     let keeping = keeper.then(|| {
         let (buckets, wanted, progress, stop) = (buckets.clone(), wanted.clone(), progress.clone(), stop.clone());
-        std::thread::spawn(move || desearch_bot::dispatch::keep_stocks(&buckets, &wanted, 1_000_000, &progress, &stop).unwrap())
+        let per_second = var("STOCK_PER_SEC", 1_000_000) as u64;
+        std::thread::spawn(move || desearch_bot::dispatch::keep_stocks(&buckets, &wanted, per_second, &progress, &stop).unwrap())
+    });
+    // When the first stock was chosen and when every fill domain had one, for the rebuild rate after a restart.
+    let rebuilt = keeper.then(|| {
+        let (progress, stop, began) = (progress.clone(), stop.clone(), std::time::Instant::now());
+        std::thread::spawn(move || {
+            let mut first = None;
+            while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                let stocked = progress.stocked.load(std::sync::atomic::Ordering::Relaxed);
+                first = first.or((stocked > 0).then(|| began.elapsed()));
+                if stocked >= fillers as u64 {
+                    return first.map(|first| (first, began.elapsed()));
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            None
+        })
     });
     let (mut totals, mut sent_all) = (Vec::new(), 0);
     for pass in 0..var("PASSES", 12) as u32 {
@@ -3258,11 +3351,12 @@ async fn passes_with_delayed_sites_stay_short() {
             tokio::time::sleep(std::time::Duration::from_millis(var("PASS_GAP_MS", 1_000) as u64)).await;
         }
         let started = std::time::Instant::now();
-        let sent = dispatcher.pass(later + 15 * pass).await.unwrap();
+        let sent = dispatcher.pass(later + var("PASS_STEP", 15) as u32 * pass).await.unwrap();
         sent_all += sent;
         let took = started.elapsed().as_millis() as u64;
         let ms: Vec<u64> = progress.pass_ms.iter().map(|m| m.load(std::sync::atomic::Ordering::Relaxed)).collect();
-        println!("pass {pass}: {sent} URLs in {took} ms (absorb {} ms, pick {} ms, send {} ms)", ms[0], ms[1], ms[2]);
+        let (stocked, waiting) = (progress.stocked.load(std::sync::atomic::Ordering::Relaxed), wanted.waiting());
+        println!("pass {pass}: {sent} URLs in {took} ms (absorb {} ms, pick {} ms, send {} ms), {stocked} stocks chosen, {waiting} waiting", ms[0], ms[1], ms[2]);
         if pass >= 2 {
             totals.push(took);
         }
@@ -3274,6 +3368,11 @@ async fn passes_with_delayed_sites_stay_short() {
     totals.sort_unstable();
     let median = totals[totals.len() / 2];
     println!("median pass after the first two: {median} ms, {sent_all} URLs sent in all, {} stocks chosen", progress.stocked.load(std::sync::atomic::Ordering::Relaxed));
+    match rebuilt.map(|watch| watch.join().unwrap()) {
+        Some(Some((first, all))) => println!("every fill domain stocked {:.1}s after the first, {:.0} stocks a minute", (all - first).as_secs_f64(), fillers as f64 * 60.0 / (all - first).as_secs_f64()),
+        Some(None) => println!("not every fill domain was stocked before the passes ended"),
+        None => {}
+    }
     if let Some(most) = std::env::var("PASS_MS_MAX").ok().and_then(|n| n.parse::<u64>().ok()) {
         assert!(median <= most, "a pass takes {median} ms, more than {most}");
     }
