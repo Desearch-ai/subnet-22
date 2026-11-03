@@ -3194,3 +3194,69 @@ async fn a_restart_carries_a_delayed_sites_spacing_on_from_what_it_kept() {
     }
     assert_eq!(sent_to(&fake, "example.com"), 0, "with nothing kept, a restart waits a whole delay");
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "a pass-time check, run by hand: FILLERS=70000 DELAYED=22000 READY=2000 cargo test --release --test dispatch passes_with_delayed_sites_stay_short -- --ignored --nocapture"]
+async fn passes_with_delayed_sites_stay_short() {
+    let var = |name: &str, default: usize| std::env::var(name).ok().and_then(|n| n.parse().ok()).unwrap_or(default);
+    let (fillers, delayed, ready) = (var("FILLERS", 20_000), var("DELAYED", 6_000), var("READY", 600));
+    let dir = Dir::new("delayed-passes");
+    let hosts: Vec<String> = (0..fillers + ready).map(|i| format!("site{i}.example")).collect();
+    let mut owned: Vec<usize> = hosts.iter().map(|h| bucket_of(h)).collect();
+    owned.sort_unstable();
+    owned.dedup();
+    let buckets = Arc::new(Buckets::open(&dir.0, &owned, &Resources::new(256 << 20, 4 << 30, owned.len())).unwrap());
+    buckets.allow(&Allowed::with_terms(hosts.iter().map(|h| (h.clone(), Terms { hourly: Some(5000), ..Terms::default() }))));
+    let later = 1000 + FILL_FLOOR;
+    let delays = [1.0, 2.0, 5.0, 10.0, 30.0, 120.0, 600.0];
+    let started = std::time::Instant::now();
+    for (i, host) in hosts.iter().enumerate() {
+        let store = buckets.store(host);
+        let mut record = records::new_domain(Some(1000 + i as i64), Some("example"), &[], State::Active, None, None);
+        // Every third site of the first `delayed` asks for a delay, as about a third of the listed ones do.
+        if i % 3 == 0 && i / 3 < delayed {
+            record.insert("delay".into(), delays[i % delays.len()].into());
+        }
+        let mut changes = Changes::default();
+        changes.domain(host, &record);
+        store.write(changes).unwrap();
+        if i < fillers {
+            let pages = (0..10).map(|p| (urls::parse(&format!("https://{host}/page{p}"), host).unwrap(), 100, false)).collect();
+            store.record_listing(host, 1, pages, 100).unwrap();
+            let mut quotas = [0; LANES];
+            quotas[FRESH] = 100;
+            store.mark_sent(&store.take_ready(host, quotas).unwrap(), 1000, &rules()).unwrap();
+            store.note_outcomes(&[], &[(host.clone(), Yield { ok: 1000.0, failed: 10.0, at: later })]).unwrap();
+            store.stock_refresh(host, 1000, None, usize::MAX, &mut |_| true).unwrap();
+        } else {
+            let pages = (0..200).map(|p| (urls::parse(&format!("https://{host}/new{p}"), host).unwrap(), 100 + p, false)).collect();
+            store.record_listing(host, 1, pages, 100).unwrap();
+        }
+    }
+    println!("{fillers} fill domains, {delayed} delayed, {ready} with pages ready, written in {:.1}s", started.elapsed().as_secs_f64());
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let fake = Arc::new(Mutex::new(FakeApi { room: 400, ..FakeApi::default() }));
+    tokio::spawn(serve_api(listener, fake.clone()));
+    let progress = Arc::new(Progress::default());
+    let api = TaskApi::new(&base, Hotkey::from_uri("//test").unwrap()).unwrap();
+    let wanted = Arc::new(StockWanted::default());
+    let mut dispatcher = Dispatcher::load(buckets.clone(), api, 1_000_000, shares(50, 10), rules(), progress.clone()).await.unwrap().refreshing(wanted);
+    let mut totals = Vec::new();
+    for pass in 0..12 {
+        let started = std::time::Instant::now();
+        let sent = dispatcher.pass(later + 15 * pass).await.unwrap();
+        let took = started.elapsed().as_millis() as u64;
+        let ms: Vec<u64> = progress.pass_ms.iter().map(|m| m.load(std::sync::atomic::Ordering::Relaxed)).collect();
+        println!("pass {pass}: {sent} URLs in {took} ms (absorb {} ms, pick {} ms, send {} ms)", ms[0], ms[1], ms[2]);
+        if pass >= 2 {
+            totals.push(took);
+        }
+    }
+    totals.sort_unstable();
+    let median = totals[totals.len() / 2];
+    println!("median pass after the first two: {median} ms");
+    if let Some(most) = std::env::var("PASS_MS_MAX").ok().and_then(|n| n.parse::<u64>().ok()) {
+        assert!(median <= most, "a pass takes {median} ms, more than {most}");
+    }
+}
