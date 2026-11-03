@@ -673,7 +673,8 @@ impl Loop {
             let ok = record.get("status").and_then(Value::as_str) == Some("ok") && update.kind.as_deref() != Some(LINKS_KIND);
             totals.insert(&update.url, (records::int(record.get("urls")).unwrap_or(0), ok));
         }
-        if write.state == State::Active {
+        // A visit the site's delay stopped keeps what it found to read next, whatever the domain's state.
+        if write.state == State::Active || write.visit.paced {
             for (url, depth, parent) in &write.visit.deferred {
                 if !totals.contains_key(url.as_str()) {
                     changes.sitemap(&write.host, url, &records::unread_sitemap(url, *depth, *parent));

@@ -1700,12 +1700,14 @@ impl Run<'_> {
         self.connect_failed = false;
         // Cookies a redirect sets go with the later hops of the same chain, as a browser sends them; some sign-in redirects loop without them.
         let mut cookies: Vec<Cookie> = Vec::new();
-        for _ in 0..=MAX_REDIRECTS {
+        // The hops of one redirect chain are one request: only the first waits its turn.
+        for hop in 0..=MAX_REDIRECTS {
             let host = urls::split(&url).map_err(|_| "ValueError".to_string())?.hostname().unwrap_or_default();
             if !net::public_host(&host) {
                 return Err("OSError".into());
             }
-            if !self.pacer.wait().await {
+            let booked = self.pacer.next;
+            if hop == 0 && !self.pacer.wait().await {
                 return Err(PACED.into());
             }
             if let (None, Some(budget)) = (&permit, &budget) {
@@ -1732,10 +1734,17 @@ impl Run<'_> {
             }
             let started = Instant::now();
             let connecting = Some(self.visitor.connect_timeout);
-            let mut response = request.send().await.map_err(|e| {
-                self.connect_failed = net::connect_failed(&e);
-                net::failure(&e, started.elapsed(), connecting).to_string()
-            })?;
+            let mut response = match request.send().await {
+                Ok(response) => response,
+                Err(error) => {
+                    self.connect_failed = net::connect_failed(&error);
+                    // Nothing answered, so the try spent no turn: a fallback to another scheme or host goes at once.
+                    if hop == 0 {
+                        self.pacer.next = booked;
+                    }
+                    return Err(net::failure(&error, started.elapsed(), connecting).to_string());
+                }
+            };
             self.answered = true;
             let peer = response.remote_addr().map(|addr| addr.ip());
             if peer.is_some() && self.on_site(&url) {
@@ -2022,7 +2031,7 @@ fn is_html(answer: &Answer) -> bool {
 
 fn crawl_delay(value: Option<f64>) -> f64 {
     match value {
-        Some(delay) if delay.is_finite() && delay >= 0.0 => delay,
+        Some(delay) if delay.is_finite() && delay >= 0.0 => delay.min(robots::MAX_CRAWL_DELAY),
         _ => 0.0,
     }
 }

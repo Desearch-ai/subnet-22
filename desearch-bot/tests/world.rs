@@ -2687,3 +2687,95 @@ async fn a_crawl_delay_that_is_not_a_number_paces_nothing() {
     assert_eq!((record["state"].as_str(), record["urls"].as_i64()), (Some("active"), Some(12)));
     assert!(record["delay"].is_null() && record.get("paced").is_none() && record.get("quiet").is_none());
 }
+
+/// One crawl step over `host` on fresh stores holding the domain and sitemap records given, with its delay already passed.
+async fn after_the_delay(web: Shared, host: &'static str, name: &str, domain: &serde_json::Map<String, serde_json::Value>, sitemaps: &[(String, serde_json::Map<String, serde_json::Value>)]) -> Arc<Buckets> {
+    let (buckets, _crawl) = crawl_prepared(web, &[host], name, |buckets| {
+        let mut record = domain.clone();
+        record.insert("due".into(), 0.into());
+        record.insert("quiet".into(), 0.into());
+        let mut changes = Changes::default();
+        changes.domain(host, &record);
+        for (url, sitemap) in sitemaps {
+            changes.sitemap(host, url, sitemap);
+        }
+        buckets.store(host).write(changes).unwrap();
+    })
+    .await;
+    buckets
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_new_site_asking_for_a_long_delay_is_judged_one_request_a_visit_from_the_sitemap_its_robots_txt_names() {
+    let web: Shared = Arc::default();
+    let host = "patient.test";
+    let list = format!("http://{host}/list.xml");
+    {
+        let mut w = web.lock().unwrap();
+        w.add(host, "/robots.txt", 200, None, format!("User-agent: *\nCrawl-delay: 600\nSitemap: {list}\n").as_bytes());
+        w.add(host, "/list.xml", 200, None, urlset(host, &(0..12).map(|i| format!("/story/{i}")).collect::<Vec<_>>()).as_bytes());
+        w.add(host, "/", 200, None, format!("<html lang=\"en\"><p>{ENGLISH}</p></html>").as_bytes());
+    }
+    let hits = |web: &Shared| web.lock().unwrap().hits.iter().filter(|(h, _, _)| h == host).map(|(_, p, _)| p.clone()).collect::<Vec<_>>();
+    let (buckets, crawl) = crawl_prepared(web.clone(), &[host], "patient-1", |_| {}).await;
+    drop(crawl);
+    let stored = || buckets.store(host).sitemap(host, &list).unwrap().expect("the named sitemap is kept for the next visit");
+    let (first, named) = (buckets.store(host).domain(host).unwrap().unwrap(), stored());
+    assert_eq!((first["state"].as_str(), first["paced"].as_bool(), hits(&web)), (Some("new"), Some(true), vec!["/robots.txt".to_string()]));
+
+    let buckets = after_the_delay(web.clone(), host, "patient-2", &first, &[(list.clone(), named)]).await;
+    let (second, read) = (buckets.store(host).domain(host).unwrap().unwrap(), buckets.store(host).sitemap(host, &list).unwrap().unwrap());
+    assert_eq!(hits(&web), ["/robots.txt", "/list.xml"], "robots.txt read that day stands; the sitemap is this visit's one request");
+    assert_eq!((second["state"].as_str(), read["status"].as_str(), read["urls"].as_i64()), (Some("new"), Some("ok"), Some(12)));
+
+    let buckets = after_the_delay(web.clone(), host, "patient-3", &second, &[(list.clone(), read)]).await;
+    let third = buckets.store(host).domain(host).unwrap().unwrap();
+    assert_eq!(hits(&web), ["/robots.txt", "/list.xml", "/"], "then the homepage");
+    assert_eq!((third["state"].as_str(), third["lang"].as_str(), third.get("paced")), (Some("active"), Some("en"), None), "judged once it has seen all it judges by");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_active_site_asking_for_a_long_delay_whose_robots_txt_redirects_still_reads_it_daily() {
+    let web: Shared = Arc::default();
+    let host = "moved-robots.test";
+    let list = format!("http://{host}/list.xml");
+    {
+        let mut w = web.lock().unwrap();
+        w.redirect(host, "/robots.txt", &format!("http://{host}/real-robots.txt"), None);
+        w.add(host, "/real-robots.txt", 200, None, format!("User-agent: *\nCrawl-delay: 600\nSitemap: {list}\n").as_bytes());
+        w.add(host, "/list.xml", 200, None, urlset(host, &(0..12).map(|i| format!("/story/{i}")).collect::<Vec<_>>()).as_bytes());
+    }
+    let now = chrono::Utc::now().timestamp();
+    let (buckets, _crawl) = crawl_prepared(web.clone(), &[host], "moved-robots", |buckets| {
+        let mut record = records::new_domain(Some(1), Some("new_generic"), &[], State::Active, None, Some(0));
+        for (name, value) in [("robots", serde_json::json!(now - 3 * 86_400)), ("robots_status", 200.into()), ("allows", true.into()), ("delay", 600.0.into())] {
+            record.insert(name.into(), value);
+        }
+        let mut changes = Changes::default();
+        changes.domain(host, &record);
+        changes.sitemap(host, &list, serde_json::json!({"id": sitemap_id(&list), "depth": 0, "next": 0}).as_object().unwrap());
+        buckets.store(host).write(changes).unwrap();
+    })
+    .await;
+    let record = buckets.store(host).domain(host).unwrap().unwrap();
+    let hits: Vec<String> = web.lock().unwrap().hits.iter().filter(|(h, _, _)| h == host).map(|(_, p, _)| p.clone()).collect();
+    assert_eq!(hits, ["/robots.txt", "/real-robots.txt"], "a redirect chain is one request");
+    assert!(record["robots"].as_i64().unwrap() >= now, "robots.txt read again");
+    assert_eq!((record["state"].as_str(), record["paced"].as_bool()), (Some("active"), Some(true)));
+    assert!(record["due"].as_i64().unwrap() >= now + 600, "the sitemap waits for the delay");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_absurd_crawl_delay_is_read_as_the_longest_and_panics_nothing() {
+    let web: Shared = Arc::default();
+    let host = "absurd.test";
+    {
+        let mut w = web.lock().unwrap();
+        w.add(host, "/robots.txt", 200, None, format!("User-agent: *\nCrawl-delay: 1e300\nSitemap: http://{host}/list.xml\n").as_bytes());
+    }
+    let now = chrono::Utc::now().timestamp();
+    let buckets = visit_once(web, &[host], &[], "absurd-delay").await;
+    let record = buckets.store(host).domain(host).unwrap().unwrap();
+    assert_eq!(record["delay"].as_f64(), Some(41.0 * 86_400.0));
+    assert!(record["due"].as_i64().unwrap() >= now + 41 * 86_400);
+}

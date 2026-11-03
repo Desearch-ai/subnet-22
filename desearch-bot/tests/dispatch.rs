@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use desearch_bot::allowed::{self, Allowed, Terms};
 use desearch_bot::buckets::{bucket_of, sitemap_id, BucketStore, Buckets, Changes, Resources};
 use desearch_bot::dispatch::{
-    allot, batch_id, interleave, most_at_once, recent_share, settle, shares, slots, split, yield_share, Dispatcher, HourlyCap, Pace, Progress, StockWanted, Want, FILL_FLOOR,
+    allot, batch_id, interleave, most_at_once, CLAIM_WINDOW, recent_share, settle, shares, slots, split, yield_share, Dispatcher, HourlyCap, Pace, Progress, StockWanted, Want, FILL_FLOOR,
     PROBE_PER_HOUR, YIELD_JUDGED, YIELD_RECENT_JUDGED,
 };
 use desearch_bot::hotkey::{self, Hotkey};
@@ -2192,8 +2192,8 @@ async fn a_site_with_only_resends_keeps_its_crawl_delay() {
     let mut dispatcher = Dispatcher::load(buckets.clone(), TaskApi::new(&base, Hotkey::from_uri("//test").unwrap()).unwrap(), 1000, shares(50, 10), rules(), Arc::new(Progress::default())).await.unwrap();
     let now = 1_800_000_000;
     assert_eq!(dispatcher.pass(now).await.unwrap(), 1, "a minute between requests is one at a time, for resends too");
-    assert_eq!(dispatcher.pass(now + 30).await.unwrap(), 0);
-    assert_eq!(dispatcher.pass(now + 60).await.unwrap(), 1, "then one a minute");
+    assert_eq!(dispatcher.pass(now + 60).await.unwrap(), 0);
+    assert_eq!(dispatcher.pass(now + 240).await.unwrap(), 1, "then one a minute and a claim window apart");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2515,14 +2515,13 @@ fn a_crawl_delay_sets_the_pages_an_hour_a_site_can_take() {
         record.insert("delay".into(), delay);
         record
     };
-    let rate = |delay: Value| desearch_bot::dispatch::delay_rate(&record(delay));
-    assert_eq!(rate(Value::from(15.0)), Some(240_000), "thousandths of a page an hour");
-    assert_eq!(rate(Value::from(1)), Some(3_600_000));
-    assert_eq!(rate(Value::from(600)), Some(6_000), "six an hour, however long the delay");
-    assert_eq!(rate(Value::from(43_200)), Some(83), "a twelfth of a page an hour, rounded down");
-    assert_eq!(rate(Value::from(7)), Some(514_285), "never rounded up past what the delay allows");
+    let delay = |delay: Value| desearch_bot::dispatch::delay_seconds(&record(delay));
+    assert_eq!(delay(Value::from(15.0)), Some(15));
+    assert_eq!(delay(Value::from(0.4)), Some(1), "rounded up, never down");
+    assert_eq!(delay(Value::from(43_200)), Some(43_200));
+    assert_eq!(delay(Value::from(1e300)), Some(41 * 86_400), "an absurd delay is read as the longest, which sends nothing");
     for garbage in [Value::from(0), Value::from(-5), Value::Null, Value::from("soon")] {
-        assert_eq!(rate(garbage.clone()), None, "{garbage}");
+        assert_eq!(delay(garbage.clone()), None, "{garbage}");
     }
     let mut cap = HourlyCap::new(36_000);
     assert_eq!(cap.allowance_within("arxiv.org", 1000, 240, true), 1, "one page before a second pass, however many an hour");
@@ -2560,9 +2559,10 @@ async fn a_site_asking_for_a_delay_between_requests_gets_no_more_than_the_delay_
     dispatcher.pass(now).await.unwrap();
     assert_eq!((sent_by(&fake, "example.com"), sent_by(&fake, "example.org")), (1, 30), "a minute between requests is one at a time");
     dispatcher.pass(now + 30).await.unwrap();
-    assert_eq!(sent_by(&fake, "example.com"), 1);
-    dispatcher.pass(now + 60).await.unwrap();
-    assert_eq!(sent_by(&fake, "example.com"), 2, "then one a minute");
+    dispatcher.pass(now + 239).await.unwrap();
+    assert_eq!(sent_by(&fake, "example.com"), 1, "not again before its minute and a claim window");
+    dispatcher.pass(now + 240).await.unwrap();
+    assert_eq!(sent_by(&fake, "example.com"), 2, "then one each four minutes");
 }
 
 #[test]
@@ -2761,14 +2761,14 @@ async fn a_site_asking_for_a_delay_sends_one_page_for_each_delay_since_the_last_
         dispatcher.pass(at).await.unwrap();
         by_pass.push(sent_to(&fake, "example.com") - before);
     }
-    assert_eq!(by_pass, [1, 3, 3, 3, 3, 3, 3, 3, 3, 3], "one at the first pass, then three for each 30 s at a 10 s delay");
+    assert_eq!(by_pass, [1, 0, 0, 0, 0, 0, 0, 1, 0, 0], "one at a time, the 10 s delay and the 180 s claim window apart");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_site_asking_for_a_delay_gets_one_request_a_delay_apart_while_passes_are_shorter() {
     let dir = Dir::new("delay-spacing");
     let buckets = Arc::new(known(&dir, &["example.com", "example.org"]));
-    buckets.allow(&Allowed::with_terms([("example.com", Terms::default()), ("example.org", Terms { hourly: Some(30), ..Terms::default() })]));
+    buckets.allow(&Allowed::with_terms([("example.com", Terms::default()), ("example.org", Terms { hourly: Some(2), ..Terms::default() })]));
     for host in ["example.com", "example.org"] {
         ask_for_a_delay(&buckets, host, 60.0);
         queue_pages(&buckets, host, 100);
@@ -2789,8 +2789,8 @@ async fn a_site_asking_for_a_delay_gets_one_request_a_delay_apart_while_passes_a
             }
         }
     }
-    assert_eq!(sends["example.com"], (0..600).step_by(60).collect::<Vec<u32>>(), "a minute apart, never closer");
-    assert_eq!(sends["example.org"], (0..600).step_by(120).collect::<Vec<u32>>(), "a list limit below the delay's rate spaces it further, one at a time still");
+    assert_eq!(sends["example.com"], [0, 240, 480], "a minute and a claim window apart, never closer");
+    assert_eq!(sends["example.org"], [0, 240], "a list limit below the delay's rate holds it further, one at a time still");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -3052,8 +3052,8 @@ fn only_a_listed_subdomains_page_kept_off_its_parents_list_is_queued_again() {
 }
 
 
-/// Each send's time and size, from passes `every` seconds apart at a rate, with the cap restarted at `restart` as a restarted bot starts it.
-fn sends_at_rate(rate: u64, start: u32, every: u32, until: u32, restart: Option<u32>) -> Vec<(u32, u64)> {
+/// Each send's time and size for a site asking `delay` seconds, from passes `every` seconds apart, with the cap restarted at `restart` as a restarted bot starts it.
+fn spaced_sends(delay: u32, start: u32, every: u32, until: u32, restart: Option<u32>) -> Vec<(u32, u64)> {
     let mut cap = HourlyCap::new(36_000);
     let mut sends = Vec::new();
     for at in (start..until).step_by(every as usize) {
@@ -3061,7 +3061,7 @@ fn sends_at_rate(rate: u64, start: u32, every: u32, until: u32, restart: Option<
             cap = HourlyCap::empty_at(36_000, at);
         }
         cap.pass_at(at);
-        let allowed = cap.allowance_at_rate("slow.com", at, rate, true);
+        let allowed = cap.allowance_spaced("slow.com", at, 36_000_000, delay + CLAIM_WINDOW);
         if allowed > 0 {
             cap.record("slow.com", at, allowed);
             sends.push((at, allowed));
@@ -3071,33 +3071,30 @@ fn sends_at_rate(rate: u64, start: u32, every: u32, until: u32, restart: Option<
 }
 
 #[test]
-fn a_ten_minute_delay_sends_at_most_six_an_hour_one_every_ten_minutes() {
-    let sends = sends_at_rate(6_000, 1_000_000, 20, 1_000_000 + 4 * 3_600, None);
-    assert!(sends.iter().all(|(_, n)| *n == 1), "one page at a time");
-    assert!(sends.windows(2).all(|pair| pair[1].0 - pair[0].0 >= 600), "{sends:?}");
-    for (at, _) in &sends {
-        let hour = sends.iter().filter(|(sent, _)| (*at..*at + 3_600).contains(sent)).count();
-        assert!(hour <= 6, "{hour} in the hour from {at}");
+fn a_delayed_sites_sends_go_one_a_pass_a_delay_and_a_claim_window_apart_whatever_the_pass_gaps() {
+    for (delay, every) in [(1, 7), (10, 7), (61, 45), (100, 120), (600, 130), (60, 61), (240, 1)] {
+        let sends = spaced_sends(delay, 1_000_000, every, 1_000_000 + 4 * 3_600, None);
+        assert!(sends.iter().all(|(_, n)| *n == 1), "{delay} s, passes {every} s apart: one at a time");
+        assert!(sends.windows(2).all(|pair| pair[1].0 - pair[0].0 >= delay + CLAIM_WINDOW), "{delay} s, passes {every} s apart: {sends:?}");
+        let gap = (delay + CLAIM_WINDOW).div_ceil(every) * every;
+        assert!(sends.len() as u32 >= 4 * 3_600 / gap, "{delay} s, passes {every} s apart: only {} sends", sends.len());
     }
-    assert!(sends.len() >= 23, "and it does send them: {}", sends.len());
 }
 
 #[test]
 fn a_twelve_hour_delay_sends_one_page_each_twelve_hours_across_hours_and_restarts() {
     let start = 1_000_000;
     for restart in [None, Some(start + 30 * 3_600), Some(start + 12 * 3_600 + 600)] {
-        let sends = sends_at_rate(83, start, 300, start + 3 * 86_400, restart);
-        assert!(sends.iter().all(|(_, n)| *n == 1));
-        assert!(sends.windows(2).all(|pair| pair[1].0 - pair[0].0 >= 43_200), "{restart:?}: {sends:?}");
+        let sends = spaced_sends(43_200, start, 300, start + 3 * 86_400, restart);
+        assert!(sends.windows(2).all(|pair| pair[1].0 - pair[0].0 >= 43_200 + CLAIM_WINDOW), "{restart:?}: {sends:?}");
         assert!((5..=6).contains(&sends.len()), "{restart:?}: {} in three days", sends.len());
     }
-    let after = sends_at_rate(83, start, 300, start + 43_200, Some(start));
-    assert!(after.is_empty(), "a restart waits a whole delay before its first page");
-    assert!(sends_at_rate(0, start, 300, start + 86_400, None).is_empty(), "a delay too long to count sends nothing");
+    assert!(spaced_sends(43_200, start, 300, start + 43_380, Some(start)).is_empty(), "a restart waits a whole delay and window before its first page");
+    assert!(spaced_sends(41 * 86_400, start, 3_600, start + 30 * 86_400, Some(start)).is_empty(), "the longest delay read sends nothing for weeks");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_site_asking_for_ten_minutes_between_requests_gets_six_an_hour_through_restarts() {
+async fn a_site_asking_for_ten_minutes_between_requests_gets_its_sends_that_and_a_claim_window_apart_through_restarts() {
     let dir = Dir::new("delay-long");
     let buckets = Arc::new(known(&dir, &["example.com"]));
     ask_for_a_delay(&buckets, "example.com", 600.0);
@@ -3116,9 +3113,9 @@ async fn a_site_asking_for_ten_minutes_between_requests_gets_six_an_hour_through
         dispatcher.pass(at).await.unwrap();
         sends.extend((before..sent_to(&fake, "example.com")).map(|_| at));
     }
-    assert!(sends.windows(2).all(|pair| pair[1] - pair[0] >= 600), "{sends:?}");
+    assert!(sends.windows(2).all(|pair| pair[1] - pair[0] >= 600 + CLAIM_WINDOW), "{sends:?}");
     for at in &sends {
         assert!(sends.iter().filter(|sent| (*at..*at + 3_600).contains(sent)).count() <= 6);
     }
-    assert!(sends.len() >= 14, "{} sends in three hours", sends.len());
+    assert!(sends.len() >= 13, "{} sends in three hours", sends.len());
 }

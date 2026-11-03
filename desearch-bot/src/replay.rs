@@ -379,7 +379,7 @@ pub async fn replay(args: ReplayArgs) -> Result<()> {
         }
         for (host, url) in std::mem::take(&mut taken.lock().unwrap_or_else(|e| e.into_inner()).urls) {
             let listed = buckets.terms(&host).hourly.unwrap_or(1_000_000);
-            let delay = *delays.entry(host.clone()).or_insert_with(|| buckets.store_for(&host).and_then(|store| store.domain(&host).ok().flatten()).as_ref().and_then(dispatch::delay_rate).map(|rate| rate.div_ceil(dispatch::MILLI)));
+            let delay = *delays.entry(host.clone()).or_insert_with(|| buckets.store_for(&host).and_then(|store| store.domain(&host).ok().flatten()).as_ref().and_then(dispatch::delay_seconds).map(|delay| (3600 / u64::from(delay + dispatch::CLAIM_WINDOW)).max(1)));
             bars.spaced(&host, now, delay.map_or(listed, |per_hour| per_hour.min(listed)), delay.is_some());
             let interval = |_: u32| recrawl.interval(&host);
             bars.sent(&url, now, host == restamping, interval);

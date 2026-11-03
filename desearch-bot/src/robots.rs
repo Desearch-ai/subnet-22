@@ -116,6 +116,9 @@ pub fn sitemaps(robots: &str) -> Vec<String> {
 }
 
 /// Python's `float(value)`, keeping only finite, non-negative delays.
+/// The longest Crawl-delay read: past 41 days one page a delay is already no send at all, and longer values only overflow.
+pub const MAX_CRAWL_DELAY: f64 = 41.0 * 86_400.0;
+
 fn seconds(value: &str) -> Option<f64> {
     let bytes = value.as_bytes();
     let joined = bytes
@@ -126,7 +129,7 @@ fn seconds(value: &str) -> Option<f64> {
         return None;
     }
     let delay: f64 = value.replace('_', "").parse().ok()?;
-    (delay.is_finite() && delay >= 0.0).then_some(delay)
+    (delay.is_finite() && delay >= 0.0).then_some(delay.min(MAX_CRAWL_DELAY))
 }
 
 #[cfg(test)]

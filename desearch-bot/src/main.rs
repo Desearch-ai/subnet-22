@@ -221,6 +221,9 @@ struct RunArgs {
     /// URLs one domain may send in an hour.
     #[arg(long, default_value_t = 2000)]
     per_domain_hourly: u64,
+    /// Seconds a miner may hold a task before fetching it: a site that asks for a delay gets its next page no sooner than its delay and this after its last.
+    #[arg(long, default_value_t = dispatch::CLAIM_WINDOW)]
+    claim_window: u32,
     /// Percent of each domain's sends kept for pages never sent, newest found first; what one lane leaves unused goes to the others.
     #[arg(long, default_value_t = 50)]
     new_share: usize,
@@ -474,6 +477,7 @@ async fn run(args: RunArgs) -> Result<()> {
             progress.clone(),
         ).await?
         .paced(args.urls_per_hour)
+        .claim_window(args.claim_window)
         .refreshing(wanted.clone())
         .resent_into(resent.clone());
         tokio::spawn(dispatcher.run(stopped.clone()));

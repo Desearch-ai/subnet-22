@@ -19,7 +19,7 @@ pub fn int(value: Option<&Value>) -> Option<i64> {
 /// When a site that asks for a delay may next be asked, after a visit at `now` whose requests are not known, in microseconds.
 pub fn quiet_after(delay: Option<f64>, now: i64) -> i64 {
     match delay.filter(|delay| delay.is_finite() && *delay > 0.0) {
-        Some(delay) => now.saturating_add((delay * SECOND as f64).min(i64::MAX as f64) as i64),
+        Some(delay) => now.saturating_add((delay.min(crate::robots::MAX_CRAWL_DELAY) * SECOND as f64) as i64),
         None => now,
     }
 }
@@ -74,7 +74,7 @@ pub fn reset_for_recheck(record: &mut Json, now_micros: i64) {
     record.insert("state".into(), State::New.as_str().into());
     record.insert("reason".into(), Value::Null);
     record.insert("failures".into(), 0.into());
-    let quiet = int(record.get("quiet")).map_or(0, |quiet| quiet * SECOND);
+    let quiet = int(record.get("quiet")).map_or(0, |quiet| quiet.saturating_mul(SECOND));
     record.insert("due".into(), seconds(Some(now_micros.max(quiet))));
     record.remove("lang");
 }

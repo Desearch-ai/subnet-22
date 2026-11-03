@@ -41,6 +41,8 @@ const HOUR: u32 = 3600;
 /// Rates go in thousandths of a page an hour, and what a domain owes in an hour of them, so a site slower than a page an hour is paced exactly.
 pub const MILLI: u64 = 1000;
 const PAGE: u64 = HOUR as u64 * MILLI;
+/// How long a miner may hold a task before fetching its pages: a site that asks for a delay gets its next page no sooner than its delay and this after its last, so the fetches keep the delay wherever in their claims they fall.
+pub const CLAIM_WINDOW: u32 = 180;
 const RANKS_SECONDS: Duration = Duration::from_secs(600);
 /// Domains a pass offers spare room to, going round the list from where the last pass stopped, so passes stay short.
 const FILL_WINDOW: usize = 2000;
@@ -247,6 +249,8 @@ pub struct HourlyCap {
     sent: HashMap<String, VecDeque<(u32, u64)>>,
     /// When every domain's saved share was empty, so a restart adds no burst to the hour before it; none starts them full.
     emptied: Option<u32>,
+    /// When each site that asks for a delay last sent; one not sent since a restart counts as sent at it.
+    spaced: HashMap<String, Option<u32>>,
     /// When the last pass started, and the seconds since the one before it.
     last_pass: Option<u32>,
     gap: Option<u32>,
@@ -254,7 +258,7 @@ pub struct HourlyCap {
 
 impl HourlyCap {
     pub fn new(limit: u64) -> Self {
-        HourlyCap { limit, sent: HashMap::new(), emptied: None, last_pass: None, gap: None }
+        HourlyCap { limit, sent: HashMap::new(), emptied: None, spaced: HashMap::new(), last_pass: None, gap: None }
     }
 
     /// A pass starts: a site that asks for a delay may send what the delay allows since the last one.
@@ -332,7 +336,20 @@ impl HourlyCap {
         held.saturating_sub(total).min(most.saturating_sub(owed) / PAGE)
     }
 
+    /// What a site that asks for a delay may send now: one page once `spacing` seconds have passed since its last, within its hourly rate.
+    pub fn allowance_spaced(&mut self, domain: &str, now: u32, rate: u64, spacing: u32) -> u64 {
+        let emptied = self.emptied;
+        let last = *self.spaced.entry(domain.to_string()).or_insert(emptied);
+        if last.is_some_and(|last| u64::from(now) < u64::from(last) + u64::from(spacing)) {
+            return 0;
+        }
+        self.allowance_at_rate(domain, now, rate, false).min(1)
+    }
+
     pub fn record(&mut self, domain: &str, now: u32, count: u64) {
+        if let Some(last) = self.spaced.get_mut(domain) {
+            *last = Some(last.map_or(now, |last| last.max(now)));
+        }
         self.sent.entry(domain.to_string()).or_default().push_back((now, count));
     }
 }
@@ -584,8 +601,10 @@ pub struct Dispatcher {
     fillers: Vec<(i64, String)>,
     fillers_read: Option<Instant>,
     fillers_job: Option<tokio::task::JoinHandle<Result<Fillers>>>,
-    /// The rate each domain's Crawl-delay allows, in thousandths of a page an hour, for the domains whose robots.txt names one.
-    paced: HashMap<String, u64>,
+    /// The Crawl-delay each domain asks, in seconds, for the domains whose robots.txt names one.
+    paced: HashMap<String, u32>,
+    /// Seconds a miner may hold a task, added to each delay so the fetches keep it.
+    claim_window: u32,
     fill_resume: Option<(i64, String)>,
     /// Domains with no refresh to send now, until when they rest, and the domains whose stock ran out, for the stock keeper.
     fill_rest: HashMap<String, u32>,
@@ -594,7 +613,7 @@ pub struct Dispatcher {
     resending: HashMap<String, Domain>,
     resend_resume: Option<(i64, String)>,
     resend_read: Option<Instant>,
-    resend_job: Option<tokio::task::JoinHandle<Result<HashMap<String, (Domain, Option<u64>)>>>>,
+    resend_job: Option<tokio::task::JoinHandle<Result<HashMap<String, (Domain, Option<u32>)>>>>,
     /// Pages sent to go once more, so their outcomes stay out of the yields that pace new pages.
     resent: Option<Arc<ResentPages>>,
 }
@@ -657,6 +676,7 @@ impl Dispatcher {
             fillers_read: None,
             fillers_job: None,
             paced,
+            claim_window: CLAIM_WINDOW,
             fill_resume: None,
             fill_rest: HashMap::new(),
             stock_wanted: None,
@@ -679,6 +699,12 @@ impl Dispatcher {
     pub fn paced_from(mut self, per_hour: u64, start: u32) -> Self {
         self.pace = Pace::new(per_hour, start);
         self.cap = HourlyCap::empty_at(self.cap.limit(), start);
+        self
+    }
+
+    /// Space a delayed site's sends by its delay and this many seconds, the claim window, instead of `CLAIM_WINDOW`.
+    pub fn claim_window(mut self, seconds: u32) -> Self {
+        self.claim_window = seconds;
         self
     }
 
@@ -832,7 +858,7 @@ impl Dispatcher {
                     *grown.entry(domain).or_default() += added;
                 }
             }
-            let ranks: Vec<(String, i64, f64, u8, Option<u64>)> = refresh
+            let ranks: Vec<(String, i64, f64, u8, Option<u32>)> = refresh
                 .iter()
                 .chain(grown.keys())
                 .map(|domain| {
@@ -882,8 +908,8 @@ impl Dispatcher {
             .iter()
             .map(|(rank, name)| {
                 let Domain { ready, share, weight, .. } = self.domains[name];
-                let (hourly, delayed) = hourly_of(&self.buckets, &self.paced, self.cap.limit(), name);
-                let allowance = self.cap.allowance_at_rate(name, now, if share == 0.0 { (PROBE_PER_HOUR * MILLI).min(hourly) } else { hourly }, delayed);
+                let (hourly, delay) = hourly_of(&self.buckets, &self.paced, self.cap.limit(), name);
+                let allowance = self.allowance(name, now, if share == 0.0 { (PROBE_PER_HOUR * MILLI).min(hourly) } else { hourly }, delay);
                 Want { rank: *rank, ready, allowance, share, weight }
             })
             .collect();
@@ -943,8 +969,8 @@ impl Dispatcher {
             .iter()
             .map(|(rank, name)| {
                 let Domain { ready, share, weight, .. } = self.resending[name];
-                let (hourly, delayed) = hourly_of(&self.buckets, &self.paced, self.cap.limit(), name);
-                let allowance = self.cap.allowance_at_rate(name, now, if share == 0.0 { (PROBE_PER_HOUR * MILLI).min(hourly) } else { hourly }, delayed);
+                let (hourly, delay) = hourly_of(&self.buckets, &self.paced, self.cap.limit(), name);
+                let allowance = self.allowance(name, now, if share == 0.0 { (PROBE_PER_HOUR * MILLI).min(hourly) } else { hourly }, delay);
                 Want { rank: *rank, ready, allowance: allowance.saturating_sub(listed.get(name).map_or(0, |picked| picked.len() as u64)), share, weight }
             })
             .collect();
@@ -1011,11 +1037,11 @@ impl Dispatcher {
     async fn relist(&mut self, now: u32) -> Result<()> {
         let buckets = self.buckets.clone();
         let known: HashSet<String> = self.domains.keys().cloned().collect();
-        let (joining, grown) = tokio::task::spawn_blocking(move || -> Result<(Vec<(String, Domain, Option<u64>)>, Vec<(String, u64)>)> {
+        let (joining, grown) = tokio::task::spawn_blocking(move || -> Result<(Vec<(String, Domain, Option<u32>)>, Vec<(String, u64)>)> {
             let found = on_readers(buckets.stores().collect(), |store| {
                 // A joining domain's stored count already holds what grew before now; only the domains kept take the growth.
                 let grown: Vec<(String, u64)> = store.take_noticed().into_iter().filter(|(domain, _)| known.contains(domain) && buckets.allows(domain)).collect();
-                let joining: Vec<(String, Domain, Option<u64>)> = store
+                let joining: Vec<(String, Domain, Option<u32>)> = store
                     .ready_domains()?
                     .into_iter()
                     .filter(|(domain, ready)| *ready > 0 && !known.contains(domain) && buckets.allows(domain))
@@ -1048,9 +1074,9 @@ impl Dispatcher {
         Ok(())
     }
 
-    fn pace_by_delay(&mut self, domain: &str, paced: Option<u64>) {
+    fn pace_by_delay(&mut self, domain: &str, paced: Option<u32>) {
         match paced {
-            Some(per_hour) => self.paced.insert(domain.to_string(), per_hour),
+            Some(delay) => self.paced.insert(domain.to_string(), delay),
             None => self.paced.remove(domain),
         };
     }
@@ -1095,8 +1121,8 @@ impl Dispatcher {
             .iter()
             .map(|(rank, name)| {
                 let terms = self.buckets.terms(name);
-                let (hourly, delayed) = hourly_of(&self.buckets, &self.paced, self.cap.limit(), name);
-                let allowance = self.cap.allowance_at_rate(name, now, hourly, delayed);
+                let (hourly, delay) = hourly_of(&self.buckets, &self.paced, self.cap.limit(), name);
+                let allowance = self.allowance(name, now, hourly, delay);
                 Want { rank: *rank, ready: allowance, allowance, share: 1.0, weight: terms.weight }
             })
             .collect();
@@ -1825,7 +1851,7 @@ fn share_of(buckets: &Buckets, domain: &str, now: u32) -> f64 {
 
 /// Listed domains whose pages come back well enough to send again, best ranked first.
 /// Every domain with pages waiting to go once more, with its rank, share and weight, and the hourly rate its Crawl-delay allows; it reads each one's records, too slow for a pass.
-fn resending(buckets: &Buckets, now: u32) -> Result<HashMap<String, (Domain, Option<u64>)>> {
+fn resending(buckets: &Buckets, now: u32) -> Result<HashMap<String, (Domain, Option<u32>)>> {
     let found = on_readers(buckets.stores().collect(), |store| store.resend_domains())?;
     Ok(found
         .into_iter()
@@ -1842,7 +1868,7 @@ fn resending(buckets: &Buckets, now: u32) -> Result<HashMap<String, (Domain, Opt
 /// The domains whose sent pages may go again, by rank, with what their Crawl-delay allows an hour.
 struct Fillers {
     domains: Vec<(i64, String)>,
-    paced: Vec<(String, Option<u64>)>,
+    paced: Vec<(String, Option<u32>)>,
 }
 
 fn fillers(buckets: &Buckets, now: u32) -> Result<Fillers> {
@@ -1874,30 +1900,36 @@ fn rank_of(buckets: &Buckets, domain: &str) -> i64 {
 }
 
 /// A domain with pages ready as the dispatcher keeps it, and the hourly rate its Crawl-delay allows.
-fn placed(buckets: &Buckets, domain: &str, ready: u64, now: u32) -> (Domain, Option<u64>) {
+fn placed(buckets: &Buckets, domain: &str, ready: u64, now: u32) -> (Domain, Option<u32>) {
     let (rank, per_hour) = placing_of(buckets, domain);
     (Domain { rank, ready, share: share_of(buckets, domain, now), weight: buckets.terms(domain).weight }, per_hour)
 }
 
 /// A domain's rank, and the hourly rate its Crawl-delay allows when its robots.txt names one.
-fn placing_of(buckets: &Buckets, domain: &str) -> (i64, Option<u64>) {
+fn placing_of(buckets: &Buckets, domain: &str) -> (i64, Option<u32>) {
     let record = buckets.store_for(domain).and_then(|store| store.domain(domain).ok().flatten());
     let rank = record.as_ref().and_then(|d| records::int(d.get("rank"))).unwrap_or(UNRANKED);
-    (rank, record.as_ref().and_then(delay_rate))
+    (rank, record.as_ref().and_then(delay_seconds))
 }
 
-/// Thousandths of a page an hour a site that asks for a delay between requests can take: one page per delay however long, rounded down so it never goes faster.
-pub fn delay_rate(record: &Json) -> Option<u64> {
+/// The whole seconds a site asks between requests, rounded up, at most `MAX_CRAWL_DELAY`; none for no delay or one that is not a number.
+pub fn delay_seconds(record: &Json) -> Option<u32> {
     let delay = record.get("delay").and_then(Value::as_f64).filter(|delay| delay.is_finite() && *delay > 0.0)?;
-    Some((PAGE as f64 / delay).floor() as u64)
+    Some(delay.min(crate::robots::MAX_CRAWL_DELAY).ceil() as u32)
 }
 
-/// A domain's hourly limit in thousandths of a page, held to what its Crawl-delay allows, and whether it asks for a delay between requests.
-fn hourly_of(buckets: &Buckets, paced: &HashMap<String, u64>, limit: u64, domain: &str) -> (u64, bool) {
-    let listed = buckets.terms(domain).hourly.unwrap_or(limit).saturating_mul(MILLI);
-    match paced.get(domain) {
-        Some(&per_hour) => (per_hour.min(listed), true),
-        None => (listed, false),
+/// A domain's hourly limit in thousandths of a page, and the Crawl-delay it asks, in seconds.
+fn hourly_of(buckets: &Buckets, paced: &HashMap<String, u32>, limit: u64, domain: &str) -> (u64, Option<u32>) {
+    (buckets.terms(domain).hourly.unwrap_or(limit).saturating_mul(MILLI), paced.get(domain).copied())
+}
+
+impl Dispatcher {
+    /// What a domain may send now at `rate`: for a site that asks for a delay, one page a delay and a claim window apart.
+    fn allowance(&mut self, domain: &str, now: u32, rate: u64, delay: Option<u32>) -> u64 {
+        match delay {
+            Some(delay) => self.cap.allowance_spaced(domain, now, rate, delay.saturating_add(self.claim_window)),
+            None => self.cap.allowance_at_rate(domain, now, rate, false),
+        }
     }
 }
 
