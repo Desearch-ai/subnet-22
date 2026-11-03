@@ -13,6 +13,7 @@ use parquet::arrow::ProjectionMask;
 use parquet::file::metadata::ParquetMetaDataReader;
 use tokio::runtime::Handle;
 use tokio::sync::{mpsc, Semaphore};
+use tokio::task::JoinHandle;
 
 use crate::compactor::{manifest_key, withdrawn_key, Withdrawn};
 use crate::current::{rows_in, standing, Manifest, PageRow, Withdrawals};
@@ -94,7 +95,7 @@ impl ShardReader {
         }
         let fetches = jobs.iter().map(|(_, at, run)| {
             let file = &files[*at];
-            self.handle.spawn(fetch(self.bucket.clone(), file.key.clone(), file.size, file.metadata.clone(), run.clone(), None, gets.clone()))
+            Abort(self.handle.spawn(fetch(self.bucket.clone(), file.key.clone(), file.size, file.metadata.clone(), run.clone(), None, gets.clone())))
         });
         let mut fetched = stream::iter(fetches).buffered(RUNS_AHEAD);
         let (mut handed, mut rows) = (0, Vec::new());
@@ -184,19 +185,37 @@ impl ShardReader {
         let roots = file.metadata.parquet_schema().root_schema().get_fields();
         let indices: Vec<usize> = roots.iter().enumerate().filter(|(_, field)| PICK_COLUMNS.contains(&field.name())).map(|(i, _)| i).collect();
         let mask = ProjectionMask::roots(file.metadata.parquet_schema(), indices);
-        let (send, mut chunks) = mpsc::channel::<Result<(Vec<usize>, Prefetched)>>(CHUNKS_AHEAD);
+        // `None` ends the file; a channel closed without it is a fetch task that died.
+        let (send, mut chunks) = mpsc::channel::<Result<Option<(Vec<usize>, Prefetched)>>>(CHUNKS_AHEAD);
         let (bucket, key, size, metadata) = (self.bucket.clone(), file.key.clone(), file.size, file.metadata.clone());
         self.handle.spawn(async move {
             for first in (0..groups).step_by(GROUPS_AT_ONCE) {
                 let ids: Vec<usize> = (first..groups.min(first + GROUPS_AT_ONCE)).collect();
                 let got = fetch(bucket.clone(), key.clone(), size, metadata.clone(), ids.clone(), Some(&PICK_COLUMNS), gets.clone()).await;
                 let failed = got.is_err();
-                if send.send(got.map(|got| (ids, got))).await.is_err() || failed {
+                if send.send(got.map(|got| Some((ids, got)))).await.is_err() || failed {
                     return;
                 }
             }
+            let _ = send.send(Ok(None)).await;
         });
-        std::iter::from_fn(move || chunks.blocking_recv()).flat_map(move |chunk| {
+        let mut ended = false;
+        std::iter::from_fn(move || match (ended, chunks.blocking_recv()) {
+            (true, _) | (false, Some(Ok(None))) => {
+                ended = true;
+                None
+            }
+            (false, Some(Ok(Some(chunk)))) => Some(Ok(chunk)),
+            (false, Some(Err(error))) => {
+                ended = true;
+                Some(Err(error))
+            }
+            (false, None) => {
+                ended = true;
+                Some(Err(anyhow!("reading {}: its fetches stopped before its end", file.key)))
+            }
+        })
+        .flat_map(move |chunk| {
             let read = || -> Result<Vec<(usize, usize, PageRow)>> {
                 let (ids, fetched) = chunk?;
                 let mut rows = Vec::new();
@@ -212,6 +231,23 @@ impl ShardReader {
                 Err(error) => vec![Err(error)],
             }
         })
+    }
+}
+
+/// A spawned fetch, stopped when dropped, so a read given up never keeps downloading.
+struct Abort<T>(JoinHandle<T>);
+
+impl<T> Drop for Abort<T> {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+impl<T> std::future::Future for Abort<T> {
+    type Output = Result<T, tokio::task::JoinError>;
+
+    fn poll(mut self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<Self::Output> {
+        std::pin::Pin::new(&mut self.0).poll(cx)
     }
 }
 

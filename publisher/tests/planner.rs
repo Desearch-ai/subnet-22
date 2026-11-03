@@ -2937,8 +2937,7 @@ async fn the_backfill_reads_a_shard_s_whole_row_groups_a_bounded_number_of_bytes
     let (all, together) = read(u64::MAX).await.unwrap();
     let (again, apart) = read(1).await.unwrap();
     assert_eq!((all, again), (5_000, 5_000));
-    // Unbounded, each window of picks is one run: three windows of two, two and one row groups.
-    assert!(apart >= together + 2, "the five row groups fetched one by one once over the bound: {apart} GETs against {together}");
+    assert!(apart >= together + 4, "the five row groups fetched one by one once over the bound: {apart} GETs against {together}");
     let _ = std::fs::remove_dir_all(&dir);
 }
 

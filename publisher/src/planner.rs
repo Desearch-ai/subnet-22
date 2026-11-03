@@ -79,6 +79,8 @@ const BULK_FILES_PER_PASS: usize = 4;
 const WAITING_COUNT: &[u8] = b"waiting-count";
 /// The backfill's shard and the last key of it planned or passed by, `<shard>\t<key>`.
 const BACKFILL: &[u8] = b"backfill";
+/// Pages a backfill slice reads at most, for each it may plan.
+const READS_PER_PLANNED: usize = 4;
 /// Pages read ahead from `current/` waiting for budget and room.
 const BACKFILL_AHEAD: usize = 16_384;
 /// How long a pass waits for the backfill's reader before going on.
@@ -1662,7 +1664,7 @@ struct Reading {
     done: JoinHandle<Result<usize>>,
     /// The last key taken from it.
     last: Option<String>,
-    /// A page taken from it but left for want of a place, read first next time.
+    /// A page taken from it but left for want of a place its class could take, read first next time.
     held: Option<PageRow>,
 }
 
@@ -2223,7 +2225,6 @@ impl Planner {
         reserve == 0 || self.has_room_after(reserve)
     }
 
-    /// The first class from `from` on that the set takes pages of; without a set, every page is of the last.
     /// The worst class the set takes pages of, so a sweep reads every class.
     fn every_class(&self) -> Class {
         Class::ALL.iter().rev().copied().find(|class| self.set.as_ref().is_none_or(|set| set.has(*class))).unwrap_or(Class::Other)
@@ -2416,7 +2417,7 @@ impl Planner {
         let (most, mut read, started, planned) = (self.settings.max_pending * self.settings.pages_per_input, 0, Instant::now(), self.counts.planned);
         loop {
             let slice_over = read > 0 && started.elapsed() >= self.settings.fresh_flush_after;
-            let full = self.counts.planned - planned >= most as u64;
+            let full = self.counts.planned - planned >= most as u64 || read >= READS_PER_PLANNED * most;
             if full || slice_over || self.inputs_held(Lane::Rest) >= self.settings.max_pending || !self.has_place(reserve) {
                 return Ok(read > 0);
             }
@@ -2431,7 +2432,7 @@ impl Planner {
             match next {
                 Err(_) => return Ok(read > 0),
                 Ok(Some(page)) => {
-                    // A page takes a place only beyond what its class leaves to the log's better ones; else it is read again next pass.
+                    // A page goes only with a place beyond what its class leaves to the log and better classes; else the sweep waits on it, as it is the log's spare budget.
                     let class = self.class_of(&page.key);
                     if stopped.is_some_and(|stopped| stopped <= class) || !self.has_place(self.reserve(class, Source::Backfill)) {
                         self.reading.as_mut().expect("a shard being read").held = Some(page);
@@ -3290,7 +3291,8 @@ impl Budget {
         let mut budget = Budget::new(per_hour, held);
         if let Some((at, tokens)) = kept.filter(|(at, tokens)| at.is_finite() && tokens.is_finite()) {
             let since = (now_us() as f64 / 1e6 - at).max(0.0);
-            budget.tokens = budget.tokens.max((tokens + since * per_hour / 3600.0).min(Budget::cap(per_hour)));
+            let resumed = (tokens + since * per_hour / 3600.0).min(Budget::cap(per_hour));
+            budget.tokens = if held.is_zero() { resumed } else { budget.tokens.max(resumed) };
         }
         budget
     }
@@ -3529,6 +3531,8 @@ mod tests {
         assert!((14.9..15.1).contains(&resumed), "{resumed}");
         assert_eq!(Budget::resumed(per_hour, Duration::ZERO, Some((now - 3600.0, 5.0))).tokens, Budget::cap(per_hour), "never more than it banks");
         assert_eq!(Budget::resumed(per_hour, BUDGET_BANKED, Some((now, 0.0))).tokens, Budget::cap(per_hour), "a budget held from the start keeps it");
+        let owed = Budget::resumed(per_hour, Duration::ZERO, Some((now, -50.0))).tokens;
+        assert!(owed < -49.0, "a debt stays owed: {owed}");
 
         let dir = std::env::temp_dir().join(format!("planner-budgets-{}", uuid::Uuid::new_v4().simple()));
         let state = State::open(&dir).unwrap();
