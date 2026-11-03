@@ -907,7 +907,7 @@ def test_a_site_takes_the_set_entry_the_planner_reads_for_its_pages():
         "corp.com": V1("landing", "company", why=("rank",)),
         "mag.com": V1("whole", "media", why=("rank",), own_host=True),
         "gov.example": V1("whole", "public"),
-        "www.agency.example": V1("whole", "public"),
+        "agency.example": V1("whole", "public"),
         "spam.com": V1("out"),
     }
     listed, counts = v1_list(rows, v1)
@@ -1013,3 +1013,24 @@ def test_sites_leaving_the_list_with_pages_ready_drain_once(tmp_path, monkeypatc
     assert {e["host"]: e["hourly"] for e in json.loads(out.read_text())}["mag.com"] == 0
     crawl_list.main(args)
     assert [e["host"] for e in json.loads(out.read_text())] == ["news.com"]
+
+
+def test_the_set_is_read_as_the_planner_reads_it(tmp_path):
+    path = tmp_path / "v1-set.json"
+    sites = [
+        {"host": "www.nhs.example", "rule": "news"},
+        {"host": "nhs.example", "rule": "whole", "type": "public"},
+        {"host": "en.m.wiki.example", "rule": "bulk"},
+        {"host": "corp.example", "rule": "news", "own_host": True},
+        {"host": "mag.example", "rule": "whole", "own_host": True},
+    ]
+    path.write_text(json.dumps({"sites": sites}))
+    v1 = crawl_list.read_v1_set(str(path))
+    assert set(v1) == {"nhs.example", "en.wiki.example", "corp.example", "mag.example"}
+    assert v1["nhs.example"].rule == "whole", "the later of two entries for one host wins"
+    assert crawl_list.set_entry(v1, "www.nhs.example").rule == "whole"
+    assert crawl_list.set_entry(v1, "en.m.wiki.example").rule == "bulk"
+    assert crawl_list.set_entry(v1, "blog.corp.example").rule == "news", (
+        "own_host counts on a whole entry only"
+    )
+    assert crawl_list.set_entry(v1, "blog.mag.example") is None

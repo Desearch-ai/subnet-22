@@ -341,15 +341,13 @@ def set_host(host: str) -> str:
 
 def set_entry(sites: dict[str, V1], host: str) -> V1 | None:
     """The set's entry for a host's pages as the planner reads it: its own, else the nearest listed host's above it; a landing entry, or one whole for its own host, takes no host under it."""
-    if host in sites:
-        return sites[host]
     own = set_host(host)
     listed = own
     while listed:
         if listed in sites:
             entry = sites[listed]
             under = own not in (listed, f"m.{listed}")
-            if under and (entry.rule == "landing" or entry.own_host):
+            if under and (entry.rule == "landing" or (entry.rule == "whole" and entry.own_host)):
                 return None
             return entry
         listed = listed.partition(".")[2]
@@ -550,8 +548,9 @@ def read_v1_set(path: str | None) -> dict[str, V1] | None:
         return None
     with open_text(path) as source:
         sites = json.load(source)["sites"]
+    # Named as set.rs names them, the later of two entries for one host winning, as there.
     return {
-        site["host"]: V1(
+        set_host(site["host"]): V1(
             site["rule"],
             site.get("type", ""),
             site.get("since"),
