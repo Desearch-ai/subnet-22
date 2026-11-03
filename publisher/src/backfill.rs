@@ -14,7 +14,7 @@ use tokio::runtime::Handle;
 
 use crate::compactor::{manifest_key, withdrawn_key, Withdrawn};
 use crate::current::{rows_in, standing, Manifest, PageRow, Withdrawals};
-use crate::reading::{coalesce, footer_length, Prefetched};
+use crate::reading::{coalesce, footer_length_at_most, Prefetched, MAX_CURRENT_FOOTER_BYTES};
 
 /// The columns that pick a page's standing version and tell whether it may be wanted.
 const PICK_COLUMNS: [&str; 13] =
@@ -127,7 +127,7 @@ impl ShardReader {
         let range = |range: Range<u64>| self.handle.block_on(self.bucket.get_range(key, range, None)).map_err(|error| anyhow!("reading {key}: {error}"));
         let mut tail_start = size.saturating_sub(TAIL_BYTES);
         let mut tail = range(tail_start..size)?;
-        let length = footer_length(size, &range(0..4)?, &tail).ok_or_else(|| anyhow!("{key} is not a Parquet file"))?;
+        let length = footer_length_at_most(size, &range(0..4)?, &tail, MAX_CURRENT_FOOTER_BYTES).ok_or_else(|| anyhow!("{key} is not a Parquet file"))?;
         let footer_start = size - 8 - length;
         if footer_start < tail_start {
             tail = [range(footer_start..tail_start)?, tail].concat().into();
@@ -242,6 +242,14 @@ fn runs(groups: &[usize], size: impl Fn(usize) -> u64, most: u64) -> Vec<Vec<usi
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_current_file_s_footer_may_be_larger_than_an_upload_s() {
+        let tail = |length: u32| [&length.to_le_bytes()[..], b"PAR1"].concat();
+        let size = 4_000_000_000;
+        assert_eq!(crate::reading::footer_length(size, b"PAR1", &tail(20_181_489)), None);
+        assert_eq!(footer_length_at_most(size, b"PAR1", &tail(20_181_489), MAX_CURRENT_FOOTER_BYTES), Some(20_181_489));
+    }
 
     #[test]
     fn row_groups_are_read_in_runs_of_bounded_bytes_in_order() {
