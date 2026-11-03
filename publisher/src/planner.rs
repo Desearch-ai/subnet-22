@@ -28,6 +28,7 @@ use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 
 use crate::backfill::{ShardReader, READ_BYTES_AT_ONCE};
+use crate::clean::{self, Levels, Tables};
 use crate::current::{decode_changes, ChangeRow, PageRow, BULK_ORDER, SHARDS};
 use crate::lang;
 use crate::records::{iso, parse_iso, Record, EXTRACTION_V2};
@@ -45,6 +46,8 @@ pub const PAGE: &str = "page";
 pub const PASSAGE: &str = "passage";
 /// Enough for the model's 2,048 tokens; the model server cuts the rest.
 const PAGE_CHARS: usize = 10_000;
+/// A planned page whose template lines in its page text changed by this share of it since is planned again.
+const RESTRIP_SHARE: f64 = 0.1;
 /// A page longer than this also gets passages, when its type is one that has them.
 const PASSAGES_FROM_CHARS: usize = 2_000;
 /// The page types that get passages; None for every type.
@@ -152,19 +155,57 @@ pub fn recipe_of(record: &Record) -> Option<&'static str> {
 
 /// The texts of one page by its recipe: its page text, and the passages of a long page of a type that has them, each led by the title and its section's heading.
 pub fn texts(key: &str, record: &Record) -> Vec<Text> {
+    texts_of(key, record, &Cleaned::of(record, None))
+}
+
+/// A v2 page's text without its site's template lines, and how much of its page text they were.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Cleaned {
+    pub body: String,
+    /// Characters of the page text, as the model reads it, before stripping.
+    pub window: usize,
+    /// Characters of template lines within that page text.
+    pub stripped: usize,
+}
+
+impl Cleaned {
+    pub fn of(record: &Record, table: Option<&dyn Levels>) -> Cleaned {
+        let body = body_v2(record);
+        let drop = clean::template_lines(table, body, record.title.trim());
+        let head = joined(record, "").chars().count();
+        let (mut at, mut stripped, mut kept) = (head, 0, Vec::new());
+        for (line, dropped) in body.split('\n').zip(drop) {
+            let chars = line.chars().count() + 1;
+            if dropped {
+                stripped += chars.min(PAGE_CHARS.saturating_sub(at));
+            } else {
+                kept.push(line);
+            }
+            at += chars;
+        }
+        Cleaned { body: kept.join("\n"), window: at.min(PAGE_CHARS), stripped }
+    }
+
+    /// Whether the page text changed enough since it was planned with `stripped` characters of template lines.
+    pub fn changed_since(&self, stripped: usize) -> bool {
+        self.stripped != stripped && self.stripped.abs_diff(stripped) as f64 >= RESTRIP_SHARE * self.window as f64
+    }
+}
+
+fn texts_of(key: &str, record: &Record, cleaned: &Cleaned) -> Vec<Text> {
     let v2 = match recipe_of(record) {
         Some(RECIPE_V1) => false,
         Some(RECIPE_V2) => true,
         _ => return Vec::new(),
     };
-    let page = if v2 { page_text_v2(record) } else { page_text(record) };
+    let page = if v2 { joined(record, &cleaned.body) } else { page_text(record) };
     let mut texts = vec![Text { text_id: format!("{key}#page"), kind: PAGE, index: 0, text: page }];
     let types = if v2 { PASSAGE_TYPES_V2 } else { PASSAGE_TYPES_V1 };
     let typed = types.is_none_or(|types| record.page_type.as_deref().is_some_and(|t| types.contains(&t)));
     if !typed || record.text.chars().count() <= PASSAGES_FROM_CHARS {
         return texts;
     }
-    let mut sections = if v2 { passages_v2(body_v2(record)) } else { passages(&record.text, &record.headings) };
+    let mut sections = if v2 { passages_v2(&cleaned.body) } else { passages(&record.text, &record.headings) };
     if record.page_type.as_deref() == Some(PAPER) {
         sections.truncate(MAX_PASSAGES_PAPER);
     }
@@ -469,6 +510,8 @@ pub struct Settings {
     /// How long after a failed read the backfill reads the shard again.
     pub backfill_retry: Duration,
     pub current_prefix: String,
+    /// Where the site template tables are; a missing file strips nothing.
+    pub templates_dir: PathBuf,
     pub poll: Duration,
     /// How long a change file number not indexed yet is looked for again before it is given up.
     pub hole_wait: Duration,
@@ -521,6 +564,7 @@ impl Settings {
             backfill_every: Duration::from_secs_f64(number("PLANNER_BACKFILL_EVERY_S", 86_400.0)?),
             backfill_retry: Duration::from_secs_f64(number("PLANNER_BACKFILL_RETRY_S", 600.0)?),
             current_prefix: text("PLANNER_CURRENT_PREFIX", "current/"),
+            templates_dir: PathBuf::from(text("PLANNER_TEMPLATES_DIR", "/home/publisher/templates")),
             poll: Duration::from_secs_f64(number("PLANNER_POLL_S", 10.0)?),
             hole_wait: Duration::from_secs_f64(number("PLANNER_HOLE_WAIT_S", 600.0)?),
         })
@@ -619,6 +663,8 @@ pub struct Version {
     pub seq: Option<i64>,
     /// The crawl task that published it; empty for versions planned before it was kept.
     pub task_id: String,
+    /// Characters of template lines left out of its page text when planned.
+    pub stripped: usize,
 }
 
 impl Version {
@@ -631,7 +677,8 @@ impl Version {
             Some(file) => file.parse::<i64>().ok().map(|file| BULK_ORDER + file),
             None => seq.parse().ok(),
         });
-        Version { content_sha1, fetched_at, page_only, seq, task_id: fields.next().unwrap_or_default().to_string() }
+        let task_id = fields.next().unwrap_or_default().to_string();
+        Version { content_sha1, fetched_at, page_only, seq, task_id, stripped: fields.nth(1).and_then(|n| n.parse().ok()).unwrap_or(0) }
     }
 
     fn value(&self) -> String {
@@ -642,7 +689,13 @@ impl Version {
             Some(seq) => seq.to_string(),
             None => String::new(),
         };
-        format!("{}\t{}\t{page_only}\t{seq}\t{}", self.content_sha1, self.fetched_at, self.task_id)
+        let base = format!("{}\t{}\t{page_only}\t{seq}\t{}", self.content_sha1, self.fetched_at, self.task_id);
+        // The sixth field is a waiting page's class, so `stripped` is the seventh.
+        if self.stripped > 0 {
+            format!("{base}\t\t{}", self.stripped)
+        } else {
+            base
+        }
     }
 }
 
@@ -1390,7 +1443,7 @@ fn class_key(class: Class, seq: i64, key: &str) -> String {
 
 /// A waiting page's version and, after it, the class it waits under.
 fn waiting_value(version: &Version, class: Class) -> String {
-    format!("{}\t{}", version.value(), class.digit())
+    format!("{}\t{}", Version { stripped: 0, ..version.clone() }.value(), class.digit())
 }
 
 fn waiting_class(raw: &[u8]) -> Option<Class> {
@@ -1455,6 +1508,7 @@ pub struct Planned {
     pub seq: i64,
     pub task_id: String,
     pub source: Source,
+    pub stripped: usize,
 }
 
 impl Planned {
@@ -1465,6 +1519,7 @@ impl Planned {
             page_only: self.page_only,
             seq: Some(self.seq),
             task_id: self.task_id.clone(),
+            stripped: self.stripped,
         }
     }
 }
@@ -1502,6 +1557,12 @@ pub struct Counts {
     pub late: u64,
     pub over_budget: u64,
     pub no_room: u64,
+    /// Pages left with too little text of their own once their site's template lines are out.
+    pub thin: u64,
+    /// Error, challenge and utility pages.
+    pub junk: u64,
+    /// Pages planned again at a version planned before, as their template lines changed.
+    pub restripped: u64,
     /// Pages planned in the fresh lane, of `planned`.
     pub fresh: u64,
     /// Pages planned with their page text alone, of `planned`.
@@ -1739,6 +1800,8 @@ pub struct Planner {
     withdrawn: HashMap<String, i64>,
     /// The hour and the pages each site put in the fresh lane in it.
     fresh_sites: (i64, HashMap<String, u32>),
+    /// The site template tables, read again when their files change.
+    tables: Arc<RwLock<Tables>>,
 }
 
 impl Planner {
@@ -1780,7 +1843,9 @@ impl Planner {
         let (bulk_read_through, bulk_budget, bulk_hole) = (state.bulk_cursor()?, Budget::new(settings.bulk_pages_per_hour, held), state.bulk_hole()?);
         let handing = (pace > 0.0).then(|| Budget::new(pace, held));
         let withdrawn = state.withdrawn()?;
+        let tables = Arc::new(RwLock::new(Tables::open(&settings.templates_dir)));
         let mut planner = Planner {
+            tables,
             settings,
             state,
             pages,
@@ -1914,12 +1979,28 @@ impl Planner {
         Ok(self.listed.is_some())
     }
 
+    /// Reads the site template tables again when their files changed.
+    pub fn reload_tables(&mut self) {
+        let mut tables = self.tables.write().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if tables.reload() {
+            println!("planner: site template tables read from {}", self.settings.templates_dir.display());
+        }
+    }
+
+    /// The page's v2 text without its site's template lines.
+    fn cleaned(&self, page: &PageRow) -> Cleaned {
+        let tables = self.tables.read().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let table = tables.get(domain_of_key(&page.key));
+        Cleaned::of(&page.record, table.as_ref().map(|table| table as &dyn Levels))
+    }
+
     /// Reads what the log added since the last pass, writes the inputs that are due and hands over what the API has room for; whether it read anything.
     pub async fn pass(&mut self) -> Result<bool> {
         let reloaded = if self.settings.set_file.is_some() { self.reload_set() } else { self.reload_list() };
         if let Err(error) = reloaded {
             eprintln!("{error:#}");
         }
+        self.reload_tables();
         // Inputs written before a restart go out first, at the budgets' pace.
         self.hand_over_unless_held().await?;
         // A failed write leaves its input and those cut after it unsaved.
@@ -2393,7 +2474,7 @@ impl Planner {
         };
         let (send, pages) = mpsc::channel(BACKFILL_AHEAD);
         let (set, langs, from, class) = (self.set.clone(), self.settings.langs.clone(), after.clone(), self.backfill_class);
-        let (state, page_first, withdrawn) = (self.state.clone(), self.settings.page_first, self.withdrawn.clone());
+        let (state, page_first, withdrawn, tables) = (self.state.clone(), self.settings.page_first, self.withdrawn.clone(), self.tables.clone());
         let bulk_through = (self.settings.bulk_pages_per_hour > 0.0).then_some(self.bulk_read_through);
         let done = tokio::task::spawn_blocking(move || {
             let keep = |row: &PageRow| {
@@ -2406,8 +2487,13 @@ impl Planner {
                     && set.as_ref().is_none_or(|set| {
                         set.class(domain_of_key(&row.key)) <= class && set.admit(&record.url, &record.published, record.page_type.as_deref()).is_ok()
                     })
+                    // A version planned before is read whole only when its template lines may have changed.
                     && match state.planned_version(RECIPE_V2, &row.key) {
-                        Ok(Some(planned)) if planned.content_sha1 == record.content_sha1 => planned.page_only && !page_first,
+                        Ok(Some(planned)) if planned.content_sha1 == record.content_sha1 => {
+                            planned.page_only && !page_first
+                                || planned.stripped > 0
+                                || tables.read().unwrap_or_else(|poisoned| poisoned.into_inner()).get(domain_of_key(&row.key)).is_some()
+                        }
                         _ => true,
                     }
                     // A version as new waits in the log, which is read for it instead.
@@ -2588,6 +2674,8 @@ impl Planner {
         let excluded = self.excluded(&record.domain.to_lowercase());
         let admission = self.set.as_ref().map(|set| set.admit(&record.url, &record.published, record.page_type.as_deref()));
         let (recipe, readable) = (recipe_of(record).filter(|recipe| PLANNED_RECIPES.contains(recipe)), !excluded && self.admitted(record));
+        let junk = readable && clean::junk(&record.url, &record.title, &record.text).is_some();
+        let readable = readable && !junk;
         let Some(recipe) = recipe.filter(|_| readable && !matches!(admission, Some(Err(_)))) else {
             if self.withdrawn.contains_key(&record.task_id) {
                 self.counts.withdrawn += 1;
@@ -2599,6 +2687,7 @@ impl Planner {
                 _ if excluded => self.counts.refused += 1,
                 Some(Err(Refusal::Unlisted | Refusal::OffPaths)) => self.counts.outside_set += 1,
                 _ if recipe.is_none() => self.counts.other_recipe += 1,
+                _ if junk => self.counts.junk += 1,
                 _ if !readable => self.counts.refused += 1,
                 Some(Err(Refusal::Undated)) => self.counts.undated += 1,
                 _ => self.counts.before_since += 1,
@@ -2619,6 +2708,12 @@ impl Planner {
         }
         if self.withdrawn.contains_key(&record.task_id) {
             self.counts.withdrawn += 1;
+            return Considered::Passed;
+        }
+        let cleaned = self.cleaned(&page);
+        if clean::thin(&cleaned.body, record.page_type.as_deref()) {
+            self.counts.thin += 1;
+            self.still_waiting(&page);
             return Considered::Passed;
         }
         let waiting = self.still_waiting(&page);
@@ -2651,14 +2746,15 @@ impl Planner {
             self.counts.older += 1;
             return Considered::Passed;
         }
-        let mut parts_only = false;
-        if let Some(Version { content_sha1, fetched_at, page_only, .. }) = &already {
+        let (mut parts_only, mut restripped) = (false, false);
+        if let Some(Version { content_sha1, fetched_at, page_only, stripped, .. }) = &already {
             if *content_sha1 == record.content_sha1 {
-                if !page_only || self.settings.page_first || buffered.is_some() {
+                restripped = buffered.is_none() && cleaned.changed_since(*stripped);
+                if !restripped && (!page_only || self.settings.page_first || buffered.is_some()) {
                     self.counts.unchanged += 1;
                     return Considered::Passed;
                 }
-                parts_only = true;
+                parts_only = !restripped;
             }
             // Times are `iso` text of one width, so they order as text; a late file can hold an older version than the one planned.
             if record.fetched_at < *fetched_at {
@@ -2667,7 +2763,7 @@ impl Planner {
             }
         }
         if let Some((lane, at)) = buffered {
-            let planned = planned_of(&page, recipe, self.settings.page_first && lane == Lane::Rest, false, from);
+            let planned = planned_of(&page, &cleaned, recipe, self.settings.page_first && lane == Lane::Rest, false, from);
             self.buffer_mut(lane).replace(at, planned);
             return Considered::Taken(lane);
         }
@@ -2718,12 +2814,13 @@ impl Planner {
             self.keep_waiting(&page);
             return Considered::Waiting;
         }
-        let planned = planned_of(&page, recipe, self.settings.page_first && lane == Lane::Rest, parts_only, from);
+        let planned = planned_of(&page, &cleaned, recipe, self.settings.page_first && lane == Lane::Rest, parts_only, from);
         if planned.texts.is_empty() {
             self.counts.unchanged += 1;
             return Considered::Passed;
         }
         self.counts.page_only += u64::from(planned.page_only);
+        self.counts.restripped += u64::from(restripped);
         self.counts.parts += u64::from(parts_only);
         if bulk_paid {
             self.bulk_budget.spend(1);
@@ -2765,6 +2862,7 @@ impl Planner {
             page_only: false,
             seq: Some(page.change_seq),
             task_id: record.task_id.clone(),
+            stripped: 0,
         };
         // A page buffered or in an input not yet saved stops waiting once saved, so it is never the one let go.
         let waited = self.state.clone().wait(&page.key, &version, self.settings.max_waiting, |key| self.unsaved_anywhere(key));
@@ -3012,9 +3110,9 @@ impl Planner {
 }
 
 /// The page as the buffer holds it, its texts made only once it is taken: all of them, its page text alone, or its passages alone.
-fn planned_of(page: &PageRow, recipe: &'static str, page_first: bool, parts_only: bool, source: Source) -> Planned {
+fn planned_of(page: &PageRow, cleaned: &Cleaned, recipe: &'static str, page_first: bool, parts_only: bool, source: Source) -> Planned {
     let record = &page.record;
-    let mut texts = texts(&page.key, record);
+    let mut texts = texts_of(&page.key, record, cleaned);
     let page_only = page_first && !parts_only && texts.len() > 1;
     if page_only {
         texts.truncate(1);
@@ -3033,6 +3131,7 @@ fn planned_of(page: &PageRow, recipe: &'static str, page_first: bool, parts_only
         seq: page.change_seq,
         task_id: record.task_id.clone(),
         source,
+        stripped: cleaned.stripped,
     }
 }
 
@@ -3228,6 +3327,7 @@ mod tests {
             page_only: true,
             seq: Some(BULK_ORDER + 7),
             task_id: "bulk-wikipedia-20261030-000001-000004".into(),
+            stripped: 0,
         };
         let value = bulk.value();
         // b17f0e32 reads the field as a number, and leaves a version without one to the backfill when its input is dropped.
@@ -3244,7 +3344,7 @@ mod tests {
         let state = State::open(&dir).unwrap();
         let key = "pages/a.example/1";
         let version =
-            Version { content_sha1: "a1".into(), fetched_at: "2026-10-28T10:00:00+00:00".into(), page_only: false, seq: Some(3), task_id: "t1".into() };
+            Version { content_sha1: "a1".into(), fetched_at: "2026-10-28T10:00:00+00:00".into(), page_only: false, seq: Some(3), task_id: "t1".into(), stripped: 0 };
         assert_eq!(state.wait(key, &version, 10, |_| false).unwrap(), Waited::Kept);
         let page = Planned {
             key: key.into(),
@@ -3258,6 +3358,7 @@ mod tests {
             seq: 3,
             task_id: "t1".into(),
             source: Source::Replan,
+            stripped: 0,
         };
         let save = || state.commit(std::slice::from_ref(&page), "embed/inputs/a.parquet", "{}", (Some(3), None), &[], None);
         // A page count that cannot be read fails the save.
@@ -3299,6 +3400,7 @@ mod tests {
             page_only: false,
             seq: Some(seq),
             task_id: "t1".into(),
+            stripped: 0,
         };
         let (bench, other) = ("pages/bench.example/1", "pages/academic.example/1");
         for key in [bench, other] {
@@ -3400,7 +3502,7 @@ mod tests {
     }
 
     fn version_in(seq: i64) -> Version {
-        Version { content_sha1: "a1".into(), fetched_at: "2026-10-28T10:00:00+00:00".into(), page_only: false, seq: Some(seq), task_id: "t1".into() }
+        Version { content_sha1: "a1".into(), fetched_at: "2026-10-28T10:00:00+00:00".into(), page_only: false, seq: Some(seq), task_id: "t1".into(), stripped: 0 }
     }
 
     #[test]

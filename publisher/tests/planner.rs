@@ -1,6 +1,6 @@
 //! The planner: the texts a page gives, and the change log turned into embed inputs within the budget and the task API's room.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
@@ -15,6 +15,7 @@ use desearch::stub;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use publisher::backfill::ShardReader;
 use publisher::changes::{self, Body, Change, Kind};
+use publisher::clean;
 use publisher::current::{self, FileRef, Manifest, PageRow, Withdrawals, BULK_ORDER};
 use publisher::planner::{
     page_text, page_text_v2, passages, passages_v2, push_input, texts, Listed, Passage, Planner, Room, Settings, EMBED_DROPPED, EMBED_INPUTS, PAGE, PAPER,
@@ -365,6 +366,7 @@ fn settings(dir: PathBuf, pages_per_hour: f64, start_after: i64) -> Settings {
         backfill_every: Duration::from_secs(3600),
         backfill_retry: Duration::from_secs(600),
         current_prefix: "current/".into(),
+        templates_dir: PathBuf::from("/nonexistent/templates"),
         poll: Duration::from_millis(10),
         hole_wait: Duration::from_secs(3600),
     }
@@ -4155,5 +4157,110 @@ async fn a_page_naming_no_language_is_planned_from_the_log_and_the_backfill_when
         .map(|(_, entry)| serde_json::from_str::<Value>(entry).unwrap()["pages"][0]["url"].as_str().unwrap().to_string())
         .collect();
     assert_eq!(planned, HashSet::from(["https://news.example/log/1".to_string(), "https://news.example/back/1".to_string()]), "English text with no language named; French text and a named French page stay out");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+const NAV: [&str; 6] = ["- Home", "- World", "- Business", "- Sport", "## Most read", "Sign up for the morning newsletter today"];
+
+fn input_texts(file: Bytes) -> Vec<String> {
+    let mut texts = Vec::new();
+    for batch in ParquetRecordBatchReaderBuilder::try_new(file).unwrap().build().unwrap().map(Result::unwrap) {
+        texts.extend(batch.column_by_name("text").unwrap().as_string::<i64>().iter().map(|t| t.unwrap().to_string()));
+    }
+    texts
+}
+
+fn nav_table(dir: &std::path::Path) {
+    let hashes = NAV.iter().map(|line| clean::line_hash(&clean::line_key(line))).collect();
+    std::fs::create_dir_all(dir).unwrap();
+    clean::write(&dir.join(clean::STORE), &BTreeMap::from([("news.example".to_string(), clean::Table::new(30, hashes, Vec::new()))])).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_page_is_embedded_without_its_site_s_template_lines_and_again_once_they_change_its_page_text() {
+    let Some((_turn, redis)) = redis_db().await else {
+        eprintln!("skipped: no Redis on {REDIS}");
+        return;
+    };
+    let dir = scratch("templates");
+    let stub = stub::start(dir.join("r2"), "127.0.0.1:0").await.unwrap();
+    let (pages, temp) = (bucket(stub.addr, "desearch-pages"), bucket(stub.addr, "subnet-22"));
+    let story = v2(record("https://news.example/story/1", &format!("{}\n{}", NAV.join("\n"), article(2)), "article", "en"));
+    let settings = Settings { templates_dir: dir.join("templates"), ..settings(dir.join("state"), 3600.0, 0) };
+    log(&pages, 1, vec![story.clone()]).await;
+    let mut planner = Planner::new(settings, pages.clone(), temp.clone(), redis.clone(), Room::Fixed(0)).await.unwrap();
+    planner.pass().await.unwrap();
+    assert_eq!(planner.counts.planned, 1, "with no table the page is planned whole");
+    planner.flush().await.unwrap();
+
+    nav_table(&dir.join("templates"));
+    log(&pages, 2, vec![story.clone()]).await;
+    planner.pass().await.unwrap();
+    assert_eq!((planner.counts.planned, planner.counts.restripped), (2, 1), "the same text is planned again once its template lines are known");
+    planner.flush().await.unwrap();
+    log(&pages, 3, vec![story.clone()]).await;
+    planner.pass().await.unwrap();
+    assert_eq!((planner.counts.planned, planner.counts.unchanged), (2, 1), "and only once");
+    planner.flush().await.unwrap();
+    let pending = planner.state.pending().unwrap();
+    let entry: Value = serde_json::from_str(&pending.last().unwrap().1).unwrap();
+    let texts = input_texts(temp.get(entry["input_key"].as_str().unwrap()).await.unwrap());
+    assert!(texts[0].starts_with("A title\nParagraph 0") && !texts.iter().any(|t| t.contains("Most read")), "{texts:?}");
+
+    let video = v2(record("https://news.example/video/2", &format!("{}\nWatch the mayor open the new bridge", NAV.join("\n")), "video", "en"));
+    let video = Record { text: format!("{}\n{}", video.text, (0..8).map(|i| format!("Clip {i} of the day from the bridge")).collect::<Vec<_>>().join("\n")), ..video };
+    let privacy = v2(record("https://news.example/privacy-policy", &article(3), "other", "en"));
+    log(&pages, 4, vec![video, privacy]).await;
+    planner.pass().await.unwrap();
+    assert_eq!((planner.counts.planned, planner.counts.thin, planner.counts.junk), (2, 1, 1));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Passes until the backfill has read `shards` shards in all, then saves what it buffered.
+async fn sweep(planner: &mut Planner, shards: u64) {
+    for _ in 0..50 {
+        planner.pass().await.unwrap();
+        if planner.counts.shards >= shards {
+            break;
+        }
+    }
+    planner.flush().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_backfill_embeds_again_only_stored_pages_whose_template_lines_changed_their_page_text() {
+    let Some((_turn, redis)) = redis_db().await else {
+        eprintln!("skipped: no Redis on {REDIS}");
+        return;
+    };
+    let dir = scratch("backfill-templates");
+    let stub = stub::start(dir.join("r2"), "127.0.0.1:0").await.unwrap();
+    let (pages, temp, current) = (bucket(stub.addr, "desearch-pages"), bucket(stub.addr, "subnet-22"), bucket(stub.addr, "desearch-current"));
+    let row = |url: &str, text: String| {
+        let record = Record { domain: page_key(url).unwrap().split('/').nth(1).unwrap().into(), ..v2(record(url, &text, "article", "en")) };
+        PageRow { key: page_key(url).unwrap(), removed: false, change_seq: 1, version: record_version(&record), published_at: record.fetched_at.clone(), record }
+    };
+    let mut rows: Vec<PageRow> = (0..3).map(|n| row(&format!("https://news.example/s/{n}"), format!("{}\n{n} {}", NAV.join("\n"), article(2)))).collect();
+    rows.push(row("https://docs.example/guide", format!("{}\n{}", NAV.join("\n"), article(2))));
+    shard(&current, 7, vec![rows]).await;
+    log(&pages, 1, vec![v2(record("https://other.example/log", &article(2), "article", "en"))]).await;
+    let set = dir.join("v1-set.json");
+    std::fs::write(&set, json!({"sites": [{"host": "news.example", "rule": "whole"}, {"host": "docs.example", "rule": "whole"}]}).to_string()).unwrap();
+    let mut backfilling = Settings { templates_dir: dir.join("templates"), ..settings(dir.join("state"), 3600.0, 0) };
+    (backfilling.backfill, backfilling.backfill_shards, backfilling.set_file, backfilling.backfill_every) = (true, 7..8, Some(set.clone()), Duration::ZERO);
+    let mut planner = Planner::new(backfilling, pages.clone(), temp.clone(), redis.clone(), Room::Fixed(0)).await.unwrap();
+    planner.current = Some(current.clone());
+    sweep(&mut planner, 1).await;
+    assert_eq!((planner.counts.backfill, planner.counts.planned), (4, 4), "with no tables every page is planned whole");
+
+    nav_table(&dir.join("templates"));
+    sweep(&mut planner, 2).await;
+    assert_eq!(
+        (planner.counts.backfill, planner.counts.planned, planner.counts.restripped),
+        (7, 7, 3),
+        "the site with a table is read whole and planned again; the other site's pages are not read"
+    );
+    sweep(&mut planner, 3).await;
+    assert_eq!((planner.counts.backfill, planner.counts.planned, planner.counts.unchanged), (10, 7, 3), "a sweep after plans nothing again");
     let _ = std::fs::remove_dir_all(&dir);
 }
