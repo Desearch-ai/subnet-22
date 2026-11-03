@@ -27,9 +27,13 @@ pub const PROSE_WORDS: usize = 10;
 pub const MIN_PROSE: usize = 300;
 pub const MIN_CHARS: usize = 1000;
 pub const RECORD_PAIRS: usize = 3;
+/// A value under a label line has at most this many words.
+pub const RECORD_VALUE_WORDS: usize = 8;
 pub const NAV_TYPES: [&str; 3] = ["home", "landing", "listing"];
 pub const ERROR_TEXT_CHARS: usize = 3000;
 pub const ERROR_TITLE_CHARS: usize = 600;
+/// An error phrase counts only in a line of at most this many words.
+pub const ERROR_LINE_WORDS: usize = 15;
 pub const STORE: &str = "templates-store.tpl";
 pub const RECENT: &str = "templates-recent.tpl";
 
@@ -44,6 +48,7 @@ static MARKS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(?:#{1,6}[ \t]+|[
 static SPACES: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[ \t\r\f\v\x{a0}\x{2000}-\x{200b}\x{202f}\x{205f}\x{3000}]+").unwrap());
 static LABEL_VALUE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(?:[-*+•][ \t]+)?([^:|]{1,40}?):[ \t]+[^\s\x1c-\x1f]").unwrap());
 static SEPARATOR: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\|?[ \t:|-]+\|?$").unwrap());
+static HEADING: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^#{1,6}[ \t]+").unwrap());
 static ERROR_TITLE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(concat!(
         r"(?i)^(?:404(?: error)?(?: ?[-:|–]? ?(?:page )?not found)?|(?:page )?not found|error(?: \d{3})?",
@@ -291,7 +296,22 @@ pub fn prose_chars(text: &str) -> usize {
 
 /// Lines that pair a short label with a value: `Label: value`, or a table row of two or more cells.
 pub fn record_pairs(text: &str) -> usize {
-    text.split('\n').filter(|line| record_pair(py_strip(line))).count()
+    let filled: Vec<&str> = text.split('\n').map(py_strip).filter(|line| !line.is_empty()).collect();
+    let mut n = 0;
+    for (i, s) in filled.iter().enumerate() {
+        if s.starts_with('|') || LABEL_VALUE.is_match(s) {
+            n += usize::from(record_pair(s));
+            continue;
+        }
+        let label = HEADING.find(s).map_or(*s, |m| &s[m.end()..]);
+        let words = py_words(label.trim_end_matches(':'));
+        if (label.len() != s.len() || s.ends_with(':')) && (1..=LABEL_WORDS).contains(&words) {
+            if let Some(value) = filled.get(i + 1) {
+                n += usize::from(!HEADING.is_match(value) && py_words(value) <= RECORD_VALUE_WORDS);
+            }
+        }
+    }
+    n
 }
 
 fn record_pair(s: &str) -> bool {
@@ -345,7 +365,7 @@ pub fn junk(url: &str, title: &str, text: &str) -> Option<&'static str> {
     let head = py_strip(TITLE_SEP.find(title).map_or(title, |m| &title[..m.start()])).trim_matches([' ', '.', '!']);
     let head = dotted_i(head);
     let chars = text.chars().take(ERROR_TEXT_CHARS).count();
-    if chars < ERROR_TEXT_CHARS && ERROR_TEXT.is_match(&dotted_i(text)) {
+    if chars < ERROR_TEXT_CHARS && text.split('\n').any(|line| py_words(line) <= ERROR_LINE_WORDS && ERROR_TEXT.is_match(&dotted_i(line))) {
         return Some("error");
     }
     if chars < ERROR_TITLE_CHARS && ERROR_TITLE.is_match(&head) {
@@ -574,11 +594,32 @@ mod tests {
             "MIN_PROSE",
             "MIN_CHARS",
             "RECORD_PAIRS",
+            "RECORD_VALUE_WORDS",
+            "ERROR_TEXT_CHARS",
+            "ERROR_TITLE_CHARS",
+            "ERROR_LINE_WORDS",
         ]
         .map(|name| c[name].as_u64().unwrap() as usize);
         assert_eq!(
             numbers,
-            [MIN_PAGES, MIN_REPEATS, RUN, LEDE_WORDS, LABEL_WORDS, LABELS, VALUE_WORDS, TITLE_CONTAINS_CHARS, PROSE_WORDS, MIN_PROSE, MIN_CHARS, RECORD_PAIRS]
+            [
+                MIN_PAGES,
+                MIN_REPEATS,
+                RUN,
+                LEDE_WORDS,
+                LABEL_WORDS,
+                LABELS,
+                VALUE_WORDS,
+                TITLE_CONTAINS_CHARS,
+                PROSE_WORDS,
+                MIN_PROSE,
+                MIN_CHARS,
+                RECORD_PAIRS,
+                RECORD_VALUE_WORDS,
+                ERROR_TEXT_CHARS,
+                ERROR_TITLE_CHARS,
+                ERROR_LINE_WORDS
+            ]
         );
         assert_eq!(c["STATIC_SHARE"].as_f64().unwrap(), STATIC_SHARE);
         for k in golden["keys"].as_array().unwrap() {
