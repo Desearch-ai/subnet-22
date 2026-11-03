@@ -373,7 +373,7 @@ def v1_list(rows, v1, overrides=None):
     return {e["host"]: e for e in entries}, counts
 
 
-def test_v1_sites_send_first_and_the_rest_fill_at_lower_weights():
+def test_v1_lists_only_the_sites_the_set_takes_pages_of():
     V1 = crawl_list.V1
     rows = [
         row(host="news.com", site_type="news"),
@@ -399,11 +399,10 @@ def test_v1_sites_send_first_and_the_rest_fill_at_lower_weights():
         3,
         crawl_list.V1_WHOLE_CAP * 3,
     )
-    assert [listed[h]["weight"] for h in ("ref.com", "mag.com", "corp.com")] == [
-        2,
-        2,
-        1,
-    ]
+    assert set(listed) == {"news.com", "uni.com"}, (
+        "a site outside the set sends nothing"
+    )
+    assert v1_list(rows, v1)[1]["out:not_in_set"] == 3
 
 
 def test_v1_news_and_whole_sites_in_the_waves_so_far_carry_the_resend_cutoff():
@@ -435,49 +434,10 @@ def test_v1_news_and_whole_sites_in_the_waves_so_far_carry_the_resend_cutoff():
         == "2026-10-27"
     )
     assert "resend_before" not in listed["later.com"], "a site in a later wave waits"
-    assert "resend_before" not in listed["corp.com"], "node-2 sites aren't sent again"
+    assert "corp.com" not in listed
     assert all("resend_before" not in e for e in v1_list(rows, v1)[0].values()), (
         "only when asked"
     )
-
-
-def test_node2_sites_spread_their_stored_pages_over_the_hours_given():
-    V1 = crawl_list.V1
-    rows = [
-        row(host="news.com", site_type="news", url_count=9_000_000),
-        row(host="corp.com", site_type="company", url_count=1000),
-        row(host="tiny.com", site_type="company", url_count=10),
-        row(host="big.com", site_type="media", url_count=90_000_000),
-    ]
-    v1 = {"news.com": V1("news", "news")}
-    entries, _ = crawl_list.build(rows, {}, {}, Hand(), v1=v1, node2_hours=60)
-    listed = {e["host"]: e for e in entries}
-    assert listed["news.com"]["hourly"] == 5_000, "v1 sites keep their hourly limit"
-    assert listed["corp.com"]["hourly"] == 17
-    assert listed["tiny.com"]["hourly"] == 1, "at least one an hour"
-    assert listed["big.com"]["hourly"] == min(
-        5_000, -(-listed["big.com"]["send_cap"] // 60)
-    ), "stored pages count up to the cap"
-    assert {e["host"]: e["hourly"] for e in v1_list(rows, v1)[0].values()}[
-        "corp.com"
-    ] == 5_000, "only when asked"
-
-
-def test_a_minimum_weight_leaves_lighter_node2_sites_off_the_list():
-    V1 = crawl_list.V1
-    rows = [
-        row(host="news.com", site_type="news"),
-        row(host="mag.com", site_type="media"),
-        row(host="corp.com", site_type="company"),
-        row(host="own.com", site_type="company"),
-    ]
-    v1 = {"news.com": V1("news", "news"), "own.com": V1("whole", "company")}
-    entries, counts = crawl_list.build(rows, {}, {}, Hand(), v1=v1, node2_min_weight=2)
-    assert {e["host"] for e in entries} == {"news.com", "mag.com", "own.com"}, (
-        "a v1 site stays whatever its type"
-    )
-    assert counts["out:node2"] == 1
-    assert "corp.com" in v1_list(rows, v1)[0], "only when asked"
 
 
 def test_hosts_to_rejoin_take_a_cap_one_up():
@@ -518,7 +478,8 @@ def test_host_files_that_match_no_listed_site_leave_the_list(
                         "rule": "news",
                         "since": "2025-10-01",
                         "type": "news",
-                    }
+                    },
+                    {"host": "corp.com", "rule": "whole", "type": "company"},
                 ]
             }
         )
@@ -619,7 +580,7 @@ def test_v1_sites_without_a_sitemap_are_listed_for_their_feed():
     )
 
 
-def test_landing_sites_send_only_their_landing_pages_unless_node2_sends_them():
+def test_landing_sites_send_only_their_landing_pages():
     V1 = crawl_list.V1
     rows = [
         row(host="corp.com", site_type="company"),
@@ -630,7 +591,7 @@ def test_landing_sites_send_only_their_landing_pages_unless_node2_sends_them():
     ]
     v1 = {r.host: V1("landing", "") for r in rows}
     build = crawl_list.build
-    entries, _ = build(rows, {}, {}, Hand(), v1=v1, node2_min_weight=2)
+    entries, _ = build(rows, {}, {}, Hand(), v1=v1)
     listed = {e["host"]: e for e in entries}
     assert listed["corp.com"] == {
         "host": "corp.com",
@@ -640,25 +601,22 @@ def test_landing_sites_send_only_their_landing_pages_unless_node2_sends_them():
         "send_cap": 100,
         "depth": 1,
     }
+    assert listed["mag.com"] == {
+        **listed["corp.com"],
+        "host": "mag.com",
+        "type": "media",
+    }, "whatever its type"
     assert listed["quiet.com"]["depth"] == listed["radio.com"]["depth"] == 1, (
         "listed for the homepage the bot reads as a list"
     )
-    node2, _ = build(rows, {}, {}, Hand(), v1={}, node2_min_weight=2)
-    assert listed["mag.com"] == node2[0] and "bank.com" not in listed
-    resent, _ = build(
-        rows, {}, {}, Hand(), v1=v1, node2_min_weight=2, resend_before="2026-10-27"
-    )
+    assert "bank.com" not in listed
+    resent, _ = build(rows, {}, {}, Hand(), v1=v1, resend_before="2026-10-27")
     assert {e["host"] for e in resent if "resend_before" in e} == {
         "corp.com",
         "quiet.com",
+        "mag.com",
         "radio.com",
-    }, (
-        "every site on landing terms, with no wave file; node 2's terms stay as they were"
-    )
-    entries, _ = build(rows, {}, {}, Hand(), v1=v1)
-    assert "depth" not in {e["host"]: e for e in entries}["corp.com"], (
-        "with no minimum weight node 2 sends it already"
-    )
+    }, "every site on landing terms, with no wave file"
     docs = row(host="docs.corp.com", state="no_sitemap", site_type="docs")
     entries, _ = build(
         rows + [docs],
@@ -666,7 +624,6 @@ def test_landing_sites_send_only_their_landing_pages_unless_node2_sends_them():
         {},
         Hand(),
         v1={**v1, "docs.corp.com": V1("whole", "docs")},
-        node2_min_weight=2,
     )
     assert "docs.corp.com" in {e["host"] for e in entries}, (
         "a landing parent sends none of a feed-only subdomain's pages, so it stays"
@@ -898,7 +855,6 @@ def test_deeper_landing_sites_and_sites_whole_for_their_rank_send_more_shallowes
         {},
         Hand(),
         v1=v1,
-        node2_min_weight=2,
         resend_before="2026-10-27",
         widened_before="2026-11-03",
     )
@@ -927,5 +883,133 @@ def test_deeper_landing_sites_and_sites_whole_for_their_rank_send_more_shallowes
         listed["cited.com"]["send_cap"] == 15_000_000
         and "depth" not in listed["cited.com"]
     )
-    plain, _ = crawl_list.build(rows, {}, {}, Hand(), v1=v1, node2_min_weight=2)
+    plain, _ = crawl_list.build(rows, {}, {}, Hand(), v1=v1)
     assert not any("resend_before" in e for e in plain), "nothing goes again unasked"
+
+
+def test_a_site_takes_the_set_entry_the_planner_reads_for_its_pages():
+    V1 = crawl_list.V1
+    rows = [
+        row(host="bbc.co.uk", site_type="news"),
+        row(host="sport.bbc.co.uk", site_type="news"),
+        row(host="data.uni.edu", site_type="academic"),
+        row(host="blog.corp.com", site_type="media"),
+        row(host="shop.mag.com", site_type="media"),
+        row(host="www.gov.example", site_type="public"),
+        row(host="www.agency.example", site_type="public"),
+        row(host="cdn.spam.com", site_type="reference"),
+        row(host="council.uni.edu", site_type=""),
+        row(host="uni.edu", site_type=""),
+    ]
+    v1 = {
+        "bbc.co.uk": V1("news", "news"),
+        "uni.edu": V1("whole", "academic"),
+        "corp.com": V1("landing", "company", why=("rank",)),
+        "mag.com": V1("whole", "media", why=("rank",), own_host=True),
+        "gov.example": V1("whole", "public"),
+        "www.agency.example": V1("whole", "public"),
+        "spam.com": V1("out"),
+    }
+    listed, counts = v1_list(rows, v1)
+    assert set(listed) == {
+        "bbc.co.uk",
+        "sport.bbc.co.uk",
+        "data.uni.edu",
+        "www.gov.example",
+        "www.agency.example",
+        "uni.edu",
+    }, "only a site's own entry lifts a label out"
+    assert listed["sport.bbc.co.uk"]["backlog"] == listed["bbc.co.uk"]["backlog"]
+    assert listed["data.uni.edu"]["send_cap"] == crawl_list.V1_WHOLE_CAP * 3
+    assert (counts["out:not_in_set"], counts["out:v1"]) == (2, 1), (
+        "a landing site and a site whole for its own host take no host under them"
+    )
+
+
+def test_the_set_entry_agrees_with_the_set_builders_matcher():
+    spec = importlib.util.spec_from_file_location(
+        "v1_set_for_list", SOURCE.parent / "v1_set.py"
+    )
+    v1_set = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(v1_set)
+    sites = {
+        "news.com": {"host": "news.com", "rule": "news"},
+        "corp.com": {"host": "corp.com", "rule": "landing"},
+        "mag.com": {"host": "mag.com", "rule": "whole", "own_host": True},
+        "uni.edu": {"host": "uni.edu", "rule": "whole"},
+        "en.wiki.org": {"host": "en.wiki.org", "rule": "bulk"},
+    }
+    as_v1 = {
+        host: crawl_list.V1(site["rule"], own_host=site.get("own_host", False))
+        for host, site in sites.items()
+    }
+    for host in (
+        "news.com",
+        "www.news.com",
+        "a.b.news.com",
+        "corp.com",
+        "www.corp.com",
+        "m.corp.com",
+        "docs.corp.com",
+        "mag.com",
+        "m.mag.com",
+        "blog.mag.com",
+        "lab.uni.edu",
+        "en.m.wiki.org",
+        "other.com",
+    ):
+        found = crawl_list.set_entry(as_v1, host)
+        url = f"https://{host}/"
+        assert (found is not None) == v1_set.matches(sites, url, "2026-01-01"), host
+
+
+def test_sites_leaving_the_list_with_pages_ready_drain_once(tmp_path, monkeypatch):
+    V1 = crawl_list.V1
+    rows = [
+        row(host="news.com", site_type="news"),
+        row(host="mag.com", site_type="media"),
+        row(host="quiet.com", site_type="media"),
+        row(host="held.com", site_type="news"),
+        row(host="refusing.com", homepage="robots_disallow", site_type="media"),
+    ]
+    v1 = {"news.com": V1("news", "news"), "held.com": V1("out")}
+    ready = {"news.com", "mag.com", "held.com", "refusing.com"}
+    entries, counts = crawl_list.build(rows, {}, {}, Hand(), v1=v1, drain_hosts=ready)
+    listed = {e["host"]: e for e in entries}
+    assert listed["mag.com"] == {
+        "host": "mag.com",
+        "type": "media",
+        "weight": 1,
+        "hourly": 0,
+        "send_cap": 0,
+        "since": "9999-12-31",
+        "depth": 0,
+    }, "no room under its cap, no hour, no date and no depth: the walker only clears it"
+    assert listed["held.com"]["send_cap"] == 0 and listed["news.com"]["hourly"] > 0
+    assert "quiet.com" not in listed, "a site with nothing ready needs no drain"
+    assert "refusing.com" not in listed, "only a site the set leaves out drains"
+    assert counts["drain"] == 2
+    with pytest.raises(SystemExit, match="no listed site with a send_cap"):
+        crawl_list.matched(entries, {}, {"r": {"mag.com"}}, "out")
+    monkeypatch.setattr(crawl_list, "MIN_DOMAINS", 1)
+    registry = tmp_path / "registry.csv"
+    registry.write_text(
+        "news.com,10,active,,1000,ok,news,0.99,\nmag.com,20,active,,1000,ok,media,0.99,\n"
+    )
+    v1_file = tmp_path / "v1-set.json"
+    v1_file.write_text(json.dumps({"sites": [{"host": "news.com", "rule": "news"}]}))
+    drain = tmp_path / "q.tsv"
+    drain.write_text("mag.com\t500\t20\t0\t0\n\n")
+    out = tmp_path / "domains.json"
+    args = [
+        "--out",
+        str(out),
+        "--registry-csv",
+        str(registry),
+        "--v1-set",
+        str(v1_file),
+    ]
+    crawl_list.main(args + ["--drain", str(drain)])
+    assert {e["host"]: e["hourly"] for e in json.loads(out.read_text())}["mag.com"] == 0
+    crawl_list.main(args)
+    assert [e["host"] for e in json.loads(out.read_text())] == ["news.com"]

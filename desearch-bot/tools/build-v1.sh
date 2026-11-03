@@ -1,13 +1,11 @@
 #!/bin/sh
-# Builds v1-set.json and the v1 crawl list into ~ubuntu/crawl-1b/v1 from the registry (read-only) and the staged inputs; NEWS=B takes every news site from 2020, UNDATED=article takes undated news articles; RESEND_WAVES=N gives the sites of resend waves 1 to N resend_before 2026-10-27 (none by default); NODE2_MIN_WEIGHT=2 leaves the weight-1 sites outside the set off the list (the default; 1 keeps them), and NODE2_HOURS=H holds each site outside the set that stays to its stored pages divided by H an hour (0, no limit, by default); REJOIN=FILE puts the send_cap of the hosts in FILE one up, so the list walker queues their stored pages again; RECHECKED=FILE (recheck_hosts.py's TSV) lets the hosts it read as ok pass the homepage language, text and error checks; VERDICTS=FILE (the site check's TSV) puts its out hosts out for quality; LANDING_RANK=N makes the listed sites ranked N or higher that no other entry takes or shuts landing sites, which send their homepage and first-level pages only; DEEP_RANK=N takes company landing sites ranked N or higher three levels down, WHOLE_RANK=N takes media, organization and reference landing sites ranked N or higher whole once the site check keeps them, and WIDENED_BEFORE=DATE sends both once more for what they sent before it; SUBDOMAINS=1 takes the docs, help, support, newsroom, investor and news subdomains of those sites as their parents are; these three read the bot's public suffix list (PSL=FILE, /opt/desearch-bot/data/public_suffix_list.dat by default), whose suffixes they never take; HUBS=1 takes the undated hub pages of the news sites taken for all years, whose homepages and hubs the bot sends again hourly or daily.
+# Builds v1-set.json and the v1 crawl list into ~ubuntu/crawl-1b/v1 from the registry (read-only) and the staged inputs; NEWS=B takes every news site from 2020, UNDATED=article takes undated news articles; RESEND_WAVES=N gives the sites of resend waves 1 to N resend_before 2026-10-27 (none by default); the list holds only the sites the set takes pages of, landing sites to their depth; DRAIN=FILE (hosts with pages ready in the bot's store, a TSV's first column) lists those the set leaves out taking nothing, so the bot clears their new-page lanes, for one build before a build without it; REJOIN=FILE puts the send_cap of the hosts in FILE one up, so the list walker queues their stored pages again; RECHECKED=FILE (recheck_hosts.py's TSV) lets the hosts it read as ok pass the homepage language, text and error checks; VERDICTS=FILE (the site check's TSV) puts its out hosts out for quality; LANDING_RANK=N makes the listed sites ranked N or higher that no other entry takes or shuts landing sites, which send their homepage and first-level pages only; DEEP_RANK=N takes company landing sites ranked N or higher three levels down, WHOLE_RANK=N takes media, organization and reference landing sites ranked N or higher whole once the site check keeps them, and WIDENED_BEFORE=DATE sends both once more for what they sent before it; SUBDOMAINS=1 takes the docs, help, support, newsroom, investor and news subdomains of those sites as their parents are; these three read the bot's public suffix list (PSL=FILE, /opt/desearch-bot/data/public_suffix_list.dat by default), whose suffixes they never take; HUBS=1 takes the undated hub pages of the news sites taken for all years, whose homepages and hubs the bot sends again hourly or daily.
 set -e
 v=/home/ubuntu/crawl-1b/v1
 f=/var/lib/task-api-feeder
 news=${NEWS:-A}
 undated=${UNDATED:-out}
 resend_waves=${RESEND_WAVES:-0}
-node2_min_weight=${NODE2_MIN_WEIGHT:-2}
-node2_hours=${NODE2_HOURS:-0}
 landing_rank=${LANDING_RANK:-}
 deep_rank=${DEEP_RANK:-}
 whole_rank=${WHOLE_RANK:-}
@@ -27,7 +25,7 @@ while [ $i -le $resend_waves ]; do
 done
 # Every input is checked before anything is written, so a bad one leaves v1-set.json and the list as they were.
 for input in $f/backing.tsv /home/ubuntu/crawl-1b/overrides-new.tsv $f/excluded-domains.txt $judged $v/v1-hand.tsv $v/bulk-set-rows.json $rows $v/extra-set-rows.json \
-  $v/news-domains.tsv.gz $v/news-outlets-2026-10-28.tsv $v/v1-store-counts-2026-10-28.tsv.gz $v/news-counts-2026-10-28b.tsv.gz $v/too-big.tsv $waves $REJOIN $RECHECKED $VERDICTS \
+  $v/news-domains.tsv.gz $v/news-outlets-2026-10-28.tsv $v/v1-store-counts-2026-10-28.tsv.gz $v/news-counts-2026-10-28b.tsv.gz $v/too-big.tsv $waves $REJOIN $RECHECKED $VERDICTS $DRAIN \
   ${PSL:-/opt/desearch-bot/data/public_suffix_list.dat}; do
   [ -s "$input" ] || fail "$input is missing or empty"
 done
@@ -43,6 +41,6 @@ python3 $v/v1_set.py --out $v/v1-set.json.next --news $news --undated $undated -
 : > $v/resend-hosts.txt
 [ -z "$waves" ] || cat $waves > $v/resend-hosts.txt
 python3 $v/crawl_list.py --out $v/domains-v1.json --decisions $v/decisions-v1.tsv.gz --v1-set $v/v1-set.json.next $common --resend-before 2026-10-27 \
-  ${waves:+--resend-hosts $v/resend-hosts.txt} --node2-min-weight $node2_min_weight --node2-hours $node2_hours ${REJOIN:+--rejoin-hosts $REJOIN} ${WIDENED_BEFORE:+--widened-before $WIDENED_BEFORE} > $v/v1-list.out
+  ${waves:+--resend-hosts $v/resend-hosts.txt} ${REJOIN:+--rejoin-hosts $REJOIN} ${DRAIN:+--drain $DRAIN} ${WIDENED_BEFORE:+--widened-before $WIDENED_BEFORE} > $v/v1-list.out
 mv $v/v1-set.json.next $v/v1-set.json
 chown ubuntu:ubuntu $v/*

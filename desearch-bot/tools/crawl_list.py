@@ -4,7 +4,6 @@ import argparse
 import csv
 import gzip
 import json
-import math
 import os
 import shlex
 import subprocess
@@ -97,10 +96,11 @@ EARNING_TYPES = {
     "public",
     "docs",
 }
-# With a v1 set, its sites send first and the rest of the list fills the room they leave.
+# With a v1 set, the list holds only the sites it takes pages of.
 V1_NEWS_WEIGHT = 4
 V1_WEIGHT = 3
-NODE2_WEIGHT = 2
+# A site that leaves the list with pages ready is listed once taking nothing, so the list walker clears its new-page lane at its cap without walking its pages.
+DRAIN = {"weight": 1, "hourly": 0, "send_cap": 0, "since": "9999-12-31", "depth": 0}
 # A v1 site taken whole: every stored page may go, up to this many.
 V1_WHOLE_CAP = 5_000_000
 # A landing site sends its homepage and first-level pages only (the bot's `depth`), a few an hour.
@@ -204,6 +204,7 @@ class V1:
     depth: int | None = None
     hubs: bool = False
     why: tuple[str, ...] = ()
+    own_host: bool = False
 
     def by_rank(self) -> bool:
         """A site taken whole for its rank, not for a backing."""
@@ -330,13 +331,36 @@ def v1_weight(site_type: str) -> int:
     return V1_NEWS_WEIGHT if site_type == "news" else V1_WEIGHT
 
 
+def set_host(host: str) -> str:
+    """A host as the set names it: lowercase, without `www.`, and a mobile `<x>.m.<site>` as `<x>.<site>` (set.rs host_of)."""
+    host = host.strip().rstrip(".").lower()
+    host = host.removeprefix("www.")
+    first, mobile, rest = host.partition(".m.")
+    return f"{first}.{rest}" if mobile and "." not in first and "." in rest else host
+
+
+def set_entry(sites: dict[str, V1], host: str) -> V1 | None:
+    """The set's entry for a host's pages as the planner reads it: its own, else the nearest listed host's above it; a landing entry, or one whole for its own host, takes no host under it."""
+    if host in sites:
+        return sites[host]
+    own = set_host(host)
+    listed = own
+    while listed:
+        if listed in sites:
+            entry = sites[listed]
+            under = own not in (listed, f"m.{listed}")
+            if under and (entry.rule == "landing" or entry.own_host):
+                return None
+            return entry
+        listed = listed.partition(".")[2]
+    return None
+
+
 def apply_v1(row: Row, base: Decision, v1: V1 | None, forced_out: bool) -> Decision:
-    if v1 is None or v1.rule == "landing":
-        return (
-            replace(base, weight=min(base.weight, NODE2_WEIGHT))
-            if base.listed
-            else base
-        )
+    if v1 is None:
+        return out("not_in_set") if base.listed else base
+    if v1.rule == "landing":
+        return base
     if v1.rule == "out":
         return out("v1")
     lifted = not base.listed and not forced_out and base.reason in SOFT_OUTS
@@ -514,6 +538,13 @@ def read_rechecked(path: str | None) -> set[str]:
     return {host for host, verdict in verdicts.items() if verdict == "ok"}
 
 
+def read_first_column(path: str | None) -> set[str]:
+    if not path:
+        return set()
+    with open_text(path) as source:
+        return {line.split("\t", 1)[0].strip() for line in source} - {""}
+
+
 def read_v1_set(path: str | None) -> dict[str, V1] | None:
     if not path:
         return None
@@ -527,6 +558,7 @@ def read_v1_set(path: str | None) -> dict[str, V1] | None:
             site.get("depth"),
             site.get("hubs") is True,
             tuple(site.get("why", ())),
+            site.get("own_host") is True,
         )
         for site in sites
     }
@@ -555,13 +587,12 @@ def build(
     v1: dict[str, V1] | None = None,
     resend_before: str | None = None,
     resend_hosts: set[str] | None = None,
-    node2_hours: float | None = None,
-    node2_min_weight: int = 1,
     rejoin_hosts: set[str] | None = None,
     rechecked: set[str] | None = None,
     widened_before: str | None = None,
+    drain_hosts: set[str] | None = None,
 ) -> tuple[list[dict], Counter]:
-    ranked, counts = [], Counter()
+    ranked, counts, drained = [], Counter(), set()
     for row in rows:
         override = overrides.get(row.host, "")
         base = decide(
@@ -572,21 +603,16 @@ def build(
             (judged or {}).get(row.host),
             row.host in (rechecked or set()),
         )
-        entry_v1 = (v1 or {}).get(row.host)
+        entry_v1 = None if v1 is None else set_entry(v1, row.host)
+        # Only a site's own entry lifts a label out; one it takes from a parent (gov.uk) does not.
+        inherited = v1 is not None and not ({row.host, set_host(row.host)} & v1.keys())
         decision = (
             base
             if v1 is None
-            else apply_v1(row, base, entry_v1, override.startswith("out:"))
+            else apply_v1(row, base, entry_v1, override.startswith("out:") or inherited)
         )
         landing = entry_v1 is not None and entry_v1.rule == "landing"
-        # A landing site the list sends for node 2 already keeps those terms; any other sends its landing pages only.
-        if (
-            landing
-            and decision.listed
-            and not (
-                decision.weight >= node2_min_weight and state_of(row) in SENDING_STATES
-            )
-        ):
+        if landing and decision.listed:
             depth = entry_v1.depth or LANDING_DEPTH
             deep = depth > LANDING_DEPTH
             decision = replace(
@@ -598,11 +624,6 @@ def build(
                 since=None,
                 depth=depth,
             )
-        node2 = v1 is not None and (
-            entry_v1 is None or (landing and decision.depth is None)
-        )
-        if node2 and decision.listed and decision.weight < node2_min_weight:
-            decision = out("node2")
         counts[decision.site_type if decision.listed else f"out:{decision.reason}"] += 1
         feed = (
             entry_v1 is not None
@@ -616,12 +637,6 @@ def build(
                 "weight": decision.weight,
                 "hourly": decision.hourly,
             }
-            if node2_hours and node2:
-                bound = decision.send_cap or decision.backlog or row.url_count
-                entry["hourly"] = min(
-                    decision.hourly,
-                    max(1, math.ceil(min(row.url_count, bound) / node2_hours)),
-                )
             if decision.send_cap is not None:
                 # A cap that changes makes the list walker walk the site again, queuing pages an earlier walk left out.
                 entry["send_cap"] = decision.send_cap + (
@@ -659,6 +674,14 @@ def build(
                     landing and feed and state_of(row) not in SENDING_STATES,
                 )
             )
+        elif (
+            base.listed
+            and decision.reason in ("not_in_set", "v1")
+            and row.host in (drain_hosts or set())
+        ):
+            drained.add(row.host)
+            entry = {"host": row.host, "type": base.site_type, **DRAIN}
+            ranked.append((row.rank is None, row.rank or 0, row.host, entry, False))
         # The decisions file keeps the decision before the v1 set, which the set itself is built from.
         if decisions is not None:
             decisions.writerow(
@@ -676,6 +699,8 @@ def build(
             )
     # A landing subdomain listed only for its feed would take its pages from its parent's lists and leave them unsent; a whole or news one sends them itself, and a landing parent sends none of them.
     hosts = {item[2] for item in ranked if "depth" not in item[3]}
+    if drained:
+        counts["drain"] = len(drained)
     ranked = [
         item for item in ranked if not (item[4] and parent_listed(item[2], hosts))
     ]
@@ -711,7 +736,7 @@ def matched(
     rejoin_hosts = set().union(*rejoin_files.values())
     resent = {e["host"] for e in entries if "resend_before" in e}
     rejoined = {
-        e["host"] for e in entries if e["host"] in rejoin_hosts and "send_cap" in e
+        e["host"] for e in entries if e["host"] in rejoin_hosts and e.get("send_cap")
     }
     for path, hosts in resend_files.items():
         if not hosts & resent:
@@ -761,7 +786,7 @@ def main(argv: list[str] | None = None) -> None:
     )
     parser.add_argument(
         "--v1-set",
-        help="v1-set.json: its sites send first under its caps, and the rest of the list at lower weights",
+        help="v1-set.json: only the sites it takes pages of are listed, under its rules: landing sites to their depth, sites whole for their own host only",
     )
     parser.add_argument(
         "--resend-before",
@@ -772,17 +797,6 @@ def main(argv: list[str] | None = None) -> None:
         action="append",
         default=[],
         help="a file of hosts, one a line, that take --resend-before: the resend waves applied so far",
-    )
-    parser.add_argument(
-        "--node2-hours",
-        type=float,
-        help="with --v1-set, each site outside it sends at most its stored pages under its cap divided by this many hours in an hour, at least one, so the v1 sites keep the rest of the cap",
-    )
-    parser.add_argument(
-        "--node2-min-weight",
-        type=int,
-        default=1,
-        help="with --v1-set, sites outside it weighted below this stay off the list; 2 leaves out companies, organizations and personal sites",
     )
     parser.add_argument(
         "--rejoin-hosts",
@@ -797,6 +811,10 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument(
         "--widened-before",
         help="an ISO date: the sites the v1 set takes deeper than their first level, or whole for their rank, send their pages last sent before it once more, up to their cap",
+    )
+    parser.add_argument(
+        "--drain",
+        help="with --v1-set, a file of the hosts with pages ready in the bot's store, one a line (a TSV's first column): those the set leaves out are listed taking nothing, so the bot clears their new-page lanes; the next build without it drops them",
     )
     parser.add_argument(
         "--registry-csv",
@@ -818,6 +836,7 @@ def main(argv: list[str] | None = None) -> None:
     resend_hosts = set().union(*resend_files.values())
     rejoin_hosts = set().union(*rejoin_files.values())
     rechecked = read_rechecked(args.rechecked)
+    drain_hosts = read_first_column(args.drain)
     if args.decisions:
         with open_text(args.decisions, "wt") as target:
             writer = csv.writer(target, delimiter="\t", lineterminator="\n")
@@ -844,11 +863,10 @@ def main(argv: list[str] | None = None) -> None:
                 v1,
                 args.resend_before,
                 resend_hosts,
-                args.node2_hours,
-                args.node2_min_weight,
                 rejoin_hosts,
                 rechecked,
                 args.widened_before,
+                drain_hosts,
             )
     else:
         entries, counts = build(
@@ -860,20 +878,22 @@ def main(argv: list[str] | None = None) -> None:
             v1=v1,
             resend_before=args.resend_before,
             resend_hosts=resend_hosts,
-            node2_hours=args.node2_hours,
-            node2_min_weight=args.node2_min_weight,
             rejoin_hosts=rejoin_hosts,
             rechecked=rechecked,
             widened_before=args.widened_before,
+            drain_hosts=drain_hosts,
         )
     resent, rejoined = matched(entries, resend_files, rejoin_files, args.out)
     write_list(entries, args.out)
-    print(f"{len(entries)} domains listed in {args.out}")
+    sending = [e for e in entries if e.get("hourly") != 0]
     print(
-        f"{len(resent)} with resend_before, {sum('since' in e for e in entries)} with since, {len(rejoined)} with send_cap one up to rejoin, {sum('depth' in e for e in entries)} landing sites with depth"
+        f"{len(entries)} domains listed in {args.out}, {len(entries) - len(sending)} of them to drain"
     )
     print(
-        f"{sum(e.get('depth', 0) > LANDING_DEPTH for e in entries)} deeper than {LANDING_DEPTH}, {sum('hubs' in e for e in entries)} with hubs ({sum(e.get('hubs') == HUB_EVERY_TOP for e in entries)} hourly)"
+        f"{len(resent)} with resend_before, {sum('since' in e for e in sending)} with since, {len(rejoined)} with send_cap one up to rejoin, {sum('depth' in e for e in sending)} landing sites with depth"
+    )
+    print(
+        f"{sum(e.get('depth', 0) > LANDING_DEPTH for e in sending)} deeper than {LANDING_DEPTH}, {sum('hubs' in e for e in sending)} with hubs ({sum(e.get('hubs') == HUB_EVERY_TOP for e in sending)} hourly)"
     )
     for name, count in sorted(counts.items(), key=lambda item: -item[1]):
         print(f"{count:>10}  {name}")
