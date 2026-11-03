@@ -71,7 +71,13 @@ pub struct DomainWrite {
 pub fn plan(known: &Known, visit: Visit, now: i64, rng: &mut impl Rng) -> DomainWrite {
     // A refusal that may pass, on a recheck, is tried again before its outcome counts.
     let retry = (visit.passing && known.state == State::New).then(|| states::recheck_retry(known.failures, now, rng)).flatten();
-    let decision = retry.unwrap_or_else(|| states::decide(known.state, visit.outcome, known.failures, known.last_ok_at, now, rng));
+    // A visit the site's Crawl-delay stopped decides nothing: the domain keeps its state and goes on once the delay has passed.
+    let undecided = visit.paced && visit.outcome == Outcome::Sitemap;
+    let decision = if undecided {
+        states::Decision { state: known.state, failures: known.failures, next_check_at: Some(now) }
+    } else {
+        retry.unwrap_or_else(|| states::decide(known.state, visit.outcome, known.failures, known.last_ok_at, now, rng))
+    };
     let mut due = decision.next_check_at;
     if decision.state == State::Active {
         let earliest = if visit.deferred.is_empty() { earliest_sitemap(known, &visit, now) } else { Some(now) };
@@ -86,6 +92,9 @@ pub fn plan(known: &Known, visit: Visit, now: i64, rng: &mut impl Rng) -> Domain
             due = Some(now + CUT_SHORT_WAIT);
         }
     }
+    if let Some(quiet) = visit.quiet_until {
+        due = due.map(|d| d.max(quiet));
+    }
     let canonical_host = match visit.outcome {
         Outcome::Redirect => visit.canonical_host.clone(),
         outcome if outcome.answered() => None,
@@ -95,7 +104,7 @@ pub fn plan(known: &Known, visit: Visit, now: i64, rng: &mut impl Rng) -> Domain
     DomainWrite {
         host: known.host.clone(),
         state: decision.state,
-        reason: visit.reason.clone(),
+        reason: if undecided { known.reason.clone() } else { visit.reason.clone() },
         failures: decision.failures,
         next_due_at: due,
         last_ok_at,
@@ -129,7 +138,7 @@ pub fn crashed(known: &Known, error: &str, now: i64) -> DomainWrite {
         state: known.state,
         reason: Some(format!("crashed: {error}")),
         failures: known.failures,
-        next_due_at: Some(now + CRASH_RETRY),
+        next_due_at: Some((now + CRASH_RETRY).max(records::quiet_after(known.crawl_delay, now))),
         last_ok_at: known.last_ok_at,
         canonical_host: known.canonical_host.clone(),
         checked_at: now,
@@ -781,7 +790,8 @@ impl Loop {
             if !records::listed_unread(&record) || records::int(record.get("due")).is_some_and(|due| due <= self.wake_by) {
                 continue;
             }
-            record.insert("due".into(), (now + rng.gen_range(0..=(self.wake_by - now).max(0))).into());
+            let quiet = records::int(record.get("quiet")).unwrap_or(0);
+            record.insert("due".into(), (now + rng.gen_range(0..=(self.wake_by - now).max(0))).max(quiet).into());
             let mut changes = Changes::default();
             changes.domain(&host, &record);
             match self.buckets.store(&host).write(changes) {

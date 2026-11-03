@@ -30,8 +30,10 @@ use crate::urls::{self, Listing, Normaliser};
 use crate::{homepage, isodate, net, records};
 
 pub const MIN_HOST_INTERVAL: f64 = 1.0;
-/// Some sites ask for hours between requests; past this we slow down no further.
-const MAX_CRAWL_DELAY: f64 = 60.0;
+/// The longest a visit waits in place for its next request; a longer Crawl-delay ends the visit, and the domain is due again once the delay has passed.
+pub const MAX_WAIT_IN_VISIT: f64 = 60.0;
+/// What a request made while the visit's next turn was further off than `MAX_WAIT_IN_VISIT` answers instead of going.
+pub const PACED: &str = "paced";
 const MAX_REDIRECTS: usize = 5;
 const SITEMAP_GUESSES: [&str; 2] = ["/sitemap.xml", "/sitemap_index.xml"];
 /// Tried after the sitemap guesses, on listed domains only: a feed names a site's newest pages when it lists no sitemap.
@@ -168,6 +170,10 @@ pub struct Known {
     pub www_only: bool,
     /// The status a link run was refused with, and when, which ends link work on the site while it holds.
     pub links_refused: Option<(u16, i64)>,
+    /// The reason the record gives its state, which a visit that decides nothing keeps.
+    pub reason: Option<String>,
+    /// The last visit stopped for the site's Crawl-delay, so this one goes on from where it stopped.
+    pub paced: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -241,6 +247,10 @@ pub struct Visit {
     pub robots_requests: i64,
     /// When the site's link work is due next, as the visit found it; None when it found nothing to say.
     pub links_at: Option<LinksAt>,
+    /// A request waited for a Crawl-delay longer than a visit waits: the visit stopped there and left the rest for later.
+    pub paced: bool,
+    /// When the site's Crawl-delay lets the next request go, in microseconds; the domain is not due before it.
+    pub quiet_until: Option<i64>,
 }
 
 /// When a site's link work comes, which never moves its visits: a first run, spread over days; a run at a time; or none, as it no longer qualifies.
@@ -286,6 +296,8 @@ impl Visit {
             revisit: false,
             robots_requests: 0,
             links_at: None,
+            paced: false,
+            quiet_until: None,
         }
     }
 }
@@ -465,15 +477,26 @@ impl Pacer {
 
     /// Hold the next request back at least this long from now.
     fn rest(&mut self, seconds: f64) {
-        let until = Instant::now() + Duration::from_secs_f64(seconds.clamp(0.0, MAX_CRAWL_DELAY));
+        let until = Instant::now() + Duration::from_secs_f64(seconds.clamp(0.0, MAX_WAIT_IN_VISIT));
         self.next = Some(self.next.map_or(until, |next| next.max(until)));
     }
 
-    async fn wait(&mut self) {
+    /// Wait for the next request's turn and book the one after; false, without waiting, when the turn is further off than a visit waits.
+    async fn wait(&mut self) -> bool {
         if let Some(next) = self.next {
+            if next.saturating_duration_since(Instant::now()).as_secs_f64() > MAX_WAIT_IN_VISIT {
+                return false;
+            }
             tokio::time::sleep_until(next).await;
         }
         self.next = Some(Instant::now() + Duration::from_secs_f64(self.interval));
+        true
+    }
+
+    /// When the next request may go, in microseconds since the epoch, once a request went.
+    fn next_at(&self) -> Option<i64> {
+        let left = self.next?.saturating_duration_since(Instant::now());
+        Some(chrono::Utc::now().timestamp_micros().saturating_add(i64::try_from(left.as_micros()).unwrap_or(i64::MAX)))
     }
 }
 
@@ -512,6 +535,7 @@ impl Visitor {
         let done = run.go().await;
         run.keep_clock();
         done?;
+        run.note_quiet();
         Ok(run.result)
     }
 
@@ -521,6 +545,7 @@ impl Visitor {
         run.result.links_only = true;
         run.link_work().await;
         run.keep_clock();
+        run.note_quiet();
         run.result
     }
 
@@ -704,8 +729,9 @@ impl Run<'_> {
 
     fn robots_due(&self) -> bool {
         // The daily recheck can land up to 10% early and should still read robots.txt.
-        self.known.state != State::Active
-            || self.known.robots_checked_at.is_none_or(|checked| (self.now - checked) as f64 >= ROBOTS_EVERY as f64 * (1.0 - JITTER))
+        let stale = self.known.robots_checked_at.is_none_or(|checked| (self.now - checked) as f64 >= ROBOTS_EVERY as f64 * (1.0 - JITTER));
+        // After a visit the site's delay stopped, robots.txt read that day stands, or each visit would spend its one request on it.
+        stale || (self.known.state != State::Active && !self.known.paced)
     }
 
     fn roots(&mut self, named: &[String]) -> Result<Vec<String>, Crash> {
@@ -844,7 +870,7 @@ impl Run<'_> {
             known.sitemaps.values().filter(|s| s.depth > 0 && due(s, self.now)).map(|s| (s.url.clone(), s.depth, s.parent_id, None, false)),
         );
         let mut seen: HashSet<String> = HashSet::new();
-        while self.fetches < MAX_FILES && self.failed_in_row < MAX_FAILURES_IN_ROW && !self.visitor.pause.load(Ordering::Relaxed) {
+        while self.fetches < MAX_FILES && self.failed_in_row < MAX_FAILURES_IN_ROW && !self.result.paced && !self.visitor.pause.load(Ordering::Relaxed) {
             let Some((url, depth, parent, index_date, force)) = queue.pop_front() else {
                 break;
             };
@@ -897,6 +923,14 @@ impl Run<'_> {
         let limit = if reads_home { MAX_HOMEPAGE_BYTES } else { MAX_SITEMAP_BYTES };
         let (answer, error) = match self.get(&url, limit, validators, budget).await {
             Ok(answer) => (Some(answer), None),
+            Err(error) if error == PACED => {
+                // Not read: a stored file stays due, a new one waits with the rest of the walk.
+                self.result.paced = true;
+                if stored.is_none() && !self.guesses.contains(&url) && self.result.deferred.len() < MAX_DEFERRED {
+                    self.result.deferred.push((url, depth, parent));
+                }
+                return Ok(Vec::new());
+            }
             Err(error) => {
                 self.network_error = Some(error.clone());
                 (None, Some(error))
@@ -1251,6 +1285,15 @@ impl Run<'_> {
             };
             let answer = match fetched {
                 Ok(answer) => answer,
+                // A run the site's delay holds back before it read anything waits for it, never a failed run; one that read stops there.
+                Err(error) if error == PACED => {
+                    if read == 0 {
+                        self.following = false;
+                        self.result.links_wait = self.pacer.next_at();
+                        return Ok(());
+                    }
+                    break;
+                }
                 Err(_) => {
                     for asked in if self.asked_ips.is_empty() { vec![ip] } else { std::mem::take(&mut self.asked_ips) } {
                         slots.connected(asked, !self.connect_failed);
@@ -1486,7 +1529,8 @@ impl Run<'_> {
     }
 
     fn settle(&mut self) {
-        if self.result.outcome != Outcome::Sitemap {
+        // A visit the site's delay stopped has not seen what it would judge by.
+        if self.result.outcome != Outcome::Sitemap || self.result.paced {
             return;
         }
         let updates = &self.result.sitemaps;
@@ -1576,6 +1620,11 @@ impl Run<'_> {
                         self.result.www_only = Some(self.www_only);
                         return Some(answer);
                     }
+                    // The site's delay holds the next try back past this visit: no verdict, the next visit tries again.
+                    Err(error) if error == PACED => {
+                        self.result.paced = true;
+                        return None;
+                    }
                     Err(error) => last = error,
                 }
                 if last.contains("DNS") {
@@ -1607,6 +1656,13 @@ impl Run<'_> {
         self.result.canonical_host = Some(target);
         self.stop(Outcome::Redirect, Some("redirect".into()));
         true
+    }
+
+    /// A site that asks for a delay gets none of the next visit's requests before its delay has passed since this one's last.
+    fn note_quiet(&mut self) {
+        if crawl_delay(self.result.crawl_delay) > 0.0 || self.result.paced {
+            self.result.quiet_until = self.pacer.next_at();
+        }
     }
 
     /// Leaves the host's clock for the next run on it, which may follow at once.
@@ -1649,7 +1705,9 @@ impl Run<'_> {
             if !net::public_host(&host) {
                 return Err("OSError".into());
             }
-            self.pacer.wait().await;
+            if !self.pacer.wait().await {
+                return Err(PACED.into());
+            }
             if let (None, Some(budget)) = (&permit, &budget) {
                 permit = Some(budget.take().await.map_err(|crash| crash.0)?);
             }
@@ -1687,7 +1745,7 @@ impl Run<'_> {
             let status = response.status().as_u16();
             if status == 429 || status == 503 {
                 let asked = retry_after(response.headers());
-                self.pacer.slow_to(Some((self.pacer.interval * 2.0).max(asked)));
+                self.pacer.slow_to(Some((self.pacer.interval * 2.0).max(asked).min(MAX_WAIT_IN_VISIT)));
             }
             if matches!(status, 301 | 302 | 303 | 307 | 308) {
                 for value in response.headers().get_all("set-cookie") {
@@ -1964,7 +2022,7 @@ fn is_html(answer: &Answer) -> bool {
 
 fn crawl_delay(value: Option<f64>) -> f64 {
     match value {
-        Some(delay) if delay.is_finite() && delay >= 0.0 => delay.min(MAX_CRAWL_DELAY),
+        Some(delay) if delay.is_finite() && delay >= 0.0 => delay,
         _ => 0.0,
     }
 }

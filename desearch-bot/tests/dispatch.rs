@@ -2515,11 +2515,15 @@ fn a_crawl_delay_sets_the_pages_an_hour_a_site_can_take() {
         record.insert("delay".into(), delay);
         record
     };
-    assert_eq!(desearch_bot::dispatch::delay_hourly(&record(Value::from(15.0))), Some(240));
-    assert_eq!(desearch_bot::dispatch::delay_hourly(&record(Value::from(1))), Some(3600));
-    assert_eq!(desearch_bot::dispatch::delay_hourly(&record(Value::from(600))), Some(60), "at most a minute apart, as the bot reads them");
-    assert_eq!(desearch_bot::dispatch::delay_hourly(&record(Value::from(0))), None);
-    assert_eq!(desearch_bot::dispatch::delay_hourly(&record(Value::Null)), None);
+    let rate = |delay: Value| desearch_bot::dispatch::delay_rate(&record(delay));
+    assert_eq!(rate(Value::from(15.0)), Some(240_000), "thousandths of a page an hour");
+    assert_eq!(rate(Value::from(1)), Some(3_600_000));
+    assert_eq!(rate(Value::from(600)), Some(6_000), "six an hour, however long the delay");
+    assert_eq!(rate(Value::from(43_200)), Some(83), "a twelfth of a page an hour, rounded down");
+    assert_eq!(rate(Value::from(7)), Some(514_285), "never rounded up past what the delay allows");
+    for garbage in [Value::from(0), Value::from(-5), Value::Null, Value::from("soon")] {
+        assert_eq!(rate(garbage.clone()), None, "{garbage}");
+    }
     let mut cap = HourlyCap::new(36_000);
     assert_eq!(cap.allowance_within("arxiv.org", 1000, 240, true), 1, "one page before a second pass, however many an hour");
     assert_eq!(cap.allowance_within("arxiv.org", 1000, 240, false), 100, "five minutes of 240 an hour is 20, held up to the floor of a hundred");
@@ -3045,4 +3049,76 @@ fn only_a_listed_subdomains_page_kept_off_its_parents_list_is_queued_again() {
     buckets.record_listing("example.com", 7, vec![page("example.com", "https://blog.example.com/b", 10)], 100).unwrap();
     buckets.record_listing("example.com", 7, vec![page("example.com", "https://blog.example.com/b", 20)], 200).unwrap();
     assert_eq!(ready("example.com"), 1, "a page on an unlisted subdomain is the parent's own, queued once");
+}
+
+
+/// Each send's time and size, from passes `every` seconds apart at a rate, with the cap restarted at `restart` as a restarted bot starts it.
+fn sends_at_rate(rate: u64, start: u32, every: u32, until: u32, restart: Option<u32>) -> Vec<(u32, u64)> {
+    let mut cap = HourlyCap::new(36_000);
+    let mut sends = Vec::new();
+    for at in (start..until).step_by(every as usize) {
+        if restart == Some(at) {
+            cap = HourlyCap::empty_at(36_000, at);
+        }
+        cap.pass_at(at);
+        let allowed = cap.allowance_at_rate("slow.com", at, rate, true);
+        if allowed > 0 {
+            cap.record("slow.com", at, allowed);
+            sends.push((at, allowed));
+        }
+    }
+    sends
+}
+
+#[test]
+fn a_ten_minute_delay_sends_at_most_six_an_hour_one_every_ten_minutes() {
+    let sends = sends_at_rate(6_000, 1_000_000, 20, 1_000_000 + 4 * 3_600, None);
+    assert!(sends.iter().all(|(_, n)| *n == 1), "one page at a time");
+    assert!(sends.windows(2).all(|pair| pair[1].0 - pair[0].0 >= 600), "{sends:?}");
+    for (at, _) in &sends {
+        let hour = sends.iter().filter(|(sent, _)| (*at..*at + 3_600).contains(sent)).count();
+        assert!(hour <= 6, "{hour} in the hour from {at}");
+    }
+    assert!(sends.len() >= 23, "and it does send them: {}", sends.len());
+}
+
+#[test]
+fn a_twelve_hour_delay_sends_one_page_each_twelve_hours_across_hours_and_restarts() {
+    let start = 1_000_000;
+    for restart in [None, Some(start + 30 * 3_600), Some(start + 12 * 3_600 + 600)] {
+        let sends = sends_at_rate(83, start, 300, start + 3 * 86_400, restart);
+        assert!(sends.iter().all(|(_, n)| *n == 1));
+        assert!(sends.windows(2).all(|pair| pair[1].0 - pair[0].0 >= 43_200), "{restart:?}: {sends:?}");
+        assert!((5..=6).contains(&sends.len()), "{restart:?}: {} in three days", sends.len());
+    }
+    let after = sends_at_rate(83, start, 300, start + 43_200, Some(start));
+    assert!(after.is_empty(), "a restart waits a whole delay before its first page");
+    assert!(sends_at_rate(0, start, 300, start + 86_400, None).is_empty(), "a delay too long to count sends nothing");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_site_asking_for_ten_minutes_between_requests_gets_six_an_hour_through_restarts() {
+    let dir = Dir::new("delay-long");
+    let buckets = Arc::new(known(&dir, &["example.com"]));
+    ask_for_a_delay(&buckets, "example.com", 600.0);
+    queue_pages(&buckets, "example.com", 100);
+    let start = 1_759_400_000;
+    let (api, mut fake) = fake_api(1, 0).await;
+    let mut dispatcher = Dispatcher::load(buckets.clone(), api, 1000, shares(50, 10), rules(), Arc::new(Progress::default())).await.unwrap();
+    let mut sends: Vec<u32> = Vec::new();
+    for at in (start..start + 3 * 3_600).step_by(30) {
+        if at == start + 5_010 {
+            let (api, restarted) = fake_api(1, 0).await;
+            dispatcher = Dispatcher::load(buckets.clone(), api, 1000, shares(50, 10), rules(), Arc::new(Progress::default())).await.unwrap().paced_from(0, at);
+            fake = restarted;
+        }
+        let before = sent_to(&fake, "example.com");
+        dispatcher.pass(at).await.unwrap();
+        sends.extend((before..sent_to(&fake, "example.com")).map(|_| at));
+    }
+    assert!(sends.windows(2).all(|pair| pair[1] - pair[0] >= 600), "{sends:?}");
+    for at in &sends {
+        assert!(sends.iter().filter(|sent| (*at..*at + 3_600).contains(sent)).count() <= 6);
+    }
+    assert!(sends.len() >= 14, "{} sends in three hours", sends.len());
 }

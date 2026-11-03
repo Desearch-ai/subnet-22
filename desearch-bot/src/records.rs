@@ -16,6 +16,14 @@ pub fn int(value: Option<&Value>) -> Option<i64> {
     value.as_i64().or_else(|| value.as_f64().map(|f| f as i64))
 }
 
+/// When a site that asks for a delay may next be asked, after a visit at `now` whose requests are not known, in microseconds.
+pub fn quiet_after(delay: Option<f64>, now: i64) -> i64 {
+    match delay.filter(|delay| delay.is_finite() && *delay > 0.0) {
+        Some(delay) => now.saturating_add((delay * SECOND as f64).min(i64::MAX as f64) as i64),
+        None => now,
+    }
+}
+
 /// A stored Unix timestamp as epoch microseconds.
 pub fn moment(value: Option<&Value>) -> Option<i64> {
     int(value).map(|seconds| seconds * SECOND)
@@ -66,7 +74,8 @@ pub fn reset_for_recheck(record: &mut Json, now_micros: i64) {
     record.insert("state".into(), State::New.as_str().into());
     record.insert("reason".into(), Value::Null);
     record.insert("failures".into(), 0.into());
-    record.insert("due".into(), seconds(Some(now_micros)));
+    let quiet = int(record.get("quiet")).map_or(0, |quiet| quiet * SECOND);
+    record.insert("due".into(), seconds(Some(now_micros.max(quiet))));
     record.remove("lang");
 }
 
@@ -90,6 +99,8 @@ pub fn known(host: &str, domain: &Json, sitemaps: &[(String, Json)]) -> Option<K
             .unwrap_or_default(),
         sitemaps: sitemaps.iter().filter_map(|(url, record)| Some((url.clone(), known_sitemap(url, record)?))).collect(),
         canonical_host: text(domain.get("canonical")),
+        reason: text(domain.get("reason")),
+        paced: domain.get("paced").and_then(Value::as_bool) == Some(true),
         www_only: domain.get("www").and_then(Value::as_bool).unwrap_or(false),
         links_refused: int(domain.get("links_status")).and_then(|status| u16::try_from(status).ok()).zip(moment(domain.get("links_status_at"))),
     })
@@ -161,6 +172,9 @@ pub fn written_domain(previous: &Json, write: &DomainWrite, url_count: i64) -> J
     if !visit.links_only {
         record.insert("due".into(), seconds(write.next_due_at));
     }
+    if let Some(quiet) = visit.quiet_until {
+        record.insert("quiet".into(), quiet.div_euclid(SECOND).saturating_add(1).into());
+    }
     if visit.robots_read {
         record.insert("robots".into(), seconds(Some(write.checked_at)));
         record.insert("robots_status".into(), visit.robots_status.into());
@@ -180,6 +194,11 @@ pub fn written_domain(previous: &Json, write: &DomainWrite, url_count: i64) -> J
     // Link work alone leaves the domain's standing and due time as they were.
     if visit.links_only {
         return record;
+    }
+    if visit.paced {
+        record.insert("paced".into(), true.into());
+    } else {
+        record.remove("paced");
     }
     record.insert("state".into(), write.state.as_str().into());
     record.insert("reason".into(), write.reason.clone().into());

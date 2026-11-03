@@ -158,3 +158,19 @@ fn off_mode_schedules_each_case_as_round_a_did() {
     ];
     assert_eq!(got, round_a);
 }
+
+#[test]
+fn a_visit_a_crawl_delay_stopped_decides_nothing_and_comes_back_after_the_delay() {
+    let mut rng = rand::rngs::StdRng::seed_from_u64(7);
+    for state in ["new", "active", "no_sitemap"] {
+        let mut record = json!({"state": state, "failures": 2, "reason": "TimeoutError", "categories": []});
+        record["ok"] = 1_700_000_000.into();
+        let known = records::known("a.test", record.as_object().unwrap(), &[]).unwrap();
+        let visit = Visit { paced: true, quiet_until: Some(NOW + 600 * SECOND), deferred: vec![("http://a.test/more.xml".into(), 1, None)], requests: 1, ..Visit::new("a.test") };
+        let write = plan(&known, visit, NOW, &mut rng);
+        assert_eq!((write.state, write.failures, write.reason.as_deref()), (known.state, 2, Some("TimeoutError")), "{state}");
+        assert!(write.next_due_at.unwrap() >= NOW + 600 * SECOND && !write.backlog, "{state}: sitemaps left for later wait for the delay too");
+    }
+    let known = records::known("a.test", json!({"state": "active", "delay": 43_200.0, "categories": []}).as_object().unwrap(), &[]).unwrap();
+    assert!(desearch_bot::crawl::crashed(&known, "StoreError", NOW).next_due_at.unwrap() >= NOW + 43_200 * SECOND, "a crash retries after the delay, not the hour");
+}

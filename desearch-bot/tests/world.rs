@@ -2616,3 +2616,74 @@ async fn a_refusal_a_link_run_drew_ends_link_work_only_while_it_holds() {
         assert_eq!(ran, runs, "{host}: a {status} from {} days ago", ago / 86_400);
     }
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_site_asking_for_a_long_delay_gets_its_next_request_on_a_visit_after_the_delay_and_no_verdict_meanwhile() {
+    let web: Shared = Arc::default();
+    let host = "slow.test";
+    {
+        let mut w = web.lock().unwrap();
+        w.add(host, "/robots.txt", 200, None, format!("User-agent: *\nCrawl-delay: 600\nSitemap: http://{host}/list.xml\n").as_bytes());
+        w.add(host, "/list.xml", 200, None, urlset(host, &(0..12).map(|i| format!("/story/{i}")).collect::<Vec<_>>()).as_bytes());
+        w.add(host, "/", 200, None, format!("<html lang=\"en\"><p>{ENGLISH}</p></html>").as_bytes());
+    }
+    let started = chrono::Utc::now().timestamp();
+    let hosts = [host];
+    let visit = tokio::time::timeout(Duration::from_secs(30), crawl_prepared(web.clone(), &hosts, "slow-delay", |_| {}));
+    let (buckets, mut crawl) = visit.await.expect("a long delay ends the visit, it never waits it out");
+    let record = buckets.store(host).domain(host).unwrap().unwrap();
+    assert_eq!((record["state"].as_str(), record["delay"].as_f64(), record["paced"].as_bool()), (Some("new"), Some(600.0), Some(true)), "no verdict from a visit the delay stopped");
+    assert!(record["quiet"].as_i64().unwrap() >= started + 600 && record["due"].as_i64().unwrap() >= started + 600);
+    let hits: Vec<String> = web.lock().unwrap().hits.iter().filter(|(h, _, _)| h == host).map(|(_, p, _)| p.clone()).collect();
+    assert_eq!(hits, ["/robots.txt"], "robots.txt asked for ten minutes between requests");
+    assert_eq!(crawl.step().await.unwrap(), 0, "not due again before the delay has passed");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_visit_after_a_delay_goes_on_from_where_the_last_one_stopped() {
+    let web: Shared = Arc::default();
+    let host = "slower.test";
+    let list = format!("http://{host}/list.xml");
+    {
+        let mut w = web.lock().unwrap();
+        w.add(host, "/robots.txt", 200, None, format!("User-agent: *\nCrawl-delay: 43200\nSitemap: {list}\n").as_bytes());
+        w.add(host, "/list.xml", 200, None, urlset(host, &(0..12).map(|i| format!("/story/{i}")).collect::<Vec<_>>()).as_bytes());
+        w.add(host, "/", 200, None, format!("<html lang=\"en\"><p>{ENGLISH}</p></html>").as_bytes());
+    }
+    let now = chrono::Utc::now().timestamp();
+    let started = std::time::Instant::now();
+    let (buckets, _crawl) = crawl_prepared(web.clone(), &[host], "slower-delay", |buckets| {
+        let mut record = records::new_domain(Some(1), Some("new_generic"), &[], State::New, None, Some(0));
+        for (name, value) in [("robots", serde_json::json!(now - 43_300)), ("robots_status", 200.into()), ("allows", true.into()), ("delay", 43_200.0.into()), ("paced", true.into())] {
+            record.insert(name.into(), value);
+        }
+        let mut changes = Changes::default();
+        changes.domain(host, &record);
+        changes.sitemap(host, &list, serde_json::json!({"id": sitemap_id(&list), "depth": 0, "next": 0}).as_object().unwrap());
+        buckets.store(host).write(changes).unwrap();
+    })
+    .await;
+    assert!(started.elapsed() < Duration::from_secs(20), "a twelve-hour delay holds no visit slot");
+    let record = buckets.store(host).domain(host).unwrap().unwrap();
+    let hits: Vec<String> = web.lock().unwrap().hits.iter().filter(|(h, _, _)| h == host).map(|(_, p, _)| p.clone()).collect();
+    assert_eq!(hits, ["/list.xml"], "robots.txt read on the day stands; the sitemap is the one request, the homepage waits");
+    assert_eq!(buckets.store(host).sitemap(host, &list).unwrap().unwrap()["status"].as_str(), Some("ok"));
+    assert_eq!((record["state"].as_str(), record["paced"].as_bool()), (Some("new"), Some(true)));
+    assert!(record["due"].as_i64().unwrap() >= now + 43_200, "the next request waits its twelve hours");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_crawl_delay_that_is_not_a_number_paces_nothing() {
+    let web: Shared = Arc::default();
+    let host = "garbled.test";
+    {
+        let mut w = web.lock().unwrap();
+        w.add(host, "/robots.txt", 200, None, format!("User-agent: *\nCrawl-delay: soon\nSitemap: http://{host}/list.xml\n").as_bytes());
+        w.add(host, "/list.xml", 200, None, urlset(host, &(0..12).map(|i| format!("/story/{i}")).collect::<Vec<_>>()).as_bytes());
+        w.add(host, "/", 200, None, format!("<html lang=\"en\"><p>{ENGLISH}</p></html>").as_bytes());
+    }
+    let buckets = visit_once(web, &[host], &[], "garbled-delay").await;
+    let record = buckets.store(host).domain(host).unwrap().unwrap();
+    assert_eq!((record["state"].as_str(), record["urls"].as_i64()), (Some("active"), Some(12)));
+    assert!(record["delay"].is_null() && record.get("paced").is_none() && record.get("quiet").is_none());
+}
