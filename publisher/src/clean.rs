@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{BufReader, BufWriter, ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock};
 use std::time::SystemTime;
 
 use anyhow::{bail, Context, Result};
@@ -29,6 +29,7 @@ pub const MIN_CHARS: usize = 1000;
 pub const RECORD_PAIRS: usize = 3;
 pub const NAV_TYPES: [&str; 3] = ["home", "landing", "listing"];
 pub const ERROR_TEXT_CHARS: usize = 3000;
+pub const ERROR_TITLE_CHARS: usize = 600;
 pub const STORE: &str = "templates-store.tpl";
 pub const RECENT: &str = "templates-recent.tpl";
 
@@ -45,9 +46,10 @@ static LABEL_VALUE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(?:[-*+•]
 static SEPARATOR: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\|?[ \t:|-]+\|?$").unwrap());
 static ERROR_TITLE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(concat!(
-        r"(?i)^(?:404\b.*|(?:page )?not found|error(?: \d{3})?|an error (?:has )?occurred|access denied|forbidden",
-        r"|just a moment|attention required|are you a (?:human|robot)\??|security check",
-        r"|site (?:is )?(?:under )?maintenance|under construction|coming soon)$",
+        r"(?i)^(?:404(?: error)?(?: ?[-:|–]? ?(?:page )?not found)?|(?:page )?not found|error(?: \d{3})?",
+        r"|an error (?:has )?occurred|access denied|forbidden|just a moment|attention required",
+        r"|are you a (?:human|robot)\??|security check|site (?:is )?(?:under )?maintenance",
+        r"|under construction|coming soon)$",
     ))
     .unwrap()
 });
@@ -59,23 +61,27 @@ static ERROR_TEXT: LazyLock<Regex> = LazyLock::new(|| {
     ))
     .unwrap()
 });
-static UTILITY_PATH: LazyLock<Regex> = LazyLock::new(|| {
+static UTILITY_SEGMENT: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(concat!(
-        r"(?i)^/legal(?:/|\.html?)?$|(?:^|/)(?:privacy(?:[-_]?(?:policy|notice|statement|settings))?",
+        r"(?i)^(?:privacy(?:[-_]?(?:policy|notice|statement|settings))?",
         r"|cookies?(?:[-_]?(?:policy|notice|settings|preferences))?",
         r"|terms(?:[-_](?:of[-_])?(?:use|service|services|and[-_]conditions|conditions))?|tos|terms-?conditions",
-        r"|legal[-_]notice|login|log-in|signin|sign-in|sign_in|wp-login\.php|logout",
+        r"|legal(?:[-_]notice)?|login|log-in|signin|sign-in|sign_in|wp-login\.php|logout",
         r"|register|registration|signup|sign-up|account|my-?account|cart|basket|checkout",
-        r")(?:/|\.html?|\.php|\.aspx?)?$",
+        r")(?:\.html?|\.php|\.aspx?)?$",
     ))
     .unwrap()
 });
+static LOCALE_SEGMENT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^[a-z]{2}(?:[-_][a-z]{2})?$").unwrap());
+/// The parents a utility page may sit under, besides a locale.
+const UTILITY_PARENTS: [&str; 18] =
+    ["legal", "policies", "policy", "help", "about", "info", "company", "site", "support", "account", "accounts", "user", "users", "customer", "my", "pages", "p", "page"];
 static UTILITY_QUERY: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)(?:^|&)(?:attachment_id|print|share)=").unwrap());
 static UTILITY_TITLE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(concat!(
-        r"(?i)^(?:privacy(?: policy| notice| statement)?|cookies?(?: policy| notice| settings)",
-        r"|terms(?: of (?:use|service)| and conditions| & conditions)|legal notice",
-        r"|log ?in|sign ?in|sign ?up|register|create (?:an )?account|my account|(?:shopping )?cart|checkout)$",
+        r"(?i)^(?:privacy (?:policy|notice|statement)|cookies? (?:policy|notice|settings)",
+        r"|terms of (?:use|service)|terms (?:and|&) conditions|legal notice",
+        r"|log ?in|sign ?in|sign ?up|create (?:an )?account|my account|shopping cart)$",
     ))
     .unwrap()
 });
@@ -338,21 +344,30 @@ pub fn junk(url: &str, title: &str, text: &str) -> Option<&'static str> {
     let title = py_strip(title);
     let head = py_strip(TITLE_SEP.find(title).map_or(title, |m| &title[..m.start()])).trim_matches([' ', '.', '!']);
     let head = dotted_i(head);
-    if ERROR_TITLE.is_match(&head) || (text.chars().nth(ERROR_TEXT_CHARS - 1).is_none() && ERROR_TEXT.is_match(&dotted_i(text))) {
+    let chars = text.chars().take(ERROR_TEXT_CHARS).count();
+    if chars < ERROR_TEXT_CHARS && ERROR_TEXT.is_match(&dotted_i(text)) {
+        return Some("error");
+    }
+    if chars < ERROR_TITLE_CHARS && ERROR_TITLE.is_match(&head) {
         return Some("error");
     }
     let (path, query) = path_query(url);
-    let path = match path.trim_end_matches('/') {
-        "" => "/",
-        path => path,
-    };
-    if UTILITY_PATH.is_match(&dotted_i(path)) || (!query.is_empty() && UTILITY_QUERY.is_match(&dotted_i(&query))) {
+    if utility_path(&path) || (!query.is_empty() && UTILITY_QUERY.is_match(&dotted_i(&query))) {
         return Some("utility");
     }
     if UTILITY_TITLE.is_match(&head) {
         return Some("utility");
     }
     None
+}
+
+/// A utility page's path: its segment alone, or under a locale or a site-section parent.
+fn utility_path(path: &str) -> bool {
+    let parts: Vec<&str> = path.split('/').filter(|part| !part.is_empty()).collect();
+    if parts.is_empty() || parts.len() > 2 || !UTILITY_SEGMENT.is_match(&dotted_i(parts[parts.len() - 1])) {
+        return false;
+    }
+    parts.len() == 1 || LOCALE_SEGMENT.is_match(&dotted_i(parts[0])) || UTILITY_PARENTS.contains(&parts[0].to_lowercase().as_str())
 }
 
 struct Entry {
@@ -467,20 +482,27 @@ pub fn write(path: &Path, tables: &BTreeMap<String, Table>) -> Result<()> {
     fs::rename(&tmp, path).with_context(|| format!("renaming {} to {}", tmp.display(), path.display()))
 }
 
+#[derive(Clone)]
 struct Loaded {
-    stamp: (Option<SystemTime>, u64),
-    file: TableFile,
+    stamp: Stamp,
+    file: Arc<TableFile>,
 }
 
+type Stamp = (Option<SystemTime>, u64);
+
 /// The store and recent table files in a directory, read again when either changes; a file that fails to read leaves the one before it.
+/// The store and recent table files of a directory; a clone shares the files read.
+#[derive(Clone)]
 pub struct Tables {
     dir: PathBuf,
     files: [Option<Loaded>; 2],
+    /// A file that failed to read, not read again until it changes.
+    failed: [Option<Stamp>; 2],
 }
 
 impl Tables {
     pub fn open(dir: impl Into<PathBuf>) -> Tables {
-        let mut tables = Tables { dir: dir.into(), files: [None, None] };
+        let mut tables = Tables { dir: dir.into(), files: [None, None], failed: [None, None] };
         tables.reload();
         tables
     }
@@ -488,7 +510,7 @@ impl Tables {
     /// Reads each file again whose modified time or size changed; whether any table changed.
     pub fn reload(&mut self) -> bool {
         let mut changed = false;
-        for (slot, name) in self.files.iter_mut().zip([STORE, RECENT]) {
+        for ((slot, failed), name) in self.files.iter_mut().zip(self.failed.iter_mut()).zip([STORE, RECENT]) {
             let path = self.dir.join(name);
             let meta = match fs::metadata(&path) {
                 Ok(meta) => meta,
@@ -502,15 +524,18 @@ impl Tables {
                 }
             };
             let stamp = (meta.modified().ok(), meta.len());
-            if slot.as_ref().is_some_and(|loaded| loaded.stamp == stamp) {
+            if slot.as_ref().is_some_and(|loaded| loaded.stamp == stamp) || *failed == Some(stamp) {
                 continue;
             }
             match TableFile::read(&path) {
                 Ok(file) => {
-                    *slot = Some(Loaded { stamp, file });
-                    changed = true;
+                    *slot = Some(Loaded { stamp, file: Arc::new(file) });
+                    (*failed, changed) = (None, true);
                 }
-                Err(e) => eprintln!("warning: template table {} not read: {e:#}", path.display()),
+                Err(e) => {
+                    *failed = Some(stamp);
+                    eprintln!("warning: template table {} not read: {e:#}", path.display());
+                }
             }
         }
         changed
@@ -584,9 +609,10 @@ mod tests {
         assert_eq!(junk("https://a.com/x", "LOGİN", ""), Some("utility"));
         assert_eq!(junk("https://a.com/x", "ſign ın | Shop", ""), Some("utility"));
         assert_eq!(junk("https://a.com/x", "Sign in\x1f-\x1fFan Club", ""), Some("utility"));
-        assert_eq!(junk(" \x01https://a.com/se\tttings/acc\nount/?x#print=1", "", ""), Some("utility"));
+        assert_eq!(junk(" \x01https://a.com/he\tlp/acc\nount/?x#print=1", "", ""), Some("utility"));
+        assert_eq!(junk(" \x01https://a.com/se\tttings/acc\nount/?x#print=1", "", ""), None);
         assert_eq!(junk("https://a.com/p#?print=1", "", ""), None);
-        assert_eq!(junk("a.com/cart", "", ""), Some("utility"));
+        assert_eq!(junk("a.com/cart", "", ""), None);
         assert_eq!(path_query("https://a.com"), (String::new(), String::new()));
         assert_eq!(junk("https://a.com/a", "", &format!("{} enable javascript and cookies", "é".repeat(2980))), None);
         assert_eq!(junk("https://a.com/a", "", &format!("{} enable javascript and cookies", "é".repeat(2960))), Some("error"));

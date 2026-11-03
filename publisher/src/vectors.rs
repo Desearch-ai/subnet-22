@@ -248,7 +248,7 @@ mod tests {
             seq: 0,
             task_id: String::new(),
             source: crate::planner::Source::Replan,
-            stripped: 0,
+            stripped: None,
         }
     }
 

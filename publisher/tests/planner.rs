@@ -18,7 +18,7 @@ use publisher::changes::{self, Body, Change, Kind};
 use publisher::clean;
 use publisher::current::{self, FileRef, Manifest, PageRow, Withdrawals, BULK_ORDER};
 use publisher::planner::{
-    page_text, page_text_v2, passages, passages_v2, push_input, texts, Listed, Passage, Planner, Room, Settings, EMBED_DROPPED, EMBED_INPUTS, PAGE, PAPER,
+    page_text, page_text_v2, passages, passages_v2, push_input, texts, Cleaned, Listed, Passage, Planner, Room, Settings, EMBED_DROPPED, EMBED_INPUTS, PAGE, PAPER,
     PASSAGE, RECIPE_V2,
 };
 use publisher::records::{iso, page_key, record_version, Record};
@@ -4202,10 +4202,15 @@ async fn a_page_is_embedded_without_its_site_s_template_lines_and_again_once_the
     planner.pass().await.unwrap();
     assert_eq!((planner.counts.planned, planner.counts.unchanged), (2, 1), "and only once");
     planner.flush().await.unwrap();
-    let pending = planner.state.pending().unwrap();
-    let entry: Value = serde_json::from_str(&pending.last().unwrap().1).unwrap();
-    let texts = input_texts(temp.get(entry["input_key"].as_str().unwrap()).await.unwrap());
-    assert!(texts[0].starts_with("A title\nParagraph 0") && !texts.iter().any(|t| t.contains("Most read")), "{texts:?}");
+    let mut pages_texts = Vec::new();
+    for (_, raw) in planner.state.pending().unwrap() {
+        let entry: Value = serde_json::from_str(&raw).unwrap();
+        pages_texts.push(input_texts(temp.get(entry["input_key"].as_str().unwrap()).await.unwrap())[0].clone());
+    }
+    pages_texts.sort();
+    assert_eq!(pages_texts.len(), 2);
+    assert!(pages_texts[0].starts_with("A title\n- Home") && pages_texts[1].starts_with("A title\nParagraph 0"), "{pages_texts:?}");
+    assert!(!pages_texts[1].contains("Most read"));
 
     let video = v2(record("https://news.example/video/2", &format!("{}\nWatch the mayor open the new bridge", NAV.join("\n")), "video", "en"));
     let video = Record { text: format!("{}\n{}", video.text, (0..8).map(|i| format!("Clip {i} of the day from the bridge")).collect::<Vec<_>>().join("\n")), ..video };
@@ -4261,6 +4266,24 @@ async fn the_backfill_embeds_again_only_stored_pages_whose_template_lines_change
         "the site with a table is read whole and planned again; the other site's pages are not read"
     );
     sweep(&mut planner, 3).await;
-    assert_eq!((planner.counts.backfill, planner.counts.planned, planner.counts.unchanged), (10, 7, 3), "a sweep after plans nothing again");
+    assert_eq!((planner.counts.backfill, planner.counts.planned), (7, 7), "a sweep after reads none of them whole again");
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_page_s_own_text_and_floor_are_read_as_the_indexer_reads_them() {
+    let golden: Value = serde_json::from_str(include_str!("clean-golden.json")).unwrap();
+    for case in golden["cases"].as_array().unwrap() {
+        let hexes = |name: &str| case[name].as_array().map(|hs| hs.iter().map(|h| h.as_str().unwrap()).collect::<Vec<_>>());
+        let table = hexes("static").zip(hexes("repeated")).map(|(statics, repeated)| clean::Table::from_hex(30, &statics, &repeated).unwrap());
+        let record = v2(Record {
+            title: case["title"].as_str().unwrap().into(),
+            text: case["text"].as_str().unwrap().into(),
+            page_type: case["page_type"].as_str().map(String::from),
+            ..record("https://news.example/x", "", "article", "en")
+        });
+        let cleaned = Cleaned::of(&record, table.as_ref().map(|table| table as &dyn clean::Levels));
+        assert_eq!(cleaned.body, case["body"].as_str().unwrap(), "{}", case["name"]);
+        assert_eq!(clean::thin(&cleaned.body, record.page_type.as_deref()), case["body_thin"].as_bool().unwrap(), "{}", case["name"]);
+    }
 }
