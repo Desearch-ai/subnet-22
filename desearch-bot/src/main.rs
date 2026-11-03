@@ -221,7 +221,7 @@ struct RunArgs {
     /// URLs one domain may send in an hour.
     #[arg(long, default_value_t = 2000)]
     per_domain_hourly: u64,
-    /// Seconds a miner may hold a task before fetching it: a site that asks for a delay gets its next page no sooner than its delay and this after its last.
+    /// Seconds added to each Crawl-delay between a site's sends, a margin on when miners fetch; 0 sends one page per delay.
     #[arg(long, default_value_t = dispatch::CLAIM_WINDOW)]
     claim_window: u32,
     /// Percent of each domain's sends kept for pages never sent, newest found first; what one lane leaves unused goes to the others.

@@ -41,8 +41,8 @@ const HOUR: u32 = 3600;
 /// Rates go in thousandths of a page an hour, and what a domain owes in an hour of them, so a site slower than a page an hour is paced exactly.
 pub const MILLI: u64 = 1000;
 const PAGE: u64 = HOUR as u64 * MILLI;
-/// How long a miner may hold a task before fetching its pages: a site that asks for a delay gets its next page no sooner than its delay and this after its last, so the fetches keep the delay wherever in their claims they fall.
-pub const CLAIM_WINDOW: u32 = 180;
+/// Seconds added to each Crawl-delay between a site's sends, for a margin on when miners fetch; none by default.
+pub const CLAIM_WINDOW: u32 = 0;
 const RANKS_SECONDS: Duration = Duration::from_secs(600);
 /// Domains a pass offers spare room to, going round the list from where the last pass stopped, so passes stay short.
 const FILL_WINDOW: usize = 2000;
@@ -249,8 +249,8 @@ pub struct HourlyCap {
     sent: HashMap<String, VecDeque<(u32, u64)>>,
     /// When every domain's saved share was empty, so a restart adds no burst to the hour before it; none starts them full.
     emptied: Option<u32>,
-    /// When each site that asks for a delay last sent; one not sent since a restart counts as sent at it.
-    spaced: HashMap<String, Option<u32>>,
+    /// For each site that asks for a delay, the time its sends so far have used up, one delay a page, and that delay.
+    spaced: HashMap<String, (u64, u64)>,
     /// When the last pass started, and the seconds since the one before it.
     last_pass: Option<u32>,
     gap: Option<u32>,
@@ -336,19 +336,24 @@ impl HourlyCap {
         held.saturating_sub(total).min(most.saturating_sub(owed) / PAGE)
     }
 
-    /// What a site that asks for a delay may send now: one page once `spacing` seconds have passed since its last, within its hourly rate.
+    /// A delayed site's pages now: one for each `spacing` seconds its sends have not used, saved back one pass gap and a page at most, counted from a restart, within its hourly rate.
     pub fn allowance_spaced(&mut self, domain: &str, now: u32, rate: u64, spacing: u32) -> u64 {
-        let emptied = self.emptied;
-        let last = *self.spaced.entry(domain.to_string()).or_insert(emptied);
-        if last.is_some_and(|last| u64::from(now) < u64::from(last) + u64::from(spacing)) {
+        if rate == 0 {
             return 0;
         }
-        self.allowance_at_rate(domain, now, rate, false).min(1)
+        // A listed rate slower than the delay spaces the pages by it instead.
+        let (now64, spacing) = (u64::from(now), u64::from(spacing.max(1)).max(PAGE.div_ceil(rate)));
+        let earliest = now64.saturating_sub(u64::from(self.gap.unwrap_or(0)) + spacing);
+        let start = self.emptied.map_or(earliest, |at| u64::from(at).max(earliest));
+        let used = self.spaced.entry(domain.to_string()).or_insert((start, spacing));
+        *used = (used.0.max(earliest), spacing);
+        let due = now64.saturating_sub(used.0) / spacing;
+        due.min(self.allowance_at_rate(domain, now, rate, false))
     }
 
     pub fn record(&mut self, domain: &str, now: u32, count: u64) {
-        if let Some(last) = self.spaced.get_mut(domain) {
-            *last = Some(last.map_or(now, |last| last.max(now)));
+        if let Some((used, spacing)) = self.spaced.get_mut(domain) {
+            *used = used.saturating_add(count.saturating_mul(*spacing));
         }
         self.sent.entry(domain.to_string()).or_default().push_back((now, count));
     }
@@ -603,7 +608,7 @@ pub struct Dispatcher {
     fillers_job: Option<tokio::task::JoinHandle<Result<Fillers>>>,
     /// The Crawl-delay each domain asks, in seconds, for the domains whose robots.txt names one.
     paced: HashMap<String, u32>,
-    /// Seconds a miner may hold a task, added to each delay so the fetches keep it.
+    /// Seconds added to each Crawl-delay between a site's sends.
     claim_window: u32,
     fill_resume: Option<(i64, String)>,
     /// Domains with no refresh to send now, until when they rest, and the domains whose stock ran out, for the stock keeper.
@@ -702,7 +707,7 @@ impl Dispatcher {
         self
     }
 
-    /// Space a delayed site's sends by its delay and this many seconds, the claim window, instead of `CLAIM_WINDOW`.
+    /// Space a delayed site's sends by its delay and this many seconds more, instead of `CLAIM_WINDOW`.
     pub fn claim_window(mut self, seconds: u32) -> Self {
         self.claim_window = seconds;
         self
@@ -1924,7 +1929,7 @@ fn hourly_of(buckets: &Buckets, paced: &HashMap<String, u32>, limit: u64, domain
 }
 
 impl Dispatcher {
-    /// What a domain may send now at `rate`: for a site that asks for a delay, one page a delay and a claim window apart.
+    /// What a domain may send now at `rate`: for a site that asks for a delay, one page each delay and claim window.
     fn allowance(&mut self, domain: &str, now: u32, rate: u64, delay: Option<u32>) -> u64 {
         match delay {
             Some(delay) => self.cap.allowance_spaced(domain, now, rate, delay.saturating_add(self.claim_window)),
