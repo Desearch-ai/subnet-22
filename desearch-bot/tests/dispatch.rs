@@ -3200,6 +3200,8 @@ async fn a_restart_carries_a_delayed_sites_spacing_on_from_what_it_kept() {
 async fn passes_with_delayed_sites_stay_short() {
     let var = |name: &str, default: usize| std::env::var(name).ok().and_then(|n| n.parse().ok()).unwrap_or(default);
     let (fillers, delayed, ready) = (var("FILLERS", 20_000), var("DELAYED", 6_000), var("READY", 600));
+    // KEEPER=1 starts every refresh stock empty, chosen by the stock keeper as fill asks for it, as after a restart.
+    let (keeper, sent_pages) = (var("KEEPER", 0) == 1, var("SENT_PAGES", 10));
     let dir = Dir::new("delayed-passes");
     let hosts: Vec<String> = (0..fillers + ready).map(|i| format!("site{i}.example")).collect();
     let mut owned: Vec<usize> = hosts.iter().map(|h| bucket_of(h)).collect();
@@ -3221,13 +3223,15 @@ async fn passes_with_delayed_sites_stay_short() {
         changes.domain(host, &record);
         store.write(changes).unwrap();
         if i < fillers {
-            let pages = (0..10).map(|p| (urls::parse(&format!("https://{host}/page{p}"), host).unwrap(), 100, false)).collect();
+            let pages = (0..sent_pages).map(|p| (urls::parse(&format!("https://{host}/page{p}"), host).unwrap(), 100, false)).collect();
             store.record_listing(host, 1, pages, 100).unwrap();
             let mut quotas = [0; LANES];
-            quotas[FRESH] = 100;
+            quotas[FRESH] = sent_pages;
             store.mark_sent(&store.take_ready(host, quotas).unwrap(), 1000, &rules()).unwrap();
             store.note_outcomes(&[], &[(host.clone(), Yield { ok: 1000.0, failed: 10.0, at: later })]).unwrap();
-            store.stock_refresh(host, 1000, None, usize::MAX, &mut |_| true).unwrap();
+            if !keeper {
+                store.stock_refresh(host, 1000, None, usize::MAX, &mut |_| true).unwrap();
+            }
         } else {
             let pages = (0..200).map(|p| (urls::parse(&format!("https://{host}/new{p}"), host).unwrap(), 100 + p, false)).collect();
             store.record_listing(host, 1, pages, 100).unwrap();
@@ -3241,11 +3245,21 @@ async fn passes_with_delayed_sites_stay_short() {
     let progress = Arc::new(Progress::default());
     let api = TaskApi::new(&base, Hotkey::from_uri("//test").unwrap()).unwrap();
     let wanted = Arc::new(StockWanted::default());
-    let mut dispatcher = Dispatcher::load(buckets.clone(), api, 1_000_000, shares(50, 10), rules(), progress.clone()).await.unwrap().refreshing(wanted);
-    let mut totals = Vec::new();
-    for pass in 0..12 {
+    let mut dispatcher = Dispatcher::load(buckets.clone(), api, 1_000_000, shares(50, 10), rules(), progress.clone()).await.unwrap().refreshing(wanted.clone());
+    let stop = Arc::new(AtomicBool::new(false));
+    let keeping = keeper.then(|| {
+        let (buckets, wanted, progress, stop) = (buckets.clone(), wanted.clone(), progress.clone(), stop.clone());
+        std::thread::spawn(move || desearch_bot::dispatch::keep_stocks(&buckets, &wanted, 1_000_000, &progress, &stop).unwrap())
+    });
+    let (mut totals, mut sent_all) = (Vec::new(), 0);
+    for pass in 0..var("PASSES", 12) as u32 {
+        if keeper {
+            // The keeper chooses stocks in real time; a pass every 5 s, as in production.
+            tokio::time::sleep(std::time::Duration::from_millis(var("PASS_GAP_MS", 1_000) as u64)).await;
+        }
         let started = std::time::Instant::now();
         let sent = dispatcher.pass(later + 15 * pass).await.unwrap();
+        sent_all += sent;
         let took = started.elapsed().as_millis() as u64;
         let ms: Vec<u64> = progress.pass_ms.iter().map(|m| m.load(std::sync::atomic::Ordering::Relaxed)).collect();
         println!("pass {pass}: {sent} URLs in {took} ms (absorb {} ms, pick {} ms, send {} ms)", ms[0], ms[1], ms[2]);
@@ -3253,9 +3267,13 @@ async fn passes_with_delayed_sites_stay_short() {
             totals.push(took);
         }
     }
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    if let Some(keeping) = keeping {
+        keeping.join().unwrap();
+    }
     totals.sort_unstable();
     let median = totals[totals.len() / 2];
-    println!("median pass after the first two: {median} ms");
+    println!("median pass after the first two: {median} ms, {sent_all} URLs sent in all, {} stocks chosen", progress.stocked.load(std::sync::atomic::Ordering::Relaxed));
     if let Some(most) = std::env::var("PASS_MS_MAX").ok().and_then(|n| n.parse::<u64>().ok()) {
         assert!(median <= most, "a pass takes {median} ms, more than {most}");
     }
