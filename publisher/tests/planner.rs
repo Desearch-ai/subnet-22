@@ -1,6 +1,6 @@
 //! The planner: the texts a page gives, and the change log turned into embed inputs within the budget and the task API's room.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
@@ -15,9 +15,10 @@ use desearch::stub;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use publisher::backfill::ShardReader;
 use publisher::changes::{self, Body, Change, Kind};
+use publisher::clean;
 use publisher::current::{self, FileRef, Manifest, PageRow, Withdrawals, BULK_ORDER};
 use publisher::planner::{
-    page_text, page_text_v2, passages, passages_v2, push_input, texts, Listed, Passage, Planner, Room, Settings, EMBED_DROPPED, EMBED_INPUTS, PAGE, PAPER,
+    page_text, page_text_v2, passages, passages_v2, push_input, texts, Cleaned, Listed, Passage, Planner, Room, Settings, EMBED_DROPPED, EMBED_INPUTS, PAGE, PAPER,
     PASSAGE, RECIPE_V2,
 };
 use publisher::records::{iso, page_key, record_version, Record};
@@ -365,6 +366,7 @@ fn settings(dir: PathBuf, pages_per_hour: f64, start_after: i64) -> Settings {
         backfill_every: Duration::from_secs(3600),
         backfill_retry: Duration::from_secs(600),
         current_prefix: "current/".into(),
+        templates_dir: PathBuf::from("/nonexistent/templates"),
         poll: Duration::from_millis(10),
         hole_wait: Duration::from_secs(3600),
     }
@@ -948,6 +950,7 @@ async fn pages_dated_in_the_last_two_days_get_their_own_inputs_outside_the_budge
     let mut planner = Planner::new(two, pages.clone(), temp.clone(), redis.clone(), Room::Fixed(0)).await.unwrap();
     planner.pass().await.unwrap();
     assert_eq!((planner.counts.inputs, planner.counts.fresh), (1, 1), "c and d fill an input while f3 waits in the fresh lane");
+    nothing_banked(&planner);
     drop(planner);
     let mut serving = settings(dir.join("state"), 3600.0, 0);
     serving.budget_at_start = Duration::ZERO;
@@ -1047,8 +1050,8 @@ async fn the_backfill_plans_each_set_page_s_standing_v2_version_as_the_budget_al
     }
     assert_eq!(
         (restarted.counts.shards, restarted.state.backfill().unwrap(), restarted.state.backfill_class().unwrap()),
-        (2, Some((7, None)), Some(Class::RecentNews)),
-        "the shard is read through for the news site's class, then for the whole site's, and the next sweep starts over"
+        (2, Some((7, None)), Some(Class::Other)),
+        "each sweep reads the shard for every class, and the next sweep starts over"
     );
     assert_eq!((restarted.counts.planned, restarted.counts.unchanged), (3, 0), "it goes on after the page planned before the restart");
     let planned: HashMap<String, String> = restarted
@@ -2452,6 +2455,7 @@ async fn a_restart_plans_and_hands_over_at_the_hourly_pace_from_the_start() {
     let mut planner = Planner::new(full, pages.clone(), temp.clone(), redis.clone(), Room::Fixed(0)).await.unwrap();
     planner.pass().await.unwrap();
     assert_eq!(planner.counts.inputs, 6, "written while the API had no room");
+    nothing_banked(&planner);
     drop(planner);
 
     for seq in 7..=9 {
@@ -2541,6 +2545,13 @@ async fn six_held(dir: &std::path::Path, pages: &Bucket, temp: &Bucket, redis: &
     let mut planner = Planner::new(full, pages.clone(), temp.clone(), redis.clone(), Room::Fixed(0)).await.unwrap();
     planner.pass().await.unwrap();
     assert_eq!(planner.counts.inputs, 6);
+    nothing_banked(&planner);
+}
+
+/// Notes the planner's budgets as spent, as a planner stops whose log brings more than its budget.
+fn nothing_banked(planner: &Planner) {
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs_f64();
+    planner.state.keep_budgets(now, [0.0; 3]).unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -3106,7 +3117,7 @@ async fn the_log_s_pages_of_a_better_class_take_the_last_room_before_worse_ones_
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn the_backfill_sweeps_current_for_a_better_class_s_pages_before_a_worse_one_s() {
+async fn the_backfill_reads_every_class_s_pages_in_one_sweep_of_current() {
     let Some((_turn, redis)) = redis_db().await else {
         eprintln!("skipped: no Redis on {REDIS}");
         return;
@@ -3126,26 +3137,22 @@ async fn the_backfill_sweeps_current_for_a_better_class_s_pages_before_a_worse_o
     let rows: Vec<PageRow> = (0..2).flat_map(|n| [row(site_page("academic.example", n)), row(site_page("bench.example", n))]).collect();
     shard(&current, 7, vec![rows]).await;
     log(&pages, 1, vec![site_page("unlisted.example", 0)]).await;
-    // One page banked a pass's worth of time.
-    let mut slow = class_settings(&dir, &set, 30.0);
-    (slow.backfill, slow.backfill_shards, slow.pages_per_input) = (true, 7..8, 1);
-    let mut planner = Planner::new(slow, pages.clone(), temp.clone(), redis.clone(), Room::Fixed(0)).await.unwrap();
+    let mut backfilling = class_settings(&dir, &set, 3600.0);
+    (backfilling.backfill, backfilling.backfill_shards, backfilling.pages_per_input) = (true, 7..8, 1);
+    let mut planner = Planner::new(backfilling, pages.clone(), temp.clone(), redis.clone(), Room::Fixed(0)).await.unwrap();
     planner.current = Some(current.clone());
     for _ in 0..20 {
         planner.pass().await.unwrap();
-        if planner.counts.planned > 0 {
+        if planner.counts.shards > 0 {
             break;
         }
     }
-    let planned: Vec<String> = planner
-        .state
-        .pending()
-        .unwrap()
-        .iter()
-        .map(|(_, entry)| serde_json::from_str::<Value>(entry).unwrap()["pages"][0]["url"].as_str().unwrap().to_string())
-        .collect();
-    assert_eq!(planned.len(), 1);
-    assert!(planned[0].starts_with("https://bench.example/"), "the academic site's keys sort first, but its class is read after: {planned:?}");
+    assert_eq!(
+        (planner.counts.shards, planner.counts.planned_by_class[BENCH], planner.counts.planned_by_class[OTHER]),
+        (1, 2, 2),
+        "one read of the shard plans both classes' pages"
+    );
+    assert_eq!(planner.state.backfill_class().unwrap(), Some(Class::Other));
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -4156,4 +4163,129 @@ async fn a_page_naming_no_language_is_planned_from_the_log_and_the_backfill_when
         .collect();
     assert_eq!(planned, HashSet::from(["https://news.example/log/1".to_string(), "https://news.example/back/1".to_string()]), "English text with no language named; French text and a named French page stay out");
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+const NAV: [&str; 6] = ["- Home", "- World", "- Business", "- Sport", "## Most read", "Sign up for the morning newsletter today"];
+
+fn input_texts(file: Bytes) -> Vec<String> {
+    let mut texts = Vec::new();
+    for batch in ParquetRecordBatchReaderBuilder::try_new(file).unwrap().build().unwrap().map(Result::unwrap) {
+        texts.extend(batch.column_by_name("text").unwrap().as_string::<i64>().iter().map(|t| t.unwrap().to_string()));
+    }
+    texts
+}
+
+fn nav_table(dir: &std::path::Path) {
+    let hashes = NAV.iter().map(|line| clean::line_hash(&clean::line_key(line))).collect();
+    std::fs::create_dir_all(dir).unwrap();
+    clean::write(&dir.join(clean::STORE), &BTreeMap::from([("news.example".to_string(), clean::Table::new(30, hashes, Vec::new()))])).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_page_is_embedded_without_its_site_s_template_lines_and_the_log_never_plans_the_same_text_again_for_them() {
+    let Some((_turn, redis)) = redis_db().await else {
+        eprintln!("skipped: no Redis on {REDIS}");
+        return;
+    };
+    let dir = scratch("templates");
+    let stub = stub::start(dir.join("r2"), "127.0.0.1:0").await.unwrap();
+    let (pages, temp) = (bucket(stub.addr, "desearch-pages"), bucket(stub.addr, "subnet-22"));
+    let story = |n: usize| v2(record(&format!("https://news.example/story/{n}"), &format!("{}\n{}", NAV.join("\n"), article(2)), "article", "en"));
+    let settings = Settings { templates_dir: dir.join("templates"), ..settings(dir.join("state"), 3600.0, 0) };
+    log(&pages, 1, vec![story(1)]).await;
+    let mut planner = Planner::new(settings, pages.clone(), temp.clone(), redis.clone(), Room::Fixed(0)).await.unwrap();
+    planner.pass().await.unwrap();
+    planner.flush().await.unwrap();
+    assert_eq!(planner.counts.planned, 1, "with no table the page is planned whole");
+
+    nav_table(&dir.join("templates"));
+    log(&pages, 2, vec![story(1), story(2)]).await;
+    planner.pass().await.unwrap();
+    planner.flush().await.unwrap();
+    assert_eq!((planner.counts.planned, planner.counts.unchanged, planner.counts.restripped), (2, 1, 0), "the same text from the log waits for the backfill");
+    let mut pages_texts = Vec::new();
+    for (_, raw) in planner.state.pending().unwrap() {
+        let entry: Value = serde_json::from_str(&raw).unwrap();
+        let url = entry["pages"][0]["url"].as_str().unwrap().to_string();
+        pages_texts.push((url, input_texts(temp.get(entry["input_key"].as_str().unwrap()).await.unwrap())[0].clone()));
+    }
+    pages_texts.sort();
+    assert!(pages_texts[0].1.starts_with("A title\n- Home") && pages_texts[1].1.starts_with("A title\nParagraph 0"), "{pages_texts:?}");
+    assert!(!pages_texts[1].1.contains("Most read"));
+
+    let nav = NAV.join("\n");
+    let video = v2(record("https://news.example/video/2", &format!("{nav}\n{nav}\n{nav}\n{nav}\nWatch the bridge open"), "video", "en"));
+    let privacy = v2(record("https://news.example/privacy-policy", &article(3), "other", "en"));
+    log(&pages, 4, vec![video, privacy]).await;
+    planner.pass().await.unwrap();
+    assert_eq!((planner.counts.planned, planner.counts.thin, planner.counts.junk), (2, 1, 1));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Passes until the backfill has read `shards` shards in all, then saves what it buffered.
+async fn sweep(planner: &mut Planner, shards: u64) {
+    for _ in 0..50 {
+        planner.pass().await.unwrap();
+        if planner.counts.shards >= shards {
+            break;
+        }
+    }
+    planner.flush().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_backfill_embeds_again_only_stored_pages_whose_template_lines_changed_their_page_text() {
+    let Some((_turn, redis)) = redis_db().await else {
+        eprintln!("skipped: no Redis on {REDIS}");
+        return;
+    };
+    let dir = scratch("backfill-templates");
+    let stub = stub::start(dir.join("r2"), "127.0.0.1:0").await.unwrap();
+    let (pages, temp, current) = (bucket(stub.addr, "desearch-pages"), bucket(stub.addr, "subnet-22"), bucket(stub.addr, "desearch-current"));
+    let row = |url: &str, text: String| {
+        let record = Record { domain: page_key(url).unwrap().split('/').nth(1).unwrap().into(), ..v2(record(url, &text, "article", "en")) };
+        PageRow { key: page_key(url).unwrap(), removed: false, change_seq: 1, version: record_version(&record), published_at: record.fetched_at.clone(), record }
+    };
+    let mut rows: Vec<PageRow> = (0..3).map(|n| row(&format!("https://news.example/s/{n}"), format!("{}\n{n} {}", NAV.join("\n"), article(2)))).collect();
+    rows.push(row("https://news.example/long", format!("{}\n{}", NAV.join("\n"), article(40))));
+    rows.push(row("https://docs.example/guide", format!("{}\n{}", NAV.join("\n"), article(2))));
+    shard(&current, 7, vec![rows]).await;
+    log(&pages, 1, vec![v2(record("https://other.example/log", &article(2), "article", "en"))]).await;
+    let set = dir.join("v1-set.json");
+    std::fs::write(&set, json!({"sites": [{"host": "news.example", "rule": "whole"}, {"host": "docs.example", "rule": "whole"}]}).to_string()).unwrap();
+    let mut backfilling = Settings { templates_dir: dir.join("templates"), ..settings(dir.join("state"), 3600.0, 0) };
+    (backfilling.backfill, backfilling.backfill_shards, backfilling.set_file, backfilling.backfill_every) = (true, 7..8, Some(set.clone()), Duration::ZERO);
+    let mut planner = Planner::new(backfilling, pages.clone(), temp.clone(), redis.clone(), Room::Fixed(0)).await.unwrap();
+    planner.current = Some(current.clone());
+    sweep(&mut planner, 1).await;
+    assert_eq!((planner.counts.backfill, planner.counts.planned), (5, 5), "with no tables every page is planned whole");
+
+    nav_table(&dir.join("templates"));
+    sweep(&mut planner, 2).await;
+    assert_eq!(
+        (planner.counts.backfill, planner.counts.planned, planner.counts.restripped, planner.counts.unchanged),
+        (9, 8, 3, 1),
+        "the site with a table is read whole and planned again where its template lines change the page text; the other site's pages are not read"
+    );
+    sweep(&mut planner, 3).await;
+    assert_eq!((planner.counts.backfill, planner.counts.planned), (9, 8), "a sweep after reads none of them whole again");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_page_s_own_text_and_floor_are_read_as_the_indexer_reads_them() {
+    let golden: Value = serde_json::from_str(include_str!("clean-golden.json")).unwrap();
+    for case in golden["cases"].as_array().unwrap() {
+        let hexes = |name: &str| case[name].as_array().map(|hs| hs.iter().map(|h| h.as_str().unwrap()).collect::<Vec<_>>());
+        let table = hexes("static").zip(hexes("repeated")).map(|(statics, repeated)| clean::Table::from_hex(30, &statics, &repeated).unwrap());
+        let record = v2(Record {
+            title: case["title"].as_str().unwrap().into(),
+            text: case["text"].as_str().unwrap().into(),
+            page_type: case["page_type"].as_str().map(String::from),
+            ..record("https://news.example/x", "", "article", "en")
+        });
+        let cleaned = Cleaned::of(&record, table.as_ref().map(|table| table as &dyn clean::Levels));
+        assert_eq!(cleaned.body, case["body"].as_str().unwrap(), "{}", case["name"]);
+        assert_eq!(clean::thin(&cleaned.body, record.page_type.as_deref()), case["body_thin"].as_bool().unwrap(), "{}", case["name"]);
+    }
 }

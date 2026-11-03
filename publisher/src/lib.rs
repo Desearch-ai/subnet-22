@@ -5,6 +5,7 @@ pub mod blocked;
 pub mod build;
 pub mod bulk;
 pub mod changes;
+pub mod clean;
 pub mod compactor;
 pub mod current;
 pub mod index;
