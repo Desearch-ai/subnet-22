@@ -1731,6 +1731,33 @@ fn a_date_floor_leaves_older_pages_unsent_wherever_they_would_queue() {
 }
 
 #[test]
+fn a_site_listed_to_drain_has_its_new_page_lane_cleared_at_its_cap_without_a_walk() {
+    let dir = Dir::new("join-drain");
+    std::fs::create_dir_all(&dir.0).unwrap();
+    let path = dir.0.join("domains.json");
+    std::fs::write(&path, r#"[{"host": "example.com", "type": "news", "backlog": 100, "since": "2020-01-01"}]"#).unwrap();
+    let list = Allowed::from_file(&path).unwrap();
+    let buckets = known(&dir, &["example.com"]);
+    buckets.allow(&list);
+    let store = buckets.store("example.com");
+    store.record_listing("example.com", 7, (0..8).map(|i| page(&format!("p{i}"), LATE)).collect(), 100).unwrap();
+    let stop = std::sync::atomic::AtomicBool::new(false);
+    assert_eq!(desearch_bot::dispatch::join_round(&buckets, &list, 1_000_000, &Progress::default(), &stop).unwrap(), 1);
+    store.mark_sent(&take(store, 3), 200, &rules()).unwrap();
+    assert_eq!(store.ready_count("example.com").unwrap(), 5);
+
+    relist(&path, &list, r#"[{"host": "example.com", "type": "news", "weight": 1, "hourly": 0, "send_cap": 0, "since": "9999-12-31", "depth": 0}]"#);
+    let progress = Progress::default();
+    assert_eq!(desearch_bot::dispatch::join_round(&buckets, &list, 1_000_000, &progress, &stop).unwrap(), 1);
+    assert_eq!(store.ready_count("example.com").unwrap(), 0, "its waiting new pages are cleared");
+    assert_eq!(progress.capped_cleared.load(std::sync::atomic::Ordering::Relaxed), 5);
+    assert_eq!(progress.join_queued.load(std::sync::atomic::Ordering::Relaxed), 0, "no walk queues its stored pages again");
+    assert!(take(store, 10).is_empty());
+    assert_eq!(buckets.terms("example.com").hourly, Some(0));
+    assert_eq!(desearch_bot::dispatch::join_round(&buckets, &list, 1_000_000, &progress, &stop).unwrap(), 0, "once drained it is settled");
+}
+
+#[test]
 fn a_higher_floor_drops_older_pages_as_they_would_go_and_a_lower_floor_walks_the_domain_again() {
     let dir = Dir::new("join-floor-round");
     std::fs::create_dir_all(&dir.0).unwrap();
