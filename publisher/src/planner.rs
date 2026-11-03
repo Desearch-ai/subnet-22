@@ -29,6 +29,7 @@ use tokio::task::JoinHandle;
 
 use crate::backfill::{ShardReader, READ_BYTES_AT_ONCE};
 use crate::current::{decode_changes, ChangeRow, PageRow, BULK_ORDER, SHARDS};
+use crate::lang;
 use crate::records::{iso, parse_iso, Record, EXTRACTION_V2};
 use crate::service::now_us;
 use crate::set::{iso_date, url_date, Admitted, Class, Refusal, Set};
@@ -1484,6 +1485,8 @@ pub struct Counts {
     pub undated: u64,
     /// Such pages typed `article`, taken because the set's `undated` is `article`.
     pub undated_article_in: u64,
+    /// Such pages of a news site with `hubs`, taken as its hub pages.
+    pub undated_hub_in: u64,
     /// Pages of a news site dated before its `since`.
     pub before_since: u64,
     /// New pages of sites whose index cap is reached.
@@ -2398,7 +2401,8 @@ impl Planner {
                 // While the bulk lane is on, versions from bulk files it has yet to read are its own.
                 bulk_through.is_none_or(|through| row.change_seq >= 0 || row.change_seq - BULK_ORDER <= through)
                     && recipe_of(record).is_some_and(|recipe| PLANNED_RECIPES.contains(&recipe))
-                    && lang_wanted(&langs, &record.lang)
+                    // A page naming no language is read whole, and its text tells.
+                    && (lang_wanted(&langs, &record.lang) || record.lang.trim().is_empty())
                     && set.as_ref().is_none_or(|set| {
                         set.class(domain_of_key(&row.key)) <= class && set.admit(&record.url, &record.published, record.page_type.as_deref()).is_ok()
                     })
@@ -2618,8 +2622,10 @@ impl Planner {
             return Considered::Passed;
         }
         let waiting = self.still_waiting(&page);
-        if let Some(Ok(Admitted::UndatedArticle)) = admission {
-            self.counts.undated_article_in += 1;
+        match admission {
+            Some(Ok(Admitted::UndatedArticle)) => self.counts.undated_article_in += 1,
+            Some(Ok(Admitted::UndatedHub)) => self.counts.undated_hub_in += 1,
+            _ => {}
         }
         let cap = match self.listed.as_ref().filter(|_| self.set.is_none()) {
             None => None,
@@ -2805,7 +2811,7 @@ impl Planner {
     }
 
     fn admitted(&self, record: &Record) -> bool {
-        lang_wanted(&self.settings.langs, &record.lang) && record.text.chars().count() >= self.settings.min_chars
+        lang_wanted(&self.settings.langs, lang::page_lang(&record.lang, &record.text)) && record.text.chars().count() >= self.settings.min_chars
     }
 
     /// Whether the host or a domain it is under is on the exclusion list.

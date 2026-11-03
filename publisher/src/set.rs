@@ -1,6 +1,6 @@
 //! The v1 set: which pages belong in the index, site by site, as `v1-set.json` lists them for the crawl list builder, the planner and the indexer.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use anyhow::{anyhow, bail, Result};
 use desearch::time::{civil_from_days, days_from_civil};
@@ -9,22 +9,26 @@ use serde_json::Value;
 /// What the set takes of one site.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Rule {
-    /// Pages dated on or after `since`, an ISO date, or of any date without it, by `published` or a date in the URL path.
+    /// Pages dated on or after `since`, an ISO date, or of any date without it, by `published` or a date in the URL path; with `hubs`, its undated hub pages too.
     News {
         since: Option<String>,
+        hubs: bool,
     },
-    /// Every page, or every page under one of `paths`.
+    /// Every page, or every page under one of `paths`; with `own`, of the listed host itself only, never the hosts under it.
     Whole {
         paths: Vec<String>,
+        own: bool,
     },
     /// Pages from a bulk source, and the site's crawled pages too.
     Bulk,
-    /// The host's own homepage and first-level pages, never the hosts under it.
-    Landing,
+    /// The host's own homepage and pages at most `depth` levels down, never the hosts under it.
+    Landing {
+        depth: usize,
+    },
     Out,
 }
 
-/// Path levels a landing page has at most, a leading English locale (`/en-us/`) not counted.
+/// Path levels a landing page has at most unless its entry names a `depth`, a leading English locale (`/en-us/`) not counted.
 pub const LANDING_DEPTH: usize = 1;
 
 /// Why a page is left out.
@@ -61,9 +65,9 @@ impl Class {
         match rule {
             Rule::Out => Class::Other,
             _ if why.iter().any(|word| !BACKING.contains(word)) => Class::Benchmark,
-            Rule::Landing => Class::Landing,
-            Rule::News { since: None } => Class::News,
-            Rule::News { since: Some(_) } => Class::RecentNews,
+            Rule::Landing { .. } => Class::Landing,
+            Rule::News { since: None, .. } => Class::News,
+            Rule::News { since: Some(_), .. } => Class::RecentNews,
             _ if kind == Some("docs") => Class::Docs,
             _ if kind == Some("reference") => Class::Reference,
             _ => Class::Other,
@@ -88,6 +92,23 @@ pub enum Admitted {
     ByRule,
     /// A news page with no date at all, in as an article because the file's `undated` is `article`.
     UndatedArticle,
+    /// A news page with no date at all, in as a hub page of a site with `hubs`.
+    UndatedHub,
+}
+
+/// What makes an undated page a hub page, as the set file's `hub_pages` names it: its type, or a word of a path level.
+#[derive(Debug, Default)]
+struct HubPages {
+    types: Vec<String>,
+    words: HashSet<String>,
+}
+
+impl HubPages {
+    /// A page of a hub type, or one with a data word as a path level or as a word of one split at `-`, `_` and `.`, in ASCII lower case.
+    fn take(&self, path: &str, page_type: Option<&str>) -> bool {
+        page_type.is_some_and(|kind| self.types.iter().any(|hub| hub == kind))
+            || path.split('/').filter(|level| !level.is_empty()).map(str::to_ascii_lowercase).any(|level| self.words.contains(&level) || level.split(['-', '_', '.']).any(|word| self.words.contains(word)))
+    }
 }
 
 #[derive(Debug, Default)]
@@ -97,6 +118,8 @@ pub struct Set {
     sites: HashMap<String, (Rule, Class)>,
     /// Undated news pages typed `article` are in.
     undated_articles: bool,
+    /// Undated hub pages of news sites with `hubs` are in.
+    hub_pages: Option<HubPages>,
 }
 
 impl Set {
@@ -107,13 +130,33 @@ impl Set {
         for entry in entries {
             let host = entry["host"].as_str().map(host_of).filter(|host| !host.is_empty()).ok_or_else(|| anyhow!("a set entry without a host: {entry}"))?;
             let rule = match entry["rule"].as_str() {
-                Some("news") => match entry["since"].as_str() {
-                    None => Rule::News { since: None },
-                    Some(since) => Rule::News { since: Some(iso_date(since).ok_or_else(|| anyhow!("{host}: since {since:?} is not an ISO date"))?) },
+                Some("news") => {
+                    let since = match entry["since"].as_str() {
+                        None => None,
+                        Some(since) => Some(iso_date(since).ok_or_else(|| anyhow!("{host}: since {since:?} is not an ISO date"))?),
+                    };
+                    let hubs = match &entry["hubs"] {
+                        Value::Null => false,
+                        Value::Bool(hubs) => *hubs,
+                        other => bail!("{host}: hubs {other} is not true or false"),
+                    };
+                    Rule::News { since, hubs }
+                }
+                Some("whole") => Rule::Whole {
+                    paths: entry["paths"].as_array().into_iter().flatten().filter_map(Value::as_str).map(String::from).collect(),
+                    own: match &entry["own_host"] {
+                        Value::Null => false,
+                        Value::Bool(own) => *own,
+                        other => bail!("{host}: own_host {other} is not true or false"),
+                    },
                 },
-                Some("whole") => Rule::Whole { paths: entry["paths"].as_array().into_iter().flatten().filter_map(Value::as_str).map(String::from).collect() },
                 Some("bulk") => Rule::Bulk,
-                Some("landing") => Rule::Landing,
+                Some("landing") => Rule::Landing {
+                    depth: match &entry["depth"] {
+                        Value::Null => LANDING_DEPTH,
+                        depth => depth.as_u64().filter(|depth| *depth >= 1).and_then(|depth| usize::try_from(depth).ok()).ok_or_else(|| anyhow!("{host}: depth {depth} is not a whole number from 1"))?,
+                    },
+                },
                 Some("out") => Rule::Out,
                 other => bail!("{host}: unknown rule {other:?}"),
             };
@@ -126,7 +169,17 @@ impl Set {
             Some("article") => true,
             Some(other) => bail!("undated {other:?} is not article or out"),
         };
-        Ok(Set { built: file["built"].as_str().map(String::from), sites, undated_articles })
+        let hub_pages = match &file["hub_pages"] {
+            Value::Null => None,
+            found => {
+                let strings = |name: &str| -> Result<Vec<String>> {
+                    let values = found[name].as_array().ok_or_else(|| anyhow!("hub_pages has no list of {name}"))?;
+                    values.iter().map(|value| value.as_str().map(String::from).ok_or_else(|| anyhow!("hub_pages {name}: {value} is not a string"))).collect()
+                };
+                Some(HubPages { types: strings("types")?, words: strings("words")?.into_iter().collect() })
+            }
+        };
+        Ok(Set { built: file["built"].as_str().map(String::from), sites, undated_articles, hub_pages })
     }
 
     /// The listed host a host is, or is nearest under, and its rule.
@@ -160,17 +213,19 @@ impl Set {
         let (host, path) = split_url(url);
         let Some((listed, rule)) = self.site(host) else { return Err(Refusal::Unlisted) };
         match rule {
-            Rule::Landing if !own_host(host, listed) => Err(Refusal::Unlisted),
-            Rule::Landing if !landing_page(url) => Err(Refusal::OffPaths),
-            Rule::Landing => Ok(Admitted::ByRule),
+            Rule::Landing { .. } if !own_host(host, listed) => Err(Refusal::Unlisted),
+            Rule::Landing { depth } if !landing_page(url, *depth) => Err(Refusal::OffPaths),
+            Rule::Landing { .. } => Ok(Admitted::ByRule),
             Rule::Out => Err(Refusal::Unlisted),
-            Rule::News { since } => match page_date(published, url) {
+            Rule::News { since, hubs } => match page_date(published, url) {
                 None if self.undated_articles && page_type == Some("article") => Ok(Admitted::UndatedArticle),
+                None if *hubs && self.hub_pages.as_ref().is_some_and(|hub_pages| hub_pages.take(path, page_type)) => Ok(Admitted::UndatedHub),
                 None => Err(Refusal::Undated),
                 Some(date) if since.as_ref().is_some_and(|since| date < *since) => Err(Refusal::BeforeSince),
                 Some(_) => Ok(Admitted::ByRule),
             },
-            Rule::Whole { paths } if !paths.is_empty() && !paths.iter().any(|prefix| path.starts_with(prefix.as_str())) => Err(Refusal::OffPaths),
+            Rule::Whole { own: true, .. } if !own_host(host, listed) => Err(Refusal::Unlisted),
+            Rule::Whole { paths, .. } if !paths.is_empty() && !paths.iter().any(|prefix| path.starts_with(prefix.as_str())) => Err(Refusal::OffPaths),
             Rule::Whole { .. } | Rule::Bulk => Ok(Admitted::ByRule),
         }
     }
@@ -199,8 +254,8 @@ fn own_host(host: &str, listed: &str) -> bool {
     host == listed || host.strip_prefix("m.") == Some(listed)
 }
 
-/// A homepage or first-level page with no query; a leading English locale (`en`, `en-us`) is no level, and a page under another locale (`de-de`) is none.
-pub fn landing_page(url: &str) -> bool {
+/// A homepage or a page at most `depth` levels down with no query; a leading English locale (`en`, `en-us`) is no level, and a page under another locale (`de-de`) is none.
+pub fn landing_page(url: &str, depth: usize) -> bool {
     let rest = url.split_once("://").map_or(url, |(_, rest)| rest);
     let rest = &rest[..rest.find('#').unwrap_or(rest.len())];
     let (rest, query) = rest.split_once('?').unwrap_or((rest, ""));
@@ -212,7 +267,7 @@ pub fn landing_page(url: &str) -> bool {
         Some(first) if locale(first) => return false,
         _ => {}
     }
-    query.is_empty() && levels.count() <= LANDING_DEPTH
+    query.is_empty() && levels.count() <= depth
 }
 
 /// Two letters, `-` or `_`, two letters: `en-us`, `de_DE`.
@@ -344,8 +399,43 @@ mod tests {
         assert_eq!(landing.admit("https://www.vendor.example/en_GB/about", "", None), Ok(Admitted::ByRule));
         assert_eq!(landing.admit("https://vendor.example/products/gpu", "", None), Err(Refusal::OffPaths));
         assert_eq!(landing.admit("https://shop.vendor.example/", "", None), Err(Refusal::Unlisted), "landing takes its own host only");
-        assert!(!landing_page("https://vendor.example/fr-fr/") && !landing_page("https://vendor.example?p=1") && landing_page("https://vendor.example/a#b?c"));
+        assert!(!landing_page("https://vendor.example/fr-fr/", 1) && !landing_page("https://vendor.example?p=1", 1) && landing_page("https://vendor.example/a#b?c", 1));
         assert!(Set::parse(br#"{"sites": [{"host": "a.example", "rule": "news", "since": "soon"}]}"#).is_err());
+    }
+
+    #[test]
+    fn a_landing_entry_may_go_deeper_and_an_established_outlet_gives_its_undated_hub_pages() {
+        let set = Set::parse(
+            br#"{"hub_pages": {"types": ["home", "listing"], "words": ["scoreboard", "table"]}, "sites": [
+                {"host": "deep.example", "rule": "landing", "depth": 3},
+                {"host": "outlet.example", "rule": "news", "hubs": true},
+                {"host": "plain.example", "rule": "news"}
+            ]}"#,
+        )
+        .unwrap();
+        assert_eq!(set.admit("https://deep.example/a/b/c", "", None), Ok(Admitted::ByRule));
+        assert_eq!(set.admit("https://deep.example/a/b/c/d", "", None), Err(Refusal::OffPaths));
+        assert_eq!(set.admit("https://outlet.example/world/", "", Some("listing")), Ok(Admitted::UndatedHub));
+        assert_eq!(set.admit("https://outlet.example/NFL/Scoreboard?week=9", "", Some("other")), Ok(Admitted::UndatedHub));
+        assert_eq!(set.admit("https://outlet.example/premier-league-table", "", None), Ok(Admitted::UndatedHub));
+        assert_eq!(set.admit("https://outlet.example/tabletop", "", None), Err(Refusal::Undated));
+        assert_eq!(set.admit("https://plain.example/world/", "", Some("listing")), Err(Refusal::Undated), "no hubs, no hub pages");
+        let own = Set::parse(br#"{"sites": [{"host": "mag.example", "rule": "whole", "own_host": true}, {"host": "nulls.example", "rule": "landing", "depth": null, "hubs": null, "own_host": null}]}"#).unwrap();
+        assert_eq!(own.admit("https://www.mag.example/reviews/a/b/c/d?x=1", "", None), Ok(Admitted::ByRule));
+        assert_eq!(own.admit("https://shop.mag.example/x", "", None), Err(Refusal::Unlisted), "a whole entry for its own host takes no host under it");
+        assert_eq!(own.admit("https://nulls.example/a/b", "", None), Err(Refusal::OffPaths), "null is no value: depth 1");
+        assert!(Set::parse(br#"{"sites": [{"host": "a.example", "rule": "whole", "own_host": 1}]}"#).is_err());
+        let bare = Set::parse(br#"{"sites": [{"host": "outlet.example", "rule": "news", "hubs": true}]}"#).unwrap();
+        assert_eq!(bare.admit("https://outlet.example/world/", "", Some("listing")), Err(Refusal::Undated), "hubs need the file's hub pages");
+        for bad in [
+            &br#"{"sites": [{"host": "a.example", "rule": "landing", "depth": 0}]}"#[..],
+            br#"{"sites": [{"host": "a.example", "rule": "landing", "depth": "3"}]}"#,
+            br#"{"sites": [{"host": "a.example", "rule": "news", "hubs": "yes"}]}"#,
+            br#"{"hub_pages": {"types": ["home"]}, "sites": []}"#,
+            br#"{"hub_pages": {"types": ["home"], "words": [1]}, "sites": []}"#,
+        ] {
+            assert!(Set::parse(bad).is_err(), "{}", String::from_utf8_lossy(bad));
+        }
     }
 
     #[test]

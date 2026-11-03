@@ -107,6 +107,15 @@ V1_WHOLE_CAP = 5_000_000
 LANDING_CAP = 100
 LANDING_HOURLY = 20
 LANDING_DEPTH = 1
+# A landing site the set takes deeper sends more; a site taken whole for its rank more again, shallowest first.
+DEEP_LANDING_CAP = 2_000
+DEEP_LANDING_HOURLY = 200
+RANK_WHOLE_CAP = 20_000
+RANK_WHOLE_HOURLY = 2_000
+RANK_WHOLE_DEPTH = 5
+# Seconds before an established outlet's homepage and hub pages go again: the top-ranked hourly, the rest daily.
+HUB_EVERY_TOP = 3_600
+HUB_EVERY = 86_400
 # Outs a v1 site lifts: the type model's labels, never a refusal, a registry state or a hand decision.
 SOFT_OUTS = {"unlabelled", "shop", "junk"}
 # A v1 site that names no sitemap is listed too, so the bot looks for its feed; it sends nothing until it lists pages.
@@ -169,6 +178,7 @@ class Decision:
     hourly: int = 0
     since: str | None = None
     depth: int | None = None
+    hubs: int | None = None
 
 
 @dataclass
@@ -191,6 +201,13 @@ class V1:
     rule: str
     site_type: str = ""
     since: str | None = None
+    depth: int | None = None
+    hubs: bool = False
+    why: tuple[str, ...] = ()
+
+    def by_rank(self) -> bool:
+        """A site taken whole for its rank, not for a backing."""
+        return self.rule == "whole" and self.why == ("rank",)
 
 
 def failure(reason: str) -> bool:
@@ -328,7 +345,8 @@ def apply_v1(row: Row, base: Decision, v1: V1 | None, forced_out: bool) -> Decis
     site_type = v1.site_type if v1.site_type in TIERS else base.site_type
     if site_type not in TIERS:
         return base
-    hourly = HOURLY_TOP if row.rank is not None and row.rank <= TOP_RANK else HOURLY
+    top = row.rank is not None and row.rank <= TOP_RANK
+    hourly = HOURLY_TOP if top else HOURLY
     if site_type == "news":
         cap = (
             base.cap
@@ -345,6 +363,21 @@ def apply_v1(row: Row, base: Decision, v1: V1 | None, forced_out: bool) -> Decis
             backlog=cap * CRAWL_PER_INDEX,
             hourly=hourly,
             since=v1.since if v1.rule == "news" else None,
+            hubs=(HUB_EVERY_TOP if top else HUB_EVERY)
+            if v1.rule == "news" and v1.hubs
+            else None,
+        )
+    if v1.by_rank():
+        return Decision(
+            True,
+            "",
+            site_type,
+            TIERS[site_type],
+            V1_WEIGHT,
+            RANK_WHOLE_CAP,
+            send_cap=RANK_WHOLE_CAP,
+            hourly=RANK_WHOLE_HOURLY,
+            depth=RANK_WHOLE_DEPTH,
         )
     return Decision(
         True,
@@ -487,7 +520,14 @@ def read_v1_set(path: str | None) -> dict[str, V1] | None:
     with open_text(path) as source:
         sites = json.load(source)["sites"]
     return {
-        site["host"]: V1(site["rule"], site.get("type", ""), site.get("since"))
+        site["host"]: V1(
+            site["rule"],
+            site.get("type", ""),
+            site.get("since"),
+            site.get("depth"),
+            site.get("hubs") is True,
+            tuple(site.get("why", ())),
+        )
         for site in sites
     }
 
@@ -519,6 +559,7 @@ def build(
     node2_min_weight: int = 1,
     rejoin_hosts: set[str] | None = None,
     rechecked: set[str] | None = None,
+    widened_before: str | None = None,
 ) -> tuple[list[dict], Counter]:
     ranked, counts = [], Counter()
     for row in rows:
@@ -546,14 +587,16 @@ def build(
                 decision.weight >= node2_min_weight and state_of(row) in SENDING_STATES
             )
         ):
+            depth = entry_v1.depth or LANDING_DEPTH
+            deep = depth > LANDING_DEPTH
             decision = replace(
                 decision,
                 weight=V1_WEIGHT,
-                send_cap=LANDING_CAP,
+                send_cap=DEEP_LANDING_CAP if deep else LANDING_CAP,
                 backlog=None,
-                hourly=LANDING_HOURLY,
+                hourly=DEEP_LANDING_HOURLY if deep else LANDING_HOURLY,
                 since=None,
-                depth=LANDING_DEPTH,
+                depth=depth,
             )
         node2 = v1 is not None and (
             entry_v1 is None or (landing and decision.depth is None)
@@ -590,6 +633,8 @@ def build(
                 entry["since"] = decision.since
             if decision.depth is not None:
                 entry["depth"] = decision.depth
+            if decision.hubs is not None:
+                entry["hubs"] = decision.hubs
             # A landing site's pages sent before the cutoff go again, as many as its cap, so they reach the index re-read.
             if resend_before and (
                 decision.depth is not None
@@ -600,6 +645,11 @@ def build(
                 )
             ):
                 entry["resend_before"] = resend_before
+            # A site the set takes deeper than before sends its pages sent before then again, up to its cap.
+            if widened_before and (decision.depth or 0) > LANDING_DEPTH:
+                entry["resend_before"] = max(
+                    entry.get("resend_before", ""), widened_before
+                )
             ranked.append(
                 (
                     row.rank is None,
@@ -745,6 +795,10 @@ def main(argv: list[str] | None = None) -> None:
         help="recheck_hosts.py's TSV of host and verdict: a host it read as ok passes the homepage language, text and error checks",
     )
     parser.add_argument(
+        "--widened-before",
+        help="an ISO date: the sites the v1 set takes deeper than their first level, or whole for their rank, send their pages last sent before it once more, up to their cap",
+    )
+    parser.add_argument(
         "--registry-csv",
         help="read the registry rows from this CSV instead of DESEARCH_DB",
     )
@@ -794,6 +848,7 @@ def main(argv: list[str] | None = None) -> None:
                 args.node2_min_weight,
                 rejoin_hosts,
                 rechecked,
+                args.widened_before,
             )
     else:
         entries, counts = build(
@@ -809,12 +864,16 @@ def main(argv: list[str] | None = None) -> None:
             node2_min_weight=args.node2_min_weight,
             rejoin_hosts=rejoin_hosts,
             rechecked=rechecked,
+            widened_before=args.widened_before,
         )
     resent, rejoined = matched(entries, resend_files, rejoin_files, args.out)
     write_list(entries, args.out)
     print(f"{len(entries)} domains listed in {args.out}")
     print(
         f"{len(resent)} with resend_before, {sum('since' in e for e in entries)} with since, {len(rejoined)} with send_cap one up to rejoin, {sum('depth' in e for e in entries)} landing sites with depth"
+    )
+    print(
+        f"{sum(e.get('depth', 0) > LANDING_DEPTH for e in entries)} deeper than {LANDING_DEPTH}, {sum('hubs' in e for e in entries)} with hubs ({sum(e.get('hubs') == HUB_EVERY_TOP for e in entries)} hourly)"
     )
     for name, count in sorted(counts.items(), key=lambda item: -item[1]):
         print(f"{count:>10}  {name}")
