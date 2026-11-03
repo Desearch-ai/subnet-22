@@ -24,8 +24,8 @@ pub const LABELS: usize = 2;
 pub const VALUE_WORDS: usize = 6;
 pub const TITLE_CONTAINS_CHARS: usize = 20;
 pub const PROSE_WORDS: usize = 10;
-pub const MIN_PROSE: usize = 300;
-pub const MIN_CHARS: usize = 1000;
+pub const MIN_PROSE: usize = 1;
+pub const MIN_CHARS: usize = 100;
 pub const RECORD_PAIRS: usize = 3;
 /// A value under a label line has at most this many words.
 pub const RECORD_VALUE_WORDS: usize = 8;

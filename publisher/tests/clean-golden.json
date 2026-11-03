@@ -10,8 +10,8 @@
   "VALUE_WORDS": 6,
   "TITLE_CONTAINS_CHARS": 20,
   "PROSE_WORDS": 10,
-  "MIN_PROSE": 300,
-  "MIN_CHARS": 1000,
+  "MIN_PROSE": 1,
+  "MIN_CHARS": 100,
   "RECORD_PAIRS": 3,
   "RECORD_VALUE_WORDS": 8,
   "ERROR_TEXT_CHARS": 3000,
@@ -141,9 +141,9 @@
    "kept": "# Story number 100 about the harbour\nParagraph 100 tells what happened at the harbour on day 100 in plain words for readers.\nSecond paragraph 100 with a quote from the mayor and more detail than the first.",
    "prose": 167,
    "pairs": 0,
-   "thin": true,
+   "thin": false,
    "body": "Paragraph 100 tells what happened at the harbour on day 100 in plain words for readers.\nSecond paragraph 100 with a quote from the mayor and more detail than the first.",
-   "body_thin": true
+   "body_thin": false
   },
   {
    "name": "synthetic-101",
@@ -175,9 +175,9 @@
    "kept": "# Story number 101 about the harbour\nParagraph 101 tells what happened at the harbour on day 101 in plain words for readers.\nSecond paragraph 101 with a quote from the mayor and more detail than the first.",
    "prose": 167,
    "pairs": 0,
-   "thin": true,
+   "thin": false,
    "body": "Paragraph 101 tells what happened at the harbour on day 101 in plain words for readers.\nSecond paragraph 101 with a quote from the mayor and more detail than the first.",
-   "body_thin": true
+   "body_thin": false
   },
   {
    "name": "synthetic-7",
@@ -209,9 +209,9 @@
    "kept": "# Story number 7 about the harbour\nParagraph 7 tells what happened at the harbour on day 7 in plain words for readers.\nSecond paragraph 7 with a quote from the mayor and more detail than the first.",
    "prose": 161,
    "pairs": 0,
-   "thin": true,
+   "thin": false,
    "body": "Paragraph 7 tells what happened at the harbour on day 7 in plain words for readers.\nSecond paragraph 7 with a quote from the mayor and more detail than the first.",
-   "body_thin": true
+   "body_thin": false
   },
   {
    "name": "no-table",
@@ -243,9 +243,9 @@
    "kept": "December 13, 2019\nTrack this case\n### Case Number:\n1:19-cv-11460\nTrademark\n### Judge:\nA. B. Judge\n### Court:",
    "prose": 0,
    "pairs": 2,
-   "thin": true,
+   "thin": false,
    "body": "December 13, 2019\nTrack this case\n### Case Number:\n1:19-cv-11460\nTrademark\n### Judge:\nA. B. Judge\n### Court:",
-   "body_thin": true
+   "body_thin": false
   },
   {
    "name": "extra-1",
@@ -495,9 +495,9 @@
    "kept": "# League quarry orbit library summit 25\nArchive archive vessel forest garden harbour tunnel tunnel orbit league archive council tunnel bridge library quarry river garden council station canal library harbour market meadow library market river canal clinic.\n| Year | Value |\n|---|---|\n| 2025 | 25 |\n```\nprint('x')\n```\n\n### Bridge league meadow bridge canal budget.\n### Festival summit league league station garden.\n### Clinic budget budget bridge vessel orbit.\n### River survey garden survey canal river.",
    "prose": 216,
    "pairs": 2,
-   "thin": true,
+   "thin": false,
    "body": "Archive archive vessel forest garden harbour tunnel tunnel orbit league archive council tunnel bridge library quarry river garden council station canal library harbour market meadow library market river canal clinic.\n| Year | Value |\n|---|---|\n| 2025 | 25 |\n```\nprint('x')\n```\n\n### Bridge league meadow bridge canal budget.\n### Festival summit league league station garden.\n### Clinic budget budget bridge vessel orbit.\n### River survey garden survey canal river.",
-   "body_thin": true
+   "body_thin": false
   },
   {
    "name": "site-0-no-table",
@@ -509,9 +509,9 @@
    "kept": "# League quarry orbit library summit 25\n- Library\n- Market\n- Council\n- Archive\n- Vessel\nArchive archive vessel forest garden harbour tunnel tunnel orbit league archive council tunnel bridge library quarry river garden council station canal library harbour market meadow library market river canal clinic.\n| Year | Value |\n|---|---|\n| 2025 | 25 |\n```\nprint('x')\n```\n\n### Bridge league meadow bridge canal budget.\n### Festival summit league league station garden.\n### Clinic budget budget bridge vessel orbit.\n### River survey garden survey canal river.\n© 2026 Orbit Press\nPrivacy policy\nΣΟΦΙΑ σοφός",
    "prose": 216,
    "pairs": 2,
-   "thin": true,
+   "thin": false,
    "body": "- Library\n- Market\n- Council\n- Archive\n- Vessel\nArchive archive vessel forest garden harbour tunnel tunnel orbit league archive council tunnel bridge library quarry river garden council station canal library harbour market meadow library market river canal clinic.\n| Year | Value |\n|---|---|\n| 2025 | 25 |\n```\nprint('x')\n```\n\n### Bridge league meadow bridge canal budget.\n### Festival summit league league station garden.\n### Clinic budget budget bridge vessel orbit.\n### River survey garden survey canal river.\n© 2026 Orbit Press\nPrivacy policy\nΣΟΦΙΑ σοφός",
-   "body_thin": true
+   "body_thin": false
   },
   {
    "name": "site-1",
@@ -575,9 +575,9 @@
    "kept": "Survey market archive vessel survey meadow market canal archive market bridge orbit festival canal orbit library canal market budget budget station festival.\nLeague meadow harbour river archive station orbit river.\n",
    "prose": 157,
    "pairs": 0,
-   "thin": true,
+   "thin": false,
    "body": "Survey market archive vessel survey meadow market canal archive market bridge orbit festival canal orbit library canal market budget budget station festival.\nLeague meadow harbour river archive station orbit river.\n",
-   "body_thin": true
+   "body_thin": false
   },
   {
    "name": "site-1",
@@ -707,9 +707,9 @@
    "kept": "# Archive vessel council forest harbour 25\nLibrary forest meadow quarry canal league river ferry.\n| Year | Value |\n|---|---|\n| 2025 | 25 |\n```\nprint('x')\n```\n",
    "prose": 0,
    "pairs": 2,
-   "thin": true,
+   "thin": false,
    "body": "Library forest meadow quarry canal league river ferry.\n| Year | Value |\n|---|---|\n| 2025 | 25 |\n```\nprint('x')\n```\n",
-   "body_thin": true
+   "body_thin": false
   },
   {
    "name": "site-1-no-table",
@@ -721,9 +721,9 @@
    "kept": "# Archive vessel council forest harbour 25\n- Station\n- Summit\n- Budget\n- Archive\n- River\nLibrary forest meadow quarry canal league river ferry.\n| Year | Value |\n|---|---|\n| 2025 | 25 |\n```\nprint('x')\n```\n\n### Harbour library ferry festival market meadow.\n### Harbour vessel league clinic orbit garden.\n### League forest league ferry league clinic.\n### Survey harbour market garden quarry river.\n© 2026 Orbit Press\nPrivacy policy\nΣΟΦΙΑ σοφός",
    "prose": 0,
    "pairs": 2,
-   "thin": true,
+   "thin": false,
    "body": "- Station\n- Summit\n- Budget\n- Archive\n- River\nLibrary forest meadow quarry canal league river ferry.\n| Year | Value |\n|---|---|\n| 2025 | 25 |\n```\nprint('x')\n```\n\n### Harbour library ferry festival market meadow.\n### Harbour vessel league clinic orbit garden.\n### League forest league ferry league clinic.\n### Survey harbour market garden quarry river.\n© 2026 Orbit Press\nPrivacy policy\nΣΟΦΙΑ σοφός",
-   "body_thin": true
+   "body_thin": false
   },
   {
    "name": "site-2",
@@ -919,9 +919,9 @@
    "kept": "# Bridge harbour market quarry league 25\nCanal ferry orbit station market canal survey budget ferry museum council market budget garden summit station.\nHarbour forest festival ferry.\n| Year | Value |\n|---|---|\n| 2025 | 25 |\n```\nprint('x')\n```\n\n### Summit forest forest clinic museum library.\n### Canal meadow clinic quarry vessel league.\n### Orbit archive orbit vessel vessel forest.\n### Ferry clinic clinic forest summit meadow.",
    "prose": 110,
    "pairs": 2,
-   "thin": true,
+   "thin": false,
    "body": "Canal ferry orbit station market canal survey budget ferry museum council market budget garden summit station.\nHarbour forest festival ferry.\n| Year | Value |\n|---|---|\n| 2025 | 25 |\n```\nprint('x')\n```\n\n### Summit forest forest clinic museum library.\n### Canal meadow clinic quarry vessel league.\n### Orbit archive orbit vessel vessel forest.\n### Ferry clinic clinic forest summit meadow.",
-   "body_thin": true
+   "body_thin": false
   },
   {
    "name": "site-2-no-table",
@@ -933,9 +933,9 @@
    "kept": "# Bridge harbour market quarry league 25\n- Council\n- Budget\n- Forest\n- Museum\n- Meadow\nCanal ferry orbit station market canal survey budget ferry museum council market budget garden summit station.\nHarbour forest festival ferry.\n| Year | Value |\n|---|---|\n| 2025 | 25 |\n```\nprint('x')\n```\n\n### Summit forest forest clinic museum library.\n### Canal meadow clinic quarry vessel league.\n### Orbit archive orbit vessel vessel forest.\n### Ferry clinic clinic forest summit meadow.\n© 2026 Ferry Press\nPrivacy policy\nGröße　Straße",
    "prose": 110,
    "pairs": 2,
-   "thin": true,
+   "thin": false,
    "body": "- Council\n- Budget\n- Forest\n- Museum\n- Meadow\nCanal ferry orbit station market canal survey budget ferry museum council market budget garden summit station.\nHarbour forest festival ferry.\n| Year | Value |\n|---|---|\n| 2025 | 25 |\n```\nprint('x')\n```\n\n### Summit forest forest clinic museum library.\n### Canal meadow clinic quarry vessel league.\n### Orbit archive orbit vessel vessel forest.\n### Ferry clinic clinic forest summit meadow.\n© 2026 Ferry Press\nPrivacy policy\nGröße　Straße",
-   "body_thin": true
+   "body_thin": false
   },
   {
    "name": "site-3",
@@ -1203,9 +1203,9 @@
    "kept": "Meadow garden river tunnel survey tunnel harbour museum library vessel museum ferry library orbit museum.\nBridge league quarry league library.\nMuseum festival orbit canal ferry clinic survey library archive bridge market festival canal quarry council meadow ferry summit council garden festival.\n\n### Market market tunnel survey market clinic.\n### Museum league survey archive council budget.\n### Council clinic quarry archive vessel garden.\n### Quarry orbit canal bridge station ferry.",
    "prose": 257,
    "pairs": 0,
-   "thin": true,
+   "thin": false,
    "body": "Meadow garden river tunnel survey tunnel harbour museum library vessel museum ferry library orbit museum.\nBridge league quarry league library.\nMuseum festival orbit canal ferry clinic survey library archive bridge market festival canal quarry council meadow ferry summit council garden festival.\n\n### Market market tunnel survey market clinic.\n### Museum league survey archive council budget.\n### Council clinic quarry archive vessel garden.\n### Quarry orbit canal bridge station ferry.",
-   "body_thin": true
+   "body_thin": false
   },
   {
    "name": "site-4",
@@ -1399,9 +1399,9 @@
    "kept": "Festival market league vessel canal tunnel league survey council vessel league council canal library forest harbour garden survey clinic clinic river quarry river forest summit vessel archive canal.\n",
    "prose": 198,
    "pairs": 0,
-   "thin": true,
+   "thin": false,
    "body": "Festival market league vessel canal tunnel league survey council vessel league council canal library forest harbour garden survey clinic clinic river quarry river forest summit vessel archive canal.\n",
-   "body_thin": true
+   "body_thin": false
   },
   {
    "name": "site-5",
@@ -1611,9 +1611,9 @@
    "kept": "Budget budget museum festival festival vessel festival orbit quarry league budget river tunnel vessel summit tunnel quarry ferry forest river river tunnel orbit harbour bridge quarry ferry league canal museum.\n\n### Summit quarry canal vessel harbour quarry.\n### Forest league tunnel market survey forest.\n### Summit river budget vessel ferry vessel.\n### Festival river tunnel ferry archive survey.",
    "prose": 209,
    "pairs": 0,
-   "thin": true,
+   "thin": false,
    "body": "Budget budget museum festival festival vessel festival orbit quarry league budget river tunnel vessel summit tunnel quarry ferry forest river river tunnel orbit harbour bridge quarry ferry league canal museum.\n\n### Summit quarry canal vessel harbour quarry.\n### Forest league tunnel market survey forest.\n### Summit river budget vessel ferry vessel.\n### Festival river tunnel ferry archive survey.",
-   "body_thin": true
+   "body_thin": false
   },
   {
    "name": "site-6",

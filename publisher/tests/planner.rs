@@ -4212,8 +4212,8 @@ async fn a_page_is_embedded_without_its_site_s_template_lines_and_again_once_the
     assert!(pages_texts[0].starts_with("A title\n- Home") && pages_texts[1].starts_with("A title\nParagraph 0"), "{pages_texts:?}");
     assert!(!pages_texts[1].contains("Most read"));
 
-    let video = v2(record("https://news.example/video/2", &format!("{}\nWatch the mayor open the new bridge", NAV.join("\n")), "video", "en"));
-    let video = Record { text: format!("{}\n{}", video.text, (0..8).map(|i| format!("Clip {i} of the day from the bridge")).collect::<Vec<_>>().join("\n")), ..video };
+    let nav = NAV.join("\n");
+    let video = v2(record("https://news.example/video/2", &format!("{nav}\n{nav}\n{nav}\n{nav}\nWatch the bridge open"), "video", "en"));
     let privacy = v2(record("https://news.example/privacy-policy", &article(3), "other", "en"));
     log(&pages, 4, vec![video, privacy]).await;
     planner.pass().await.unwrap();
