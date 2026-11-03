@@ -365,6 +365,8 @@ pub struct Sent {
     pub failures: u8,
     /// Back on its ready list for a retry or a re-crawl.
     pub requeued: bool,
+    /// The latest send came back published.
+    pub published: bool,
 }
 
 impl Sent {
@@ -373,33 +375,52 @@ impl Sent {
         let mut out = [0u8; 6];
         out[..4].copy_from_slice(&self.lastmod.to_le_bytes());
         out[5] = u8::from(self.requeued) | self.failures.min(127) << 1;
+        // Earlier versions never read this byte, and write it as zero.
+        out[4] = if self.published { PUBLISHED_BIT } else { 0 };
         out
     }
 
     fn unpack(data: &[u8]) -> Option<Sent> {
-        (data.len() == 6).then(|| Sent { lastmod: u32::from_le_bytes(data[..4].try_into().unwrap()), failures: data[5] >> 1, requeued: data[5] & 1 != 0 })
+        (data.len() == 6).then(|| Sent { lastmod: u32::from_le_bytes(data[..4].try_into().unwrap()), failures: data[5] >> 1, requeued: data[5] & 1 != 0, published: data[4] & PUBLISHED_BIT != 0 })
     }
 }
 
-/// A page's failed sends counted as their outcomes came, and the time of the last one counted.
+/// A page's failed sends counted as their outcomes came, and the send last counted: the one made at `send`, or the one before it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct Fails {
     count: u8,
-    at: u32,
+    send: u32,
+    before: bool,
 }
 
 impl Fails {
-    fn pack(self) -> [u8; 5] {
-        let mut out = [0u8; 5];
+    fn pack(self) -> [u8; 6] {
+        let mut out = [0u8; 6];
         out[0] = self.count;
-        out[1..].copy_from_slice(&self.at.to_be_bytes());
+        out[1] = u8::from(self.before);
+        out[2..].copy_from_slice(&self.send.to_be_bytes());
         out
     }
 
+    /// A count kept with the time of its last failure instead of its send names no send.
     fn unpack(data: &[u8]) -> Option<Fails> {
-        (data.len() == 5).then(|| Fails { count: data[0], at: u32::from_be_bytes(data[1..].try_into().unwrap()) })
+        match data.len() {
+            6 => Some(Fails { count: data[0], before: data[1] != 0, send: u32::from_be_bytes(data[2..].try_into().unwrap()) }),
+            5 => Some(Fails { count: data[0], ..Fails::default() }),
+            _ => None,
+        }
+    }
+
+    /// Whether this count already took in the failure of the send in flight at `at`, the latest made at `latest` or the one before it.
+    fn took(self, target: Fails, at: u32) -> bool {
+        (self.send, self.before) == (target.send, target.before)
+            // Counted while it was the latest, the send before the latest is the one that went before the failure.
+            || (target.before && !self.before && self.send != 0 && self.send <= at.saturating_add(STALE_OUTCOME))
     }
 }
+
+/// The bit of a sent record's fifth byte that says its latest send came back published; the counts earlier versions kept there stayed far below it.
+const PUBLISHED_BIT: u8 = 0x80;
 
 /// The failure count key of a page's sent record key.
 fn fails_key(sent_key: &[u8]) -> Vec<u8> {
@@ -938,7 +959,7 @@ impl BucketStore {
             if pick.reason != Reason::Requeued {
                 batch.delete(fails_key(&pick.entry.sent_key()));
             }
-            batch.put(pick.entry.sent_key(), Sent { lastmod: pick.lastmod, failures, requeued: false }.pack());
+            batch.put(pick.entry.sent_key(), Sent { lastmod: pick.lastmod, failures, requeued: false, published: false }.pack());
         }
         // A lastmod that moved while the page was in flight is a change the API has not seen.
         self.add_ready(&mut batch, moved, &mut counts)?;
@@ -1637,16 +1658,21 @@ impl BucketStore {
             put_schedule(&mut batch, domain.as_bytes(), rest, *next);
         }
         let _guard = self.lock_ready();
-        // Each failed send counts once, when its outcome comes: not one a later send already overtook, and not again when a file is applied twice.
+        // Each failed send counts once, against the send in flight when it failed: the latest, or the one before it while the latest has not come back published.
         let failed: Vec<&PageSchedule> = schedules.iter().filter(|s| s.next.why == Why::Failed).collect();
         let records = self.records(failed.iter().map(|s| prefixed(URL, s.domain.as_bytes(), &s.rest)))?;
         let fails = self.fails(failed.iter().map(|s| prefixed(FAILS, s.domain.as_bytes(), &s.rest)))?;
-        for ((page, record), fails) in failed.iter().zip(records).zip(fails) {
+        let sents = self.sents(failed.iter().map(|s| prefixed(SENT, s.domain.as_bytes(), &s.rest)))?;
+        for (((page, record), fails), sent) in failed.iter().zip(records).zip(fails).zip(sents) {
+            let Some(record) = record else {
+                continue;
+            };
             let fails = fails.unwrap_or_default();
-            if record.is_none_or(|record| page.next.outdated(record.pushed_at)) || fails.at >= page.next.at {
+            let target = Fails { send: record.pushed_at, before: page.next.outdated(record.pushed_at), ..fails };
+            if fails.took(target, page.next.at) || (target.before && sent.is_some_and(|sent| sent.published)) {
                 continue;
             }
-            batch.put(prefixed(FAILS, page.domain.as_bytes(), &page.rest), Fails { count: fails.count.saturating_add(1), at: page.next.at }.pack());
+            batch.put(prefixed(FAILS, page.domain.as_bytes(), &page.rest), Fails { count: fails.count.saturating_add(1), ..target }.pack());
         }
         self.db.write(batch)?;
         Ok(())
@@ -1659,7 +1685,13 @@ impl BucketStore {
         }
         let _guard = self.lock_ready();
         let mut batch = WriteBatch::default();
-        self.clear_failures(&mut batch, pages.iter().map(|(domain, rest)| prefixed(SENT, domain.as_bytes(), rest)).collect())?;
+        let keys: Vec<Vec<u8>> = pages.iter().map(|(domain, rest)| prefixed(SENT, domain.as_bytes(), rest)).collect();
+        for (key, sent) in keys.iter().zip(self.sents(keys.iter().cloned())?) {
+            batch.delete(fails_key(key));
+            if let Some(sent) = sent.filter(|sent| sent.failures > 0 || !sent.published) {
+                batch.put(key, Sent { failures: 0, published: true, ..sent }.pack());
+            }
+        }
         self.db.write(batch)?;
         Ok(())
     }
@@ -2329,11 +2361,13 @@ mod tests {
 
     #[test]
     fn failures_share_the_requeued_byte_and_the_count_of_earlier_versions_is_not_read() {
-        let sent = Sent { lastmod: 7, failures: 2, requeued: false };
+        let sent = Sent { lastmod: 7, failures: 2, requeued: false, published: false };
         assert_eq!(Sent::unpack(&sent.pack()), Some(sent));
         assert_eq!(sent.pack()[4..], [0, 4], "earlier versions read it as requeued, which only matters for a page on its list");
         let earlier = [7, 0, 0, 0, 3, 1];
-        assert_eq!(Sent::unpack(&earlier), Some(Sent { lastmod: 7, failures: 0, requeued: true }), "three retries counted before, outcomes that never came among them");
+        assert_eq!(Sent::unpack(&earlier), Some(Sent { lastmod: 7, failures: 0, requeued: true, published: false }), "three retries counted before, outcomes that never came among them");
+        let published = Sent { published: true, ..sent };
+        assert_eq!((Sent::unpack(&published.pack()), published.pack()[5]), (Some(published), sent.pack()[5]), "the published bit leaves the byte earlier versions read alone");
     }
 
     #[test]

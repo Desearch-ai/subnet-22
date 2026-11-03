@@ -301,25 +301,6 @@ fn an_outlet_s_hub_goes_again_and_is_retried_on_its_hubs_interval() {
 }
 
 #[test]
-fn an_outlet_s_hub_failing_on_two_sends_in_a_row_takes_the_long_wait_even_when_outcomes_come_after_it_went_again() {
-    let dir = Dir::new("ready-hub-late");
-    let buckets = known(&dir, &["example.com"]);
-    buckets.allow(&Allowed::with_terms([("example.com", Terms { hubs: Some(3_600), ..Terms::default() })]));
-    let store = buckets.store("example.com");
-    store.record_listing("example.com", 7, vec![page("tag/sudan-war", 0)], 100).unwrap();
-    let hub = "https://example.com/tag/sudan-war";
-    store.mark_sent(&take(store, 10), 1_000, &rules()).unwrap();
-    assert_eq!(requeue(store, 1_000 + 3_600), Requeued { moved: 1, gone: 0 }, "it goes again on its hubs interval before the first send's outcome");
-    let again = store.take_ready("example.com", [0, 100, 0]).unwrap();
-    store.mark_sent(&again, 4_650, &rules()).unwrap();
-    let mut reader = OutcomeReader::new(rules(), 1000);
-    reader.apply(&buckets, &[outcome(hub, Outcome::Failed, 4_700)], 4_700).unwrap();
-    reader.apply(&buckets, &[outcome(hub, Outcome::Failed, 8_400)], 8_400).unwrap();
-    assert_eq!(requeue(store, 8_400 + 3_600), Requeued { moved: 0, gone: 1 }, "both sends failed");
-    assert_eq!(store.next_send("example.com", &rest("tag/sudan-war")).unwrap().map(|n| n.why), Some(Why::Gone));
-}
-
-#[test]
 fn the_sent_record_keeps_the_failure_count_earlier_versions_read() {
     let dir = Dir::new("ready-fails-rollback");
     let buckets = known(&dir, &["example.com"]);
@@ -354,6 +335,40 @@ fn a_failed_send_counts_once_and_never_after_a_later_send_overtook_it() {
     reader.apply(&buckets, &[outcome("https://example.com/b", Outcome::Published, 5100)], 5100).unwrap();
     reader.apply(&buckets, &[outcome("https://example.com/b", Outcome::Failed, 1100)], 6000).unwrap();
     assert_eq!(store.failed_sends("example.com", &rest("b")).unwrap(), 0, "the first send's late failure counts nothing once a later send went and came back");
+}
+
+#[test]
+fn a_hub_failure_that_comes_after_its_next_send_counts_against_the_send_it_belongs_to_once() {
+    let dir = Dir::new("ready-hub-between");
+    let buckets = known(&dir, &["example.com"]);
+    buckets.allow(&Allowed::with_terms([("example.com", Terms { hubs: Some(3_600), ..Terms::default() })]));
+    let store = buckets.store("example.com");
+    store.record_listing("example.com", 7, vec![page("tag/sudan-war", 0)], 100).unwrap();
+    let hub = "https://example.com/tag/sudan-war";
+    store.mark_sent(&take(store, 10), 1_000, &rules()).unwrap();
+    let mut reader = OutcomeReader::new(rules(), 1000);
+    // The task API may report a send's failure again, later, when its task comes back to it.
+    reader.apply(&buckets, &[outcome(hub, Outcome::Failed, 1_100)], 1_100).unwrap();
+    reader.apply(&buckets, &[outcome(hub, Outcome::Failed, 1_300)], 1_300).unwrap();
+    assert_eq!(store.failed_sends("example.com", &rest("tag/sudan-war")).unwrap(), 1, "one send, one failure");
+    assert_eq!(requeue(store, 1_300 + 3_600), Requeued { moved: 1, gone: 0 });
+    store.mark_sent(&store.take_ready("example.com", [0, 100, 0]).unwrap(), 5_000, &rules()).unwrap();
+    reader.apply(&buckets, &[outcome(hub, Outcome::Failed, 1_300)], 5_100).unwrap();
+    assert_eq!(store.failed_sends("example.com", &rest("tag/sudan-war")).unwrap(), 1, "the first send's failure, reported once more after the next send, is not counted twice");
+
+    let dir = Dir::new("ready-hub-between-late");
+    let buckets = known(&dir, &["example.com"]);
+    buckets.allow(&Allowed::with_terms([("example.com", Terms { hubs: Some(3_600), ..Terms::default() })]));
+    let store = buckets.store("example.com");
+    store.record_listing("example.com", 7, vec![page("tag/sudan-war", 0)], 100).unwrap();
+    store.mark_sent(&take(store, 10), 1_000, &rules()).unwrap();
+    assert_eq!(requeue(store, 1_000 + 3_600), Requeued { moved: 1, gone: 0 });
+    store.mark_sent(&store.take_ready("example.com", [0, 100, 0]).unwrap(), 4_650, &rules()).unwrap();
+    let mut reader = OutcomeReader::new(rules(), 1000);
+    reader.apply(&buckets, &[outcome(hub, Outcome::Failed, 1_100)], 4_700).unwrap();
+    assert_eq!(store.failed_sends("example.com", &rest("tag/sudan-war")).unwrap(), 1, "the first send failed before the second went, and its outcome came after");
+    reader.apply(&buckets, &[outcome(hub, Outcome::Failed, 8_400)], 8_400).unwrap();
+    assert_eq!(requeue(store, 8_400 + 3_600), Requeued { moved: 0, gone: 1 }, "both sends failed");
 }
 
 #[test]
@@ -535,6 +550,7 @@ fn dropped_pages_go_again_soon_and_a_burst_is_spread_over_the_following_hours() 
     assert_eq!(again.len(), 3);
     assert!(again.iter().all(|p| p.reason == Reason::Requeued && p.failures == 0), "a dropped page is no failure");
 }
+
 #[test]
 fn the_backfill_queues_old_pages_once_and_resumes_where_it_stopped() {
     let dir = Dir::new("ready-backfill");

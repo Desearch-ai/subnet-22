@@ -177,8 +177,9 @@ its published and failed pages to their domain's yield, counted twice: fading ov
 hour. The dispatcher gives domains whose pages rarely come back fewer slots, down to an hourly probe,
 by the lower of the two, so a domain that starts refusing slows within hours. A failed page goes again
 after its domain's interval, and after two failures in a row waits `--gone-days`; each failed send
-counts once when its outcome comes, even after the page went again, unless a later send went before
-that outcome, in a count of its own beside the
+counts once when its outcome comes, against the send in flight when it failed: the latest, or the one
+before it while the latest has not come back published, however often the failure is reported. It is
+kept in a count of its own beside the
 sent record's, which keeps the meaning earlier versions read; a send that comes back
 published, or a sitemap that names the page anew, starts the count over. A dropped page, whose task never reached the site, goes again
 within the hourly budget. A number still missing after two minutes, or whose file expired, is
