@@ -347,3 +347,15 @@ def test_hand_depths_and_switches_are_read_as_the_set_holds_them_and_a_bad_one_s
         with pytest.raises(SystemExit):
             v1_set.hand_entries([bad])
     assert [v1_set.bad_entry(e) for e in ({"depth": 0}, {"depth": True}, {"depth": "3"}, {"hubs": 1}, {"own_host": "true"}, {"depth": 2, "hubs": True}, {"depth": None})] == ["depth 0", "depth True", "depth '3'", "hubs 1", "own_host 'true'", None, None]
+
+
+def test_registry_hosts_are_named_as_the_set_readers_look_them_up():
+    counts = {"www.nhs.example": {"stored": "1000"}}
+    decisions = [decision("www.nhs.example", "public", 200_000), decision("www.paper.example", "news"), decision("en.m.wiki.example", "academic")]
+    decisions += [{**decision("www.vendor.example", "company"), "rank": "50"}]
+    sites, _ = build(decisions, counts=counts, news_sources={"www.paper.example": "wikidata"}, landing_rank=200_000)
+    assert set(sites) == {"nhs.example", "paper.example", "en.wiki.example", "vendor.example"}
+    assert sites["paper.example"]["why"] == ["wikidata"], "the registry host's own backing and counts still count"
+    for url in ("https://www.nhs.example/conditions/flu/", "https://nhs.example/a/b", "https://en.m.wiki.example/x"):
+        assert v1_set.matches(sites, url, None), url
+    assert v1_set.matches(sites, "https://www.vendor.example/products", None)

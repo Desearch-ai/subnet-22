@@ -222,30 +222,32 @@ def listed_entries(decisions, backing, news_sources, outlets, judged, counts, ne
     for row in decisions:
         if row["listed"] != "1":
             continue
-        host, site_type = row["host"], row["type"]
+        site_type = row["type"]
         if site_type not in WHOLE_TYPES | {"news", "reference"}:
             continue
-        verdict = share(judged.get(host))
-        if host in spam:
+        # The registry's own host reads its counts; the entry names the host as the set's readers look it up.
+        found, host = row["host"], site_host(row["host"])
+        verdict = share(judged.get(found))
+        if found in spam:
             entries.append({"host": host, "rule": "out", "why": ["spam"]})
             continue
         if site_type != "news" and PEOPLE_SEARCH.search(host):
             entries.append({"host": host, "rule": "out", "why": ["people-search"]})
             continue
-        stored = int(counts.get(host, {}).get("stored") or 0)
+        stored = int(counts.get(found, {}).get("stored") or 0)
         if site_type in WEATHER_TYPES and WEATHER.search(host) and stored >= WEATHER_MIN:
             entries.append({"host": host, "rule": "out", "why": ["template"]})
             continue
         if site_type == "news":
             # The judge and spam checks go by the host's own backing; a site that moved to it lends only its window.
-            own = backed_news(host, backing, news_sources, outlets)
+            own = backed_news(found, backing, news_sources, outlets)
             if not own and verdict is not None and verdict <= FAILED_SHARE:
                 entries.append({"host": host, "rule": "out", "why": ["judge"]})
                 continue
-            if not own and int(news_counts.get(host, {}).get("dated_last_year") or 0) > NEWS_YEAR_MAX:
+            if not own and int(news_counts.get(found, {}).get("dated_last_year") or 0) > NEWS_YEAR_MAX:
                 entries.append({"host": host, "rule": "out", "why": ["spam"]})
                 continue
-            why = own or backed_news(host, backing, news_sources, outlets, moved_from)
+            why = own or backed_news(found, backing, news_sources, outlets, moved_from)
             entry = {"host": host, "rule": "news", "type": "news", "why": why or ["news"]}
             if since := news_since(bool(why), news, recent):
                 entry["since"] = since
@@ -254,7 +256,7 @@ def listed_entries(decisions, backing, news_sources, outlets, judged, counts, ne
                 too_big.append({"host": host, "type": site_type, "stored": stored, "cap": int(row["cap"])})
                 continue
             entry = {"host": host, "rule": "whole", "type": site_type, "why": [site_type if site_type != "reference" else "judge"]}
-            if backing.get(host, {}).get("wikidata_type"):
+            if backing.get(found, {}).get("wikidata_type"):
                 entry["why"].append("wikidata")
         else:
             continue
@@ -267,8 +269,8 @@ def landing_entries(ranked: list[dict], judged: dict, counts: dict[str, dict], s
     spam = networks(counts)
     entries = []
     for row in ranked:
-        host, verdict = row["host"], share(judged.get(row["host"]))
-        if entry_for(sites, host) is not None or host in spam or PEOPLE_SEARCH.search(host) or (verdict is not None and verdict <= FAILED_SHARE):
+        host, verdict = site_host(row["host"]), share(judged.get(row["host"]))
+        if entry_for(sites, host) is not None or row["host"] in spam or PEOPLE_SEARCH.search(host) or (verdict is not None and verdict <= FAILED_SHARE):
             continue
         entry = {"host": host, "rule": "landing", "type": row["type"], "why": ["rank"]}
         rank = int(row.get("rank") or 0)
@@ -291,12 +293,13 @@ def subdomain_entries(rows: list[dict], sites: dict[str, dict], suffixes=(set(),
     """Listed docs, help, support, newsroom, investor and news subdomains of a site taken for its rank, each taken as its parent is; a public suffix is no parent."""
     entries = []
     for row in rows:
-        label, _, parent = row["host"].partition(".")
+        host = site_host(row["host"])
+        label, _, parent = host.partition(".")
         found = sites.get(parent)
-        if row["listed"] != "1" or label not in SUBDOMAIN_LABELS or not by_rank(found) or entry_for(sites, row["host"]) is not found or platform(parent, suffixes):
+        if row["listed"] != "1" or label not in SUBDOMAIN_LABELS or not by_rank(found) or entry_for(sites, host) is not found or platform(parent, suffixes):
             continue
         taken = {key: found[key] for key in ("rule", "depth", "own_host") if key in found}
-        entries.append({"host": row["host"], **taken, "type": "docs" if label in SUBDOMAIN_DOCS else found.get("type") or row["type"], "why": ["rank"]})
+        entries.append({"host": host, **taken, "type": "docs" if label in SUBDOMAIN_DOCS else found.get("type") or row["type"], "why": ["rank"]})
     return entries
 
 
