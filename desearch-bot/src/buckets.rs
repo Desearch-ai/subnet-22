@@ -309,6 +309,12 @@ impl BucketStore {
         Ok(self.db.put(meta_key(name), serde_json::to_vec(value)?)?)
     }
 
+    /// Every meta value whose name starts with `prefix`, by the rest of its name.
+    pub fn metas_under(&self, prefix: &str) -> Result<Vec<(String, Value)>> {
+        let start = meta_key(prefix);
+        self.scan(&start, |key, raw| Ok((String::from_utf8_lossy(&key[start.len()..]).into_owned(), serde_json::from_slice(raw)?)))
+    }
+
     pub(crate) fn lock_ready(&self) -> MutexGuard<'_, ()> {
         self.ready_lock.lock().unwrap_or_else(|e| e.into_inner())
     }

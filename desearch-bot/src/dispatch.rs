@@ -64,6 +64,8 @@ const REQUEUE_PER_PASS: usize = 5_000;
 /// A pass tries again with what is left when stale entries left the first allotment short.
 const ALLOT_TRIES: usize = 3;
 const PENDING: &str = "dispatch_pending";
+/// Meta names under which each delayed site's used time and spacing are kept, so a restart carries its spacing on.
+const SPACED: &str = "dispatch_spaced/";
 const TOP_DOMAINS: usize = 5;
 
 /// Slots a domain gets at each turn: 7 for the ten best ranks, one fewer for each tenfold, 1 from a million on and for unranked domains.
@@ -351,6 +353,16 @@ impl HourlyCap {
         due.min(self.allowance_at_rate(domain, now, rate, false))
     }
 
+    /// A delayed site's used time and spacing, once it has been paced.
+    pub fn spaced_of(&self, domain: &str) -> Option<(u64, u64)> {
+        self.spaced.get(domain).copied()
+    }
+
+    /// Carry on a delayed site's spacing from before a restart: its pages count from its used time, not the restart.
+    pub fn restore_spaced(&mut self, domain: &str, used: u64, spacing: u64) {
+        self.spaced.insert(domain.to_string(), (used, spacing.max(1)));
+    }
+
     pub fn record(&mut self, domain: &str, now: u32, count: u64) {
         if let Some((used, spacing)) = self.spaced.get_mut(domain) {
             *used = used.saturating_add(count.saturating_mul(*spacing));
@@ -634,7 +646,7 @@ impl Dispatcher {
         progress: Arc<Progress>,
     ) -> Result<Self> {
         let (reading, list_version) = (buckets.clone(), buckets.list_version());
-        let (domains, paced, pending) = tokio::task::spawn_blocking(move || -> Result<_> {
+        let (domains, paced, pending, spaced) = tokio::task::spawn_blocking(move || -> Result<_> {
             let (mut domains, mut paced) = (HashMap::new(), HashMap::new());
             let forgotten = on_readers(reading.stores().collect(), |store| store.forget_expecting())?;
             if forgotten.iter().any(|&found| found) {
@@ -659,10 +671,11 @@ impl Dispatcher {
                 Some(Value::Null) | None => Vec::new(),
                 Some(one) => vec![serde_json::from_value(one)?],
             };
-            Ok((domains, paced, pending))
+            let spaced = reading.stores().next().map(|store| store.metas_under(SPACED)).transpose()?.unwrap_or_default();
+            Ok((domains, paced, pending, spaced))
         })
         .await??;
-        let dispatcher = Dispatcher {
+        let mut dispatcher = Dispatcher {
             list_version,
             buckets,
             api: Arc::new(api),
@@ -691,6 +704,11 @@ impl Dispatcher {
             resend_job: None,
             resent: None,
         };
+        for (domain, saved) in spaced {
+            if let (Some(used), Some(spacing)) = (saved.get(0).and_then(Value::as_u64), saved.get(1).and_then(Value::as_u64)) {
+                dispatcher.cap.restore_spaced(&domain, used, spacing);
+            }
+        }
         dispatcher.report();
         Ok(dispatcher)
     }
@@ -703,7 +721,9 @@ impl Dispatcher {
     /// As `paced`, with the pace starting at `start` rather than now, for a replay on a simulated clock.
     pub fn paced_from(mut self, per_hour: u64, start: u32) -> Self {
         self.pace = Pace::new(per_hour, start);
+        let spaced = std::mem::take(&mut self.cap.spaced);
         self.cap = HourlyCap::empty_at(self.cap.limit(), start);
+        self.cap.spaced = spaced;
         self
     }
 
@@ -1212,6 +1232,7 @@ impl Dispatcher {
             return Ok(0);
         }
         self.mark_sent(&landed).await?;
+        let mut spaced: HashMap<String, (u64, u64)> = HashMap::new();
         let mut count = 0;
         for pending in &landed {
             let mut per_domain: HashMap<&str, u64> = HashMap::new();
@@ -1220,6 +1241,9 @@ impl Dispatcher {
             }
             for (domain, count) in per_domain {
                 self.cap.record(domain, pending.at, count);
+                if let Some(used) = self.cap.spaced_of(domain) {
+                    spaced.insert(domain.to_string(), used);
+                }
             }
             for sending in &pending.picks {
                 let counter = match sending.reason {
@@ -1239,6 +1263,19 @@ impl Dispatcher {
         }
         self.pace.spend(count);
         self.progress.dispatched.fetch_add(count, Ordering::Relaxed);
+        // Kept before the batches leave the pending list, so a restart either finds them recorded here or records them again.
+        if !spaced.is_empty() {
+            let buckets = self.buckets.clone();
+            tokio::task::spawn_blocking(move || -> Result<()> {
+                if let Some(store) = buckets.stores().next() {
+                    for (domain, (used, spacing)) in spaced {
+                        store.set_meta(&format!("{SPACED}{domain}"), &serde_json::json!([used, spacing]))?;
+                    }
+                }
+                Ok(())
+            })
+            .await??;
+        }
         Ok(count)
     }
 

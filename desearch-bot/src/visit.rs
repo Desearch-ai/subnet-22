@@ -729,7 +729,9 @@ impl Run<'_> {
 
     fn robots_due(&self) -> bool {
         // The daily recheck can land up to 10% early and should still read robots.txt.
-        let stale = self.known.robots_checked_at.is_none_or(|checked| (self.now - checked) as f64 >= ROBOTS_EVERY as f64 * (1.0 - JITTER));
+        // A site asking a day or more between requests keeps its robots.txt two delays, so its visits get past it to its sitemaps and homepage.
+        let every = (ROBOTS_EVERY as f64).max(2.0 * crawl_delay(self.known.crawl_delay) * SECOND as f64);
+        let stale = self.known.robots_checked_at.is_none_or(|checked| (self.now - checked) as f64 >= every * (1.0 - JITTER));
         // After a visit the site's delay stopped, robots.txt read that day stands, or each visit would spend its one request on it.
         stale || (self.known.state != State::Active && !self.known.paced)
     }
@@ -1738,8 +1740,8 @@ impl Run<'_> {
                 Ok(response) => response,
                 Err(error) => {
                     self.connect_failed = net::connect_failed(&error);
-                    // Nothing answered, so the try spent no turn: a fallback to another scheme or host goes at once.
-                    if hop == 0 {
+                    // Only a try that never reached the server (no address, refused, no TLS) spends no turn; one it timed out on or dropped did.
+                    if hop == 0 && error.is_connect() {
                         self.pacer.next = booked;
                     }
                     return Err(net::failure(&error, started.elapsed(), connecting).to_string());

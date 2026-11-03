@@ -3150,3 +3150,47 @@ async fn a_site_asking_for_ten_minutes_between_requests_gets_six_an_hour_through
     }
     assert!(sends.len() >= 17, "{} sends in three hours", sends.len());
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_restart_carries_a_delayed_sites_spacing_on_from_what_it_kept() {
+    let dir = Dir::new("delay-kept");
+    let buckets = Arc::new(known(&dir, &["example.com"]));
+    ask_for_a_delay(&buckets, "example.com", 43_200.0);
+    queue_pages(&buckets, "example.com", 100);
+    let start = 1_759_400_000;
+    let restarted = |at: u32| {
+        let buckets = buckets.clone();
+        async move {
+            let (api, fake) = fake_api(1, 0).await;
+            let dispatcher = Dispatcher::load(buckets, api, 1000, shares(50, 10), rules(), Arc::new(Progress::default())).await.unwrap().paced_from(0, at);
+            (dispatcher, fake)
+        }
+    };
+    let (api, fake) = fake_api(1, 0).await;
+    let mut first = Dispatcher::load(buckets.clone(), api, 1000, shares(50, 10), rules(), Arc::new(Progress::default())).await.unwrap();
+    first.pass(start).await.unwrap();
+    assert_eq!(sent_to(&fake, "example.com"), 1);
+    let mut sends = vec![start];
+    // Restarts half an hour before each six hours, so no page is due at the moment one starts, when the hourly share starts empty.
+    let restart_at = |k: u32| start + k * 6 * 3_600 - 1_800;
+    for restart in 1..5 {
+        let (mut dispatcher, fake) = restarted(restart_at(restart)).await;
+        for at in (restart_at(restart)..restart_at(restart + 1)).step_by(600) {
+            let before = sent_to(&fake, "example.com");
+            dispatcher.pass(at).await.unwrap();
+            sends.extend((before..sent_to(&fake, "example.com")).map(|_| at));
+        }
+    }
+    assert_eq!(sends, [start, start + 43_200, start + 2 * 43_200], "restarted every six hours, it still sends every twelve");
+
+    let fresh = Dir::new("delay-unkept");
+    let unkept = Arc::new(known(&fresh, &["example.com"]));
+    ask_for_a_delay(&unkept, "example.com", 43_200.0);
+    queue_pages(&unkept, "example.com", 100);
+    let (api, fake) = fake_api(1, 0).await;
+    let mut dispatcher = Dispatcher::load(unkept, api, 1000, shares(50, 10), rules(), Arc::new(Progress::default())).await.unwrap().paced_from(0, start);
+    for at in (start..start + 43_200).step_by(600) {
+        dispatcher.pass(at).await.unwrap();
+    }
+    assert_eq!(sent_to(&fake, "example.com"), 0, "with nothing kept, a restart waits a whole delay");
+}

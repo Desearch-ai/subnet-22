@@ -40,6 +40,8 @@ struct Web {
     hits: Vec<(String, String, Option<String>)>,
     /// When each request came, hits and the TLS handshakes hung up on alike.
     hit_at: Vec<std::time::Instant>,
+    /// When each request reached the server, by host and path.
+    at: Vec<(String, String, std::time::Instant)>,
     /// Served instead once the path was asked this many times.
     later: HashMap<(String, String), (usize, Page)>,
     /// Asked for, and never answered.
@@ -102,11 +104,13 @@ async fn serve(listener: TcpListener, web: Shared) {
                     let asked = web.hits.iter().filter(|(h, p, _)| *h == host && p == path).count();
                     web.hits.push((host.clone(), path.to_string(), validator.clone()));
                     web.hit_at.push(std::time::Instant::now());
+                    web.at.push((host.clone(), path.to_string(), std::time::Instant::now()));
                     let key = (host, path.to_string());
                     let silent = web.silent.contains(&key);
                     (web.later.get(&key).filter(|(after, _)| asked >= *after).map(|(_, page)| page.clone()).or_else(|| web.pages.get(&key).cloned()), silent)
                 };
-                if silent {
+                // A silent path, or one under /hang: the server took the request and never answers.
+                if silent || path.starts_with("/hang") {
                     tokio::time::sleep(Duration::from_secs(30)).await;
                     return;
                 }
@@ -2778,4 +2782,89 @@ async fn an_absurd_crawl_delay_is_read_as_the_longest_and_panics_nothing() {
     let record = buckets.store(host).domain(host).unwrap().unwrap();
     assert_eq!(record["delay"].as_f64(), Some(41.0 * 86_400.0));
     assert!(record["due"].as_i64().unwrap() >= now + 41 * 86_400);
+}
+
+/// One crawl step over `host` with a client that gives up after `timeout`, on fresh stores `prepare` sets up.
+async fn probe_crawl(web: Shared, host: &'static str, name: &str, timeout: Duration, prepare: impl FnOnce(&Arc<Buckets>)) -> Arc<Buckets> {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(serve(listener, web));
+    let root = std::env::temp_dir().join(format!("desearch-bot-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let owned = vec![bucket_of(host)];
+    let buckets = Arc::new(Buckets::open(&root, &owned, &Resources::new(8 << 20, 8 << 20, 1)).unwrap());
+    let mut changes = Changes::default();
+    changes.domain(host, &records::new_domain(Some(1), Some("new_generic"), &[], State::New, None, Some(0)));
+    buckets.store(host).write(changes).unwrap();
+    prepare(&buckets);
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .dns_resolver(Arc::new(TestResolver { addr, known: [host].into() }))
+        .timeout(timeout)
+        .build()
+        .unwrap();
+    let visitor = Visitor {
+        client,
+        buckets: buckets.clone(),
+        suffixes: Arc::new(PublicSuffixList::parse("test\n")),
+        signer: None,
+        language: Arc::new(|text: &str| Some(if text.contains("the") { "en" } else { "fr" }.to_string())),
+        floor: 0.0,
+        connect_timeout: Duration::from_secs(10),
+        cpu: Slots::new(4),
+        bodies: Slots::new(2),
+        pause: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        heavy: Slots::new(1),
+        links: Slots::new(2),
+        follow_links: FollowLinks::Off,
+        resolver: Some(Arc::new(TestResolver { addr, known: [host].into() })),
+        links_cpu: Slots::new(2),
+    };
+    let mut crawl = Loop::new(buckets.clone(), Arc::new(visitor), 16, Registry::offline(), HashSet::new());
+    crawl.load().unwrap();
+    crawl.step().await.unwrap();
+    drop(crawl);
+    buckets
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_request_the_server_took_and_never_answered_spends_its_turn() {
+    let web: Shared = Arc::default();
+    let host = "hanging.test";
+    {
+        let mut w = web.lock().unwrap();
+        w.add(host, "/robots.txt", 200, None, format!("User-agent: *\nCrawl-delay: 8\nSitemap: http://{host}/hang1.xml\nSitemap: http://{host}/hang2.xml\nSitemap: http://{host}/hang3.xml\n").as_bytes());
+    }
+    probe_crawl(web.clone(), host, "hanging", Duration::from_secs(2), |_| {}).await;
+    let at: Vec<(String, std::time::Instant)> = web.lock().unwrap().at.iter().filter(|(h, _, _)| h == host).map(|(_, p, t)| (p.clone(), *t)).collect();
+    assert_eq!(at.iter().map(|(p, _)| p.as_str()).collect::<Vec<_>>(), ["/robots.txt", "/hang1.xml", "/hang2.xml", "/hang3.xml"], "the https try that never connected spent no turn");
+    let gaps: Vec<f64> = at.windows(2).map(|w| (w[1].1 - w[0].1).as_secs_f64()).collect();
+    assert!(gaps.iter().all(|gap| *gap >= 7.9), "a request that timed out still waits the delay before the next: {gaps:?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_site_asking_a_day_between_requests_reads_its_sitemap_and_homepage_between_robots_txt_reads() {
+    let web: Shared = Arc::default();
+    let host = "daily.test";
+    let list = format!("http://{host}/list.xml");
+    {
+        let mut w = web.lock().unwrap();
+        w.add(host, "/robots.txt", 200, None, format!("User-agent: *\nCrawl-delay: 86400\nSitemap: {list}\n").as_bytes());
+        w.add(host, "/list.xml", 200, None, urlset(host, &(0..12).map(|i| format!("/story/{i}")).collect::<Vec<_>>()).as_bytes());
+        w.add(host, "/", 200, None, format!("<html lang=\"en\"><p>{ENGLISH}</p></html>").as_bytes());
+    }
+    let hits = |web: &Shared| web.lock().unwrap().hits.iter().filter(|(h, _, _)| h == host).map(|(_, p, _)| p.clone()).collect::<Vec<_>>();
+    let (buckets, crawl) = crawl_prepared(web.clone(), &[host], "daily-0", |_| {}).await;
+    drop(crawl);
+    let (mut domain, mut sitemaps) = (buckets.store(host).domain(host).unwrap().unwrap(), vec![(list.clone(), buckets.store(host).sitemap(host, &list).unwrap().unwrap())]);
+    for visit in 1..4 {
+        // A day on: the delay has passed and robots.txt was read a day earlier than it was.
+        let read = domain["robots"].as_i64().unwrap();
+        domain.insert("robots".into(), (read - 86_400).into());
+        let buckets = after_the_delay(web.clone(), host, &format!("daily-{visit}"), &domain, &sitemaps).await;
+        domain = buckets.store(host).domain(host).unwrap().unwrap();
+        sitemaps = vec![(list.clone(), buckets.store(host).sitemap(host, &list).unwrap().unwrap())];
+    }
+    assert_eq!(hits(&web), ["/robots.txt", "/list.xml", "/robots.txt", "/"], "robots.txt every other day, the sitemap and the homepage between");
+    assert_eq!((domain["state"].as_str(), domain["lang"].as_str()), (Some("active"), Some("en")));
 }
