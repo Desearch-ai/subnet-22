@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, AtomicUsize, Ordering}
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -1817,7 +1817,7 @@ impl StockPace {
         StockPace { per_second: per_second.max(1), next: Mutex::new(Instant::now()) }
     }
 
-    fn wait(&self, read: u64) {
+    fn wait(&self, read: u64, quit: &dyn Fn() -> bool) {
         let cost = Duration::from_secs_f64(read as f64 / self.per_second as f64);
         let until = {
             let mut next = self.next.lock().unwrap_or_else(|e| e.into_inner());
@@ -1826,8 +1826,11 @@ impl StockPace {
             *next = (*next).max(now.checked_sub(cost).unwrap_or(now)) + cost;
             *next
         };
-        if let Some(ahead) = until.checked_duration_since(Instant::now()) {
-            std::thread::sleep(ahead);
+        while let Some(ahead) = until.checked_duration_since(Instant::now()).filter(|ahead| !ahead.is_zero()) {
+            if quit() {
+                return;
+            }
+            std::thread::sleep(ahead.min(Duration::from_secs(1)));
         }
     }
 }
@@ -1847,7 +1850,8 @@ pub fn keep_stocks_on(buckets: &Buckets, wanted: &StockWanted, per_second: u64, 
             .map(|worker| {
                 let (pace, failed, quit) = (&pace, &failed, &quit);
                 scope.spawn(move || {
-                    let kept = keep_worker_stocks(buckets, wanted, worker, pace, progress, quit, clock);
+                    let kept = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| keep_worker_stocks(buckets, wanted, worker, pace, progress, quit, clock)))
+                        .unwrap_or_else(|_| Err(anyhow!("stock keeper thread {worker} panicked")));
                     if kept.is_err() {
                         failed.store(true, Ordering::Relaxed);
                     }
@@ -1855,7 +1859,7 @@ pub fn keep_stocks_on(buckets: &Buckets, wanted: &StockWanted, per_second: u64, 
                 })
             })
             .collect();
-        workers.into_iter().map(|worker| worker.join().expect("a stock keeper thread panicked")).collect::<Result<Vec<()>>>()?;
+        workers.into_iter().map(|worker| worker.join().unwrap_or_else(|_| Err(anyhow!("a stock keeper thread panicked")))).collect::<Result<Vec<()>>>()?;
         Ok(())
     })
 }
@@ -1879,7 +1883,7 @@ fn keep_worker_stocks(buckets: &Buckets, wanted: &StockWanted, worker: usize, pa
             };
             let keep = (buckets.terms(&domain).hourly.unwrap_or(0) as usize / 4).max(STOCK_KEEP);
             let mut paced = |scanned: u64| {
-                pace.wait(scanned);
+                pace.wait(scanned, quit);
                 !quit()
             };
             let Some(stocked) = store.stock_refresh(&domain, keep, cursor.get(&domain).map(Vec::as_slice), STOCK_SCAN, &mut paced)? else {
