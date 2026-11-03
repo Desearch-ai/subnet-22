@@ -129,7 +129,10 @@ as often down to every 60 days; with `--follow-links all`, every whole or news s
 site answers from, waits a random time up to its interval. Runs on one address, whichever sites
 share it, keep their fetches a second apart, and three failed connections to it in a row stop runs
 there for a day. A visit or link run that comes right after another on the same site waits out the site's
-crawl delay from the last one's last request.
+crawl delay from the last one's last request. A visit waits in place at most a minute: a longer delay
+ends it undecided, and the site is due again once the delay has passed, going on where it stopped.
+A redirect chain is one request, and a try that never reached the server (no address, refused, no
+TLS) spends no turn.
 
 A listed subdomain with a registry record of its own is crawled on its own host, under its own
 robots.txt. Its pages go under it while that record is active, failing or without sitemaps, and not
@@ -164,8 +167,10 @@ Every 5 seconds the bot asks `GET /v1/room` how many tasks the API can take, and
 times 1,000 URLs, a few from each domain in turn, best ranked first, within `--per-domain-hourly` and
 `--urls-per-hour`. A domain sends at most two minutes' worth of its hourly limit at once (100 pages at
 least), so a site sees a steady stream rather than its hour in one burst. A site whose robots.txt
-names a Crawl-delay is held to one page per delay over the hour, the delay counted up to a minute, and
-sends them one at a time. The hourly pace starts empty and saves at most five minutes of sends, so a
+names a Crawl-delay gets one page per delay, however long the delay (up to 41 days): each pass sends
+the pages the delay allows since its sends last used it, never one early, saving at most one pass gap,
+and each site's place is kept in the store so a restart carries it on (`--claim-window` adds seconds to
+each delay, none by default). The hourly pace starts empty and saves at most five minutes of sends, so a
 restart or a stall is followed by no burst. A batch carries a hash of its content, so a batch sent
 again after a timeout is queued once, and a batch in flight survives a restart. URLs over 2,048
 characters, the sitemap protocol's limit, are never sent.
