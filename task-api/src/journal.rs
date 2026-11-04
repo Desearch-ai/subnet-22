@@ -177,12 +177,9 @@ fn header<'a>(headers: &'a HeaderMap, name: &str) -> &'a str {
     headers.get(name).and_then(|v| v.to_str().ok()).unwrap_or_default()
 }
 
-/// One signed request's identity, the same in every place that names it (the witness relays of block C use it too):
-/// SHA-256 of the signed payload, the hotkey and the signature in lowercase hex.
+/// One signed request's identity, as receipts and the witness relays name it (`auth::request_hash`).
 pub fn request_hash(method: &str, path: &str, body: &[u8], timestamp: &str, nonce: &str, hotkey: &str, signature: &str) -> String {
-    let mut bytes = signing_payload(method, path, body, timestamp, nonce);
-    bytes.extend_from_slice(format!("\n{hotkey}\n{}", signature.to_lowercase()).as_bytes());
-    sha256(&bytes)
+    crate::auth::request_hash(method, path, body, hotkey, timestamp, nonce, signature)
 }
 
 /// A signed request as the log keeps it: everything needed to check the caller's signature again, and its hash.

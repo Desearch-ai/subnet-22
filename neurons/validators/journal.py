@@ -37,6 +37,8 @@ JOIN_BACK = 120
 # Published files are kept here until replayed; the newest few stay for a fraud proof to quote.
 KEEP_FILES = 20
 REPLAY_TIMEOUT_S = 600.0
+# A request the API let in is in a `requests` entry within about this many blocks of arriving.
+LOG_LAG_BLOCKS = 5
 
 log = logging.getLogger("validator")
 
@@ -85,6 +87,7 @@ class JournalFollower:
             CREATE TABLE IF NOT EXISTS hashes (seq INTEGER PRIMARY KEY, hash TEXT NOT NULL, segment INTEGER NOT NULL);
             CREATE TABLE IF NOT EXISTS blocks (block INTEGER PRIMARY KEY, hash TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS requests (hash TEXT PRIMARY KEY, seq INTEGER NOT NULL, block INTEGER);
+            CREATE TABLE IF NOT EXISTS request_entries (seq INTEGER PRIMARY KEY, block INTEGER);
             """)
 
     def state(self, name: str):
@@ -115,6 +118,14 @@ class JournalFollower:
     def anchored_through(self) -> int:
         """The last entry an anchor on chain covers that this log agrees with."""
         return int(self.state("anchored") or 0)
+
+    def covered_block(self) -> int:
+        """The newest block whose requests the anchored log has listed: a request let in before it is in the log."""
+        row = self.db.execute(
+            "SELECT COALESCE(MAX(block), 0) FROM request_entries WHERE seq <= ?",
+            (self.anchored_through(),),
+        ).fetchone()
+        return int(row[0] or 0)
 
     async def get(self, key: str):
         async with self.http.get(
@@ -233,6 +244,10 @@ class JournalFollower:
         self.db.executemany(
             "INSERT OR IGNORE INTO requests VALUES (?, ?, ?)",
             [(row[0], entry["seq"], given.get("block")) for row in listed or [] if row],
+        )
+        self.db.execute(
+            "INSERT OR REPLACE INTO request_entries VALUES (?, ?)",
+            (entry["seq"], given.get("block")),
         )
 
     async def check_blocks(self, entries: list[dict]) -> list[Problem]:
@@ -368,3 +383,38 @@ class JournalFollower:
         log.error(
             "task API log: %s (proof in %s)", problem.what, self.folder / "fraud" / name
         )
+
+
+class JournalLogView:
+    """What a censorship check asks of the log: a relayed request is in it when a `requests` entry names it, and is
+    not when the anchored log already lists requests from blocks after it; otherwise the API's signed receipts
+    answer (`fallback`, the witness relays' `ApiLog`)."""
+
+    def __init__(
+        self,
+        follower: Callable[[], Optional["JournalFollower"]],
+        head,
+        after_blocks: int,
+        fallback=None,
+        lag_blocks: int = LOG_LAG_BLOCKS,
+    ):
+        self.follower = follower
+        self.head = head
+        self.after_blocks = after_blocks
+        self.fallback = fallback
+        self.lag_blocks = lag_blocks
+
+    async def included(self, request: str) -> bool | None:
+        follower = self.follower()
+        if follower is not None:
+            if follower.included(request) is not None:
+                return True
+            head = self.head.block
+            # A check asks only of requests relayed `after_blocks` or more before the head.
+            if (
+                head is not None
+                and follower.covered_block()
+                >= head - self.after_blocks + self.lag_blocks
+            ):
+                return False
+        return await self.fallback.included(request) if self.fallback else None

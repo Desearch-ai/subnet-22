@@ -374,3 +374,77 @@ async def test_a_follower_back_after_files_expired_reads_on_from_a_recent_one(tm
         ].what
         assert await follower.poll() == []
         assert follower.state("last") == 6 and follower.hash_at(6) == hash_of(third[-1])
+
+
+async def test_the_chained_log_answers_a_witness_check_once_anchored_past_the_request(
+    tmp_path,
+):
+    import aiohttp
+
+    from neurons.validators.journal import JournalLogView
+
+    class Head:
+        block = 200
+
+    class Receipts:
+        def __init__(self):
+            self.asked = []
+
+        async def included(self, request):
+            self.asked.append(request)
+            return None
+
+    bucket = Bucket()
+    first = chained(2)
+    requests_entry = {
+        "v": 1,
+        "seq": 3,
+        "prev": hash_of(first[-1]),
+        "at": 1.0,
+        "kind": "requests",
+        "input": {"count": 1, "requests": [["a" * 64, 1.0]], "block": 195},
+        "output": None,
+    }
+    entries = first + [requests_entry]
+    bucket.put(segment_key(1), segment(1, entries, GENESIS))
+    bucket.put(LATEST_KEY, latest(1, entries))
+    anchor = []
+    async with serving(bucket.handle) as url, aiohttp.ClientSession() as http:
+        follower = JournalFollower(
+            http,
+            url,
+            API.ss58_address,
+            tmp_path,
+            node({101: "0xhash101"}),
+            anchored(anchor),
+        )
+        await follower.poll()
+        receipts = Receipts()
+        view = JournalLogView(
+            lambda: follower, Head(), after_blocks=10, fallback=receipts
+        )
+        assert await view.included("a" * 64) is True
+        assert (
+            await view.included("b" * 64) is None
+        ), "not anchored yet: the receipts are asked"
+        assert receipts.asked == ["b" * 64]
+        anchor.append(
+            {
+                "block": 196,
+                "info": {
+                    "fields": [
+                        {"Raw8": "0x" + b"sn22j1:3".hex()},
+                        {"Sha256": "0x" + hash_of(requests_entry)},
+                    ]
+                },
+            }
+        )
+        await follower.poll()
+        assert (
+            await view.included("b" * 64) is False
+        ), "the anchored log lists blocks past the request"
+        Head.block = 300
+        assert (
+            await view.included("b" * 64) is None
+        ), "a request newer than the anchored log: can't tell"
+        assert await JournalLogView(lambda: None, Head(), 10).included("b" * 64) is None

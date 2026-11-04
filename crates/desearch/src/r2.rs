@@ -9,6 +9,7 @@ use anyhow::{anyhow, Context, Result};
 use bytes::Bytes;
 use futures::{StreamExt, TryStreamExt};
 use hmac::{Hmac, Mac};
+use md5::Md5;
 use reqwest::header::{HeaderMap, HeaderValue};
 use reqwest::{Method, StatusCode};
 use sha2::{Digest, Sha256};
@@ -67,12 +68,43 @@ impl std::fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
-/// A stored object's size, entity tag (quotes included, as R2 sends it) and when it was last written.
+/// A stored object's size, entity tag (quotes included, as R2 sends it), when it was last written, and on a
+/// versioned bucket the version it is.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Head {
     pub size: u64,
     pub etag: String,
     pub modified: Option<i64>,
+    pub version: Option<String>,
+}
+
+/// Which version of an object a read must get: any, the one with this entity tag, or this version of a versioned bucket.
+#[derive(Clone, Copy, Debug)]
+pub enum Pin<'a> {
+    Any,
+    Etag(&'a str),
+    Version(&'a str),
+}
+
+impl<'a> Pin<'a> {
+    /// The version when there is one, else the entity tag: a version read can't be answered by a rewrite.
+    pub fn of(head: &'a Head) -> Pin<'a> {
+        match head.version.as_deref() {
+            Some(version) => Pin::Version(version),
+            None if head.etag.is_empty() => Pin::Any,
+            None => Pin::Etag(&head.etag),
+        }
+    }
+
+    fn apply(self, query: &mut Vec<(&'a str, &'a str)>, headers: &mut HeaderMap) {
+        match self {
+            Pin::Any => {}
+            Pin::Etag(etag) => {
+                headers.insert(reqwest::header::IF_MATCH, value(etag));
+            }
+            Pin::Version(version) => query.push(("versionId", version)),
+        }
+    }
 }
 
 /// One bucket under one key prefix.
@@ -128,11 +160,19 @@ impl Bucket {
     }
 
     pub async fn head(&self, key: &str) -> Result<Option<Head>, Error> {
-        match self.call(Method::HEAD, Some(key), &[], HeaderMap::new(), Bytes::new(), READ).await {
+        self.head_at(key, None).await
+    }
+
+    /// One version of an object on a versioned bucket, or the current one without `version`.
+    pub async fn head_at(&self, key: &str, version: Option<&str>) -> Result<Option<Head>, Error> {
+        let query: Vec<(&str, &str)> = version.map(|version| ("versionId", version)).into_iter().collect();
+        match self.call(Method::HEAD, Some(key), &query, HeaderMap::new(), Bytes::new(), READ).await {
             Ok((headers, _)) => {
                 let text = |name: &str| headers.get(name).and_then(|v| v.to_str().ok()).unwrap_or_default().to_string();
                 let size = text("content-length").parse().map_err(|_| Error::Transport("a HEAD without a length".into()))?;
-                Ok(Some(Head { size, etag: text("etag"), modified: parse_http_date(&text("last-modified")) }))
+                // An unversioned or suspended bucket answers no version, or "null".
+                let found = Some(text("x-amz-version-id")).filter(|v| !v.is_empty() && v != "null");
+                Ok(Some(Head { size, etag: text("etag"), modified: parse_http_date(&text("last-modified")), version: found }))
             }
             Err(Error::Missing) => Ok(None),
             Err(error) => Err(error),
@@ -145,12 +185,16 @@ impl Bucket {
 
     /// Bytes `range` of an object, refused as `Changed` when it is no longer the version `if_match` names.
     pub async fn get_range(&self, key: &str, range: Range<u64>, if_match: Option<&str>) -> Result<Bytes, Error> {
+        self.get_range_at(key, range, if_match.map_or(Pin::Any, Pin::Etag)).await
+    }
+
+    /// Bytes `range` of the version of an object `pin` names.
+    pub async fn get_range_at(&self, key: &str, range: Range<u64>, pin: Pin<'_>) -> Result<Bytes, Error> {
         let mut headers = HeaderMap::new();
         headers.insert(reqwest::header::RANGE, value(&format!("bytes={}-{}", range.start, range.end - 1)));
-        if let Some(etag) = if_match {
-            headers.insert(reqwest::header::IF_MATCH, value(etag));
-        }
-        let (_, body) = self.call(Method::GET, Some(key), &[], headers, Bytes::new(), READ).await?;
+        let mut query = Vec::new();
+        pin.apply(&mut query, &mut headers);
+        let (_, body) = self.call(Method::GET, Some(key), &query, headers, Bytes::new(), READ).await?;
         if body.len() as u64 != range.end - range.start {
             return Err(Error::Transport(format!("asked for {} bytes of {key}, got {}", range.end - range.start, body.len())));
         }
@@ -232,12 +276,35 @@ impl Bucket {
 
     /// Opens an object someone else wrote, such as a miner's upload; does nothing where the bucket itself is public.
     pub async fn make_public(&self, key: &str) -> Result<(), Error> {
+        self.make_public_at(key, None).await
+    }
+
+    /// Opens one version of an object, or the current one without `version`.
+    pub async fn make_public_at(&self, key: &str, version: Option<&str>) -> Result<(), Error> {
         if !self.public {
             return Ok(());
         }
         let mut headers = HeaderMap::new();
         self.mark_public(&mut headers);
-        self.call(Method::PUT, Some(key), &[("acl", "")], headers, Bytes::new(), SHORT).await?;
+        let mut query = vec![("acl", "")];
+        query.extend(version.map(|version| ("versionId", version)));
+        self.call(Method::PUT, Some(key), &query, headers, Bytes::new(), SHORT).await?;
+        Ok(())
+    }
+
+    /// Puts one version of an object under Object Lock in compliance mode until `until` (Unix seconds): nobody,
+    /// the bucket's owner included, can delete or shorten it before then. The bucket must have Object Lock on.
+    pub async fn lock_version(&self, key: &str, version: &str, until: i64) -> Result<(), Error> {
+        let [year, month, day, hour, minute, second] = utc(until);
+        let body = format!(
+            "<Retention xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\"><Mode>COMPLIANCE</Mode>\
+             <RetainUntilDate>{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}Z</RetainUntilDate></Retention>"
+        );
+        let mut headers = HeaderMap::new();
+        headers.insert(reqwest::header::CONTENT_TYPE, HeaderValue::from_static("application/xml"));
+        // S3 asks for the body's MD5 on every Object Lock request.
+        headers.insert("content-md5", value(&base64(&Md5::digest(body.as_bytes()))));
+        self.call(Method::PUT, Some(key), &[("retention", ""), ("versionId", version)], headers, Bytes::from(body), SHORT).await?;
         Ok(())
     }
 
@@ -416,6 +483,19 @@ impl Bucket {
     }
 }
 
+/// Standard base64 with padding, for the few headers that carry a digest.
+fn base64(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let n = chunk.iter().enumerate().fold(0u32, |n, (i, b)| n | u32::from(*b) << (16 - 8 * i));
+        for i in 0..4 {
+            out.push(if i <= chunk.len() { ALPHABET[(n >> (18 - 6 * i) & 63) as usize] as char } else { '=' });
+        }
+    }
+    out
+}
+
 fn backoff(attempt: u32) -> Duration {
     let base = FIRST_BACKOFF * 2u32.pow(attempt - 1);
     let jitter = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().subsec_nanos() % 1000;
@@ -491,6 +571,14 @@ fn hmac(key: &[u8], data: &[u8]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_object_lock_request_carries_the_digest_s3_asks_for() {
+        for (bytes, encoded) in [(&b""[..], ""), (b"f", "Zg=="), (b"fo", "Zm8="), (b"foo", "Zm9v"), (b"foobar", "Zm9vYmFy")] {
+            assert_eq!(base64(bytes), encoded);
+        }
+        assert_eq!(base64(&Md5::digest(b"")), "1B2M2Y8AsgTpgAmY7PhCfg==");
+    }
 
     #[test]
     fn a_copy_s_entity_tag_reads_the_same_however_its_quotes_are_escaped() {

@@ -153,10 +153,19 @@ impl Replay {
                 self.diverge(entry, FRAUD, "the request is not signed by the hotkey it names", request.clone(), Value::Null);
             }
         }
+        self.receipts_name_the_request(entry);
         if kind == "snapshot" {
             self.snapshot(entry, blobs)?;
         } else if kind == "start" {
-            self.set_meta("start", &entry["input"])?;
+            let mut starts: Vec<Value> = self.meta("starts")?.and_then(|s| s.as_array().cloned()).unwrap_or_default();
+            starts.push(entry["input"].clone());
+            // A start older than any claim still open no longer matters.
+            if starts.len() > 32 {
+                starts.remove(0);
+            }
+            self.set_meta("starts", &json!(starts))?;
+        } else if kind == "probe" {
+            crate::canary::record(&self.conn, &crate::canary::from_logged(&entry["input"]))?;
         } else if self.started()? {
             match kind.as_str() {
                 "claim" => self.claim(entry)?,
@@ -176,6 +185,7 @@ impl Replay {
                     let at = float(&entry["at"]);
                     budgets::prune(&self.conn, KEEP_H, at)?;
                     checks::prune(&self.conn, at)?;
+                    crate::canary::prune(&self.conn, at)?;
                 }
                 "shares" => {
                     let pools = budgets::shares(&self.conn, SHARE_WINDOW_H, float(&entry["input"]["as_of"]))?;
@@ -287,7 +297,6 @@ impl Replay {
         let task_id = text(input, "task_id");
         let hotkey = if text(entry, "kind") == "abandon" { input["request"]["hotkey"].as_str().unwrap_or_default() } else { text(input, "hotkey") };
         let kind = input.get("kind").and_then(Value::as_str).unwrap_or(CRAWL);
-        let forgiven = input["forgiven"].as_bool().unwrap_or(false);
         if text(entry, "kind") == "lapse" {
             let waiting: Option<String> = self
                 .conn
@@ -300,14 +309,14 @@ impl Replay {
                 self.diverge(entry, FRAUD, "a claim was struck as expired before it expired", input["expiry"].clone(), at.into());
             }
         }
-        if forgiven {
-            let start = self.meta("start")?.unwrap_or(Value::Null);
-            let ttl = float(&start["settings"][if kind == EMBED { "embed_claim_ttl" } else { "claim_ttl" }]);
-            let expiry = input["expiry"].as_f64();
-            if text(entry, "kind") == "lapse" && expiry.is_none_or(|expiry| expiry > float(&start["started_at"]) + ttl) {
-                self.diverge(entry, FRAUD, "a lapse was forgiven as held through a restart that did not happen", input.clone(), start["started_at"].clone());
-            }
-        }
+        let ours = self.forgiveness(entry, kind)?;
+        let theirs = match &input["forgiven"] {
+            Value::String(cause) => Some(cause.clone()),
+            Value::Bool(true) => Some("restart".to_string()),
+            _ => None,
+        };
+        self.compare(entry, "why the lapse costs the miner nothing", &json!(theirs), json!(ours));
+        let forgiven = theirs.is_some();
         let budget = if forgiven {
             budgets::get_or_create(&self.conn, hotkey, kind)?.budget
         } else {
@@ -319,6 +328,48 @@ impl Replay {
         }
         self.conn.execute("DELETE FROM replay_claims WHERE task_id = ? AND hotkey = ?", params![task_id, hotkey])?;
         Ok(())
+    }
+
+    /// Why a lapse costs nothing by the rules: held through the restart of the copy that decided, which must be one the log saw
+    /// start, or, with the storage-outage rule on, held while a probe the log holds failed.
+    fn forgiveness(&mut self, entry: &Value, kind: &str) -> Result<Option<&'static str>> {
+        let input = &entry["input"];
+        let basis = &input["forgiving"];
+        let expiry = input["expiry"].as_f64();
+        let starts: Vec<Value> = self.meta("starts")?.and_then(|s| s.as_array().cloned()).unwrap_or_default();
+        let start = starts.last().cloned().unwrap_or(Value::Null);
+        if let Some(started_at) = basis["started_at"].as_f64() {
+            if !starts.iter().any(|s| s["started_at"].as_f64() == Some(started_at)) {
+                self.diverge(entry, FRAUD, "a lapse was decided by a copy the log never saw start", basis["started_at"].clone(), json!(starts));
+            }
+            let ttl = float(&start["settings"][if kind == EMBED { "embed_claim_ttl" } else { "claim_ttl" }]) + crate::rounds::UPLOAD_GRACE_S;
+            if !start.is_null() && basis["claim_ttl"].as_f64() != Some(ttl) {
+                self.diverge(entry, FRAUD, "the claim time a restart allows", basis["claim_ttl"].clone(), ttl.into());
+            }
+            if expiry.is_some_and(|expiry| expiry <= started_at + float(&basis["claim_ttl"])) {
+                return Ok(Some("restart"));
+            }
+        }
+        if start["settings"]["storage_outage_forgives"] == true {
+            if let (Some(from), Some(to)) = (basis["claimed_at"].as_f64(), expiry) {
+                if crate::canary::outage_during(&self.conn, from, to)? {
+                    return Ok(Some(crate::canary::OUTAGE_CAUSE));
+                }
+            }
+        } else if basis["claimed_at"].as_f64().is_some() {
+            self.diverge(entry, FRAUD, "storage outages were looked up while the rule is off", basis.clone(), Value::Null);
+        }
+        Ok(None)
+    }
+
+    /// Every receipt answering a signed request names that request, so a relaying validator's witness can be matched to it.
+    fn receipts_name_the_request(&mut self, entry: &Value) {
+        let Some(request) = entry["input"]["request"]["request"].as_str().map(String::from) else { return };
+        for receipt in entry["output"]["receipts"].as_array().cloned().unwrap_or_default() {
+            if receipt["body"]["request"] != request.as_str() {
+                self.diverge(entry, FRAUD, "a receipt does not name the request it answers", receipt["body"].clone(), request.clone().into());
+            }
+        }
     }
 
     fn job(&self, task_id: &str) -> Result<Option<Value>> {

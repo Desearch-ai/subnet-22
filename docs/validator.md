@@ -141,6 +141,15 @@ pm2 start run.sh --name desearch_autoupdate -- \
 | `--neuron.replay_bin` | the `task-api-replay` binary (`cargo build --release --bin task-api-replay` in `task-api/`, or `TASK_API_REPLAY_BIN`); without it the log is checked but not replayed |
 | `--wandb.off` | do not log to Weights & Biases |
 | `--logging.info`, `--logging.debug` | without one, only warnings are printed |
+| `--relay.port` | serve a relay for miners' requests on this port, signing a witness of each; 0 (the default) serves none |
+| `--relay.publish_delay_blocks`, `--relay.check_after_blocks` | blocks before a witness is listed (5), and after which a relayed request missing from the task API's log is a censorship proof (50) |
+| `--relay.signer` | the key the task API's log must be signed with; its `/v1/key` when empty |
+| `--witness.storage_off` | do not look at, and sign what storage holds for, every completed upload |
+
+**Relays and witnesses.** A validator serving a relay gives miners a path to the task API outside the
+operator's network, signs a witness of every request it forwards and publishes censorship proofs for any the
+API's log then lacks. Every validator also looks at every completed upload in storage and signs what it saw.
+Open the relay's port to miners and tell them its URL. See [witness relays](./witness-relays.md).
 
 ### Upgrading from the search validator
 

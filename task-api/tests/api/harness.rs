@@ -125,6 +125,24 @@ impl Client {
         self.call(Method::POST, path, Some(body)).await
     }
 
+    /// A signed POST and the hash naming it, as a relaying validator's witness gives it.
+    pub async fn post_hashed(&self, path: &str, body: Option<Value>) -> (Result<Value, Refused>, String) {
+        let bytes = body.map(|b| b.to_string().into_bytes()).unwrap_or_default();
+        let nonce = format!("{:032x}", rand::random::<u128>());
+        let timestamp = desearch::time::now() as i64;
+        let headers = auth_headers(&self.hotkey, "POST", path, &bytes, timestamp, &nonce);
+        let hashed = task_api::auth::request_hash("POST", path, &bytes, &self.ss58(), &timestamp.to_string(), &nonce, &headers[3].1);
+        let mut request = self.http.post(format!("{}{path}", self.base)).header("content-type", "application/json");
+        for (name, value) in headers {
+            request = request.header(name, value);
+        }
+        let response = request.body(bytes).send().await.expect("the API answers");
+        let status = response.status();
+        let body: Value = response.json().await.unwrap_or(Value::Null);
+        let answer = if status.is_success() { Ok(body) } else { Err(Refused { status: status.as_u16(), detail: body.get("detail").cloned().unwrap_or(body) }) };
+        (answer, hashed)
+    }
+
     pub async fn claim(&self) -> Value {
         self.call(Method::POST, "/v1/tasks/claim", None).await.expect("a claim answers")
     }
@@ -214,6 +232,9 @@ pub fn settings(data: PathBuf, endpoint: &str) -> Settings {
         anchor: None,
         key_uri: String::new(),
         cors_origins: Vec::new(),
+        canary_every: 0.0,
+        storage_outage_forgives: false,
+        upload_lock_s: 0.0,
     }
 }
 
@@ -450,6 +471,11 @@ pub async fn judged(h: &Harness, validator: &Client, verdict: &str, task_id: Opt
     let path = format!("/v1/validation/{}/score", job["task_id"].as_str().unwrap_or_default());
     let answer = validator.post(&path, body).await;
     (job, answer)
+}
+
+/// A key the claim drew at random: `uploads/`, 32 hex characters and the kind's suffix, naming no task or miner.
+pub fn is_random_upload_key(key: &str, suffix: &str) -> bool {
+    key.strip_prefix("uploads/").and_then(|name| name.strip_suffix(suffix)).is_some_and(|name| name.len() == 32 && name.bytes().all(|b| b.is_ascii_hexdigit()))
 }
 
 pub fn task_id(task: &Value) -> String {

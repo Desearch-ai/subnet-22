@@ -25,6 +25,7 @@ from desearch.fetch import (
 )
 from desearch.kinds import CRAWL
 from neurons.miners.config import ENV_FILE, Settings
+from neurons.miners.paths import MultiPathClient, keep_witness
 from neurons.miners.rows import UploadWriter, build_row, error_row
 
 log = logging.getLogger("miner")
@@ -41,6 +42,9 @@ ROOM_CHECK_S = 1.0
 ATTEMPTS = 3
 SUMMARY_EVERY_S = 60.0
 UPLOAD_TIMEOUT = aiohttp.ClientTimeout(total=120.0, sock_connect=15.0)
+# The API's refusal of a completion whose key holds another object than the miner's upload.
+SWAPPED = "another object"
+SWAPPED_RETRIES = 1
 
 
 class UploadError(Exception):
@@ -51,6 +55,21 @@ class UploadError(Exception):
         self.status = status
 
 
+def task_api(settings: Settings) -> TaskApiClient | MultiPathClient:
+    """The task API directly, or over every path the settings give when they name relays."""
+    if not settings.relay_urls:
+        return TaskApiClient(settings.task_api_url, settings.keypair())
+    on_witness = (
+        keep_witness(settings.witnesses_file) if settings.witnesses_file else None
+    )
+    return MultiPathClient(
+        settings.keypair(),
+        settings.task_api_url if settings.direct_path else None,
+        settings.relay_urls,
+        on_witness=on_witness,
+    )
+
+
 class TaskWorker:
     """Claims one kind of task and runs up to max_tasks of them at once."""
 
@@ -58,7 +77,7 @@ class TaskWorker:
 
     def __init__(self, settings: Settings, api: TaskApiClient | None = None):
         self.settings = settings
-        self.api = api or TaskApiClient(settings.task_api_url, settings.keypair())
+        self.api = api or task_api(settings)
         self.upload_http: aiohttp.ClientSession | None = None
         self.stopping = asyncio.Event()
         self.in_flight: set[asyncio.Task] = set()
@@ -152,7 +171,10 @@ class TaskWorker:
     async def process_task(self, task: dict) -> None:
         raise NotImplementedError
 
-    async def upload(self, upload: dict, body: bytes) -> None:
+    async def upload(self, upload: dict, body: bytes) -> dict:
+        """Uploads the file; returns what the completion pins it by: its entity tag, and its version on a
+        versioned bucket, so nothing anyone else writes to the key can be taken for it.
+        """
         if self.upload_http is None:
             self.upload_http = aiohttp.ClientSession(timeout=UPLOAD_TIMEOUT)
         try:
@@ -163,10 +185,42 @@ class TaskWorker:
                 headers={"Content-Type": upload["content_type"]},
             ) as response:
                 status = response.status
+                pins = {
+                    "etag": response.headers.get("ETag"),
+                    "version": response.headers.get("x-amz-version-id"),
+                }
         except (aiohttp.ClientError, asyncio.TimeoutError):
             raise UploadError(0) from None
         if status >= 400:
             raise UploadError(status)
+        return {
+            name: value for name, value in pins.items() if value and value != "null"
+        }
+
+    async def deliver(
+        self, task_id: str, upload: dict, body: bytes, report: dict
+    ) -> None:
+        """Uploads the file and completes the task, pinning the upload by what its answer named.
+
+        Whoever else holds the link (on a bucket without versions, a relay that carried the claim) could write
+        over the key before the completion; the API then refuses to pin a file this miner did not write, and it
+        uploads once more.
+        """
+        for attempt in range(1 + SWAPPED_RETRIES):
+            pins = await with_retries(lambda: self.upload(upload, body))
+            try:
+                await with_retries(
+                    lambda: self.api.post(
+                        f"/v1/tasks/{task_id}/complete", {**report, **(pins or {})}
+                    )
+                )
+                return
+            except TaskApiError as exc:
+                if exc.status != 409 or SWAPPED not in exc.detail or attempt:
+                    raise
+                log.warning(
+                    "task %s: the upload was written over, uploading again", task_id
+                )
 
     async def abandon(self, task_id: str, reason: str) -> None:
         log.warning("abandoning task %s: %s", task_id, reason)
@@ -345,7 +399,6 @@ class Miner(TaskWorker):
             await self.crawl(task["urls"], task.get("expires_at"), pages, progress)
             crawled = time.monotonic()
             body = await pages.finish()
-            await with_retries(lambda: self.upload(upload, body))
             report = {
                 "key": upload["key"],
                 "rows": pages.rows,
@@ -353,9 +406,7 @@ class Miner(TaskWorker):
                 "errors": pages.rows - pages.ok,
                 "bytes": len(body),
             }
-            await with_retries(
-                lambda: self.api.post(f"/v1/tasks/{task_id}/complete", report)
-            )
+            await self.deliver(task_id, upload, body, report)
             self.upload_s = max(time.monotonic() - crawled, 0.8 * self.upload_s)
         except asyncio.CancelledError:
             await self.abandon(task_id, "shutting down")

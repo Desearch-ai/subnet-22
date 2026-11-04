@@ -9,7 +9,7 @@ pub const OPEN_LIST_KEY: &str = "validation/open.json";
 pub const UPLOAD_LOG_LATEST: &str = "log/uploads/latest.json";
 /// Far enough ahead to anchor the commitment before the seed block.
 pub const REVEAL_AFTER_BLOCKS: i64 = 10;
-pub const FIELDS: [&str; 17] = [
+pub const FIELDS: [&str; 18] = [
     "task_id",
     "kind",
     "round_id",
@@ -27,6 +27,8 @@ pub const FIELDS: [&str; 17] = [
     "chars",
     "input_key",
     "input_sha256",
+    // Only on a versioned bucket, so the signed bytes of a note without it are unchanged.
+    "version",
 ];
 
 /// The manifest fields that are set, as the bytes its signature covers.

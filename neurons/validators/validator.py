@@ -21,6 +21,7 @@ from desearch.fetch import Fetcher, ScrapingDog
 from desearch.kinds import CRAWL, EMBED
 from desearch.journal import Anchor, anchor_from_commitment
 from desearch.manifest import seed_from_hash
+from desearch.witness import ApiLog
 from bittensor.wallets import Wallet
 
 from neurons.validators.config import ENV_FILE, config, flat, setup_logging
@@ -37,10 +38,17 @@ from neurons.validators.fetchers import (
     SampleFetcher,
     ScrapingDogAccount,
 )
-from neurons.validators.journal import JournalFollower
+from neurons.validators.journal import JournalFollower, JournalLogView
 from neurons.validators.ledger import Ledger
+from neurons.validators.relay import Relay, serve
 from neurons.validators.upload_log import UploadLog
 from neurons.validators.weights import set_weights, weights_from_shares
+from neurons.validators.witness import (
+    CensorshipCheck,
+    ChainHead,
+    StorageWitness,
+    WitnessStore,
+)
 
 WEIGHTS_WINDOW_BLOCKS = 20
 UPLOAD_LOG_POLL_S = 60
@@ -76,9 +84,14 @@ class Validator:
             os.environ.get("SCRAPINGDOG_DAILY_CREDITS", SCRAPINGDOG_DAILY_CREDITS)
         )
         self.ledger = Ledger(os.path.join(self.config.neuron.full_path, "verdicts.db"))
+        self.witnesses = WitnessStore(
+            os.path.join(self.config.neuron.full_path, "witness.db")
+        )
         self.stopping = asyncio.Event()
         # What the task API's log shows it did against its own rules; kept for the run and written to fraud proofs as found.
         self.journal_problems = []
+        # The log follower, once the log is followed; witness checks read it.
+        self.journal = None
 
     async def initialize(self) -> None:
         network = self.config.subtensor.chain_endpoint or self.config.subtensor.network
@@ -92,6 +105,8 @@ class Validator:
         self.metagraph = await self.subtensor.subnets.metagraph(self.config.netuid)
         self.uid = self.metagraph.hotkeys.index(self.wallet.hotkey.ss58_address)
         self.http = aiohttp.ClientSession(timeout=DOWNLOAD_TIMEOUT)
+        self.head = ChainHead(self.subtensor.block)
+        await self.head.refresh()
 
     async def run(self) -> None:
         await self.initialize()
@@ -105,6 +120,8 @@ class Validator:
             asyncio.create_task(self.sync_weights()),
             asyncio.create_task(self.follow_upload_log()),
             asyncio.create_task(self.follow_journal()),
+            asyncio.create_task(self.head.follow(self.stopping)),
+            asyncio.create_task(self.serve_relay()),
         ]
         try:
             await asyncio.gather(self.check_crawl_tasks(), self.check_embed_tasks())
@@ -312,6 +329,7 @@ class Validator:
             self.journal_anchor,
             self.config.neuron.replay_bin,
         )
+        self.journal = follower
         if not self.config.neuron.replay_bin:
             log.info(
                 "No --neuron.replay_bin: the task API's log is checked, not replayed"
@@ -324,13 +342,60 @@ class Validator:
                 log.warning(f"Task API log unavailable, retrying: {error!r}")
             await asyncio.sleep(JOURNAL_POLL_S)
 
+    async def serve_relay(self) -> None:
+        """A path to the task API for miners that doesn't run through the operator's network, witnessing every
+        request it forwards and proving any the API's log then lacks."""
+        relay_config = self.config.relay
+        if not relay_config.port:
+            return
+        api = self.config.neuron.task_api_url
+        relay = Relay(
+            self.wallet.hotkey,
+            api,
+            self.witnesses,
+            self.head,
+            registered=lambda hotkey: hotkey in self.metagraph.hotkeys,
+            http=self.http,
+            publish_delay_blocks=relay_config.publish_delay_blocks,
+        )
+        runner = await serve(relay, relay_config.host, relay_config.port)
+        signer = relay_config.signer or await self.api_signer()
+        check = CensorshipCheck(
+            self.witnesses,
+            self.head,
+            JournalLogView(
+                lambda: self.journal,
+                self.head,
+                relay_config.check_after_blocks,
+                fallback=ApiLog(self.http, api, signer),
+            ),
+            after_blocks=relay_config.check_after_blocks,
+            source=api,
+        )
+        try:
+            await check.follow(self.stopping)
+        finally:
+            await runner.cleanup()
+
     async def follow_upload_log(self) -> None:
         """Every miner's uploads of both kinds, from the log the task API signs into the uploads bucket."""
+        observer = (
+            StorageWitness(
+                self.http,
+                self.config.neuron.storage_url,
+                self.wallet.hotkey,
+                self.witnesses,
+                self.head,
+            )
+            if self.config.witness_storage
+            else None
+        )
         upload_log = UploadLog(
             self.http,
             self.config.neuron.storage_url,
             await self.api_signer(),
             self.ledger,
+            observer,
         )
         pruned_at = 0.0
         while not self.stopping.is_set():
@@ -342,6 +407,7 @@ class Validator:
                 log.warning(f"Upload log unavailable, retrying: {error!r}")
             if time.time() - pruned_at > PRUNE_EVERY_S:
                 self.ledger.prune()
+                self.witnesses.prune()
                 pruned_at = time.time()
             await asyncio.sleep(UPLOAD_LOG_POLL_S)
 

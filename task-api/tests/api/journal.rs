@@ -263,3 +263,70 @@ async fn every_read_is_signed_over_its_path_time_and_body() {
     assert_eq!(missing.status(), 404);
     assert!(missing.headers().get(SIGNATURE_HEADER).is_none(), "only answered reads are signed");
 }
+
+async fn expired_now(h: &Harness, task_id: &str) {
+    let _: i64 =
+        redis::cmd("ZADD").arg(task_api::queues::CLAIMS).arg("XX").arg(desearch::time::now()).arg(task_id).query_async(&mut h.redis.clone()).await.unwrap();
+    lifecycle::reclaim_expired(&h.state, desearch::time::now() + 1.0).await.unwrap();
+}
+
+#[tokio::test]
+async fn a_lapse_forgiven_for_a_storage_outage_is_decided_again_from_the_logged_probes() {
+    use task_api::canary;
+    let h = Harness::with(|s| s.storage_outage_forgives = true).await;
+    h.enqueue(urls(6)).await;
+    let held = h.miner.claim().await["tasks"][0].clone();
+    assert!(canary::run(&h.state).await.unwrap().failed.is_none());
+    h.stub.state.fail("PUT", &format!("{}/uploads/", crate::harness::BUCKET), 1);
+    assert!(canary::run(&h.state).await.unwrap().failed.is_some(), "the bucket refuses a write while the miner holds its claim");
+    expired_now(&h, &task_id(&held)).await;
+    assert!(canary::run(&h.state).await.unwrap().failed.is_none(), "storage is back");
+    let later = h.rival.claim().await["tasks"][0].clone();
+    expired_now(&h, &task_id(&later)).await;
+    h.state.db.run(|conn| snapshot::record(conn, desearch::time::now())).await.unwrap();
+
+    let files = published(&h).await;
+    let all = entries(&files);
+    let forgiven: Vec<Value> = all.iter().filter(|e| e["kind"] == "lapse").map(|e| e["input"]["forgiven"].clone()).collect();
+    assert_eq!(forgiven, [json!(canary::OUTAGE_CAUSE), Value::Null], "only the claim held through the outage costs nothing");
+    assert_eq!(all.iter().filter(|e| e["kind"] == "probe").count(), 3);
+    let claims: Vec<&Value> = all.iter().filter(|e| e["kind"] == "claim").collect();
+    assert!(claims.iter().all(|c| c["output"]["receipts"][0]["body"]["request"] == c["input"]["request"]["request"]), "receipts name their request");
+    let (replay, chained) = replayed(&h, &files);
+    assert_eq!(chained, Ok(()));
+    assert_eq!(replay.divergences, []);
+
+    // Forgiving the second lapse too, with its budget left alone: the probes the log holds show no outage then.
+    let forged = rechained(&h, &files, |entry| {
+        if entry["kind"] == "lapse" && entry["input"]["forgiven"].is_null() {
+            entry["input"]["forgiven"] = canary::OUTAGE_CAUSE.into();
+        }
+    });
+    let (replay, _) = replayed(&h, &forged);
+    assert!(replay.fraud().any(|d| d.kind == "lapse" && d.what.contains("costs the miner nothing")), "{:?}", replay.divergences);
+
+    // Dropping the failed probe from the log takes away the ground for the first one.
+    let without = rechained(
+        &h,
+        &files
+            .iter()
+            .map(|file| {
+                let mut file = file.clone();
+                file["entries"].as_array_mut().unwrap().retain(|e| !(e["kind"] == "probe" && e["input"]["ok"] == false));
+                file
+            })
+            .collect::<Vec<_>>(),
+        |_| {},
+    );
+    let (replay, _) = replayed(&h, &without);
+    assert!(replay.fraud().any(|d| d.kind == "lapse"), "{:?}", replay.divergences);
+
+    // A receipt that names another request than the one it answers.
+    let renamed = rechained(&h, &files, |entry| {
+        if entry["kind"] == "claim" {
+            entry["output"]["receipts"][0]["body"]["request"] = "0".repeat(64).into();
+        }
+    });
+    let (replay, _) = replayed(&h, &renamed);
+    assert!(replay.fraud().any(|d| d.what.contains("does not name the request")), "{:?}", replay.divergences);
+}

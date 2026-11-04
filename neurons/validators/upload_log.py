@@ -20,12 +20,19 @@ log = logging.getLogger("validator")
 
 class UploadLog:
     def __init__(
-        self, http: aiohttp.ClientSession, storage_url: str, signer: str, ledger
+        self,
+        http: aiohttp.ClientSession,
+        storage_url: str,
+        signer: str,
+        ledger,
+        observer=None,
     ):
         self.http = http
         self.storage_url = storage_url.rstrip("/")
         self.signer = signer
         self.ledger = ledger
+        # Looks at every new upload in storage and signs what it saw; backfilled ones may be gone already.
+        self.observer = observer
 
     async def poll(self) -> int:
         """Reads every file written since the last poll; returns how many uploads were new."""
@@ -48,7 +55,16 @@ class UploadLog:
                 break
             added += self.ledger.add_uploads(found["entries"])
             self.ledger.set_state(NEXT_SEQ, str(seq + 1))
+            await self.observe(found["entries"])
         return added
+
+    async def observe(self, entries: list[dict]) -> None:
+        if self.observer is None or not entries:
+            return
+        try:
+            await self.observer.observe(entries)
+        except Exception as error:
+            log.warning("could not look at %d uploads in storage: %r", len(entries), error)
 
     async def backfill(self, latest: int) -> int:
         """Back far enough to cover the scoring window."""

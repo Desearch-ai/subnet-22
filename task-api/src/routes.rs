@@ -224,6 +224,7 @@ async fn claim_tasks(state: &State, signed: &Signed<'_>) -> Answer {
                     outcome: "issued",
                     seq: got.seq,
                     task_id: Some(got.task_id.clone()),
+                    request: Some(who.request.clone()),
                     ..Receipt::default()
                 });
                 issued.push(task);
@@ -274,6 +275,7 @@ async fn refused(state: &State, signed: &Signed<'_>, round_id: &str, who: &Calle
         outcome: "refused",
         seq,
         refusal: Some(refusal_value.clone()),
+        request: Some(who.request.clone()),
         ..Receipt::default()
     };
     let receipt = state.record_logged(vec![receipt], "claim", json!({"request": request}), blobs).await?.remove(0);
@@ -284,8 +286,10 @@ async fn refused(state: &State, signed: &Signed<'_>, round_id: &str, who: &Calle
 async fn issue(state: &State, got: &Claim, kind: &str, who: &Caller) -> Result<Option<Value>, ApiError> {
     let task_id = &got.task_id;
     let (suffix, content_type) = if kind == EMBED { (VECTORS_SUFFIX, VECTORS_TYPE) } else { (".parquet", PARQUET) };
-    let name = format!("task={task_id}/{}-{}{suffix}", who.hotkey, got.seq);
-    // Random task ids lead the key so storage that shards by key range spreads the writes.
+    // A random name says nothing of the miner, the task or the claim, so neither the storage nor the path to it
+    // can tell whose upload a write carries; the key reaches the public log only with the completion. Being
+    // random, it also spreads writes over storage that shards by key range.
+    let name = format!("{}{suffix}", upload_name());
     let upload_key = format!("uploads/{name}");
     let since_epoch = Duration::from_secs_f64(now());
     // It may outlive the claim; a late completion or a file written after it is refused.
@@ -320,6 +324,11 @@ async fn issue(state: &State, got: &Claim, kind: &str, who: &Caller) -> Result<O
     task.extend(inputs.as_object().cloned().unwrap_or_default());
     task.insert("upload".into(), json!({"url": upload_url, "key": upload_key, "content_type": content_type, "expires_at": expires_at}));
     Ok(Some(Value::Object(task)))
+}
+
+/// 128 random bits from the thread's CSPRNG, as 32 hex characters.
+pub fn upload_name() -> String {
+    format!("{:032x}", rand::random::<u128>())
 }
 
 async fn completed_by(state: &State, task_id: &str, hotkey: &str) -> Result<Option<Value>, ApiError> {
@@ -415,6 +424,11 @@ async fn finish_completion(
     Ok(result)
 }
 
+/// Entity tags compared without the quotes some stores and clients drop.
+fn same_etag(a: &str, b: &str) -> bool {
+    a.trim().trim_matches('"') == b.trim().trim_matches('"')
+}
+
 fn storage_down(what: &str, error: StorageError) -> ApiError {
     eprintln!("{what}: {error}");
     ApiError::status(502, "object storage is unavailable, retry")
@@ -433,10 +447,17 @@ async fn verify_completion(
     if issued.get("key").and_then(Value::as_str) != Some(report.key.as_str()) {
         return Err(ApiError::status(400, "key is not the one issued with this claim"));
     }
-    let found = state.storage.head(&report.key).await.map_err(|e| storage_down(&format!("HEAD failed for {}", report.key), e))?;
+    // The version the miner's own upload made, when it names one; otherwise whatever the key holds now.
+    let found = state.storage.head_at(&report.key, report.version.as_deref()).await.map_err(|e| storage_down(&format!("HEAD failed for {}", report.key), e))?;
     let Some(found) = found.filter(|f| f.size > 0) else {
+        if report.version.is_some() {
+            return Err(ApiError::status(422, "the issued key holds no such version"));
+        }
         return Err(ApiError::status(422, "nothing was uploaded to the issued key"));
     };
+    if report.etag.as_deref().is_some_and(|etag| !same_etag(etag, &found.etag)) {
+        return Err(ApiError::status(409, "the issued key holds another object than the one you uploaded; upload again and complete"));
+    }
     if found.modified.is_some_and(|modified| modified as f64 > arrived + CLOCK_SLACK_S) {
         return Err(ApiError::status(409, "the upload was written after this completion"));
     }
@@ -466,7 +487,23 @@ async fn verify_completion(
             return Err(ApiError::status(422, "the upload is not a Parquet file"));
         }
     }
-    state.storage.make_public(&report.key).await.map_err(|e| storage_down(&format!("could not open {} to readers", report.key), e))?;
+    // Locked for the check window, so not even the bucket's owner can delete the version every reader is sent to;
+    // a store that refuses is logged, and every validator's look at the upload shows whether it is locked.
+    // The completion's log entry says whether the lock held, so a missing lock is on record, not only in this copy's output.
+    let mut lock = Value::Null;
+    if let Some(version) = found.version.as_deref().filter(|_| state.settings.upload_lock_s > 0.0) {
+        let until = (arrived + state.settings.upload_lock_s).ceil() as i64;
+        let locked = state.storage.lock_version(&report.key, version, until).await;
+        if let Err(error) = &locked {
+            eprintln!("could not lock {} version {version}: {error}", report.key);
+        }
+        lock = json!({"version": version, "until": until, "locked": locked.is_ok()});
+    }
+    state
+        .storage
+        .make_public_at(&report.key, found.version.as_deref())
+        .await
+        .map_err(|e| storage_down(&format!("could not open {} to readers", report.key), e))?;
 
     let mut steps = Steps::since(arrived);
     steps.mark("checks");
@@ -475,7 +512,8 @@ async fn verify_completion(
     let frozen_block = state.seeds.current_block().await?;
     let completed_at = arrived;
     let position = payload.get("position").cloned().unwrap_or_else(|| 0.into());
-    // The PUT URL outlives this call, so every reader asks for the version checked here by its entity tag.
+    // The PUT URL outlives this call, so every reader asks for the version checked here: by its version id on a
+    // versioned bucket, where a later write can't take its place, else by its entity tag.
     let mut job = json!({
         "task_id": task_id,
         "kind": kind,
@@ -498,6 +536,9 @@ async fn verify_completion(
         if let Some(value) = payload.get(name) {
             job[name] = value.clone();
         }
+    }
+    if let Some(version) = &found.version {
+        job["version"] = version.clone().into();
     }
     // An embed upload's counts come from its input, never from the miner.
     if kind == CRAWL {
@@ -522,9 +563,11 @@ async fn verify_completion(
         seq,
         task_id: Some(task_id.into()),
         block: Some(frozen_block),
+        request: Some(who.request.clone()),
         ..Receipt::default()
     };
-    let receipt = state.record_logged(vec![receipt], "complete", json!({"request": request, "task_id": task_id, "job": kept}), blobs).await;
+    let input = json!({"request": request, "task_id": task_id, "job": kept, "lock": lock});
+    let receipt = state.record_logged(vec![receipt], "complete", input, blobs).await;
     steps.mark("receipt");
     if let Some(slow) = steps.slow() {
         eprintln!("completing {task_id} took {slow}");
@@ -548,7 +591,8 @@ pub async fn abandon(
     if state.claim_holder(&task_id).await?.as_deref() != Some(who.hotkey.as_str()) {
         return Err(ApiError::status(409, "you do not hold this claim"));
     }
-    let forgiven = lifecycle::held_through_restart(&state, state.tasks(&kind).claim_ttl, queues::claim_expiry(&state.redis, &task_id).await?);
+    let expiry = queues::claim_expiry(&state.redis, &task_id).await?;
+    let forgiving = lifecycle::forgiving(&state, &task_id, state.tasks(&kind).claim_ttl, expiry).await?;
     // A completion still running decides first; a finished one leaves nothing to abandon.
     let lock = hold_completion(&state, &task_id, &who.hotkey).await?;
     let seq = state.tasks(&kind).abandon(&state.redis, &task_id, &who.hotkey).await;
@@ -564,7 +608,7 @@ pub async fn abandon(
         outcome: "reclaimed",
         seq,
         task_id: Some(task_id.clone()),
-        cause: Some(if forgiven { "restart" } else { "abandoned" }.into()),
+        request: Some(who.request.clone()),
         ..Receipt::default()
     };
     let (request, blobs) = signed.logged();
@@ -573,13 +617,24 @@ pub async fn abandon(
         .db
         .run(move |conn| {
             let at = now();
+            // Decided here, on the probes the log holds up to this entry, so a replay decides it alike.
+            let forgiven = lifecycle::forgiven_in(conn, &forgiving, expiry)?;
+            let receipt = Receipt { cause: Some(forgiven.unwrap_or("abandoned").into()), ..receipt };
             let receipts = crate::state::record_receipts(conn, &key, vec![receipt], at)?;
-            let budget = if forgiven {
+            let budget = if forgiven.is_some() {
                 budgets::get_or_create(conn, &hotkey, kind_of(&lapsed))?.budget
             } else {
                 lifecycle::lapse(conn, &hotkey, &task, &lapsed, "abandoned", at)?
             };
-            let input = json!({"request": request, "task_id": task, "kind": kind_of(&lapsed), "assigned": lifecycle::assigned(&lapsed), "forgiven": forgiven});
+            let input = json!({
+                "request": request,
+                "task_id": task,
+                "kind": kind_of(&lapsed),
+                "assigned": lifecycle::assigned(&lapsed),
+                "expiry": expiry,
+                "forgiving": forgiving.logged(),
+                "forgiven": forgiven,
+            });
             journal::append(conn, journal::Record::new("abandon", at, input, json!({"receipts": receipts, "budget": budget})).with_blobs(blobs))?;
             Ok(budget)
         })
@@ -603,7 +658,8 @@ pub async fn release(
     let Some(job) = job.filter(|job| job.get("picked").is_some_and(|p| !p.is_null() && p != false && p != "")) else {
         return Err(ApiError::status(409, "no such open upload"));
     };
-    let gone = state.storage.head(text(&job, "key")).await.map_err(|_| ApiError::status(502, "object storage is unavailable, retry"))?.is_none();
+    let pinned = job.get("version").and_then(Value::as_str);
+    let gone = state.storage.head_at(text(&job, "key"), pinned).await.map_err(|_| ApiError::status(502, "object storage is unavailable, retry"))?.is_none();
     if !gone {
         return Ok(Json(json!({"task_id": task_id, "status": "open"})));
     }
@@ -810,6 +866,16 @@ pub async fn enqueue(Shared(state): Shared<Arc<State>>, ConnectInfo(peer): Conne
 
 pub async fn key(Shared(state): Shared<Arc<State>>) -> Answer {
     Ok(Json(json!({"signer": state.signer()})))
+}
+
+/// The storage canary's probes since `since` (the last hour unless asked), newest first, and the outages they show.
+pub async fn storage_probes(Shared(state): Shared<Arc<State>>, QueryParams(query): QueryParams<Query>) -> Answer {
+    let since = crate::logs::float_param(&query, "since")?.unwrap_or_else(|| now() - 3600.0);
+    let limit = crate::logs::int_param(&query, "limit", 100, 1, 1000)?;
+    let every = state.settings.canary_every;
+    let mut report = state.lookups.read(move |conn| crate::canary::report(conn, since, limit)).await?;
+    report["every_s"] = every.into();
+    Ok(Json(report))
 }
 
 pub async fn round_list(Shared(state): Shared<Arc<State>>, QueryParams(query): QueryParams<Query>) -> Answer {

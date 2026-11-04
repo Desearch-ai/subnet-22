@@ -27,7 +27,7 @@ use crate::state::{Redis, State};
 use crate::storage::{delete_quietly, put_json};
 use crate::validations::{self, build_report, FinalVerdict};
 use crate::verdicts::{decide, Decision, ERROR_OUTCOMES, NO_MAJORITY};
-use crate::{checks, hours, journal, outcomes, py, roundstore};
+use crate::{canary, checks, hours, journal, outcomes, py, roundstore};
 
 pub const EMBED_FIELDS: [&str; 7] = ["model", "texts", "chars", "input_key", "input_sha256", "pages", "written_at"];
 pub const EMBED_ROUND_INPUTS: isize = 200;
@@ -450,11 +450,11 @@ pub async fn reclaim_expired(state: &State, now: f64) -> Result<Vec<(String, Str
         let kind = kind_of(&payload).to_string();
         let tasks = state.tasks(&kind);
         let expiry = queues::claim_expiry(&state.redis, &task_id).await?;
+        // Read before the reclaim, which forgets when the task was issued.
+        let forgiving = forgiving(state, &task_id, tasks.claim_ttl, expiry).await?;
         let Some((holder, seq)) = tasks.reclaim(&state.redis, &task_id, now).await? else { continue };
-        let forgiven = held_through_restart(state, tasks.claim_ttl, expiry);
         if !holder.is_empty() {
             let round_id = Some(text(&payload, "round_id")).filter(|r| !r.is_empty()).map(String::from).unwrap_or_else(|| state.current_round(&kind));
-            let cause = if forgiven { "restart" } else { "expired" };
             let receipt = Receipt {
                 round_id,
                 hotkey: holder.clone(),
@@ -462,7 +462,6 @@ pub async fn reclaim_expired(state: &State, now: f64) -> Result<Vec<(String, Str
                 outcome: "reclaimed",
                 seq,
                 task_id: Some(task_id.clone()),
-                cause: Some(cause.into()),
                 ..Receipt::default()
             };
             let (hotkey, task, lapsed, key) = (holder.clone(), task_id.clone(), payload.clone(), state.key.clone());
@@ -471,9 +470,20 @@ pub async fn reclaim_expired(state: &State, now: f64) -> Result<Vec<(String, Str
                 .run(move |conn| {
                     // The time the claim was judged expired at, so the log shows it had.
                     let at = now;
-                    let budget = if forgiven { None } else { Some(lapse(conn, &hotkey, &task, &lapsed, "claim_expired", at)?) };
+                    // Decided here, on the probes the log holds up to this entry, so a replay decides it alike.
+                    let forgiven = forgiven_in(conn, &forgiving, expiry)?;
+                    let receipt = Receipt { cause: Some(forgiven.unwrap_or("expired").into()), ..receipt };
+                    let budget = if forgiven.is_some() { None } else { Some(lapse(conn, &hotkey, &task, &lapsed, "claim_expired", at)?) };
                     let receipts = crate::state::record_receipts(conn, &key, vec![receipt], at)?;
-                    let input = json!({"task_id": task, "hotkey": hotkey, "kind": kind_of(&lapsed), "assigned": assigned(&lapsed), "expiry": expiry, "forgiven": forgiven});
+                    let input = json!({
+                        "task_id": task,
+                        "hotkey": hotkey,
+                        "kind": kind_of(&lapsed),
+                        "assigned": assigned(&lapsed),
+                        "expiry": expiry,
+                        "forgiving": forgiving.logged(),
+                        "forgiven": forgiven,
+                    });
                     journal::append(conn, journal::Record::new("lapse", at, input, json!({"receipts": receipts, "budget": budget})))?;
                     Ok(())
                 })
@@ -487,6 +497,52 @@ pub async fn reclaim_expired(state: &State, now: f64) -> Result<Vec<(String, Str
 /// Claimed before this process started: the miner may have tried to finish while we were down.
 pub fn held_through_restart(state: &State, claim_ttl: f64, expiry: Option<f64>) -> bool {
     expiry.is_some_and(|expiry| expiry <= state.started_at + claim_ttl)
+}
+
+/// What a lapse's forgiveness is decided on: whether the claim was held through a restart, and, where the
+/// storage-outage rule is on, when it was claimed, so the probes between then and its expiry can be read.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Forgiving {
+    pub restart: bool,
+    /// When the deciding copy started and the claim time it allows, so a replay checks the restart rule alike.
+    pub started_at: Option<f64>,
+    pub claim_ttl: f64,
+    pub claimed_at: Option<f64>,
+}
+
+impl Forgiving {
+    /// What a lapse's log entry records of how its forgiveness was decided.
+    pub fn logged(&self) -> Value {
+        json!({"started_at": self.started_at, "claim_ttl": self.claim_ttl, "claimed_at": self.claimed_at})
+    }
+}
+
+pub async fn forgiving(state: &State, task_id: &str, claim_ttl: f64, expiry: Option<f64>) -> Result<Forgiving> {
+    let restart = held_through_restart(state, claim_ttl, expiry);
+    let started_at = Some(state.started_at).filter(|at| at.is_finite());
+    let decided = Forgiving { restart, started_at, claim_ttl, claimed_at: None };
+    let Some(expiry) = expiry.filter(|_| state.settings.storage_outage_forgives && !restart) else { return Ok(decided) };
+    let issued: Option<String> = state.redis.clone().get(format!("issued:{task_id}")).await?;
+    let claimed_at = issued.and_then(|raw| serde_json::from_str::<Value>(&raw).ok()).and_then(|issued| issued["at"].as_f64()).unwrap_or(expiry - claim_ttl);
+    Ok(Forgiving { claimed_at: Some(claimed_at), ..decided })
+}
+
+/// Why a claim that ended without an upload costs its miner nothing, if it does: held through a restart, or,
+/// where the storage-outage rule is on, held while the storage canary found the uploads bucket failing. Read in
+/// the transaction that logs the lapse, so the log holds every probe it was decided on.
+pub fn forgiven_in(conn: &Connection, forgiving: &Forgiving, expiry: Option<f64>) -> Result<Option<&'static str>> {
+    if forgiving.restart {
+        return Ok(Some("restart"));
+    }
+    match (forgiving.claimed_at, expiry) {
+        (Some(from), Some(to)) if canary::outage_during(conn, from, to)? => Ok(Some(canary::OUTAGE_CAUSE)),
+        _ => Ok(None),
+    }
+}
+
+pub async fn forgiven_cause(state: &State, task_id: &str, claim_ttl: f64, expiry: Option<f64>) -> Result<Option<&'static str>> {
+    let found = forgiving(state, task_id, claim_ttl, expiry).await?;
+    state.lookups.read(move |conn| forgiven_in(conn, &found, expiry)).await
 }
 
 /// A claim that ended without an upload: its URLs, the budget and a strike; returns the budget.

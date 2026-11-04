@@ -1,8 +1,10 @@
 //! Who is calling: four signed headers, checked against the subnet's hotkeys and a nonce used once.
 
 use axum::http::HeaderMap;
+use desearch::canonical::hex;
 use desearch::hotkey::{public_of, signing_payload, verify};
 use desearch::time::now;
+use sha2::{Digest, Sha256};
 
 use crate::http::ApiError;
 use crate::journal;
@@ -20,6 +22,17 @@ pub struct Caller {
     pub is_validator: bool,
     pub requested_at: f64,
     pub is_admin: bool,
+    /// The signed request's hash, as a relaying validator's witness and `desearch.witness.request_hash` give it.
+    pub request: String,
+}
+
+/// One signed request's identity: what it signed, who signed it and the signature, so the same request sent
+/// over several paths hashes the same and a witness can name it.
+pub fn request_hash(method: &str, path: &str, body: &[u8], hotkey: &str, timestamp: &str, nonce: &str, signature: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(signing_payload(method, path, body, timestamp, nonce));
+    hasher.update(format!("\n{hotkey}\n{}", signature.to_ascii_lowercase()).as_bytes());
+    hex(&hasher.finalize())
 }
 
 pub fn client_address(headers: &HeaderMap, peer: &str) -> String {
@@ -80,13 +93,29 @@ async fn authenticate(state: &State, headers: &HeaderMap, method: &str, path: &s
     if !state.set_once(&format!("nonce:{hotkey}:{nonce}"), "1", NONCE_TTL_S).await? {
         return Err(ApiError::status(401, "nonce already used"));
     }
+    let request = request_hash(method, path, body, hotkey, timestamp, nonce, signature);
     // Every request let in reaches the log by its hash, even one that changes nothing, so a relay holding it can show it arrived.
-    journal::note_request(&state.redis, &journal::request_hash(method, path, body, timestamp, nonce, hotkey, signature), now()).await?;
+    journal::note_request(&state.redis, &request, now()).await?;
     Ok(Caller {
         hotkey: hotkey.into(),
         uid: entry.as_ref().and_then(|e| e.uid),
         is_validator: entry.as_ref().is_some_and(|e| e.is_validator),
         requested_at: sent_at,
         is_admin: admin,
+        request,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::request_hash;
+
+    #[test]
+    fn a_request_hashes_the_same_whoever_sees_it_and_a_signature_case_does_not_matter() {
+        let hashed = request_hash("POST", "/v1/tasks/claim", b"{}", "5Hotkey", "1700000000", "0123456789abcdef0123456789abcdef", "ABcd");
+        assert_eq!(hashed, request_hash("POST", "/v1/tasks/claim", b"{}", "5Hotkey", "1700000000", "0123456789abcdef0123456789abcdef", "abcd"));
+        assert_ne!(hashed, request_hash("POST", "/v1/tasks/claim", b"{ }", "5Hotkey", "1700000000", "0123456789abcdef0123456789abcdef", "abcd"));
+        // The vector desearch/witness.py checks against, so both sides name a request alike.
+        assert_eq!(hashed, "70d28f38ac11f0c4eaac445d2662509f3f3ab2e403ea3ea7ec70aaf3ea63d19a");
+    }
 }

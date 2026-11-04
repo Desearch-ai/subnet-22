@@ -115,6 +115,13 @@ pub struct Settings {
     pub admin_uris: String,
     pub key_uri: String,
     pub cors_origins: Vec<String>,
+    /// Seconds between storage canary probes; 0 turns the canary off.
+    pub canary_every: f64,
+    /// A claim that ended without an upload while the canary found storage failing costs its miner nothing.
+    pub storage_outage_forgives: bool,
+    /// Seconds each pinned upload version is put under Object Lock (compliance mode) at its completion; 0 locks
+    /// none. Needs a versioned bucket with Object Lock on.
+    pub upload_lock_s: f64,
     /// Seconds between published files of the log.
     pub journal_every: f64,
     /// Seconds between the shares written into the log, for a replay to compare with its own.
@@ -173,6 +180,9 @@ impl Settings {
             "embed_model": self.embed_model,
             "active_s": self.active_s,
             "max_upload": self.max_upload,
+            "canary_every": self.canary_every,
+            "storage_outage_forgives": self.storage_outage_forgives,
+            "upload_lock_s": self.upload_lock_s,
             "registry": registry,
             "seeds": match self.seeds { SeedsMode::Chain { .. } => "chain", SeedsMode::Local { .. } => "local" },
         })
@@ -269,6 +279,9 @@ impl Settings {
             admin_uris: text("TASK_API_ADMIN_URIS", ""),
             key_uri,
             cors_origins: listed(&text("TASK_API_CORS_ORIGINS", DEFAULT_ORIGINS)),
+            canary_every: number("TASK_API_CANARY_EVERY_S", 60.0)?,
+            storage_outage_forgives: text("TASK_API_STORAGE_OUTAGE_FORGIVES", "0") == "1",
+            upload_lock_s: number("TASK_API_UPLOAD_LOCK_S", 0.0)?,
             journal_every: number("TASK_API_JOURNAL_EVERY_S", 30.0)?,
             journal_shares_every: number("TASK_API_JOURNAL_SHARES_EVERY_S", 600.0)?,
             snapshot_every: number("TASK_API_SNAPSHOT_EVERY_S", 21_600.0)?,

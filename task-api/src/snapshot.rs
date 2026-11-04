@@ -13,7 +13,7 @@ use crate::py::canonical;
 
 /// Each table, the columns decisions read, and which rows: every row of a table the API prunes itself (prunes are logged and
 /// replayed), and of verdicts only those a take-back, a strike or a lockout can still reach.
-const TABLES: [(&str, &str, &str); 10] = [
+const TABLES: [(&str, &str, &str); 11] = [
     ("miners", "hotkey, pool, budget, verified", "1"),
     ("credits", "pool, hotkey, hour, amount", "1"),
     ("coverage", "hotkey, hour, assigned, returned", "1"),
@@ -23,6 +23,8 @@ const TABLES: [(&str, &str, &str); 10] = [
     ("checks", "hotkey, kind, task_id, at, upload_at, passed, errors_judged, errors_unconfirmed", "1"),
     ("check_states", "hotkey, kind, recheck_left, last_pass_at", "1"),
     ("validator_audits", "hotkey, audits, disagreements", "1"),
+    // The storage canary's probes, which a lapse's forgiveness reads.
+    ("storage_probes", "at, block, ok, step, detail, took_ms", "1"),
     (
         "validations",
         "task_id, kind, round_id, miner, validator, verdict, credited, completed_at, scored_at, upload_key",
@@ -71,6 +73,8 @@ pub fn load(conn: &Connection, snapshot: &Value) -> Result<()> {
             (columns.to_string(), Vec::new())
         };
         let width = columns.split(',').count();
+        // Probes a replay read before its first snapshot are in the snapshot too.
+        conn.execute(&format!("DELETE FROM {table}"), [])?;
         let insert = format!("INSERT INTO {table} ({columns}) VALUES ({})", vec!["?"; width].join(", "));
         for row in rows {
             let mut values: Vec<Sql> = row.as_array().into_iter().flatten().map(sql_of).collect();
@@ -94,6 +98,7 @@ fn sql_of(value: &Value) -> Sql {
 
 /// The tables the accounts live in, empty, as a replay needs them.
 pub fn create(conn: &Connection) -> Result<()> {
+    crate::canary::create(conn)?;
     crate::budgets::create(conn)?;
     crate::checks::create(conn)?;
     crate::validations::create(conn)?;

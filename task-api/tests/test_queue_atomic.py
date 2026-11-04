@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 import time
 
 import redis.asyncio as aioredis
@@ -13,7 +14,8 @@ from app.queues import (
     ValidationQueue,
 )
 
-REDIS_URL = "redis://localhost:6379/14"
+# TASK_API_TEST_REDIS_URL lets checkouts testing at once each use their own Redis.
+REDIS_URL = os.environ.get("TASK_API_TEST_REDIS_URL", "redis://localhost:6379/14")
 
 
 def run(scenario):

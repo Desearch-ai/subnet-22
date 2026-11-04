@@ -111,6 +111,13 @@ Embedding is switched off until its inputs and the publishing of vectors below a
 - **Direct to storage.** Uploads go from the miner straight into storage through a link for one
   key, and validators read them from the public bucket. The API never carries the files, so it has
   nothing to alter, and the signed note beside each upload records what the miner was given.
+- **Witnessed paths.** Miners can reach the task API through validators' relays, which sign a witness of
+  every request they forward; one the API's signed log then lacks is a censorship proof. Upload keys are
+  random until the completion, and a storage canary makes any storage outage public and, by rule, harmless.
+  See [witness relays](./witness-relays.md).
+- **Uploads pinned by version.** On a versioned bucket a completion pins the miner's own version of its
+  upload, locked for the check window, and validators read that version, so nobody's later write can fail
+  it. Every validator looks at every completed upload and signs what storage held.
 - **Unpredictable checks.** Which uploads are checked is decided by a block hash that did not exist
   while the miner uploaded, so no upload is safe to fake.
 - **Take-back.** A failed check takes back the miner's unchecked work since its last passed check,
@@ -131,8 +138,8 @@ Embedding is switched off until its inputs and the publishing of vectors below a
 
 ```
 subnet-22 bucket (temporary, objects expire after a day, readable by anyone)
-  uploads/          where miners' upload links point; each completed upload is checked and published
-                    from here
+  uploads/          where miners' upload links point, one random key per claim; each completed upload is
+                    checked and published from here
   validation/       open.json, the list of uploads waiting for validators
   log/uploads/      every completed upload with the counts its miner reported, signed, for validators to count
   log/journal/      the hash-chained, signed log of every change to the accounts, its head anchored on chain

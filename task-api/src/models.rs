@@ -6,6 +6,8 @@ use crate::rounds::Url;
 
 pub const MAX_URL_DETAILS: usize = 1000;
 pub const MAX_CLAIM: i64 = 50;
+/// S3 version ids are up to 1,024 bytes; entity tags far shorter.
+const MAX_PIN_CHARS: usize = 1024;
 const MAX_CLAIM_MODELS: usize = 8;
 const OUTCOMES: [&str; 6] = ["matched", "mismatched", "unverifiable", "errors_confirmed", "errors_unconfirmed", "not_fetched"];
 const EMBED_OUTCOMES: [&str; 3] = ["matched", "mismatched", "malformed"];
@@ -305,6 +307,11 @@ pub struct CompleteBody {
     pub key: String,
     /// The miner's counts, as `model_dump(exclude={"key"})` gives them.
     pub reported: Value,
+    /// The version its upload made on a versioned bucket, from the upload's answer: the completion pins exactly
+    /// that version, so nothing written to the key by anyone else can be pinned in its place.
+    pub version: Option<String>,
+    /// The entity tag its upload's answer gave; a completion that finds another object at the key is refused.
+    pub etag: Option<String>,
 }
 
 impl CompleteBody {
@@ -317,9 +324,13 @@ impl CompleteBody {
         for name in ["rows", "ok", "errors", "bytes"] {
             fields.int(name, Some(0), Some(0));
         }
-        fields.out.remove("key");
+        let version = fields.text("version", None, true, Some(MAX_PIN_CHARS)).filter(|v| !v.is_empty() && v != "null");
+        let etag = fields.text("etag", None, true, Some(MAX_PIN_CHARS)).filter(|e| !e.is_empty());
+        for name in ["key", "version", "etag"] {
+            fields.out.remove(name);
+        }
         let reported = Value::Object(fields.out.clone());
-        fields.invalid.result(CompleteBody { key: key.unwrap_or_default(), reported })
+        fields.invalid.result(CompleteBody { key: key.unwrap_or_default(), reported, version, etag })
     }
 }
 

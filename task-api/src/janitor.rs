@@ -15,7 +15,7 @@ use crate::budgets::{self, hour_of, KEEP_H};
 use crate::http::ApiError;
 use crate::queues::KINDS;
 use crate::state::State;
-use crate::{anchor, checks, hours, journal, lifecycle, logs, roundstore, snapshot, uploadlog, validations};
+use crate::{anchor, canary, checks, hours, journal, lifecycle, logs, roundstore, snapshot, uploadlog, validations};
 use serde_json::{json, Value};
 
 /// The copy of the API that runs the passes; a rolling deploy briefly runs two copies.
@@ -72,9 +72,14 @@ enum Duty {
     Rounds,
     Release,
     Upkeep,
+    /// Its own loop, since a probe of a failing store may take as long as its timeouts.
+    Canary,
 }
 
-const DUTIES: [Duty; 9] = [Duty::Journal, Duty::Anchor, Duty::Reclaim, Duty::Settle, Duty::Finalize, Duty::Publish, Duty::Rounds, Duty::Release, Duty::Upkeep];
+const DUTIES: [Duty; 10] =
+    [Duty::Journal, Duty::Anchor, Duty::Reclaim, Duty::Settle, Duty::Finalize, Duty::Publish, Duty::Rounds, Duty::Release, Duty::Upkeep, Duty::Canary];
+/// How often a canary that is turned off looks again whether it still is.
+const CANARY_OFF_EVERY: Duration = Duration::from_secs(60);
 
 #[derive(Default)]
 struct Due {
@@ -94,9 +99,11 @@ fn elapsed(at: Option<Instant>, interval: Duration) -> bool {
 }
 
 impl Duty {
-    fn every(self) -> Duration {
+    fn every(self, state: &State) -> Duration {
         match self {
             Duty::Rounds | Duty::Anchor => Duration::from_secs(2),
+            Duty::Canary if state.settings.canary_every > 0.0 => Duration::from_secs_f64(state.settings.canary_every),
+            Duty::Canary => CANARY_OFF_EVERY,
             _ => Duration::from_secs(1),
         }
     }
@@ -141,6 +148,8 @@ impl Duty {
                 Ok(())
             }
             Duty::Upkeep => upkeep(state, due).await,
+            Duty::Canary if state.settings.canary_every > 0.0 => canary::run(state).await.map(drop),
+            Duty::Canary => Ok(()),
         }
     }
 }
@@ -209,6 +218,7 @@ async fn upkeep(state: &Arc<State>, due: &mut Due) -> Result<()> {
                 budgets::prune(conn, KEEP_H, at)?;
                 validations::prune_hours(conn, at)?;
                 hours::prune(conn, at)?;
+                canary::prune(conn, at)?;
                 checks::prune(conn, at)?;
                 journal::append(conn, journal::Record::new("prune", at, json!({"keep_h": KEEP_H}), Value::Null))?;
                 Ok(())
@@ -295,7 +305,7 @@ async fn keep(duty: Duty, state: Arc<State>, leading: Arc<AtomicBool>, mut stop:
             }
         }
         tokio::select! {
-            _ = tokio::time::sleep(duty.every()) => {}
+            _ = tokio::time::sleep(duty.every(&state)) => {}
             _ = stop.changed() => {}
         }
     }
