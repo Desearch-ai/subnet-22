@@ -36,8 +36,8 @@ async fn a_claim_held_across_a_restart_expires_without_a_strike() {
     h.enqueue(urls(6)).await;
     h.miner.claim().await;
     tokio::time::sleep(Duration::from_millis(50)).await;
-    let mut restarted = State::new(h.state.settings.clone(), h.redis.clone(), h.state.storage.clone(), h.state.pages.clone()).await.unwrap();
-    restarted.started_at = desearch::time::now();
+    let restarted = State::new(h.state.settings.clone(), h.redis.clone(), h.state.storage.clone(), h.state.pages.clone()).await.unwrap();
+    restarted.set_started_at(desearch::time::now());
     tokio::time::sleep(Duration::from_millis(50)).await;
     h.rival.claim().await;
     let reclaimed = lifecycle::reclaim_expired(&restarted, desearch::time::now() + 3600.0).await.unwrap();

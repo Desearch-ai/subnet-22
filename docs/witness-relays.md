@@ -173,9 +173,10 @@ miner's upload (a random key, Parquet's magic bytes, a random size of 16 to 256 
 canary and fail miners. Each probe is kept a week and public at `GET /v1/storage/probes` with the outages they
 show (from the last probe that passed to the next one that does).
 
-With `TASK_API_STORAGE_OUTAGE_FORGIVES=1`, a claim that expires or is abandoned while a probe failed during it
-costs its miner nothing: the reclaim is logged with cause `storage_outage`, like a restart. This is block A's
-rule to own (it is off by default); the canary only measures.
+A failed probe opens a storage outage under block A's rule ([Rules](rules.md#outages)), as a failed write of the
+API's own storage probe does: a claim that expires or is abandoned while it was alive costs its miner nothing, and
+the reclaim is logged with cause `storage_outage`, like a restart. The outage's start and end are in the log, so a
+replay forgives the same claims.
 
 ## What depends on other blocks
 

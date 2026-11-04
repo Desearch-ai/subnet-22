@@ -131,7 +131,7 @@ cp neurons/validators/.env.template neurons/validators/.env
 | `SCRAPINGDOG_API_KEY` | required: a validator that cannot check crawl tasks sets no weights |
 | `SCRAPINGDOG_DAILY_CREDITS` | ScrapingDog credits to use per day, spread evenly over the hours; 100,000 by default |
 | `WANDB_API_KEY` | Weights & Biases login, unless `--wandb.off`; `wandb login` also stores it |
-| `EMBED_API_URL` | optional: your own model server's `/v1/embeddings` for checking [embed tasks](./embedding-tasks.md); without it the vectors come from the task API |
+| `EMBED_API_URL` | optional: your own model server's `/v1/embeddings` for checking [embed tasks](./embedding-tasks.md); without it your validator does not check embed tasks, since reference vectors come only from validators' own models |
 | `EMBED_API_KEY` | if your server requires one |
 
 Nothing else is configurable.
@@ -205,5 +205,10 @@ curl -s "https://api-22.desearch.ai/v1/tasks?validator=<hotkey>"
 ```
 
 `/v1/health` lists the active validators and every validator's standing: how many finalized uploads
-it took part in, and how many times it disagreed with the majority. A validator that disagrees too
-often stops receiving uploads.
+it took part in, how many times it disagreed with the majority, and its wrong reports. Disagreeing
+costs nothing: your live-page judgment goes into your own weights. Only reports your tasks could not
+have produced (a sampled URL outside the task, rows that do not add up) count as wrong; five within a
+day and the API refuses your reports for the rest of it. Reports carry the facts of each file (rows,
+duplicates, rows per host, rows not re-extracted from their HTML); the task API charges miners on
+those facts alone, and facts that differ between two validators charge nobody. See
+[Rules](./rules.md).

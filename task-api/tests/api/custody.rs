@@ -37,6 +37,7 @@ fn approving(text: String) -> custody::SnapshotSource {
                 validator_permit: true,
                 total_stake_rao: stake,
                 alpha_stake_rao: 0,
+                incentive: None,
             };
             let owner = desearch::hotkey::Hotkey::from_uri("//owner-api-test")?.ss58();
             Ok(Snapshot {

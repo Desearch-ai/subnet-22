@@ -6,10 +6,11 @@ use std::str::FromStr;
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Map, Value};
 
-use crate::budgets::EMBED;
+use crate::budgets::{CRAWL, EMBED};
 use crate::embedding::{self, DESEARCH_4B_V1};
 use crate::queues::ACTIVE_S;
 use crate::rounds::{CLAIM_TTL_S, EMBED_CLAIM_TTL_S};
+use crate::rules;
 use crate::sampling::{CHECKS_PER_HOUR, EMBED_CHECKS_PER_HOUR, EMBED_SHARE, SHARE};
 
 const DEFAULT_ORIGINS: &str = "http://localhost:5173,http://localhost:8081,http://127.0.0.1:5173,http://127.0.0.1:8081";
@@ -157,10 +158,6 @@ pub struct Settings {
     pub task_urls: usize,
     pub embed_tasks: bool,
     pub embed_model: String,
-    /// Desearch's model servers for validators without their own, tried in order; none when empty.
-    pub embed_reference_urls: Vec<String>,
-    pub embed_reference_key: String,
-    pub embed_reference_calls: usize,
     pub active_s: f64,
     pub publish_ttl: f64,
     pub publish_tries: i64,
@@ -183,8 +180,6 @@ pub struct Settings {
     pub cors_origins: Vec<String>,
     /// Seconds between storage canary probes; 0 turns the canary off.
     pub canary_every: f64,
-    /// A claim that ended without an upload while the canary found storage failing costs its miner nothing.
-    pub storage_outage_forgives: bool,
     /// Seconds each pinned upload version is put under Object Lock (compliance mode) at its completion; 0 locks
     /// none. Needs a versioned bucket with Object Lock on.
     pub upload_lock_s: f64,
@@ -201,6 +196,30 @@ pub struct Settings {
     pub client_address_header: String,
     pub chain: ChainOptions,
     pub tee: TeeOptions,
+    /// Seconds between storage probes; a failed one opens an outage that forgives the claims alive in it.
+    pub storage_probe_s: f64,
+    /// Blocks finality may fall behind the best block before the claims alive then are forgiven.
+    pub finality_stall_blocks: i64,
+    /// Matching reports an objective fail needs before it charges a miner anything.
+    pub objective_quorum: usize,
+    /// Validators of distinct coldkeys whose own models must find the same mismatch before an embed upload fails on it.
+    pub embed_references: usize,
+    /// Validator samples a round needs before its loadability lowers the coverage gate.
+    pub loadability_samples: i64,
+    /// Checked uploads with rows of a host a round needs before the host can be neutral.
+    pub neutral_uploads: i64,
+    /// Share of those uploads whose rows of the host are mostly errors past which the host is neutral for the round.
+    pub neutral_share: f64,
+    /// Share of the incentive its counted work implies at which a miner's budget is no longer capped; 0 turns the cap off.
+    pub incentive_full: f64,
+    /// Hours of counted work before a hotkey's incentive caps its budget.
+    pub incentive_grace_h: i64,
+    /// Each pool's share of the emission, as validators split it (`CRAWL_PERC`, `EMBED_PERC` in the validator).
+    pub crawl_emission: f64,
+    pub embed_emission: f64,
+    /// Reports a validator may send that the task could not have produced, within the window, before its reports are refused.
+    pub wrong_reports: i64,
+    pub wrong_reports_window_s: f64,
 }
 
 fn text(name: &str, default: &str) -> String {
@@ -251,10 +270,14 @@ impl Settings {
             "active_s": self.active_s,
             "max_upload": self.max_upload,
             "canary_every": self.canary_every,
-            "storage_outage_forgives": self.storage_outage_forgives,
             "upload_lock_s": self.upload_lock_s,
             "registry": registry,
             "seeds": match self.seeds { SeedsMode::Chain { .. } => "chain", SeedsMode::Local { .. } => "local" },
+            "block_seconds": match self.seeds { SeedsMode::Chain { .. } => crate::seeds::BLOCK_SECONDS, SeedsMode::Local { block_seconds, .. } => block_seconds },
+            "anchored": self.anchor.is_some(),
+            "rules": self.rules(),
+            "wrong_reports": self.wrong_reports,
+            "wrong_reports_window_s": self.wrong_reports_window_s,
         })
     }
 
@@ -273,6 +296,21 @@ impl Settings {
             (self.embed_check_share, self.embed_checks_per_hour)
         } else {
             (self.check_share, self.checks_per_hour)
+        }
+    }
+
+    /// The knobs of the rules behind budgets, strikes and the API's count of work.
+    pub fn rules(&self) -> rules::Params {
+        rules::Params {
+            coverage_gate: crate::credit::COVERAGE_GATE,
+            objective_quorum: self.objective_quorum,
+            embed_references: self.embed_references,
+            loadability_samples: self.loadability_samples,
+            neutral_uploads: self.neutral_uploads,
+            neutral_share: self.neutral_share,
+            incentive_full: self.incentive_full,
+            incentive_grace_h: self.incentive_grace_h,
+            emission: [(CRAWL.to_string(), self.crawl_emission), (EMBED.to_string(), self.embed_emission)].into_iter().collect(),
         }
     }
 
@@ -362,9 +400,6 @@ impl Settings {
             task_urls: number("TASK_API_TASK_URLS", 1_000)?,
             embed_tasks,
             embed_model,
-            embed_reference_urls: listed(&text("TASK_API_EMBED_REFERENCE_URL", "")),
-            embed_reference_key: text("TASK_API_EMBED_REFERENCE_KEY", ""),
-            embed_reference_calls: number("TASK_API_EMBED_REFERENCE_CALLS", 4)?,
             active_s: number("TASK_API_ACTIVE_S", ACTIVE_S)?,
             publish_ttl: number("TASK_API_PUBLISH_TTL", 600.0)?,
             publish_tries: number("TASK_API_PUBLISH_TRIES", 5)?,
@@ -388,7 +423,6 @@ impl Settings {
             key_uri,
             cors_origins: listed(&text("TASK_API_CORS_ORIGINS", DEFAULT_ORIGINS)),
             canary_every: number("TASK_API_CANARY_EVERY_S", 60.0)?,
-            storage_outage_forgives: text("TASK_API_STORAGE_OUTAGE_FORGIVES", "0") == "1",
             upload_lock_s: number("TASK_API_UPLOAD_LOCK_S", 0.0)?,
             journal_every: number("TASK_API_JOURNAL_EVERY_S", 30.0)?,
             journal_shares_every: number("TASK_API_JOURNAL_SHARES_EVERY_S", 600.0)?,
@@ -408,6 +442,19 @@ impl Settings {
             client_address_header: text("TASK_API_CLIENT_ADDRESS_HEADER", crate::auth::CLIENT_ADDRESS_HEADER),
             chain,
             tee,
+            storage_probe_s: number("TASK_API_STORAGE_PROBE_S", 30.0)?,
+            finality_stall_blocks: number("TASK_API_FINALITY_STALL_BLOCKS", 10)?,
+            objective_quorum: number("TASK_API_OBJECTIVE_QUORUM", 1)?,
+            embed_references: number("TASK_API_EMBED_REFERENCES", 2)?,
+            loadability_samples: number("TASK_API_LOADABILITY_SAMPLES", 30)?,
+            neutral_uploads: number("TASK_API_NEUTRAL_UPLOADS", 3)?,
+            neutral_share: number("TASK_API_NEUTRAL_SHARE", 0.5)?,
+            incentive_full: number("TASK_API_INCENTIVE_FULL", 0.5)?,
+            incentive_grace_h: number("TASK_API_INCENTIVE_GRACE_H", 24)?,
+            crawl_emission: number("TASK_API_CRAWL_EMISSION", 0.2)?,
+            embed_emission: number("TASK_API_EMBED_EMISSION", 0.5)?,
+            wrong_reports: number("TASK_API_WRONG_REPORTS", 5)?,
+            wrong_reports_window_s: number("TASK_API_WRONG_REPORTS_WINDOW_S", 86_400.0)?,
         })
     }
 
@@ -453,8 +500,6 @@ impl Settings {
             ("TASK_API_TASK_URLS", json!(self.task_urls)),
             ("TASK_API_EMBED_TASKS", json!(self.embed_tasks)),
             ("TASK_API_EMBED_MODEL", json!(self.embed_model)),
-            ("TASK_API_EMBED_REFERENCE_URL", json!(self.embed_reference_urls)),
-            ("TASK_API_EMBED_REFERENCE_CALLS", json!(self.embed_reference_calls)),
             ("TASK_API_ACTIVE_S", json!(self.active_s)),
             ("TASK_API_PUBLISH_TTL", json!(self.publish_ttl)),
             ("TASK_API_PUBLISH_TRIES", json!(self.publish_tries)),
@@ -500,7 +545,19 @@ impl Settings {
             ("TASK_API_LEGACY_SIGNER", json!(self.tee.legacy_signer)),
             ("TASK_API_TEE_SIMULATED", json!(self.tee.simulated)),
             ("TASK_API_CANARY_EVERY_S", json!(self.canary_every)),
-            ("TASK_API_STORAGE_OUTAGE_FORGIVES", json!(self.storage_outage_forgives)),
+            ("TASK_API_STORAGE_PROBE_S", json!(self.storage_probe_s)),
+            ("TASK_API_FINALITY_STALL_BLOCKS", json!(self.finality_stall_blocks)),
+            ("TASK_API_OBJECTIVE_QUORUM", json!(self.objective_quorum)),
+            ("TASK_API_EMBED_REFERENCES", json!(self.embed_references)),
+            ("TASK_API_LOADABILITY_SAMPLES", json!(self.loadability_samples)),
+            ("TASK_API_NEUTRAL_UPLOADS", json!(self.neutral_uploads)),
+            ("TASK_API_NEUTRAL_SHARE", json!(self.neutral_share)),
+            ("TASK_API_INCENTIVE_FULL", json!(self.incentive_full)),
+            ("TASK_API_INCENTIVE_GRACE_H", json!(self.incentive_grace_h)),
+            ("TASK_API_CRAWL_EMISSION", json!(self.crawl_emission)),
+            ("TASK_API_EMBED_EMISSION", json!(self.embed_emission)),
+            ("TASK_API_WRONG_REPORTS", json!(self.wrong_reports)),
+            ("TASK_API_WRONG_REPORTS_WINDOW_S", json!(self.wrong_reports_window_s)),
             ("TASK_API_UPLOAD_LOCK_S", json!(self.upload_lock_s)),
             ("TASK_API_JOURNAL_EVERY_S", json!(self.journal_every)),
             ("TASK_API_JOURNAL_SHARES_EVERY_S", json!(self.journal_shares_every)),
@@ -520,8 +577,8 @@ impl Settings {
             ("CF_R2_SECRET_ACCESS_KEY", &self.r2_secret_key),
             ("PAGES_S3_ACCESS_KEY_ID", &pages.map(|p| p.access_key.clone()).unwrap_or_default()),
             ("PAGES_S3_SECRET_ACCESS_KEY", &pages.map(|p| p.secret_key.clone()).unwrap_or_default()),
-            ("TASK_API_EMBED_REFERENCE_KEY", &self.embed_reference_key),
             ("TASK_API_KEY_URI", &self.key_uri),
+            ("TASK_API_ANCHOR_KEY_URI", &self.anchor.as_ref().map(|a| a.key_uri.clone()).unwrap_or_default()),
         ]
         .into_iter()
         .filter(|(_, value)| !value.is_empty())

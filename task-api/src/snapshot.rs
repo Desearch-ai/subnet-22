@@ -1,6 +1,8 @@
 //! The accounts as decisions read them, dumped in a fixed order, so the API and a replay can show they hold the same by one hash.
 //!
 //! A replay starts from the first snapshot in the log and, at every later one, compares the digest of its own accounts with the API's.
+//! A crawl round's loadability and neutral hosts ride along so a replay that joins late judges the round's uploads alike; they are
+//! loaded, not compared, since the API drops them with the round and a replay keeps no rounds.
 
 use anyhow::Result;
 use rusqlite::{params_from_iter, types::Value as Sql, Connection};
@@ -13,7 +15,7 @@ use crate::py::canonical;
 
 /// Each table, the columns decisions read, and which rows: every row of a table the API prunes itself (prunes are logged and
 /// replayed), and of verdicts only those a take-back, a strike or a lockout can still reach.
-const TABLES: [(&str, &str, &str); 11] = [
+const TABLES: [(&str, &str, &str); 12] = [
     ("miners", "hotkey, pool, budget, verified", "1"),
     ("credits", "pool, hotkey, hour, amount", "1"),
     ("coverage", "hotkey, hour, assigned, returned", "1"),
@@ -23,8 +25,9 @@ const TABLES: [(&str, &str, &str); 11] = [
     ("checks", "hotkey, kind, task_id, at, upload_at, passed, errors_judged, errors_unconfirmed", "1"),
     ("check_states", "hotkey, kind, recheck_left, last_pass_at", "1"),
     ("validator_audits", "hotkey, audits, disagreements", "1"),
-    // The storage canary's probes, which a lapse's forgiveness reads.
-    ("storage_probes", "at, block, ok, step, detail, took_ms", "1"),
+    // Outages a lapse's forgiveness reads, and the wrong reports that exclude a validator.
+    ("outages", "cause, start, end, start_block, end_block, detail", "1"),
+    ("wrong_reports", "validator, task_id, why, at", "1"),
     (
         "validations",
         "task_id, kind, round_id, miner, validator, verdict, credited, completed_at, scored_at, upload_key",
@@ -32,10 +35,12 @@ const TABLES: [(&str, &str, &str); 11] = [
     ),
 ];
 
-/// The accounts at `at`: each table's rows as arrays, sorted.
-pub fn take(conn: &Connection, at: f64) -> Result<Value> {
+/// What crawl rounds' checked uploads built up, as the rules judge the next upload of the round.
+const ROUNDS: [(&str, &str, &str); 2] = [("round_loads", "round_id, sampled, loaded", "1"), ("round_hosts", "round_id, host, uploads, failed", "1")];
+
+fn rows_of(conn: &Connection, tables: &[(&str, &str, &str)], at: f64) -> Result<Map<String, Value>> {
     let mut state = Map::new();
-    for (table, columns, rows) in TABLES {
+    for (table, columns, rows) in tables.iter().copied() {
         let sql = format!("SELECT {columns} FROM {table} WHERE {rows} ORDER BY {columns}");
         let mut statement = conn.prepare(&sql)?;
         let width = statement.column_count();
@@ -45,26 +50,32 @@ pub fn take(conn: &Connection, at: f64) -> Result<Value> {
         let found: Vec<Value> = found.map(|row| row.map(Value::Array)).collect::<rusqlite::Result<_>>()?;
         state.insert(table.into(), found.into());
     }
-    Ok(json!({"at": at, "tables": state}))
+    Ok(state)
+}
+
+/// The accounts at `at`: each table's rows as arrays, sorted; and the rounds' loadability beside them.
+pub fn take(conn: &Connection, at: f64) -> Result<Value> {
+    Ok(json!({"at": at, "tables": rows_of(conn, &TABLES, at)?, "rounds": rows_of(conn, &ROUNDS, at)?}))
 }
 
 /// Writes the accounts as they are now into the log; the blob holding them is named by their digest.
 pub fn record(conn: &Connection, at: f64) -> Result<String> {
     let state = take(conn, at)?;
     let blob = crate::journal::Blob::of(canonical(&state));
-    let digest = blob.sha256.clone();
+    let digest = digest(&state);
     let output = json!({"digest": digest, "state": blob.reference()});
     crate::journal::append(conn, crate::journal::Record::new("snapshot", at, json!({"at": at}), output).with_blobs(vec![blob]))?;
     Ok(digest)
 }
 
+/// The hash of the accounts a snapshot holds: its time and its tables.
 pub fn digest(snapshot: &Value) -> String {
-    sha256(&canonical(snapshot))
+    sha256(&canonical(&json!({"at": snapshot["at"], "tables": snapshot["tables"]})))
 }
 
 /// Empties the accounts, as a replay does when a CVM appointed without a handover starts them afresh.
 pub fn clear(conn: &Connection) -> Result<()> {
-    for (table, _, _) in TABLES {
+    for (table, _, _) in TABLES.iter().chain(&ROUNDS) {
         conn.execute(&format!("DELETE FROM {table}"), [])?;
     }
     conn.execute("DELETE FROM final_verdicts", [])?;
@@ -73,8 +84,8 @@ pub fn clear(conn: &Connection) -> Result<()> {
 
 /// Fills an empty store with a snapshot, as a replay starts.
 pub fn load(conn: &Connection, snapshot: &Value) -> Result<()> {
-    for (table, columns, _) in TABLES {
-        let rows = snapshot["tables"][table].as_array().cloned().unwrap_or_default();
+    for (part, (table, columns, _)) in TABLES.iter().map(|t| ("tables", *t)).chain(ROUNDS.iter().map(|t| ("rounds", *t))) {
+        let rows = snapshot[part][table].as_array().cloned().unwrap_or_default();
         let (columns, extra) = if table == "validations" {
             // What verdict pages show is left out of the snapshot; only the columns decisions read are kept.
             (format!("{columns}, reason, report_key, report"), vec![Sql::Text(String::new()), Sql::Text(String::new()), Sql::Text("{}".into())])
@@ -82,7 +93,7 @@ pub fn load(conn: &Connection, snapshot: &Value) -> Result<()> {
             (columns.to_string(), Vec::new())
         };
         let width = columns.split(',').count();
-        // Probes a replay read before its first snapshot are in the snapshot too.
+        // Outages a replay read before its first snapshot are in the snapshot too.
         conn.execute(&format!("DELETE FROM {table}"), [])?;
         let insert = format!("INSERT INTO {table} ({columns}) VALUES ({})", vec!["?"; width].join(", "));
         for row in rows {
@@ -108,6 +119,8 @@ fn sql_of(value: &Value) -> Sql {
 /// The tables the accounts live in, empty, as a replay needs them.
 pub fn create(conn: &Connection) -> Result<()> {
     crate::canary::create(conn)?;
+    crate::outages::create(conn)?;
+    crate::rules::create(conn)?;
     crate::budgets::create(conn)?;
     crate::checks::create(conn)?;
     crate::validations::create(conn)?;

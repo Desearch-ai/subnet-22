@@ -43,16 +43,75 @@ pub struct Anchored {
 pub fn create(conn: &Connection) -> Result<()> {
     conn.execute_batch(
         "
-        CREATE TABLE IF NOT EXISTS anchors (
+        CREATE TABLE IF NOT EXISTS log_anchors (
             seq       INTEGER PRIMARY KEY,
             head      TEXT NOT NULL,
             block     INTEGER,
             sent_at   INTEGER NOT NULL,
             extrinsic TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS round_commits (
+            round_id TEXT PRIMARY KEY,
+            seq      INTEGER NOT NULL
+        );
         ",
     )?;
     Ok(())
+}
+
+/// The log entry that holds a round's latest commitment; its seed may cut the round only once an anchor at or past it is on chain.
+pub fn note_commitment(conn: &Connection, round_id: &str, seq: i64) -> Result<()> {
+    conn.execute("INSERT OR REPLACE INTO round_commits (round_id, seq) VALUES (?, ?)", params![round_id, seq])?;
+    Ok(())
+}
+
+/// Where a round's commitment stands against its seed block.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InTime {
+    /// An anchor at or past the commitment is in a block before the seed block.
+    Anchored,
+    /// One that could still have landed before the seed block has not been seen yet.
+    Waiting,
+    /// None did: the API could have read the seed before the chain held what it committed to.
+    Late,
+}
+
+/// Where a round's commitment stands at block `current`; rounds committed before anchoring count as anchored.
+pub fn commitment_anchored(conn: &Connection, round_id: &str, seed_block: i64, current: i64) -> Result<InTime> {
+    let Some(seq) = conn.query_row("SELECT seq FROM round_commits WHERE round_id = ?", [round_id], |row| row.get::<_, i64>(0)).optional()? else {
+        return Ok(InTime::Anchored);
+    };
+    let anchored =
+        conn.query_row("SELECT 1 FROM log_anchors WHERE seq >= ? AND block IS NOT NULL AND block < ?", params![seq, seed_block], |_| Ok(())).optional()?;
+    if anchored.is_some() {
+        return Ok(InTime::Anchored);
+    }
+    let waiting = conn
+        .query_row(
+            "SELECT 1 FROM log_anchors WHERE seq >= ? AND block IS NULL AND sent_at < ? AND sent_at + ? > ?",
+            params![seq, seed_block, INCLUSION_BLOCKS, current],
+            |_| Ok(()),
+        )
+        .optional()?;
+    Ok(if waiting.is_some() { InTime::Waiting } else { InTime::Late })
+}
+
+/// Whether a round's seed may cut it: always without anchoring; with it, once its commitment was anchored before its seed block.
+/// A commitment that missed is committed again to a later seed block, and the round waits for that one.
+pub async fn anchored_in_time(state: &State, round: &mut crate::rounds::Round) -> Result<bool> {
+    if state.settings.anchor.is_none() {
+        return Ok(true);
+    }
+    let current = state.seeds.current_block().await?;
+    let (round_id, seed_block) = (round.round_id.clone(), round.seed_block);
+    match state.db.run(move |conn| commitment_anchored(conn, &round_id, seed_block, current)).await? {
+        InTime::Anchored => Ok(true),
+        InTime::Waiting => Ok(false),
+        InTime::Late => {
+            crate::lifecycle::recommit(state, round).await?;
+            Ok(false)
+        }
+    }
 }
 
 /// The commitment's fields: the entry number as `Raw`, the entry's hash as `Sha256`.
@@ -341,10 +400,10 @@ pub async fn pass(state: &State, anchoring: &mut Anchoring) -> Result<()> {
             .db
             .run(move |conn| {
                 let pending: Option<Option<i64>> = conn
-                    .query_row("SELECT block FROM anchors WHERE seq = ? AND head = ?", params![confirmed.seq, confirmed.head], |row| row.get(0))
+                    .query_row("SELECT block FROM log_anchors WHERE seq = ? AND head = ?", params![confirmed.seq, confirmed.head], |row| row.get(0))
                     .optional()?;
                 if pending == Some(None) {
-                    conn.execute("UPDATE anchors SET block = ? WHERE seq = ?", params![confirmed.block, confirmed.seq])?;
+                    conn.execute("UPDATE log_anchors SET block = ? WHERE seq = ?", params![confirmed.block, confirmed.seq])?;
                     let input = json!({"netuid": settings.netuid, "hotkey": account, "seq": confirmed.seq, "head": confirmed.head, "block": confirmed.block});
                     journal::append(conn, journal::Record::new("anchor", desearch::time::now(), input, serde_json::Value::Null))?;
                 }
@@ -357,13 +416,13 @@ pub async fn pass(state: &State, anchoring: &mut Anchoring) -> Result<()> {
         .run(move |conn| {
             let (seq, head) = journal::head(conn)?;
             let last: Option<(i64, Option<i64>, i64)> = conn
-                .query_row("SELECT seq, block, sent_at FROM anchors ORDER BY seq DESC LIMIT 1", [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+                .query_row("SELECT seq, block, sent_at FROM log_anchors ORDER BY seq DESC LIMIT 1", [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
                 .optional()?;
-            let sent: i64 = conn.query_row("SELECT COUNT(*) FROM anchors WHERE sent_at > ?", [block - EPOCH_BLOCKS], |row| row.get(0))?;
+            let sent: i64 = conn.query_row("SELECT COUNT(*) FROM log_anchors WHERE sent_at > ?", [block - EPOCH_BLOCKS], |row| row.get(0))?;
             let (last_seq, last_block, last_sent) = last.unwrap_or((0, Some(0), 0));
             // A round's commitment should reach the chain before its seed block, so a round opening is anchored soon.
             let opened: bool = conn
-                .query_row("SELECT 1 FROM journal WHERE seq > ? AND kind IN ('enqueue', 'embed_round') LIMIT 1", [last_seq], |_| Ok(()))
+                .query_row("SELECT 1 FROM journal WHERE seq > ? AND kind IN ('enqueue', 'embed_round', 'recommit') LIMIT 1", [last_seq], |_| Ok(()))
                 .optional()?
                 .is_some();
             let waiting = last_block.is_none() && block < last_sent + INCLUSION_BLOCKS;
@@ -378,7 +437,10 @@ pub async fn pass(state: &State, anchoring: &mut Anchoring) -> Result<()> {
     state
         .db
         .run(move |conn| {
-            conn.execute("INSERT OR REPLACE INTO anchors (seq, head, block, sent_at, extrinsic) VALUES (?, ?, NULL, ?, ?)", params![seq, head, block, sent])?;
+            conn.execute(
+                "INSERT OR REPLACE INTO log_anchors (seq, head, block, sent_at, extrinsic) VALUES (?, ?, NULL, ?, ?)",
+                params![seq, head, block, sent],
+            )?;
             Ok(())
         })
         .await?;

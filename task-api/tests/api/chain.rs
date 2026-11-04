@@ -8,7 +8,7 @@ use serde_json::json;
 use task_api::chain::Chain;
 use task_api::registry::{self, Entry};
 use task_api::settings::ChainOptions;
-use task_api::settings::RegistryMode;
+use task_api::settings::{RegistryMode, SeedsMode};
 use task_api::state::State;
 
 use crate::fakechain::{hash_of, FakeChain};
@@ -86,7 +86,7 @@ async fn a_kept_metagraph_lets_a_restarted_copy_serve_while_the_chain_refuses() 
     let fake = FakeChain::start(1_000, 12.0).await;
     fake.refuse(true);
     let h = Harness::start().await;
-    let kept = vec![Entry { hotkey: h.miner.ss58(), uid: Some(3), is_validator: false, coldkey: Some("ck".into()) }];
+    let kept = vec![Entry { hotkey: h.miner.ss58(), uid: Some(3), is_validator: false, coldkey: Some("ck".into()), incentive: None }];
     h.state.db.run(move |conn| registry::save(conn, &kept)).await.unwrap();
     let mut settings = h.state.settings.clone();
     settings.registry = RegistryMode::Chain { netuid: 22, network: fake.url.clone() };
@@ -121,13 +121,13 @@ async fn a_quorum_takes_the_finalized_head_and_hashes_only_when_enough_endpoints
     liar.lie(true);
     let network = format!("{},{},{}", honest[0].url, liar.url, honest[1].url);
     let chain = Arc::new(Chain::with(&network, &quorum(2)).unwrap());
-    assert_eq!(chain.current_block().await.unwrap(), 4_997, "the finalized head, not the liar's 1000 blocks ahead");
+    assert_eq!(chain.current_block().await.unwrap(), 4_998, "the finalized head, not the liar's 1000 blocks ahead");
     assert_eq!(chain.block_hash(4_990).await.unwrap(), Some(hash_of(4_990)), "the two honest endpoints outvote the liar");
     assert_eq!(chain.block_hash(4_999).await.unwrap(), None, "past the finalized head is not a seed yet");
 
     honest[1].refuse(true);
     let alone = Arc::new(Chain::with(&network, &quorum(2)).unwrap());
-    assert_eq!(alone.current_block().await.unwrap(), 4_997, "the second highest head is the honest one: a liar can only hold time back");
+    assert_eq!(alone.current_block().await.unwrap(), 4_998, "the second highest head is the honest one: a liar can only hold time back");
     assert_eq!(alone.block_hash(4_980).await.unwrap(), None, "a hash without a quorum is taken as not made yet");
     honest[0].refuse(true);
     let none = Arc::new(Chain::with(&network, &quorum(2)).unwrap());
@@ -145,4 +145,30 @@ async fn without_counting_on_the_clock_the_block_only_moves_when_read() {
     let counting = Arc::new(Chain::new(&fake.url).unwrap());
     counting.assume(read, desearch::time::now() - 25.0);
     assert!(counting.current_block().await.unwrap() > read, "counting on the clock moves it");
+}
+
+#[tokio::test]
+async fn deadlines_run_on_the_finalized_block_never_counted_on_the_clock() {
+    let fake = FakeChain::start(5_000, 0.05).await;
+    let chain = Arc::new(Chain::new(&fake.url).unwrap());
+    let first = chain.finalized_block().await.unwrap();
+    assert!((4_998..=5_000).contains(&first), "{first}");
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(chain.finalized_block().await.unwrap(), first, "read every few seconds, not counted on between reads");
+    assert_eq!(fake.calls("chain_getFinalizedHead"), 1);
+}
+
+#[tokio::test]
+async fn every_copy_and_every_restart_keeps_the_first_anchor() {
+    let fake = FakeChain::start(7_000, 12.0).await;
+    let h = Harness::start().await;
+    let mut settings = h.state.settings.clone();
+    settings.seeds = SeedsMode::Chain { network: fake.url.clone() };
+    let first = State::new(settings.clone(), h.redis.clone(), h.state.storage.clone(), h.state.pages.clone()).await.unwrap();
+    let clock = first.clock().await.unwrap();
+    let tick = first.tick().await.unwrap();
+    assert_eq!((clock.anchor_block, clock.block_seconds, tick.at), (6_998, 12.0, clock.anchor_at));
+    let again = State::new(settings, h.redis.clone(), h.state.storage.clone(), h.state.pages.clone()).await.unwrap();
+    assert_eq!(again.clock().await.unwrap(), clock);
+    assert!(first.started_at() <= tick.at, "a restart is dated by the first finalized block it read");
 }

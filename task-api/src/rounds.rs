@@ -1,4 +1,8 @@
 //! Rounds of tasks: URLs packed into batches, committed to by a manifest hash, served in an order a later block's hash decides.
+//!
+//! A crawl round commits to its URL set alone (`desearch-round-3`): the batches are cut only once the seed block's hash is
+//! known, every host's URLs dealt across them in turn, so no one can choose which URLs land together and every batch has the
+//! round's mix. Embed rounds commit to their batches, one per planner input (`desearch-serve-order-2`).
 
 use std::collections::HashMap;
 
@@ -80,6 +84,8 @@ pub struct Round {
     pub seed: Option<String>,
     pub order: Vec<String>,
     pub closed_at: Option<f64>,
+    /// A crawl round's URL set as committed before its seed existed: `url_count`, `urls_hash`, `task_urls` and `tasks`.
+    pub commitment: Option<Value>,
 }
 
 impl Round {
@@ -127,11 +133,25 @@ impl Round {
         self.batches.iter().map(Batch::manifest_entry).collect()
     }
 
+    /// Tasks the round has or will have once its seed cuts it.
+    pub fn tasks(&self) -> usize {
+        match &self.commitment {
+            Some(commitment) => commitment["tasks"].as_u64().unwrap_or(0) as usize,
+            None => self.batches.len(),
+        }
+    }
+
     pub fn public_view(&self) -> Map<String, Value> {
         let mut view = Map::new();
         view.insert("round_id".into(), self.round_id.clone().into());
         view.insert("kind".into(), self.kind.clone().into());
-        view.insert("algorithm".into(), proofs::ALGORITHM.into());
+        let algorithm = if self.commitment.is_some() { proofs::SET_ALGORITHM } else { proofs::ALGORITHM };
+        view.insert("algorithm".into(), algorithm.into());
+        if let Some(commitment) = &self.commitment {
+            for name in ["url_count", "urls_hash", "task_urls"] {
+                view.insert(name.into(), commitment[name].clone());
+            }
+        }
         view.insert("manifest_hash".into(), self.manifest_hash.clone().into());
         view.insert("seed_block".into(), self.seed_block.into());
         view.insert("opened_at".into(), self.opened_at.into());
@@ -184,7 +204,73 @@ pub fn open_batches(batches: Vec<Batch>, seed_block: i64, kind: &str, now: f64) 
         seed: None,
         order: Vec::new(),
         closed_at: None,
+        commitment: None,
     }
+}
+
+/// The hash of a URL set: its `[host, url]` pairs sorted by URL, as canonical JSON.
+pub fn set_hash(urls: &[Url]) -> String {
+    let mut pairs: Vec<(&str, &str)> = urls.iter().map(|u| (u.url.as_str(), u.host.as_str())).collect();
+    pairs.sort_unstable();
+    let listed: Vec<Value> = pairs.into_iter().map(|(url, host)| json!([host, url])).collect();
+    sha256(&canonical(&Value::Array(listed)))
+}
+
+/// The tasks `url_count` URLs make, none over `task_urls`.
+pub fn tasks_for(url_count: usize, task_urls: usize) -> usize {
+    url_count.div_ceil(task_urls.max(1))
+}
+
+/// A crawl round committed to its URL set before its seed block exists; its batches are cut by `cut` once the seed is known.
+pub fn open_set(urls: &[Url], seed_block: i64, task_urls: usize, now: f64) -> Round {
+    let round_id = new_id();
+    let (url_count, urls_hash) = (urls.len(), set_hash(urls));
+    let commitment = json!({"url_count": url_count, "urls_hash": urls_hash, "task_urls": task_urls, "tasks": tasks_for(url_count, task_urls)});
+    Round {
+        manifest_hash: proofs::set_manifest_hash(&round_id, seed_block, task_urls, url_count, &urls_hash),
+        round_id,
+        batches: Vec::new(),
+        seed_block,
+        opened_at: now,
+        kind: "crawl".into(),
+        seed: None,
+        order: Vec::new(),
+        closed_at: None,
+        commitment: Some(commitment),
+    }
+}
+
+/// The batches a committed URL set makes under a seed, the same for anyone who has the set and the seed:
+/// hosts in the order of `sha256("{seed}:host:{host}")`, each host's URLs in the order of `sha256("{seed}:url:{url}")`,
+/// the whole run dealt across `tasks_for` batches in turn, each batch's hosts then taking turns (`spread`), and batch `i`
+/// named by the first 16 hex digits of `sha256("{seed}:{round_id}:{i}")`.
+pub fn cut(urls: &[Url], seed: &str, round_id: &str, task_urls: usize) -> Vec<Batch> {
+    let count = tasks_for(urls.len(), task_urls);
+    if count == 0 {
+        return Vec::new();
+    }
+    let key = |kind: &str, value: &str| sha256(format!("{seed}:{kind}:{value}").as_bytes());
+    let mut by_host: HashMap<&str, Vec<&Url>> = HashMap::new();
+    for url in urls {
+        by_host.entry(url.host.as_str()).or_default().push(url);
+    }
+    let mut hosts: Vec<(String, &str)> = by_host.keys().map(|host| (key("host", host), *host)).collect();
+    hosts.sort_unstable();
+    let mut dealt: Vec<Vec<Url>> = vec![Vec::new(); count];
+    let mut at = 0;
+    for (_, host) in hosts {
+        let mut own: Vec<(String, &Url)> = by_host[host].iter().map(|url| (key("url", &url.url), *url)).collect();
+        own.sort_unstable_by(|a, b| (&a.0, &a.1.url).cmp(&(&b.0, &b.1.url)));
+        for (_, url) in own {
+            dealt[at % count].push(url.clone());
+            at += 1;
+        }
+    }
+    dealt
+        .into_iter()
+        .enumerate()
+        .map(|(i, urls)| Batch::new(sha256(format!("{seed}:{round_id}:{i}").as_bytes())[..16].to_string(), spread(urls), Map::new()))
+        .collect()
 }
 
 pub fn reveal(round: &mut Round, seed: &str) -> Vec<String> {
@@ -213,6 +299,60 @@ mod tests {
         let mixed: Vec<String> = spread(urls).into_iter().map(|u| u.url).collect();
         assert_eq!(mixed, ["https://a/1", "https://b/1", "https://c/1", "https://a/2", "https://c/2", "https://a/3"]);
         assert_eq!(pack(vec![url("a", 1), url("a", 2), url("b", 1)], 2).iter().map(|b| b.urls.len()).collect::<Vec<_>>(), [2, 1]);
+    }
+
+    fn golden_set() -> Vec<Url> {
+        let mut urls: Vec<Url> = (0..5).map(|n| url("a.example", n)).collect();
+        urls.extend((0..3).map(|n| url("b.example", n)));
+        urls.push(url("c.example", 0));
+        urls
+    }
+
+    #[test]
+    fn the_cut_matches_tools_verify_round() {
+        let urls = golden_set();
+        assert_eq!(set_hash(&urls), "a2315215c5ad3ef308edb903a7a7bbee6b987b971d557b36bcb21e764b064332");
+        assert_eq!(proofs::set_manifest_hash("r1", 77, 4, 9, &set_hash(&urls)), "3ebc415543cf7d37d74b7a1043ebd7db706b685a2717047212aa974cd2eca0a6");
+        let cut: Vec<(String, Vec<String>)> =
+            cut(&urls, "seed", "r1", 4).into_iter().map(|b| (b.batch_id, b.urls.into_iter().map(|u| u.url).collect())).collect();
+        assert_eq!(
+            cut,
+            [
+                ("34af69571cea3b51".to_string(), vec!["https://c.example/0".to_string(), "https://a.example/0".into(), "https://b.example/1".into()]),
+                ("5388cbf670e889e5".to_string(), vec!["https://a.example/3".to_string(), "https://b.example/0".into(), "https://a.example/1".into()]),
+                ("7006229857aa481c".to_string(), vec!["https://a.example/2".to_string(), "https://b.example/2".into(), "https://a.example/4".into()]),
+            ]
+        );
+    }
+
+    #[test]
+    fn the_seed_alone_decides_which_urls_go_together_and_every_batch_has_the_rounds_mix() {
+        let urls: Vec<Url> = (0..2530).map(|n| Url { host: format!("s{}.example", n % 40), url: format!("https://s{}.example/{n}", n % 40) }).collect();
+        let batches = cut(&urls, "seed", "r", 1000);
+        assert_eq!(batches.iter().map(|b| b.urls.len()).collect::<Vec<_>>(), [844, 843, 843], "as even as the URLs allow, none over 1000");
+        let mut all: Vec<&str> = batches.iter().flat_map(|b| b.urls.iter().map(|u| u.url.as_str())).collect();
+        all.sort_unstable();
+        all.dedup();
+        assert_eq!(all.len(), urls.len(), "every URL once");
+        for host in 0..40 {
+            let counts: Vec<usize> = batches.iter().map(|b| b.urls.iter().filter(|u| u.host == format!("s{host}.example")).count()).collect();
+            assert!(counts.iter().max().unwrap() - counts.iter().min().unwrap() <= 1, "host {host} spread {counts:?}");
+        }
+        let mut shuffled = urls.clone();
+        shuffled.reverse();
+        assert_eq!(cut(&shuffled, "seed", "r", 1000), batches, "the order the bot sent them in plays no part");
+        assert_ne!(cut(&urls, "other", "r", 1000)[0].urls, batches[0].urls);
+        assert_eq!(set_hash(&shuffled), set_hash(&urls));
+    }
+
+    #[test]
+    fn a_round_commits_to_its_set_before_any_batch_exists() {
+        let round = open_set(&golden_set(), 77, 4, 1_800_000_000.0);
+        assert!(round.batches.is_empty());
+        assert_eq!(round.tasks(), 3);
+        assert_eq!(round.manifest_hash, proofs::set_manifest_hash(&round.round_id, 77, 4, 9, &set_hash(&golden_set())));
+        assert_eq!(round.public_view()["algorithm"], proofs::SET_ALGORITHM);
+        assert_eq!(tasks_for(0, 1000), 0);
     }
 
     #[test]

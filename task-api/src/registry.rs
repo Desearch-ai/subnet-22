@@ -27,6 +27,8 @@ pub struct Entry {
     pub uid: Option<i64>,
     pub is_validator: bool,
     pub coldkey: Option<String>,
+    /// Its share of the subnet's incentive on chain; None where no metagraph gives one.
+    pub incentive: Option<f64>,
 }
 
 /// The metagraph has not loaded since this copy started and none was kept from before.
@@ -42,29 +44,35 @@ pub fn create(conn: &Connection) -> Result<()> {
             coldkey      TEXT
         )",
     )?;
+    let has_incentive: i64 = conn.query_row("SELECT COUNT(*) FROM pragma_table_info('registry') WHERE name = 'incentive'", [], |row| row.get(0))?;
+    if has_incentive == 0 {
+        conn.execute_batch("ALTER TABLE registry ADD COLUMN incentive REAL")?;
+    }
     Ok(())
 }
 
 /// Keeps the metagraph as last loaded, so a restart serves at once whatever the chain does.
 pub fn save(conn: &Connection, entries: &[Entry]) -> Result<()> {
     conn.execute("DELETE FROM registry", [])?;
-    let mut insert = conn.prepare("INSERT INTO registry (hotkey, uid, is_validator, coldkey) VALUES (?, ?, ?, ?)")?;
+    let mut insert = conn.prepare("INSERT INTO registry (hotkey, uid, is_validator, coldkey, incentive) VALUES (?, ?, ?, ?, ?)")?;
     for entry in entries {
-        insert.execute(params![entry.hotkey, entry.uid, entry.is_validator, entry.coldkey])?;
+        insert.execute(params![entry.hotkey, entry.uid, entry.is_validator, entry.coldkey, entry.incentive])?;
     }
     Ok(())
 }
 
 pub fn saved(conn: &Connection) -> Result<Vec<Entry>> {
-    let mut statement = conn.prepare("SELECT hotkey, uid, is_validator, coldkey FROM registry")?;
-    let rows = statement.query_map([], |row| Ok(Entry { hotkey: row.get(0)?, uid: row.get(1)?, is_validator: row.get(2)?, coldkey: row.get(3)? }))?;
+    let mut statement = conn.prepare("SELECT hotkey, uid, is_validator, coldkey, incentive FROM registry")?;
+    let rows = statement
+        .query_map([], |row| Ok(Entry { hotkey: row.get(0)?, uid: row.get(1)?, is_validator: row.get(2)?, coldkey: row.get(3)?, incentive: row.get(4)? }))?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
-/// Writes the metagraph into the log when who is on the subnet, or who may vote, changed since it was last written; the neurons with
-/// their stakes go in a blob, so a replay sees who could vote and anyone can check it against the chain at that block.
+/// Writes the metagraph into the log when who is on the subnet, who may vote or the incentive changed since it was last written; the
+/// neurons with their stakes and incentive go in a blob, so a replay sees who could vote and what capped each budget, and anyone can
+/// check it against the chain at that block.
 pub fn log_metagraph(conn: &Connection, netuid: u16, block: Option<i64>, neurons: &[Neuron], entries: &[Entry]) -> Result<()> {
-    let mut members: Vec<Value> = entries.iter().map(|e| json!([e.uid, e.hotkey, e.coldkey, e.is_validator])).collect();
+    let mut members: Vec<Value> = entries.iter().map(|e| json!([e.uid, e.hotkey, e.coldkey, e.is_validator, e.incentive])).collect();
     members.sort_by_key(|member| member.to_string());
     let members_hash = crate::proofs::sha256(&crate::py::canonical(&Value::Array(members)));
     let last: Option<String> =
@@ -72,8 +80,10 @@ pub fn log_metagraph(conn: &Connection, netuid: u16, block: Option<i64>, neurons
     if last.and_then(|entry| serde_json::from_str::<Value>(&entry).ok()).is_some_and(|entry| entry["output"]["members"] == members_hash.as_str()) {
         return Ok(());
     }
-    let listed: Vec<Value> =
-        neurons.iter().map(|n| json!([n.uid, n.hotkey, n.coldkey, n.validator_permit, n.total_stake_rao.to_string(), n.alpha_stake_rao.to_string()])).collect();
+    let listed: Vec<Value> = neurons
+        .iter()
+        .map(|n| json!([n.uid, n.hotkey, n.coldkey, n.validator_permit, n.total_stake_rao.to_string(), n.alpha_stake_rao.to_string(), n.incentive]))
+        .collect();
     let blob = crate::journal::Blob::of(crate::py::canonical(&Value::Array(listed)));
     let validators: Vec<&str> = entries.iter().filter(|e| e.is_validator).map(|e| e.hotkey.as_str()).collect();
     let input = json!({"netuid": netuid, "block": block, "neurons": blob.reference()});
@@ -145,7 +155,13 @@ impl Registry {
     pub fn load(&self, neurons: Vec<Neuron>) -> Vec<Entry> {
         let fresh: Vec<Entry> = neurons
             .iter()
-            .map(|n| Entry { hotkey: n.hotkey.clone(), uid: Some(n.uid), is_validator: is_validator(n), coldkey: Some(n.coldkey.clone()) })
+            .map(|n| Entry {
+                hotkey: n.hotkey.clone(),
+                uid: Some(n.uid),
+                is_validator: is_validator(n),
+                coldkey: Some(n.coldkey.clone()),
+                incentive: n.incentive,
+            })
             .collect();
         self.restore(fresh.clone());
         fresh
@@ -181,7 +197,9 @@ impl Registry {
     /// The caller's entry; before any metagraph is known, waits a few seconds for the first.
     pub async fn lookup(&self, hotkey: &str) -> Result<Option<Entry>, NotLoaded> {
         match self {
-            Registry::Local { validators } => Ok(Some(Entry { hotkey: hotkey.into(), uid: None, is_validator: validators.contains(hotkey), coldkey: None })),
+            Registry::Local { validators } => {
+                Ok(Some(Entry { hotkey: hotkey.into(), uid: None, is_validator: validators.contains(hotkey), coldkey: None, incentive: None }))
+            }
             Registry::Chain { entries, loaded } => {
                 let mut ready = loaded.subscribe();
                 if !matches!(tokio::time::timeout(FIRST_LOAD_WAIT, ready.wait_for(|loaded| *loaded)).await, Ok(Ok(_))) {

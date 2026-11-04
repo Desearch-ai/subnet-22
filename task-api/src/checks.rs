@@ -120,12 +120,21 @@ pub fn took_recheck(conn: &Connection, hotkey: &str, kind: &str) -> Result<()> {
 
 /// Share of the hotkey's reported crawl failures that checks reproduced, one of each assumed before any.
 pub fn error_share(conn: &Connection, hotkey: &str, now: f64) -> Result<f64> {
-    let (judged, unconfirmed): (i64, i64) = conn.query_row(
+    let (judged, unconfirmed) = error_counts(conn, hotkey, now)?;
+    Ok(error_rate(judged, unconfirmed))
+}
+
+/// Error rows the hotkey's crawl checks of the rate window judged, and those the validator could load.
+pub fn error_counts(conn: &Connection, hotkey: &str, now: f64) -> Result<(i64, i64)> {
+    Ok(conn.query_row(
         "SELECT COALESCE(SUM(errors_judged), 0), COALESCE(SUM(errors_unconfirmed), 0) FROM checks WHERE hotkey = ? AND kind = ? AND at >= ?",
         params![hotkey, CRAWL, now - RATE_WINDOW_S],
         |row| Ok((row.get(0)?, row.get(1)?)),
-    )?;
-    Ok((judged - unconfirmed + 1) as f64 / (judged + 2) as f64)
+    )?)
+}
+
+pub fn error_rate(judged: i64, unconfirmed: i64) -> f64 {
+    (judged - unconfirmed + 1) as f64 / (judged + 2) as f64
 }
 
 pub fn prune(conn: &Connection, now: f64) -> Result<()> {

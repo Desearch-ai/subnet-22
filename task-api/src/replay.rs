@@ -1,12 +1,14 @@
 //! Rebuilds the accounts from the log with the API's own rules, and names every output the API logged that its rules do not give.
 //!
-//! The order of entries is the API's to choose and is taken as given; so are the times and Redis counters an entry states (block A moves
-//! those onto block heights). Everything else is worked out again: a validator's vote from its signed report, a verdict from the votes,
-//! whether an upload is checked from the seed block's hash, budgets, strikes, lockouts, take-backs and shares from the rules, and the
-//! accounts as a whole against every snapshot's digest. A difference the API decided inside one transaction is `fraud`: the log itself
+//! The order of entries is the API's to choose and is taken as given; so are the rule times and Redis counters an entry states. Everything
+//! else is worked out again under the rules (`docs/rules.md`): a validator's vote from its signed report, a verdict from the votes and the
+//! round's loadability as the log built it, whether an upload is checked from the seed block's hash, a crawl round's commitment from the
+//! URLs of its signed request and its batches from that set and the seed, whether a lapse is forgiven from the logged outages, budgets,
+//! strikes, lockouts, take-backs and shares from the rules, and the accounts as a whole against every snapshot's digest. With anchoring on,
+//! a round must be revealed only once an anchor at or past its commitment was in a block before its seed block. A difference the API decided inside one transaction is `fraud`: the log itself
 //! proves it. A check the API makes on reads that may race a concurrent write is only `suspect`.
 
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::Path;
 
 use anyhow::Result;
@@ -16,10 +18,14 @@ use serde_json::{json, Map, Value};
 use crate::budgets::{self, CRAWL, EMBED, KEEP_H, SHARE_WINDOW_H};
 use crate::chain::Neuron;
 use crate::journal::{self, Break};
-use crate::lifecycle::{self, kind_of, text, Kept};
+use crate::lifecycle::{self, kind_of, text, Basis, Given, Kept};
 use crate::manifest::seed_from_hash;
+use crate::rounds::{self, Batch, Url};
 use crate::verdicts::{build_embed_vote, build_vote, decide, Decision};
-use crate::{checks, models, proofs, registry, snapshot, validations};
+use crate::{checks, models, outages, proofs, registry, rules, snapshot, validations};
+
+/// Wrong reports are kept a week, as the API prunes them.
+const WRONG_REPORTS_KEPT_S: f64 = 7.0 * 86_400.0;
 
 /// The log itself shows the API did not follow its rules.
 pub const FRAUD: &str = "fraud";
@@ -59,6 +65,15 @@ pub struct Replay {
 
 type Blobs<'a> = &'a dyn Fn(&str) -> Option<Vec<u8>>;
 
+/// A round not revealed yet: its seed block, the entry its commitment is in, and what it committed to: a crawl round's URL set and
+/// task size, an embed round's manifest.
+struct Committed {
+    seed_block: i64,
+    commit_seq: i64,
+    set: Option<(Vec<Url>, usize)>,
+    manifest: Option<Vec<Value>>,
+}
+
 fn create(conn: &Connection) -> Result<()> {
     snapshot::create(conn)?;
     conn.execute_batch(
@@ -69,6 +84,11 @@ fn create(conn: &Connection) -> Result<()> {
         CREATE TABLE IF NOT EXISTS replay_claims (task_id TEXT PRIMARY KEY, hotkey TEXT NOT NULL, kind TEXT NOT NULL, state TEXT NOT NULL, at REAL NOT NULL);
         CREATE TABLE IF NOT EXISTS replay_blocks (block INTEGER PRIMARY KEY, hash TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS replay_batches (batch_id TEXT PRIMARY KEY, round_id TEXT NOT NULL, urls_hash TEXT);
+        CREATE TABLE IF NOT EXISTS replay_rounds (
+            round_id TEXT PRIMARY KEY, kind TEXT NOT NULL, seed_block INTEGER NOT NULL, commit_seq INTEGER NOT NULL,
+            task_urls INTEGER, urls TEXT, manifest TEXT
+        );
+        CREATE TABLE IF NOT EXISTS replay_anchors (seq INTEGER PRIMARY KEY, block INTEGER NOT NULL);
         ",
     )?;
     Ok(())
@@ -108,6 +128,19 @@ impl Replay {
         let last = self.meta("last")?.and_then(|v| v.as_i64()).unwrap_or(0);
         let head = self.meta("head")?.and_then(|v| v.as_str().map(String::from)).unwrap_or_else(|| journal::GENESIS.into());
         Ok((last, head))
+    }
+
+    /// The latest start entry's input: the settings and rules the copy that logs now runs with.
+    fn start(&self) -> Result<Value> {
+        Ok(self.meta("starts")?.and_then(|s| s.as_array().and_then(|s| s.last().cloned())).unwrap_or(Value::Null))
+    }
+
+    fn params(&self) -> Result<rules::Params> {
+        Ok(serde_json::from_value(self.start()?["settings"]["rules"].clone()).unwrap_or_default())
+    }
+
+    fn anchoring(&self) -> Result<bool> {
+        Ok(self.start()?["settings"]["anchored"] == true)
     }
 
     /// Whether a snapshot was loaded; entries before the first are only checked for their links and signatures.
@@ -172,10 +205,33 @@ impl Replay {
             self.set_meta("starts", &json!(starts))?;
         } else if kind == "custody" {
             self.custody(entry)?;
+        } else if kind == "started" {
+            // A copy's start lowered to the rule time of its first block: the settings stay those of its start entry.
+            let mut starts: Vec<Value> = self.meta("starts")?.and_then(|s| s.as_array().cloned()).unwrap_or_default();
+            if let Some(mut lowered) = starts.last().cloned() {
+                lowered["started_at"] = entry["input"]["started_at"].clone();
+                starts.push(lowered);
+                self.set_meta("starts", &json!(starts))?;
+            }
+        } else if kind == "clock" {
+            if let Some(before) = self.meta("clock")?.filter(|before| *before != entry["input"]) {
+                self.diverge(entry, FRAUD, "the clock every rule time is counted from was anchored again", entry["input"].clone(), before);
+            }
+            self.set_meta("clock", &entry["input"])?;
         } else if kind == "pause" {
             self.set_meta("paused", &entry["input"]["paused"])?;
-        } else if kind == "probe" {
-            crate::canary::record(&self.conn, &crate::canary::from_logged(&entry["input"]))?;
+        } else if kind == "anchor" {
+            self.conn.execute(
+                "INSERT OR REPLACE INTO replay_anchors (seq, block) VALUES (?, ?)",
+                params![int(&entry["input"]["seq"]), int(&entry["input"]["block"])],
+            )?;
+        } else if kind == "enqueue" || kind == "embed_round" {
+            // Rounds are followed from the first entry, so a reveal is checked against the commitment and its anchor.
+            self.round(entry, blobs)?;
+        } else if kind == "recommit" {
+            self.recommit(entry, blobs)?;
+        } else if kind == "reveal" {
+            self.reveal(entry, blobs)?;
         } else if self.started()? {
             match kind.as_str() {
                 "claim" => self.claim(entry)?,
@@ -191,11 +247,13 @@ impl Replay {
                 "release" => self.close_upload(text(&entry["input"], "task_id"))?,
                 "take_back" => self.take_back(entry)?,
                 "recheck" => self.recheck(entry)?,
+                "outage" => self.outage(entry)?,
                 "prune" => {
                     let at = float(&entry["at"]);
                     budgets::prune(&self.conn, KEEP_H, at)?;
                     checks::prune(&self.conn, at)?;
-                    crate::canary::prune(&self.conn, at)?;
+                    outages::prune(&self.conn, at)?;
+                    rules::prune_wrong_reports(&self.conn, at - WRONG_REPORTS_KEPT_S)?;
                 }
                 "shares" => {
                     let pools = budgets::shares(&self.conn, SHARE_WINDOW_H, float(&entry["input"]["as_of"]))?;
@@ -203,8 +261,6 @@ impl Replay {
                     self.compare(entry, "the shares", &api, serde_json::to_value(pools)?);
                 }
                 "metagraph" => self.metagraph(entry, blobs)?,
-                "enqueue" | "embed_round" => self.round(entry, blobs)?,
-                "reveal" => self.reveal(entry)?,
                 _ => {}
             }
         }
@@ -246,14 +302,17 @@ impl Replay {
         }
         if record["kind"] == crate::custody::APPOINT {
             snapshot::clear(&self.conn)?;
-            self.conn.execute_batch("DELETE FROM replay_jobs; DELETE FROM replay_votes; DELETE FROM replay_claims;")?;
+            self.conn.execute_batch(
+                "DELETE FROM replay_jobs; DELETE FROM replay_votes; DELETE FROM replay_claims; DELETE FROM replay_rounds; DELETE FROM replay_batches;",
+            )?;
             self.set_meta("started", &false.into())?;
         }
         Ok(())
     }
 
     fn claim(&mut self, entry: &Value) -> Result<()> {
-        let at = float(&entry["at"]);
+        // A claim states the rule time it was judged at; a refusal its wall time, and a lockout's its rule time and wait.
+        let at = entry["input"]["at"].as_f64().unwrap_or_else(|| float(&entry["at"]));
         let hotkey = entry["input"]["request"]["hotkey"].as_str().unwrap_or_default().to_string();
         let kind = entry["input"].get("kind").and_then(Value::as_str).unwrap_or(CRAWL).to_string();
         for receipt in entry["output"]["receipts"].as_array().into_iter().flatten() {
@@ -276,8 +335,13 @@ impl Replay {
                         params![task_id, hotkey, kind, at],
                     )?;
                 }
-                "refused" if body["refusal"]["code"] == "LOCKED_OUT" && budgets::locked_until(&self.conn, &hotkey, &kind, at)?.is_none() => {
-                    self.diverge(entry, SUSPECT, "a miner was refused as locked out while it was not", body.clone(), Value::Null);
+                "refused" if body["refusal"]["code"] == "LOCKED_OUT" => {
+                    let inputs = &body["refusal"]["inputs"];
+                    let judged_at = float(&inputs["until"]) - float(&inputs["retry_after"]);
+                    let locked = [CRAWL, EMBED].iter().map(|pool| budgets::locked_until(&self.conn, &hotkey, pool, judged_at)).collect::<Result<Vec<_>>>()?;
+                    if locked.iter().all(Option::is_none) {
+                        self.diverge(entry, SUSPECT, "a miner was refused as locked out while it was not", body.clone(), Value::Null);
+                    }
                 }
                 "refused" if body["refusal"]["code"] == "PAUSED" && self.meta("paused")? != Some(true.into()) => {
                     self.diverge(entry, SUSPECT, "a claim was refused as paused while the log shows no pause", body.clone(), Value::Null);
@@ -292,7 +356,34 @@ impl Replay {
         if held > budget {
             self.diverge(entry, SUSPECT, "the miner holds more tasks than its budget", held.into(), budget.into());
         }
+        // The on-chain incentive caps the budget a claim uses, as the metagraph the log holds gives it; the API reads the work it
+        // compares against from a cache, so a difference is only suspect.
+        let allowed = budget.min(self.incentive_cap(&hotkey, at)?);
+        if entry["input"]["budget"].as_i64().is_some_and(|used| used != allowed) {
+            self.diverge(
+                entry,
+                SUSPECT,
+                "the budget a claim used is not the one the checks and the incentive give",
+                entry["input"]["budget"].clone(),
+                allowed.into(),
+            );
+        }
         Ok(())
+    }
+
+    /// The budget a hotkey's incentive allows, as `State::budget_cap` works it out.
+    fn incentive_cap(&self, hotkey: &str, at: f64) -> Result<i64> {
+        let params = self.params()?;
+        let Some(incentive) = self.meta("incentives")?.and_then(|known| known[hotkey].as_f64()).filter(|_| params.incentive_full > 0.0) else {
+            return Ok(budgets::CEILING);
+        };
+        let work = budgets::work(&self.conn, SHARE_WINDOW_H, at)?;
+        let Some((shares, first)) = work.get(hotkey) else { return Ok(budgets::CEILING) };
+        let expected = rules::expected_incentive(shares, &params);
+        if *first > budgets::hour_of(at) - params.incentive_grace_h || expected <= 0.0 {
+            return Ok(budgets::CEILING);
+        }
+        Ok(rules::incentive_cap(Some(incentive / expected), &params))
     }
 
     fn complete(&mut self, entry: &Value, blobs: Blobs) -> Result<()> {
@@ -362,35 +453,47 @@ impl Replay {
     }
 
     /// Why a lapse costs nothing by the rules: held through the restart of the copy that decided, which must be one the log saw
-    /// start, or, with the storage-outage rule on, held while a probe the log holds failed.
-    fn forgiveness(&mut self, entry: &Value, kind: &str) -> Result<Option<&'static str>> {
+    /// start, or alive while an outage the log holds was open.
+    fn forgiveness(&mut self, entry: &Value, kind: &str) -> Result<Option<String>> {
         let input = &entry["input"];
         let basis = &input["forgiving"];
-        let expiry = input["expiry"].as_f64();
         let starts: Vec<Value> = self.meta("starts")?.and_then(|s| s.as_array().cloned()).unwrap_or_default();
         let start = starts.last().cloned().unwrap_or(Value::Null);
+        let claim_ttl = float(&basis["claim_ttl"]);
+        if !start.is_null() {
+            let ttl = float(&start["settings"][if kind == EMBED { "embed_claim_ttl" } else { "claim_ttl" }]) + crate::rounds::UPLOAD_GRACE_S;
+            if claim_ttl != ttl {
+                self.diverge(entry, FRAUD, "the claim time a lapse was judged on", basis["claim_ttl"].clone(), ttl.into());
+            }
+            if let Some(block_seconds) = start["settings"]["block_seconds"].as_f64().filter(|b| basis["block_seconds"].as_f64() != Some(*b)) {
+                self.diverge(entry, FRAUD, "the block length a lapse was judged on", basis["block_seconds"].clone(), block_seconds.into());
+            }
+        }
+        let Some(expiry) = input["expiry"].as_f64() else { return Ok(None) };
         if let Some(started_at) = basis["started_at"].as_f64() {
             if !starts.iter().any(|s| s["started_at"].as_f64() == Some(started_at)) {
                 self.diverge(entry, FRAUD, "a lapse was decided by a copy the log never saw start", basis["started_at"].clone(), json!(starts));
             }
-            let ttl = float(&start["settings"][if kind == EMBED { "embed_claim_ttl" } else { "claim_ttl" }]) + crate::rounds::UPLOAD_GRACE_S;
-            if !start.is_null() && basis["claim_ttl"].as_f64() != Some(ttl) {
-                self.diverge(entry, FRAUD, "the claim time a restart allows", basis["claim_ttl"].clone(), ttl.into());
-            }
-            if expiry.is_some_and(|expiry| expiry <= started_at + float(&basis["claim_ttl"])) {
-                return Ok(Some("restart"));
+            if expiry <= started_at + claim_ttl {
+                return Ok(Some("restart".into()));
             }
         }
-        if start["settings"]["storage_outage_forgives"] == true {
-            if let (Some(from), Some(to)) = (basis["claimed_at"].as_f64(), expiry) {
-                if crate::canary::outage_during(&self.conn, from, to)? {
-                    return Ok(Some(crate::canary::OUTAGE_CAUSE));
-                }
-            }
-        } else if basis["claimed_at"].as_f64().is_some() {
-            self.diverge(entry, FRAUD, "storage outages were looked up while the rule is off", basis.clone(), Value::Null);
+        let from = expiry - claim_ttl - 2.0 * float(&basis["block_seconds"]);
+        Ok(outages::during(&self.conn, from, expiry)?.map(|cause| format!("{cause}_outage")))
+    }
+
+    /// An outage opened or closed: one of a cause at a time, as the API keeps them.
+    fn outage(&mut self, entry: &Value) -> Result<()> {
+        let input = &entry["input"];
+        let (cause, at, block) = (text(input, "cause"), float(&input["at"]), int(&input["block"]));
+        let changed = match text(input, "event") {
+            "begin" => outages::begin(&self.conn, cause, at, block, text(input, "detail"))?,
+            _ => outages::end(&self.conn, cause, at, block)?,
+        };
+        if !changed {
+            self.diverge(entry, FRAUD, "an outage began while one of its cause was open, or ended while none was", input.clone(), Value::Null);
         }
-        Ok(None)
+        Ok(())
     }
 
     /// Every receipt answering a signed request names that request, so a relaying validator's witness can be matched to it.
@@ -425,10 +528,20 @@ impl Replay {
             models::score(&body).ok().map(|result| build_vote(&job, &validator, result))
         };
         if let Some(refused) = entry["output"].get("refused") {
+            let at = float(&entry["at"]);
             if refused["status"] == 422 && matches!(built, Some(Ok(_))) {
                 self.diverge(entry, FRAUD, "a feasible report was refused", refused.clone(), Value::Null);
             }
-            if refused["status"] == 403 && !validations::is_excluded(&self.conn, &validator)? {
+            // A report its task could not have produced counts against its validator, and only such a report does.
+            match (refused["status"] == 422 && matches!(built, Some(Err(_))), input["wrong_report"].as_str()) {
+                (true, Some(why)) => rules::note_wrong_report(&self.conn, &validator, task_id, why, at)?,
+                (true, None) => self.diverge(entry, FRAUD, "a report its task could not have produced was not counted", refused.clone(), Value::Null),
+                (false, Some(_)) => self.diverge(entry, FRAUD, "a report was counted wrong that its task could have produced", refused.clone(), Value::Null),
+                (false, None) => {}
+            }
+            let settings = &self.start()?["settings"];
+            let (since, limit) = (at - float(&settings["wrong_reports_window_s"]), settings["wrong_reports"].as_i64().unwrap_or(0));
+            if refused["status"] == 403 && !validations::is_excluded(&self.conn, &validator, since, limit)? {
                 self.diverge(entry, FRAUD, "a report was refused from a validator that is not excluded", refused.clone(), Value::Null);
             }
             return Ok(());
@@ -493,7 +606,9 @@ impl Replay {
             self.diverge(entry, FRAUD, "a verdict on another upload than the one accepted", input["key"].clone(), job["key"].clone());
         }
         job["picked"] = input["picked"].clone();
-        let decision = match text(input, "mode") {
+        let params = self.params()?;
+        let mode = text(input, "mode").to_string();
+        let (basis, decision) = match mode.as_str() {
             "checked" => {
                 let voters: Vec<String> = input["voters"].as_array().into_iter().flatten().filter_map(Value::as_str).map(String::from).collect();
                 let mut votes = Vec::new();
@@ -519,41 +634,57 @@ impl Replay {
                 if votes.is_empty() {
                     return Ok(());
                 }
-                lifecycle::held_to_report(&job, decide(&votes, false, true))
+                let decision = lifecycle::held_to_report(&job, decide(&votes, false, true));
+                (Basis::Checked(votes), decision)
             }
-            "unchecked" if kind_of(&job) == EMBED => Decision::last(lifecycle::unchecked_embed_vote(&job), Vec::new()),
             "unchecked" => {
-                let share = checks::error_share(&self.conn, text(&job, "miner"), at)?;
-                if input["error_share"].as_f64() != Some(share) {
-                    self.diverge(entry, FRAUD, "the share of reported errors the miner is paid for", input["error_share"].clone(), share.into());
-                }
-                Decision::last(lifecycle::unchecked_vote(&job, share), Vec::new())
+                let vote = if kind_of(&job) == EMBED {
+                    lifecycle::unchecked_embed_vote(&job)
+                } else {
+                    let (judged, _) = lifecycle::judge(&self.conn, &job, &Basis::Unchecked, &HashMap::new(), &params, at)?;
+                    lifecycle::unchecked_vote(&job, &judged)
+                };
+                (Basis::Unchecked, Decision::last(vote, Vec::new()))
             }
-            _ => Decision::last(lifecycle::unscored_vote(), Vec::new()),
+            _ => (Basis::Unscored, Decision::last(lifecycle::unscored_vote(), Vec::new())),
         };
+        // Each voter counts under its coldkey, as the metagraph the log holds names it.
+        let coldkeys: HashMap<String, String> = input["coldkeys"]
+            .as_object()
+            .into_iter()
+            .flatten()
+            .map(|(hotkey, coldkey)| (hotkey.clone(), coldkey.as_str().unwrap_or_default().to_string()))
+            .collect();
+        let known = self.meta("coldkeys")?.unwrap_or(Value::Null);
+        for (hotkey, coldkey) in &coldkeys {
+            let expected = known[hotkey.as_str()].as_str().unwrap_or(hotkey.as_str());
+            if !known.is_null() && coldkey != expected {
+                self.diverge(entry, SUSPECT, "a voter's coldkey is not the one the metagraph names", coldkey.clone().into(), expected.into());
+            }
+        }
         let vote = decision.vote().clone();
         let result = vote["result"].as_object().cloned().unwrap_or_default();
-        let report = validations::build_report(task_id, &job, text(&vote, "validator"), &result, &decision.votes, float(&output["scored_at"]));
-        let budget = lifecycle::finalize_accounts(&self.conn, task_id, &job, &decision, Kept { report: &report, publish: None, details: None }, at)?;
-        let checked = match budget {
-            Some(_) if lifecycle_picked(&job) => lifecycle::check_accounts(&self.conn, &job, &decision, at)?,
-            _ => None,
-        };
-        let ours = json!({
-            "verdict": vote["verdict"],
-            "reason": vote["result"].get("reason").cloned().unwrap_or(Value::Null),
-            "credited": if vote["verdict"] == "pass" { vote["credited"].clone() } else { 0.into() },
-            "budget": budget,
-            "agreed": decision.agreed,
-            "disagreed": decision.disagreed,
-            "taken": checked.as_ref().map(|c| c.taken_ids()).unwrap_or_default(),
-            "penalty": checked.as_ref().is_some_and(|c| c.penalty.is_some()),
-        });
-        let mut api = Map::new();
-        for name in ["verdict", "reason", "credited", "budget", "agreed", "disagreed", "taken", "penalty"] {
-            api.insert(name.into(), output.get(name).cloned().unwrap_or(Value::Null));
+        let published = text(&vote, "verdict").to_string();
+        let published_reason = result.get("reason").cloned().unwrap_or_else(|| "".into());
+        if input["published"] != published.as_str() || input["published_reason"] != published_reason {
+            // The votes decide what is published; an unchecked upload's own counts are judged once before the transaction.
+            let severity = if mode == "checked" { FRAUD } else { SUSPECT };
+            let api = json!([input["published"], input["published_reason"]]);
+            self.diverge(entry, severity, "what the validators' majority found", api, json!([published, published_reason]));
         }
-        self.compare(entry, "the verdict and its accounts", &Value::Object(api), ours);
+        let report = validations::build_report(task_id, &job, text(&vote, "validator"), &result, &decision.votes, float(&output["scored_at"]));
+        let candidate = lifecycle::publish_candidate(&result).then(|| json!({}));
+        let given = Given { basis: &basis, coldkeys: &coldkeys, params: &params, published: &published, published_reason: &published_reason };
+        let kept = Kept { report: &report, publish: candidate.as_ref(), details: None };
+        let Some(settled) = lifecycle::finalize_accounts(&self.conn, task_id, &job, &decision, given, kept, at)? else {
+            self.diverge(entry, FRAUD, "a second verdict on one upload", input.clone(), Value::Null);
+            return Ok(());
+        };
+        let checked = if lifecycle_picked(&job) { lifecycle::check_accounts(&self.conn, &job, &basis, &settled.judged, &published, at)? } else { None };
+        let ours = lifecycle::finalized_output(&settled, &decision, checked.as_ref());
+        let names = ["verdict", "reason", "credited", "budget", "publish", "agreed", "disagreed", "taken", "penalty"];
+        let pick = |from: &Value| Value::Object(names.iter().map(|name| (name.to_string(), from.get(*name).cloned().unwrap_or(Value::Null))).collect());
+        self.compare(entry, "the verdict and its accounts", &pick(output), pick(&ours));
         self.close_upload(task_id)
     }
 
@@ -606,44 +737,159 @@ impl Replay {
                     validator_permit: n[3].as_bool().unwrap_or(false),
                     total_stake_rao: n[4].as_str().and_then(|s| s.parse().ok()).unwrap_or(0),
                     alpha_stake_rao: n[5].as_str().and_then(|s| s.parse().ok()).unwrap_or(0),
+                    incentive: n[6].as_f64(),
                 };
                 registry::is_validator(&neuron).then_some(neuron.hotkey)
             })
             .collect();
         self.compare(entry, "who may vote", &entry["output"]["validators"], json!(validators));
+        let coldkeys: Map<String, Value> = listed
+            .iter()
+            .filter_map(|n| Some((n[1].as_str()?.to_string(), Value::from(n[2].as_str().filter(|c| !c.is_empty()).unwrap_or(n[1].as_str()?)))))
+            .collect();
+        self.set_meta("coldkeys", &Value::Object(coldkeys))?;
+        let incentives: Map<String, Value> = listed.iter().filter_map(|n| Some((n[1].as_str()?.to_string(), Value::from(n[6].as_f64()?)))).collect();
+        self.set_meta("incentives", &Value::Object(incentives))?;
         self.set_meta("validators", &json!(validators))
     }
 
+    /// A round's commitment: a crawl round's is worked out again from the URLs of its signed request, an embed round's from its
+    /// manifest. The round is kept until its reveal, which is checked against it.
     fn round(&mut self, entry: &Value, blobs: Blobs) -> Result<()> {
         let output = &entry["output"];
-        let sha = output["manifest"]["blob"].as_str().unwrap_or_default();
-        let manifest: Option<Vec<Value>> = blobs(sha).filter(|body| proofs::sha256(body) == sha).and_then(|body| serde_json::from_slice(&body).ok());
-        let Some(manifest) = manifest else {
-            self.diverge(entry, FRAUD, "the round's manifest was not published", output.clone(), Value::Null);
-            return Ok(());
+        let (round_id, seed_block) = (text(output, "round_id"), int(&output["seed_block"]));
+        let (task_urls, urls, manifest) = match output.get("commitment").filter(|set| !set.is_null()) {
+            Some(set) => {
+                let requested = journal::request_body(&entry["input"]["request"], blobs)
+                    .and_then(|body| serde_json::from_slice::<Value>(&body).ok())
+                    .and_then(|body| models::Enqueue::parse(&body).ok());
+                let Some(requested) = requested else {
+                    self.diverge(entry, FRAUD, "the round's URLs are not those of a signed request", entry["input"].clone(), Value::Null);
+                    return Ok(());
+                };
+                let task_urls = int(&set["task_urls"]) as usize;
+                if let Some(setting) = self.start()?["settings"]["task_urls"].as_i64().filter(|t| *t as usize != task_urls) {
+                    self.diverge(entry, FRAUD, "the URLs a task gets", set["task_urls"].clone(), setting.into());
+                }
+                let Ok((_, unique)) = lifecycle::pack_round(requested.urls, seed_block, task_urls, 0.0) else {
+                    self.diverge(entry, FRAUD, "a round of URLs that do not parse", entry["input"].clone(), Value::Null);
+                    return Ok(());
+                };
+                let urls_hash = rounds::set_hash(&unique);
+                let ours =
+                    json!({"url_count": unique.len(), "urls_hash": urls_hash, "task_urls": task_urls, "tasks": rounds::tasks_for(unique.len(), task_urls)});
+                self.compare(entry, "the URL set the round commits to", set, ours);
+                let hash = proofs::set_manifest_hash(round_id, seed_block, task_urls, unique.len(), &urls_hash);
+                self.compare(entry, "the round's commitment", &output["manifest_hash"], hash.into());
+                (Some(task_urls as i64), Some(lifecycle::staged_set(&unique).to_string()), None)
+            }
+            None => {
+                let sha = output["manifest"]["blob"].as_str().unwrap_or_default();
+                let manifest: Option<Vec<Value>> = blobs(sha).filter(|body| proofs::sha256(body) == sha).and_then(|body| serde_json::from_slice(&body).ok());
+                let Some(manifest) = manifest else {
+                    self.diverge(entry, FRAUD, "the round's manifest was not published", output.clone(), Value::Null);
+                    return Ok(());
+                };
+                let hash = proofs::manifest_hash(&manifest, seed_block);
+                self.compare(entry, "the round's commitment", &output["manifest_hash"], hash.into());
+                for batch in &manifest {
+                    self.conn.execute(
+                        "INSERT OR REPLACE INTO replay_batches (batch_id, round_id, urls_hash) VALUES (?, ?, ?)",
+                        params![text(batch, "batch_id"), round_id, batch["urls_hash"].as_str()],
+                    )?;
+                }
+                (None, None, Some(Value::Array(manifest).to_string()))
+            }
         };
-        let hash = proofs::manifest_hash(&manifest, int(&output["seed_block"]));
-        self.compare(entry, "the round's commitment", &output["manifest_hash"], hash.into());
-        for batch in &manifest {
-            self.conn.execute(
-                "INSERT OR REPLACE INTO replay_batches (batch_id, round_id, urls_hash) VALUES (?, ?, ?)",
-                params![text(batch, "batch_id"), text(output, "round_id"), batch["urls_hash"].as_str()],
-            )?;
-        }
+        self.conn.execute(
+            "INSERT OR REPLACE INTO replay_rounds (round_id, kind, seed_block, commit_seq, task_urls, urls, manifest) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            params![round_id, text(output, "kind"), seed_block, int(&entry["seq"]), task_urls, urls, manifest],
+        )?;
         Ok(())
     }
 
-    fn reveal(&mut self, entry: &Value) -> Result<()> {
-        let input = &entry["input"];
+    fn kept_round(&self, round_id: &str) -> Result<Option<Committed>> {
+        let committed = |row: &rusqlite::Row| -> rusqlite::Result<Committed> {
+            let (task_urls, urls, manifest): (Option<i64>, Option<String>, Option<String>) = (row.get(2)?, row.get(3)?, row.get(4)?);
+            let set = urls
+                .and_then(|raw| serde_json::from_str::<Vec<(String, String)>>(&raw).ok())
+                .map(|pairs| (pairs.into_iter().map(|(host, url)| Url { host, url }).collect(), task_urls.unwrap_or(1) as usize));
+            Ok(Committed { seed_block: row.get(0)?, commit_seq: row.get(1)?, set, manifest: manifest.and_then(|raw| serde_json::from_str(&raw).ok()) })
+        };
+        Ok(self
+            .conn
+            .query_row("SELECT seed_block, commit_seq, task_urls, urls, manifest FROM replay_rounds WHERE round_id = ?", [round_id], committed)
+            .optional()?)
+    }
+
+    /// Whether an anchor the log confirmed covers entry `seq` and was in a block before `seed_block`.
+    fn anchored_before(&self, seq: i64, seed_block: i64) -> Result<bool> {
+        Ok(self.conn.query_row("SELECT 1 FROM replay_anchors WHERE seq >= ? AND block < ?", params![seq, seed_block], |_| Ok(())).optional()?.is_some())
+    }
+
+    /// A commitment not anchored before its seed block, made again to a later one.
+    fn recommit(&mut self, entry: &Value, _blobs: Blobs) -> Result<()> {
+        let (input, output) = (&entry["input"], &entry["output"]);
+        let round_id = text(input, "round_id");
+        let Some(Committed { seed_block, commit_seq, set, manifest }) = self.kept_round(round_id)? else { return Ok(()) };
+        let moved = int(&input["seed_block"]);
+        if int(&input["seed_block_was"]) != seed_block || moved <= seed_block {
+            self.diverge(entry, FRAUD, "a round committed again to a seed block not after its own", input.clone(), seed_block.into());
+        }
+        // A commitment anchored in time is revealed under its seed; committing it again would choose among seeds.
+        if self.anchored_before(commit_seq, seed_block)? {
+            self.diverge(entry, FRAUD, "a round anchored before its seed block was committed again", input.clone(), Value::Null);
+        }
+        let hash = match (&set, &manifest) {
+            (Some((urls, task_urls)), _) => proofs::set_manifest_hash(round_id, moved, *task_urls, urls.len(), &rounds::set_hash(urls)),
+            (None, Some(manifest)) => proofs::manifest_hash(manifest, moved),
+            (None, None) => return Ok(()),
+        };
+        self.compare(entry, "the round's new commitment", &output["manifest_hash"], hash.into());
+        self.conn.execute("UPDATE replay_rounds SET seed_block = ?, commit_seq = ? WHERE round_id = ?", params![moved, int(&entry["seq"]), round_id])?;
+        Ok(())
+    }
+
+    fn reveal(&mut self, entry: &Value, blobs: Blobs) -> Result<()> {
+        let (input, output) = (&entry["input"], &entry["output"]);
+        let round_id = text(input, "round_id");
         self.note_block(entry, int(&input["seed_block"]), text(input, "block_hash"))?;
         let seed = seed_from_hash(text(input, "block_hash"));
-        self.compare(entry, "the round's seed", &entry["output"]["seed"], seed.clone().into());
+        self.compare(entry, "the round's seed", &output["seed"], seed.clone().into());
+        if let Some(Committed { seed_block, commit_seq, set, .. }) = self.kept_round(round_id)? {
+            if int(&input["seed_block"]) != seed_block {
+                self.diverge(entry, FRAUD, "a round revealed under another seed block than it committed to", input["seed_block"].clone(), seed_block.into());
+            }
+            if self.anchoring()? && !self.anchored_before(commit_seq, seed_block)? {
+                self.diverge(entry, FRAUD, "a round was revealed before its commitment was anchored on chain", json!(commit_seq), seed_block.into());
+            }
+            if let Some((urls, task_urls)) = set {
+                let ours: Vec<Value> = rounds::cut(&urls, &seed, round_id, task_urls).iter().map(Batch::manifest_entry).collect();
+                let sha = output["batches"]["blob"].as_str().unwrap_or_default();
+                let theirs: Option<Vec<Value>> = blobs(sha).filter(|body| proofs::sha256(body) == sha).and_then(|body| serde_json::from_slice(&body).ok());
+                match theirs {
+                    // The API lost the set it staged and the round closes empty: its fault, not a cut of its choosing.
+                    Some(theirs) if theirs.is_empty() && !ours.is_empty() => {
+                        self.diverge(entry, SUSPECT, "the round lost its URL set before its seed cut it", Value::Null, json!(ours.len()))
+                    }
+                    Some(theirs) => self.compare(entry, "the batches the seed cuts from the committed set", &json!(theirs), json!(ours.clone())),
+                    None => self.diverge(entry, FRAUD, "the batches the seed cut were not published", output["batches"].clone(), Value::Null),
+                }
+                for batch in &ours {
+                    self.conn.execute(
+                        "INSERT OR REPLACE INTO replay_batches (batch_id, round_id, urls_hash) VALUES (?, ?, ?)",
+                        params![text(batch, "batch_id"), round_id, batch["urls_hash"].as_str()],
+                    )?;
+                }
+            }
+            self.conn.execute("DELETE FROM replay_rounds WHERE round_id = ?", [round_id])?;
+        }
         let mut statement = self.conn.prepare("SELECT batch_id FROM replay_batches WHERE round_id = ?")?;
-        let ids: Vec<String> = statement.query_map([text(input, "round_id")], |row| row.get(0))?.collect::<rusqlite::Result<_>>()?;
+        let ids: Vec<String> = statement.query_map([round_id], |row| row.get(0))?.collect::<rusqlite::Result<_>>()?;
         drop(statement);
         if !ids.is_empty() {
             let order = proofs::serve_order(&seed, &ids);
-            self.compare(entry, "the round's serve order", &entry["output"]["serve_order"], json!(order));
+            self.compare(entry, "the round's serve order", &output["serve_order"], json!(order));
         }
         Ok(())
     }

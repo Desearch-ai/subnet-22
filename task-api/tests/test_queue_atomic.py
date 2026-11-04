@@ -14,7 +14,7 @@ from app.queues import (
     ValidationQueue,
 )
 
-# TASK_API_TEST_REDIS_URL lets checkouts testing at once each use their own Redis.
+# Redis on localhost, or at TASK_API_TEST_REDIS_URL when the usual one is unavailable.
 REDIS_URL = os.environ.get("TASK_API_TEST_REDIS_URL", "redis://localhost:6379/14")
 
 

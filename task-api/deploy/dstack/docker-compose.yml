@@ -82,16 +82,28 @@ services:
       TASK_API_TASK_URLS: "1000"
       TASK_API_EMBED_TASKS: "0"
       TASK_API_EMBED_MODEL: desearch-4b-v1
-      # No reference model servers: references come from validators' own models (block A).
-      TASK_API_EMBED_REFERENCE_URL: ""
-      TASK_API_EMBED_REFERENCE_CALLS: "4"
       TASK_API_ACTIVE_S: "3600"
       TASK_API_PUBLISH_TTL: "600"
       TASK_API_PUBLISH_TRIES: "5"
 
-      # The storage canary and pinned upload versions (block C).
+      # The rules (block A): outages that forgive lapses, objective judgments, a round's loadability and neutral
+      # hosts, the on-chain incentive cap, and the wrong reports that exclude a validator.
+      TASK_API_STORAGE_PROBE_S: "30"
+      TASK_API_FINALITY_STALL_BLOCKS: "10"
+      TASK_API_OBJECTIVE_QUORUM: "1"
+      TASK_API_EMBED_REFERENCES: "2"
+      TASK_API_LOADABILITY_SAMPLES: "30"
+      TASK_API_NEUTRAL_UPLOADS: "3"
+      TASK_API_NEUTRAL_SHARE: "0.5"
+      TASK_API_INCENTIVE_FULL: "0.5"
+      TASK_API_INCENTIVE_GRACE_H: "24"
+      TASK_API_CRAWL_EMISSION: "0.2"
+      TASK_API_EMBED_EMISSION: "0.5"
+      TASK_API_WRONG_REPORTS: "5"
+      TASK_API_WRONG_REPORTS_WINDOW_S: "86400"
+
+      # The storage canary and pinned upload versions (block C); a failed canary probe opens a storage outage too.
       TASK_API_CANARY_EVERY_S: "60"
-      TASK_API_STORAGE_OUTAGE_FORGIVES: "0"
       TASK_API_UPLOAD_LOCK_S: "0"
 
       # The hash-chained log (block B). Anchoring its head needs a hotkey registered on the subnet, which

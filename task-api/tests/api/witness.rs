@@ -182,8 +182,8 @@ async fn reclaim_cause(h: &Harness, id: &str) -> String {
 }
 
 #[tokio::test]
-async fn a_claim_that_lapsed_while_the_canary_found_storage_down_costs_nothing_when_the_rule_is_on() {
-    let h = Harness::with(|s| s.storage_outage_forgives = true).await;
+async fn a_claim_that_lapsed_while_the_canary_found_storage_down_costs_nothing() {
+    let h = Harness::start().await;
     let id = claimed_then_storage_fails(&h).await;
     assert_eq!(reclaim_cause(&h, &id).await, canary::OUTAGE_CAUSE);
     assert_eq!(strikes(&h).await, 0);
@@ -194,14 +194,6 @@ async fn a_claim_that_lapsed_while_the_canary_found_storage_down_costs_nothing_w
     let outages = probes["outages"].as_array().unwrap();
     assert_eq!(outages.len(), 1, "public: {probes}");
     assert!(outages[0]["to_at"].is_null(), "still down as far as the canary knows");
-}
-
-#[tokio::test]
-async fn without_the_rule_the_canary_only_records_the_outage() {
-    let h = Harness::start().await;
-    let id = claimed_then_storage_fails(&h).await;
-    assert_eq!(reclaim_cause(&h, &id).await, "expired");
-    assert_eq!(strikes(&h).await, 1);
 }
 
 #[tokio::test]

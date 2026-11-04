@@ -482,88 +482,23 @@ def test_a_check_is_kept_in_characters_for_the_validators_own_weights():
     assert ledger.embed_paid(200.0)["5Miner"].amount == -1000
 
 
-def test_a_validator_without_a_model_server_gets_its_sample_from_the_task_api():
-    from neurons.validators.embed import ApiReference
-
-    class Api:
-        def __init__(self):
-            self.posts = []
-
-        async def post(self, path, body=None):
-            self.posts.append((path, body))
-            return {
-                "vectors": [
-                    {
-                        "text_id": i,
-                        "embedding": base64.b64encode(
-                            truth(i).astype("<f4").tobytes()
-                        ).decode(),
-                    }
-                    for i in reversed(body["text_ids"])
-                ]
-            }
-
-    api = Api()
-    picked = INPUTS[:3]
-    vectors = asyncio.run(ApiReference(api, MODEL).vectors({"task_id": "t1"}, picked))
-
-    assert api.posts == [("/v1/embed/t1/reference", {"text_ids": ["p0", "p1", "p2"]})]
-    assert np.allclose(vectors, [truth(row["text_id"]) for row in picked], atol=1e-6), (
-        "in the order asked"
-    )
-
-
-def test_the_task_api_reference_is_waited_for_while_another_validator_computes_it():
-    from desearch.client import TaskApiError
-    from neurons.validators.embed import ApiReference
-
-    class Api:
-        def __init__(self, answers):
-            self.answers = answers
-
-        async def post(self, path, body=None):
-            answer = self.answers.pop(0)
-            if isinstance(answer, Exception):
-                raise answer
-            return {
-                "vectors": [
-                    {
-                        "text_id": i,
-                        "embedding": base64.b64encode(
-                            truth(i).astype("<f4").tobytes()
-                        ).decode(),
-                    }
-                    for i in body["text_ids"]
-                ]
-            }
-
-    busy = TaskApiError(503, "the reference for this upload is being computed", 0.01)
-    picked = INPUTS[:2]
-    api = Api([busy, busy, None])
-    vectors = asyncio.run(ApiReference(api, MODEL).vectors({"task_id": "t1"}, picked))
-    assert api.answers == [] and vectors.shape == (2, MODEL.dims)
-
-    down = TaskApiError(503, "the reference model server is unavailable", 30)
-    with pytest.raises(TaskApiError):
-        asyncio.run(ApiReference(Api([down]), MODEL).vectors({"task_id": "t1"}, picked))
-
-
-@pytest.mark.parametrize("status", [409, 422, 429])
-def test_a_reference_refused_for_one_upload_defers_it_without_pausing_the_checks(
-    status,
+def test_a_validator_without_its_own_model_server_does_not_vote_on_embed_uploads(
+    monkeypatch,
 ):
-    from desearch.client import TaskApiError
-    from neurons.validators.embed import ApiReference
+    from neurons.validators import validator
 
-    class Refusing:
-        async def post(self, path, body=None):
-            raise TaskApiError(status, "no")
+    made = validator.Validator.__new__(validator.Validator)
+    made.stopping = asyncio.Event()
+    made.stopping.set()
+    monkeypatch.delenv("EMBED_API_URL", raising=False)
 
-    reference = ApiReference(Refusing(), MODEL)
-    posts, checker, _ = asyncio.run(judged(upload(), reference))
+    def refuse(*_args, **_kwargs):
+        raise AssertionError("no embed checker without a model of our own")
 
-    assert posts == [] and "t1" in checker.deferred
-    assert checker.provider_failures == 0
+    monkeypatch.setattr(validator, "EmbedValidator", refuse)
+    monkeypatch.setattr(validator, "TaskApiClient", refuse)
+    asyncio.run(made.check_embed_tasks())
+
 
 
 def test_a_validator_checks_only_the_models_its_own_server_serves():

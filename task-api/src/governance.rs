@@ -249,7 +249,7 @@ mod tests {
 
     fn neuron(uid: i64, coldkey: &str, stake: u128) -> Neuron {
         let hotkey = desearch::hotkey::Hotkey::from_uri(&format!("//gov{uid}")).unwrap().ss58();
-        Neuron { uid, hotkey, coldkey: coldkey.into(), validator_permit: true, total_stake_rao: stake, alpha_stake_rao: 0 }
+        Neuron { uid, hotkey, coldkey: coldkey.into(), validator_permit: true, total_stake_rao: stake, alpha_stake_rao: 0, incentive: None }
     }
 
     fn snapshot(at: i64, commitments: &[(usize, i64, String)]) -> Snapshot {

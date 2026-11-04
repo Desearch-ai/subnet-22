@@ -35,7 +35,7 @@ impl FakeChain {
             url,
             refusing: AtomicBool::new(false),
             lying: AtomicBool::new(false),
-            finality_lag: 3,
+            finality_lag: 2,
             calls: Mutex::default(),
             started: Instant::now(),
             first_block,

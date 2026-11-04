@@ -8,6 +8,7 @@ import math
 from collections import Counter, defaultdict
 from collections.abc import Mapping
 from dataclasses import dataclass, fields
+from urllib.parse import urlsplit
 
 import pyarrow.parquet as pq
 
@@ -167,6 +168,23 @@ def sample_order(urls, seed: str) -> list[str]:
     return sorted(
         urls, key=lambda url: hashlib.sha256(f"{seed}{url}".encode()).digest()
     )
+
+
+def host_of(url: str) -> str:
+    """The host a URL counts under, as the task API's `domain_of` names it."""
+    host = urlsplit(url).netloc.lower()
+    return host[4:] if host.startswith("www.") else host
+
+
+def rows_by_host(kept: dict[str, dict]) -> dict[str, list[int]]:
+    """Each host's rows and error rows in the file: a fact every validator finds the same, from which the task API
+    tells the hosts most miners of a round could not load."""
+    hosts: dict[str, list[int]] = {}
+    for url, row in kept.items():
+        counts = hosts.setdefault(host_of(url), [0, 0])
+        counts[0] += 1
+        counts[1] += row["error"] is not None
+    return hosts
 
 
 def rows_by_url(rows: list[dict], assigned: list[str]) -> tuple[dict[str, dict], int]:
@@ -479,6 +497,7 @@ def empty_result(wanted: set[str], reason: str) -> dict:
         "missing": len(wanted),
         "error_rows": 0,
         "integrity_checked": 0,
+        "hosts": {},
         "verdict": "fail",
         "reason": reason,
         "samples": [],
@@ -525,6 +544,7 @@ def score(
         **counts,
         "error_rows": error_rows,
         "integrity_checked": checked,
+        "hosts": rows_by_host(kept),
         "verdict": verdict,
         "reason": reason,
         "samples": samples,

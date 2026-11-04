@@ -47,6 +47,7 @@ fn counted(job: &Value) -> Value {
     json!({
         "kind": CRAWL,
         "task_id": job["task_id"],
+        "round_id": job["round_id"],
         "miner": job["miner"],
         "key": job["key"],
         "completed_at": job["completed_at"],

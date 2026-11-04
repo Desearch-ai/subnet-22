@@ -267,6 +267,8 @@ class TaskChecker:
             returned,
             returned - result.get("error_rows", 0),
             assigned,
+            round_id=job.get("round_id", ""),
+            hosts=result.get("hosts"),
         )
 
     def note_embed_verdict(self, job: dict, result: dict) -> None:

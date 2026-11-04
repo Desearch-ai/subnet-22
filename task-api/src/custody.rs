@@ -300,7 +300,7 @@ async fn activate_received(state: &State, record: Value) -> Result<()> {
     if record_hash(&latest) != record_hash(&record) {
         return Ok(());
     }
-    let started = crate::state::start_input(&state.settings, &state.signer(), state.started_at);
+    let started = crate::state::start_input(&state.settings, &state.signer(), state.started_at());
     state
         .db
         .run(move |conn| {
@@ -364,7 +364,7 @@ async fn appoint(state: &State) -> Result<()> {
     let record = signed(state, record);
     publish(state, &record, &attestation).await?;
     let kept = record.clone();
-    let started = crate::state::start_input(&state.settings, &signer, state.started_at);
+    let started = crate::state::start_input(&state.settings, &signer, state.started_at());
     state
         .db
         .run(move |conn| {

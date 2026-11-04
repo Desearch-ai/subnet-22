@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 import time
 from collections import defaultdict
@@ -14,6 +15,8 @@ from desearch.credit import (
     RATE_WINDOW_S,
     RECENT_CHECKS,
     SHARE_WINDOW_H,
+    neutral_hosts,
+    outside_neutral,
     overstated,
 )
 from desearch.kinds import CRAWL, EMBED
@@ -28,6 +31,10 @@ ADDED_COLUMNS = (
     ("uploads", "kind", f"TEXT NOT NULL DEFAULT '{CRAWL}'"),
     ("uploads", "chars", "INTEGER NOT NULL DEFAULT 0"),
     ("checks", "kind", f"TEXT NOT NULL DEFAULT '{CRAWL}'"),
+    # The round and rows per host, so hosts most miners of a round could not load pay nobody.
+    ("uploads", "round_id", "TEXT NOT NULL DEFAULT ''"),
+    ("checks", "round_id", "TEXT NOT NULL DEFAULT ''"),
+    ("checks", "hosts", "TEXT"),
 )
 
 
@@ -111,7 +118,7 @@ class Ledger:
         before = self.db.total_changes
         self.db.executemany(
             "INSERT OR IGNORE INTO uploads (key, task_id, miner, completed_at, assigned,"
-            " ok, errors, kind, chars) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " ok, errors, kind, chars, round_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             [upload_row(e) for e in entries],
         )
         self.db.commit()
@@ -129,10 +136,13 @@ class Ledger:
         assigned: int,
         at: float | None = None,
         kind: str = CRAWL,
+        round_id: str = "",
+        hosts: dict[str, list[int]] | None = None,
     ) -> None:
         self.db.execute(
             "INSERT OR REPLACE INTO checks (key, miner, completed_at, scored_at, verdict,"
-            " credited, returned, content, assigned, kind) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " credited, returned, content, assigned, kind, round_id, hosts)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 key,
                 miner,
@@ -144,6 +154,8 @@ class Ledger:
                 content,
                 assigned,
                 kind,
+                round_id,
+                json.dumps(hosts) if hosts is not None else None,
             ),
         )
         self.db.commit()
@@ -169,6 +181,15 @@ class Ledger:
     def _paid(self, kind: str, returned_of: str, now: float | None) -> dict[str, Paid]:
         now = now or time.time()
         since = now - SHARE_WINDOW_H * 3600
+        found = self.db.execute(
+            "SELECT c.miner, c.key, c.completed_at, c.verdict, c.credited, c.returned,"
+            " c.content, c.assigned, u.ok, c.round_id, c.hosts FROM checks c"
+            " LEFT JOIN uploads u ON u.key = c.key"
+            " WHERE c.scored_at >= ? AND c.kind = ? AND c.verdict IN ('pass', 'fail')"
+            " ORDER BY c.scored_at",
+            (now - RATE_WINDOW_S, kind),
+        ).fetchall()
+        rounds = neutral_by_round(found)
         checks: dict[str, list[Check]] = defaultdict(list)
         for (
             miner,
@@ -180,33 +201,35 @@ class Ledger:
             content,
             assigned,
             ok,
-        ) in self.db.execute(
-            "SELECT c.miner, c.key, c.completed_at, c.verdict, c.credited, c.returned,"
-            " c.content, c.assigned, u.ok FROM checks c LEFT JOIN uploads u ON u.key = c.key"
-            " WHERE c.scored_at >= ? AND c.kind = ? AND c.verdict IN ('pass', 'fail')"
-            " ORDER BY c.scored_at",
-            (now - RATE_WINDOW_S, kind),
-        ):
+            round_id,
+            hosts,
+        ) in found:
             passed = verdict == "pass" and not (
                 kind == CRAWL and ok is not None and overstated(ok, content, assigned)
+            )
+            # Rows on hosts most miners of the round could not load pay nobody and cost nobody.
+            kept = outside_neutral(
+                json.loads(hosts) if hosts else {},
+                rounds.get(round_id, (set(), 0.0))[0],
             )
             checks[miner].append(
                 Check(
                     key,
                     completed_at,
                     passed,
-                    credited if passed else 0,
-                    returned,
-                    assigned,
+                    round(credited * kept) if passed else 0,
+                    round(returned * kept),
+                    round(assigned * kept),
                 )
             )
         uploads: dict[str, list[tuple[str, float, int]]] = defaultdict(list)
-        for miner, key, completed_at, returned in self.db.execute(
-            f"SELECT miner, key, completed_at, {returned_of} FROM uploads"
+        for miner, key, completed_at, returned, round_id in self.db.execute(
+            f"SELECT miner, key, completed_at, {returned_of}, round_id FROM uploads"
             " WHERE completed_at >= ? AND kind = ?",
             (since, kind),
         ):
-            uploads[miner].append((key, completed_at, returned))
+            neutral_share = rounds.get(round_id, (set(), 0.0))[1]
+            uploads[miner].append((key, completed_at, returned * (1.0 - neutral_share)))
         return {
             miner: paid(checks[miner], uploads[miner], since)
             for miner in set(checks) | set(uploads)
@@ -266,6 +289,28 @@ class Paid:
     rate: float
 
 
+def neutral_by_round(found: list[tuple]) -> dict[str, tuple[set[str], float]]:
+    """Per round this validator checked: the hosts most of its checked uploads could not load, and the share
+    of the checked rows on them, every upload's share too since every task of a round has the round's mix."""
+    by_round: dict[str, list[dict[str, list[int]]]] = defaultdict(list)
+    for row in found:
+        round_id, hosts = row[-2], row[-1]
+        if round_id and hosts:
+            by_round[round_id].append(json.loads(hosts))
+    rounds = {}
+    for round_id, checked in by_round.items():
+        neutral = neutral_hosts(checked)
+        total = sum(rows for hosts in checked for rows, _ in hosts.values())
+        on_neutral = sum(
+            rows
+            for hosts in checked
+            for host, (rows, _) in hosts.items()
+            if host in neutral
+        )
+        rounds[round_id] = (neutral, on_neutral / total if total else 0.0)
+    return rounds
+
+
 def upload_row(entry: dict) -> tuple:
     """A logged upload as stored; an entry without a kind is a crawl upload from an older log."""
     if entry.get("kind", CRAWL) == EMBED:
@@ -278,6 +323,7 @@ def upload_row(entry: dict) -> tuple:
         entry["miner"],
         entry["completed_at"],
         *counts,
+        entry.get("round_id") or "",
     )
 
 

@@ -27,7 +27,7 @@ from desearch.client import TaskApiClient, TaskApiError
 from tests.http_client import HttpClient
 
 ROOT = Path(__file__).resolve().parents[1]
-# TASK_API_TEST_REDIS_URL lets checkouts testing at once each use their own Redis.
+# Redis on localhost, or at TASK_API_TEST_REDIS_URL when the usual one is unavailable.
 REDIS_URL = os.environ.get("TASK_API_TEST_REDIS_URL", "redis://localhost:6379/14")
 MINER, RIVAL = "//miner-api-test", "//rival-api-test"
 VALIDATOR, OTHER_VALIDATOR, THIRD_VALIDATOR = (

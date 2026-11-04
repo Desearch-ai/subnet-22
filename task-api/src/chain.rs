@@ -18,6 +18,9 @@ use tokio::sync::Mutex;
 
 use crate::seeds::BLOCK_SECONDS;
 use crate::settings::ChainOptions;
+
+/// The finalized head, which every deadline is measured on, is read this often and never counted on between reads.
+const FINALIZED_REFRESH: Duration = Duration::from_secs(6);
 /// After a failed call an endpoint is skipped this long, doubling up to `PAUSE_MAX`, so an unwell one is not hammered while the next is asked.
 const PAUSE_FIRST: Duration = Duration::from_secs(5);
 const PAUSE_MAX: Duration = Duration::from_secs(30);
@@ -36,6 +39,9 @@ pub struct Neuron {
     pub validator_permit: bool,
     pub total_stake_rao: u128,
     pub alpha_stake_rao: u128,
+    /// Its share of the subnet's incentive, as Yuma consensus last set it from validators' weights; None when the
+    /// metagraph gives no incentive, or none to anyone yet.
+    pub incentive: Option<f64>,
 }
 
 pub struct Chain {
@@ -53,6 +59,9 @@ pub struct Chain {
     best: std::sync::Mutex<Option<(i64, Instant)>>,
     reading: AtomicBool,
     first: Mutex<()>,
+    finalized_head: std::sync::Mutex<Option<(i64, Instant)>>,
+    finalizing: AtomicBool,
+    first_finalized: Mutex<()>,
     pauses: std::sync::Mutex<Vec<Pause>>,
     hashes: Mutex<HashMap<i64, String>>,
     absent: std::sync::Mutex<Option<(i64, Instant)>>,
@@ -100,6 +109,9 @@ impl Chain {
             best: std::sync::Mutex::default(),
             reading: AtomicBool::new(false),
             first: Mutex::default(),
+            finalized_head: std::sync::Mutex::default(),
+            finalizing: AtomicBool::new(false),
+            first_finalized: Mutex::default(),
             pauses: std::sync::Mutex::new(urls.iter().map(|_| Pause::default()).collect()),
             urls,
             hashes: Mutex::default(),
@@ -240,8 +252,45 @@ impl Chain {
         Some((block, desearch::time::now() - at.elapsed().as_secs_f64()))
     }
 
+    /// The newest finalized block read from the chain, read again in the background once it is `FINALIZED_REFRESH` old.
+    /// Unlike `current_block` it is never counted on the clock: a chain or an endpoint that stalls stalls every deadline with it.
+    pub async fn finalized_block(self: &Arc<Self>) -> Result<i64> {
+        if let Some(block) = self.last_finalized() {
+            return Ok(block);
+        }
+        let _first = self.first_finalized.lock().await;
+        if let Some(block) = self.last_finalized() {
+            return Ok(block);
+        }
+        self.read_finalized().await
+    }
+
+    fn last_finalized(self: &Arc<Self>) -> Option<i64> {
+        let (block, at) = (*self.finalized_head.lock().expect("finalized block"))?;
+        if at.elapsed() >= FINALIZED_REFRESH && !self.all_paused() && !self.finalizing.swap(true, Ordering::AcqRel) {
+            let chain = self.clone();
+            tokio::spawn(async move {
+                if let Err(error) = chain.read_finalized().await {
+                    eprintln!("reading the finalized block failed: {error:#}");
+                }
+                chain.finalizing.store(false, Ordering::Release);
+            });
+        }
+        Some(block)
+    }
+
+    async fn read_finalized(&self) -> Result<i64> {
+        // Through the quorum, as every other height: no single endpoint sets the clock.
+        let block = if self.quorum <= 1 { self.head_from(None, true).await? } else { self.agreed_head(true).await? };
+        let mut kept = self.finalized_head.lock().expect("finalized block");
+        // Endpoints that lag one another must not move the clock back.
+        let block = kept.map_or(block, |(seen, _)| seen.max(block));
+        *kept = Some((block, Instant::now()));
+        Ok(block)
+    }
+
     async fn read_best(&self) -> Result<i64> {
-        let block = if self.quorum <= 1 { self.head_from(None).await? } else { self.agreed_head().await? };
+        let block = if self.quorum <= 1 { self.head_from(None, self.finalized).await? } else { self.agreed_head(self.finalized).await? };
         let mut best = self.best.lock().expect("best block");
         // A slower quorum never moves the clock back.
         let block = best.map_or(block, |(known, _)| known.max(block));
@@ -250,14 +299,14 @@ impl Chain {
     }
 
     /// The head of one endpoint, or of the first that answers: the finalized one when asked for, else the best.
-    async fn head_from(&self, url: Option<&str>) -> Result<i64> {
+    async fn head_from(&self, url: Option<&str>, finalized: bool) -> Result<i64> {
         let ask = |method: &'static str, params: serde_json::Value| async move {
             match url {
                 Some(url) => self.call(url, method, params).await,
                 None => self.rpc(method, params).await,
             }
         };
-        let header = if self.finalized {
+        let header = if finalized {
             let hash = ask("chain_getFinalizedHead", json!([])).await?;
             ask("chain_getHeader", json!([hash])).await?
         } else {
@@ -268,12 +317,12 @@ impl Chain {
     }
 
     /// The highest block `quorum` endpoints have all reached: one endpoint running ahead cannot make time pass faster.
-    async fn agreed_head(&self) -> Result<i64> {
+    async fn agreed_head(&self, finalized: bool) -> Result<i64> {
         let heads = futures::future::join_all(self.urls.iter().enumerate().map(|(at, url)| async move {
             if self.paused_for(at).is_some() {
                 return None;
             }
-            match self.head_from(Some(url)).await {
+            match self.head_from(Some(url), finalized).await {
                 Ok(block) => Some(block),
                 Err(error) => {
                     let mut pauses = self.pauses.lock().expect("chain pause");
@@ -446,6 +495,9 @@ fn neurons(graph: &Value<u32>) -> Result<Vec<Neuron>> {
     let column = |name: &str| -> Vec<&Value<u32>> { field(graph, name).map(items).unwrap_or_default() };
     let (hotkeys, coldkeys, permits, total, alpha) =
         (column("hotkeys"), column("coldkeys"), column("validator_permit"), column("total_stake"), column("alpha_stake"));
+    let incentives: Vec<Option<u128>> = column("incentives").iter().map(|v| number(v)).collect();
+    // A metagraph without incentives, or before any weights, says nothing about any miner.
+    let known = incentives.iter().any(|n| n.is_some_and(|n| n > 0));
     hotkeys
         .iter()
         .enumerate()
@@ -458,6 +510,7 @@ fn neurons(graph: &Value<u32>) -> Result<Vec<Neuron>> {
                 validator_permit: permits.get(uid).and_then(|v| boolean(v)).unwrap_or(false),
                 total_stake_rao: total.get(uid).and_then(|v| number(v)).unwrap_or(0),
                 alpha_stake_rao: alpha.get(uid).and_then(|v| number(v)).unwrap_or(0),
+                incentive: incentives.get(uid).copied().flatten().filter(|_| known).map(|n| n as f64 / u16::MAX as f64),
             })
         })
         .collect()
@@ -531,4 +584,29 @@ pub fn decode_hex(text: &str) -> Option<Vec<u8>> {
         return None;
     }
     (0..text.len()).step_by(2).map(|i| u8::from_str_radix(text.get(i..i + 2)?, 16).ok()).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn graph(incentives: Option<Vec<u128>>) -> Value<u32> {
+        let account = |b: u128| Value::unnamed_composite([Value::unnamed_composite((0..32).map(|_| Value::u128(b)))]);
+        let mut fields = vec![
+            ("hotkeys".to_string(), Value::unnamed_composite([account(1), account(2)])),
+            ("coldkeys".to_string(), Value::unnamed_composite([account(3), account(4)])),
+        ];
+        if let Some(incentives) = incentives {
+            fields.push(("incentives".to_string(), Value::unnamed_composite(incentives.into_iter().map(Value::u128))));
+        }
+        Value::named_composite(fields).map_context(|_| 0u32)
+    }
+
+    #[test]
+    fn incentives_are_read_and_a_metagraph_without_any_says_nothing() {
+        let read = neurons(&graph(Some(vec![65_535, 0]))).unwrap();
+        assert_eq!(read.iter().map(|n| n.incentive).collect::<Vec<_>>(), [Some(1.0), Some(0.0)]);
+        assert!(neurons(&graph(None)).unwrap().iter().all(|n| n.incentive.is_none()), "no column: unknown, not zero");
+        assert!(neurons(&graph(Some(vec![0, 0]))).unwrap().iter().all(|n| n.incentive.is_none()), "no weights yet: unknown, not zero");
+    }
 }

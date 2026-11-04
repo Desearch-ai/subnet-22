@@ -33,20 +33,30 @@ which writes passed pages and vectors to the pages bucket and takes withdrawn on
 tasks the queue can take and enqueues that many, each batch with an id so a batch sent twice is
 queued once. It reads back what became of every URL from the outcome feed.
 
-**Rounds.** URLs are enqueued in rounds. The API packs them into tasks of 1,000 URLs, the last one
-of a round taking whatever is left, publishes a hash of the batches, and commits to a block ten
-blocks ahead; that block's hash sets the order the batches are served in.
+**Rounds.** URLs are enqueued in rounds. The API commits to a round's URL set and to a block ten
+blocks ahead before that block exists; only once its hash is known does it cut the set into tasks of
+at most 1,000 URLs, every host's URLs dealt across the tasks in turn so each task has the round's mix,
+and that hash also sets the order the tasks are served in. Nobody, the bot included, chooses which
+URLs go together. [Rules](../docs/rules.md#rounds) has the exact cut.
+
+**Time.** Every deadline, window and lockout is counted in finalized blocks, read from the chain and
+never counted on the clock, so a stalled chain only gives miners more time. Stored times are rule
+time, `anchor_at + 12 s × (block − anchor_block)`; `GET /v1/clock` gives the anchor and the current
+block.
 
 **Claims.** A miner asks for as many tasks as it can take and receives, for each, its URLs and an
 upload link for one key; it never holds storage credentials. The key is 128 random bits
 (`uploads/<32 hex>.parquet`) and names no miner, task or claim; it reaches the public log only with the
-completion. The claim's time starts when the API hands the tasks over. On completion the API records the
-upload's entity tag in the signed note. On a versioned bucket it pins the version the miner's own upload
-made (the completion names it, from the upload's answer) and records it in the note, and validators read
-that version by id, so nothing written to the key afterwards, by anyone, changes what they check. Without
-versions, validators and the publisher read the upload with `If-Match` on its tag, so a file changed
-afterwards is answered with 412 and fails its check (`upload_changed`); a completion naming an `etag` that
-the key no longer holds is refused with 409. See [witness relays](../docs/witness-relays.md). A completion counts as on time when it
+completion. The claim's time starts at the block finalized when the API hands the tasks over and ends at a
+whole block, `expires_block`, shown with the wall time it should fall at as `expires_at`. A claim alive while
+the API restarted, while storage failed the API's probe or while finality stalled ends at no cost (see
+[Rules](../docs/rules.md#outages)). On completion the API records the upload's entity tag in the signed note.
+On a versioned bucket it pins the version the miner's own upload made (the completion names it, from the
+upload's answer) and records it in the note, and validators read that version by id, so nothing written to
+the key afterwards, by anyone, changes what they check. Without versions, validators and the publisher read
+the upload with `If-Match` on its tag, so a file changed afterwards is answered with 412 and fails its check
+(`upload_changed`); a completion naming an `etag` that the key no longer holds is refused with 409. See
+[witness relays](../docs/witness-relays.md). A completion counts as on time when it
 reaches the API inside the claim, however long the API then takes over it; a file written after the
 completion reached the API is refused. Sending the same completion again returns the first one's
 answer. A miner is never given a batch it held before.
@@ -79,24 +89,35 @@ It reports what it found for each checked URL, once per upload; the API works ou
 those findings and ignores any number a validator states. Reports stay sealed until finalized.
 
 **Final verdict.** A checked upload is finalized when every active validator has reported, or at
-its deadline on the reports it has; a validator is active for an hour after its last report. One
-active validator finalizes alone. An upload no validator reported on by its deadline is finalized
-like an unchecked one.
+its deadline on the reports it has; a validator is active for an hour after its last report. An
+upload no validator reported on by its deadline is finalized like an unchecked one.
 
-The majority decides pass or fail, and a pass pays the miner's rows at the rate the checked pages
-matched (the lower middle count when the majority differs). A validator that disagrees with the
-majority is marked, as are two passes more than 15% apart on the rows to pay; one that keeps
-disagreeing stops receiving uploads.
+Validators report facts of the file (rows, duplicates, URLs outside the task, rows not re-extracted
+from their HTML, rows per host) and their own comparison with the live pages. The miner's budget,
+strikes, take-backs and the API's count of its work follow only the facts, which every honest
+validator finds the same, judged by fixed rules; facts two reports disagree on charge and pay nothing.
+The live-page comparison reaches the miner through each validator's own weights, and through its
+on-chain incentive, which caps its budget. What is published still follows the validators' majority.
+See [Rules](../docs/rules.md#facts-and-judgments).
+
+A validator is never measured against the others; one that keeps sending reports its tasks could not
+have produced stops receiving uploads for a day.
 
 **Unchecked uploads.** An upload no check drew is finalized as soon as its block hash exists, on the
 counts the miner reported at completion: its content rows, and its error rows at the share of the
-hotkey's reported errors that checks of the last 3 days could reproduce. A report under 85% of the
-task's URLs fails.
+hotkey's reported errors that checks of the last 3 days could reproduce. A report under the round's
+gate fails: 85% of the task's URLs, times the share of the round's pages validators could load once
+they have sampled enough of it. Hosts most miners of the round could not load are left out of both.
 
-**Take-back.** A failed check takes back everything the hotkey passed since its last passed check:
-the pay and the published pages. Two failed checks among a hotkey's last 10 also cost it its pay of
-the last 24 hours, its pages of the last 24 hours and a 48-hour lockout. A checked upload whose
-report claims more content rows than its file holds fails.
+**Loadability.** `GET /v1/rounds/{id}` shows, for each crawl round, the share of validators' samples
+they could load, each host's checked uploads and how many were mostly errors, and the round's neutral
+hosts: those most miners who got them could not load, which neither pay nor cost anyone that round.
+
+**Take-back.** A check that fails on the file's facts takes back everything the hotkey passed since its
+last passed check: the pay and the published pages. Two such fails among a hotkey's last 10 also cost
+it its pay of the last 24 hours, its pages of the last 24 hours and a 48-hour lockout. A checked upload
+whose report claims more content rows than its file holds fails. A fail on the live pages alone checks
+the hotkey's next 10 uploads, at no cost.
 
 **Publishing.** The publisher reads a passed upload's text columns in byte ranges, never its HTML,
 and refuses a file whose footer promises more than its task could hold. It keeps its own index of
@@ -115,15 +136,18 @@ attempt and a withdrawn page are reported dropped, so the bot sends them again.
 **Signed log.** Every claim, refusal and completion is signed by the API, and names the hash of the
 miner's signed request it answers (`request`), so a validator that relayed the request can show whether the
 log holds it. `tools/verify_round.py` checks a closed round end to end, reading the seed block's hash from
-your own node, and `tools/check_witnesses.py` turns relayed requests the log lacks into censorship proofs.
+your own node; given the round's URLs (`--urls`, the `rounds/<round_id>` file in the pages bucket), it also
+cuts its tasks again from the seed. `tools/check_witnesses.py` turns relayed requests the log lacks into
+censorship proofs.
 Beyond that, every change to the accounts goes into one hash-chained log that is published, anchored on
 chain and replayed by validators; see [Verifiable log](#verifiable-log).
 
 **Storage canary.** Every minute the API writes an object shaped like a miner's upload through a presigned
 link and reads it back through another; failures are public at `/v1/storage/probes` and every probe is a
-`probe` entry in the log. With `TASK_API_STORAGE_OUTAGE_FORGIVES=1` a claim that lapses while a probe failed
-costs its miner nothing; the lapse's entry says which copy decided, when the claim began and why it was
-forgiven, and a replay decides it again from the logged probes.
+`probe` entry in the log. A failed probe opens a storage outage, as a failed write of the API's own storage
+probe does ([Rules](../docs/rules.md#outages)), and a claim alive during one costs its miner nothing. Each
+outage's start and end is an `outage` entry; a lapse's entry says which copy decided (its rule start time),
+the claim's time and the block length, and a replay decides it again from the logged outages.
 
 ## Verifiable log
 
@@ -140,13 +164,14 @@ dropped, reordered or forked without every later hash changing.
 
 | Kind | Input | Output |
 | --- | --- | --- |
-| `start` | the version, the signer and the knobs that shape decisions | — |
+| `start` | the version, the signer, the knobs that shape decisions and the rules' parameters | — |
+| `started`, `clock` | the rule time a copy's start was lowered to at its first block; the anchor every rule time is counted from | — |
 | `snapshot` | when | the digest of the accounts, and the accounts in a blob named by it (one at the first start, then every `TASK_API_SNAPSHOT_EVERY_S`) |
 | `requests` | the hash of every authenticated request since the last, and the block | — |
-| `claim`, `complete`, `abandon`, `report`, `release`, `enqueue` | the signed request: method, path, hotkey, timestamp, nonce, signature and body; a completion's Object Lock (version, until, whether it held) | the receipts (each naming the request's hash), the job, the vote, the budget, the round's commitment, or why it was refused |
-| `miner`, `lapse`, `settle`, `finalize`, `take_back`, `recheck` | what the rule read: the job (with its pinned version), the voters in order, the seed block and its hash, the upload counters, the claim's start and expiry | the budget, whether the upload is checked, the verdict, its credit, the uploads taken back, why a lapse was forgiven (`restart`, `storage_outage`) |
-| `probe` | the storage canary's probe: when, the block, whether it passed and the step that failed | — |
-| `reveal`, `close`, `embed_round` | the round, its seed block and that block's hash | the seed, the serve order, the round log's Merkle root |
+| `claim`, `complete`, `abandon`, `report`, `release`, `enqueue` | the signed request: method, path, hotkey, timestamp, nonce, signature and body; a completion's Object Lock (version, until, whether it held); a report its task could not have produced (`wrong_report`) | the receipts (each naming the request's hash), the job, the vote, the budget (as the incentive caps it), the round's commitment, or why it was refused |
+| `miner`, `lapse`, `settle`, `finalize`, `take_back`, `recheck` | what the rule read: the job (with its pinned version), the voters in order and their coldkeys, what the validators' majority found, the seed block and its hash, the upload counters, the claim's expiry | the budget, whether the upload is checked, the verdict and reason under the [rules](../docs/rules.md), its credit, whether it is published, the uploads taken back, why a lapse was forgiven (`restart`, `storage_outage`, `finality_outage`) |
+| `probe`, `outage` | the storage canary's probe: when, the block, whether it passed and the step that failed; an outage's start or end, its cause and block | — |
+| `reveal`, `close`, `embed_round`, `recommit` | the round, its seed block and that block's hash; a later seed block for a commitment not anchored in time | the seed, the serve order, the batches the seed cut, the round log's Merkle root, the new commitment |
 | `metagraph` | the neurons and their stakes, when who may vote changed | the validators |
 | `prune`, `shares`, `anchor`, `receipt` | | the shares as served, an anchor the chain confirmed, receipts signed elsewhere |
 
@@ -169,15 +194,24 @@ files with one number and different heads, both signed, prove a fork on their ow
 round opened, after `TASK_API_ANCHOR_MIN_BLOCKS`, at most `TASK_API_ANCHOR_PER_EPOCH` per 361 blocks. A
 `System.remark` would need no registration but a funded account and an indexer to find it again. The
 anchoring hotkey must be registered on the subnet (and kept from being pruned, e.g. as an owner-immune
-uid) and hold the existential deposit. Each confirmed anchor is logged as an `anchor` entry.
+uid) and hold the existential deposit. Each confirmed anchor is logged as an `anchor` entry, with the block
+the chain registered it in. With anchoring on, a round is revealed only once an anchor at or past the entry
+holding its commitment was registered in a block before its seed block, so the API cannot have read the seed
+before the chain held what it committed to. A commitment that missed its seed block is committed again to a
+later one (`recommit`), and the round waits for that.
 
 **Replay.** [`src/replay.rs`](src/replay.rs) rebuilds the accounts from the log with the API's own rule
 functions on an SQLite of its own, from the first `snapshot`:
 - every logged request must be signed by the hotkey it names, and every blob must hash to its name;
-- a validator's vote is built again from its signed report; a verdict is decided again from the votes of
-  the voters the entry names, all of which must have been reported and none left out;
+- a validator's vote is built again from its signed report; a verdict is judged again under the
+  [rules](../docs/rules.md) from the votes of the voters the entry names, all of which must have been
+  reported and none left out, and the round's loadability and neutral hosts as the log built them; a report
+  its task could not have produced must be counted against its validator;
+- a crawl round's commitment is worked out again from the URLs of its signed request, its batches cut again
+  from that set and its seed, and it must have been anchored before its seed block;
 - whether a seeded upload is checked is drawn again from the seed block's hash, the counters and the
-  re-check state; budgets, strikes, lockouts, take-backs and full penalties follow from the same rules;
+  re-check state; budgets, strikes, lockouts, take-backs, full penalties and forgiven lapses follow from the
+  same rules;
 - shares and every later snapshot's digest must equal the replay's own.
 
 A difference the API decided inside one transaction is `fraud`. A check the API makes on reads outside the
@@ -193,8 +227,9 @@ difference as a JSON line.
 page or a screenshot of one can be shown to come from the API. The UI reads these endpoints; it does not
 check the signatures itself yet.
 
-**Taken as given until block A; who signs, from block D.** Times are the API's clock (A moves them to block
-heights). Omitted requests are caught by the witness relays: a relay compares its signed requests with the
+**Taken as given; who signs, from block D.** Times are rule time, counted in finalized blocks from the
+`clock` anchor; the block an entry was decided at is the API's to state, and its seeds are checked against
+the chain. Omitted requests are caught by the witness relays: a relay compares its signed requests with the
 `requests` entries of the anchored log (`JournalLogView`), falling back to the signed receipts. The key is
 whoever holds `TASK_API_KEY_URI` until custody records start (validators pin it in
 [`desearch/trust.py`](../desearch/trust.py)); from then validators take each holder from the custody chain
@@ -206,38 +241,43 @@ a replay starts again. A CVM's own key is not registered on the subnet, so ancho
 
 ## Scoring
 
-A crawl task fails when it:
+A crawl task fails, at a cost to the miner, when the facts of its file show that it:
 
 - has a row for a URL it was not given, or the same URL twice;
-- returns under 85% of its URLs;
-- has over 20% of checked rows that do not re-extract exactly from the uploaded HTML;
-- has sampled pages whose text does not match the validator's own fetch;
-- is over half error rows for pages the validator could load.
+- returns fewer rows than the round's gate (85% of its URLs, lowered with the round's loadability);
+- has over 20% of re-extracted rows whose text does not come from the uploaded HTML;
+- reports more content rows than its file holds, or is not a readable page file;
+- was written again after its completion.
 
-A checked task where nothing could be judged decides nothing: nothing is paid or charged, and it goes back
-in the queue. The same goes for a task whose checked rows the validator could mostly not read, and
-for a check the validator could not finish because of its own timeout or crash. A passing task pays
-the miner row by row at the rate its checked pages matched.
+Each validator also fetches sampled pages and compares their text with the miner's. That comparison
+is its own: it sets its weights, decides with the other validators' what is published, and sends a
+task the majority did not pass to another miner, but it never charges the miner or changes its
+budget. A validator's own timeout or crash decides nothing. The API counts a passing task's content
+rows, and its error rows at the share checks could reproduce, outside the round's neutral hosts.
+[Rules](../docs/rules.md) has every rule.
 
 Rows a check turned down are not published even when the task passes: a sampled page whose text
 differs from the validator's fetch, a row whose text does not re-extract from its HTML, and a page
 whose title or author differs from the live page. A sampled page whose publication date or canonical
 URL differs from the live page counts as a mismatch, since those never change between two fetches.
 
-The API takes a validator's findings per page, not its counts, on trust: a report whose rows the
-task could not have produced, such as more checked rows than rows returned or a checked URL outside
-the task, is refused.
+A report whose rows the task could not have produced, such as more checked rows than rows returned, a
+checked URL outside the task or rows per host that do not add up, is refused and kept on the
+validator's record. Reports that disagree on a fact of the file charge and pay nothing.
 
 **Budgets and lockouts.**
 
-- A miner may crawl as many tasks at once as its budget, with up to twice that waiting for a verdict.
-- The budget starts at 1, grows by half for each task paid for at least 85% of its URLs, up to 100,
-  and halves on a failure, an expired claim or an abandoned task.
+- A miner may crawl as many tasks at once as its budget, with up to twice that waiting for a verdict,
+  and never more than its on-chain incentive allows: a miner validators pay under half of what its
+  counted work implies is capped in proportion, down to 1. New work has a day's grace.
+- The budget starts at 1, grows by half for each task credited at least the round's gate of its URLs,
+  up to 100, and halves on a fail on the file's facts, an expired claim or an abandoned task.
 - Each of those is also a strike and takes the task's URLs back from the miner's paid rows; lapses
-  within 5 minutes of each other are one strike.
+  within 5 minutes of each other are one strike, and a claim held through a restart, a storage outage
+  or a finality stall costs nothing.
 - Two strikes within 24 hours, if at least 5% of its checked tasks, lock the miner out for an hour,
-  then 12 hours, then 48 within a week. An upload that crashes most validators' checks locks it out
-  for a week. Validator-side problems never count.
+  then 12 hours, then 48 within a week, counted in blocks. An upload that crashes every validator's
+  check locks it out for a week. Validator-side problems never count.
 
 A completed upload must be Parquet: the API checks its first and last bytes and never parses it.
 Failed and void uploads are deleted. A miner may claim every 2 seconds; a refusal repeated within a
@@ -271,14 +311,14 @@ Embed tasks are off until `TASK_API_EMBED_TASKS=1`. The flow:
    finalized as passed and paid its characters. A failed check takes back the miner's embed uploads
    since its last passed embed check, and two among its last 10 bring the full penalty, in the embed
    pool only.
-4. **Validators** read the 48 sampled vectors of a picked upload by byte range and get the same texts
-   embedded again with the same model, each of which must reach a cosine similarity of 0.999. A
-   validator with its own model server uses it; the others ask `POST /v1/embed/{task_id}/reference`
-   with the sampled text ids (at most 64 of one upload), and the API reads those texts from the
-   upload's input, embeds each once on Desearch's model servers (`TASK_API_EMBED_REFERENCE_URL`) and
-   keeps it for the next validator, which waits while it is computed. A picked embed upload waits only
-   for validators that vote on embed uploads; one nobody scored by its deadline is void, deleted and
-   handed to another miner, at no cost. A pass pays the characters embedded. Embed uploads awaiting a
+4. **Validators** read the 48 sampled vectors of a picked upload by byte range and embed the same
+   texts again on their own model server, each of which must reach a cosine similarity of 0.999.
+   The API serves no reference vectors: a validator without its own model does not check embed
+   uploads. A mismatch fails the upload only when validators of two distinct coldkeys
+   (`TASK_API_EMBED_REFERENCES`) found it and none passed it; malformed or missing vectors, facts of
+   the file, fail it on one report. A picked embed upload waits only for validators that vote on embed
+   uploads; one nobody scored by its deadline is void, deleted and handed to another miner, at no
+   cost. A pass pays the characters embedded. Embed uploads awaiting a
    verdict count against the planner's room. A task that fails `TASK_API_MAX_ATTEMPTS` times is
    dropped and its pages go back to the planner (`embed:dropped`), which plans them again the next
    time the log shows them. A task is also dropped when it is next claimed, at no cost to that
@@ -429,10 +469,10 @@ The [bot](../desearch-bot/README.md) fills the queue with the admin hotkey (`--t
 | `TASK_API_PCCS_URL` | `https://pccs.phala.network` | where a successor's quote collateral is fetched |
 | `TASK_API_LEGACY_SIGNER` | — | the signer before custody records, the only one that may hand over at seq 0 |
 | `TASK_API_TEE_SIMULATED` | 0 | 1 takes a successor's quote without Intel's signature, for the dstack simulator on a testnet only |
-| `TASK_API_CLAIM_TTL` | 180 | seconds a miner is given to upload a task after claiming it; the claim and its upload link last 10 seconds longer |
+| `TASK_API_CLAIM_TTL` | 180 | seconds a miner is given to upload a task after claiming it, counted as 12 s blocks; the claim lasts 10 seconds and a block longer, rounded up to a whole block, and its upload link 5 minutes longer |
 | `TASK_API_POLL_RATE` | 0.5 | claim requests per second one hotkey may make |
-| `TASK_API_VALIDATION_TTL` | 900 | seconds validators have to report once the upload is open |
-| `TASK_API_ACTIVE_S` | 3600 | seconds since its last report a validator counts as active |
+| `TASK_API_VALIDATION_TTL` | 900 | seconds validators have to report once the upload is open, counted in blocks |
+| `TASK_API_ACTIVE_S` | 3600 | seconds (of rule time) since its last report a validator counts as active |
 | `TASK_API_LEDGER_DELAY_S` | 0 | seconds finalized uploads and shares stay out of public view |
 | `TASK_API_MAX_ATTEMPTS` | 3 | times a task is retried before it is dropped |
 | `TASK_API_CHECK_SHARE` | `SHARE` in [`app/sampling.py`](app/sampling.py) | share of an established hotkey's uploads drawn for a check; 1 checks every upload |
@@ -450,16 +490,20 @@ The [bot](../desearch-bot/README.md) fills the queue with the admin hotkey (`--t
 | `TASK_API_MAX_HANDBACKS` | 5 | hand-backs (abandons and expired claims) after which an embed task is dropped at its next claim |
 | `TASK_API_EMBED_CHECK_SHARE` | 0.05 | share of an established hotkey's embed uploads drawn for a check; 1 checks every upload |
 | `TASK_API_EMBED_CHECKS_PER_HOUR` | 600 | drawn embed checks an hour across all miners; the share is lowered to stay within it |
-| `TASK_API_EMBED_REFERENCE_URL` | — | Desearch's model servers (each an OpenAI-compatible `/v1/embeddings` serving the model under its name) for validators without their own, comma-separated and tried in order; without one, the reference endpoint answers 503 |
-| `TASK_API_EMBED_REFERENCE_KEY` | — | those servers' key |
-| `TASK_API_EMBED_REFERENCE_CALLS` | 4 | requests to those servers at once |
-| `TASK_API_CANARY_EVERY_S` | 60 | seconds between storage canary probes; 0 turns the canary off |
-| `TASK_API_STORAGE_OUTAGE_FORGIVES` | 0 | 1: a claim that lapses while a canary probe failed costs nothing (cause `storage_outage`) |
+| `TASK_API_CANARY_EVERY_S` | 60 | seconds between storage canary probes; 0 turns the canary off; a failed one opens a storage outage |
 | `TASK_API_UPLOAD_LOCK_S` | 0 | seconds each pinned upload version is put under Object Lock in compliance mode; needs a versioned bucket with Object Lock on |
-
-While the Redis key `reference:servers` holds a comma-separated list of servers, it is used instead of
-`TASK_API_EMBED_REFERENCE_URL`, so servers are added or replaced without a restart; deleting the key
-goes back to the configured ones. In the TEE no one outside the CVM reaches its Redis, so the key cannot be set there. A server that fails is tried after the others for a minute.
+| `TASK_API_STORAGE_PROBE_S` | 30 | seconds between storage probes; a failed one opens an outage that forgives the claims alive in it |
+| `TASK_API_FINALITY_STALL_BLOCKS` | 10 | blocks finality may fall behind the best block before the claims alive then are forgiven |
+| `TASK_API_OBJECTIVE_QUORUM` | 1 | reports with the same facts a fail on the file needs before it charges the miner |
+| `TASK_API_EMBED_REFERENCES` | 2 | validators of distinct coldkeys whose own models must find the same mismatch before an embed upload fails on it |
+| `TASK_API_LOADABILITY_SAMPLES` | 30 | validator samples a round needs before its loadability lowers the coverage gate |
+| `TASK_API_NEUTRAL_UPLOADS` | 3 | checked uploads with rows of a host a round needs before the host can be neutral |
+| `TASK_API_NEUTRAL_SHARE` | 0.5 | share of them whose rows of the host are mostly errors past which it is neutral for the round |
+| `TASK_API_INCENTIVE_FULL` | 0.5 | share of the incentive its counted work implies from which a miner's budget is not capped; 0 turns the cap off |
+| `TASK_API_INCENTIVE_GRACE_H` | 24 | hours of counted work before the incentive caps a hotkey's budget |
+| `TASK_API_CRAWL_EMISSION`, `TASK_API_EMBED_EMISSION` | 0.2, 0.5 | each pool's share of the emission, as validators split it |
+| `TASK_API_WRONG_REPORTS` | 5 | reports its tasks could not have produced a validator may send within the window before its reports are refused |
+| `TASK_API_WRONG_REPORTS_WINDOW_S` | 86400 | that window |
 
 In `chain` mode a validator needs a validator permit, at least 10,000 total stake and at least 20
 alpha of its own.
@@ -481,15 +525,17 @@ Anyone can read these; the [UI](../ui/README.md) is built on them. Every answer 
 | `GET /v1/miners` | every miner's budget, coverage, share and results in the window, for one `kind` (`crawl` unless asked) |
 | `GET /v1/miners/{hotkey}` | a miner's budget of each kind and its history, coverage, each kind's share, results and claims, its take-backs, and lockouts |
 | `GET /v1/miners/{hotkey}/verdicts` | signed by that miner: its own finalized uploads, without the ledger delay |
-| `GET /v1/validators` | every validator's votes, how often it agreed with the final result, and its standing |
+| `GET /v1/validators` | every validator's votes, how often it agreed with the majority, its wrong reports, and whether it is refused |
 | `GET /v1/validators/{hotkey}` | the same for one validator |
 | `GET /v1/events` | the signed log as a feed: tasks issued, completed, refused and returned; filter with `miner`, `task_id`, `outcome`, `request` (a signed request's hash) |
 | `GET /v1/health` | queue depths, backlog, the active validators and every validator's standing |
 | `GET /v1/room` | how many tasks the queue can take now, for the bot |
 | `GET /v1/shares` | every miner's share of the paid work as the API counts it, per pool |
-| `GET /v1/rounds`, `GET /v1/rounds/{id}` | round commitments, kept a week after a round closes |
+| `GET /v1/rounds`, `GET /v1/rounds/{id}` | round commitments, kept a week after a round closes; a crawl round also shows its loadability and neutral hosts |
 | `GET /v1/rounds/{id}/log` | a round's signed log |
 | `GET /v1/key` | the key that signs the log and the notes next to uploads; validators follow the custody chain (or the key their release pins) and never take it from here |
+| `GET /v1/clock` | the finalized block every deadline is measured on, and the anchor that turns blocks into the rule times the API stores |
+| `GET /v1/outages` | storage outages and finality stalls of the last week; claims alive in them lapsed at no cost |
 | `GET /v1/storage/probes` | the storage canary's probes since `since` (the last hour), newest first, and the outages they show |
 | `GET /v1/config` | every setting the API runs with, by variable name, secrets left out |
 | `GET /v1/attestation` | in a TEE: the TDX quote, its event log and app compose, and the document it binds (the signer, the handover key, the hash of `/v1/config`, the TLS key); `?nonce=` for a fresh one ([format](../docs/tee.md#get-v1attestation)) |

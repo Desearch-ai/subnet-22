@@ -119,10 +119,21 @@ pub async fn run(state: &State) -> Result<Probe> {
         eprintln!("storage canary: the {step} step failed after {} ms: {detail}", found.took_ms);
     }
     let kept = found.clone();
+    // A failed probe opens a storage outage under the rules, and one that passes closes it, as the API's own probe does.
+    let tick = state.tick().await.ok();
     state
         .db
         .run(move |conn| {
             record(conn, &kept)?;
+            match (tick, &kept.failed) {
+                (Some(tick), Some((step, detail))) => {
+                    crate::outages::begin_logged(conn, crate::outages::STORAGE, tick.at, tick.block, &format!("canary {step}: {detail}"))?;
+                }
+                (Some(tick), None) => {
+                    crate::outages::end_logged(conn, crate::outages::STORAGE, tick.at, tick.block)?;
+                }
+                (None, _) => {}
+            }
             // Logged with the probe, since a lapse is forgiven on the probes the log holds.
             crate::journal::append(conn, crate::journal::Record::new("probe", kept.at, logged(&kept), Value::Null))?;
             Ok(())

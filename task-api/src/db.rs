@@ -13,7 +13,7 @@ use rusqlite::{Connection, Row, TransactionBehavior};
 use serde_json::{Map, Value};
 use tokio::sync::oneshot;
 
-use crate::{budgets, canary, checks, hours, journal, registry, roundlog, roundstore, validations};
+use crate::{budgets, canary, checks, clock, hours, journal, outages, registry, roundlog, roundstore, rules, validations};
 
 pub const FILE: &str = "task_api.db";
 
@@ -64,6 +64,9 @@ impl Db {
         roundstore::create(&conn)?;
         validations::create(&conn)?;
         checks::create(&conn)?;
+        clock::create(&conn)?;
+        outages::create(&conn)?;
+        rules::create(&conn)?;
         registry::create(&conn)?;
         hours::create(&conn)?;
         canary::create(&conn)?;

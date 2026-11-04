@@ -85,7 +85,7 @@ export const URL_OUTCOME_LABEL: Record<UrlOutcome, string> = {
 }
 
 export const EXCLUDED_MEANING =
-  'Excluded: disagreed with too many final results, no longer receives work'
+  'Excluded: sent too many reports its tasks could not have produced, refused for a day'
 
 export const TAKE_BACK_MEANING: Record<string, string> = {
   check_failed:

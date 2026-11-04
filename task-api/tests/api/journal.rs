@@ -4,9 +4,10 @@
 use serde_json::{json, Value};
 use task_api::journal::{self, Break};
 use task_api::replay::{check_anchor, replay_dir, Replay, FRAUD};
+use task_api::settings::AnchorSettings;
 use task_api::{lifecycle, snapshot};
 
-use crate::harness::{judged, parquet, task_id, urls, Client, Harness};
+use crate::harness::{judged, objective_fail, parquet, task_id, urls, Client, Harness};
 
 /// Publishes what the log holds and reads every file back, oldest first.
 async fn published(h: &Harness) -> Vec<Value> {
@@ -56,7 +57,8 @@ fn rechained(h: &Harness, files: &[Value], edit: impl Fn(&mut Value)) -> Vec<Val
     out
 }
 
-/// Mines until the upload is settled: checked by `validator` with `verdict` when drawn, finalized on the miner's counts otherwise.
+/// Mines until the upload is settled: checked by `validator` with `verdict` when drawn (a fail on a fact of the file, which the
+/// rules charge), finalized on the miner's counts otherwise.
 async fn settled(h: &Harness, miner: &Client, validator: &Client, verdict: &str) -> String {
     let task = h.mine(miner, 0).await;
     let id = task_id(&task);
@@ -64,7 +66,8 @@ async fn settled(h: &Harness, miner: &Client, validator: &Client, verdict: &str)
         lifecycle::settle_seeded(&h.state).await.unwrap();
         let picked = h.state.validation.job(&h.redis, &id).await.unwrap().is_some_and(|job| !job["picked"].is_null());
         if picked {
-            judged(h, validator, verdict, Some(&id), json!({})).await.1.unwrap();
+            let facts = if verdict == "fail" { objective_fail() } else { json!({}) };
+            judged(h, validator, verdict, Some(&id), facts).await.1.unwrap();
             return id;
         }
         if ["pass", "fail", "queued"].contains(&h.status(&id).await.as_str()) {
@@ -265,15 +268,19 @@ async fn every_read_is_signed_over_its_path_time_and_body() {
 }
 
 async fn expired_now(h: &Harness, task_id: &str) {
-    let _: i64 =
-        redis::cmd("ZADD").arg(task_api::queues::CLAIMS).arg("XX").arg(desearch::time::now()).arg(task_id).query_async(&mut h.redis.clone()).await.unwrap();
-    lifecycle::reclaim_expired(&h.state, desearch::time::now() + 1.0).await.unwrap();
+    expired_at(h, task_id, desearch::time::now()).await;
+}
+
+/// Ends a claim at `expiry` and reclaims it just after.
+async fn expired_at(h: &Harness, task_id: &str, expiry: f64) {
+    let _: i64 = redis::cmd("ZADD").arg(task_api::queues::CLAIMS).arg("XX").arg(expiry).arg(task_id).query_async(&mut h.redis.clone()).await.unwrap();
+    lifecycle::reclaim_expired(&h.state, expiry + 1.0).await.unwrap();
 }
 
 #[tokio::test]
-async fn a_lapse_forgiven_for_a_storage_outage_is_decided_again_from_the_logged_probes() {
+async fn a_lapse_forgiven_for_a_storage_outage_is_decided_again_from_the_logged_outages() {
     use task_api::canary;
-    let h = Harness::with(|s| s.storage_outage_forgives = true).await;
+    let h = Harness::start().await;
     h.enqueue(urls(6)).await;
     let held = h.miner.claim().await["tasks"][0].clone();
     assert!(canary::run(&h.state).await.unwrap().failed.is_none());
@@ -281,8 +288,9 @@ async fn a_lapse_forgiven_for_a_storage_outage_is_decided_again_from_the_logged_
     assert!(canary::run(&h.state).await.unwrap().failed.is_some(), "the bucket refuses a write while the miner holds its claim");
     expired_now(&h, &task_id(&held)).await;
     assert!(canary::run(&h.state).await.unwrap().failed.is_none(), "storage is back");
+    // A claim whose whole time came after storage was back: it lapses a claim's time from now.
     let later = h.rival.claim().await["tasks"][0].clone();
-    expired_now(&h, &task_id(&later)).await;
+    expired_at(&h, &task_id(&later), desearch::time::now() + 2.0 * h.state.crawl.claim_ttl).await;
     h.state.db.run(|conn| snapshot::record(conn, desearch::time::now())).await.unwrap();
 
     let files = published(&h).await;
@@ -290,13 +298,15 @@ async fn a_lapse_forgiven_for_a_storage_outage_is_decided_again_from_the_logged_
     let forgiven: Vec<Value> = all.iter().filter(|e| e["kind"] == "lapse").map(|e| e["input"]["forgiven"].clone()).collect();
     assert_eq!(forgiven, [json!(canary::OUTAGE_CAUSE), Value::Null], "only the claim held through the outage costs nothing");
     assert_eq!(all.iter().filter(|e| e["kind"] == "probe").count(), 3);
+    let outages: Vec<Value> = all.iter().filter(|e| e["kind"] == "outage").map(|e| e["input"]["event"].clone()).collect();
+    assert_eq!(outages, [json!("begin"), json!("end")], "the failed probe opened an outage and the next closed it");
     let claims: Vec<&Value> = all.iter().filter(|e| e["kind"] == "claim").collect();
     assert!(claims.iter().all(|c| c["output"]["receipts"][0]["body"]["request"] == c["input"]["request"]["request"]), "receipts name their request");
     let (replay, chained) = replayed(&h, &files);
     assert_eq!(chained, Ok(()));
     assert_eq!(replay.divergences, []);
 
-    // Forgiving the second lapse too, with its budget left alone: the probes the log holds show no outage then.
+    // Forgiving the second lapse too, with its budget left alone: the outages the log holds show none then.
     let forged = rechained(&h, &files, |entry| {
         if entry["kind"] == "lapse" && entry["input"]["forgiven"].is_null() {
             entry["input"]["forgiven"] = canary::OUTAGE_CAUSE.into();
@@ -305,14 +315,14 @@ async fn a_lapse_forgiven_for_a_storage_outage_is_decided_again_from_the_logged_
     let (replay, _) = replayed(&h, &forged);
     assert!(replay.fraud().any(|d| d.kind == "lapse" && d.what.contains("costs the miner nothing")), "{:?}", replay.divergences);
 
-    // Dropping the failed probe from the log takes away the ground for the first one.
+    // Dropping the outage from the log takes away the ground for the first one.
     let without = rechained(
         &h,
         &files
             .iter()
             .map(|file| {
                 let mut file = file.clone();
-                file["entries"].as_array_mut().unwrap().retain(|e| !(e["kind"] == "probe" && e["input"]["ok"] == false));
+                file["entries"].as_array_mut().unwrap().retain(|e| e["kind"] != "outage");
                 file
             })
             .collect::<Vec<_>>(),
@@ -329,4 +339,113 @@ async fn a_lapse_forgiven_for_a_storage_outage_is_decided_again_from_the_logged_
     });
     let (replay, _) = replayed(&h, &renamed);
     assert!(replay.fraud().any(|d| d.what.contains("does not name the request")), "{:?}", replay.divergences);
+}
+
+/// What `anchor::pass` writes when the chain confirms an anchor of the head: the row, with the block it was registered in, and its entry.
+async fn confirm_anchor(h: &Harness, block: i64) -> i64 {
+    h.state
+        .db
+        .run(move |conn| {
+            let (seq, head) = journal::head(conn)?;
+            conn.execute(
+                "INSERT OR REPLACE INTO log_anchors (seq, head, block, sent_at, extrinsic) VALUES (?, ?, ?, ?, '')",
+                rusqlite::params![seq, head, block, block - 1],
+            )?;
+            let input = json!({"netuid": 22, "hotkey": "", "seq": seq, "head": head, "block": block});
+            journal::append(conn, journal::Record::new("anchor", desearch::time::now(), input, Value::Null))?;
+            Ok(seq)
+        })
+        .await
+        .unwrap()
+}
+
+async fn past_block(h: &Harness, block: i64) {
+    while h.state.seeds.current_block().await.unwrap() <= block {
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+}
+
+async fn kept_round(h: &Harness, round_id: &str) -> task_api::rounds::Round {
+    let asked = round_id.to_string();
+    h.state.db.run(move |conn| task_api::roundstore::get(conn, &asked)).await.unwrap().expect("the round is kept")
+}
+
+#[tokio::test]
+async fn with_anchoring_on_a_round_is_revealed_only_after_an_anchor_before_its_seed_block() {
+    let anchoring = AnchorSettings { network: "ws://127.0.0.1:1".into(), netuid: 22, key_uri: String::new(), every_blocks: 12, min_blocks: 3, per_epoch: 30 };
+    let h = Harness::with(|s| s.anchor = Some(anchoring)).await;
+    let enqueued = h.admin.post("/v1/admin/enqueue", json!({"urls": urls(6)})).await.unwrap();
+    let (round_id, first_seed) = (enqueued["round_id"].as_str().unwrap().to_string(), enqueued["seed_block"].as_i64().unwrap());
+
+    // An anchor of the commitment was sent before the seed block and may still land: the round waits, keeping its seed block.
+    h.state
+        .db
+        .run(move |conn| {
+            let (seq, head) = journal::head(conn)?;
+            conn.execute(
+                "INSERT INTO log_anchors (seq, head, block, sent_at, extrinsic) VALUES (?, ?, NULL, ?, '')",
+                rusqlite::params![seq, head, first_seed - 5],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    past_block(&h, first_seed).await;
+    lifecycle::reveal_pending(&h.state).await.unwrap();
+    let waiting = kept_round(&h, &round_id).await;
+    assert_eq!((waiting.seed.is_none(), waiting.seed_block), (true, first_seed), "not revealed, not moved");
+
+    // It never landed: the API could have read the seed before the chain held the commitment, so it commits again to a later block.
+    h.state.db.run(move |conn| Ok(conn.execute("UPDATE log_anchors SET sent_at = ?", [first_seed - 40])?)).await.unwrap();
+    lifecycle::reveal_pending(&h.state).await.unwrap();
+    let moved = kept_round(&h, &round_id).await;
+    assert!(moved.seed.is_none() && moved.seed_block > first_seed, "{moved:?}");
+    assert_ne!(moved.manifest_hash, enqueued["manifest_hash"].as_str().unwrap(), "the new seed block is part of the commitment");
+
+    // An anchor of the new commitment registered before the new seed block lets the seed cut it.
+    confirm_anchor(&h, moved.seed_block - 1).await;
+    h.revealed().await;
+    assert!(kept_round(&h, &round_id).await.seed.is_some());
+
+    let files = published(&h).await;
+    let all = entries(&files);
+    assert_eq!(all.iter().filter(|e| e["kind"] == "recommit").count(), 1);
+    assert_eq!(all.iter().filter(|e| e["kind"] == "start").map(|e| e["input"]["settings"]["anchored"].clone()).next_back(), Some(json!(true)));
+    let (replay, chained) = replayed(&h, &files);
+    assert_eq!(chained, Ok(()));
+    assert_eq!(replay.divergences, []);
+
+    // Without the anchor in the log, the reveal came before the chain held the commitment.
+    let unanchored = rechained(
+        &h,
+        &files
+            .iter()
+            .map(|file| {
+                let mut file = file.clone();
+                file["entries"].as_array_mut().unwrap().retain(|e| e["kind"] != "anchor");
+                file
+            })
+            .collect::<Vec<_>>(),
+        |_| {},
+    );
+    let (replay, _) = replayed(&h, &unanchored);
+    assert!(replay.fraud().any(|d| d.kind == "reveal" && d.what.contains("anchored")), "{:?}", replay.divergences);
+
+    // A commitment the request's URLs do not make.
+    let other = rechained(&h, &files, |entry| {
+        if entry["kind"] == "enqueue" {
+            entry["output"]["commitment"]["urls_hash"] = "0".repeat(64).into();
+        }
+    });
+    let (replay, _) = replayed(&h, &other);
+    assert!(replay.fraud().any(|d| d.kind == "enqueue" && d.what.contains("URL set")), "{:?}", replay.divergences);
+
+    // A new commitment that is not the old one moved to its new seed block.
+    let rerolled = rechained(&h, &files, |entry| {
+        if entry["kind"] == "recommit" {
+            entry["output"]["manifest_hash"] = "0".repeat(64).into();
+        }
+    });
+    let (replay, _) = replayed(&h, &rerolled);
+    assert!(replay.fraud().any(|d| d.kind == "recommit"), "{:?}", replay.divergences);
 }
