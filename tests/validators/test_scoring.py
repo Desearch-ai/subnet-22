@@ -14,7 +14,7 @@ from desearch.extraction.schema import sha256_hex
 from desearch.fetch import ScrapingDog
 from desearch.manifest import OPEN_LIST_KEY
 from neurons.miners.rows import write_parquet
-from neurons.validators import crawl, tasks
+from neurons.validators import crawl, scoring, tasks
 from neurons.validators.crawl import CrawlValidator, DownloadFailed
 from neurons.validators.fetchers import to_page
 from neurons.validators.ledger import Ledger
@@ -61,6 +61,21 @@ def test_completeness_counts_missing_duplicates_and_unassigned_rows():
     assert result["sampled"] == 3
     assert {s["url"] for s in result["samples"]} == set(assigned[:3])
     assert (result["verdict"], result["reason"]) == ("fail", "extra_rows")
+
+
+def test_rows_and_error_rows_are_counted_per_host_for_the_task_api():
+    rows, assigned, fetched = synthetic(4)
+    uploaded = rows[:3] + [error_row(rows[3]["url"])]
+
+    hosts = run(uploaded, assigned, fetched, 10)["hosts"]
+
+    assert hosts == {
+        "site0.example": [1, 0],
+        "site1.example": [1, 0],
+        "site2.example": [1, 0],
+        "site3.example": [1, 1],
+    }
+    assert scoring.host_of("https://WWW.Example.com:8080/a") == "example.com:8080"
 
 
 @pytest.mark.parametrize("extra", ["duplicate", "unassigned"])

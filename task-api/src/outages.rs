@@ -64,9 +64,8 @@ pub fn during(conn: &Connection, from: f64, to: f64) -> Result<Option<String>> {
 }
 
 pub fn recent(conn: &Connection, since: f64, limit: i64) -> Result<Vec<Value>> {
-    let mut statement = conn.prepare(
-        "SELECT cause, start, end, start_block, end_block, detail FROM outages WHERE end IS NULL OR end >= ? ORDER BY start DESC LIMIT ?",
-    )?;
+    let mut statement =
+        conn.prepare("SELECT cause, start, end, start_block, end_block, detail FROM outages WHERE end IS NULL OR end >= ? ORDER BY start DESC LIMIT ?")?;
     let rows = statement.query_map(params![since, limit], |row| {
         Ok(json!({
             "cause": row.get::<_, String>(0)?,

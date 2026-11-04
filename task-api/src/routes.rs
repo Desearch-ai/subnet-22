@@ -722,7 +722,7 @@ pub async fn enqueue(Shared(state): Shared<Arc<State>>, ConnectInfo(peer): Conne
         }
     }
     let round = lifecycle::open_round(&state, request.urls).await?.map_err(|invalid| ApiError::status(422, invalid.to_string()))?;
-    let found = json!({"round_id": round.round_id, "batches": round.batches.len(), "seed_block": round.seed_block, "manifest_hash": round.manifest_hash});
+    let found = json!({"round_id": round.round_id, "batches": round.tasks(), "seed_block": round.seed_block, "manifest_hash": round.manifest_hash});
     if let Some(seen) = &seen {
         let _: () = state.redis.clone().set_ex(seen, found.to_string(), ENQUEUED_TTL_S).await?;
     }
@@ -746,12 +746,32 @@ pub async fn round_list(Shared(state): Shared<Arc<State>>, QueryParams(query): Q
 }
 
 pub async fn round_view(Shared(state): Shared<Arc<State>>, Path(round_id): Path<String>) -> Answer {
-    let Some(found) = state.lookups.read(move |conn| roundstore::get(conn, &round_id)).await? else {
+    let params = state.settings.rules();
+    let Some((found, loads)) = state
+        .lookups
+        .read(move |conn| {
+            let Some(found) = roundstore::get(conn, &round_id)? else { return Ok(None) };
+            let loads = rules::round_view(conn, &round_id, &params)?;
+            Ok(Some((found, loads)))
+        })
+        .await?
+    else {
         return Err(ApiError::status(404, "no such round"));
     };
     let mut view = found.public_view();
     view.insert("signer".into(), state.signer().into());
+    // How much of the round validators could load, and the hosts most miners could not, as its checks so far showed.
+    if found.kind == CRAWL {
+        view.insert("loadability".into(), loads.view());
+    }
     Ok(Json(Value::Object(view)))
+}
+
+/// Storage outages and finality stalls the API saw in the last week: claims alive in them lapsed at no cost.
+pub async fn outages(Shared(state): Shared<Arc<State>>) -> Answer {
+    let since = state.rule_now().await? - crate::outages::KEEP_DAYS * 86_400.0;
+    let found = state.lookups.read(move |conn| crate::outages::recent(conn, since, 200)).await?;
+    Ok(Json(json!({"outages": found})))
 }
 
 pub async fn round_log(Shared(state): Shared<Arc<State>>, Path(round_id): Path<String>) -> Answer {

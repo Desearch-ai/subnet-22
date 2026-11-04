@@ -95,11 +95,16 @@ pub fn check_feasible(job: &Value, result: &Value) -> Result<(), Infeasible> {
     let content: i64 = CONTENT_OUTCOMES.iter().map(|o| outcomes.count(o)).sum();
     let errors: i64 = ERROR_OUTCOMES.iter().map(|o| outcomes.count(o)).sum();
     let assigned = urls.len() as i64;
+    let (host_rows, host_errors) = result
+        .get("hosts")
+        .and_then(Value::as_object)
+        .map_or((returned, error_rows), |hosts| hosts.values().fold((0, 0), |(rows, errors), counts| (rows + int(&counts[0]), errors + int(&counts[1]))));
     let problems = [
         (distinct.len() < sampled.len(), "a URL was sampled twice".to_string()),
         (!sampled.iter().all(|url| urls.binary_search(url).is_ok()), "a sampled URL is not in the task".to_string()),
         (returned > assigned, "more rows returned than URLs assigned".to_string()),
         (sampled.len() as i64 > returned, "more samples than rows returned".to_string()),
+        ((host_rows, host_errors) != (returned, error_rows), "rows per host do not add up to the rows returned".to_string()),
         (content > returned - error_rows, "more content samples than content rows".to_string()),
         (errors > error_rows, "more error samples than error rows".to_string()),
         (

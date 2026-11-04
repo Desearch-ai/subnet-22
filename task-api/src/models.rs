@@ -350,6 +350,23 @@ pub fn score(body: &Map<String, Value>) -> Result<Map<String, Value>, Invalid> {
         fields.invalid.add("string_type", &loc, "Input should be a valid string");
     }
     fields.out.insert("rejected".into(), rejected.into());
+    // Rows and error rows per host, as `[rows, errors]`; the task API judges hosts most miners could not load on them.
+    match body.get("hosts") {
+        None | Some(Value::Null) => {}
+        Some(Value::Object(hosts)) if hosts.len() <= MAX_URL_DETAILS => {
+            for (host, counts) in hosts {
+                let pair = counts.as_array().filter(|c| c.len() == 2).and_then(|c| Some((c[0].as_i64()?, c[1].as_i64()?)));
+                if !pair.is_some_and(|(rows, errors)| rows >= 0 && (0..=rows).contains(&errors)) {
+                    fields.invalid.add(
+                        "value_error",
+                        &["hosts".into(), host.clone().into()],
+                        "Value error, a host's counts are [rows, errors] with 0 <= errors <= rows",
+                    );
+                }
+            }
+        }
+        Some(_) => fields.invalid.add("dict_type", &["hosts".into()], "Input should be a valid dictionary of hosts"),
+    }
     if fields.invalid.0.is_empty() {
         counts_match(&mut fields, &OUTCOMES, &dumped);
         if fields.out["error_rows"].as_i64() > fields.out["returned"].as_i64() {

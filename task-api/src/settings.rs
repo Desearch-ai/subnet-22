@@ -6,10 +6,10 @@ use std::str::FromStr;
 use anyhow::{bail, Context, Result};
 
 use crate::budgets::{CRAWL, EMBED};
-use crate::rules;
 use crate::embedding::{self, DESEARCH_4B_V1};
 use crate::queues::ACTIVE_S;
 use crate::rounds::{CLAIM_TTL_S, EMBED_CLAIM_TTL_S};
+use crate::rules;
 use crate::sampling::{CHECKS_PER_HOUR, EMBED_CHECKS_PER_HOUR, EMBED_SHARE, SHARE};
 
 const DEFAULT_ORIGINS: &str = "http://localhost:5173,http://localhost:8081,http://127.0.0.1:5173,http://127.0.0.1:8081";

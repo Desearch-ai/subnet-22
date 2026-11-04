@@ -12,11 +12,11 @@ use tokio::sync::watch;
 use tokio::task::JoinSet;
 
 use crate::budgets::{self, hour_of, KEEP_H};
+use crate::clock::Tick;
 use crate::http::ApiError;
 use crate::queues::KINDS;
-use crate::state::State;
-use crate::clock::Tick;
 use crate::seeds::Seeds;
+use crate::state::State;
 use crate::{checks, hours, lifecycle, logs, outages, roundstore, uploadlog, validations};
 
 /// The copy of the API that runs the passes; a rolling deploy briefly runs two copies.
@@ -181,6 +181,7 @@ async fn upkeep(state: &Arc<State>, due: &mut Due) -> Result<()> {
                 validations::prune_hours(conn, now())?;
                 hours::prune(conn, now())?;
                 outages::prune(conn, at)?;
+                crate::rules::prune(conn, at - 7.0 * 86_400.0)?;
                 checks::prune(conn, at)
             })
             .await?;

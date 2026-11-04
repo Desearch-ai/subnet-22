@@ -127,7 +127,8 @@ async fn reports_that_disagree_on_a_fact_of_the_file_charge_nothing() {
     let disputed = verdict(&h, &h.validator, "pass", Some(&task), json!({})).await;
     assert_eq!((disputed["verdict"].clone(), disputed["reason"].clone(), disputed["credited"].clone()), (json!("void"), json!("facts_disputed"), json!(0)));
     let rival = h.rival.ss58();
-    let strikes: i64 = h.state.db.run(move |conn| Ok(conn.query_row("SELECT COUNT(*) FROM strikes WHERE hotkey = ?", [rival], |row| row.get(0))?)).await.unwrap();
+    let strikes: i64 =
+        h.state.db.run(move |conn| Ok(conn.query_row("SELECT COUNT(*) FROM strikes WHERE hotkey = ?", [rival], |row| row.get(0))?)).await.unwrap();
     assert_eq!(strikes, 0, "one of the two reports is wrong, and anyone can tell which from the public file");
     assert_eq!(h.status(&task).await, "queued");
 }
@@ -185,7 +186,11 @@ async fn a_report_the_task_could_not_have_produced_is_refused() {
 /// Enough reports its tasks could not have produced to be excluded for a day.
 async fn exclude(h: &Harness, validator: &Client) {
     let (hotkey, at) = (validator.ss58(), h.state.rule_now().await.unwrap());
-    h.state.db.run(move |conn| (0..5).try_for_each(|i| rules::note_wrong_report(conn, &hotkey, &format!("t{i}"), "a sampled URL is not in the task", at))).await.unwrap();
+    h.state
+        .db
+        .run(move |conn| (0..5).try_for_each(|i| rules::note_wrong_report(conn, &hotkey, &format!("t{i}"), "a sampled URL is not in the task", at)))
+        .await
+        .unwrap();
 }
 
 #[tokio::test]

@@ -69,7 +69,7 @@ pub struct State {
     /// How a finalized height becomes rule time; fixed once read.
     pub clock: tokio::sync::OnceCell<Clock>,
     /// Every hotkey's share of each pool and its first hour of work, read at most once a minute for the incentive cap.
-    pub work: Mutex<Option<(std::time::Instant, Arc<HashMap<String, (std::collections::BTreeMap<String, f64>, i64)>>)>>,
+    pub work: Mutex<Option<(std::time::Instant, Arc<budgets::Work>)>>,
     /// Set when storage failed a request, so the janitor probes it without waiting for its turn.
     pub probe_storage: AtomicBool,
     /// Set on shutdown so /v1/ping fails and the proxy stops routing here before the server stops.

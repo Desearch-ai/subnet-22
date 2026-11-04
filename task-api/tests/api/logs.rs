@@ -192,7 +192,13 @@ async fn the_miners_page_lists_only_hotkeys_on_the_subnet_once_the_metagraph_is_
         })
         .await
         .unwrap();
-    h.state.registry.restore(vec![task_api::registry::Entry { hotkey: "5OnTheSubnet".into(), uid: Some(4), is_validator: false, coldkey: None, incentive: None }]);
+    h.state.registry.restore(vec![task_api::registry::Entry {
+        hotkey: "5OnTheSubnet".into(),
+        uid: Some(4),
+        is_validator: false,
+        coldkey: None,
+        incentive: None,
+    }]);
     let listed = h.public("/v1/miners").await.1;
     let hotkeys: Vec<&str> = listed["miners"].as_array().unwrap().iter().filter_map(|m| m["hotkey"].as_str()).collect();
     assert_eq!(hotkeys, ["5OnTheSubnet"]);

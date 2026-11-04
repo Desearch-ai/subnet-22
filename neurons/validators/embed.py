@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 import hashlib
 import logging
 import random
@@ -9,11 +8,9 @@ from collections import Counter
 
 import numpy as np
 
-from desearch.client import TaskApiError
 from desearch.embedding import (
     INPUT_SCHEMA,
     EmbeddingClient,
-    EmbeddingModel,
     decode_vector,
     read_parquet,
 )
@@ -35,15 +32,8 @@ LONG_CHARS = 6000
 MATCH_SIMILARITY = 0.999
 NORM_TOLERANCE = 0.01
 RANGE_READS = 16
-# The task API keeps computing vectors a validator stopped waiting for; this covers a slow input read or a model server failing over.
-REFERENCE_WAIT_S = 120.0
-# Another validator's request for the same upload is being embedded, which may take as long.
-BUSY_WAIT_S = REFERENCE_WAIT_S
-BUSY_RETRY_MAX_S = 5.0
-
-
-class ReferenceRefused(Exception):
-    """The task API gives no reference vectors for this upload; the model server is not at fault."""
+# The task API only takes verdicts now; reference vectors come from the validator's own model server alone.
+API_WAIT_S = 30.0
 
 
 def unit_vector(raw: bytes, dims: int) -> np.ndarray | None:
@@ -136,50 +126,8 @@ class ServerReference:
         await self.client.aclose()
 
 
-class ApiReference:
-    """Desearch's model server through the task API, for a validator without one."""
-
-    def __init__(self, api, model: EmbeddingModel):
-        self.api = api
-        self.model = model
-
-    async def vectors(self, job: dict, picked: list[dict]) -> np.ndarray:
-        ids = [row["text_id"] for row in picked]
-        answer = await self.ask(f"/v1/embed/{job['task_id']}/reference", ids)
-        given = {
-            row["text_id"]: np.frombuffer(
-                base64.b64decode(row["embedding"]), dtype="<f4"
-            )
-            for row in answer["vectors"]
-        }
-        vectors = [given[text_id] for text_id in ids]
-        if any(vector.size != self.model.dims for vector in vectors):
-            raise ValueError(f"reference vectors are not {self.model.dims} long")
-        return np.array(vectors, dtype=np.float32)
-
-    async def ask(self, path: str, ids: list[str]) -> dict:
-        """The API's answer, waiting while another validator's request for the upload is embedded."""
-        waited = 0.0
-        while True:
-            try:
-                return await self.api.post(path, {"text_ids": ids})
-            except TaskApiError as exc:
-                if exc.status in (409, 422, 429):
-                    raise ReferenceRefused(str(exc)) from exc
-                pause = exc.retry_after
-                if exc.status != 503 or pause is None or pause > BUSY_RETRY_MAX_S:
-                    raise
-                if waited >= BUSY_WAIT_S:
-                    raise ReferenceRefused("its reference stayed busy") from exc
-                await asyncio.sleep(pause)
-                waited += pause
-
-    async def aclose(self) -> None:
-        pass
-
-
 class EmbedValidator(TaskChecker):
-    """Recomputes a sample of each embed task's vectors, on the validator's own model server or Desearch's."""
+    """Recomputes a sample of each embed task's vectors on the validator's own model server."""
 
     kinds = (EMBED,)
 
@@ -187,7 +135,7 @@ class EmbedValidator(TaskChecker):
         self,
         api,
         http,
-        references: dict[str, ServerReference | ApiReference],
+        references: dict[str, ServerReference],
         ledger=None,
         storage_url: str = "",
         seeds=None,
@@ -254,10 +202,6 @@ class EmbedValidator(TaskChecker):
                 expected = (
                     await reference.vectors(job, formed) if formed else np.empty(0)
                 )
-            except ReferenceRefused as exc:
-                log.warning("task=%s no reference vectors: %s", task_id, exc)
-                self.defer(task_id)
-                return {}
             except Exception as exc:
                 log.warning("task=%s reference failed: %s", task_id, exc)
                 self.provider_failed()

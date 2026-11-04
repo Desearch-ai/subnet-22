@@ -205,14 +205,22 @@ pub fn facts(vote: &Value) -> Option<Facts> {
         return None;
     }
     if reason == UPLOAD_CHANGED {
-        return Some(Facts { changed: true, readable: true, returned: 0, duplicates: 0, unassigned: 0, error_rows: 0, reextract_mismatch: 0, integrity_checked: 0, hosts: None });
+        return Some(Facts {
+            changed: true,
+            readable: true,
+            returned: 0,
+            duplicates: 0,
+            unassigned: 0,
+            error_rows: 0,
+            reextract_mismatch: 0,
+            integrity_checked: 0,
+            hosts: None,
+        });
     }
-    let hosts = result.get("hosts").and_then(Value::as_object).map(|hosts| {
-        hosts
-            .iter()
-            .map(|(host, counts)| (host.clone(), (int(&counts[0]), int(&counts[1]))))
-            .collect::<BTreeMap<_, _>>()
-    });
+    let hosts = result
+        .get("hosts")
+        .and_then(Value::as_object)
+        .map(|hosts| hosts.iter().map(|(host, counts)| (host.clone(), (int(&counts[0]), int(&counts[1])))).collect::<BTreeMap<_, _>>());
     Some(Facts {
         changed: false,
         readable: reason != UNREADABLE,
@@ -229,10 +237,11 @@ pub fn facts(vote: &Value) -> Option<Facts> {
 /// Two reports agree when every fact both carry is the same; a report without per-host rows agrees on the rest.
 fn agree(one: &Facts, other: &Facts) -> bool {
     let strip = |facts: &Facts| Facts { hosts: None, ..facts.clone() };
-    strip(one) == strip(other) && match (&one.hosts, &other.hosts) {
-        (Some(a), Some(b)) => a == b,
-        _ => true,
-    }
+    strip(one) == strip(other)
+        && match (&one.hosts, &other.hosts) {
+            (Some(a), Some(b)) => a == b,
+            _ => true,
+        }
 }
 
 fn urls_of(job: &Value) -> Vec<&str> {
@@ -313,7 +322,8 @@ pub fn judge_crawl(job: &Value, votes: &[Value], round: &RoundView, error_share:
     let hosts = found.iter().find_map(|f| f.hosts.clone());
     let kept = assigned - neutral_assigned(job, round);
     let returned_all = first.returned.min(assigned);
-    let (content, errors) = outside_neutral(returned_all - first.error_rows.min(returned_all), first.error_rows.min(returned_all), hosts.as_ref(), assigned, kept, round);
+    let (content, errors) =
+        outside_neutral(returned_all - first.error_rows.min(returned_all), first.error_rows.min(returned_all), hosts.as_ref(), assigned, kept, round);
     let returned = content + errors;
     let gate = round.gate(params);
     let reported = &job["reported"];
@@ -327,7 +337,9 @@ pub fn judge_crawl(job: &Value, votes: &[Value], round: &RoundView, error_share:
         Some(TEXT_NOT_FROM_HTML)
     } else if kept > 0 && (returned as f64) < gate * kept as f64 {
         Some(COVERAGE)
-    } else if reported.get("rows").is_some_and(|rows| !rows.is_null()) && overstated(int(&reported["ok"]), returned_all - first.error_rows.min(returned_all), assigned as usize) {
+    } else if reported.get("rows").is_some_and(|rows| !rows.is_null())
+        && overstated(int(&reported["ok"]), returned_all - first.error_rows.min(returned_all), assigned as usize)
+    {
         Some(REPORTED_ROWS)
     } else {
         None
@@ -367,7 +379,8 @@ pub fn judge_embed(job: &Value, votes: &[Value], coldkey_of: &HashMap<String, St
     if judged.is_empty() {
         return Judged::neutral(fault_reason(votes), texts, 0);
     }
-    let file_fails: Vec<&str> = judged.iter().filter(|(_, verdict, reason)| *verdict == "fail" && EMBED_FILE_REASONS.contains(reason)).map(|(_, _, reason)| *reason).collect();
+    let file_fails: Vec<&str> =
+        judged.iter().filter(|(_, verdict, reason)| *verdict == "fail" && EMBED_FILE_REASONS.contains(reason)).map(|(_, _, reason)| *reason).collect();
     let passes = judged.iter().filter(|(_, verdict, _)| *verdict == "pass").count();
     if let Some(reason) = file_fails.first() {
         if file_fails.len() != judged.len() || file_fails.iter().any(|other| other != reason) {
@@ -390,7 +403,15 @@ pub fn judge_embed(job: &Value, votes: &[Value], coldkey_of: &HashMap<String, St
         if mismatched.len() < params.embed_references.max(1) {
             return Judged::neutral(ONE_REFERENCE, texts, judged.len());
         }
-        return Judged { outcome: Outcome::Fail, reason: VECTORS_MISMATCH.into(), credited: 0, assigned: texts, returned: texts, ramp: false, reports: judged.len() };
+        return Judged {
+            outcome: Outcome::Fail,
+            reason: VECTORS_MISMATCH.into(),
+            credited: 0,
+            assigned: texts,
+            returned: texts,
+            ramp: false,
+            reports: judged.len(),
+        };
     }
     if passes == 0 {
         return Judged::neutral(UNSCORED, texts, judged.len());
@@ -462,12 +483,11 @@ pub fn round_view(conn: &Connection, round_id: &str, params: &Params) -> anyhow:
     Ok(RoundView { sampled, loaded, hosts, ..RoundView::default() }.decide(params))
 }
 
-pub fn prune_rounds(conn: &Connection, round_ids: &[String]) -> anyhow::Result<()> {
-    for round_id in round_ids {
-        conn.execute("DELETE FROM round_loads WHERE round_id = ?", [round_id])?;
-        conn.execute("DELETE FROM round_hosts WHERE round_id = ?", [round_id])?;
-    }
-    Ok(())
+/// Drops the loadability of rounds no longer kept, and wrong reports past any window.
+pub fn prune(conn: &Connection, wrong_before: f64) -> anyhow::Result<()> {
+    conn.execute("DELETE FROM round_loads WHERE round_id NOT IN (SELECT round_id FROM rounds)", [])?;
+    conn.execute("DELETE FROM round_hosts WHERE round_id NOT IN (SELECT round_id FROM rounds)", [])?;
+    prune_wrong_reports(conn, wrong_before)
 }
 
 /// A report the task could not have produced: the one kind of wrong the API can tell without the file.

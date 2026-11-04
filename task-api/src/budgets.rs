@@ -307,8 +307,10 @@ pub fn shares(conn: &Connection, window_hours: i64, now: f64) -> Result<BTreeMap
 }
 
 /// Each hotkey's share of every pool over the window, and the first hour it earned anything that is still kept.
-pub fn work(conn: &Connection, window_hours: i64, now: f64) -> Result<HashMap<String, (BTreeMap<String, f64>, i64)>> {
-    let mut work: HashMap<String, (BTreeMap<String, f64>, i64)> = HashMap::new();
+pub type Work = HashMap<String, (BTreeMap<String, f64>, i64)>;
+
+pub fn work(conn: &Connection, window_hours: i64, now: f64) -> Result<Work> {
+    let mut work: Work = HashMap::new();
     for (pool, miners) in shares(conn, window_hours, now)? {
         for (hotkey, share) in miners {
             work.entry(hotkey).or_insert_with(|| (BTreeMap::new(), i64::MAX)).0.insert(pool.clone(), share);

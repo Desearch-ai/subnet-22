@@ -11,6 +11,7 @@ mod logs;
 mod overlap;
 mod punishment;
 mod queueing;
+mod rules;
 mod staging;
 mod timing;
 mod trust;

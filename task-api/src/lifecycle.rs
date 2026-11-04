@@ -21,12 +21,12 @@ use crate::manifest::{self, OPEN_LIST_KEY};
 use crate::queues::{self, Finalized, OPEN_SCAN};
 use crate::roundlog::{self, Receipt};
 use crate::rounds::{self, Batch, Round, Url};
+use crate::rules::{self, Facts, Judged, Outcome, RoundView};
 use crate::sampling;
 use crate::settings::Settings;
 use crate::state::{Redis, State};
 use crate::storage::{delete_quietly, put_json};
 use crate::validations::{self, build_report, FinalVerdict};
-use crate::rules::{self, Facts, Judged, Outcome, RoundView};
 use crate::verdicts::{decide, Decision, ERROR_OUTCOMES, NO_MAJORITY};
 use crate::{checks, hours, outages, outcomes, roundstore};
 
@@ -146,8 +146,9 @@ pub async fn publish_open(state: &State, at: f64) -> Result<bool> {
     Ok(true)
 }
 
-/// Two spellings of one page would race for the same key, so each canonical URL is kept once.
-pub fn pack_round(urls: Vec<Url>, target: i64, task_urls: usize, now: f64) -> Result<Round, desearch::canonical::Invalid> {
+/// Two spellings of one page would race for the same key, so each canonical URL is kept once; the round commits to that set,
+/// returned with it to be staged until the seed cuts it into batches.
+pub fn pack_round(urls: Vec<Url>, target: i64, task_urls: usize, now: f64) -> Result<(Round, Vec<Url>), desearch::canonical::Invalid> {
     let mut at: HashMap<String, usize> = HashMap::new();
     let mut unique: Vec<Url> = Vec::new();
     for url in urls {
@@ -160,7 +161,34 @@ pub fn pack_round(urls: Vec<Url>, target: i64, task_urls: usize, now: f64) -> Re
             }
         }
     }
-    Ok(rounds::open_batches(rounds::pack(unique, task_urls), target, "crawl", now))
+    Ok((rounds::open_set(&unique, target, task_urls, now), unique))
+}
+
+/// A committed URL set as staged in Redis until its seed: `[host, url]` pairs.
+pub fn staged_set(urls: &[Url]) -> Value {
+    urls.iter().map(|u| json!([u.host, u.url])).collect::<Vec<_>>().into()
+}
+
+fn set_of(staged: &Value) -> Option<Vec<Url>> {
+    staged.as_array()?.iter().map(|pair| Some(Url { host: pair.get(0)?.as_str()?.into(), url: pair.get(1)?.as_str()?.into() })).collect()
+}
+
+/// A round committed to its URL set gets its batches from its seed and the set staged for it; false when the set was lost.
+async fn cut_round(state: &State, round: &mut Round) -> Result<bool> {
+    let (Some(commitment), Some(seed)) = (round.commitment.clone(), round.seed.clone()) else { return Ok(true) };
+    let Some(urls) = queues::staged(&state.redis, &round.round_id).await?.as_ref().and_then(set_of) else { return Ok(false) };
+    let task_urls = commitment["task_urls"].as_u64().unwrap_or(1) as usize;
+    let (round_id, urls_hash) = (round.round_id.clone(), commitment["urls_hash"].as_str().unwrap_or_default().to_string());
+    let cutting = seed.clone();
+    let (batches, matches) =
+        tokio::task::spawn_blocking(move || (rounds::cut(&urls, &cutting, &round_id, task_urls), rounds::set_hash(&urls) == urls_hash)).await?;
+    if !matches {
+        eprintln!("round={} staged URLs do not match its commitment; it closes without them", round.round_id);
+        return Ok(false);
+    }
+    round.batches = batches;
+    rounds::reveal(round, &seed);
+    Ok(true)
 }
 
 /// The round a bot's URLs make, committed before its seed block exists; returned as SQLite keeps it.
@@ -171,7 +199,7 @@ pub async fn open_round(state: &State, urls: Vec<Url>) -> Result<Result<Round, d
     let task_urls = state.settings.task_urls;
     let count = urls.len();
     let packing =
-        tokio::task::spawn_blocking(move || pack_round(urls, target, task_urls, now()).map(|round| (queues::pack_job(&round.url_lists()), round.sealed())));
+        tokio::task::spawn_blocking(move || pack_round(urls, target, task_urls, now()).map(|(round, set)| (queues::pack_job(&staged_set(&set)), round)));
     let (lists, sealed) = match packing.await? {
         Ok(packed) => packed,
         Err(invalid) => return Ok(Err(invalid)),
@@ -284,6 +312,10 @@ pub async fn reveal_pending(state: &State) -> Result<usize> {
                 continue;
             }
         };
+        round.seed = Some(seed.clone());
+        if !cut_round(state, &mut round).await? {
+            eprintln!("round={} lost its URL set before its seed cut it", round.round_id);
+        }
         rounds::reveal(&mut round, &seed);
         // Saved first, so a crash cannot queue the round twice.
         let saved = round.clone();
@@ -296,7 +328,13 @@ pub async fn reveal_pending(state: &State) -> Result<usize> {
 /// Queues a revealed round's tasks; it counts as filled only once Redis holds them.
 pub async fn fill_round(state: &State, round: &Round) -> Result<usize> {
     let mut round = round.clone();
-    if !round.has_urls() {
+    if round.commitment.is_some() {
+        // Cut again from the staged set after a crash; the seed gives the same batches.
+        if !round.has_urls() && !cut_round(state, &mut round).await? {
+            eprintln!("round={} lost its URL set before its tasks were queued; it closes without them", round.round_id);
+            round.order.clear();
+        }
+    } else if !round.has_urls() {
         let lists = queues::staged(&state.redis, &round.round_id).await?;
         if !lists.is_some_and(|lists| round.restore_urls(&lists)) {
             eprintln!("round={} lost its URL lists before its tasks were queued; it closes without them", round.round_id);
@@ -408,7 +446,7 @@ pub async fn reclaim_expired(state: &State, now: f64) -> Result<Vec<(String, Str
                     outcome: "reclaimed",
                     seq,
                     task_id: Some(task_id.clone()),
-                    cause: Some(cause.into()),
+                    cause: Some(cause),
                     ..Receipt::default()
                 })
                 .await?;
@@ -746,7 +784,14 @@ pub enum Basis {
 }
 
 /// The upload's accounts under the rules, against its round as SQLite holds it now plus this upload's own checks.
-pub fn judge(conn: &Connection, job: &Value, basis: &Basis, coldkeys: &HashMap<String, String>, params: &rules::Params, at: f64) -> Result<(Judged, RoundView)> {
+pub fn judge(
+    conn: &Connection,
+    job: &Value,
+    basis: &Basis,
+    coldkeys: &HashMap<String, String>,
+    params: &rules::Params,
+    at: f64,
+) -> Result<(Judged, RoundView)> {
     let kind = kind_of(job);
     let round_id = text(job, "round_id");
     let mut round = if kind == CRAWL { rules::round_view(conn, round_id, params)? } else { RoundView::default() };
@@ -760,7 +805,9 @@ pub fn judge(conn: &Connection, job: &Value, basis: &Basis, coldkeys: &HashMap<S
     let judged = match (basis, kind == EMBED) {
         (Basis::Unchecked, false) => rules::judge_unchecked(job, &round, error_share, params),
         (Basis::Unchecked, true) => rules::judge_unchecked_embed(job),
-        (Basis::Unscored, _) => Judged { outcome: Outcome::Neutral, reason: rules::UNSCORED.into(), credited: 0, assigned: assigned(job), returned: 0, ramp: false, reports: 0 },
+        (Basis::Unscored, _) => {
+            Judged { outcome: Outcome::Neutral, reason: rules::UNSCORED.into(), credited: 0, assigned: assigned(job), returned: 0, ramp: false, reports: 0 }
+        }
         (Basis::Checked(votes), true) => rules::judge_embed(job, votes, coldkeys, params),
         (Basis::Checked(votes), false) => {
             // The upload counts toward its own round: its samples, and its rows per host when its reports agree on them.
@@ -898,8 +945,6 @@ fn checked_texts(job: &Value, result: &Map<String, Value>) -> Value {
         .collect::<Vec<_>>()
         .into()
 }
-
-/// Accounts are finalized once per upload, in one transaction, before Redis lets go; None when storage failed or the upload was closed under it.
 
 /// The verdict an upload's accounts carry.
 pub fn account_verdict(outcome: Outcome) -> &'static str {
@@ -1087,7 +1132,6 @@ pub async fn take_back(state: &State, miner: &str, kind: &str, since: f64, reaso
     Ok(task_ids)
 }
 
-
 /// Where a round's URL lists are kept once its tasks are queued, so a take-back can tell the bot which URLs to send again.
 pub fn round_urls_key(round_id: &str) -> String {
     format!("rounds/{round_id}")
@@ -1212,7 +1256,6 @@ pub fn finalize_accounts(conn: &Connection, task_id: &str, job: &Value, decision
     }
     Ok(Some(Settled { budget, judged, publish, report }))
 }
-
 
 pub fn publish_job(state: &State, job: &Value, vote: &Value, agreed: &[String]) -> Value {
     let kind = kind_of(job);

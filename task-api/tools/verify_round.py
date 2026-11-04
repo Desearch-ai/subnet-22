@@ -12,6 +12,8 @@ from collections import defaultdict
 from pathlib import Path
 
 ALGORITHM = "desearch-serve-order-2"
+# A crawl round commits to its URL set; the seed cuts it into batches after.
+SET_ALGORITHM = "desearch-round-3"
 RECEIPT_FIELDS = (
     "round_id",
     "hotkey",
@@ -42,6 +44,69 @@ def manifest_hash(entries: list[dict], seed_block: int) -> str:
             {"algorithm": ALGORITHM, "seed_block": seed_block, "batches": ordered}
         )
     )
+
+
+def set_hash(pairs: list[list[str]]) -> str:
+    """The hash a round commits to: its [host, url] pairs sorted by URL."""
+    ordered = sorted(([host, url] for host, url in pairs), key=lambda p: (p[1], p[0]))
+    return sha256(canonical_json(ordered))
+
+
+def set_manifest_hash(
+    round_id: str, seed_block: int, task_urls: int, url_count: int, urls_hash: str
+) -> str:
+    return sha256(
+        canonical_json(
+            {
+                "algorithm": SET_ALGORITHM,
+                "round_id": round_id,
+                "seed_block": seed_block,
+                "task_urls": task_urls,
+                "url_count": url_count,
+                "urls_hash": urls_hash,
+            }
+        )
+    )
+
+
+def tasks_for(url_count: int, task_urls: int) -> int:
+    return -(-url_count // max(task_urls, 1))
+
+
+def batch_id(seed: str, round_id: str, index: int) -> str:
+    return sha256(f"{seed}:{round_id}:{index}".encode())[:16]
+
+
+def spread(pairs: list[list[str]]) -> list[list[str]]:
+    """Hosts take turns, in the order each first appears."""
+    queues: dict[str, list[list[str]]] = {}
+    for pair in pairs:
+        queues.setdefault(pair[0], []).append(pair)
+    mixed, at = [], 0
+    while any(at < len(queue) for queue in queues.values()):
+        mixed.extend(queue[at] for queue in queues.values() if at < len(queue))
+        at += 1
+    return mixed
+
+
+def cut(
+    pairs: list[list[str]], seed: str, round_id: str, task_urls: int
+) -> list[tuple[str, list[list[str]]]]:
+    """The batches a committed URL set makes under its seed, as the task API cuts them."""
+    count = tasks_for(len(pairs), task_urls)
+    if not count:
+        return []
+    key = lambda kind, value: sha256(f"{seed}:{kind}:{value}".encode())  # noqa: E731
+    by_host: dict[str, list[list[str]]] = {}
+    for host, url in pairs:
+        by_host.setdefault(host, []).append([host, url])
+    dealt: list[list[list[str]]] = [[] for _ in range(count)]
+    at = 0
+    for host in sorted(by_host, key=lambda h: (key("host", h), h)):
+        for pair in sorted(by_host[host], key=lambda p: (key("url", p[1]), p[1])):
+            dealt[at % count].append(pair)
+            at += 1
+    return [(batch_id(seed, round_id, i), spread(urls)) for i, urls in enumerate(dealt)]
 
 
 def serve_order(seed: str, batch_ids: list[str]) -> list[str]:
@@ -104,6 +169,7 @@ def verify(
     receipts: list[dict] | None = None,
     received: dict[str, list[str]] | None = None,
     signer: str | None = None,
+    urls: list[list[str]] | None = None,
 ) -> bool:
     round_ = get(api, f"/v1/rounds/{round_id}")
     log = get(api, f"/v1/rounds/{round_id}/log")
@@ -123,18 +189,22 @@ def verify(
 
     ok = True
 
+    algorithm = round_.get("algorithm")
     ok &= check(
-        "algorithm is the one this script implements",
-        round_.get("algorithm") == ALGORITHM,
-        f"published {round_.get('algorithm')!r}, expected {ALGORITHM!r}",
+        "algorithm is one this script implements",
+        algorithm in (ALGORITHM, SET_ALGORITHM),
+        f"published {algorithm!r}, expected {ALGORITHM!r} or {SET_ALGORITHM!r}",
     )
 
-    recomputed = manifest_hash(manifest, round_["seed_block"])
-    ok &= check(
-        "manifest AND seed block match the hash committed before that block existed",
-        recomputed == round_["manifest_hash"],
-        f"committed {round_['manifest_hash'][:32]}…\n         recomputed {recomputed[:32]}…",
-    )
+    if algorithm == SET_ALGORITHM:
+        ok &= _set_commitment(round_, manifest, seed, urls)
+    else:
+        recomputed = manifest_hash(manifest, round_["seed_block"])
+        ok &= check(
+            "manifest AND seed block match the hash committed before that block existed",
+            recomputed == round_["manifest_hash"],
+            f"committed {round_['manifest_hash'][:32]}…\n         recomputed {recomputed[:32]}…",
+        )
 
     expected = serve_order(seed, [entry["batch_id"] for entry in manifest])
     ok &= check(
@@ -203,6 +273,56 @@ def verify(
         f"{GREEN}Round verified.{RESET}" if ok else f"{RED}Verification FAILED.{RESET}"
     )
     return bool(ok)
+
+
+def _set_commitment(
+    round_: dict, manifest: list[dict], seed: str, urls: list[list[str]] | None
+) -> bool:
+    round_id, task_urls, url_count = (
+        round_["round_id"],
+        round_["task_urls"],
+        round_["url_count"],
+    )
+    recomputed = set_manifest_hash(
+        round_id, round_["seed_block"], task_urls, url_count, round_["urls_hash"]
+    )
+    ok = check(
+        "the URL set AND seed block match the hash committed before that block existed",
+        recomputed == round_["manifest_hash"],
+        f"committed {round_['manifest_hash'][:32]}…\n         recomputed {recomputed[:32]}…",
+    )
+    expected = {
+        batch_id(seed, round_id, i) for i in range(tasks_for(url_count, task_urls))
+    }
+    ok &= check(
+        "batches are the ones the seed names, and hold exactly the committed URLs",
+        {e["batch_id"] for e in manifest} == expected
+        and sum(e["url_count"] for e in manifest) == url_count,
+        f"{len(manifest)} batches of {sum(e['url_count'] for e in manifest)} URLs; "
+        f"the commitment makes {len(expected)} of {url_count}",
+    )
+    if urls is None:
+        print(
+            f"  {GREY}[ .. ] no --urls given: the batches' contents are not cut again from the committed set{RESET}"
+        )
+        return ok
+    ok &= check(
+        "the URLs given are the committed set", set_hash(urls) == round_["urls_hash"]
+    )
+    committed = {e["batch_id"]: e["urls_hash"] for e in manifest}
+    cut_again = cut(urls, seed, round_id, task_urls)
+    mismatched = [
+        batch
+        for batch, pairs in cut_again
+        if committed.get(batch) != sha256(canonical_json([url for _, url in pairs]))
+    ]
+    ok &= check(
+        "every batch is what the seed cuts from the committed set",
+        not mismatched,
+        f"{len(cut_again)} batches cut again"
+        + (f", {len(mismatched)} differ: {mismatched[:3]}" if mismatched else ""),
+    )
+    return ok
 
 
 def _signatures(round_id: str, entries: list[dict], signer: str) -> tuple[bool, str]:
@@ -306,6 +426,11 @@ def main() -> int:
         help="file of {task_id: [urls]} you were given, to check they match the commitment",
     )
     parser.add_argument(
+        "--urls",
+        help="file of the round's [host, url] pairs (or its {batch_id: [[host, url]]} lists from the pages "
+        "bucket's rounds/<round_id>), to cut its batches again from the seed",
+    )
+    parser.add_argument(
         "--receipts",
         help="file of receipts you kept, one JSON object per line as the miner writes them",
     )
@@ -320,7 +445,24 @@ def main() -> int:
         else None
     )
     batches = json.loads(Path(args.batches).read_text()) if args.batches else None
-    return 0 if verify(args.api, args.round, receipts, batches, args.signer) else 1
+    urls = read_urls(Path(args.urls)) if args.urls else None
+    return (
+        0 if verify(args.api, args.round, receipts, batches, args.signer, urls) else 1
+    )
+
+
+def read_urls(path: Path) -> list[list[str]]:
+    """[host, url] pairs, from a plain list or from per-batch lists, packed (z:) as the API keeps them or not."""
+    raw = path.read_text().strip()
+    if raw.startswith("z:"):
+        import base64
+        import zlib
+
+        raw = zlib.decompress(base64.b64decode(raw[2:])).decode()
+    found = json.loads(raw)
+    if isinstance(found, dict):
+        return [pair for pairs in found.values() for pair in pairs]
+    return found
 
 
 if __name__ == "__main__":

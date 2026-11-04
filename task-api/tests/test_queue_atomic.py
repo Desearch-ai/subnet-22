@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 import time
 
 import redis.asyncio as aioredis
@@ -13,7 +14,8 @@ from app.queues import (
     ValidationQueue,
 )
 
-REDIS_URL = "redis://localhost:6379/14"
+# Redis on localhost, or at TASK_API_TEST_REDIS_URL when the usual one is unavailable.
+REDIS_URL = os.environ.get("TASK_API_TEST_REDIS_URL", "redis://localhost:6379/14")
 
 
 def run(scenario):
