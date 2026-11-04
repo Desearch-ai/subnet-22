@@ -130,7 +130,7 @@ impl Registry {
                 uid: Some(n.uid),
                 is_validator: is_validator(n),
                 coldkey: Some(n.coldkey.clone()),
-                incentive: Some(n.incentive),
+                incentive: n.incentive,
             })
             .collect();
         self.restore(fresh.clone());

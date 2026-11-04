@@ -37,8 +37,9 @@ pub struct Neuron {
     pub validator_permit: bool,
     pub total_stake_rao: u128,
     pub alpha_stake_rao: u128,
-    /// Its share of the subnet's incentive, as Yuma consensus last set it from validators' weights.
-    pub incentive: f64,
+    /// Its share of the subnet's incentive, as Yuma consensus last set it from validators' weights; None when the
+    /// metagraph gives no incentive, or none to anyone yet.
+    pub incentive: Option<f64>,
 }
 
 pub struct Chain {
@@ -285,7 +286,9 @@ fn neurons(graph: &Value<u32>) -> Result<Vec<Neuron>> {
     let column = |name: &str| -> Vec<&Value<u32>> { field(graph, name).map(items).unwrap_or_default() };
     let (hotkeys, coldkeys, permits, total, alpha) =
         (column("hotkeys"), column("coldkeys"), column("validator_permit"), column("total_stake"), column("alpha_stake"));
-    let incentives = column("incentives");
+    let incentives: Vec<Option<u128>> = column("incentives").iter().map(|v| number(v)).collect();
+    // A metagraph without incentives, or before any weights, says nothing about any miner.
+    let known = incentives.iter().any(|n| n.is_some_and(|n| n > 0));
     hotkeys
         .iter()
         .enumerate()
@@ -298,7 +301,7 @@ fn neurons(graph: &Value<u32>) -> Result<Vec<Neuron>> {
                 validator_permit: permits.get(uid).and_then(|v| boolean(v)).unwrap_or(false),
                 total_stake_rao: total.get(uid).and_then(|v| number(v)).unwrap_or(0),
                 alpha_stake_rao: alpha.get(uid).and_then(|v| number(v)).unwrap_or(0),
-                incentive: incentives.get(uid).and_then(|v| number(v)).map_or(0.0, |n| n as f64 / u16::MAX as f64),
+                incentive: incentives.get(uid).copied().flatten().filter(|_| known).map(|n| n as f64 / u16::MAX as f64),
             })
         })
         .collect()
@@ -372,4 +375,29 @@ fn decode_hex(text: &str) -> Option<Vec<u8>> {
         return None;
     }
     (0..text.len()).step_by(2).map(|i| u8::from_str_radix(text.get(i..i + 2)?, 16).ok()).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn graph(incentives: Option<Vec<u128>>) -> Value<u32> {
+        let account = |b: u128| Value::unnamed_composite([Value::unnamed_composite((0..32).map(|_| Value::u128(b)))]);
+        let mut fields = vec![
+            ("hotkeys".to_string(), Value::unnamed_composite([account(1), account(2)])),
+            ("coldkeys".to_string(), Value::unnamed_composite([account(3), account(4)])),
+        ];
+        if let Some(incentives) = incentives {
+            fields.push(("incentives".to_string(), Value::unnamed_composite(incentives.into_iter().map(Value::u128))));
+        }
+        Value::named_composite(fields).map_context(|_| 0u32)
+    }
+
+    #[test]
+    fn incentives_are_read_and_a_metagraph_without_any_says_nothing() {
+        let read = neurons(&graph(Some(vec![65_535, 0]))).unwrap();
+        assert_eq!(read.iter().map(|n| n.incentive).collect::<Vec<_>>(), [Some(1.0), Some(0.0)]);
+        assert!(neurons(&graph(None)).unwrap().iter().all(|n| n.incentive.is_none()), "no column: unknown, not zero");
+        assert!(neurons(&graph(Some(vec![0, 0]))).unwrap().iter().all(|n| n.incentive.is_none()), "no weights yet: unknown, not zero");
+    }
 }

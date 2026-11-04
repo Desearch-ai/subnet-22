@@ -36,13 +36,15 @@ every page.
 
 ## A crawl task, start to finish
 
-1. **Round.** The task API packs new URLs into tasks of 1,000, spreading each site across them. It
-   publishes a hash of the batches before serving any, and a future block's hash decides the order
+1. **Round.** The task API commits to a round's URL set and to a future block before that block
+   exists. Once its hash is known, it cuts the set into tasks of at most 1,000, dealing each site's
+   URLs across them in turn so every task has the round's mix, and the same hash decides the order
    they go out in.
 2. **Claim.** A miner asks for as many tasks as it can finish and receives, for each, its URLs and an
-   upload link. The link accepts one file under one key and lasts as long as the claim: 3 minutes,
-   plus 10 seconds of grace for the upload. Miners never hold storage credentials, and a miner is
-   never given a task it held before.
+   upload link. The link accepts one file under one key. The claim lasts 3 minutes plus 10 seconds of
+   grace for the upload, counted in finalized chain blocks, and costs nothing if it lapses while the
+   API restarts, its storage fails or finality stalls. Miners never hold storage credentials, and a
+   miner is never given a task it held before.
 3. **Crawl.** The miner fetches every URL, extracts each page's text, and uploads one Parquet file
    with a row per URL, including the page's HTML. When it reports the task
    complete, the task API checks the file is Parquet and within the size limit, and records which
@@ -61,16 +63,18 @@ every page.
    - fetches the same pages itself and compares the text with the miner's;
    - checks a sample of the rows the miner reported as failed.
 
-   It reports pass or fail to the API, with what it saw for each checked page; reports stay sealed
-   until the upload is finalized. A validator whose own fetches failed says so, at no cost to the
-   miner. Reporting is the only thing a validator needs the API for.
+   It reports the facts of the file (rows, duplicates, rows outside the task, rows per site, rows not
+   re-extracted from their HTML) and what it saw for each checked page; reports stay sealed until the
+   upload is finalized. A validator whose own fetches failed says so, at no cost to the miner.
+   Reporting is the only thing a validator needs the API for.
 6. **Finalize.** A checked upload is finalized once every active validator has reported, or at its
    deadline on the reports it has; a validator is active for an hour after its last report. The
-   majority decides pass or fail, and a pass pays the miner's rows at the rate the checked pages
-   matched (35 of 40 rows when 7 of 8 matched). One active validator finalizes alone. A failed
-   check takes back everything the hotkey passed since its last passed check, pay and pages, and
-   two failed checks among its last 10 cost its last 24 hours of pay and a 48-hour lockout. The
-   exact rules are in [the task API's scoring section](../task-api/README.md#scoring).
+   miner's budget, strikes and take-backs follow fixed rules on the facts of the file, which every
+   honest validator finds the same; facts two validators disagree on charge nothing. The live-page
+   comparison goes into each validator's own weights, and the majority of it decides only what is
+   published. A fail on the facts takes back everything the hotkey passed since its last passed
+   check, pay and pages, and two among its last 10 cost its last 24 hours of pay and a 48-hour
+   lockout. The exact rules are in [Rules](./rules.md).
 7. **Publish.** The publisher writes each passed page to the pages bucket, only when its text
    changed and never over a newer fetch, leaving out the rows the checks turned down, and takes
    withdrawn pages down. What became of every URL goes back to the bot
@@ -98,8 +102,14 @@ Embedding is switched off until its inputs and the publishing of vectors below a
 
 ## How the work stays honest
 
-- **Committed rounds.** A round's batches are fixed before the block that orders them exists, so the
-  task API cannot swap or reorder them.
+- **Committed rounds.** A round's URL set is fixed before the block that cuts and orders it exists,
+  so the task API can neither choose which URLs go together nor reorder them, and every task has the
+  round's mix.
+- **Blocks, not clocks.** Every deadline and lockout counts finalized chain blocks, so the server's
+  clock cannot shorten a claim; outages on the API's side are public and cost nobody.
+- **Relative thresholds.** The coverage gate falls with the share of a round validators could load,
+  and a site most miners of a round could not load pays and costs nobody that round, so a bad mix of
+  URLs hurts no one's standing and a site only one miner can load earns it nothing.
 - **Signed logs.** Every claim, refusal and completion is signed by the task API. Anyone can check a
   closed round with [`task-api/tools/verify_round.py`](../task-api/tools/verify_round.py).
 - **Direct to storage.** Uploads go from the miner straight into storage through a link for one
@@ -112,12 +122,14 @@ Embedding is switched off until its inputs and the publishing of vectors below a
 - **Validators set their own weights.** Each validator counts every miner's uploads from the
   signed log in the public bucket and pays them at the rate its own checks of that miner found, so
   its weights never come from the task API.
-- **Validators decide checked uploads.** A checked upload is decided by the active validators, and
-  every page published from it names the validators that agreed. One that keeps disagreeing with
-  the majority stops receiving uploads.
-- **Consequences.** Failures and lapsed claims halve a miner's budget, repeated strikes lock it out
-  of new tasks for an hour, then 12 hours, then 48, and two failed checks among its last 10 lock it
-  out for 48 hours.
+- **No head count decides a penalty.** Budgets, strikes and lockouts follow facts of the file that
+  anyone can recompute, and the miner's on-chain incentive, which comes from validators' stake-weighted
+  weights. Publishing still follows the validators' majority, and every page published names the
+  validators that agreed. A validator is refused only for reports its tasks could not have produced,
+  never for disagreeing.
+- **Consequences.** Fails on the file's facts and lapsed claims halve a miner's budget, repeated
+  strikes lock it out of new tasks for an hour, then 12 hours, then 48, and two such fails among its
+  last 10 lock it out for 48 hours.
 - **Public results.** Every validator's report, with the rows it paid and what it found for each
   URL, is public at `https://api-22.desearch.ai/v1/tasks`, so anyone can recompute the shares.
 

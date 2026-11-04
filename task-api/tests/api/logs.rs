@@ -149,7 +149,7 @@ async fn a_finalized_task_says_when_it_was_claimed_and_uploaded() {
 
 fn neuron(client: &Client, uid: i64, coldkey: &str, validator: bool) -> Neuron {
     let stake = if validator { 50_000_000_000_000 } else { 0 };
-    Neuron { uid, hotkey: client.ss58(), coldkey: coldkey.into(), validator_permit: validator, total_stake_rao: stake, alpha_stake_rao: stake, incentive: 0.0 }
+    Neuron { uid, hotkey: client.ss58(), coldkey: coldkey.into(), validator_permit: validator, total_stake_rao: stake, alpha_stake_rao: stake, incentive: None }
 }
 
 #[tokio::test]

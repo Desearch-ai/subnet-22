@@ -7,7 +7,7 @@ use futures::future::join_all;
 use serde_json::json;
 use task_api::chain::Chain;
 use task_api::registry::{self, Entry};
-use task_api::settings::RegistryMode;
+use task_api::settings::{RegistryMode, SeedsMode};
 use task_api::state::State;
 
 use crate::fakechain::FakeChain;
@@ -107,4 +107,30 @@ async fn with_no_metagraph_yet_a_caller_is_asked_to_come_back() {
     let refused = h.miner.post("/v1/tasks/claim", json!({})).await.unwrap_err();
     assert_eq!(refused.status, 503);
     assert!(started.elapsed() < Duration::from_secs(8), "turned away, not held");
+}
+
+#[tokio::test]
+async fn deadlines_run_on_the_finalized_block_never_counted_on_the_clock() {
+    let fake = FakeChain::start(5_000, 0.05).await;
+    let chain = Arc::new(Chain::new(&fake.url).unwrap());
+    let first = chain.finalized_block().await.unwrap();
+    assert!((4_998..=5_000).contains(&first), "{first}");
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(chain.finalized_block().await.unwrap(), first, "read every few seconds, not counted on between reads");
+    assert_eq!(fake.calls("chain_getFinalizedHead"), 1);
+}
+
+#[tokio::test]
+async fn every_copy_and_every_restart_keeps_the_first_anchor() {
+    let fake = FakeChain::start(7_000, 12.0).await;
+    let h = Harness::start().await;
+    let mut settings = h.state.settings.clone();
+    settings.seeds = SeedsMode::Chain { network: fake.url.clone() };
+    let first = State::new(settings.clone(), h.redis.clone(), h.state.storage.clone(), h.state.pages.clone()).await.unwrap();
+    let clock = first.clock().await.unwrap();
+    let tick = first.tick().await.unwrap();
+    assert_eq!((clock.anchor_block, clock.block_seconds, tick.at), (6_998, 12.0, clock.anchor_at));
+    let again = State::new(settings, h.redis.clone(), h.state.storage.clone(), h.state.pages.clone()).await.unwrap();
+    assert_eq!(again.clock().await.unwrap(), clock);
+    assert!(first.started_at() <= tick.at, "a restart is dated by the first finalized block it read");
 }

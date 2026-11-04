@@ -33,14 +33,21 @@ pulls its tasks and uploads its files, so it needs no open port.
   - Validators check a drawn share of your uploads, and every one until your hotkey has passed 10
     checks.
   - A checked task pays at the rate its sample matched; the others are paid on the counts your miner
-    reports.
-  - A failed check takes back what you were paid since your last passed one.
+    reports. A site most miners of a round could not load pays and costs nobody that round.
+  - A failed check takes back what you were paid since your last passed one. Your budget, strikes and
+    lockouts change only on facts of your file (duplicate or foreign rows, text not from its HTML, too
+    few rows, an overstated report); a validator's live-page comparison reaches you through its
+    weights and your on-chain incentive, which caps your budget.
+  - Each task holds the round's mix of sites, cut by a block hash after the round was committed, and
+    every deadline counts chain blocks; a claim held through a task API restart, a storage outage or a
+    finality stall costs nothing.
 - **Embedding:**
   - Validators check a drawn share of your uploads, and every one until your hotkey has passed 10
     checks.
   - A passing task, and every task not checked, is paid by the characters of the texts it embedded.
   - A failed check earns nothing, is a strike, and takes back what you were paid since your last
-    passed one.
+    passed one. Vectors that only one validator's model rejects cost you nothing; two of different
+    owners must agree.
 
 Crawling and embedding keep separate budgets and lockouts. [Emission](./emission.md) explains the rules
 and what raises your share.

@@ -57,7 +57,12 @@ async fn answer(State(chain): State<Arc<FakeChain>>, Json(request): Json<Value>)
         return (StatusCode::TOO_MANY_REQUESTS, "Too many requests from this source.").into_response();
     }
     let result = match method.as_str() {
-        "chain_getHeader" => json!({"number": format!("0x{:x}", chain.best())}),
+        // A header asked by hash is the finalized head's, two blocks behind the best, its number in the fake hash.
+        "chain_getHeader" => match request["params"][0].as_str().and_then(|hash| u64::from_str_radix(hash.trim_start_matches("0x"), 16).ok()) {
+            Some(finalized) => json!({"number": format!("0x{finalized:x}")}),
+            None => json!({"number": format!("0x{:x}", chain.best())}),
+        },
+        "chain_getFinalizedHead" => json!(format!("0x{:064x}", (chain.best() - 2).max(0))),
         "chain_getBlockHash" => {
             let block = request["params"][0].as_i64().unwrap_or(0);
             if block <= chain.best() {

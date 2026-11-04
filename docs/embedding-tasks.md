@@ -40,15 +40,18 @@ uploaded:
 - your next 10 uploads after a failed check;
 - otherwise a share of your uploads, at least about one an hour.
 
-In a checked task, validators embed 48 of its texts again with the same model, including some of the
-longest. Each of your vectors for them must have finite values and length 1, and reach a cosine
-similarity of 0.999 with theirs.
+In a checked task, validators embed 48 of its texts again with the same model on their own model
+servers, including some of the longest; validators without one do not check embed tasks. Each of your
+vectors for them must have finite values and length 1, and reach a cosine similarity of 0.999 with
+theirs.
 
 **Pay:** a passing task, and every task not picked for a check, is paid by the characters of its
 texts. A failed check earns nothing and costs the task's characters, halves your embed budget and is
 a strike. It also takes back everything you uploaded since your last passed check, and those vectors
 leave the published set. Two failed checks among your last 10 take back your last 24 hours and lock
-you out of embed tasks for 48 hours.
+you out of embed tasks for 48 hours. A mismatch fails your task only when validators of two different
+owners found it with their own models and none passed it; one alone sends the task to another miner
+at no cost. Malformed or missing vectors and a file of the wrong size fail it on one check.
 
 Every vector is checked for finite values and length 1 before it is published. One that fails is
 never published, and your next 10 uploads are all checked. An upload picked for a check that no
