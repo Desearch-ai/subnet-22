@@ -550,7 +550,7 @@ impl Settings {
             pages_per_input: number("PLANNER_PAGES_PER_INPUT", 1_000)?,
             chars_per_input: number("PLANNER_CHARS_PER_INPUT", 3_000_000)?,
             flush_after: Duration::from_secs_f64(number("PLANNER_FLUSH_S", 600.0)?),
-            max_pending: number("PLANNER_MAX_PENDING", 100)?,
+            max_pending: number::<usize>("PLANNER_MAX_PENDING", 100)?.max(1),
             max_waiting: number("PLANNER_MAX_WAITING", 30_000_000)?,
             fresh: Some(Duration::from_secs_f64(number("PLANNER_FRESH_S", 48.0 * 3600.0)?)).filter(|window| !window.is_zero()),
             fresh_per_hour: number("PLANNER_FRESH_PER_HOUR", 300_000.0)?,
@@ -3130,13 +3130,16 @@ impl Planner {
         if pending.is_empty() {
             return Ok(0);
         }
-        let asked = Instant::now();
-        let mut tries = ROOM_TRIES.iter();
+        let (mut asked, mut tries) = (Instant::now(), ROOM_TRIES.iter());
         let room = loop {
             match self.room.tasks().await {
                 Ok(room) => break room.max(0) as usize,
-                Err(error) => match tries.next() {
-                    Some(wait) => tokio::time::sleep(*wait).await,
+                // A question that timed out or answered slowly is not asked again at once.
+                Err(error) => match tries.next().filter(|_| asked.elapsed() < ROOM_SLOW && !timed_out(&error)) {
+                    Some(wait) => {
+                        tokio::time::sleep(*wait).await;
+                        asked = Instant::now();
+                    }
                     None => {
                         eprintln!("the task API's embed room is unavailable: {error:#}");
                         self.ask_room_at = Some(Instant::now() + ROOM_RETRY);
@@ -3219,6 +3222,11 @@ fn planned_of(page: &PageRow, cleaned: &Cleaned, recipe: &'static str, page_firs
         source,
         stripped: cleaned.kept(),
     }
+}
+
+/// Whether a request failed for want of an answer in time.
+fn timed_out(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| cause.downcast_ref::<reqwest::Error>().is_some_and(reqwest::Error::is_timeout))
 }
 
 /// Whether opening the state failed because another process holds its lock.

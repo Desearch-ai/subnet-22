@@ -57,7 +57,7 @@ fresh lane's two minutes; budget left unspent is kept for two minutes at most, s
 across a restart and neither a restart nor a stretch without room plans or hands over a backlog at once. A restart reads
 the log again from before the oldest page not in a saved input, and plans again only pages no saved input
 holds. A starting planner waits up to three minutes for the one it replaces to let go of its state. When the
-API is full, slow to answer (2 s or more) or does not answer after two more tries 1 s and 2 s apart, inputs wait,
+API is full, slow to answer (2 s or more) or does not answer in time, or fails twice more 1 s and 2 s apart, inputs wait,
 and the planner asks for room at the end of each pass and at most every 30 s in between; after a restart it asks
 before reading the log. While the rest lane holds `PLANNER_MAX_PENDING` (100) inputs, the log stops before its
 next change file and reads it next pass.
