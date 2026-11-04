@@ -2213,7 +2213,7 @@ async fn while_the_task_api_is_full_slow_or_down_inputs_are_held_without_asking_
     log(&pages, 2, old("s", 10)).await;
     let mut planner = Planner::new(one(), pages.clone(), temp.clone(), redis.clone(), Room::api(&api).unwrap()).await.unwrap();
     planner.pass().await.unwrap();
-    assert_eq!((planner.counts.inputs, asked.load(SeqCst)), (10, 5), "a failed answer holds inputs too: asked at the start and the end");
+    assert_eq!((planner.counts.inputs, asked.load(SeqCst)), (10, 9), "a failed answer holds inputs too: asked at the start and the end, each time thrice");
     assert_eq!(planner.state.pending().unwrap().len(), 19);
     drop(planner);
 
@@ -2224,7 +2224,7 @@ async fn while_the_task_api_is_full_slow_or_down_inputs_are_held_without_asking_
     planner.pass().await.unwrap();
     assert_eq!(
         (planner.counts.handed_over, asked.load(SeqCst)),
-        (29, 7),
+        (29, 11),
         "a slow answer with room holds inputs too: the 19 held go at the start, the 10 cut after at the end"
     );
     let _ = std::fs::remove_dir_all(&dir);
@@ -4288,4 +4288,40 @@ fn a_page_s_own_text_and_floor_are_read_as_the_indexer_reads_them() {
         assert_eq!(cleaned.body, case["body"].as_str().unwrap(), "{}", case["name"]);
         assert_eq!(clean::thin(&cleaned.body, record.page_type.as_deref()), case["body_thin"].as_bool().unwrap(), "{}", case["name"]);
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_failed_room_question_is_asked_again_at_once_and_a_full_rest_lane_holds_the_log_in_its_files() {
+    use std::sync::atomic::Ordering::SeqCst;
+    let Some((_turn, redis)) = redis_db().await else {
+        eprintln!("skipped: no Redis on {REDIS}");
+        return;
+    };
+    let dir = scratch("room-again");
+    let stub = stub::start(dir.join("r2"), "127.0.0.1:0").await.unwrap();
+    let (pages, temp) = (bucket(stub.addr, "desearch-pages"), bucket(stub.addr, "subnet-22"));
+    let page = |n: u64| v2(record(&format!("https://news.example/story/{n}"), &format!("{n} {}", article(2)), "article", "en"));
+    for seq in 1..=6 {
+        log(&pages, seq, vec![page(seq)]).await;
+    }
+    let (room, slow, asked) = (Arc::new(std::sync::atomic::AtomicI64::new(-1)), Arc::new(AtomicU64::new(0)), Arc::new(AtomicU64::new(0)));
+    let api = room_api(room.clone(), slow, asked.clone()).await;
+    let mut held = settings(dir.join("state"), 3600.0, 0);
+    (held.pages_per_input, held.max_pending, held.fresh) = (1, 2, None);
+    let mut planner = Planner::new(held, pages.clone(), temp.clone(), redis.clone(), Room::api(&api).unwrap()).await.unwrap();
+    planner.pass().await.unwrap();
+    assert_eq!(
+        (planner.counts.inputs, planner.counts.no_room, planner.counts.log_held, planner.read_through()),
+        (2, 0, 1, 2),
+        "two inputs fill the rest lane while the API is down, and the log stops before its third file rather than keep its pages waiting"
+    );
+    let failed = asked.load(SeqCst);
+    let answer = room.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        answer.store(100, SeqCst);
+    });
+    planner.hand_over().await.unwrap();
+    assert_eq!((planner.counts.handed_over, asked.load(SeqCst) - failed), (2, 2), "the second try, a second later, finds room");
+    let _ = std::fs::remove_dir_all(&dir);
 }

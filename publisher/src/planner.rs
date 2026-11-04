@@ -102,6 +102,8 @@ const ROOM_TIMEOUT: Duration = Duration::from_secs(20);
 /// After an answer that left inputs waiting, a slow one or none, inputs are held this long before the API is asked again mid-pass.
 const ROOM_RETRY: Duration = Duration::from_secs(30);
 const ROOM_SLOW: Duration = Duration::from_secs(2);
+/// Waits before asking again after a failed room question, before it is left for `ROOM_RETRY`.
+const ROOM_TRIES: [Duration; 2] = [Duration::from_secs(1), Duration::from_secs(2)];
 const FILES_PER_PASS: usize = 64;
 /// Set when no page waits without a change file to plan it from.
 const WAITING_NUMBERED: &[u8] = b"waiting-numbered";
@@ -548,7 +550,7 @@ impl Settings {
             pages_per_input: number("PLANNER_PAGES_PER_INPUT", 1_000)?,
             chars_per_input: number("PLANNER_CHARS_PER_INPUT", 3_000_000)?,
             flush_after: Duration::from_secs_f64(number("PLANNER_FLUSH_S", 600.0)?),
-            max_pending: number("PLANNER_MAX_PENDING", 50)?,
+            max_pending: number("PLANNER_MAX_PENDING", 100)?,
             max_waiting: number("PLANNER_MAX_WAITING", 30_000_000)?,
             fresh: Some(Duration::from_secs_f64(number("PLANNER_FRESH_S", 48.0 * 3600.0)?)).filter(|window| !window.is_zero()),
             fresh_per_hour: number("PLANNER_FRESH_PER_HOUR", 300_000.0)?,
@@ -1579,6 +1581,8 @@ pub struct Counts {
     pub late: u64,
     pub over_budget: u64,
     pub no_room: u64,
+    /// Passes whose log phase stopped before a change file as the rest lane was full.
+    pub log_held: u64,
     /// Pages left with too little text of their own once their site's template lines are out.
     pub thin: u64,
     /// Error, challenge and utility pages.
@@ -2073,6 +2077,11 @@ impl Planner {
             stream::iter(ahead).map(|seq| Ahead(tokio::spawn(fetch(pages.clone(), seq))).map(move |rows| (seq, rows))).buffered(self.settings.reads.max(1));
         loop {
             let waited = Instant::now();
+            // With the rest lane full, the log waits in its files, read again in order, rather than as waiting pages, each read again from its own file.
+            if self.inputs_held(Lane::Rest) >= self.settings.max_pending {
+                self.counts.log_held += 1;
+                break;
+            }
             let Some((seq, rows)) = fetched.next().await else { break };
             self.spent.log_reads += waited.elapsed();
             match rows?? {
@@ -3122,12 +3131,18 @@ impl Planner {
             return Ok(0);
         }
         let asked = Instant::now();
-        let room = match self.room.tasks().await {
-            Ok(room) => room.max(0) as usize,
-            Err(error) => {
-                eprintln!("the task API's embed room is unavailable: {error:#}");
-                self.ask_room_at = Some(Instant::now() + ROOM_RETRY);
-                return Ok(0);
+        let mut tries = ROOM_TRIES.iter();
+        let room = loop {
+            match self.room.tasks().await {
+                Ok(room) => break room.max(0) as usize,
+                Err(error) => match tries.next() {
+                    Some(wait) => tokio::time::sleep(*wait).await,
+                    None => {
+                        eprintln!("the task API's embed room is unavailable: {error:#}");
+                        self.ask_room_at = Some(Instant::now() + ROOM_RETRY);
+                        return Ok(0);
+                    }
+                },
             }
         };
         let slow = asked.elapsed() >= ROOM_SLOW;
