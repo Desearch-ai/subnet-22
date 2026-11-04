@@ -27,6 +27,22 @@ impl Seeds {
         }
     }
 
+    /// The height every deadline is measured on: the chain's newest finalized block as last read, never counted on the clock.
+    pub async fn height(&self) -> Result<i64> {
+        match self {
+            Seeds::Local { .. } => self.current_block().await,
+            Seeds::Chain(chain) => chain.finalized_block().await,
+        }
+    }
+
+    /// Seconds a block stands for when a duration is turned into blocks.
+    pub fn block_seconds(&self) -> f64 {
+        match self {
+            Seeds::Local { block_seconds, .. } => *block_seconds,
+            Seeds::Chain(_) => BLOCK_SECONDS,
+        }
+    }
+
     pub async fn target_block(&self) -> Result<i64> {
         Ok(self.current_block().await? + REVEAL_AFTER_BLOCKS)
     }

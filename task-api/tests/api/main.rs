@@ -11,7 +11,6 @@ mod logs;
 mod overlap;
 mod punishment;
 mod queueing;
-mod reference;
 mod staging;
 mod timing;
 mod trust;
@@ -124,7 +123,7 @@ async fn a_crawl_task_goes_round_trip() {
         {"url": "https://site1.example/page/1", "status": 404, "error": "http_4xx"},
     ]);
     let scored = h.validator.post(&score_path, detailed).await.unwrap();
-    assert_eq!(scored, json!({"task_id": id, "verdict": "pass", "credited": 3, "miner_budget": 2}));
+    assert_eq!(scored, json!({"task_id": id, "verdict": "pass", "reason": "ok", "credited": 3, "published": true, "miner_budget": 2}));
     assert_eq!(h.validator.post(&score_path, score("pass", 3, "ok", None, &first_url(&task))).await.unwrap_err().status, 409);
     let view = h.view(&id).await;
     assert_eq!(view["status"], "pass");
@@ -166,11 +165,15 @@ async fn a_crawl_task_goes_round_trip() {
     let opened = h.opened(Some(&h.validator), None).await;
     assert_eq!(opened["task_id"], second_id.as_str());
     let second_score = format!("/v1/validation/{second_id}/score");
-    let failed = h.validator.post(&second_score, score("fail", 3, "content_mismatch", None, &first_url(&second))).await.unwrap();
-    assert_eq!(failed, json!({"task_id": second_id, "verdict": "fail", "credited": 0, "miner_budget": 1}));
+    let mut not_from_html = score("fail", 3, "text_not_from_html", None, &first_url(&second));
+    not_from_html["reextract_mismatch"] = 1.into();
+    not_from_html["integrity_checked"] = 3.into();
+    let failed = h.validator.post(&second_score, not_from_html).await.unwrap();
+    assert_eq!(failed, json!({"task_id": second_id, "verdict": "fail", "reason": "text_not_from_html", "credited": 0, "published": false, "miner_budget": 1}));
     let view = h.view(&second_id).await;
     assert_eq!(view["status"], "queued", "a failed task goes back out for someone else");
-    assert_eq!((view["score"]["verdict"].clone(), view["score"]["reason"].clone()), (json!("fail"), json!("content_mismatch")));
+    assert_eq!((view["score"]["verdict"].clone(), view["score"]["reason"].clone()), (json!("fail"), json!("text_not_from_html")));
+    assert_eq!((view["score"]["publish_verdict"].clone(), view["score"]["accounts"]["outcome"].clone()), (json!("fail"), json!("fail")));
     assert!(h.object(view["score"]["upload_key"].as_str().unwrap()).is_none(), "a failed upload is deleted, so the next miner cannot resubmit it");
 
     let again = h.mine(&h.rival, 0).await;
@@ -268,7 +271,8 @@ async fn a_locked_out_miner_is_refused_until_the_lockout_ends() {
     assert_eq!(answer["refusal"]["inputs"]["until"], round_to(until, 3));
     let first = LOCKOUT_STEPS_H[0] * 3600.0;
     let retry = answer["refusal"]["inputs"]["retry_after"].as_f64().unwrap();
-    assert!(first - 60.0 < retry && retry <= first);
+    // Measured on the block finalized now, at most a block behind the wall clock the strikes were dated by.
+    assert!(first - 60.0 < retry && retry <= first + 1.0, "{retry}");
     let view = h.public(&format!("/v1/miners/{}", h.miner.ss58())).await.1;
     assert_eq!(view["pools"]["crawl"]["locked_until"], until);
     assert!(view["pools"]["embed"]["locked_until"].is_null());

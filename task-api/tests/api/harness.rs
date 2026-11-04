@@ -19,7 +19,10 @@ use task_api::state::{redis_from, State};
 use tokio::net::TcpListener;
 use tokio::sync::{Mutex, MutexGuard};
 
-pub const REDIS_URL: &str = "redis://127.0.0.1:6379/13";
+/// Redis on localhost, or at `TASK_API_TEST_REDIS_ADDR` when the usual one is unavailable.
+pub static REDIS_ADDR: std::sync::LazyLock<String> =
+    std::sync::LazyLock::new(|| std::env::var("TASK_API_TEST_REDIS_ADDR").unwrap_or_else(|_| "127.0.0.1:6379".into()));
+pub static REDIS_URL: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| format!("redis://{}/13", *REDIS_ADDR));
 pub const MINER: &str = "//miner-api-test";
 pub const RIVAL: &str = "//rival-api-test";
 pub const VALIDATOR: &str = "//validator-api-test";
@@ -154,7 +157,7 @@ pub fn settings(data: PathBuf, endpoint: &str) -> Settings {
     Settings {
         listen: "127.0.0.1:0".into(),
         data,
-        redis_url: REDIS_URL.into(),
+        redis_url: REDIS_URL.clone(),
         claim_ttl: 180.0,
         embed_claim_ttl: 300.0,
         validation_ttl: 900.0,
@@ -178,9 +181,6 @@ pub fn settings(data: PathBuf, endpoint: &str) -> Settings {
         task_urls: 3,
         embed_tasks: false,
         embed_model: "desearch-4b-v1".into(),
-        embed_reference_urls: Vec::new(),
-        embed_reference_key: String::new(),
-        embed_reference_calls: 4,
         active_s: 3600.0,
         publish_ttl: 600.0,
         publish_tries: 5,
@@ -200,6 +200,19 @@ pub fn settings(data: PathBuf, endpoint: &str) -> Settings {
         admin_uris: ADMIN.into(),
         key_uri: String::new(),
         cors_origins: Vec::new(),
+        storage_probe_s: 30.0,
+        finality_stall_blocks: 10,
+        objective_quorum: 1,
+        embed_references: 2,
+        loadability_samples: 30,
+        neutral_uploads: 3,
+        neutral_share: 0.5,
+        incentive_full: 0.5,
+        incentive_grace_h: 24,
+        crawl_emission: 0.2,
+        embed_emission: 0.5,
+        wrong_reports: 5,
+        wrong_reports_window_s: 86_400.0,
     }
 }
 
@@ -215,14 +228,14 @@ impl Harness {
         let endpoint = format!("http://{}", stub.addr);
         let mut settings = settings(dir.0.join("data"), &endpoint);
         tune(&mut settings);
-        let redis = redis_from(REDIS_URL).await.expect("Redis on localhost");
+        let redis = redis_from(&REDIS_URL).await.expect("Redis on localhost");
         let _: () = redis::cmd("FLUSHDB").query_async(&mut redis.clone()).await.expect("FLUSHDB");
-        let proxy = Proxy::start("127.0.0.1:6379").await;
+        let proxy = Proxy::start(REDIS_ADDR.as_str()).await;
         let relayed = redis_from(&format!("redis://{}/13", proxy.addr)).await.expect("Redis through the relay");
         let (storage, pages) = buckets(&settings, &endpoint);
-        let mut state = State::new(settings, relayed, storage, pages).await.expect("the state opens");
+        let state = State::new(settings, relayed, storage, pages).await.expect("the state opens");
         // Running since long before any claim, so no claim counts as held through a restart.
-        state.started_at = f64::NEG_INFINITY;
+        state.set_started_at(f64::NEG_INFINITY);
         let state = Arc::new(state);
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("a port");
         let addr = listener.local_addr().expect("an address");
@@ -418,6 +431,11 @@ pub fn score(verdict: &str, returned: i64, reason: &str, outcome: Option<&str>, 
             "validator_chars": 41,
         }],
     })
+}
+
+/// Overrides that fail a check on a fact of the file, which charges the miner, not on the live pages, which does not.
+pub fn objective_fail() -> Value {
+    json!({"reason": "text_not_from_html", "reextract_mismatch": 1, "integrity_checked": 1})
 }
 
 /// Votes on the task, or on the oldest upload this validator has not voted on, sampling the task's own URLs.

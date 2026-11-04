@@ -85,7 +85,7 @@ async fn a_kept_metagraph_lets_a_restarted_copy_serve_while_the_chain_refuses() 
     let fake = FakeChain::start(1_000, 12.0).await;
     fake.refuse(true);
     let h = Harness::start().await;
-    let kept = vec![Entry { hotkey: h.miner.ss58(), uid: Some(3), is_validator: false, coldkey: Some("ck".into()) }];
+    let kept = vec![Entry { hotkey: h.miner.ss58(), uid: Some(3), is_validator: false, coldkey: Some("ck".into()), incentive: None }];
     h.state.db.run(move |conn| registry::save(conn, &kept)).await.unwrap();
     let mut settings = h.state.settings.clone();
     settings.registry = RegistryMode::Chain { netuid: 22, network: fake.url.clone() };

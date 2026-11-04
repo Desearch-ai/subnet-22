@@ -79,9 +79,7 @@ pub const VOTE_FIELDS: [&str; 20] = [
 ];
 pub const VERDICTS: [&str; 3] = ["pass", "fail", "void"];
 pub const WITHDRAWN: &str = "withdrawn";
-pub const MIN_AUDITS: i64 = 10;
 pub const URL_DETAIL_DAYS: f64 = 2.0;
-pub const MAX_DISAGREEMENT: f64 = 0.3;
 const VERDICT_SUMS: &str = "SUM(verdict = 'pass'), SUM(verdict = 'fail'), SUM(verdict = 'void')";
 
 pub fn create(conn: &Connection) -> Result<()> {
@@ -451,8 +449,21 @@ fn reports(conn: &Connection, sql: &str, args: &[&dyn ToSql]) -> Result<Vec<Map<
 }
 
 /// Every finalized upload of a task, newest first.
+/// What a task page shows of each upload's report beyond its columns: what the validators' majority found for publishing, and
+/// the accounts the rules drew from the file.
+pub const ACCOUNT_FIELDS: [&str; 3] = ["publish_verdict", "publish_reason", "accounts"];
+
 pub fn uploads(conn: &Connection, task_id: &str) -> Result<Vec<Map<String, Value>>> {
-    reports(conn, &format!("SELECT {} FROM validations WHERE task_id = ? ORDER BY id DESC", FIELDS.join(", ")), &[&task_id])
+    let mut found = reports(conn, &format!("SELECT {} FROM validations WHERE task_id = ? ORDER BY id DESC", FIELDS.join(", ")), &[&task_id])?;
+    let mut statement = conn.prepare("SELECT report FROM validations WHERE task_id = ? ORDER BY id DESC")?;
+    let kept: Vec<String> = statement.query_map([task_id], |row| row.get(0))?.collect::<rusqlite::Result<_>>()?;
+    for (upload, report) in found.iter_mut().zip(kept) {
+        let report: Value = serde_json::from_str(&report).unwrap_or(Value::Null);
+        for name in ACCOUNT_FIELDS {
+            upload.insert(name.into(), report.get(name).cloned().unwrap_or(Value::Null));
+        }
+    }
+    Ok(found)
 }
 
 /// The per-URL detail of the task's last check: compressed, or plain JSON as kept before.
@@ -705,20 +716,31 @@ pub fn record_audit(conn: &Connection, agreed: &[String], disagreed: &[String]) 
     Ok(())
 }
 
-pub fn audit_standing(conn: &Connection) -> Result<BTreeMap<String, Value>> {
+/// Each validator's agreement with the majority, shown for what it is: no validator is held to it. A validator is excluded
+/// only while it has sent `limit` or more reports since `since` that the task could not have produced.
+pub fn audit_standing(conn: &Connection, since: f64, limit: i64) -> Result<BTreeMap<String, Value>> {
+    let mut standing: BTreeMap<String, Value> = BTreeMap::new();
     let mut statement = conn.prepare("SELECT hotkey, audits, disagreements FROM validator_audits")?;
-    let rows = statement.query_map([], |row| {
-        let (audits, disagreements): (i64, i64) = (row.get(1)?, row.get(2)?);
-        let excluded = audits >= MIN_AUDITS && disagreements as f64 / audits as f64 > MAX_DISAGREEMENT;
-        Ok((row.get::<_, String>(0)?, json!({"audits": audits, "disagreements": disagreements, "excluded": excluded})))
-    })?;
-    Ok(rows.collect::<rusqlite::Result<_>>()?)
+    let rows = statement.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?, row.get::<_, i64>(2)?)))?;
+    for row in rows {
+        let (hotkey, audits, disagreements) = row?;
+        standing.insert(hotkey, json!({"audits": audits, "disagreements": disagreements, "wrong_reports": 0, "excluded": false}));
+    }
+    let mut statement = conn.prepare("SELECT validator, COUNT(*) FROM wrong_reports WHERE at >= ? GROUP BY validator")?;
+    let rows = statement.query_map([since], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)))?;
+    for row in rows {
+        let (hotkey, wrong) = row?;
+        let entry = standing.entry(hotkey).or_insert_with(|| json!({"audits": 0, "disagreements": 0}));
+        entry["wrong_reports"] = wrong.into();
+        entry["excluded"] = (wrong >= limit).into();
+    }
+    Ok(standing)
 }
 
-pub fn is_excluded(conn: &Connection, hotkey: &str) -> Result<bool> {
-    let found: Option<(i64, i64)> =
-        conn.query_row("SELECT audits, disagreements FROM validator_audits WHERE hotkey = ?", [hotkey], |row| Ok((row.get(0)?, row.get(1)?))).optional()?;
-    Ok(found.is_some_and(|(audits, disagreements)| audits >= MIN_AUDITS && disagreements as f64 / audits as f64 > MAX_DISAGREEMENT))
+/// Excluded only for reports that were objectively wrong: `limit` or more since `since` the task could not have produced.
+/// Disagreeing with other validators costs nothing.
+pub fn is_excluded(conn: &Connection, hotkey: &str, since: f64, limit: i64) -> Result<bool> {
+    Ok(limit > 0 && crate::rules::wrong_reports(conn, hotkey, since)? >= limit)
 }
 
 /// The report of one finalized upload, as written to the pages bucket and the validations table.

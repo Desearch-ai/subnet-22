@@ -224,11 +224,39 @@ async fn a_failed_embed_task_strikes_only_the_embed_pool() {
     embed_round(&h, input()).await;
     let task = embed_task(&h, &h.miner).await;
     h.opened(Some(&h.validator), None).await;
-    let scored = h.validator.post(&format!("/v1/validation/{}/score", task_id(&task)), embed_score("fail", "mismatched", "vectors_mismatch")).await.unwrap();
+    let scored = h.validator.post(&format!("/v1/validation/{}/score", task_id(&task)), embed_score("fail", "malformed", "vectors_malformed")).await.unwrap();
     assert_eq!(scored["verdict"], "fail");
-    assert_eq!(strikes(&h).await, [("embed".to_string(), "vectors_mismatch".to_string())]);
+    assert_eq!(strikes(&h).await, [("embed".to_string(), "vectors_malformed".to_string())]);
     assert_eq!(h.miner.post("/v1/tasks/claim", embed_claim()).await.unwrap()["refusal"]["code"], "ALREADY_HELD");
     assert_eq!(h.rival.post("/v1/tasks/claim", embed_claim()).await.unwrap()["tasks"][0]["task_id"], task["task_id"]);
+}
+
+#[tokio::test]
+async fn one_validators_model_alone_cannot_fail_an_embed_upload_and_two_independent_ones_can() {
+    let h = embedding().await;
+    embed_round(&h, inputs(2)[0].clone()).await;
+    let task = task_id(&embed_task(&h, &h.miner).await);
+    h.opened(Some(&h.validator), None).await;
+    let lone = score(&h, &task, embed_score("fail", "mismatched", "vectors_mismatch")).await;
+    assert_eq!((lone["verdict"].clone(), lone["reason"].clone()), (json!("void"), json!("too_few_references")));
+    assert!(strikes(&h).await.is_empty(), "one reference is no proof");
+    assert_eq!(budgets_of(&h, EMBED).await, budgets::START);
+
+    // Both validators check embed uploads, so the next one waits for both references.
+    embed_round(&h, inputs(2)[1].clone()).await;
+    let next = task_id(&embed_task(&h, &h.miner).await);
+    h.state.validation.present_for(&h.redis, EMBED, &h.other_validator.ss58(), h.state.rule_now().await.unwrap()).await.unwrap();
+    h.opened(Some(&h.validator), Some(&next)).await;
+    assert_eq!(score(&h, &next, embed_score("fail", "mismatched", "vectors_mismatch")).await["verdict"], "pending");
+    let path = format!("/v1/validation/{next}/score");
+    let second = h.other_validator.post(&path, embed_score("fail", "mismatched", "vectors_mismatch")).await.unwrap();
+    assert_eq!((second["verdict"].clone(), second["reason"].clone()), (json!("fail"), json!("vectors_mismatch")));
+    assert_eq!(strikes(&h).await, [("embed".to_string(), "vectors_mismatch".to_string())]);
+}
+
+async fn budgets_of(h: &Harness, pool: &'static str) -> i64 {
+    let hotkey = h.miner.ss58();
+    h.state.db.run(move |conn| Ok(budgets::get(conn, &hotkey, pool)?.budget)).await.unwrap()
 }
 
 #[tokio::test]
@@ -571,7 +599,7 @@ async fn a_failed_embed_check_takes_back_the_unchecked_embed_uploads_since_the_l
     assert_eq!(settled(&h, &checked).await, sampling::RECHECK);
     assert_eq!(rechecks(&h).await, (0, sampling::RECHECK_UPLOADS - 1));
 
-    let verdict = score(&h, &checked, embed_score("fail", "mismatched", "vectors_mismatch")).await;
+    let verdict = score(&h, &checked, embed_score("fail", "malformed", "vectors_malformed")).await;
     assert_eq!(verdict["verdict"], "fail");
     assert_eq!(h.view(&unchecked).await["score"]["verdict"], "withdrawn");
     assert_eq!(credits(&h, EMBED).await, 0, "its characters are taken back");

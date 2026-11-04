@@ -11,7 +11,7 @@ use task_api::manifest::{log_payload, upload_log_key, UPLOAD_LOG_LATEST};
 use task_api::verdicts::UPLOAD_CHANGED;
 use task_api::{budgets, checks, lifecycle, sampling, uploadlog};
 
-use crate::harness::{judged, parquet, score, task_id, urls, Harness, BUCKET, PAGES_PREFIX};
+use crate::harness::{judged, objective_fail, parquet, score, task_id, urls, Harness, BUCKET, PAGES_PREFIX};
 
 async fn started(task_urls: usize, check_share: f64) -> Harness {
     let h = Harness::with(|s| {
@@ -108,7 +108,7 @@ async fn a_failed_check_takes_back_what_passed_since_the_last_pass() {
     start_recheck(&h, hotkey.clone()).await;
     let checked = task_id(&h.mine(&h.miner, 0).await);
     assert_eq!(settled(&h, &checked).await, sampling::RECHECK);
-    let verdict = judged(&h, &h.validator, "fail", Some(&checked), json!({})).await.1.unwrap();
+    let verdict = judged(&h, &h.validator, "fail", Some(&checked), objective_fail()).await.1.unwrap();
     assert_eq!(verdict["verdict"], "fail");
     assert_eq!(h.view(&unchecked).await["score"]["verdict"], "withdrawn");
     assert_eq!(credits(&h, hotkey.clone()).await, -2, "its credit is taken back, and the failed upload costs its URLs");
@@ -169,7 +169,7 @@ async fn two_fails_among_the_last_ten_checks_lock_out_and_wipe_the_day() {
         start_recheck(&h, hotkey.clone()).await;
         let task = task_id(&h.mine(&h.miner, 0).await);
         settled(&h, &task).await;
-        judged(&h, &h.validator, "fail", Some(&task), json!({})).await.1.unwrap();
+        judged(&h, &h.validator, "fail", Some(&task), objective_fail()).await.1.unwrap();
     }
     let asked = hotkey.clone();
     let until = h.state.db.run(move |conn| budgets::locked_until(conn, &asked, "crawl", desearch::time::now())).await.unwrap().expect("locked out");

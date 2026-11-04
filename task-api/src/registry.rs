@@ -26,6 +26,8 @@ pub struct Entry {
     pub uid: Option<i64>,
     pub is_validator: bool,
     pub coldkey: Option<String>,
+    /// Its share of the subnet's incentive on chain; None where no metagraph gives one.
+    pub incentive: Option<f64>,
 }
 
 /// The metagraph has not loaded since this copy started and none was kept from before.
@@ -41,22 +43,27 @@ pub fn create(conn: &Connection) -> Result<()> {
             coldkey      TEXT
         )",
     )?;
+    let has_incentive: i64 = conn.query_row("SELECT COUNT(*) FROM pragma_table_info('registry') WHERE name = 'incentive'", [], |row| row.get(0))?;
+    if has_incentive == 0 {
+        conn.execute_batch("ALTER TABLE registry ADD COLUMN incentive REAL")?;
+    }
     Ok(())
 }
 
 /// Keeps the metagraph as last loaded, so a restart serves at once whatever the chain does.
 pub fn save(conn: &Connection, entries: &[Entry]) -> Result<()> {
     conn.execute("DELETE FROM registry", [])?;
-    let mut insert = conn.prepare("INSERT INTO registry (hotkey, uid, is_validator, coldkey) VALUES (?, ?, ?, ?)")?;
+    let mut insert = conn.prepare("INSERT INTO registry (hotkey, uid, is_validator, coldkey, incentive) VALUES (?, ?, ?, ?, ?)")?;
     for entry in entries {
-        insert.execute(params![entry.hotkey, entry.uid, entry.is_validator, entry.coldkey])?;
+        insert.execute(params![entry.hotkey, entry.uid, entry.is_validator, entry.coldkey, entry.incentive])?;
     }
     Ok(())
 }
 
 pub fn saved(conn: &Connection) -> Result<Vec<Entry>> {
-    let mut statement = conn.prepare("SELECT hotkey, uid, is_validator, coldkey FROM registry")?;
-    let rows = statement.query_map([], |row| Ok(Entry { hotkey: row.get(0)?, uid: row.get(1)?, is_validator: row.get(2)?, coldkey: row.get(3)? }))?;
+    let mut statement = conn.prepare("SELECT hotkey, uid, is_validator, coldkey, incentive FROM registry")?;
+    let rows = statement
+        .query_map([], |row| Ok(Entry { hotkey: row.get(0)?, uid: row.get(1)?, is_validator: row.get(2)?, coldkey: row.get(3)?, incentive: row.get(4)? }))?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
@@ -118,7 +125,13 @@ impl Registry {
     pub fn load(&self, neurons: Vec<Neuron>) -> Vec<Entry> {
         let fresh: Vec<Entry> = neurons
             .iter()
-            .map(|n| Entry { hotkey: n.hotkey.clone(), uid: Some(n.uid), is_validator: is_validator(n), coldkey: Some(n.coldkey.clone()) })
+            .map(|n| Entry {
+                hotkey: n.hotkey.clone(),
+                uid: Some(n.uid),
+                is_validator: is_validator(n),
+                coldkey: Some(n.coldkey.clone()),
+                incentive: Some(n.incentive),
+            })
             .collect();
         self.restore(fresh.clone());
         fresh
@@ -154,7 +167,9 @@ impl Registry {
     /// The caller's entry; before any metagraph is known, waits a few seconds for the first.
     pub async fn lookup(&self, hotkey: &str) -> Result<Option<Entry>, NotLoaded> {
         match self {
-            Registry::Local { validators } => Ok(Some(Entry { hotkey: hotkey.into(), uid: None, is_validator: validators.contains(hotkey), coldkey: None })),
+            Registry::Local { validators } => {
+                Ok(Some(Entry { hotkey: hotkey.into(), uid: None, is_validator: validators.contains(hotkey), coldkey: None, incentive: None }))
+            }
             Registry::Chain { entries, loaded } => {
                 let mut ready = loaded.subscribe();
                 if !matches!(tokio::time::timeout(FIRST_LOAD_WAIT, ready.wait_for(|loaded| *loaded)).await, Ok(Ok(_))) {

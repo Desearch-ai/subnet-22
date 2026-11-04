@@ -175,7 +175,22 @@ async fn a_claims_clock_starts_when_the_claim_is_handed_over() {
     let handed = desearch::time::now();
     let expiry: f64 = h.redis.clone().zscore(CLAIMS, task_id(&task)).await.unwrap();
     assert!(expiry >= handed + h.state.settings.claim_ttl - 0.2);
-    assert_eq!(task["expires_at"].as_f64().unwrap(), expiry - UPLOAD_GRACE_S);
+    let clock = h.state.clock().await.unwrap();
+    assert_eq!(clock.at(task["expires_block"].as_i64().unwrap()), expiry, "the claim ends at a whole block");
+    assert!((task["expires_at"].as_f64().unwrap() - (expiry - UPLOAD_GRACE_S)).abs() < 1.0, "shown as the wall time that block should come at");
+}
+
+#[tokio::test]
+async fn a_completion_counts_until_its_block_is_finalized_however_late_the_wall_clock() {
+    let h = Harness::start().await;
+    h.enqueue(urls(6)).await;
+    let task = h.miner.claim().await["tasks"][0].clone();
+    let expiry: f64 = h.redis.clone().zscore(CLAIMS, task_id(&task)).await.unwrap();
+    // Rule time is the finalized block's, so nothing but blocks moves a claim towards its end.
+    let clock = h.state.clock().await.unwrap();
+    assert!(clock.block_of(expiry) > h.state.tick().await.unwrap().block);
+    assert!(lifecycle::reclaim_expired(&h.state, clock.at(clock.block_of(expiry))).await.unwrap().is_empty(), "the deadline block itself still counts");
+    assert_eq!(lifecycle::reclaim_expired(&h.state, clock.at(clock.block_of(expiry) + 1)).await.unwrap().len(), 1);
 }
 
 #[tokio::test]

@@ -306,6 +306,25 @@ pub fn shares(conn: &Connection, window_hours: i64, now: f64) -> Result<BTreeMap
         .collect())
 }
 
+/// Each hotkey's share of every pool over the window, and the first hour it earned anything that is still kept.
+pub fn work(conn: &Connection, window_hours: i64, now: f64) -> Result<HashMap<String, (BTreeMap<String, f64>, i64)>> {
+    let mut work: HashMap<String, (BTreeMap<String, f64>, i64)> = HashMap::new();
+    for (pool, miners) in shares(conn, window_hours, now)? {
+        for (hotkey, share) in miners {
+            work.entry(hotkey).or_insert_with(|| (BTreeMap::new(), i64::MAX)).0.insert(pool.clone(), share);
+        }
+    }
+    let mut statement = conn.prepare("SELECT hotkey, MIN(hour) FROM credits WHERE amount > 0 GROUP BY hotkey")?;
+    let rows = statement.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)))?;
+    for row in rows {
+        let (hotkey, first) = row?;
+        if let Some(entry) = work.get_mut(&hotkey) {
+            entry.1 = first;
+        }
+    }
+    Ok(work)
+}
+
 pub fn coverage_report(conn: &Connection, window_hours: i64, now: f64) -> Result<BTreeMap<String, Value>> {
     let since = hour_of(now) - window_hours + 1;
     let mut statement =

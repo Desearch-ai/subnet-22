@@ -17,6 +17,8 @@ use crate::seeds::BLOCK_SECONDS;
 
 /// The best block is read this often; in between it is counted on the clock, at most a block behind.
 const BLOCK_REFRESH: Duration = Duration::from_secs(30);
+/// The finalized head, which every deadline is measured on, is read this often and never counted on between reads.
+const FINALIZED_REFRESH: Duration = Duration::from_secs(6);
 /// After a failed call an endpoint is skipped this long, doubling up to `PAUSE_MAX`, so an unwell one is not hammered while the next is asked.
 const PAUSE_FIRST: Duration = Duration::from_secs(5);
 const PAUSE_MAX: Duration = Duration::from_secs(30);
@@ -35,6 +37,8 @@ pub struct Neuron {
     pub validator_permit: bool,
     pub total_stake_rao: u128,
     pub alpha_stake_rao: u128,
+    /// Its share of the subnet's incentive, as Yuma consensus last set it from validators' weights.
+    pub incentive: f64,
 }
 
 pub struct Chain {
@@ -44,6 +48,9 @@ pub struct Chain {
     best: std::sync::Mutex<Option<(i64, Instant)>>,
     reading: AtomicBool,
     first: Mutex<()>,
+    finalized: std::sync::Mutex<Option<(i64, Instant)>>,
+    finalizing: AtomicBool,
+    first_finalized: Mutex<()>,
     pauses: std::sync::Mutex<Vec<Pause>>,
     hashes: Mutex<HashMap<i64, String>>,
     absent: std::sync::Mutex<Option<(i64, Instant)>>,
@@ -79,6 +86,9 @@ impl Chain {
             best: std::sync::Mutex::default(),
             reading: AtomicBool::new(false),
             first: Mutex::default(),
+            finalized: std::sync::Mutex::default(),
+            finalizing: AtomicBool::new(false),
+            first_finalized: Mutex::default(),
             pauses: std::sync::Mutex::new(urls.iter().map(|_| Pause::default()).collect()),
             urls,
             hashes: Mutex::default(),
@@ -171,6 +181,45 @@ impl Chain {
         Some((block, desearch::time::now() - at.elapsed().as_secs_f64()))
     }
 
+    /// The newest finalized block read from the chain, read again in the background once it is `FINALIZED_REFRESH` old.
+    /// Unlike `current_block` it is never counted on the clock: a chain or an endpoint that stalls stalls every deadline with it.
+    pub async fn finalized_block(self: &Arc<Self>) -> Result<i64> {
+        if let Some(block) = self.last_finalized() {
+            return Ok(block);
+        }
+        let _first = self.first_finalized.lock().await;
+        if let Some(block) = self.last_finalized() {
+            return Ok(block);
+        }
+        self.read_finalized().await
+    }
+
+    fn last_finalized(self: &Arc<Self>) -> Option<i64> {
+        let (block, at) = (*self.finalized.lock().expect("finalized block"))?;
+        if at.elapsed() >= FINALIZED_REFRESH && !self.all_paused() && !self.finalizing.swap(true, Ordering::AcqRel) {
+            let chain = self.clone();
+            tokio::spawn(async move {
+                if let Err(error) = chain.read_finalized().await {
+                    eprintln!("reading the finalized block failed: {error:#}");
+                }
+                chain.finalizing.store(false, Ordering::Release);
+            });
+        }
+        Some(block)
+    }
+
+    async fn read_finalized(&self) -> Result<i64> {
+        let head = self.rpc("chain_getFinalizedHead", json!([])).await?;
+        let header = self.rpc("chain_getHeader", json!([head])).await?;
+        let number = header["number"].as_str().ok_or_else(|| anyhow!("a finalized header without a number"))?;
+        let block = i64::from_str_radix(number.trim_start_matches("0x"), 16).context("a finalized header's number")?;
+        let mut kept = self.finalized.lock().expect("finalized block");
+        // Endpoints that lag one another must not move the clock back.
+        let block = kept.map_or(block, |(seen, _)| seen.max(block));
+        *kept = Some((block, Instant::now()));
+        Ok(block)
+    }
+
     async fn read_best(&self) -> Result<i64> {
         let header = self.rpc("chain_getHeader", json!([])).await?;
         let number = header["number"].as_str().ok_or_else(|| anyhow!("a header without a number"))?;
@@ -236,6 +285,7 @@ fn neurons(graph: &Value<u32>) -> Result<Vec<Neuron>> {
     let column = |name: &str| -> Vec<&Value<u32>> { field(graph, name).map(items).unwrap_or_default() };
     let (hotkeys, coldkeys, permits, total, alpha) =
         (column("hotkeys"), column("coldkeys"), column("validator_permit"), column("total_stake"), column("alpha_stake"));
+    let incentives = column("incentives");
     hotkeys
         .iter()
         .enumerate()
@@ -248,6 +298,7 @@ fn neurons(graph: &Value<u32>) -> Result<Vec<Neuron>> {
                 validator_permit: permits.get(uid).and_then(|v| boolean(v)).unwrap_or(false),
                 total_stake_rao: total.get(uid).and_then(|v| number(v)).unwrap_or(0),
                 alpha_stake_rao: alpha.get(uid).and_then(|v| number(v)).unwrap_or(0),
+                incentive: incentives.get(uid).and_then(|v| number(v)).map_or(0.0, |n| n as f64 / u16::MAX as f64),
             })
         })
         .collect()

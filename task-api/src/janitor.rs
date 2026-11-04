@@ -15,7 +15,9 @@ use crate::budgets::{self, hour_of, KEEP_H};
 use crate::http::ApiError;
 use crate::queues::KINDS;
 use crate::state::State;
-use crate::{checks, hours, lifecycle, logs, roundstore, uploadlog, validations};
+use crate::clock::Tick;
+use crate::seeds::Seeds;
+use crate::{checks, hours, lifecycle, logs, outages, roundstore, uploadlog, validations};
 
 /// The copy of the API that runs the passes; a rolling deploy briefly runs two copies.
 pub const LEASE_KEY: &str = "janitor:leader";
@@ -76,6 +78,9 @@ struct Due {
     sealed_at: Option<Instant>,
     logged_at: Option<Instant>,
     kept_block_at: Option<Instant>,
+    probed_at: Option<Instant>,
+    /// The last storage probe that worked: an outage is dated from it.
+    storage_ok: Option<Tick>,
     listed_at: Option<Instant>,
     pruned_hour: Option<i64>,
 }
@@ -94,17 +99,17 @@ impl Duty {
 
     async fn pass(self, state: &Arc<State>, due: &mut Due) -> Result<()> {
         match self {
-            Duty::Reclaim => lifecycle::reclaim_expired(state, now()).await.map(drop),
+            Duty::Reclaim => lifecycle::reclaim_expired(state, state.rule_now().await?).await.map(drop),
             Duty::Settle => {
                 lifecycle::recheck_malformed(state).await?;
                 lifecycle::settle_seeded(state).await.map(drop)
             }
-            Duty::Finalize => lifecycle::finalize_due(state, now()).await.map(drop),
+            Duty::Finalize => lifecycle::finalize_due(state, state.rule_now().await?).await.map(drop),
             Duty::Publish => {
                 note_publish_rate(state).await?;
                 if elapsed(due.listed_at, OPEN_LIST_EVERY) {
                     due.listed_at = Some(Instant::now());
-                    lifecycle::publish_open(state, now()).await?;
+                    lifecycle::publish_open(state, state.rule_now().await?).await?;
                 }
                 lifecycle::return_expired_publishes(state).await.map(drop)
             }
@@ -160,24 +165,68 @@ async fn upkeep(state: &Arc<State>, due: &mut Due) -> Result<()> {
     if elapsed(due.kept_block_at, BEST_BLOCK_EVERY) {
         due.kept_block_at = Some(Instant::now());
         state.keep_best_block().await?;
+        watch_finality(state).await?;
     }
-    if due.pruned_hour != Some(hour_of(now())) {
+    let probe_every = Duration::from_secs_f64(state.settings.storage_probe_s.max(1.0));
+    if state.probe_storage.swap(false, Ordering::AcqRel) || elapsed(due.probed_at, probe_every) {
+        due.probed_at = Some(Instant::now());
+        probe_storage(state, due).await?;
+    }
+    let at = state.rule_now().await?;
+    if due.pruned_hour != Some(hour_of(at)) {
         state
             .db
-            .run(|conn| {
-                let at = now();
+            .run(move |conn| {
                 budgets::prune(conn, KEEP_H, at)?;
-                validations::prune_hours(conn, at)?;
-                hours::prune(conn, at)?;
+                validations::prune_hours(conn, now())?;
+                hours::prune(conn, now())?;
+                outages::prune(conn, at)?;
                 checks::prune(conn, at)
             })
             .await?;
-        due.pruned_hour = Some(hour_of(now()));
+        due.pruned_hour = Some(hour_of(at));
     }
     Ok(())
 }
 
 /// Takes or renews the lease for `holder`; false while another copy holds it.
+/// Writes and reads back the probe object; a failure opens a storage outage dated from the last probe that worked.
+async fn probe_storage(state: &State, due: &mut Due) -> Result<()> {
+    let tick = state.tick().await?;
+    match outages::probe_storage(state, tick.at).await {
+        Ok(()) => {
+            if state.db.run(move |conn| outages::end(conn, outages::STORAGE, tick.at, tick.block)).await? {
+                eprintln!("storage outage over at block {}", tick.block);
+            }
+            due.storage_ok = Some(tick);
+        }
+        Err(why) => {
+            let start = due.storage_ok.unwrap_or(tick);
+            let detail = why.clone();
+            if state.db.run(move |conn| outages::begin(conn, outages::STORAGE, start.at, start.block, &detail)).await? {
+                eprintln!("storage outage from block {}: {why}; claims alive in it lapse at no cost", start.block);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Finality that falls behind the best block stops every deadline; the claims alive then lapse at no cost once it catches up.
+async fn watch_finality(state: &State) -> Result<()> {
+    let (Seeds::Chain(chain), limit) = (&state.seeds, state.settings.finality_stall_blocks) else { return Ok(()) };
+    let (best, tick) = (chain.current_block().await?, state.tick().await?);
+    let lag = best - tick.block;
+    if lag > limit {
+        let detail = format!("finalized block {} is {lag} blocks behind best {best}", tick.block);
+        if state.db.run(move |conn| outages::begin(conn, outages::FINALITY, tick.at, tick.block, &detail)).await? {
+            eprintln!("finality stalled {lag} blocks behind best at block {}; claims alive now lapse at no cost", tick.block);
+        }
+    } else if state.db.run(move |conn| outages::end(conn, outages::FINALITY, tick.at, tick.block)).await? {
+        eprintln!("finality caught up at block {}", tick.block);
+    }
+    Ok(())
+}
+
 pub async fn hold(state: &State, holder: &str) -> Result<bool> {
     let held: i64 = HOLD.key(LEASE_KEY).arg(holder).arg(LEASE_MS).invoke_async(&mut state.redis.clone()).await?;
     Ok(held == 1)

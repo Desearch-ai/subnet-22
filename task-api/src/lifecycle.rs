@@ -15,7 +15,7 @@ use redis::AsyncCommands;
 use rusqlite::Connection;
 use serde_json::{json, Map, Value};
 
-use crate::budgets::{self, COVERAGE_GATE, CRAWL, EMBED, FULL_PENALTY_LOCKOUT_H, HOSTILE_LOCKOUT_H, HOUR, STRIKE_REASONS, STRIKE_WINDOW_H};
+use crate::budgets::{self, CRAWL, EMBED, FULL_PENALTY_LOCKOUT_H, HOSTILE_LOCKOUT_H, HOUR, STRIKE_WINDOW_H};
 use crate::credit::{self, FAILS_FOR_PENALTY, PENALTY_WINDOW_S};
 use crate::manifest::{self, OPEN_LIST_KEY};
 use crate::queues::{self, Finalized, OPEN_SCAN};
@@ -26,8 +26,9 @@ use crate::settings::Settings;
 use crate::state::{Redis, State};
 use crate::storage::{delete_quietly, put_json};
 use crate::validations::{self, build_report, FinalVerdict};
+use crate::rules::{self, Facts, Judged, Outcome, RoundView};
 use crate::verdicts::{decide, Decision, ERROR_OUTCOMES, NO_MAJORITY};
-use crate::{checks, hours, outcomes, py, roundstore};
+use crate::{checks, hours, outages, outcomes, roundstore};
 
 pub const EMBED_FIELDS: [&str; 7] = ["model", "texts", "chars", "input_key", "input_sha256", "pages", "written_at"];
 pub const EMBED_ROUND_INPUTS: isize = 200;
@@ -388,14 +389,17 @@ pub async fn reclaim_expired(state: &State, now: f64) -> Result<Vec<(String, Str
         let tasks = state.tasks(&kind);
         let expiry = queues::claim_expiry(&state.redis, &task_id).await?;
         let Some((holder, seq)) = tasks.reclaim(&state.redis, &task_id, now).await? else { continue };
-        let forgiven = held_through_restart(state, tasks.claim_ttl, expiry);
+        let forgiven = forgiven(state, tasks.claim_ttl, expiry).await?;
         if !holder.is_empty() {
-            if !forgiven {
-                let (hotkey, task, lapsed) = (holder.clone(), task_id.clone(), payload.clone());
-                state.db.run(move |conn| lapse(conn, &hotkey, &task, &lapsed, "claim_expired", desearch::time::now())).await?;
+            match &forgiven {
+                Some(cause) => eprintln!("task={task_id} miner={} lapsed at no cost: its claim was held through a {cause}", short(&holder)),
+                None => {
+                    let (hotkey, task, lapsed) = (holder.clone(), task_id.clone(), payload.clone());
+                    state.db.run(move |conn| lapse(conn, &hotkey, &task, &lapsed, "claim_expired", now)).await?;
+                }
             }
             let round_id = Some(text(&payload, "round_id")).filter(|r| !r.is_empty()).map(String::from).unwrap_or_else(|| state.current_round(&kind));
-            let cause = if forgiven { "restart" } else { "expired" };
+            let cause = forgiven.unwrap_or_else(|| "expired".into());
             state
                 .record_one(Receipt {
                     round_id,
@@ -414,9 +418,22 @@ pub async fn reclaim_expired(state: &State, now: f64) -> Result<Vec<(String, Str
     Ok(reclaimed)
 }
 
-/// Claimed before this process started: the miner may have tried to finish while we were down.
-pub fn held_through_restart(state: &State, claim_ttl: f64, expiry: Option<f64>) -> bool {
-    expiry.is_some_and(|expiry| expiry <= state.started_at + claim_ttl)
+/// Why a claim that ended without an upload costs its miner nothing, if it does: it was held through a restart of the API
+/// (`restart`), or alive while storage failed its probe or finality fell behind (`storage_outage`, `finality_outage`).
+pub async fn forgiven(state: &State, claim_ttl: f64, expiry: Option<f64>) -> Result<Option<String>> {
+    let Some(expiry) = expiry else { return Ok(None) };
+    // Claimed before this process started: the miner may have tried to finish while we were down.
+    if expiry <= state.started_at() + claim_ttl {
+        return Ok(Some("restart".into()));
+    }
+    // A claim lasts its time plus a block for the one it was read in; one more block keeps a span's edge on the miner's side.
+    let from = expiry - claim_ttl - 2.0 * state.clock().await?.block_seconds;
+    let cause = state.lookups.read(move |conn| outages::during(conn, from, expiry)).await?;
+    Ok(cause.map(|cause| format!("{cause}_outage")))
+}
+
+pub fn short(hotkey: &str) -> &str {
+    hotkey.get(..10).unwrap_or(hotkey)
 }
 
 /// A claim that ended without an upload: its URLs, the budget and a strike; returns the budget.
@@ -438,10 +455,9 @@ pub fn strike(conn: &Connection, miner: &str, reason: &str, task_id: &str, kind:
     Ok(())
 }
 
-/// Checks that crashed twice on this upload alone, on most validators, point at the file.
-pub fn crashed_on_most(votes: &[Value]) -> bool {
-    let crashed = votes.iter().filter(|vote| truthy(vote["result"].get("crashed"))).count();
-    crashed * 2 > votes.len()
+/// Checks that crashed twice on this upload alone, on every validator that voted, point at the file.
+pub fn crashed_on_all(votes: &[Value]) -> bool {
+    !votes.is_empty() && votes.iter().all(|vote| truthy(vote["result"].get("crashed")))
 }
 
 /// A task that goes no further: its receipt, and its URLs or pages handed back.
@@ -534,7 +550,7 @@ pub async fn void_task(state: &State, task_id: &str, lapsed: Finalized, validato
     discard_upload(state, &lapsed.job).await;
     requeue(state, task_id, &lapsed.job, "void").await?;
     let result = json!({"verdict": "void", "reason": reason});
-    let mut report = build_report(task_id, &lapsed.job, validator, result.as_object().expect("an object"), &[], now());
+    let mut report = build_report(task_id, &lapsed.job, validator, result.as_object().expect("an object"), &[], state.rule_now().await?);
     write_report(state, &mut report).await;
     let (recorded, votes) = (report.clone(), lapsed.votes);
     state
@@ -620,13 +636,13 @@ async fn pick_reason(state: &State, task_id: &str, job: &Value, seed: &str) -> R
     if kind == CRAWL && !truthy(job.get("reported").and_then(|r| r.get("rows"))) {
         return Ok(Some(UNREPORTED));
     }
+    let at = state.rule_now().await?;
     let (asked, pool) = (miner.clone(), kind.clone());
-    if state.lookups.read(move |conn| budgets::locked_until(conn, &asked, &pool, now())).await?.is_some() {
+    if state.lookups.read(move |conn| budgets::locked_until(conn, &asked, &pool, at)).await?.is_some() {
         return Ok(Some(LOCKED));
     }
     let (asked, pool) = (miner.clone(), kind.clone());
     let (passes, recheck_left) = state.lookups.read(move |conn| Ok((checks::passes(conn, &asked, &pool)?, checks::recheck_left(conn, &asked, &pool)?))).await?;
-    let at = now();
     let (share, per_hour) = state.settings.checks_for(&kind);
     let share = sampling::budget_share(share, per_hour, sampling::uploads_last_hour(&state.redis, &kind, sampling::ALL, at).await?);
     Ok(sampling::pick_reason(
@@ -681,18 +697,15 @@ pub fn unscored_vote() -> Value {
     })
 }
 
-/// No validator checked it: the miner's own counts, within what it was assigned, errors at its confirmed share.
-pub fn unchecked_vote(job: &Value, error_share: f64) -> Value {
+/// No validator checked it: the miner's own counts, as the rules judged them.
+pub fn unchecked_vote(job: &Value, judged: &Judged) -> Value {
     let assigned = assigned(job);
     let reported = &job["reported"];
     let content = number(reported, "ok").min(assigned);
     let errors = number(reported, "errors").min(assigned - content);
     let returned = content + errors;
-    let (verdict, reason, credited) = if (returned as f64) < COVERAGE_GATE * assigned as f64 {
-        ("fail", "coverage", 0)
-    } else {
-        ("pass", UNCHECKED, content + py::round(errors as f64 * error_share))
-    };
+    let (verdict, reason) = if judged.outcome == Outcome::Fail { ("fail", rules::COVERAGE) } else { ("pass", UNCHECKED) };
+    let credited = judged.credited;
     json!({
         "validator": "",
         "verdict": verdict,
@@ -721,15 +734,81 @@ pub fn unchecked_embed_vote(job: &Value) -> Value {
     })
 }
 
-pub async fn finalize_unchecked(state: &State, task_id: &str, job: &Value, seeding: bool) -> Result<Option<Value>> {
-    let vote = if kind_of(job) == EMBED {
-        unchecked_embed_vote(job)
+/// What an upload's accounts rest on.
+#[derive(Clone, Debug)]
+pub enum Basis {
+    /// No check drew it: the miner's own report.
+    Unchecked,
+    /// Drawn, but no validator voted by its deadline.
+    Unscored,
+    /// Every vote it had.
+    Checked(Vec<Value>),
+}
+
+/// The upload's accounts under the rules, against its round as SQLite holds it now plus this upload's own checks.
+pub fn judge(conn: &Connection, job: &Value, basis: &Basis, coldkeys: &HashMap<String, String>, params: &rules::Params, at: f64) -> Result<(Judged, RoundView)> {
+    let kind = kind_of(job);
+    let round_id = text(job, "round_id");
+    let mut round = if kind == CRAWL { rules::round_view(conn, round_id, params)? } else { RoundView::default() };
+    // Error rows count at the share of the miner's failures checks reproduced, this upload's own checks included.
+    let error_share = if kind == CRAWL {
+        let ((judged, unconfirmed), (own, own_unconfirmed)) = (checks::error_counts(conn, text(job, "miner"), at)?, error_samples(basis));
+        checks::error_rate(judged + own, unconfirmed + own_unconfirmed)
     } else {
-        let miner = text(job, "miner").to_string();
-        let share = state.lookups.read(move |conn| checks::error_share(conn, &miner, now())).await?;
-        unchecked_vote(job, share)
+        0.0
     };
-    conclude_validation(state, task_id, job, Decision::last(vote, Vec::new()), seeding).await
+    let judged = match (basis, kind == EMBED) {
+        (Basis::Unchecked, false) => rules::judge_unchecked(job, &round, error_share, params),
+        (Basis::Unchecked, true) => rules::judge_unchecked_embed(job),
+        (Basis::Unscored, _) => Judged { outcome: Outcome::Neutral, reason: rules::UNSCORED.into(), credited: 0, assigned: assigned(job), returned: 0, ramp: false, reports: 0 },
+        (Basis::Checked(votes), true) => rules::judge_embed(job, votes, coldkeys, params),
+        (Basis::Checked(votes), false) => {
+            // The upload counts toward its own round: its samples, and its rows per host when its reports agree on them.
+            let hosts = agreed_hosts(votes);
+            let (sampled, loaded) = votes.iter().filter(|vote| rules::facts(vote).is_some()).fold((0, 0), |(s, l), vote| {
+                let (vs, vl) = rules::loaded_samples(vote["result"]["samples"].as_array().map(Vec::as_slice).unwrap_or_default());
+                (s + vs, l + vl)
+            });
+            round.sampled += sampled;
+            round.loaded += loaded;
+            for (host, (rows, errors)) in hosts.iter().flatten() {
+                if *rows > 0 {
+                    let entry = round.hosts.entry(host.clone()).or_default();
+                    entry.0 += 1;
+                    entry.1 += i64::from(errors * 2 > *rows);
+                }
+            }
+            round = round.decide(params);
+            rules::judge_crawl(job, votes, &round, error_share, params)
+        }
+    };
+    Ok((judged, round))
+}
+
+/// Rows per host the reports agree on, None when they disagree on any fact or none carries them.
+fn agreed_hosts(votes: &[Value]) -> Option<BTreeMap<String, (i64, i64)>> {
+    let found: Vec<rules::Facts> = votes.iter().filter_map(rules::facts).collect();
+    let first = found.first()?;
+    let same = found.iter().all(|other| Facts { hosts: None, ..other.clone() } == Facts { hosts: None, ..first.clone() });
+    let hosts: Vec<&BTreeMap<String, (i64, i64)>> = found.iter().filter_map(|f| f.hosts.as_ref()).collect();
+    (same && hosts.windows(2).all(|pair| pair[0] == pair[1])).then(|| hosts.first().map(|h| (*h).clone())).flatten()
+}
+
+/// Each validator's coldkey, so references from one owner count once; a hotkey off the metagraph stands for itself.
+fn coldkeys(state: &State, votes: &[Value]) -> HashMap<String, String> {
+    votes
+        .iter()
+        .filter_map(|vote| vote["validator"].as_str())
+        .map(|validator| (validator.to_string(), state.registry.registered(validator).and_then(|e| e.coldkey).unwrap_or_else(|| validator.to_string())))
+        .collect()
+}
+
+pub async fn finalize_unchecked(state: &State, task_id: &str, job: &Value, seeding: bool) -> Result<Option<Value>> {
+    let (at, params) = (state.rule_now().await?, state.settings.rules());
+    let probe = job.clone();
+    let (judged, _) = state.lookups.read(move |conn| judge(conn, &probe, &Basis::Unchecked, &HashMap::new(), &params, at)).await?;
+    let vote = if kind_of(job) == EMBED { unchecked_embed_vote(job) } else { unchecked_vote(job, &judged) };
+    conclude_validation(state, task_id, job, Decision::last(vote, Vec::new()), Basis::Unchecked, seeding).await
 }
 
 /// Finalizes every open upload that is ready, oldest first.
@@ -761,13 +840,13 @@ pub async fn finalize_task(state: &State, task_id: &str, job: &Value, now: f64) 
     }
     if voters.is_empty() {
         if kind_of(job) != CRAWL {
-            return conclude_validation(state, task_id, job, Decision::last(unscored_vote(), Vec::new()), false).await;
+            return conclude_validation(state, task_id, job, Decision::last(unscored_vote(), Vec::new()), Basis::Unscored, false).await;
         }
         return finalize_unchecked(state, task_id, job, false).await;
     }
     let votes = state.validation.votes(&state.redis, task_id).await?;
     let decision = held_to_report(job, decide(&votes, false, true));
-    conclude_validation(state, task_id, job, decision, false).await
+    conclude_validation(state, task_id, job, decision, Basis::Checked(votes), false).await
 }
 
 fn overstated(job: &Value, result: &Value) -> bool {
@@ -779,7 +858,7 @@ fn overstated(job: &Value, result: &Value) -> bool {
     credit::overstated(number(reported, "ok"), counted, assigned(job) as usize)
 }
 
-/// Unchecked uploads are paid on the miner's report, so a checked one that overstates it fails.
+/// What is published follows the validators' majority; a pass whose report overstates its file is not published.
 pub fn held_to_report(job: &Value, decision: Decision) -> Decision {
     let vote = decision.vote();
     if kind_of(job) != CRAWL || vote["verdict"] != "pass" || !overstated(job, &vote["result"]) {
@@ -821,34 +900,75 @@ fn checked_texts(job: &Value, result: &Map<String, Value>) -> Value {
 }
 
 /// Accounts are finalized once per upload, in one transaction, before Redis lets go; None when storage failed or the upload was closed under it.
-pub async fn conclude_validation(state: &State, task_id: &str, job: &Value, decision: Decision, seeding: bool) -> Result<Option<Value>> {
+
+/// The verdict an upload's accounts carry.
+pub fn account_verdict(outcome: Outcome) -> &'static str {
+    match outcome {
+        Outcome::Pass => "pass",
+        Outcome::Fail => "fail",
+        Outcome::Neutral => "void",
+    }
+}
+
+/// The report states the accounts as its verdict, reason and credit, and keeps what the validators' majority found beside them.
+fn account_report(report: &mut Map<String, Value>, judged: &Judged, published: &str, published_reason: &Value) {
+    report.insert("verdict".into(), account_verdict(judged.outcome).into());
+    report.insert("reason".into(), judged.reason.clone().into());
+    report.insert("credited".into(), judged.credited.into());
+    report.insert("publish_verdict".into(), published.into());
+    report.insert("publish_reason".into(), published_reason.clone());
+    report.insert("accounts".into(), judged.view());
+}
+
+/// Published when the validators' majority passed it and its file facts did not fail or conflict.
+fn publishes(published: &str, judged: &Judged) -> bool {
+    published == "pass" && judged.outcome != Outcome::Fail && judged.reason != rules::FACTS_DISPUTED
+}
+
+/// Accounts are finalized once per upload, in one transaction, before Redis lets go; None when storage failed or the upload was closed under it.
+pub async fn conclude_validation(state: &State, task_id: &str, job: &Value, decision: Decision, basis: Basis, seeding: bool) -> Result<Option<Value>> {
     let (task, key) = (task_id.to_string(), text(job, "key").to_string());
     if let Some(finalized) = state.lookups.read(move |conn| validations::final_verdict(conn, &task, &key)).await? {
         return finish_finalized(state, task_id, job, finalized, seeding).await;
     }
+    let (at, params) = (state.rule_now().await?, state.settings.rules());
+    let coldkeys = match &basis {
+        Basis::Checked(votes) => coldkeys(state, votes),
+        _ => HashMap::new(),
+    };
+    // Judged once for the report written first; the transaction judges again with whatever of the round settled since.
+    let (judged, _) = {
+        let (job, basis, coldkeys, params) = (job.clone(), basis.clone(), coldkeys.clone(), params.clone());
+        state.lookups.read(move |conn| judge(conn, &job, &basis, &coldkeys, &params, at)).await?
+    };
     let vote = decision.vote().clone();
     let result = vote["result"].as_object().cloned().unwrap_or_default();
-    let verdict = text(&vote, "verdict").to_string();
-    let report = build_report(task_id, job, text(&vote, "validator"), &result, &decision.votes, now());
-    if let Err(error) = put_json(&state.pages, text(&Value::Object(report.clone()), "report_key"), &Value::Object(report.clone()), None).await {
+    let published = text(&vote, "verdict").to_string();
+    let published_reason = result.get("reason").cloned().unwrap_or_else(|| "".into());
+    let mut report = build_report(task_id, job, text(&vote, "validator"), &result, &decision.votes, at);
+    account_report(&mut report, &judged, &published, &published_reason);
+    let report_key = text(&Value::Object(report.clone()), "report_key").to_string();
+    if let Err(error) = put_json(&state.pages, &report_key, &Value::Object(report.clone()), None).await {
         eprintln!("storage failed while scoring {task_id}: {error}");
         return Ok(None);
     }
-    let publish = (verdict == "pass" && (truthy(result.get("matched")) || result.get("reason").and_then(Value::as_str) == Some(UNCHECKED)))
+    let candidate = (truthy(result.get("matched")) || result.get("reason").and_then(Value::as_str) == Some(UNCHECKED))
         .then(|| publish_job(state, job, &vote, &decision.agreed));
     let details =
         if kind_of(job) == EMBED { validations::pack_details(Some(&checked_texts(job, &result))) } else { validations::pack_details(result.get("urls")) };
     let settled = {
-        let (task, job, decision, report, publish) = (task_id.to_string(), job.clone(), decision.clone(), report.clone(), publish.clone());
+        let (task, job, decision, publish) = (task_id.to_string(), job.clone(), decision.clone(), candidate.clone());
+        let (basis, coldkeys, published, published_reason) = (basis.clone(), coldkeys.clone(), published.clone(), published_reason.clone());
         state
             .db
             .run(move |conn| {
                 let kept = Kept { report: &report, publish: publish.as_ref(), details: details.as_deref() };
-                finalize_accounts(conn, &task, &job, &decision, kept, now())
+                let given = Given { basis: &basis, coldkeys: &coldkeys, params: &params, published: &published, published_reason: &published_reason };
+                finalize_accounts(conn, &task, &job, &decision, given, kept, at)
             })
             .await?
     };
-    let Some(budget) = settled else {
+    let Some(settled) = settled else {
         let (task, key) = (task_id.to_string(), text(job, "key").to_string());
         let finalized = state
             .db
@@ -857,44 +977,66 @@ pub async fn conclude_validation(state: &State, task_id: &str, job: &Value, deci
             .ok_or_else(|| anyhow!("task={task_id} settled without a verdict"))?;
         return finish_finalized(state, task_id, job, finalized, seeding).await;
     };
-    for validator in &decision.disagreed {
-        let asked = validator.clone();
-        if state.lookups.read(move |conn| validations::is_excluded(conn, &asked)).await? {
-            state.validation.leave(&state.redis, validator).await?;
+    if settled.judged != judged {
+        // Another upload of the round settled in between and moved its loadability or neutral hosts.
+        if let Err(error) = put_json(&state.pages, &report_key, &Value::Object(settled.report.clone()), None).await {
+            eprintln!("could not rewrite the report for {task_id}: {error}");
         }
     }
-    if !close_upload(state, task_id, job, &verdict, publish.as_ref(), seeding).await? {
+    let flow = if publishes(&published, &settled.judged) { "pass" } else { "fail" };
+    if !close_upload(state, task_id, job, flow, settled.publish.as_ref(), seeding).await? {
         return Ok(None);
     }
     if truthy(job.get("picked")) {
-        account_check(state, job, &decision).await?;
+        account_check(state, job, &basis, &settled.judged, &published).await?;
     }
     Ok(Some(json!({
         "task_id": task_id,
-        "verdict": verdict,
-        "credited": if verdict == "pass" { vote["credited"].clone() } else { 0.into() },
-        "miner_budget": budget,
+        "verdict": account_verdict(settled.judged.outcome),
+        "reason": settled.judged.reason,
+        "credited": settled.judged.credited,
+        "published": flow == "pass",
+        "miner_budget": settled.budget,
     })))
 }
 
-/// A pass marks where the hotkey last stood in its kind; a fail takes back what passed since then and checks its next uploads of the kind.
-async fn account_check(state: &State, job: &Value, decision: &Decision) -> Result<()> {
-    let vote = decision.vote();
-    let (verdict, miner, kind) = (text(vote, "verdict").to_string(), text(job, "miner").to_string(), kind_of(job).to_string());
-    if verdict != "pass" && verdict != "fail" {
+/// Error samples the checks judged and those the validators could load, summed over every report of the file.
+fn error_samples(basis: &Basis) -> (i64, i64) {
+    let Basis::Checked(votes) = basis else { return (0, 0) };
+    votes.iter().filter(|vote| rules::facts(vote).is_some()).fold((0, 0), |(judged, unconfirmed), vote| {
+        let samples = vote["result"]["samples"].as_array().cloned().unwrap_or_default();
+        let found = samples.iter().filter(|s| ERROR_OUTCOMES.contains(&text(s, "outcome"))).count() as i64;
+        let loaded = samples.iter().filter(|s| text(s, "outcome") == "errors_unconfirmed").count() as i64;
+        (judged + found, unconfirmed + loaded)
+    })
+}
+
+/// A drawn upload's check: an objective pass marks where the hotkey last stood in its kind; an objective fail takes back what
+/// passed since then and checks its next uploads. A fail the validators' majority found only on the live pages checks the next
+/// uploads too, at no cost: it is evidence for each validator's own weights, not a charge.
+async fn account_check(state: &State, job: &Value, basis: &Basis, judged: &Judged, published: &str) -> Result<()> {
+    let (miner, kind) = (text(job, "miner").to_string(), kind_of(job).to_string());
+    let recheck = published == "fail";
+    if judged.outcome == Outcome::Neutral {
+        if recheck {
+            let (asked, pool) = (miner.clone(), kind.clone());
+            state.db.run(move |conn| checks::start_recheck(conn, &asked, &pool)).await?;
+        }
         return Ok(());
     }
-    let samples = vote["result"]["samples"].as_array().cloned().unwrap_or_default();
-    let judged = samples.iter().filter(|s| ERROR_OUTCOMES.contains(&text(s, "outcome"))).count() as i64;
-    let unconfirmed = samples.iter().filter(|s| text(s, "outcome") == "errors_unconfirmed").count() as i64;
-    let passed = verdict == "pass";
+    let at = state.rule_now().await?;
+    let (errors_judged, unconfirmed) = error_samples(basis);
+    let passed = judged.outcome == Outcome::Pass;
     let (asked, pool, task_id) = (miner.clone(), kind.clone(), text(job, "task_id").to_string());
-    let upload_at = job.get("completed_at").and_then(Value::as_f64).filter(|c| *c != 0.0).unwrap_or_else(now);
+    let upload_at = job.get("completed_at").and_then(Value::as_f64).filter(|c| *c != 0.0).unwrap_or(at);
     let since = state
         .db
         .run(move |conn| {
             let since = checks::last_pass_at(conn, &asked, &pool)?;
-            checks::record(conn, &asked, &pool, &task_id, passed, upload_at, judged, unconfirmed, now())?;
+            checks::record(conn, &asked, &pool, &task_id, passed, upload_at, errors_judged, unconfirmed, at)?;
+            if passed && recheck {
+                checks::start_recheck(conn, &asked, &pool)?;
+            }
             Ok(since)
         })
         .await?;
@@ -918,15 +1060,16 @@ async fn account_check(state: &State, job: &Value, decision: &Decision) -> Resul
 
 /// Un-credits and unpublishes a hotkey's passed uploads of one kind completed after `since`: the unchecked ones, or every one.
 pub async fn take_back(state: &State, miner: &str, kind: &str, since: f64, reason: &str, checked_too: bool) -> Result<Vec<String>> {
+    let at = state.rule_now().await?;
     let (asked, pool, cause) = (miner.to_string(), kind.to_string(), reason.to_string());
     let taken = state
         .db
         .run(move |conn| {
             let taken = validations::withdraw(conn, &asked, &pool, since, checked_too)?;
             let credited: i64 = taken.iter().map(|t| t.credited).sum();
-            budgets::credit(conn, &asked, -credited, &pool, now())?;
+            budgets::credit(conn, &asked, -credited, &pool, at)?;
             if !taken.is_empty() {
-                hours::record_take_back(conn, &asked, &pool, &cause, taken.len() as i64, credited, now())?;
+                hours::record_take_back(conn, &asked, &pool, &cause, taken.len() as i64, credited, at)?;
             }
             Ok(taken)
         })
@@ -934,7 +1077,7 @@ pub async fn take_back(state: &State, miner: &str, kind: &str, since: f64, reaso
     let task_ids: Vec<String> = taken.iter().map(|t| t.task_id.clone()).collect();
     if !task_ids.is_empty() {
         state.publish.withdraw(&state.redis, &task_ids, reason, now()).await?;
-        eprintln!("miner={} {} {kind} uploads taken back: {reason}", &miner[..miner.len().min(10)], task_ids.len());
+        eprintln!("miner={} {} {kind} uploads taken back: {reason}", short(miner), task_ids.len());
         // An embed take-back's pages go back to the planner from the publisher.
         if kind == CRAWL {
             let (pages, storage, redis) = (state.pages.clone(), state.storage.clone(), state.redis.clone());
@@ -943,6 +1086,7 @@ pub async fn take_back(state: &State, miner: &str, kind: &str, since: f64, reaso
     }
     Ok(task_ids)
 }
+
 
 /// Where a round's URL lists are kept once its tasks are queued, so a take-back can tell the bot which URLs to send again.
 pub fn round_urls_key(round_id: &str) -> String {
@@ -981,13 +1125,13 @@ pub async fn report_dropped(pages: &Bucket, storage: &Bucket, redis: &Redis, tak
 
 /// The hotkey's last day of credit and published work in one kind's pool, and a lockout from it.
 pub async fn full_penalty(state: &State, miner: &str, kind: &str, reason: &str) -> Result<()> {
-    let at = now();
+    let at = state.rule_now().await?;
     let (asked, pool, why) = (miner.to_string(), kind.to_string(), reason.to_string());
     state.db.run(move |conn| budgets::lock_out(conn, &asked, &pool, FULL_PENALTY_LOCKOUT_H, &why, at)).await?;
     take_back(state, miner, kind, at - PENALTY_WINDOW_S, reason, true).await?;
     let (asked, pool) = (miner.to_string(), kind.to_string());
     state.db.run(move |conn| budgets::wipe_credits(conn, &asked, at - PENALTY_WINDOW_S, &pool)).await?;
-    eprintln!("miner={} {kind} full penalty: {reason}", &miner[..miner.len().min(10)]);
+    eprintln!("miner={} {kind} full penalty: {reason}", short(miner));
     Ok(())
 }
 
@@ -997,54 +1141,78 @@ pub async fn report_outcomes(state: &State, urls: &[String], outcome: &'static s
     }
 }
 
-/// What a verdict leaves behind: its report, the publish job for a pass, and the packed per-URL detail of a check.
+/// What a verdict leaves behind: its report, the publish job a pass would have, and the packed per-URL detail of a check.
 pub struct Kept<'a> {
     pub report: &'a Map<String, Value>,
     pub publish: Option<&'a Value>,
     pub details: Option<&'a [u8]>,
 }
 
-/// Every SQLite effect of one verdict, committed together; the miner's budget, or None when the upload was finalized before.
-pub fn finalize_accounts(conn: &Connection, task_id: &str, job: &Value, decision: &Decision, kept: Kept, now: f64) -> Result<Option<i64>> {
+/// What the accounts are judged on, and what the validators' majority found for publishing.
+pub struct Given<'a> {
+    pub basis: &'a Basis,
+    pub coldkeys: &'a HashMap<String, String>,
+    pub params: &'a rules::Params,
+    pub published: &'a str,
+    pub published_reason: &'a Value,
+}
+
+/// An upload's accounts as committed.
+pub struct Settled {
+    pub budget: i64,
+    pub judged: Judged,
+    pub publish: Option<Value>,
+    pub report: Map<String, Value>,
+}
+
+/// Every SQLite effect of one verdict, committed together and judged inside the same transaction, so uploads of one round
+/// settle in one order; None when the upload was finalized before.
+pub fn finalize_accounts(conn: &Connection, task_id: &str, job: &Value, decision: &Decision, given: Given, kept: Kept, now: f64) -> Result<Option<Settled>> {
     let Kept { report, publish, details } = kept;
-    let vote = decision.vote();
-    let result = &vote["result"];
-    let (verdict, kind, miner) = (text(vote, "verdict"), kind_of(job), text(job, "miner"));
-    let assigned = assigned(job);
-    let credited = if verdict == "pass" { number(vote, "credited") } else { 0 };
-    let reason = text(result, "reason");
-    if !validations::finalize(conn, task_id, text(job, "key"), verdict, credited, publish, now)? {
+    let (judged, _) = judge(conn, job, given.basis, given.coldkeys, given.params, now)?;
+    let mut report = report.clone();
+    account_report(&mut report, &judged, given.published, given.published_reason);
+    let publish = publish.filter(|_| publishes(given.published, &judged)).cloned();
+    let (kind, miner) = (kind_of(job), text(job, "miner"));
+    if !validations::finalize(conn, task_id, text(job, "key"), account_verdict(judged.outcome), judged.credited, publish.as_ref(), now)? {
         return Ok(None);
     }
-    if kind == CRAWL && verdict != "void" {
-        budgets::record_coverage(conn, miner, assigned, number(result, "returned"), now)?;
+    if let (Basis::Checked(votes), CRAWL) = (given.basis, kind) {
+        rules::note_round(conn, text(job, "round_id"), votes, agreed_hosts(votes).as_ref())?;
     }
-    let budget = if verdict == "fail" {
-        let budget = budgets::penalise(conn, miner, task_id, "verification_failed", kind, now)?.budget;
-        if kind == CRAWL && STRIKE_REASONS.contains(&reason) {
-            budgets::credit(conn, miner, -assigned, kind, now)?;
+    if kind == CRAWL && judged.outcome != Outcome::Neutral {
+        budgets::record_coverage(conn, miner, judged.assigned, judged.returned, now)?;
+    }
+    let budget = match judged.outcome {
+        Outcome::Fail => {
+            let budget = budgets::penalise(conn, miner, task_id, "verification_failed", kind, now)?.budget;
+            if kind == CRAWL {
+                budgets::credit(conn, miner, -judged.assigned, kind, now)?;
+            }
+            budget
         }
-        budget
-    } else if credited != 0 {
-        // An embed pass is all or nothing, so every one grows the budget.
-        let ramp = kind == EMBED || credited as f64 >= COVERAGE_GATE * assigned as f64;
-        budgets::reward(conn, miner, task_id, credited, ramp, kind, now)?.budget
-    } else {
-        budgets::get(conn, miner, kind)?.budget
+        Outcome::Pass if judged.credited != 0 => budgets::reward(conn, miner, task_id, judged.credited, judged.ramp, kind, now)?.budget,
+        _ => budgets::get(conn, miner, kind)?.budget,
     };
+    // Agreement with the majority is shown on the validators' pages; it no longer costs a validator anything.
     if !decision.agreed.is_empty() || !decision.disagreed.is_empty() {
         validations::record_audit(conn, &decision.agreed, &decision.disagreed)?;
     }
-    validations::record(conn, report, details)?;
-    validations::record_votes(conn, report, &decision.votes, &decision.disagreed, reason != NO_MAJORITY)?;
-    if verdict == "fail" && STRIKE_REASONS.contains(&reason) {
-        strike(conn, miner, reason, task_id, kind, now)?;
+    validations::record(conn, &report, details)?;
+    // Each vote is compared with what the majority found, as the votes page shows it.
+    let mut majority = report.clone();
+    majority.insert("verdict".into(), given.published.into());
+    majority.insert("credited".into(), decision.vote()["credited"].clone());
+    validations::record_votes(conn, &majority, &decision.votes, &decision.disagreed, decision.vote()["result"]["reason"] != NO_MAJORITY)?;
+    if judged.outcome == Outcome::Fail {
+        strike(conn, miner, &judged.reason, task_id, kind, now)?;
     }
-    if crashed_on_most(&decision.votes) {
+    if crashed_on_all(&decision.votes) {
         budgets::lock_out(conn, miner, kind, HOSTILE_LOCKOUT_H, "hostile_upload", now)?;
     }
-    Ok(Some(budget))
+    Ok(Some(Settled { budget, judged, publish, report }))
 }
+
 
 pub fn publish_job(state: &State, job: &Value, vote: &Value, agreed: &[String]) -> Value {
     let kind = kind_of(job);

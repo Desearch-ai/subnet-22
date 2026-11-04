@@ -1,7 +1,7 @@
 //! What every request and the janitor share: settings, Redis, SQLite, the buckets, the chain and the receipt key.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicBool, AtomicUsize};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -13,14 +13,18 @@ use desearch::time::now;
 use redis::AsyncCommands;
 use serde_json::{json, Value};
 
-use crate::budgets::{CRAWL, EMBED};
+use crate::budgets::{self, CRAWL, EMBED};
+use crate::rules;
+
+/// How often the incentive cap reads every hotkey's share of the work again.
+const WORK_REFRESH: Duration = Duration::from_secs(60);
 use crate::chain::Chain;
+use crate::clock::{self, Clock, Tick};
 use crate::db::{Db, Reader};
 use crate::flow::PublishRate;
 use crate::logs::Cache;
 use crate::py::{canonical, round_to};
 use crate::queues::{PublishQueue, TaskQueue, ValidationQueue};
-use crate::reference::Reference;
 use crate::registry::{self, addresses, Registry};
 use crate::roundlog::{self, Receipt};
 use crate::rounds::UPLOAD_GRACE_S;
@@ -44,7 +48,6 @@ pub struct State {
     pub cache: Cache,
     pub storage: Bucket,
     pub pages: Bucket,
-    pub reference: Option<Reference>,
     pub registry: Arc<Registry>,
     pub chain: Option<Arc<Chain>>,
     pub admins: HashSet<String>,
@@ -60,11 +63,18 @@ pub struct State {
     /// Each open upload's manifest and deadline, read once instead of on every listing.
     pub open_manifests: Mutex<HashMap<String, (Value, f64)>>,
     pub open_listed: Mutex<Option<Vec<String>>>,
-    /// Claims that expired before this moment plus one claim's time were held through a restart.
-    pub started_at: f64,
+    /// Claims that expired before this rule time plus one claim's time were held through a restart: the wall time at start,
+    /// lowered to the rule time of the first finalized block this process reads.
+    started_at: AtomicU64,
+    /// How a finalized height becomes rule time; fixed once read.
+    pub clock: tokio::sync::OnceCell<Clock>,
+    /// Every hotkey's share of each pool and its first hour of work, read at most once a minute for the incentive cap.
+    pub work: Mutex<Option<(std::time::Instant, Arc<HashMap<String, (std::collections::BTreeMap<String, f64>, i64)>>)>>,
+    /// Set when storage failed a request, so the janitor probes it without waiting for its turn.
+    pub probe_storage: AtomicBool,
     /// Set on shutdown so /v1/ping fails and the proxy stops routing here before the server stops.
     pub draining: AtomicBool,
-    /// Completions and reference calls running on after their caller may have stopped waiting.
+    /// Completions running on after their caller may have stopped waiting.
     pub detached: AtomicUsize,
 }
 
@@ -134,11 +144,7 @@ impl State {
         let mut admins: HashSet<String> = settings.admin_hotkeys.iter().cloned().collect();
         admins.extend(addresses(&settings.admin_uris)?);
         let key = Hotkey::from_uri(if settings.key_uri.is_empty() { DEV_RECEIPT_KEY } else { &settings.key_uri }).context("TASK_API_KEY_URI")?;
-        let reference = (!settings.embed_reference_urls.is_empty())
-            .then(|| Reference::new(&settings.embed_reference_urls, &settings.embed_reference_key, settings.embed_reference_calls))
-            .transpose()?;
         Ok(State {
-            reference,
             redis,
             db,
             reader,
@@ -159,7 +165,10 @@ impl State {
             current: Mutex::new(current),
             open_manifests: Mutex::default(),
             open_listed: Mutex::default(),
-            started_at: now(),
+            started_at: AtomicU64::new(now().to_bits()),
+            clock: tokio::sync::OnceCell::new(),
+            work: Mutex::default(),
+            probe_storage: AtomicBool::new(false),
             draining: AtomicBool::new(false),
             detached: AtomicUsize::new(0),
             settings,
@@ -179,6 +188,71 @@ impl State {
         };
         let pages = Bucket::new(http, endpoint, &settings.pages_bucket, &settings.pages_prefix, credentials, Default::default())?;
         Ok((storage, pages))
+    }
+
+    /// How heights become rule time: from the genesis on a local chain, from the saved anchor on a real one.
+    pub async fn clock(&self) -> Result<Clock> {
+        let clock = self
+            .clock
+            .get_or_try_init(|| async {
+                let block_seconds = self.seeds.block_seconds();
+                Ok::<_, anyhow::Error>(match &self.settings.seeds {
+                    SeedsMode::Local { genesis, .. } => Clock { anchor_block: 0, anchor_at: *genesis, block_seconds },
+                    SeedsMode::Chain { .. } => {
+                        let (block, at) = (self.seeds.height().await?, now());
+                        let (anchor_block, anchor_at) = self.db.run(move |conn| clock::anchor(conn, block, at)).await?;
+                        Clock { anchor_block, anchor_at, block_seconds }
+                    }
+                })
+            })
+            .await?;
+        Ok(*clock)
+    }
+
+    /// The finalized height now and its rule time, which every deadline, window and lockout is measured on.
+    pub async fn tick(&self) -> Result<Tick> {
+        let block = self.seeds.height().await?;
+        let tick = self.clock().await?.tick(block);
+        let _ = self.started_at.fetch_update(Ordering::AcqRel, Ordering::Acquire, |bits| (tick.at < f64::from_bits(bits)).then(|| tick.at.to_bits()));
+        Ok(tick)
+    }
+
+    pub async fn rule_now(&self) -> Result<f64> {
+        Ok(self.tick().await?.at)
+    }
+
+    /// The rule time this process started at.
+    pub fn started_at(&self) -> f64 {
+        f64::from_bits(self.started_at.load(Ordering::Acquire))
+    }
+
+    /// Moves the start, as a restart would; tests use it.
+    pub fn set_started_at(&self, at: f64) {
+        self.started_at.store(at.to_bits(), Ordering::Release);
+    }
+
+    /// The budget a miner's on-chain incentive allows, `CEILING` where there is nothing to compare: no metagraph incentive,
+    /// no counted work, or work younger than the grace.
+    pub async fn budget_cap(&self, hotkey: &str, at: f64) -> Result<i64> {
+        let params = self.settings.rules();
+        let Some(incentive) = self.registry.registered(hotkey).and_then(|entry| entry.incentive).filter(|_| params.incentive_full > 0.0) else {
+            return Ok(budgets::CEILING);
+        };
+        let fresh = self.work.lock().expect("work").as_ref().filter(|(read, _)| read.elapsed() < WORK_REFRESH).map(|(_, work)| work.clone());
+        let work = match fresh {
+            Some(work) => work,
+            None => {
+                let work = Arc::new(self.lookups.read(move |conn| budgets::work(conn, budgets::SHARE_WINDOW_H, at)).await?);
+                *self.work.lock().expect("work") = Some((std::time::Instant::now(), work.clone()));
+                work
+            }
+        };
+        let Some((shares, first)) = work.get(hotkey) else { return Ok(budgets::CEILING) };
+        let expected = rules::expected_incentive(shares, &params);
+        if *first > budgets::hour_of(at) - params.incentive_grace_h || expected <= 0.0 {
+            return Ok(budgets::CEILING);
+        }
+        Ok(rules::incentive_cap(Some(incentive / expected), &params))
     }
 
     pub fn tasks(&self, kind: &str) -> &TaskQueue {

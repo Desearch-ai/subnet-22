@@ -4,7 +4,7 @@ use serde_json::{json, Value};
 use task_api::chain::Neuron;
 use task_api::settings::RegistryMode;
 
-use crate::harness::{judged, task_id, urls, Client, Harness};
+use crate::harness::{judged, objective_fail, task_id, urls, Client, Harness};
 
 async fn read(h: &Harness, path: &str) -> Value {
     let (status, body) = h.public(path).await;
@@ -149,7 +149,7 @@ async fn a_finalized_task_says_when_it_was_claimed_and_uploaded() {
 
 fn neuron(client: &Client, uid: i64, coldkey: &str, validator: bool) -> Neuron {
     let stake = if validator { 50_000_000_000_000 } else { 0 };
-    Neuron { uid, hotkey: client.ss58(), coldkey: coldkey.into(), validator_permit: validator, total_stake_rao: stake, alpha_stake_rao: stake }
+    Neuron { uid, hotkey: client.ss58(), coldkey: coldkey.into(), validator_permit: validator, total_stake_rao: stake, alpha_stake_rao: stake, incentive: 0.0 }
 }
 
 #[tokio::test]
@@ -192,7 +192,7 @@ async fn the_miners_page_lists_only_hotkeys_on_the_subnet_once_the_metagraph_is_
         })
         .await
         .unwrap();
-    h.state.registry.restore(vec![task_api::registry::Entry { hotkey: "5OnTheSubnet".into(), uid: Some(4), is_validator: false, coldkey: None }]);
+    h.state.registry.restore(vec![task_api::registry::Entry { hotkey: "5OnTheSubnet".into(), uid: Some(4), is_validator: false, coldkey: None, incentive: None }]);
     let listed = h.public("/v1/miners").await.1;
     let hotkeys: Vec<&str> = listed["miners"].as_array().unwrap().iter().filter_map(|m| m["hotkey"].as_str()).collect();
     assert_eq!(hotkeys, ["5OnTheSubnet"]);
@@ -217,7 +217,7 @@ async fn each_hour_shows_the_work_handed_out_the_claims_refused_and_how_checks_w
     let passed = task_id(&h.mine(&h.miner, 0).await);
     vote(&h, &h.validator, "pass", Some(&passed)).await;
     let failed = task_id(&h.mine(&h.miner, 0).await);
-    vote(&h, &h.validator, "fail", Some(&failed)).await;
+    judged(&h, &h.validator, "fail", Some(&failed), objective_fail()).await.1.expect("the vote is taken");
     h.mine(&h.rival, 0).await;
     assert_eq!(h.miner.claim().await["tasks"].as_array().unwrap().len(), 1);
     assert_eq!(h.rival.claim().await["refusal"]["code"], "QUEUE_EMPTY");
@@ -243,7 +243,7 @@ async fn each_hour_shows_the_work_handed_out_the_claims_refused_and_how_checks_w
     assert_eq!((overview["claims"]["issued"].clone(), overview["claims"]["refused"].clone()), (json!(4), json!({"QUEUE_EMPTY": 1})));
     let checks = &overview["checks"];
     assert_eq!((checks["checked"].clone(), checks["verdict_s"]["checked"]["tasks"].clone()), (json!(2), json!(2)));
-    assert!(checks["reasons"].as_array().unwrap().contains(&json!({"verdict": "fail", "reason": "content_mismatch", "checked": true, "tasks": 1})));
+    assert!(checks["reasons"].as_array().unwrap().contains(&json!({"verdict": "fail", "reason": "text_not_from_html", "checked": true, "tasks": 1})));
     assert_eq!((overview["validators"]["agreement"].clone(), overview["locked_out"].clone()), (json!(1.0), json!(0)));
     assert_eq!(overview["taken_back"], json!({"take_backs": 0, "tasks": 0, "miners": 0, "credited": 0}));
 
