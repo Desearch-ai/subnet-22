@@ -91,6 +91,9 @@ apply to both:
 | `TASK_API_URL` | `https://api-22.desearch.ai` | the task API |
 | `MAX_TASKS` | 4 | most tasks held at once; a miner also claims only what its measured pace can finish in time, within its budget |
 | `RECEIPTS_FILE` | none | file each signed receipt is appended to, as proof of what you were served |
+| `RELAY_URLS` | none | validators' relays to reach the task API through; each request takes one path at random and moves on when one does not answer ([witness relays](./witness-relays.md)) |
+| `DIRECT_PATH` | 1 | 0 sends every request through the relays, never straight to the task API |
+| `WITNESSES_FILE` | none | file each witness a relay signs for your requests is appended to; `task-api/tools/check_witnesses.py` turns any the task API's log lacks into a censorship proof |
 
 ### 4. Crawling
 

@@ -20,6 +20,7 @@ bot ──URLs──▶ task API ──claim──▶ miner ──upload──�
 | `app/` | the API: auth, queues, rounds, upload links, check results, budgets and shares |
 | `feeder/` | `feeder.sample` exports the URL dataset the miner sandbox serves |
 | `tools/verify_round.py` | checks a closed round against its commitment and signed log |
+| `tools/check_witnesses.py` | turns requests relaying validators witnessed, missing from the signed log, into censorship proofs |
 
 The miner and validator are in [`neurons/`](../neurons/), and the code they share with the API
 (text extraction, the signed client, the payment rules) is in [`desearch/`](../desearch/). The publisher,
@@ -37,10 +38,15 @@ of a round taking whatever is left, publishes a hash of the batches, and commits
 blocks ahead; that block's hash sets the order the batches are served in.
 
 **Claims.** A miner asks for as many tasks as it can take and receives, for each, its URLs and an
-upload link for one key; it never holds storage credentials. The claim's time starts when the API
-hands the tasks over. On completion the API records the upload's entity tag in the signed note, and
-validators and the publisher read the upload with `If-Match` on that tag, so a file changed afterwards
-is answered with 412 and fails its check (`upload_changed`). A completion counts as on time when it
+upload link for one key; it never holds storage credentials. The key is 128 random bits
+(`uploads/<32 hex>.parquet`) and names no miner, task or claim; it reaches the public log only with the
+completion. The claim's time starts when the API hands the tasks over. On completion the API records the
+upload's entity tag in the signed note. On a versioned bucket it pins the version the miner's own upload
+made (the completion names it, from the upload's answer) and records it in the note, and validators read
+that version by id, so nothing written to the key afterwards, by anyone, changes what they check. Without
+versions, validators and the publisher read the upload with `If-Match` on its tag, so a file changed
+afterwards is answered with 412 and fails its check (`upload_changed`); a completion naming an `etag` that
+the key no longer holds is refused with 409. See [witness relays](../docs/witness-relays.md). A completion counts as on time when it
 reaches the API inside the claim, however long the API then takes over it; a file written after the
 completion reached the API is refused. Sending the same completion again returns the first one's
 answer. A miner is never given a batch it held before.
@@ -106,8 +112,14 @@ publisher write these in numbered files, `outcomes/seq/<n>.json` in the uploads 
 Parquet file, with the newest number in `outcomes/latest.json`. A task dropped after its last
 attempt and a withdrawn page are reported dropped, so the bot sends them again.
 
-**Signed log.** Every claim, refusal and completion is signed by the API. `GET /v1/key` publishes the
-signer, and `tools/verify_round.py` checks a closed round end to end.
+**Signed log.** Every claim, refusal and completion is signed by the API, and names the hash of the
+miner's signed request it answers (`request`), so a validator that relayed the request can show whether the
+log holds it. `GET /v1/key` publishes the signer, `tools/verify_round.py` checks a closed round end to end,
+and `tools/check_witnesses.py` turns relayed requests the log lacks into censorship proofs.
+
+**Storage canary.** Every minute the API writes an object shaped like a miner's upload through a presigned
+link and reads it back through another; failures are public at `/v1/storage/probes`. With
+`TASK_API_STORAGE_OUTAGE_FORGIVES=1` a claim that lapses while a probe failed costs its miner nothing.
 
 ## Scoring
 
@@ -271,6 +283,9 @@ It needs two buckets:
   (and `PAGES_S3_BUCKET` when the name differs) put it on another S3 store; the publisher and the
   compactor read the same settings.
 
+For a versioned bucket under Object Lock, so that no overwrite can fail a miner, see
+[witness relays → bucket configuration](../docs/witness-relays.md#bucket-configuration).
+
 Validators read `subnet-22` without credentials. On a store that keeps buckets private and opens
 objects one by one, as OVHcloud Object Storage does, set `CF_R2_PUBLIC_OBJECTS=1` for the API and the
 publisher: the API writes its own files readable by anyone and opens each upload once its completion
@@ -314,6 +329,9 @@ The [bot](../desearch-bot/README.md) fills the queue with the admin hotkey (`--t
 | `TASK_API_EMBED_REFERENCE_URL` | — | Desearch's model servers (each an OpenAI-compatible `/v1/embeddings` serving the model under its name) for validators without their own, comma-separated and tried in order; without one, the reference endpoint answers 503 |
 | `TASK_API_EMBED_REFERENCE_KEY` | — | those servers' key |
 | `TASK_API_EMBED_REFERENCE_CALLS` | 4 | requests to those servers at once |
+| `TASK_API_CANARY_EVERY_S` | 60 | seconds between storage canary probes; 0 turns the canary off |
+| `TASK_API_STORAGE_OUTAGE_FORGIVES` | 0 | 1: a claim that lapses while a canary probe failed costs nothing (cause `storage_outage`) |
+| `TASK_API_UPLOAD_LOCK_S` | 0 | seconds each pinned upload version is put under Object Lock in compliance mode; needs a versioned bucket with Object Lock on |
 
 While the Redis key `reference:servers` holds a comma-separated list of servers, it is used instead of
 `TASK_API_EMBED_REFERENCE_URL`, so servers are added or replaced without a restart; deleting the key
@@ -340,13 +358,14 @@ Anyone can read these; the [UI](../ui/README.md) is built on them.
 | `GET /v1/miners/{hotkey}/verdicts` | signed by that miner: its own finalized uploads, without the ledger delay |
 | `GET /v1/validators` | every validator's votes, how often it agreed with the final result, and its standing |
 | `GET /v1/validators/{hotkey}` | the same for one validator |
-| `GET /v1/events` | the signed log as a feed: tasks issued, completed, refused and returned; filter with `miner`, `task_id`, `outcome` |
+| `GET /v1/events` | the signed log as a feed: tasks issued, completed, refused and returned; filter with `miner`, `task_id`, `outcome`, `request` (a signed request's hash) |
 | `GET /v1/health` | queue depths, backlog, the active validators and every validator's standing |
 | `GET /v1/room` | how many tasks the queue can take now, for the bot |
 | `GET /v1/shares` | every miner's share of the paid work as the API counts it, per pool |
 | `GET /v1/rounds`, `GET /v1/rounds/{id}` | round commitments, kept a week after a round closes |
 | `GET /v1/rounds/{id}/log` | a round's signed log |
 | `GET /v1/key` | the key that signs the log and the notes next to uploads |
+| `GET /v1/storage/probes` | the storage canary's probes since `since` (the last hour), newest first, and the outages they show |
 
 A refused claim is logged once a minute per miner and reason, so an hour's refusals divided by 60 is
 how many miners were turned away each minute on average.
