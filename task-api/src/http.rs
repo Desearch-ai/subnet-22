@@ -135,7 +135,9 @@ pub fn json_body(body: &[u8]) -> Result<Value, ApiError> {
 pub type Query = HashMap<String, String>;
 
 pub fn body_limit(path: &str) -> usize {
-    if path == "/v1/admin/enqueue" || path.ends_with("/score") {
+    if path == crate::custody::RECEIVE_PATH {
+        crate::custody::HANDOVER_BYTES
+    } else if path == "/v1/admin/enqueue" || path.ends_with("/score") {
         LARGE_BODY_BYTES
     } else {
         BODY_BYTES
@@ -168,7 +170,7 @@ pub fn peer(request: &Request) -> String {
 
 async fn limit_requests(Shared(state): Shared<Arc<State>>, request: Request, next: Next) -> Response {
     let path = request.uri().path().to_string();
-    let address = crate::auth::client_address(request.headers(), &peer(&request));
+    let address = crate::auth::client_address(request.headers(), &peer(&request), &state.settings.client_address_header);
     let wait = match *request.method() {
         Method::GET => state.read_wait(&address, logs::PATHS.iter().any(|p| path.starts_with(p))).await,
         Method::POST => state.write_wait(&address).await,
@@ -182,6 +184,23 @@ async fn limit_requests(Shared(state): Shared<Arc<State>>, request: Request, nex
         Ok(Some(wait)) => with_retry_after(detail(StatusCode::TOO_MANY_REQUESTS, "too many requests".into()), &wait.to_string()),
         Ok(None) => next.run(request).await,
     }
+}
+
+/// A copy that does not hold the log turns writes away: it would sign with a key validators do not follow.
+async fn hold_writes(Shared(state): Shared<Arc<State>>, request: Request, next: Next) -> Response {
+    let path = request.uri().path();
+    let exempt = path == crate::custody::RECEIVE_PATH || path == crate::custody::HANDOVER_PATH;
+    if *request.method() == Method::POST && !exempt && !state.custody.signing() {
+        if path == CLAIM_PATH {
+            return unavailable(CLAIM_PATH);
+        }
+        let status = serde_json::to_value(state.custody.status()).unwrap_or_default();
+        return with_retry_after(
+            detail(StatusCode::SERVICE_UNAVAILABLE, format!("this copy does not hold the log ({})", status.as_str().unwrap_or("")).into()),
+            "30",
+        );
+    }
+    next.run(request).await
 }
 
 fn cors(origins: &[String]) -> CorsLayer {
@@ -267,6 +286,12 @@ pub fn router(state: Arc<State>) -> Router {
         .route("/v1/room", get(routes::room))
         .route("/v1/admin/enqueue", post(routes::enqueue))
         .route("/v1/key", get(routes::key))
+        .route("/v1/config", get(routes::config))
+        .route("/v1/attestation", get(routes::attestation))
+        .route("/v1/custody", get(routes::custody))
+        .route(crate::custody::RECEIVE_PATH, post(routes::custody_receive))
+        .route(crate::custody::HANDOVER_PATH, post(routes::handover))
+        .route("/v1/admin/pause", post(routes::pause))
         .route("/v1/rounds", get(routes::round_list))
         .route("/v1/rounds/{round_id}", get(routes::round_view))
         .route("/v1/rounds/{round_id}/log", get(routes::round_log))
@@ -287,6 +312,7 @@ pub fn router(state: Arc<State>) -> Router {
         .route("/v1/tasks/{task_id}", get(logs::task))
         .fallback(not_found)
         .layer(middleware::from_fn(method_not_allowed))
+        .layer(middleware::from_fn_with_state(state.clone(), hold_writes))
         .layer(middleware::from_fn_with_state(state.clone(), limit_requests))
         .layer(cors(&state.settings.cors_origins))
         .layer(middleware::from_fn(limit_body))

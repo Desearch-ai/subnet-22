@@ -224,14 +224,29 @@ The planner keeps its place in the log and the version of every page it planned 
 
 ## Run
 
-The API is built from `Dockerfile.rust` at the repository root. It keeps its SQLite file in `/data`
-and needs a Redis (`TASK_API_REDIS`); the [publisher](../publisher/) runs on its own machine:
+The API is built from `Dockerfile.rust` at the repository root, reproducibly: CI
+([`task-api-image.yml`](../.github/workflows/task-api-image.yml)) builds every `task-api-v*` tag, pushes
+it to `ghcr.io/desearch-ai/sn22-task-api` with a signed provenance linking the commit to the digest, and
+fails if a second build from scratch gives another digest. [`deploy/rebuild.sh`](deploy/rebuild.sh)
+rebuilds a tag the same way and prints the digest, for anyone checking.
+
+In production the API runs in a TEE, as the dstack app in [`deploy/dstack/`](deploy/dstack/README.md):
+images by digest, every setting written in the measured compose, Redis inside the CVM, TLS ending inside
+it, a key made inside it. What that proves and how validators check it is in
+[docs/tee.md](../docs/tee.md); how anyone checks a release, in
+[docs/verify-task-api.md](../docs/verify-task-api.md).
+
+Outside a TEE it keeps its SQLite file in `/data` and needs a Redis (`TASK_API_REDIS`); the
+[publisher](../publisher/) runs on its own machine:
 
 ```bash
 docker build -f task-api/Dockerfile.rust -t task-api .
 docker run -d --env-file task-api/deploy/.env.example -e TASK_API_REGISTRY=chain -e TASK_API_SEEDS=chain -v task-api-data:/data -p 127.0.0.1:8080:8080 task-api
 curl -s localhost:8080/v1/ping
 ```
+
+[`deploy/docker-compose.prod.yml`](deploy/docker-compose.prod.yml) runs a released image by digest the
+same way.
 
 Fill in the storage credentials, admin hotkeys, signing key and Redis URL in the env file first. Behind a
 proxy that checks `/v1/ping`, a deploy can roll: the new copy serves next to the old one until the old
@@ -289,7 +304,23 @@ The [bot](../desearch-bot/README.md) fills the queue with the admin hotkey (`--t
 | `TASK_API_REDIS` | `redis://localhost:6379/15` | the Redis URL |
 | `TASK_API_LISTEN` | `0.0.0.0:8080` | the address the API listens on |
 | `TASK_API_ADMIN_HOTKEYS` | — | hotkeys allowed to enqueue |
-| `TASK_API_KEY_URI` | — | the key the log is signed with; required in `chain` mode |
+| `TASK_API_KEY_URI` | — | the key the log is signed with; required in `chain` mode unless the key is made in the CVM |
+| `TASK_API_KEY_SOURCE` | `uri` | `cvm`: the key is made inside the CVM at first boot, kept on its encrypted disk and bound to its TDX quote; `TASK_API_KEY_URI` must then be unset |
+| `TASK_API_DSTACK_SOCKET` | `/var/run/dstack.sock` | the dstack guest agent the quote comes from |
+| `TASK_API_TLS_CERT` | — | the PEM certificate the TLS proxy in the CVM serves; its public key is bound into the attestation, read again as it renews |
+| `TASK_API_CLIENT_ADDRESS_HEADER` | `CF-Connecting-IP` | the header the proxy in front writes the caller's address into |
+| `TASK_API_CHAIN_QUORUM` | 1 | how many of the `TASK_API_NETWORK` endpoints must give the same block height, hash, storage or metagraph |
+| `TASK_API_CHAIN_FINALIZED` | 0 | 1 reads the finalized head instead of the best block, so no seed comes from a block that can still change |
+| `TASK_API_CHAIN_COUNT_ON` | 1 | 0 never counts blocks on the local clock: the current block is the last one read |
+| `TASK_API_CHAIN_REFRESH_S` | 30 | seconds between reads of the head |
+| `TASK_API_CUSTODY` | 0 | 1 (with `TASK_API_KEY_SOURCE=cvm`): the copy signs nothing until validators' stake appoints it or the holder hands it the log ([custody](../docs/tee.md#custody-which-key-validators-follow)) |
+| `TASK_API_CUSTODY_POLL_S` | 60 | seconds between custody checks |
+| `TASK_API_GOV_THRESHOLD` | 0.5 | share of the independent validators' stake that must approve a version, strictly more than |
+| `TASK_API_GOV_TIMELOCK_BLOCKS` | 50400 | blocks an approval must be old before a version takes over |
+| `TASK_API_SUCCESSOR_OS` | — | OS measurements (`mrtd:rtmr0:rtmr1:rtmr2`) a successor may boot besides this CVM's own, comma-separated |
+| `TASK_API_PCCS_URL` | `https://pccs.phala.network` | where a successor's quote collateral is fetched |
+| `TASK_API_LEGACY_SIGNER` | — | the signer before custody records, the only one that may hand over at seq 0 |
+| `TASK_API_TEE_SIMULATED` | 0 | 1 takes a successor's quote without Intel's signature, for the dstack simulator on a testnet only |
 | `TASK_API_CLAIM_TTL` | 180 | seconds a miner is given to upload a task after claiming it; the claim and its upload link last 10 seconds longer |
 | `TASK_API_POLL_RATE` | 0.5 | claim requests per second one hotkey may make |
 | `TASK_API_VALIDATION_TTL` | 900 | seconds validators have to report once the upload is open |
@@ -317,7 +348,7 @@ The [bot](../desearch-bot/README.md) fills the queue with the admin hotkey (`--t
 
 While the Redis key `reference:servers` holds a comma-separated list of servers, it is used instead of
 `TASK_API_EMBED_REFERENCE_URL`, so servers are added or replaced without a restart; deleting the key
-goes back to the configured ones. A server that fails is tried after the others for a minute.
+goes back to the configured ones. In the TEE no one outside the CVM reaches its Redis, so the key cannot be set there. A server that fails is tried after the others for a minute.
 
 In `chain` mode a validator needs a validator permit, at least 10,000 total stake and at least 20
 alpha of its own.
@@ -347,6 +378,13 @@ Anyone can read these; the [UI](../ui/README.md) is built on them.
 | `GET /v1/rounds`, `GET /v1/rounds/{id}` | round commitments, kept a week after a round closes |
 | `GET /v1/rounds/{id}/log` | a round's signed log |
 | `GET /v1/key` | the key that signs the log and the notes next to uploads |
+| `GET /v1/config` | every setting the API runs with, by variable name, secrets left out |
+| `GET /v1/attestation` | in a TEE: the TDX quote, its event log and app compose, and the document it binds (the signer, the handover key, the hash of `/v1/config`, the TLS key); `?nonce=` for a fresh one ([format](../docs/tee.md#get-v1attestation)) |
+| `GET /v1/custody` | whether this copy holds the log, the custody records it knows, and the pause |
+
+Two admin calls change what the API does, and nothing else does: `POST /v1/admin/pause` stops handing
+out tasks (claims are refused with `PAUSED`) or resumes, and `POST /v1/admin/handover` hands the log to an
+attested CVM whose version validators' stake approved ([docs/tee.md](../docs/tee.md)).
 
 A refused claim is logged once a minute per miner and reason, so an hour's refusals divided by 60 is
 how many miners were turned away each minute on average.
@@ -407,5 +445,6 @@ key = f"pages/{domain_of(url)}/{url_sha1(url)}"
 cd task-api && python3 -m pytest -q
 ```
 
-The tests use Redis db 14 and an in-memory R2; run one suite at a time. `TASK_API_TEST_R2=1` also runs
+The tests use Redis db 14 and an in-memory R2; run one suite at a time. The Rust tests (`cargo test`) use
+Redis dbs 12 and 13 on `127.0.0.1:6379`, or the address in `TASK_API_TEST_REDIS`. `TASK_API_TEST_R2=1` also runs
 the storage tests against real buckets, under `_test/`.

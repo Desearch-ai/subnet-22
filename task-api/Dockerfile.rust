@@ -1,5 +1,13 @@
+# syntax=docker/dockerfile:1.28.0@sha256:bb22d9815c728170f72750f4e5b0d672e06176142e1d602c7e66c050100b7e5b
 # Build from the repository root: docker build -f task-api/Dockerfile.rust -t desearch-task-api .
-FROM rust:1-bookworm AS build
+#
+# The build is reproducible: the same commit built for the same platform gives the same image digest.
+# CI (.github/workflows/task-api-image.yml) and task-api/deploy/rebuild.sh build it with BuildKit v0.34.1,
+# SOURCE_DATE_EPOCH set to the commit's time, TASK_API_COMMIT to its hash, and
+# `rewrite-timestamp=true,oci-mediatypes=true,compression=gzip` on the output. Every base image is pinned
+# by digest and apt reads a fixed snapshot of Debian, so nothing changes between two builds.
+
+FROM rust:1.99.1-bookworm@sha256:c9155318d07341301a78b45ecdd81af2e43b8b297d64e8fd4c5e80d7735607c3 AS build
 
 WORKDIR /src
 COPY crates/desearch crates/desearch
@@ -7,22 +15,50 @@ COPY task-api/Cargo.toml task-api/Cargo.lock task-api/
 COPY task-api/src task-api/src
 WORKDIR /src/task-api
 ARG CARGO_BUILD_JOBS=4
-ENV CARGO_TARGET_DIR=/src/target
+# The commit the image is built from, compiled in and shown by /v1/config.
+ARG TASK_API_COMMIT=""
+ENV TASK_API_COMMIT=${TASK_API_COMMIT} \
+    CARGO_TARGET_DIR=/src/target \
+    CARGO_INCREMENTAL=0 \
+    RUSTFLAGS="--remap-path-prefix=/usr/local/cargo=/cargo --remap-path-prefix=/src=/build"
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/target \
     cargo build --release --locked --bin task-api \
     && strip -o /task-api /src/target/release/task-api
 
-FROM debian:bookworm-slim
+FROM debian:bookworm-20261020-slim@sha256:7ff6ba31527b9e336162fa061746c366c4b2032f4d2cff2078bea43f78efe3f8
 
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl tini \
-    && rm -rf /var/lib/apt/lists/* \
-    && useradd --create-home --uid 10001 crawler \
-    && mkdir -p /data \
-    && chown crawler /data
+# useradd dates /etc/shadow by it, and BuildKit stamps the image and its files with it.
+ARG SOURCE_DATE_EPOCH
+# The packages come from the snapshot the base image was made from, so they are the same on every build.
+RUN set -eux; \
+    printf '%s\n' \
+        'Types: deb' \
+        'URIs: http://snapshot.debian.org/archive/debian/20261020T213255Z' \
+        'Suites: bookworm bookworm-updates' \
+        'Components: main' \
+        'Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg' \
+        '' \
+        'Types: deb' \
+        'URIs: http://snapshot.debian.org/archive/debian-security/20261020T213255Z' \
+        'Suites: bookworm-security' \
+        'Components: main' \
+        'Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg' \
+        > /etc/apt/sources.list.d/debian.sources; \
+    apt-get -o Acquire::Check-Valid-Until=false update; \
+    apt-get install -y --no-install-recommends ca-certificates curl tini; \
+    useradd --create-home --uid 10001 crawler; \
+    mkdir -p /data; \
+    chown crawler /data; \
+    rm -rf /var/lib/apt/lists/* /var/cache/apt/* /var/log/* /var/cache/ldconfig/aux-cache \
+        /var/cache/debconf/*-old /var/lib/dpkg/*-old
 
 COPY --from=build /task-api /usr/local/bin/task-api
+
+ARG TASK_API_COMMIT=""
+LABEL org.opencontainers.image.source="https://github.com/Desearch-ai/subnet-22" \
+      org.opencontainers.image.revision="${TASK_API_COMMIT}" \
+      org.opencontainers.image.title="sn22-task-api"
 
 USER crawler
 ENV TASK_API_DATA=/data

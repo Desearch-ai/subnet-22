@@ -66,6 +66,7 @@ impl Db {
         checks::create(&conn)?;
         registry::create(&conn)?;
         hours::create(&conn)?;
+        crate::custody::create(&conn)?;
         conn.busy_timeout(BUSY)?;
         Ok(Db { jobs: spawn("sqlite", conn)? })
     }
@@ -90,6 +91,18 @@ impl Db {
             self.jobs.send(job).map_err(|_| anyhow!("the SQLite writer stopped"))?;
             result.await.map_err(|_| anyhow!("the SQLite writer stopped"))?
         }
+    }
+}
+
+impl Db {
+    /// Runs `work` on the writer thread outside any transaction, for what SQLite will not run inside one: `VACUUM INTO`, a restore.
+    pub async fn whole<T: Send + 'static>(&self, work: impl FnOnce(&mut Connection) -> Result<T> + Send + 'static) -> Result<T> {
+        let (done, result) = oneshot::channel();
+        let job: Job = Box::new(move |conn| {
+            let _ = done.send(work(conn));
+        });
+        self.jobs.send(job).map_err(|_| anyhow!("the SQLite writer stopped"))?;
+        result.await.map_err(|_| anyhow!("the SQLite writer stopped"))?
     }
 }
 

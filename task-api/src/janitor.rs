@@ -205,7 +205,11 @@ pub async fn run(state: Arc<State>, stop: watch::Receiver<bool>) {
     let warming = tokio::spawn(keep_warm(state.clone(), stop.clone()));
     let mut stopping = stop.clone();
     while !*stopping.borrow() {
-        let held = hold(&state, &holder).await;
+        if let Err(error) = crate::custody::refresh_pause(&state).await {
+            eprintln!("could not read the pause: {error:#}");
+        }
+        // A copy that does not hold the log signs nothing, so it runs none of the passes.
+        let held = if state.custody.signing() { hold(&state, &holder).await } else { Ok(false) };
         leading.store(matches!(held, Ok(true)), Ordering::Release);
         let followed = match held {
             Ok(true) => Ok(()),

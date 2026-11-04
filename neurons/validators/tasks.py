@@ -15,6 +15,7 @@ from desearch.credit import crawl_credit, embed_credit
 from desearch.kinds import CRAWL, EMBED
 from desearch.manifest import OPEN_LIST_KEY
 from desearch.manifest import verify as verify_manifest
+from neurons.validators.custody import as_signers
 
 LIST_TIMEOUT = aiohttp.ClientTimeout(total=30.0)
 LIST_CACHE_S = 2.0
@@ -71,7 +72,7 @@ class TaskChecker:
         self.ledger = ledger
         self.storage_url = storage_url.rstrip("/")
         self.seeds = seeds
-        self.signer = signer
+        self.signers = as_signers(signer)
         self.paused_until = 0.0
         self.pause = PAUSE_S
         self.provider_failures = 0
@@ -192,9 +193,12 @@ class TaskChecker:
             task_id = manifest["task_id"]
             if task_id in self.in_flight:
                 continue
-            if not verify_manifest(manifest, self.signer):
+            allowed = self.signers.for_manifest(manifest)
+            if not any(verify_manifest(manifest, signer) for signer in allowed):
                 log.warning(
-                    "task=%s is not signed by %s, skipped", task_id, self.signer
+                    "task=%s is not signed by %s, skipped",
+                    task_id,
+                    " or ".join(allowed) or "a followed signer",
                 )
                 continue
             # Taken before the seed lookup, so loops waiting on it never pick the same upload.

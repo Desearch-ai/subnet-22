@@ -19,7 +19,15 @@ use task_api::state::{redis_from, State};
 use tokio::net::TcpListener;
 use tokio::sync::{Mutex, MutexGuard};
 
-pub const REDIS_URL: &str = "redis://127.0.0.1:6379/13";
+/// The Redis the tests use, `127.0.0.1:6379` unless `TASK_API_TEST_REDIS` names another.
+pub fn redis_addr() -> &'static str {
+    static ADDR: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| std::env::var("TASK_API_TEST_REDIS").unwrap_or_else(|_| "127.0.0.1:6379".into()));
+    &ADDR
+}
+
+pub fn redis_url(db: u8) -> String {
+    format!("redis://{}/{db}", redis_addr())
+}
 pub const MINER: &str = "//miner-api-test";
 pub const RIVAL: &str = "//rival-api-test";
 pub const VALIDATOR: &str = "//validator-api-test";
@@ -154,7 +162,7 @@ pub fn settings(data: PathBuf, endpoint: &str) -> Settings {
     Settings {
         listen: "127.0.0.1:0".into(),
         data,
-        redis_url: REDIS_URL.into(),
+        redis_url: redis_url(13),
         claim_ttl: 180.0,
         embed_claim_ttl: 300.0,
         validation_ttl: 900.0,
@@ -200,6 +208,9 @@ pub fn settings(data: PathBuf, endpoint: &str) -> Settings {
         admin_uris: ADMIN.into(),
         key_uri: String::new(),
         cors_origins: Vec::new(),
+        client_address_header: task_api::auth::CLIENT_ADDRESS_HEADER.into(),
+        chain: Default::default(),
+        tee: Default::default(),
     }
 }
 
@@ -215,9 +226,9 @@ impl Harness {
         let endpoint = format!("http://{}", stub.addr);
         let mut settings = settings(dir.0.join("data"), &endpoint);
         tune(&mut settings);
-        let redis = redis_from(REDIS_URL).await.expect("Redis on localhost");
+        let redis = redis_from(&redis_url(13)).await.expect("Redis on localhost");
         let _: () = redis::cmd("FLUSHDB").query_async(&mut redis.clone()).await.expect("FLUSHDB");
-        let proxy = Proxy::start("127.0.0.1:6379").await;
+        let proxy = Proxy::start(redis_addr()).await;
         let relayed = redis_from(&format!("redis://{}/13", proxy.addr)).await.expect("Redis through the relay");
         let (storage, pages) = buckets(&settings, &endpoint);
         let mut state = State::new(settings, relayed, storage, pages).await.expect("the state opens");
@@ -249,6 +260,33 @@ impl Harness {
             _dir: dir,
             _serial: serial,
         }
+    }
+
+    /// Serves another API on the same buckets but its own Redis db and data directory, as a second CVM would; returns it and its URL.
+    pub async fn sibling(&self, redis_db: u8, tune: impl FnOnce(&mut Settings)) -> (Arc<State>, String, TempDir) {
+        let dir = TempDir(std::env::temp_dir().join(format!("task-api-sibling-{}", uuid::Uuid::new_v4().simple())));
+        let endpoint = format!("http://{}", self.stub.addr);
+        let mut settings = settings(dir.0.join("data"), &endpoint);
+        settings.redis_url = redis_url(redis_db);
+        tune(&mut settings);
+        let redis = redis_from(&settings.redis_url).await.expect("Redis on localhost");
+        let _: () = redis::cmd("FLUSHDB").query_async(&mut redis.clone()).await.expect("FLUSHDB");
+        let (storage, pages) = buckets(&settings, &endpoint);
+        let mut state = State::new(settings, redis, storage, pages).await.expect("the sibling opens");
+        state.started_at = f64::NEG_INFINITY;
+        let state = Arc::new(state);
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("a port");
+        let url = format!("http://{}", listener.local_addr().expect("an address"));
+        let router = task_api::http::router(state.clone());
+        tokio::spawn(async move {
+            axum::serve(listener, router.into_make_service_with_connect_info::<SocketAddr>()).await.expect("serving");
+        });
+        (state, url, dir)
+    }
+
+    /// A client for another API, signing as one of this harness's roles.
+    pub fn client_of(&self, base: &str, uri: &str) -> Client {
+        Client { hotkey: Hotkey::from_uri(uri).expect("a test key"), base: base.to_string(), http: self.http.clone() }
     }
 
     /// Serves another copy started now on the same Redis and database, as after a restart; returns its URL.

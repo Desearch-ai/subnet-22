@@ -52,9 +52,10 @@ async fn main() -> Result<()> {
         state.registry.refresh(chain.clone(), *netuid, state.db.clone());
     }
     let (stop, stopped) = tokio::sync::watch::channel(false);
-    let janitor = tokio::spawn(janitor::run(state.clone(), stopped));
+    let janitor = tokio::spawn(janitor::run(state.clone(), stopped.clone()));
+    let custody = tokio::spawn(task_api::custody::run(state.clone(), stopped));
     let listener = TcpListener::bind(&listen).await.with_context(|| format!("listening on {listen}"))?;
-    eprintln!("task API on {listen}, signing as {}", state.signer());
+    eprintln!("task API on {listen}, signing as {} ({:?})", state.signer(), state.custody.status());
     let stopping = {
         let state = state.clone();
         async move {
@@ -72,5 +73,6 @@ async fn main() -> Result<()> {
         eprintln!("stopping with {cut} completions or reference calls still running");
     }
     janitor.await?;
+    custody.await?;
     Ok(())
 }

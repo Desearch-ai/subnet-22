@@ -9,6 +9,7 @@ import aiohttp
 
 from desearch.credit import SHARE_WINDOW_H
 from desearch.manifest import UPLOAD_LOG_LATEST, upload_log_key, verify_log
+from neurons.validators.custody import as_signers
 
 NEXT_SEQ = "upload_log_next"
 # A new validator reads back at most this many files, a day at one every 30 seconds.
@@ -19,12 +20,11 @@ log = logging.getLogger("validator")
 
 
 class UploadLog:
-    def __init__(
-        self, http: aiohttp.ClientSession, storage_url: str, signer: str, ledger
-    ):
+    def __init__(self, http: aiohttp.ClientSession, storage_url: str, signer, ledger):
         self.http = http
         self.storage_url = storage_url.rstrip("/")
-        self.signer = signer
+        # One address, or the custody chain naming who signed which file.
+        self.signers = as_signers(signer)
         self.ledger = ledger
 
     async def poll(self) -> int:
@@ -72,8 +72,13 @@ class UploadLog:
         found = await self.get(upload_log_key(seq))
         if found is None:
             return None
-        if not verify_log(found, self.signer):
-            log.warning("upload log %d is not signed by %s, skipped", seq, self.signer)
+        allowed = self.signers.for_log(seq)
+        if not any(verify_log(found, signer) for signer in allowed):
+            log.warning(
+                "upload log %d is not signed by %s, skipped",
+                seq,
+                " or ".join(allowed) or "a followed signer",
+            )
             return {"entries": [], "written_at": None}
         return found
 

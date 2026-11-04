@@ -48,6 +48,30 @@ def build_parser() -> argparse.ArgumentParser:
         help="Public URL of the bucket uploads land in; the open list and the uploads are read from it.",
         default="https://subnet-22.s3.us-east-va.io.cloud.ovh.us",
     )
+    parser.add_argument(
+        "--neuron.archive_network",
+        type=str,
+        help="A chain endpoint holding old state, for approvals at custody records' blocks; the subtensor's own archive fallback when empty.",
+        default="",
+    )
+    parser.add_argument(
+        "--neuron.legacy_signer",
+        type=str,
+        help="The task API signer from before custody records; the release pins it, the only one that may hand over first.",
+        default="",
+    )
+    parser.add_argument(
+        "--neuron.tee_allow_any_os",
+        action="store_true",
+        help="Testnets only: accept a task API attestation from any OS image. Ignored on finney.",
+        default=False,
+    )
+    parser.add_argument(
+        "--neuron.tee_simulated",
+        action="store_true",
+        help="Testnets only: accept the dstack simulator's quotes, whose signature cannot verify. Ignored on finney.",
+        default=False,
+    )
     return parser
 
 

@@ -2,8 +2,10 @@
 
 mod chain;
 mod checks;
+mod custody;
 mod embed;
 mod fakechain;
+mod fakedstack;
 mod harness;
 mod limits;
 mod load;
@@ -13,6 +15,7 @@ mod punishment;
 mod queueing;
 mod reference;
 mod staging;
+mod tee;
 mod timing;
 mod trust;
 

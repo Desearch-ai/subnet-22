@@ -1,6 +1,7 @@
 # 🛡️ Validator
 
 - [🔍 What a validator does](#-what-a-validator-does)
+- [🔐 Which task API it trusts](#-which-task-api-it-trusts)
 - [🔧 Setup](#-setup)
 
 ## 🔍 What a validator does
@@ -41,6 +42,39 @@ until a task is checked again, when any of these happens:
 
 **Updates:** `run.sh` checks for a new release every 20 minutes, installs it and restarts the
 validator.
+
+## 🔐 Which task API it trusts
+
+The task API runs in a TEE, and the validator follows only a key it has checked itself
+([how it works](./tee.md)):
+
+- It reads the API's **custody records** from the uploads bucket (`log/custody/`): the chain of keys the
+  log has been signed with. It checks each new record's signature and link, that validators' stake had
+  approved its version at its block, and the new key's attestation: Intel's signature on the TDX quote,
+  the pinned production OS, the compose (images pinned by digest, only storage credentials set from
+  outside) and the key bound into the quote.
+- It takes each upload log file and manifest only from the key whose turn it was, and stops following
+  the API when its version loses validators' endorsement or when two valid records claim one place in
+  the chain. Accepted records are kept in `custody.json` in the validator's folder.
+- Until the API publishes custody records, it trusts the key the task API names at `/v1/key`, as before,
+  and logs a warning.
+
+**Approving a version.** A new version takes effect only once more than half the stake of validators
+other than the subnet owner has listed its compose hash in their commitment for 7 days (50,400
+blocks). Check the version first ([verify](./verify-task-api.md)), then commit it with the validator's
+hotkey; the tool prints the commitment and sends nothing without `--commit`:
+
+```bash
+python3 tools/approve_version.py --version <running compose hash> --next <new compose hash>
+python3 tools/approve_version.py --version <running> --next <new> --commit --network finney \
+  --wallet.name validator --wallet.hotkey default
+```
+
+- Keep the running version listed (`--version`) while its successor waits: a commitment that drops
+  it ends the running version's endorsement at once.
+- To start the chain, or to replace a CVM lost for good, appoint one CVM of an approved version with
+  `--version <hash> --appoint <its signer>`, after checking its attestation.
+- A commitment replaces the hotkey's last one on the subnet.
 
 ## 🔧 Setup
 
@@ -123,6 +157,8 @@ pm2 start run.sh --name desearch_autoupdate -- \
 | `--neuron.task_api_url` | the task API, `https://api-22.desearch.ai` by default |
 | `--neuron.storage_url` | the public URL of the uploads bucket, `https://subnet-22.s3.us-east-va.io.cloud.ovh.us` by default |
 | `--neuron.disable_set_weights` | check tasks without setting weights |
+| `--neuron.archive_network` | a chain endpoint with old state, for approvals at old custody records; the subtensor's archive fallback when empty |
+| `--neuron.tee_allow_any_os`, `--neuron.tee_simulated` | testnets only: accept any OS image, or the dstack simulator's quotes; ignored on finney |
 | `--wandb.off` | do not log to Weights & Biases |
 | `--logging.info`, `--logging.debug` | without one, only warnings are printed |
 

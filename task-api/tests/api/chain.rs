@@ -7,10 +7,11 @@ use futures::future::join_all;
 use serde_json::json;
 use task_api::chain::Chain;
 use task_api::registry::{self, Entry};
+use task_api::settings::ChainOptions;
 use task_api::settings::RegistryMode;
 use task_api::state::State;
 
-use crate::fakechain::FakeChain;
+use crate::fakechain::{hash_of, FakeChain};
 use crate::harness::Harness;
 
 #[tokio::test]
@@ -107,4 +108,41 @@ async fn with_no_metagraph_yet_a_caller_is_asked_to_come_back() {
     let refused = h.miner.post("/v1/tasks/claim", json!({})).await.unwrap_err();
     assert_eq!(refused.status, 503);
     assert!(started.elapsed() < Duration::from_secs(8), "turned away, not held");
+}
+
+fn quorum(of: usize) -> ChainOptions {
+    ChainOptions { quorum: of, finalized: true, count_on: false, refresh_s: 1.0 }
+}
+
+#[tokio::test]
+async fn a_quorum_takes_the_finalized_head_and_hashes_only_when_enough_endpoints_agree() {
+    let honest = [FakeChain::start(5_000, 12.0).await, FakeChain::start(5_000, 12.0).await];
+    let liar = FakeChain::start(5_000, 12.0).await;
+    liar.lie(true);
+    let network = format!("{},{},{}", honest[0].url, liar.url, honest[1].url);
+    let chain = Arc::new(Chain::with(&network, &quorum(2)).unwrap());
+    assert_eq!(chain.current_block().await.unwrap(), 4_997, "the finalized head, not the liar's 1000 blocks ahead");
+    assert_eq!(chain.block_hash(4_990).await.unwrap(), Some(hash_of(4_990)), "the two honest endpoints outvote the liar");
+    assert_eq!(chain.block_hash(4_999).await.unwrap(), None, "past the finalized head is not a seed yet");
+
+    honest[1].refuse(true);
+    let alone = Arc::new(Chain::with(&network, &quorum(2)).unwrap());
+    assert_eq!(alone.current_block().await.unwrap(), 4_997, "the second highest head is the honest one: a liar can only hold time back");
+    assert_eq!(alone.block_hash(4_980).await.unwrap(), None, "a hash without a quorum is taken as not made yet");
+    honest[0].refuse(true);
+    let none = Arc::new(Chain::with(&network, &quorum(2)).unwrap());
+    assert!(none.current_block().await.is_err(), "the liar alone is not a quorum");
+    assert!(Chain::with(&honest[0].url, &quorum(2)).is_err(), "a quorum of two needs two endpoints");
+}
+
+#[tokio::test]
+async fn without_counting_on_the_clock_the_block_only_moves_when_read() {
+    let fake = FakeChain::start(5_000, 0.05).await;
+    let chain = Arc::new(Chain::with(&fake.url, &ChainOptions { quorum: 1, finalized: false, count_on: false, refresh_s: 30.0 }).unwrap());
+    let read = chain.current_block().await.unwrap();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(chain.current_block().await.unwrap(), read, "blocks passed on the fake chain, but none was read");
+    let counting = Arc::new(Chain::new(&fake.url).unwrap());
+    counting.assume(read, desearch::time::now() - 25.0);
+    assert!(counting.current_block().await.unwrap() > read, "counting on the clock moves it");
 }

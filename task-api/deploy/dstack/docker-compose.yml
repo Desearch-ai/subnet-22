@@ -1,0 +1,204 @@
+# The task API as a dstack app: what the TEE measures (docs/tee.md).
+#
+# Its SHA-256, wrapped in app-compose.json by app_compose.py, is the compose hash in the TDX quote and the
+# version validators approve. So every image is named by digest and every setting is written here: the
+# only values from outside are the storage credentials, the names app-compose.json lists in allowed_envs.
+# Changing any line here makes a new version that needs validators' approval and the timelock.
+#
+# Fill in the two REPLACE_WITH_ values before a release; app_compose.py refuses to hash the file until
+# then, and takes the API image's digest with --image-digest.
+
+services:
+  api:
+    image: ghcr.io/desearch-ai/sn22-task-api@sha256:REPLACE_WITH_IMAGE_DIGEST
+    restart: always
+    depends_on:
+      redis:
+        condition: service_healthy
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    environment:
+      # The key is made inside this CVM at first boot and kept on its encrypted disk; no TASK_API_KEY_URI.
+      TASK_API_KEY_SOURCE: cvm
+      TASK_API_DSTACK_SOCKET: /var/run/dstack.sock
+      TASK_API_CUSTODY: "1"
+      TASK_API_CUSTODY_POLL_S: "60"
+      TASK_API_GOV_THRESHOLD: "0.5"
+      TASK_API_GOV_TIMELOCK_BLOCKS: "50400"
+      TASK_API_SUCCESSOR_OS: ""
+      TASK_API_PCCS_URL: https://pccs.phala.network
+      # The signer before custody records, whose handover to the first CVM is record 0 (docs/tee.md).
+      TASK_API_LEGACY_SIGNER: REPLACE_WITH_LEGACY_SIGNER
+      # Quotes are checked against Intel's signatures; validators refuse a compose that turns this on.
+      TASK_API_TEE_SIMULATED: "0"
+      # The certificate the tls service serves; its public key is bound into the attestation.
+      TASK_API_TLS_CERT: /tls/caddy/certificates/acme-v02.api.letsencrypt.org-directory/api-22.desearch.ai/api-22.desearch.ai.crt
+      TASK_API_CLIENT_ADDRESS_HEADER: X-Client-Address
+
+      # The chain: two of three independent endpoints must agree, finalized blocks only, and time is
+      # only what the chain says, never this host's clock.
+      TASK_API_REGISTRY: chain
+      TASK_API_SEEDS: chain
+      TASK_API_NETUID: "22"
+      TASK_API_NETWORK: finney,https://lite.chain.opentensor.ai:443,https://bittensor-finney.api.onfinality.io/public
+      TASK_API_CHAIN_QUORUM: "2"
+      TASK_API_CHAIN_FINALIZED: "1"
+      TASK_API_CHAIN_COUNT_ON: "0"
+      TASK_API_CHAIN_REFRESH_S: "6"
+      # Local mode only; written so that /v1/config is fully decided by this file.
+      TASK_API_VALIDATOR_URIS: ""
+      TASK_API_BLOCK_SECONDS: "12"
+      TASK_API_GENESIS: "0"
+
+      TASK_API_LISTEN: 0.0.0.0:8080
+      TASK_API_DATA: /data
+      # Redis runs in this CVM and listens on a Unix socket only, no TCP port at all.
+      TASK_API_REDIS: unix:///run/redis/redis.sock?db=0
+      TASK_API_ADMIN_HOTKEYS: REPLACE_WITH_ADMIN_HOTKEYS
+      TASK_API_ADMIN_URIS: ""
+      TASK_API_CORS_ORIGINS: https://mining.desearch.ai
+
+      # The rules miners are paid by.
+      TASK_API_CLAIM_TTL: "180"
+      TASK_API_EMBED_CLAIM_TTL: "300"
+      TASK_API_VALIDATION_TTL: "900"
+      TASK_API_POLL_RATE: "0.5"
+      TASK_API_READS_PER_MINUTE: "120"
+      TASK_API_LOG_READS_PER_MINUTE: "60"
+      TASK_API_FAILED_WRITES_PER_MINUTE: "30"
+      TASK_API_MAX_UPLOAD_BYTES: "100000000"
+      TASK_API_MAX_BACKLOG_S: "21600"
+      TASK_API_MAX_ATTEMPTS: "3"
+      TASK_API_MAX_HANDBACKS: "5"
+      TASK_API_LEDGER_DELAY_S: "0"
+      TASK_API_CHECK_SHARE: "0.05"
+      TASK_API_CHECKS_PER_HOUR: "400"
+      TASK_API_EMBED_CHECK_SHARE: "0.05"
+      TASK_API_EMBED_CHECKS_PER_HOUR: "600"
+      TASK_API_QUEUE_TARGET: "1200"
+      TASK_API_EMBED_QUEUE_TARGET: "100"
+      TASK_API_EMBED_INPUT_MAX_AGE_S: "72000"
+      TASK_API_RELEASE_SPREAD_S: "60"
+      TASK_API_TASK_URLS: "1000"
+      TASK_API_EMBED_TASKS: "0"
+      TASK_API_EMBED_MODEL: desearch-4b-v1
+      # No reference model servers: references come from validators' own models (block A).
+      TASK_API_EMBED_REFERENCE_URL: ""
+      TASK_API_EMBED_REFERENCE_CALLS: "4"
+      TASK_API_ACTIVE_S: "3600"
+      TASK_API_PUBLISH_TTL: "600"
+      TASK_API_PUBLISH_TRIES: "5"
+
+      # Storage: where it is is written here; only the keys come from outside.
+      CF_R2_ENDPOINT: https://s3.us-east-va.io.cloud.ovh.us
+      CF_R2_REGION: us-east-va
+      CF_R2_PUBLIC_OBJECTS: "1"
+      CF_R2_BUCKET: subnet-22
+      TASK_API_R2_PREFIX: ""
+      CF_R2_PAGES_BUCKET: desearch-pages
+      CF_R2_PAGES_PREFIX: ""
+      PAGES_S3_ENDPOINT: ""
+      PAGES_S3_REGION: ""
+      PAGES_S3_BUCKET: ""
+      CF_R2_ACCESS_KEY_ID: ${CF_R2_ACCESS_KEY_ID}
+      CF_R2_SECRET_ACCESS_KEY: ${CF_R2_SECRET_ACCESS_KEY}
+      PAGES_S3_ACCESS_KEY_ID: ${PAGES_S3_ACCESS_KEY_ID:-}
+      PAGES_S3_SECRET_ACCESS_KEY: ${PAGES_S3_SECRET_ACCESS_KEY:-}
+    volumes:
+      - api-data:/data
+      - redis-socket:/run/redis
+      - caddy-data:/tls:ro
+      # Only the API talks to dstack: for its quote and its info, never for a key.
+      - /var/run/dstack.sock:/var/run/dstack.sock
+
+  redis:
+    image: redis:7.4.9-alpine@sha256:6ab0b6e7381779332f97b8ca76193e45b0756f38d4c0dcda72dbb3c32061ab99
+    restart: always
+    security_opt: ["no-new-privileges:true"]
+    # No port: the API reaches it through the socket on a volume only the two of them mount.
+    entrypoint:
+      - /bin/sh
+      - -c
+      - >-
+        mkdir -p /run/redis && chown redis:redis /run/redis &&
+        exec docker-entrypoint.sh redis-server --port 0 --unixsocket /run/redis/redis.sock --unixsocketperm 777
+        --protected-mode yes --appendonly yes --appendfsync everysec --save '' --dir /data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-s", "/run/redis/redis.sock", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    volumes:
+      - redis-data:/data
+      - redis-socket:/run/redis
+
+  # Gives Caddy's volumes to the user it runs as, once, before it starts.
+  tls-init:
+    image: caddy:2.10.2-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d
+    restart: "no"
+    user: "0"
+    entrypoint: ["chown", "-R", "10001:10001", "/data", "/config"]
+    volumes:
+      - caddy-data:/data
+      - caddy-config:/config
+
+  # TLS ends here, inside the CVM: the gateway passes the encrypted stream through and prefixes it with a
+  # PROXY protocol header naming the client. The certificate comes from Let's Encrypt over TLS-ALPN-01
+  # on the same port, so no DNS credential is needed, and its key never leaves this volume.
+  tls:
+    image: caddy:2.10.2-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d
+    restart: always
+    user: "10001:10001"
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    depends_on:
+      tls-init:
+        condition: service_completed_successfully
+      api:
+        condition: service_started
+    entrypoint:
+      - /bin/sh
+      - -c
+      - printf '%s\n' "$$CADDYFILE" > /config/Caddyfile && exec caddy run --config /config/Caddyfile --adapter caddyfile
+    environment:
+      CADDYFILE: |
+        {
+        	admin off
+        	https_port 8443
+        	auto_https disable_redirects
+        	servers :8443 {
+        		listener_wrappers {
+        			proxy_protocol {
+        				timeout 5s
+        				allow 0.0.0.0/0 ::/0
+        			}
+        			tls
+        		}
+        	}
+        }
+
+        api-22.desearch.ai:8443 {
+        	tls {
+        		issuer acme {
+        			dir https://acme-v02.api.letsencrypt.org/directory
+        			disable_http_challenge
+        			alt_tlsalpn_port 8443
+        		}
+        	}
+        	reverse_proxy api:8080 {
+        		header_up X-Client-Address {remote_host}
+        	}
+        }
+    ports:
+      - "443:8443"
+    volumes:
+      - caddy-data:/data
+      - caddy-config:/config
+
+# On the CVM's disk, which dstack encrypts with a key only this app's CVM gets from the KMS.
+volumes:
+  api-data:
+  redis-data:
+  redis-socket:
+  caddy-data:
+  caddy-config:
