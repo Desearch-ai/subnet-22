@@ -48,6 +48,39 @@ def build_parser() -> argparse.ArgumentParser:
         help="Public URL of the bucket uploads land in; the open list and the uploads are read from it.",
         default="https://subnet-22.s3.us-east-va.io.cloud.ovh.us",
     )
+    parser.add_argument(
+        "--relay.port",
+        type=int,
+        default=0,
+        help="Serve a relay for miners' task API requests on this port, witnessing each one; 0 serves none.",
+    )
+    parser.add_argument(
+        "--relay.host", default="0.0.0.0", help="The address the relay listens on."
+    )
+    parser.add_argument(
+        "--relay.publish_delay_blocks",
+        type=int,
+        default=5,
+        help="Blocks before a relayed request's witness record is listed publicly.",
+    )
+    parser.add_argument(
+        "--relay.check_after_blocks",
+        type=int,
+        default=50,
+        help="Blocks after which a relayed request missing from the task API's log is a censorship proof.",
+    )
+    parser.add_argument(
+        "--relay.signer",
+        default="",
+        help="The ss58 key the task API's log must be signed with; read from the API's /v1/key when empty.",
+    )
+    parser.add_argument(
+        "--witness.storage_off",
+        action="store_false",
+        dest="witness_storage",
+        help="Do not look at every completed upload in storage.",
+    )
+    parser.set_defaults(witness_storage=True)
     return parser
 
 

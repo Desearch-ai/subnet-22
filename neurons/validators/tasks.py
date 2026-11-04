@@ -5,6 +5,7 @@ import contextlib
 import logging
 import time
 from collections import deque
+from urllib.parse import quote
 
 import aiohttp
 from aiohttp import hdrs
@@ -47,7 +48,10 @@ class UploadMissing(Exception):
 
 
 class UploadChanged(Exception):
-    """Storage holds another version than the one the completion pinned: the miner rewrote it."""
+    """Storage holds another version than the one the completion pinned: the miner rewrote it.
+
+    Never raised for an upload pinned by version: a read by version id gets that version or nothing, so a later
+    write by anyone can't make it fail."""
 
 
 class TaskChecker:
@@ -217,7 +221,7 @@ class TaskChecker:
         job = {
             **manifest,
             "seed": seed,
-            "download_url": f"{self.storage_url}/{manifest['key']}",
+            "download_url": upload_url(self.storage_url, manifest),
         }
         if manifest.get("input_key"):
             job["input"] = {
@@ -302,6 +306,8 @@ class TaskChecker:
     async def download(
         self, url: str, task_id: str, etag: str | None = None
     ) -> bytes | None:
+        # A URL that names the version reads exactly it; an entity tag on top would only add a way to fail.
+        etag = None if by_version(url) else etag
         problem = ""
         for attempt in range(DOWNLOAD_ATTEMPTS):
             if attempt:
@@ -328,12 +334,14 @@ class TaskChecker:
             problem = f"HTTP {status}"
             if status < 500:
                 break
+        # A 403 to a read by version is the bucket refusing versioned reads, never the miner's doing.
         raise DownloadFailed(f"task={task_id} download failed: {problem}")
 
     async def read_range(
         self, url: str, start: int, size: int, task_id: str, etag: str | None = None
     ) -> tuple[bytes, int]:
         """Bytes start to start + size - 1 of an object and its total size; no bytes when it ends before start."""
+        etag = None if by_version(url) else etag
         headers = {
             hdrs.RANGE: f"bytes={start}-{start + size - 1}",
             hdrs.ACCEPT_ENCODING: "identity",
@@ -421,6 +429,17 @@ class TaskChecker:
                     raise
             await asyncio.sleep(RETRY_DELAY_S)
         return False
+
+
+def upload_url(storage_url: str, manifest: dict) -> str:
+    """Where an upload is read: the version its completion pinned, on a versioned bucket."""
+    url = f"{storage_url}/{manifest['key']}"
+    version = manifest.get("version")
+    return f"{url}?versionId={quote(str(version), safe='')}" if version else url
+
+
+def by_version(url: str) -> bool:
+    return "versionId=" in URL(url, encoded=True).query_string
 
 
 def pinned(etag: str | None) -> dict[str, str]:

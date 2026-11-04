@@ -30,6 +30,10 @@ class Settings(FetchSettings):
     embed_model: str = "desearch-4b-v1"
     embed_api_url: str = LOCAL_EMBEDDINGS
     embed_api_key: str = ""
+    # Validators' relays to reach the task API through, besides or instead of reaching it directly.
+    relay_urls: tuple[str, ...] = ()
+    direct_path: bool = True
+    witnesses_file: str = ""
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] = os.environ) -> Settings:
@@ -38,6 +42,7 @@ class Settings(FetchSettings):
             return type(default)(value) if value else default
 
         proxies = env.get("PROXY_URLS", "")
+        relays = env.get("RELAY_URLS", "")
         return cls(
             task_api_url=get("TASK_API_URL", cls.task_api_url),
             wallet_name=get("WALLET_NAME", cls.wallet_name),
@@ -60,6 +65,10 @@ class Settings(FetchSettings):
             embed_model=get("EMBED_MODEL", cls.embed_model),
             embed_api_url=get("EMBED_API_URL", cls.embed_api_url),
             embed_api_key=get("EMBED_API_KEY", cls.embed_api_key),
+            relay_urls=tuple(r.strip() for r in relays.split(",") if r.strip()),
+            direct_path=env.get("DIRECT_PATH", "1").strip().lower()
+            not in ("0", "false", "no"),
+            witnesses_file=get("WITNESSES_FILE", cls.witnesses_file),
         )
 
     def keypair(self) -> Keypair:

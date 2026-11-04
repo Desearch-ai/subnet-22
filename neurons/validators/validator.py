@@ -19,6 +19,7 @@ from desearch.credit import SHARE_WINDOW_H
 from desearch.fetch import Fetcher, ScrapingDog
 from desearch.kinds import CRAWL, EMBED
 from desearch.manifest import seed_from_hash
+from desearch.witness import ApiLog
 from bittensor.wallets import Wallet
 
 from neurons.validators.config import ENV_FILE, config, flat, setup_logging
@@ -36,8 +37,15 @@ from neurons.validators.fetchers import (
     ScrapingDogAccount,
 )
 from neurons.validators.ledger import Ledger
+from neurons.validators.relay import Relay, serve
 from neurons.validators.upload_log import UploadLog
 from neurons.validators.weights import set_weights, weights_from_shares
+from neurons.validators.witness import (
+    CensorshipCheck,
+    ChainHead,
+    StorageWitness,
+    WitnessStore,
+)
 
 WEIGHTS_WINDOW_BLOCKS = 20
 UPLOAD_LOG_POLL_S = 60
@@ -72,6 +80,9 @@ class Validator:
             os.environ.get("SCRAPINGDOG_DAILY_CREDITS", SCRAPINGDOG_DAILY_CREDITS)
         )
         self.ledger = Ledger(os.path.join(self.config.neuron.full_path, "verdicts.db"))
+        self.witnesses = WitnessStore(
+            os.path.join(self.config.neuron.full_path, "witness.db")
+        )
         self.stopping = asyncio.Event()
 
     async def initialize(self) -> None:
@@ -86,6 +97,8 @@ class Validator:
         self.metagraph = await self.subtensor.subnets.metagraph(self.config.netuid)
         self.uid = self.metagraph.hotkeys.index(self.wallet.hotkey.ss58_address)
         self.http = aiohttp.ClientSession(timeout=DOWNLOAD_TIMEOUT)
+        self.head = ChainHead(self.subtensor.block)
+        await self.head.refresh()
 
     async def run(self) -> None:
         await self.initialize()
@@ -98,6 +111,8 @@ class Validator:
             asyncio.create_task(self.sync_metagraph()),
             asyncio.create_task(self.sync_weights()),
             asyncio.create_task(self.follow_upload_log()),
+            asyncio.create_task(self.head.follow(self.stopping)),
+            asyncio.create_task(self.serve_relay()),
         ]
         try:
             await asyncio.gather(self.check_crawl_tasks(), self.check_embed_tasks())
@@ -276,13 +291,55 @@ class Validator:
                 await asyncio.sleep(SIGNER_RETRY_S)
         return ""
 
+    async def serve_relay(self) -> None:
+        """A path to the task API for miners that doesn't run through the operator's network, witnessing every
+        request it forwards and proving any the API's log then lacks."""
+        relay_config = self.config.relay
+        if not relay_config.port:
+            return
+        api = self.config.neuron.task_api_url
+        relay = Relay(
+            self.wallet.hotkey,
+            api,
+            self.witnesses,
+            self.head,
+            registered=lambda hotkey: hotkey in self.metagraph.hotkeys,
+            http=self.http,
+            publish_delay_blocks=relay_config.publish_delay_blocks,
+        )
+        runner = await serve(relay, relay_config.host, relay_config.port)
+        signer = relay_config.signer or await self.api_signer()
+        check = CensorshipCheck(
+            self.witnesses,
+            self.head,
+            ApiLog(self.http, api, signer),
+            after_blocks=relay_config.check_after_blocks,
+            source=api,
+        )
+        try:
+            await check.follow(self.stopping)
+        finally:
+            await runner.cleanup()
+
     async def follow_upload_log(self) -> None:
         """Every miner's uploads of both kinds, from the log the task API signs into the uploads bucket."""
+        observer = (
+            StorageWitness(
+                self.http,
+                self.config.neuron.storage_url,
+                self.wallet.hotkey,
+                self.witnesses,
+                self.head,
+            )
+            if self.config.witness_storage
+            else None
+        )
         upload_log = UploadLog(
             self.http,
             self.config.neuron.storage_url,
             await self.api_signer(),
             self.ledger,
+            observer,
         )
         pruned_at = 0.0
         while not self.stopping.is_set():
@@ -294,6 +351,7 @@ class Validator:
                 log.warning(f"Upload log unavailable, retrying: {error!r}")
             if time.time() - pruned_at > PRUNE_EVERY_S:
                 self.ledger.prune()
+                self.witnesses.prune()
                 pruned_at = time.time()
             await asyncio.sleep(UPLOAD_LOG_POLL_S)
 

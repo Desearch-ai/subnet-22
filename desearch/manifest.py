@@ -29,6 +29,8 @@ FIELDS = (
     "chars",
     "input_key",
     "input_sha256",
+    # Only on a versioned bucket, so the signed bytes of a note without it are unchanged.
+    "version",
 )
 
 
