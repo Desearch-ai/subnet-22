@@ -105,7 +105,7 @@ pub struct Signed<'a> {
 
 impl Signed<'_> {
     pub async fn caller(&self, state: &State) -> Result<Caller, ApiError> {
-        let address = client_address(self.headers, &self.peer.ip().to_string());
+        let address = client_address(self.headers, &self.peer.ip().to_string(), &state.settings.client_address_header);
         auth::caller(state, self.headers, self.method, self.uri.path(), self.body, &address).await
     }
 
@@ -142,6 +142,9 @@ async fn claim_tasks(state: &State, signed: &Signed<'_>) -> Answer {
     let body = ClaimBody::parse(&json_body(signed.body)?)?;
     let kind: &'static str = if body.kind == EMBED { EMBED } else { CRAWL };
     let round_id = state.current_round(kind);
+    if let Some(pause) = state.custody.paused() {
+        return refused(state, signed, &round_id, &who, Refusal::new("PAUSED", json!({"reason": pause["reason"], "since": pause["since"]}))).await;
+    }
 
     let rated = state.retry_after(&who.hotkey).await?;
     steps.mark("rate");
@@ -876,6 +879,69 @@ pub async fn storage_probes(Shared(state): Shared<Arc<State>>, QueryParams(query
     let mut report = state.lookups.read(move |conn| crate::canary::report(conn, since, limit)).await?;
     report["every_s"] = every.into();
     Ok(Json(report))
+}
+
+/// Every setting this copy runs with, secrets left out; the attestation binds its hash.
+pub async fn config(Shared(state): Shared<Arc<State>>) -> Answer {
+    Ok(Json(state.settings.public()))
+}
+
+/// Which key signs the log, every custody record this copy knows, and the pause.
+pub async fn custody(Shared(state): Shared<Arc<State>>) -> Answer {
+    Ok(Json(crate::custody::view(&state).await?))
+}
+
+/// A predecessor's state, sealed to this CVM's attested handover key.
+pub async fn custody_receive(Shared(state): Shared<Arc<State>>, body: Bytes) -> Answer {
+    Ok(Json(crate::custody::receive(&state, body).await?))
+}
+
+async fn admin(state: &State, signed: &Signed<'_>) -> Result<Caller, ApiError> {
+    let who = signed.caller(state).await?;
+    if !who.is_admin {
+        return Err(ApiError::status(403, "only an admin hotkey may do this"));
+    }
+    Ok(who)
+}
+
+/// Hands the log to the CVM at `successor`, once its attestation holds and validators' stake approved its version.
+pub async fn handover(Shared(state): Shared<Arc<State>>, ConnectInfo(peer): ConnectInfo<SocketAddr>, headers: HeaderMap, uri: Uri, body: Bytes) -> Answer {
+    admin(&state, &Signed { headers: &headers, method: "POST", uri: &uri, body: &body, peer }).await?;
+    let request = json_body(&body)?;
+    let successor =
+        request["successor"].as_str().filter(|s| s.starts_with("http")).ok_or_else(|| ApiError::status(422, "successor must be the successor's URL"))?;
+    Ok(Json(crate::custody::hand_over(&state, successor).await?))
+}
+
+/// Stops or resumes handing out tasks, the only emergency power.
+pub async fn pause(Shared(state): Shared<Arc<State>>, ConnectInfo(peer): ConnectInfo<SocketAddr>, headers: HeaderMap, uri: Uri, body: Bytes) -> Answer {
+    let signed = Signed { headers: &headers, method: "POST", uri: &uri, body: &body, peer };
+    let who = admin(&state, &signed).await?;
+    let request = json_body(&body)?;
+    let paused = request["paused"].as_bool().ok_or_else(|| ApiError::status(422, "paused must be true or false"))?;
+    let reason = request["reason"].as_str().unwrap_or_default();
+    if paused && reason.trim().is_empty() {
+        return Err(ApiError::status(422, "a pause needs a reason"));
+    }
+    let answer = crate::custody::pause(&state, paused, reason, &who.hotkey).await?;
+    // Claims are refused while paused, so the log says when and why, with the admin's signed request.
+    let (logged, blobs) = signed.logged();
+    let record = journal::Record::new("pause", now(), json!({"request": logged, "paused": paused, "reason": reason}), answer.clone()).with_blobs(blobs);
+    state.db.run(move |conn| journal::append(conn, record)).await?;
+    Ok(Json(answer))
+}
+
+/// The CVM's TDX quote and what it binds: the signer, the handover key, the settings and the TLS key.
+pub async fn attestation(Shared(state): Shared<Arc<State>>, QueryParams(query): QueryParams<Query>) -> Answer {
+    let Some(tee) = &state.tee else {
+        return Err(ApiError::status(404, "this copy does not run in a TEE"));
+    };
+    let nonce = query.get("nonce").map(|text| crate::attestation::nonce(text)).transpose().map_err(|error| ApiError::status(422, error.to_string()))?;
+    let answer = tee.attestation(&state.signer(), &state.settings.public(), nonce.as_deref()).await.map_err(|error| {
+        eprintln!("attesting failed: {error:#}");
+        ApiError::retry(503, "the attestation could not be made now, retry", "5")
+    })?;
+    Ok(Json(answer))
 }
 
 pub async fn round_list(Shared(state): Shared<Arc<State>>, QueryParams(query): QueryParams<Query>) -> Answer {

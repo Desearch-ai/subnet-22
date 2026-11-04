@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use std::str::FromStr;
 
 use anyhow::{bail, Context, Result};
+use serde_json::{json, Map, Value};
 
 use crate::budgets::EMBED;
 use crate::embedding::{self, DESEARCH_4B_V1};
@@ -59,6 +60,71 @@ pub struct AnchorSettings {
     pub min_blocks: i64,
     pub per_epoch: i64,
 }
+
+/// Where the receipt key comes from: a secret URI handed in, or a key the CVM makes for itself and never lets out.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KeySource {
+    Uri,
+    Cvm,
+}
+
+/// How the chain is read: how many endpoints must agree, which head, and whether blocks are counted on the clock in between.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ChainOptions {
+    pub quorum: usize,
+    pub finalized: bool,
+    pub count_on: bool,
+    pub refresh_s: f64,
+}
+
+impl Default for ChainOptions {
+    fn default() -> Self {
+        ChainOptions { quorum: 1, finalized: false, count_on: true, refresh_s: 30.0 }
+    }
+}
+
+/// What only matters inside a TEE: the key, the attestation, custody of the log and the vote that moves it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TeeOptions {
+    pub key_source: KeySource,
+    pub dstack_socket: String,
+    /// The PEM certificate the TLS proxy inside the CVM serves, whose public key the attestation binds.
+    pub tls_cert: String,
+    /// Off: this copy signs from the start, as before. On: it waits to be appointed or handed the log.
+    pub custody: bool,
+    pub custody_poll_s: f64,
+    /// Share of the independent validators' stake that must approve a version, strictly more than.
+    pub gov_threshold: f64,
+    pub gov_timelock_blocks: i64,
+    /// Measurements (`mrtd:rtmr0:rtmr1:rtmr2`) a successor may boot besides this CVM's own.
+    pub successor_os: Vec<String>,
+    pub pccs_url: String,
+    /// The signer before custody records: the first record may be its handover.
+    pub legacy_signer: String,
+    /// Takes a successor's quote without Intel's signature, for the dstack simulator on a testnet; validators refuse such a compose.
+    pub simulated: bool,
+}
+
+impl Default for TeeOptions {
+    fn default() -> Self {
+        TeeOptions {
+            key_source: KeySource::Uri,
+            dstack_socket: DSTACK_SOCKET.into(),
+            tls_cert: String::new(),
+            custody: false,
+            custody_poll_s: 60.0,
+            gov_threshold: 0.5,
+            gov_timelock_blocks: 50_400,
+            successor_os: Vec::new(),
+            pccs_url: PCCS_URL.into(),
+            legacy_signer: String::new(),
+            simulated: false,
+        }
+    }
+}
+
+pub const DSTACK_SOCKET: &str = "/var/run/dstack.sock";
+pub const PCCS_URL: &str = "https://pccs.phala.network";
 
 #[derive(Clone, Debug)]
 pub struct Settings {
@@ -131,6 +197,10 @@ pub struct Settings {
     /// Seconds published log entries stay in SQLite.
     pub journal_keep: f64,
     pub anchor: Option<AnchorSettings>,
+    /// The header the proxy in front writes the caller's address into.
+    pub client_address_header: String,
+    pub chain: ChainOptions,
+    pub tee: TeeOptions,
 }
 
 fn text(name: &str, default: &str) -> String {
@@ -217,6 +287,44 @@ impl Settings {
             _ => SeedsMode::Local { block_seconds: number("TASK_API_BLOCK_SECONDS", 12.0)?, genesis: number("TASK_API_GENESIS", 0.0)? },
         };
         let key_uri = text("TASK_API_KEY_URI", "");
+        let key_source = match text("TASK_API_KEY_SOURCE", "uri").as_str() {
+            "uri" => KeySource::Uri,
+            "cvm" => KeySource::Cvm,
+            other => bail!("TASK_API_KEY_SOURCE={other:?} must be uri or cvm"),
+        };
+        let custody = text("TASK_API_CUSTODY", "0") == "1";
+        if key_source == KeySource::Cvm && !key_uri.is_empty() {
+            bail!("TASK_API_KEY_URI must not be set when TASK_API_KEY_SOURCE=cvm: the key is made inside the CVM");
+        }
+        if custody && key_source != KeySource::Cvm {
+            bail!("TASK_API_CUSTODY=1 needs TASK_API_KEY_SOURCE=cvm");
+        }
+        let chain = ChainOptions {
+            quorum: number("TASK_API_CHAIN_QUORUM", 1)?,
+            finalized: text("TASK_API_CHAIN_FINALIZED", "0") == "1",
+            count_on: text("TASK_API_CHAIN_COUNT_ON", "1") == "1",
+            refresh_s: number("TASK_API_CHAIN_REFRESH_S", 30.0)?,
+        };
+        if chain.quorum == 0 {
+            bail!("TASK_API_CHAIN_QUORUM must be at least 1");
+        }
+        let gov_threshold: f64 = number("TASK_API_GOV_THRESHOLD", 0.5)?;
+        if !(0.0..1.0).contains(&gov_threshold) {
+            bail!("TASK_API_GOV_THRESHOLD={gov_threshold} must be at least 0 and below 1");
+        }
+        let tee = TeeOptions {
+            key_source,
+            dstack_socket: text("TASK_API_DSTACK_SOCKET", DSTACK_SOCKET),
+            tls_cert: text("TASK_API_TLS_CERT", ""),
+            custody,
+            custody_poll_s: number("TASK_API_CUSTODY_POLL_S", 60.0)?,
+            gov_threshold,
+            gov_timelock_blocks: number("TASK_API_GOV_TIMELOCK_BLOCKS", 50_400)?,
+            successor_os: listed(&text("TASK_API_SUCCESSOR_OS", "")),
+            pccs_url: text("TASK_API_PCCS_URL", PCCS_URL),
+            legacy_signer: text("TASK_API_LEGACY_SIGNER", ""),
+            simulated: text("TASK_API_TEE_SIMULATED", "0") == "1",
+        };
         let pages_store = PagesStore::from(|name| std::env::var(name).ok())?;
         let pages_bucket = text("CF_R2_PAGES_BUCKET", "desearch-pages");
         let embed_tasks = text("TASK_API_EMBED_TASKS", "0") == "1";
@@ -224,7 +332,7 @@ impl Settings {
         if embed_tasks && embedding::model(&embed_model).is_none() {
             bail!("TASK_API_EMBED_MODEL={embed_model:?} is not a model whose vectors the task API knows");
         }
-        if key_uri.is_empty() && matches!(registry, RegistryMode::Chain { .. }) {
+        if key_uri.is_empty() && key_source == KeySource::Uri && matches!(registry, RegistryMode::Chain { .. }) {
             bail!("TASK_API_KEY_URI must be set when TASK_API_REGISTRY=chain");
         }
         Ok(Settings {
@@ -297,7 +405,146 @@ impl Settings {
                     per_epoch: number("TASK_API_ANCHOR_PER_EPOCH", crate::anchor::PER_EPOCH - 1)?,
                 }),
             },
+            client_address_header: text("TASK_API_CLIENT_ADDRESS_HEADER", crate::auth::CLIENT_ADDRESS_HEADER),
+            chain,
+            tee,
         })
+    }
+
+    /// Every setting this copy runs with, by the variable that sets it, secrets left out: what `/v1/config` serves.
+    pub fn public(&self) -> Value {
+        let (registry, netuid, validator_uris) = match &self.registry {
+            RegistryMode::Chain { netuid, .. } => ("chain", Some(*netuid), None),
+            RegistryMode::Local { validator_uris } => ("local", None, Some(validator_uris.clone())),
+        };
+        let (seeds, block_seconds, genesis) = match &self.seeds {
+            SeedsMode::Chain { .. } => ("chain", None, None),
+            SeedsMode::Local { block_seconds, genesis } => ("local", Some(*block_seconds), Some(*genesis)),
+        };
+        let network = match (&self.registry, &self.seeds) {
+            (RegistryMode::Chain { network, .. }, _) | (_, SeedsMode::Chain { network }) => Some(network.clone()),
+            _ => None,
+        };
+        let pages = self.pages_store.as_ref();
+        let settings: Map<String, Value> = [
+            ("TASK_API_LISTEN", json!(self.listen)),
+            ("TASK_API_DATA", json!(self.data.display().to_string())),
+            ("TASK_API_REDIS", json!(without_password(&self.redis_url))),
+            ("TASK_API_CLAIM_TTL", json!(self.claim_ttl)),
+            ("TASK_API_EMBED_CLAIM_TTL", json!(self.embed_claim_ttl)),
+            ("TASK_API_VALIDATION_TTL", json!(self.validation_ttl)),
+            ("TASK_API_POLL_RATE", json!(self.poll_rate)),
+            ("TASK_API_READS_PER_MINUTE", json!(self.reads_per_minute)),
+            ("TASK_API_LOG_READS_PER_MINUTE", json!(self.log_reads_per_minute)),
+            ("TASK_API_FAILED_WRITES_PER_MINUTE", json!(self.failed_writes_per_minute)),
+            ("TASK_API_MAX_UPLOAD_BYTES", json!(self.max_upload)),
+            ("TASK_API_MAX_BACKLOG_S", json!(self.max_backlog)),
+            ("TASK_API_MAX_ATTEMPTS", json!(self.max_attempts)),
+            ("TASK_API_MAX_HANDBACKS", json!(self.max_handbacks)),
+            ("TASK_API_LEDGER_DELAY_S", json!(self.ledger_delay)),
+            ("TASK_API_CHECK_SHARE", json!(self.check_share)),
+            ("TASK_API_CHECKS_PER_HOUR", json!(self.checks_per_hour)),
+            ("TASK_API_EMBED_CHECK_SHARE", json!(self.embed_check_share)),
+            ("TASK_API_EMBED_CHECKS_PER_HOUR", json!(self.embed_checks_per_hour)),
+            ("TASK_API_QUEUE_TARGET", json!(self.queue_target)),
+            ("TASK_API_EMBED_QUEUE_TARGET", json!(self.embed_queue_target)),
+            ("TASK_API_EMBED_INPUT_MAX_AGE_S", json!(self.embed_input_max_age)),
+            ("TASK_API_RELEASE_SPREAD_S", json!(self.release_spread)),
+            ("TASK_API_TASK_URLS", json!(self.task_urls)),
+            ("TASK_API_EMBED_TASKS", json!(self.embed_tasks)),
+            ("TASK_API_EMBED_MODEL", json!(self.embed_model)),
+            ("TASK_API_EMBED_REFERENCE_URL", json!(self.embed_reference_urls)),
+            ("TASK_API_EMBED_REFERENCE_CALLS", json!(self.embed_reference_calls)),
+            ("TASK_API_ACTIVE_S", json!(self.active_s)),
+            ("TASK_API_PUBLISH_TTL", json!(self.publish_ttl)),
+            ("TASK_API_PUBLISH_TRIES", json!(self.publish_tries)),
+            ("CF_R2_ENDPOINT", json!(self.r2_endpoint)),
+            ("CF_R2_REGION", json!(self.r2_region)),
+            ("CF_R2_PUBLIC_OBJECTS", json!(self.public_objects)),
+            ("CF_R2_BUCKET", json!(self.bucket)),
+            ("TASK_API_R2_PREFIX", json!(self.prefix)),
+            ("CF_R2_PAGES_BUCKET", json!(self.pages_bucket)),
+            ("CF_R2_PAGES_PREFIX", json!(self.pages_prefix)),
+            ("PAGES_S3_ENDPOINT", json!(pages.map(|p| p.endpoint.clone()))),
+            ("PAGES_S3_REGION", json!(pages.map(|p| p.region.clone()))),
+            ("TASK_API_REGISTRY", json!(registry)),
+            ("TASK_API_NETUID", json!(netuid)),
+            ("TASK_API_VALIDATOR_URIS", json!(validator_uris)),
+            ("TASK_API_SEEDS", json!(seeds)),
+            ("TASK_API_BLOCK_SECONDS", json!(block_seconds)),
+            ("TASK_API_GENESIS", json!(genesis)),
+            ("TASK_API_NETWORK", json!(network)),
+            ("TASK_API_ADMIN_HOTKEYS", json!(self.admin_hotkeys)),
+            ("TASK_API_ADMIN_URIS", json!(self.admin_uris)),
+            ("TASK_API_CORS_ORIGINS", json!(self.cors_origins)),
+            ("TASK_API_CLIENT_ADDRESS_HEADER", json!(self.client_address_header)),
+            ("TASK_API_CHAIN_QUORUM", json!(self.chain.quorum)),
+            ("TASK_API_CHAIN_FINALIZED", json!(self.chain.finalized)),
+            ("TASK_API_CHAIN_COUNT_ON", json!(self.chain.count_on)),
+            ("TASK_API_CHAIN_REFRESH_S", json!(self.chain.refresh_s)),
+            (
+                "TASK_API_KEY_SOURCE",
+                json!(match self.tee.key_source {
+                    KeySource::Uri => "uri",
+                    KeySource::Cvm => "cvm",
+                }),
+            ),
+            ("TASK_API_DSTACK_SOCKET", json!(self.tee.dstack_socket)),
+            ("TASK_API_TLS_CERT", json!(self.tee.tls_cert)),
+            ("TASK_API_CUSTODY", json!(self.tee.custody)),
+            ("TASK_API_CUSTODY_POLL_S", json!(self.tee.custody_poll_s)),
+            ("TASK_API_GOV_THRESHOLD", json!(self.tee.gov_threshold)),
+            ("TASK_API_GOV_TIMELOCK_BLOCKS", json!(self.tee.gov_timelock_blocks)),
+            ("TASK_API_SUCCESSOR_OS", json!(self.tee.successor_os)),
+            ("TASK_API_PCCS_URL", json!(self.tee.pccs_url)),
+            ("TASK_API_LEGACY_SIGNER", json!(self.tee.legacy_signer)),
+            ("TASK_API_TEE_SIMULATED", json!(self.tee.simulated)),
+            ("TASK_API_CANARY_EVERY_S", json!(self.canary_every)),
+            ("TASK_API_STORAGE_OUTAGE_FORGIVES", json!(self.storage_outage_forgives)),
+            ("TASK_API_UPLOAD_LOCK_S", json!(self.upload_lock_s)),
+            ("TASK_API_JOURNAL_EVERY_S", json!(self.journal_every)),
+            ("TASK_API_JOURNAL_SHARES_EVERY_S", json!(self.journal_shares_every)),
+            ("TASK_API_SNAPSHOT_EVERY_S", json!(self.snapshot_every)),
+            ("TASK_API_JOURNAL_KEEP_S", json!(self.journal_keep)),
+            ("TASK_API_ANCHOR_NETWORK", json!(self.anchor.as_ref().map(|a| a.network.clone()))),
+            ("TASK_API_ANCHOR_NETUID", json!(self.anchor.as_ref().map(|a| a.netuid))),
+            ("TASK_API_ANCHOR_EVERY_BLOCKS", json!(self.anchor.as_ref().map(|a| a.every_blocks))),
+            ("TASK_API_ANCHOR_MIN_BLOCKS", json!(self.anchor.as_ref().map(|a| a.min_blocks))),
+            ("TASK_API_ANCHOR_PER_EPOCH", json!(self.anchor.as_ref().map(|a| a.per_epoch))),
+        ]
+        .into_iter()
+        .map(|(name, value)| (name.to_string(), value))
+        .collect();
+        let secrets_set: Vec<&str> = [
+            ("CF_R2_ACCESS_KEY_ID", &self.r2_access_key),
+            ("CF_R2_SECRET_ACCESS_KEY", &self.r2_secret_key),
+            ("PAGES_S3_ACCESS_KEY_ID", &pages.map(|p| p.access_key.clone()).unwrap_or_default()),
+            ("PAGES_S3_SECRET_ACCESS_KEY", &pages.map(|p| p.secret_key.clone()).unwrap_or_default()),
+            ("TASK_API_EMBED_REFERENCE_KEY", &self.embed_reference_key),
+            ("TASK_API_KEY_URI", &self.key_uri),
+        ]
+        .into_iter()
+        .filter(|(_, value)| !value.is_empty())
+        .map(|(name, _)| name)
+        .collect();
+        json!({
+            "version": env!("CARGO_PKG_VERSION"),
+            "commit": option_env!("TASK_API_COMMIT"),
+            "settings": settings,
+            "secrets_set": secrets_set,
+        })
+    }
+}
+
+/// A Redis URL with any password replaced, so `/v1/config` can show where Redis is without how to get in.
+fn without_password(url: &str) -> String {
+    let Some((scheme, rest)) = url.split_once("://") else { return url.to_string() };
+    match rest.rsplit_once('@') {
+        Some((credentials, host)) => {
+            let user = credentials.split(':').next().unwrap_or_default();
+            format!("{scheme}://{user}:***@{host}")
+        }
+        None => url.to_string(),
     }
 }
 
@@ -324,5 +571,13 @@ mod tests {
         ]);
         let store = PagesStore::from(|name| own.get(name).cloned()).unwrap().unwrap();
         assert_eq!((store.endpoint.as_str(), store.region.as_str(), store.access_key.as_str()), ("https://s3.example", "us-east-va", "s3key"));
+    }
+
+    #[test]
+    fn a_redis_password_is_kept_out_of_the_public_settings() {
+        assert_eq!(without_password("redis://:hunter2@redis:6379/0"), "redis://:***@redis:6379/0");
+        assert_eq!(without_password("rediss://api:hunter2@redis.example:6380/1"), "rediss://api:***@redis.example:6380/1");
+        assert_eq!(without_password("redis://redis:6379/0"), "redis://redis:6379/0");
+        assert_eq!(without_password("unix:///run/redis/redis.sock?db=0"), "unix:///run/redis/redis.sock?db=0");
     }
 }

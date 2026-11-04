@@ -188,7 +188,7 @@ pub struct Extrinsics {
 
 impl Extrinsics {
     pub async fn load(chain: Arc<Chain>) -> Result<Extrinsics> {
-        let metadata = chain.metadata().await?;
+        let metadata = chain.metadata(None).await?;
         let genesis = chain.rpc("chain_getBlockHash", json!([0])).await?;
         let genesis = genesis.as_str().and_then(|h| decode_hex(h.trim_start_matches("0x"))).ok_or_else(|| anyhow!("no genesis hash"))?;
         let version = chain.rpc("state_getRuntimeVersion", json!([])).await?;
@@ -328,7 +328,7 @@ pub struct Anchoring {
 pub async fn pass(state: &State, anchoring: &mut Anchoring) -> Result<()> {
     let Some(settings) = state.settings.anchor.clone() else { return Ok(()) };
     if anchoring.extrinsics.is_none() {
-        let chain = Arc::new(Chain::new(&settings.network)?);
+        let chain = Arc::new(Chain::with(&settings.network, &state.settings.chain)?);
         anchoring.extrinsics = Some(Extrinsics::load(chain).await?);
         anchoring.key = Some(Hotkey::from_uri(if settings.key_uri.is_empty() { &state.settings.key_uri } else { &settings.key_uri })?);
     }

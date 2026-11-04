@@ -112,12 +112,23 @@ pub fn hash_of(entry: &Value) -> String {
     sha256(&canonical(entry))
 }
 
-/// The newest entry's number and hash, or 0 and the genesis hash.
+/// The newest entry's number and hash: of this copy's log, else of the head it adopted, else 0 and the genesis hash.
 pub fn head(conn: &Connection) -> Result<(i64, String)> {
+    if let Some(found) = conn.query_row("SELECT seq, hash FROM journal ORDER BY seq DESC LIMIT 1", [], |row| Ok((row.get(0)?, row.get(1)?))).optional()? {
+        return Ok(found);
+    }
     Ok(conn
-        .query_row("SELECT seq, hash FROM journal ORDER BY seq DESC LIMIT 1", [], |row| Ok((row.get(0)?, row.get(1)?)))
+        .query_row("SELECT last, head FROM journal_segments ORDER BY segment DESC LIMIT 1", [], |row| Ok((row.get(0)?, row.get(1)?)))
         .optional()?
         .unwrap_or((0, GENESIS.into())))
+}
+
+/// A copy appointed without a handover goes on from the head the last holder published (`log/journal/latest.json`): what it logged
+/// while it waited, never published, is dropped, and its numbers and links follow on from that head.
+pub fn adopt(conn: &Connection, segment: i64, last: i64, head: &str) -> Result<()> {
+    conn.execute_batch("DELETE FROM journal; DELETE FROM journal_blobs; DELETE FROM journal_segments;")?;
+    conn.execute("INSERT INTO journal_segments (segment, first, last, head, written_at) VALUES (?, ?, ?, ?, ?)", params![segment, last, last, head, now()])?;
+    Ok(())
 }
 
 /// Chains `record` onto the log; call it inside the transaction that makes the change it records.

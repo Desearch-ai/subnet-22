@@ -3,8 +3,10 @@
 mod anchor;
 mod chain;
 mod checks;
+mod custody;
 mod embed;
 mod fakechain;
+mod fakedstack;
 mod harness;
 mod journal;
 mod limits;
@@ -15,6 +17,7 @@ mod punishment;
 mod queueing;
 mod reference;
 mod staging;
+mod tee;
 mod timing;
 mod trust;
 mod witness;

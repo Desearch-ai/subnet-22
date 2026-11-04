@@ -448,3 +448,48 @@ async def test_the_chained_log_answers_a_witness_check_once_anchored_past_the_re
             await view.included("b" * 64) is None
         ), "a request newer than the anchored log: can't tell"
         assert await JournalLogView(lambda: None, Head(), 10).included("b" * 64) is None
+
+
+async def test_a_follower_reads_a_handed_over_log_under_each_holder_in_turn(tmp_path):
+    import aiohttp
+
+    successor = Keypair.create_from_uri("//task-api-successor")
+
+    class Holders:
+        """API holds entries up to 3, the successor after, as a custody chain's journal_seq says."""
+
+        def for_journal(self, seq):
+            return [API.ss58_address] if seq <= 3 else [successor.ss58_address]
+
+        def every(self):
+            return [API.ss58_address, successor.ss58_address]
+
+    bucket = Bucket()
+    first = chained(3)
+    second = chained(3, start=3, prev=hash_of(first[-1]))
+    bucket.put(segment_key(1), segment(1, first, GENESIS))
+    bucket.put(segment_key(2), segment(2, second, hash_of(first[-1]), key=successor))
+    later = {
+        "segment": 2,
+        "last": 6,
+        "head": hash_of(second[-1]),
+        "signer": successor.ss58_address,
+    }
+    later["signature"] = successor.sign(signed_payload(later)).hex()
+    bucket.put(LATEST_KEY, later)
+    async with serving(bucket.handle) as url, aiohttp.ClientSession() as http:
+        follower = JournalFollower(
+            http, url, Holders(), tmp_path / "ok", node({}), anchored([])
+        )
+        assert await follower.poll() == []
+        assert follower.state("last") == 6
+
+        bucket.put(segment_key(2), segment(2, second, hash_of(first[-1])))
+        follower = JournalFollower(
+            http, url, Holders(), tmp_path / "old", node({}), anchored([])
+        )
+        problems = await follower.poll()
+        assert [p.severity for p in problems] == ["fraud"]
+        assert (
+            "not signed" in problems[0].what
+        ), "the old holder signs nothing past its turn"

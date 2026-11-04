@@ -1,4 +1,7 @@
-//! The subtensor chain over JSON-RPC: the best block, block hashes, and a subnet's metagraph decoded with the chain's own metadata.
+//! The subtensor chain over JSON-RPC: the best or finalized block, block hashes, storage and a subnet's metagraph decoded with the chain's own metadata.
+//!
+//! With a quorum above one, every answer is asked of all the endpoints and taken only when that many agree, so no single
+//! endpoint can feed the API a seed, a height or a metagraph of its own.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -7,7 +10,6 @@ use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail, Context, Result};
 use desearch::canonical::hex;
-use frame_metadata::v15::RuntimeMetadataV15;
 use frame_metadata::{RuntimeMetadata, RuntimeMetadataPrefixed};
 use parity_scale_codec::Decode;
 use scale_value::{Composite, Primitive, Value, ValueDef};
@@ -15,9 +17,7 @@ use serde_json::json;
 use tokio::sync::Mutex;
 
 use crate::seeds::BLOCK_SECONDS;
-
-/// The best block is read this often; in between it is counted on the clock, at most a block behind.
-const BLOCK_REFRESH: Duration = Duration::from_secs(30);
+use crate::settings::ChainOptions;
 /// After a failed call an endpoint is skipped this long, doubling up to `PAUSE_MAX`, so an unwell one is not hammered while the next is asked.
 const PAUSE_FIRST: Duration = Duration::from_secs(5);
 const PAUSE_MAX: Duration = Duration::from_secs(30);
@@ -42,6 +42,14 @@ pub struct Chain {
     http: reqwest::Client,
     /// Asked in this order; one failing is skipped for a while and the next asked.
     urls: Vec<String>,
+    /// How many endpoints must give the same answer; one keeps the first that answers.
+    quorum: usize,
+    /// The finalized head instead of the best block, so a seed never comes from a block that can still change.
+    finalized: bool,
+    /// Off, the current block is the last one read and never counted on the local clock, so time can only run slow.
+    count_on: bool,
+    /// The head is read this often; in between it is counted on the clock, at most a block behind, when `count_on`.
+    refresh: Duration,
     best: std::sync::Mutex<Option<(i64, Instant)>>,
     reading: AtomicBool,
     first: Mutex<()>,
@@ -70,13 +78,25 @@ pub fn endpoint(network: &str) -> String {
 impl Chain {
     /// One network, or several separated by commas to fall back on in order.
     pub fn new(network: &str) -> Result<Chain> {
+        Chain::with(network, &ChainOptions::default())
+    }
+
+    /// Several networks, `quorum` of which must agree on every answer.
+    pub fn with(network: &str, options: &ChainOptions) -> Result<Chain> {
         let http = reqwest::Client::builder().timeout(RPC_TIMEOUT).build()?;
         let urls: Vec<String> = network.split(',').map(str::trim).filter(|name| !name.is_empty()).map(endpoint).collect();
         if urls.is_empty() {
             bail!("no chain endpoint in {network:?}");
         }
+        if options.quorum > urls.len() {
+            bail!("a quorum of {} needs as many chain endpoints, {network:?} names {}", options.quorum, urls.len());
+        }
         Ok(Chain {
             http,
+            quorum: options.quorum.max(1),
+            finalized: options.finalized,
+            count_on: options.count_on,
+            refresh: Duration::from_secs_f64(options.refresh_s.max(1.0)),
             best: std::sync::Mutex::default(),
             reading: AtomicBool::new(false),
             first: Mutex::default(),
@@ -113,6 +133,50 @@ impl Chain {
         Err(failed.unwrap_or_else(|| anyhow!("{method}: no chain endpoint")))
     }
 
+    /// The answer `quorum` endpoints give alike; with a quorum of one, the first endpoint's that answers.
+    async fn agreed(&self, method: &str, params: serde_json::Value) -> Result<serde_json::Value> {
+        if self.quorum <= 1 {
+            return self.rpc(method, params).await;
+        }
+        let answers = self.ask_all(method, params).await;
+        let mut tally: Vec<(serde_json::Value, usize)> = Vec::new();
+        for answer in answers.iter().flatten() {
+            match tally.iter_mut().find(|(value, _)| value == answer) {
+                Some((_, votes)) => *votes += 1,
+                None => tally.push((answer.clone(), 1)),
+            }
+        }
+        if let Some((value, _)) = tally.iter().find(|(_, votes)| *votes >= self.quorum) {
+            return Ok(value.clone());
+        }
+        let failed = answers.iter().filter(|answer| answer.is_err()).count();
+        bail!("{method}: {} of {} chain endpoints must agree; {} answers differed and {failed} failed", self.quorum, self.urls.len(), tally.len())
+    }
+
+    /// Every endpoint not paused, at once; a paused one counts as failed.
+    async fn ask_all(&self, method: &str, params: serde_json::Value) -> Vec<Result<serde_json::Value>> {
+        let calls = self.urls.iter().enumerate().map(|(at, url)| {
+            let params = params.clone();
+            async move {
+                if let Some(left) = self.paused_for(at) {
+                    bail!("{method}: {url} is not called for {:.0}s after failing", left.as_secs_f64());
+                }
+                let reply = self.call(url, method, params).await;
+                let mut pauses = self.pauses.lock().expect("chain pause");
+                match &reply {
+                    Ok(_) => pauses[at] = Pause::default(),
+                    Err(_) => {
+                        let pause = &mut pauses[at];
+                        pause.length = (pause.length * 2).clamp(PAUSE_FIRST, PAUSE_MAX);
+                        pause.until = Some(Instant::now() + pause.length);
+                    }
+                }
+                reply
+            }
+        });
+        futures::future::join_all(calls).await
+    }
+
     async fn call(&self, url: &str, method: &str, params: serde_json::Value) -> Result<serde_json::Value> {
         let request = json!({"id": 1, "jsonrpc": "2.0", "method": method, "params": params});
         let reply: serde_json::Value = self.http.post(url).json(&request).send().await?.error_for_status()?.json().await?;
@@ -145,7 +209,7 @@ impl Chain {
 
     fn counted(self: &Arc<Self>) -> Option<i64> {
         let (block, at) = (*self.best.lock().expect("best block"))?;
-        if at.elapsed() >= BLOCK_REFRESH && !self.all_paused() && !self.reading.swap(true, Ordering::AcqRel) {
+        if at.elapsed() >= self.refresh && !self.all_paused() && !self.reading.swap(true, Ordering::AcqRel) {
             let chain = self.clone();
             tokio::spawn(async move {
                 if let Err(error) = chain.read_best().await {
@@ -153,6 +217,9 @@ impl Chain {
                 }
                 chain.reading.store(false, Ordering::Release);
             });
+        }
+        if !self.count_on {
+            return Some(block);
         }
         Some(block + (at.elapsed().as_secs_f64() / BLOCK_SECONDS).floor() as i64)
     }
@@ -174,11 +241,57 @@ impl Chain {
     }
 
     async fn read_best(&self) -> Result<i64> {
-        let header = self.rpc("chain_getHeader", json!([])).await?;
-        let number = header["number"].as_str().ok_or_else(|| anyhow!("a header without a number"))?;
-        let block = i64::from_str_radix(number.trim_start_matches("0x"), 16).context("a header's number")?;
-        *self.best.lock().expect("best block") = Some((block, Instant::now()));
+        let block = if self.quorum <= 1 { self.head_from(None).await? } else { self.agreed_head().await? };
+        let mut best = self.best.lock().expect("best block");
+        // A slower quorum never moves the clock back.
+        let block = best.map_or(block, |(known, _)| known.max(block));
+        *best = Some((block, Instant::now()));
         Ok(block)
+    }
+
+    /// The head of one endpoint, or of the first that answers: the finalized one when asked for, else the best.
+    async fn head_from(&self, url: Option<&str>) -> Result<i64> {
+        let ask = |method: &'static str, params: serde_json::Value| async move {
+            match url {
+                Some(url) => self.call(url, method, params).await,
+                None => self.rpc(method, params).await,
+            }
+        };
+        let header = if self.finalized {
+            let hash = ask("chain_getFinalizedHead", json!([])).await?;
+            ask("chain_getHeader", json!([hash])).await?
+        } else {
+            ask("chain_getHeader", json!([])).await?
+        };
+        let number = header["number"].as_str().ok_or_else(|| anyhow!("a header without a number"))?;
+        i64::from_str_radix(number.trim_start_matches("0x"), 16).context("a header's number")
+    }
+
+    /// The highest block `quorum` endpoints have all reached: one endpoint running ahead cannot make time pass faster.
+    async fn agreed_head(&self) -> Result<i64> {
+        let heads = futures::future::join_all(self.urls.iter().enumerate().map(|(at, url)| async move {
+            if self.paused_for(at).is_some() {
+                return None;
+            }
+            match self.head_from(Some(url)).await {
+                Ok(block) => Some(block),
+                Err(error) => {
+                    let mut pauses = self.pauses.lock().expect("chain pause");
+                    let pause = &mut pauses[at];
+                    pause.length = (pause.length * 2).clamp(PAUSE_FIRST, PAUSE_MAX);
+                    pause.until = Some(Instant::now() + pause.length);
+                    eprintln!("chain endpoint {url}: {error:#}");
+                    None
+                }
+            }
+        }))
+        .await;
+        let mut heads: Vec<i64> = heads.into_iter().flatten().collect();
+        heads.sort_unstable_by(|a, b| b.cmp(a));
+        heads
+            .get(self.quorum - 1)
+            .copied()
+            .ok_or_else(|| anyhow!("only {} of {} chain endpoints gave a head, {} must", heads.len(), self.urls.len(), self.quorum))
     }
 
     /// The block's hash as `0x` and lowercase hex, None before it exists.
@@ -189,7 +302,19 @@ impl Chain {
         if self.absent.lock().expect("absent block").is_some_and(|(from, at)| block >= from && at.elapsed() < ABSENT_FOR) {
             return Ok(None);
         }
-        let found = self.rpc("chain_getBlockHash", json!([block])).await?;
+        if self.finalized && self.counted_or_read().await? < block {
+            *self.absent.lock().expect("absent block") = Some((block, Instant::now()));
+            return Ok(None);
+        }
+        let found = match self.agreed("chain_getBlockHash", json!([block])).await {
+            Ok(found) => found,
+            // Endpoints a block apart disagree about the newest block for a moment; it is taken as not made yet.
+            Err(error) if self.quorum > 1 => {
+                eprintln!("block {block}: {error:#}");
+                serde_json::Value::Null
+            }
+            Err(error) => return Err(error),
+        };
         let Some(hash) = found.as_str().map(str::to_lowercase) else {
             *self.absent.lock().expect("absent block") = Some((block, Instant::now()));
             return Ok(None);
@@ -202,15 +327,70 @@ impl Chain {
         Ok(Some(hash))
     }
 
-    pub async fn state_call(&self, method: &str, input: &[u8]) -> Result<Vec<u8>> {
-        let found = self.rpc("state_call", json!([method, format!("0x{}", hex(input))])).await?;
-        let text = found.as_str().ok_or_else(|| anyhow!("{method} returned no bytes"))?;
-        decode_hex(text.trim_start_matches("0x")).ok_or_else(|| anyhow!("{method} returned bytes that are not hex"))
+    /// The current block as `current_block` gives it, for callers that hold no `Arc`.
+    async fn counted_or_read(&self) -> Result<i64> {
+        if let Some((block, at)) = *self.best.lock().expect("best block") {
+            if !self.count_on {
+                return Ok(block);
+            }
+            return Ok(block + (at.elapsed().as_secs_f64() / BLOCK_SECONDS).floor() as i64);
+        }
+        self.read_best().await
     }
 
-    /// The runtime's v15 metadata: its types, pallets, calls and transaction extensions.
-    pub async fn metadata(&self) -> Result<RuntimeMetadataV15> {
-        let raw = self.state_call("Metadata_metadata_at_version", &METADATA_VERSION.to_le_bytes()).await?;
+    /// The hash the endpoints agree the current head has: what a metagraph or storage read is pinned to.
+    pub async fn head_hash(&self) -> Result<(i64, String)> {
+        let block = self.counted_or_read().await?;
+        let hash = self.block_hash(block).await?.ok_or_else(|| anyhow!("block {block} has no hash yet"))?;
+        Ok((block, hash))
+    }
+
+    /// The raw value at a storage key, at a block, None when unset.
+    pub async fn storage(&self, key: &[u8], at: &str) -> Result<Option<Vec<u8>>> {
+        let found = self.agreed("state_getStorage", json!([format!("0x{}", hex(key)), at])).await?;
+        found.as_str().map(|text| decode_hex(text.trim_start_matches("0x")).ok_or_else(|| anyhow!("storage that is not hex"))).transpose()
+    }
+
+    /// The values at many storage keys, at a block, in one call per batch: missing ones are left out.
+    pub async fn storage_many(&self, keys: &[Vec<u8>], at: &str) -> Result<HashMap<Vec<u8>, Vec<u8>>> {
+        const BATCH: usize = 256;
+        let mut values = HashMap::new();
+        for batch in keys.chunks(BATCH) {
+            let asked: Vec<String> = batch.iter().map(|key| format!("0x{}", hex(key))).collect();
+            let found = self.agreed("state_queryStorageAt", json!([asked, at])).await?;
+            for set in found.as_array().into_iter().flatten() {
+                for change in set["changes"].as_array().into_iter().flatten() {
+                    let (Some(key), Some(value)) = (change[0].as_str(), change[1].as_str()) else { continue };
+                    let decoded = |text: &str| decode_hex(text.trim_start_matches("0x")).ok_or_else(|| anyhow!("storage that is not hex"));
+                    values.insert(decoded(key)?, decoded(value)?);
+                }
+            }
+        }
+        Ok(values)
+    }
+
+    /// Every storage key under a prefix, at a block.
+    pub async fn keys(&self, prefix: &[u8], at: &str) -> Result<Vec<Vec<u8>>> {
+        const PAGE: usize = 1000;
+        let mut keys = Vec::new();
+        let mut start: Option<String> = None;
+        loop {
+            let found = self.agreed("state_getKeysPaged", json!([format!("0x{}", hex(prefix)), PAGE, start, at])).await?;
+            let page: Vec<String> = serde_json::from_value(found).context("a page of storage keys")?;
+            let done = page.len() < PAGE;
+            start = page.last().cloned();
+            for key in page {
+                keys.push(decode_hex(key.trim_start_matches("0x")).ok_or_else(|| anyhow!("a storage key that is not hex"))?);
+            }
+            if done {
+                return Ok(keys);
+            }
+        }
+    }
+
+    /// The runtime's v15 metadata at a block, for decoding storage and runtime calls.
+    pub async fn metadata(&self, at: Option<&str>) -> Result<frame_metadata::v15::RuntimeMetadataV15> {
+        let raw = self.state_call_at("Metadata_metadata_at_version", &METADATA_VERSION.to_le_bytes(), at).await?;
         let opaque = Option::<Vec<u8>>::decode(&mut raw.as_slice())?.ok_or_else(|| anyhow!("the chain has no v{METADATA_VERSION} metadata"))?;
         let RuntimeMetadata::V15(metadata) = RuntimeMetadataPrefixed::decode(&mut opaque.as_slice())?.1 else {
             bail!("the chain's metadata is not v{METADATA_VERSION}");
@@ -218,9 +398,31 @@ impl Chain {
         Ok(metadata)
     }
 
+    /// A runtime call at the head, as the endpoints agree on it.
+    pub async fn state_call(&self, method: &str, input: &[u8]) -> Result<Vec<u8>> {
+        self.state_call_at(method, input, None).await
+    }
+
+    async fn state_call_at(&self, method: &str, input: &[u8], at: Option<&str>) -> Result<Vec<u8>> {
+        let mut params = vec![json!(method), json!(format!("0x{}", hex(input)))];
+        if let Some(at) = at {
+            params.push(json!(at));
+        }
+        let found = self.agreed("state_call", serde_json::Value::Array(params)).await?;
+        let text = found.as_str().ok_or_else(|| anyhow!("{method} returned no bytes"))?;
+        decode_hex(text.trim_start_matches("0x")).ok_or_else(|| anyhow!("{method} returned bytes that are not hex"))
+    }
+
     /// Every neuron of the subnet, from `SubnetInfoRuntimeApi.get_metagraph` as bittensor's metagraph reads it.
     pub async fn metagraph(&self, netuid: u16) -> Result<Vec<Neuron>> {
-        let metadata = self.metadata().await?;
+        // Endpoints a block apart answer differently, so a quorum reads at a block they agree on.
+        let at = if self.quorum > 1 { Some(self.head_hash().await?.1) } else { None };
+        self.metagraph_at(netuid, at.as_deref()).await
+    }
+
+    /// Every neuron of the subnet at a block, or at the endpoint's own head.
+    pub async fn metagraph_at(&self, netuid: u16, at: Option<&str>) -> Result<Vec<Neuron>> {
+        let metadata = self.metadata(at).await?;
         let method = metadata
             .apis
             .iter()
@@ -232,7 +434,7 @@ impl Chain {
         let mut encoded = Vec::new();
         scale_value::scale::encode_as_type(&Value::u128(netuid.into()), input.ty.id, &metadata.types, &mut encoded)
             .map_err(|e| anyhow!("encoding the netuid: {e}"))?;
-        let output = self.state_call("SubnetInfoRuntimeApi_get_metagraph", &encoded).await?;
+        let output = self.state_call_at("SubnetInfoRuntimeApi_get_metagraph", &encoded, at).await?;
         let graph = scale_value::scale::decode_as_type(&mut output.as_slice(), method.output.id, &metadata.types)
             .map_err(|e| anyhow!("decoding the metagraph: {e}"))?;
         neurons(&graph)
@@ -261,7 +463,7 @@ fn neurons(graph: &Value<u32>) -> Result<Vec<Neuron>> {
         .collect()
 }
 
-fn unwrap_some(value: &Value<u32>) -> Option<&Value<u32>> {
+pub(crate) fn unwrap_some(value: &Value<u32>) -> Option<&Value<u32>> {
     match &value.value {
         ValueDef::Variant(variant) if variant.name == "Some" => variant.values.values().next(),
         ValueDef::Variant(_) => None,
@@ -269,14 +471,14 @@ fn unwrap_some(value: &Value<u32>) -> Option<&Value<u32>> {
     }
 }
 
-fn field<'a>(value: &'a Value<u32>, name: &str) -> Option<&'a Value<u32>> {
+pub(crate) fn field<'a>(value: &'a Value<u32>, name: &str) -> Option<&'a Value<u32>> {
     match &value.value {
         ValueDef::Composite(Composite::Named(fields)) => fields.iter().find(|(n, _)| n == name).map(|(_, v)| v),
         _ => None,
     }
 }
 
-fn items(value: &Value<u32>) -> Vec<&Value<u32>> {
+pub(crate) fn items(value: &Value<u32>) -> Vec<&Value<u32>> {
     match &value.value {
         ValueDef::Composite(composite) => composite.values().collect(),
         _ => Vec::new(),
@@ -284,21 +486,21 @@ fn items(value: &Value<u32>) -> Vec<&Value<u32>> {
 }
 
 /// The only value inside newtypes and single-field wrappers.
-fn inner(value: &Value<u32>) -> &Value<u32> {
+pub(crate) fn inner(value: &Value<u32>) -> &Value<u32> {
     match &value.value {
         ValueDef::Composite(composite) if composite.len() == 1 => inner(composite.values().next().expect("one value")),
         _ => value,
     }
 }
 
-fn number(value: &Value<u32>) -> Option<u128> {
+pub(crate) fn number(value: &Value<u32>) -> Option<u128> {
     match &inner(value).value {
         ValueDef::Primitive(Primitive::U128(n)) => Some(*n),
         _ => None,
     }
 }
 
-fn boolean(value: &Value<u32>) -> Option<bool> {
+pub(crate) fn boolean(value: &Value<u32>) -> Option<bool> {
     match &inner(value).value {
         ValueDef::Primitive(Primitive::Bool(b)) => Some(*b),
         _ => None,
@@ -306,7 +508,7 @@ fn boolean(value: &Value<u32>) -> Option<bool> {
 }
 
 /// A 32-byte account id, whatever wrappers it comes in.
-fn account(value: &Value<u32>) -> Option<[u8; 32]> {
+pub(crate) fn account(value: &Value<u32>) -> Option<[u8; 32]> {
     fn bytes(value: &Value<u32>, out: &mut Vec<u8>) -> Option<()> {
         match &value.value {
             ValueDef::Primitive(Primitive::U128(n)) => out.push(u8::try_from(*n).ok()?),

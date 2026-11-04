@@ -128,13 +128,19 @@ impl Replay {
 
     /// Replays one published file: checked first for its signer and its links from where the replay stands. A replay that has
     /// replayed nothing yet may start at any file when `join` is set, trusting its `prev` until an anchor on chain confirms it.
-    pub fn apply_segment(&mut self, segment: &Value, signer: &str, join: bool, blobs: Blobs) -> Result<Result<(), Break>> {
+    pub fn apply_segment(&mut self, segment: &Value, signers: &[String], join: bool, blobs: Blobs) -> Result<Result<(), Break>> {
         let (mut last, mut head) = self.position()?;
         if last == 0 && join {
             last = int(&segment["first"]) - 1;
             head = segment["prev"].as_str().unwrap_or_default().to_string();
         }
-        if let Err(broken) = journal::verify_segment(segment, signer, last, &head) {
+        // Any holder of the log may have signed it; which one held it when is the custody chain's to say.
+        let checked: Vec<Result<(i64, String), Break>> = signers.iter().map(|signer| journal::verify_segment(segment, signer, last, &head)).collect();
+        if !checked.iter().any(Result::is_ok) {
+            // A file one holder did sign but that breaks the links says more than a signature no holder made.
+            let number = segment["segment"].as_i64().unwrap_or(-1);
+            let broken =
+                checked.into_iter().filter_map(Result::err).find(|b| !matches!(b, Break::Signature { .. })).unwrap_or(Break::Signature { segment: number });
             return Ok(Err(broken));
         }
         for entry in segment["entries"].as_array().into_iter().flatten() {
@@ -164,6 +170,10 @@ impl Replay {
                 starts.remove(0);
             }
             self.set_meta("starts", &json!(starts))?;
+        } else if kind == "custody" {
+            self.custody(entry)?;
+        } else if kind == "pause" {
+            self.set_meta("paused", &entry["input"]["paused"])?;
         } else if kind == "probe" {
             crate::canary::record(&self.conn, &crate::canary::from_logged(&entry["input"]))?;
         } else if self.started()? {
@@ -227,6 +237,21 @@ impl Replay {
         self.set_meta("started", &true.into())
     }
 
+    /// A new holder of the log: signed by whoever must have signed it; one appointed without a handover starts the accounts afresh,
+    /// so the replay waits for the snapshot that follows.
+    fn custody(&mut self, entry: &Value) -> Result<()> {
+        let record = &entry["input"]["record"];
+        if !crate::custody::signature_holds(record) {
+            self.diverge(entry, FRAUD, "a custody record not signed by who it says", record.clone(), Value::Null);
+        }
+        if record["kind"] == crate::custody::APPOINT {
+            snapshot::clear(&self.conn)?;
+            self.conn.execute_batch("DELETE FROM replay_jobs; DELETE FROM replay_votes; DELETE FROM replay_claims;")?;
+            self.set_meta("started", &false.into())?;
+        }
+        Ok(())
+    }
+
     fn claim(&mut self, entry: &Value) -> Result<()> {
         let at = float(&entry["at"]);
         let hotkey = entry["input"]["request"]["hotkey"].as_str().unwrap_or_default().to_string();
@@ -239,6 +264,9 @@ impl Replay {
             }
             match text(body, "outcome") {
                 "issued" => {
+                    if self.meta("paused")? == Some(true.into()) {
+                        self.diverge(entry, SUSPECT, "a task was issued while the log shows a pause", body.clone(), Value::Null);
+                    }
                     if let Some(until) = budgets::locked_until(&self.conn, &hotkey, &kind, at)? {
                         self.diverge(entry, SUSPECT, "a task was issued to a locked-out miner", body.clone(), until.into());
                     }
@@ -250,6 +278,9 @@ impl Replay {
                 }
                 "refused" if body["refusal"]["code"] == "LOCKED_OUT" && budgets::locked_until(&self.conn, &hotkey, &kind, at)?.is_none() => {
                     self.diverge(entry, SUSPECT, "a miner was refused as locked out while it was not", body.clone(), Value::Null);
+                }
+                "refused" if body["refusal"]["code"] == "PAUSED" && self.meta("paused")? != Some(true.into()) => {
+                    self.diverge(entry, SUSPECT, "a claim was refused as paused while the log shows no pause", body.clone(), Value::Null);
                 }
                 _ => {}
             }
@@ -639,7 +670,7 @@ fn differing_tables(theirs: &Value, ours: &Value) -> Vec<String> {
 }
 
 /// Every file of a log in a folder as the uploads bucket lays it out (`seq/<n>.json`, `blobs/<sha256>`), replayed in order.
-pub fn replay_dir(replay: &mut Replay, dir: &Path, signer: &str, join: bool) -> Result<Result<usize, Break>> {
+pub fn replay_dir(replay: &mut Replay, dir: &Path, signers: &[String], join: bool) -> Result<Result<usize, Break>> {
     let blobs = |sha: &str| std::fs::read(dir.join("blobs").join(sha)).ok();
     let mut files: Vec<_> =
         std::fs::read_dir(dir.join("seq"))?.filter_map(|e| e.ok()).map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "json")).collect();
@@ -651,7 +682,7 @@ pub fn replay_dir(replay: &mut Replay, dir: &Path, signer: &str, join: bool) -> 
         if int(&segment["last"]) <= last {
             continue;
         }
-        if let Err(broken) = replay.apply_segment(&segment, signer, join, &blobs)? {
+        if let Err(broken) = replay.apply_segment(&segment, signers, join, &blobs)? {
             return Ok(Err(broken));
         }
         replayed += 1;

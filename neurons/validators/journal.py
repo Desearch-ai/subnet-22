@@ -30,6 +30,7 @@ from desearch.journal import (
     signed_by,
     verify_segment,
 )
+from neurons.validators.custody import as_signers
 
 READ_TIMEOUT = aiohttp.ClientTimeout(total=60.0)
 # A validator that starts reads back this many files, about an hour at one file every 30 seconds.
@@ -74,7 +75,8 @@ class JournalFollower:
     ):
         self.http = http
         self.storage_url = storage_url.rstrip("/")
-        self.signer = signer
+        # One address, or the custody chain naming who signed which entries.
+        self.signers = as_signers(signer)
         self.folder = Path(folder)
         self.block_hash = block_hash
         self.anchor = anchor
@@ -147,10 +149,11 @@ class JournalFollower:
         latest = await self.get_json(LATEST_KEY)
         if latest is None:
             return problems
-        if not signed_by(latest, self.signer):
+        allowed = self.signers.for_journal(int(latest.get("last") or 0))
+        if not any(signed_by(latest, signer) for signer in allowed):
             return [
                 Problem(
-                    f"{LATEST_KEY} is not signed by {self.signer}",
+                    f"{LATEST_KEY} is not signed by {' or '.join(allowed) or 'any holder'}",
                     evidence={"latest": latest},
                 )
             ]
@@ -196,7 +199,7 @@ class JournalFollower:
         if joining or head is None:
             last, head = int(segment["first"]) - 1, segment["prev"]
         try:
-            last, head = verify_segment(segment, self.signer, last, head)
+            last, head = self.verified(segment, last, head)
         except Broken as broken:
             self.set_state("broken", str(broken))
             return [
@@ -234,6 +237,21 @@ class JournalFollower:
         self.set_state("last", last)
         self.set_state("head", head)
         return problems
+
+    def verified(self, segment: dict, last: int, head: str) -> tuple[int, str]:
+        """A file checked against whoever held the log for its entries; a holder's signature with broken links says more than none."""
+        allowed = self.signers.for_journal(int(segment.get("last") or 0))
+        problems = []
+        for signer in allowed:
+            try:
+                return verify_segment(segment, signer, last, head)
+            except Broken as broken:
+                problems.append(broken)
+        named = [p for p in problems if "not signed" not in str(p)]
+        found = named or problems
+        if found:
+            raise found[0]
+        raise Broken(f"file {segment.get('segment')} has no holder to be signed by")
 
     def index_requests(self, entry: dict) -> None:
         given = entry.get("input") or {}
@@ -321,8 +339,7 @@ class JournalFollower:
             str(self.folder),
             "--state",
             str(self.folder / "replay.db"),
-            "--signer",
-            self.signer,
+            *[part for signer in self.signers.every() for part in ("--signer", signer)],
             "--join",
         ]
         try:
@@ -372,7 +389,7 @@ class JournalFollower:
         name = f"{problem.seq or 0:012d}-{int(time.time())}.json"
         proof = {
             "problem": problem.as_dict(),
-            "signer": self.signer,
+            "signer": str(self.signers),
             "anchor": self.state("anchor"),
             "storage_url": self.storage_url,
             "files": sorted(p.name for p in (self.folder / "seq").glob("*.json"))[

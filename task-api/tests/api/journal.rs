@@ -21,7 +21,7 @@ fn replayed(h: &Harness, files: &[Value]) -> (Replay, Result<(), Break>) {
     let mut replay = Replay::open(None).unwrap();
     let blobs = |sha: &str| h.object(&journal::blob_key(sha));
     for file in files {
-        if let Err(broken) = replay.apply_segment(file, &h.state.signer(), false, &blobs).unwrap() {
+        if let Err(broken) = replay.apply_segment(file, &[h.state.signer()], false, &blobs).unwrap() {
             return (replay, Err(broken));
         }
     }
@@ -139,7 +139,7 @@ async fn a_replay_of_the_published_log_reaches_the_api_accounts() {
         std::fs::write(dir.join("seq").join(format!("{:012}.json", file["segment"].as_i64().unwrap())), file.to_string()).unwrap();
         if at + 1 == half || at + 1 == files.len() {
             let mut replay = Replay::open(Some(&state)).unwrap();
-            assert!(replay_dir(&mut replay, &dir, &h.state.signer(), false).unwrap().is_ok());
+            assert!(replay_dir(&mut replay, &dir, &[h.state.signer()], false).unwrap().is_ok());
             assert_eq!(replay.divergences, []);
         }
     }
@@ -236,7 +236,7 @@ async fn altered_dropped_forked_and_made_up_entries_are_caught() {
     let sha = snapshot["output"]["state"]["blob"].as_str().unwrap().to_string();
     let mut replay = Replay::open(None).unwrap();
     let swapped = |asked: &str| if asked == sha { Some(b"{}".to_vec()) } else { h.object(&journal::blob_key(asked)) };
-    replay.apply_segment(&files[0], &signer, false, &swapped).unwrap().unwrap();
+    replay.apply_segment(&files[0], std::slice::from_ref(&signer), false, &swapped).unwrap().unwrap();
     assert!(replay.fraud().any(|d| d.kind == "snapshot" && d.what.contains("not published")));
     assert!(replay.divergences.iter().all(|d| d.severity == FRAUD));
 }

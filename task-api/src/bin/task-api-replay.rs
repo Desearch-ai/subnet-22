@@ -1,7 +1,8 @@
 //! Replays the task API's log from a folder laid out as the uploads bucket keeps it (`seq/<n>.json`, `blobs/<sha256>`), going on from
 //! the state of the last run, and prints every output the API's rules do not give as one JSON line, then a summary line.
 //!
-//! `task-api-replay --dir <folder> --state <file> --signer <ss58> [--join]`; exits 2 when the log's links or signatures break.
+//! `task-api-replay --dir <folder> --state <file> --signer <ss58> [--signer <ss58>…] [--join]`, a signer for each holder of the log;
+//! exits 2 when the log's links or signatures break.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -13,23 +14,27 @@ use task_api::replay::{replay_dir, Replay};
 struct Args {
     dir: PathBuf,
     state: Option<PathBuf>,
-    signer: String,
+    signers: Vec<String>,
     join: bool,
 }
 
 fn args() -> Result<Args> {
-    let (mut dir, mut state, mut signer, mut join) = (None, None, None, false);
+    let (mut dir, mut state, mut signers, mut join) = (None, None, Vec::new(), false);
     let mut given = std::env::args().skip(1);
     while let Some(name) = given.next() {
         match name.as_str() {
             "--dir" => dir = given.next().map(PathBuf::from),
             "--state" => state = given.next().map(PathBuf::from),
-            "--signer" => signer = given.next(),
+            // Once per holder of the log, as the custody chain lists them.
+            "--signer" => signers.extend(given.next().into_iter().flat_map(|s| s.split(',').map(String::from).collect::<Vec<_>>())),
             "--join" => join = true,
             other => bail!("unknown argument {other:?}"),
         }
     }
-    Ok(Args { dir: dir.context("--dir is required")?, state, signer: signer.context("--signer is required")?, join })
+    if signers.is_empty() {
+        bail!("--signer is required");
+    }
+    Ok(Args { dir: dir.context("--dir is required")?, state, signers, join })
 }
 
 fn main() -> ExitCode {
@@ -45,7 +50,7 @@ fn main() -> ExitCode {
 fn run() -> Result<ExitCode> {
     let args = args()?;
     let mut replay = Replay::open(args.state.as_deref())?;
-    let outcome = replay_dir(&mut replay, &args.dir, &args.signer, args.join)?;
+    let outcome = replay_dir(&mut replay, &args.dir, &args.signers, args.join)?;
     for divergence in &replay.divergences {
         println!("{}", divergence.to_json());
     }

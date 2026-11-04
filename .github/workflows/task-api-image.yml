@@ -1,0 +1,179 @@
+# Builds the task API image from a release tag, checks that a second, independent build gives the same
+# digest, and only then pushes it to GHCR with a signed SLSA build provenance (Sigstore) that links the
+# commit to the digest. The digest is what the dstack compose names and the TEE measures; see
+# docs/tee.md and docs/verify-task-api.md for checking it.
+name: task-api image
+
+on:
+  push:
+    tags: ["task-api-v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "An existing tag to build, e.g. task-api-v1.2.0"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: task-api-image-${{ github.event.inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/desearch-ai/sn22-task-api
+  PLATFORM: linux/amd64
+  # The same BuildKit as task-api/deploy/rebuild.sh, so anyone can rebuild the same digest.
+  BUILDKIT_IMAGE: moby/buildkit:v0.34.1@sha256:99368f3e46177c6405b9740e4461d91cee004128daeecca78d4ceac50ec1da5c
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    outputs:
+      tag: ${{ steps.source.outputs.tag }}
+      version: ${{ steps.source.outputs.version }}
+      commit: ${{ steps.source.outputs.commit }}
+      digest: ${{ steps.digest.outputs.digest }}
+    steps:
+      - name: Pick the tag
+        id: tag
+        env:
+          INPUT_TAG: ${{ github.event.inputs.tag }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          tag="${INPUT_TAG:-$REF_NAME}"
+          if ! [[ "$tag" =~ ^task-api-v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; then
+            echo "::error::$tag is not a task-api-vX.Y.Z tag"
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ steps.tag.outputs.tag }}
+          persist-credentials: false
+
+      - name: Read the commit
+        id: source
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          {
+            echo "tag=$TAG"
+            echo "version=${TAG#task-api-v}"
+            echo "commit=$(git rev-parse HEAD)"
+            echo "epoch=$(git log -1 --format=%ct HEAD)"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+        with:
+          driver-opts: image=${{ env.BUILDKIT_IMAGE }}
+
+      - name: Build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        env:
+          SOURCE_DATE_EPOCH: ${{ steps.source.outputs.epoch }}
+        with:
+          context: .
+          file: task-api/Dockerfile.rust
+          platforms: ${{ env.PLATFORM }}
+          build-args: |
+            TASK_API_COMMIT=${{ steps.source.outputs.commit }}
+            SOURCE_DATE_EPOCH=${{ steps.source.outputs.epoch }}
+          # Attestations from the builder would add manifests that differ on every run; the provenance is
+          # attested below instead, beside the image rather than inside it.
+          provenance: false
+          sbom: false
+          no-cache: true
+          outputs: type=oci,dest=${{ runner.temp }}/image.tar,rewrite-timestamp=true,oci-mediatypes=true,compression=gzip,compression-level=6,force-compression=true
+
+      - name: Read the digest
+        id: digest
+        run: |
+          mkdir -p "$RUNNER_TEMP/layout"
+          tar -xf "$RUNNER_TEMP/image.tar" -C "$RUNNER_TEMP/layout" index.json
+          digest=$(jq -r '.manifests[0].digest' "$RUNNER_TEMP/layout/index.json")
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "### task API image" >> "$GITHUB_STEP_SUMMARY"
+          echo "\`$IMAGE@$digest\` built from \`$(git rev-parse HEAD)\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "digest $digest"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: image
+          path: ${{ runner.temp }}/image.tar
+          retention-days: 7
+          if-no-files-found: error
+
+  # A second build on a fresh runner, the way anyone verifying would do it: it must give the same digest.
+  reproduce:
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ needs.build.outputs.tag }}
+          persist-credentials: false
+
+      - name: Rebuild
+        id: rebuild
+        run: |
+          digest=$(TASK_API_SOURCE=. TASK_API_WORK="$RUNNER_TEMP" task-api/deploy/rebuild.sh HEAD "$PLATFORM")
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
+      - name: Compare
+        env:
+          BUILT: ${{ needs.build.outputs.digest }}
+          REBUILT: ${{ steps.rebuild.outputs.digest }}
+        run: |
+          echo "built   $BUILT"
+          echo "rebuilt $REBUILT"
+          if [[ -z "$BUILT" || "$BUILT" != "$REBUILT" ]]; then
+            echo "::error::the image is not reproducible: $BUILT != $REBUILT; nothing is pushed"
+            exit 1
+          fi
+
+  publish:
+    needs: [build, reproduce]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: image
+          path: ${{ runner.temp }}
+
+      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # skopeo copies the tested archive as it is, so the pushed digest is the one both builds gave.
+      - name: Push by digest
+        env:
+          DIGEST: ${{ needs.build.outputs.digest }}
+          VERSION: ${{ needs.build.outputs.version }}
+          COMMIT: ${{ needs.build.outputs.commit }}
+        run: |
+          for tag in "$VERSION" "$COMMIT"; do
+            skopeo copy --preserve-digests "oci-archive:$RUNNER_TEMP/image.tar" "docker://$IMAGE:$tag"
+          done
+          pushed=$(skopeo inspect --raw "docker://$IMAGE@$DIGEST" | sha256sum | cut -d' ' -f1)
+          if [[ "sha256:$pushed" != "$DIGEST" ]]; then
+            echo "::error::the registry holds sha256:$pushed, not $DIGEST"
+            exit 1
+          fi
+          echo "pushed $IMAGE@$DIGEST as $VERSION and $COMMIT"
+
+      - name: Attest the build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ needs.build.outputs.digest }}
+          push-to-registry: true

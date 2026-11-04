@@ -13,7 +13,7 @@ import numpy as np
 import wandb
 
 import desearch
-from desearch import env
+from desearch import attestation, env
 from desearch.client import TaskApiClient
 from desearch.embedding import MODELS, EmbeddingClient
 from desearch.credit import SHARE_WINDOW_H
@@ -26,6 +26,7 @@ from bittensor.wallets import Wallet
 
 from neurons.validators.config import ENV_FILE, config, flat, setup_logging
 from neurons.validators.crawl import CrawlValidator
+from neurons.validators.custody import LEGACY_SIGNER, Custody
 from neurons.validators.embed import (
     REFERENCE_WAIT_S,
     ApiReference,
@@ -38,6 +39,7 @@ from neurons.validators.fetchers import (
     SampleFetcher,
     ScrapingDogAccount,
 )
+from neurons.validators.governance import read_snapshot
 from neurons.validators.journal import JournalFollower, JournalLogView
 from neurons.validators.ledger import Ledger
 from neurons.validators.relay import Relay, serve
@@ -59,6 +61,7 @@ AFTER_WEIGHTS_S = 300
 SHARES_TIMEOUT = aiohttp.ClientTimeout(total=30.0)
 SIGNER_RETRY_S = 30
 JOURNAL_POLL_S = 60
+CUSTODY_FILE = "custody.json"
 ACCOUNT_CHECK_S = 300
 VALIDATION_JOBS = 12
 EMBED_JOBS = 2
@@ -92,6 +95,8 @@ class Validator:
         self.journal_problems = []
         # The log follower, once the log is followed; witness checks read it.
         self.journal = None
+        self.custody: Custody | None = None
+        self.custody_ready = asyncio.Lock()
 
     async def initialize(self) -> None:
         network = self.config.subtensor.chain_endpoint or self.config.subtensor.network
@@ -102,6 +107,8 @@ class Validator:
             path=self.config.wallet.path,
         )
         self.subtensor = await bt.Subtensor(network)
+        archive = self.config.neuron.archive_network
+        self.archive = await bt.Subtensor(archive) if archive else self.subtensor
         self.metagraph = await self.subtensor.subnets.metagraph(self.config.netuid)
         self.uid = self.metagraph.hotkeys.index(self.wallet.hotkey.ss58_address)
         self.http = aiohttp.ClientSession(timeout=DOWNLOAD_TIMEOUT)
@@ -286,23 +293,80 @@ class Validator:
             return None
         return seed_from_hash((await self.subtensor.block_info(block)).hash)
 
-    async def api_signer(self) -> str:
-        """The key the task API signs with, as this release pins it; the API's own `/v1/key` is only compared with it, never taken."""
-        pinned = self.config.neuron.task_api_signer
+    async def api_signer(self) -> Custody:
+        """Who signs manifests and the upload log: the attested custody chain, set up once."""
+        async with self.custody_ready:
+            if self.custody is None:
+                self.custody = await self.follow_custody()
+        return self.custody
+
+    async def follow_custody(self) -> Custody:
+        custody = Custody(
+            self.http,
+            self.config.neuron.storage_url,
+            os.path.join(self.config.neuron.full_path, CUSTODY_FILE),
+            lambda block: read_snapshot(self.archive, self.config.netuid, block),
+            fallback=self.config.neuron.legacy_signer or LEGACY_SIGNER,
+            policy=self.tee_policy(),
+        )
+        try:
+            await custody.poll()
+        except Exception as error:
+            log.warning(f"Custody records unavailable, retrying later: {error!r}")
+        if custody.records:
+            log.info(f"Following the attested task API signer {custody}")
+        elif custody.fallback:
+            await self.compare_with_api(custody.fallback)
+        else:
+            log.warning(
+                "No task API custody records yet and no pinned signer: trusting the signer the task API names at /v1/key"
+            )
+            custody.fallback = await self.key_from_api()
+        return custody
+
+    async def compare_with_api(self, pinned: str) -> None:
+        """Logs it when the task API says it signs with another key than this release pins; the pinned one is followed regardless."""
         url = f"{self.config.neuron.task_api_url.rstrip('/')}/v1/key"
         try:
             async with self.http.get(
                 url, timeout=SHARES_TIMEOUT, raise_for_status=True
             ) as response:
                 published = (await response.json())["signer"]
-            if published != pinned:
-                log.error(
-                    f"The task API says it signs with {published}, this release pins {pinned}: "
-                    "only files signed by the pinned key are read"
-                )
         except Exception as error:
             log.warning(f"Task API signer not compared with the pinned one: {error!r}")
-        return pinned
+            return
+        if published != pinned:
+            log.error(
+                f"The task API says it signs with {published}, this release pins {pinned}: "
+                "only files signed by the pinned key are read"
+            )
+
+    def tee_policy(self) -> attestation.Policy:
+        """The release's attestation policy; the testnet loosenings never apply on finney."""
+        loosened = (
+            self.config.neuron.tee_allow_any_os or self.config.neuron.tee_simulated
+        )
+        if loosened and self.config.subtensor.network == "finney":
+            log.error("--neuron.tee_* flags are for testnets and are ignored on finney")
+            return attestation.RELEASE
+        return attestation.Policy(
+            allow_any_os=self.config.neuron.tee_allow_any_os,
+            simulated=self.config.neuron.tee_simulated,
+        )
+
+    async def key_from_api(self) -> str:
+        """The key the task API says it signs with, fetched once."""
+        url = f"{self.config.neuron.task_api_url.rstrip('/')}/v1/key"
+        while not self.stopping.is_set():
+            try:
+                async with self.http.get(
+                    url, timeout=SHARES_TIMEOUT, raise_for_status=True
+                ) as response:
+                    return (await response.json())["signer"]
+            except Exception as error:
+                log.warning(f"Task API signer unavailable, retrying: {error!r}")
+                await asyncio.sleep(SIGNER_RETRY_S)
+        return ""
 
     async def block_hash(self, block: int) -> str | None:
         """A block's hash from our own node; None until it exists."""
@@ -359,7 +423,8 @@ class Validator:
             publish_delay_blocks=relay_config.publish_delay_blocks,
         )
         runner = await serve(relay, relay_config.host, relay_config.port)
-        signer = relay_config.signer or await self.api_signer()
+        custody = await self.api_signer()
+        signer = relay_config.signer or custody.current or custody.fallback
         check = CensorshipCheck(
             self.witnesses,
             self.head,
@@ -399,6 +464,12 @@ class Validator:
         )
         pruned_at = 0.0
         while not self.stopping.is_set():
+            try:
+                # Custody first, so a file signed after a handover finds its signer accepted.
+                if await self.custody.poll():
+                    log.warning(f"The task API signer is now {self.custody}")
+            except Exception as error:
+                log.warning(f"Custody records unavailable, keeping the last: {error!r}")
             try:
                 added = await upload_log.poll()
                 if added:
@@ -533,6 +604,11 @@ class Validator:
             await self.http.close()
         if hasattr(self, "subtensor"):
             await self.subtensor.close()
+        if getattr(self, "archive", None) not in (
+            None,
+            getattr(self, "subtensor", None),
+        ):
+            await self.archive.close()
 
 
 def proportions(amounts: dict[str, float]) -> dict[str, float]:

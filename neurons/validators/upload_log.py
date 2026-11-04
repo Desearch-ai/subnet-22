@@ -9,6 +9,7 @@ import aiohttp
 
 from desearch.credit import SHARE_WINDOW_H
 from desearch.manifest import UPLOAD_LOG_LATEST, upload_log_key, verify_log
+from neurons.validators.custody import as_signers
 
 NEXT_SEQ = "upload_log_next"
 # A new validator reads back at most this many files, a day at one every 30 seconds.
@@ -23,13 +24,14 @@ class UploadLog:
         self,
         http: aiohttp.ClientSession,
         storage_url: str,
-        signer: str,
+        signer,
         ledger,
         observer=None,
     ):
         self.http = http
         self.storage_url = storage_url.rstrip("/")
-        self.signer = signer
+        # One address, or the custody chain naming who signed which file.
+        self.signers = as_signers(signer)
         self.ledger = ledger
         # Looks at every new upload in storage and signs what it saw; backfilled ones may be gone already.
         self.observer = observer
@@ -49,7 +51,9 @@ class UploadLog:
             found = await self.read(seq)
             if found is None and seq < latest:
                 # Files are written in order, so one missing below the latest was lost with its storage.
-                log.warning("upload log %d is missing while %d exists, skipped", seq, latest)
+                log.warning(
+                    "upload log %d is missing while %d exists, skipped", seq, latest
+                )
                 found = {"entries": []}
             if found is None:
                 break
@@ -64,7 +68,9 @@ class UploadLog:
         try:
             await self.observer.observe(entries)
         except Exception as error:
-            log.warning("could not look at %d uploads in storage: %r", len(entries), error)
+            log.warning(
+                "could not look at %d uploads in storage: %r", len(entries), error
+            )
 
     async def backfill(self, latest: int) -> int:
         """Back far enough to cover the scoring window."""
@@ -88,8 +94,13 @@ class UploadLog:
         found = await self.get(upload_log_key(seq))
         if found is None:
             return None
-        if not verify_log(found, self.signer):
-            log.warning("upload log %d is not signed by %s, skipped", seq, self.signer)
+        allowed = self.signers.for_log(seq)
+        if not any(verify_log(found, signer) for signer in allowed):
+            log.warning(
+                "upload log %d is not signed by %s, skipped",
+                seq,
+                " or ".join(allowed) or "a followed signer",
+            )
             return {"entries": [], "written_at": None}
         return found
 

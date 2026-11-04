@@ -35,8 +35,9 @@ pub fn request_hash(method: &str, path: &str, body: &[u8], hotkey: &str, timesta
     hex(&hasher.finalize())
 }
 
-pub fn client_address(headers: &HeaderMap, peer: &str) -> String {
-    headers.get(CLIENT_ADDRESS_HEADER).and_then(|v| v.to_str().ok()).filter(|v| !v.is_empty()).unwrap_or(peer).to_string()
+/// The caller's address from the header the proxy in front sets (`TASK_API_CLIENT_ADDRESS_HEADER`), else the connection's own.
+pub fn client_address(headers: &HeaderMap, peer: &str, header: &str) -> String {
+    headers.get(header).and_then(|v| v.to_str().ok()).filter(|v| !v.is_empty()).unwrap_or(peer).to_string()
 }
 
 fn header<'a>(headers: &'a HeaderMap, name: &str) -> &'a str {

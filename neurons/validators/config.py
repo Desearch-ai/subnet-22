@@ -45,12 +45,6 @@ def build_parser() -> argparse.ArgumentParser:
         default="https://api-22.desearch.ai",
     )
     parser.add_argument(
-        "--neuron.task_api_signer",
-        type=str,
-        help="The key the task API signs with; pinned in this release, never read from the API.",
-        default=TASK_API_SIGNER,
-    )
-    parser.add_argument(
         "--neuron.task_api_anchor",
         type=str,
         help="The hotkey whose commitment on the subnet anchors the task API's log.",
@@ -92,7 +86,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--relay.signer",
         default="",
-        help="The ss58 key the task API's log must be signed with; read from the API's /v1/key when empty.",
+        help="The ss58 key the task API's receipts must be signed with; the custody chain's holder (or the pinned signer) when empty.",
     )
     parser.add_argument(
         "--witness.storage_off",
@@ -101,6 +95,33 @@ def build_parser() -> argparse.ArgumentParser:
         help="Do not look at every completed upload in storage.",
     )
     parser.set_defaults(witness_storage=True)
+    parser.add_argument(
+        "--neuron.archive_network",
+        type=str,
+        help="A chain endpoint holding old state, for approvals at custody records' blocks; the subtensor's own archive fallback when empty.",
+        default="",
+    )
+    parser.add_argument(
+        "--neuron.legacy_signer",
+        "--neuron.task_api_signer",
+        dest="neuron.legacy_signer",
+        type=str,
+        help="The task API signer from before custody records, pinned in this release and never read from the API; "
+        "the only one that may hand over first.",
+        default=TASK_API_SIGNER,
+    )
+    parser.add_argument(
+        "--neuron.tee_allow_any_os",
+        action="store_true",
+        help="Testnets only: accept a task API attestation from any OS image. Ignored on finney.",
+        default=False,
+    )
+    parser.add_argument(
+        "--neuron.tee_simulated",
+        action="store_true",
+        help="Testnets only: accept the dstack simulator's quotes, whose signature cannot verify. Ignored on finney.",
+        default=False,
+    )
     return parser
 
 

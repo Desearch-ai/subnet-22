@@ -1,15 +1,18 @@
 //! The SN22 task API, as a library so its tests can run it in process.
 
 pub mod anchor;
+pub mod attestation;
 pub mod auth;
 pub mod budgets;
 pub mod canary;
 pub mod chain;
 pub mod checks;
 pub mod credit;
+pub mod custody;
 pub mod db;
 pub mod embedding;
 pub mod flow;
+pub mod governance;
 pub mod hours;
 pub mod http;
 pub mod janitor;
@@ -38,3 +41,4 @@ pub mod storage;
 pub mod uploadlog;
 pub mod validations;
 pub mod verdicts;
+pub mod verify;

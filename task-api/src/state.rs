@@ -13,8 +13,10 @@ use desearch::time::now;
 use redis::AsyncCommands;
 use serde_json::{json, Value};
 
+use crate::attestation::{self, Tee};
 use crate::budgets::{CRAWL, EMBED};
 use crate::chain::Chain;
+use crate::custody::Custody;
 use crate::db::{Db, Reader};
 use crate::flow::PublishRate;
 use crate::logs::Cache;
@@ -25,7 +27,7 @@ use crate::registry::{self, addresses, Registry};
 use crate::roundlog::{self, Receipt};
 use crate::rounds::UPLOAD_GRACE_S;
 use crate::seeds::Seeds;
-use crate::settings::{RegistryMode, SeedsMode, Settings};
+use crate::settings::{KeySource, RegistryMode, SeedsMode, Settings};
 use crate::{db, journal, roundstore};
 
 pub type Redis = redis::aio::ConnectionManager;
@@ -50,6 +52,10 @@ pub struct State {
     pub admins: HashSet<String>,
     pub seeds: Seeds,
     pub key: Arc<Hotkey>,
+    /// The CVM this copy runs in, when its key was made there.
+    pub tee: Option<Arc<Tee>>,
+    /// Whether this copy holds the log, and the pause.
+    pub custody: Custody,
     pub crawl: TaskQueue,
     pub embed: TaskQueue,
     pub validation: ValidationQueue,
@@ -66,6 +72,17 @@ pub struct State {
     pub draining: AtomicBool,
     /// Completions and reference calls running on after their caller may have stopped waiting.
     pub detached: AtomicUsize,
+}
+
+/// What a `start` entry holds: when this copy started, its version and key, the knobs a replay reads and every setting it runs with.
+pub fn start_input(settings: &Settings, signer: &str, started_at: f64) -> Value {
+    json!({
+        "started_at": started_at,
+        "version": env!("CARGO_PKG_VERSION"),
+        "signer": signer,
+        "settings": settings.journaled(),
+        "config": settings.public(),
+    })
 }
 
 /// Signs receipts and writes them to the round log in the caller's transaction; returns each as the caller is shown it.
@@ -129,7 +146,7 @@ impl State {
             (RegistryMode::Chain { network, .. }, _) | (_, SeedsMode::Chain { network }) => Some(network),
             _ => None,
         };
-        let chain = network.map(|network| Chain::new(network)).transpose()?.map(Arc::new);
+        let chain = network.map(|network| Chain::with(network, &settings.chain)).transpose()?.map(Arc::new);
         let registry = match &settings.registry {
             RegistryMode::Chain { .. } => Registry::chain(),
             RegistryMode::Local { validator_uris } => Registry::local(addresses(validator_uris)?),
@@ -149,9 +166,17 @@ impl State {
         };
         let mut admins: HashSet<String> = settings.admin_hotkeys.iter().cloned().collect();
         admins.extend(addresses(&settings.admin_uris)?);
-        let key = Hotkey::from_uri(if settings.key_uri.is_empty() { DEV_RECEIPT_KEY } else { &settings.key_uri }).context("TASK_API_KEY_URI")?;
+        let (key, tee) = match settings.tee.key_source {
+            KeySource::Uri => {
+                (Hotkey::from_uri(if settings.key_uri.is_empty() { DEV_RECEIPT_KEY } else { &settings.key_uri }).context("TASK_API_KEY_URI")?, None)
+            }
+            KeySource::Cvm => (
+                attestation::cvm_key(&settings.data).context("the CVM's key")?,
+                Some(Arc::new(Tee::open(&settings.data, &settings.tee.dstack_socket, &settings.tee.tls_cert)?)),
+            ),
+        };
         let started_at = now();
-        let started = json!({"started_at": started_at, "version": env!("CARGO_PKG_VERSION"), "signer": key.ss58(), "settings": settings.journaled()});
+        let started = start_input(&settings, &key.ss58(), started_at);
         db.run(move |conn| {
             let (last, _) = journal::head(conn)?;
             journal::append(conn, journal::Record::new("start", started_at, started, Value::Null))?;
@@ -179,6 +204,8 @@ impl State {
             admins,
             seeds,
             key: Arc::new(key),
+            tee,
+            custody: Custody::open(&settings.data, settings.tee.custody)?,
             crawl: TaskQueue::new("crawl", settings.claim_ttl_for(CRAWL) + UPLOAD_GRACE_S),
             embed: TaskQueue::new("embed", settings.claim_ttl_for(EMBED) + UPLOAD_GRACE_S),
             validation: ValidationQueue { active_s: settings.active_s },
@@ -223,6 +250,11 @@ impl State {
 
     pub fn signer(&self) -> String {
         self.key.ss58()
+    }
+
+    /// The development key a copy signs with when given no key at all.
+    pub fn dev_signer() -> String {
+        Hotkey::from_uri(DEV_RECEIPT_KEY).map(|key| key.ss58()).unwrap_or_default()
     }
 
     pub fn sign(&self, message: &[u8]) -> String {
