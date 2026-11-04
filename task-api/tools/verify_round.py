@@ -82,6 +82,37 @@ def signed_by(signer: str, body: dict, signature: str) -> bool | None:
         return False
 
 
+NETWORKS = {
+    "finney": "https://entrypoint-finney.opentensor.ai:443",
+    "test": "https://test.finney.opentensor.ai:443",
+    "archive": "https://archive.chain.opentensor.ai:443",
+    "local": "http://127.0.0.1:9944",
+}
+
+
+def endpoint(network: str) -> str:
+    return NETWORKS.get(
+        network, network.replace("wss://", "https://").replace("ws://", "http://")
+    )
+
+
+def block_hash(node: str, block: int) -> str | None:
+    """A block's hash from a node of your choosing, never from the API."""
+    request = json.dumps(
+        {"id": 1, "jsonrpc": "2.0", "method": "chain_getBlockHash", "params": [block]}
+    ).encode()
+    call = urllib.request.Request(
+        endpoint(node), data=request, headers={"Content-Type": "application/json"}
+    )
+    with urllib.request.urlopen(call, timeout=30) as response:
+        found = json.load(response).get("result")
+    return found.lower() if isinstance(found, str) else None
+
+
+def seed_from_hash(hash_: str) -> str:
+    return sha256(hash_.encode())
+
+
 GREEN, RED, GREY, RESET = "\033[32m", "\033[31m", "\033[90m", "\033[0m"
 
 
@@ -104,6 +135,10 @@ def verify(
     receipts: list[dict] | None = None,
     received: dict[str, list[str]] | None = None,
     signer: str | None = None,
+    node: str | None = "finney",
+    storage: str | None = None,
+    anchor: str | None = None,
+    netuid: int = 22,
 ) -> bool:
     round_ = get(api, f"/v1/rounds/{round_id}")
     log = get(api, f"/v1/rounds/{round_id}/log")
@@ -135,6 +170,28 @@ def verify(
         recomputed == round_["manifest_hash"],
         f"committed {round_['manifest_hash'][:32]}…\n         recomputed {recomputed[:32]}…",
     )
+
+    if node:
+        try:
+            ours = block_hash(node, round_["seed_block"])
+        except Exception as error:
+            ours, why = None, f"could not ask {node}: {error!r}"
+        else:
+            why = f"{node} has no block {round_['seed_block']}"
+        if ours is None:
+            ok &= check(
+                "the seed is the seed block's hash on your own node", False, why
+            )
+        else:
+            ok &= check(
+                "the seed is the seed block's hash on your own node",
+                seed_from_hash(ours) == seed,
+                f"block {round_['seed_block']} is {ours} on {node}; its seed is {seed_from_hash(ours)[:32]}…, the API used {seed[:32]}…",
+            )
+    else:
+        print(
+            f"  {GREY}[ .. ] --node none: the seed is taken from the API without checking it against the chain{RESET}"
+        )
 
     expected = serve_order(seed, [entry["batch_id"] for entry in manifest])
     ok &= check(
@@ -188,6 +245,20 @@ def verify(
             *_batches(manifest, received),
         )
 
+    if storage and anchor:
+        ok &= check(
+            "the round's commitment was anchored on chain before its seed block",
+            *_anchored_before_seed(
+                node or "finney",
+                storage,
+                round_id,
+                round_,
+                anchor,
+                netuid,
+                signer or published_signer,
+            ),
+        )
+
     if receipts:
         ok &= check(
             "every receipt you hold is signed and appears in the published log",
@@ -239,6 +310,97 @@ def _receipts(
             f"{len(problems)} of your {len(receipts)} receipts fail: {problems[:3]}",
         )
     return True, f"all {len(receipts)} receipts signed and present in the log"
+
+
+def _anchored_before_seed(
+    node: str,
+    storage: str,
+    round_id: str,
+    round_: dict,
+    anchor: str,
+    netuid: int,
+    signer: str,
+) -> tuple[bool, str]:
+    """Finds the round's commitment in the API's log and the anchor the chain held the block before its seed block."""
+    try:
+        import asyncio
+
+        import bittensor as bt
+
+        from desearch.journal import (
+            LATEST_KEY,
+            anchor_from_commitment,
+            hash_of,
+            segment_key,
+            verify_segment,
+        )
+    except ImportError:
+        return False, "install bittensor (and run from the repository) to read anchors"
+
+    def get(key: str) -> dict | None:
+        try:
+            with urllib.request.urlopen(
+                f"{storage.rstrip('/')}/{key}", timeout=30
+            ) as response:
+                return json.load(response)
+        except Exception:
+            return None
+
+    latest = get(LATEST_KEY)
+    if latest is None:
+        return False, f"no log at {storage}"
+    files, opened = [], None
+    for number in range(int(latest["segment"]), 0, -1):
+        found = get(segment_key(number))
+        if found is None:
+            break
+        files.insert(0, found)
+        for entry in found["entries"]:
+            if (
+                entry.get("kind") in ("enqueue", "embed_round")
+                and (entry.get("output") or {}).get("round_id") == round_id
+            ):
+                opened = entry
+        if opened is not None:
+            break
+    if opened is None:
+        return (
+            False,
+            "the round's commitment is not in the log still published (files are kept a day)",
+        )
+    if (opened.get("output") or {}).get("manifest_hash") != round_["manifest_hash"]:
+        return False, "the log commits to another manifest hash than the round page"
+    last, head = int(files[0]["first"]) - 1, files[0]["prev"]
+    hashes = {}
+    for found in files:
+        last, head = verify_segment(found, signer, last, head)
+        hashes.update({entry["seq"]: hash_of(entry) for entry in found["entries"]})
+
+    async def read() -> dict | None:
+        subtensor = await bt.Subtensor(node)
+        return await subtensor.query(
+            ("Commitments", "CommitmentOf"),
+            [netuid, anchor],
+            block=round_["seed_block"] - 1,
+        )
+
+    anchored = anchor_from_commitment(asyncio.run(read()))
+    if anchored is None:
+        return False, f"{anchor} held no anchor at block {round_['seed_block'] - 1}"
+    if anchored.seq < opened["seq"]:
+        return False, (
+            f"the chain anchored entry {anchored.seq} before the seed block, the commitment is entry {opened['seq']}: "
+            "the seed was public before the commitment was on chain"
+        )
+    if anchored.seq in hashes and hashes[anchored.seq] != anchored.head:
+        return (
+            False,
+            f"the chain anchors {anchored.head} at entry {anchored.seq}, the log has {hashes[anchored.seq]}",
+        )
+    return (
+        True,
+        f"entry {opened['seq']} anchored by entry {anchored.seq} at block {anchored.block}, before block {round_['seed_block']}",
+    )
 
 
 def _replay(
@@ -302,6 +464,20 @@ def main() -> int:
         "--signer", help="the ss58 key the API publishes for its receipts"
     )
     parser.add_argument(
+        "--node",
+        default="finney",
+        help="your own chain node (a network name or URL) to read the seed block from; 'none' to skip",
+    )
+    parser.add_argument(
+        "--storage",
+        help="the uploads bucket's public URL, to find the round's commitment in the API's log",
+    )
+    parser.add_argument(
+        "--anchor",
+        help="the hotkey that anchors the log (desearch.trust.TASK_API_ANCHOR_HOTKEY), to check the anchor came before the seed",
+    )
+    parser.add_argument("--netuid", type=int, default=22)
+    parser.add_argument(
         "--batches",
         help="file of {task_id: [urls]} you were given, to check they match the commitment",
     )
@@ -320,7 +496,19 @@ def main() -> int:
         else None
     )
     batches = json.loads(Path(args.batches).read_text()) if args.batches else None
-    return 0 if verify(args.api, args.round, receipts, batches, args.signer) else 1
+    node = None if args.node == "none" else args.node
+    passed = verify(
+        args.api,
+        args.round,
+        receipts,
+        batches,
+        args.signer,
+        node,
+        args.storage,
+        args.anchor,
+        args.netuid,
+    )
+    return 0 if passed else 1
 
 
 if __name__ == "__main__":

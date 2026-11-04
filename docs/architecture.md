@@ -101,7 +101,13 @@ Embedding is switched off until its inputs and the publishing of vectors below a
 - **Committed rounds.** A round's batches are fixed before the block that orders them exists, so the
   task API cannot swap or reorder them.
 - **Signed logs.** Every claim, refusal and completion is signed by the task API. Anyone can check a
-  closed round with [`task-api/tools/verify_round.py`](../task-api/tools/verify_round.py).
+  closed round with [`task-api/tools/verify_round.py`](../task-api/tools/verify_round.py), which reads
+  the seed block's hash from a node of their own.
+- **One verifiable log.** Every request that changes the accounts, every decision the API makes and every
+  block hash it decides on goes into one hash-chained, signed log in the public bucket, and its head is
+  committed on chain. Validators check it against their own node and replay it with the API's own rules,
+  so a budget, verdict, take-back or share the rules do not give is a fraud proof
+  ([Verifiable log](../task-api/README.md#verifiable-log)).
 - **Direct to storage.** Uploads go from the miner straight into storage through a link for one
   key, and validators read them from the public bucket. The API never carries the files, so it has
   nothing to alter, and the signed note beside each upload records what the miner was given.
@@ -129,6 +135,7 @@ subnet-22 bucket (temporary, objects expire after a day, readable by anyone)
                     from here
   validation/       open.json, the list of uploads waiting for validators
   log/uploads/      every completed upload with the counts its miner reported, signed, for validators to count
+  log/journal/      the hash-chained, signed log of every change to the accounts, its head anchored on chain
   outcomes/         what became of every URL, for the bot
   embed-inputs/     texts waiting to be embedded
 desearch-pages bucket

@@ -148,3 +148,37 @@ def test_packing_keeps_every_url_when_hosts_are_lopsided(monkeypatch):
 
     assert sum(len(b.urls) for b in batches) == 26
     assert batches[0].urls[1].host == "small.example"
+
+
+def test_the_seed_is_read_from_a_node_of_ones_own():
+    import http.server
+    import json
+    import threading
+
+    blocks = {77: "0xABCDEF"}
+
+    class Node(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            asked = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            body = json.dumps(
+                {"id": 1, "jsonrpc": "2.0", "result": blocks.get(asked["params"][0])}
+            ).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *_):
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), Node)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        node = f"http://127.0.0.1:{server.server_port}"
+        assert verifier.block_hash(node, 77) == "0xabcdef"
+        assert verifier.block_hash(node, 78) is None
+        assert verifier.seed_from_hash("0xabcdef") == verifier.sha256(b"0xabcdef")
+        assert verifier.endpoint("finney").startswith("https://entrypoint-finney")
+        assert verifier.endpoint("ws://10.0.0.1:9944") == "http://10.0.0.1:9944"
+    finally:
+        server.shutdown()

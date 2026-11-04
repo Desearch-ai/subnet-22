@@ -5,6 +5,8 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+from desearch.trust import TASK_API_ANCHOR_HOTKEY, TASK_API_SIGNER
+
 ENV_FILE = Path(__file__).resolve().parent / ".env"
 DEFAULT_LOG_DIR = "~/.bittensor/miners"
 LOG_FORMAT = "%(asctime)s | %(levelname)-7s | %(message)s"
@@ -41,6 +43,24 @@ def build_parser() -> argparse.ArgumentParser:
         type=str,
         help="The task API: verdicts are reported to it and the coverage gate read from it.",
         default="https://api-22.desearch.ai",
+    )
+    parser.add_argument(
+        "--neuron.task_api_signer",
+        type=str,
+        help="The key the task API signs with; pinned in this release, never read from the API.",
+        default=TASK_API_SIGNER,
+    )
+    parser.add_argument(
+        "--neuron.task_api_anchor",
+        type=str,
+        help="The hotkey whose commitment on the subnet anchors the task API's log.",
+        default=TASK_API_ANCHOR_HOTKEY,
+    )
+    parser.add_argument(
+        "--neuron.replay_bin",
+        type=str,
+        help="The task API's replay tool (task-api-replay); with it, the log is replayed and every output the rules do not give is reported.",
+        default=os.environ.get("TASK_API_REPLAY_BIN", ""),
     )
     parser.add_argument(
         "--neuron.storage_url",
