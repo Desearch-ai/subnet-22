@@ -19,7 +19,16 @@ use task_api::state::{redis_from, State};
 use tokio::net::TcpListener;
 use tokio::sync::{Mutex, MutexGuard};
 
-pub const REDIS_URL: &str = "redis://127.0.0.1:6379/13";
+/// The Redis tests run against: `TASK_API_TEST_REDIS_ADDR`, so checkouts testing at once can each have their own, or the local one.
+pub fn redis_addr() -> &'static str {
+    static ADDR: std::sync::LazyLock<String> =
+        std::sync::LazyLock::new(|| std::env::var("TASK_API_TEST_REDIS_ADDR").unwrap_or_else(|_| "127.0.0.1:6379".into()));
+    &ADDR
+}
+
+pub fn redis_url() -> String {
+    format!("redis://{}/13", redis_addr())
+}
 pub const MINER: &str = "//miner-api-test";
 pub const RIVAL: &str = "//rival-api-test";
 pub const VALIDATOR: &str = "//validator-api-test";
@@ -154,7 +163,7 @@ pub fn settings(data: PathBuf, endpoint: &str) -> Settings {
     Settings {
         listen: "127.0.0.1:0".into(),
         data,
-        redis_url: REDIS_URL.into(),
+        redis_url: redis_url(),
         claim_ttl: 180.0,
         embed_claim_ttl: 300.0,
         validation_ttl: 900.0,
@@ -198,6 +207,11 @@ pub fn settings(data: PathBuf, endpoint: &str) -> Settings {
         seeds: SeedsMode::Local { block_seconds: 0.02, genesis: 0.0 },
         admin_hotkeys: Vec::new(),
         admin_uris: ADMIN.into(),
+        journal_every: 30.0,
+        journal_shares_every: 600.0,
+        snapshot_every: 21_600.0,
+        journal_keep: 8.0 * 86_400.0,
+        anchor: None,
         key_uri: String::new(),
         cors_origins: Vec::new(),
     }
@@ -215,9 +229,9 @@ impl Harness {
         let endpoint = format!("http://{}", stub.addr);
         let mut settings = settings(dir.0.join("data"), &endpoint);
         tune(&mut settings);
-        let redis = redis_from(REDIS_URL).await.expect("Redis on localhost");
+        let redis = redis_from(&redis_url()).await.expect("Redis on localhost");
         let _: () = redis::cmd("FLUSHDB").query_async(&mut redis.clone()).await.expect("FLUSHDB");
-        let proxy = Proxy::start("127.0.0.1:6379").await;
+        let proxy = Proxy::start(redis_addr()).await;
         let relayed = redis_from(&format!("redis://{}/13", proxy.addr)).await.expect("Redis through the relay");
         let (storage, pages) = buckets(&settings, &endpoint);
         let mut state = State::new(settings, relayed, storage, pages).await.expect("the state opens");

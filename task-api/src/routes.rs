@@ -31,7 +31,7 @@ use crate::state::State;
 use crate::storage::{delete_quietly, is_parquet};
 use crate::validations::{self, TaskFilter};
 use crate::verdicts::{build_embed_vote, build_vote};
-use crate::{roundstore, sampling, uploadlog};
+use crate::{journal, roundstore, sampling, uploadlog};
 
 const COMPLETE_LOCK_S: i64 = 300;
 const CLAIM_DRAWS: usize = 4;
@@ -108,6 +108,11 @@ impl Signed<'_> {
         let address = client_address(self.headers, &self.peer.ip().to_string());
         auth::caller(state, self.headers, self.method, self.uri.path(), self.body, &address).await
     }
+
+    /// The request as the log keeps it, so anyone can check the caller signed it.
+    pub fn logged(&self) -> (Value, Vec<journal::Blob>) {
+        journal::signed_request(self.headers, self.method, self.uri.path(), self.body)
+    }
 }
 
 async fn validator(state: &State, signed: &Signed<'_>) -> Result<Caller, ApiError> {
@@ -146,10 +151,10 @@ async fn claim_tasks(state: &State, signed: &Signed<'_>) -> Answer {
         return Ok(Json(json!({"tasks": [], "refusal": refusal, "receipt": null})));
     }
     if kind == EMBED && !state.settings.embed_tasks {
-        return refused(state, &round_id, &who, Refusal::new("KIND_CLOSED", json!({"kind": kind}))).await;
+        return refused(state, signed, &round_id, &who, Refusal::new("KIND_CLOSED", json!({"kind": kind}))).await;
     }
     if kind == EMBED && !body.models.contains(&state.settings.embed_model) {
-        return refused(state, &round_id, &who, Refusal::new("MODEL_MISMATCH", json!({"model": state.settings.embed_model}))).await;
+        return refused(state, signed, &round_id, &who, Refusal::new("MODEL_MISMATCH", json!({"model": state.settings.embed_model}))).await;
     }
     let at = now();
     let (hotkey, pool) = (who.hotkey.clone(), kind.to_string());
@@ -157,7 +162,7 @@ async fn claim_tasks(state: &State, signed: &Signed<'_>) -> Answer {
     steps.mark("lockout");
     if let Some(until) = locked {
         let inputs = json!({"until": round_to(until, 3), "retry_after": round_to(until - now(), 3)});
-        return refused(state, &round_id, &who, Refusal::new("LOCKED_OUT", inputs)).await;
+        return refused(state, signed, &round_id, &who, Refusal::new("LOCKED_OUT", inputs)).await;
     }
     // Stop leasing work whose upload would expire before validation.
     let validating = state.validation.oldest_age(&state.redis, at).await?.max(state.validation.oldest_seeding_age(&state.redis, at).await?);
@@ -167,7 +172,7 @@ async fn claim_tasks(state: &State, signed: &Signed<'_>) -> Answer {
     if max_backlog != 0.0 && validating.max(publishing) > max_backlog {
         let waiting = state.publish.waiting(&state.redis).await?;
         let inputs = json!({"validation_s": validating, "publish_s": publishing, "limit_s": max_backlog, "publish_waiting": waiting});
-        return refused(state, &round_id, &who, Refusal::new("VALIDATION_BACKLOG", inputs)).await;
+        return refused(state, signed, &round_id, &who, Refusal::new("VALIDATION_BACKLOG", inputs)).await;
     }
     let (hotkey, pool) = (who.hotkey.clone(), kind.to_string());
     let found = {
@@ -176,7 +181,17 @@ async fn claim_tasks(state: &State, signed: &Signed<'_>) -> Answer {
     };
     let budget = match found {
         Some(miner) => miner.budget,
-        None => state.db.run(move |conn| budgets::get_or_create(conn, &hotkey, &pool)).await?.budget,
+        None => {
+            let created = state.db.run(move |conn| {
+                let miner = budgets::get_or_create(conn, &hotkey, &pool)?;
+                // A miner's first claim gives it a budget, whether or not the claim gets anything or is logged.
+                if conn.changes() > 0 {
+                    journal::append(conn, journal::Record::new("miner", now(), json!({"hotkey": hotkey, "pool": pool}), json!({"budget": miner.budget})))?;
+                }
+                Ok(miner)
+            });
+            created.await?.budget
+        }
     };
     steps.mark("budget");
     let tasks = state.tasks(kind);
@@ -187,7 +202,7 @@ async fn claim_tasks(state: &State, signed: &Signed<'_>) -> Answer {
     for _ in 0..CLAIM_DRAWS {
         let claims = match tasks.claim(&state.redis, &who.hotkey, budget, WAITING_PER_BUDGET * budget, body.count, now()).await? {
             Ok(claims) => claims,
-            Err(refusal) => return refused(state, &round_id, &who, refusal).await,
+            Err(refusal) => return refused(state, signed, &round_id, &who, refusal).await,
         };
         steps.mark("queue");
         let drawn = claims.len();
@@ -221,13 +236,14 @@ async fn claim_tasks(state: &State, signed: &Signed<'_>) -> Answer {
     }
     if issued.is_empty() && dropped > 0 {
         let refusal = Refusal::new("QUEUE_EMPTY", json!({"depth": tasks.depth(&state.redis).await?}));
-        return refused(state, &round_id, &who, refusal).await;
+        return refused(state, signed, &round_id, &who, refusal).await;
     }
     if issued.is_empty() {
         return Err(ApiError::status(503, "upload signing is unavailable"));
     }
     steps.mark("issue");
-    let receipts = state.record(receipts).await?;
+    let (request, blobs) = signed.logged();
+    let receipts = state.record_logged(receipts, "claim", json!({"request": request, "kind": kind, "budget": budget}), blobs).await?;
     steps.mark("receipts");
     // The time spent signing and recording the claims is ours, not the miner's.
     let task_ids: Vec<String> = issued.iter().map(|task| text(task, "task_id").to_string()).collect();
@@ -243,24 +259,24 @@ async fn claim_tasks(state: &State, signed: &Signed<'_>) -> Answer {
     Ok(Json(json!({"tasks": issued, "receipts": receipts})))
 }
 
-async fn refused(state: &State, round_id: &str, who: &Caller, mut refusal: Refusal) -> Answer {
+async fn refused(state: &State, signed: &Signed<'_>, round_id: &str, who: &Caller, mut refusal: Refusal) -> Answer {
     refusal.inputs.entry("retry_after").or_insert_with(|| retry_after_for(refusal.code).into());
     let refusal_value = refusal.as_value();
     if !state.first_refusal(&who.hotkey, refusal.code).await? {
         return Ok(Json(json!({"tasks": [], "refusal": refusal_value, "receipt": null})));
     }
     let seq = state.next_seq().await?;
-    let receipt = state
-        .record_one(Receipt {
-            round_id: round_id.into(),
-            hotkey: who.hotkey.clone(),
-            requested_at: who.requested_at,
-            outcome: "refused",
-            seq,
-            refusal: Some(refusal_value.clone()),
-            ..Receipt::default()
-        })
-        .await?;
+    let (request, blobs) = signed.logged();
+    let receipt = Receipt {
+        round_id: round_id.into(),
+        hotkey: who.hotkey.clone(),
+        requested_at: who.requested_at,
+        outcome: "refused",
+        seq,
+        refusal: Some(refusal_value.clone()),
+        ..Receipt::default()
+    };
+    let receipt = state.record_logged(vec![receipt], "claim", json!({"request": request}), blobs).await?.remove(0);
     Ok(Json(json!({"tasks": [], "refusal": refusal_value, "receipt": receipt})))
 }
 
@@ -338,14 +354,19 @@ pub async fn complete(
     let signed = Signed { headers: &headers, method: "POST", uri: &uri, body: &body, peer };
     let who = signed.caller(&state).await?;
     let report = CompleteBody::parse(&json_body(&body)?)?;
+    let signed = &signed;
     let holds = state.claim_holder(&task_id).await?.as_deref() == Some(who.hotkey.as_str());
     if !holds && completed_by(&state, &task_id, &who.hotkey).await?.is_none() {
         return Err(ApiError::status(409, "you do not hold this claim"));
     }
     let lock = hold_completion(&state, &task_id, &who.hotkey).await?;
+    let logged = signed.logged();
     // Detached so a miner that times out can't cancel it and leave the lock to block its retries.
     let finishing = detach(&state.clone(), async move {
-        let outcome = finish_completion(&state, &task_id, &report, &who, arrived).await;
+        let outcome = finish_completion(&state, &task_id, &report, &who, arrived, logged.clone()).await;
+        if let Err(ApiError::Status { status, detail, .. }) = &outcome {
+            log_refused(&state, "complete", logged, &task_id, *status, detail).await?;
+        }
         state.delete(&lock).await?;
         outcome
     });
@@ -355,7 +376,29 @@ pub async fn complete(
     }
 }
 
-async fn finish_completion(state: &State, task_id: &str, report: &CompleteBody, who: &Caller, arrived: f64) -> Result<Value, ApiError> {
+/// A signed request the API turned down, with why; a miner holding the claim can then show the log what it was told.
+async fn log_refused(
+    state: &State,
+    kind: &'static str,
+    (request, blobs): (Value, Vec<journal::Blob>),
+    task_id: &str,
+    status: u16,
+    detail: &Value,
+) -> Result<(), ApiError> {
+    let record = journal::Record::new(kind, now(), json!({"request": request, "task_id": task_id}), json!({"refused": {"status": status, "detail": detail}}));
+    let record = record.with_blobs(blobs);
+    state.db.run(move |conn| journal::append(conn, record)).await?;
+    Ok(())
+}
+
+async fn finish_completion(
+    state: &State,
+    task_id: &str,
+    report: &CompleteBody,
+    who: &Caller,
+    arrived: f64,
+    logged: (Value, Vec<journal::Blob>),
+) -> Result<Value, ApiError> {
     if let Some(done) = completed_by(state, task_id, &who.hotkey).await? {
         return Ok(done);
     }
@@ -366,7 +409,7 @@ async fn finish_completion(state: &State, task_id: &str, report: &CompleteBody, 
         Some(expiry) if expiry >= arrived => {}
         _ => return Err(ApiError::status(409, "you do not hold a live claim on this task")),
     }
-    let result = verify_completion(state, task_id, report, who, arrived).await?;
+    let result = verify_completion(state, task_id, report, who, arrived, logged).await?;
     let done = json!({"miner": who.hotkey, "result": result});
     let _: () = state.redis.clone().set_ex(format!("completed:{task_id}"), done.to_string(), COMPLETED_TTL_S).await?;
     Ok(result)
@@ -377,7 +420,14 @@ fn storage_down(what: &str, error: StorageError) -> ApiError {
     ApiError::status(502, "object storage is unavailable, retry")
 }
 
-async fn verify_completion(state: &State, task_id: &str, report: &CompleteBody, who: &Caller, arrived: f64) -> Result<Value, ApiError> {
+async fn verify_completion(
+    state: &State,
+    task_id: &str,
+    report: &CompleteBody,
+    who: &Caller,
+    arrived: f64,
+    (request, mut blobs): (Value, Vec<journal::Blob>),
+) -> Result<Value, ApiError> {
     let issued: Option<String> = state.redis.clone().get(format!("issued:{task_id}")).await?;
     let issued: Value = issued.and_then(|raw| serde_json::from_str(&raw).ok()).unwrap_or_else(|| json!({}));
     if issued.get("key").and_then(Value::as_str) != Some(report.key.as_str()) {
@@ -462,18 +512,19 @@ async fn verify_completion(state: &State, task_id: &str, report: &CompleteBody, 
     sampling::note_upload(&state.redis, &kind, &who.hotkey, completed_at).await?;
     uploadlog::note(&state.redis, &job).await?;
     steps.mark("logs");
-    let receipt = state
-        .record_one(Receipt {
-            round_id,
-            hotkey: who.hotkey.clone(),
-            requested_at: who.requested_at,
-            outcome: "completed",
-            seq,
-            task_id: Some(task_id.into()),
-            block: Some(frozen_block),
-            ..Receipt::default()
-        })
-        .await;
+    let (kept, urls) = lifecycle::logged_job(&job);
+    blobs.extend(urls);
+    let receipt = Receipt {
+        round_id,
+        hotkey: who.hotkey.clone(),
+        requested_at: who.requested_at,
+        outcome: "completed",
+        seq,
+        task_id: Some(task_id.into()),
+        block: Some(frozen_block),
+        ..Receipt::default()
+    };
+    let receipt = state.record_logged(vec![receipt], "complete", json!({"request": request, "task_id": task_id, "job": kept}), blobs).await;
     steps.mark("receipt");
     if let Some(slow) = steps.slow() {
         eprintln!("completing {task_id} took {slow}");
@@ -490,7 +541,8 @@ pub async fn abandon(
     uri: Uri,
     body: Bytes,
 ) -> Answer {
-    let who = Signed { headers: &headers, method: "POST", uri: &uri, body: &body, peer }.caller(&state).await?;
+    let signed = Signed { headers: &headers, method: "POST", uri: &uri, body: &body, peer };
+    let who = signed.caller(&state).await?;
     let payload = state.payload(&task_id).await?.unwrap_or_else(|| json!({}));
     let kind = kind_of(&payload).to_string();
     if state.claim_holder(&task_id).await?.as_deref() != Some(who.hotkey.as_str()) {
@@ -505,27 +557,31 @@ pub async fn abandon(
         return Err(ApiError::status(409, "you do not hold this claim"));
     };
     let round_id = Some(text(&payload, "round_id")).filter(|r| !r.is_empty()).map(String::from).unwrap_or_else(|| state.current_round(&kind));
-    state
-        .record_one(Receipt {
-            round_id,
-            hotkey: who.hotkey.clone(),
-            requested_at: who.requested_at,
-            outcome: "reclaimed",
-            seq,
-            task_id: Some(task_id.clone()),
-            cause: Some(if forgiven { "restart" } else { "abandoned" }.into()),
-            ..Receipt::default()
-        })
-        .await?;
-    let (hotkey, task, lapsed) = (who.hotkey.clone(), task_id.clone(), payload);
+    let receipt = Receipt {
+        round_id,
+        hotkey: who.hotkey.clone(),
+        requested_at: who.requested_at,
+        outcome: "reclaimed",
+        seq,
+        task_id: Some(task_id.clone()),
+        cause: Some(if forgiven { "restart" } else { "abandoned" }.into()),
+        ..Receipt::default()
+    };
+    let (request, blobs) = signed.logged();
+    let (hotkey, task, lapsed, key) = (who.hotkey.clone(), task_id.clone(), payload, state.key.clone());
     let budget = state
         .db
         .run(move |conn| {
-            if forgiven {
-                Ok(budgets::get_or_create(conn, &hotkey, kind_of(&lapsed))?.budget)
+            let at = now();
+            let receipts = crate::state::record_receipts(conn, &key, vec![receipt], at)?;
+            let budget = if forgiven {
+                budgets::get_or_create(conn, &hotkey, kind_of(&lapsed))?.budget
             } else {
-                lifecycle::lapse(conn, &hotkey, &task, &lapsed, "abandoned", now())
-            }
+                lifecycle::lapse(conn, &hotkey, &task, &lapsed, "abandoned", at)?
+            };
+            let input = json!({"request": request, "task_id": task, "kind": kind_of(&lapsed), "assigned": lifecycle::assigned(&lapsed), "forgiven": forgiven});
+            journal::append(conn, journal::Record::new("abandon", at, input, json!({"receipts": receipts, "budget": budget})).with_blobs(blobs))?;
+            Ok(budget)
         })
         .await?;
     Ok(Json(json!({"task_id": task_id, "budget": budget})))
@@ -540,7 +596,8 @@ pub async fn release(
     uri: Uri,
     body: Bytes,
 ) -> Answer {
-    let who = validator(&state, &Signed { headers: &headers, method: "POST", uri: &uri, body: &body, peer }).await?;
+    let signed = Signed { headers: &headers, method: "POST", uri: &uri, body: &body, peer };
+    let who = validator(&state, &signed).await?;
     models::release(&json_body(&body)?)?;
     let job = state.validation.job(&state.redis, &task_id).await?;
     let Some(job) = job.filter(|job| job.get("picked").is_some_and(|p| !p.is_null() && p != false && p != "")) else {
@@ -554,6 +611,10 @@ pub async fn release(
         return Err(ApiError::status(409, "the upload was finalized"));
     };
     lifecycle::void_task(&state, &task_id, lapsed, &who.hotkey, "upload_missing").await?;
+    let (request, blobs) = signed.logged();
+    let record = journal::Record::new("release", now(), json!({"request": request, "task_id": task_id}), json!({"status": "void", "reason": "upload_missing"}));
+    let record = record.with_blobs(blobs);
+    state.db.run(move |conn| journal::append(conn, record)).await?;
     Ok(Json(json!({"task_id": task_id, "status": "void"})))
 }
 
@@ -601,7 +662,8 @@ pub async fn score(
     uri: Uri,
     body: Bytes,
 ) -> Answer {
-    let who = validator(&state, &Signed { headers: &headers, method: "POST", uri: &uri, body: &body, peer }).await?;
+    let signed = Signed { headers: &headers, method: "POST", uri: &uri, body: &body, peer };
+    let who = validator(&state, &signed).await?;
     let result = match json_body(&body)? {
         Value::Object(result) => result,
         Value::Null => return Err(models::Invalid::single("missing", &["body"], "Field required").into()),
@@ -611,12 +673,21 @@ pub async fn score(
     if !state.set_once(&lock, &who.hotkey, lifecycle::FINALIZE_LOCK_S).await? {
         return Err(ApiError::retry(503, "a verdict for this upload is already being recorded", "2"));
     }
-    let outcome = record_verdict(&state, &task_id, result, &who).await;
+    let outcome = record_verdict(&state, &task_id, result, &who, signed.logged()).await;
+    if let Err(ApiError::Status { status, detail, .. }) = &outcome {
+        log_refused(&state, "report", signed.logged(), &task_id, *status, detail).await?;
+    }
     state.delete(&lock).await?;
     outcome.map(Json)
 }
 
-async fn record_verdict(state: &State, task_id: &str, result: Map<String, Value>, who: &Caller) -> Result<Value, ApiError> {
+async fn record_verdict(
+    state: &State,
+    task_id: &str,
+    result: Map<String, Value>,
+    who: &Caller,
+    (request, blobs): (Value, Vec<journal::Blob>),
+) -> Result<Value, ApiError> {
     let hotkey = who.hotkey.clone();
     if state.lookups.read(move |conn| validations::is_excluded(conn, &hotkey)).await? {
         state.validation.leave(&state.redis, &who.hotkey).await?;
@@ -635,6 +706,8 @@ async fn record_verdict(state: &State, task_id: &str, result: Map<String, Value>
     if state.validation.vote(&state.redis, task_id, &who.hotkey, &vote, now()).await? == 0 {
         return Err(ApiError::status(409, "this validator already voted on this upload"));
     }
+    let record = journal::Record::new("report", now(), json!({"request": request, "task_id": task_id}), json!({"vote": vote})).with_blobs(blobs);
+    state.db.run(move |conn| journal::append(conn, record)).await?;
     if let Some(finalized) = lifecycle::finalize_task(state, task_id, &job, now()).await? {
         return Ok(finalized);
     }
@@ -707,7 +780,8 @@ async fn embed_room(state: &State) -> Answer {
 
 /// A batch sent twice, after a timeout, is queued once.
 pub async fn enqueue(Shared(state): Shared<Arc<State>>, ConnectInfo(peer): ConnectInfo<SocketAddr>, headers: HeaderMap, uri: Uri, body: Bytes) -> Answer {
-    let who = Signed { headers: &headers, method: "POST", uri: &uri, body: &body, peer }.caller(&state).await?;
+    let signed = Signed { headers: &headers, method: "POST", uri: &uri, body: &body, peer };
+    let who = signed.caller(&state).await?;
     if !who.is_admin {
         return Err(ApiError::status(403, "only admins may do this"));
     }
@@ -726,7 +800,7 @@ pub async fn enqueue(Shared(state): Shared<Arc<State>>, ConnectInfo(peer): Conne
             return Ok(Json(earlier));
         }
     }
-    let round = lifecycle::open_round(&state, request.urls).await?.map_err(|invalid| ApiError::status(422, invalid.to_string()))?;
+    let round = lifecycle::open_round(&state, request.urls, signed.logged()).await?.map_err(|invalid| ApiError::status(422, invalid.to_string()))?;
     let found = json!({"round_id": round.round_id, "batches": round.batches.len(), "seed_block": round.seed_block, "manifest_hash": round.manifest_hash});
     if let Some(seen) = &seen {
         let _: () = state.redis.clone().set_ex(seen, found.to_string(), ENQUEUED_TTL_S).await?;

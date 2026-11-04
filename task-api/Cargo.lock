@@ -2120,6 +2120,7 @@ dependencies = [
  "arrow-schema",
  "axum",
  "base64 0.22.1",
+ "blake2",
  "bytes",
  "desearch",
  "flate2",
@@ -2140,6 +2141,7 @@ dependencies = [
  "tikv-jemallocator",
  "tokio",
  "tower-http",
+ "twox-hash",
  "uuid",
 ]
 

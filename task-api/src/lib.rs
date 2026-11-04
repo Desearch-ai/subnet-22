@@ -1,5 +1,6 @@
 //! The SN22 task API, as a library so its tests can run it in process.
 
+pub mod anchor;
 pub mod auth;
 pub mod budgets;
 pub mod chain;
@@ -11,6 +12,7 @@ pub mod flow;
 pub mod hours;
 pub mod http;
 pub mod janitor;
+pub mod journal;
 pub mod lifecycle;
 pub mod logs;
 pub mod manifest;
@@ -21,6 +23,7 @@ pub mod py;
 pub mod queues;
 pub mod reference;
 pub mod registry;
+pub mod replay;
 pub mod roundlog;
 pub mod rounds;
 pub mod roundstore;
@@ -28,6 +31,7 @@ pub mod routes;
 pub mod sampling;
 pub mod seeds;
 pub mod settings;
+pub mod snapshot;
 pub mod state;
 pub mod storage;
 pub mod uploadlog;

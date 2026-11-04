@@ -47,6 +47,19 @@ impl PagesStore {
     }
 }
 
+/// Where and how often the log's head is committed on chain; off unless `TASK_API_ANCHOR_NETWORK` is set.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AnchorSettings {
+    pub network: String,
+    pub netuid: u16,
+    /// The hotkey that commits; the log's signing key when empty. It must be registered on the subnet.
+    pub key_uri: String,
+    pub every_blocks: i64,
+    /// Blocks between anchors at least, when a round opened since the last.
+    pub min_blocks: i64,
+    pub per_epoch: i64,
+}
+
 #[derive(Clone, Debug)]
 pub struct Settings {
     pub listen: String,
@@ -102,6 +115,15 @@ pub struct Settings {
     pub admin_uris: String,
     pub key_uri: String,
     pub cors_origins: Vec<String>,
+    /// Seconds between published files of the log.
+    pub journal_every: f64,
+    /// Seconds between the shares written into the log, for a replay to compare with its own.
+    pub journal_shares_every: f64,
+    /// Seconds between snapshots of the accounts in the log, which a replay may start from.
+    pub snapshot_every: f64,
+    /// Seconds published log entries stay in SQLite.
+    pub journal_keep: f64,
+    pub anchor: Option<AnchorSettings>,
 }
 
 fn text(name: &str, default: &str) -> String {
@@ -123,6 +145,39 @@ pub(crate) fn listed(value: &str) -> Vec<String> {
 }
 
 impl Settings {
+    /// The knobs that shape decisions, written into the log at every start so a replay and every miner see what the API runs with.
+    pub fn journaled(&self) -> serde_json::Value {
+        let registry = match &self.registry {
+            RegistryMode::Chain { netuid, .. } => serde_json::json!({"mode": "chain", "netuid": netuid}),
+            RegistryMode::Local { .. } => serde_json::json!({"mode": "local"}),
+        };
+        serde_json::json!({
+            "claim_ttl": self.claim_ttl,
+            "embed_claim_ttl": self.embed_claim_ttl,
+            "validation_ttl": self.validation_ttl,
+            "poll_rate": self.poll_rate,
+            "max_backlog": self.max_backlog,
+            "max_attempts": self.max_attempts,
+            "max_handbacks": self.max_handbacks,
+            "ledger_delay": self.ledger_delay,
+            "check_share": self.check_share,
+            "checks_per_hour": self.checks_per_hour,
+            "embed_check_share": self.embed_check_share,
+            "embed_checks_per_hour": self.embed_checks_per_hour,
+            "queue_target": self.queue_target,
+            "embed_queue_target": self.embed_queue_target,
+            "embed_input_max_age": self.embed_input_max_age,
+            "release_spread": self.release_spread,
+            "task_urls": self.task_urls,
+            "embed_tasks": self.embed_tasks,
+            "embed_model": self.embed_model,
+            "active_s": self.active_s,
+            "max_upload": self.max_upload,
+            "registry": registry,
+            "seeds": match self.seeds { SeedsMode::Chain { .. } => "chain", SeedsMode::Local { .. } => "local" },
+        })
+    }
+
     /// Seconds a miner has to upload a task of this kind after claiming it.
     pub fn claim_ttl_for(&self, kind: &str) -> f64 {
         if kind == EMBED {
@@ -214,6 +269,21 @@ impl Settings {
             admin_uris: text("TASK_API_ADMIN_URIS", ""),
             key_uri,
             cors_origins: listed(&text("TASK_API_CORS_ORIGINS", DEFAULT_ORIGINS)),
+            journal_every: number("TASK_API_JOURNAL_EVERY_S", 30.0)?,
+            journal_shares_every: number("TASK_API_JOURNAL_SHARES_EVERY_S", 600.0)?,
+            snapshot_every: number("TASK_API_SNAPSHOT_EVERY_S", 21_600.0)?,
+            journal_keep: number("TASK_API_JOURNAL_KEEP_S", 8.0 * 86_400.0)?,
+            anchor: match text("TASK_API_ANCHOR_NETWORK", "").as_str() {
+                "" => None,
+                network => Some(AnchorSettings {
+                    network: network.into(),
+                    netuid: number("TASK_API_ANCHOR_NETUID", number("TASK_API_NETUID", 22)?)?,
+                    key_uri: text("TASK_API_ANCHOR_KEY_URI", ""),
+                    every_blocks: number("TASK_API_ANCHOR_EVERY_BLOCKS", 12)?,
+                    min_blocks: number("TASK_API_ANCHOR_MIN_BLOCKS", 3)?,
+                    per_epoch: number("TASK_API_ANCHOR_PER_EPOCH", crate::anchor::PER_EPOCH - 1)?,
+                }),
+            },
         })
     }
 }
