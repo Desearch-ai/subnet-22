@@ -109,6 +109,9 @@ const FILES_PER_PASS: usize = 64;
 const RANGED_FROM_BYTES: u64 = 16 << 20;
 const RANGE_BYTES: u64 = 8 << 20;
 const RANGES_PER_FILE: usize = 8;
+/// Ranges of change files fetched at once across every file, so each keeps the pace its read timeout needs.
+const RANGES_IN_FLIGHT: usize = 32;
+static RANGES: LazyLock<tokio::sync::Semaphore> = LazyLock::new(|| tokio::sync::Semaphore::new(RANGES_IN_FLIGHT));
 /// Set when no page waits without a change file to plan it from.
 const WAITING_NUMBERED: &[u8] = b"waiting-numbered";
 const UNWAIT_BATCH: i64 = 100_000;
@@ -3258,8 +3261,7 @@ impl<T> std::future::Future for Ahead<T> {
 /// A change file's rows; the inner error says why the file cannot be read yet.
 type Fetched = Result<std::result::Result<Vec<ChangeRow>, Unread>>;
 
-/// Change file `seq`'s rows, fetched and decoded.
-/// A change file, a large one in ranges fetched at once, as one GET of it streams many times slower than several.
+/// A change file, a large one as ranges of the version its HEAD names, at most `RANGES_IN_FLIGHT` of them across every file at once.
 async fn get_whole(pages: &Bucket, key: &str) -> Result<Bytes, r2::Error> {
     let Some(head) = pages.head(key).await? else { return Err(r2::Error::Missing) };
     if head.size < RANGED_FROM_BYTES {
@@ -3267,14 +3269,22 @@ async fn get_whole(pages: &Bucket, key: &str) -> Result<Bytes, r2::Error> {
     }
     let etag = Some(head.etag.as_str()).filter(|etag| !etag.is_empty());
     let ranges = (0..head.size).step_by(RANGE_BYTES as usize).map(|start| start..(start + RANGE_BYTES).min(head.size));
-    let parts: Vec<Bytes> = stream::iter(ranges).map(|range| pages.get_range(key, range, etag)).buffered(RANGES_PER_FILE).try_collect().await?;
-    let mut whole = bytes::BytesMut::with_capacity(head.size as usize);
-    for part in parts {
-        whole.extend_from_slice(&part);
-    }
+    let parts = stream::iter(ranges)
+        .map(|range| async move {
+            let _range = RANGES.acquire().await.map_err(|error| r2::Error::Transport(format!("{error}")))?;
+            pages.get_range(key, range, etag).await
+        })
+        .buffered(RANGES_PER_FILE);
+    let whole = parts
+        .try_fold(bytes::BytesMut::with_capacity(head.size as usize), |mut whole, part| async move {
+            whole.extend_from_slice(&part);
+            Ok(whole)
+        })
+        .await?;
     Ok(whole.freeze())
 }
 
+/// Change file `seq`'s rows, fetched and decoded.
 async fn fetch(pages: Bucket, seq: i64) -> Fetched {
     let key = match change_key(&pages, seq).await {
         Ok(Some(key)) => key,
@@ -3564,7 +3574,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Holds the state at `PLANNER_HOLD_STATE` for a minute, as a planner still stopping would; run as its own process by the test below.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_large_change_file_is_read_in_ranges_and_a_small_one_whole() {
         let dir = std::env::temp_dir().join(format!("planner-ranges-{}", uuid::Uuid::new_v4().simple()));
@@ -3604,6 +3613,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Holds the state at `PLANNER_HOLD_STATE` for a minute, as a planner still stopping would; run as its own process by the test below.
     #[test]
     #[ignore]
     fn hold_the_state() {
