@@ -1,4 +1,5 @@
 //! Every completed upload of either kind, written in numbered signed files to the uploads bucket, so validators count each miner's work themselves.
+//! Each entry names the version its completion pinned, so every validator can look at it and sign what it saw.
 
 use anyhow::Result;
 use desearch::r2::Bucket;
@@ -20,6 +21,16 @@ pub const BATCH: isize = 1000;
 
 /// An embed upload is counted in the texts and characters its input holds; a crawl upload in the URLs it was given and the miner's counts.
 pub fn entry(job: &Value) -> Value {
+    let mut entry = counted(job);
+    for name in ["etag", "version"] {
+        if let Some(pinned) = job.get(name).filter(|v| v.as_str().is_some_and(|v| !v.is_empty())) {
+            entry[name] = pinned.clone();
+        }
+    }
+    entry
+}
+
+fn counted(job: &Value) -> Value {
     if kind_of(job) == EMBED {
         return json!({
             "kind": EMBED,

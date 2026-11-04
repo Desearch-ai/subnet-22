@@ -27,7 +27,7 @@ use crate::state::{Redis, State};
 use crate::storage::{delete_quietly, put_json};
 use crate::validations::{self, build_report, FinalVerdict};
 use crate::verdicts::{decide, Decision, ERROR_OUTCOMES, NO_MAJORITY};
-use crate::{checks, hours, outcomes, py, roundstore};
+use crate::{canary, checks, hours, outcomes, py, roundstore};
 
 pub const EMBED_FIELDS: [&str; 7] = ["model", "texts", "chars", "input_key", "input_sha256", "pages", "written_at"];
 pub const EMBED_ROUND_INPUTS: isize = 200;
@@ -388,14 +388,14 @@ pub async fn reclaim_expired(state: &State, now: f64) -> Result<Vec<(String, Str
         let tasks = state.tasks(&kind);
         let expiry = queues::claim_expiry(&state.redis, &task_id).await?;
         let Some((holder, seq)) = tasks.reclaim(&state.redis, &task_id, now).await? else { continue };
-        let forgiven = held_through_restart(state, tasks.claim_ttl, expiry);
+        let forgiven = forgiven_cause(state, &task_id, tasks.claim_ttl, expiry).await?;
         if !holder.is_empty() {
-            if !forgiven {
+            if forgiven.is_none() {
                 let (hotkey, task, lapsed) = (holder.clone(), task_id.clone(), payload.clone());
                 state.db.run(move |conn| lapse(conn, &hotkey, &task, &lapsed, "claim_expired", desearch::time::now())).await?;
             }
             let round_id = Some(text(&payload, "round_id")).filter(|r| !r.is_empty()).map(String::from).unwrap_or_else(|| state.current_round(&kind));
-            let cause = if forgiven { "restart" } else { "expired" };
+            let cause = forgiven.unwrap_or("expired");
             state
                 .record_one(Receipt {
                     round_id,
@@ -417,6 +417,19 @@ pub async fn reclaim_expired(state: &State, now: f64) -> Result<Vec<(String, Str
 /// Claimed before this process started: the miner may have tried to finish while we were down.
 pub fn held_through_restart(state: &State, claim_ttl: f64, expiry: Option<f64>) -> bool {
     expiry.is_some_and(|expiry| expiry <= state.started_at + claim_ttl)
+}
+
+/// Why a claim that ended without an upload costs its miner nothing, if it does: held through a restart, or,
+/// where the storage-outage rule is on, held while the storage canary found the uploads bucket failing.
+pub async fn forgiven_cause(state: &State, task_id: &str, claim_ttl: f64, expiry: Option<f64>) -> Result<Option<&'static str>> {
+    if held_through_restart(state, claim_ttl, expiry) {
+        return Ok(Some("restart"));
+    }
+    let Some(expiry) = expiry.filter(|_| state.settings.storage_outage_forgives) else { return Ok(None) };
+    let issued: Option<String> = state.redis.clone().get(format!("issued:{task_id}")).await?;
+    let claimed_at = issued.and_then(|raw| serde_json::from_str::<Value>(&raw).ok()).and_then(|issued| issued["at"].as_f64()).unwrap_or(expiry - claim_ttl);
+    let down = state.lookups.read(move |conn| canary::outage_during(conn, claimed_at, expiry)).await?;
+    Ok(down.then_some(canary::OUTAGE_CAUSE))
 }
 
 /// A claim that ended without an upload: its URLs, the budget and a strike; returns the budget.

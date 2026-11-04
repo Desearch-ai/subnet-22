@@ -1,4 +1,6 @@
 //! The signed log of every claim, completion, refusal and reclaim, anchored by a Merkle root when its round closes.
+//! A receipt that answers a miner's signed request names that request's hash, so a validator that relayed it can
+//! show whether the log holds it.
 
 use anyhow::Result;
 use rusqlite::{params, Connection, OptionalExtension, ToSql};
@@ -23,7 +25,8 @@ pub fn create(conn: &Connection) -> Result<()> {
             receipt_sig  TEXT NOT NULL,
             seq          INTEGER NOT NULL DEFAULT 0,
             cause        TEXT,
-            block        INTEGER
+            block        INTEGER,
+            request      TEXT
         );
         CREATE INDEX IF NOT EXISTS entries_round ON entries (round_id, id);
         CREATE INDEX IF NOT EXISTS entries_hotkey ON entries (hotkey, id);
@@ -35,6 +38,11 @@ pub fn create(conn: &Connection) -> Result<()> {
         );
         ",
     )?;
+    let has_request: i64 = conn.query_row("SELECT COUNT(*) FROM pragma_table_info('entries') WHERE name = 'request'", [], |row| row.get(0))?;
+    if has_request == 0 {
+        conn.execute_batch("ALTER TABLE entries ADD COLUMN request TEXT")?;
+    }
+    conn.execute_batch("CREATE INDEX IF NOT EXISTS entries_request ON entries (request) WHERE request IS NOT NULL")?;
     Ok(())
 }
 
@@ -50,6 +58,8 @@ pub struct Receipt {
     pub refusal: Option<Value>,
     pub cause: Option<String>,
     pub block: Option<i64>,
+    /// The hash of the miner's signed request this receipt answers.
+    pub request: Option<String>,
 }
 
 impl Receipt {
@@ -73,6 +83,9 @@ impl Receipt {
         if let Some(block) = self.block {
             body.insert("block".into(), block.into());
         }
+        if let Some(request) = &self.request {
+            body.insert("request".into(), request.clone().into());
+        }
         Value::Object(body)
     }
 }
@@ -80,8 +93,8 @@ impl Receipt {
 pub fn record(conn: &Connection, receipt: &Receipt, signature: &str, served_at: f64) -> Result<()> {
     let refusal = receipt.refusal.as_ref().filter(|r| r.as_object().is_none_or(|o| !o.is_empty())).map(|r| r.to_string());
     conn.execute(
-        "INSERT INTO entries (round_id, hotkey, requested_at, served_at, outcome, task_id, refusal, receipt_sig, seq, cause, block)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO entries (round_id, hotkey, requested_at, served_at, outcome, task_id, refusal, receipt_sig, seq, cause, block, request)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         params![
             receipt.round_id,
             receipt.hotkey,
@@ -93,7 +106,8 @@ pub fn record(conn: &Connection, receipt: &Receipt, signature: &str, served_at: 
             signature,
             receipt.seq,
             receipt.cause,
-            receipt.block
+            receipt.block,
+            receipt.request
         ],
     )?;
     Ok(())
@@ -101,7 +115,7 @@ pub fn record(conn: &Connection, receipt: &Receipt, signature: &str, served_at: 
 
 pub fn entries(conn: &Connection, round_id: &str) -> Result<Vec<Value>> {
     let mut statement = conn.prepare(
-        "SELECT hotkey, requested_at, served_at, outcome, task_id, refusal, receipt_sig, seq, cause, block FROM entries WHERE round_id = ? ORDER BY seq, id",
+        "SELECT hotkey, requested_at, served_at, outcome, task_id, refusal, receipt_sig, seq, cause, block, request FROM entries WHERE round_id = ? ORDER BY seq, id",
     )?;
     let rows = statement.query_map([round_id], |row| {
         let mut entry = Map::new();
@@ -123,23 +137,29 @@ pub fn entries(conn: &Connection, round_id: &str) -> Result<Vec<Value>> {
         if let Some(block) = row.get::<_, Option<i64>>(9)? {
             entry.insert("block".into(), block.into());
         }
+        if let Some(request) = row.get::<_, Option<String>>(10)? {
+            entry.insert("request".into(), request.into());
+        }
         Ok(Value::Object(entry))
     })?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
+/// What `events` narrows the log to.
+#[derive(Default)]
+pub struct EventFilter<'a> {
+    pub miner: Option<&'a str>,
+    pub task_id: Option<&'a str>,
+    pub outcome: Option<&'a str>,
+    pub request: Option<&'a str>,
+}
+
 /// Entries newest first, and the cursor of the next page when there is one.
-pub fn events(
-    conn: &Connection,
-    miner: Option<&str>,
-    task_id: Option<&str>,
-    outcome: Option<&str>,
-    before: Option<i64>,
-    limit: i64,
-) -> Result<(Vec<Value>, Option<i64>)> {
+pub fn events(conn: &Connection, filter: &EventFilter, before: Option<i64>, limit: i64) -> Result<(Vec<Value>, Option<i64>)> {
     let mut clauses = vec!["1"];
     let mut args: Vec<&dyn ToSql> = Vec::new();
-    for (clause, value) in [("hotkey = ?", &miner), ("task_id = ?", &task_id), ("outcome = ?", &outcome)] {
+    for (clause, value) in [("hotkey = ?", &filter.miner), ("task_id = ?", &filter.task_id), ("outcome = ?", &filter.outcome), ("request = ?", &filter.request)]
+    {
         if let Some(value) = value.as_ref().filter(|v| !v.is_empty()) {
             clauses.push(clause);
             args.push(value);
@@ -151,7 +171,7 @@ pub fn events(
     }
     args.push(&limit);
     let sql = format!(
-        "SELECT id, round_id, hotkey, served_at, outcome, task_id, refusal, cause FROM entries WHERE {} ORDER BY id DESC LIMIT ?",
+        "SELECT id, round_id, hotkey, served_at, outcome, task_id, refusal, cause, request FROM entries WHERE {} ORDER BY id DESC LIMIT ?",
         clauses.join(" AND ")
     );
     let mut statement = conn.prepare(&sql)?;
@@ -168,6 +188,7 @@ pub fn events(
                 "task_id": json_of(row.get_ref(5)?),
                 "refusal": refusal.map_or(Value::Null, |r| serde_json::from_str(&r).unwrap_or(Value::Null)),
                 "cause": json_of(row.get_ref(7)?),
+                "request": json_of(row.get_ref(8)?),
             }),
         ))
     })?;

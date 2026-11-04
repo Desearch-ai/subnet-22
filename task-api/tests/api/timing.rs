@@ -69,7 +69,7 @@ async fn a_completion_pins_the_upload_where_the_miner_put_it() {
     h.miner.post(&format!("/v1/tasks/{id}/complete"), report).await.unwrap();
     assert_eq!(h.object(&key), Some(parquet(&task)), "the upload stays where the miner put it");
     assert_eq!(h.stub.state.count("DELETE"), deletes, "and nothing is deleted");
-    let kept: Vec<String> = h.stub.state.keys(BUCKET, "").into_iter().filter(|k| k.contains(&format!("/task={id}/"))).collect();
+    let kept: Vec<String> = h.stub.state.keys(BUCKET, "uploads/");
     assert_eq!(kept, std::slice::from_ref(&key), "nor copied, and nothing is written beside it");
     let job = h.state.validation.job(&h.redis, &id).await.unwrap().unwrap();
     assert_eq!((job["key"].clone(), job["etag"].clone()), (json!(key), json!(stored.etag)));

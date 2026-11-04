@@ -10,7 +10,7 @@ use task_api::verdicts::UPLOAD_CHANGED;
 use task_api::{checks, lifecycle, sampling, uploadlog};
 
 use crate::checks::{established_in, settled};
-use crate::harness::{judged, task_id, urls, vectors, Client, Harness};
+use crate::harness::{is_random_upload_key, judged, task_id, urls, vectors, Client, Harness};
 
 fn pages() -> Value {
     json!((0..2).map(|i| json!({"url": format!("https://site{i}.example/story/{i}"), "host": format!("site{i}.example"), "page_key": format!("pages/{i:040x}.zst"), "content_sha1": format!("{i:040x}")})).collect::<Vec<_>>())
@@ -479,7 +479,7 @@ async fn an_embed_upload_is_one_float16_vector_per_text_and_its_size_is_checked_
     embed_round(&h, input()).await;
     let task = h.miner.post("/v1/tasks/claim", embed_claim()).await.unwrap()["tasks"][0].clone();
     let key = task["upload"]["key"].as_str().unwrap();
-    assert!(key.starts_with("uploads/task=") && key.ends_with(".f16"), "{key}");
+    assert!(is_random_upload_key(key, ".f16"), "{key}");
     assert_eq!(task["upload"]["content_type"], "application/octet-stream");
     let url = task["upload"]["url"].as_str().unwrap();
     let complete = format!("/v1/tasks/{}/complete", task_id(&task));
@@ -614,7 +614,7 @@ async fn every_completed_embed_upload_is_logged_with_its_texts_and_characters() 
     let written = h.json_object(&upload_log_key(1)).unwrap();
     assert_eq!(
         written["entries"],
-        json!([{"kind": "embed", "key": job["key"], "task_id": task, "miner": h.miner.ss58(), "completed_at": job["completed_at"], "texts": 6, "chars": 5400}])
+        json!([{"kind": "embed", "key": job["key"], "etag": job["etag"], "task_id": task, "miner": h.miner.ss58(), "completed_at": job["completed_at"], "texts": 6, "chars": 5400}])
     );
 }
 

@@ -1,7 +1,7 @@
 //! The few object-storage steps the task API takes beyond plain reads and writes.
 
 use bytes::Bytes;
-use desearch::r2::{Bucket, Error, Head, JSON};
+use desearch::r2::{Bucket, Error, Head, Pin, JSON};
 use serde_json::Value;
 
 const PARQUET_MAGIC: &[u8; 4] = b"PAR1";
@@ -16,8 +16,8 @@ pub async fn is_parquet(bucket: &Bucket, key: &str, found: &Head) -> Result<bool
     if found.size < 2 * magic {
         return Ok(false);
     }
-    let (head, tail) =
-        tokio::try_join!(bucket.get_range(key, 0..magic, Some(&found.etag)), bucket.get_range(key, found.size - magic..found.size, Some(&found.etag)))?;
+    let pin = Pin::of(found);
+    let (head, tail) = tokio::try_join!(bucket.get_range_at(key, 0..magic, pin), bucket.get_range_at(key, found.size - magic..found.size, pin))?;
     Ok(head.as_ref() == PARQUET_MAGIC && tail.as_ref() == PARQUET_MAGIC)
 }
 

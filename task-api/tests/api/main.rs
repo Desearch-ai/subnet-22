@@ -15,9 +15,10 @@ mod reference;
 mod staging;
 mod timing;
 mod trust;
+mod witness;
 
 use desearch::hotkey::{public_of, verify};
-use harness::{first_url, parquet, score, task_id, urls, Harness};
+use harness::{first_url, is_random_upload_key, parquet, score, task_id, urls, Harness};
 use serde_json::{json, Value};
 use task_api::budgets::{self, LOCKOUT_STEPS_H};
 use task_api::lifecycle;
@@ -73,7 +74,7 @@ async fn a_crawl_task_goes_round_trip() {
     assert_eq!(task["round_id"], round_id.as_str());
     assert_eq!(task["urls"].as_array().unwrap().len(), 3);
     let key = upload["key"].as_str().unwrap();
-    assert!(key.starts_with(&format!("uploads/task={id}/{}-", h.miner.ss58())) && key.ends_with(".parquet"), "{key}");
+    assert!(is_random_upload_key(key, ".parquet") && !key.contains(&id) && !key.contains(&h.miner.ss58()), "{key}");
     assert_eq!(upload["content_type"], "application/vnd.apache.parquet");
     assert_eq!(upload["expires_at"], task["expires_at"]);
     let signer = h.public("/v1/key").await.1["signer"].as_str().unwrap().to_string();
@@ -83,7 +84,7 @@ async fn a_crawl_task_goes_round_trip() {
     let complete = format!("/v1/tasks/{id}/complete");
     let report = json!({"key": key, "rows": 3, "ok": 3, "errors": 0, "bytes": 0});
     assert_eq!(h.rival.post(&complete, report.clone()).await.unwrap_err().status, 409);
-    let forged = key.replace(&h.miner.ss58(), &h.rival.ss58());
+    let forged = format!("uploads/{}.parquet", "0".repeat(32));
     assert_eq!(h.miner.post(&complete, json!({"key": forged, "rows": 3, "ok": 3})).await.unwrap_err().status, 400);
     assert_eq!(h.miner.post(&complete, report.clone()).await.unwrap_err().status, 422, "nothing uploaded yet");
 

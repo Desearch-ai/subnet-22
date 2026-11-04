@@ -267,6 +267,7 @@ pub fn router(state: Arc<State>) -> Router {
         .route("/v1/room", get(routes::room))
         .route("/v1/admin/enqueue", post(routes::enqueue))
         .route("/v1/key", get(routes::key))
+        .route("/v1/storage/probes", get(routes::storage_probes))
         .route("/v1/rounds", get(routes::round_list))
         .route("/v1/rounds/{round_id}", get(routes::round_view))
         .route("/v1/rounds/{round_id}/log", get(routes::round_log))

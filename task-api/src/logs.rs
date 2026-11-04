@@ -683,9 +683,17 @@ pub async fn events(Shared(state): Shared<Arc<State>>, QueryParams(query): Query
     let miner = id_param(&query, "miner")?;
     let task_id = id_param(&query, "task_id")?;
     let outcome = literal_param(&query, "outcome", &["issued", "completed", "refused", "reclaimed", "dropped"])?;
+    let request = id_param(&query, "request")?;
     let before = optional_int(&query, "before")?;
     let limit = int_param(&query, "limit", PAGE, 1, MAX_PAGE)?;
-    let (found, next) = state.reader.read(move |conn| roundlog::events(conn, miner.as_deref(), task_id.as_deref(), outcome.as_deref(), before, limit)).await?;
+    let (found, next) = state
+        .reader
+        .read(move |conn| {
+            let filter =
+                roundlog::EventFilter { miner: miner.as_deref(), task_id: task_id.as_deref(), outcome: outcome.as_deref(), request: request.as_deref() };
+            roundlog::events(conn, &filter, before, limit)
+        })
+        .await?;
     Ok(Json(json!({"events": found, "next": next})))
 }
 

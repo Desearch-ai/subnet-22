@@ -2,6 +2,7 @@
 
 pub mod auth;
 pub mod budgets;
+pub mod canary;
 pub mod chain;
 pub mod checks;
 pub mod credit;

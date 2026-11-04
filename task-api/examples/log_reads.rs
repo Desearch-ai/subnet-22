@@ -220,6 +220,7 @@ fn build(dir: &Path, days: i64) -> Result<()> {
                 refusal,
                 cause: cause.map(String::from),
                 block: None,
+                request: None,
             };
             roundlog::record(&tx, &receipt, &"ab".repeat(64), at)?;
         }
@@ -382,8 +383,9 @@ fn time(dir: &Path) -> Result<()> {
         votes(VoteFilter { validator: Some(validator.into()), agreed: Some(false), limit: 50, ..VoteFilter::default() }),
         Vec::len,
     )?;
-    let events =
-        |miner: Option<&'static str>, outcome: Option<&'static str>| move || roundlog::events(conn, miner, None, outcome, None, 50).map(|(found, _)| found);
+    let events = |miner: Option<&'static str>, outcome: Option<&'static str>| {
+        move || roundlog::events(conn, &roundlog::EventFilter { miner, outcome, ..Default::default() }, None, 50).map(|(found, _)| found)
+    };
     let leaked: &'static str = Box::leak(miner.clone().into_boxed_str());
     timed("events: one miner 50", events(Some(leaked), None), Vec::len)?;
     timed("events: refused 50", events(None, Some("refused")), Vec::len)?;

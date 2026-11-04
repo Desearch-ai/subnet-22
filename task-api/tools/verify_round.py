@@ -22,6 +22,7 @@ RECEIPT_FIELDS = (
     "refusal",
     "cause",
     "block",
+    "request",
 )
 
 
