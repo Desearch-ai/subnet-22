@@ -82,7 +82,7 @@ const BACKFILL: &[u8] = b"backfill";
 /// Pages a backfill slice reads at most, for each it may plan.
 const READS_PER_PLANNED: usize = 4;
 /// Pages read ahead from `current/` waiting for budget and room.
-const BACKFILL_AHEAD: usize = 16_384;
+const BACKFILL_AHEAD: usize = 49_152;
 /// How long a pass waits for the backfill's reader before going on.
 const BACKFILL_WAIT: Duration = Duration::from_millis(500);
 /// Failed reads of one shard in a row after which the backfill goes on to the next.
@@ -1784,6 +1784,8 @@ pub struct Planner {
     listed_modified: Option<std::time::SystemTime>,
     set: Option<Arc<Set>>,
     reading: Option<Reading>,
+    /// The next shard, read from its first key while this one is taken, so its pick is done by the time it is wanted.
+    next_reading: Option<Reading>,
     /// When the backfill reads again: its next sweep once it has read every shard, or a while after a shard failed.
     next_sweep: Option<Instant>,
     /// The shard the backfill last failed to read, and how many times in a row.
@@ -1899,6 +1901,7 @@ impl Planner {
             listed_modified: None,
             set: None,
             reading: None,
+            next_reading: None,
             next_sweep: None,
             failing: (usize::MAX, 0),
             replan_after: [0; CLASSES],
@@ -2515,7 +2518,7 @@ impl Planner {
         }
     }
 
-    /// Starts reading the backfill's next shard from where it was left; false while a finished sweep waits for the next.
+    /// Starts reading the backfill's next shard from where it was left, and the one after it from its start; false while a finished sweep waits for the next.
     fn start_reading(&mut self) -> Result<bool> {
         if self.next_sweep.is_some_and(|next| Instant::now() < next) {
             return Ok(false);
@@ -2523,6 +2526,26 @@ impl Planner {
         let shards = self.settings.backfill_shards.clone();
         let (shard, after) = self.state.backfill()?.unwrap_or((shards.start, None));
         let (shard, after) = if shards.contains(&shard) { (shard, after) } else { (shards.start, None) };
+        let ready = match self.next_reading.take() {
+            Some(next) if next.shard == shard && after.is_none() => Some(next),
+            // A shard read again after a failure keeps the one after it as read so far.
+            Some(next) if next.shard == shard + 1 => {
+                self.next_reading = Some(next);
+                None
+            }
+            _ => None,
+        };
+        self.reading = Some(match ready {
+            Some(next) => next,
+            None => self.spawn_reading(shard, after),
+        });
+        if self.next_reading.is_none() && shard + 1 < shards.end {
+            self.next_reading = Some(self.spawn_reading(shard + 1, None));
+        }
+        Ok(true)
+    }
+
+    fn spawn_reading(&self, shard: usize, after: Option<String>) -> Reading {
         let reader = ShardReader {
             bucket: self.current.clone().expect("a current/ bucket"),
             prefix: self.settings.current_prefix.clone(),
@@ -2558,8 +2581,7 @@ impl Planner {
             };
             reader.read(shard, from.as_deref(), withdrawn, keep, |page| send.blocking_send(page).is_ok())
         });
-        self.reading = Some(Reading { shard, pages, done, last: after, held: None });
-        Ok(true)
+        Reading { shard, pages, done, last: after, held: None }
     }
 
     /// Change files missed on the way past: read once they can be; a number never indexed is given up after `hole_wait`, a file that cannot be read is tried until it can.

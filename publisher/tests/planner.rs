@@ -2863,6 +2863,47 @@ async fn the_re_plan_leaves_the_log_s_share_within_a_change_file_and_the_rest_of
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_backfill_reads_the_next_shard_while_it_plans_the_one_before() {
+    let Some((_turn, redis)) = redis_db().await else {
+        eprintln!("skipped: no Redis on {REDIS}");
+        return;
+    };
+    let dir = scratch("backfill-next-shard");
+    let stub = stub::start(dir.join("r2"), "127.0.0.1:0").await.unwrap();
+    let (pages, temp, current) = (bucket(stub.addr, "desearch-pages"), bucket(stub.addr, "subnet-22"), bucket(stub.addr, "desearch-current"));
+    let row = |url: String| {
+        let record = v2(record(&url, &format!("{url} {}", article(2)), "article", "en"));
+        PageRow { key: page_key(&url).unwrap(), removed: false, change_seq: 1, version: record_version(&record), published_at: record.fetched_at.clone(), record }
+    };
+    shard(&current, 7, vec![(0..4).map(|n| row(format!("https://news.example/a/{n}"))).collect()]).await;
+    shard(&current, 8, vec![(0..3).map(|n| row(format!("https://news.example/b/{n}"))).collect()]).await;
+    log(&pages, 1, vec![v2(record("https://other.example/log", &article(2), "article", "en"))]).await;
+    let mut sliced = settings(dir.join("state"), 3_600_000.0, 0);
+    (sliced.backfill, sliced.backfill_shards, sliced.fresh_flush_after) = (true, 7..9, Duration::ZERO);
+    let mut planner = Planner::new(sliced, pages.clone(), temp.clone(), redis.clone(), Room::Fixed(1_000)).await.unwrap();
+    planner.current = Some(current.clone());
+    for _ in 0..20 {
+        planner.pass().await.unwrap();
+        if planner.counts.backfill > 0 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!((planner.counts.backfill, planner.counts.shards), (1, 0), "one page of shard 7 a pass");
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    for key in ["manifest.json", "base-000000000000.parquet"] {
+        current.delete(&format!("current/shard=0008/{key}")).await.unwrap();
+    }
+    sweep(&mut planner, 2).await;
+    assert_eq!(
+        (planner.counts.backfill, planner.counts.shards, planner.counts.shard_failures),
+        (7, 2, 0),
+        "shard 8 was read while shard 7 was planned, before its files went"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_shard_the_backfill_fails_to_read_three_times_in_a_row_is_gone_past_and_counted() {
     let Some((_turn, redis)) = redis_db().await else {
         eprintln!("skipped: no Redis on {REDIS}");
