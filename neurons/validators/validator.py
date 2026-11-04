@@ -5,6 +5,7 @@ import os
 import signal
 import sys
 import time
+from pathlib import Path
 
 import aiohttp
 import bittensor as bt
@@ -18,6 +19,7 @@ from desearch.embedding import MODELS, EmbeddingClient
 from desearch.credit import SHARE_WINDOW_H
 from desearch.fetch import Fetcher, ScrapingDog
 from desearch.kinds import CRAWL, EMBED
+from desearch.journal import Anchor, anchor_from_commitment
 from desearch.manifest import seed_from_hash
 from bittensor.wallets import Wallet
 
@@ -35,6 +37,7 @@ from neurons.validators.fetchers import (
     SampleFetcher,
     ScrapingDogAccount,
 )
+from neurons.validators.journal import JournalFollower
 from neurons.validators.ledger import Ledger
 from neurons.validators.upload_log import UploadLog
 from neurons.validators.weights import set_weights, weights_from_shares
@@ -47,6 +50,7 @@ POLL_S = 60
 AFTER_WEIGHTS_S = 300
 SHARES_TIMEOUT = aiohttp.ClientTimeout(total=30.0)
 SIGNER_RETRY_S = 30
+JOURNAL_POLL_S = 60
 ACCOUNT_CHECK_S = 300
 VALIDATION_JOBS = 12
 EMBED_JOBS = 2
@@ -73,6 +77,8 @@ class Validator:
         )
         self.ledger = Ledger(os.path.join(self.config.neuron.full_path, "verdicts.db"))
         self.stopping = asyncio.Event()
+        # What the task API's log shows it did against its own rules; kept for the run and written to fraud proofs as found.
+        self.journal_problems = []
 
     async def initialize(self) -> None:
         network = self.config.subtensor.chain_endpoint or self.config.subtensor.network
@@ -98,6 +104,7 @@ class Validator:
             asyncio.create_task(self.sync_metagraph()),
             asyncio.create_task(self.sync_weights()),
             asyncio.create_task(self.follow_upload_log()),
+            asyncio.create_task(self.follow_journal()),
         ]
         try:
             await asyncio.gather(self.check_crawl_tasks(), self.check_embed_tasks())
@@ -263,18 +270,59 @@ class Validator:
         return seed_from_hash((await self.subtensor.block_info(block)).hash)
 
     async def api_signer(self) -> str:
-        """The key the task API signs manifests with, fetched once."""
+        """The key the task API signs with, as this release pins it; the API's own `/v1/key` is only compared with it, never taken."""
+        pinned = self.config.neuron.task_api_signer
         url = f"{self.config.neuron.task_api_url.rstrip('/')}/v1/key"
+        try:
+            async with self.http.get(
+                url, timeout=SHARES_TIMEOUT, raise_for_status=True
+            ) as response:
+                published = (await response.json())["signer"]
+            if published != pinned:
+                log.error(
+                    f"The task API says it signs with {published}, this release pins {pinned}: "
+                    "only files signed by the pinned key are read"
+                )
+        except Exception as error:
+            log.warning(f"Task API signer not compared with the pinned one: {error!r}")
+        return pinned
+
+    async def block_hash(self, block: int) -> str | None:
+        """A block's hash from our own node; None until it exists."""
+        if block > await self.subtensor.block():
+            return None
+        return (await self.subtensor.block_info(block)).hash
+
+    async def journal_anchor(self) -> Anchor | None:
+        """The head of the task API's log as its anchor hotkey last committed it on this subnet, from our own node."""
+        record = await self.subtensor.query(
+            ("Commitments", "CommitmentOf"),
+            [self.config.netuid, self.config.neuron.task_api_anchor],
+        )
+        return anchor_from_commitment(record)
+
+    async def follow_journal(self) -> None:
+        """Checks the task API's log as it is published: links, signatures, block hashes and anchors, and replays it when the tool is installed."""
+        follower = JournalFollower(
+            self.http,
+            self.config.neuron.storage_url,
+            await self.api_signer(),
+            Path(self.config.neuron.full_path) / "journal",
+            self.block_hash,
+            self.journal_anchor,
+            self.config.neuron.replay_bin,
+        )
+        if not self.config.neuron.replay_bin:
+            log.info(
+                "No --neuron.replay_bin: the task API's log is checked, not replayed"
+            )
         while not self.stopping.is_set():
             try:
-                async with self.http.get(
-                    url, timeout=SHARES_TIMEOUT, raise_for_status=True
-                ) as response:
-                    return (await response.json())["signer"]
+                problems = await follower.poll()
+                self.journal_problems += [p for p in problems if p.severity == "fraud"]
             except Exception as error:
-                log.warning(f"Task API signer unavailable, retrying: {error!r}")
-                await asyncio.sleep(SIGNER_RETRY_S)
-        return ""
+                log.warning(f"Task API log unavailable, retrying: {error!r}")
+            await asyncio.sleep(JOURNAL_POLL_S)
 
     async def follow_upload_log(self) -> None:
         """Every miner's uploads of both kinds, from the log the task API signs into the uploads bucket."""

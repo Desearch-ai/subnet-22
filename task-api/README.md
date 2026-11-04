@@ -106,8 +106,81 @@ publisher write these in numbered files, `outcomes/seq/<n>.json` in the uploads 
 Parquet file, with the newest number in `outcomes/latest.json`. A task dropped after its last
 attempt and a withdrawn page are reported dropped, so the bot sends them again.
 
-**Signed log.** Every claim, refusal and completion is signed by the API. `GET /v1/key` publishes the
-signer, and `tools/verify_round.py` checks a closed round end to end.
+**Signed log.** Every claim, refusal and completion is signed by the API, and `tools/verify_round.py`
+checks a closed round end to end, reading the seed block's hash from your own node. Beyond that, every
+change to the accounts goes into one hash-chained log that is published, anchored on chain and replayed
+by validators; see [Verifiable log](#verifiable-log).
+
+## Verifiable log
+
+The API is run as a state machine anyone can check. Every input that changes the accounts, and what the
+API made of it, is one entry in a log, written in the same SQLite transaction as the change:
+
+```json
+{"v": 1, "seq": 812, "prev": "<sha256 of entry 811>", "at": 1793781693.42, "kind": "finalize", "input": {...}, "output": {...}}
+```
+
+An entry's hash is the SHA-256 of its canonical JSON (`json.dumps(sort_keys=True, separators=(",", ":"),
+ensure_ascii=False)`), and every entry names the hash of the one before, so no entry can be altered,
+dropped, reordered or forked without every later hash changing.
+
+| Kind | Input | Output |
+| --- | --- | --- |
+| `start` | the version, the signer and the knobs that shape decisions | — |
+| `snapshot` | when | the digest of the accounts, and the accounts in a blob named by it (one at the first start, then every `TASK_API_SNAPSHOT_EVERY_S`) |
+| `requests` | the hash of every authenticated request since the last, and the block | — |
+| `claim`, `complete`, `abandon`, `report`, `release`, `enqueue` | the signed request: method, path, hotkey, timestamp, nonce, signature and body | the receipts, the job, the vote, the budget, the round's commitment, or why it was refused |
+| `miner`, `lapse`, `settle`, `finalize`, `take_back`, `recheck` | what the rule read: the job, the voters in order, the seed block and its hash, the upload counters | the budget, whether the upload is checked, the verdict, its credit, the uploads taken back |
+| `reveal`, `close`, `embed_round` | the round, its seed block and that block's hash | the seed, the serve order, the round log's Merkle root |
+| `metagraph` | the neurons and their stakes, when who may vote changed | the validators |
+| `prune`, `shares`, `anchor`, `receipt` | | the shares as served, an anchor the chain confirmed, receipts signed elsewhere |
+
+A request body over 2 kB, a job's URLs, a manifest and a snapshot are kept in blobs the entry names by
+their SHA-256 (`{"blob": "<sha256>", "bytes": n}`); a job's URL blob is named by the `urls_hash` its round
+committed to. Presigned upload links are never logged.
+
+**Files.** Every `TASK_API_JOURNAL_EVERY_S` the janitor writes the entries not yet published into
+`log/journal/seq/<n>.json` in the uploads bucket, after the blobs they name (`log/journal/blobs/<sha256>`),
+and points `log/journal/latest.json` at it. Each file holds `first`, `last`, `prev` (the hash before its
+first entry), `head` (its last entry's hash), the entries, the signer and a signature over the rest. Two
+files with one number and different heads, both signed, prove a fork on their own.
+
+**Anchors.** With `TASK_API_ANCHOR_NETWORK` set, the API commits the head to the chain with
+`Commitments.set_commitment(netuid, [Raw("sn22j1:<seq>"), Sha256(<hash of entry seq>)])`, signed by
+`TASK_API_ANCHOR_KEY_URI` (the log's key unless set). Commitments are free, live in chain state
+(`Commitments.CommitmentOf(netuid, hotkey)`) where any node answers, and a hotkey may make 31 per epoch
+(3,100 bytes, each call counted as 100), so the API anchors every `TASK_API_ANCHOR_EVERY_BLOCKS` and, once a
+round opened, after `TASK_API_ANCHOR_MIN_BLOCKS`, at most `TASK_API_ANCHOR_PER_EPOCH` per 361 blocks. A
+`System.remark` would need no registration but a funded account and an indexer to find it again. The
+anchoring hotkey must be registered on the subnet (and kept from being pruned, e.g. as an owner-immune
+uid) and hold the existential deposit. Each confirmed anchor is logged as an `anchor` entry.
+
+**Replay.** [`src/replay.rs`](src/replay.rs) rebuilds the accounts from the log with the API's own rule
+functions on an SQLite of its own, from the first `snapshot`:
+- every logged request must be signed by the hotkey it names, and every blob must hash to its name;
+- a validator's vote is built again from its signed report; a verdict is decided again from the votes of
+  the voters the entry names, all of which must have been reported and none left out;
+- whether a seeded upload is checked is drawn again from the seed block's hash, the counters and the
+  re-check state; budgets, strikes, lockouts, take-backs and full penalties follow from the same rules;
+- shares and every later snapshot's digest must equal the replay's own.
+
+A difference the API decided inside one transaction is `fraud`. A check the API makes on reads outside the
+transaction that logs it (a claim against the budget or a lockout) is only `suspect`. The order of entries,
+the times they state and the Redis counters they quote are the API's to choose and are taken as given. The
+replay ships as `task-api-replay --dir <folder> --state <file> --signer <ss58> [--join]`, reading the
+bucket's layout (`seq/`, `blobs/`) from a folder and going on from its saved state; it prints each
+difference as a JSON line.
+
+**Signed reads.** Every answered `GET` carries `X-Desearch-Signer`, `X-Desearch-Signed-At` and
+`X-Desearch-Signature`, a signature over the canonical JSON
+`{"at": <X-Desearch-Signed-At>, "path": "<path and query>", "sha256": "<SHA-256 of the body>"}`, so a
+page or a screenshot of one can be shown to come from the API. The UI reads these endpoints; it does not
+check the signatures itself yet.
+
+**Taken as given until blocks A, C and D.** Times are the API's clock (A moves them to block heights),
+omitted requests are caught only with C's witness relays (the `requests` entries are what a relay
+compares its signed requests with), and the key is whoever holds `TASK_API_KEY_URI` (validators pin it in
+[`desearch/trust.py`](../desearch/trust.py) until D binds it to an attested enclave).
 
 ## Scoring
 
@@ -289,7 +362,17 @@ The [bot](../desearch-bot/README.md) fills the queue with the admin hotkey (`--t
 | `TASK_API_REDIS` | `redis://localhost:6379/15` | the Redis URL |
 | `TASK_API_LISTEN` | `0.0.0.0:8080` | the address the API listens on |
 | `TASK_API_ADMIN_HOTKEYS` | — | hotkeys allowed to enqueue |
-| `TASK_API_KEY_URI` | — | the key the log is signed with; required in `chain` mode |
+| `TASK_API_KEY_URI` | — | the key the log is signed with; required in `chain` mode. Validators pin its address in [`desearch/trust.py`](../desearch/trust.py), so a new key needs a release |
+| `TASK_API_JOURNAL_EVERY_S` | 30 | seconds between published log files |
+| `TASK_API_JOURNAL_SHARES_EVERY_S` | 600 | seconds between the shares written into the log |
+| `TASK_API_SNAPSHOT_EVERY_S` | 21600 | seconds between snapshots of the accounts in the log |
+| `TASK_API_JOURNAL_KEEP_S` | 691200 | seconds published log entries stay in SQLite |
+| `TASK_API_ANCHOR_NETWORK` | — | the chain the log's head is anchored on (a network name or URL); no anchors without it |
+| `TASK_API_ANCHOR_NETUID` | `TASK_API_NETUID` | the subnet the anchoring hotkey is registered on |
+| `TASK_API_ANCHOR_KEY_URI` | `TASK_API_KEY_URI` | the hotkey that commits the anchors |
+| `TASK_API_ANCHOR_EVERY_BLOCKS` | 12 | blocks between anchors |
+| `TASK_API_ANCHOR_MIN_BLOCKS` | 3 | blocks between anchors at least, once a round opened |
+| `TASK_API_ANCHOR_PER_EPOCH` | 30 | anchors per 361 blocks at most; the chain allows 31 |
 | `TASK_API_CLAIM_TTL` | 180 | seconds a miner is given to upload a task after claiming it; the claim and its upload link last 10 seconds longer |
 | `TASK_API_POLL_RATE` | 0.5 | claim requests per second one hotkey may make |
 | `TASK_API_VALIDATION_TTL` | 900 | seconds validators have to report once the upload is open |
@@ -324,7 +407,8 @@ alpha of its own.
 
 ## Public endpoints
 
-Anyone can read these; the [UI](../ui/README.md) is built on them.
+Anyone can read these; the [UI](../ui/README.md) is built on them. Every answer is signed
+([Signed reads](#verifiable-log)).
 
 | Endpoint | |
 | --- | --- |
@@ -346,7 +430,7 @@ Anyone can read these; the [UI](../ui/README.md) is built on them.
 | `GET /v1/shares` | every miner's share of the paid work as the API counts it, per pool |
 | `GET /v1/rounds`, `GET /v1/rounds/{id}` | round commitments, kept a week after a round closes |
 | `GET /v1/rounds/{id}/log` | a round's signed log |
-| `GET /v1/key` | the key that signs the log and the notes next to uploads |
+| `GET /v1/key` | the key that signs the log and the notes next to uploads; validators compare it with the key their release pins and never take it from here |
 
 A refused claim is logged once a minute per miner and reason, so an hour's refusals divided by 60 is
 how many miners were turned away each minute on average.
@@ -375,6 +459,8 @@ subnet-22 bucket, temporary, emptied after a day, public
   uploads/              miner uploads
   validation/open.json  the uploads waiting for validators, with their manifests, rewritten as they change
   log/uploads/          every completed upload with its reported counts, numbered and signed
+  log/journal/          the hash-chained log of every change to the accounts, numbered and signed, with the
+                        blobs its entries name
   outcomes/             what became of every URL, numbered under seq/, newest in latest.json
   embed/inputs/         the planner's input files, deleted once their vectors are published
 desearch-pages bucket
@@ -409,3 +495,8 @@ cd task-api && python3 -m pytest -q
 
 The tests use Redis db 14 and an in-memory R2; run one suite at a time. `TASK_API_TEST_R2=1` also runs
 the storage tests against real buckets, under `_test/`.
+
+The Rust tests (`cargo test`) use Redis db 13 at `TASK_API_TEST_REDIS_ADDR` (`127.0.0.1:6379` unless set,
+so checkouts testing at once can each run their own). `TASK_API_TEST_CHAIN=test` (or a local node's URL)
+also checks an anchor's extrinsic with the runtime's `validate_transaction`; with `TASK_API_TEST_ANCHOR_KEY`
+and `TASK_API_TEST_NETUID` on a local chain it is sent and read back. Nothing is ever sent to finney.

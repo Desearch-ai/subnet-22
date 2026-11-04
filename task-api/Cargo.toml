@@ -12,6 +12,7 @@ arrow-array = "59"
 arrow-schema = "59"
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "matched-path", "query", "tokio", "tower-log"] }
 base64 = "0.22"
+blake2 = "0.10"
 bytes = "1"
 flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
 frame-metadata = { version = "23", default-features = false, features = ["current", "decode", "std"] }
@@ -30,6 +31,7 @@ sha2 = "0.10"
 desearch = { path = "../crates/desearch" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "signal", "sync", "net"] }
 tower-http = { version = "0.6", features = ["cors"] }
+twox-hash = { version = "2", default-features = false, features = ["xxhash64"] }
 uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]

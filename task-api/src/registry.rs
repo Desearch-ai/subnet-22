@@ -6,7 +6,8 @@ use std::time::Duration;
 
 use anyhow::Result;
 use desearch::hotkey::Hotkey;
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
+use serde_json::{json, Value};
 use tokio::sync::watch;
 
 use crate::chain::{Chain, Neuron};
@@ -60,6 +61,27 @@ pub fn saved(conn: &Connection) -> Result<Vec<Entry>> {
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
+/// Writes the metagraph into the log when who is on the subnet, or who may vote, changed since it was last written; the neurons with
+/// their stakes go in a blob, so a replay sees who could vote and anyone can check it against the chain at that block.
+pub fn log_metagraph(conn: &Connection, netuid: u16, block: Option<i64>, neurons: &[Neuron], entries: &[Entry]) -> Result<()> {
+    let mut members: Vec<Value> = entries.iter().map(|e| json!([e.uid, e.hotkey, e.coldkey, e.is_validator])).collect();
+    members.sort_by_key(|member| member.to_string());
+    let members_hash = crate::proofs::sha256(&crate::py::canonical(&Value::Array(members)));
+    let last: Option<String> =
+        conn.query_row("SELECT entry FROM journal WHERE kind = 'metagraph' ORDER BY seq DESC LIMIT 1", [], |row| row.get(0)).optional()?;
+    if last.and_then(|entry| serde_json::from_str::<Value>(&entry).ok()).is_some_and(|entry| entry["output"]["members"] == members_hash.as_str()) {
+        return Ok(());
+    }
+    let listed: Vec<Value> =
+        neurons.iter().map(|n| json!([n.uid, n.hotkey, n.coldkey, n.validator_permit, n.total_stake_rao.to_string(), n.alpha_stake_rao.to_string()])).collect();
+    let blob = crate::journal::Blob::of(crate::py::canonical(&Value::Array(listed)));
+    let validators: Vec<&str> = entries.iter().filter(|e| e.is_validator).map(|e| e.hotkey.as_str()).collect();
+    let input = json!({"netuid": netuid, "block": block, "neurons": blob.reference()});
+    let output = json!({"members": members_hash, "validators": validators});
+    crate::journal::append(conn, crate::journal::Record::new("metagraph", desearch::time::now(), input, output).with_blobs(vec![blob]))?;
+    Ok(())
+}
+
 /// A permit alone is not enough: votes decide results, so a vote costs stake.
 pub fn is_validator(neuron: &Neuron) -> bool {
     neuron.validator_permit && neuron.total_stake_rao as f64 / RAO >= MIN_TOTAL_STAKE && neuron.alpha_stake_rao as f64 / RAO >= MIN_ALPHA_STAKE
@@ -98,8 +120,13 @@ impl Registry {
             loop {
                 let wait = match chain.metagraph(netuid).await {
                     Ok(neurons) => {
-                        let entries = registry.load(neurons);
-                        if let Err(error) = db.run(move |conn| save(conn, &entries)).await {
+                        let block = chain.last_read().map(|(block, _)| block);
+                        let entries = registry.load(neurons.clone());
+                        let saved = db.run(move |conn| {
+                            save(conn, &entries)?;
+                            log_metagraph(conn, netuid, block, &neurons, &entries)
+                        });
+                        if let Err(error) = saved.await {
                             eprintln!("could not keep the metagraph: {error:#}");
                         }
                         REFRESH

@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail, Context, Result};
 use desearch::canonical::hex;
+use frame_metadata::v15::RuntimeMetadataV15;
 use frame_metadata::{RuntimeMetadata, RuntimeMetadataPrefixed};
 use parity_scale_codec::Decode;
 use scale_value::{Composite, Primitive, Value, ValueDef};
@@ -86,7 +87,8 @@ impl Chain {
         })
     }
 
-    async fn rpc(&self, method: &str, params: serde_json::Value) -> Result<serde_json::Value> {
+    /// One JSON-RPC call, to the first endpoint that answers.
+    pub async fn rpc(&self, method: &str, params: serde_json::Value) -> Result<serde_json::Value> {
         let mut failed = None;
         for (at, url) in self.urls.iter().enumerate() {
             if let Some(left) = self.paused_for(at) {
@@ -200,19 +202,25 @@ impl Chain {
         Ok(Some(hash))
     }
 
-    async fn state_call(&self, method: &str, input: &[u8]) -> Result<Vec<u8>> {
+    pub async fn state_call(&self, method: &str, input: &[u8]) -> Result<Vec<u8>> {
         let found = self.rpc("state_call", json!([method, format!("0x{}", hex(input))])).await?;
         let text = found.as_str().ok_or_else(|| anyhow!("{method} returned no bytes"))?;
         decode_hex(text.trim_start_matches("0x")).ok_or_else(|| anyhow!("{method} returned bytes that are not hex"))
     }
 
-    /// Every neuron of the subnet, from `SubnetInfoRuntimeApi.get_metagraph` as bittensor's metagraph reads it.
-    pub async fn metagraph(&self, netuid: u16) -> Result<Vec<Neuron>> {
+    /// The runtime's v15 metadata: its types, pallets, calls and transaction extensions.
+    pub async fn metadata(&self) -> Result<RuntimeMetadataV15> {
         let raw = self.state_call("Metadata_metadata_at_version", &METADATA_VERSION.to_le_bytes()).await?;
         let opaque = Option::<Vec<u8>>::decode(&mut raw.as_slice())?.ok_or_else(|| anyhow!("the chain has no v{METADATA_VERSION} metadata"))?;
         let RuntimeMetadata::V15(metadata) = RuntimeMetadataPrefixed::decode(&mut opaque.as_slice())?.1 else {
             bail!("the chain's metadata is not v{METADATA_VERSION}");
         };
+        Ok(metadata)
+    }
+
+    /// Every neuron of the subnet, from `SubnetInfoRuntimeApi.get_metagraph` as bittensor's metagraph reads it.
+    pub async fn metagraph(&self, netuid: u16) -> Result<Vec<Neuron>> {
+        let metadata = self.metadata().await?;
         let method = metadata
             .apis
             .iter()
@@ -316,7 +324,7 @@ fn account(value: &Value<u32>) -> Option<[u8; 32]> {
     out.try_into().ok()
 }
 
-fn decode_hex(text: &str) -> Option<Vec<u8>> {
+pub fn decode_hex(text: &str) -> Option<Vec<u8>> {
     if !text.len().is_multiple_of(2) {
         return None;
     }

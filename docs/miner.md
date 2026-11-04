@@ -198,3 +198,18 @@ curl -s "https://api-22.desearch.ai/v1/tasks?miner=<hotkey>"
   for a verdict, coverage and pass/fail counts.
 - `/v1/tasks?miner=<hotkey>` lists your checked tasks.
 - `/v1/tasks/<task_id>` shows what validators found for each of a task's URLs or texts.
+
+**Checking the task API.** Everything the API decides about you is in its public, hash-chained log
+(`log/journal/` in the uploads bucket): your signed claims, completions and abandons, every validator's
+report on your uploads, the block hash that drew each check, every verdict, budget change, strike and
+take-back. The log's head is anchored on chain, and validators replay it with the API's own rules, so a
+budget, verdict or take-back the rules do not give is reported as a fraud proof. To check a round
+yourself, with the seed block read from your own node:
+
+```bash
+python3 task-api/tools/verify_round.py --round <round_id> --node finney \
+  --signer 5CD6xo6ZmkFxWEwPbPaUh9cdznuk67EN48d6E5PuXFLyJ4so --receipts <your receipts file>
+```
+
+Every page the API serves is signed (`X-Desearch-Signature`), so a screenshot of one can be checked
+against its signature. See [Verifiable log](../task-api/README.md#verifiable-log).

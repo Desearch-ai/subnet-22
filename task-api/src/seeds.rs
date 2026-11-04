@@ -38,14 +38,20 @@ impl Seeds {
         }
     }
 
-    /// The seed of a block that exists, None before it does.
-    pub async fn seed_for(&self, block: i64) -> Result<Option<String>> {
+    /// The hash of a block that exists, None before it does; the log keeps it beside every decision it seeds, so anyone can check it
+    /// against a node of their own.
+    pub async fn block_hash(&self, block: i64) -> Result<Option<String>> {
         if self.current_block().await? < block {
             return Ok(None);
         }
         Ok(match self {
-            Seeds::Local { .. } => Some(seed_from_hash(&local_block_hash(block))),
-            Seeds::Chain(chain) => chain.block_hash(block).await?.map(|hash| seed_from_hash(&hash)),
+            Seeds::Local { .. } => Some(local_block_hash(block)),
+            Seeds::Chain(chain) => chain.block_hash(block).await?,
         })
+    }
+
+    /// The seed of a block that exists, None before it does.
+    pub async fn seed_for(&self, block: i64) -> Result<Option<String>> {
+        Ok(self.block_hash(block).await?.map(|hash| seed_from_hash(&hash)))
     }
 }

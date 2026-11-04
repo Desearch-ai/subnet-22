@@ -7,7 +7,7 @@
 
 A validator checks miners' work under rules fixed in code, so every validator checks the same way, and
 sets weights from what its own checks found. It is one process,
-[`neurons/validators/validator.py`](../neurons/validators/validator.py), started by `run.sh`, with three
+[`neurons/validators/validator.py`](../neurons/validators/validator.py), started by `run.sh`, with four
 jobs:
 
 1. **Checks crawl tasks.**
@@ -32,6 +32,19 @@ jobs:
      checks of each miner paid, less what its failed checks take back.
    - Embed miners are paid the same way, counted in the characters of the texts they embedded.
    - See [Emission](./emission.md).
+
+4. **Checks the task API itself.**
+   - The task API signs with a key this release pins (`desearch/trust.py`); the validator never takes the
+     key from the API's own `/v1/key`, only compares it and logs a mismatch.
+   - It follows the API's hash-chained log in the uploads bucket: every file must be signed by the pinned
+     key and follow on from the last, every block hash an entry decided on must be the one your own node
+     has, and the head the API anchored on chain (`Commitments.CommitmentOf` of its hotkey on the subnet,
+     read from your node) must be the log's hash at that entry.
+   - With `--neuron.replay_bin`, it also replays the log with the API's own rules and reports every
+     budget, verdict, take-back or share the rules do not give.
+   - Whatever does not hold is logged as an error and written as a fraud proof (the files, entries and
+     chain reads that show it) under `~/.bittensor/miners/<wallet>/<hotkey>/netuid22/validator/journal/fraud/`.
+     See [Verifiable log](../task-api/README.md#verifiable-log).
 
 **Healthy checking:** weights are set only while the validator is checking. It sets none, and logs why,
 until a task is checked again, when any of these happens:
@@ -123,6 +136,9 @@ pm2 start run.sh --name desearch_autoupdate -- \
 | `--neuron.task_api_url` | the task API, `https://api-22.desearch.ai` by default |
 | `--neuron.storage_url` | the public URL of the uploads bucket, `https://subnet-22.s3.us-east-va.io.cloud.ovh.us` by default |
 | `--neuron.disable_set_weights` | check tasks without setting weights |
+| `--neuron.task_api_signer` | the key the task API signs with; pinned in each release, change it only with a release |
+| `--neuron.task_api_anchor` | the hotkey whose commitment anchors the task API's log; the signer by default |
+| `--neuron.replay_bin` | the `task-api-replay` binary (`cargo build --release --bin task-api-replay` in `task-api/`, or `TASK_API_REPLAY_BIN`); without it the log is checked but not replayed |
 | `--wandb.off` | do not log to Weights & Biases |
 | `--logging.info`, `--logging.debug` | without one, only warnings are printed |
 

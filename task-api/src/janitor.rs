@@ -15,7 +15,8 @@ use crate::budgets::{self, hour_of, KEEP_H};
 use crate::http::ApiError;
 use crate::queues::KINDS;
 use crate::state::State;
-use crate::{checks, hours, lifecycle, logs, roundstore, uploadlog, validations};
+use crate::{anchor, checks, hours, journal, lifecycle, logs, roundstore, snapshot, uploadlog, validations};
+use serde_json::{json, Value};
 
 /// The copy of the API that runs the passes; a rolling deploy briefly runs two copies.
 pub const LEASE_KEY: &str = "janitor:leader";
@@ -42,6 +43,8 @@ const SEAL_EVERY: Duration = Duration::from_secs(5);
 /// Held tasks moved to the ready queue in one step at most; a backlog drains over a few steps.
 const RELEASE_AT_ONCE: usize = 2_000;
 const UPLOAD_LOG_EVERY: Duration = Duration::from_secs(30);
+/// Log files published per pass at most, so a backlog drains over a few passes.
+const PUBLISH_AT_ONCE: usize = 10;
 const BEST_BLOCK_EVERY: Duration = Duration::from_secs(30);
 /// The open list carries every open upload's URLs, so it is rewritten at most this often.
 const OPEN_LIST_EVERY: Duration = Duration::from_secs(5);
@@ -60,6 +63,8 @@ const ROLL_UP_ENTRIES: i64 = 5000;
 
 #[derive(Clone, Copy, Debug)]
 enum Duty {
+    Journal,
+    Anchor,
     Reclaim,
     Settle,
     Finalize,
@@ -69,10 +74,14 @@ enum Duty {
     Upkeep,
 }
 
-const DUTIES: [Duty; 7] = [Duty::Reclaim, Duty::Settle, Duty::Finalize, Duty::Publish, Duty::Rounds, Duty::Release, Duty::Upkeep];
+const DUTIES: [Duty; 9] = [Duty::Journal, Duty::Anchor, Duty::Reclaim, Duty::Settle, Duty::Finalize, Duty::Publish, Duty::Rounds, Duty::Release, Duty::Upkeep];
 
 #[derive(Default)]
 struct Due {
+    anchoring: anchor::Anchoring,
+    journaled_at: Option<Instant>,
+    shared_at: Option<Instant>,
+    snapshot_at: Option<Instant>,
     sealed_at: Option<Instant>,
     logged_at: Option<Instant>,
     kept_block_at: Option<Instant>,
@@ -87,13 +96,15 @@ fn elapsed(at: Option<Instant>, interval: Duration) -> bool {
 impl Duty {
     fn every(self) -> Duration {
         match self {
-            Duty::Rounds => Duration::from_secs(2),
+            Duty::Rounds | Duty::Anchor => Duration::from_secs(2),
             _ => Duration::from_secs(1),
         }
     }
 
     async fn pass(self, state: &Arc<State>, due: &mut Due) -> Result<()> {
         match self {
+            Duty::Journal => journal_pass(state, due).await,
+            Duty::Anchor => anchor::pass(state, &mut due.anchoring).await,
             Duty::Reclaim => lifecycle::reclaim_expired(state, now()).await.map(drop),
             Duty::Settle => {
                 lifecycle::recheck_malformed(state).await?;
@@ -134,6 +145,35 @@ impl Duty {
     }
 }
 
+/// Writes the request hashes, the shares and the snapshots into the log, and publishes what it holds.
+async fn journal_pass(state: &Arc<State>, due: &mut Due) -> Result<()> {
+    let settings = &state.settings;
+    if !elapsed(due.journaled_at, Duration::from_secs_f64(settings.journal_every)) {
+        return Ok(());
+    }
+    due.journaled_at = Some(Instant::now());
+    journal::log_requests(state).await?;
+    // The first pass of a leader waits a whole interval, so copies taking turns do not each write the shares at once.
+    if due.shared_at.is_none() {
+        due.shared_at = Some(Instant::now());
+    } else if elapsed(due.shared_at, Duration::from_secs_f64(settings.journal_shares_every)) {
+        due.shared_at = Some(Instant::now());
+        journal::log_shares(state).await?;
+    }
+    if due.snapshot_at.is_none() {
+        due.snapshot_at = Some(Instant::now());
+    } else if elapsed(due.snapshot_at, Duration::from_secs_f64(settings.snapshot_every)) {
+        due.snapshot_at = Some(Instant::now());
+        state.db.run(|conn| snapshot::record(conn, now())).await?;
+    }
+    for _ in 0..PUBLISH_AT_ONCE {
+        if journal::publish(state).await?.is_none() {
+            break;
+        }
+    }
+    Ok(())
+}
+
 async fn upkeep(state: &Arc<State>, due: &mut Due) -> Result<()> {
     state.db.run(|conn| validations::prune_urls(conn, now(), PRUNE_DETAILS)).await?;
     state.db.run(|conn| validations::roll_up(conn, ROLL_UP_ROWS)).await?;
@@ -169,10 +209,14 @@ async fn upkeep(state: &Arc<State>, due: &mut Due) -> Result<()> {
                 budgets::prune(conn, KEEP_H, at)?;
                 validations::prune_hours(conn, at)?;
                 hours::prune(conn, at)?;
-                checks::prune(conn, at)
+                checks::prune(conn, at)?;
+                journal::append(conn, journal::Record::new("prune", at, json!({"keep_h": KEEP_H}), Value::Null))?;
+                Ok(())
             })
             .await?;
         due.pruned_hour = Some(hour_of(now()));
+        let keep = state.settings.journal_keep;
+        state.db.run(move |conn| journal::prune(conn, now(), keep)).await?;
     }
     Ok(())
 }

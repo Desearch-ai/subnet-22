@@ -27,7 +27,7 @@ use crate::state::{Redis, State};
 use crate::storage::{delete_quietly, put_json};
 use crate::validations::{self, build_report, FinalVerdict};
 use crate::verdicts::{decide, Decision, ERROR_OUTCOMES, NO_MAJORITY};
-use crate::{checks, hours, outcomes, py, roundstore};
+use crate::{checks, hours, journal, outcomes, py, roundstore};
 
 pub const EMBED_FIELDS: [&str; 7] = ["model", "texts", "chars", "input_key", "input_sha256", "pages", "written_at"];
 pub const EMBED_ROUND_INPUTS: isize = 200;
@@ -98,6 +98,34 @@ pub fn lock_key(task_id: &str) -> String {
     format!("scoring:{task_id}")
 }
 
+/// A job as the log keeps it: without its signed note, and with its URLs (and an embed input's pages) in blobs named by their hash;
+/// the URLs' hash is the `urls_hash` its round committed to.
+pub fn logged_job(job: &Value) -> (Value, Vec<journal::Blob>) {
+    let mut kept = job.as_object().cloned().unwrap_or_default();
+    kept.remove("manifest");
+    let mut blobs = Vec::new();
+    for name in ["urls", "pages"] {
+        if let Some(listed) = kept.remove(name) {
+            let blob = journal::Blob::of(py::canonical(&listed));
+            kept.insert(name.into(), blob.reference());
+            blobs.push(blob);
+        }
+    }
+    (Value::Object(kept), blobs)
+}
+
+/// A logged job with its blobs read back, as it was when logged.
+pub fn restored_job(logged: &Value, blobs: &dyn Fn(&str) -> Option<Vec<u8>>) -> Option<Value> {
+    let mut job = logged.as_object().cloned()?;
+    for name in ["urls", "pages"] {
+        if let Some(sha) = job.get(name).and_then(|r| r.get("blob")).and_then(Value::as_str).map(String::from) {
+            let body = blobs(&sha).filter(|body| crate::proofs::sha256(body) == sha)?;
+            job.insert(name.into(), serde_json::from_slice(&body).ok()?);
+        }
+    }
+    Some(Value::Object(job))
+}
+
 /// What the miner was given and when it was frozen, signed by the task API.
 pub fn signed_manifest(state: &State, job: &Value) -> Value {
     let mut manifest: Map<String, Value> =
@@ -163,7 +191,7 @@ pub fn pack_round(urls: Vec<Url>, target: i64, task_urls: usize, now: f64) -> Re
 }
 
 /// The round a bot's URLs make, committed before its seed block exists; returned as SQLite keeps it.
-pub async fn open_round(state: &State, urls: Vec<Url>) -> Result<Result<Round, desearch::canonical::Invalid>> {
+pub async fn open_round(state: &State, urls: Vec<Url>, logged: (Value, Vec<journal::Blob>)) -> Result<Result<Round, desearch::canonical::Invalid>> {
     let started = Instant::now();
     let target = state.seeds.target_block().await?;
     let blocked = started.elapsed().as_secs_f64();
@@ -176,7 +204,8 @@ pub async fn open_round(state: &State, urls: Vec<Url>) -> Result<Result<Round, d
         Err(invalid) => return Ok(Err(invalid)),
     };
     let packed = started.elapsed().as_secs_f64();
-    save_round(state, &sealed, &lists).await?;
+    let (request, blobs) = logged;
+    save_round(state, &sealed, &lists, "enqueue", json!({"request": request}), blobs).await?;
     let took = started.elapsed().as_secs_f64();
     if took > SLOW_ENQUEUE_S {
         eprintln!("enqueueing {count} urls took {took:.1}s (block {blocked:.1}s, pack {:.1}s, save {:.1}s)", packed - blocked, took - packed);
@@ -184,11 +213,28 @@ pub async fn open_round(state: &State, urls: Vec<Url>) -> Result<Result<Round, d
     Ok(Ok(sealed))
 }
 
-/// Staged before it is saved, so a saved round always has its URLs.
-async fn save_round(state: &State, sealed: &Round, lists: &str) -> Result<()> {
+/// Staged before it is saved, so a saved round always has its URLs; logged with its commitment in the same transaction.
+async fn save_round(state: &State, sealed: &Round, lists: &str, kind: &'static str, input: Value, mut blobs: Vec<journal::Blob>) -> Result<()> {
     queues::stage(&state.redis, &sealed.round_id, lists).await?;
     let saved = sealed.clone();
-    state.db.run(move |conn| roundstore::save(conn, &saved)).await
+    let manifest = journal::Blob::of(py::canonical(&Value::Array(saved.manifest())));
+    let output = json!({
+        "round_id": saved.round_id,
+        "kind": saved.kind,
+        "manifest_hash": saved.manifest_hash,
+        "seed_block": saved.seed_block,
+        "batches": saved.batches.len(),
+        "manifest": manifest.reference(),
+    });
+    blobs.push(manifest);
+    state
+        .db
+        .run(move |conn| {
+            roundstore::save(conn, &saved)?;
+            journal::append(conn, journal::Record::new(kind, saved.opened_at, input, output).with_blobs(blobs))?;
+            Ok(())
+        })
+        .await
 }
 
 /// Turns the planner's waiting inputs into one embed round, one batch per input.
@@ -227,9 +273,15 @@ pub async fn open_embed_rounds(state: &State) -> Result<Option<Round>> {
             marks.set_ex(opened_key(input_key), &sealed.round_id, OPENED_TTL_S).ignore();
         }
         let _: () = marks.query_async(&mut redis).await?;
-        queues::stage(&state.redis, &sealed.round_id, &queues::pack_job(&round.url_lists())).await?;
-        let saved = sealed.clone();
-        state.db.run(move |conn| roundstore::save(conn, &saved)).await?;
+        let inputs: Vec<Value> = round
+            .batches
+            .iter()
+            .map(|batch| {
+                let field = |name: &str| batch.extra.get(name).cloned().unwrap_or(Value::Null);
+                json!({"batch_id": batch.batch_id, "input_key": field("input_key"), "input_sha256": field("input_sha256"), "texts": field("texts"), "chars": field("chars")})
+            })
+            .collect();
+        save_round(state, &sealed, &queues::pack_job(&round.url_lists()), "embed_round", json!({"inputs": inputs}), Vec::new()).await?;
         opened = Some(sealed);
     }
     // Trimmed only once the round is saved, so a crash re-reads the inputs.
@@ -271,8 +323,8 @@ pub async fn reveal_pending(state: &State) -> Result<usize> {
         if round.seed_block >= missing_from {
             continue;
         }
-        let seed = match state.seeds.seed_for(round.seed_block).await {
-            Ok(Some(seed)) => seed,
+        let hash = match state.seeds.block_hash(round.seed_block).await {
+            Ok(Some(hash)) => hash,
             Ok(None) => {
                 missing_from = round.seed_block;
                 continue;
@@ -283,10 +335,19 @@ pub async fn reveal_pending(state: &State) -> Result<usize> {
                 continue;
             }
         };
-        rounds::reveal(&mut round, &seed);
+        rounds::reveal(&mut round, &manifest::seed_from_hash(&hash));
         // Saved first, so a crash cannot queue the round twice.
         let saved = round.clone();
-        state.db.run(move |conn| roundstore::mark_revealed(conn, &saved)).await?;
+        state
+            .db
+            .run(move |conn| {
+                roundstore::mark_revealed(conn, &saved)?;
+                let input = json!({"round_id": saved.round_id, "seed_block": saved.seed_block, "block_hash": hash, "manifest_hash": saved.manifest_hash});
+                let output = json!({"seed": saved.seed, "serve_order": saved.order});
+                journal::append(conn, journal::Record::new("reveal", now(), input, output))?;
+                Ok(())
+            })
+            .await?;
         filled += fill_round(state, &round).await?;
     }
     Ok(filled)
@@ -360,8 +421,10 @@ pub async fn close_finished(state: &State) -> Result<Vec<String>> {
         state
             .db
             .run(move |conn| {
-                roundlog::anchor(conn, &closing, now())?;
-                roundstore::close(conn, &closing, now())
+                let root = roundlog::anchor(conn, &closing, now())?;
+                roundstore::close(conn, &closing, now())?;
+                journal::append(conn, journal::Record::new("close", now(), json!({"round_id": closing}), json!({"anchor_root": root})))?;
+                Ok(())
             })
             .await?;
         // Later refusals must not land in a log whose root is anchored.
@@ -390,22 +453,29 @@ pub async fn reclaim_expired(state: &State, now: f64) -> Result<Vec<(String, Str
         let Some((holder, seq)) = tasks.reclaim(&state.redis, &task_id, now).await? else { continue };
         let forgiven = held_through_restart(state, tasks.claim_ttl, expiry);
         if !holder.is_empty() {
-            if !forgiven {
-                let (hotkey, task, lapsed) = (holder.clone(), task_id.clone(), payload.clone());
-                state.db.run(move |conn| lapse(conn, &hotkey, &task, &lapsed, "claim_expired", desearch::time::now())).await?;
-            }
             let round_id = Some(text(&payload, "round_id")).filter(|r| !r.is_empty()).map(String::from).unwrap_or_else(|| state.current_round(&kind));
             let cause = if forgiven { "restart" } else { "expired" };
+            let receipt = Receipt {
+                round_id,
+                hotkey: holder.clone(),
+                requested_at: 0.0,
+                outcome: "reclaimed",
+                seq,
+                task_id: Some(task_id.clone()),
+                cause: Some(cause.into()),
+                ..Receipt::default()
+            };
+            let (hotkey, task, lapsed, key) = (holder.clone(), task_id.clone(), payload.clone(), state.key.clone());
             state
-                .record_one(Receipt {
-                    round_id,
-                    hotkey: holder.clone(),
-                    requested_at: 0.0,
-                    outcome: "reclaimed",
-                    seq,
-                    task_id: Some(task_id.clone()),
-                    cause: Some(cause.into()),
-                    ..Receipt::default()
+                .db
+                .run(move |conn| {
+                    // The time the claim was judged expired at, so the log shows it had.
+                    let at = now;
+                    let budget = if forgiven { None } else { Some(lapse(conn, &hotkey, &task, &lapsed, "claim_expired", at)?) };
+                    let receipts = crate::state::record_receipts(conn, &key, vec![receipt], at)?;
+                    let input = json!({"task_id": task, "hotkey": hotkey, "kind": kind_of(&lapsed), "assigned": assigned(&lapsed), "expiry": expiry, "forgiven": forgiven});
+                    journal::append(conn, journal::Record::new("lapse", at, input, json!({"receipts": receipts, "budget": budget})))?;
+                    Ok(())
                 })
                 .await?;
         }
@@ -421,8 +491,11 @@ pub fn held_through_restart(state: &State, claim_ttl: f64, expiry: Option<f64>) 
 
 /// A claim that ended without an upload: its URLs, the budget and a strike; returns the budget.
 pub fn lapse(conn: &Connection, hotkey: &str, task_id: &str, payload: &Value, cause: &str, now: f64) -> Result<i64> {
-    let kind = kind_of(payload);
-    let assigned = assigned(payload);
+    lapse_counted(conn, hotkey, task_id, kind_of(payload), assigned(payload), cause, now)
+}
+
+/// A lapse of a task of `kind` given `assigned` URLs, as its log entry records it.
+pub fn lapse_counted(conn: &Connection, hotkey: &str, task_id: &str, kind: &str, assigned: i64, cause: &str, now: f64) -> Result<i64> {
     if kind == CRAWL {
         budgets::record_coverage(conn, hotkey, assigned, 0, now)?;
         budgets::credit(conn, hotkey, -assigned, kind, now)?;
@@ -569,8 +642,8 @@ pub async fn settle_seeded(state: &Arc<State>) -> Result<usize> {
     let blocks: BTreeSet<i64> = jobs.iter().map(|(_, job)| number(job, "seed_block")).collect();
     let mut seeds = HashMap::new();
     for block in blocks {
-        if let Ok(Some(seed)) = state.seeds.seed_for(block).await {
-            seeds.insert(block, seed);
+        if let Ok(Some(hash)) = state.seeds.block_hash(block).await {
+            seeds.insert(block, hash);
         }
     }
     let settled: Vec<usize> = stream::iter(jobs)
@@ -600,40 +673,62 @@ pub async fn settle_seeded(state: &Arc<State>) -> Result<usize> {
     Ok(settled.into_iter().sum())
 }
 
-async fn settle_one(state: &State, task_id: &str, job: &Value, seed: &str) -> Result<()> {
-    let Some(reason) = pick_reason(state, task_id, job, seed).await? else {
+async fn settle_one(state: &State, task_id: &str, job: &Value, block_hash: &str) -> Result<()> {
+    let (kind, miner) = (kind_of(job).to_string(), text(job, "miner").to_string());
+    let at = now();
+    let (share, per_hour) = state.settings.checks_for(&kind);
+    let input = json!({
+        "task_id": task_id,
+        "kind": kind,
+        "miner": miner,
+        "etag": text(job, "etag"),
+        "seed_block": number(job, "seed_block"),
+        "block_hash": block_hash,
+        "reported": kind != CRAWL || truthy(job.get("reported").and_then(|r| r.get("rows"))),
+        "uploads_last_hour": sampling::uploads_last_hour(&state.redis, &kind, &miner, at).await?,
+        "all_last_hour": sampling::uploads_last_hour(&state.redis, &kind, sampling::ALL, at).await?,
+        "share": share,
+        "per_hour": per_hour,
+    });
+    // Decided in the transaction that logs it, on the passes and re-checks the log has seen up to here, as a replay decides it.
+    let reason = state
+        .db
+        .run(move |conn| {
+            let reason = settle_reason(conn, &input, at)?;
+            if reason == Some(sampling::RECHECK) {
+                checks::took_recheck(conn, text(&input, "miner"), text(&input, "kind"))?;
+            }
+            journal::append(conn, journal::Record::new("settle", at, input, json!({"picked": reason})))?;
+            Ok(reason)
+        })
+        .await?;
+    let Some(reason) = reason else {
         finalize_unchecked(state, task_id, job, true).await?;
         return Ok(());
     };
-    if reason == sampling::RECHECK {
-        let (miner, kind) = (text(job, "miner").to_string(), kind_of(job).to_string());
-        state.db.run(move |conn| checks::took_recheck(conn, &miner, &kind)).await?;
-    }
     let mut picked = job.as_object().cloned().unwrap_or_default();
     picked.insert("picked".into(), reason.into());
     state.validation.open(&state.redis, task_id, &Value::Object(picked), now()).await?;
     Ok(())
 }
 
-async fn pick_reason(state: &State, task_id: &str, job: &Value, seed: &str) -> Result<Option<&'static str>> {
-    let (kind, miner) = (kind_of(job).to_string(), text(job, "miner").to_string());
-    if kind == CRAWL && !truthy(job.get("reported").and_then(|r| r.get("rows"))) {
+/// Whether a seeded upload is checked and why, from what its `settle` entry holds: the seed block's hash, the upload counters and the share.
+pub fn settle_reason(conn: &Connection, input: &Value, at: f64) -> Result<Option<&'static str>> {
+    let (kind, miner) = (text(input, "kind"), text(input, "miner"));
+    if !input["reported"].as_bool().unwrap_or(false) {
         return Ok(Some(UNREPORTED));
     }
-    let (asked, pool) = (miner.clone(), kind.clone());
-    if state.lookups.read(move |conn| budgets::locked_until(conn, &asked, &pool, now())).await?.is_some() {
+    if budgets::locked_until(conn, miner, kind, at)?.is_some() {
         return Ok(Some(LOCKED));
     }
-    let (asked, pool) = (miner.clone(), kind.clone());
-    let (passes, recheck_left) = state.lookups.read(move |conn| Ok((checks::passes(conn, &asked, &pool)?, checks::recheck_left(conn, &asked, &pool)?))).await?;
-    let at = now();
-    let (share, per_hour) = state.settings.checks_for(&kind);
-    let share = sampling::budget_share(share, per_hour, sampling::uploads_last_hour(&state.redis, &kind, sampling::ALL, at).await?);
+    let float = |name: &str| input[name].as_f64().unwrap_or(0.0);
+    let share = sampling::budget_share(float("share"), float("per_hour"), float("all_last_hour"));
+    let seed = manifest::seed_from_hash(text(input, "block_hash"));
     Ok(sampling::pick_reason(
-        sampling::draw(seed, task_id, text(job, "etag")),
-        sampling::uploads_last_hour(&state.redis, &kind, &miner, at).await?,
-        passes,
-        recheck_left,
+        sampling::draw(&seed, text(input, "task_id"), text(input, "etag")),
+        float("uploads_last_hour"),
+        checks::passes(conn, miner, kind)?,
+        checks::recheck_left(conn, miner, kind)?,
         share,
     ))
 }
@@ -642,6 +737,7 @@ async fn pick_reason(state: &State, task_id: &str, job: &Value, seed: &str) -> R
 pub async fn recheck_malformed(state: &State) -> Result<usize> {
     let mut redis = state.redis.clone();
     let reported: Vec<String> = redis.lrange(queues::EMBED_MALFORMED, 0, MALFORMED_AT_ONCE - 1).await?;
+    let logged: Vec<Value> = reported.iter().filter_map(|raw| serde_json::from_str(raw).ok()).collect();
     if reported.is_empty() {
         return Ok(0);
     }
@@ -663,6 +759,8 @@ pub async fn recheck_malformed(state: &State) -> Result<usize> {
             for miner in &miners {
                 checks::start_recheck(conn, miner, EMBED)?;
             }
+            let output = json!({"miners": miners.iter().collect::<Vec<_>>()});
+            journal::append(conn, journal::Record::new("recheck", now(), json!({"reports": logged}), output))?;
             Ok(())
         })
         .await?;
@@ -722,14 +820,35 @@ pub fn unchecked_embed_vote(job: &Value) -> Value {
 }
 
 pub async fn finalize_unchecked(state: &State, task_id: &str, job: &Value, seeding: bool) -> Result<Option<Value>> {
-    let vote = if kind_of(job) == EMBED {
-        unchecked_embed_vote(job)
+    let (vote, basis) = if kind_of(job) == EMBED {
+        (unchecked_embed_vote(job), Basis::Unchecked { error_share: None })
     } else {
         let miner = text(job, "miner").to_string();
         let share = state.lookups.read(move |conn| checks::error_share(conn, &miner, now())).await?;
-        unchecked_vote(job, share)
+        (unchecked_vote(job, share), Basis::Unchecked { error_share: Some(share) })
     };
-    conclude_validation(state, task_id, job, Decision::last(vote, Vec::new()), seeding).await
+    conclude_validation(state, task_id, job, Decision::last(vote, Vec::new()), basis, seeding).await
+}
+
+/// What a verdict was decided on, as its `finalize` entry records it.
+#[derive(Clone, Debug)]
+pub enum Basis {
+    /// The votes of these validators, in the order they reported.
+    Checked { voters: Vec<String> },
+    /// The miner's own counts; a crawl upload's error rows at this share, which the accounts must still hold when it is finalized.
+    Unchecked { error_share: Option<f64> },
+    /// An embed upload no validator scored by its deadline.
+    Unscored,
+}
+
+impl Basis {
+    pub fn logged(&self) -> Value {
+        match self {
+            Basis::Checked { voters } => json!({"mode": "checked", "voters": voters}),
+            Basis::Unchecked { error_share } => json!({"mode": "unchecked", "error_share": error_share}),
+            Basis::Unscored => json!({"mode": "unscored"}),
+        }
+    }
 }
 
 /// Finalizes every open upload that is ready, oldest first.
@@ -761,13 +880,14 @@ pub async fn finalize_task(state: &State, task_id: &str, job: &Value, now: f64) 
     }
     if voters.is_empty() {
         if kind_of(job) != CRAWL {
-            return conclude_validation(state, task_id, job, Decision::last(unscored_vote(), Vec::new()), false).await;
+            return conclude_validation(state, task_id, job, Decision::last(unscored_vote(), Vec::new()), Basis::Unscored, false).await;
         }
         return finalize_unchecked(state, task_id, job, false).await;
     }
     let votes = state.validation.votes(&state.redis, task_id).await?;
+    let voters = votes.iter().map(|vote| text(vote, "validator").to_string()).collect();
     let decision = held_to_report(job, decide(&votes, false, true));
-    conclude_validation(state, task_id, job, decision, false).await
+    conclude_validation(state, task_id, job, decision, Basis::Checked { voters }, false).await
 }
 
 fn overstated(job: &Value, result: &Value) -> bool {
@@ -821,7 +941,7 @@ fn checked_texts(job: &Value, result: &Map<String, Value>) -> Value {
 }
 
 /// Accounts are finalized once per upload, in one transaction, before Redis lets go; None when storage failed or the upload was closed under it.
-pub async fn conclude_validation(state: &State, task_id: &str, job: &Value, decision: Decision, seeding: bool) -> Result<Option<Value>> {
+pub async fn conclude_validation(state: &State, task_id: &str, job: &Value, decision: Decision, basis: Basis, seeding: bool) -> Result<Option<Value>> {
     let (task, key) = (task_id.to_string(), text(job, "key").to_string());
     if let Some(finalized) = state.lookups.read(move |conn| validations::final_verdict(conn, &task, &key)).await? {
         return finish_finalized(state, task_id, job, finalized, seeding).await;
@@ -843,12 +963,42 @@ pub async fn conclude_validation(state: &State, task_id: &str, job: &Value, deci
         state
             .db
             .run(move |conn| {
+                let at = now();
+                // The share read before may be stale by now; the verdict waits for the next pass rather than log what the accounts no longer say.
+                if let Basis::Unchecked { error_share: Some(used) } = &basis {
+                    if checks::error_share(conn, text(&job, "miner"), at)? != *used {
+                        return Ok(Settled::Stale);
+                    }
+                }
                 let kept = Kept { report: &report, publish: publish.as_ref(), details: details.as_deref() };
-                finalize_accounts(conn, &task, &job, &decision, kept, now())
+                let Some(budget) = finalize_accounts(conn, &task, &job, &decision, kept, at)? else { return Ok(Settled::Before) };
+                let checked = if truthy(job.get("picked")) { check_accounts(conn, &job, &decision, at)? } else { None };
+                let vote = decision.vote();
+                let output = json!({
+                    "verdict": vote["verdict"],
+                    "reason": vote["result"].get("reason").cloned().unwrap_or(Value::Null),
+                    "credited": if vote["verdict"] == "pass" { vote["credited"].clone() } else { 0.into() },
+                    "budget": budget,
+                    "agreed": decision.agreed,
+                    "disagreed": decision.disagreed,
+                    "taken": checked.as_ref().map(|c| c.taken_ids()).unwrap_or_default(),
+                    "penalty": checked.as_ref().is_some_and(|c| c.penalty.is_some()),
+                    "report_key": report.get("report_key").cloned().unwrap_or(Value::Null),
+                    "scored_at": report.get("scored_at").cloned().unwrap_or(Value::Null),
+                });
+                let mut input = basis.logged();
+                input["task_id"] = task.clone().into();
+                input["key"] = text(&job, "key").into();
+                input["picked"] = job.get("picked").cloned().unwrap_or(Value::Null);
+                journal::append(conn, journal::Record::new("finalize", at, input, output))?;
+                Ok(Settled::Now { budget, checked })
             })
             .await?
     };
-    let Some(budget) = settled else {
+    if let Settled::Stale = settled {
+        return Ok(None);
+    }
+    let Settled::Now { budget, checked } = settled else {
         let (task, key) = (task_id.to_string(), text(job, "key").to_string());
         let finalized = state
             .db
@@ -863,11 +1013,17 @@ pub async fn conclude_validation(state: &State, task_id: &str, job: &Value, deci
             state.validation.leave(&state.redis, validator).await?;
         }
     }
+    // Taken back in the verdict's own transaction; the bucket and the publisher hear of it now.
+    if let Some(checked) = checked {
+        let (miner, kind) = (text(job, "miner"), kind_of(job));
+        withdrawn(state, miner, kind, checked.taken, "check_failed").await?;
+        if let Some(penalty) = checked.penalty {
+            withdrawn(state, miner, kind, penalty, "repeated_fails").await?;
+            eprintln!("miner={} {kind} full penalty: repeated_fails", &miner[..miner.len().min(10)]);
+        }
+    }
     if !close_upload(state, task_id, job, &verdict, publish.as_ref(), seeding).await? {
         return Ok(None);
-    }
-    if truthy(job.get("picked")) {
-        account_check(state, job, &decision).await?;
     }
     Ok(Some(json!({
         "task_id": task_id,
@@ -877,60 +1033,78 @@ pub async fn conclude_validation(state: &State, task_id: &str, job: &Value, deci
     })))
 }
 
+/// How finalizing one upload went in its transaction.
+enum Settled {
+    Now {
+        budget: i64,
+        checked: Option<Checked>,
+    },
+    /// Finalized before; nothing was paid twice.
+    Before,
+    /// The accounts moved since the verdict was worked out; it is worked out again.
+    Stale,
+}
+
+/// What a check's verdict took back: the uploads since the hotkey's last passed check, and its last day's on a full penalty.
+pub struct Checked {
+    pub taken: Vec<validations::Taken>,
+    pub penalty: Option<Vec<validations::Taken>>,
+}
+
+impl Checked {
+    pub fn taken_ids(&self) -> Vec<String> {
+        self.taken.iter().chain(self.penalty.iter().flatten()).map(|t| t.task_id.clone()).collect()
+    }
+}
+
 /// A pass marks where the hotkey last stood in its kind; a fail takes back what passed since then and checks its next uploads of the kind.
-async fn account_check(state: &State, job: &Value, decision: &Decision) -> Result<()> {
+pub fn check_accounts(conn: &Connection, job: &Value, decision: &Decision, at: f64) -> Result<Option<Checked>> {
     let vote = decision.vote();
-    let (verdict, miner, kind) = (text(vote, "verdict").to_string(), text(job, "miner").to_string(), kind_of(job).to_string());
+    let (verdict, miner, kind) = (text(vote, "verdict"), text(job, "miner"), kind_of(job));
     if verdict != "pass" && verdict != "fail" {
-        return Ok(());
+        return Ok(None);
     }
     let samples = vote["result"]["samples"].as_array().cloned().unwrap_or_default();
     let judged = samples.iter().filter(|s| ERROR_OUTCOMES.contains(&text(s, "outcome"))).count() as i64;
     let unconfirmed = samples.iter().filter(|s| text(s, "outcome") == "errors_unconfirmed").count() as i64;
     let passed = verdict == "pass";
-    let (asked, pool, task_id) = (miner.clone(), kind.clone(), text(job, "task_id").to_string());
-    let upload_at = job.get("completed_at").and_then(Value::as_f64).filter(|c| *c != 0.0).unwrap_or_else(now);
-    let since = state
-        .db
-        .run(move |conn| {
-            let since = checks::last_pass_at(conn, &asked, &pool)?;
-            checks::record(conn, &asked, &pool, &task_id, passed, upload_at, judged, unconfirmed, now())?;
-            Ok(since)
-        })
-        .await?;
+    let upload_at = job.get("completed_at").and_then(Value::as_f64).filter(|c| *c != 0.0).unwrap_or(at);
+    let since = checks::last_pass_at(conn, miner, kind)?;
+    checks::record(conn, miner, kind, text(job, "task_id"), passed, upload_at, judged, unconfirmed, at)?;
     if passed {
-        return Ok(());
+        return Ok(Some(Checked { taken: Vec::new(), penalty: None }));
     }
-    take_back(state, &miner, &kind, since, "check_failed", false).await?;
-    let (asked, pool) = (miner.clone(), kind.clone());
-    let fails = state
-        .db
-        .run(move |conn| {
-            checks::start_recheck(conn, &asked, &pool)?;
-            checks::fails_in_recent(conn, &asked, &pool)
-        })
-        .await?;
-    if fails >= FAILS_FOR_PENALTY {
-        full_penalty(state, &miner, &kind, "repeated_fails").await?;
-    }
-    Ok(())
+    let taken = take_back_accounts(conn, miner, kind, since, "check_failed", false, at)?;
+    checks::start_recheck(conn, miner, kind)?;
+    let penalty = if checks::fails_in_recent(conn, miner, kind)? >= FAILS_FOR_PENALTY {
+        Some(full_penalty_accounts(conn, miner, kind, "repeated_fails", at)?)
+    } else {
+        None
+    };
+    Ok(Some(Checked { taken, penalty }))
 }
 
-/// Un-credits and unpublishes a hotkey's passed uploads of one kind completed after `since`: the unchecked ones, or every one.
-pub async fn take_back(state: &State, miner: &str, kind: &str, since: f64, reason: &str, checked_too: bool) -> Result<Vec<String>> {
-    let (asked, pool, cause) = (miner.to_string(), kind.to_string(), reason.to_string());
-    let taken = state
-        .db
-        .run(move |conn| {
-            let taken = validations::withdraw(conn, &asked, &pool, since, checked_too)?;
-            let credited: i64 = taken.iter().map(|t| t.credited).sum();
-            budgets::credit(conn, &asked, -credited, &pool, now())?;
-            if !taken.is_empty() {
-                hours::record_take_back(conn, &asked, &pool, &cause, taken.len() as i64, credited, now())?;
-            }
-            Ok(taken)
-        })
-        .await?;
+/// Un-credits a hotkey's passed uploads of one kind completed after `since`: the unchecked ones, or every one.
+pub fn take_back_accounts(conn: &Connection, miner: &str, kind: &str, since: f64, reason: &str, checked_too: bool, at: f64) -> Result<Vec<validations::Taken>> {
+    let taken = validations::withdraw(conn, miner, kind, since, checked_too)?;
+    let credited: i64 = taken.iter().map(|t| t.credited).sum();
+    budgets::credit(conn, miner, -credited, kind, at)?;
+    if !taken.is_empty() {
+        hours::record_take_back(conn, miner, kind, reason, taken.len() as i64, credited, at)?;
+    }
+    Ok(taken)
+}
+
+/// The hotkey's last day of credit and passed uploads in one kind's pool, and a lockout from it.
+pub fn full_penalty_accounts(conn: &Connection, miner: &str, kind: &str, reason: &str, at: f64) -> Result<Vec<validations::Taken>> {
+    budgets::lock_out(conn, miner, kind, FULL_PENALTY_LOCKOUT_H, reason, at)?;
+    let taken = take_back_accounts(conn, miner, kind, at - PENALTY_WINDOW_S, reason, true, at)?;
+    budgets::wipe_credits(conn, miner, at - PENALTY_WINDOW_S, kind)?;
+    Ok(taken)
+}
+
+/// Unpublishes uploads taken back, and sends a crawl upload's URLs back to the bot.
+async fn withdrawn(state: &State, miner: &str, kind: &str, taken: Vec<validations::Taken>, reason: &str) -> Result<Vec<String>> {
     let task_ids: Vec<String> = taken.iter().map(|t| t.task_id.clone()).collect();
     if !task_ids.is_empty() {
         state.publish.withdraw(&state.redis, &task_ids, reason, now()).await?;
@@ -942,6 +1116,23 @@ pub async fn take_back(state: &State, miner: &str, kind: &str, since: f64, reaso
         }
     }
     Ok(task_ids)
+}
+
+/// Un-credits and unpublishes a hotkey's passed uploads of one kind completed after `since`: the unchecked ones, or every one.
+pub async fn take_back(state: &State, miner: &str, kind: &str, since: f64, reason: &str, checked_too: bool) -> Result<Vec<String>> {
+    let (asked, pool, cause) = (miner.to_string(), kind.to_string(), reason.to_string());
+    let taken = state
+        .db
+        .run(move |conn| {
+            let at = now();
+            let taken = take_back_accounts(conn, &asked, &pool, since, &cause, checked_too, at)?;
+            let input = json!({"miner": asked, "kind": pool, "since": since, "reason": cause, "checked_too": checked_too});
+            let output = json!({"taken": taken.iter().map(|t| t.task_id.clone()).collect::<Vec<_>>()});
+            journal::append(conn, journal::Record::new("take_back", at, input, output))?;
+            Ok(taken)
+        })
+        .await?;
+    withdrawn(state, miner, kind, taken, reason).await
 }
 
 /// Where a round's URL lists are kept once its tasks are queued, so a take-back can tell the bot which URLs to send again.
@@ -977,18 +1168,6 @@ pub async fn report_dropped(pages: &Bucket, storage: &Bucket, redis: &Redis, tak
             eprintln!("round={round_id} dropped outcomes not written: {error:#}");
         }
     }
-}
-
-/// The hotkey's last day of credit and published work in one kind's pool, and a lockout from it.
-pub async fn full_penalty(state: &State, miner: &str, kind: &str, reason: &str) -> Result<()> {
-    let at = now();
-    let (asked, pool, why) = (miner.to_string(), kind.to_string(), reason.to_string());
-    state.db.run(move |conn| budgets::lock_out(conn, &asked, &pool, FULL_PENALTY_LOCKOUT_H, &why, at)).await?;
-    take_back(state, miner, kind, at - PENALTY_WINDOW_S, reason, true).await?;
-    let (asked, pool) = (miner.to_string(), kind.to_string());
-    state.db.run(move |conn| budgets::wipe_credits(conn, &asked, at - PENALTY_WINDOW_S, &pool)).await?;
-    eprintln!("miner={} {kind} full penalty: {reason}", &miner[..miner.len().min(10)]);
-    Ok(())
 }
 
 pub async fn report_outcomes(state: &State, urls: &[String], outcome: &'static str, task_id: &str) {

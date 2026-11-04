@@ -5,6 +5,7 @@ use desearch::hotkey::{public_of, signing_payload, verify};
 use desearch::time::now;
 
 use crate::http::ApiError;
+use crate::journal;
 use crate::state::State;
 
 const TOLERANCE_S: f64 = 60.0;
@@ -79,6 +80,8 @@ async fn authenticate(state: &State, headers: &HeaderMap, method: &str, path: &s
     if !state.set_once(&format!("nonce:{hotkey}:{nonce}"), "1", NONCE_TTL_S).await? {
         return Err(ApiError::status(401, "nonce already used"));
     }
+    // Every request let in reaches the log by its hash, even one that changes nothing, so a relay holding it can show it arrived.
+    journal::note_request(&state.redis, &journal::request_hash(method, path, body, timestamp, nonce, hotkey, signature), now()).await?;
     Ok(Caller {
         hotkey: hotkey.into(),
         uid: entry.as_ref().and_then(|e| e.uid),

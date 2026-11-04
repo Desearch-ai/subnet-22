@@ -26,7 +26,7 @@ use crate::roundlog::{self, Receipt};
 use crate::rounds::UPLOAD_GRACE_S;
 use crate::seeds::Seeds;
 use crate::settings::{RegistryMode, SeedsMode, Settings};
-use crate::{db, roundstore};
+use crate::{db, journal, roundstore};
 
 pub type Redis = redis::aio::ConnectionManager;
 
@@ -66,6 +66,22 @@ pub struct State {
     pub draining: AtomicBool,
     /// Completions and reference calls running on after their caller may have stopped waiting.
     pub detached: AtomicUsize,
+}
+
+/// Signs receipts and writes them to the round log in the caller's transaction; returns each as the caller is shown it.
+pub fn record_receipts(conn: &rusqlite::Connection, key: &Hotkey, receipts: Vec<Receipt>, served_at: f64) -> Result<Vec<Value>> {
+    let mut shown = Vec::with_capacity(receipts.len());
+    for mut receipt in receipts {
+        // Another copy of the API may have sealed the round this one still names.
+        if receipt.outcome == "refused" && roundlog::anchored_root(conn, &receipt.round_id)?.is_some() {
+            receipt.round_id.clear();
+        }
+        let body = receipt.body();
+        let signature = hex(&key.sign(&canonical(&body)));
+        roundlog::record(conn, &receipt, &signature, served_at)?;
+        shown.push(json!({"body": body, "signature": signature}));
+    }
+    Ok(shown)
 }
 
 pub async fn redis_from(url: &str) -> Result<Redis> {
@@ -134,6 +150,18 @@ impl State {
         let mut admins: HashSet<String> = settings.admin_hotkeys.iter().cloned().collect();
         admins.extend(addresses(&settings.admin_uris)?);
         let key = Hotkey::from_uri(if settings.key_uri.is_empty() { DEV_RECEIPT_KEY } else { &settings.key_uri }).context("TASK_API_KEY_URI")?;
+        let started_at = now();
+        let started = json!({"started_at": started_at, "version": env!("CARGO_PKG_VERSION"), "signer": key.ss58(), "settings": settings.journaled()});
+        db.run(move |conn| {
+            let (last, _) = journal::head(conn)?;
+            journal::append(conn, journal::Record::new("start", started_at, started, Value::Null))?;
+            // The first log starts from the accounts as they are, so a replay can follow on from them.
+            if last == 0 {
+                crate::snapshot::record(conn, started_at)?;
+            }
+            Ok(())
+        })
+        .await?;
         let reference = (!settings.embed_reference_urls.is_empty())
             .then(|| Reference::new(&settings.embed_reference_urls, &settings.embed_reference_key, settings.embed_reference_calls))
             .transpose()?;
@@ -159,7 +187,7 @@ impl State {
             current: Mutex::new(current),
             open_manifests: Mutex::default(),
             open_listed: Mutex::default(),
-            started_at: now(),
+            started_at,
             draining: AtomicBool::new(false),
             detached: AtomicUsize::new(0),
             settings,
@@ -217,20 +245,10 @@ impl State {
     /// Signs receipts and writes them to the log together; returns each as the caller is shown it.
     pub async fn record(&self, receipts: Vec<Receipt>) -> Result<Vec<Value>> {
         let key = self.key.clone();
-        let served_at = now();
         self.db
             .run(move |conn| {
-                let mut shown = Vec::with_capacity(receipts.len());
-                for mut receipt in receipts {
-                    // Another copy of the API may have sealed the round this one still names.
-                    if receipt.outcome == "refused" && roundlog::anchored_root(conn, &receipt.round_id)?.is_some() {
-                        receipt.round_id.clear();
-                    }
-                    let body = receipt.body();
-                    let signature = hex(&key.sign(&canonical(&body)));
-                    roundlog::record(conn, &receipt, &signature, served_at)?;
-                    shown.push(json!({"body": body, "signature": signature}));
-                }
+                let shown = record_receipts(conn, &key, receipts, now())?;
+                journal::append(conn, journal::Record::new("receipt", now(), Value::Null, json!({"receipts": shown})))?;
                 Ok(shown)
             })
             .await
@@ -238,6 +256,19 @@ impl State {
 
     pub async fn record_one(&self, receipt: Receipt) -> Result<Value> {
         Ok(self.record(vec![receipt]).await?.remove(0))
+    }
+
+    /// Signs receipts and writes them, with one log entry of `kind` holding `input` and the receipts as its output.
+    pub async fn record_logged(&self, receipts: Vec<Receipt>, kind: &'static str, input: Value, blobs: Vec<journal::Blob>) -> Result<Vec<Value>> {
+        let key = self.key.clone();
+        self.db
+            .run(move |conn| {
+                let at = now();
+                let shown = record_receipts(conn, &key, receipts, at)?;
+                journal::append(conn, journal::Record::new(kind, at, input, json!({"receipts": shown})).with_blobs(blobs))?;
+                Ok(shown)
+            })
+            .await
     }
 
     /// Seconds a hotkey polling past its rate waits, None while it is within it.
